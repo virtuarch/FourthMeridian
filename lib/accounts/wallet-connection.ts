@@ -89,7 +89,7 @@
 
 import { db } from "@/lib/db";
 import { ConnectionStatus, ProviderType } from "@prisma/client";
-import { dualWriteProviderAccountIdentity, isAuthorityRefusal } from "@/lib/accounts/provider-identity";
+import { dualWriteProviderAccountIdentity, isAuthorityRefusal, ProviderIdentityConflictError } from "@/lib/accounts/provider-identity";
 import { walletConnectionCredential, walletExternalConnectionId } from "@/lib/accounts/wallet-connection-format";
 import { setWalletConnectionHealth } from "@/lib/connections/health-transitions";
 import type { DbClient } from "@/lib/accounts/space-account-link";
@@ -403,6 +403,32 @@ export async function alignWalletProviderSpine(params: {
       console.error(
         `[wallet-connection] AUTHORITY REFUSED a spine write for account ${params.financialAccountId} — ` +
         `an identity or connection row is now MISSING, and this is a write-ORDER defect, not a provider failure:`,
+        e,
+      );
+      return null;
+    }
+    // ── PROVIDER-IDENTITY — THE SAME ASYMMETRY, FOR THE SAME STATED REASON ───
+    //
+    // The identity helper now also raises on a uniqueness collision it cannot
+    // prove is this account's own. The documented contract above decides what
+    // happens to it here: this function returns null and never breaks its five
+    // callers' primary flows, so the conflict is absorbed exactly as the
+    // authority refusal is — and, exactly as that one is, it gets its OWN
+    // severity and marker instead of disappearing into the generic warn below.
+    //
+    // ⚠️ WHAT IT MEANS FOR A WALLET IS NOT WHAT IT MEANS FOR PLAID, and the
+    // helper already encodes the difference: D2 Step 1D made a shared wallet
+    // ADDRESS across two owners' accounts legitimate, so a foreign WALLET row
+    // is not by itself a conflict. Reaching here therefore means either a
+    // genuinely global collision or — the case that will matter once this path
+    // runs on a tenant client — an INDETERMINATE reread, where the conflicting
+    // row is real and hidden by RLS. Both leave the spine incomplete, which is
+    // operator-visible and is why this is `error`, not `warn`.
+    if (e instanceof ProviderIdentityConflictError) {
+      console.error(
+        `[wallet-connection] PROVIDER IDENTITY CONTESTED for account ${params.financialAccountId} ` +
+        `(${e.verdict}, ${e.conflictingAccountCount} other holder(s)) — the Connection and AccountConnection stand, ` +
+        `the identity row does NOT, and no alternate account was adopted. Spine alignment is INCOMPLETE:`,
         e,
       );
       return null;

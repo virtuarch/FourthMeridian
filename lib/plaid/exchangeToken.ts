@@ -52,7 +52,7 @@ import { mapAccountType } from "@/lib/plaid/account-type";
 import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
 // PROV-4 — the canonical per-account conn+SAL spine writer (was inline here).
 import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
-import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
+import { dualWriteProviderAccountIdentity, ProviderIdentityConflictError } from "@/lib/accounts/provider-identity";
 import { deploymentEnvironment } from "@/lib/env";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 
@@ -455,7 +455,42 @@ export async function performPlaidTokenExchange(
     // This is the fourth instance of the ordering phenomenon b42e8e0 first
     // recorded for disconnect/restore: it is what happens every time a subtree
     // write is authored before the link that authorizes it.
-    await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
+    // ── PROVIDER-IDENTITY — THE DEGRADATION IS PER ACCOUNT, AND IT IS CHOSEN ──
+    //
+    // The helper no longer swallows a uniqueness collision. Before, a contested
+    // identity produced one `console.warn` here and the loop carried straight
+    // on: the account was counted as imported, pushed into `importedIds`, and
+    // handed to the snapshot regeneration and the first transaction sync — with
+    // an identity row that was absent or pointing at someone else. The sync's
+    // `(provider, externalAccountId)` resolve then names a row WITHOUT naming an
+    // account, which is the mechanism that puts a provider's transactions on
+    // another ledger.
+    //
+    // ⚠️ THIS LOOP HAS NO SURROUNDING try/catch, SO AN UNABSORBED THROW FAILS
+    // THE WHOLE PLAID IMPORT — every other account in the batch included. For a
+    // conflict that is the wrong blast radius: the contest is about ONE
+    // provider account and the other accounts are fine. So the conflict is
+    // absorbed HERE, deliberately, and the account is EXCLUDED from
+    // `importedIds`/`imported` rather than silently included. Excluding it is
+    // the substantive half: an account whose provider identity is contested is
+    // precisely the one that must not be scheduled for a transaction sync.
+    //
+    // ⚠️ AND THE ABSORPTION IS NARROW. An authority refusal still escapes — it
+    // is a write-ORDER defect and RLS-ACC-S4 made it loud on purpose — and so
+    // does every unknown failure. Only the typed conflict degrades.
+    try {
+      await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
+    } catch (identityError) {
+      if (!(identityError instanceof ProviderIdentityConflictError)) throw identityError;
+      console.error(
+        `[plaid][PROVIDER-IDENTITY] SKIPPING account ${fa.id} — its Plaid provider identity is contested ` +
+        `(${identityError.verdict}, ${identityError.conflictingAccountCount} other holder(s)). The account row and its ` +
+        `spine stand, but it is NOT counted as imported and NOT scheduled for a transaction sync: resolving a ` +
+        `transaction through a contested identity is how a row lands on another account's ledger.`,
+        redactedErrorForLog(identityError),
+      );
+      continue;
+    }
 
     importedIds.push(fa.id);
     imported++;

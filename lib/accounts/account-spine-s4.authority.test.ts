@@ -203,14 +203,30 @@ async function main(): Promise<void> {
     const c = code(IDENT);
     check("the catch consults the predicate", /if \(isAuthorityRefusal\(e\)\)/.test(c));
     check("…and THROWS", /throw new ProviderIdentityAuthorityRefusedError\(/.test(c));
-    const throwAt = c.indexOf("throw new ProviderIdentityAuthorityRefusedError(");
-    const warnAt  = c.indexOf("console.warn(");
-    check("both the throw and the warn exist (so the ordering claim is not vacuous)",
-      throwAt !== -1 && warnAt !== -1, `throw@${throwAt} warn@${warnAt}`);
-    check("THE THROW PRECEDES THE WARN — otherwise the refusal is logged and returned as success",
-      throwAt < warnAt);
-    check("the collision path is UNCHANGED: it still warns and returns normally",
-      /non-fatal/.test(c) && !/throw;/.test(c));
+    // ── PROVIDER-IDENTITY UPDATED THESE THREE, AND THE REASON IS THE POINT ──
+    // S4 pinned the refusal's throw as coming BEFORE the collision's
+    // `console.warn`, and pinned the collision path as "UNCHANGED: it still
+    // warns and returns normally". Both described a catch that still ended in a
+    // swallow. PROVIDER-IDENTITY removed the swallow entirely — the collision is
+    // classified and the remainder is rethrown — so there is no `console.warn`
+    // left in the module for the refusal's throw to precede.
+    //
+    // ⚠️ THE S4 PROPERTY IS NOT WEAKENED, IT IS STRENGTHENED, AND THAT IS WHAT
+    // IS ASSERTED. "The refusal is thrown before anything can swallow it" used
+    // to need an ordering comparison; now it holds because NOTHING in the catch
+    // swallows. The ordering is still pinned against the one construct that
+    // could reintroduce the hazard: the terminal rethrow.
+    const throwAt   = c.indexOf("throw new ProviderIdentityAuthorityRefusedError(");
+    const rethrowAt = c.indexOf("throw e;");
+    check("the refusal's throw and the terminal rethrow BOTH exist (so the ordering claim is not vacuous)",
+      throwAt !== -1 && rethrowAt !== -1, `refusalThrow@${throwAt} rethrow@${rethrowAt}`);
+    check("THE REFUSAL IS CLASSIFIED FIRST — before the collision branch and before the terminal rethrow, so it can never be relabelled as either",
+      throwAt < rethrowAt && throwAt < c.indexOf("isUniqueCollision(e)"));
+    check("THE COLLISION PATH NO LONGER WARNS AND RETURNS — it is classified, and the only non-fatal verdict is the account's own mapping",
+      !/console\.warn/.test(c)
+      && /if \(isUniqueCollision\(e\)\)/.test(c)
+      && /verdict === "SAME_ACCOUNT"/.test(c)
+      && /throw new ProviderIdentityConflictError\(/.test(c));
     check("the module no longer declares the swallow as unconditional",
       !/catch \(e\) \{\s*console\.warn/.test(c));
   }
