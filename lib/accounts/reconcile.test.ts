@@ -417,7 +417,12 @@ async function main(): Promise<void> {
       check(`${f}: still does NOT import the migration principal`,
         !/import\s*\{[^{}]*\bdb\b[^{}]*\}\s*from\s*["']@\/lib\/db["']/.test(src));
       check(`${f}: folds through a withTenantDb PHASE — the merge's authority is this route's tenant role`,
-        /withTenantDb\([^;]*?mergeArchivedDuplicateIntoCanonical\(/s.test(code2),
+        // ⚠️ NO `/s` FLAG. tsconfig targets below es2018, so dotAll is a
+        // COMPILE ERROR here — and the main checkout's tsc never reached this
+        // line, because it aborted on a stale generated `.next/dev/types` file
+        // first. A clean worktree is what found it. `[^;]` already spans
+        // newlines, so the flag was redundant as well as illegal.
+        /withTenantDb\([^;]*?mergeArchivedDuplicateIntoCanonical\(/.test(code2),
         "the merge must receive a phase client, so every statement in the fold is policy-subject and atomic with it");
       check(`${f}: names the migration that unblocked the fold, so nobody re-derives the refusal`,
         /DuplicateAccountCandidate/.test(src) && /20261003000100/.test(src));
