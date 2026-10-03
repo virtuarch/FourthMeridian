@@ -101,7 +101,9 @@ import { requireSpaceRole } from "@/lib/session";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { PHASE_BUDGET_MS } from "@/lib/ai/tenant-phase";
 import { resolveSpaceContext } from "@/lib/space";
-import { computeAverageMonthlySpending } from "@/lib/ai/intelligence";
+import { readCanonicalSpending } from "@/lib/transactions/canonical-spending";
+import { transactionCorpusSpan } from "@/lib/data/transaction-query";
+import { todayUTCISO } from "@/lib/time/clock";
 import { resolveExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import { getAssembler } from "@/lib/ai/assembler-registry";
 import { FinanceDomains } from "@/lib/ai/types";
@@ -141,20 +143,34 @@ export async function GET(
   // the authority it is handed is now the authenticated caller's own, so the
   // MEASURED rung is computed over exactly the transaction population the caller
   // may see, which is what the security note above has always claimed.
-  const txnSection = assemble
+  //
+  // ⚠️ THE CANONICAL MONTHS, READ OVER THEIR OWN CALENDAR WINDOW. This read the
+  // assessment's 90-day window, whose reliable months were two on 356 days of
+  // 2026; the canonical baseline is the trailing three COMPLETE months before
+  // today (lib/transactions/canonical-spending), the same figure the Daily Brief,
+  // the assessment and every scenario now average.
+  const canonical = assemble
     ? await withTenantDb(
         viewer.user.id,
-        (tx) => assemble(tx, spaceCtx, { scopeHint: "full" }),
+        (tx) => readCanonicalSpending({
+          asOf: todayUTCISO(),
+          readWindow: async (w) => ((await assemble(tx, spaceCtx,
+            { scopeHint: "full", transactionWindow: w }))?.data as TransactionsSummaryData | undefined) ?? null,
+          readHistory: async (asOf) => {
+            const span = await transactionCorpusSpan(tx, { spaceId, asOf });
+            return { from: span.from, to: span.to };
+          },
+        }),
         { timeout: PHASE_BUDGET_MS.PROLOGUE },
       )
     : null;
-  const measured = computeAverageMonthlySpending(
-    txnSection ? (txnSection.data as TransactionsSummaryData) : null,
-  );
+  const measured = canonical?.baseline.monthly ?? null;
 
   // THE authority decides. Precedence and the positive-or-refuse rule live there,
   // not here — this route supplies evidence and serializes the verdict.
-  const baseline = resolveExpenseBaseline({ declared, measured });
+  const baseline = resolveExpenseBaseline({ declared, measured,
+    measuredOver: canonical && canonical.baseline.monthCount > 0
+      ? { label: canonical.baseline.label, count: canonical.baseline.monthCount } : null });
 
   return NextResponse.json({ baseline });
 }

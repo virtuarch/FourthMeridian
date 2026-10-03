@@ -268,6 +268,12 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
   const a = i.assessment;
   const behavior: BriefPackage['behavior'] = txn && a ? {
     window: { from: txn.startDate, to: txn.endDate, days: txn.windowDays },
+    ...(txn.canonicalSpending ? { averagedMonths: {
+      months: txn.canonicalSpending.baseline.months,
+      count: txn.canonicalSpending.baseline.monthCount,
+      label: txn.canonicalSpending.baseline.label,
+      basis: txn.canonicalSpending.baseline.basis,
+    } } : {}),
     monthlyIncome:       moneyOrNull(a.cashFlow.impliedMonthlyIncome),
     // ⚠️ M1 — THE BASELINE THE COVERAGE FIGURE DIVIDED BY, NOT THE RAW MEASUREMENT.
     // This read `cashFlow.estimatedMonthlyExpenses` (always the measured mean)

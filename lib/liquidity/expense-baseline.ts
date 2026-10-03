@@ -73,6 +73,12 @@ export interface ExpenseBaseline {
   /** Always > 0 — a non-positive baseline is a refusal, never a value. */
   amount: number;
   basis:  ExpenseBaselineBasis;
+  /**
+   * MEASURED only — which complete months were averaged ("Jul–Sep 2026 (3 complete
+   * months)") and how many. The canonical spending baseline's own label, carried
+   * so the surface names the window instead of "complete months" in general.
+   */
+  measuredOver?: { label: string; count: number };
 }
 
 /** The candidate figures a caller may hold. Either may be absent. */
@@ -81,8 +87,10 @@ export interface ExpenseBaselineEvidence {
   stated?: number | null;
   /** The user's declared monthly expenses (`emergency_fund_progress` config). */
   declared?: number | null;
-  /** The reliable-month average (`computeAverageMonthlySpending`). */
+  /** The canonical spending baseline (`computeAverageMonthlySpending`). */
   measured?: number | null;
+  /** The months `measured` averaged, when the caller knows them. Echoed on a MEASURED answer. */
+  measuredOver?: { label: string; count: number } | null;
 }
 
 /**
@@ -106,7 +114,9 @@ export function resolveExpenseBaseline(e: ExpenseBaselineEvidence): ExpenseBasel
   if (declared !== null) return { amount: declared, basis: "DECLARED" };
 
   const measured = usable(e.measured);
-  if (measured !== null) return { amount: measured, basis: "MEASURED" };
+  if (measured !== null) {
+    return { amount: measured, basis: "MEASURED", ...(e.measuredOver ? { measuredOver: e.measuredOver } : {}) };
+  }
 
   return null;
 }
@@ -126,5 +136,7 @@ export function describeExpenseBaseline(
     ? `at ${formatMoney(b.amount)}/mo — the figure you gave in this conversation`
     : b.basis === "DECLARED"
     ? `at ${formatMoney(b.amount)}/mo — the figure you set`
+    : b.measuredOver
+    ? `at ${formatMoney(b.amount)}/mo — your average over ${b.measuredOver.label}`
     : `at ${formatMoney(b.amount)}/mo — your average across complete months`;
 }

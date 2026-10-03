@@ -37,6 +37,9 @@
  */
 
 import { AssumptionOrigin, type AssumptionOriginKind } from './policy';
+// ⚠️ THE LENGTH IS THE CANONICAL BASELINE'S, NOT A SECOND COPY OF IT. Which months
+// those are is decided there too, from the as-of date; this module averages them.
+import { CANONICAL_SPENDING_MONTHS } from '@/lib/transactions/canonical-spending';
 
 /**
  * The canonical projection lookback.
@@ -47,7 +50,7 @@ import { AssumptionOrigin, type AssumptionOriginKind } from './policy';
  * disclosed; more are never used, so a longer history cannot quietly smooth an
  * unstable recent period into a comfortable number.
  */
-export const WINDOW_MONTHS = 3;
+export const WINDOW_MONTHS = CANONICAL_SPENDING_MONTHS;
 
 /** One complete month, as the shared breakdown already holds it. */
 export interface CompleteMonth {

@@ -57,6 +57,8 @@ export interface LiquidityCoverage {
    * how one judgment ended up with two answers.
    */
   basis: import("@/lib/liquidity/expense-baseline").ExpenseBaselineBasis;
+  /** MEASURED only — the complete months averaged, named in the label. */
+  measuredOver?: { label: string; count: number };
 }
 
 export function LiquidityHero({
@@ -195,7 +197,8 @@ export function LiquidityHero({
                   complete months, and those are different claims. */}
               <span className="text-[var(--text-faint)]">
                 {" · "}{describeExpenseBaseline(
-                  { amount: coverage.monthlyExpenses, basis: coverage.basis },
+                  { amount: coverage.monthlyExpenses, basis: coverage.basis,
+                    ...(coverage.measuredOver ? { measuredOver: coverage.measuredOver } : {}) },
                   // MONEY-PRECISION-2 — "at $4,000/mo — the figure you set" is a
                   // clause, not a field: whole dollars. The coverage figure and
                   // every structured amount on this hero keep their cents.

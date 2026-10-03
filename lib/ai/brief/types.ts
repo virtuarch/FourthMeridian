@@ -241,6 +241,14 @@ export interface BriefPackage {
 
   behavior?: {
     window: { from: string; to: string; days: number };
+    /**
+     * The complete calendar months `monthlyIncome`, a MEASURED `monthlyExpenses` and
+     * `monthlyDebtPayments` average over — the canonical spending baseline's months
+     * (trailing 3 complete months before the Brief's day, net of refunds; a month
+     * with nothing recorded counts as zero). `count` < 3 only when history is
+     * shorter. Absent when the read carried no canonical baseline.
+     */
+    averagedMonths?: { months: string[]; count: number; label: string; basis: 'NET_OF_REFUNDS' };
     /** M1 — mean income per complete calendar month, the same population as expenses. */
     monthlyIncome:       number | null;
     /** M1 — the canonical expense baseline (the figure `liquidity.coverageMonths` divided by). */

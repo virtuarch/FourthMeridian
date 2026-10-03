@@ -257,6 +257,7 @@ export function LiquidityWorkspace({
       months:          cashNow / expenseBaseline.amount,
       monthlyExpenses: expenseBaseline.amount,
       basis:           expenseBaseline.basis,
+      ...(expenseBaseline.measuredOver ? { measuredOver: expenseBaseline.measuredOver } : {}),
     };
   }, [expenseBaseline, cashNow]);
 

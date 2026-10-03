@@ -97,8 +97,13 @@ export const RELEVANCE_PRIOR_MAX_DAYS = 30;
  * cash leg has no nameable counterparty (the flow is the authority's verdict and
  * touches cash AND debt), and now also refuses a movement dated outside the
  * window it is cited with; the instruction says both.
+ * 5: the canonical spending baseline — behavior's monthly income, expenses and debt
+ * payments average the trailing 3 COMPLETE calendar months before the Brief's day
+ * (named in `behavior.averagedMonths`), not the complete months a 90-day window
+ * happened to hold (two on 356 days of 2026). Only the current day's row is
+ * regenerated; a stored Brief for an earlier day keeps the basis it was written on.
  */
-export const BRIEF_GENERATION_VERSION = 'brief-generation-4';
+export const BRIEF_GENERATION_VERSION = 'brief-generation-5';
 
 /**
  * The generation version a stored `promptVersion` was written under. Stored as

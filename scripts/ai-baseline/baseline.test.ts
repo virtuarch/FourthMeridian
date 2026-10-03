@@ -1268,8 +1268,10 @@ console.log('16. as-of coherence');
   check('a retrospective projection starts from the balance that was true THEN',
     /openingBasis = 'HISTORICAL_SNAPSHOT'/.test(src)
       && /historicalSnapshot\(ctx, asOf\)/.test(src));
+  // CANONICAL BASELINE (2026-10-04) — the cutoff decides the months: the spine reads
+  // the trailing three complete months before `asOf`, retrospective or not.
   check('…and windows its spending evidence to the cutoff',
-    /evidence through \$\{asOf\}/.test(src));
+    /readCanonicalSpending\(\{\s*asOf,/.test(src));
   check('…and runs the engine from that date, not from today',
     /assembleForecast\(\{[\s\S]*?asOfISO: asOf,/.test(src) && /fromISO: asOf/.test(src));
   check('…and says what it is, so it is never read as a current expectation',

@@ -299,23 +299,28 @@ console.log('\nSOURCE — one month-normalisation, and no day-normalisation anyw
   }
 
   const metrics = stripComments(readFileSync(join(DIR, 'metrics.ts'), 'utf8'));
-  check('metrics.ts divides by a month count in exactly ONE place — meanPerReliableMonth',
+  check('metrics.ts divides by a month count in exactly ONE place — meanOver, under meanPerReliableMonth',
     (metrics.match(/\/\s*months\.length/g) ?? []).length === 1 &&
-    /export function meanPerReliableMonth[\s\S]{0,400}\/\s*months\.length/.test(metrics));
+    /function meanOver[\s\S]{0,400}\/\s*months\.length/.test(metrics) &&
+    /export function meanPerReliableMonth\([\s\S]{0,240}return meanOver\(months, pick\)/.test(metrics));
+  // CANONICAL BASELINE (2026-10-04) — income and debt payments average the SAME months
+  // as spending: `baselineMonths`, the canonical trailing-3-complete-month read when the
+  // payload carries one, else the window's reliable months.
   for (const fn of ['computeAverageMonthlyIncome', 'computeAverageMonthlyDebtPayments']) {
-    check(`${fn} is the helper over one field`, new RegExp(`export function ${fn}\\([\\s\\S]{0,120}return meanPerReliableMonth\\(`).test(metrics));
+    check(`${fn} is the helper over one field, over baselineMonths`,
+      new RegExp(`export function ${fn}\\([\\s\\S]{0,120}return meanOver\\(baselineMonths\\(txn\\),`).test(metrics));
   }
   // ⚠️ SPENDING IS THE ONE THAT DOES NOT USE THE GENERIC HELPER, AND THE RULE IS THE
-  // SAME. It is NET economic spending: each reliable month's charges less that month's
+  // SAME. It is NET economic spending: each month's charges less that month's
   // refunds, clamped at 0, then averaged — a rule that belongs to the refund authority
   // (`meanMonthlyEconomicSpend`, lib/transactions/cash-flow) and is not copied here.
   // What this guard protects is the PROPERTY, not the spelling: the same month
   // population as income and debt payments, and no day normalisation.
-  check('monthly spending is the economic-spend authority over the SAME reliable months',
+  check('monthly spending is the economic-spend authority over the SAME months (baselineMonths)',
     /export function computeAverageMonthlySpending\([\s\S]{0,160}return computeMonthlySpendingBasis\(txn\)\?\.net/.test(metrics)
-      && /export function computeMonthlySpendingBasis\([\s\S]{0,200}return meanMonthlyEconomicSpend\(reliableMonths\(txn\)\)/.test(metrics));
-  check('…and every one of the three averages over `reliableMonths`, nothing else',
-    (metrics.match(/reliableMonths\(txn\)/g) ?? []).length >= 1
+      && /export function computeMonthlySpendingBasis\([\s\S]{0,200}return meanMonthlyEconomicSpend\(baselineMonths\(txn\)\)/.test(metrics));
+  check('…and baselineMonths is the canonical read when present, the reliable months otherwise — nothing else',
+    /export function baselineMonths\([\s\S]{0,200}txn\?\.canonicalSpending \? txn\.canonicalSpending\.months : reliableMonths\(txn\)/.test(metrics)
       && /export function meanPerReliableMonth\([\s\S]{0,240}reliableMonths\(txn\)/.test(metrics));
   check('the category figure goes through the helper too', /const monthlyEquivalent = meanPerReliableMonth\(/.test(metrics));
 

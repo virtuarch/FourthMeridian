@@ -215,6 +215,8 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
 // half without the Space gate and the event projection is exactly how this file
 // came to read a population no other surface did.
 import { bankingTransactionWhere } from "@/lib/data/banking-population";
+import { transactionCorpusSpan } from "@/lib/data/transaction-query";
+import { readCanonicalSpending } from "@/lib/transactions/canonical-spending";
 import { boundedSelection, type BoundedSelection } from "@/lib/ai/bounded-selection";
 import {
   SelectionReasons, TemporalRequests, CoverageBounds, ScopeProvenances,
@@ -1092,6 +1094,7 @@ async function assembleTransactions(
       debtCountedIds,
       incomeClassOf: (id) => incomeAttrById.get(id)?.incomeClass ?? null,
     },
+    effectiveEndIso >= todayUTCISO(),
   );
 
   // ── Date range ────────────────────────────────────────────────────────────
@@ -1302,6 +1305,23 @@ async function assembleTransactions(
     ...(drilldown !== undefined ? { drilldown } : {}),
   };
 
+  // ── The canonical spending baseline, when this read was asked for it ───────
+  // ⚠️ A SECOND READ OVER ITS OWN CALENDAR WINDOW, under the SAME client. The
+  // window above is the assessment window (W4, 90 rolling days) and stays exactly
+  // what it was; the baseline's months are decided by the as-of date alone
+  // (lib/transactions/canonical-spending.ts). The nested read never asks again.
+  if (options.canonicalSpendingAsOf) {
+    data.canonicalSpending = await readCanonicalSpending({
+      asOf: options.canonicalSpendingAsOf,
+      readWindow: async (w) => ((await assembleTransactions(client, spaceCtx,
+        { scopeHint, transactionWindow: w }))?.data as TransactionsSummaryData | undefined) ?? null,
+      readHistory: async (asOf) => {
+        const span = await transactionCorpusSpan(client, { spaceId, asOf });
+        return { from: span.from, to: span.to };
+      },
+    });
+  }
+
   return {
     domain:      FinanceDomains.TRANSACTIONS_SUMMARY,
     assembledAt,
@@ -1441,6 +1461,10 @@ export function buildMonthlyBreakdown(
     debtCountedIds: ReadonlySet<string>;
     incomeClassOf?: (id: string) => string | null;
   },
+  // B2 — the read's end is TODAY (or later), so the end month is still in
+  // progress even when today is its last calendar day. Absent ⇒ the end date
+  // alone decides, byte-for-byte the prior behaviour for a closed historical window.
+  endInProgress?: boolean,
 ): MonthlyBreakdownEntry[] {
   type Bucket = {
     // REVIEW-3 C-1 — the economic buckets are folded by the canonical authority
@@ -1543,7 +1567,11 @@ export function buildMonthlyBreakdown(
   const startMonth   = startIso.slice(0, 7);
   const startClipped = Number(startIso.slice(8, 10)) > 1;
   const endMonth     = endIso.slice(0, 7);
-  const endClipped   = !isLastDayOfMonth(endIso);
+  // ⚠️ A MONTH IS COMPLETE WHEN IT HAS ENDED, NOT WHEN TODAY IS ITS LAST DAY. On
+  // 09-30 the rolling read ended "on the last day of September" and counted an
+  // unfinished September complete — which is how nine days of 2026 averaged three
+  // months and every other day two.
+  const endClipped   = !isLastDayOfMonth(endIso) || endInProgress === true;
 
   return Array.from(buckets.entries())
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)) // oldest → newest

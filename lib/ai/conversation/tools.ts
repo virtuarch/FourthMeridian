@@ -34,13 +34,14 @@
 import { getAssembler } from '@/lib/ai/assembler-registry';
 import {
   FinanceDomains,
-  type AccountsSectionData, type TransactionsSummaryData, type AccountSummaryItem,
+  type AccountsSectionData, type TransactionsSummaryData, type AccountSummaryItem, type MonthlyBreakdownEntry,
   type HoldingsSummaryData, type SpaceContext_AI,
 } from '@/lib/ai/types';
 import { composeInvestments } from '@/lib/ai/economic-concepts';
 import {
   queryTransactions, countTransactions, transactionCorpusSpan, transactionCoverage,
 } from '@/lib/data/transaction-query';
+import { readCanonicalSpending, type CanonicalSpendingBaseline } from '@/lib/transactions/canonical-spending';
 import { transactionAccountPopulation } from '@/lib/data/transaction-population';
 import { MAX_TRANSACTION_PAGE_SIZE, type TransactionQuery } from '@/lib/data/transaction-query-core';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
@@ -149,7 +150,7 @@ import {
   resolveExpenseBaselineFromEvidence, resolveIncomeBaseline, derive, economicSpendingOf,
   resolveMonthsOfExpensesFloor, type FloorDerivation,
 } from '@/lib/ai/measures/baseline';
-import { incomeStreamEvidence, OBSERVED_SPENDING_WINDOW_MONTHS } from '@/lib/ai/forecast/income-evidence';
+import { incomeStreamEvidence } from '@/lib/ai/forecast/income-evidence';
 import { computeDebtAggregate } from '@/lib/debt/aggregates';
 
 // ── The tool contract ────────────────────────────────────────────────────────
@@ -917,6 +918,17 @@ const PERIOD_SCHEMA = {
 interface FlowRead { rows: MonthRow[]; truncated: boolean; readFrom: string | null;
   declaredMonthlyExpenses: number | null }
 
+/** The monthly fold's entries as the measure layer reads them. */
+function toMonthRows(entries: readonly MonthlyBreakdownEntry[]): MonthRow[] {
+  return entries.map((m) => ({
+    month: m.month, incomeTotal: m.incomeTotal, expenseTotal: m.expenseTotal,
+    refundTotal: m.refundTotal, debtPaymentTotal: m.debtPaymentTotal, transferTotal: m.transferTotal,
+    partial: m.partial, truncated: m.truncated,
+    byCategory: m.byCategory.map((c) => ({ category: c.category, total: c.total, count: c.count,
+      ...(c.refundTotal ? { refundTotal: c.refundTotal } : {}) })),
+  }));
+}
+
 /** One window of monthly rows, exactly as the ONE fold produced them. */
 async function readFlowMonths(
   ctx: ToolContext, window: { from: string; to: string; label: string } | null,
@@ -925,13 +937,7 @@ async function readFlowMonths(
     window ? { transactionWindow: { startDate: window.from, endDate: window.to, label: window.label } } : {});
   if (!t) return null;
   return {
-    rows: t.monthlyBreakdown.map((m) => ({
-      month: m.month, incomeTotal: m.incomeTotal, expenseTotal: m.expenseTotal,
-      refundTotal: m.refundTotal, debtPaymentTotal: m.debtPaymentTotal, transferTotal: m.transferTotal,
-      partial: m.partial, truncated: m.truncated,
-      byCategory: m.byCategory.map((c) => ({ category: c.category, total: c.total, count: c.count,
-        ...(c.refundTotal ? { refundTotal: c.refundTotal } : {}) })),
-    })),
+    rows: toMonthRows(t.monthlyBreakdown),
     truncated: t.truncated,
     // The assembler clamps a floor older than its maximum lookback; the clamp is
     // a completeness fact about THIS read, so it travels with the rows.
@@ -1126,13 +1132,24 @@ const getBaselines: ToolDefinition = {
     const wanted = [...new Set([3, 6, 12, ...asked])].sort((x, y) => x - y);
 
     const year = resolvePeriod({ completeMonths: 12 }, ceiling);
-    const [acc, streams, assessmentRead, yearRead] = await Promise.all([
+    const [acc, streams, canonical, yearRead] = await Promise.all([
       assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
       loadForecastIncomeStreams(ctx.readClient, ctx.spaceId, ceiling),
-      // The default window is the cash projection's own: the reliable months of
-      // the assembler's assessment window, at most `OBSERVED_SPENDING_WINDOW_MONTHS`.
-      readFlowMonths(ctx, ceiling < ctx.asOfISO
-        ? { from: daysAgoISO(ceiling, 89), to: ceiling, label: `evidence through ${ceiling}` } : null),
+      // ⚠️ THE DEFAULT IS THE CANONICAL BASELINE — the cash projection's own months,
+      // now the trailing three COMPLETE months before the ceiling's month
+      // (lib/transactions/canonical-spending). It was the reliable months of the
+      // 90-day assessment window: two, on almost every day, while `byWindow[3]`
+      // beside it said Jul–Sep. One result, two "three-month" answers.
+      // A named `spendingWindow` below is a MEASUREMENT and never touches this.
+      windowSpec ? Promise.resolve(null) : readCanonicalSpending({
+        asOf: ceiling,
+        readWindow: (w) => assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
+          { transactionWindow: w }),
+        readHistory: async (at) => {
+          const span = await transactionCorpusSpan(ctx.readClient, { spaceId: ctx.spaceId, asOf: at });
+          return { from: span.from, to: span.to };
+        },
+      }),
       readFlowMonths(ctx, { from: year.from, to: year.to, label: year.label }),
     ]);
     const cov = await flowCoverage(ctx, ceiling, acc);
@@ -1146,17 +1163,16 @@ const getBaselines: ToolDefinition = {
       const read = await readFlowMonths(ctx, { from: p.from, to: p.to, label: p.label });
       measuredSpending = measure('spending', read?.rows ?? [], p, covOf(read));
     } else {
-      const reliable = (assessmentRead?.rows ?? []).filter((m) => !m.partial && !m.truncated)
-        .slice(-OBSERVED_SPENDING_WINDOW_MONTHS);
-      const p = reliable.length ? completeMonthsPeriod(reliable[0].month, reliable[reliable.length - 1].month,
-        `the ${reliable.length} complete month${reliable.length === 1 ? '' : 's'} the cash projection averages`,
+      const months = canonical?.months ?? [];
+      const p = months.length ? completeMonthsPeriod(months[0].month, months[months.length - 1].month,
+        `the canonical spending baseline: ${canonical!.baseline.label}, the months the cash projection averages`,
         ceiling) : null;
-      measuredSpending = p ? measure('spending', reliable, p, covOf(assessmentRead)) : null;
+      measuredSpending = p ? measure('spending', toMonthRows(months), p, covOf(null)) : null;
     }
 
     const expense = resolveExpenseBaselineFromEvidence({
       stated: typeof a.statedMonthlySpending === 'number' ? a.statedMonthlySpending : null,
-      declared: assessmentRead?.declaredMonthlyExpenses ?? yearRead?.declaredMonthlyExpenses ?? null,
+      declared: yearRead?.declaredMonthlyExpenses ?? null,
       measured: measuredSpending,
     });
 
@@ -1231,7 +1247,9 @@ const getBaselines: ToolDefinition = {
         ? { minimumDebtServiceUnknownFor: aggregate.missingMinimumCount } : {}),
       measuredSpending: { byWindow,
         note: 'The measured monthly figure depends on the window. None of these is wrong; say which one '
-          + 'an answer used, and pass `spendingWindow` to make the baseline use it. Every figure is NET of '
+          + 'an answer used. These are MEASUREMENTS: the canonical baseline (`expense`, the cash projection\'s '
+          + 'own months) does not change because one of them was read. `spendingWindow` prices THIS answer\'s '
+          + 'thresholds over another window and nothing else. Every figure is NET of '
           + 'refunds dated in the month; where refunds mattered, `grossPerCompleteMonth` and `refundEffect` '
           + 'are given — quote them, never subtract.' },
     };
@@ -1778,6 +1796,8 @@ interface CashSpine {
    */
   runTo:         (end: string,
                   extraSpendingChanges?: readonly SpendingChangeRule[]) => AssembledForecast;
+  /** The canonical spending baseline the observed rate averages — its months, count and basis. */
+  spendingBaseline: CanonicalSpendingBaseline;
 }
 
 async function buildCashSpine(
@@ -1815,7 +1835,7 @@ async function buildCashSpine(
   const retrospective = asOf < ctx.asOfISO;
 
   const reads = ctx.cashSpineReads;
-  const [streams, accounts, transactions] = await Promise.all([
+  const [streams, accounts, canonical] = await Promise.all([
     loadForecastIncomeStreams(ctx.readClient, ctx.spaceId, asOf, reads?.incomeTransactions, reads?.incomeAccountTypes),
     reads ? reads.accounts() : assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
     // ⚠️ THE ONE LINE THAT MADE THIS TOOL WORK. PROJECTION-1 derives its spending
@@ -1825,12 +1845,31 @@ async function buildCashSpine(
     // null / null. After: $38,243.50 to end-2026 and $128,827.54 to end-2027.
     // Both models papered over the null by doing the arithmetic in prose, and
     // one of them was $745.86 out.
-    reads ? reads.transactionsSummary() : assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
-      retrospective
-        ? { transactionWindow: { startDate: daysAgoISO(asOf, 179), endDate: asOf,
-            label: `evidence through ${asOf}` } }
-        : {}),
+    //
+    // ⚠️ AND THE MONTHS ARE THE CANONICAL ONES, NOT THE WINDOW'S. This read the
+    // 90-day assessment window, whose reliable months were TWO on 356 days of
+    // 2026 — so `WINDOW_MONTHS = 3` was a cap that could not bind, and every
+    // scenario spent at Aug+Sep while the get_baselines 3-month measurement said
+    // Jul–Sep. The spine now reads exactly the trailing three complete months
+    // before `asOf` (lib/transactions/canonical-spending), a month with nothing
+    // recorded counting as zero; retrospective or not, the as-of date decides.
+    readCanonicalSpending({
+      asOf,
+      readWindow: async (w) => reads ? reads.transactionsSummary()
+        : assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx, { transactionWindow: w }),
+      // The seam's fixture summary IS the history it was given.
+      readHistory: async (at) => {
+        if (reads) {
+          const t = await reads.transactionsSummary();
+          return { from: t?.startDate ?? null, to: t?.endDate ?? null };
+        }
+        const span = await transactionCorpusSpan(ctx.readClient, { spaceId: ctx.spaceId, asOf: at });
+        return { from: span.from, to: span.to };
+      },
+    }),
   ]);
+  // The forecast reads only the months; it is handed exactly the canonical ones.
+  const transactions = { monthlyBreakdown: canonical.months } as unknown as TransactionsSummaryData;
 
   // ⚠️ A SOLVER VARIES SPENDING BY RULE, NOT BY STATEMENT (S1-7). `scenario_goal_seek`
   // re-runs the projection at dozens of spending cuts; the expensive part is the three
@@ -1901,6 +1940,7 @@ async function buildCashSpine(
 
   return {
     asOf, retrospective, openingBasis, accounts: openingAccounts,
+    spendingBaseline: canonical.baseline,
     runTo: (end: string, extraSpendingChanges?: readonly SpendingChangeRule[]) => {
       const rules = [...(opts.spendingChanges ?? []), ...(extraSpendingChanges ?? [])];
       return assembleForecast({
@@ -2346,6 +2386,8 @@ interface ScenarioSetup {
   rejected: RefusedInput[];
   /** The spending level the base run used, and where it came from. */
   monthlySpending: { amount: number | null; source: 'USER_STATED' | 'OBSERVED' | 'NONE' };
+  /** The canonical baseline behind an OBSERVED `monthlySpending` — which months, how many, net of refunds. */
+  spendingBaseline: CanonicalSpendingBaseline;
   /** M1 — floors stated as months of expenses, with the derivation each resolved through. */
   floorDerivations: FloorDerivation[];
   /**
@@ -2672,7 +2714,7 @@ async function prepareScenario(
     ...(spending.rules.length > 0 ? { spendingChanges: spending.rules } : {}),
   });
   if ('unavailable' in spine) return spine;
-  const { asOf, runTo, accounts } = spine;
+  const { asOf, runTo, accounts, spendingBaseline } = spine;
   if (!accounts) return absentIn(ctx, 'no accounts in scope', 'any accounts in scope');
   if (toISO <= asOf) {
     return { unavailable: `the horizon ${toISO} is not in the future; a scenario needs a `
@@ -2971,7 +3013,7 @@ async function prepareScenario(
 
   return {
     asOf, toISO, plan, dates, accounts, returns, liabilities,
-    contributions: expanded.movements, outflows, rejected, monthlySpending, floorDerivations,
+    contributions: expanded.movements, outflows, rejected, monthlySpending, spendingBaseline, floorDerivations,
     ...(endpoint.incomeChanges ? { incomeChanges: endpoint.incomeChanges } : {}),
     ...(endpoint.modelledInterest ? { modelledInterest: endpoint.modelledInterest } : {}),
     ...(spendingOutcome ? { spendingChanges: spendingOutcome, spendingRequestedAs: spending.requestedAs } : {}),
@@ -3327,6 +3369,15 @@ function scenarioAssumptions(
     outflows: { count: kind('OUTFLOW').length, settled: kind('OUTFLOW').slice(0, 12),
       provenance: PROVENANCE.USER_ASSUMED },
     spending: { source: setup.monthlySpending.source, monthly: setup.monthlySpending.amount,
+      // ⚠️ WHICH MONTHS, ALWAYS, WHEN THE RATE IS OBSERVED. "Roughly $5.7k to low-$7k
+      // baked in" was narrated over a rate that was one number over two months the
+      // echo never named. The canonical baseline's own months travel with the figure.
+      ...(setup.monthlySpending.source === 'OBSERVED' ? { averagedMonths: {
+        months: setup.spendingBaseline.months, count: setup.spendingBaseline.monthCount,
+        label: setup.spendingBaseline.label, basis: setup.spendingBaseline.basis,
+        ...(setup.spendingBaseline.zeroMonths.length ? { zeroMonths: setup.spendingBaseline.zeroMonths } : {}),
+        ...(setup.spendingBaseline.excluded.length ? { notAveraged: setup.spendingBaseline.excluded } : {}),
+      } } : {}),
       ...(setup.monthlySpending.source === 'OBSERVED'
         ? { note: setup.modelledInterest
           ? 'from the same observed rate project_cash uses, LESS the interest below — so it can be lower than project_cash\'s'

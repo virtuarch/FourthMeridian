@@ -315,6 +315,12 @@ export function meanPerReliableMonth(
   pick: (month: MonthlyBreakdownEntry) => number,
 ): number | null {
   const months = reliableMonths(txn);
+  return meanOver(months, pick);
+}
+
+function meanOver(
+  months: readonly MonthlyBreakdownEntry[], pick: (month: MonthlyBreakdownEntry) => number,
+): number | null {
   if (months.length === 0) return null;
   const total = months.reduce((s, m) => s + pick(m), 0);
   return Math.round((total / months.length) * 100) / 100;
@@ -352,7 +358,29 @@ export function computeAverageMonthlySpending(
 export function computeMonthlySpendingBasis(
   txn: TransactionsSummaryData | null,
 ): MonthlyEconomicSpend | null {
-  return meanMonthlyEconomicSpend(reliableMonths(txn));
+  return meanMonthlyEconomicSpend(baselineMonths(txn));
+}
+
+/**
+ * THE month population every "per month" figure on a surface averages over.
+ *
+ * ⚠️ THE CANONICAL MONTHS WHEN THE READ CARRIES THEM (the owner's trailing 3
+ * complete calendar months, zero months included — lib/transactions/
+ * canonical-spending). The reliable months of the 90-day assessment window were
+ * TWO on 356 days of 2026, which is how every surface came to average Aug+Sep
+ * while believing it averaged three months.
+ *
+ * Without a canonical read — a fixture, or a caller that did not ask — the
+ * window's own complete months are averaged, as before. Every production surface
+ * that prints a baseline asks (`canonicalSpendingAsOf`); a source scan holds them.
+ *
+ * ⚠️ INCOME AND DEBT PAYMENTS FOLLOW SPENDING. They are printed beside it under
+ * one "monthly averages" label and compared with it (surplus, deficit), so they
+ * must average the same months — a July in the spending mean and not in the
+ * income mean would manufacture a deficit.
+ */
+export function baselineMonths(txn: TransactionsSummaryData | null): MonthlyBreakdownEntry[] {
+  return txn?.canonicalSpending ? txn.canonicalSpending.months : reliableMonths(txn);
 }
 
 
@@ -368,7 +396,7 @@ export function computeMonthlySpendingBasis(
 export function computeAverageMonthlyIncome(
   txn: TransactionsSummaryData | null,
 ): number | null {
-  return meanPerReliableMonth(txn, (m) => m.incomeTotal);
+  return meanOver(baselineMonths(txn), (m) => m.incomeTotal);
 }
 
 /**
@@ -395,7 +423,7 @@ export function computeAverageMonthlyIncome(
 export function computeAverageMonthlyDebtPayments(
   txn: TransactionsSummaryData | null,
 ): number | null {
-  return meanPerReliableMonth(txn, (m) => m.debtPaymentTotal);
+  return meanOver(baselineMonths(txn), (m) => m.debtPaymentTotal);
 }
 
 /**

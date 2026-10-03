@@ -25,6 +25,7 @@ import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 import type { DebtService } from "@/lib/transactions/debt-service";
+import type { CanonicalSpendingRead } from "@/lib/transactions/canonical-spending";
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -112,6 +113,14 @@ export interface AssemblerOptions {
    * whole-portfolio. Absent ⇒ ALL, which is the pre-CF-12 behaviour.
    */
   positionClass?: 'ALL' | 'TRADITIONAL' | 'DIGITAL';
+  /**
+   * The canonical spending baseline as of this date (lib/transactions/canonical-spending):
+   * when set, the transactions assembler ALSO reads the trailing 3 complete calendar
+   * months before this date over an explicit window and attaches the result as
+   * `canonicalSpending`. Opt-in, because it is a second read: a surface that prints
+   * "how much do I spend" asks for it; a measurement over a named window never does.
+   */
+  canonicalSpendingAsOf?: string;
   transactionWindow?: {
     /**
      * YYYY-MM-DD, inclusive floor. CF-2 — OPTIONAL, because a temporal request
@@ -1032,6 +1041,12 @@ export interface TransactionsSummaryData {
    * quoting a coverage figure must say which of the two it divided by.
    */
   declaredMonthlyExpenses?: number | null;
+  /**
+   * The canonical spending baseline and its months, present when the read asked for
+   * it (`AssemblerOptions.canonicalSpendingAsOf`). Every "how much do I spend a
+   * month" figure on a surface reads THIS, not the reliable months of the window.
+   */
+  canonicalSpending?: CanonicalSpendingRead;
 
   // ── Highlights ──────────────────────────────────────────────────────────
   largestIncome:  { merchant: string; amount: number; date: string } | null;

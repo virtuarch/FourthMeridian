@@ -220,11 +220,14 @@ export async function loadBriefPackage(args: {
     }
   };
 
+  // ⚠️ THE BASELINE'S MONTHS ARE THE BRIEF'S DAY'S, NOT THE WINDOW'S. Every
+  // monthly figure in `behavior` averages the canonical months as of `asOf`
+  // (lib/transactions/canonical-spending), read beside the activity window.
   const transactionOptions: AssemblerOptions = retrospective
-    ? { scopeHint: 'brief', transactionWindow: {
+    ? { scopeHint: 'brief', canonicalSpendingAsOf: asOf, transactionWindow: {
         startDate: shiftDays(asOf, -RETROSPECTIVE_WINDOW_DAYS), endDate: asOf,
         label: `daily brief as of ${asOf}` } }
-    : { scopeHint: 'brief' };
+    : { scopeHint: 'brief', canonicalSpendingAsOf: asOf };
 
   // ⚠️ RECENT ACTIVITY WAITS FOR THE ACCOUNTS — and only for them. A row's account
   // CLASS comes from the accounts payload the viewer is already entitled to, so the

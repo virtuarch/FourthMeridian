@@ -392,7 +392,7 @@ async function main() {
     // may say changed meaningfully: if so bump BRIEF_GENERATION_VERSION (policy.ts);
     // either way, update the pin. The version, not this hash, decides validity.
     check('the prompt/schema hash is pinned (review BRIEF_GENERATION_VERSION when it moves)',
-      BRIEF_PROMPT_HASH === '9f52c60bcbb6', BRIEF_PROMPT_HASH);
+      BRIEF_PROMPT_HASH === '08fbac9b9cb7', BRIEF_PROMPT_HASH);
     check('what a row stores is the intentional version plus the hash', BRIEF_PROMPT_VERSION === `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}`);
 
     const r = harness();
@@ -419,6 +419,19 @@ async function main() {
     check('H + I. an equal watermark AND an equal digest did not suppress it; reason version', r.state.lastReason === 'version');
     check('F. the row now carries the current generation version', r.store.get(today)!.promptVersion === BRIEF_PROMPT_VERSION
       && headline() === 'Quiet day. #2');
+
+    // CANONICAL BASELINE (brief-generation-5) — a version bump regenerates TODAY only.
+    // A stored Brief for an earlier day keeps the basis it was written on, byte for byte.
+    const h2 = harness();
+    const yesterday = key('2026-09-12');
+    await h2.ensure(new Date('2026-09-12T09:00:00.000Z'));
+    h2.store.get(yesterday)!.promptVersion = 'brief-generation-4+prompt-9f52c60bcbb6';
+    const before = JSON.stringify(h2.store.get(yesterday));
+    const regen = await h2.ensure(new Date('2026-09-13T09:00:00.000Z'));
+    check('H. [test 8] after the bump, today is generated and YESTERDAY\'s row is untouched (old version, same content)',
+      regen.status === 'GENERATED' && JSON.stringify(h2.store.get(yesterday)) === before
+        && h2.store.get(yesterday)!.promptVersion === 'brief-generation-4+prompt-9f52c60bcbb6',
+      JSON.stringify(h2.store.get(yesterday)).slice(0, 200));
     const after = await r.ensure(t(4));
     check('G. the next visit is FRESH CACHED, no model call', after.status === 'FRESH' && after.path === 'CACHED' && r.state.generations === 2);
 

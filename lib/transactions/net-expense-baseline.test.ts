@@ -248,8 +248,8 @@ console.log("25. ONE authority — no second refund calculation anywhere in the 
   const baseline = code("lib/ai/measures/baseline.ts"), metrics = code("lib/ai/intelligence/annotations/metrics.ts");
   check("baseline.ts reads the measure's netOfRefunds — it never touches refund rows, flow types or merchants",
     baseline.includes("m.netOfRefunds") && !/refundTotal|merchant|flowType|isRefund|foldEconomicRow/.test(baseline));
-  check("the assessment mean is meanMonthlyEconomicSpend over reliableMonths — no local subtraction",
-    /meanMonthlyEconomicSpend\(reliableMonths\(txn\)\)/.test(metrics) && !/expenseTotal\s*-\s*[a-z.]*refundTotal/i.test(metrics));
+  check("the assessment mean is meanMonthlyEconomicSpend over the baseline months — no local subtraction",
+    /meanMonthlyEconomicSpend\(baselineMonths\(txn\)\)/.test(metrics) && !/expenseTotal\s*-\s*[a-z.]*refundTotal/i.test(metrics));
   check("the mean's per-month net IS the canonical clamp", /net: clampEconomicSpend\(m\.expenseTotal, m\.refundTotal\)/.test(code("lib/transactions/cash-flow.ts")));
   check("the expense TREND reconciles: income − expense = net, month by month",
     (() => { const m = months([spent("2026-09-05", 5000), refund("2026-09-20", 2000), { date: "2026-09-01", flow: "INCOME", amount: 6000, incomeClass: "EARNED_INCOME" }])[0];
