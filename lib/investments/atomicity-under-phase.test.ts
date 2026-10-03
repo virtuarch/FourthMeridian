@@ -157,7 +157,14 @@ function eventStore(record: (op: string) => void): Record<string, unknown> {
       // A row already on this key whose QUANTITY differs ⇒ a provider
       // restatement ⇒ the append + supersede path, which is the atomic one.
       findUnique: async () => ({
-        id: "ev_old", type: InvestmentEventType.BUY, date: D("2026-06-03"),
+        // RLS-ACC-FK — the FK is part of this select now, and the fake must
+        // answer it. `persistPlaidEvent` refuses to proceed when the resolved
+        // row's account is unknown or differs from the ingest's: the same key is
+        // tenant-wide unique, so it names a row without naming an account. This
+        // fake's row belongs to the account the ingest is for, which is what
+        // makes the three-statement correction below the path under test.
+        id: "ev_old", financialAccountId: "fa_1",
+        type: InvestmentEventType.BUY, date: D("2026-06-03"),
         quantity: 7, price: 100, amount: -700, fees: 0, currency: "USD",
         providerType: "buy", providerSubtype: "buy", providerSecurityId: "sec_vti",
         description: "Buy VTI", instrumentId: "inst_vti",
