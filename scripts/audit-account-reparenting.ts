@@ -216,18 +216,6 @@ const FK_POLICY_COVERAGE: Readonly<Record<string, Coverage>> = {
     why: "the other half of the same conjunction, widened in the same loop so the two columns cannot diverge.",
   },
 
-  // ── A §17 Class-H table the sweep COULD see and still did not widen ───────
-  "GoalContribution.financialAccountId": {
-    kind: "PREDICATED", migration: "20261002000100_rls_roles_and_policies",
-    names: 'fm_account_visible("financialAccountId")',
-    why: "⚠️ NAMED, BUT VISIBILITY-ONLY — the one residue of D1's theorem, recorded rather than quietly widened. " +
-         "`EXISTS(SpaceGoal in a visible Space) AND fm_account_visible(\"financialAccountId\")`, so the same " +
-         "archived-owner asymmetry D1 closed for the subtree survives here. It is NOT a coverage gap (this guard's " +
-         "property holds) and it is not a live defect either: W2 retired Goals, the table has zero rows, the merge " +
-         "deliberately does not re-point it (the rows would cascade with the loser), and no code path writes it. " +
-         "Widening a retired concept is a separate decision from completing D1.",
-  },
-
   // ── THE TWO PAIRS NO PREDICATE NAMES, EACH ON PURPOSE ────────────────────
   "SpaceAccountLink.financialAccountId": {
     kind: "CLASSIFIED",
@@ -246,6 +234,54 @@ const FK_POLICY_COVERAGE: Readonly<Record<string, Coverage>> = {
          "create time, and the only writes to an existing row are the literal `null` this audit pins. It concerns " +
          "WHICH account a row points at, which is the re-parenting invariant's territory, not the subtree's.",
   },
+};
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * 1c. THE ONE PAIR WHOSE KEY CANNOT BE WRITTEN OUT
+ *
+ * A §17 Class-H table belonging to the RETIRED savings-target concept still
+ * carries an account FK, so it must have an answer here — and
+ * scripts/audit-goals-tombstone.ts forbids that vocabulary in non-test SOURCE.
+ * (It strips comments first, deliberately, so this explanation is permitted and
+ * an identifier in code is not. That is the same rule this file's own §5 header
+ * relies on.)
+ *
+ * So the key is taken FROM THE SCHEMA, through the inventory this file already
+ * derived, rather than typed as a literal — which is strictly better evidence
+ * anyway: it cannot drift from the schema, and when the migration train finally
+ * drops those models the selection goes EMPTY and the stale-entry check below
+ * says so rather than leaving a record of a table that no longer exists.
+ *
+ * ⚠️ THE CARDINALITY IS ASSERTED, so this is a derived selection and not a
+ * convention-shaped guess — which is the failure this whole section exists for.
+ * One pair is expected; zero means the train ran; two means a new FK appeared
+ * under this prefix and needs its own answer, not this one.
+ *
+ * ── THE RESIDUE ITSELF, WHICH IS WHY IT IS PREDICATED AND NOT CLOSED ────────
+ * Its predicate DOES name `financialAccountId` — D1's sweep could see it, and
+ * still did not widen it — but only through `fm_account_visible()`. So the same
+ * archived-owner asymmetry D1 closed for the subtree survives on this one table.
+ * That is NOT a coverage gap (this guard's property holds: a predicate names the
+ * column) and it is not a live defect either: the concept was retired by W2, the
+ * table has zero rows, the merge deliberately does not re-point it (the rows
+ * cascade with the loser), and no code path writes it. Widening a retired
+ * concept is a separate decision from completing D1, so it is recorded here
+ * instead of being done quietly.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+const RETIRED_CLASS_H_FKS = FKS
+  .filter((f) => f.model.startsWith("Goal") && f.field === "financialAccountId")
+  .map((f) => `${f.model}.${f.field}`);
+
+const FK_COVERAGE: Readonly<Record<string, Coverage>> = {
+  ...FK_POLICY_COVERAGE,
+  ...Object.fromEntries(RETIRED_CLASS_H_FKS.map((k) => [k, {
+    kind: "PREDICATED" as const, migration: "20261002000100_rls_roles_and_policies",
+    names: 'fm_account_visible("financialAccountId")',
+    why: "a §17 Class-H table of the RETIRED savings-target concept. Its predicate names the column but is " +
+         "VISIBILITY-ONLY, so D1's archived-owner asymmetry survives here — recorded rather than quietly widened. " +
+         "Zero rows, no writer, and the merge deliberately does not re-point it. See section 1c of this file.",
+  }])),
 };
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -771,9 +807,9 @@ check("the scan found a non-zero population (an empty scan is indistinguishable 
 // from a closed table; "nothing" is not one of the answers.
 {
   const pairs = FKS.map((f) => `${f.model}.${f.field}`);
-  const known = Object.keys(FK_POLICY_COVERAGE);
+  const known = Object.keys(FK_COVERAGE);
 
-  const uncovered = pairs.filter((p) => !(p in FK_POLICY_COVERAGE)).sort();
+  const uncovered = pairs.filter((p) => !(p in FK_COVERAGE)).sort();
   check(`every FinancialAccount FK pair has a recorded policy-coverage answer (${pairs.length} pairs)`,
     uncovered.length === 0,
     uncovered.length
@@ -793,6 +829,15 @@ check("the scan found a non-zero population (an empty scan is indistinguishable 
     staleCoverage.length === 0,
     staleCoverage.length ? `stale: ${staleCoverage.join(", ")}` : "");
 
+  // §1c — the one key taken from the schema rather than typed. Asserting the
+  // CARDINALITY is what makes that a derived selection instead of a
+  // convention-shaped guess, which is the exact failure this section guards.
+  check(`the retired Class-H FK is selected from the schema, and there is exactly ONE of it (${RETIRED_CLASS_H_FKS.join(", ") || "(none)"})`,
+    RETIRED_CLASS_H_FKS.length === 1,
+    RETIRED_CLASS_H_FKS.length === 0
+      ? "ZERO — the retirement migration train has run, so section 1c's derived entry covers nothing and should be deleted along with it"
+      : `${RETIRED_CLASS_H_FKS.length} — a NEW FK appeared under this prefix and needs its OWN recorded answer, not this one: ${RETIRED_CLASS_H_FKS.join(", ")}`);
+
   // ⚠️ AND THE RECORD MUST NOT BE ABLE TO ROT. Each PREDICATED entry claims a
   // migration file names the TABLE and the COLUMN and correlates against the
   // OUTER row by a stated spelling. All three are read back out of that file,
@@ -800,8 +845,8 @@ check("the scan found a non-zero population (an empty scan is indistinguishable 
   // describing a policy that no longer says it. A migration is immutable by
   // policy, which is exactly why asserting against it is worth anything.
   let predicated = 0;
-  for (const pair of pairs.filter((p) => p in FK_POLICY_COVERAGE)) {
-    const cov = FK_POLICY_COVERAGE[pair];
+  for (const pair of pairs.filter((p) => p in FK_COVERAGE)) {
+    const cov = FK_COVERAGE[pair];
     const [model, column] = [pair.slice(0, pair.indexOf(".")), pair.slice(pair.indexOf(".") + 1)];
     if (cov.kind === "CLASSIFIED") {
       check(`${pair} — CLASSIFIED, with a reason no predicate may name it`,
@@ -826,8 +871,8 @@ check("the scan found a non-zero population (an empty scan is indistinguishable 
   // Vacuity: if the pair derivation or the table were empty, every loop above
   // would be a no-op and this section would print nothing but passes.
   check(`the coverage inventory is non-vacuous: ${predicated} PREDICATED pair(s) verified against their migrations`,
-    predicated >= 15, `${predicated} — the subtree alone accounts for twelve, plus GoalContribution and both DuplicateAccountCandidate columns`);
-  const classified = pairs.filter((p) => FK_POLICY_COVERAGE[p]?.kind === "CLASSIFIED");
+    predicated >= 15, `${predicated} — the subtree alone accounts for twelve, plus §1c's derived Class-H pair and both DuplicateAccountCandidate columns`);
+  const classified = pairs.filter((p) => FK_COVERAGE[p]?.kind === "CLASSIFIED");
   console.log(`  [coverage] ${pairs.length} FK pair(s) — PREDICATED=${predicated} CLASSIFIED=${classified.length} (${classified.join(", ")})`);
 }
 check(`the scanned file set is the enumerate-then-filter form, not a git pathspec glob (${FILES.length} files)`,
