@@ -23,7 +23,15 @@
 
 import "server-only";
 
-import * as Sentry from "@sentry/nextjs";
+// PERF-2 — capture through @sentry/core, never the @sentry/nextjs SDK entry.
+// On the server @sentry/nextjs resolves to the full Node SDK (OpenTelemetry,
+// auto-instrumentations, a JS parser for import hooks): ~730 modules compiled
+// into every route that reaches this file — and lib/auth.ts / lib/session.ts
+// do. captureException is the SAME function in both (asserted by
+// lib/monitoring/sentry-capture-boundary.test.ts) and writes to the global
+// carrier the SDK's init in instrumentation.ts populated, so what is captured,
+// scrubbed and sent is unchanged. The init surfaces stay on @sentry/nextjs.
+import * as Sentry from "@sentry/core";
 
 /**
  * The authentication stage an infrastructure failure occurred in. Kept coarse

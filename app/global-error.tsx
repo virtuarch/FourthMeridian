@@ -12,7 +12,11 @@
  * Must render its own <html>/<body> because it replaces the root layout.
  */
 
-import * as Sentry from "@sentry/nextjs";
+// PERF-2 — @sentry/core, not the SDK entry: this client component is also
+// compiled for SSR, where @sentry/nextjs resolves to the full Node SDK
+// (~730 modules). captureException is the same function either way and
+// reports to the client instrumentation-client.ts initialised.
+import * as Sentry from "@sentry/core";
 import { useEffect } from "react";
 
 export default function GlobalError({

@@ -102,6 +102,7 @@
     "@noble/hashes": "^2.2.0",
     "@prisma/client": "^5.22.0",
     "@scure/bip32": "^2.2.0",
+    "@sentry/core": "10.67.0",
     "@sentry/nextjs": "^10.67.0",
     "bcryptjs": "^3.0.3",
     "exceljs": "^4.4.0",
