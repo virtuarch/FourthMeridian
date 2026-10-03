@@ -442,8 +442,10 @@ const ALLOWLIST: readonly Entry[] = [
   {
     key: "lib/accounts/provider-identity.ts:providerAccountIdentity.update", verdict: "OPAQUE_BUT_FK_FREE", expect: 1,
     why: "the dual-write repoints externalAccountId/connectionId on a row found by (financialAccountId, provider); the FK is in the `where`, never the patch. " +
-         "⚠️ ROUTED FINDING: this site SWALLOWS a unique-constraint collision meaning 'another FinancialAccount already owns this provider identity' and logs it as a non-fatal warn — " +
-         "the exact event that makes syncTransactions' plaidTransactionId lookup resolve a different destination. PEER-OWNED FILE; the edit is reported, not made.",
+         "⚠️ ROUTED FINDING, STILL OPEN AND NOW NARROWER. RLS-ACC-S4 closed the AUTHORITY-refusal half of this catch (a 42501 carries no typed Prisma code, so it fell " +
+         "through to the warn and the function returned as if it had succeeded). The UNIQUE-CONSTRAINT half is still swallowed: a P2002 here means 'another " +
+         "FinancialAccount already owns this provider identity', which is the exact event that makes syncTransactions' plaidTransactionId lookup resolve a DIFFERENT " +
+         "destination account — so it must raise (or record a durable collision incident) rather than warn and continue. PEER-OWNED FILE; the edit is reported, not made.",
   },
 
   {
