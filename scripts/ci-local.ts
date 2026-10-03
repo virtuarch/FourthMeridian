@@ -207,7 +207,8 @@ function main(): void {
 
   // 3c. The site job — the public website, in its own directory, with an
   // environment that cannot carry an application secret.
-  const siteOk = runJob("site", SITE_JOB, join(workdir, SITE_DIR), siteJobEnv(process.env));
+  // (Next's types mark NODE_ENV required on ProcessEnv; this env deliberately has none.)
+  const siteOk = runJob("site", SITE_JOB, join(workdir, SITE_DIR), siteJobEnv(process.env) as unknown as NodeJS.ProcessEnv);
 
   bar(`SUMMARY — HEAD ${sha.slice(0, 12)} · Node ${process.versions.node}`);
   for (const r of results) {

@@ -70,9 +70,12 @@ export const SITE_JOB = [
 export const SITE_DIR = "site";
 
 /** The only variables the local runner passes to the `site` job — no secret can be inherited. */
-export function siteJobEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = { CI: "true" };
-  for (const k of ["PATH", "HOME", "TMPDIR"] as const) if (env[k] !== undefined) out[k] = env[k];
+export function siteJobEnv(env: Readonly<Record<string, string | undefined>>): Record<string, string> {
+  const out: Record<string, string> = { CI: "true" };
+  for (const k of ["PATH", "HOME", "TMPDIR"] as const) {
+    const v = env[k];
+    if (v !== undefined) out[k] = v;
+  }
   return out;
 }
 
