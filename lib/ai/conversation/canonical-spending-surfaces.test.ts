@@ -177,7 +177,7 @@ async function main(): Promise<void> {
   console.log('2. the assessment and 3. the Daily Brief package');
   const { loadBriefPackage } = await import('@/lib/ai/brief/load');
   const { computeAssessment } = await import('@/lib/ai/intelligence');
-  let assessed: Rec | null = null;
+  const box: { assessed: Rec | null } = { assessed: null };
   const loaded = await loadBriefPackage({
     spaceCtx: spaceCtx as never, asOf: ASOF, now: new Date(`${ASOF}T12:00:00Z`),
     deps: {
@@ -187,9 +187,10 @@ async function main(): Promise<void> {
       },
       readSnapshots: async () => [], projectSnapshots: () => null as never, recall: async () => [],
       recentActivity: async () => null as never,
-      assess: (c) => { assessed = computeAssessment(c) as unknown as Rec; return assessed as never; },
+      assess: (c) => { box.assessed = computeAssessment(c) as unknown as Rec; return box.assessed as never; },
     },
   });
+  const assessed = box.assessed;
   check(`assessment cash flow: estimatedMonthlyExpenses = ${CANONICAL}`,
     cents(assessed?.cashFlow?.estimatedMonthlyExpenses, CANONICAL), String(assessed?.cashFlow?.estimatedMonthlyExpenses));
   check(`assessment liquidity/runway: estimatedMonthlyExpense = ${CANONICAL} (MEASURED)`,

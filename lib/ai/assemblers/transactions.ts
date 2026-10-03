@@ -215,7 +215,6 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
 // half without the Space gate and the event projection is exactly how this file
 // came to read a population no other surface did.
 import { bankingTransactionWhere } from "@/lib/data/banking-population";
-import { transactionCorpusSpan } from "@/lib/data/transaction-query";
 import { readCanonicalSpending } from "@/lib/transactions/canonical-spending";
 import { boundedSelection, type BoundedSelection } from "@/lib/ai/bounded-selection";
 import {
@@ -1316,6 +1315,9 @@ async function assembleTransactions(
       readWindow: async (w) => ((await assembleTransactions(client, spaceCtx,
         { scopeHint, transactionWindow: w }))?.data as TransactionsSummaryData | undefined) ?? null,
       readHistory: async (asOf) => {
+        // ⚠️ LAZY: `transaction-query` is server-only, and this module is loaded by
+        // scripts and audits that never ask for the canonical read.
+        const { transactionCorpusSpan } = await import('@/lib/data/transaction-query');
         const span = await transactionCorpusSpan(client, { spaceId, asOf });
         return { from: span.from, to: span.to };
       },

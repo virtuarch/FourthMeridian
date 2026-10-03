@@ -19,7 +19,7 @@ import {
 } from "@/lib/transactions/canonical-spending";
 import { WINDOW_MONTHS } from "@/lib/forecast/observed-spending";
 import { buildMonthlyBreakdown } from "@/lib/ai/assemblers/transactions";
-import type { TransactionsSummaryData } from "@/lib/ai/types";
+import type { MonthlyBreakdownEntry, TransactionsSummaryData } from "@/lib/ai/types";
 
 let failures = 0, passed = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -168,7 +168,7 @@ async function main() {
     const window = canonicalSpendingWindow("2026-10-04");
     const cov = coverageOfRead({ startDate: "2026-07-01", truncated: true, coverageStartDate: "2026-08-20" } as never, window,
       { from: "2025-01-01", to: "2026-10-03" });
-    const sel = selectCanonicalSpendingMonths([], window, cov);
+    const sel = selectCanonicalSpendingMonths([] as MonthlyBreakdownEntry[], window, cov);
     check("July (no bucket, before the cap floor) is PARTIAL, not $0; August's floor month too",
       sel.months.length === 1 && sel.months[0].month === "2026-09"
         && sel.excluded.map((x) => `${x.month}:${x.reason}`).join() === "2026-07:PARTIAL,2026-08:PARTIAL", JSON.stringify(sel));
