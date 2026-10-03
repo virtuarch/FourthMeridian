@@ -200,11 +200,20 @@ export async function POST(req: NextRequest) {
       select: { id: true },
     });
     if (archivedDup) {
+      // RLS-ACC-S5 — the authority is NAMED here instead of inherited from the
+      // module default. This route is not converted (it holds `db` throughout
+      // and is on the ratchet for its own reasons), so passing it costs nothing
+      // and removes one of the four sites that silently relied on the default.
+      // The fold could not run on a tenant client today in any case:
+      // `DuplicateAccountCandidate.fm_app_ins` requires `fm_account_visible()`
+      // on the archived loser, which is false by construction (42501, measured;
+      // acceptance cases 86-87). See lib/accounts/reconcile.ts's header.
       await mergeArchivedDuplicateIntoCanonical(
         archivedDup.id,
         activeFa.id,
         DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH,
-        spaceId
+        spaceId,
+        db,
       );
     }
 

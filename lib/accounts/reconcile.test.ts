@@ -16,14 +16,21 @@
  * the cross-owner fold refused on a live `fm_app` connection, BALANCE_ONLY and
  * FULL reaching the IDENTICAL verdict, and the legitimate same-owner fold still
  * succeeding so the refusals are not vacuous — are cases 73–80 of
- * scripts/rls-app-acceptance.ts, which build their own Postgres.
+ * scripts/rls-app-acceptance.ts, which build their own Postgres. RLS-ACC-S5
+ * added 86–87 there: the same fold driven on a real `fm_app` PHASE, succeeding
+ * end to end when the loser is still linked and refused at exactly one
+ * statement when it is archived. Nothing in THIS file can say either thing.
+ *
+ * ⚠️ RUN IT THROUGH THE PRELOAD. reconcile.ts reaches lib/plaid/client.ts, which
+ * is `server-only`; a bare `npx tsx` on this file dies on MODULE_NOT_FOUND
+ * before a single check runs. scripts/run-tests.ts already does this.
  *
  * What THIS file proves is the module's own behaviour: which rows move, which
  * deliberately do not, that a partial write is LOUD, that a replay is
  * deterministic, and that the authority question is asked through the caller's
  * client before anything is written.
  *
- *   npx tsx lib/accounts/reconcile.test.ts
+ *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/accounts/reconcile.test.ts
  */
 
 import { readFileSync } from "node:fs";
@@ -302,6 +309,67 @@ async function main(): Promise<void> {
     check("no migration-principal fallback inside the merge: every statement in it runs on `tx`",
       !/\bdb\.(transaction|debtProfile|spaceAccountLink|duplicateAccountCandidate)\./.test(
         code.slice(code.indexOf("const tx = client;"))));
+
+    // ── RLS-ACC-S5 — THE READS NO LONGER CHOOSE THEIR OWN AUTHORITY ────────
+    // Prisma's ITXClientDenyList strips $transaction from ReadClient, so a read
+    // leaf is structurally incapable of opening a phase of its own; LEADING so
+    // the authority is the first thing read at every call site.
+    for (const fn of ["findActiveAccountByIdentity", "resolvePlaidAccountByExternalId", "findCandidatesByFingerprint"]) {
+      check(`${fn} takes a REQUIRED, LEADING ReadClient — a read leaf cannot open its own phase`,
+        new RegExp(`function ${fn}\\(\\s*client: ReadClient,`).test(code));
+    }
+
+    // ⚠️ THE PROVIDER-CALLING HELPERS DEMAND A ROOT CLIENT, BY TYPE. They reach
+    // Plaid's itemRemove BETWEEN their transactions; handed a phase client they
+    // would make that call inside somebody else's open transaction.
+    // Prisma.TransactionClient has no $transaction, so it is not assignable to
+    // PrismaClient and the mistake does not compile.
+    check("closeOutAccountConnections demands a ROOT client — it reaches a provider call",
+      /function closeOutAccountConnections\(\s*client: PrismaClient,/.test(code));
+    check("pickCanonicalAndMerge demands a ROOT client — it opens transactions around a provider call",
+      /function pickCanonicalAndMerge\(\s*client: PrismaClient,/.test(code));
+    check("resolveAccountByFingerprint's client is typed PrismaClient, so a tenant PHASE cannot be threaded into a provider call",
+      /client: PrismaClient = db,/.test(code));
+
+    // ── THE DEFAULT THAT SURVIVES, AND THE EXACT COUNT OF WHO RELIES ON IT ──
+    // ⚠️ THE NUMBER IS THE ASSERTION. A defaulted client is an ambient
+    // authority; this one is kept because the fold's final statement —
+    // `DuplicateAccountCandidate`'s INSERT — is refused by fm_app for an
+    // ARCHIVED loser (acceptance case 87), and because requiring it would put
+    // the two restore routes back on the migration principal and GROW the
+    // ratchet. Both facts are measured. What must not happen is the set
+    // quietly growing again, so it is counted, not described.
+    const DEFAULT_RELIANT = [
+      "app/api/accounts/[id]/restore/route.ts",
+      "app/api/accounts/manual/[id]/restore/route.ts",
+    ];
+    const MERGE_CALLERS = [
+      ...DEFAULT_RELIANT,
+      "app/api/accounts/wallet/route.ts",
+      "lib/plaid/exchangeToken.ts",
+    ];
+    {
+      const callsWithoutClient: string[] = [];
+      for (const f of MERGE_CALLERS) {
+        const src = stripComments(readFileSync(join(ROOT, f), "utf8"));
+        // Every external invocation of either defaulted entry point, with the
+        // argument list flattened so the trailing client is visible.
+        const calls = [...src.matchAll(/(?:mergeArchivedDuplicateIntoCanonical|resolveAccountByFingerprint)\(([\s\S]*?)\);/g)]
+          .map((m) => m[1].replace(/\s+/g, " "));
+        if (calls.some((c) => !/\bdb\s*,?\s*$/.test(c.trim()))) callsWithoutClient.push(f);
+      }
+      check("EXACTLY the two restore routes still rely on the module default — and they are the two that provably cannot supply a client",
+        callsWithoutClient.length === DEFAULT_RELIANT.length
+          && DEFAULT_RELIANT.every((f) => callsWithoutClient.includes(f)),
+        `relying on the default: ${callsWithoutClient.join(", ") || "(none)"}`);
+    }
+    for (const f of DEFAULT_RELIANT) {
+      const src = readFileSync(join(ROOT, f), "utf8");
+      check(`${f}: still does NOT import the migration principal (requiring the client would have regressed it)`,
+        !/import\s*\{[^{}]*\bdb\b[^{}]*\}\s*from\s*["']@\/lib\/db["']/.test(src));
+      check(`${f}: names the policy that blocks the conversion, so nobody re-derives it`,
+        /DuplicateAccountCandidate/.test(src) && /fm_account_visible/.test(src));
+    }
   }
 
   console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} check(s) failed.\n`);

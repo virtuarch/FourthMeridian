@@ -29,6 +29,7 @@
 import { plaidClient } from "@/lib/plaid/client";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import {
   AccountType,
   PlaidItemStatus,
@@ -337,7 +338,31 @@ export async function performPlaidTokenExchange(
     //    soft-deleted rows too, so the restore branch below can revive them).
     // 2. Fingerprint match against archived accounts.
     // 3. Create new row if neither lookup finds anything.
-    let fa = await resolvePlaidAccountByExternalId(acct.account_id);
+    // ── RLS-ACC-S5 — A TENANT PHASE, AND A DELIBERATELY SHORT ONE ──────────
+    // The resolver's client is now required and leading. This path is HTTP on
+    // both of its two callers (requireUser for the customer flow,
+    // requireSystemAdmin for Expand History), and `userId` is the INSTITUTION
+    // OWNER in both — the admin route resolves `oldItem.userId` and passes it
+    // precisely so every downstream write lands in the target user's tenancy,
+    // not the operator's. So this is the target user's own identity and the
+    // tenant role is the right authority for the lookup.
+    //
+    // ⚠️ THE PHASE WRAPS THE LOOKUP AND NOTHING ELSE, ON PURPOSE. This loop
+    // interleaves Plaid HTTP calls with database work, and `withTenantDb` is a
+    // SECURITY BOUNDARY, not a request-lifetime container — widening it to cover
+    // the `financialAccount.update` below would hold a pooled connection across
+    // a provider round trip. The existing boundaries are respected rather than
+    // stretched to make threading easier.
+    //
+    // ⚠️ AND IT NARROWS WHAT CAN BE FOUND. Under fm_app the
+    // `ProviderAccountIdentity` lookup sees only the caller's own subtree, so a
+    // plaidAccountId held by ANOTHER owner's account resolves to null here where
+    // the migration principal found it. That is the correct answer: Plaid has
+    // just authenticated THIS user for THIS item, and an account another tenant
+    // owns is not a row this exchange may update. The caller's own soft-deleted
+    // account is still found — that is RLS-D1's owner arm, and before it this
+    // conversion would have broken restore-on-reconnect.
+    let fa = await withTenantDb(userId, (tx) => resolvePlaidAccountByExternalId(tx, acct.account_id));
 
     if (fa) {
       fa = await db.financialAccount.update({
@@ -362,7 +387,27 @@ export async function performPlaidTokenExchange(
         name:          acct.name,
         type,
       };
-      const resolution = await resolveAccountByFingerprint(fingerprint, undefined, spaceId);
+      // RLS-ACC-S5 — `db`, EXPLICITLY, and not for want of a classification.
+      // This is tenant work; it cannot be a tenant client today. The resolution
+      // folds archived siblings, and the fold's last statement writes
+      // `DuplicateAccountCandidate`, whose fm_app INSERT policy requires BOTH
+      // accounts to satisfy `fm_account_visible()` — false for an archived loser
+      // by construction, so the whole fold aborts on 42501. Measured on a live
+      // fm_app role; see the header of lib/accounts/reconcile.ts and acceptance
+      // cases 86-87. The parameter type also refuses a phase client outright:
+      // this helper calls Plaid's itemRemove between its transactions.
+      // RLS-ACC-S5 — `db`, EXPLICITLY, where this site used to inherit it from
+      // the module default. It is not a free choice: the resolution folds
+      // archived siblings, and a fold's last statement is a
+      // `DuplicateAccountCandidate` INSERT whose fm_app policy requires
+      // `fm_account_visible()` on BOTH accounts — false for an archived loser by
+      // construction, so a tenant client aborts the whole fold on 42501
+      // (measured; acceptance cases 86-87, and lib/accounts/reconcile.ts's
+      // header). This module already holds `db` for its own writes, so naming it
+      // here costs no ratchet and makes the one non-tenant authority on this
+      // path visible. The parameter type separately refuses a phase client:
+      // the helper calls Plaid's itemRemove between its transactions.
+      const resolution = await resolveAccountByFingerprint(fingerprint, undefined, spaceId, db);
 
       console.log("[plaid] fingerprint lookup", {
         institutionId:      institution_id,

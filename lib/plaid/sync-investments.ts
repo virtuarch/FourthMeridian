@@ -37,7 +37,7 @@
 
 import type { AccountBase, Item } from "plaid";
 import { PlaidInvestmentsConsent } from "@prisma/client";
-import { db } from "@/lib/db";
+import { db, systemDb } from "@/lib/db";
 import { plaidClient } from "@/lib/plaid/client";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
@@ -137,7 +137,11 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
       // DF-2E — resolve identity first so a no-holdings account can be recorded
       // as SKIPPED/NO_HOLDINGS (resolution is a read; no behavior change for
       // accounts that do have holdings).
-      const fa = await resolvePlaidAccountByExternalId(plaidAcct.account_id);
+      // RLS-ACC-S5 — `systemDb`, for the same reason as lib/plaid/refresh.ts:
+      // the holdings loop is background provider ingestion with no user identity
+      // to bind. The authority is now stated at the call site instead of being
+      // resolved from a module global inside the leaf.
+      const fa = await resolvePlaidAccountByExternalId(systemDb, plaidAcct.account_id);
       if (!fa) continue; // no FinancialAccount identity to attribute
 
       const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
@@ -197,7 +201,7 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
     // coverage ledger has to record.
     const coveredFinancialAccountIds: string[] = [];
     for (const plaidAcct of investmentAccounts) {
-      const fa = await resolvePlaidAccountByExternalId(plaidAcct.account_id);
+      const fa = await resolvePlaidAccountByExternalId(systemDb, plaidAcct.account_id);
       if (fa) coveredFinancialAccountIds.push(fa.id);
     }
 

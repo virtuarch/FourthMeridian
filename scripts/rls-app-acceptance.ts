@@ -1503,10 +1503,21 @@ async function main(): Promise<void> {
   const rec = await import("@/lib/accounts/reconcile");
   const dupSource = (await import("@prisma/client")).DuplicateDetectionSource;
 
-  /** Run the real merge and report the refusal's IDENTITY, not just that it threw. */
+  /**
+   * Run the real merge and report the refusal's IDENTITY, not just that it threw.
+   *
+   * ⚠️ RLS-ACC-S5 — THE CLIENT IS NOW NAMED, AND IT IS `dbMod.db` ON PURPOSE.
+   * The merge still DEFAULTS to the migration principal (cases 86-87 measure the
+   * one policy that forces that), but a suite making a claim about authority
+   * must not inherit one. These four cases are about the APPLICATION's refusal,
+   * and BYPASSRLS cannot turn two owners into one — so the migration principal
+   * is what makes 75-77 meaningful rather than weaker. Cases 86-87 drive the
+   * SAME function on a real tenant client, and are a separate block for exactly
+   * that reason.
+   */
   const foldAttempt = async (loser: string, winner: string) => {
     try {
-      await rec.mergeArchivedDuplicateIntoCanonical(loser, winner, dupSource.FINGERPRINT_MATCH, null);
+      await rec.mergeArchivedDuplicateIntoCanonical(loser, winner, dupSource.FINGERPRINT_MATCH, null, dbMod.db);
       return { refused: false, name: "(no throw)", reason: "(none)" };
     } catch (e) {
       return {
@@ -1691,6 +1702,193 @@ async function main(): Promise<void> {
       run.status === 0 && m !== null && sites > 0 && scanned > 500 && classifiedLines > 0 && !anyUnclassified,
       m ? `sites=${sites} files=${scanned} classificationLines=${classifiedLines} unclassified=${anyUnclassified} exit=${run.status}`
         : `could not read the "[source] N capable site(s) found over M scanned file(s)" line; exit=${run.status}\n${out.split("\n").slice(-8).join("\n")}`);
+  }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // RLS-ACC-S5 — THE MERGE, DRIVEN ON A REAL TENANT CLIENT
+  //
+  // Cases 75-80 drive `mergeArchivedDuplicateIntoCanonical` on the MIGRATION
+  // PRINCIPAL, and say so: BYPASSRLS cannot turn two owners into one, so the
+  // refusals there are provably the application's. That is a different claim
+  // from the one this slice has to make. The merge's `client: DbClient = db`
+  // default is gone, every caller now names its authority, and the question
+  // four deferrals turned on is whether the legitimate same-owner fold actually
+  // WORKS as `fm_app` with no privileged fallback anywhere in the path.
+  //
+  // It does, and it does not, and the boundary between those two answers is one
+  // statement. Both halves are measured here, each with a denominator:
+  //
+  //   86  THE POSITIVE. The whole fold — guard, transactions, DebtProfile,
+  //       links, audit row — executes through a `withTenantDb` phase, and the
+  //       phase is shown reading `current_user = fm_app` with `app.user_id` set
+  //       in the SAME transaction the merge then runs in. No fallback can hide
+  //       behind that: the principal is read, not assumed.
+  //
+  //   87  THE RESIDUE. Change ONE thing — archive the loser and revoke its link,
+  //       which is the shape EVERY production fold actually faces — and the
+  //       identical call is refused with 42501 on
+  //       `DuplicateAccountCandidate`. RLS-D1 gave the thirteen account-subtree
+  //       tables an `ownerUserId = me` arm; that sweep was keyed on tables with
+  //       a column literally named `financialAccountId`, and this table's FK
+  //       columns are `accountAId`/`accountBId`. A merge's loser is archived BY
+  //       CONSTRUCTION, so `fm_account_visible(loser)` is false and the audit
+  //       row — the only durable record that the fold happened — cannot be
+  //       written by the tenant who performed it.
+  //
+  // ⚠️ 87 CARRIES ITS OWN DENOMINATOR, three ways, because "the fold failed" is
+  // also what a typo, a missing fixture or a broken conversion would report:
+  // the two `fm_account_visible()` values are read on the role and DISAGREE, the
+  // post-state proves the whole fold ROLLED BACK rather than half-applied, and
+  // the IDENTICAL call on `db` over the IDENTICAL fixture succeeds completely.
+  // That triple is what makes it a POLICY finding rather than a code failure.
+  //
+  // This is why the four external merge call sites pass `db` explicitly instead
+  // of a tenant client. When the policy gains its owner arm, 87 is the case that
+  // flips, and those four call sites are the only lines that have to change.
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    /** Where a named set of transaction rows currently live, owner-side. */
+    const rowsOn = (ids: string, acct: string) => psql(h.ownerUrl,
+      `select count(*) from "Transaction" where id in (${ids}) and "financialAccountId"='${acct}';`).out.trim();
+    const debtOn = (dp: string) => psql(h.ownerUrl,
+      `select "financialAccountId" from "DebtProfile" where id='${dp}';`).out.trim();
+    const auditRows = (loser: string) => psql(h.ownerUrl,
+      `select count(*) from "DuplicateAccountCandidate" where "accountAId"='acct_alice' and "accountBId"='${loser}';`).out.trim();
+    /** fm_account_visible(), evaluated BY THE ROLE, as the owner. */
+    const visibleToAlice = (acct: string) => {
+      const r = asTenant("alice", `select fm_account_visible('${acct}');`);
+      return lines(r)[lines(r).length - 1];
+    };
+
+    // ── 86 [role+service] THE CONVERTED PATH, ON fm_app, END TO END ─────────
+    // The loser here is ACTIVE and linked. That is not the common production
+    // shape — it is the SIBLING-CONSOLIDATION one, where two rows for the same
+    // real-world account were simultaneously live — and it is the shape in which
+    // the tenant CAN see both accounts, so it is the honest test of whether the
+    // converted signature works on a real role.
+    {
+      const seed = psql(h.ownerUrl, `
+        insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","updatedAt") values
+          ('acct_tfold','Alice Checking (live dup)','checking','TestBank','USER','alice',now());
+        insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","updatedAt") values
+          ('l_tfold','space_a','acct_tfold','SHARED','ACTIVE','FULL',now());
+        insert into "DebtProfile" (id,"financialAccountId","updatedAt") values ('dp_tfold','acct_tfold',now());
+        insert into "Transaction" (id,"financialAccountId",date,"economicDate",merchant,category,amount,"updatedAt") values
+          ('s5_t1','acct_tfold',current_date,current_date,'Tenant fold 1','Other',-31,now()),
+          ('s5_t2','acct_tfold',current_date,current_date,'Tenant fold 2','Other',-32,now()),
+          ('s5_t3','acct_tfold',current_date,current_date,'Tenant fold 3','Other',-33,now());`);
+      if (!seed.ok) throw new Error(`case 86 fixture failed: ${seed.err.split("\n")[0]}`);
+
+      const IDS = `'s5_t1','s5_t2','s5_t3'`;
+      const before = rowsOn(IDS, "acct_tfold");
+
+      let principal = "(unread)", identity = "(unread)", threw = "(no throw)";
+      try {
+        await tenant.withTenantDb("alice", async (tx) => {
+          // ⚠️ READ THE PRINCIPAL INSIDE THE PHASE THE MERGE WILL RUN IN. A
+          // suite that verified a connection string and called it a principal is
+          // already on this programme's ledger of mistakes; the only honest
+          // proof that there is no privileged fallback in this path is to ask
+          // the server who it is, in the same transaction, immediately before.
+          const who = await tx.$queryRaw<Array<{ u: string; i: string | null }>>`
+            SELECT current_user::text AS u, nullif(current_setting('app.user_id', true),'') AS i`;
+          principal = who[0]?.u ?? "(none)";
+          identity  = who[0]?.i ?? "(none)";
+          await rec.mergeArchivedDuplicateIntoCanonical(
+            "acct_tfold", "acct_alice", dupSource.SIBLING_CONSOLIDATION, null, tx);
+        });
+      } catch (e) {
+        threw = e instanceof Error ? `${e.name}: ${String(e.message).split("\n")[0]}` : String(e);
+      }
+
+      const moved   = rowsOn(IDS, "acct_alice");
+      const left    = rowsOn(IDS, "acct_tfold");
+      const debt    = debtOn("dp_tfold");
+      const audit   = auditRows("acct_tfold");
+      const relinked = psql(h.ownerUrl,
+        `select count(*) from "SpaceAccountLink" where "financialAccountId"='acct_alice' and "spaceId"='space_a' and status='ACTIVE';`).out.trim();
+
+      check(86, "[role+service] the LEGITIMATE same-owner fold runs END TO END through the converted merge on a REAL fm_app phase — principal and identity read inside that very transaction, every observed row moved, the DebtProfile moved, the link re-pointed and the audit row written, with no privileged fallback anywhere in the path",
+        threw === "(no throw)"
+          && principal === "fm_app" && identity === "alice"
+          && before === "3" && moved === before && left === "0"
+          && debt === "acct_alice" && audit === "1" && relinked === "1",
+        `threw=${threw} principal=${principal} identity=${identity} population=${before} moved=${moved} left=${left} debt=${debt} audit=${audit} activeLink=${relinked}`);
+
+      psql(h.ownerUrl, `delete from "Transaction" where id in (${IDS});
+                        delete from "DuplicateAccountCandidate" where "accountBId"='acct_tfold';
+                        delete from "FinancialAccount" where id='acct_tfold';`);
+    }
+
+    // ── 87 [role+service] THE RESIDUE: ONE STATEMENT, AND IT IS A POLICY ────
+    {
+      const IDS = `'s5_a1','s5_a2'`;
+      const seedArchived = () => {
+        const r = psql(h.ownerUrl, `
+          delete from "DuplicateAccountCandidate" where "accountBId"='acct_afold';
+          delete from "Transaction" where id in (${IDS});
+          delete from "FinancialAccount" where id='acct_afold';
+          insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","deletedAt","updatedAt") values
+            ('acct_afold','Alice Checking (archived dup)','checking','TestBank','USER','alice',now(),now());
+          insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","revokedAt","updatedAt") values
+            ('l_afold','space_a','acct_afold','SHARED','REVOKED','FULL',now(),now());
+          insert into "DebtProfile" (id,"financialAccountId","updatedAt") values ('dp_afold','acct_afold',now());
+          insert into "Transaction" (id,"financialAccountId",date,"economicDate",merchant,category,amount,"updatedAt") values
+            ('s5_a1','acct_afold',current_date,current_date,'Archived fold 1','Other',-41,now()),
+            ('s5_a2','acct_afold',current_date,current_date,'Archived fold 2','Other',-42,now());`);
+        if (!r.ok) throw new Error(`case 87 fixture failed: ${r.err.split("\n")[0]}`);
+      };
+
+      seedArchived();
+      const population = rowsOn(IDS, "acct_afold");
+      // The two halves of the predicate the policy actually evaluates, read on
+      // the role rather than reasoned about.
+      const loserVisible  = visibleToAlice("acct_afold");
+      const winnerVisible = visibleToAlice("acct_alice");
+
+      // (a) the tenant attempt
+      let refusal = "(no throw)", isRls = false;
+      try {
+        await tenant.withTenantDb("alice", (tx) =>
+          rec.mergeArchivedDuplicateIntoCanonical("acct_afold", "acct_alice", dupSource.FINGERPRINT_MATCH, null, tx));
+      } catch (e) {
+        refusal = e instanceof Error ? e.name : String(e);
+        isRls = /42501|row-level security/i.test(e instanceof Error ? e.message : String(e))
+             && /DuplicateAccountCandidate/.test(e instanceof Error ? e.message : String(e));
+      }
+      // THE WHOLE FOLD ROLLED BACK — a half-applied merge would be far worse
+      // than a refused one, and "it threw" does not distinguish them.
+      const stillOnLoser  = rowsOn(IDS, "acct_afold");
+      const debtAfter     = debtOn("dp_afold");
+      const auditAfter    = auditRows("acct_afold");
+
+      // (b) THE DENOMINATOR: the identical call, identical fixture, on `db`.
+      seedArchived();
+      let privilegedThrew = "(no throw)";
+      try {
+        await rec.mergeArchivedDuplicateIntoCanonical(
+          "acct_afold", "acct_alice", dupSource.FINGERPRINT_MATCH, null, dbMod.db);
+      } catch (e) {
+        privilegedThrew = e instanceof Error ? e.name : String(e);
+      }
+      const privilegedMoved = rowsOn(IDS, "acct_alice");
+      const privilegedAudit = auditRows("acct_afold");
+
+      check(87, "[role+service] the SAME fold over an ARCHIVED loser — the shape every production merge actually has — is refused on fm_app at exactly ONE statement, DuplicateAccountCandidate's INSERT policy, because RLS-D1's owner arm reached the thirteen financialAccountId-keyed subtree tables and not this one; the fold rolls back WHOLE, the two fm_account_visible() values disagree on the role, and the identical call on the migration principal succeeds completely",
+        refusal !== "(no throw)" && isRls
+          && population === "2" && stillOnLoser === population
+          && debtAfter === "acct_afold" && auditAfter === "0"
+          && loserVisible === "f" && winnerVisible === "t"
+          && privilegedThrew === "(no throw)" && privilegedMoved === "2" && privilegedAudit === "1",
+        `tenantRefusal=${refusal} isRlsOnAuditTable=${isRls} population=${population} stillOnLoser=${stillOnLoser} ` +
+        `debt=${debtAfter} auditRows=${auditAfter} visible(loser)=${loserVisible} visible(winner)=${winnerVisible} | ` +
+        `onDb: threw=${privilegedThrew} moved=${privilegedMoved} audit=${privilegedAudit}`);
+
+      psql(h.ownerUrl, `delete from "Transaction" where id in (${IDS});
+                        delete from "DuplicateAccountCandidate" where "accountBId"='acct_afold';
+                        delete from "FinancialAccount" where id='acct_afold';`);
+    }
   }
 
 

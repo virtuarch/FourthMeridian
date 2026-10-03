@@ -38,7 +38,7 @@
 
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
-import { db } from "@/lib/db";
+import { db, systemDb } from "@/lib/db";
 // PROV-2 — shared owners: Plaid type→AccountType mapping and the identity→legacy
 // account resolver (was a private mapAccountType copy + two inline lookups here).
 import { mapAccountType } from "@/lib/plaid/account-type";
@@ -196,7 +196,15 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
   for (const acct of plaidAccounts) {
     // PROV-2 — canonical identity→legacy resolve. Refresh SKIPS soft-deleted
     // matches: never restore or create during a refresh (relink owns that).
-    const fa = await resolvePlaidAccountByExternalId(acct.account_id);
+    // RLS-ACC-S5 — the resolver's client is now required and LEADING, so this
+    // site's authority is visible rather than inherited. `systemDb` (fm_system),
+    // not `db`: this is the BACKGROUND refresh pipeline. It runs on a cron/webhook
+    // with no user identity to bind, so there is no tenant phase it could belong
+    // to, and fm_system is NOBYPASSRLS and reaches every tenant through explicit
+    // role-scoped policies — strictly narrower than the migration principal this
+    // replaces. The rest of this module still holds `db`; converting it is a
+    // later slice, and this one line is what that slice has to change here.
+    const fa = await resolvePlaidAccountByExternalId(systemDb, acct.account_id);
     if (!fa) continue; // unresolved provider account — no FinancialAccount identity to attribute
     if (fa.deletedAt) {
       // DF-2E — a soft-deleted account under an active item: intentionally not

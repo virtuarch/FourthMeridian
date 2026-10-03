@@ -73,13 +73,25 @@ export const POST = withApiHandler(async (
   // Manual assets normally have no provider identity, so this is a no-op for
   // them — kept for consistency with the generic restore route in case a
   // record ever does carry one.
+  // RLS-ACC-S5 — required leading client; a TENANT phase, because ownership of
+  // `fa` was proved on the tenant role above. See the generic restore route.
   const identity  = providerIdentityOf(fa);
-  const canonical = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
+  const canonical = identity
+    ? await withTenantDb(userId, (tx) => findActiveAccountByIdentity(tx, identity, fa.id))
+    : null;
 
   if (canonical) {
     // Only reachable via providerIdentityOf/findActiveAccountByIdentity in
     // this route (no fingerprint fallback here — see comment above), so the
     // source is always a provider-identity match.
+    // ⚠️ RLS-ACC-S5 — ONE OF THE TWO CALL SITES THAT STILL RELY ON THE MODULE
+    // DEFAULT. `DuplicateAccountCandidate.fm_app_ins` requires
+    // `fm_account_visible()` on BOTH accounts and a fold's loser is archived by
+    // construction, so a tenant client aborts the whole fold on 42501 (measured;
+    // acceptance cases 86-87). Naming `db` here instead would put this route
+    // back on the migration principal and grow the authority ratchet, which
+    // lib/accounts/links-everywhere.test.ts pins against. See
+    // app/api/accounts/[id]/restore/route.ts for the full note.
     await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id, DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH);
 
     await withTenantDb(userId, (tx) => tx.auditLog.create({

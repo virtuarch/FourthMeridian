@@ -116,8 +116,17 @@ export const POST = withApiHandler(async (
     // If an active account already exists for the same provider identity,
     // this restore would create a visible duplicate. Silently fold this
     // account's history into the active one instead — no conflict shown.
+    // RLS-ACC-S5 — the lookup's client is now required and leading, and this
+    // one is a TENANT phase: ownership of `fa` was just proved on the tenant
+    // role above, so the active duplicate this is looking for is the caller's
+    // own account. Under fm_app a provider identity held by ANOTHER owner is no
+    // longer found — which turns a fold that could only ever end in
+    // ReparentingRefusedError/CROSS_OWNER (a 500 on a legitimate restore) into
+    // an ordinary restore. Short phase, no provider call inside it.
     const identity = providerIdentityOf(fa);
-    let canonical: { id: string } | null = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
+    let canonical: { id: string } | null = identity
+      ? await withTenantDb(user.id, (tx) => findActiveAccountByIdentity(tx, identity, fa.id))
+      : null;
     // Tracks which match found `canonical`, so the merge below is tagged with
     // the right DuplicateDetectionSource. Default reflects the identity-match
     // branch above; overwritten if the fingerprint fallback is the one that
@@ -133,6 +142,22 @@ export const POST = withApiHandler(async (
     // siblings, if any, get consolidated the next time the account is
     // reconnected via Plaid — see app/api/plaid/exchange-token/route.ts.)
     if (!canonical) {
+      // ⚠️ RLS-ACC-S5 — ONE OF THE TWO CALL SITES THAT STILL RELY ON THE
+      // MODULE DEFAULT, AND THE ONLY REASON IS A POLICY. Everything else in this
+      // route runs on `fm_app`; this resolution and the merge below cannot,
+      // because folding an archived sibling ends in a
+      // `DuplicateAccountCandidate` INSERT whose fm_app policy is
+      // `fm_account_visible("accountAId") AND fm_account_visible("accountBId")`
+      // — false for an archived loser BY CONSTRUCTION, so the whole fold aborts
+      // on 42501 (measured on a live role; acceptance cases 86-87).
+      //
+      // Passing `db` here EXPLICITLY would be the honest shape, and it is
+      // refused for a second, independent reason: it would put this route back
+      // on the migration principal, growing the authority ratchet and falsifying
+      // lib/accounts/links-everywhere.test.ts's pin that S7 took it off. There is
+      // no authority this route may hold that can complete the fold. The default
+      // therefore stays until `DuplicateAccountCandidate` gains RLS-D1's owner
+      // arm, and reconcile.ts's header records exactly which line that is.
       const resolution = await resolveAccountByFingerprint(
         {
           ownerUserId:   fa.ownerUserId,
@@ -153,6 +178,12 @@ export const POST = withApiHandler(async (
     }
 
     if (canonical) {
+      // ⚠️ RLS-ACC-S5 — THE SECOND SITE, SAME SINGLE REASON. See the note on
+      // the fingerprint fallback above: the fold's last statement is a
+      // `DuplicateAccountCandidate` INSERT that `fm_app` cannot make about an
+      // archived loser, and naming `db` here would regress this route onto the
+      // migration principal. This is the one operation in this route that does
+      // not run on the tenant role, it is deliberate, and it is measured.
       await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id, mergeSource);
 
       await withTenantDb(user.id, (tx) => tx.auditLog.create({

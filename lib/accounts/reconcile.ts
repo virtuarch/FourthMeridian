@@ -45,11 +45,68 @@
  * matching row's history into it, and returns that one row — so repeated
  * relinks converge on a single canonical account no matter how many stale
  * rows accumulated before the fix landed.
+ *
+ * ── RLS-ACC-S5 — THE AUTHORITY IS THE CALLER'S, WITH TWO NAMED EXCEPTIONS ──
+ * Every function here takes its client as a parameter. The reads take it
+ * REQUIRED AND LEADING, so the compiler enumerates their call sites and each one
+ * states the authority it executes under instead of inheriting one from this
+ * module. Three parameter types are used and they are not interchangeable:
+ *
+ *   ReadClient    the pure lookups (findActiveAccountByIdentity,
+ *                 resolvePlaidAccountByExternalId, findCandidatesByFingerprint).
+ *                 Prisma's ITXClientDenyList strips the transaction opener from
+ *                 this type, so a read leaf is STRUCTURALLY incapable of opening
+ *                 a phase of its own.
+ *   PrismaClient  closeOutAccountConnections / pickCanonicalAndMerge /
+ *                 resolveAccountByFingerprint. A ROOT client, and required to be
+ *                 one BY THE COMPILER: these interleave a provider HTTP call
+ *                 (closeOutAccountConnections → disconnectPlaidItemIfOrphaned →
+ *                 Plaid itemRemove) BETWEEN their transactions. Handed a phase
+ *                 client they would put that round trip inside somebody else's
+ *                 open transaction, which withTenantDb's contract forbids. A
+ *                 Prisma.TransactionClient has no `$transaction`, so it is not
+ *                 assignable here and the mistake does not compile.
+ *   DbClient      the merge, and only the merge. It must accept both, because
+ *                 its `"$transaction" in client` capability test (RLS-7) is what
+ *                 lets a caller that already holds a phase reuse it.
+ *
+ * ── THE EXCEPTION, MEASURED RATHER THAN ASSUMED ──────────────────────────────
+ * `resolveAccountByFingerprint` and `mergeArchivedDuplicateIntoCanonical` KEEP a
+ * trailing `= db` default, and the reason is one statement in one policy.
+ *
+ * The merge is tenant work and every statement in it succeeds on a real `fm_app`
+ * role EXCEPT the last. `DuplicateAccountCandidate.fm_app_ins` is
+ * `fm_account_visible("accountAId") AND fm_account_visible("accountBId")`.
+ * RLS-D1 gave the THIRTEEN account-subtree tables an `ownerUserId = me` arm;
+ * that sweep enumerated the tables keyed on a column named `financialAccountId`,
+ * and this table's FK columns are named `accountAId`/`accountBId`. A merge's
+ * loser is an ARCHIVED, link-revoked account BY CONSTRUCTION, so the predicate is
+ * false for it and the audit row cannot be written by the tenant who performed
+ * the fold. Replayed statement by statement as the owner on a live fm_app
+ * connection: guard OK, 2 of 2 transactions moved, 1 of 1 DebtProfile moved,
+ * 1 of 1 link re-pointed, then 42501 — and the whole fold rolls back.
+ *
+ * ⚠️ AND REQUIRING THE PARAMETER ANYWAY WOULD BE A REGRESSION, NOT A STEP. Both
+ * restore routes were taken OFF the migration principal by RLS-C-S7 and are
+ * pinned there by lib/accounts/links-everywhere.test.ts. A required parameter
+ * they could only satisfy with `db` would re-import it into both, GROW the
+ * authority ratchet, and leave that pin green and false. There is no authority
+ * those two routes may hold that can complete the fold.
+ *
+ * So the default survives on EXACTLY TWO call sites — the two restore routes —
+ * and reconcile.test.ts asserts that it is exactly two and names them, so the
+ * number can only go down. The two callers that already hold `db` (exchangeToken
+ * and the wallet route, both on the ratchet for their own reasons) now pass it
+ * EXPLICITLY. Acceptance cases 86 and 87 hold the measurement on a real role:
+ * the fold runs END TO END on an `fm_app` phase when the loser is still linked,
+ * and is refused at exactly this one statement when it is not. Case 87 is the
+ * case that flips when the policy gains its owner arm.
  */
 
 import { db } from "@/lib/db";
 import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus, ProviderType, type PrismaClient } from "@prisma/client";
 import { dualWriteSpaceAccountLink, resolveAccountCreatorUserId, type DbClient } from "@/lib/accounts/space-account-link";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { assertAccountReparentingAuthorized } from "@/lib/accounts/account-reparenting";
 import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
@@ -84,15 +141,21 @@ import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
  * every losing candidate below, not just newly-archived ones — a candidate
  * that arrived already archived can still be carrying a live connection if
  * it was archived before this fix existed, which is exactly the bug above.
+ *
+ * ⚠️ RLS-ACC-S5 — THE CLIENT IS A ROOT CLIENT AND THE TYPE SAYS SO. This
+ * function reaches `disconnectPlaidItemIfOrphaned`, which calls Plaid's
+ * `itemRemove` over HTTP. A provider call must never run inside an open
+ * transaction, and `Prisma.TransactionClient` is not assignable to
+ * `PrismaClient`, so a caller holding a phase cannot pass it here.
  */
-async function closeOutAccountConnections(financialAccountId: string): Promise<void> {
-  const liveConnections = await db.accountConnection.findMany({
+async function closeOutAccountConnections(client: PrismaClient, financialAccountId: string): Promise<void> {
+  const liveConnections = await client.accountConnection.findMany({
     where:  { financialAccountId, deletedAt: null },
     select: { id: true, plaidItemDbId: true },
   });
   if (liveConnections.length === 0) return;
 
-  await db.accountConnection.updateMany({
+  await client.accountConnection.updateMany({
     where: { financialAccountId, deletedAt: null },
     data:  { deletedAt: new Date() },
   });
@@ -137,8 +200,26 @@ export function providerIdentityOf(fa: {
  * §B (Risk 1: coverage gaps) and §C (Step 3D). A fallback hit is logged so
  * coverage gaps are visible before the fallback is ever removed (Step 3G).
  * The WALLET branch is unchanged by this step.
+ *
+ * ── RLS-ACC-S5 — THE CLIENT IS REQUIRED AND LEADING ─────────────────────────
+ * This lookup is reached from genuinely different caller classes, which is the
+ * textbook case for the parameter: both restore routes supply a TENANT phase
+ * (they have already proved `fa.ownerUserId === user.id`, so the account they
+ * are asking about is their own).
+ *
+ * ⚠️ WHAT A TENANT CLIENT CHANGES, MEASURED. The PLAID branch's
+ * `ProviderAccountIdentity` lookup is keyed on `externalAccountId` alone — a
+ * GLOBAL key. Under `fm_app` that read narrows to the subtree the caller can
+ * reach, so a provider identity held by ANOTHER owner's account is simply not
+ * found (measured: 1 row visible for the caller's own archived account, 0 for a
+ * foreign owner's active one). That is a BEHAVIOUR CHANGE and it is the right
+ * one: on the migration principal the foreign row WAS found, and the fold that
+ * followed could only ever end in `ReparentingRefusedError/CROSS_OWNER` — a 500
+ * on a restore the user was entitled to. The caller's own archived account stays
+ * visible because of RLS-D1's owner arm; before D1 it did not, which is the
+ * third of this conversion's four deferral reasons.
  */
-export async function findActiveAccountByIdentity(identity: ProviderIdentity, excludeId?: string) {
+export async function findActiveAccountByIdentity(client: ReadClient, identity: ProviderIdentity, excludeId?: string) {
   if (identity.kind === "plaid") {
     // D2 Step 1D — findFirst, not findUnique: ProviderAccountIdentity's
     // unique key now includes financialAccountId (multiple FinancialAccounts
@@ -146,7 +227,7 @@ export async function findActiveAccountByIdentity(identity: ProviderIdentity, ex
     // alone is no longer a named unique key. PLAID's real uniqueness is
     // still guaranteed independently by FinancialAccount.plaidAccountId
     // @unique, so this is a type-shape change only, not a behavior change.
-    const plaidIdentity = await db.providerAccountIdentity.findFirst({
+    const plaidIdentity = await client.providerAccountIdentity.findFirst({
       where: { provider: ProviderType.PLAID, externalAccountId: identity.plaidAccountId },
       include: { financialAccount: true },
     });
@@ -162,7 +243,7 @@ export async function findActiveAccountByIdentity(identity: ProviderIdentity, ex
     }
 
     // No identity row — coverage gap. Fall back to the legacy lookup.
-    const fallback = await db.financialAccount.findFirst({
+    const fallback = await client.financialAccount.findFirst({
       where: { plaidAccountId: identity.plaidAccountId, deletedAt: null, ...(excludeId ? { id: { not: excludeId } } : {}) },
     });
     if (fallback) {
@@ -173,7 +254,7 @@ export async function findActiveAccountByIdentity(identity: ProviderIdentity, ex
     return fallback;
   }
 
-  return db.financialAccount.findFirst({
+  return client.financialAccount.findFirst({
     where: {
       ownerUserId:   identity.ownerUserId,
       walletAddress: identity.walletAddress,
@@ -213,14 +294,14 @@ export async function findActiveAccountByIdentity(identity: ProviderIdentity, ex
  * exchange path (one fewer warning per restored account) — never data or flow.
  * The consolidated tag `[D2-3G]` supersedes D2-3C/3E/3F.
  */
-export async function resolvePlaidAccountByExternalId(externalAccountId: string) {
-  const identity = await db.providerAccountIdentity.findFirst({
+export async function resolvePlaidAccountByExternalId(client: ReadClient, externalAccountId: string) {
+  const identity = await client.providerAccountIdentity.findFirst({
     where:   { provider: ProviderType.PLAID, externalAccountId },
     include: { financialAccount: true },
   });
   if (identity?.financialAccount) return identity.financialAccount;
 
-  const legacy = await db.financialAccount.findUnique({ where: { plaidAccountId: externalAccountId } });
+  const legacy = await client.financialAccount.findUnique({ where: { plaidAccountId: externalAccountId } });
   if (legacy && legacy.deletedAt === null) {
     console.warn(
       `[plaid][D2-3G] ProviderAccountIdentity miss, legacy plaidAccountId hit — ` +
@@ -266,6 +347,7 @@ function cleanStr(s: string | null | undefined): string | null {
  * itself; callers decide how to reduce multiple matches to one canonical row.
  */
 async function findCandidatesByFingerprint(
+  client: ReadClient,
   fp: AccountFingerprint,
   deletedAt: null | { not: null },
   excludeId?: string
@@ -286,7 +368,7 @@ async function findCandidatesByFingerprint(
   ];
   if (nameOr.length === 0) return [];
 
-  return db.financialAccount.findMany({
+  return client.financialAccount.findMany({
     where: {
       ...(fp.ownerUserId ? { ownerUserId: fp.ownerUserId } : {}),
       type: fp.type,
@@ -318,6 +400,7 @@ async function findCandidatesByFingerprint(
  * rather than inheriting the caller's.
  */
 async function pickCanonicalAndMerge(
+  client: PrismaClient,
   candidates: FingerprintCandidate[],
   spaceId?: string | null
 ): Promise<FingerprintCandidate | null> {
@@ -333,7 +416,7 @@ async function pickCanonicalAndMerge(
     // rollback must not count as "history" when deciding which duplicate-
     // account candidate is canonical. See
     // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §2.
-    const count = await db.transaction.count({ where: { financialAccountId: c.id, deletedAt: null } });
+    const count = await client.transaction.count({ where: { financialAccountId: c.id, deletedAt: null } });
     counts.set(c.id, count);
     if (count > canonicalCount) {
       canonical = c;
@@ -348,7 +431,7 @@ async function pickCanonicalAndMerge(
     // the loser's history moved to the canonical row while the loser stays
     // active — a visible, empty duplicate (exactly the state this merge
     // exists to prevent). The merge reuses this tx rather than opening its own.
-    await db.$transaction(async (tx) => {
+    await client.$transaction(async (tx) => {
       await mergeArchivedDuplicateIntoCanonical(c.id, canonical.id, DuplicateDetectionSource.SIBLING_CONSOLIDATION, spaceId, tx);
       if (!c.deletedAt) {
         // Was active under a different plaidAccountId — its history now lives
@@ -361,7 +444,7 @@ async function pickCanonicalAndMerge(
     // arrived already archived. See closeOutAccountConnections' doc comment.
     // External Plaid itemRemove — MUST stay OUTSIDE the transaction; runs
     // post-commit.
-    await closeOutAccountConnections(c.id);
+    await closeOutAccountConnections(client, c.id);
   }
 
   return canonical;
@@ -392,23 +475,33 @@ export type FingerprintResolution = {
 export async function resolveAccountByFingerprint(
   fp: AccountFingerprint,
   excludeId?: string,
-  spaceId?: string | null
+  spaceId?: string | null,
+  // ⚠️ RLS-ACC-S5 — THE DEFAULT SURVIVES HERE AND IN THE MERGE, AND NOWHERE
+  // ELSE IN THIS MODULE. See the file header: this path ends in a
+  // `DuplicateAccountCandidate` INSERT that `fm_app` cannot make about an
+  // archived loser, so a tenant client aborts the whole fold on 42501. The
+  // type is `PrismaClient` and not `DbClient`, which is a second, independent
+  // constraint: `closeOutAccountConnections` calls Plaid's `itemRemove`
+  // BETWEEN this function's transactions, so a phase client here would put a
+  // provider round trip inside somebody else's open transaction. A
+  // `Prisma.TransactionClient` has no `$transaction` and so does not compile.
+  client: PrismaClient = db,
 ): Promise<FingerprintResolution | null> {
   const [activeCandidates, archivedCandidates] = await Promise.all([
-    findCandidatesByFingerprint(fp, null, excludeId),
-    findCandidatesByFingerprint(fp, { not: null }, excludeId),
+    findCandidatesByFingerprint(client, fp, null, excludeId),
+    findCandidatesByFingerprint(client, fp, { not: null }, excludeId),
   ]);
 
   if (activeCandidates.length > 0) {
-    const canonical = await pickCanonicalAndMerge(activeCandidates, spaceId);
+    const canonical = await pickCanonicalAndMerge(client, activeCandidates, spaceId);
     for (const a of archivedCandidates) {
-      await mergeArchivedDuplicateIntoCanonical(a.id, canonical!.id, DuplicateDetectionSource.FINGERPRINT_MATCH, spaceId);
+      await mergeArchivedDuplicateIntoCanonical(a.id, canonical!.id, DuplicateDetectionSource.FINGERPRINT_MATCH, spaceId, client);
       // Lifecycle fix (Step A) — second gap, found on a full read of this
       // file while implementing the fix above: this loop folds already-
       // archived siblings into the canonical directly, without ever going
       // through pickCanonicalAndMerge's loop. Same reasoning applies — `a`
       // may still be carrying a live connection from before this fix existed.
-      await closeOutAccountConnections(a.id);
+      await closeOutAccountConnections(client, a.id);
     }
     return {
       canonical:              canonical!,
@@ -419,7 +512,7 @@ export async function resolveAccountByFingerprint(
   }
 
   if (archivedCandidates.length > 0) {
-    const canonical = await pickCanonicalAndMerge(archivedCandidates, spaceId);
+    const canonical = await pickCanonicalAndMerge(client, archivedCandidates, spaceId);
     return {
       canonical:              canonical!,
       matchedActive:          false,
@@ -465,28 +558,41 @@ export async function mergeArchivedDuplicateIntoCanonical(
   winnerId: string,
   source: DuplicateDetectionSource,
   spaceId?: string | null,
-  // ⚠️ RLS-C-S7 — THIS DEFAULT STAYS, AND THE REASON IS STATED RATHER THAN
-  // SILENT. A defaulted client is an ambient authority and this programme is
-  // removing them; S7 nonetheless left this one alone, for the same kind of
-  // reason S6a left `claimPlaidItemSyncLock`'s in place.
-  //
-  // Making it required does not move the authority — it moves the ARGUMENT. This
-  // function is reached from `resolveAccountByFingerprint` and
-  // `pickCanonicalAndMerge`, which in turn sit behind `findCandidatesByFingerprint`,
-  // `findActiveAccountByIdentity`, `resolvePlaidAccountByExternalId` and
-  // `closeOutAccountConnections` — eight `db` call sites in this module, none of
-  // which take a client. So requiring it here forces either a client parameter
-  // through the whole of reconcile.ts and its six external callers (which span
-  // tenant request paths AND the Plaid background pipeline, i.e. two different
-  // correct authorities), or a cosmetic `db` passed in at four call sites. The
+  // ⚠️ RLS-ACC-S5 — THE DEFAULT STAYS, AND THE REASON IS NO LONGER THE ONE S7
+  // GAVE. S7 said requiring it "moves the argument, not the authority — the
   // module keeps its `db` import either way, so the authority ratchet does not
-  // move one file.
+  // move one file". Three of its four premises have since been retired by
+  // measurement (see the file header), and that one WAS true and is now the
+  // least of it. The real blocker was found by running the merge, statement by
+  // statement, as the owner on a live `fm_app` role:
   //
-  // It is a slice of its own, and it has a prerequisite: the fingerprint
-  // resolution reads ACROSS identity boundaries by design (a global
-  // `plaidAccountId` lookup, an `ownerUserId` fingerprint sweep), so converting
-  // it means deciding which of those reads a tenant may perform at all — not
-  // just which client issues them.
+  //   guard OK · 2 of 2 transactions moved · 1 of 1 DebtProfile moved ·
+  //   1 of 1 link re-pointed · then `DuplicateAccountCandidate.upsert` → 42501.
+  //
+  // `DuplicateAccountCandidate.fm_app_ins` is `fm_account_visible("accountAId")
+  // AND fm_account_visible("accountBId")`. RLS-D1 gave the THIRTEEN
+  // account-subtree tables an `ownerUserId = me` arm; that sweep enumerated the
+  // tables keyed on a column named `financialAccountId`, and this table's FK
+  // columns are `accountAId`/`accountBId`. A merge's loser is an ARCHIVED,
+  // link-revoked account BY CONSTRUCTION, so the predicate is false for it and
+  // the audit row — the only durable record that the fold happened — cannot be
+  // written by the tenant who performed it. The refusal arrives as
+  // PrismaClientUnknownRequestError with `code` UNDEFINED, so no `P2002`-shaped
+  // handler would catch it either. Acceptance cases 86 and 87 hold both halves:
+  // the fold DOES run end to end on a real fm_app phase when the loser is still
+  // linked, and is refused at exactly this one statement when it is not.
+  //
+  // ⚠️ AND REQUIRING IT ANYWAY WOULD MAKE THINGS WORSE, WHICH IS WHY THIS IS A
+  // BLOCKER AND NOT A PREFERENCE. Both restore routes were taken OFF the
+  // migration principal by S7 and are pinned there by
+  // lib/accounts/links-everywhere.test.ts. A required parameter they can only
+  // satisfy with `db` would re-import it into both, GROW the authority ratchet,
+  // and turn that pin into a statement that is green and false. There is no
+  // authority those routes may hold that can complete the fold. So the default
+  // is kept, deliberately, on exactly TWO call sites — and the test file asserts
+  // that it is exactly two and names them, so the number can only go down.
+  // exchangeToken and the wallet route, which hold `db` already, now pass it
+  // explicitly instead of inheriting it.
   //
   // The `"$transaction" in client` capability test below is the RLS-7 fix and
   // must not be reverted to a `=== db` reference comparison.
@@ -640,6 +746,24 @@ export async function mergeArchivedDuplicateIntoCanonical(
     });
   }
 
+  // ⚠️ RLS-ACC-S5 — THE ONE STATEMENT IN THIS FUNCTION A TENANT CLIENT CANNOT
+  // EXECUTE, AND THE REASON IS A POLICY, NOT A BUG HERE.
+  // `DuplicateAccountCandidate.fm_app_ins` is
+  // `fm_account_visible("accountAId") AND fm_account_visible("accountBId")`.
+  // RLS-D1 gave the THIRTEEN account-subtree tables an `ownerUserId = me` arm;
+  // they are the ones keyed on a column literally named `financialAccountId`,
+  // and this table's two FK columns are not. A merge's loser is an ARCHIVED,
+  // link-revoked account BY CONSTRUCTION, so the function is false for it and
+  // the INSERT is refused with 42501 — which Prisma surfaces as
+  // PrismaClientUnknownRequestError with `code` UNDEFINED, so no `P2002`-shaped
+  // handler would catch it. Measured on a live fm_app role: every preceding
+  // statement wrote its full population, this one aborted, the fold rolled back.
+  //
+  // It is NOT routed around here. Writing the row on a wider authority would
+  // make the audit trail the one part of the fold that escapes the policy, and
+  // skipping it would make a merge that happened indistinguishable from one that
+  // did not. So the four callers pass `db` explicitly and say why, and
+  // acceptance cases 86-87 hold the measurement until the policy is widened.
   const now = new Date();
   await tx.duplicateAccountCandidate.upsert({
     where: { accountAId_accountBId: { accountAId: winnerId, accountBId: loserId } },
