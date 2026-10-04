@@ -22,6 +22,7 @@ import { requireFreshUser } from "@/lib/session";
 import { getSpaceContext } from "@/lib/space";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { db } from "@/lib/db";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { assertOpeningPosition, investmentImportsEnabled } from "@/lib/investments/opening-position";
 
@@ -76,7 +77,15 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   if (!access.ok) return access.response;
 
   // ── Write ──────────────────────────────────────────────────────────────────
+  // ⚠️ NOT CONVERTED, AND NOW VISIBLY SO (RLS-PREP-C). `assertOpeningPosition`
+  // used to default to `db`, so this route wrote as the migration principal
+  // while importing nothing that said so. The default is gone and the authority
+  // is named here, which puts this file on the ratchet for this one line. The
+  // writer cannot take a tenant phase yet for the reason recorded on
+  // `CommitInput.client` (investment-import-commit.ts). 404 unless
+  // INVESTMENT_IMPORTS_ENABLED is set; see docs/operations/rls-preview-cutover.md.
   const result = await assertOpeningPosition({
+    client: db,
     financialAccountId,
     instrument: hasInstrumentId
       ? { instrumentId: instrumentId as string }

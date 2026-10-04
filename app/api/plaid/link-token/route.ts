@@ -28,7 +28,7 @@ import { plaidClient, PLAID_ENV } from "@/lib/plaid/client";
 import { CountryCode, Products } from "plaid";
 import { requireUser } from "@/lib/session";
 import { parsePlaidError } from "@/lib/plaid/errors";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { limitByUser } from "@/lib/rate-limit";
@@ -52,6 +52,15 @@ function resolvePlaidWebhookUrl(): string | undefined {
   return url;
 }
 
+// RLS-PREP-C — this route's OWN reads and writes run on the tenant role.
+// `PlaidItem` and `Connection` are user-scoped tables (`"userId" = me`) and
+// `AuditLog` inserts are open to fm_app, so each statement the handler issues
+// directly is one short `withTenantDb` phase: the lookup that decides WHICH item
+// a user may act on is now a database guarantee, not a `where` clause on the
+// owner's connection. The provider work those lookups authorise — the sync and
+// refresh pipelines in lib/plaid/ — runs on its own authority and is not part of
+// this conversion (it interleaves Plaid HTTP with its writes, and a tenant phase
+// must never span a network round trip).
 export async function GET(req: NextRequest) {
   const [user, err] = await requireUser();
   if (err) return err;
@@ -89,10 +98,10 @@ export async function GET(req: NextRequest) {
 
     if (reconnectItemId) {
       // Existing path — unchanged from D2-7E.
-      const existing = await db.plaidItem.findFirst({
+      const existing = await withTenantDb(user.id, (tx) => tx.plaidItem.findFirst({
         where:  { id: reconnectItemId, userId: user.id },
         select: { encryptedToken: true },
-      });
+      }));
       if (!existing) {
         return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
       }
@@ -102,7 +111,7 @@ export async function GET(req: NextRequest) {
       // Check Connection layer first (written by exchange-token since Slice A);
       // fall back to PlaidItem for credentials that predate Slice A and have
       // no Connection row yet.
-      const existingConnection = await db.connection.findFirst({
+      const existingConnection = await withTenantDb(user.id, (tx) => tx.connection.findFirst({
         where:  {
           userId:               user.id,
           provider:             ProviderType.PLAID,
@@ -110,7 +119,7 @@ export async function GET(req: NextRequest) {
           status:               ConnectionStatus.ACTIVE,
         },
         select: { credential: true },
-      });
+      }));
 
       if (existingConnection?.credential) {
         accessToken = decryptWithPurpose(
@@ -122,11 +131,11 @@ export async function GET(req: NextRequest) {
         );
       } else {
         // Legacy fallback: PlaidItem has no Connection row yet (pre-Slice-A link).
-        const existingItem = await db.plaidItem.findFirst({
+        const existingItem = await withTenantDb(user.id, (tx) => tx.plaidItem.findFirst({
           where:   { userId: user.id, institutionId, status: PlaidItemStatus.ACTIVE },
           select:  { encryptedToken: true },
           orderBy: { updatedAt: "desc" },
-        });
+        }));
         if (existingItem) {
           accessToken = decryptWithPurpose(
             existingItem.encryptedToken,

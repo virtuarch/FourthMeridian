@@ -29,9 +29,48 @@
  * a space-level aggregate — you cannot subtract one account's slice, see
  * proposal §2), so a REMOVED account is naturally excluded and a newly-ADDED one
  * naturally included.
+ *
+ * ── RLS-PREP-C — TWO AUTHORITIES, AND WHICH STATEMENT RUNS UNDER WHICH ───────
+ * This module took one optional `client` and resolved it `?? db`. The route
+ * passed nothing, so the whole amendment — the gate that decides whether the
+ * caller may amend this Space, the PENDING row, the rewrite, the breakdown and
+ * the AuditLog — ran as the migration principal, and the route imported no `db`,
+ * so the authority ratchet could not see it. `requireSpaceRole(OWNER)` in the
+ * route was the only boundary.
+ *
+ * It now runs under two NAMED authorities, and the split follows what each
+ * statement IS rather than what was convenient:
+ *
+ *   `tenant` (fm_app, the requesting user)   REQUIRED, supplied by the caller.
+ *     · the gate: does this Space exist FOR ME, is it PERSONAL, is the account
+ *       linked into it. Under RLS a Space the caller is not a member of is not a
+ *       row, so the gate fails closed as "not found" before anything is written;
+ *     · every row the amendment itself authors: the SnapshotAmendment (PENDING),
+ *       the SnapshotAmendmentDay breakdown, the AuditLog row, and the flip to
+ *       APPLIED. All are Space-keyed tables the tenant role may write for a
+ *       Space it is a member of, and nothing else.
+ *
+ *   `engine` (fm_system)                     the regeneration, and only it.
+ *     `regenerateWealthHistory` cannot run in a tenant phase and this is not a
+ *     shortcut: it performs price-provider NETWORK I/O (a tenant transaction
+ *     must never span a network round trip), it needs a root client, and it is
+ *     the Space-level snapshot engine that the scheduled refresh and every
+ *     account mutation already run on fm_system (lib/snapshots/regenerate.ts).
+ *     Rewriting a Space's snapshot series is a system capability exercised on
+ *     behalf of a caller whose authority over THAT Space the tenant phase has
+ *     just proved; `spaceId` is the only scope it is given and it comes from the
+ *     row the gate read.
+ *
+ * ⚠️ ORDER IS THE SECURITY PROPERTY. The engine is never reached unless the
+ * tenant gate returned. A caller who is not a member cannot make fm_system
+ * rewrite a series by naming a Space id.
+ *
+ * ⚠️ A REFUSED WRITE CANNOT REPORT SUCCESS. The tenant-phase writes are
+ * `create`, `createMany` and `update({ where: { id } })`; a WITH CHECK refusal
+ * raises 42501 and a hidden row raises P2025. There is no `updateMany`.
  */
 
-import { db } from "@/lib/db";
+import { systemDb } from "@/lib/db";
 import {
   SpaceType,
   type SnapshotAmendmentKind,
@@ -43,6 +82,9 @@ import { regenerateWealthHistory, type WealthHistoryDiff } from "@/lib/snapshots
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
+/** Run `fn` as the requesting user, in ONE transaction on the tenant role. */
+export type AmendmentTenantPhase = <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>) => Promise<T>;
+
 export interface AmendmentRequest {
   spaceId: string;
   financialAccountId: string;
@@ -51,7 +93,13 @@ export interface AmendmentRequest {
   toDate: string; // YYYY-MM-DD inclusive (≤ yesterday — today's live row is frozen)
   requestedByUserId: string;
   now?: Date;
-  client?: Client;
+  /** The requesting user's tenant phase. REQUIRED — see the module header. */
+  tenant: AmendmentTenantPhase;
+  /**
+   * The regeneration engine's authority. Omitted in production, where it is
+   * fm_system; supplied only by a test that must not reach a database.
+   */
+  engine?: Client;
 }
 
 /** The quantified, human-facing delta a preview/apply reports. */
@@ -120,12 +168,20 @@ async function assertAccountInSpace(client: Client, spaceId: string, financialAc
  * READ-ONLY preview of an amendment: the per-day before→after diff, guards
  * bypassed, nothing written. Safe to call repeatedly.
  */
-export async function previewAmendment(req: AmendmentRequest): Promise<AmendmentPreview> {
-  const client = req.client ?? db;
-  const space = await client.space.findUnique({ where: { id: req.spaceId }, select: { type: true } });
+/**
+ * THE GATE. Runs as the requesting user: a Space they are not a member of is
+ * not visible, so it is "not found" here and nothing downstream is reached.
+ */
+async function assertAmendable(tx: Client, req: AmendmentRequest): Promise<void> {
+  const space = await tx.space.findUnique({ where: { id: req.spaceId }, select: { type: true } });
   if (!space) throw new Error(`Space ${req.spaceId} not found.`);
   if (space.type !== SpaceType.PERSONAL) throw new SharedSpaceAmendmentError();
-  await assertAccountInSpace(client, req.spaceId, req.financialAccountId);
+  await assertAccountInSpace(tx, req.spaceId, req.financialAccountId);
+}
+
+export async function previewAmendment(req: AmendmentRequest): Promise<AmendmentPreview> {
+  await req.tenant((tx) => assertAmendable(tx, req));
+  const client = req.engine ?? systemDb;
 
   const res = await regenerateWealthHistory({
     spaceId: req.spaceId,
@@ -167,28 +223,28 @@ export async function previewAmendment(req: AmendmentRequest): Promise<Amendment
  * [amendmentId, date]).
  */
 export async function applyAmendment(req: AmendmentRequest): Promise<AmendmentResult> {
-  // Apply needs an interactive transaction (step 3), so the root must be a full
-  // PrismaClient — a nested transaction client cannot open one.
-  const rootClient = (req.client ?? db) as PrismaClient;
+  // The regeneration needs a root client (it does network I/O and manages its
+  // own writes); see the module header for why that authority is fm_system.
+  const rootClient = (req.engine ?? systemDb) as PrismaClient;
   const now = req.now ?? new Date();
 
-  const space = await rootClient.space.findUnique({ where: { id: req.spaceId }, select: { type: true } });
-  if (!space) throw new Error(`Space ${req.spaceId} not found.`);
-  if (space.type !== SpaceType.PERSONAL) throw new SharedSpaceAmendmentError();
-  await assertAccountInSpace(rootClient, req.spaceId, req.financialAccountId);
-
-  // 1. PENDING amendment (the FK target for the rows about to be rewritten).
-  const amendment = await rootClient.snapshotAmendment.create({
-    data: {
-      spaceId: req.spaceId,
-      financialAccountId: req.financialAccountId,
-      kind: req.kind,
-      fromDate: new Date(`${req.fromDate}T00:00:00Z`),
-      toDate: new Date(`${req.toDate}T00:00:00Z`),
-      requestedByUserId: req.requestedByUserId,
-      status: "PENDING",
-    },
-    select: { id: true },
+  // GATE + 1. PENDING amendment (the FK target for the rows about to be
+  // rewritten) — ONE tenant phase, so the row is only ever authored for a Space
+  // the same transaction has just proved the caller may amend.
+  const amendment = await req.tenant(async (tx) => {
+    await assertAmendable(tx, req);
+    return tx.snapshotAmendment.create({
+      data: {
+        spaceId: req.spaceId,
+        financialAccountId: req.financialAccountId,
+        kind: req.kind,
+        fromDate: new Date(`${req.fromDate}T00:00:00Z`),
+        toDate: new Date(`${req.toDate}T00:00:00Z`),
+        requestedByUserId: req.requestedByUserId,
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
   });
 
   // 2. Rewrite the affected rows (guards bypassed, kill switch bypassed, tagged).
@@ -203,8 +259,9 @@ export async function applyAmendment(req: AmendmentRequest): Promise<AmendmentRe
   });
   const { changed, summary } = summarize(res.diffs);
 
-  // 3. Breakdown + AuditLog + flip to APPLIED, atomically.
-  const auditLogId = await rootClient.$transaction(async (tx) => {
+  // 3. Breakdown + AuditLog + flip to APPLIED, atomically — as the requesting
+  //    user. These are the amendment's own records, not the engine's output.
+  const auditLogId = await req.tenant(async (tx) => {
     if (changed.length > 0) {
       await tx.snapshotAmendmentDay.createMany({
         data: changed.map((d) => ({

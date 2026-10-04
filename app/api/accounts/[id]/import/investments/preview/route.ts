@@ -12,7 +12,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireFreshUser } from "@/lib/session";
-import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
@@ -21,6 +20,9 @@ import { investmentImportsEnabled } from "@/lib/investments/opening-position";
 import { buildImportPreview } from "@/lib/investments/investment-import-preview";
 import { guardImportUpload } from "@/lib/investments/import-upload-guard";
 import { maskAccountLabel } from "@/lib/imports/investments/import-validation";
+
+/** One read-only phase over a whole file; Prisma's 5 s default is sized for a single statement group. */
+const PREVIEW_PHASE_TIMEOUT_MS = 30_000;
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -48,12 +50,22 @@ export const POST = withApiHandler(async (
   const profileKey = (form?.get("profileKey") as string) || "csv:generic";
   const rowKindOverride = (form?.get("rowKind") as string) === "positions" ? "POSITION" as const : undefined;
 
-  const acct = await db.financialAccount.findUnique({ where: { id }, select: { institution: true, mask: true } });
   const text = await file.text();
-  const preview = await buildImportPreview({
-    csvText: text, profileKey, rowKindOverride,
-    financialAccountId: id, connectionInstitution: acct?.institution ?? "", targetMask: acct?.mask ?? null,
-  });
+  // RLS-PREP-C — the account read and the whole preview are ONE tenant phase.
+  // This route imported `db` for the account read and reached it a SECOND time
+  // without naming it: `buildImportPreview` was called with no client and
+  // resolved `?? db` two functions down, so the dedupe-candidate read ran as the
+  // table owner. Both are pure reads with no network, so one phase covers them;
+  // the timeout is raised because the preview resolves each row's instrument.
+  const { acct, preview } = await withTenantDb(user.id, async (tx) => {
+    const acct = await tx.financialAccount.findUnique({ where: { id }, select: { institution: true, mask: true } });
+    const preview = await buildImportPreview({
+      csvText: text, profileKey, rowKindOverride,
+      financialAccountId: id, connectionInstitution: acct?.institution ?? "", targetMask: acct?.mask ?? null,
+      client: tx,
+    });
+    return { acct, preview };
+  }, { timeout: PREVIEW_PHASE_TIMEOUT_MS });
 
   return NextResponse.json({
     target: { id, label: maskAccountLabel(acct?.mask ?? null), institution: acct?.institution ?? null },

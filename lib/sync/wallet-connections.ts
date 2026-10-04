@@ -15,7 +15,7 @@
  * each wallet's own account(s).
  */
 
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { ProviderType, ConnectionStatus } from "@prisma/client";
 import { buildWalletSyncStatus, type SyncConnection, type WalletConnectionStateInput } from "@/lib/sync/status";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
@@ -26,8 +26,8 @@ export interface WalletSyncData {
   accountsByConnectionId: Record<string, AccountLite[]>;
 }
 
-export async function loadWalletSyncConnections(userId: string): Promise<WalletSyncData> {
-  const rows = await db.connection.findMany({
+export async function loadWalletSyncConnections(client: ReadClient, userId: string): Promise<WalletSyncData> {
+  const rows = await client.connection.findMany({
     where: {
       userId,
       provider: ProviderType.WALLET,

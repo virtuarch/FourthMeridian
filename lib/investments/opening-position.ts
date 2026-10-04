@@ -34,7 +34,6 @@
  */
 
 import { InvestmentEventType, PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { repairReconstructionForAccount } from "@/lib/investments/reconstruction-runner";
 import { resolveInstrumentForImport, type ImportInstrumentIdentity } from "@/lib/investments/instrument-resolver-import";
@@ -59,8 +58,14 @@ export interface AssertOpeningPositionParams {
   costBasis?: number | null;
   userId:   string;
   now?:     Date;
-  /** Top-level client (needs $transaction); defaults to db. */
-  client?:  PrismaClient;
+  /**
+   * Top-level client (needs $transaction). RLS-PREP-C — REQUIRED: this defaulted
+   * to `db`, so the opening-position route wrote InvestmentEvent and
+   * PositionObservation as the migration principal without importing it. The
+   * route now names the authority it passes. It is still a ROOT client for the
+   * reason recorded on `CommitInput.client` in investment-import-commit.ts.
+   */
+  client:   PrismaClient;
 }
 
 export interface AssertOpeningPositionResult {
@@ -86,7 +91,7 @@ function toDate(ymd: string): Date {
 export async function assertOpeningPosition(params: AssertOpeningPositionParams): Promise<AssertOpeningPositionResult> {
   if (!investmentImportsEnabled()) return { status: "disabled" };
 
-  const client = params.client ?? db;
+  const client = params.client;
   const now = params.now ?? new Date();
   const date = toDate(params.date);
   const { financialAccountId, quantity, userId } = params;

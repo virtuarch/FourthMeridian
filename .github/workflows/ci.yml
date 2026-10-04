@@ -173,6 +173,14 @@ jobs:
       - name: RLS provider-ledger adversarial suite
         run: npm run rls:accept:plaid
 
+      # RLS-PREP-C — the converted FOREGROUND financial paths, attacked as a
+      # second tenant on a real fm_app role: cross-user reads and writes through
+      # the same functions and statements the routes now execute, that a refused
+      # write RAISES rather than reporting a zero, and the deployed-authority
+      # report against three real roles and against an owner impostor.
+      - name: RLS foreground-path adversarial suite
+        run: npm run rls:accept:foreground
+
   site:
     name: Public site (zero-authority boundary)
     runs-on: ubuntu-latest

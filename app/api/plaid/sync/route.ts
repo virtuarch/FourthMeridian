@@ -16,7 +16,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
@@ -34,6 +34,15 @@ interface SyncBody {
   plaidItemId?: string;
 }
 
+// RLS-PREP-C — this route's OWN reads and writes run on the tenant role.
+// `PlaidItem` and `Connection` are user-scoped tables (`"userId" = me`) and
+// `AuditLog` inserts are open to fm_app, so each statement the handler issues
+// directly is one short `withTenantDb` phase: the lookup that decides WHICH item
+// a user may act on is now a database guarantee, not a `where` clause on the
+// owner's connection. The provider work those lookups authorise — the sync and
+// refresh pipelines in lib/plaid/ — runs on its own authority and is not part of
+// this conversion (it interleaves Plaid HTTP with its writes, and a tenant phase
+// must never span a network round trip).
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;
@@ -64,14 +73,14 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
   const body = await req.json().catch(() => ({})) as SyncBody;
 
-  const items = await db.plaidItem.findMany({
+  const items = await withTenantDb(user.id, (tx) => tx.plaidItem.findMany({
     where: {
       userId: user.id,
       status: PlaidItemStatus.ACTIVE,
       ...(body.plaidItemId && { id: body.plaidItemId }),
     },
     select: { id: true, institutionName: true, lastManualRefreshAt: true },
-  });
+  }));
 
   if (body.plaidItemId && items.length === 0) {
     return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
@@ -174,14 +183,14 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     }
   }
 
-  await db.auditLog.create({
+  await withTenantDb(user.id, (tx) => tx.auditLog.create({
     data: {
       userId:    user.id,
       action:    AuditAction.PLAID_SYNC,
       metadata:  { itemCount: eligibleItems.length, totalAdded, totalModified, totalRemoved },
       ipAddress: getClientIp(req),
     },
-  });
+  }));
 
   return NextResponse.json({ ok: true, results, totalAdded, totalModified, totalRemoved });
 }, "POST /api/plaid/sync");

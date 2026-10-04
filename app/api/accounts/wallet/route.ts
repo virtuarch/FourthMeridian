@@ -22,7 +22,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceContext } from "@/lib/space";
 import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource } from "@prisma/client";
 import { requireUser } from "@/lib/session";
@@ -150,106 +150,80 @@ export async function POST(req: NextRequest) {
 
   const { spaceId, userId } = await getSpaceContext();
 
-  // ── Automatic duplicate reconciliation ────────────────────────────────────
-  // Same provider-identity check as Plaid reconnect: never create a second
-  // visible row for a wallet address that already has one, and never show
-  // the user a conflict — just reuse/reactivate the existing account.
-  const activeFa = await db.financialAccount.findFirst({
-    where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: null },
-    select: { id: true },
-  });
+  // ── RLS-PREP-C — THE RESOLUTION AND ITS WRITES ARE ONE TENANT PHASE ────────
+  // Look up → (re-share | reactivate | create) used to be three lookups and two
+  // owner transactions on the migration principal. They are one `withTenantDb`
+  // transaction on `fm_app` now, so the row this request decides to reuse is
+  // the row it then writes, and every statement is policy-subject:
+  //
+  //   FinancialAccount   INSERT/DELETE owner-only; SELECT/UPDATE owner or linked.
+  //                      Every lookup here is `ownerUserId = userId`, which is
+  //                      the policy's own owner arm — including the ARCHIVED row,
+  //                      whose links are revoked and which only that arm reaches.
+  //   AccountConnection  account subtree (owner arm, RLS-D1).
+  //   SpaceAccountLink   `spaceId` must be a Space the caller is a member of. A
+  //                      forged active-Space cookie cannot plant a link in
+  //                      somebody else's Space: WITH CHECK refuses the INSERT and
+  //                      the refusal RAISES.
+  //
+  // ⚠️ NOTHING IN THIS PHASE CAN REPORT A REFUSED WRITE AS SUCCESS. The account
+  // writes are `create` and `update({ where: { id } })`, both of which raise
+  // when the policy refuses them (42501 / P2025). The one `updateMany` — the
+  // reactivated wallet's archived AccountConnection rows — is keyed by the
+  // account whose visibility the `update` on the line above has just proved in
+  // this same phase, under a policy keyed on that same account; a zero there
+  // means "it had no archived connections", which is a real and ordinary answer.
+  //
+  // ⚠️ NO NETWORK IN HERE. Provider sync and history regeneration run AFTER the
+  // phase commits, exactly as they ran after the old transactions.
+  type Resolved =
+    | { kind: "active"; accountId: string }
+    | { kind: "reactivated"; accountId: string }
+    | { kind: "created"; accountId: string; name: string };
 
-  if (activeFa) {
-    // Already exists and active — re-share into this space if needed and
-    // return success silently. No 409, no "already connected" message.
-    // D3 Stage B3 — SpaceAccountLink is the sole write target.
-    // RLS slice B — `dualWriteSpaceAccountLink` now requires its client. This
-    // caller is not converted in this slice, so it passes the one it already used.
-    await dualWriteSpaceAccountLink(db, {
-      spaceId,
-      financialAccountId: activeFa.id,
-      create: {
-        addedByUserId:   userId,
-        visibilityLevel: VisibilityLevel.FULL,
-        status:          ShareStatus.ACTIVE,
-      },
-      update: {
-        status:          ShareStatus.ACTIVE,
-        revokedAt:       null,
-        revokedByUserId: null,
-      },
+  const resolved = await withTenantDb(userId, async (tx): Promise<Resolved> => {
+    // ── Automatic duplicate reconciliation ──────────────────────────────────
+    // Same provider-identity check as Plaid reconnect: never create a second
+    // visible row for a wallet address that already has one, and never show
+    // the user a conflict — just reuse/reactivate the existing account.
+    const activeFa = await tx.financialAccount.findFirst({
+      where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: null },
+      select: { id: true },
     });
 
-    // D2 Step 2 — WALLET dual-write (best-effort, non-fatal; see
-    // lib/accounts/provider-identity.ts). Owner-scoped lookup above is
-    // unchanged — this only mirrors activeFa's own identity, never another
-    // owner's FinancialAccount, per the D2 Step 1D corrected model.
-    // Wallet Provider v1.5 — ensure the real Connection(WALLET) spine and link
-    // the AccountConnection + ProviderAccountIdentity to it (also self-heals a
-    // wallet created before v1.5). Idempotent, non-fatal.
-    await alignWalletProviderSpine({ userId, financialAccountId: activeFa.id, address: walletValue, chain, descriptorOnly: isXpub });
+    if (activeFa) {
+      // Already exists and active — re-share into this space if needed and
+      // return success silently. No 409, no "already connected" message.
+      // D3 Stage B3 — SpaceAccountLink is the sole write target.
+      await dualWriteSpaceAccountLink(tx, {
+        spaceId,
+        financialAccountId: activeFa.id,
+        create: {
+          addedByUserId:   userId,
+          visibilityLevel: VisibilityLevel.FULL,
+          status:          ShareStatus.ACTIVE,
+        },
+        update: {
+          status:          ShareStatus.ACTIVE,
+          revokedAt:       null,
+          revokedByUserId: null,
+        },
+      });
+      return { kind: "active", accountId: activeFa.id };
+    }
 
-    // walletAddress has no DB-level unique constraint, so an archived row
-    // for this same address can exist alongside the active one (e.g. a
-    // previous soft-delete that never got cleaned up). Before this fix,
-    // that archived row was left permanently orphaned — nothing ever found
-    // or merged it, since this branch returned immediately. Fold it into
-    // the active row now, the same way the restore routes do.
-    const archivedDup = await db.financialAccount.findFirst({
+    // No active match — but a previously soft-deleted wallet with this address
+    // would otherwise fall through to create() below and become a genuine
+    // second row (walletAddress has no DB-level unique constraint). Reactivate
+    // it instead of creating a duplicate.
+    const archivedFa = await tx.financialAccount.findFirst({
       where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: { not: null } },
       select: { id: true },
     });
-    if (archivedDup) {
-      // RLS-ACC-S5 — the authority is NAMED here instead of inherited from the
-      // module default. This route is not converted (it holds `db` throughout
-      // and is on the ratchet for its own reasons), so passing it costs nothing
-      // and removes one of the four sites that silently relied on the default.
-      // The fold could not run on a tenant client today in any case:
-      // `DuplicateAccountCandidate.fm_app_ins` requires `fm_account_visible()`
-      // on the archived loser, which is false by construction (42501, measured;
-      // acceptance cases 86-87). See lib/accounts/reconcile.ts's header.
-      await mergeArchivedDuplicateIntoCanonical(
-        archivedDup.id,
-        activeFa.id,
-        DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH,
-        spaceId,
-        db,
-      );
-    }
 
-    // BTC wallet sync v1 — refresh the confirmed balance + USD value when an
-    // existing BTC wallet is re-added (best-effort, non-fatal; matches the
-    // create/reactivate branches). Without this, an already-existing wallet
-    // has no automatic sync trigger at all — the reported "re-add does nothing"
-    // bug. Runs BEFORE snapshot regen so the snapshot captures the fresh balance.
-    const activeSync = await syncWalletBestEffort(activeFa.id, chain);
-
-    // Regenerate SpaceSnapshot now that the share is active in this space —
-    // same best-effort/non-fatal pattern as the reactivation branch below.
-    try {
-      await regenerateSnapshotsForAccounts([activeFa.id]);
-    } catch (snapshotErr) {
-      console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${activeFa.id} (non-fatal):`, snapshotErr);
-    }
-    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(activeFa.id);
-
-    return NextResponse.json({ success: true, accountId: activeFa.id, initialSync: activeSync }, { status: 200 });
-  }
-
-  // No active match — but a previously soft-deleted wallet with this address
-  // would otherwise fall through to create() below and become a genuine
-  // second row (walletAddress has no DB-level unique constraint). Reactivate
-  // it instead of creating a duplicate.
-  const archivedFa = await db.financialAccount.findFirst({
-    where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: { not: null } },
-    select: { id: true },
-  });
-
-  if (archivedFa) {
-    // KD-4 Phase 3 — reactivate FinancialAccount + AccountConnection + SAL
-    // atomically. The providerIdentity mirror, snapshot regen, and the audit
-    // write below stay OUTSIDE the transaction.
-    await db.$transaction(async (tx) => {
+    if (archivedFa) {
+      // KD-4 Phase 3 — reactivate FinancialAccount + AccountConnection + SAL
+      // atomically (now atomic with the lookup that chose the row, too).
       await tx.financialAccount.update({
         where: { id: archivedFa.id },
         data:  { deletedAt: null, syncStatus: "pending" },
@@ -273,44 +247,11 @@ export async function POST(req: NextRequest) {
           revokedByUserId: null,
         },
       });
-    });
-
-    // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
-    // this user's own archived account — no cross-owner behavior involved.
-    // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine.
-    await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletValue, chain, descriptorOnly: isXpub });
-
-    // BTC wallet sync v1 — populate the confirmed balance + USD value on
-    // reactivate (best-effort, non-fatal). syncBtcWallet never throws; on
-    // explorer/price failure the account stays visible and "pending" and a
-    // SyncIssue is recorded (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot
-    // regen so the snapshot captures the freshly-synced balance.
-    const archivedSync = await syncWalletBestEffort(archivedFa.id, chain);
-
-    // Regenerate SpaceSnapshot now that the share is active again — see
-    // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
-    try {
-      await regenerateSnapshotsForAccounts([archivedFa.id]);
-    } catch (snapshotErr) {
-      console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${archivedFa.id} (non-fatal):`, snapshotErr);
+      return { kind: "reactivated", accountId: archivedFa.id };
     }
-    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(archivedFa.id);
 
-    await db.auditLog.create({
-      data: {
-        userId,
-        spaceId,
-        action:   AuditAction.ACCOUNT_RESTORE,
-        metadata: { name: name.trim(), chain, address: walletValue },
-      },
-    });
-    return NextResponse.json({ success: true, accountId: archivedFa.id, initialSync: archivedSync }, { status: 200 });
-  }
-
-  // ── KD-4 Phase 3 — new FinancialAccount + AccountConnection + SAL commit
-  //    atomically. The providerIdentity mirror, snapshot regen, and audit
-  //    write below stay OUTSIDE the transaction.
-  const fa = await db.$transaction(async (tx) => {
+    // ── KD-4 Phase 3 — new FinancialAccount + AccountConnection + SAL commit
+    //    atomically.
     const created = await tx.financialAccount.create({
       data: {
         ownerType:     AccountOwnerType.USER,
@@ -342,8 +283,125 @@ export async function POST(req: NextRequest) {
       client:             tx,
     });
 
-    return created;
+    return { kind: "created", accountId: created.id, name: created.name };
   });
+
+  // ── AFTER THE PHASE: three branches, exactly as before ─────────────────────
+  // Everything below ran after the old transactions too, and in this order. It
+  // is kept as three explicit branches rather than folded into one, because the
+  // sequence in each (align → sync → snapshot → history → audit) is pinned
+  // per branch by the wallet suites, and a fold would hide which branch a
+  // future edit changed.
+  //
+  // ⚠️ `alignWalletProviderSpine` IS STILL ON ITS OWN, DEFAULTED AUTHORITY — AND
+  // NAMED AS SUCH. The WALLET Connection row, the AccountConnection → Connection
+  // link and the ProviderAccountIdentity mirror are NOT converted here. It cannot
+  // simply be handed the phase's client:
+  //   · it is best-effort and SWALLOWS its own failures, and a statement that
+  //     fails inside a transaction aborts the transaction — the account this
+  //     request just created would roll back with the bookkeeping;
+  //   · its identity write, `dualWriteProviderAccountIdentity`, takes no client
+  //     at all, and its collision classifier has measured tenant-blind
+  //     semantics that are a decision, not an edit (lib/accounts/
+  //     provider-identity.ts, acceptance case 84).
+  // It runs after the phase has committed, exactly where it ran before, and it
+  // is counted: scripts/audit-db-authority.ts records these call sites in the
+  // implicit-owner-call ratchet, so they cannot become invisible by this file no
+  // longer importing `db`.
+
+  if (resolved.kind === "active") {
+    const activeFa = { id: resolved.accountId };
+
+    // D2 Step 2 — WALLET dual-write (best-effort, non-fatal; see
+    // lib/accounts/provider-identity.ts). Wallet Provider v1.5 — ensure the real
+    // Connection(WALLET) spine and link the AccountConnection +
+    // ProviderAccountIdentity to it (also self-heals a wallet created before
+    // v1.5). Idempotent, non-fatal.
+    await alignWalletProviderSpine({ userId, financialAccountId: activeFa.id, address: walletValue, chain, descriptorOnly: isXpub });
+
+    // walletAddress has no DB-level unique constraint, so an archived row
+    // for this same address can exist alongside the active one (e.g. a
+    // previous soft-delete that never got cleaned up). Before this fix,
+    // that archived row was left permanently orphaned — nothing ever found
+    // or merged it, since this branch returned immediately. Fold it into
+    // the active row now, the same way the restore routes do.
+    //
+    // RLS-PREP-C — the fold runs on this route's own tenant role, as it does in
+    // both restore routes since RLS-ACC-S6 (20261003000100 gave
+    // DuplicateAccountCandidate the owner arm the fold needs; acceptance cases
+    // 86-87). The lookup and the fold are one phase.
+    await withTenantDb(userId, async (tx) => {
+      const archivedDup = await tx.financialAccount.findFirst({
+        where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: { not: null } },
+        select: { id: true },
+      });
+      if (!archivedDup) return;
+      await mergeArchivedDuplicateIntoCanonical(
+        archivedDup.id,
+        activeFa.id,
+        DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH,
+        spaceId,
+        tx,
+      );
+    });
+
+    // BTC wallet sync v1 — refresh the confirmed balance + USD value when an
+    // existing BTC wallet is re-added (best-effort, non-fatal; matches the
+    // create/reactivate branches). Without this, an already-existing wallet
+    // has no automatic sync trigger at all — the reported "re-add does nothing"
+    // bug. Runs BEFORE snapshot regen so the snapshot captures the fresh balance.
+    const activeSync = await syncWalletBestEffort(activeFa.id, chain);
+
+    // Regenerate SpaceSnapshot now that the share is active in this space —
+    // same best-effort/non-fatal pattern as the reactivation branch below.
+    try {
+      await regenerateSnapshotsForAccounts([activeFa.id]);
+    } catch (snapshotErr) {
+      console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${activeFa.id} (non-fatal):`, snapshotErr);
+    }
+    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(activeFa.id);
+
+    return NextResponse.json({ success: true, accountId: activeFa.id, initialSync: activeSync }, { status: 200 });
+  }
+
+  if (resolved.kind === "reactivated") {
+    const archivedFa = { id: resolved.accountId };
+
+    // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
+    // this user's own archived account — no cross-owner behavior involved.
+    // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine.
+    await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletValue, chain, descriptorOnly: isXpub });
+
+    // BTC wallet sync v1 — populate the confirmed balance + USD value on
+    // reactivate (best-effort, non-fatal). syncBtcWallet never throws; on
+    // explorer/price failure the account stays visible and "pending" and a
+    // SyncIssue is recorded (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot
+    // regen so the snapshot captures the freshly-synced balance.
+    const archivedSync = await syncWalletBestEffort(archivedFa.id, chain);
+
+    // Regenerate SpaceSnapshot now that the share is active again — see
+    // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
+    try {
+      await regenerateSnapshotsForAccounts([archivedFa.id]);
+    } catch (snapshotErr) {
+      console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${archivedFa.id} (non-fatal):`, snapshotErr);
+    }
+    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(archivedFa.id);
+
+    // An AuditLog INSERT is refused loudly or not at all (`fm_app_ins` is
+    // WITH CHECK (true)); it is a phase of its own because it follows network work.
+    await withTenantDb(userId, (tx) => tx.auditLog.create({
+      data: {
+        userId,
+        spaceId,
+        action:   AuditAction.ACCOUNT_RESTORE,
+        metadata: { name: name.trim(), chain, address: walletValue },
+      },
+    }));
+    return NextResponse.json({ success: true, accountId: archivedFa.id, initialSync: archivedSync }, { status: 200 });
+  }
+
+  const fa = { id: resolved.accountId, name: resolved.name };
 
   // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). New row, so
   // dualWriteProviderAccountIdentity's find-by-{financialAccountId,
@@ -377,14 +435,14 @@ export async function POST(req: NextRequest) {
   }
   if (chainSupportsHistory(chain)) await regenWalletWealthHistory(fa.id);
 
-  await db.auditLog.create({
+  await withTenantDb(userId, (tx) => tx.auditLog.create({
     data: {
       userId,
       spaceId,
       action:   "WALLET_ADD",
       metadata: { name: fa.name, chain, address: walletValue },
     },
-  });
+  }));
 
   // W-M2a — 201 IS CORRECT, AND IT NOW SAYS SO PRECISELY.
   //

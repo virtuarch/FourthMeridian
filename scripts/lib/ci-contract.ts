@@ -52,6 +52,16 @@ export const ARCHITECTURE_JOB = [
   // else — including the part Postgres cannot tell you, since a row records no
   // writer identity, so the authority is discriminated by revoke/re-grant.
   "npm run rls:accept:plaid",
+  // RLS-PREP-C — the CONVERTED FOREGROUND PATHS, attacked. The four suites above
+  // predate the conversion of the authenticated foreground financial routes
+  // (transaction correction, CSV import, wallet add, FICO, the Investments
+  // workspace, Connections, the Plaid routes' own lookups, the wealth
+  // amendment), so none of them asks whether Bob can reach Alice THROUGH those
+  // paths, or whether a refused write on them raises instead of returning a
+  // calm zero. It also runs the deployed-authority report against real roles
+  // and against an impostor — the only place that verifier meets a database
+  // before a cutover does.
+  "npm run rls:accept:foreground",
 ] as const;
 
 /**

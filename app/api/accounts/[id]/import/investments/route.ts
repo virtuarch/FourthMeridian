@@ -20,6 +20,9 @@ import { runInvestmentImportPipelineFromCsv } from "@/lib/imports/investments/pi
 import { buildImportPreview } from "@/lib/investments/investment-import-preview";
 import { guardImportUpload } from "@/lib/investments/import-upload-guard";
 
+/** One read-only phase over a whole file; Prisma's 5 s default is sized for a single statement group. */
+const PREVIEW_PHASE_TIMEOUT_MS = 30_000;
+
 export const POST = withApiHandler(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -59,11 +62,16 @@ export const POST = withApiHandler(async (
   // be committed even if a client bypasses the preview. Blocking ⇒ 422; an
   // unproven-but-plausible file (generic/unverified) requires the explicit
   // `acknowledged` flag the UI's confirm step sends ⇒ else 409.
-  const acct = await db.financialAccount.findUnique({ where: { id }, select: { institution: true, mask: true } });
-  const preview = await buildImportPreview({
-    csvText: text, profileKey, rowKindOverride,
-    financialAccountId: id, connectionInstitution: acct?.institution ?? "", targetMask: acct?.mask ?? null, client: db,
-  });
+  //
+  // RLS-PREP-C — the gate's reads run on the tenant role, in one phase (pure
+  // reads, no network), exactly as the preview route's do.
+  const preview = await withTenantDb(user.id, async (tx) => {
+    const acct = await tx.financialAccount.findUnique({ where: { id }, select: { institution: true, mask: true } });
+    return buildImportPreview({
+      csvText: text, profileKey, rowKindOverride,
+      financialAccountId: id, connectionInstitution: acct?.institution ?? "", targetMask: acct?.mask ?? null, client: tx,
+    });
+  }, { timeout: PREVIEW_PHASE_TIMEOUT_MS });
   if (!preview.canCommit) {
     return NextResponse.json({ error: "This file can't be imported into this account.", blockingReasons: preview.blockingReasons, preview }, { status: 422 });
   }
@@ -73,7 +81,17 @@ export const POST = withApiHandler(async (
 
   const pipeline = runInvestmentImportPipelineFromCsv(text, { profileKey, rowKindOverride });
 
+  // ⚠️ NOT CONVERTED, AND SAYING SO. The WRITE still executes as the migration
+  // principal. It is passed explicitly — `commitInvestmentImport` no longer has
+  // a default to fall into — so this file stays on the authority ratchet for
+  // exactly this line. Why it is not a tenant phase yet is recorded on
+  // `CommitInput.client`: the instrument resolver and the repair step both write
+  // SyncIssue telemetry through the caller's client, and `SyncIssue` is revoked
+  // from fm_app. The route is 404 unless INVESTMENT_IMPORTS_ENABLED is set, and
+  // it must stay unset on any deployment claiming the RLS boundary until this
+  // writer is converted (docs/operations/rls-preview-cutover.md).
   const result = await commitInvestmentImport({
+    client: db,
     financialAccountId: id, userId: user.id,
     profileKey, profileVersion: pipeline.resolvedColumnMapping.profileVersion,
     source: ImportSource.CSV,

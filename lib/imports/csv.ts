@@ -46,8 +46,7 @@
  */
 
 import Papa from "papaparse";
-import { TransactionCategory } from "@prisma/client";
-import { db } from "@/lib/db";
+import { TransactionCategory, type Prisma } from "@prisma/client";
 import { findByFingerprint, normalizeMerchantKey } from "@/lib/transactions/fingerprint";
 
 export type SignConvention = "creditPositive" | "debitPositive";
@@ -540,12 +539,13 @@ export async function resolveFingerprintOutcome(
   // fingerprint as `description ?? merchant` so CSV keys on the same stable raw
   // descriptor as Plaid sync (see lib/transactions/fingerprint.ts). Optional so
   // a caller without a separate descriptor keeps the prior merchant-keyed match.
-  description: string | null = null,
-  // W1 (D6) — optional injected client (defaults to the real `db`), the same
-  // additive seam findByFingerprint gained in PRE-V26-PLAID-CLOSE: without it,
-  // the ambiguity re-check is the one query on this path that escapes a test's
-  // fake client. Every existing caller is unchanged.
-  client: Pick<typeof db, "transaction"> = db
+  description: string | null,
+  // RLS-PREP-C — REQUIRED, and `description` lost its default so that it can be.
+  // This was `= db`, which made the duplicate-detection read of BOTH import
+  // routes run as the migration principal although neither of them named it:
+  // the routes called this with six arguments and the seventh was supplied for
+  // them. They now pass the tenant phase they are executing in.
+  client: Pick<Prisma.TransactionClient, "transaction">
 ): Promise<FingerprintOutcome> {
   if (externalTransactionId) {
     // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import

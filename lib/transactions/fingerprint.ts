@@ -19,7 +19,7 @@
  * already existed and re-points the one existing caller onto it.
  */
 
-import { db } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
 
 export type TransactionFingerprintCandidate = {
   id: string;
@@ -91,13 +91,14 @@ export async function findByFingerprint(
   descriptor: string,
   pending: boolean,
   /**
-   * PRE-V26-PLAID-CLOSE — optional injected Prisma client (defaults to the real
-   * `db`). Additive: every existing caller is unchanged. Needed so a sync run
-   * driven by an injected fake client does not silently read through to the real
-   * database here — without it, the fingerprint fallback would be the one path
-   * in the sync loop that escapes the test seam.
+   * RLS-PREP-C — REQUIRED. This was `= db`: an optional authority is an ambient
+   * one, and the ambient one here was the migration principal. The CSV import
+   * route reached it without importing `db` at all, so the read that decides
+   * whether a file row is a duplicate ran as the table owner while the route
+   * looked converted. Every caller already passed a client (the Plaid sync its
+   * own, the tests a fake); the default existed only to be fallen into.
    */
-  client: Pick<typeof db, "transaction"> = db,
+  client: Pick<Prisma.TransactionClient, "transaction">,
 ): Promise<TransactionFingerprintCandidate | null> {
   const candidates = await client.transaction.findMany({
     // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import

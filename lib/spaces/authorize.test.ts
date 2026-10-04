@@ -263,7 +263,8 @@ check("F correct POST KEEPS transactionDetailWhere (FULL tier stays necessary)",
 // Order: the door runs before the body parse and before the row is loaded.
 {
   const doorAt = correct.indexOf('requireSpaceAction(spaceId, "transaction:correct")');
-  const rowAt  = correct.indexOf("db.transaction.findFirst");
+  // RLS-PREP-C — the row read moved onto the tenant phase's client.
+  const rowAt  = correct.indexOf("tx.transaction.findFirst");
   const bodyAt = correct.indexOf("req.json()");
   check("F correct POST door precedes the row read",
     doorAt !== -1 && rowAt !== -1 && doorAt < rowAt, `door@${doorAt} row@${rowAt}`);

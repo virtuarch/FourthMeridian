@@ -1,0 +1,449 @@
+/**
+ * scripts/rls-foreground-acceptance.ts  (RLS-PREP-C)
+ *
+ * THE CONVERTED FOREGROUND FINANCIAL PATHS, ATTACKED ON A REAL fm_app ROLE.
+ *
+ * RLS-PREP-C moved the authenticated foreground financial operations that still
+ * executed as the migration principal onto the tenant role: transaction
+ * correction, CSV import (preview and commit), wallet add, the FICO write, the
+ * Investments workspace read, the Connections page and its poller, the Plaid
+ * routes' own item lookups, and the wealth-timeline amendment. A conversion is
+ * only worth what an attack on it shows, so this suite does not ask whether
+ * those paths WORK — the unit suites and the product do that. It asks the three
+ * questions a conversion can get wrong while still working:
+ *
+ *   1. CROSS-TENANT.  Can Bob read or write Alice's rows through the SAME
+ *      functions and statements the converted routes now execute?
+ *   2. SILENT REFUSAL. When the policy refuses a converted WRITE, does the
+ *      caller get an error — or a calm zero that reads as success?
+ *   3. THE BINDING.   Is the authority these ran under really fm_app? The
+ *      deployed-authority report (RLS-PREP-B) is exercised here against real
+ *      roles, and against an impostor, because a verifier nobody has pointed at
+ *      a real database is itself only a claim.
+ *
+ * ⚠️ WHY SERVICE FUNCTIONS AND STATEMENTS, NOT HTTP. A Next route handler cannot
+ * be invoked from a script: `headers()` needs the request store. So each case
+ * runs what the route runs — the same library function, or the identical
+ * statement on the same kind of client — inside the same `withTenantDb` phase,
+ * as an adversary. The route-shaped half (does the route actually CALL these on
+ * a tenant client, and import no owner client) is pinned by the source scans at
+ * the end and by scripts/audit-db-authority.ts. The deployed half is the
+ * acceptance plan in docs/operations/rls-preview-cutover.md.
+ *
+ *   npm run rls:accept:foreground
+ */
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import {
+  prepareHarness, assertTenantClientBound, teardownHarness, psql, makeRecorder, APP_FIXTURES,
+} from "./lib/rls-harness";
+
+const KEEP = process.argv.includes("--keep");
+const { check, report } = makeRecorder();
+
+/** Extra rows the converted paths need that the shared fixtures do not carry. */
+const EXTRA_FIXTURES = `
+insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","walletAddress","walletChain","deletedAt","updatedAt") values
+  ('wallet_alice_archived','Alice Ledger','crypto','Self-custodied','USER','alice','bc1qalicearchived','BTC',now(),now());
+
+insert into "ImportMappingProfile" (id,"spaceId",name,source,mapping,"createdByUserId","updatedAt") values
+  ('prof_alice','space_a','Alice bank','CSV','{"date":"Date"}'::jsonb,'alice',now());
+
+insert into "Merchant" (id,"canonicalKey","displayName","updatedAt") values
+  ('m_coffee','coffee','Coffee',now());
+update "Transaction" set "merchantId" = 'm_coffee' where id = 'tx_alice_1';
+`;
+
+const errText = (e: unknown) => (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).replace(/\s+/g, " ");
+/** A refusal that RAISED: a policy violation, or Prisma's "no row matched" on a keyed write. */
+const raisedRefusal = (m: string) => /row-level security|P2025|No record was found|Record to update not found|required but not found/i.test(m);
+
+async function attempt<T>(fn: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+  try { return { ok: true, value: await fn() }; }
+  catch (e) { return { ok: false, error: errText(e) }; }
+}
+
+async function main(): Promise<void> {
+  console.log("\n=== RLS FOREGROUND-PATH ADVERSARIAL SUITE ===\n");
+
+  const h = prepareHarness("rlsfg");
+  await assertTenantClientBound();
+  const seed = psql(h.ownerUrl, APP_FIXTURES + EXTRA_FIXTURES);
+  if (!seed.ok) throw new Error(`fixture seed failed: ${seed.err}`);
+  console.log("[rls] Alice / Bob fixtures seeded.\n");
+
+  /** Owner-side truth, for asserting that a refused write left the row alone. */
+  const truth = (sql: string) => psql(h.ownerUrl, sql).out.trim();
+
+  // Imported ONLY now — lib/db.ts binds its clients at module load.
+  const dbMod = await import("@/lib/db");
+  const { withTenantDb } = await import("@/lib/db/tenant-context");
+  const as = <T,>(userId: string, fn: Parameters<typeof withTenantDb<T>>[1]) => withTenantDb(userId, fn);
+
+  // ════════════════════════════════════════════════════════════════════════
+  // B. THE DEPLOYED-AUTHORITY REPORT, AGAINST REAL ROLES
+  // ════════════════════════════════════════════════════════════════════════
+  const authority = await import("@/lib/platform/db-authority");
+  const live = await authority.getDbAuthorityReport("alice");
+  check(1, "[authority] on three real roles the deployed-authority report is OK — each connection asked through itself",
+    live.ok && live.strict && live.roles.every((r) => r.bound && r.verdict?.ok)
+    && live.roles.map((r) => r.verdict?.actual).join() === "fm_app,fm_auth,fm_system",
+    JSON.stringify(live));
+  check(2, "[authority] the tenant channel binds inside a transaction and leaves NO residue on the pooled connections after it",
+    live.tenantChannel.boundInsideTransaction === true && live.tenantChannel.residueObserved === 0
+    && live.tenantChannel.residueSamples >= 8, JSON.stringify(live.tenantChannel));
+  check(3, "[authority] the report reads the installed posture as fm_app: every RLS table is forced and policies exist",
+    (live.rls.policies ?? 0) > 100 && live.rls.rlsEnabled === live.rls.rlsForced && (live.rls.rlsEnabled ?? 0) >= 50,
+    JSON.stringify(live.rls));
+
+  // The impostor: DATABASE_URL_APP "is" fm_app by name, and the client behind it
+  // is the OWNER. This is the state strict mode's boot check cannot see.
+  const impostor = await authority.buildDbAuthorityReport({
+    env: process.env,
+    clients: { ...dbMod.configuredRoleClients(), DATABASE_URL_APP: dbMod.db },
+    probeUserId: "alice",
+    readIdentityInsideTenantTransaction: (u) => withTenantDb(u, async (tx) => {
+      const r = await tx.$queryRaw<Array<{ v: string | null }>>`SELECT nullif(current_setting('app.user_id', true), '') AS v`;
+      return r[0]?.v ?? null;
+    }),
+  });
+  const impostorApp = impostor.roles.find((r) => r.variable === "DATABASE_URL_APP");
+  check(4, "[authority] an fm_app slot actually bound to the OWNER is reported NOT OK — though the URL and strict config are clean",
+    !impostor.ok && impostor.configProblems.length === 0
+    && impostorApp?.verdict?.actual !== "fm_app" && (impostorApp?.problems.length ?? 0) >= 2,
+    JSON.stringify(impostorApp));
+
+  const serialised = JSON.stringify([live, impostor]);
+  const secrets = [h.appUrl, h.authUrl, h.systemUrl, h.ownerUrl].flatMap((u) => { const x = new URL(u); return [x.password, u]; });
+  check(5, "[authority] neither report contains a password, a connection string or a host",
+    secrets.every((s) => !serialised.includes(s)) && !/postgres(ql)?:\/\//.test(serialised) && !serialised.includes("127.0.0.1"),
+    "a secret or a URL appeared in the report");
+
+  console.log("\n--- example deployed-authority report (sanitised by construction) ---");
+  console.log(JSON.stringify(live, null, 2));
+  console.log("--- end example ---\n");
+
+  // ════════════════════════════════════════════════════════════════════════
+  // C1. TRANSACTION CORRECTION  (POST /api/transactions/[id]/correct)
+  // ════════════════════════════════════════════════════════════════════════
+  const corrections = await import("@/lib/transactions/merchant-corrections");
+  const { transactionDetailWhere } = await import("@/lib/transactions/detail-query");
+  const ROW_SELECT = {
+    id: true, merchant: true, description: true, category: true, amount: true, merchantId: true,
+    categorySource: true, merchantEntityId: true, pfcPrimary: true, pfcDetailed: true,
+    pfcConfidenceLevel: true, flowAuthority: true,
+  } as const;
+  const ACCT = { accountType: "checking", debtSubtype: null };
+
+  // The route's row load, as Bob, naming Alice's transaction and HER Space.
+  const bobLoad = await as("bob", (tx) => tx.transaction.findFirst({ where: transactionDetailWhere("tx_alice_1", "space_a"), select: { id: true } }));
+  check(6, "[correct] Bob's row load for Alice's transaction — in HER Space id — finds nothing (the route answers 404)",
+    bobLoad === null, JSON.stringify(bobLoad));
+
+  // Bob has the row's contents from elsewhere and skips the load. Every write must RAISE.
+  const aliceRow = await as("alice", (tx) => tx.transaction.findUniqueOrThrow({ where: { id: "tx_alice_1" }, select: ROW_SELECT }));
+  const before = truth(`select category||'|'||coalesce("categorySource"::text,'-') from "Transaction" where id='tx_alice_1'`);
+
+  const bobOverride = await attempt(() => as("bob", (tx) => corrections.applyTransactionOverride(tx, aliceRow, ACCT, "Travel")));
+  check(7, "[correct] Bob's OVERRIDE of Alice's row RAISES — a refused write is an error, never a calm zero",
+    !bobOverride.ok && raisedRefusal(bobOverride.error), bobOverride.ok ? "it returned" : bobOverride.error.slice(0, 160));
+
+  const bobRule = await attempt(() => as("bob", (tx) => corrections.applyCategoryRuleCorrection(tx, aliceRow, ACCT, "bob", "Travel")));
+  const bobRules = truth(`select count(*) from "MerchantRule" where "ownerUserId"='bob'`);
+  check(8, "[correct] Bob's CATEGORY RULE against Alice's row RAISES, and the rule it minted first is ROLLED BACK with it (one phase, all six seams)",
+    !bobRule.ok && raisedRefusal(bobRule.error) && bobRules === "0",
+    `${bobRule.ok ? "it returned" : bobRule.error.slice(0, 120)} · bob rules=${bobRules}`);
+
+  const bobMerchant = await attempt(() => as("bob", (tx) =>
+    corrections.applyMerchantIdentityCorrection(tx, aliceRow, { kind: "select", merchantId: "m_coffee" })));
+  check(9, "[correct] Bob's MERCHANT correction of Alice's row RAISES",
+    !bobMerchant.ok && raisedRefusal(bobMerchant.error), bobMerchant.ok ? "it returned" : bobMerchant.error.slice(0, 160));
+
+  const after = truth(`select category||'|'||coalesce("categorySource"::text,'-') from "Transaction" where id='tx_alice_1'`);
+  check(10, "[correct] after three refused corrections Alice's row is byte-for-byte what it was",
+    before === after, `before=${before} after=${after}`);
+
+  const aliceOverride = await attempt(() => as("alice", (tx) => corrections.applyTransactionOverride(tx, aliceRow, ACCT, "Travel")));
+  const aliceAfter = truth(`select category||'|'||"categorySource" from "Transaction" where id='tx_alice_1'`);
+  check(11, "[correct] the LEGITIMATE correction still lands on the tenant role — so 6–10 are refusals, not a broken path",
+    aliceOverride.ok && aliceAfter === "Travel|USER_OVERRIDE", `${aliceOverride.ok ? "" : aliceOverride.error} row=${aliceAfter}`);
+
+  // ════════════════════════════════════════════════════════════════════════
+  // C2. CSV IMPORT  (POST /api/accounts/[id]/import and …/preview)
+  // ════════════════════════════════════════════════════════════════════════
+  const csv = await import("@/lib/imports/csv");
+  const today = new Date(truth(`select current_date::text`) + "T00:00:00.000Z");
+
+  // Alice's row tx_alice_2 is (acct_alice, today, -20, "Books"). An honest
+  // classifier says MATCH. Bob, naming her account, must learn nothing.
+  const aliceClass = await as("alice", (tx) => csv.resolveFingerprintOutcome("acct_alice", today, -20, "Books", null, null, tx));
+  const bobClass   = await as("bob",   (tx) => csv.resolveFingerprintOutcome("acct_alice", today, -20, "Books", null, null, tx));
+  check(12, "[import] the duplicate-detection read is tenant-blind: Alice gets MATCH, Bob naming her account gets CREATE — no existence oracle",
+    aliceClass.outcome === "MATCH" && bobClass.outcome === "CREATE", `alice=${aliceClass.outcome} bob=${bobClass.outcome}`);
+
+  const bobBatch = await attempt(() => as("bob", (tx) => tx.importBatch.create({
+    data: { financialAccountId: "acct_alice", createdByUserId: "bob", source: "CSV", status: "PROCESSING", rowCount: 1 },
+  })));
+  check(13, "[import] Bob cannot open an ImportBatch on Alice's account — the INSERT RAISES",
+    !bobBatch.ok && /row-level security/i.test(bobBatch.error), bobBatch.ok ? "it was created" : bobBatch.error.slice(0, 160));
+
+  const bobRow = await attempt(() => as("bob", (tx) => tx.transaction.create({
+    data: { financialAccountId: "acct_alice", date: today, merchant: "Planted", category: "Other", amount: -1, pending: false },
+    select: { id: true },
+  })));
+  const planted = truth(`select count(*) from "Transaction" where merchant='Planted'`);
+  check(14, "[import] Bob cannot import a row INTO Alice's account — the create RAISES and nothing is written",
+    !bobRow.ok && /row-level security/i.test(bobRow.error) && planted === "0", `${bobRow.ok ? "created" : ""} planted=${planted}`);
+
+  const bobUpdate = await attempt(() => as("bob", (tx) => tx.transaction.update({ where: { id: "tx_alice_2" }, data: { amount: -999 } })));
+  const aliceAmount = truth(`select amount from "Transaction" where id='tx_alice_2'`);
+  check(15, "[import] update-on-match against Alice's row RAISES for Bob (the route counts it FAILED, never imported) and her amount is intact",
+    !bobUpdate.ok && raisedRefusal(bobUpdate.error) && Number(aliceAmount) === -20, `${bobUpdate.ok ? "updated" : ""} amount=${aliceAmount}`);
+
+  const bobProfileRead = await as("bob", (tx) => tx.importMappingProfile.findMany({ where: { spaceId: "space_a" }, select: { id: true } }));
+  const bobProfileBump = await attempt(() => as("bob", (tx) => tx.importMappingProfile.update({ where: { id: "prof_alice" }, data: { useCount: { increment: 1 } } })));
+  check(16, "[import] Bob cannot read or bump a saved mapping profile of Alice's Space",
+    bobProfileRead.length === 0 && !bobProfileBump.ok && raisedRefusal(bobProfileBump.error),
+    `read=${bobProfileRead.length} ${bobProfileBump.ok ? "bumped" : ""}`);
+
+  const aliceBatch = await attempt(() => as("alice", async (tx) => {
+    const batch = await tx.importBatch.create({
+      data: { financialAccountId: "acct_alice", createdByUserId: "alice", source: "CSV", status: "PROCESSING", rowCount: 1 },
+      select: { id: true },
+    });
+    const row = await tx.transaction.create({
+      data: { financialAccountId: "acct_alice", date: today, merchant: "Imported", category: "Other", amount: -3, pending: false, importBatchId: batch.id },
+      select: { id: true },
+    });
+    await tx.importBatch.update({ where: { id: batch.id }, data: { importedCount: 1, status: "COMPLETED", completedAt: new Date() } });
+    return row.id;
+  }));
+  check(17, "[import] Alice's own import (batch → row → finalise) runs end to end on the tenant role",
+    aliceBatch.ok, aliceBatch.ok ? "" : aliceBatch.error.slice(0, 200));
+
+  // ════════════════════════════════════════════════════════════════════════
+  // C3. WALLET ADD  (POST /api/accounts/wallet)
+  // ════════════════════════════════════════════════════════════════════════
+  const { dualWriteSpaceAccountLink } = await import("@/lib/accounts/space-account-link");
+  const { persistAccountSpine } = await import("@/lib/accounts/persist-account-spine");
+
+  const bobFindsAlice = await as("bob", (tx) => tx.financialAccount.findFirst({
+    where: { ownerUserId: "alice", walletAddress: "bc1qalicearchived" }, select: { id: true },
+  }));
+  check(18, "[wallet] Bob's lookup for Alice's wallet address — with HER id in the where clause — finds nothing",
+    bobFindsAlice === null, JSON.stringify(bobFindsAlice));
+
+  const bobForAlice = await attempt(() => as("bob", (tx) => tx.financialAccount.create({
+    data: { ownerType: "USER", ownerUserId: "alice", name: "Planted wallet", type: "crypto", institution: "Self-custodied",
+            balance: 0, currency: "USD", walletAddress: "bc1qplanted", walletChain: "BTC" },
+  })));
+  check(19, "[wallet] Bob cannot create a wallet OWNED BY Alice — the INSERT RAISES",
+    !bobForAlice.ok && /row-level security/i.test(bobForAlice.error), bobForAlice.ok ? "created" : bobForAlice.error.slice(0, 160));
+
+  const bobReactivates = await attempt(() => as("bob", (tx) => tx.financialAccount.update({
+    where: { id: "wallet_alice_archived" }, data: { deletedAt: null, syncStatus: "pending" },
+  })));
+  const stillArchived = truth(`select ("deletedAt" is not null)::text from "FinancialAccount" where id='wallet_alice_archived'`);
+  check(20, "[wallet] Bob cannot REACTIVATE Alice's archived wallet — the update RAISES and it stays archived",
+    !bobReactivates.ok && raisedRefusal(bobReactivates.error) && stillArchived === "true",
+    `${bobReactivates.ok ? "reactivated" : ""} archived=${stillArchived}`);
+
+  // A forged active-Space cookie: Bob links HIS OWN account into Alice's Space.
+  const linkArgs = (spaceId: string, financialAccountId: string, userId: string) => ({
+    spaceId, financialAccountId,
+    create: { addedByUserId: userId, visibilityLevel: "FULL" as const, status: "ACTIVE" as const },
+    update: { status: "ACTIVE" as const, revokedAt: null, revokedByUserId: null },
+  });
+  const bobPlantsLink = await attempt(() => as("bob", (tx) => dualWriteSpaceAccountLink(tx, linkArgs("space_a", "acct_bob", "bob"))));
+  const plantedLinks = truth(`select count(*) from "SpaceAccountLink" where "spaceId"='space_a' and "financialAccountId"='acct_bob'`);
+  check(21, "[wallet] Bob cannot plant a link into ALICE'S Space (the forged-active-Space case) — it RAISES and no link exists",
+    !bobPlantsLink.ok && plantedLinks === "0", `${bobPlantsLink.ok ? "linked" : bobPlantsLink.error.slice(0, 100)} links=${plantedLinks}`);
+
+  const bobOwnWallet = await attempt(() => as("bob", async (tx) => {
+    const fa = await tx.financialAccount.create({
+      data: { ownerType: "USER", ownerUserId: "bob", createdByUserId: "bob", name: "Bob Ledger", type: "crypto",
+              institution: "Self-custodied", balance: 0, currency: "USD", walletAddress: "bc1qbob", walletChain: "BTC",
+              nativeBalance: 0, syncStatus: "pending" },
+    });
+    await persistAccountSpine({
+      financialAccountId: fa.id, spaceId: "space_b", addedByUserId: "bob", creatorUserId: "bob",
+      connection: { connectedByUserId: "bob", syncStatus: "pending" }, client: tx,
+    });
+    return fa.id;
+  }));
+  const bobSpine = bobOwnWallet.ok
+    ? truth(`select (select count(*) from "AccountConnection" where "financialAccountId"='${bobOwnWallet.value}')||'|'||
+                    (select count(*) from "SpaceAccountLink" where "financialAccountId"='${bobOwnWallet.value}' and "spaceId"='space_b' and status='ACTIVE')`)
+    : "";
+  check(22, "[wallet] Bob's OWN wallet (account + connection + link) commits in ONE tenant phase",
+    bobOwnWallet.ok && bobSpine === "1|1", bobOwnWallet.ok ? `spine=${bobSpine}` : bobOwnWallet.error.slice(0, 200));
+
+  // ════════════════════════════════════════════════════════════════════════
+  // C4. FICO  (PATCH /api/credit/update-fico)
+  // ════════════════════════════════════════════════════════════════════════
+  const bobFico = await attempt(() => as("bob", (tx) => tx.creditScore.create({ data: { userId: "alice", score: 300, source: "manual" } })));
+  const aliceFico = await attempt(() => as("alice", (tx) => tx.creditScore.create({ data: { userId: "alice", score: 780, source: "manual" } })));
+  const scores = truth(`select string_agg(score::text, ',' order by score) from "CreditScore" where "userId"='alice'`);
+  check(23, "[fico] Bob cannot record a score FOR Alice (RAISES); Alice's own write lands; only hers exists",
+    !bobFico.ok && /row-level security/i.test(bobFico.error) && aliceFico.ok && scores === "780",
+    `${bobFico.ok ? "bob wrote" : ""} scores=${scores}`);
+
+  // ════════════════════════════════════════════════════════════════════════
+  // C5. CONNECTIONS PAGE + /api/sync/status
+  // ════════════════════════════════════════════════════════════════════════
+  const connections = await import("@/lib/connections/space-data");
+  const aliceConn = await as("alice", (tx) => connections.loadConnectionsSpaceData(tx, "alice"));
+  // The attack this conversion exists for: the loader's ONLY boundary used to be
+  // the `userId` argument. Bob's session, Alice's id.
+  const bobAsAlice = await as("bob", (tx) => connections.loadConnectionsSpaceData(tx, "alice"));
+  const bobPoll    = await as("bob", (tx) => connections.loadConnectionsSyncStatus(tx, "alice"));
+  check(24, "[connections] Alice sees her connection; the SAME loader run in Bob's session with ALICE'S userId returns none of hers",
+    aliceConn.status.connections.some((c) => c.id === "pi_alice")
+    && bobAsAlice.status.connections.length === 0 && Object.keys(bobAsAlice.accountsByConnectionId).length === 0
+    && bobPoll.status.connections.length === 0,
+    `alice=${aliceConn.status.connections.map((c) => c.id).join()} bobAsAlice=${bobAsAlice.status.connections.length}`);
+
+  // ════════════════════════════════════════════════════════════════════════
+  // C6. PLAID ROUTES' OWN LOOKUPS  (sync / refresh / resume-sync / link-token / investments-enable)
+  // ════════════════════════════════════════════════════════════════════════
+  const bobItem = await as("bob", (tx) => tx.plaidItem.findFirst({
+    where: { id: "pi_alice", userId: "alice", status: "ACTIVE" }, select: { id: true, encryptedToken: true },
+  }));
+  check(25, "[plaid] Bob's item lookup naming Alice's item AND her userId finds nothing — her encrypted token is not readable",
+    bobItem === null, bobItem ? "returned a row" : "");
+
+  const bobRearm = await attempt(() => as("bob", (tx) => tx.plaidItem.update({ where: { id: "pi_alice" }, data: { syncIncompleteAt: new Date() } })));
+  const aliceMarker = truth(`select ("syncIncompleteAt" is null)::text from "PlaidItem" where id='pi_alice'`);
+  check(26, "[plaid] resume-sync's marker write against Alice's item RAISES for Bob (not a silent zero) and her marker is untouched",
+    !bobRearm.ok && raisedRefusal(bobRearm.error) && aliceMarker === "true", `${bobRearm.ok ? "updated" : ""} markerNull=${aliceMarker}`);
+
+  const bobConnCred = await as("bob", (tx) => tx.connection.findFirst({ where: { userId: "alice" }, select: { credential: true } }));
+  check(27, "[plaid] link-token's Connection credential lookup for Alice returns nothing to Bob", bobConnCred === null);
+
+  // ════════════════════════════════════════════════════════════════════════
+  // C7. WEALTH AMENDMENT  (POST /api/spaces/[id]/wealth/amend)
+  // ════════════════════════════════════════════════════════════════════════
+  const amend = await import("@/lib/snapshots/snapshot-amendment");
+  let engineTouched = false;
+  const engineSpy = new Proxy({}, { get: () => { engineTouched = true; return () => { throw new Error("engine reached"); }; } }) as never;
+  const window = truth(`select (current_date - 3)::text||'|'||(current_date - 1)::text`).split("|");
+  const amendReq = (userId: string, spaceId: string, accountId: string) => ({
+    spaceId, financialAccountId: accountId, kind: "ACCOUNT_ADDED_RETROACTIVE" as const,
+    fromDate: window[0], toDate: window[1], requestedByUserId: userId,
+    tenant: <T,>(fn: Parameters<typeof withTenantDb<T>>[1]) => withTenantDb(userId, fn),
+  });
+
+  const bobAmend = await attempt(() => amend.applyAmendment({ ...amendReq("bob", "space_a", "acct_alice"), engine: engineSpy }));
+  const bobPreview = await attempt(() => amend.previewAmendment({ ...amendReq("bob", "space_a", "acct_alice"), engine: engineSpy }));
+  const amendRows = truth(`select count(*) from "SnapshotAmendment" where "spaceId"='space_a'`);
+  check(28, "[amend] Bob amending ALICE'S Space fails at the tenant gate as 'not found', authors NO amendment row, and the fm_system engine is NEVER reached",
+    !bobAmend.ok && /not found/i.test(bobAmend.error) && !bobPreview.ok && /not found/i.test(bobPreview.error)
+    && amendRows === "0" && !engineTouched,
+    `apply=${bobAmend.ok ? "ran" : bobAmend.error.slice(0, 60)} rows=${amendRows} engineTouched=${engineTouched}`);
+
+  // Bob IS a member of the SHARED Space — the gate must refuse on the product
+  // rule, still before the engine.
+  const bobShared = await attempt(() => amend.applyAmendment({ ...amendReq("bob", "space_s", "acct_shared"), engine: engineSpy }));
+  check(29, "[amend] in a Space Bob CAN see, the product rule (PERSONAL only) still refuses before the engine",
+    !bobShared.ok && /SharedSpaceAmendmentError|shared/i.test(bobShared.error) && !engineTouched, bobShared.ok ? "ran" : bobShared.error.slice(0, 120));
+
+  // The legitimate path, END TO END, with the REAL engine on fm_system and the
+  // amendment's own records written as Alice.
+  const aliceAmend = await attempt(() => amend.applyAmendment(amendReq("alice", "space_a", "acct_alice")));
+  const amendState = truth(`select coalesce((select status::text||'|'||("auditLogId" is not null)::text from "SnapshotAmendment" where "spaceId"='space_a' limit 1),'none')`);
+  const amendAudit = truth(`select count(*) from "AuditLog" where action='SNAPSHOT_AMENDMENT_APPLIED' and "userId"='alice' and "spaceId"='space_a'`);
+  check(30, "[amend] Alice's own amendment completes: gate + PENDING as fm_app, regeneration as fm_system, breakdown + audit + APPLIED as fm_app",
+    aliceAmend.ok && amendState === "APPLIED|true" && amendAudit === "1",
+    `${aliceAmend.ok ? "" : aliceAmend.error.slice(0, 200)} state=${amendState} audit=${amendAudit}`);
+
+  // ════════════════════════════════════════════════════════════════════════
+  // C8. INVESTMENTS WORKSPACE  (GET /api/spaces/[id]/investments/space-data)
+  // ════════════════════════════════════════════════════════════════════════
+  // Give Alice one observed position, then read her Space as each of them.
+  const posSeed = psql(h.ownerUrl, `
+    insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","updatedAt")
+      values ('acct_alice_brk','Alice Brokerage 2','investment','TestBroker','USER','alice',now());
+    insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","updatedAt")
+      values ('l_abrk','space_a','acct_alice_brk','HOME','ACTIVE','FULL',now());
+    insert into "Instrument" (id,"tickerSymbol",name,currency,"assetClass","updatedAt")
+      values ('inst_fg','FGTEST','FG Test','USD','EQUITY',now());
+    insert into "PositionObservation" (id,"financialAccountId","instrumentId",date,origin,source,quantity,currency)
+      values ('po_fg','acct_alice_brk','inst_fg',current_date,'OBSERVED','plaid',10,'USD');`);
+  if (!posSeed.ok) throw new Error(`position fixture failed: ${posSeed.err}`);
+  const inv = await import("@/lib/investments/space-data");
+  const aliceInv = await attempt(() => as("alice", (tx) => inv.loadInvestmentsSpaceData({ spaceId: "space_a" }, { client: tx })));
+  const bobInv   = await attempt(() => as("bob",   (tx) => inv.loadInvestmentsSpaceData({ spaceId: "space_a" }, { client: tx })));
+  const rowsOf = (r: typeof aliceInv) => (r.ok ? JSON.stringify(r.value).includes("FGTEST") : false);
+  check(31, "[investments] the workspace loader on the tenant role shows Alice her position and shows Bob — naming HER Space — none of it",
+    aliceInv.ok && bobInv.ok && rowsOf(aliceInv) && !rowsOf(bobInv),
+    `alice=${aliceInv.ok ? rowsOf(aliceInv) : aliceInv.error.slice(0, 160)} bob=${bobInv.ok ? rowsOf(bobInv) : bobInv.error.slice(0, 160)}`);
+
+  // ════════════════════════════════════════════════════════════════════════
+  // THE SILENT ZERO, DEMONSTRATED — and why no converted write can produce it
+  // ════════════════════════════════════════════════════════════════════════
+  const silent = await as("bob", (tx) => tx.transaction.updateMany({ where: { id: "tx_alice_2" }, data: { amount: -1 } }));
+  check(32, "[silent-zero] the hazard is real: an updateMany against a hidden row returns { count: 0 } with NO error",
+    silent.count === 0, `count=${silent.count}`);
+
+  const ROOT = process.cwd();
+  const code = (f: string) => readFileSync(join(ROOT, f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  /** Routes whose every DIRECT statement is now a tenant phase. */
+  const CONVERTED_ROUTES = [
+    "app/api/transactions/[id]/correct/route.ts",
+    "app/api/accounts/wallet/route.ts",
+    "app/api/credit/update-fico/route.ts",
+    "app/api/accounts/[id]/import/route.ts",
+    "app/api/accounts/[id]/import/preview/route.ts",
+    "app/api/accounts/[id]/import/investments/preview/route.ts",
+    "app/api/spaces/[id]/investments/space-data/route.ts",
+    "app/api/spaces/[id]/wealth/amend/route.ts",
+    "app/(shell)/dashboard/connections/page.tsx",
+    "app/api/sync/status/route.ts",
+    "app/api/plaid/sync/route.ts",
+    "app/api/plaid/refresh/route.ts",
+    "app/api/plaid/resume-sync/route.ts",
+    "app/api/plaid/link-token/route.ts",
+    "app/api/plaid/investments/enable/route.ts",
+  ];
+  const stillOwner = CONVERTED_ROUTES.filter((f) => /from\s*["']@\/lib\/db["']/.test(code(f)));
+  const noPhase = CONVERTED_ROUTES.filter((f) => !/withTenantDb\(/.test(code(f)));
+  check(33, `[source] none of the ${CONVERTED_ROUTES.length} converted routes imports a client from @/lib/db, and every one opens a tenant phase`,
+    stillOwner.length === 0 && noPhase.length === 0, `owner import: ${stillOwner.join(", ")} · no phase: ${noPhase.join(", ")}`);
+
+  // A converted WRITE must be a keyed create/update that raises when refused.
+  // The single sanctioned updateMany is the wallet reactivation's, which follows
+  // a keyed update of the same account in the same phase (see the route).
+  const bulk = CONVERTED_ROUTES.flatMap((f) =>
+    [...code(f).matchAll(/\btx\.(\w+)\.(updateMany|deleteMany)\(/g)].map((m) => `${f}:${m[1]}.${m[2]}`));
+  check(34, "[source] the converted routes issue NO count-returning bulk write on a tenant client, except the one that follows a keyed update of the same account",
+    bulk.length === 1 && bulk[0] === "app/api/accounts/wallet/route.ts:accountConnection.updateMany"
+    && /tx\.financialAccount\.update\(\{\s*where: \{ id: archivedFa\.id \}[\s\S]{0,200}tx\.accountConnection\.updateMany/.test(code("app/api/accounts/wallet/route.ts")),
+    bulk.join(" | "));
+
+  /** Library seams whose `?? db` / `= db` default made a foreground caller an owner without saying so. */
+  const NO_DEFAULT = [
+    "lib/connections/space-data.ts", "lib/investments/space-data.ts", "lib/snapshots/snapshot-amendment.ts",
+    "lib/imports/csv.ts", "lib/transactions/fingerprint.ts", "lib/sync/wallet-connections.ts",
+    "lib/investments/investment-import-commit.ts", "lib/investments/opening-position.ts", "lib/platform/refresh-policy.ts",
+  ];
+  const defaulted = NO_DEFAULT.filter((f) => /\?\?\s*db\b|=\s*db\s*[,)\n]|from\s*["']@\/lib\/db["']\s*;?\s*$/m.test(code(f).replace(/import \{ systemDb \} from "@\/lib\/db";/, "")));
+  check(35, `[source] the ${NO_DEFAULT.length} library seams behind those routes no longer import or default to the migration principal`,
+    defaulted.length === 0, defaulted.join(", "));
+
+  for (const c of [dbMod.tenantDb, dbMod.authDb, dbMod.systemDb, dbMod.db]) {
+    await (c as { $disconnect: () => Promise<void> }).$disconnect();
+  }
+
+  const failures = report("FOREGROUND-PATH ADVERSARIAL");
+  if (failures) process.exit(1);
+  console.log("\nThe converted foreground paths refuse another tenant loudly, and run as the role they claim.\n");
+}
+
+main()
+  .catch((e) => {
+    console.error(`\n[rls] SUITE ERROR: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exitCode = 1;
+  })
+  .finally(() => teardownHarness(KEEP));

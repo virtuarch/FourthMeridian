@@ -255,7 +255,9 @@ console.log("\nB0. THE NEEDLES WORK, AND THE DENOMINATOR IS REAL");
       code(rel).length > 400 && /export\s+const\s+(POST|PATCH|DELETE)\s*=/.test(code(rel)));
   }
   // The `db.<model>.` needle, proved against a control that legitimately holds one.
-  const CONTROL = "app/api/accounts/wallet/route.ts";
+  // RLS-PREP-C — was the wallet route; it was converted and stopped holding one.
+  // This route's owner reads are deliberate and documented in its header.
+  const CONTROL = "app/api/spaces/[id]/permanent/route.ts";
   const needle = /\bdb\.[a-zA-Z][a-zA-Z0-9_]*\./g;
   check("CONTROL: the migration-principal needle MATCHES a file that still holds one",
     (code(CONTROL).match(needle) ?? []).length > 0,

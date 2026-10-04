@@ -381,8 +381,15 @@ function scanCallSites(): void {
     !/getDebtPaymentRows\(\{/.test(credit));
 
   const correct = code("app/api/transactions/[id]/correct/route.ts");
-  check("the correction WRITE route passes its authority explicitly (legible, not converted)",
-    (correct.match(/getTransactionDetail\(db,\s*id,/g) ?? []).length === 3);
+  // RLS-PREP-C — this used to pin `getTransactionDetail(db, id,` three times:
+  // "legible, not converted". The write-path slice it was waiting for landed, so
+  // all three read-backs execute in the SAME tenant phase as the write they
+  // follow, and the migration principal is gone from the route entirely.
+  check("the correction WRITE route reads back in its tenant phase, three times (converted)",
+    (correct.match(/getTransactionDetail\(tx,\s*id,/g) ?? []).length === 3);
+  check("...and it no longer reaches the migration principal at all",
+    !/getTransactionDetail\(db,/.test(correct) && !/from\s+"@\/lib\/db"/.test(correct)
+    && /withTenantDb\(user\.id,/.test(correct));
 }
 
 // ───────────────────────────────────────────────────────────────────────────────

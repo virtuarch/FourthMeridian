@@ -49,7 +49,7 @@
  * no money.
  */
 
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { PlaidItemStatus, ConnectionStatus } from "@prisma/client";
 import { getIngestionDeferrals } from "@/lib/platform/refresh/projections";
@@ -173,11 +173,12 @@ export function groupConnectionAccounts(
  * By STABLE id — never institution name.
  */
 async function loadPlaidConnectionAccounts(
+  client: ReadClient,
   userId: string,
   itemIds: string[],
 ): Promise<Record<string, AccountLite[]>> {
   if (itemIds.length === 0) return {};
-  const links = await db.accountConnection.findMany({
+  const links = await client.accountConnection.findMany({
     where: {
       plaidItemDbId:    { in: itemIds },
       plaidItem:        { userId }, // ownership gate — the user's own connection only
@@ -219,6 +220,7 @@ async function loadPlaidConnectionAccounts(
  * PCS-2-safe: status/dates only, no balances/valuations.
  */
 async function loadConnectionIntelligence(
+  client: ReadClient,
   userId: string,
   connections: SyncConnection[],
   accountsByConnectionId: Record<string, AccountLite[]>,
@@ -237,7 +239,7 @@ async function loadConnectionIntelligence(
   //    (keyed by metadata.connectionId; CONN-2B). Both mean "a reconstruction
   //    completed"; the latest of either is the connection's reconstruction time.
   //    Rows are few per user; the (userId, createdAt) index serves this.
-  const historyRows = await db.auditLog.findMany({
+  const historyRows = await client.auditLog.findMany({
     where: {
       userId,
       action: { in: [AuditAction.PLAID_HISTORY_SYNCED, AuditAction.CONNECTION_INTELLIGENCE_REBUILT] },
@@ -260,14 +262,14 @@ async function loadConnectionIntelligence(
   // authority can ask the capability question per account.
   const walletChainByAccount = new Map<string, string | null>(
     allAccountIds.length
-      ? (await db.financialAccount.findMany({
+      ? (await client.financialAccount.findMany({
           where:  { id: { in: allAccountIds } },
           select: { id: true, walletChain: true },
         })).map((a) => [a.id, a.walletChain])
       : [],
   );
   const floors = allAccountIds.length
-    ? await db.transaction.groupBy({
+    ? await client.transaction.groupBy({
         by:    ["financialAccountId"],
         where: { financialAccountId: { in: allAccountIds }, deletedAt: null },
         _min:  { date: true },
@@ -282,7 +284,7 @@ async function loadConnectionIntelligence(
   //    balance-verified stamp). TIMESTAMP ONLY: `balance` is never selected here,
   //    so the PCS-2 no-portfolio-read boundary holds (freshness metadata, no money).
   const balanceRows = allAccountIds.length
-    ? await db.financialAccount.findMany({
+    ? await client.financialAccount.findMany({
         where:  { id: { in: allAccountIds } },
         select: { id: true, lastUpdated: true },
       })
@@ -298,7 +300,7 @@ async function loadConnectionIntelligence(
   const walletAccounts = Object.values(accountsByConnectionId).flat()
     .map((a) => ({ id: a.id, walletChain: walletChainByAccount.get(a.id) ?? null }))
     .filter((a) => a.walletChain !== null);
-  const historyMeta = await loadWalletHistoryMetadata(walletAccounts);
+  const historyMeta = await loadWalletHistoryMetadata(walletAccounts, { client });
 
   // CRYPTO-FRESHNESS-1 — CURRENT-POSITION FRESHNESS, from the spine.
   //
@@ -309,7 +311,7 @@ async function loadConnectionIntelligence(
   // observation written minutes earlier. Timestamp only — no quantity, no value,
   // so the PCS-2 no-portfolio-read boundary holds.
   const positionRows = allAccountIds.length
-    ? await db.positionObservation.groupBy({
+    ? await client.positionObservation.groupBy({
         by:    ["financialAccountId"],
         where: { financialAccountId: { in: allAccountIds }, supersededById: null, deletedAt: null },
         _max:  { date: true },
@@ -417,8 +419,8 @@ async function loadConnectionIntelligence(
  * assembly as loadConnectionsSpaceData so the poll and first render can never
  * derive state differently.
  */
-export async function loadConnectionsSyncStatus(userId: string): Promise<ConnectionsSyncView> {
-  const { status, intelligenceByConnectionId } = await loadConnectionsSpaceData(userId);
+export async function loadConnectionsSyncStatus(client: ReadClient, userId: string): Promise<ConnectionsSyncView> {
+  const { status, intelligenceByConnectionId } = await loadConnectionsSpaceData(client, userId);
   return { status, intelligenceByConnectionId };
 }
 
@@ -426,15 +428,35 @@ export async function loadConnectionsSyncStatus(userId: string): Promise<Connect
  * THE canonical Connections loader: sync status + per-connection account
  * inventory, no portfolio read. Plaid and wallet accounts are unified into one
  * `accountsByConnectionId` map (both keyed by SyncConnection.id).
+ *
+ * ── RLS-PREP-C — THE AUTHORITY IS THE CALLER'S, REQUIRED AND LEADING ─────────
+ * This module imported `db` and used it for every read, so the Connections page
+ * and its poller (`/api/sync/status`) read PlaidItem, Connection,
+ * AccountConnection, FinancialAccount, Transaction, PositionObservation and
+ * AuditLog as the migration principal — and NEITHER CALLER imported `db`, so
+ * neither appeared on the authority ratchet. A `userId` predicate in the `where`
+ * clause was the entire boundary.
+ *
+ * Every one of those tables is expressible under the existing tenant policies
+ * with the same predicate the code already wrote: PlaidItem / Connection /
+ * AuditLog are `userId = me`; the account tables are owned-or-linked, and a
+ * connection's accounts are its owner's. So the conversion changes which rows
+ * CAN be returned, not which rows ARE returned for an honest caller.
+ *
+ * ⚠️ ONE READ STAYS ON fm_system, BY DESIGN: `getIngestionDeferrals`, which
+ * reads the refresh ledger. `RefreshExecution` is REVOKED from fm_app, the
+ * function is keyed by item ids this phase has just read as the caller, and it
+ * returns a deferral verdict per id and nothing else. It is a capability in
+ * lib/platform/, not a default this module falls into.
  */
-export async function loadConnectionsSpaceData(userId: string): Promise<ConnectionsSpaceData> {
+export async function loadConnectionsSpaceData(client: ReadClient, userId: string): Promise<ConnectionsSpaceData> {
   const [items, wallet] = await Promise.all([
-    db.plaidItem.findMany({
+    client.plaidItem.findMany({
       where:   { userId, status: { not: PlaidItemStatus.REVOKED } },
       select:  PLAID_ITEM_SELECT,
       orderBy: { createdAt: "asc" },
     }),
-    loadWalletSyncConnections(userId),
+    loadWalletSyncConnections(client, userId),
   ]);
 
   // OPS-2D-4A — resolve policy deferral from the refresh ledger before deriving
@@ -446,12 +468,12 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
 
   // Plaid accounts by stable connection id; wallet accounts already come keyed
   // by connection id from loadWalletSyncConnections. One id space, one map.
-  const plaidAccounts = await loadPlaidConnectionAccounts(userId, items.map((i) => i.id));
+  const plaidAccounts = await loadPlaidConnectionAccounts(client, userId, items.map((i) => i.id));
   const accountsByConnectionId = { ...plaidAccounts, ...wallet.accountsByConnectionId };
 
   // Connected/authorization time per connection (CONN-2D timeline): Plaid item
   // createdAt (already selected) + wallet Connection.createdAt (a tiny id→date read).
-  const walletCreatedRows = await db.connection.findMany({
+  const walletCreatedRows = await client.connection.findMany({
     where:  { userId, status: { not: ConnectionStatus.REVOKED } },
     // status/errorCode/lastSyncedAt/cursor — the raw fields source health reads
     // (the cursor only as "is there one"; its value never leaves this function).
@@ -480,13 +502,14 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
   }
 
   const intelligenceByConnectionId = await loadConnectionIntelligence(
+    client,
     userId,
     status.connections,
     accountsByConnectionId,
     connectedAtByConnId,
     rawByConnId,
     facetClocksByConnId,
-    await loadRefreshPolicies(),
+    await loadRefreshPolicies(client),
   );
 
   return { status, accountsByConnectionId, intelligenceByConnectionId };

@@ -200,8 +200,16 @@ async function main(): Promise<void> {
     const imp = code(IMPORT_ROUTE);
     check("the banking import still has NO enclosing transaction (unchanged, and recorded)",
       !needle.test(imp));
-    check("…and it still writes one Transaction per row (so the exposure is real, not hypothetical)",
-      /db\.transaction\.create\(/.test(imp));
+    // RLS-PREP-C — the WRITER moved to the tenant role; the SHAPE recorded here
+    // did not. Each row is still its own unit (now its own `withTenantDb` phase)
+    // precisely so that the per-row catch below keeps meaning "this row failed"
+    // — one file-level transaction would make a single refusal abort every row
+    // after it. So "no enclosing transaction" above is still true and still
+    // deliberate; what changed is who the row is written as.
+    check("…and it still writes one Transaction per row, now in a per-row TENANT phase",
+      /tenant\(\(tx\) => tx\.transaction\.create\(/.test(imp) && !/\bdb\.transaction\./.test(imp));
+    check("…with no client taken from @/lib/db at all",
+      !/from\s+"@\/lib\/db"/.test(imp));
     check("…inside a per-row catch that CONTINUES, which is what makes a refusal look like a bad row",
       /catch\s*\(rowErr\)/.test(imp) && /failed\+\+/.test(imp));
     check("the gate itself is nonetheless a tenant phase, so authorization is not part of the exposure",

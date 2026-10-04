@@ -23,6 +23,7 @@ import { requireSpaceRole } from "@/lib/session";
 import { SpaceMemberRole, SnapshotAmendmentKind } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import { previewAmendment, applyAmendment, SharedSpaceAmendmentError } from "@/lib/snapshots/snapshot-amendment";
+import { withTenantDb } from "@/lib/db/tenant-context";
 
 const VALID_KINDS = new Set<string>(Object.values(SnapshotAmendmentKind));
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -71,6 +72,10 @@ export const POST = withApiHandler(async (
     fromDate,
     toDate,
     requestedByUserId: user.id,
+    // RLS-PREP-C — the amendment's gate and its own records run as THIS user.
+    // The library used to resolve an unnamed `?? db` on this route's behalf;
+    // it now requires the phase, and the identity is the authenticated session's.
+    tenant: <T,>(fn: Parameters<typeof withTenantDb<T>>[1]) => withTenantDb(user.id, fn),
   };
 
   try {

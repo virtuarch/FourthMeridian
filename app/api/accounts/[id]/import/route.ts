@@ -117,7 +117,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
 import { createNotification } from "@/lib/notifications/create";
 import { getSpaceContext } from "@/lib/space";
 import { ImportBatchStatus, ImportSource, Prisma, type CategorySource } from "@prisma/client";
@@ -131,7 +130,7 @@ import {
 } from "@/lib/imports/csv";
 import { runImportPipeline } from "@/lib/imports/pipeline";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
-import { withTenantDb } from "@/lib/db/tenant-context";
+import { withTenantDb, type TenantClient } from "@/lib/db/tenant-context";
 import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
 // FlowType P5 Slice 0 — same classification contract as the Plaid sync write path.
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
@@ -249,11 +248,11 @@ export const POST = withApiHandler(async (
   // Every Space with zero saved profiles (every Space today — no route
   // creates one yet) gets an empty array here, which makes the saved-profile
   // branch of resolveColumns() a no-op — identical to pre-4D-5b behavior.
-  const savedProfileRows = await db.importMappingProfile.findMany({
+  const savedProfileRows = await withTenantDb(user.id, (tx) => tx.importMappingProfile.findMany({
     where:   { spaceId },
     orderBy: [{ lastUsedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
     select:  { id: true, mapping: true },
-  });
+  }));
   const savedProfilesLite: SavedMappingProfileLite[] = savedProfileRows.map((p) => ({
     id:      p.id,
     // Json column at the Prisma layer is looser (Prisma.JsonValue) than this
@@ -291,7 +290,34 @@ export const POST = withApiHandler(async (
   // ── Create the batch ─────────────────────────────────────────────────────
   // Only created once the file shape is known-valid — a file with the wrong
   // columns never becomes an ImportBatch row (see module header).
-  const batch = await db.importBatch.create({
+  // ── RLS-PREP-C — EVERY STATEMENT BELOW RUNS ON THE TENANT ROLE ─────────────
+  // The authorization above was already a tenant phase; the import itself was
+  // not. It read and wrote ImportBatch, Transaction and the event tables as the
+  // migration principal, with the account id as the only thing standing between
+  // a file and somebody else's ledger. All of it is account-subtree data, and
+  // every one of those tables carries the same policy: an ACTIVE link into a
+  // Space the caller can see, or an account the caller owns.
+  //
+  // ⚠️ ONE PHASE PER ROW, NOT ONE PHASE PER FILE — AND THAT IS LOAD-BEARING.
+  // This route's contract is that a bad row fails ALONE: it is counted, reported
+  // in errorSummary, and the rest of the file still imports. A failed statement
+  // inside a transaction aborts the WHOLE transaction, so a single phase around
+  // the loop would turn one bad row into a lost file — and, worse, the catch
+  // below would keep counting "failed" rows that were really casualties of an
+  // already-aborted transaction. The same is true of the two BEST-EFFORT steps
+  // (merchant intelligence, event identity): each gets a phase of its own so
+  // that its failure degrades exactly as it always did instead of taking the row
+  // it decorates with it. Sequential, committed phases also keep within-file
+  // duplicate detection working: row N+1's fingerprint read sees row N.
+  //
+  // ⚠️ A REFUSED WRITE CANNOT BE COUNTED AS IMPORTED. Rows are written with
+  // `create` (WITH CHECK refusal raises 42501) and `update({ where: { id } })`
+  // (a hidden row raises P2025). Both land in the per-row catch as `failed`. The
+  // batch's own final update raises out of the route. There is no `updateMany`.
+  const tenant = <T,>(fn: (tx: TenantClient) => Promise<T>) => withTenantDb(user.id, fn);
+
+  const { batch, flowAcct } = await tenant(async (tx) => {
+  const batch = await tx.importBatch.create({
     data: {
       financialAccountId,
       createdByUserId:  user.id,
@@ -319,6 +345,22 @@ export const POST = withApiHandler(async (
     },
   });
 
+  // FlowType P5 Slice 0 — populate flow columns on import writes using the same
+  // contract as lib/plaid/syncTransactions.ts. Account context is loaded ONCE per
+  // batch (every row targets this single FinancialAccount). CSV/Excel/QuickBooks
+  // carry no Plaid PFC, so pfc*/merchantEntityId are null on create; on
+  // update-on-match they are preserved from the existing row (never nulled).
+  // counterpartyAccountId stays null throughout (no inference).
+  const flowAcct = await tx.financialAccount.findUnique({
+    where:  { id: financialAccountId },
+    // currency: MC1 Phase 0 Slice 2 — import files carry no per-row currency
+    // column (lib/imports/csv.ts), so created rows are stamped with the
+    // target account's currency; null if the account row is missing. Never
+    // defaulted to USD here.
+    select: { type: true, debtSubtype: true, currency: true },
+  });
+    return { batch, flowAcct };
+  });
   let created = 0;
   let matched = 0;
   let skipped = 0;
@@ -329,20 +371,6 @@ export const POST = withApiHandler(async (
   // counter (see D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §5).
   const updatedTransactionIds: string[] = [];
 
-  // FlowType P5 Slice 0 — populate flow columns on import writes using the same
-  // contract as lib/plaid/syncTransactions.ts. Account context is loaded ONCE per
-  // batch (every row targets this single FinancialAccount). CSV/Excel/QuickBooks
-  // carry no Plaid PFC, so pfc*/merchantEntityId are null on create; on
-  // update-on-match they are preserved from the existing row (never nulled).
-  // counterpartyAccountId stays null throughout (no inference).
-  const flowAcct = await db.financialAccount.findUnique({
-    where:  { id: financialAccountId },
-    // currency: MC1 Phase 0 Slice 2 — import files carry no per-row currency
-    // column (lib/imports/csv.ts), so created rows are stamped with the
-    // target account's currency; null if the account row is missing. Never
-    // defaulted to USD here.
-    select: { type: true, debtSubtype: true, currency: true },
-  });
   const flowAccountContext = {
     accountType: (flowAcct?.type as string | null) ?? null,
     debtSubtype: flowAcct?.debtSubtype ?? null,
@@ -392,6 +420,11 @@ export const POST = withApiHandler(async (
       continue;
     }
 
+    // The guard above proved date/amount/merchant present. Bind them once: the
+    // tenant phases below are closures, and TypeScript does not carry a property
+    // narrowing across a function boundary.
+    const vrow = { ...row, date: row.date, amount: row.amount, merchant: row.merchant };
+
     // CCPAY-2C-4 — file imports now participate in the ONE card-payment rescue
     // (lib/transactions/liability-payment.ts), the same authority the Plaid sync
     // seam calls. Until this slice the rescue existed ONLY on the Plaid path, so
@@ -413,37 +446,39 @@ export const POST = withApiHandler(async (
     // debit, so a payment credit is positive). A file imported under the wrong
     // signConvention flips payments negative, which the liability+inflow guard
     // rejects — a MISS, never a false DEBT_PAYMENT.
-    const paymentRescuedCategory = resolveLiabilityPaymentCategory(row.category, "Payment", {
+    const paymentRescuedCategory = resolveLiabilityPaymentCategory(vrow.category, "Payment", {
       ...flowAccountContext,
-      amount:      row.amount,
-      merchant:    row.merchant,
-      description: row.description,
+      amount:      vrow.amount,
+      merchant:    vrow.merchant,
+      description: vrow.description,
     });
     // SR-2 — payroll descriptor rescue, same order as the Plaid sync seam. Both
     // are rescue-only + Other-only, so an already-rescued Payment leg passes
     // through untouched and only a still-"Other" inbound payroll credit promotes.
     const rescuedCategory = resolvePayrollIncomeCategory(paymentRescuedCategory, "Income", {
-      amount:      row.amount,
-      merchant:    row.merchant,
-      description: row.description,
+      amount:      vrow.amount,
+      merchant:    vrow.merchant,
+      description: vrow.description,
     });
 
     try {
-      const result = await resolveFingerprintOutcome(
+      // PHASE 1 — classify the row (CREATE / MATCH / SKIP) as the caller.
+      const result = await tenant((tx) => resolveFingerprintOutcome(
         financialAccountId,
-        row.date,
-        row.amount,
-        row.merchant,
-        row.externalTransactionId,
-        row.description // DF-4 — fingerprint on the raw descriptor
-      );
+        vrow.date,
+        vrow.amount,
+        vrow.merchant,
+        vrow.externalTransactionId,
+        vrow.description, // DF-4 — fingerprint on the raw descriptor
+        tx,
+      ));
 
       if (result.outcome === "CREATE") {
         // FlowType P5 Slice 0 — classify from the incoming row (no Plaid PFC).
-        let finalCategory: typeof row.category = rescuedCategory;
+        let finalCategory: typeof vrow.category = rescuedCategory;
         let finalFlow = computeFlowFields({
           category:           rescuedCategory,
-          amount:             row.amount,
+          amount:             vrow.amount,
           pfcPrimary:         null,
           pfcDetailed:        null,
           pfcConfidenceLevel: null,
@@ -456,23 +491,25 @@ export const POST = withApiHandler(async (
         // no preserve case arises. Best-effort; never blocks the create.
         const mi: { merchantId?: string; categorySource?: CategorySource; categoryRuleId?: string } = {};
         try {
-          const miResult = await resolveMerchantWrite(db, {
-            merchant:        row.merchant,
-            description:     row.description,
+          // PHASE 2 (best-effort) — its own transaction, so a failure here
+          // degrades to null MI columns instead of aborting the row's create.
+          const miResult = await tenant((tx) => resolveMerchantWrite(tx, {
+            merchant:        vrow.merchant,
+            description:     vrow.description,
             // CCPAY-2C-4 — the RESCUED category, matching what this path actually
             // persists and mirroring the Plaid seam (syncTransactions passes its
             // post-rescue `category` here too). MI reads currentCategory to decide
             // whether the global catalog CONFIRMS the category as provenance;
             // handing it a value we are not writing would compare against a
-            // category that never reaches the row.
+            // category that never reaches the vrow.
             currentCategory: rescuedCategory,
             ownerUserId:     user.id,
-          });
+          }));
           if (miResult.setMerchantId && miResult.merchantId) mi.merchantId = miResult.merchantId;
           if (miResult.category) {
             finalCategory = miResult.category;
             finalFlow = computeFlowFields({
-              category: finalCategory, amount: row.amount,
+              category: finalCategory, amount: vrow.amount,
               pfcPrimary: null, pfcDetailed: null, pfcConfidenceLevel: null, merchantEntityId: null,
             });
             mi.categorySource = "USER_RULE";
@@ -483,20 +520,21 @@ export const POST = withApiHandler(async (
         } catch (miErr) {
           console.warn(`[merchant-intelligence] import resolution skipped for row ${lineNumber} — writing null MI columns:`, miErr);
         }
-        const createdRow = await db.transaction.create({
+        // PHASE 3 — the row itself. A policy refusal raises and is counted failed.
+        const createdRow = await tenant((tx) => tx.transaction.create({
           data: {
             financialAccountId,
-            date:                  row.date,
+            date:                  vrow.date,
             // L8-A — an imported row carries no provider authorization, so the
             // economic date is the supplied date. Through the write authority so
             // a future importer that maps an authorization column needs no change.
-            economicDate:          economicDateFor({ postingDate: row.date, authorizedAt: null }),
-            merchant:              row.merchant,
-            description:           row.description,
+            economicDate:          economicDateFor({ postingDate: vrow.date, authorizedAt: null }),
+            merchant:              vrow.merchant,
+            description:           vrow.description,
             category:              finalCategory,
-            amount:                row.amount,
+            amount:                vrow.amount,
             pending:               false,
-            externalTransactionId: row.externalTransactionId,
+            externalTransactionId: vrow.externalTransactionId,
             importBatchId:         batch.id, // only set on rows this batch creates — never on MATCH
             // MC1 Phase 0 Slice 2 — the target account's currency (files
             // carry no per-row currency column).
@@ -506,26 +544,27 @@ export const POST = withApiHandler(async (
             ...mi,
           },
           select: { id: true },
-        });
+        }));
         // L8 — an imported row is a single-observation event: a CSV file carries
         // no pending↔posted lifecycle, so the row is observed once, POSTED. It
         // still gets an identity, so "every banking row has an event" holds
         // without exception. Non-blocking, like the Plaid path.
         try {
-          await recordTransactionObservation(db, {
+          // PHASE 4 (best-effort) — additive event identity, its own transaction.
+          await tenant((tx) => recordTransactionObservation(tx, {
             transactionId:      createdRow.id,
             financialAccountId,
             provider:           "CSV",
-            providerRowId:      row.externalTransactionId ?? null,
+            providerRowId:      vrow.externalTransactionId ?? null,
             providerPendingRef: null,
             lifecycle:          "POSTED",
-            amount:             row.amount,
-            postingDate:        row.date,
-            economicDate:       economicDateFor({ postingDate: row.date, authorizedAt: null }),
+            amount:             vrow.amount,
+            postingDate:        vrow.date,
+            economicDate:       economicDateFor({ postingDate: vrow.date, authorizedAt: null }),
             authorizedAt:       null,
             transactionIsLive:  true,
             observedAt:         new Date(),
-          });
+          }));
         } catch (e) {
           console.warn(`[l8] observation skipped for imported row ${lineNumber} — event identity is additive and non-blocking:`, e);
         }
@@ -537,8 +576,12 @@ export const POST = withApiHandler(async (
         // an exact externalId match only — never a fingerprint-fallback
         // match, regardless of source.
         if (getImportProviderCapabilities(source).supportsUpdateOnMatch && result.matchedVia === "externalId") {
-          const existing = await db.transaction.findUnique({
-            where:  { id: result.transactionId },
+          // ONE phase for the read and the write it decides: the diff is computed
+          // from, and applied to, the same row under the same identity.
+          const matchedId = result.transactionId;
+          const didUpdate = await tenant(async (tx) => {
+          const existing = await tx.transaction.findUnique({
+            where:  { id: matchedId },
             select: {
               date: true, amount: true, merchant: true, description: true, category: true,
               // FlowType P5 Slice 0 — read existing provider hints so a re-classify
@@ -549,13 +592,14 @@ export const POST = withApiHandler(async (
               currency: true,
               // v2.6-OWN-1 — who owns this row's flow facts. An update-on-match
               // is the CLASSIFIER refreshing its own work; it must not silently
-              // revert a transfer-authority repair or a crypto-ledger row.
+              // revert a transfer-authority repair or a crypto-ledger vrow.
               flowAuthority: true,
             },
           });
-          if (existing) {
+          if (!existing) return false;
+          {
             // CCPAY-2C-4 — the RESCUED category, so update-on-match and CREATE
-            // cannot disagree about the same file row. Feeding the raw category
+            // cannot disagree about the same file vrow. Feeding the raw category
             // here while the flow below classified the rescued one would persist
             // category=Other alongside flowType=DEBT_PAYMENT — a desync produced
             // by this route itself.
@@ -568,10 +612,10 @@ export const POST = withApiHandler(async (
             // it can never trigger one; currency is an opportunistic backfill,
             // whereas category is a value this route authoritatively writes.
             const diff = computeQuickBooksUpdateDiff(existing, {
-              date:        row.date,
-              amount:      row.amount,
-              merchant:    row.merchant,
-              description: row.description,
+              date:        vrow.date,
+              amount:      vrow.amount,
+              merchant:    vrow.merchant,
+              description: vrow.description,
               category:    rescuedCategory,
             });
             if (diff) {
@@ -580,31 +624,34 @@ export const POST = withApiHandler(async (
               // backfill would not re-select a current-version row). Existing
               // provider hints are re-fed and preserved.
               //
-              // v2.6-OWN-1 — but only where the CLASSIFIER still owns the row.
+              // v2.6-OWN-1 — but only where the CLASSIFIER still owns the vrow.
               // A re-import is routine, not an approved act of correction, so it
               // declares no claims: a row the transfer authority repaired keeps
               // its flow facts and only the non-flow diff lands.
               const flowFields = mayWriteFlow(existing.flowAuthority, "CLASSIFIER").allowed
                 ? computeFlowFields({
                     category:           rescuedCategory,
-                    amount:             row.amount,
+                    amount:             vrow.amount,
                     pfcPrimary:         existing.pfcPrimary,
                     pfcDetailed:        existing.pfcDetailed,
                     pfcConfidenceLevel: existing.pfcConfidenceLevel,
                     merchantEntityId:   existing.merchantEntityId,
                   })
                 : {};
-              await db.transaction.update({
-                where: { id: result.transactionId },
+              await tx.transaction.update({
+                where: { id: matchedId },
                 // currency (MC1 Phase 0 Slice 2): preserve the existing stamp,
                 // else stamp the target account's currency opportunistically.
                 // Deliberately NOT part of computeQuickBooksUpdateDiff —
                 // currency must never be what *triggers* an update.
                 data:  { ...diff, ...flowFields, ...computeFactFields(existing.currency ?? flowAcct?.currency ?? null), currency: existing.currency ?? flowAcct?.currency ?? null },
               });
-              updatedTransactionIds.push(result.transactionId);
+              return true;
             }
           }
+          return false;
+          });
+          if (didUpdate) updatedTransactionIds.push(matchedId);
         }
       } else {
         skipped++;
@@ -619,7 +666,7 @@ export const POST = withApiHandler(async (
 
   const finalStatus = failed > 0 ? ImportBatchStatus.COMPLETED_WITH_ERRORS : ImportBatchStatus.COMPLETED;
 
-  const updated = await db.importBatch.update({
+  const updated = await tenant((tx) => tx.importBatch.update({
     where: { id: batch.id },
     data: {
       importedCount: created,
@@ -630,7 +677,7 @@ export const POST = withApiHandler(async (
       status:        finalStatus,
       completedAt:   new Date(),
     },
-  });
+  }));
 
   // OPS-3 S5 Wave 3 — batch-completion record for the bell (the importing
   // user; particularly valuable for the WITH_ERRORS case, whose row count
@@ -658,7 +705,7 @@ export const POST = withApiHandler(async (
   // otherwise-successful import response into an error.
   if (updatedTransactionIds.length > 0) {
     try {
-      await db.auditLog.create({
+      await tenant((tx) => tx.auditLog.create({
         data: {
           userId:    user.id,
           spaceId,
@@ -670,7 +717,7 @@ export const POST = withApiHandler(async (
           },
           ipAddress: getClientIp(req),
         },
-      });
+      }));
     } catch (auditErr) {
       console.error(
         `[import] batch ${batch.id} failed to write update-on-match audit log:`,
@@ -688,10 +735,10 @@ export const POST = withApiHandler(async (
   // otherwise-successful import response into an error.
   if (matchedProfileId) {
     try {
-      await db.importMappingProfile.update({
+      await tenant((tx) => tx.importMappingProfile.update({
         where: { id: matchedProfileId },
         data:  { useCount: { increment: 1 }, lastUsedAt: new Date() },
-      });
+      }));
     } catch (profileErr) {
       console.error(
         `[import] batch ${batch.id} failed to bump mapping profile ${matchedProfileId} usage:`,

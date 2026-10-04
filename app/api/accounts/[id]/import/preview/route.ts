@@ -80,7 +80,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { withApiHandler } from "@/lib/api";
 import { ImportSource } from "@prisma/client";
@@ -99,7 +98,7 @@ import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-pa
 // preview matches the confirm route's persisted category exactly.
 import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
-import { withTenantDb } from "@/lib/db/tenant-context";
+import { withTenantDb, type TenantClient } from "@/lib/db/tenant-context";
 import { suggestColumnMapping } from "@/lib/imports/suggest";
 import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
 
@@ -198,11 +197,19 @@ export const POST = withApiHandler(async (
 
   // ── Saved column-mapping profiles — fetched exactly as the confirm route
   // does (read-only; this preview route never bumps useCount/lastUsedAt) ──
-  const savedProfileRows = await db.importMappingProfile.findMany({
+  // RLS-PREP-C — every read below runs on the tenant role. This route writes
+  // nothing, so the hazard was never a refused write: it was that the preview
+  // classified a file against the ledger AS THE TABLE OWNER, with the account id
+  // as the only scope, and so could report what exists in an account the caller
+  // cannot see. One short phase per row, mirroring the confirm route, so that a
+  // read which fails is that row's `willFail` and not the rest of the file's.
+  const tenant = <T,>(fn: (tx: TenantClient) => Promise<T>) => withTenantDb(user.id, fn);
+
+  const savedProfileRows = await tenant((tx) => tx.importMappingProfile.findMany({
     where:   { spaceId },
     orderBy: [{ lastUsedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
     select:  { id: true, mapping: true },
-  });
+  }));
   const savedProfilesLite: SavedMappingProfileLite[] = savedProfileRows.map((p) => ({
     id:      p.id,
     mapping: p.mapping as Record<string, string | null>,
@@ -244,10 +251,10 @@ export const POST = withApiHandler(async (
   // `wouldUpdate` against a category the confirm route never writes, silently
   // undercounting willUpdate. Read-only: the account is only read for its
   // liability shape, exactly as the confirm route reads it (flowAccountContext).
-  const previewAcct = await db.financialAccount.findUnique({
+  const previewAcct = await tenant((tx) => tx.financialAccount.findUnique({
     where:  { id: financialAccountId },
     select: { type: true, debtSubtype: true },
-  });
+  }));
   const previewAccountContext = {
     accountType: (previewAcct?.type as string | null) ?? null,
     debtSubtype: previewAcct?.debtSubtype ?? null,
@@ -306,14 +313,32 @@ export const POST = withApiHandler(async (
       errors.push({ row: lineNumber, reason });
     } else {
       try {
-        const result = await resolveFingerprintOutcome(
-          financialAccountId,
-          row.date,
-          row.amount,
-          row.merchant,
-          row.externalTransactionId,
-          row.description // DF-4 — fingerprint on the raw descriptor
-        );
+        // One phase for the classification and the read it may need: both are
+        // statements about the same row under the same identity.
+        const rowDate = row.date, rowAmount = row.amount, rowMerchant = row.merchant;
+        const { result, existing } = await tenant(async (tx) => {
+          const result = await resolveFingerprintOutcome(
+            financialAccountId,
+            rowDate,
+            rowAmount,
+            rowMerchant,
+            row.externalTransactionId,
+            row.description, // DF-4 — fingerprint on the raw descriptor
+            tx,
+          );
+          // D2 Step 4D-4 / D2 Step 5 slice #1 — read-only parity with the
+          // confirm route's update-on-match gate (lib/imports/provider-capabilities.ts).
+          const existing =
+            result.outcome === "MATCH"
+            && getImportProviderCapabilities(source).supportsUpdateOnMatch
+            && result.matchedVia === "externalId"
+              ? await tx.transaction.findUnique({
+                  where:  { id: result.transactionId },
+                  select: { date: true, amount: true, merchant: true, description: true, category: true },
+                })
+              : null;
+          return { result, existing };
+        });
 
         if (result.outcome === "CREATE") {
           willCreate++;
@@ -324,11 +349,7 @@ export const POST = withApiHandler(async (
           // D2 Step 4D-4 / D2 Step 5 slice #1 — read-only parity with the
           // confirm route's update-on-match gate (lib/imports/provider-capabilities.ts).
           // Never writes.
-          if (getImportProviderCapabilities(source).supportsUpdateOnMatch && result.matchedVia === "externalId") {
-            const existing = await db.transaction.findUnique({
-              where:  { id: result.transactionId },
-              select: { date: true, amount: true, merchant: true, description: true, category: true },
-            });
+          {
             if (existing) {
               const diff = computeQuickBooksUpdateDiff(existing, {
                 date:        row.date,

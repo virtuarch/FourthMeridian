@@ -23,11 +23,14 @@ export type RefreshPolicies = Readonly<Record<RefreshSourceKind, RefreshPolicy>>
 
 type Client = Pick<PrismaClient, 'platformSetting'>;
 
-export async function loadRefreshPolicies(client?: Client): Promise<RefreshPolicies> {
+export async function loadRefreshPolicies(client: Client): Promise<RefreshPolicies> {
   let rows: { key: string; value: string; updatedAt: Date }[] = [];
   try {
-    const c = client ?? (await import('@/lib/db')).db;
-    rows = await c.platformSetting.findMany({
+    // RLS-PREP-C — the client is REQUIRED. It used to fall back to a dynamic
+    // import of `db`, and the Connections loader was the one caller that passed
+    // nothing, so a user-facing page read its cadence policy as the migration
+    // principal. `PlatformSetting` is readable by all three runtime roles.
+    rows = await client.platformSetting.findMany({
       where:  { key: { in: Object.values(REFRESH_CADENCE_SETTING_KEY) } },
       select: { key: true, value: true, updatedAt: true },
     });

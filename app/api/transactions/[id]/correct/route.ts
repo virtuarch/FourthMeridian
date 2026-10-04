@@ -31,15 +31,32 @@
  * FULL visibility remains a NECESSARY condition, it is simply no longer a
  * sufficient one. Both must hold.
  *
- * RLS-T1 — STILL UNCONVERTED, AND NOW VISIBLY SO. `getTransactionDetail` took a
- * required, leading authority in that slice, so the three calls below pass `db`
- * — the migration principal — EXPLICITLY. That is what the required parameter is
- * for: an unconverted caller stays legible instead of looking converted. This
- * route is a WRITE path (it mints MerchantRules and stamps rows through five
- * further `db` seams), so converting the one read inside it would have produced a
- * route that reads as the caller and writes as the owner — a split authority that
- * is worse than an honest single one. Its conversion belongs with the write-path
- * slice that takes all six seams at once.
+ * RLS-PREP-C — ONE TENANT PHASE, ALL SIX SEAMS. RLS-T1 left this route passing
+ * `db` (the migration principal) explicitly, because converting only the read
+ * inside a write path would have produced a route that reads as the caller and
+ * writes as the owner. This is the slice it was waiting for: the row load, the
+ * merchant resolution, the rule mint, the row stamp and the read-back all run
+ * inside ONE `withTenantDb` transaction on `fm_app`.
+ *
+ * Every table it touches is expressible under the existing policies, with no
+ * policy changed:
+ *   Transaction      account subtree — an ACTIVE link into a Space I can see,
+ *                    or an account I own
+ *   MerchantRule     `ownerUserId = me` (a USER rule is the caller's own)
+ *   Merchant/Alias   global reference tables (no RLS; fm_app may read/insert/update)
+ *
+ * ⚠️ A REFUSED WRITE CANNOT REPORT SUCCESS HERE. Every row write is a
+ * `transaction.update({ where: { id } })`, and Prisma RAISES (P2025) when an
+ * UPDATE matches no row — which is exactly what a policy that hides the row
+ * produces. There is no `updateMany` whose zero count could be read as a calm
+ * outcome. The raise aborts the phase, the phase rolls back, and the caller gets
+ * the 500; a half-applied correction (rule minted, row not stamped) cannot
+ * commit, which the six separate autocommit statements used to allow.
+ *
+ * `transactionDetailWhere` and `requireSpaceAction` are KEPT. RLS is the tenancy
+ * boundary, not the product permission: the policy would let any member of a
+ * Space that links the account reach the row, and FULL visibility plus MEMBER+
+ * are the narrower product rules. All three must hold.
  */
 
 import { NextRequest, NextResponse }  from "next/server";
@@ -47,7 +64,7 @@ import { requireUser }                from "@/lib/session";
 import { requireSpaceAction }         from "@/lib/spaces/authorize";
 import { getSpaceContext }            from "@/lib/space";
 import { getTransactionDetail }       from "@/lib/data/transactions";
-import { db }                         from "@/lib/db";
+import { withTenantDb }               from "@/lib/db/tenant-context";
 import { TransactionCategory }        from "@prisma/client";
 import { transactionDetailWhere }     from "@/lib/transactions/detail-query";
 import { resolveMerchantWrite }       from "@/lib/transactions/merchant-write";
@@ -86,77 +103,94 @@ export async function POST(
   }
   const correction = body.correction;
 
-  // Load the row (FULL-visibility scoped) with the fields corrections need.
-  const row = await db.transaction.findFirst({
-    where: transactionDetailWhere(id, spaceId),
-    select: {
-      id: true, merchant: true, description: true, category: true, amount: true,
-      merchantId: true, categorySource: true, merchantEntityId: true,
-      pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true,
-      // v2.6-OWN-1 — who owns this row's flow facts.
-      flowAuthority: true,
-      financialAccount: { select: { type: true, debtSubtype: true } },
-    },
-  });
-  if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-  const acct: CorrectionAcct = {
-    accountType: (row.financialAccount?.type as string | null) ?? null,
-    debtSubtype: row.financialAccount?.debtSubtype ?? null,
-  };
-  const correctionRow: CorrectionRow = {
-    id: row.id, merchant: row.merchant, description: row.description, category: row.category,
-    amount: row.amount, merchantId: row.merchantId, categorySource: row.categorySource,
-    merchantEntityId: row.merchantEntityId, pfcPrimary: row.pfcPrimary,
-    pfcDetailed: row.pfcDetailed, pfcConfidenceLevel: row.pfcConfidenceLevel,
-    flowAuthority: row.flowAuthority,
-  };
-
   const validCategory = (v: unknown): v is TransactionCategory =>
     typeof v === "string" && (Object.values(TransactionCategory) as string[]).includes(v);
 
+  type Outcome =
+    | { kind: "not-found" }
+    | { kind: "invalid-category" }
+    | { kind: "unknown-correction" }
+    | { kind: "needs-confirmation"; normalized: { canonicalKey: string; displayName: string }; candidates: Awaited<ReturnType<typeof findMerchantCandidates>> }
+    | { kind: "done"; body: Record<string, unknown> };
+
   try {
-    if (correction === "merchant") {
-      const decision = planMerchantIdentityCorrection(body as unknown as MerchantIdentityInput);
-      if (decision.kind === "needs-confirmation") {
-        const candidates = await findMerchantCandidates(db, decision.normalized.displayName);
-        return NextResponse.json(
-          { needsConfirmation: true, normalized: decision.normalized, candidates },
-          { status: 409 },
-        );
+    const outcome = await withTenantDb(user.id, async (tx): Promise<Outcome> => {
+      // Load the row (FULL-visibility scoped) with the fields corrections need.
+      const row = await tx.transaction.findFirst({
+        where: transactionDetailWhere(id, spaceId),
+        select: {
+          id: true, merchant: true, description: true, category: true, amount: true,
+          merchantId: true, categorySource: true, merchantEntityId: true,
+          pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true,
+          // v2.6-OWN-1 — who owns this row's flow facts.
+          flowAuthority: true,
+          financialAccount: { select: { type: true, debtSubtype: true } },
+        },
+      });
+      if (!row) return { kind: "not-found" };
+
+      const acct: CorrectionAcct = {
+        accountType: (row.financialAccount?.type as string | null) ?? null,
+        debtSubtype: row.financialAccount?.debtSubtype ?? null,
+      };
+      const correctionRow: CorrectionRow = {
+        id: row.id, merchant: row.merchant, description: row.description, category: row.category,
+        amount: row.amount, merchantId: row.merchantId, categorySource: row.categorySource,
+        merchantEntityId: row.merchantEntityId, pfcPrimary: row.pfcPrimary,
+        pfcDetailed: row.pfcDetailed, pfcConfidenceLevel: row.pfcConfidenceLevel,
+        flowAuthority: row.flowAuthority,
+      };
+
+      if (correction === "merchant") {
+        const decision = planMerchantIdentityCorrection(body as unknown as MerchantIdentityInput);
+        if (decision.kind === "needs-confirmation") {
+          const candidates = await findMerchantCandidates(tx, decision.normalized.displayName);
+          return { kind: "needs-confirmation", normalized: decision.normalized, candidates };
+        }
+        const { merchantId } = await applyMerchantIdentityCorrection(tx, correctionRow, decision);
+        const transaction = await getTransactionDetail(tx, id, { spaceId });
+        return { kind: "done", body: { transaction, merchantId } };
       }
-      const { merchantId } = await applyMerchantIdentityCorrection(db, correctionRow, decision);
-      const transaction = await getTransactionDetail(db, id, { spaceId });
-      return NextResponse.json({ transaction, merchantId });
-    }
 
-    if (correction === "category") {
-      if (!validCategory(body.category)) return NextResponse.json({ error: "Invalid category" }, { status: 400 });
-      // The rule attaches to the row's merchant; ensure one exists (mint from the
-      // provider descriptor — not free text — for any legacy row lacking it).
-      let merchantRow = correctionRow;
-      if (!merchantRow.merchantId) {
-        const mi = await resolveMerchantWrite(db, {
-          merchant: correctionRow.merchant, description: correctionRow.description,
-          merchantEntityId: correctionRow.merchantEntityId, currentCategory: correctionRow.category,
-          currentCategorySource: correctionRow.categorySource, currentMerchantId: null,
-        });
-        if (mi.merchantId) await db.transaction.update({ where: { id }, data: { merchantId: mi.merchantId } });
-        merchantRow = { ...correctionRow, merchantId: mi.merchantId };
+      if (correction === "category") {
+        if (!validCategory(body.category)) return { kind: "invalid-category" };
+        // The rule attaches to the row's merchant; ensure one exists (mint from the
+        // provider descriptor — not free text — for any legacy row lacking it).
+        let merchantRow = correctionRow;
+        if (!merchantRow.merchantId) {
+          const mi = await resolveMerchantWrite(tx, {
+            merchant: correctionRow.merchant, description: correctionRow.description,
+            merchantEntityId: correctionRow.merchantEntityId, currentCategory: correctionRow.category,
+            currentCategorySource: correctionRow.categorySource, currentMerchantId: null,
+          });
+          if (mi.merchantId) await tx.transaction.update({ where: { id }, data: { merchantId: mi.merchantId } });
+          merchantRow = { ...correctionRow, merchantId: mi.merchantId };
+        }
+        const { ruleId } = await applyCategoryRuleCorrection(tx, merchantRow, acct, user.id, body.category);
+        const transaction = await getTransactionDetail(tx, id, { spaceId });
+        return { kind: "done", body: { transaction, ruleId } };
       }
-      const { ruleId } = await applyCategoryRuleCorrection(db, merchantRow, acct, user.id, body.category);
-      const transaction = await getTransactionDetail(db, id, { spaceId });
-      return NextResponse.json({ transaction, ruleId });
-    }
 
-    if (correction === "override") {
-      if (!validCategory(body.category)) return NextResponse.json({ error: "Invalid category" }, { status: 400 });
-      await applyTransactionOverride(db, correctionRow, acct, body.category);
-      const transaction = await getTransactionDetail(db, id, { spaceId });
-      return NextResponse.json({ transaction });
-    }
+      if (correction === "override") {
+        if (!validCategory(body.category)) return { kind: "invalid-category" };
+        await applyTransactionOverride(tx, correctionRow, acct, body.category);
+        const transaction = await getTransactionDetail(tx, id, { spaceId });
+        return { kind: "done", body: { transaction } };
+      }
 
-    return NextResponse.json({ error: "Unknown correction" }, { status: 400 });
+      return { kind: "unknown-correction" };
+    });
+
+    if (outcome.kind === "not-found")        return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (outcome.kind === "invalid-category") return NextResponse.json({ error: "Invalid category" }, { status: 400 });
+    if (outcome.kind === "unknown-correction") return NextResponse.json({ error: "Unknown correction" }, { status: 400 });
+    if (outcome.kind === "needs-confirmation") {
+      return NextResponse.json(
+        { needsConfirmation: true, normalized: outcome.normalized, candidates: outcome.candidates },
+        { status: 409 },
+      );
+    }
+    return NextResponse.json(outcome.body);
   } catch (e) {
     console.error(`[POST /api/transactions/${id}/correct] correction failed:`, e);
     return NextResponse.json({ error: "Correction failed" }, { status: 500 });

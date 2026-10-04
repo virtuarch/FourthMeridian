@@ -92,8 +92,14 @@ const migrationPrincipalReads = (src: string) => src.match(/\bdb\.[a-zA-Z][a-zA-
 console.log("THE NEEDLES WORK — proved on controls before any zero is trusted");
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const CONTROL = "app/api/accounts/wallet/route.ts";
-  check(`CONTROL ${CONTROL} exists (it is fenced out of this slice, so it stays a positive)`,
+  // RLS-PREP-C — the control used to be the wallet route, which was "fenced out
+  // of this slice, so it stays a positive". It was converted, so it stopped
+  // being one, and this control went red — which is the control working. It is
+  // now a route whose owner reads are DELIBERATE and documented in its own
+  // header (a cross-tenant ownership count and the Space delete), so it stays a
+  // positive for a reason that does not depend on anybody's backlog.
+  const CONTROL = "app/api/spaces/[id]/permanent/route.ts";
+  check(`CONTROL ${CONTROL} exists (its owner reads are deliberate, so it stays a positive)`,
     existsSync(path.join(ROOT, CONTROL)));
   const control = code(CONTROL);
   check("the migration-principal needle MATCHES the control — so a zero below means something",

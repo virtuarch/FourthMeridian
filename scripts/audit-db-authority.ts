@@ -28,6 +28,26 @@
  *
  * A ratchet rather than a target, because the honest state is "adoption in
  * progress" and a gate that pretends otherwise is the kind that gets disabled.
+ *
+ *   3. A RATCHET ON THE DEFAULTED AUTHORITY (RLS-PREP-C). Check 2 counts files
+ *      that IMPORT `db`. It cannot see a file that reaches `db` without
+ *      importing it — and that turned out to be the more dangerous half. A
+ *      library function declared `client?: X` and resolved it `?? db`; a route
+ *      called it with no client; the route imported nothing from @/lib/db, sat
+ *      outside the baseline, and read a tenant's portfolio as the table owner.
+ *      Three foreground routes were in that state (Investments workspace,
+ *      wealth amendment, the Connections page and its poller) and the ratchet
+ *      reported them as converted, because by its only measure they were.
+ *
+ *      So two more things are recorded, and neither may grow:
+ *        · DEFAULT SITES — every place runtime code resolves a missing client
+ *          to the migration principal (`?? db`, a `= db` parameter default, or
+ *          the lazy `(await import("@/lib/db")).db` spelling), per file.
+ *        · IMPLICIT OWNER CALLS — every call, anywhere in runtime code, to a
+ *          function that HAS such a default and is handed no authority. That is
+ *          the call that looks like nothing and executes as the owner.
+ *      Removing a default removes its implicit calls with it, which is the
+ *      direction this is meant to be driven in.
  */
 
 import { execSync } from "node:child_process";
@@ -234,14 +254,94 @@ const globalImporters = RUNTIME.filter((f) => clientsTakenFrom(read(f)).has("db"
 
 const baselinePath = join(ROOT, BASELINE_FILE);
 
+// ── 2b. THE DEFAULTED AUTHORITY ──────────────────────────────────────────────
+// Comments are stripped first: this codebase explains its defaults at length,
+// and a sentence that QUOTES `?? db` is not a default.
+const stripComments = (src: string) =>
+  src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " ")).replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
+
+/**
+ * The three spellings of "no client was passed, so use the migration principal":
+ *   `x ?? db`                               the option-bag form
+ *   `client: T = db`                        the parameter-default form
+ *   `x ?? (await import("@/lib/db")).db`    the lazy-deps form
+ * `\bdb\b` and the lookahead keep `?? dbFoo` and `= db.something` out.
+ */
+const OWNER_DEFAULT =
+  /\?\?\s*db\b(?!\s*\.)|=\s*db\b(?=\s*[,)\n])|\?\?\s*\(\s*await\s+import\(\s*["']@\/lib\/db["']\s*\)\s*\)\s*\.\s*db\b/g;
+
+/** The nearest function declared ABOVE an index — the one whose default it is. */
+function enclosingFunction(code: string, index: number): string | null {
+  const head = code.slice(0, index);
+  const re = /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)|(?:^|\n)\s*(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?(?:<[^>]*>\s*)?\(/g;
+  let name: string | null = null;
+  for (const m of head.matchAll(re)) name = m[1] ?? m[2] ?? name;
+  return name;
+}
+
+const defaultSites: Record<string, number> = {};
+const defaultedFunctions = new Set<string>();
+for (const f of RUNTIME) {
+  const code = stripComments(read(f));
+  const hits = [...code.matchAll(OWNER_DEFAULT)];
+  if (hits.length === 0) continue;
+  defaultSites[f] = hits.length;
+  for (const h of hits) {
+    const fn = enclosingFunction(code, h.index ?? 0);
+    if (fn) defaultedFunctions.add(fn);
+  }
+}
+
+/** The text between a call's parentheses, balanced. Null if it never closes. */
+function callArguments(code: string, openParen: number): string | null {
+  let depth = 0;
+  for (let i = openParen; i < code.length; i++) {
+    const c = code[i];
+    if (c === "(") depth++;
+    else if (c === ")") { depth--; if (depth === 0) return code.slice(openParen + 1, i); }
+  }
+  return null;
+}
+
+/**
+ * A call "names an authority" when its arguments mention one. Deliberately
+ * generous — `tx`, `client`, an explicit `db`/`systemDb`/`authDb`, or anything
+ * ending in Client/Db — because the failure this check exists for is the call
+ * that mentions NONE, and a false "implicit" would teach people to ignore it.
+ * An explicit `db` is not hidden: the IMPORT ratchet above already counts it.
+ */
+const NAMES_AUTHORITY = /\b(tx|client|db|systemDb|authDb|tenantDb|database|prisma|deps|\w+Client|\w+Db)\b/;
+
+const implicitOwnerCalls: string[] = [];
+for (const f of RUNTIME) {
+  const code = stripComments(read(f));
+  for (const fn of defaultedFunctions) {
+    const call = new RegExp(`(?<![\\w.])${fn}\\(`, "g");
+    for (const m of code.matchAll(call)) {
+      const at = m.index ?? 0;
+      // A declaration is not a call.
+      if (/function\s+$/.test(code.slice(Math.max(0, at - 12), at))) continue;
+      const args = callArguments(code, at + m[0].length - 1);
+      if (args === null || NAMES_AUTHORITY.test(args)) continue;
+      implicitOwnerCalls.push(`${f} -> ${fn}`);
+    }
+  }
+}
+implicitOwnerCalls.sort();
+const totalDefaults = Object.values(defaultSites).reduce((a, b) => a + b, 0);
+
 if (process.argv.includes("--write-baseline")) {
   writeFileSync(baselinePath, JSON.stringify({
     note: "RLS-4 ratchet. Runtime-reachable files still reaching the database through the migration principal (@/lib/db `db`). This set may SHRINK freely as adoption proceeds; it may never GROW. Regenerate with `npx tsx scripts/audit-db-authority.ts --write-baseline`, and say in the commit why anything added is justified.",
     generatedAt: new Date().toISOString().slice(0, 10),
     count: globalImporters.length,
     files: globalImporters,
+    defaultSiteCount: totalDefaults,
+    defaultSites,
+    implicitOwnerCallCount: implicitOwnerCalls.length,
+    implicitOwnerCalls,
   }, null, 2) + "\n");
-  console.log(`  wrote ${BASELINE_FILE}: ${globalImporters.length} file(s)\n`);
+  console.log(`  wrote ${BASELINE_FILE}: ${globalImporters.length} importing file(s), ${totalDefaults} default site(s), ${implicitOwnerCalls.length} implicit owner call(s)\n`);
   process.exit(0);
 }
 
@@ -249,7 +349,12 @@ if (!existsSync(baselinePath)) {
   console.error(`\n  ✗ missing ${BASELINE_FILE}. Regenerate with:\n      npx tsx scripts/audit-db-authority.ts --write-baseline\n`);
   process.exit(1);
 }
-const baseline: string[] = JSON.parse(readFileSync(baselinePath, "utf8")).files;
+const baselineDoc = JSON.parse(readFileSync(baselinePath, "utf8")) as {
+  files: string[];
+  defaultSites?: Record<string, number>;
+  implicitOwnerCalls?: string[];
+};
+const baseline: string[] = baselineDoc.files;
 
 const added = globalImporters.filter((f) => !baseline.includes(f));
 const removed = baseline.filter((f) => !globalImporters.includes(f));
@@ -264,6 +369,46 @@ if (removed.length) {
   console.log(`  · ${removed.length} file(s) adopted an explicit authority since the baseline — regenerate it to lock the progress in:`);
   for (const f of removed.slice(0, 12)) console.log(`      ${f}`);
   if (removed.length > 12) console.log(`      … and ${removed.length - 12} more`);
+}
+
+// ── 2b (continued). NEITHER THE DEFAULTS NOR THEIR SILENT CALLERS MAY GROW ───
+{
+  const baseSites = baselineDoc.defaultSites;
+  const baseCalls = baselineDoc.implicitOwnerCalls;
+  check("the baseline records the defaulted-authority sets (regenerate it if this fails on an old file)",
+    baseSites !== undefined && baseCalls !== undefined,
+    `npx tsx scripts/audit-db-authority.ts --write-baseline`);
+
+  const grown = Object.entries(defaultSites).filter(([f, n]) => n > (baseSites?.[f] ?? 0));
+  const baseTotal = Object.values(baseSites ?? {}).reduce((a, b) => a + b, 0);
+  check(`no NEW place resolves a missing client to the migration principal (${totalDefaults} default site(s), baseline ${baseTotal})`,
+    grown.length === 0,
+    grown.length
+      ? `A parameter that defaults to \`db\` makes every caller that forgets it an owner without saying so.\n      Make the client REQUIRED and LEADING instead:\n        ${grown.map(([f, n]) => `${f}  (${baseSites?.[f] ?? 0} -> ${n})`).join("\n        ")}`
+      : "");
+
+  // Compared as multisets: the same file may legitimately call one defaulted
+  // function twice, and a second silent call is growth even though its label
+  // already appears once.
+  const remaining = [...(baseCalls ?? [])];
+  const newCalls: string[] = [];
+  for (const c of implicitOwnerCalls) {
+    const i = remaining.indexOf(c);
+    if (i === -1) newCalls.push(c); else remaining.splice(i, 1);
+  }
+  check(`no NEW call reaches the migration principal by passing no authority (${implicitOwnerCalls.length} implicit call(s), baseline ${baseCalls?.length ?? 0})`,
+    newCalls.length === 0,
+    newCalls.length
+      ? `These call a function whose client defaults to \`db\` and hand it none, so they execute as the\n      table owner while importing nothing that says so. Pass the phase you are in:\n        ${newCalls.join("\n        ")}`
+      : "");
+
+  if (remaining.length) {
+    console.log(`  · ${remaining.length} implicit owner call(s) were closed since the baseline — regenerate it to lock that in.`);
+  }
+  const shrunk = Object.entries(baseSites ?? {}).filter(([f, n]) => (defaultSites[f] ?? 0) < n);
+  if (shrunk.length) {
+    console.log(`  · ${shrunk.length} file(s) dropped an owner default since the baseline — regenerate it to lock that in.`);
+  }
 }
 
 // ── 3. STRICT MODE CANNOT BE SILENTLY DEFEATED ───────────────────────────────

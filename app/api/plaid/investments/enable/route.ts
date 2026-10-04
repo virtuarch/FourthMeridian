@@ -33,7 +33,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidInvestmentsConsent, PlaidItemStatus } from "@prisma/client";
@@ -50,6 +50,15 @@ interface EnableBody {
   plaidItemId?: string;
 }
 
+// RLS-PREP-C — this route's OWN reads and writes run on the tenant role.
+// `PlaidItem` and `Connection` are user-scoped tables (`"userId" = me`) and
+// `AuditLog` inserts are open to fm_app, so each statement the handler issues
+// directly is one short `withTenantDb` phase: the lookup that decides WHICH item
+// a user may act on is now a database guarantee, not a `where` clause on the
+// owner's connection. The provider work those lookups authorise — the sync and
+// refresh pipelines in lib/plaid/ — runs on its own authority and is not part of
+// this conversion (it interleaves Plaid HTTP with its writes, and a tenant phase
+// must never span a network round trip).
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;
@@ -84,10 +93,11 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Missing plaidItemId" }, { status: 400 });
   }
 
-  const item = await db.plaidItem.findFirst({
-    where:  { id: body.plaidItemId, userId: user.id, status: PlaidItemStatus.ACTIVE },
+  const requestedItemId = body.plaidItemId;
+  const item = await withTenantDb(user.id, (tx) => tx.plaidItem.findFirst({
+    where:  { id: requestedItemId, userId: user.id, status: PlaidItemStatus.ACTIVE },
     select: { id: true, investmentsConsent: true },
-  });
+  }));
   if (!item) {
     return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
   }
@@ -140,12 +150,12 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
   // Re-read the consent flag refreshPlaidItem persisted — ENABLED once consent
   // was actually granted (holdings import path), else unchanged.
-  const updated = await db.plaidItem.findUnique({
+  const updated = await withTenantDb(user.id, (tx) => tx.plaidItem.findUnique({
     where:  { id: item.id },
     select: { investmentsConsent: true },
-  });
+  }));
 
-  await db.auditLog.create({
+  await withTenantDb(user.id, (tx) => tx.auditLog.create({
     data: {
       userId:    user.id,
       action:    AuditAction.PLAID_REFRESH,
@@ -157,7 +167,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       },
       ipAddress: getClientIp(req),
     },
-  });
+  }));
 
   return NextResponse.json({
     ok:                 true,

@@ -46,6 +46,14 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 // the Brief ended up publishing a row count as "90 days".
 const SERIES_ROWS = 1100;
 
+/**
+ * The composition runs the valuation engine at up to two dates inside one
+ * transaction. Prisma's 5 s default is sized for a handful of statements; this
+ * is the same order of work the liquidity loader does, with a wider ceiling so a
+ * large Space degrades to a slow read rather than a refused one.
+ */
+const COMPOSITION_PHASE_TIMEOUT_MS = 20_000;
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -81,12 +89,18 @@ export async function GET(
   // rather than a price floor. This replaced a per-request archive read whose
   // answer moved with the provider tier.
   const [data, snaps] = await Promise.all([
-    loadInvestmentsSpaceData({ spaceId }, { history: { asOf, compareTo: compareToRaw ?? null } }),
-    // RLS-C-S3 — one short tenant transaction around the snapshot read ALONE. The
-    // composition loader beside it is a different leaf this slice does not own, and
-    // wrapping both would hold the boundary over reads still running on another
-    // authority. The two stay CONCURRENT, which a single shared transaction would
-    // have serialised.
+    // RLS-PREP-C — the composition loader is the leaf RLS-C-S3 said it did not
+    // own. It took no client and resolved `?? db`, so the entire Investments
+    // workspace was read as the migration principal behind a route that imports
+    // no `db`. It now runs in its OWN tenant phase: pure reads (current
+    // positions, valuation at one or two dates, period flows), no network.
+    withTenantDb(ctx.user.id, (tx) => loadInvestmentsSpaceData(
+      { spaceId },
+      { history: { asOf, compareTo: compareToRaw ?? null }, client: tx },
+    ), { timeout: COMPOSITION_PHASE_TIMEOUT_MS }),
+    // RLS-C-S3 — a second short tenant transaction around the snapshot read.
+    // Two phases rather than one so the two reads stay CONCURRENT, which a
+    // single shared transaction would have serialised.
     withTenantDb(ctx.user.id, (tx) => getRecentSnapshots(tx, { rows: SERIES_ROWS }, { spaceId })),
   ]);
   const series = buildPortfolioValueSeries(snaps, data.current.reportingCurrency);

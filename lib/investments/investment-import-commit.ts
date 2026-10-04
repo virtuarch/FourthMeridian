@@ -25,7 +25,6 @@ import {
   ImportBatchStatus, ImportSource, InvestmentEventType, PositionOrigin,
   type Prisma, type PrismaClient,
 } from "@prisma/client";
-import { db } from "@/lib/db";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { repairReconstructionForAccount } from "@/lib/investments/reconstruction-runner";
 import {
@@ -69,7 +68,7 @@ function identityOf(row: NormalizedInvestmentRow, profileKey: string): ImportIns
 }
 
 async function fetchCandidates(
-  client: Pick<PrismaClient, "investmentEvent">,
+  client: Pick<Prisma.TransactionClient, "investmentEvent">,
   financialAccountId: string,
   rows: NormalizedInvestmentRow[],
 ): Promise<DedupeCandidate[]> {
@@ -96,9 +95,17 @@ export async function previewInvestmentImport(input: {
   profileKey: string;
   rows: NormalizedInvestmentRow[];
   userDecisions?: UserDecisions;
-  client?: PrismaClient;
+  /**
+   * RLS-PREP-C — REQUIRED, and a READ client. This was `client?: PrismaClient`
+   * resolved with `?? db`, and the preview route passed nothing, so a zero-write
+   * preview classified a file against InvestmentEvent AS THE TABLE OWNER while
+   * the route itself imported no `db` — invisible to the authority ratchet. The
+   * preview is pure reads, so it needs no transaction opener; a tenant phase
+   * client is exactly enough.
+   */
+  client: Prisma.TransactionClient;
 }): Promise<PreviewResult> {
-  const client = input.client ?? db;
+  const client = input.client;
   const decisions = input.userDecisions ?? {};
   const candidates = await fetchCandidates(client, input.financialAccountId, input.rows);
   const counts: ImportCounts = { create: 0, match: 0, skip: 0, failed: 0 };
@@ -142,7 +149,18 @@ export interface CommitInput {
   rows: NormalizedInvestmentRow[];
   userDecisions?: UserDecisions;
   now?: Date;
-  client?: PrismaClient;
+  /**
+   * RLS-PREP-C — REQUIRED. Still a ROOT client, and NOT YET a tenant one: the
+   * writer below resolves instruments through `resolveInstrumentForImport`,
+   * which records INSTRUMENT_IDENTITY_CONFLICT incidents through this same
+   * client (OPS-2D-TX-1) — and `SyncIssue` is REVOKED from fm_app — and it ends
+   * with a best-effort repair whose failure handler writes another. Running it
+   * inside one tenant transaction would turn either telemetry write into a
+   * rollback of the import. That is a design change to a money-writing spine
+   * and it is not made here; what IS made here is that the caller must NAME the
+   * authority instead of inheriting `db` by saying nothing.
+   */
+  client: PrismaClient;
 }
 
 export interface CommitResult {
@@ -174,7 +192,7 @@ export function computeAffectedWindow(args: { financialAccountId: string; instru
 
 export async function commitInvestmentImport(input: CommitInput): Promise<CommitResult> {
   if (!investmentImportsEnabled()) return { status: "disabled", batchId: null };
-  const client = input.client ?? db;
+  const client = input.client;
   const now = input.now ?? new Date();
   const { financialAccountId, userId, profileKey, profileVersion } = input;
   const decisions = input.userDecisions ?? {};

@@ -45,7 +45,6 @@
 
 import { SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
-import { db } from "@/lib/db";
 import type { ReadClient } from "@/lib/db/tenant-context";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import { DIGITAL_ASSET_ACCOUNT_TYPES } from "@/lib/account-classifier";
@@ -162,11 +161,17 @@ export interface LoadInvestmentsSpaceDataOptions extends CurrentPositionsOptions
    *
    * ⚠️ IT USED TO ARRIVE VIA `CurrentPositionsOptions.client`, which this interface
    * extends, so the field was inherited from a leaf's option bag and defaulted to
-   * `db` two levels down. The leaf's option is gone; this surface names its own,
-   * and it is still optional HERE because this is a workspace loader with many
-   * callers — the required parameter is enforced where the READ happens.
+   * `db` two levels down. The leaf's option is gone; this surface names its own.
+   *
+   * RLS-PREP-C — AND IT IS REQUIRED NOW. "Optional here because this is a
+   * workspace loader with many callers" was the reasoning, and there is exactly
+   * ONE caller: the Investments workspace route, which passed nothing. So the
+   * whole Investments surface — current positions, the as-of/compare time
+   * machine, period flows — was read as the migration principal by a route that
+   * never imported `db`, and the authority ratchet could not see it. This module
+   * no longer imports `db` at all.
    */
-  client?: ReadClient;
+  client: ReadClient;
 }
 
 /**
@@ -187,9 +192,9 @@ export interface LoadInvestmentsSpaceDataOptions extends CurrentPositionsOptions
  */
 export async function loadInvestmentsSpaceData(
   scope:    CurrentPositionsScope,
-  options?: LoadInvestmentsSpaceDataOptions,
+  options: LoadInvestmentsSpaceDataOptions,
 ): Promise<InvestmentsSpaceData> {
-  const client = options?.client ?? db;
+  const client = options.client;
 
   // The current positions read and the (independent) scope-divergence read run in
   // parallel, so the disclosure adds no latency to the workspace load.
@@ -203,7 +208,7 @@ export async function loadInvestmentsSpaceData(
 
   // Historical slice through the SAME A10 binding the /time-machine route uses —
   // scoped identically to the current read, so both views cover the same accounts.
-  const historical = options?.history
+  const historical = options.history
     ? await getInvestmentsTimeMachine({
         ...scope,
         asOf:      options.history.asOf,
