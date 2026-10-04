@@ -175,6 +175,12 @@ export const AuditAction = {
   // String by design.
   PLAID_ITEM_REVOCATION_UNCONFIRMED: "PLAID_ITEM_REVOCATION_UNCONFIRMED",
   PLAID_ITEM_REVOCATION_CONFIRMED:   "PLAID_ITEM_REVOCATION_CONFIRMED",
+  // An OPERATOR asked for the cleanup to be retried (Platform Ops). Distinct
+  // from the two above on purpose: those are the lifecycle VERDICT, written by
+  // the revocation path itself, and this is a record of a human asking. Its
+  // `outcome` is read back off the marker after the attempt, never from
+  // PlaidItem.status.
+  PLAID_ITEM_REVOCATION_RETRY_REQUESTED: "PLAID_ITEM_REVOCATION_RETRY_REQUESTED",
   ACCOUNT_ADD:              "ACCOUNT_ADD",
   ACCOUNT_REMOVE:           "ACCOUNT_REMOVE",
   REGISTER:                 "REGISTER",

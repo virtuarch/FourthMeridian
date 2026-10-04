@@ -142,7 +142,11 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     { workspaceId: "platform-refresh", sections: ["ops_refresh_executions", "ops_refresh_summary", "ops_connection_health", "ops_refresh_coverage"] },
     // Providers — health interpretation → observed behaviour → per-connection
     // diagnostics → consumption → freshness → delivery.
-    { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_provider_operations", "ops_connection_health", "ops_connection_diagnostics", "ops_api_usage", "ops_resource_freshness", "ops_email_delivery"] },
+    // `ops_provider_cleanup` sits right after per-connection diagnostics: an
+    // operator reading connection state should meet "and these removals were
+    // never confirmed upstream" in the same breath, since those items are
+    // REVOKED and appear in none of the health surfaces above.
+    { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_provider_operations", "ops_connection_health", "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_resource_freshness", "ops_email_delivery"] },
     // History — the OPS-5 Wave B intelligence layer.
     { workspaceId: "platform-trends", sections: ["ops_history", "ops_convergence", "ops_timeline"] },
     // AI — per-invocation operations + economics, Daily Brief operations, and

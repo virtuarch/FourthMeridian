@@ -190,6 +190,11 @@ function main() {
       "app/api/platform/platform-ops/connections/[id]/resync/route.ts",
       "app/api/platform/platform-ops/connections/[id]/request-reauth/route.ts",
       "app/api/platform/platform-ops/operations/route.ts",
+      // Provider-cleanup retry: a bounded operator action over the canonical
+      // revocation path, gated on WRITE exactly like resync/request-reauth. It
+      // adds no authority of its own — it calls disconnectPlaidItemIfOrphaned
+      // and re-reads the durable marker.
+      "app/api/platform/platform-ops/provider-cleanup/route.ts",
       "app/api/platform/growth-revenue/registration-mode/route.ts",
       "app/api/platform/growth-revenue/product-status/route.ts",
       "app/api/platform/growth-revenue/invitations/route.ts",

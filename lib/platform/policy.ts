@@ -79,6 +79,13 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // PLATFORM_AREA_WORKSPACES (right after connection_health); this materialized
       // order is just a unique Int.
       { key: "ops_connection_diagnostics", label: "Connection Diagnostics", order: 14 },
+      // Provider-cleanup visibility: Plaid items whose newest revocation marker
+      // is UNCONFIRMED, i.e. the removal was attempted and never confirmed
+      // upstream. Deliberately SEPARATE from connection health, because the
+      // item is REVOKED from the product's point of view and would never show
+      // up there — which is exactly how a failed itemRemove stayed invisible
+      // and kept billing. Backfilled onto the live Space by ensurePlatformSections.
+      { key: "ops_provider_cleanup", label: "Provider Cleanup", order: 16 },
       // PO-5A — email-delivery visibility (sent/captured/error over NotificationDelivery).
       { key: "ops_email_delivery", label: "Email Delivery", order: 15 },
       // OPS-5 S1 — content-aware resource freshness (FX rates, security prices).
