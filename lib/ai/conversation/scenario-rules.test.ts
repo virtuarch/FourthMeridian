@@ -597,7 +597,7 @@ console.log('\n9. STRUCTURE — where the label can and cannot go');
   check('the roster is part of `scenarioAssumptions`, so all three scenario tools echo it',
     // FM-AUDIT-011 — the roster echoes the floor derivations THIS run used (re-resolved
     // at a transformed spending level), not the setup's base ones.
-    /function scenarioAssumptions\([\s\S]{0,400}?clauses: clausesInForce\(ledger,\s+floorDerivationsOf\(setup, ledger\)/.test(tools)
+    /function scenarioAssumptions\([\s\S]{0,900}?clauses: clausesInForce\(ledger,\s+floorDerivationsOf\(setup, ledger\)/.test(tools)
     && (tools.match(/scenarioAssumptions\(setup, /g) ?? []).length >= 3);
   const rules = code('lib/ai/conversation/scenario-rules.ts');
   check('scenario-rules is pure: type-only imports, no clock, no I/O',

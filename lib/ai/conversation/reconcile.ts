@@ -156,7 +156,8 @@ export function readCheckpoint(m: {
   // Such rows are no longer written (only an evidence-based projection is), but
   // they exist from before that rule, and they were being graded, with the
   // assumption's raw text surfacing through the basis diff.
-  if (((p.basis ?? {}) as Record<string, unknown>).spendingSource === 'USER_STATED') {
+  const source = ((p.basis ?? {}) as Record<string, unknown>).spendingSource;
+  if (source === 'USER_STATED' || source === 'MODEL_SUPPLIED') {
     return { unusable: `checkpoint ${m.subject} rested on a spending figure the user supplied, so it is a conditional `
       + 'statement: comparing it with what happened would measure whether they did what they said, not whether we were right' };
   }

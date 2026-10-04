@@ -104,7 +104,8 @@ export function projectionStatement(
 
   const basis = (projection.basis ?? {}) as Record<string, unknown>;
   const spending = (basis.spending ?? {}) as Record<string, unknown>;
-  if (spending.source === 'USER_STATED') return null;
+  // A level supplied by the call — said by the user or supplied by the model — is conditional either way.
+  if (spending.source === 'USER_STATED' || spending.source === 'MODEL_SUPPLIED') return null;
 
   return {
     // ⚠️ THE SUBJECT IS METRIC + HORIZON, WHICH MAKES REPETITION SELF-LIMITING.

@@ -68,7 +68,7 @@ import {
 } from '@/lib/ai/forecast/assemble';
 import { SCENARIO_INPUTS, NOT_AN_ASSUMPTION, scenarioAssumptionKeys } from './scenario-inputs';
 import {
-  mergeIntoArgs, stagePlan, type Attribution, type PlanSlot,
+  mergeIntoArgs, stagePlan, argumentFiguresStated, type Attribution, type PlanSlot,
 } from './pending-plan';
 import {
   type IncomeChangeOpKind, type IncomeChangeResult, type IncomeChangeRule,
@@ -91,8 +91,9 @@ import {
 } from './scenario-crossing';
 import {
   monthEndsBetween,
-  runScenarioLedger, expandContributions, solveForTarget, PROVENANCE,
+  runScenarioLedger, expandContributions, solveForTarget,
   returnHorizon, returnRepresentation, annualizedFromPeriodPct, periodFromAnnualizedPct, monthEndOccurrences,
+  ORIGIN, type Origin,
   type SolveBound,
   type ContributionSpec, type LedgerCheckpoint, type LedgerResult,
   type PlannedMovement, type ReturnPeriod, type SpinePoint,
@@ -1235,9 +1236,12 @@ const getBaselines: ToolDefinition = {
 
     return {
       asOf: ceiling,
-      expense: expense ?? refuse('no expense baseline: nothing stated, nothing declared, and no '
+      // ⚠️ A STATED rung is the figure the CALL passed; `origin` says whether the user's words license it.
+      expense: expense ? { ...expense, ...(expense.basis === 'STATED' ? { origin: originOf(a, 'statedMonthlySpending', ctx) } : {}) }
+        : refuse('no expense baseline: nothing stated, nothing declared, and no '
         + 'complete calendar month of spending to average', 'anything to build an expense baseline from'),
-      income: income ?? refuse('no income baseline: nothing stated, no settled recurring deposits, '
+      income: income ? { ...income, ...(income.basis === 'STATED' ? { origin: originOf(a, 'statedMonthlyIncome', ctx) } : {}) }
+        : refuse('no income baseline: nothing stated, no settled recurring deposits, '
         + 'and no complete month of observed income', 'anything to build an income baseline from'),
       ...derived,
       liquid: liquid === null ? refuse('no accounts in scope', 'any accounts in scope') : {
@@ -2214,7 +2218,7 @@ const projectCash: ToolDefinition = {
         basis: {
           openingCash: f.projection.openingCash,
           spending: userAssumed
-            ? { source: 'USER_STATED', statedAs: f.appliedFacts }
+            ? { source: originOf(a, 'assumedMonthlySpending', ctx), statedAs: f.appliedFacts }
             : f.observedSpending
               ? { source: 'OBSERVED', dailyRate: f.observedSpending.dailyRate,
                   monthsAveraged: (f.observedSpending as { months?: string[] }).months ?? null }
@@ -2374,6 +2378,32 @@ interface ScenarioOverrides {
   extraSpendingChanges?: SpendingChangeRule[];
 }
 
+/** A spending level that came from the arguments (said by the user or supplied by the model), not observed. */
+const suppliedSpending = (source: string) => source === 'USER_STATED' || source === 'MODEL_SUPPLIED';
+
+/** USER_STATED when the user's own words license every figure in `a[key]`; MODEL_SUPPLIED otherwise. */
+function originOf(a: Record<string, unknown>, key: string, ctx: ToolContext): Origin {
+  return argumentFiguresStated(key, a[key], ctx.turn) ? ORIGIN.USER_STATED : ORIGIN.MODEL_SUPPLIED;
+}
+
+/** The origin of every figure-bearing argument the call (and any staged clause merged into it) gave. */
+const ORIGIN_KEYS = ['assumedMonthlySpending', 'annualReturnPct', 'returns', 'contributions', 'outflows',
+  'liabilityAssumptions', 'incomeChanges', 'spendingChanges'] as const;
+function argumentOrigins(a: Record<string, unknown>, ctx: ToolContext): Partial<Record<string, Origin>> {
+  const out: Partial<Record<string, Origin>> = {};
+  for (const k of ORIGIN_KEYS) {
+    const v = a[k];
+    if (v === undefined || v === null || (Array.isArray(v) && v.length === 0)) continue;
+    out[k] = originOf(a, k, ctx);
+  }
+  // `annualReturnPct` and `returns` are one assumption: the returns in force.
+  if (out.annualReturnPct || out.returns) {
+    out.returnsInForce = out.annualReturnPct === ORIGIN.MODEL_SUPPLIED || out.returns === ORIGIN.MODEL_SUPPLIED
+      ? ORIGIN.MODEL_SUPPLIED : ORIGIN.USER_STATED;
+  }
+  return out;
+}
+
 interface ScenarioSetup {
   asOf: string; toISO: string;
   /** Which dates the table carries and why — cadence, source, anything omitted. */
@@ -2387,7 +2417,12 @@ interface ScenarioSetup {
   liabilities: LiabilityLine[];
   rejected: RefusedInput[];
   /** The spending level the base run used, and where it came from. */
-  monthlySpending: { amount: number | null; source: 'USER_STATED' | 'OBSERVED' | 'NONE' };
+  monthlySpending: { amount: number | null; source: 'USER_STATED' | 'MODEL_SUPPLIED' | 'OBSERVED' | 'NONE' };
+  /**
+   * WHO SUPPLIED each direct scenario argument — USER_STATED only when the user's own words license
+   * every figure in it (`argumentFiguresStated`), else MODEL_SUPPLIED. Absent ⇒ the argument was not given.
+   */
+  origins: Partial<Record<string, Origin>>;
   /** The canonical baseline behind an OBSERVED `monthlySpending` — which months, how many, net of refunds. */
   spendingBaseline: CanonicalSpendingBaseline;
   /** M1 — floors stated as months of expenses, with the derivation each resolved through. */
@@ -2804,7 +2839,7 @@ async function prepareScenario(
   const observedDaily = endpoint.observedSpending?.dailyRate ?? null;
   const monthlySpending: ScenarioSetup['monthlySpending'] =
     typeof a.assumedMonthlySpending === 'number'
-      ? { amount: a.assumedMonthlySpending, source: 'USER_STATED' }
+      ? { amount: a.assumedMonthlySpending, source: originOf(a, 'assumedMonthlySpending', ctx) as 'USER_STATED' | 'MODEL_SUPPLIED' }
       : observedDaily !== null
         ? { amount: round2(observedDaily * DAYS_PER_MONTH), source: 'OBSERVED' }
         : { amount: null, source: 'NONE' };
@@ -2858,7 +2893,7 @@ async function prepareScenario(
       }
       const floor = resolveMonthsOfExpensesFloor({
         monthsOfExpenses: Number(raw.liquidFloorMonthsOfExpenses),
-        stated: monthlySpending.source === 'USER_STATED' ? monthlySpending.amount : null,
+        stated: suppliedSpending(monthlySpending.source) ? monthlySpending.amount : null,
         observedMonthly: monthlySpending.source === 'OBSERVED' ? monthlySpending.amount : null,
       });
       if ('unavailable' in floor) { rejected.push({ input: what, reason: floor.unavailable }); continue; }
@@ -3021,6 +3056,7 @@ async function prepareScenario(
     ...(spendingOutcome ? { spendingChanges: spendingOutcome, spendingRequestedAs: spending.requestedAs } : {}),
     ...(staged ? { staged } : {}),
     argumentsRun: a,
+    origins: argumentOrigins(a, ctx),
     run: (o: ScenarioOverrides = {}): ScenarioRun => {
       // ⚠️ FM-AUDIT-011 — A DERIVED VALUE RECOMPUTES WHEN ITS DEPENDENCY CHANGES.
       // A floor stated as "N months of expenses" was resolved above from the BASE
@@ -3108,7 +3144,7 @@ export function rebindDerivedFloors(
     if ('unavailable' in d) return d;
     byMonths.set(n, { ...d, derivedFrom: { ...d.derivedFrom, baseline: { ...d.derivedFrom.baseline,
       note: `${d.derivedFrom.baseline.note} — re-resolved at the ${round2(runMonthlySpending)}/month this run `
-        + `spends (the scenario's ${base.source === 'USER_STATED' ? 'stated' : 'observed'} level after its transformation)` } } });
+        + `spends (the scenario's ${suppliedSpending(base.source) ? 'supplied' : 'observed'} level after its transformation)` } } });
   }
   if (byMonths.size === 0) return { movements: [...movements], derivations: baseDerivations };
   return {
@@ -3137,8 +3173,8 @@ function resolveFloorAt(
   }
   return resolveMonthsOfExpensesFloor({
     monthsOfExpenses: n,
-    stated: base.source === 'USER_STATED' ? level : null,
-    observedMonthly: base.source === 'USER_STATED' ? null : level,
+    stated: suppliedSpending(base.source) ? level : null,
+    observedMonthly: suppliedSpending(base.source) ? null : level,
   });
 }
 
@@ -3321,7 +3357,11 @@ function stagedEcho(setup: ScenarioSetup, rejected: readonly { input: string; ar
 
 function scenarioAssumptions(
   setup: ScenarioSetup, ledger: LedgerResult, returns: ReturnPeriod[],
+  /** The lever a goal seek SOLVED for, whose values in this run are the solver's, not anyone's statement. */
+  solved?: string,
 ) {
+  const solvedReturn = solved === 'annualReturnPct';
+  const solvedFlow = solved === 'monthlyContribution' || solved === 'monthlySpendingCut';
   const kind = (k: 'CONTRIBUTION' | 'OUTFLOW') => ledger.movements.filter((m) => m.kind === k);
   return {
     // ⚠️ THE HORIZON IS AN ASSUMPTION, AND IT IS ECHOED WITH THE OTHERS. A solve
@@ -3347,7 +3387,8 @@ function scenarioAssumptions(
           note: 'No return was in force. Investments are held flat at 0% — do not substitute '
             + 'a market average, and do not describe this result as carrying a return.' }
       : returns.map((r) => ({ from: r.fromISO, to: r.toISO, annualPct: r.annualPct,
-          provenance: PROVENANCE.USER_ASSUMED })),
+          origin: solvedReturn ? ORIGIN.SOLVED : setup.origins.returnsInForce ?? ORIGIN.MODEL_SUPPLIED,
+          scenarioAssumption: true })),
     // ⚠️ WHAT THE SHARE ACTUALLY CAME TO, EVERY TIME. "Half my liquidity" is the
     // instruction; the dollar figures are the answer, they differ at every date,
     // and only the settled ones can be checked against the table.
@@ -3355,7 +3396,10 @@ function scenarioAssumptions(
       scheduled: kind('CONTRIBUTION').length,
       total: round2(kind('CONTRIBUTION').reduce((s, m) => s + m.amount, 0)),
       settled: kind('CONTRIBUTION').slice(0, 12),
-      provenance: PROVENANCE.USER_ASSUMED,
+      ...(setup.origins.contributions ? { origin: setup.origins.contributions } : {}),
+      ...(solvedFlow ? { solvedIncluded: { origin: ORIGIN.SOLVED,
+        meaning: 'the movements labelled "solved …" are the goal seek\'s answer, not a stated contribution' } } : {}),
+      scenarioAssumption: true,
       // ⚠️ THE RULE, NOT ONLY ITS ARTIFACTS. "75% of each month's surplus" is one
       // sentence that expands into a hundred and thirty-five dated amounts; a
       // later turn saying "make it 8%" has to inherit the SENTENCE, and a
@@ -3369,7 +3413,7 @@ function scenarioAssumptions(
             + 'any.' } : {}),
     },
     outflows: { count: kind('OUTFLOW').length, settled: kind('OUTFLOW').slice(0, 12),
-      provenance: PROVENANCE.USER_ASSUMED },
+      ...(setup.origins.outflows ? { origin: setup.origins.outflows } : {}), scenarioAssumption: true },
     spending: { source: setup.monthlySpending.source, monthly: setup.monthlySpending.amount,
       // ⚠️ WHICH MONTHS, ALWAYS, WHEN THE RATE IS OBSERVED. "Roughly $5.7k to low-$7k
       // baked in" was narrated over a rate that was one number over two months the
@@ -3400,7 +3444,7 @@ function scenarioAssumptions(
         liabilities: setup.modelledInterest.accounts,
         byMonth: setup.modelledInterest.months.map((m) => ({ month: m.month, amount: round2(m.excluded) })),
         meaning: setup.modelledInterest.meaning } } : {}) },
-    ...(ledger.liabilities ? { liabilities: liabilityEcho(ledger) } : {}),
+    ...(ledger.liabilities ? { liabilities: liabilityEcho(ledger, setup.origins.liabilityAssumptions) } : {}),
     // ⚠️ WHAT RAN BECAUSE IT WAS STAGED, SAID CLAUSE BY CLAUSE (planning
     // continuity). A condition the user stated in an earlier turn and this run
     // applied is named as such — never as something this call said — and a call
@@ -3423,7 +3467,12 @@ function scenarioAssumptions(
  * answer can say which. A user-assumed rate is echoed as USER_ASSUMED so a term
  * the user supplied is never presented as the issuer's.
  */
-function liabilityEcho(ledger: LedgerResult) {
+function liabilityEcho(ledger: LedgerResult, assumedOrigin?: Origin) {
+  // ⚠️ AN ACCOUNT'S STORED TERMS ARE THE USER'S SAVED SETTINGS, NOT AN ASSUMPTION AND NOT "STATED" IN
+  // THIS CONVERSATION. The ledger's own STATED/USER_ASSUMED marks are translated into the vocabulary
+  // here; an assumed term carries whether the user's words license it.
+  const termOrigin = (t: 'STATED' | 'USER_ASSUMED' | 'UNKNOWN') => (t === 'STATED' ? ORIGIN.USER_CONFIRMED
+    : t === 'USER_ASSUMED' ? assumedOrigin ?? ORIGIN.MODEL_SUPPLIED : null);
   const L = ledger.liabilities!;
   const last = ledger.checkpoints[ledger.checkpoints.length - 1];
   const paid = ledger.movements.filter((m) => m.kind === 'CONTRIBUTION' && m.placed && m.placed.liabilities.length > 0);
@@ -3433,7 +3482,10 @@ function liabilityEcho(ledger: LedgerResult) {
   return {
     lines: L.lines.map((l) => ({ id: l.id, label: l.label, openingBalance: l.balance,
       apr: l.apr, minimumPayment: l.minimumPayment, subtype: l.subtype ?? null,
-      terms: l.termsProvenance ?? null })),
+      terms: l.termsProvenance ? {
+        apr: termOrigin(l.termsProvenance.apr), minimumPayment: termOrigin(l.termsProvenance.minimumPayment),
+        meaning: 'USER_CONFIRMED = the term stored on the account; USER_STATED / MODEL_SUPPLIED = a scenario '
+          + 'assumption for this run; null = no term known' } : null })),
     interestBasis: L.interestBasis,
     unmodelled: L.unmodelled,
     withheldAggregate: L.withheldAggregate,
@@ -3479,7 +3531,7 @@ function changeSinceOpeningAt(setup: ScenarioSetup, ledger: LedgerResult, c: Led
  * The scenario payload both tools return, so a solved answer and a stated one
  * are read the same way.
  */
-function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: ReturnPeriod[]) {
+function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: ReturnPeriod[], solved?: string) {
   const difference = round2(ledger.opening.netWorth - (setup.accounts.netWorth ?? 0));
   const warnings = [...ledger.warnings];
   if (Math.abs(difference) > 1) {
@@ -3502,7 +3554,7 @@ function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: Re
       ledgerOpeningNetWorth: ledger.opening.netWorth,
       difference,
     },
-    assumptions: scenarioAssumptions(setup, ledger, returns),
+    assumptions: scenarioAssumptions(setup, ledger, returns, solved),
     opening: ledger.opening,
     // ⚠️ THE DIFFERENCE IS A FIELD, NOT A SUBTRACTION LEFT TO THE READER. "About
     // $65k higher by next June" was the projected net worth minus the opening one,
@@ -4161,11 +4213,12 @@ const scenarioGoalSeek: ToolDefinition = {
             + 'count principal moved in as return.' },
         horizon: { ...horizon, compounding: 'effective annual over actual days: factor = (1 + annual)^(dayCount/365)' },
       } } : {}),
-      provenance: PROVENANCE.USER_ASSUMED,
+      // The answer is the SOLVER'S, never a figure anyone stated (provenance correction).
+      origin: ORIGIN.SOLVED,
       // ⚠️ THE LEDGER AT THE ANSWER, WITH THE SOLVED RULE IN ITS ROSTER — the table
       // beneath the number is the run that produced it (S1-7: the solved spending
       // rule is listed as a rule that ran, beside the scenario's own).
-      scenario: presentScenario(setup, ledger, returnsUsed),
+      scenario: presentScenario(setup, ledger, returnsUsed, solveFor),
       qualification:
         'This is the value that reaches the target under the stated assumptions — it is '
         + 'arithmetic, not advice and not a prediction. Whether it is achievable is a '

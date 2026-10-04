@@ -649,7 +649,8 @@ console.log('13c. clip 3 — project_cash');
   // The label said USER_ASSUMED whenever observedSpending was absent, even with
   // no user assumption in play.
   check('the spending source is never mislabelled USER_ASSUMED',
-    /userAssumed[\s\S]{0,140}'USER_STATED'/.test(src)
+    // Provenance correction: the source is the gate's verdict (USER_STATED or MODEL_SUPPLIED), never a literal.
+    /userAssumed[\s\S]{0,140}originOf\(a, 'assumedMonthlySpending', ctx\)/.test(src)
       && !/kind: 'USER_ASSUMED'/.test(src));
   check('…and a genuinely absent basis says NONE', /source: 'NONE'/.test(src));
 
@@ -812,7 +813,7 @@ console.log('13h. applied facts — nothing reaches the applied channel that did
   check('`appliedUserFacts` is the assembler\'s own list, unedited',
     /appliedUserFacts: f\.appliedFacts,/.test(cash));
   check('the spending basis echoes that same list and derives nothing of its own',
-    /source: 'USER_STATED', statedAs: f\.appliedFacts/.test(cash));
+    /source: originOf\(a, 'assumedMonthlySpending', ctx\), statedAs: f\.appliedFacts/.test(cash));
   check('no other field in the result asserts application from free text',
     !/applied[A-Za-z]*:\s*(a\.|String\(a\.)/.test(cash));
 }

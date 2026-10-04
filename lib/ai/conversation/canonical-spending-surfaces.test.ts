@@ -245,6 +245,9 @@ async function main(): Promise<void> {
 
   // ── 8. A stated level overrides inside its own scenario only ────────────────
   console.log('8. [test 6] "$5,700 a month" overrides the baseline inside that scenario only');
+  // The user SAYS it (provenance correction: a level the model supplies unprompted is MODEL_SUPPLIED).
+  const { turnEvidence } = await import('./memory-model');
+  ctx.turn = turnEvidence(['Assume I spend $5,700 a month.'], []);
   const stated = await run('scenario_goal_seek', { target: 200_000, by: '2026-12-31', solveFor: 'annualReturnPct',
     assumedMonthlySpending: 5_700 });
   check('the stated scenario spends 5,700 USER_STATED, and names no averaged months',

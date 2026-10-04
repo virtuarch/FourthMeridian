@@ -272,6 +272,9 @@ const FIGURES: Record<string, Record<string, Gate>> = {
   // S1 — "a 20% cut" licenses 0.8 through the MULTIPLIER gate; "spend $500 less"
   // licenses −500 (the gate compares magnitudes).
   spendingChanges: { multiplier: 'MULTIPLIER', monthly: 'Money' },
+  // get_baselines' direct figures — gated for their LABEL only (`argumentFiguresStated`); never staged.
+  statedMonthlySpending: { '': 'Money' },
+  statedMonthlyIncome: { '': 'Money' },
 };
 
 /**
@@ -291,6 +294,32 @@ function licensed(gate: Gate, v: number, evidence: TurnEvidence): boolean {
     return userStatedFigure('Percent', Math.round(Math.abs(v - 1) * 1e6) / 1e4, evidence);
   }
   return userStatedFigure(gate, v, evidence);
+}
+
+/**
+ * Did the USER say every figure this scenario argument carries? The staging gate, applied to a
+ * DIRECT tool argument (provenance correction, 2026-10-04).
+ *
+ * ⚠️ IT LABELS; IT DOES NOT REFUSE. A clause is staged only when the user said it, but a direct
+ * argument the contract accepts is still APPLIED — what this decides is whether the result may call
+ * it the user's. A model that passed `assumedMonthlySpending: 3000` nobody said was echoed as
+ * USER_STATED, and nothing downstream could tell. Same FIGURES map, same `licensed`, same stop rule
+ * as staging, so the two can never disagree about what "the user said" means. No evidence ⇒ false.
+ */
+export function argumentFiguresStated(key: string, value: unknown, evidence: TurnEvidence | undefined): boolean {
+  const figures = FIGURES[key];
+  if (!evidence || !figures || value === undefined || value === null) return false;
+  if (!isArrayKey(key)) {
+    return typeof value === 'number' && !!figures[''] && licensed(figures[''], value, evidence);
+  }
+  const items = Array.isArray(value) ? value : [value];
+  return items.every((it) => {
+    const item = o(it);
+    return Object.entries(figures).every(([field, gate]) => {
+      const v = item[field];
+      return typeof v !== 'number' || isStop(key, item, field, v) || licensed(gate, v, evidence);
+    });
+  });
 }
 
 // ── Shape ────────────────────────────────────────────────────────────────────

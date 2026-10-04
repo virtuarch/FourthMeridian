@@ -53,11 +53,43 @@ export const PROVENANCE = {
   PROJECTED_FROM_EVIDENCE: 'PROJECTED_FROM_EVIDENCE',
   /** Carried forward unchanged because nothing was stated about it. */
   HELD_FLAT: 'HELD_FLAT',
-  /** A return or a contribution the user supplied. Never derived from history. */
+  /**
+   * A SCENARIO ASSUMPTION moved this line — a stated return, a contribution, an outflow, an
+   * assumed rate. Never derived from history. ⚠️ It does NOT say who supplied it: each assumption
+   * in a result's echo carries its own `origin` (USER_STATED only when the user's words license
+   * the figure). An account's own stored terms are not an assumption and never set this.
+   */
   USER_ASSUMED: 'USER_ASSUMED',
 } as const;
 
 export type ProvenanceKind = typeof PROVENANCE[keyof typeof PROVENANCE];
+
+/**
+ * WHO SUPPLIED A FIGURE — the provenance vocabulary (owner, 2026-10-04). A scenario assumption is a
+ * QUALIFIER on top of this (`scenarioAssumption: true`), never an origin of its own.
+ *
+ * ⚠️ THE INVARIANT: Fourth Meridian never says "the user said X" because the model passed X to a
+ * tool. USER_STATED requires the user's own words to license the figure (`argumentFiguresStated`);
+ * anything else the model supplied is MODEL_SUPPLIED, and is still applied where the contract allows.
+ */
+export const ORIGIN = {
+  /** Read from data: balances, transactions, measured rates. */
+  OBSERVED: 'OBSERVED',
+  /** The user's own words in this conversation license the figure. */
+  USER_STATED: 'USER_STATED',
+  /** Saved by the user in the product — a setting, an account's entered terms, a confirmed memory. */
+  USER_CONFIRMED: 'USER_CONFIRMED',
+  /** Computed by the system from evidence or policy. */
+  SYSTEM_DERIVED: 'SYSTEM_DERIVED',
+  /** Passed by the model; the user's words do not license it. */
+  MODEL_SUPPLIED: 'MODEL_SUPPLIED',
+  /** Produced by a solver: the answer to a goal seek, not an input to it. */
+  SOLVED: 'SOLVED',
+  /** Applied because nothing was stated (0% return, held flat). */
+  DEFAULT: 'DEFAULT',
+} as const;
+
+export type Origin = typeof ORIGIN[keyof typeof ORIGIN];
 
 /** One money figure and everything that produced it. */
 export interface LedgerLine {
@@ -1270,13 +1302,18 @@ export function runScenarioLedger(input: LedgerInput): LedgerResult {
       || contribs.some((m) => m.placed && m.placed.liabilities.length > 0));
 
     const stated = contribs.length > 0 || outs.length > 0;
+    // ⚠️ AN ACCOUNT'S OWN TERMS ARE NOT AN ASSUMPTION. A minimum or an accrual from the APR stored on the
+    // account moved cash and debt with no one supposing anything; only an ASSUMED term does that.
+    const assumedTerms = lines.some((l) => l.termsProvenance?.apr === 'USER_ASSUMED'
+      || l.termsProvenance?.minimumPayment === 'USER_ASSUMED');
+    const placedOnDebt = contribs.some((m) => m.placed && m.placed.liabilities.length > 0);
     const grew   = Math.abs(investAmount - opening.investments - investedPrincipal) >= 0.005;
 
     const liquidLine: LedgerLine | null = liquidAmount === null ? null : {
       amount: liquidAmount,
       provenance: uniq([
         PROVENANCE.PROJECTED_FROM_EVIDENCE,
-        ...(stated || minimumTotal > 0 ? [PROVENANCE.USER_ASSUMED] : []),
+        ...(stated || (assumedTerms && minimumTotal > 0) ? [PROVENANCE.USER_ASSUMED] : []),
       ]),
     };
     const investLine: LedgerLine = {
@@ -1287,7 +1324,8 @@ export function runScenarioLedger(input: LedgerInput): LedgerResult {
       ]),
     };
     const debtLine:  LedgerLine = { amount: debtAmount,
-      provenance: [PROVENANCE.MEASURED, debtMoved ? PROVENANCE.USER_ASSUMED : PROVENANCE.HELD_FLAT] };
+      provenance: [PROVENANCE.MEASURED, !debtMoved ? PROVENANCE.HELD_FLAT
+        : placedOnDebt || assumedTerms ? PROVENANCE.USER_ASSUMED : PROVENANCE.PROJECTED_FROM_EVIDENCE] };
     const otherLine: LedgerLine = { amount: round2(opening.otherAssets),
       provenance: [PROVENANCE.MEASURED, PROVENANCE.HELD_FLAT] };
 
