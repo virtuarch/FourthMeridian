@@ -46,38 +46,8 @@ import {
 } from './scenario-rules';
 import { scenarioAssumptionKeys } from './scenario-inputs';
 
-/** The tool whose success establishes a scenario. */
+/** The tool whose success establishes a scenario. Goal-seek is NOT one of these. */
 export const SCENARIO_TOOL = 'scenario_projection' as const;
-
-/**
- * The tool that asks what ONE number would have to be for the same hypothetical to
- * reach a goal (A7).
- *
- * ⚠️ THE GOAL HAD NO STATE. "Make investments 100k by December" was solved, and
- * "no — total net worth 100k" needed the whole scenario rebuilt from prose, because
- * a goal seek was IGNOREd here while the crossing — the same scenario asked WHEN —
- * was captured. Its arguments are an assumption set exactly as the crossing's are,
- * including the goal itself (`target`, `by`, `measure`, `solveFor`), so a
- * correction to one dimension of the goal is a change of one field.
- */
-export const GOAL_SEEK_TOOL = 'scenario_goal_seek' as const;
-
-/**
- * What a captured goal seek found, beside the scenario it was asked of.
- *
- * ⚠️ IT SAYS WHAT THE SIX FIGURES ARE, because for a goal seek that is not obvious:
- * when solved they are the ledger AT the solved value — a value the arguments do not
- * contain — and when not solved they are the stated assumptions without it. The
- * goal's own dimensions are NOT repeated here; they are in `assumptions`, verbatim.
- */
-export interface ActiveGoal {
-  /** The measure the target was for, as the tool resolved it (the default is netWorth). */
-  measure: string;
-  outcome: string;
-  /** The solved value and, for a return, both of its representations. Absent unless solved. */
-  solved?: { value: number; unit: string; periodPct?: number; annualizedPct?: number | null };
-  resultIs: string;
-}
 
 /**
  * The tool that answers WHEN the same hypothetical reaches a number.
@@ -131,8 +101,6 @@ export interface ActiveScenario {
    * Absent only when the result carried no roster.
    */
   ran?: ClausesRan;
-  /** Present only when a goal seek established the scenario. */
-  goal?: ActiveGoal;
   result: ActiveScenarioResult;
   /**
    * WHAT THE SIX FIGURES ARE — one date, and whether the path that reached it is
@@ -197,9 +165,7 @@ const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFi
 export function captureActiveScenario(
   toolName: string, args: unknown, result: unknown,
 ): ScenarioCapture {
-  if (toolName !== SCENARIO_TOOL && toolName !== CROSSING_TOOL && toolName !== GOAL_SEEK_TOOL) {
-    return { action: 'IGNORE' };
-  }
+  if (toolName !== SCENARIO_TOOL && toolName !== CROSSING_TOOL) return { action: 'IGNORE' };
   // ⚠️ THE ARGUMENTS THAT RAN, NOT THE ONES THAT WERE SENT (planning continuity).
   // A scenario tool merges conditions staged earlier in the conversation into its
   // call and echoes the result as `argumentsRun`. Capturing the call's own
@@ -225,10 +191,8 @@ export function captureActiveScenario(
   // is its last checkpoint, a crossing's is the month it found — and both arrive
   // here as the same six numbers, so there is still exactly one place a scenario
   // comes into existence.
-  const position = toolName === CROSSING_TOOL ? crossingPosition(r)
-    : toolName === GOAL_SEEK_TOOL ? goalSeekPosition(r) : finalCheckpoint(r);
+  const position = toolName === CROSSING_TOOL ? crossingPosition(r) : finalCheckpoint(r);
   if ('reason' in position) return { action: 'CLEAR', reason: position.reason };
-  const goal = toolName === GOAL_SEEK_TOOL ? goalOf(r) : null;
   const { asOf, to, liquid, investments, debt, netWorth } = position;
 
   // ⚠️ VERBATIM, MINUS THE ONE KEY THE CONTRACT NEVER APPLIES. A rule's `label`
@@ -245,7 +209,6 @@ export function captureActiveScenario(
     scenario: {
       assumptions: stated,
       ...(ran ? { ran } : {}),
-      ...(goal ? { goal } : {}),
       result: { asOf, to, liquid, investments, debt, netWorth },
       covers: coversSentence(to, ran),
     },
@@ -396,41 +359,6 @@ function crossingPosition(r: Record<string, unknown>): Position {
     { date?: unknown; composition?: Record<string, unknown> } | null | undefined;
   if (!at || typeof at !== 'object') return { reason: 'no crossing position to carry' };
   return position(r, at.date, at.composition, 'incomplete crossing position');
-}
-
-/**
- * A goal seek's position: the ledger AT the answer when it solved, and the stated
- * assumptions WITHOUT the solved variable when it did not.
- *
- * ⚠️ A GOAL THAT WAS NOT REACHED IS STILL THE GOAL UNDER DISCUSSION. An OUT_OF_RANGE
- * or INFEASIBLE answer is an answer, not a failure — "no, I meant net worth" is as
- * likely after it as after a solve, so it is captured, with the baseline position the
- * tool computed at the deadline and an `outcome` saying the target was not reached.
- */
-function goalSeekPosition(r: Record<string, unknown>): Position {
-  if (r.feasible === true) {
-    const scenario = r.scenario as Record<string, unknown> | undefined;
-    if (!scenario || typeof scenario !== 'object') return { reason: 'no scenario at the solution' };
-    return finalCheckpoint({ ...scenario, asOf: r.asOf });
-  }
-  const at = (r.baseline as { at?: Record<string, unknown> } | undefined)?.at;
-  if (!at || typeof at !== 'object') return { reason: 'no baseline position to carry' };
-  return position(r, at.date, at, 'incomplete baseline position');
-}
-
-function goalOf(r: Record<string, unknown>): ActiveGoal {
-  const outcome = typeof r.outcome === 'string' ? r.outcome : r.feasible === true ? 'SOLVED' : 'OUT_OF_RANGE';
-  const measure = typeof r.measure === 'string' ? r.measure : 'netWorth';
-  const rep = r.returnAtSolution as { periodPct?: unknown; annualizedPct?: unknown } | undefined;
-  const value = num(r.required);
-  const solved = r.feasible === true && value !== null ? {
-    value, unit: typeof r.unit === 'string' ? r.unit : '',
-    ...(rep && num(rep.periodPct) !== null ? { periodPct: num(rep.periodPct)!, annualizedPct: num(rep.annualizedPct) } : {}),
-  } : undefined;
-  return { measure, outcome, ...(solved ? { solved } : {}),
-    resultIs: r.feasible === true
-      ? `the scenario AT the solved ${String(r.solveFor)} (${value}) — a value the assumptions above do not contain`
-      : `the stated assumptions WITHOUT any ${String(r.solveFor)} — the target was not reached (${outcome})` };
 }
 
 /** Apply a capture to the slot. The only way the slot ever changes. */

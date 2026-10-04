@@ -606,9 +606,8 @@ console.log('\n9. STRUCTURE — where the label can and cannot go');
   check('…and recognises no English: no pattern is ever applied to a label',
     !/label[^\n]{0,60}\.(test|match|includes|search)\(|RegExp/.test(rules));
   const env = code('lib/ai/conversation/active-scenario.ts');
-  // A7: a goal seek's goal joins the same literal, from the same result.
   check('the envelope takes its roster from the SAME result, in the SAME literal',
-    /scenario: \{\n\s*assumptions: stated,\n\s*\.\.\.\(ran \? \{ ran \} : \{\}\),\n(?:\s*\.\.\.\(goal \? \{ goal \} : \{\}\),\n)?\s*result: \{ asOf, to, liquid, investments, debt, netWorth \},/.test(env));
+    /scenario: \{\n\s*assumptions: stated,\n\s*\.\.\.\(ran \? \{ ran \} : \{\}\),\n\s*result: \{ asOf, to, liquid, investments, debt, netWorth \},/.test(env));
 }
 
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);
