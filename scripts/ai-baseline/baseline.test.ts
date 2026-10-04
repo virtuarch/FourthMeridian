@@ -1698,8 +1698,11 @@ console.log('18a. goal seek tool');
   // ⚠️ REPORT AND LET THE MODEL JUDGE (open question 5). Nothing in the code
   // decides that a required return is unrealistic; the bracket is wide and
   // stated, and out-of-range is reported with how far it got.
+  // Slice A: the bracket is 500 in the HORIZON'S terms — +500% over a period shorter than
+  // a year, 500%/yr from a year on — and the range states both representations.
   check('a required return is reported however large, inside a wide stated bracket',
-    /MAX_SOLVED_RETURN_PCT = 500/.test(src) && /searchRange: \{ from: lo, to: hi/.test(src));
+    /MAX_SOLVED_RETURN_PCT = 500/.test(src) && /searchRange: \{ from: lo, to: isReturn \? round2\(annualOf\(hi\)\) : hi/.test(src)
+      && /periodTo: round2\(periodOf\(hi\)\)/.test(src));
   check('the spending-cut bound is what the user actually spends',
     /nobody can cut more than they spend/.test(read('lib/ai/conversation/tools.ts')));
   check('a Space with no established spending level cannot be asked for a cut',

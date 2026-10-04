@@ -30,6 +30,7 @@
     "ai:project-cash-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/project-cash-evidence.check.ts",
     "ai:planning-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/planning-continuity.check.ts",
     "ai:income-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/income-change.check.ts",
+    "ai:goal-seek-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/goal-seek-return.check.ts",
     "ai:liability-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/liability-dynamics.check.ts",
     "ai:networth-change-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/net-worth-change.check.ts",
     "ai:chat-route-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/chat-route.check.ts",

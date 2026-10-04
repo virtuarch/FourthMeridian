@@ -92,6 +92,8 @@ import {
 import {
   monthEndsBetween,
   runScenarioLedger, expandContributions, solveForTarget, PROVENANCE,
+  returnHorizon, returnRepresentation, annualizedFromPeriodPct, periodFromAnnualizedPct,
+  type SolveBound,
   type ContributionSpec, type LedgerCheckpoint, type LedgerResult,
   type PlannedMovement, type ReturnPeriod, type SpinePoint,
   type LiabilityLine, type AllocationTarget,
@@ -3787,7 +3789,15 @@ const SOLVABLE = {
 /** The first day a projection from `asOf` governs. */
 const dayAfter = (iso: string) => new Date(Date.parse(`${iso}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
 
-/** A wide, stated bracket. Anything beyond it is reported as out of range, not clamped. */
+/**
+ * A wide, stated bracket. Anything beyond it is reported as out of range, not clamped.
+ *
+ * ⚠️ 500 IN THE HORIZON'S OWN TERMS. It was 500% A YEAR at every horizon, which over 30
+ * days is +15.9% and over 89 days +54.8% — so a target needing +60% by 31 December was
+ * reported as unreachable while a +293% one was impossible, both by a search that had
+ * simply stopped. Below a year the bound is +500% OVER THE PERIOD (the search runs in
+ * period space); from a year on it is 500% a year, as before. The two meet at 365 days.
+ */
 const MAX_SOLVED_RETURN_PCT = 500;
 
 const scenarioGoalSeek: ToolDefinition = {
@@ -3803,9 +3813,14 @@ const scenarioGoalSeek: ToolDefinition = {
     'contribution needed, or the monthly spending cut needed. Use it for "how could I reach ' +
     'a million by 2030?" — do NOT estimate a required return or a required saving rate ' +
     'yourself. ' +
-    'It returns the value AND the full scenario at that value, or `feasible: false` with how ' +
-    'far the range actually got. Takes the same scenario inputs as scenario_projection, ' +
-    'which are held fixed while the one unknown is solved.',
+    'It returns the value AND the full scenario at that value, with `outcome`: SOLVED, ' +
+    'ALREADY_MET, INFEASIBLE (no value of the lever can reach it), or OUT_OF_RANGE (the search ' +
+    'stopped first — never call that impossible). Takes the same scenario inputs as ' +
+    'scenario_projection, which are held fixed while the one unknown is solved. ' +
+    'A solved return comes as `returnAtSolution` over `horizon`: lead with `periodPct` (growth ' +
+    'over the actual period) for a by-date question shorter than a year, with `annualizedPct` ' +
+    'for a longer one or when the user asks for an annual/annualized rate — and give the other ' +
+    'as context. Never convert between them yourself.',
   parameters: obj({
     target: num('The number to reach, in dollars. Required.'),
     by:     str('YYYY-MM-DD by which to reach it. Required.'),
@@ -3918,7 +3933,17 @@ const scenarioGoalSeek: ToolDefinition = {
 
     let evaluate: (x: number) => number | null;
     let hi = 0, unit = '';
+    let bound: SolveBound = 'SEARCH';
     const lo = 0, precision = 0.01;
+    // The ledger's own day count over the solved period — one year convention per result.
+    const horizon = returnHorizon(setup.asOf, toISO);
+    /** A rate over [asOf, by], the only return a solve is allowed to state. */
+    const solvedReturns = (annualPct: number): ReturnPeriod[] => [{ fromISO: setup.asOf, toISO, annualPct }];
+    const atAnnual = (annualPct: number) => valueOf(setup.run({ returns: solvedReturns(annualPct) }));
+    // ⚠️ BELOW A YEAR THE RETURN IS SEARCHED AS PERIOD GROWTH (see MAX_SOLVED_RETURN_PCT).
+    const returnSpace: 'PERIOD' | 'ANNUAL' = horizon.dayCount < 365 ? 'PERIOD' : 'ANNUAL';
+    const annualOf = (x: number) => (returnSpace === 'PERIOD' ? annualizedFromPeriodPct(x, horizon.dayCount) : x);
+    const periodOf = (x: number) => (returnSpace === 'PERIOD' ? x : periodFromAnnualizedPct(x, horizon.dayCount));
 
     if (solveFor === SOLVABLE.annualReturnPct) {
       unit = 'percent per year';
@@ -3926,8 +3951,7 @@ const scenarioGoalSeek: ToolDefinition = {
       // ⚠️ A SOLVED RETURN REPLACES ANY STATED ONE. Solving for a rate while
       // leaving another in force would answer a question about a blend that
       // nobody described.
-      evaluate = (x) => valueOf(setup.run({
-        returns: [{ fromISO: setup.asOf, toISO, annualPct: x }] }));
+      evaluate = (x) => atAnnual(annualOf(x));
     } else if (solveFor === SOLVABLE.monthlyContribution) {
       unit = 'USD per month';
       // ⚠️ THE BRACKET FOR A DEBT TARGET IS THE DEBT. A monthly amount equal to
@@ -3936,6 +3960,7 @@ const scenarioGoalSeek: ToolDefinition = {
       hi = measure === 'debt'
         ? Math.max(setup.liabilities.reduce((t, l) => t + l.balance, 0) + (setup.accounts.totalLiabilities ?? 0), 1_000)
         : Math.max(Math.abs(target), 1_000);
+      if (measure === 'debt') bound = 'STRUCTURAL';
       evaluate = (x) => valueOf(setup.run({
         extraContributions: monthly(x, 'solved monthly contribution') }));
     } else if (solveFor === SOLVABLE.monthlySpendingCut) {
@@ -3950,6 +3975,7 @@ const scenarioGoalSeek: ToolDefinition = {
       // their whole outgoings, and "you would need to free up $12,400 a month"
       // said to somebody who spends $7,549 is a fabrication with a decimal point.
       hi = base;
+      bound = 'STRUCTURAL';
       // ⚠️ S1-7 — THE CUT IS A RULE ON TOP OF THE SCENARIO, NOT A NEW SPENDING LEVEL.
       // It was a replacement level (`base − x`), which with a Dining cut already in
       // the scenario would have silently dropped the Dining cut. An aggregate DELTA
@@ -3961,6 +3987,7 @@ const scenarioGoalSeek: ToolDefinition = {
     } else {
       unit = spendSolve.unit === 'percent' ? 'percent of the line' : 'USD per month';
       hi = spendSolve.unit === 'percent' ? 100 : spendSolve.lineMonthly;
+      bound = 'STRUCTURAL';
       // ⚠️ THE CUT JOINS THE SCENARIO'S OWN RULES, and the freed cash stays wherever
       // the scenario's rules send cash — a floor sweep, a waterfall, or nowhere. It is
       // a question about the line, not an instruction to invest.
@@ -3969,19 +3996,43 @@ const scenarioGoalSeek: ToolDefinition = {
 
     const baseLedger = setup.run();
     const baseline = valueOf(baseLedger);
-    const solved = solveForTarget({ solveFor, evaluate, target: sign * target, lo, hi, precision });
+    let solved = solveForTarget({ solveFor, evaluate, target: sign * target, lo, hi, precision, bound });
+    const isReturn = solveFor === SOLVABLE.annualReturnPct;
+    // ⚠️ A PERIOD-SPACE SOLVE IS REFINED TO THE REPORTED UNIT. A hundredth of a point of period
+    // growth over 89 days is fifteen hundredths a year; the answer is reported per year, so it is
+    // bisected again — inside the period bracket — to a hundredth of THAT, and verified. The
+    // period answer was rounded UP, so the true one lies within two steps below it.
+    if (isReturn && returnSpace === 'PERIOD' && solved.outcome === 'SOLVED') {
+      const refined = solveForTarget({ solveFor, evaluate: atAnnual, target: sign * target, precision,
+        lo: annualOf(Math.max(0, solved.required - 2 * precision)), hi: annualOf(solved.required) });
+      const required = Math.ceil((refined.feasible ? refined.required : annualOf(solved.required + precision)) * 100 - 1e-9) / 100;
+      solved = { ...solved, iterations: solved.iterations + refined.iterations, required,
+        reached: atAnnual(required) ?? Number.NEGATIVE_INFINITY };
+    } else if (isReturn && returnSpace === 'PERIOD' && !solved.feasible) {
+      solved = { ...solved, bestAt: round2(annualOf(solved.bestAt)) };
+    }
+    const outOfRange = !solved.feasible && solved.outcome === 'OUT_OF_RANGE';
+
+    // ⚠️ `timeToTarget.years` IS NOT HERE. It is a display distance on a 365.25-day year; the
+    // result's one year fraction is `horizon.yearFraction`, the exponent the ledger grew money by.
+    const { years: _displayYears, ...timeToTarget } = elapsedBetween(setup.asOf, toISO);
+    void _displayYears;
 
     const head = {
-      asOf: setup.asOf, target, by: toISO, measure, solveFor, unit,
+      asOf: setup.asOf, target, by: toISO, measure, solveFor, unit, outcome: solved.outcome,
       /** How far off the deadline is, from the scenario's asOf — the engine's subtraction, not the model's. */
-      timeToTarget: elapsedBetween(setup.asOf, toISO),
+      timeToTarget,
+      horizon,
       // ⚠️ ON EVERY PATH, INCLUDING THE REFUSAL. See `scenarioAssumptions`.
       assumptionsInForce: scenarioAssumptions(setup, baseLedger, setup.returns),
       ...(contributionTargets ? { contributionTarget: contributionTargets } : {}),
       baseline: { reached: baseline === null ? null : sign * baseline,
         gap: baseline === null ? null : round2(target - sign * baseline),
         meaning: 'where the stated assumptions land WITHOUT the solved variable' },
-      searchRange: { from: lo, to: hi, unit, iterations: solved.iterations,
+      searchRange: { from: lo, to: isReturn ? round2(annualOf(hi)) : hi, unit, iterations: solved.iterations,
+        ...(isReturn ? { periodTo: round2(periodOf(hi)), boundIn: returnSpace === 'PERIOD'
+          ? 'period growth: up to +500% over the horizon, because the horizon is shorter than a year'
+          : 'annual rate: up to 500% a year' } : {}),
         note: solveFor === SOLVABLE.monthlySpendingCut
           ? `the upper bound is the whole ${setup.monthlySpending.source.toLowerCase()} `
             + 'monthly spending level — nobody can cut more than they spend'
@@ -3998,9 +4049,15 @@ const scenarioGoalSeek: ToolDefinition = {
     if (!solved.feasible) {
       return { ...head, feasible: false, reason: solved.reason,
         bestReached: solved.bestReached === null ? null : sign * solved.bestReached, bestAt: solved.bestAt,
+        ...(isReturn ? { bestAtPeriodPct: round2(periodOf(hi)) } : {}),
         // ⚠️ HOW FAR THE RANGE GOT IS AN ANSWER; A HUGE INVENTED NUMBER IS NOT.
-        meaning: `Nothing in the searched range reaches ${target}. The best it did was `
-          + `${solved.bestReached ?? 'nothing'} at ${solved.bestAt} ${unit}. Say that, and `
+        meaning: (outOfRange
+          ? `The search stopped before reaching ${target}: the best it did was ${solved.bestReached ?? 'nothing'} `
+            + `at ${solved.bestAt} ${unit}${isReturn ? ` (+${round2(periodOf(hi))}% over the horizon)` : ''}. `
+            + 'That is where the search ended, NOT a proof that it is impossible — do not call it impossible. '
+          : `No value of ${solveFor} reaches ${target}. The best it did was `
+            + `${solved.bestReached ?? 'nothing'} at ${solved.bestAt} ${unit}. `)
+          + 'Say that, and '
           + 'say which other lever might close the gap — do not estimate a figure yourself. '
           + 'Describe the result using `assumptionsInForce` above and nothing else: if a '
           + 'return or a contribution from earlier in the conversation is not listed there, '
@@ -4022,6 +4079,10 @@ const scenarioGoalSeek: ToolDefinition = {
     const ledger = setup.run(atSolution);
     const returnsUsed = solveFor === SOLVABLE.annualReturnPct
       ? [{ fromISO: setup.asOf, toISO, annualPct: solved.required }] : setup.returns;
+    // ⚠️ FROM THE FACTOR THE LEDGER GREW THE MONEY BY — never `investments at the answer ÷ opening`,
+    // which mixes any contribution or outflow on the way into the "return".
+    const representation = returnRepresentation(returnsUsed, setup.asOf, toISO);
+    const last = ledger.checkpoints[ledger.checkpoints.length - 1];
 
     return {
       ...head,
@@ -4032,6 +4093,28 @@ const scenarioGoalSeek: ToolDefinition = {
       ...(solved.alreadyMet
         ? { meaning: `The target is already reached without any ${solveFor} at all.` }
         : {}),
+      ...(isReturn ? { returnAtSolution: { ...representation,
+        leadWith: horizon.dayCount < 365 ? 'periodPct' : 'annualizedPct',
+        leadWithMeaning: 'the default for this horizon; when the user asked for an annual or annualized rate, '
+          + 'lead with annualizedPct and give periodPct beside it' } } : {}),
+      // ⚠️ "SHOW ME THE MATH" IS READ HERE, NOT REBUILT. Every term is the ledger at the answer.
+      ...(last ? { derivation: {
+        measure,
+        identity: 'netWorth = liquid + investments + otherAssets − debt',
+        terms: { liquid: last.liquid?.amount ?? null, investments: last.investments.amount,
+          otherAssets: last.otherAssets.amount, debt: last.debt.amount, netWorth: last.netWorth?.amount ?? null,
+          target },
+        investments: { opening: ledger.opening.investments, atHorizon: last.investments.amount,
+          growthFromReturn: last.movements.investmentGrowthToDate,
+          principalMovedIn: round2(last.investments.amount - ledger.opening.investments
+            - last.movements.investmentGrowthToDate),
+          growthFactor: representation.growthFactor, periodPct: representation.periodPct,
+          annualizedPct: representation.annualizedPct,
+          meaning: 'atHorizon = opening + principalMovedIn + growthFromReturn. periodPct is growthFactor − 1, '
+            + 'the growth of a dollar held the whole horizon; it is NOT atHorizon ÷ opening, which would '
+            + 'count principal moved in as return.' },
+        horizon: { ...horizon, compounding: 'effective annual over actual days: factor = (1 + annual)^(dayCount/365)' },
+      } } : {}),
       provenance: PROVENANCE.USER_ASSUMED,
       // ⚠️ THE LEDGER AT THE ANSWER, WITH THE SOLVED RULE IN ITS ROSTER — the table
       // beneath the number is the run that produced it (S1-7: the solved spending

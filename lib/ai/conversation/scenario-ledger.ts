@@ -551,6 +551,85 @@ export function growthFactor(
   return factor;
 }
 
+// ── Return representation ────────────────────────────────────────────────────
+
+/** The ledger's year: actual days over 365, the exponent `growthFactor` uses. */
+export const DAY_COUNT_CONVENTION = 'ACT/365' as const;
+
+/**
+ * A modelled period, on the ledger's own day count. Half-open, as `growthFactor`.
+ *
+ * ⚠️ NOT `elapsedBetween`. That one is a display distance in mean months and
+ * 365.25-day years; this is the exponent the money was grown by. A result that
+ * states a return beside a year fraction must state THIS year fraction, or
+ * `annualizedPct` and `periodPct` stop reconciling by the width of a quarter day.
+ */
+export interface ReturnHorizon {
+  startDate: string;
+  endDate:   string;
+  dayCount:  number;
+  /** dayCount / 365, unrounded beyond 6 places. */
+  yearFraction: number;
+  dayCountConvention: typeof DAY_COUNT_CONVENTION;
+}
+
+export function returnHorizon(fromISO: string, toISO: string): ReturnHorizon {
+  const dayCount = Math.max(0, days(fromISO, toISO));
+  return { startDate: fromISO, endDate: toISO, dayCount,
+    yearFraction: Math.round((dayCount / 365) * 1e6) / 1e6, dayCountConvention: DAY_COUNT_CONVENTION };
+}
+
+/** The effective annual rate whose period growth over `dayCount` days is `periodPct`. */
+export function annualizedFromPeriodPct(periodPct: number, dayCount: number): number {
+  return (Math.pow(1 + periodPct / 100, 365 / dayCount) - 1) * 100;
+}
+
+/** The period growth an effective annual rate produces over `dayCount` days. */
+export function periodFromAnnualizedPct(annualPct: number, dayCount: number): number {
+  return (Math.pow(1 + annualPct / 100, dayCount / 365) - 1) * 100;
+}
+
+/**
+ * One return over one horizon, said both ways. PURE.
+ *
+ * ⚠️ RETURN IS A PROPERTY OF A HORIZON. "444% a year" and "+51% by 31 December"
+ * are the same growth over 89 days; the first extrapolates it across 276 days the
+ * question never covered. Both come from the ONE factor the ledger grew the money
+ * by, so neither can be a conversion the model did.
+ *
+ * ⚠️ `periodPct` IS THE FACTOR, NOT A VALUE RATIO. With contributions, outflows,
+ * or a rate that starts later, `requiredValue / openingValue − 1` mixes principal
+ * with growth. `growthFactor − 1` is what one dollar held the whole horizon grows
+ * by, which is the rate's own period equivalent in every case.
+ */
+export interface ReturnRepresentation {
+  periodPct:     number;
+  annualizedPct: number | null;
+  growthFactor:  number;
+  compounding:   'EFFECTIVE_ANNUAL';
+  meaning:       string;
+}
+
+export const RETURN_REPRESENTATION_MEANING =
+  'periodPct is what one dollar held for the whole horizon grows by; annualizedPct is the same growth '
+  + 'expressed as an effective rate per 365 days (compounded over actual days). They are one fact said two '
+  + 'ways — do not convert between them yourself.';
+
+export function returnRepresentation(
+  periods: readonly ReturnPeriod[], fromISO: string, toISO: string,
+): ReturnRepresentation {
+  const factor = growthFactor(periods, fromISO, toISO);
+  const { dayCount } = returnHorizon(fromISO, toISO);
+  const annualized = dayCount > 0 ? (Math.pow(factor, 365 / dayCount) - 1) * 100 : null;
+  return {
+    periodPct: round2((factor - 1) * 100),
+    annualizedPct: annualized === null || !Number.isFinite(annualized) ? null : round2(annualized),
+    growthFactor: Math.round(factor * 1e6) / 1e6,
+    compounding: 'EFFECTIVE_ANNUAL',
+    meaning: RETURN_REPRESENTATION_MEANING,
+  };
+}
+
 // ── Contributions ────────────────────────────────────────────────────────────
 
 /**
@@ -1309,9 +1388,29 @@ export interface SolveOutcome {
   iterations: number;
 }
 
+/**
+ * What a solve found. FOUR answers, because "no" had two meanings.
+ *
+ * - SOLVED: a value inside the bound reaches the target; `required` is the smallest reportable one.
+ * - ALREADY_MET: the bottom of the range already reaches it; nothing is needed.
+ * - INFEASIBLE: no value of the lever can reach it — the target does not respond to the lever, or
+ *   the bound is a FACT (a cut cannot exceed the spending it cuts) and the whole of it falls short.
+ * - OUT_OF_RANGE: the lever moves the result, but not far enough inside a SEARCH bound — a
+ *   convention, not a fact. A larger value might reach it; it is reported, never called impossible.
+ *
+ * ⚠️ `feasible` STAYS, DERIVED: true for SOLVED and ALREADY_MET. It was the only field and it said
+ * "no solution exists" about a search that had merely stopped.
+ */
+export type SolveOutcomeKind = 'SOLVED' | 'ALREADY_MET' | 'OUT_OF_RANGE' | 'INFEASIBLE';
+
+/** Whether the top of the range is a fact about the world or where the search stopped. */
+export type SolveBound = 'STRUCTURAL' | 'SEARCH';
+
 export type SolveResult =
-  | (SolveOutcome & { feasible: true;  required: number; alreadyMet: boolean; reached: number })
-  | (SolveOutcome & { feasible: false; reason: string; bestReached: number | null; bestAt: number });
+  | (SolveOutcome & { outcome: 'SOLVED' | 'ALREADY_MET'; feasible: true;
+      required: number; alreadyMet: boolean; reached: number })
+  | (SolveOutcome & { outcome: 'OUT_OF_RANGE' | 'INFEASIBLE'; feasible: false;
+      reason: string; bestReached: number | null; bestAt: number });
 
 const ceilTo = (n: number, step: number) => Math.ceil(n / step - 1e-9) * step;
 
@@ -1324,23 +1423,28 @@ export function solveForTarget(args: {
   /** The smallest step worth reporting: 0.01 of a percentage point, or a cent. */
   precision: number;
   maxIterations?: number;
+  /** Default SEARCH: exhausting the range is OUT_OF_RANGE, not INFEASIBLE. */
+  bound?: SolveBound;
 }): SolveResult {
   const { solveFor, evaluate, target, lo, hi, precision } = args;
+  const bound = args.bound ?? 'SEARCH';
   const maxIterations = args.maxIterations ?? 80;
   const frame = { solveFor, lo, hi };
   const at = (x: number) => evaluate(x) ?? Number.NEGATIVE_INFINITY;
 
   const atLo = at(lo);
   if (atLo >= target) {
-    return { ...frame, iterations: 0, feasible: true, required: lo,
+    return { ...frame, iterations: 0, outcome: 'ALREADY_MET', feasible: true, required: lo,
       alreadyMet: true, reached: atLo };
   }
 
   const atHi = at(hi);
   if (atHi < target) {
-    return { ...frame, iterations: 1, feasible: false,
+    const flat = atHi === atLo;
+    return { ...frame, iterations: 1,
+      outcome: flat || bound === 'STRUCTURAL' ? 'INFEASIBLE' : 'OUT_OF_RANGE', feasible: false,
       bestReached: Number.isFinite(atHi) ? atHi : null, bestAt: hi,
-      reason: atHi === atLo
+      reason: flat
         // ⚠️ A FLAT FUNCTION IS THE MOST USEFUL REFUSAL THIS TOOL PRODUCES.
         // Moving cash into investments at a 0% return relocates money; it does
         // not create any, so NO monthly contribution reaches a net-worth target.
@@ -1349,7 +1453,10 @@ export function solveForTarget(args: {
         ? `the target does not respond to ${solveFor} at all under these assumptions — `
           + 'every value in the range produces the same result, so no amount of it reaches '
           + 'the target'
-        : `no value of ${solveFor} between ${lo} and ${hi} reaches the target`,
+        : bound === 'STRUCTURAL'
+          ? `not even ${hi}, the most ${solveFor} can be, reaches the target`
+          : `no value of ${solveFor} between ${lo} and ${hi} reaches the target; ${hi} is where the `
+            + 'search stopped, not a limit of the arithmetic — a larger value might reach it',
     };
   }
 
@@ -1366,5 +1473,5 @@ export function solveForTarget(args: {
   let reached  = at(required);
   if (reached < target) { required = ceilTo(required + precision, precision); reached = at(required); }
 
-  return { ...frame, iterations, feasible: true, required, alreadyMet: false, reached };
+  return { ...frame, iterations, outcome: 'SOLVED', feasible: true, required, alreadyMet: false, reached };
 }
