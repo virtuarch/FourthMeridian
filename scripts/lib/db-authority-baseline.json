@@ -1,7 +1,7 @@
 {
   "note": "RLS-4 ratchet. Runtime-reachable files still reaching the database through the migration principal (@/lib/db `db`). This set may SHRINK freely as adoption proceeds; it may never GROW. Regenerate with `npx tsx scripts/audit-db-authority.ts --write-baseline`, and say in the commit why anything added is justified.",
-  "generatedAt": "2026-10-03",
-  "count": 186,
+  "generatedAt": "2026-10-04",
+  "count": 185,
   "files": [
     "app/(shell)/dashboard/platform/[area]/page.tsx",
     "app/(shell)/dashboard/spaces/page.tsx",
@@ -87,7 +87,6 @@
     "lib/account-deletion/purge.ts",
     "lib/accounts/persist-account-spine.ts",
     "lib/accounts/provider-identity.ts",
-    "lib/accounts/reconcile.ts",
     "lib/accounts/wallet-connection.ts",
     "lib/alerts/run.ts",
     "lib/connections/health-transitions.ts",

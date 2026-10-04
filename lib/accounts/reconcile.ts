@@ -46,91 +46,91 @@
  * relinks converge on a single canonical account no matter how many stale
  * rows accumulated before the fix landed.
  *
- * ── RLS-ACC-S5 — THE AUTHORITY IS THE CALLER'S, WITH TWO NAMED EXCEPTIONS ──
- * Every function here takes its client as a parameter. The reads take it
- * REQUIRED AND LEADING, so the compiler enumerates their call sites and each one
- * states the authority it executes under instead of inheriting one from this
- * module. Three parameter types are used and they are not interchangeable:
+ * ── THE AUTHORITY IS THE CALLER'S, WITH NO EXCEPTIONS LEFT (RLS-ACC-S5→S7) ──
+ * Every function here takes its client as a parameter, REQUIRED and LEADING,
+ * so the compiler enumerates the call sites and each one states the authority it
+ * executes under instead of inheriting one. This module does not import `db`.
+ * Four parameter types are used and they are not interchangeable:
  *
  *   ReadClient    the pure lookups (findActiveAccountByIdentity,
  *                 resolvePlaidAccountByExternalId, findCandidatesByFingerprint).
  *                 Prisma's ITXClientDenyList strips the transaction opener from
  *                 this type, so a read leaf is STRUCTURALLY incapable of opening
  *                 a phase of its own.
- *   PrismaClient  closeOutAccountConnections / pickCanonicalAndMerge /
- *                 resolveAccountByFingerprint. A ROOT client, and required to be
- *                 one BY THE COMPILER: these interleave a provider HTTP call
- *                 (closeOutAccountConnections → disconnectPlaidItemIfOrphaned →
- *                 Plaid itemRemove) BETWEEN their transactions. Handed a phase
- *                 client they would put that round trip inside somebody else's
- *                 open transaction, which withTenantDb's contract forbids. A
- *                 Prisma.TransactionClient has no `$transaction`, so it is not
- *                 assignable here and the mistake does not compile.
+ *   WriteClient   resolveAccountByFingerprint, and only it. The one public entry
+ *                 point, which opens the transaction when handed a root client
+ *                 and JOINS the caller's when handed a phase.
+ *   Prisma.TransactionClient
+ *                 pickCanonicalAndMerge / closeOutAccountConnections. They run
+ *                 INSIDE the fold and cannot open anything; the type says so.
  *   DbClient      the merge, and only the merge. It must accept both, because
  *                 its `"$transaction" in client` capability test (RLS-7) is what
  *                 lets a caller that already holds a phase reuse it.
  *
- * ── THE MERGE'S DEFAULT IS GONE (RLS-ACC-S6), AND WHAT REMOVED IT WAS A POLICY ─
+ * ── S6: THE MERGE'S DEFAULT WENT WHEN A POLICY CHANGED ──────────────────────
  * S5 kept a trailing `= db` on `mergeArchivedDuplicateIntoCanonical` for ONE
- * measured reason: the fold's last statement.
- * `DuplicateAccountCandidate.fm_app_ins` was
+ * measured reason: `DuplicateAccountCandidate.fm_app_ins` was
  * `fm_account_visible("accountAId") AND fm_account_visible("accountBId")`, and a
  * merge's loser is an ARCHIVED, link-revoked account BY CONSTRUCTION, so the
  * conjunction was unsatisfiable for the very shape every production fold has.
- * Replayed statement by statement as the OWNER on a live fm_app connection:
- * guard OK, 2 of 2 transactions moved, 1 of 1 DebtProfile moved, 1 of 1 link
- * re-pointed, then 42501 — and the whole fold rolled back. (The refusal arrives
- * as PrismaClientUnknownRequestError with `code` UNDEFINED, so no `P2002`-shaped
- * handler would have caught it either.)
+ * Replayed as the owner on a live fm_app connection: guard OK, 2 of 2
+ * transactions moved, 1 of 1 DebtProfile moved, 1 of 1 link re-pointed, then
+ * 42501 — whole fold rolled back. (The refusal arrives as
+ * PrismaClientUnknownRequestError with `code` UNDEFINED, so no `P2002`-shaped
+ * handler would have caught it either.) 20261003000100 gave each half the
+ * `OR I own the account` arm, and the default went with it.
  *
- * 20261003000100 closes it, as the REMAINDER of RLS-D1's already-approved
- * theorem rather than as a new one: each half of that conjunction is now
- * `(an ACTIVE link into a visible Space) OR (I own the account)`. D1 missed this
- * table because its sweep enumerated by the column name `financialAccountId` and
- * these FK columns are `accountAId`/`accountBId`;
- * scripts/audit-account-reparenting.ts now refuses any FK pair that is neither
- * predicated nor classified, so that cannot recur.
+ * ── S7: THE LAST DEFAULT WENT WHEN A TRANSACTION BOUNDARY MOVED ─────────────
+ * S6 recorded `resolveAccountByFingerprint`'s surviving `= db` as STRUCTURAL
+ * rather than a policy, and it was right about why:
  *
- * So the merge's client is REQUIRED. Both restore routes name it by running the
- * fold inside a `withTenantDb` phase — which is what S5 said would be the only
- * line that had to change — and neither imports `db` to do it. Acceptance case
- * 86 proved the fold already ran end to end on `fm_app` for a LIVE loser; case
- * 87 is the ARCHIVED one, and it is the case that flipped.
+ *   · its client was typed `PrismaClient` because `closeOutAccountConnections`
+ *     called Plaid's `itemRemove` BETWEEN this function's transactions, once per
+ *     archived sibling folded;
+ *   · a TENANT authority is only ever a transaction client, because the identity
+ *     the policies read is bound with `set_config(…, is_local := true)` and
+ *     cannot outlive a transaction.
  *
- * ── THE ONE DEFAULT THAT SURVIVES, FOR A REASON THAT IS NOT A POLICY ─────────
- * `resolveAccountByFingerprint` KEEPS its `= db`, and the blocker is now
- * STRUCTURAL rather than a refusal that could be widened away:
+ * Both were true, so no tenant client of any shape could satisfy the parameter.
+ * The fix was therefore NOT to escalate authority but to remove the thing that
+ * required a root client: the close-out is SPLIT, its DB half runs inside the
+ * fold, and its provider half is returned as `pendingProviderRevocations` for
+ * the caller to dispatch after the commit.
  *
- *   · Its client is typed `PrismaClient` — a ROOT authority — because it
- *     interleaves a provider HTTP call (closeOutAccountConnections →
- *     disconnectPlaidItemIfOrphaned → Plaid itemRemove) BETWEEN its own
- *     transactions, for every archived sibling it folds.
- *   · A TENANT authority is only ever a transaction client. The identity the
- *     policies read is bound with `set_config(…, is_local := true)`, so it
- *     cannot outlive a transaction (lib/db/tenant-context.ts), and
- *     lib/db/write-phase.ts states the consequence in terms: "`PrismaClient`
- *     here means a ROOT authority: `db` today, `systemDb` for a job, never a
- *     tenant one".
+ * ⚠️ WHAT THAT ALSO FIXED, AND IT WAS THE BIGGER DEFECT. The old shape opened
+ * ONE TRANSACTION PER LOSER with autocommitted statements and a provider round
+ * trip between them, so a cohort of three committed loser 1 and rolled back
+ * loser 2 — one canonical account-graph mutation, committed in pieces.
+ * lib/accounts/account-spine-boundary.test.ts measured exactly that against the
+ * real function (2 BEGINs; loser 1's 3 of 3 transactions moved, DebtProfile
+ * moved, row archived, DuplicateAccountCandidate written; loser 2 untouched)
+ * before the repair, and now measures one BEGIN and nothing surviving a failure.
  *
- * Those two facts cannot both hold for one client, so there is no tenant client
- * of ANY shape this parameter can accept — and naming `db` at its one defaulting
- * call site would re-import the migration principal into a restore route that
- * RLS-C-S7 took off it, which lib/accounts/links-everywhere.test.ts pins
- * against. Removing it needs the provider round trip LIFTED OUT of this
- * function so the fold itself becomes phase-shaped; that is a separate slice
- * about transaction boundaries, not about authority, and it is the one thing
- * keeping this module on the authority ratchet. reconcile.test.ts asserts the
- * set of default-reliant call sites is EXACTLY ONE and names it, so the number
- * can only go down.
+ * ⚠️ AND THE PROVIDER CALL STILL MUST NOT MOVE INSIDE. `disconnectPlaidItem-
+ * IfOrphaned` decides whether to call Plaid by COUNTING live connections on
+ * `systemDb` — a different client with a different pool — so the fold's
+ * soft-delete has to be COMMITTED before the gate can see it. Inside the
+ * transaction the gate reads a non-zero count and silently declines, which is
+ * the orphaned-PlaidItem defect of
+ * docs/bugfixes/BUGFIX_PLAID_REFRESH_ORPHANED_PLAID_ITEMS.md. That is why the
+ * work is carried out as IDS rather than performed here.
+ *
+ * ── THE ELECTION IS ONE QUERY, AND ITS ZERO IS EXPLICIT ─────────────────────
+ * The canonical election replaced N `transaction.count` calls with one
+ * `groupBy`. ⚠️ `groupBy` OMITS ZERO-COUNT GROUPS — measured on the migrated
+ * database, 6 ids in and 5 rows out — so the `?? 0` back-fill is load-bearing:
+ * without it a history-less candidate leaves the comparison entirely and the
+ * winner can change. The scan itself is preserved exactly (`-1` seed, strict
+ * `>`, candidates `createdAt: "asc"`), which is what makes ties break to the
+ * OLDEST and an all-zero cohort elect the oldest.
  */
 
-import { db } from "@/lib/db";
-import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus, ProviderType, type PrismaClient } from "@prisma/client";
+import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus, ProviderType, type Prisma, type PrismaClient } from "@prisma/client";
 import { dualWriteSpaceAccountLink, resolveAccountCreatorUserId, type DbClient } from "@/lib/accounts/space-account-link";
 import type { ReadClient } from "@/lib/db/tenant-context";
-import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { assertAccountReparentingAuthorized } from "@/lib/accounts/account-reparenting";
 import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
+import { inOneTransaction, type WriteClient } from "@/lib/db/write-phase";
 
 /**
  * Lifecycle fix — docs/bugfixes/BUGFIX_PLAID_REFRESH_ORPHANED_PLAID_ITEMS.md,
@@ -163,30 +163,59 @@ import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
  * that arrived already archived can still be carrying a live connection if
  * it was archived before this fix existed, which is exactly the bug above.
  *
- * ⚠️ RLS-ACC-S5 — THE CLIENT IS A ROOT CLIENT AND THE TYPE SAYS SO. This
- * function reaches `disconnectPlaidItemIfOrphaned`, which calls Plaid's
- * `itemRemove` over HTTP. A provider call must never run inside an open
- * transaction, and `Prisma.TransactionClient` is not assignable to
- * `PrismaClient`, so a caller holding a phase cannot pass it here.
+ * ⚠️ RLS-ACC-S7 — THE CLIENT IS NOW A PHASE CLIENT, AND THE INVERSION IS THE
+ * POINT. This used to take a ROOT client because it performed the provider call
+ * itself: `disconnectPlaidItemIfOrphaned` → Plaid `itemRemove` over HTTP, which
+ * must never run inside an open transaction. That made the whole fold
+ * root-shaped, which is what let it commit in pieces.
+ *
+ * So the function was SPLIT rather than relocated. The DB half — observe the
+ * live connections, capture their Plaid items, soft-delete them — belongs
+ * INSIDE the one fold transaction, because it is part of the same canonical
+ * mutation. The provider half is RETURNED to the caller, which dispatches it
+ * after the commit.
+ *
+ * ⚠️ AND THE CAPTURE MUST PRECEDE THE SOFT-DELETE. `disconnectPlaidItemIfOrphaned`
+ * decides whether to call Plaid by counting LIVE connections, so after the
+ * soft-delete there is nothing left to read the item ids from. The same
+ * ordering requirement is recorded in lib/accounts/disconnect.ts.
+ *
+ * ⚠️ AND THE WRITE IS NOW ASSERTED. The previous version read the connections,
+ * issued an `updateMany`, and DISCARDED the count — so a soft-delete that
+ * touched fewer rows than it observed passed silently, which is precisely the
+ * shape conditional-write.ts exists to refuse. Under one authority in one
+ * transaction a disagreement can only be concurrent modification, so it is an
+ * alarm rather than a business outcome.
+ *
+ * @returns the distinct Plaid item ids whose provider-side removal the CALLER
+ *          must consider once this transaction has committed.
  */
-async function closeOutAccountConnections(client: PrismaClient, financialAccountId: string): Promise<void> {
-  const liveConnections = await client.accountConnection.findMany({
+async function closeOutAccountConnections(
+  tx: Prisma.TransactionClient,
+  financialAccountId: string,
+): Promise<string[]> {
+  const liveConnections = await tx.accountConnection.findMany({
     where:  { financialAccountId, deletedAt: null },
     select: { id: true, plaidItemDbId: true },
   });
-  if (liveConnections.length === 0) return;
+  if (liveConnections.length === 0) return [];
 
-  await client.accountConnection.updateMany({
-    where: { financialAccountId, deletedAt: null },
-    data:  { deletedAt: new Date() },
-  });
-
+  // Captured BEFORE the soft-delete — see the ordering note above.
   const plaidItemDbIds = [...new Set(
     liveConnections.map((c) => c.plaidItemDbId).filter((id): id is string => !!id)
   )];
-  for (const plaidItemDbId of plaidItemDbIds) {
-    await disconnectPlaidItemIfOrphaned(plaidItemDbId);
-  }
+
+  const closed = await tx.accountConnection.updateMany({
+    where: { financialAccountId, deletedAt: null },
+    data:  { deletedAt: new Date() },
+  });
+  assertEveryObservedRowWasWritten(
+    { table: "AccountConnection", operation: "update", scope: "one folded loser's live connections" },
+    liveConnections.length,
+    closed.count,
+  );
+
+  return plaidItemDbIds;
 }
 
 export type ProviderIdentity =
@@ -421,54 +450,74 @@ async function findCandidatesByFingerprint(
  * rather than inheriting the caller's.
  */
 async function pickCanonicalAndMerge(
-  client: PrismaClient,
+  tx: Prisma.TransactionClient,
   candidates: FingerprintCandidate[],
   spaceId?: string | null
-): Promise<FingerprintCandidate | null> {
-  if (candidates.length === 0) return null;
-  if (candidates.length === 1) return candidates[0];
+): Promise<{ canonical: FingerprintCandidate | null; pendingProviderRevocations: string[] }> {
+  if (candidates.length === 0) return { canonical: null, pendingProviderRevocations: [] };
+  if (candidates.length === 1) return { canonical: candidates[0], pendingProviderRevocations: [] };
+
+  // ── THE ELECTION, IN ONE QUERY INSTEAD OF N ───────────────────────────────
+  // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import rollback
+  // must not count as "history" when deciding which duplicate-account candidate
+  // is canonical. See
+  // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §2.
+  //
+  // ⚠️ `groupBy` OMITS ZERO-COUNT GROUPS, SO THE BACK-FILL IS LOAD-BEARING.
+  // Measured against the migrated database: asked for 6 account ids, it
+  // returned 5 rows — the one with no live transactions was simply absent.
+  // The replaced loop asked per candidate and therefore saw an explicit 0.
+  // Without `?? 0` below, a zero-history candidate would be skipped by the
+  // comparison entirely and the winner could change.
+  //
+  // ⚠️ AND THE SCAN IS PRESERVED EXACTLY, NOT REPLACED BY AN ORDER-BY.
+  // `canonicalCount` starts at -1 and the comparison is STRICT `>`, over
+  // candidates that arrive pre-sorted `createdAt: "asc"`. So the first
+  // candidate at the maximum wins, i.e. TIES BREAK TO THE OLDEST — and an
+  // all-zero cohort elects the oldest because `0 > -1` fires on the first
+  // iteration. `orderBy: { _count }, take: 1` would silently drop zero-count
+  // candidates AND has no defined tie-break; it is the wrong shape twice.
+  const grouped = await tx.transaction.groupBy({
+    by:      ["financialAccountId"],
+    where:   { financialAccountId: { in: candidates.map((c) => c.id) }, deletedAt: null },
+    _count:  { _all: true },
+  });
+  const counts = new Map(grouped.map((g) => [g.financialAccountId, g._count._all]));
 
   let canonical = candidates[0];
   let canonicalCount = -1;
-  const counts = new Map<string, number>();
-
   for (const c of candidates) {
-    // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import
-    // rollback must not count as "history" when deciding which duplicate-
-    // account candidate is canonical. See
-    // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §2.
-    const count = await client.transaction.count({ where: { financialAccountId: c.id, deletedAt: null } });
-    counts.set(c.id, count);
+    const count = counts.get(c.id) ?? 0;
     if (count > canonicalCount) {
       canonical = c;
       canonicalCount = count;
     }
   }
 
+  // ── THE FOLD, ALL OF IT, IN THE CALLER'S ONE TRANSACTION ─────────────────
+  // KD-4 Phase 2 required the merge and the active-loser archive to commit
+  // together, and that guarantee is SUBSUMED rather than weakened: the
+  // enclosing transaction is wider than the one this loop used to open. What
+  // changes is that loser k+1 can no longer land while loser k is already
+  // committed — proven in lib/accounts/account-spine-boundary.test.ts, which
+  // measured the old shape committing loser 1 and rolling back loser 2.
+  const pendingProviderRevocations: string[] = [];
   for (const c of candidates) {
     if (c.id === canonical.id) continue;
-    // KD-4 Phase 2 — the merge and the active-loser archive must commit
-    // together. Without one transaction, a failure between them could leave
-    // the loser's history moved to the canonical row while the loser stays
-    // active — a visible, empty duplicate (exactly the state this merge
-    // exists to prevent). The merge reuses this tx rather than opening its own.
-    await client.$transaction(async (tx) => {
-      await mergeArchivedDuplicateIntoCanonical(c.id, canonical.id, DuplicateDetectionSource.SIBLING_CONSOLIDATION, spaceId, tx);
-      if (!c.deletedAt) {
-        // Was active under a different plaidAccountId — its history now lives
-        // on the canonical row, so archive it to remove the duplicate from view.
-        await tx.financialAccount.update({ where: { id: c.id }, data: { deletedAt: new Date() } });
-      }
-    });
+    await mergeArchivedDuplicateIntoCanonical(c.id, canonical.id, DuplicateDetectionSource.SIBLING_CONSOLIDATION, spaceId, tx);
+    if (!c.deletedAt) {
+      // Was active under a different plaidAccountId — its history now lives
+      // on the canonical row, so archive it to remove the duplicate from view.
+      await tx.financialAccount.update({ where: { id: c.id }, data: { deletedAt: new Date() } });
+    }
     // Lifecycle fix (Step A) — close out `c`'s own connections now that it's
     // being folded away as a loser, whether it was archived just above or
-    // arrived already archived. See closeOutAccountConnections' doc comment.
-    // External Plaid itemRemove — MUST stay OUTSIDE the transaction; runs
-    // post-commit.
-    await closeOutAccountConnections(client, c.id);
+    // arrived already archived. The DB half runs here, in the fold; the
+    // provider half is carried out to the caller for after the commit.
+    pendingProviderRevocations.push(...await closeOutAccountConnections(tx, c.id));
   }
 
-  return canonical;
+  return { canonical, pendingProviderRevocations };
 }
 
 export type FingerprintResolution = {
@@ -476,6 +525,18 @@ export type FingerprintResolution = {
   matchedActive:          boolean;
   activeCandidateCount:   number;
   archivedCandidateCount: number;
+  /**
+   * Plaid item ids whose provider-side removal the CALLER must consider, AFTER
+   * the transaction this resolution ran in has committed.
+   *
+   * ⚠️ IT IS A LIST OF IDS AND NOTHING ELSE, deliberately — the same idiom as
+   * `EverywhereLinkResult.affectedSpaceIds`. Carrying a callback or a client
+   * here would let the provider call be made from inside the fold again, which
+   * is the defect this field exists to prevent. The orphan gate re-reads the
+   * live connection count itself at dispatch time, so a stale id is safe: it
+   * simply declines.
+   */
+  pendingProviderRevocations: readonly string[];
 };
 
 /**
@@ -494,68 +555,75 @@ export type FingerprintResolution = {
  * has a space in scope (e.g. the Plaid import route), omit it otherwise.
  */
 export async function resolveAccountByFingerprint(
+  // ── RLS-ACC-S7 — REQUIRED, LEADING, AND NO LONGER A ROOT CLIENT ──────────
+  // S6 kept a trailing `= db` here and recorded the blocker as STRUCTURAL
+  // rather than a policy: the client had to be a ROOT authority because
+  // `closeOutAccountConnections` called Plaid's `itemRemove` BETWEEN this
+  // function's transactions, and a tenant authority is only ever a transaction
+  // client. Both halves of that were true. The resolution was not to escalate
+  // the authority but to LIFT THE PROVIDER ROUND TRIP OUT: the close-out's DB
+  // half now runs inside the fold and its provider half is returned to the
+  // caller as `pendingProviderRevocations`, to dispatch after the commit.
+  //
+  // So the whole canonical mutation is ONE transaction and this parameter is a
+  // `WriteClient`: handed `db` it opens one, handed a `withTenantDb` phase it
+  // joins it. The module no longer imports `db` at all.
+  client: WriteClient,
   fp: AccountFingerprint,
   excludeId?: string,
   spaceId?: string | null,
-  // ⚠️ RLS-ACC-S6 — THE LAST DEFAULT IN THIS MODULE, AND THE REASON IS NO
-  // LONGER THE POLICY. 20261003000100 gave `DuplicateAccountCandidate` the owner
-  // arm, so the fold itself now completes on a real `fm_app` phase and the
-  // merge's own default is GONE. What keeps this one is the TYPE, and the type
-  // is load-bearing: `closeOutAccountConnections` calls Plaid's `itemRemove`
-  // BETWEEN this function's transactions — once per archived sibling — so this
-  // must be a ROOT client, and a `Prisma.TransactionClient` has no
-  // `$transaction` and does not compile here.
-  //
-  // A tenant authority, however, is ONLY ever a transaction client: the identity
-  // the policies read is transaction-local by construction (lib/db/tenant-
-  // context.ts), and lib/db/write-phase.ts says so outright — "`PrismaClient`
-  // here means a ROOT authority … never a tenant one". So no tenant client of
-  // any shape can satisfy this parameter, and the one call site that relies on
-  // the default (app/api/accounts/[id]/restore/route.ts) may not name `db`
-  // either: RLS-C-S7 took that route OFF the migration principal and
-  // lib/accounts/links-everywhere.test.ts pins it there.
-  //
-  // Removing this default therefore requires LIFTING THE PROVIDER ROUND TRIP
-  // OUT of the fold, so the whole operation becomes phase-shaped. That is a
-  // transaction-boundary change, not an authority one, and it is the single
-  // remaining reason this module imports `db` at all.
-  client: PrismaClient = db,
 ): Promise<FingerprintResolution | null> {
-  const [activeCandidates, archivedCandidates] = await Promise.all([
-    findCandidatesByFingerprint(client, fp, null, excludeId),
-    findCandidatesByFingerprint(client, fp, { not: null }, excludeId),
-  ]);
+  // ONE transaction for the entire canonical mutation — the sweep, the
+  // election, every fold, and every connection close-out. `inOneTransaction`
+  // opens one when handed a root client and joins the caller's phase when
+  // handed a transaction client, so both call sites get the same atomicity
+  // without this function knowing which it has.
+  //
+  // The SWEEP is inside it deliberately: candidates are classified
+  // active-vs-archived and then folded on that classification, so reading them
+  // in a different snapshot from the writes is how a candidate changes class
+  // between the two. It also costs nothing — they were two reads either way.
+  return inOneTransaction(client, async (tx) => {
+    const [activeCandidates, archivedCandidates] = await Promise.all([
+      findCandidatesByFingerprint(tx, fp, null, excludeId),
+      findCandidatesByFingerprint(tx, fp, { not: null }, excludeId),
+    ]);
 
-  if (activeCandidates.length > 0) {
-    const canonical = await pickCanonicalAndMerge(client, activeCandidates, spaceId);
-    for (const a of archivedCandidates) {
-      await mergeArchivedDuplicateIntoCanonical(a.id, canonical!.id, DuplicateDetectionSource.FINGERPRINT_MATCH, spaceId, client);
-      // Lifecycle fix (Step A) — second gap, found on a full read of this
-      // file while implementing the fix above: this loop folds already-
-      // archived siblings into the canonical directly, without ever going
-      // through pickCanonicalAndMerge's loop. Same reasoning applies — `a`
-      // may still be carrying a live connection from before this fix existed.
-      await closeOutAccountConnections(client, a.id);
+    if (activeCandidates.length > 0) {
+      const { canonical, pendingProviderRevocations } = await pickCanonicalAndMerge(tx, activeCandidates, spaceId);
+      for (const a of archivedCandidates) {
+        await mergeArchivedDuplicateIntoCanonical(a.id, canonical!.id, DuplicateDetectionSource.FINGERPRINT_MATCH, spaceId, tx);
+        // Lifecycle fix (Step A) — second gap, found on a full read of this
+        // file while implementing the fix above: this loop folds already-
+        // archived siblings into the canonical directly, without ever going
+        // through pickCanonicalAndMerge's loop. Same reasoning applies — `a`
+        // may still be carrying a live connection from before this fix existed.
+        pendingProviderRevocations.push(...await closeOutAccountConnections(tx, a.id));
+      }
+      return {
+        canonical:              canonical!,
+        matchedActive:          true,
+        activeCandidateCount:   activeCandidates.length,
+        archivedCandidateCount: archivedCandidates.length,
+        // De-duplicated across both loops: two losers on the same Plaid item
+        // must not produce two dispatches.
+        pendingProviderRevocations: [...new Set(pendingProviderRevocations)],
+      };
     }
-    return {
-      canonical:              canonical!,
-      matchedActive:          true,
-      activeCandidateCount:   activeCandidates.length,
-      archivedCandidateCount: archivedCandidates.length,
-    };
-  }
 
-  if (archivedCandidates.length > 0) {
-    const canonical = await pickCanonicalAndMerge(client, archivedCandidates, spaceId);
-    return {
-      canonical:              canonical!,
-      matchedActive:          false,
-      activeCandidateCount:   0,
-      archivedCandidateCount: archivedCandidates.length,
-    };
-  }
+    if (archivedCandidates.length > 0) {
+      const { canonical, pendingProviderRevocations } = await pickCanonicalAndMerge(tx, archivedCandidates, spaceId);
+      return {
+        canonical:              canonical!,
+        matchedActive:          false,
+        activeCandidateCount:   0,
+        archivedCandidateCount: archivedCandidates.length,
+        pendingProviderRevocations: [...new Set(pendingProviderRevocations)],
+      };
+    }
 
-  return null;
+    return null;
+  });
 }
 
 /**

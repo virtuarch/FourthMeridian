@@ -63,6 +63,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { withTenantDb } from "@/lib/db/tenant-context";
+import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 import { DuplicateDetectionSource } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
@@ -142,39 +143,52 @@ export const POST = withApiHandler(async (
     // siblings, if any, get consolidated the next time the account is
     // reconnected via Plaid — see app/api/plaid/exchange-token/route.ts.)
     if (!canonical) {
-      // ⚠️ RLS-ACC-S6 — THE LAST SITE IN THE CODEBASE THAT RELIES ON
-      // reconcile.ts's MODULE DEFAULT, AND THE REASON IS NO LONGER A POLICY.
-      // 20261003000100 gave `DuplicateAccountCandidate` RLS-D1's owner arm, so
-      // the fold below now runs on this route's own tenant phase — see it.
+      // ── RLS-ACC-S7 — THE LAST DEFAULT IN THE CODEBASE IS GONE ────────────
+      // S6 recorded this site as the only one relying on reconcile.ts's module
+      // default, and named the blocker precisely: a TRANSACTION BOUNDARY, not
+      // an authority. `resolveAccountByFingerprint` had to be a ROOT client
+      // because it called Plaid's `itemRemove` BETWEEN its own transactions,
+      // and a tenant authority is only ever a transaction client.
       //
-      // What keeps THIS call on the default is a TRANSACTION BOUNDARY, not an
-      // authority: `resolveAccountByFingerprint`'s client is typed
-      // `PrismaClient` because it calls Plaid's `itemRemove` BETWEEN its own
-      // transactions (once per archived sibling it folds), and a tenant
-      // authority is only ever a transaction client — the identity the policies
-      // read is transaction-local by construction. The two requirements cannot
-      // both hold for one client, so there is no tenant client of any shape this
-      // parameter can accept.
-      //
-      // And naming `db` here is refused for the independent reason it always
-      // was: it would put this route back on the migration principal, growing
-      // the authority ratchet and falsifying
-      // lib/accounts/links-everywhere.test.ts's pin that RLS-C-S7 took it off.
-      // Closing it needs the provider round trip lifted OUT of that function;
-      // reconcile.ts's header records exactly that.
-      const resolution = await resolveAccountByFingerprint(
-        {
-          ownerUserId:   fa.ownerUserId,
-          institutionId: fa.institutionId,
-          institution:   fa.institution,
-          mask:          fa.mask,
-          officialName:  fa.officialName,
-          plaidName:     fa.plaidName,
-          name:          fa.name,
-          type:          fa.type,
-        },
-        fa.id
-      );
+      // That is now fixed at the source rather than worked around here: the
+      // close-out's DB half runs inside the fold and its provider half comes
+      // back as `pendingProviderRevocations`, dispatched below AFTER the phase
+      // commits. So the whole resolution runs on THIS ROUTE'S OWN TENANT ROLE,
+      // in one transaction, and the route still does not import `db`.
+      const resolution = await withTenantDb(user.id, (tx) =>
+        resolveAccountByFingerprint(
+          tx,
+          {
+            ownerUserId:   fa.ownerUserId,
+            institutionId: fa.institutionId,
+            institution:   fa.institution,
+            mask:          fa.mask,
+            officialName:  fa.officialName,
+            plaidName:     fa.plaidName,
+            name:          fa.name,
+            type:          fa.type,
+          },
+          fa.id,
+        ));
+
+      // ⚠️ AFTER THE PHASE, NEVER INSIDE IT. `disconnectPlaidItemIfOrphaned`
+      // decides whether to call Plaid by counting live connections on
+      // `systemDb` — a different client with a different pool — so the
+      // soft-delete the fold just made has to be COMMITTED before the gate can
+      // see it. Inside the phase the gate would read a non-zero count and
+      // silently decline, which is the defect
+      // docs/bugfixes/BUGFIX_PLAID_REFRESH_ORPHANED_PLAID_ITEMS.md exists for.
+      // Best-effort: a provider cleanup failure must not fail a restore that
+      // has already committed, and f339e57 makes the unconfirmed outcome
+      // durable so it stays discoverable.
+      for (const plaidItemDbId of resolution?.pendingProviderRevocations ?? []) {
+        try {
+          await disconnectPlaidItemIfOrphaned(plaidItemDbId);
+        } catch (e) {
+          console.error(`[restore] provider cleanup failed for item ${plaidItemDbId} (non-fatal):`, e);
+        }
+      }
+
       if (resolution?.matchedActive) {
         canonical = resolution.canonical;
         mergeSource = DuplicateDetectionSource.FINGERPRINT_MATCH;

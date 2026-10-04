@@ -56,6 +56,7 @@ import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { dualWriteProviderAccountIdentity, ProviderIdentityConflictError } from "@/lib/accounts/provider-identity";
 import { deploymentEnvironment } from "@/lib/env";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
+import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -387,27 +388,27 @@ export async function performPlaidTokenExchange(
         name:          acct.name,
         type,
       };
-      // RLS-ACC-S5 — `db`, EXPLICITLY, and not for want of a classification.
-      // This is tenant work; it cannot be a tenant client today. The resolution
-      // folds archived siblings, and the fold's last statement writes
-      // `DuplicateAccountCandidate`, whose fm_app INSERT policy requires BOTH
-      // accounts to satisfy `fm_account_visible()` — false for an archived loser
-      // by construction, so the whole fold aborts on 42501. Measured on a live
-      // fm_app role; see the header of lib/accounts/reconcile.ts and acceptance
-      // cases 86-87. The parameter type also refuses a phase client outright:
-      // this helper calls Plaid's itemRemove between its transactions.
-      // RLS-ACC-S5 — `db`, EXPLICITLY, where this site used to inherit it from
-      // the module default. It is not a free choice: the resolution folds
-      // archived siblings, and a fold's last statement is a
-      // `DuplicateAccountCandidate` INSERT whose fm_app policy requires
-      // `fm_account_visible()` on BOTH accounts — false for an archived loser by
-      // construction, so a tenant client aborts the whole fold on 42501
-      // (measured; acceptance cases 86-87, and lib/accounts/reconcile.ts's
-      // header). This module already holds `db` for its own writes, so naming it
-      // here costs no ratchet and makes the one non-tenant authority on this
-      // path visible. The parameter type separately refuses a phase client:
-      // the helper calls Plaid's itemRemove between its transactions.
-      const resolution = await resolveAccountByFingerprint(fingerprint, undefined, spaceId, db);
+      // ── RLS-ACC-S7 — `db`, EXPLICITLY, AND NOW LEADING ───────────────────
+      // The two near-verbatim RLS-ACC-S5 paragraphs that stood here both
+      // claimed the fold aborts on 42501 for an archived loser because
+      // `DuplicateAccountCandidate`'s fm_app policy was visibility-only. That
+      // was measured and true when written, and 20261003000100 closed it — so
+      // both comments were stale, and duplicated. Replaced by one accurate note
+      // rather than left to mislead the next reader.
+      //
+      // `db` is still what this site passes, and that is a deliberate
+      // NON-widening: this module already holds `db` for its own
+      // `financialAccount.create`/`update`, so naming it costs no ratchet, and
+      // the authority here is exactly what it was before this slice. Converting
+      // this site to a `withTenantDb` phase is now UNBLOCKED (the parameter is
+      // a `WriteClient` and the policies admit the fold) but it is a separate
+      // change with its own blast radius, not a side effect of moving a
+      // transaction boundary.
+      //
+      // What DID change: the resolution is now ONE transaction, and the Plaid
+      // `itemRemove` it used to make between its own transactions comes back as
+      // `pendingProviderRevocations` for dispatch after the commit, below.
+      const resolution = await resolveAccountByFingerprint(db, fingerprint, undefined, spaceId);
 
       console.log("[plaid] fingerprint lookup", {
         institutionId:      institution_id,
@@ -420,6 +421,23 @@ export async function performPlaidTokenExchange(
         canonicalAccountId: resolution?.canonical.id ?? null,
         outcome:            resolution ? "reused" : "created",
       });
+
+      // ⚠️ AFTER THE RESOLUTION'S TRANSACTION, NEVER INSIDE IT. The fold
+      // soft-deleted each folded loser's AccountConnection rows; whether Plaid's
+      // `itemRemove` should follow is decided by `disconnectPlaidItemIfOrphaned`
+      // COUNTING live connections on `systemDb` — a different client with a
+      // different pool. Inside the transaction that count still sees them and
+      // the gate silently declines, which is exactly the orphaned-PlaidItem
+      // defect it exists to prevent. Best-effort: a cleanup failure must not
+      // fail an import whose DB work has committed, and f339e57 records an
+      // unconfirmed removal durably so it stays discoverable.
+      for (const plaidItemDbId of resolution?.pendingProviderRevocations ?? []) {
+        try {
+          await disconnectPlaidItemIfOrphaned(plaidItemDbId);
+        } catch (e) {
+          console.error(`[plaid] provider cleanup failed for item ${plaidItemDbId} (non-fatal):`, redactedErrorForLog(e));
+        }
+      }
 
       if (resolution) {
         fa = await db.financialAccount.update({

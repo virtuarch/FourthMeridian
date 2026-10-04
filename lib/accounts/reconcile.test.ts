@@ -319,17 +319,31 @@ async function main(): Promise<void> {
         new RegExp(`function ${fn}\\(\\s*client: ReadClient,`).test(code));
     }
 
-    // ⚠️ THE PROVIDER-CALLING HELPERS DEMAND A ROOT CLIENT, BY TYPE. They reach
-    // Plaid's itemRemove BETWEEN their transactions; handed a phase client they
-    // would make that call inside somebody else's open transaction.
-    // Prisma.TransactionClient has no $transaction, so it is not assignable to
-    // PrismaClient and the mistake does not compile.
-    check("closeOutAccountConnections demands a ROOT client — it reaches a provider call",
-      /function closeOutAccountConnections\(\s*client: PrismaClient,/.test(code));
-    check("pickCanonicalAndMerge demands a ROOT client — it opens transactions around a provider call",
-      /function pickCanonicalAndMerge\(\s*client: PrismaClient,/.test(code));
-    check("resolveAccountByFingerprint's client is typed PrismaClient, so a tenant PHASE cannot be threaded into a provider call",
-      /client: PrismaClient = db,/.test(code));
+    // ── RLS-ACC-S7 — THE THREE ROOT-CLIENT PINS ARE INVERTED ────────────────
+    // These asserted the OPPOSITE until this slice, and the reason they did was
+    // sound at the time: these helpers reached Plaid's `itemRemove` BETWEEN
+    // their transactions, so a phase client would have put a provider round
+    // trip inside somebody else's open transaction. The repair did not weaken
+    // that rule — it removed the thing that required breaking it. The
+    // close-out's DB half now runs inside the one fold transaction and its
+    // provider half is RETURNED for the caller to dispatch post-commit, so
+    // every one of these can be, and must be, a phase client.
+    check("closeOutAccountConnections takes a PHASE client — its DB half belongs inside the fold",
+      /function closeOutAccountConnections\(\s*tx: Prisma\.TransactionClient,/.test(code));
+    check("pickCanonicalAndMerge takes a PHASE client — it no longer opens transactions of its own",
+      /function pickCanonicalAndMerge\(\s*tx: Prisma\.TransactionClient,/.test(code)
+        && !/client\.\$transaction/.test(code));
+    check("resolveAccountByFingerprint takes a REQUIRED, LEADING WriteClient with NO default",
+      /function resolveAccountByFingerprint\(\s*(?:\/\/[^\n]*\n\s*)*client: WriteClient,/.test(code)
+        && !/client: PrismaClient = db/.test(code));
+    check("…and the whole canonical mutation runs through ONE inOneTransaction",
+      /return inOneTransaction\(client, async \(tx\) =>/.test(code));
+    check("the provider dispatch has LEFT this module — it is carried out as ids",
+      !/disconnectPlaidItemIfOrphaned/.test(code) && /pendingProviderRevocations/.test(code));
+    check("the election is ONE groupBy with an explicit zero back-fill",
+      /transaction\.groupBy/.test(code) && /counts\.get\(c\.id\) \?\? 0/.test(code),
+      "groupBy OMITS zero-count groups (measured on the migrated DB), so `?? 0` is what keeps a " +
+      "history-less candidate in the comparison and the tie-break intact");
 
     // ── RLS-ACC-S6 — THE MERGE'S DEFAULT IS GONE ────────────────────────────
     // A defaulted client is an AMBIENT authority. This one was kept for one
@@ -345,19 +359,14 @@ async function main(): Promise<void> {
     check("…and `spaceId` became required-in-arity to allow it (a required parameter cannot follow an optional one)",
       /spaceId: string \| null \| undefined,/.test(code) && !/spaceId\?: string \| null,\s*\n\s*(?:\/\/[^\n]*\n\s*)*client: DbClient/.test(code));
 
-    // ── THE ONE DEFAULT THAT SURVIVES, AND THE EXACT COUNT OF WHO RELIES ON IT
-    // ⚠️ THE NUMBER IS THE ASSERTION, and it may only go DOWN.
-    // `resolveAccountByFingerprint` keeps its default for a reason that is NOT a
-    // policy and cannot be widened away: its client is typed `PrismaClient`
-    // because it calls Plaid's `itemRemove` BETWEEN its own transactions, and a
-    // tenant authority is only ever a transaction client (lib/db/write-phase.ts
-    // says so in terms). No tenant client of any shape can satisfy it, and
-    // naming `db` at the one site that defaults would put a restore route back
-    // on the migration principal. Closing it means lifting the provider round
-    // trip out of the fold — a transaction-boundary change, not an authority one.
-    const DEFAULT_RELIANT = ["app/api/accounts/[id]/restore/route.ts"];
+    // ── NO DEFAULT SURVIVES. THE COUNT IS ZERO AND MAY ONLY STAY ZERO ───────
+    // S5 left two defaults, S6 removed the merge's, and this slice removed the
+    // last one by lifting the provider round trip out of the fold rather than by
+    // escalating anybody's authority. `DEFAULT_RELIANT` is empty; a non-empty
+    // list is a regression whichever entry point it names.
+    const DEFAULT_RELIANT: string[] = [];
     const RECONCILE_CALLERS = [
-      ...DEFAULT_RELIANT,
+      "app/api/accounts/[id]/restore/route.ts",
       "app/api/accounts/manual/[id]/restore/route.ts",
       "app/api/accounts/wallet/route.ts",
       "lib/plaid/exchangeToken.ts",
@@ -388,8 +397,17 @@ async function main(): Promise<void> {
         }
         return out;
       };
-      /** An authority named at the call site: the principal, or a phase client. */
-      const namesAuthority = (args: string) => /\b(?:db|tx|client)\s*,?\s*$/.test(args);
+      /**
+       * An authority named at the call site: the principal, or a phase client.
+       *
+       * ⚠️ IT MUST MATCH AT EITHER END. The merge still takes its client LAST,
+       * while `resolveAccountByFingerprint` now takes it FIRST and REQUIRED. A
+       * trailing-only test (what this was) reads every converted leading-client
+       * call as "no authority named" and would have reported the conversion as a
+       * regression — measured, it did exactly that for both call sites.
+       */
+      const namesAuthority = (args: string) =>
+        /\b(?:db|tx|client)\s*,?\s*$/.test(args) || /^\s*(?:db|tx|client)\s*,/.test(args);
 
       const mergeDefaulting: string[] = [];
       const fingerprintDefaulting: string[] = [];
@@ -401,8 +419,8 @@ async function main(): Promise<void> {
       check("NO call site relies on the merge's default any more — all four name an authority",
         mergeDefaulting.length === 0,
         `still defaulting: ${mergeDefaulting.join(", ")}`);
-      check("EXACTLY ONE call site relies on a reconcile default, and it is the fingerprint fallback in the generic restore route",
-        fingerprintDefaulting.length === 1 && fingerprintDefaulting[0] === DEFAULT_RELIANT[0],
+      check("ZERO call sites rely on a reconcile default — every one names its authority, leading or trailing",
+        fingerprintDefaulting.length === 0 && DEFAULT_RELIANT.length === 0,
         `relying on a default: ${fingerprintDefaulting.join(", ") || "(none)"}`);
     }
 
@@ -427,10 +445,28 @@ async function main(): Promise<void> {
       check(`${f}: names the migration that unblocked the fold, so nobody re-derives the refusal`,
         /DuplicateAccountCandidate/.test(src) && /20261003000100/.test(src));
     }
-    check("the generic restore route still records WHY its fingerprint fallback cannot be converted",
-      /resolveAccountByFingerprint/.test(readFileSync(join(ROOT, DEFAULT_RELIANT[0]), "utf8"))
-        && /itemRemove/.test(readFileSync(join(ROOT, DEFAULT_RELIANT[0]), "utf8")),
-      "the blocker is a transaction boundary (a provider call between transactions), and the route must say so");
+    // ── THE INVERSE OF THE PIN THAT USED TO LIVE HERE ───────────────────────
+    // This asserted the generic restore route still RECORDED WHY its fingerprint
+    // fallback could not be converted. There is nothing left to record: the
+    // route now threads its own phase and dispatches the provider work after it.
+    // So the assertion flips to the shape that makes the conversion visible —
+    // and it is asserted rather than assumed, because a route that threaded a
+    // phase but kept the provider call INSIDE it would still read as converted.
+    {
+      const restore = stripComments(readFileSync(join(ROOT, "app/api/accounts/[id]/restore/route.ts"), "utf8"));
+      check("the generic restore route resolves the fingerprint INSIDE its own tenant phase",
+        /withTenantDb\([^;]*?resolveAccountByFingerprint\(/.test(restore),
+        "the resolution must run on the route's own tenant role, not on an ambient default");
+      // ⚠️ THE CALL, NOT THE IMPORT. `indexOf("disconnectPlaidItemIfOrphaned")`
+      // finds the import statement at the top of the file, which is always
+      // before everything — measured, this check failed on exactly that.
+      const phaseEnd = restore.indexOf("pendingProviderRevocations");
+      const dispatch = restore.indexOf("await disconnectPlaidItemIfOrphaned(");
+      check("…and dispatches the provider cleanup AFTER that phase, from the returned ids",
+        phaseEnd > 0 && dispatch > phaseEnd,
+        "a provider call before/inside the phase is the orphan-gate defect: the gate counts live " +
+        "connections on a different client and cannot see an uncommitted soft-delete");
+    }
   }
 
   console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} check(s) failed.\n`);
