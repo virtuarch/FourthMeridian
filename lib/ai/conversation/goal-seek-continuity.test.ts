@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   check('SOLVED, and captured as REPLACE', r1.outcome === 'SOLVED' && c1.action === 'REPLACE', JSON.stringify({ o: r1.outcome, c: c1.action }));
   check('the goal says the measure, the outcome, the solved value and both representations',
     a.goal?.measure === 'investments' && a.goal.outcome === 'SOLVED' && a.goal.solved?.value === r1.required
-      && a.goal.solved.periodPct === r1.returnAtSolution.periodPct && a.goal.solved.annualizedPct === r1.returnAtSolution.annualizedPct,
+      && a.goal.solved?.periodPct === r1.returnAtSolution.periodPct && a.goal.solved?.annualizedPct === r1.returnAtSolution.annualizedPct,
     JSON.stringify(a.goal));
   check('…and that the figures are AT the solved value, which the assumptions do not contain', /AT the solved/.test(a.goal?.resultIs ?? ''));
   const atAnswer = r1.scenario.checkpoints.at(-1);
