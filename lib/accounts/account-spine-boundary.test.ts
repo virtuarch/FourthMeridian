@@ -65,7 +65,7 @@ type World = {
   accounts: Acct[];
   transactions: { id: string; financialAccountId: string; deletedAt: Date | null }[];
   debtProfiles: { id: string; financialAccountId: string }[];
-  links: { spaceId: string; financialAccountId: string; addedByUserId: string | null; visibilityLevel: string; status: string }[];
+  links: { id: string; spaceId: string; financialAccountId: string; addedByUserId: string | null; visibilityLevel: string; status: string }[];
   candidates: { a: string; b: string }[];
   connections: { id: string; financialAccountId: string; plaidItemDbId: string | null; deletedAt: Date | null }[];
 };
@@ -175,6 +175,11 @@ function makeRootClient(w: World, opts: { failFoldOf?: string } = {}) {
         say("spaceAccountLink.findMany");
         return w.links.filter((l) => l.financialAccountId === a.where.financialAccountId).map((l) => ({ ...l }));
       },
+      // ⚠️ HONOURS `where.id.in`, WHICH THE FIRST VERSION DID NOT. It filtered
+      // on `where.financialAccountId` — a key the real call does not even send —
+      // so it revoked the right rows for the wrong reason and would have passed
+      // even if the implementation had asked for the wrong ids. Measured: §5's
+      // assertions were vacuous until this was fixed.
       count:     async () => { say("spaceAccountLink.count"); return w.links.length; },
       findFirst: async () => { say("spaceAccountLink.findFirst"); return null; },
       upsert:    async (a: { create: { spaceId: string; financialAccountId: string; addedByUserId: string | null; visibilityLevel: string; status: string } }) => {
@@ -182,13 +187,17 @@ function makeRootClient(w: World, opts: { failFoldOf?: string } = {}) {
         const c = a.create;
         const existing = w.links.find((l) => l.spaceId === c.spaceId && l.financialAccountId === c.financialAccountId);
         if (existing) existing.status = "ACTIVE";
-        else w.links.push({ ...c });
+        else w.links.push({ id: `sal_${c.financialAccountId}_${c.spaceId}`, ...c });
         return {};
       },
-      updateMany: async (a: { where: { financialAccountId: string }; data: { status?: string } }) => {
+      updateMany: async (a: { where: { id?: { in: string[] }; status?: string }; data: { status?: string; revokedAt?: Date; revokedByUserId?: string | null } }) => {
         say("spaceAccountLink.updateMany");
-        const hit = w.links.filter((l) => l.financialAccountId === a.where.financialAccountId && l.status === "ACTIVE");
-        for (const l of hit) if (a.data.status) l.status = a.data.status;
+        const ids = new Set(a.where.id?.in ?? []);
+        const hit = w.links.filter((l) => ids.has(l.id) && (a.where.status === undefined || l.status === a.where.status));
+        for (const l of hit) {
+          if (a.data.status) l.status = a.data.status;
+          if (a.data.revokedAt !== undefined) (l as { revokedAt?: Date | null }).revokedAt = a.data.revokedAt;
+        }
         return { count: hit.length };
       },
     },
@@ -267,9 +276,9 @@ function cohortOfThree(): World {
     ],
     debtProfiles: [{ id: "dp_b", financialAccountId: "acct_b" }],
     links: [
-      { spaceId: "space_a", financialAccountId: "acct_a", addedByUserId: "alice", visibilityLevel: "FULL", status: "ACTIVE" },
-      { spaceId: "space_b", financialAccountId: "acct_b", addedByUserId: "alice", visibilityLevel: "FULL", status: "ACTIVE" },
-      { spaceId: "space_c", financialAccountId: "acct_c", addedByUserId: "alice", visibilityLevel: "FULL", status: "ACTIVE" },
+      { id: "sal_a", spaceId: "space_a", financialAccountId: "acct_a", addedByUserId: "alice", visibilityLevel: "FULL", status: "ACTIVE" },
+      { id: "sal_b", spaceId: "space_b", financialAccountId: "acct_b", addedByUserId: "alice", visibilityLevel: "FULL", status: "ACTIVE" },
+      { id: "sal_c", spaceId: "space_c", financialAccountId: "acct_c", addedByUserId: "alice", visibilityLevel: "FULL", status: "ACTIVE" },
     ],
     candidates: [],
     // Empty on purpose: a live connection would send closeOutAccountConnections
@@ -399,6 +408,101 @@ async function main(): Promise<void> {
       !/disconnectPlaidItemIfOrphaned/.test(stripped));
     check("the connection close-out asserts its own shortfall",
       /assertEveryObservedRowWasWritten/.test(stripped) && /AccountConnection/.test(stripped));
+  }
+
+  // ══ 5. RLS-ACC-S8 — THE ARCHIVED LOSER KEEPS NO ACTIVE LINK ═══════════════
+  // The fold COPIES each loser link onto the winner and, until this slice, left
+  // the loser's own rows ACTIVE. `fm_account_visible(acct)` is
+  // `EXISTS(SpaceAccountLink … status='ACTIVE' AND spaceId IN
+  // fm_visible_space_ids())` and arm 1 of all thirteen subtree policies is that
+  // predicate written out, so a lingering ACTIVE link kept the archived loser
+  // AND ITS SUBTREE reachable by every member of that Space indefinitely.
+  console.log("\n5. a folded loser keeps no ACTIVE link, and the winner's are correct");
+  {
+    // ── multi-Space loser: every link moves, every loser row is revoked ──────
+    const w = cohortOfThree();
+    w.links.push({ id: "sal_b2", spaceId: "space_x", financialAccountId: "acct_b", addedByUserId: "alice", visibilityLevel: "BALANCE_ONLY", status: "ACTIVE" });
+    const c = makeRootClient(w);
+    await resolve(w, c);
+
+    const loserActive = w.links.filter((l) => (l.financialAccountId === "acct_b" || l.financialAccountId === "acct_c") && l.status === "ACTIVE");
+    check("DENOMINATOR: the losers held 3 ACTIVE links across 3 Spaces before the fold",
+      ["space_b", "space_c", "space_x"].length === 3);
+    check("NO ACTIVE link remains on either folded loser",
+      loserActive.length === 0, JSON.stringify(loserActive));
+    check("…and they are REVOKED rather than deleted — the historical rows survive",
+      w.links.filter((l) => l.financialAccountId === "acct_b" || l.financialAccountId === "acct_c").every((l) => l.status === "REVOKED"));
+    check("the winner holds an ACTIVE link in EVERY Space a loser was in",
+      ["space_b", "space_c", "space_x"].every((sp) =>
+        w.links.some((l) => l.financialAccountId === "acct_a" && l.spaceId === sp && l.status === "ACTIVE")),
+      JSON.stringify(w.links.filter((l) => l.financialAccountId === "acct_a")));
+    check("the winner's OWN pre-existing link is untouched and still ACTIVE",
+      w.links.find((l) => l.id === "sal_a")?.status === "ACTIVE");
+    // BALANCE_ONLY is a PRODUCT visibility level, never a mutation authority —
+    // it travels with the copied link and does not gate the revoke.
+    check("a BALANCE_ONLY loser link is revoked exactly like a FULL one",
+      w.links.find((l) => l.id === "sal_b2")?.status === "REVOKED");
+
+    // ── the revoke is INSIDE the atomic boundary (#1's) ──────────────────────
+    const revokes = c.log.filter((l) => l.stmt === "spaceAccountLink.updateMany");
+    check("the loser-link revoke ran inside the ONE transaction, not after it",
+      revokes.length > 0 && revokes.every((l) => l.scope !== "root"), JSON.stringify(revokes));
+  }
+  {
+    // ── ROLLBACK: the revoke is atomic with the fold ─────────────────────────
+    const w = cohortOfThree();
+    const c = makeRootClient(w, { failFoldOf: "acct_c" });
+    try { await resolve(w, c); } catch { /* expected */ }
+    check("on failure the loser's link is STILL ACTIVE — the revoke rolled back with everything else",
+      w.links.find((l) => l.id === "sal_b")?.status === "ACTIVE",
+      JSON.stringify(w.links.map((l) => `${l.id}:${l.status}`)));
+  }
+  {
+    // ── REPLAY: already-revoked loser links are idempotent, and the shortfall
+    //    assertion must not fire on them (they are filtered out before the
+    //    write, so observed === written === 0).
+    const w = cohortOfThree();
+    const c1 = makeRootClient(w);
+    await resolve(w, c1);
+    const afterFirst = w.links.map((l) => `${l.id}:${l.status}`).sort().join(",");
+    // Re-point the losers active again? No — replay the fold as production
+    // would: the losers are now archived, so they arrive as ARCHIVED candidates.
+    const c2 = makeRootClient(w);
+    let replayThrew = "(none)";
+    try { await resolve(w, c2); } catch (e) { replayThrew = e instanceof Error ? e.message.slice(0, 70) : String(e); }
+    check("a REPLAY of the fold does not throw — an already-revoked loser link is not a shortfall",
+      replayThrew === "(none)", replayThrew);
+    check("…and the link state is unchanged by the replay",
+      w.links.map((l) => `${l.id}:${l.status}`).sort().join(",") === afterFirst,
+      `before=[${afterFirst}] after=[${w.links.map((l) => `${l.id}:${l.status}`).sort().join(",")}]`);
+  }
+  {
+    // ── CROSS-OWNER: the reparenting guard still refuses, and nothing is
+    //    revoked on the way to that refusal.
+    const w = cohortOfThree();
+    w.accounts.find((a) => a.id === "acct_c")!.ownerUserId = "bob";
+    const c = makeRootClient(w);
+    let threw = "(none)";
+    try { await resolve(w, c); } catch (e) { threw = e instanceof Error ? e.name : String(e); }
+    check("a cross-owner candidate REFUSES the fold (the reparenting guard holds)",
+      threw !== "(none)", threw);
+    check("…and no link was revoked on the way to that refusal",
+      w.links.every((l) => l.status === "ACTIVE"),
+      JSON.stringify(w.links.map((l) => `${l.id}:${l.status}`)));
+  }
+  {
+    // ── [source] the shape, pinned ───────────────────────────────────────────
+    const { readFileSync } = await import("node:fs");
+    const code = readFileSync("lib/accounts/reconcile.ts", "utf8").replace(/\/\*[\s\S]*?\*\/|(^|[^:])\/\/.*$/gm, "$1");
+    check("the loser-link revoke acts on OBSERVED IDS, not on a broad predicate",
+      /spaceAccountLink\.updateMany\(\{\s*where:\s*\{\s*id:\s*\{\s*in:\s*loserActiveLinkIds\s*\}/.test(code.replace(/\s+/g, " ").replace(/ /g, " ")) ||
+      /id: \{ in: loserActiveLinkIds \}/.test(code),
+      "a `{financialAccountId, status: ACTIVE}` predicate could touch a row that became ACTIVE concurrently, " +
+      "and would make the shortfall assertion meaningless");
+    check("…and its shortfall is asserted",
+      /assertEveryObservedRowWasWritten\(\s*\{ table: "SpaceAccountLink"/.test(code));
+    check("reconcile.ts still does NOT import systemDb — the revoke stayed tenant-scoped and atomic",
+      !/systemDb/.test(code));
   }
 
   console.log(

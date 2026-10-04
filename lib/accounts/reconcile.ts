@@ -822,7 +822,10 @@ export async function mergeArchivedDuplicateIntoCanonical(
 
   const loserLinks = await tx.spaceAccountLink.findMany({
     where:  { financialAccountId: loserId },
-    select: { spaceId: true, addedByUserId: true, visibilityLevel: true },
+    // `id` and `status` are new in RLS-ACC-S8: the revoke below acts on exactly
+    // the rows this read observed, which is what makes its shortfall assertion
+    // mean something.
+    select: { id: true, status: true, spaceId: true, addedByUserId: true, visibilityLevel: true },
   });
   for (const l of loserLinks) {
     await dualWriteSpaceAccountLink(tx, {
@@ -840,6 +843,67 @@ export async function mergeArchivedDuplicateIntoCanonical(
         revokedByUserId: null,
       },
     });
+  }
+
+  // ── RLS-ACC-S8 — THE LOSER'S OWN LINKS ARE REVOKED, NOT LEFT ACTIVE ───────
+  // The loop above COPIES each link onto the winner. It never touched the
+  // loser's own rows, and nothing else did either, so a folded-away duplicate
+  // stayed ACTIVE in the same Space as the winner it had just been folded into.
+  // That is not a cosmetic residue: `fm_account_visible(acct)` is
+  // `EXISTS(SpaceAccountLink … status='ACTIVE' AND spaceId IN
+  // fm_visible_space_ids())`, and arm 1 of all thirteen account-subtree policies
+  // is that predicate written out — so a lingering ACTIVE link kept the archived
+  // loser AND ITS ENTIRE SUBTREE readable and writable by every member of that
+  // Space, indefinitely, after the product had archived it.
+  //
+  // It also broke restore: `reactivateAccountLinksEverywhere` observes
+  // `status: REVOKED`, so a loser whose links were never revoked yielded
+  // observed 0 / changed 0, its shortfall assertion passed vacuously, and the
+  // account came back with its old ACTIVE links while the winner still held
+  // ACTIVE links in the same Spaces — a resurrected visible duplicate arriving
+  // THROUGH the guard rail.
+  //
+  // ⚠️ ARCHAEOLOGY SAYS OVERSIGHT, NOT DECISION. The block has been a
+  // findMany + winner-side upsert since its first line (5e552ad, 2026-06-16);
+  // `4986d12` the same day made `pickCanonicalAndMerge` archive a live loser
+  // itself, revoking nothing. Both commits have one-line messages and no body.
+  // Meanwhile this file's own header says only the account's *visible*
+  // duplication is resolved — and an ACTIVE link IS the visibility predicate —
+  // and `reconcile.ts` was the only one of three FinancialAccount archival sites
+  // that omitted the revoke; the other two (lib/accounts/disconnect.ts,
+  // app/api/accounts/manual/[id]/route.ts) both follow archival with one.
+  //
+  // ⚠️ REVOKE-DON'T-DELETE, AND `kind` IS NOT TOUCHED. The schema comment on
+  // this table says the doctrine outright. A REVOKED HOME row keeps occupying
+  // `SpaceAccountLink_one_home_per_account` (UNIQUE(financialAccountId) WHERE
+  // kind='HOME'), which is correct and conflict-free because that index is
+  // per-account. `revokedByUserId` is left NULL on purpose: the revoker here is
+  // reconciliation, not a person, and this function has no actor parameter —
+  // naming one would be fabricating an attribution.
+  //
+  // ⚠️ AND THE REVOKE IS EXACTLY AS WIDE AS THE COPY — NO WIDER. It acts on the
+  // ids the read above observed, under the same authority in the same snapshot.
+  // `SpaceAccountLink` has NO owner arm (verified against the migrated database:
+  // four fm_app policies, all plain `spaceId IN fm_visible_space_ids()`), so a
+  // tenant phase sees only links in Spaces the actor can reach. That narrowness
+  // is a PRE-EXISTING property of the copy, not something this revoke
+  // introduces: a loser link in an invisible Space was already never copied to
+  // the winner. Making the revoke deployment-wide would need `systemDb`, which
+  // cannot be atomic with this fold (separate client, separate pool) and which
+  // lib/accounts/links-everywhere.test.ts forbids this module from importing.
+  // Atomicity was chosen; the residual narrowness of BOTH halves is reported
+  // separately rather than quietly widened here.
+  const loserActiveLinkIds = loserLinks.filter((l) => l.status === ShareStatus.ACTIVE).map((l) => l.id);
+  if (loserActiveLinkIds.length > 0) {
+    const revoked = await tx.spaceAccountLink.updateMany({
+      where: { id: { in: loserActiveLinkIds }, status: ShareStatus.ACTIVE },
+      data:  { status: ShareStatus.REVOKED, revokedAt: new Date(), revokedByUserId: null },
+    });
+    assertEveryObservedRowWasWritten(
+      { table: "SpaceAccountLink", operation: "update", scope: "the folded loser's own active links" },
+      loserActiveLinkIds.length,
+      revoked.count,
+    );
   }
 
   // ⚠️ THE STATEMENT THAT USED TO BE THE ONE A TENANT CLIENT COULD NOT EXECUTE.

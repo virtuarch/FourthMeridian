@@ -1813,13 +1813,26 @@ async function main(): Promise<void> {
       const audit   = auditRows("acct_tfold");
       const relinked = psql(h.ownerUrl,
         `select count(*) from "SpaceAccountLink" where "financialAccountId"='acct_alice' and "spaceId"='space_a' and status='ACTIVE';`).out.trim();
+      // ⚠️ RLS-ACC-S8 — THE LOSER'S OWN LINK, WHICH THIS CASE BUILT AND NEVER
+      // READ. `l_tfold` is seeded ACTIVE above and the fold copies it onto the
+      // winner; until this slice nothing revoked it, so a folded-away duplicate
+      // stayed ACTIVE in the same Space as its winner. Case 86 asserted
+      // `relinked` — the WINNER's link — and looked away from the loser's, which
+      // is exactly how the defect survived six weeks of green suites. Measured
+      // before the repair: `ACTIVE/null`.
+      const loserLink = psql(h.ownerUrl,
+        `select coalesce(status || '/' || coalesce("revokedAt"::text,'null'), '(gone)') from "SpaceAccountLink" where id='l_tfold';`).out.trim();
+      const loserActiveAnywhere = psql(h.ownerUrl,
+        `select count(*) from "SpaceAccountLink" where "financialAccountId"='acct_tfold' and status='ACTIVE';`).out.trim();
 
-      check(86, "[role+service] the LEGITIMATE same-owner fold runs END TO END through the converted merge on a REAL fm_app phase — principal and identity read inside that very transaction, every observed row moved, the DebtProfile moved, the link re-pointed and the audit row written, with no privileged fallback anywhere in the path",
+      check(86, "[role+service] the LEGITIMATE same-owner fold runs END TO END through the converted merge on a REAL fm_app phase — principal and identity read inside that very transaction, every observed row moved, the DebtProfile moved, the link re-pointed, the audit row written, AND THE LOSER'S OWN LINK REVOKED so a folded-away duplicate cannot stay ACTIVE beside its winner, with no privileged fallback anywhere in the path",
         threw === "(no throw)"
           && principal === "fm_app" && identity === "alice"
           && before === "3" && moved === before && left === "0"
-          && debt === "acct_alice" && audit === "1" && relinked === "1",
-        `threw=${threw} principal=${principal} identity=${identity} population=${before} moved=${moved} left=${left} debt=${debt} audit=${audit} activeLink=${relinked}`);
+          && debt === "acct_alice" && audit === "1" && relinked === "1"
+          && loserLink.startsWith("REVOKED/") && !loserLink.endsWith("/null")
+          && loserActiveAnywhere === "0",
+        `threw=${threw} principal=${principal} identity=${identity} population=${before} moved=${moved} left=${left} debt=${debt} audit=${audit} activeWinnerLink=${relinked} loserLink=${loserLink} loserActiveLinks=${loserActiveAnywhere}`);
 
       // ⚠️ THE DebtProfile IS DELETED BY ID, AND IT WAS NOT, WHICH LEFT CASE 87
       // ASSERTING SOMETHING ALREADY TRUE. This fold MOVED `dp_tfold` onto
