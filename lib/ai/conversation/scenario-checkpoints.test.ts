@@ -160,11 +160,12 @@ console.log('\nK–L. movement compaction');
   const ledger = runScenarioLedger({ opening: { asOfISO: ASOF, liquid: 15_000, investments: 20_000, debt: 0, otherAssets: 0 },
     spine, contributions: movements, outflows: [{ date: '2027-06-30', amount: 4_000, label: 'trip' }], returns: [] });
   const c = compactMovements(ledger.movements);
-  check(`361 contributions + 1 outflow → the first ${MOVEMENTS_SHOWN} shown, all counted`,
-    c.count === 362 && c.first.length === MOVEMENTS_SHOWN && c.compacted === true && !!c.note);
+  // 360 month-end sweeps: the 13 September 2056 horizon is not a month-end, so no sweep lands on it.
+  check(`360 contributions + 1 outflow → the first ${MOVEMENTS_SHOWN} shown, all counted`,
+    c.count === 361 && c.first.length === MOVEMENTS_SHOWN && c.compacted === true && !!c.note);
   check('contribution total equals the ledger\'s own total to date at the horizon (conserved)',
     c.contributions.total === ledger.checkpoints[ledger.checkpoints.length - 1].movements.contributionsToDate.total
-      && c.contributions.count === 361);
+      && c.contributions.count === 360);
   check('outflow total and count likewise', c.outflows.total === 4_000 && c.outflows.count === 1);
   check('the shown movements are the first applied, verbatim',
     JSON.stringify(c.first) === JSON.stringify(ledger.movements.slice(0, MOVEMENTS_SHOWN)));

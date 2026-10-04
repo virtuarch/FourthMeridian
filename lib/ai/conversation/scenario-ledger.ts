@@ -487,6 +487,19 @@ export function isMonthEndISO(iso: string): boolean {
   return d.getUTCDate() === 1;
 }
 
+/**
+ * The month-ends in (fromISO, toISO] on which a MONTHLY flow occurs — a schedule, not a grid.
+ *
+ * ⚠️ NOT `monthEndsBetween`. That is a CHECKPOINT grid and ends on the horizon by design, so the last
+ * checkpoint is the endpoint. Read as a payment schedule it put a whole month's flow on a horizon that
+ * is not a month-end: a goal seek "by 1 November" invested on 31 October AND 1 November, and so
+ * needed half of what "by 31 October" did (1,000.01 vs 2,000, 2026-10-04). A partial last month owes
+ * nothing, exactly as the liability schedule already treats it.
+ */
+export function monthEndOccurrences(fromISO: string, toISO: string): string[] {
+  return monthEndsBetween(fromISO, toISO).filter(isMonthEndISO);
+}
+
 function addDaysISO(iso: string, n: number): string {
   const d = new Date(`${iso}T00:00:00.000Z`);
   d.setUTCDate(d.getUTCDate() + n);
@@ -737,7 +750,7 @@ export function expandContributions(
       // rule reads one balance on one date; there is no "month it closes". The
       // balance it reads is settled by `settleMovements`, which is where every
       // earlier movement has already been subtracted.
-      const grid = monthEndsBetween(asOfISO, sTo);
+      const grid = monthEndOccurrences(asOfISO, sTo);
       const firstIdx = grid.findIndex((d) => d >= sFrom);
       const dates = firstIdx === -1 ? [] : grid.slice(firstIdx);
       if (dates.length === 0) {
@@ -782,7 +795,7 @@ export function expandContributions(
       // opens at the month-end before it — not at today. Generating from `asOf`
       // and then taking the tail is what makes the first contribution of a
       // late-starting rule one month's surplus instead of four years of it.
-      const grid = monthEndsBetween(asOfISO, sTo);
+      const grid = monthEndOccurrences(asOfISO, sTo);
       const firstIdx = grid.findIndex((d) => d >= sFrom);
       const dates = firstIdx === -1 ? [] : grid.slice(firstIdx);
       if (dates.length === 0) {
@@ -994,7 +1007,7 @@ export function settleMovements(
   const obligationFrom = asOfISO ?? (spineDates[0] ? addDaysISO(spineDates[0], -1) : undefined);
   const lastSpine = spineDates[spineDates.length - 1];
   const obligationDue = obligationFrom && lastSpine
-    ? monthEndsBetween(obligationFrom, lastSpine).filter(isMonthEndISO) : [];
+    ? monthEndOccurrences(obligationFrom, lastSpine) : [];
   let nextObligation = 0;
   // Settlement dates: every spine date, plus any date a movement falls on.
   const dates = [...new Set([...spineDates, ...planned.map((m) => m.date)])].sort();
@@ -1389,28 +1402,47 @@ export interface SolveOutcome {
 }
 
 /**
- * What a solve found. FOUR answers, because "no" had two meanings.
+ * What a solve found. FIVE answers, because "no" had three meanings.
  *
  * - SOLVED: a value inside the bound reaches the target; `required` is the smallest reportable one.
  * - ALREADY_MET: the bottom of the range already reaches it; nothing is needed.
- * - INFEASIBLE: no value of the lever can reach it — the target does not respond to the lever, or
- *   the bound is a FACT (a cut cannot exceed the spending it cuts) and the whole of it falls short.
- * - OUT_OF_RANGE: the lever moves the result, but not far enough inside a SEARCH bound — a
- *   convention, not a fact. A larger value might reach it; it is reported, never called impossible.
+ * - INFEASIBLE: every evaluation SUCCEEDED and they prove no value of the lever can reach it —
+ *   the target does not respond to the lever, the lever moves the measure AWAY from the target,
+ *   or the bound is a FACT (a cut cannot exceed the spending it cuts) and the whole of it falls short.
+ * - OUT_OF_RANGE: the lever moves the result TOWARD the target, but not far enough inside a SEARCH
+ *   bound — a convention, not a fact. A larger value might reach it; never called impossible.
+ * - EVALUATION_FAILED: the projection produced no usable value at a point the answer depends on, so
+ *   reachability is UNKNOWN. An evaluation that failed is never evidence that a target is impossible.
  *
  * ⚠️ `feasible` STAYS, DERIVED: true for SOLVED and ALREADY_MET. It was the only field and it said
- * "no solution exists" about a search that had merely stopped.
+ * "no solution exists" about a search that had merely stopped — and, before EVALUATION_FAILED, about
+ * a projection that could not run at all ("does not respond … no amount of it reaches the target"
+ * for a Space with no complete month of spending, 2026-10-04).
  */
-export type SolveOutcomeKind = 'SOLVED' | 'ALREADY_MET' | 'OUT_OF_RANGE' | 'INFEASIBLE';
+export type SolveOutcomeKind = 'SOLVED' | 'ALREADY_MET' | 'OUT_OF_RANGE' | 'INFEASIBLE' | 'EVALUATION_FAILED';
 
 /** Whether the top of the range is a fact about the world or where the search stopped. */
 export type SolveBound = 'STRUCTURAL' | 'SEARCH';
 
+/**
+ * Which way raising the lever moves the measure, read from the solve's own evaluations at the two
+ * ends of its range: TOWARD the target (it rises), AWAY from it (it falls), NONE (flat), or UNKNOWN
+ * (an end could not be evaluated).
+ *
+ * ⚠️ A CONTRACT THE SOLVER ESTABLISHES, NOT A TABLE THE CALLER KEEPS. A monthly contribution RAISES
+ * investments and LOWERS cash; a spending cut raises cash unless a rule sweeps it on; a waterfall can
+ * send the same dollar to debt. A static lever × measure table would be wrong for some rule
+ * combination; the two end evaluations are the ledger's own answer for THIS scenario. The bisection
+ * already assumes the function is monotone between them — this states which way, and a lever that
+ * moves the measure away is never told "a larger value might reach it".
+ */
+export type LeverDirection = 'TOWARD' | 'AWAY' | 'NONE' | 'UNKNOWN';
+
 export type SolveResult =
-  | (SolveOutcome & { outcome: 'SOLVED' | 'ALREADY_MET'; feasible: true;
+  | (SolveOutcome & { outcome: 'SOLVED' | 'ALREADY_MET'; feasible: true; direction: LeverDirection;
       required: number; alreadyMet: boolean; reached: number })
-  | (SolveOutcome & { outcome: 'OUT_OF_RANGE' | 'INFEASIBLE'; feasible: false;
-      reason: string; bestReached: number | null; bestAt: number });
+  | (SolveOutcome & { outcome: 'OUT_OF_RANGE' | 'INFEASIBLE' | 'EVALUATION_FAILED'; feasible: false;
+      direction: LeverDirection; reason: string; bestReached: number | null; bestAt: number });
 
 const ceilTo = (n: number, step: number) => Math.ceil(n / step - 1e-9) * step;
 
@@ -1430,21 +1462,29 @@ export function solveForTarget(args: {
   const bound = args.bound ?? 'SEARCH';
   const maxIterations = args.maxIterations ?? 80;
   const frame = { solveFor, lo, hi };
-  const at = (x: number) => evaluate(x) ?? Number.NEGATIVE_INFINITY;
+  /** A usable value, or null — never a stand-in number for "the projection refused". */
+  const at = (x: number): number | null => { const v = evaluate(x); return v !== null && Number.isFinite(v) ? v : null; };
+  const failed = (where: number, iterations: number): SolveResult => ({ ...frame, iterations,
+    outcome: 'EVALUATION_FAILED', feasible: false, direction: 'UNKNOWN', bestReached: null, bestAt: where,
+    reason: `the projection produced no value for ${solveFor} = ${where}, so whether any value reaches the `
+      + 'target is unknown — this is not evidence that it cannot' });
 
   const atLo = at(lo);
+  if (atLo === null) return failed(lo, 0);
   if (atLo >= target) {
-    return { ...frame, iterations: 0, outcome: 'ALREADY_MET', feasible: true, required: lo,
-      alreadyMet: true, reached: atLo };
+    return { ...frame, iterations: 0, outcome: 'ALREADY_MET', feasible: true, direction: 'UNKNOWN',
+      required: lo, alreadyMet: true, reached: atLo };
   }
 
   const atHi = at(hi);
+  if (atHi === null) return failed(hi, 1);
+  const direction: LeverDirection = atHi > atLo ? 'TOWARD' : atHi < atLo ? 'AWAY' : 'NONE';
   if (atHi < target) {
-    const flat = atHi === atLo;
-    return { ...frame, iterations: 1,
-      outcome: flat || bound === 'STRUCTURAL' ? 'INFEASIBLE' : 'OUT_OF_RANGE', feasible: false,
-      bestReached: Number.isFinite(atHi) ? atHi : null, bestAt: hi,
-      reason: flat
+    return { ...frame, iterations: 1, direction,
+      outcome: direction !== 'TOWARD' || bound === 'STRUCTURAL' ? 'INFEASIBLE' : 'OUT_OF_RANGE', feasible: false,
+      // The best the range did is at whichever end is higher — the top only when the lever helps.
+      ...(direction === 'AWAY' ? { bestReached: atLo, bestAt: lo } : { bestReached: atHi, bestAt: hi }),
+      reason: direction === 'NONE'
         // ⚠️ A FLAT FUNCTION IS THE MOST USEFUL REFUSAL THIS TOOL PRODUCES.
         // Moving cash into investments at a 0% return relocates money; it does
         // not create any, so NO monthly contribution reaches a net-worth target.
@@ -1453,17 +1493,22 @@ export function solveForTarget(args: {
         ? `the target does not respond to ${solveFor} at all under these assumptions — `
           + 'every value in the range produces the same result, so no amount of it reaches '
           + 'the target'
-        : bound === 'STRUCTURAL'
-          ? `not even ${hi}, the most ${solveFor} can be, reaches the target`
-          : `no value of ${solveFor} between ${lo} and ${hi} reaches the target; ${hi} is where the `
-            + 'search stopped, not a limit of the arithmetic — a larger value might reach it',
+        : direction === 'AWAY'
+          ? `raising ${solveFor} moves this measure AWAY from the target (${atLo} at ${lo}, ${atHi} at ${hi}), `
+            + `so no larger value can reach it; the closest is ${solveFor} = ${lo}`
+          : bound === 'STRUCTURAL'
+            ? `not even ${hi}, the most ${solveFor} can be, reaches the target`
+            : `no value of ${solveFor} between ${lo} and ${hi} reaches the target; ${hi} is where the `
+              + 'search stopped, not a limit of the arithmetic — a larger value might reach it',
     };
   }
 
   let low = lo, high = hi, iterations = 0;
   while (high - low > precision && iterations < maxIterations) {
     const mid = (low + high) / 2;
-    if (at(mid) >= target) high = mid; else low = mid;
+    const v = at(mid);
+    if (v === null) return failed(mid, iterations + 1);
+    if (v >= target) high = mid; else low = mid;
     iterations++;
   }
 
@@ -1471,7 +1516,8 @@ export function solveForTarget(args: {
   // verify it — a value rounded to the cent must not land a cent short.
   let required = ceilTo(high, precision);
   let reached  = at(required);
-  if (reached < target) { required = ceilTo(required + precision, precision); reached = at(required); }
+  if (reached !== null && reached < target) { required = ceilTo(required + precision, precision); reached = at(required); }
+  if (reached === null) return failed(required, iterations);
 
-  return { ...frame, iterations, outcome: 'SOLVED', feasible: true, required, alreadyMet: false, reached };
+  return { ...frame, iterations, outcome: 'SOLVED', feasible: true, direction, required, alreadyMet: false, reached };
 }

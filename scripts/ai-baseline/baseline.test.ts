@@ -1724,7 +1724,8 @@ console.log('18a. goal seek tool');
   // year at 8%", because that is what the conversation had said. The figure was
   // right and the sentence around it was not.
   check('the assumptions actually in force are echoed on EVERY path, refusal included',
-    /assumptionsInForce: scenarioAssumptions\(setup, baseLedger, setup\.returns\)/.test(src)
+    // A return solve echoes the stated rate as REPLACED, not in force (truthfulness slice).
+    /assumptionsInForce: scenarioAssumptions\(setup, baseLedger, isReturn \? \[\] : setup\.returns\)/.test(src)
       && /^function scenarioAssumptions/m.test(src));
   // 3 tools + the goal seek's one refusal-echo helper (S1-7), all the same function.
   check('…and it is the same function the projection and the crossing report from',

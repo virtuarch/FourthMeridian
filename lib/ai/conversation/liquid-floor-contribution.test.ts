@@ -21,7 +21,7 @@
  */
 
 import {
-  expandContributions, runScenarioLedger, growthFactor, monthEndsBetween,
+  expandContributions, runScenarioLedger, growthFactor, monthEndsBetween, isMonthEndISO,
   type ContributionSpec, type LedgerOpening, type SpinePoint, type LedgerResult,
 } from './scenario-ledger';
 import { findScenarioCrossing } from './scenario-crossing';
@@ -297,8 +297,12 @@ console.log('\n13. A LONG HORIZON (N)');
   const r = run([FLOOR_ALL], { path: long, returns: [{ fromISO: ASOF, toISO: '2056-09-13', annualPct: 7 }] });
   const ms = Date.now() - t0;
   check('361 month-ends settle and compose well under a second', ms < 1000 && r.checkpoints.length === long.length, `${ms} ms`);
-  check('cash is pinned at the floor from the crossing month to the end',
-    r.checkpoints.filter((c) => c.date >= '2027-01-31').every((c) => c.liquid!.amount === FLOOR));
+  // A floor sweeps on MONTH-ENDS (truthfulness slice, 2026-10-04): the 13 September horizon is not
+  // one, so the half-month after the last sweep is cash the rule has not yet moved.
+  check('cash is pinned at the floor at every month-end from the crossing month on',
+    r.checkpoints.filter((c) => c.date >= '2027-01-31' && isMonthEndISO(c.date)).every((c) => c.liquid!.amount === FLOOR));
+  check('…and at the mid-month horizon cash sits above it, unswept — nothing swept on a non-month-end',
+    r.checkpoints.at(-1)!.date === '2056-09-13' && r.checkpoints.at(-1)!.liquid!.amount > FLOOR);
   check('no rejection, no warning on a plan that funds itself', r.rejected.length === 0 && r.warnings.length === 0);
 }
 

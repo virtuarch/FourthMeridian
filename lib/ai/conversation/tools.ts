@@ -87,12 +87,12 @@ import {
 } from './forecast-vocabulary';
 import { applyInvestmentScenario, type ScenarioComponent } from './scenario';
 import {
-  findScenarioCrossing, elapsedBetween, type CrossingDirection, type LedgerMetric,
+  findScenarioCrossing, elapsedBetween, metricAt, type CrossingDirection, type LedgerMetric,
 } from './scenario-crossing';
 import {
   monthEndsBetween,
   runScenarioLedger, expandContributions, solveForTarget, PROVENANCE,
-  returnHorizon, returnRepresentation, annualizedFromPeriodPct, periodFromAnnualizedPct,
+  returnHorizon, returnRepresentation, annualizedFromPeriodPct, periodFromAnnualizedPct, monthEndOccurrences,
   type SolveBound,
   type ContributionSpec, type LedgerCheckpoint, type LedgerResult,
   type PlannedMovement, type ReturnPeriod, type SpinePoint,
@@ -3695,9 +3695,16 @@ const scenarioCrossing: ToolDefinition = {
     const found = findScenarioCrossing({ checkpoints: ledger.checkpoints,
       opening: ledger.opening, metric, direction, threshold });
 
+    // ⚠️ AN UNEVALUATED MONTH-END IS NOT A MONTH THE CONDITION FAILED. A Space with no complete
+    // month of spending has no projection at all, and "not met at any month-end through 2056" was
+    // said after examining ZERO of them (2026-10-04). Count what could not be read, and never fold
+    // it into a negative.
+    const unevaluated = ledger.checkpoints.filter((c) => metricAt(c, metric) === null);
     const head = {
       asOf: setup.asOf, metric, metricMeans: CROSSING_METRICS[metric], direction, threshold,
       searchedThrough: { to: searchThrough, monthsExamined: found.examined,
+        ...(unevaluated.length > 0 ? { monthsUnevaluated: unevaluated.length,
+          firstUnevaluated: unevaluated[0].date } : {}),
         grain: 'month-end',
         ...(asked > capISO ? { cappedAt: `${CROSSING_MAX_YEARS} years` } : {}) },
       assumptionsInForce: scenarioAssumptions(setup, ledger, setup.returns),
@@ -3712,22 +3719,33 @@ const scenarioCrossing: ToolDefinition = {
     // narrated as though a future event had been found. A position that already
     // satisfies the condition has a date, and it is today.
     if (found.alreadySatisfied) {
-      return { ...head, crossing: null,
+      return { ...head, outcome: 'ALREADY_SATISFIED', crossing: null,
         alreadySatisfied: { ...found.alreadySatisfied,
           elapsed: elapsedBetween(setup.asOf, found.alreadySatisfied.date) },
         meaning: 'This is already true today. Nothing here is a future event.' };
     }
 
+    if (!found.crossing && found.examined === 0) {
+      return { ...head, outcome: 'EVALUATION_FAILED', crossing: null, neverCrossesBy: null,
+        projectionRefusal: unevaluated.find((c) => c.unavailable)?.unavailable ?? 'the projection produced no value',
+        meaning: 'The projection could not produce a value at any month-end, so whether and when this '
+          + 'condition is met is UNKNOWN. Do not say it is never met; say the calculation could not run and why.' };
+    }
+
     if (!found.crossing) {
-      return { ...head, crossing: null,
+      return { ...head, outcome: 'NOT_WITHIN_WINDOW', crossing: null,
         neverCrossesBy: found.end
           ? { date: found.end.checkpoint.date, value: found.end.value,
               elapsed: elapsedBetween(setup.asOf, found.end.checkpoint.date),
               composition: composition(found.end.checkpoint),
               changeSinceOpening: changeAt(found.end.checkpoint) }
           : null,
-        meaning: 'Under these assumptions the condition is not met at any month-end through '
-          + `${searchThrough}. That is a statement about this search window, not about ever.` };
+        meaning: (unevaluated.length > 0
+          ? `Under these assumptions the condition is not met at any of the ${found.examined} month-ends the `
+            + `projection could evaluate through ${searchThrough}; ${unevaluated.length} could not be evaluated `
+            + `(from ${unevaluated[0].date}), and nothing is known about those. `
+          : 'Under these assumptions the condition is not met at any month-end through '
+            + `${searchThrough}. `) + 'That is a statement about this search window, not about ever.' };
     }
 
     const hit = found.crossing;
@@ -3745,6 +3763,7 @@ const scenarioCrossing: ToolDefinition = {
       : null;
     return {
       ...head,
+      outcome: 'CROSSES',
       crossing: {
         ...(interest ? { interestEvidence: interest } : {}),
         date: hit.checkpoint.date, value: hit.value,
@@ -3814,8 +3833,9 @@ const scenarioGoalSeek: ToolDefinition = {
     'a million by 2030?" — do NOT estimate a required return or a required saving rate ' +
     'yourself. ' +
     'It returns the value AND the full scenario at that value, with `outcome`: SOLVED, ' +
-    'ALREADY_MET, INFEASIBLE (no value of the lever can reach it), or OUT_OF_RANGE (the search ' +
-    'stopped first — never call that impossible). Takes the same scenario inputs as ' +
+    'ALREADY_MET, INFEASIBLE (no value of the lever can reach it), OUT_OF_RANGE (the search ' +
+    'stopped first — never call that impossible) or EVALUATION_FAILED (the projection could not ' +
+    'run — reachability is unknown, never impossible). Takes the same scenario inputs as ' +
     'scenario_projection, which are held fixed while the one unknown is solved. ' +
     'A solved return comes as `returnAtSolution` over `horizon`: lead with `periodPct` (growth ' +
     'over the actual period) for a by-date question shorter than a year, with `annualizedPct` ' +
@@ -3925,10 +3945,11 @@ const scenarioGoalSeek: ToolDefinition = {
       return line?.amount === undefined || line?.amount === null ? null : sign * line.amount;
     };
 
-    // A monthly schedule of a solved dollar amount, on the same month-ends the
-    // projection already knows how to produce.
+    // A monthly schedule of a solved dollar amount, on the month-ends that fall by the
+    // deadline — a SCHEDULE, never the checkpoint grid, which ends on `by` itself and so
+    // put a whole extra month's amount on a mid-month deadline.
     const monthly = (amount: number, label: string): PlannedMovement[] =>
-      monthEndsBetween(setup.asOf, toISO).map((date) => ({ date, amount, label,
+      monthEndOccurrences(setup.asOf, toISO).map((date) => ({ date, amount, label,
         ...(contributionTargets ? { targets: contributionTargets } : {}) }));
 
     let evaluate: (x: number) => number | null;
@@ -3994,10 +4015,15 @@ const scenarioGoalSeek: ToolDefinition = {
       evaluate = (x) => valueOf(setup.run(x > 0 ? { extraSpendingChanges: [spendSolve.rule(x)] } : {}));
     }
 
-    const baseLedger = setup.run();
+    const isReturn = solveFor === SOLVABLE.annualReturnPct;
+    // ⚠️ THE BASELINE IS THE LEVER AT THE BOTTOM OF ITS RANGE, UNDER THE SOLVE'S OWN RULES. A solved
+    // return REPLACES any stated one, so "without the solved variable" is the scenario at 0%, not at
+    // the stated rate: with a stated −20% the baseline was run at −20% while the solve started at 0%,
+    // and the result said ALREADY_MET beside a positive baseline gap (2026-10-04). Status, gap and
+    // solution now describe one scenario family; the replaced statement is named, not hidden.
+    const baseLedger = setup.run(isReturn ? { returns: solvedReturns(annualOf(lo)) } : {});
     const baseline = valueOf(baseLedger);
     let solved = solveForTarget({ solveFor, evaluate, target: sign * target, lo, hi, precision, bound });
-    const isReturn = solveFor === SOLVABLE.annualReturnPct;
     // ⚠️ A PERIOD-SPACE SOLVE IS REFINED TO THE REPORTED UNIT. A hundredth of a point of period
     // growth over 89 days is fifteen hundredths a year; the answer is reported per year, so it is
     // bisected again — inside the period bracket — to a hundredth of THAT, and verified. The
@@ -4011,6 +4037,9 @@ const scenarioGoalSeek: ToolDefinition = {
     } else if (isReturn && returnSpace === 'PERIOD' && !solved.feasible) {
       solved = { ...solved, bestAt: round2(annualOf(solved.bestAt)) };
     }
+    /** Why the projection itself could not produce a value — its own words, for EVALUATION_FAILED. */
+    const projectionRefusal = baseLedger.checkpoints.find((c) => c.unavailable)?.unavailable
+      ?? (baseline === null ? 'the projection produced no value at the deadline' : null);
     const outOfRange = !solved.feasible && solved.outcome === 'OUT_OF_RANGE';
 
     // ⚠️ `timeToTarget.years` IS NOT HERE. It is a display distance on a 365.25-day year; the
@@ -4023,12 +4052,20 @@ const scenarioGoalSeek: ToolDefinition = {
       /** How far off the deadline is, from the scenario's asOf — the engine's subtraction, not the model's. */
       timeToTarget,
       horizon,
-      // ⚠️ ON EVERY PATH, INCLUDING THE REFUSAL. See `scenarioAssumptions`.
-      assumptionsInForce: scenarioAssumptions(setup, baseLedger, setup.returns),
+      // ⚠️ ON EVERY PATH, INCLUDING THE REFUSAL. See `scenarioAssumptions`. For a return solve the
+      // returns in force are the solve's, so a stated rate is echoed as REPLACED, never as applied.
+      assumptionsInForce: scenarioAssumptions(setup, baseLedger, isReturn ? [] : setup.returns),
+      ...(isReturn && setup.returns.length > 0 ? { replacedByThisSolve: {
+        returns: setup.returns.map((r) => ({ from: r.fromISO, to: r.toISO, annualPct: r.annualPct })),
+        meaning: 'A solved return replaces any stated one: the baseline, the outcome and the answer are all '
+          + 'computed WITHOUT these rates. To keep a stated rate, solve for a different lever.' } } : {}),
+      /** Which way raising the lever moved this measure in THIS scenario (from the solve's own evaluations). */
+      leverDirection: solved.direction,
       ...(contributionTargets ? { contributionTarget: contributionTargets } : {}),
       baseline: { reached: baseline === null ? null : sign * baseline,
         gap: baseline === null ? null : round2(target - sign * baseline),
-        meaning: 'where the stated assumptions land WITHOUT the solved variable' },
+        meaning: isReturn ? `where the scenario lands with ${solveFor} at ${lo}, the bottom of the solved range`
+          : 'where the stated assumptions land WITHOUT the solved variable' },
       searchRange: { from: lo, to: isReturn ? round2(annualOf(hi)) : hi, unit, iterations: solved.iterations,
         ...(isReturn ? { periodTo: round2(periodOf(hi)), boundIn: returnSpace === 'PERIOD'
           ? 'period growth: up to +500% over the horizon, because the horizon is shorter than a year'
@@ -4049,12 +4086,21 @@ const scenarioGoalSeek: ToolDefinition = {
     if (!solved.feasible) {
       return { ...head, feasible: false, reason: solved.reason,
         bestReached: solved.bestReached === null ? null : sign * solved.bestReached, bestAt: solved.bestAt,
-        ...(isReturn ? { bestAtPeriodPct: round2(periodOf(hi)) } : {}),
+        ...(isReturn && solved.outcome !== 'EVALUATION_FAILED'
+          ? { bestAtPeriodPct: round2(periodOf(solved.direction === 'AWAY' ? lo : hi)) } : {}),
         // ⚠️ HOW FAR THE RANGE GOT IS AN ANSWER; A HUGE INVENTED NUMBER IS NOT.
-        meaning: (outOfRange
+        ...(solved.outcome === 'EVALUATION_FAILED' ? { projectionRefusal } : {}),
+        meaning: (solved.outcome === 'EVALUATION_FAILED'
+          ? `The projection could not produce a value (${projectionRefusal ?? 'no value'}), so whether ${target} is `
+            + 'reachable is UNKNOWN. Do not call it impossible or unreachable; say the calculation could not run '
+            + 'and why, and what would let it (for example a stated monthly spending level). '
+          : outOfRange
           ? `The search stopped before reaching ${target}: the best it did was ${solved.bestReached ?? 'nothing'} `
             + `at ${solved.bestAt} ${unit}${isReturn ? ` (+${round2(periodOf(hi))}% over the horizon)` : ''}. `
             + 'That is where the search ended, NOT a proof that it is impossible — do not call it impossible. '
+          : solved.direction === 'AWAY'
+            ? `Raising ${solveFor} moves ${measure} AWAY from ${target} in this scenario, so no amount of it `
+              + `reaches it; the closest is ${solveFor} = ${solved.bestAt}. `
           : `No value of ${solveFor} reaches ${target}. The best it did was `
             + `${solved.bestReached ?? 'nothing'} at ${solved.bestAt} ${unit}. `)
           + 'Say that, and '
