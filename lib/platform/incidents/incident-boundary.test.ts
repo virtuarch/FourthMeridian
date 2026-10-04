@@ -63,10 +63,12 @@ const ALL_PRODUCERS = [
   { file: "lib/plaid/syncTransactions.ts",                   enveloped: true },
   { file: "lib/plaid/refresh.ts",                            enveloped: true },
   { file: "lib/investments/investment-event-ingest.ts",      enveloped: false },
-  { file: "lib/investments/instrument-resolver-import.ts",   enveloped: false },
   { file: "lib/investments/instrument-resolver.ts",          enveloped: false },
-  { file: "lib/investments/investment-import-commit.ts",     enveloped: false },
-  { file: "lib/investments/opening-position.ts",             enveloped: false },
+  // RLS-PREP-2 — the import resolver and the two A7 writers no longer hold a
+  // client or call the facade: they RETURN / hand a typed incident to a
+  // recorder the route supplies. The facade callers are therefore the routes.
+  { file: "app/api/accounts/[id]/import/investments/route.ts", enveloped: false },
+  { file: "app/api/investments/opening-position/route.ts",   enveloped: false },
   { file: "app/api/imports/[id]/rollback/route.ts",          enveloped: false },
   { file: "lib/crypto/btc-sync.ts",                          enveloped: false },
 ] as const;
