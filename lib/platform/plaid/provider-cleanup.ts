@@ -51,7 +51,23 @@
  * else — see lib/plaid/disconnect.ts.
  */
 
-import { db } from "@/lib/db";
+import { systemDb } from "@/lib/db";
+
+/**
+ * ⚠️ `systemDb` (fm_system), NOT `db`. This is a PLATFORM OPS read: one
+ * operator asking about every tenant's items at once, with no user identity to
+ * bind, so there is no tenant phase it could belong to. `fm_system` is
+ * NOBYPASSRLS and reaches each tenant through explicit role-scoped policies —
+ * strictly narrower than the migration principal, and the same authority
+ * `refreshBalancesForItem` uses for its background resolver.
+ *
+ * It is also what keeps the authority ratchet honest. A first version imported
+ * `db`, and `audit-db-authority` correctly refused it: 185 → 187, naming both
+ * new files. The baseline may SHRINK freely and may never GROW, so the fix was
+ * to use the right authority rather than to widen the record of who holds the
+ * wrong one. `lib/platform/` and `app/api/platform/` are inside systemDb's
+ * confinement allowlist precisely because this is the shape it exists for.
+ */
 import { AuditAction } from "@/lib/audit-actions";
 
 /** The two markers that constitute the provider-cleanup lifecycle. */
@@ -109,7 +125,7 @@ const hoursSince = (d: Date, now: Date) => Math.floor((now.getTime() - d.getTime
  * global clock — the same reason the forecast engine takes its `asOf`.
  */
 export async function getProviderCleanupStatus(now: Date = new Date()): Promise<ProviderCleanupStatus> {
-  const rows = await db.auditLog.findMany({
+  const rows = await systemDb.auditLog.findMany({
     where:   { action: { in: [...MARKERS] } },
     orderBy: { createdAt: "asc" },
     select:  { action: true, createdAt: true, metadata: true },
@@ -117,7 +133,7 @@ export async function getProviderCleanupStatus(now: Date = new Date()): Promise<
 
   // Which items are owed, so only those rows are fetched.
   const owedIdsForLookup = owedItemIds(rows);
-  const items = owedIdsForLookup.length === 0 ? [] : await db.plaidItem.findMany({
+  const items = owedIdsForLookup.length === 0 ? [] : await systemDb.plaidItem.findMany({
     where:  { id: { in: owedIdsForLookup } },
     select: { id: true, status: true, institutionName: true, userId: true },
   });

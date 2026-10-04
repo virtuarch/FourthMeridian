@@ -35,6 +35,14 @@
  * success-equivalence is a repo assertion the vendored SDK does not confirm and
  * an unbounded loop on an unconfirmable code is the one shape to avoid.
  *
+ * AUTHORITY — `systemDb` (fm_system), never `db`. An operator reads across all
+ * tenants with no user identity to bind, so there is no tenant phase this could
+ * belong to; fm_system is NOBYPASSRLS and reaches each tenant through explicit
+ * role-scoped policies, which is strictly narrower than the migration
+ * principal. A first version used `db` and `audit-db-authority` refused it
+ * (ratchet 185 → 187) — correctly, so the authority was fixed rather than the
+ * baseline widened.
+ *
  * PRIVACY — operational metadata only, matching connection-diagnostics' binding
  * boundary: item id, institution label, an opaque owner reference, timestamps,
  * counts, and the provider's own error code. No access token, no email, no
@@ -42,7 +50,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { systemDb } from "@/lib/db";
 import { requirePlatformAccess, requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
@@ -93,7 +101,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const item = await db.plaidItem.findUnique({ where: { id: plaidItemId }, select: { id: true, institutionName: true, userId: true } });
+  const item = await systemDb.plaidItem.findUnique({ where: { id: plaidItemId }, select: { id: true, institutionName: true, userId: true } });
   if (!item) {
     // The marker outlives its item by design; there is nothing left to revoke.
     return NextResponse.json(
@@ -119,7 +127,7 @@ export async function POST(req: NextRequest) {
   // `disconnectPlaidItemIfOrphaned` writes REVOKED whatever Plaid answered.
   const stillOwed = await isProviderCleanupOwed(plaidItemId);
 
-  await db.auditLog.create({
+  await systemDb.auditLog.create({
     data: {
       userId:             item.userId,
       action:             AuditAction.PLAID_ITEM_REVOCATION_RETRY_REQUESTED,
