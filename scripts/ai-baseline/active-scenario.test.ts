@@ -152,7 +152,7 @@ console.log('\n4. ORDINARY TURNS AND project_cash LEAVE IT ALONE');
   applyCapture(slot, captureActiveScenario(SCENARIO_TOOL, A1, R1));
   const before = JSON.stringify(slot.active);
   for (const tool of ['project_cash', 'get_spending', 'get_transactions', 'remember',
-    'scenario_goal_seek', 'reconcile_projection']) {
+    'reconcile_projection']) {
     const c = captureActiveScenario(tool, { to: '2026-12-31' }, { projection: { endingCash: 35898.84 } });
     check(`${tool} IGNOREs`, c.action === 'IGNORE');
     applyCapture(slot, c);
@@ -162,7 +162,9 @@ console.log('\n4. ORDINARY TURNS AND project_cash LEAVE IT ALONE');
   check('a FAILED project_cash also leaves it alone — only a scenario can clear it',
     (() => { applyCapture(slot, captureActiveScenario('project_cash', {}, { error: 'boom' }));
       return JSON.stringify(slot.active) === before; })());
-  check('scenario_goal_seek is NOT in this slice', SCENARIO_TOOL === 'scenario_projection');
+  // A7 — a goal seek IS a scenario now (lib/ai/conversation/goal-seek-continuity.test.ts proves it
+  // through the real tool); the projection is still the tool that establishes one by default.
+  check('the projection is still SCENARIO_TOOL', SCENARIO_TOOL === 'scenario_projection');
 }
 
 console.log('\n4b. A BASELINE CROSSING IS NOT A HYPOTHETICAL — it leaves the slot alone');

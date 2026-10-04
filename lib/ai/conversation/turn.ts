@@ -374,8 +374,8 @@ async function executeTurnInner(args: {
           // ⚠️ A STAGED CLAUSE IS CONSUMED ONLY BY A RUN THAT ESTABLISHED A SCENARIO.
           // It now lives in the envelope's `argumentsRun`, which is truer: it ran.
           // A failed run CLEARs the envelope and keeps the clauses, so nothing the
-          // user said is lost to an error; a goal seek establishes no scenario and
-          // consumes nothing.
+          // user said is lost to an error. A goal seek now establishes one too (A7),
+          // so clauses it ran are consumed exactly as a projection's are.
           if (toolCtx.plan) toolCtx.plan.scenarioRan = args.scenario.active !== null;
           if (capture.action === 'REPLACE' && toolCtx.plan) {
             const applied = appliedStagedIds(result);

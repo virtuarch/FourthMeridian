@@ -3996,6 +3996,7 @@ const scenarioGoalSeek: ToolDefinition = {
 
     const baseLedger = setup.run();
     const baseline = valueOf(baseLedger);
+    const baseCheckpoint = baseLedger.checkpoints[baseLedger.checkpoints.length - 1];
     let solved = solveForTarget({ solveFor, evaluate, target: sign * target, lo, hi, precision, bound });
     const isReturn = solveFor === SOLVABLE.annualReturnPct;
     // ⚠️ A PERIOD-SPACE SOLVE IS REFINED TO THE REPORTED UNIT. A hundredth of a point of period
@@ -4028,6 +4029,10 @@ const scenarioGoalSeek: ToolDefinition = {
       ...(contributionTargets ? { contributionTarget: contributionTargets } : {}),
       baseline: { reached: baseline === null ? null : sign * baseline,
         gap: baseline === null ? null : round2(target - sign * baseline),
+        // The whole position at the deadline, for the active scenario (A7) — the ledger's figures, not a summary.
+        ...(baseCheckpoint?.liquid && baseCheckpoint.netWorth ? { at: { date: baseCheckpoint.date,
+          liquid: baseCheckpoint.liquid.amount, investments: baseCheckpoint.investments.amount,
+          debt: baseCheckpoint.debt.amount, netWorth: baseCheckpoint.netWorth.amount } } : {}),
         meaning: 'where the stated assumptions land WITHOUT the solved variable' },
       searchRange: { from: lo, to: isReturn ? round2(annualOf(hi)) : hi, unit, iterations: solved.iterations,
         ...(isReturn ? { periodTo: round2(periodOf(hi)), boundIn: returnSpace === 'PERIOD'
