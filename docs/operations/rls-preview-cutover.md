@@ -27,19 +27,19 @@ Two labels are used throughout:
 | Investments workspace; Connections page; `/api/sync/status` | `withTenantDb` (RLS-PREP-C) |
 | Plaid routes' own item lookups and audit writes (sync, refresh, resume-sync, link-token, investments-enable) | `withTenantDb` (RLS-PREP-C) |
 | Wealth-timeline amendment: the gate and the amendment's own records | `withTenantDb`; the regeneration engine runs as `fm_system` |
+| Investment import commit; opening-position assertion (RLS-PREP-2) | `withTenantDb`: one phase for the batch, one per row, one per superseded instrument, one to finalize, one for reconstruction repair. Instrument identity is resolved and minted as `fm_app` (global reference data it may already write). Operator incidents (`SyncIssue`) are recorded by `fm_system`, only after a tenant phase has admitted the account and ended; the writer holds no database client. |
 
 **Still on the migration principal (`postgres`) after it** — VERIFIED (repo), and this is the honest boundary of the claim Preview can make:
 
 | Surface | Why it is not converted | Containment |
 |---|---|---|
-| Investment import **commit** and **opening-position** writes | The writer records `SyncIssue` telemetry through the caller's client (revoked from `fm_app`) and its instrument resolver requires a root client. A design change to a money-writing spine, not an edit. | **`INVESTMENT_IMPORTS_ENABLED` must be unset on Preview.** Both routes then answer 404. Do not enable it on any deployment claiming the RLS boundary until that writer is converted. |
 | Wallet provider-spine bookkeeping (`alignWalletProviderSpine`) inside wallet add | Best-effort, swallows its own failures (which would abort a tenant transaction), and its identity write takes no client. | Runs after the tenant phase commits; recorded on the authority ratchet as an implicit owner call. |
 | Provider ingestion started by a foreground request (Plaid sync/refresh, wallet sync, snapshot regeneration) | Interleaves provider HTTP with writes; a tenant phase must never span a network round trip. System authority, separate slice. | The item/account the work runs for is selected by a tenant-phase read. |
 | Documented exceptions in `app/api/spaces/[id]/{route,permanent,snapshots,accounts/detail}` | Each is explained in its file header (public-Space read, cross-tenant ownership count, user-keyed PlaidItem state). | Reviewed in earlier RLS slices; unchanged here. |
 | `getSpaceContext`, notifications, settings loaders, `/api/auth/*`, rate limiting | Non-financial identity/membership and pre-identity paths. | Out of scope for this slice. |
 | Admin, Platform Ops, cron, the Plaid webhook, operator scripts | System / operator authority. Separate deployment concern. | Operator gates, `CRON_SECRET`, webhook signature. |
 
-The exact residue is machine-readable: `scripts/lib/db-authority-baseline.json` (166 files importing the owner client, 51 owner-default sites, 64 implicit owner calls). `npm run audit:ci` fails if any of the three grows.
+The exact residue is machine-readable: `scripts/lib/db-authority-baseline.json` (163 files importing the owner client, 49 owner-default sites, 64 implicit owner calls). `npm run audit:ci` fails if any of the three grows.
 
 ---
 
@@ -113,7 +113,7 @@ Four pools at the default size can equal `max_connections`. Decide the pool size
 
 - Which **branch** Preview builds. It must be `v2.6`: none of this work is on `main`.
 - Whether Fluid Compute is on for Preview.
-- That `INVESTMENT_IMPORTS_ENABLED` is **not** set for Preview (see §0).
+- That `INVESTMENT_IMPORTS_ENABLED` is **not** set for Preview. The writers behind it now run as `fm_app` (§0), so the flag is no longer an RLS containment — but enabling the feature on Preview is an OWNER decision, to be taken only once the conversion is gated (clean-copy CI and exact-SHA GitHub green), and it is not part of the cutover.
 - Whether `CRON_SECRET`, `RESEND_API_KEY`, `PLAID_ENV`, `PLAID_REDIRECT_URI`, `PLAID_WEBHOOK_URL` are set for Preview, and what Preview's database contains (§2.6).
 
 ### 2.6 What Preview holds

@@ -1,14 +1,13 @@
 {
   "note": "RLS-4 ratchet. Runtime-reachable files still reaching the database through the migration principal (@/lib/db `db`). This set may SHRINK freely as adoption proceeds; it may never GROW. Regenerate with `npx tsx scripts/audit-db-authority.ts --write-baseline`, and say in the commit why anything added is justified.",
   "generatedAt": "2026-10-04",
-  "count": 166,
+  "count": 163,
   "files": [
     "app/(shell)/dashboard/platform/[area]/page.tsx",
     "app/(shell)/dashboard/spaces/page.tsx",
     "app/admin/page.tsx",
     "app/admin/providers/page.tsx",
     "app/api/access-request/route.ts",
-    "app/api/accounts/[id]/import/investments/route.ts",
     "app/api/admin/audit/route.ts",
     "app/api/admin/plaid/diagnostics/route.ts",
     "app/api/admin/plaid/exchange-expanded-history-token/route.ts",
@@ -32,7 +31,6 @@
     "app/api/auth/verify-email/resend/route.ts",
     "app/api/auth/verify-email/route.ts",
     "app/api/health/route.ts",
-    "app/api/investments/opening-position/route.ts",
     "app/api/plaid/webhook/route.ts",
     "app/api/platform/growth-revenue/invitations/route.ts",
     "app/api/platform/growth-revenue/product-status/route.ts",
@@ -108,7 +106,6 @@
     "lib/investments/event-coverage.ts",
     "lib/investments/historical-holdings.ts",
     "lib/investments/holding-ownership.ts",
-    "lib/investments/instrument-resolver-import.ts",
     "lib/investments/instrument-resolver.ts",
     "lib/investments/investments-time-machine.ts",
     "lib/investments/position-capture.ts",
@@ -170,7 +167,7 @@
     "lib/space.ts",
     "lib/spaces/sync-completeness.ts"
   ],
-  "defaultSiteCount": 51,
+  "defaultSiteCount": 49,
   "defaultSites": {
     "lib/accounts/wallet-connection.ts": 4,
     "lib/connections/health-transitions.ts": 1,
@@ -189,7 +186,6 @@
     "lib/investments/event-coverage.ts": 2,
     "lib/investments/historical-holdings.ts": 1,
     "lib/investments/holding-ownership.ts": 1,
-    "lib/investments/instrument-resolver-import.ts": 2,
     "lib/investments/instrument-resolver.ts": 1,
     "lib/investments/investments-time-machine.ts": 1,
     "lib/investments/position-capture.ts": 1,

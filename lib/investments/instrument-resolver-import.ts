@@ -22,12 +22,29 @@
  * unattended sync moving; imports are interactive, so they refuse.
  */
 
-import { AssetClass, type Prisma, type PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
-import { recordSyncIssue } from "@/lib/plaid/syncIssues";
+import { AssetClass, type Prisma } from "@prisma/client";
+import type { SyncIssueInput } from "@/lib/plaid/syncIssues";
 import { decideResolution } from "@/lib/investments/instrument-resolver";
 
-type Client = PrismaClient | Prisma.TransactionClient;
+// RLS-PREP-2 — THIS MODULE HOLDS NO DATABASE CLIENT AND WRITES NO TELEMETRY.
+//
+// Both functions used to resolve `opts?.client ?? db`, and the writing one
+// recorded INSTRUMENT_IDENTITY_CONFLICT incidents through that same client.
+// Those two facts together were the whole reason the investment-import commit
+// and the opening-position assertion ran as the migration principal: `SyncIssue`
+// is revoked from fm_app, a telemetry write cannot share a financial
+// transaction (OPS-2D-TX-1), so the resolver demanded a ROOT client — and the
+// only root client a foreground caller could hand it was the table owner.
+//
+// The identity work itself never needed that. `Instrument` and
+// `InstrumentAlias` are global reference data that fm_app may SELECT, INSERT
+// and UPDATE by a recorded decision ("user-triggered imports legitimately mint
+// instruments", …_rls_roles_and_policies §5). So the split is: resolution runs
+// on whatever phase client the caller is already in, and a conflict is
+// RETURNED as a typed `issue` for the caller to record after its phase has
+// ended, under the incident authority. Nothing here can abort a caller's
+// transaction for telemetry's sake, and nothing here reaches fm_system.
+type Client = Prisma.TransactionClient;
 
 /** The identity an imported row / manual assertion can supply. Name-free-safe. */
 export interface ImportInstrumentIdentity {
@@ -47,6 +64,12 @@ export interface ResolvedImportInstrument {
   created:      boolean;
   /** True ⇒ ambiguous / conflicting identity — NO instrument was resolved or written. */
   conflict:     boolean;
+  /**
+   * Present exactly when `conflict` is true: the operator-facing incident this
+   * refusal should leave behind. NOT recorded here — the caller records it once
+   * the phase that ran the resolution has ended (see the module note).
+   */
+  issue?:       SyncIssueInput;
 }
 
 /** Read-only resolution outcome for preview (zero writes). */
@@ -64,9 +87,9 @@ export interface MatchedImportInstrument {
  */
 export async function matchInstrumentForImport(
   identity: ImportInstrumentIdentity,
-  opts?: { client?: Client },
+  opts: { client: Client },
 ): Promise<MatchedImportInstrument> {
-  const client = opts?.client ?? db;
+  const client = opts.client;
 
   const alias = identity.aliasProvider && identity.aliasExternalId
     ? await client.instrumentAlias.findUnique({
@@ -111,17 +134,16 @@ function strongImportConflict(
  * identity (and a provider alias when a namespace is supplied) only when nothing
  * safe to reuse exists. Performs writes only on the create path.
  *
- * OPS-2D-TX-1 — `client` is a ROOT client. The previous wording here invited
- * callers to "pass a transaction client", which no caller ever did and which is
- * now unsafe: this function records INSTRUMENT_IDENTITY_CONFLICT incidents, and
- * a telemetry write that fails inside a caller's transaction aborts it, taking
- * the financial mutation with it (silently — COMMIT degrades to ROLLBACK).
+ * `client` is the caller's PHASE client. A conflict performs no write of any
+ * kind and comes back with the `issue` to record; the create path's writes join
+ * the caller's transaction, so a minted instrument commits or rolls back with
+ * the financial row that needed it.
  */
 export async function resolveInstrumentForImport(
   identity: ImportInstrumentIdentity,
-  opts?: { client?: PrismaClient; financialAccountId?: string | null },
+  opts: { client: Client; financialAccountId?: string | null },
 ): Promise<ResolvedImportInstrument> {
-  const client = opts?.client ?? db;
+  const client = opts.client;
 
   // 1. Learned provider alias (fast path).
   const alias = identity.aliasProvider && identity.aliasExternalId
@@ -150,12 +172,11 @@ export async function resolveInstrumentForImport(
       take:   2,
     });
     if (weak.length > 1) {
-      await recordSyncIssue({
+      return { instrumentId: "", created: false, conflict: true, issue: {
         kind: "INSTRUMENT_IDENTITY_CONFLICT",
-        financialAccountId: opts?.financialAccountId ?? null,
+        financialAccountId: opts.financialAccountId ?? null,
         detail: { stage: "import-weak-ambiguous", symbol: identity.symbol, currency: identity.currency ?? null, matches: weak.map((w) => w.id) },
-      }, client);
-      return { instrumentId: "", created: false, conflict: true };
+      } };
     }
     weakMatchId = weak[0]?.id ?? null;
   }
@@ -168,12 +189,11 @@ export async function resolveInstrumentForImport(
   });
 
   if (decision.action === "conflict") {
-    await recordSyncIssue({
+    return { instrumentId: "", created: false, conflict: true, issue: {
       kind: "INSTRUMENT_IDENTITY_CONFLICT",
-      financialAccountId: opts?.financialAccountId ?? null,
+      financialAccountId: opts.financialAccountId ?? null,
       detail: { stage: "import-strong-conflict", symbol: identity.symbol, cusip: identity.cusip ?? null, isin: identity.isin ?? null, conflictingInstrumentIds: [...new Set(strongMatches.map((m) => m.id))] },
-    }, client);
-    return { instrumentId: "", created: false, conflict: true };
+    } };
   }
 
   if (decision.action === "use") {

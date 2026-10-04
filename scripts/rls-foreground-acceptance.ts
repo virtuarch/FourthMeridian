@@ -397,6 +397,8 @@ async function main(): Promise<void> {
     "app/api/accounts/[id]/import/route.ts",
     "app/api/accounts/[id]/import/preview/route.ts",
     "app/api/accounts/[id]/import/investments/preview/route.ts",
+    "app/api/accounts/[id]/import/investments/route.ts",
+    "app/api/investments/opening-position/route.ts",
     "app/api/spaces/[id]/investments/space-data/route.ts",
     "app/api/spaces/[id]/wealth/amend/route.ts",
     "app/(shell)/dashboard/connections/page.tsx",
@@ -427,10 +429,137 @@ async function main(): Promise<void> {
     "lib/connections/space-data.ts", "lib/investments/space-data.ts", "lib/snapshots/snapshot-amendment.ts",
     "lib/imports/csv.ts", "lib/transactions/fingerprint.ts", "lib/sync/wallet-connections.ts",
     "lib/investments/investment-import-commit.ts", "lib/investments/opening-position.ts", "lib/platform/refresh-policy.ts",
+    "lib/investments/instrument-resolver-import.ts",
   ];
   const defaulted = NO_DEFAULT.filter((f) => /\?\?\s*db\b|=\s*db\s*[,)\n]|from\s*["']@\/lib\/db["']\s*;?\s*$/m.test(code(f).replace(/import \{ systemDb \} from "@\/lib\/db";/, "")));
   check(35, `[source] the ${NO_DEFAULT.length} library seams behind those routes no longer import or default to the migration principal`,
     defaulted.length === 0, defaulted.join(", "));
+
+  // ════════════════════════════════════════════════════════════════════════
+  // C9. THE INVESTMENT-IMPORT WRITER AND THE OPENING-POSITION ASSERTION
+  //     (POST /api/accounts/[id]/import/investments, POST /api/investments/opening-position)
+  //
+  // The last two foreground financial writers that ran as the table owner. They
+  // now hold no client: the money runs in tenant phases, and the incident
+  // recorder (fm_system, by recordSyncIssue's own default) is reachable only
+  // after a tenant phase has admitted the account and ended.
+  // ════════════════════════════════════════════════════════════════════════
+  process.env.INVESTMENT_IMPORTS_ENABLED = "true";
+  process.env.INVESTMENT_RECONSTRUCTION_ENABLED = "true";
+  const opening = await import("@/lib/investments/opening-position");
+  const commit = await import("@/lib/investments/investment-import-commit");
+  const { recordSyncIssue } = await import("@/lib/plaid/syncIssues");
+  const { runInvestmentImportPipelineFromCsv } = await import("@/lib/imports/investments/pipeline");
+  const BRK = "acct_alice_brk";
+  const dupSeed = psql(h.ownerUrl, `
+    insert into "Instrument"(id,"tickerSymbol",name,currency,"assetClass","updatedAt")
+      values ('inst_dup1','DUPX','Dup One','USD','EQUITY',now()), ('inst_dup2','DUPX','Dup Two','USD','EQUITY',now());`);
+  if (!dupSeed.ok) throw new Error(`ambiguous-instrument fixture failed: ${dupSeed.err}`);
+  const authorityFor = (who: string) => ({
+    tenant: <T,>(fn: Parameters<typeof withTenantDb<T>>[1], opts?: { timeout?: number }) => withTenantDb(who, fn, opts),
+    recordIssue: (issue: Parameters<typeof recordSyncIssue>[0]) => recordSyncIssue(issue),
+  });
+  const issuesFor = () => truth(`select count(*) from "SyncIssue" where "financialAccountId"='${BRK}'`);
+  const eventsFor = (extra = "") => truth(`select count(*) from "InvestmentEvent" where "financialAccountId"='${BRK}' ${extra}`);
+
+  // ── opening position ──
+  const bobOpening = await attempt(() => opening.assertOpeningPosition({
+    financialAccountId: BRK, instrument: { instrumentId: "inst_fg" }, date: "2026-01-02", quantity: 99, userId: "bob", ...authorityFor("bob"),
+  }));
+  // The ambiguous identity is the path that LEADS to telemetry — Bob must not get there.
+  const bobOpeningDup = await attempt(() => opening.assertOpeningPosition({
+    financialAccountId: BRK, instrument: { symbol: "DUPX", currency: "USD" }, date: "2026-01-02", quantity: 99, userId: "bob", ...authorityFor("bob"),
+  }));
+  check(36, "[opening] Bob asserting a position on ALICE'S account RAISES at the tenant boundary — no event, no observation, and the fm_system recorder is never reached even on the path that leads to it",
+    !bobOpening.ok && !bobOpeningDup.ok && /not visible to the acting user/.test(bobOpening.error) && /not visible to the acting user/.test(bobOpeningDup.error)
+    && eventsFor() === "0" && issuesFor() === "0"
+    && truth(`select count(*) from "PositionObservation" where "financialAccountId"='${BRK}' and origin='USER_ASSERTED'`) === "0",
+    `bob=${bobOpening.ok ? "WROTE" : bobOpening.error.slice(0, 120)} events=${eventsFor()} issues=${issuesFor()}`);
+
+  const aliceOpening = await attempt(() => opening.assertOpeningPosition({
+    financialAccountId: BRK, instrument: { symbol: "MINTED", currency: "USD", name: "Minted By A Tenant" }, date: "2026-03-01", quantity: 4, costBasis: 100, userId: "alice", ...authorityFor("alice"),
+  }));
+  const aliceReassert = aliceOpening.ok && aliceOpening.value.instrumentId
+    ? await attempt(() => opening.assertOpeningPosition({
+        financialAccountId: BRK, instrument: { instrumentId: aliceOpening.value.instrumentId! }, date: "2026-03-05", quantity: 6, userId: "alice", ...authorityFor("alice"),
+      }))
+    : aliceOpening;
+  const liveOpenings = truth(`select count(*) filter (where "supersededById" is null)||'/'||count(*) from "InvestmentEvent" where "financialAccountId"='${BRK}' and type='OPENING_BALANCE' and source='user'`);
+  check(37, "[opening] Alice's own assertion completes ENTIRELY as fm_app: the instrument is minted by the tenant role, the pair is written, a re-assertion supersedes the first, and repair runs in a tenant phase",
+    aliceOpening.ok && aliceOpening.value.status === "ok" && aliceOpening.value.instrumentCreated === true && aliceOpening.value.repair?.status === "ok"
+    && aliceReassert.ok && aliceReassert.value.status === "ok" && aliceReassert.value.supersededEventIds?.length === 1 && aliceReassert.value.supersededObservationIds?.length === 1
+    && liveOpenings === "1/2" && truth(`select count(*) from "Instrument" where "tickerSymbol"='MINTED'`) === "1",
+    `${aliceOpening.ok ? JSON.stringify(aliceOpening.value) : aliceOpening.error.slice(0, 200)} | ${aliceReassert.ok ? "" : aliceReassert.error.slice(0, 200)} live=${liveOpenings}`);
+
+  const aliceDup = await attempt(() => opening.assertOpeningPosition({
+    financialAccountId: BRK, instrument: { symbol: "DUPX", currency: "USD" }, date: "2026-03-01", quantity: 1, userId: "alice", ...authorityFor("alice"),
+  }));
+  const aliceWritesIssue = await attempt(() => as("alice", (tx) => (tx as unknown as { syncIssue: { create: (a: unknown) => Promise<unknown> } }).syncIssue.create({
+    data: { kind: "INSTRUMENT_IDENTITY_CONFLICT", financialAccountId: BRK } })));
+  check(38, "[opening] an ambiguous identity is a conflict with ZERO financial writes, and its incident IS recorded — by fm_system, on a table the tenant role still cannot write",
+    aliceDup.ok && aliceDup.value.status === "conflict" && eventsFor() === "2"
+    && truth(`select count(*) from "SyncIssue" where "financialAccountId"='${BRK}' and kind='INSTRUMENT_IDENTITY_CONFLICT'`) === "1"
+    && !aliceWritesIssue.ok && /permission denied|row-level security/i.test(aliceWritesIssue.error),
+    `dup=${aliceDup.ok ? aliceDup.value.status : aliceDup.error.slice(0, 160)} issues=${issuesFor()} tenantWrite=${aliceWritesIssue.ok ? "ALLOWED" : aliceWritesIssue.error.slice(0, 80)}`);
+
+  // ── import commit ──
+  const csvOf = (lines: string[]) => ["Trade Date,Action,Symbol,Description,Quantity,Price,Amount,Currency,Reference", ...lines].join("\n");
+  const commitAs = (who: string, lines: string[], decisions: Record<string, { outcome: "force-create" }> = {}) => {
+    const pipeline = runInvestmentImportPipelineFromCsv(csvOf(lines), { profileKey: "csv:generic" });
+    return attempt(() => commit.commitInvestmentImport({
+      financialAccountId: BRK, userId: who, profileKey: "csv:generic", profileVersion: pipeline.resolvedColumnMapping.profileVersion,
+      source: "CSV", originalFilename: "fg.csv", resolvedColumnMapping: {}, rows: pipeline.rows, userDecisions: decisions, ...authorityFor(who),
+    }));
+  };
+  const issuesBeforeBob = issuesFor();
+  const bobCommit = await commitAs("bob", ["2026-02-01,Buy,DUPX,Dup,1,10.00,-10.00,USD,BOB-1", "2026-02-02,Buy,FGTEST,FG Test,1,10.00,-10.00,USD,BOB-2"]);
+  check(39, "[import] Bob committing a file into ALICE'S account RAISES on the batch INSERT — no batch, no event, no instrument, and no incident, though the file's first row is the one that leads to telemetry",
+    !bobCommit.ok && raisedRefusal(bobCommit.error)
+    && truth(`select count(*) from "ImportBatch" where "financialAccountId"='${BRK}'`) === "0"
+    && eventsFor(`and "externalEventId" like 'BOB-%'`) === "0" && issuesFor() === issuesBeforeBob,
+    `bob=${bobCommit.ok ? "WROTE" : bobCommit.error.slice(0, 160)}`);
+
+  const conflictsFor = () => Number(truth(`select count(*) from "SyncIssue" where "financialAccountId"='${BRK}' and kind='INSTRUMENT_IDENTITY_CONFLICT'`));
+  const conflictsBeforeAlice = conflictsFor();
+  // MINTED's live opening is dated 2026-03-05; an imported buy on 2026-02-10 covers it.
+  const aliceCommit = await commitAs("alice", [
+    "2026-02-10,Buy,MINTED,Minted,2,10.00,-20.00,USD,AL-1",
+    "2026-02-11,Buy,DUPX,Dup,1,10.00,-10.00,USD,AL-2",
+    "2026-02-12,Buy,FRESH,Fresh Co,1,10.00,-10.00,USD,AL-3",
+    "2026-02-13,Dividend,FGTEST,FG Test,,,5.00,USD,AL-4",
+  ]);
+  const batchRow = truth(`select status||'|'||"importedCount"||'|'||"skippedCount"||'|'||"createdByUserId" from "ImportBatch" where "financialAccountId"='${BRK}'`);
+  check(40, "[import] Alice's own import completes as fm_app end to end: batch, events with provenance, a freshly minted instrument, supersession of her covered opening, finalize and repair — and the ambiguous row is skipped with its incident recorded by fm_system",
+    aliceCommit.ok && aliceCommit.value.status === "ok"
+    && aliceCommit.value.counts?.create === 3 && aliceCommit.value.counts?.skip === 1 && aliceCommit.value.supersededAssertions === 1
+    && aliceCommit.value.repair?.status === "ok" && batchRow === "COMPLETED_WITH_ERRORS|3|1|alice"
+    && eventsFor(`and "importBatchId" is not null and "createdByUserId"='alice'`) === "3"
+    && truth(`select count(*) from "Instrument" where "tickerSymbol"='FRESH'`) === "1"
+    && truth(`select count(*) from "InvestmentEvent" where "financialAccountId"='${BRK}' and type='OPENING_BALANCE' and "supersededById" is null`) === "0"
+    && conflictsFor() === conflictsBeforeAlice + 1,
+    `${aliceCommit.ok ? JSON.stringify({ c: aliceCommit.value.counts, s: aliceCommit.value.supersededAssertions, r: aliceCommit.value.repair }) : aliceCommit.error.slice(0, 300)} batch=${batchRow} conflicts=${truth(`select count(*) from "SyncIssue" where "financialAccountId"='${BRK}' and kind='INSTRUMENT_IDENTITY_CONFLICT'`)} liveOpenings=${truth(`select count(*) from "InvestmentEvent" where "financialAccountId"='${BRK}' and type='OPENING_BALANCE' and "supersededById" is null`)} imported=${eventsFor(`and "importBatchId" is not null and "createdByUserId"='alice'`)}`);
+
+  // PER-ROW FAILURE SEMANTICS, on real transactions. Row 2 is forced to collide
+  // with the [source, externalEventId] unique key, so its phase raises.
+  const partial = await commitAs("alice", [
+    "2026-02-20,Buy,FRESH,Fresh Co,1,10.00,-10.00,USD,AL-5",
+    "2026-02-10,Buy,MINTED,Minted,2,10.00,-20.00,USD,AL-1",
+    "2026-02-21,Buy,FRESH,Fresh Co,1,10.00,-10.00,USD,AL-6",
+  ], { "AL-1": { outcome: "force-create" } });
+  const partialBatch = truth(`select status||'|'||"importedCount" from "ImportBatch" where "financialAccountId"='${BRK}' order by "createdAt" desc limit 1`);
+  check(41, "[import] per-row failure semantics are preserved under tenant transactions: a row that raises stops the import, the rows before it STAY written, the rows after it are not, and the batch is left PROCESSING for rollback to find",
+    !partial.ok && /Unique constraint|P2002/i.test(partial.error)
+    && eventsFor(`and "externalEventId"='AL-5'`) === "1" && eventsFor(`and "externalEventId"='AL-6'`) === "0"
+    && eventsFor(`and "externalEventId"='AL-1'`) === "1" && partialBatch === "PROCESSING|0",
+    `partial=${partial.ok ? "COMPLETED" : partial.error.slice(0, 140)} batch=${partialBatch}`);
+
+  const WRITERS = ["lib/investments/investment-import-commit.ts", "lib/investments/opening-position.ts", "lib/investments/instrument-resolver-import.ts"];
+  const holdsClient = WRITERS.filter((f) => /from\s*["']@\/lib\/db["']/.test(code(f)) || /import\s*\{[^}]*\brecordSyncIssue\b[^}]*\}\s*from/.test(code(f).replace(/import type[^;]*;/g, "")) || /\bPrismaClient\b/.test(code(f)));
+  const telemetryInsidePhase = WRITERS.filter((f) => /tenant\([^]*?recordIssue\(/.test(
+    // any recordIssue( lexically inside a `tenant(async (tx) => { … })` body
+    (code(f).match(/await tenant(?:<[^>]*>)?\(async \(tx\) => \{[\s\S]*?\n  \}\)/g) ?? []).join("\n")));
+  check(42, "[source] the two writers and the resolver hold NO database client, import no incident recorder, and never call recordIssue inside a tenant phase body",
+    holdsClient.length === 0 && telemetryInsidePhase.length === 0, `holdsClient=[${holdsClient.join(",")}] inside=[${telemetryInsidePhase.join(",")}]`);
 
   for (const c of [dbMod.tenantDb, dbMod.authDb, dbMod.systemDb, dbMod.db]) {
     await (c as { $disconnect: () => Promise<void> }).$disconnect();

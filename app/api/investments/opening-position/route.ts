@@ -22,8 +22,8 @@ import { requireFreshUser } from "@/lib/session";
 import { getSpaceContext } from "@/lib/space";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
-import { db } from "@/lib/db";
 import { withTenantDb } from "@/lib/db/tenant-context";
+import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { assertOpeningPosition, investmentImportsEnabled } from "@/lib/investments/opening-position";
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -69,23 +69,20 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   const { spaceId } = await getSpaceContext();
   // RLS-ACC-S2 — the shared guard takes its authority as a required leading
   // parameter now, so the check runs as the caller rather than as the
-  // migration principal it used to default to. The WRITE below is a separate
-  // question and is named in the header: `assertOpeningPosition` is not this
-  // slice's to convert.
+  // migration principal it used to default to.
   const access = await withTenantDb(
     user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, financialAccountId));
   if (!access.ok) return access.response;
 
   // ── Write ──────────────────────────────────────────────────────────────────
-  // ⚠️ NOT CONVERTED, AND NOW VISIBLY SO (RLS-PREP-C). `assertOpeningPosition`
-  // used to default to `db`, so this route wrote as the migration principal
-  // while importing nothing that said so. The default is gone and the authority
-  // is named here, which puts this file on the ratchet for this one line. The
-  // writer cannot take a tenant phase yet for the reason recorded on
-  // `CommitInput.client` (investment-import-commit.ts). 404 unless
-  // INVESTMENT_IMPORTS_ENABLED is set; see docs/operations/rls-preview-cutover.md.
+  // RLS-PREP-2 — the write runs as the CALLER, in phases opened here on the
+  // tenant role; the writer holds no database client. `recordIssue` is the
+  // incident recorder on its own fm_system default — one typed incident, never
+  // a client — and the writer calls it only after a tenant phase has admitted
+  // the account and ended (lib/investments/opening-position.ts).
   const result = await assertOpeningPosition({
-    client: db,
+    tenant: (fn, opts) => withTenantDb(user.id, fn, opts),
+    recordIssue: (issue) => recordSyncIssue(issue),
     financialAccountId,
     instrument: hasInstrumentId
       ? { instrumentId: instrumentId as string }

@@ -8,12 +8,12 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireFreshUser } from "@/lib/session";
-import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { ImportSource } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { withTenantDb } from "@/lib/db/tenant-context";
+import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { investmentImportsEnabled } from "@/lib/investments/opening-position";
 import { commitInvestmentImport, type UserDecisions } from "@/lib/investments/investment-import-commit";
 import { runInvestmentImportPipelineFromCsv } from "@/lib/imports/investments/pipeline";
@@ -81,17 +81,15 @@ export const POST = withApiHandler(async (
 
   const pipeline = runInvestmentImportPipelineFromCsv(text, { profileKey, rowKindOverride });
 
-  // ⚠️ NOT CONVERTED, AND SAYING SO. The WRITE still executes as the migration
-  // principal. It is passed explicitly — `commitInvestmentImport` no longer has
-  // a default to fall into — so this file stays on the authority ratchet for
-  // exactly this line. Why it is not a tenant phase yet is recorded on
-  // `CommitInput.client`: the instrument resolver and the repair step both write
-  // SyncIssue telemetry through the caller's client, and `SyncIssue` is revoked
-  // from fm_app. The route is 404 unless INVESTMENT_IMPORTS_ENABLED is set, and
-  // it must stay unset on any deployment claiming the RLS boundary until this
-  // writer is converted (docs/operations/rls-preview-cutover.md).
+  // RLS-PREP-2 — the write runs as the CALLER. The writer holds no client: each
+  // of its phases is opened here on the tenant role, so RLS — not this route's
+  // guard alone — decides which account's rows it may create. `recordIssue` is
+  // the incident recorder on its own fm_system default; it takes one typed
+  // incident and is called only after a tenant phase has admitted the account
+  // and ended (lib/investments/opening-position.ts records the contract).
   const result = await commitInvestmentImport({
-    client: db,
+    tenant: (fn, opts) => withTenantDb(user.id, fn, opts),
+    recordIssue: (issue) => recordSyncIssue(issue),
     financialAccountId: id, userId: user.id,
     profileKey, profileVersion: pipeline.resolvedColumnMapping.profileVersion,
     source: ImportSource.CSV,

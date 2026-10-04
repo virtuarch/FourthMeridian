@@ -29,13 +29,13 @@ const FIX = path.join(process.cwd(), "lib/imports/investments/fixtures");
 const genericRows = () => runInvestmentImportPipelineFromCsv(readFileSync(path.join(FIX, "generic.csv"), "utf8"), { profileKey: "csv:generic" }).rows;
 
 interface Row { [k: string]: unknown }
-function makeFake(opts: { candidates?: Row[]; priorUserOpenings?: Row[]; priorUserObs?: Row[] } = {}) {
+function makeFake(opts: { candidates?: Row[]; priorUserOpenings?: Row[]; priorUserObs?: Row[]; noAlias?: boolean; weakMatches?: Row[]; repairThrows?: boolean; batchRefused?: boolean } = {}) {
   const w = { batch: null as Row | null, batchUpdates: [] as Row[], events: [] as Row[], observations: [] as Row[] };
   const superseded = { events: [] as string[], observations: [] as string[] };
   let evSeq = 0;
   const client: Record<string, unknown> = {
     importBatch: {
-      create: async ({ data }: { data: Row }) => { w.batch = data; return { id: "batch_1" }; },
+      create: async ({ data }: { data: Row }) => { if (opts.batchRefused) throw new Error("new row violates row-level security policy"); w.batch = data; return { id: "batch_1" }; },
       update: async ({ data }: { data: Row }) => { w.batchUpdates.push(data); return {}; },
     },
     investmentEvent: {
@@ -48,11 +48,32 @@ function makeFake(opts: { candidates?: Row[]; priorUserOpenings?: Row[]; priorUs
       findMany: async () => opts.priorUserObs ?? [],
       updateMany: async ({ where }: { where: { id: { in: string[] } } }) => { superseded.observations.push(...where.id.in); return { count: where.id.in.length }; },
     },
-    instrumentAlias: { findUnique: async ({ where }: { where: { provider_externalId: { externalId: string } } }) => ({ instrumentId: `inst_${where.provider_externalId.externalId}` }) },
-    instrument: { findMany: async () => [], create: async () => ({ id: "inst_new" }) },
-    positionReconstruction: { findMany: async () => [] },
+    instrumentAlias: { findUnique: async ({ where }: { where: { provider_externalId: { externalId: string } } }) => (opts.noAlias ? null : { instrumentId: `inst_${where.provider_externalId.externalId}` }) },
+    instrument: { findMany: async () => opts.weakMatches ?? [], create: async () => ({ id: "inst_new" }) },
+    positionReconstruction: { findMany: async () => { if (opts.repairThrows) throw new Error("repair boom"); return []; } },
   };
   return { client, w, superseded };
+}
+
+// RLS-PREP-2 — the writer takes a phase runner and an incident recorder, never
+// a client. `log` records the ORDER in which phases close and incidents are
+// recorded, which is the property the boundary rests on.
+function authority(client: unknown, log: string[] = []) {
+  const issues: { kind: string; detail?: unknown }[] = [];
+  let open = 0;
+  return {
+    issues, log,
+    tenant: async <T>(fn: (tx: never) => Promise<T>): Promise<T> => {
+      open++; log.push("phase:open");
+      try { const r = await fn(client as never); log.push("phase:commit"); return r; }
+      catch (e) { log.push("phase:rollback"); throw e; }
+      finally { open--; }
+    },
+    recordIssue: async (issue: { kind: string; detail?: unknown }) => {
+      log.push(open === 0 ? `issue:${issue.kind}` : `issue-INSIDE-PHASE:${issue.kind}`);
+      issues.push(issue);
+    },
+  };
 }
 
 async function main(): Promise<void> {
@@ -65,7 +86,7 @@ async function main(): Promise<void> {
     const res = await commitInvestmentImport({
       financialAccountId: "fa1", userId: "u1", profileKey: "csv:generic", profileVersion: 1,
       source: ImportSource.CSV, resolvedColumnMapping: { profileKey: "csv:generic" }, rows: genericRows(),
-      now: D("2026-07-12"), client: client as never,
+      now: D("2026-07-12"), ...authority(client),
     });
     check("status ok, batch created", res.status === "ok" && res.batchId === "batch_1");
     check("batch is kind INVESTMENT_HISTORY", (w.batch as Row)?.kind === "INVESTMENT_HISTORY");
@@ -85,7 +106,7 @@ async function main(): Promise<void> {
     const { client, w } = makeFake({ candidates: [candidate] });
     const res = await commitInvestmentImport({
       financialAccountId: "fa1", userId: "u1", profileKey: "csv:generic", profileVersion: 1,
-      source: ImportSource.CSV, resolvedColumnMapping: {}, rows: genericRows(), now: D("2026-07-12"), client: client as never,
+      source: ImportSource.CSV, resolvedColumnMapping: {}, rows: genericRows(), now: D("2026-07-12"), ...authority(client),
     });
     check("Buy SPY matched the Plaid event (event count unchanged for it)", res.counts?.match === 1 && res.counts?.create === 2 && w.events.length === 2);
     check("no event written for the matched row", !w.events.some((e) => e.externalEventId === "REF-1"));
@@ -98,7 +119,7 @@ async function main(): Promise<void> {
     const { client, w } = makeFake();
     const res = await commitInvestmentImport({
       financialAccountId: "fa1", userId: "u1", profileKey: "csv:schwab", profileVersion: 1,
-      source: ImportSource.CSV, resolvedColumnMapping: {}, rows: posRows, now: D("2026-07-12"), client: client as never,
+      source: ImportSource.CSV, resolvedColumnMapping: {}, rows: posRows, now: D("2026-07-12"), ...authority(client),
     });
     check("2 IMPORTED observations upserted with importBatchId", w.observations.length === 2 && w.observations.every((o) => o.origin === PositionOrigin.IMPORTED && o.importBatchId === "batch_1") && res.counts?.create === 2);
     check("cost basis carried onto the observation", w.observations[0].costBasis === 4500);
@@ -113,7 +134,7 @@ async function main(): Promise<void> {
     });
     const res = await commitInvestmentImport({
       financialAccountId: "fa1", userId: "u1", profileKey: "csv:generic", profileVersion: 1,
-      source: ImportSource.CSV, resolvedColumnMapping: {}, rows: genericRows(), now: D("2026-07-12"), client: client as never,
+      source: ImportSource.CSV, resolvedColumnMapping: {}, rows: genericRows(), now: D("2026-07-12"), ...authority(client),
     });
     check("prior user opening superseded (append + supersede)", superseded.events.includes("uo1") && (res.supersededAssertions ?? 0) >= 1);
     check("prior user observation superseded", superseded.observations.includes("uobs1"));
@@ -124,8 +145,48 @@ async function main(): Promise<void> {
   {
     const badRow: NormalizedInvestmentRow = { lineNumber: 1, rowKind: "TRANSACTION", date: null, settlementDate: null, type: InvestmentEventType.BUY, rawAction: "Buy", symbol: "AAA", cusip: null, description: null, quantity: 1, price: null, amount: null, fees: null, currency: null, reference: null, costBasis: null, ratio: null, externalEventId: "x", importedRaw: { a: "b" }, error: "Missing date.", warnings: [] };
     const { client, w } = makeFake();
-    const res = await commitInvestmentImport({ financialAccountId: "fa1", userId: "u1", profileKey: "csv:generic", profileVersion: 1, source: ImportSource.CSV, resolvedColumnMapping: {}, rows: [badRow], now: D("2026-07-12"), client: client as never });
+    const res = await commitInvestmentImport({ financialAccountId: "fa1", userId: "u1", profileKey: "csv:generic", profileVersion: 1, source: ImportSource.CSV, resolvedColumnMapping: {}, rows: [badRow], now: D("2026-07-12"), ...authority(client) });
     check("failed counted, no event written, batch COMPLETED_WITH_ERRORS", res.counts?.failed === 1 && w.events.length === 0 && (w.batchUpdates[0] as Row)?.status === "COMPLETED_WITH_ERRORS");
+  }
+
+  // ── RLS-PREP-2 — the authority boundary ────────────────────────────────────
+  console.log("authority: row phases, telemetry after the phase, refusals raise");
+  {
+    // Every row whose symbol is ambiguous: no event, and each incident lands
+    // strictly between phases.
+    const { client, w } = makeFake({ noAlias: true, weakMatches: [{ id: "i1" }, { id: "i2" }] });
+    const a = authority(client);
+    const res = await commitInvestmentImport({ financialAccountId: "fa1", userId: "u1", profileKey: "csv:generic", profileVersion: 1, source: ImportSource.CSV, resolvedColumnMapping: {}, rows: genericRows(), now: D("2026-07-12"), ...a });
+    const conflicts = a.issues.filter((i) => i.kind === "INSTRUMENT_IDENTITY_CONFLICT").length;
+    check("ambiguous instruments are skipped, counted, and never written", conflicts >= 1 && res.counts?.skip === conflicts && w.events.every((e) => e.instrumentId === null));
+    check("no incident is ever recorded while a tenant phase is open", !a.log.some((l) => l.startsWith("issue-INSIDE-PHASE")), a.log.join(","));
+    check("the batch still finalizes COMPLETED_WITH_ERRORS", (w.batchUpdates[0] as Row)?.status === "COMPLETED_WITH_ERRORS");
+  }
+  {
+    // The batch INSERT is the boundary: refused ⇒ raise, no row, no incident.
+    const { client, w } = makeFake({ batchRefused: true, noAlias: true, weakMatches: [{ id: "i1" }, { id: "i2" }] });
+    const a = authority(client);
+    let raised = false;
+    try { await commitInvestmentImport({ financialAccountId: "fa_foreign", userId: "u1", profileKey: "csv:generic", profileVersion: 1, source: ImportSource.CSV, resolvedColumnMapping: {}, rows: genericRows(), ...a }); } catch { raised = true; }
+    check("a refused batch raises before any row, instrument or incident", raised && w.events.length === 0 && a.issues.length === 0 && a.log.join(",") === "phase:open,phase:rollback", a.log.join(","));
+  }
+  {
+    // One phase per written row (+ batch, finalize, repair) — a later failure cannot unwrite an earlier row.
+    const { client } = makeFake();
+    const a = authority(client);
+    await commitInvestmentImport({ financialAccountId: "fa1", userId: "u1", profileKey: "csv:generic", profileVersion: 1, source: ImportSource.CSV, resolvedColumnMapping: {}, rows: genericRows(), now: D("2026-07-12"), ...a });
+    const phases = a.log.filter((l) => l === "phase:commit").length;
+    check("batch + one phase per row + supersession + finalize + repair", phases >= 1 + 3 + 1 + 1, String(phases));
+  }
+  {
+    process.env.INVESTMENT_RECONSTRUCTION_ENABLED = "true";
+    const { client, w } = makeFake({ repairThrows: true });
+    const a = authority(client);
+    const res = await commitInvestmentImport({ financialAccountId: "fa1", userId: "u1", profileKey: "csv:generic", profileVersion: 1, source: ImportSource.CSV, resolvedColumnMapping: {}, rows: genericRows(), now: D("2026-07-12"), ...a });
+    delete process.env.INVESTMENT_RECONSTRUCTION_ENABLED;
+    check("repair failure is non-fatal: import ok, batch finalized, incident recorded after the rollback",
+      res.status === "ok" && w.events.length === 3 && res.repair === undefined
+      && a.log.slice(-2).join(",") === "phase:rollback,issue:INVESTMENT_DATA_PERSISTENCE_FAILED", a.log.slice(-3).join(","));
   }
 
   // ── Preview is zero-write ──────────────────────────────────────────────────
@@ -142,7 +203,7 @@ async function main(): Promise<void> {
   delete process.env.INVESTMENT_IMPORTS_ENABLED;
   {
     const { client, w } = makeFake();
-    const res = await commitInvestmentImport({ financialAccountId: "fa1", userId: "u1", profileKey: "csv:generic", profileVersion: 1, source: ImportSource.CSV, resolvedColumnMapping: {}, rows: genericRows(), client: client as never });
+    const res = await commitInvestmentImport({ financialAccountId: "fa1", userId: "u1", profileKey: "csv:generic", profileVersion: 1, source: ImportSource.CSV, resolvedColumnMapping: {}, rows: genericRows(), ...authority(client) });
     check("disabled, no batch created", res.status === "disabled" && w.batch === null);
   }
 

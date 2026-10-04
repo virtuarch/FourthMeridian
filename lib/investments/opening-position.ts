@@ -33,10 +33,66 @@
  * (account, [instrument]); repair failure is non-fatal (the ingest hook posture).
  */
 
-import { InvestmentEventType, PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
-import { recordSyncIssue } from "@/lib/plaid/syncIssues";
+import { InvestmentEventType, PositionOrigin, type Prisma } from "@prisma/client";
+import type { SyncIssueInput } from "@/lib/plaid/syncIssues";
+import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 import { repairReconstructionForAccount } from "@/lib/investments/reconstruction-runner";
 import { resolveInstrumentForImport, type ImportInstrumentIdentity } from "@/lib/investments/instrument-resolver-import";
+
+// ── RLS-PREP-2 — THE TWO AUTHORITIES OF AN INVESTMENT IMPORT ─────────────────
+//
+// The A7 writers (this one and investment-import-commit.ts) ran as the
+// migration principal for one reason: they wrote operator telemetry through the
+// same client as the money, and `SyncIssue` is revoked from fm_app. The answer
+// is NOT to grant the tenant role that table, and NOT to run the money as
+// fm_system. It is that the writer holds no database client at all:
+//
+//   tenant        every financial statement — batch, events, observations,
+//                 supersession, reconstruction repair, and the instrument
+//                 identity work (global reference data fm_app may already
+//                 mint) — runs inside phases the CALLER opens as the tenant
+//                 role. RLS decides what each one may touch.
+//   recordIssue   a function that accepts ONE typed incident and returns
+//                 nothing. In production it is `recordSyncIssue` on its
+//                 fm_system default. It is not a client: there is no statement
+//                 a writer could issue through it, so the system authority
+//                 cannot become a way to perform the mutation outside RLS.
+//
+// ORDER IS THE BOUNDARY. `recordIssue` is only ever called after a tenant phase
+// has ALREADY proved the account is visible to the caller under RLS (here an
+// explicit read; in the commit writer the ImportBatch INSERT's WITH CHECK), and
+// only after the phase it reports on has ended — committed or rolled back. A
+// telemetry failure therefore cannot abort a financial transaction
+// (OPS-2D-TX-1), and an unauthorized caller cannot reach telemetry.
+//
+// WHAT WAS NOT LOST. Telemetry was never atomic with the mutation: the old
+// writer ran on an autocommit root client and recorded incidents as separate
+// statements. Both incident kinds also describe something that wrote nothing —
+// a refused identity, or a repair that rolled back — so there is no financial
+// row for them to be atomic WITH.
+export type InvestmentTenantPhase = <T>(
+  fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  opts?: { timeout?: number },
+) => Promise<T>;
+export type InvestmentIssueRecorder = (issue: SyncIssueInput) => Promise<void>;
+
+/**
+ * Reconstruction repair walks an account's whole event log in one phase;
+ * Prisma's 5 s interactive default is sized for a single statement group.
+ */
+export const REPAIR_PHASE_TIMEOUT_MS = 30_000;
+
+/**
+ * The caller's tenant phase could not see the account it was asked to write to.
+ * Routes authorize before calling, so this is a programming error or a race
+ * with a revocation — never a normal outcome, and never a reason to continue.
+ */
+export class InvestmentAccountNotVisibleError extends Error {
+  constructor() {
+    super("The account is not visible to the acting user under the tenant role; refusing to write investment evidence or record telemetry for it.");
+    this.name = "InvestmentAccountNotVisibleError";
+  }
+}
 
 /** The canonical source string for manual (non-file) evidence. */
 export const USER_SOURCE = "user";
@@ -58,14 +114,10 @@ export interface AssertOpeningPositionParams {
   costBasis?: number | null;
   userId:   string;
   now?:     Date;
-  /**
-   * Top-level client (needs $transaction). RLS-PREP-C — REQUIRED: this defaulted
-   * to `db`, so the opening-position route wrote InvestmentEvent and
-   * PositionObservation as the migration principal without importing it. The
-   * route now names the authority it passes. It is still a ROOT client for the
-   * reason recorded on `CommitInput.client` in investment-import-commit.ts.
-   */
-  client:   PrismaClient;
+  /** Opens a phase as the acting user on the tenant role. See the module note. */
+  tenant:      InvestmentTenantPhase;
+  /** Records one operator incident AFTER a phase has ended. Never a client. */
+  recordIssue: InvestmentIssueRecorder;
 }
 
 export interface AssertOpeningPositionResult {
@@ -91,26 +143,33 @@ function toDate(ymd: string): Date {
 export async function assertOpeningPosition(params: AssertOpeningPositionParams): Promise<AssertOpeningPositionResult> {
   if (!investmentImportsEnabled()) return { status: "disabled" };
 
-  const client = params.client;
+  const { tenant, recordIssue } = params;
   const now = params.now ?? new Date();
   const date = toDate(params.date);
   const { financialAccountId, quantity, userId } = params;
   const costBasis = params.costBasis ?? null;
 
-  // ── Resolve the instrument (prefer an explicit id; else identity) ──────────
-  let instrumentId: string;
-  let instrumentCreated = false;
-  if ("instrumentId" in params.instrument) {
-    instrumentId = params.instrument.instrumentId;
-  } else {
-    const resolved = await resolveInstrumentForImport(params.instrument, { client, financialAccountId });
-    if (resolved.conflict) return { status: "conflict" };
-    instrumentId = resolved.instrumentId;
-    instrumentCreated = resolved.created;
-  }
+  // ── ONE tenant phase: visibility → identity → the composite write ──────────
+  // Atomic end to end, which it was not before: the instrument a manual
+  // assertion mints now rolls back with the assertion that needed it instead of
+  // surviving as an orphan when the composite write fails.
+  const outcome = await tenant(async (tx) => {
+    // The boundary every later step stands behind — including telemetry, which
+    // names this account id to an operator.
+    const visible = await tx.financialAccount.findUnique({ where: { id: financialAccountId }, select: { id: true } });
+    if (!visible) throw new InvestmentAccountNotVisibleError();
 
-  // ── Atomic composite write + supersession ──────────────────────────────────
-  const written = await client.$transaction(async (tx: Prisma.TransactionClient) => {
+    let instrumentId: string;
+    let instrumentCreated = false;
+    if ("instrumentId" in params.instrument) {
+      instrumentId = params.instrument.instrumentId;
+    } else {
+      const resolved = await resolveInstrumentForImport(params.instrument, { client: tx, financialAccountId });
+      if (resolved.conflict) return { conflict: true as const, issue: resolved.issue };
+      instrumentId = resolved.instrumentId;
+      instrumentCreated = resolved.created;
+    }
+
     const event = await tx.investmentEvent.create({
       data: {
         financialAccountId, instrumentId,
@@ -133,10 +192,16 @@ export async function assertOpeningPosition(params: AssertOpeningPositionParams)
       select: { id: true },
     });
     if (priorEvents.length > 0) {
-      await tx.investmentEvent.updateMany({
+      // A count-returning write: under RLS a refused row is a smaller count,
+      // not an error. Every row this phase just SAW must have been written.
+      const r = await tx.investmentEvent.updateMany({
         where: { id: { in: priorEvents.map((e) => e.id) } },
         data:  { supersededById: event.id },
       });
+      assertEveryObservedRowWasWritten(
+        { table: "InvestmentEvent", operation: "update", scope: `${priorEvents.length} prior user opening(s) of one position` },
+        priorEvents.length, r.count,
+      );
     }
 
     const observation = await tx.positionObservation.upsert({
@@ -165,30 +230,49 @@ export async function assertOpeningPosition(params: AssertOpeningPositionParams)
       select: { id: true },
     });
     if (priorObs.length > 0) {
-      await tx.positionObservation.updateMany({
+      const r = await tx.positionObservation.updateMany({
         where: { id: { in: priorObs.map((o) => o.id) } },
         data:  { supersededById: observation.id },
       });
+      assertEveryObservedRowWasWritten(
+        { table: "PositionObservation", operation: "update", scope: `${priorObs.length} prior user anchor(s) of one position` },
+        priorObs.length, r.count,
+      );
     }
 
     return {
-      eventId: event.id,
-      observationId: observation.id,
-      supersededEventIds: priorEvents.map((e) => e.id),
-      supersededObservationIds: priorObs.map((o) => o.id),
+      conflict: false as const,
+      instrumentId, instrumentCreated,
+      written: {
+        eventId: event.id,
+        observationId: observation.id,
+        supersededEventIds: priorEvents.map((e) => e.id),
+        supersededObservationIds: priorObs.map((o) => o.id),
+      },
     };
   });
 
+  if (outcome.conflict) {
+    // The phase has ended and wrote nothing. Only now does telemetry run.
+    if (outcome.issue) await recordIssue(outcome.issue);
+    return { status: "conflict" };
+  }
+  const { instrumentId, instrumentCreated, written } = outcome;
+
   // ── Bounded reconstruction repair (non-fatal) ──────────────────────────────
+  // Its own tenant phase, so a failed repair rolls back alone and leaves the
+  // committed assertion standing. The best-effort handling sits OUTSIDE the
+  // phase (lib/db/write-phase.ts): catching inside it would hand the next
+  // statement an aborted transaction.
   let repair: AssertOpeningPositionResult["repair"];
   try {
-    const m = await repairReconstructionForAccount(client, {
+    const m = await tenant((tx) => repairReconstructionForAccount(tx, {
       financialAccountId, affectedInstrumentIds: [instrumentId], affectedCash: false, now,
-    });
+    }), { timeout: REPAIR_PHASE_TIMEOUT_MS });
     repair = { status: m.status, repairedInstrumentIds: m.repairedInstrumentIds };
   } catch (err) {
     console.warn(`[opening-position] reconstruction repair for account ${financialAccountId} failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-    await recordSyncIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", financialAccountId, detail: { stage: "opening-position-repair", error: err instanceof Error ? err.message : String(err) } }, client);
+    await recordIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", financialAccountId, detail: { stage: "opening-position-repair", error: err instanceof Error ? err.message : String(err) } });
   }
 
   return { status: "ok", instrumentId, instrumentCreated, ...written, repair };
