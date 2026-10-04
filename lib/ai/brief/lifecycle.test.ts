@@ -284,7 +284,12 @@ async function main() {
 
     const first = harness();
     first.state.fail = 'PROVIDER_ERROR';
+    const logged: string[] = [];
+    const origErr = console.error; console.error = (...a: unknown[]) => { logged.push(a.map(String).join(' ')); };
     const failed = await first.ensure(T0);
+    console.error = origErr;
+    check('a failed generation LOGS its reason and the provider\'s own detail (the row keeps only the type)',
+      logged.some((l) => /\[brief\] generation failed/.test(l) && /PROVIDER_ERROR/.test(l) && /boom/.test(l)), logged.join(' / '));
     check('a first-ever failure → FAILED with the cooldown as retryAfterMs, nothing to show',
       failed.status === 'FAILED' && failed.retryAfterMs === GENERATION_FAILURE_COOLDOWN_MS && failed.fallback === null);
     for (let i = 1; i <= 5; i++) await first.ensure(new Date(T0.getTime() + i * 10_000));

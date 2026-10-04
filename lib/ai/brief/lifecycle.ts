@@ -301,6 +301,12 @@ export async function ensureDailyBrief(
       : digest !== state.row.materialDigest ? 'change' : 'version';
     const result = await lap('generate', () => deps.generate(modelPkg, now, reason));
     if (!result.ok) {
+      // ⚠️ THE ROW KEEPS THE TYPED REASON; THE LOG KEEPS WHY. "Couldn't update" with
+      // PROVIDER_ERROR on the row was all an operator had on 2026-10-04, when the
+      // provider's sentence was "you have no credits remaining" — and it took a
+      // reproduction to read it. The detail is the provider's or validator's own text.
+      console.error(`[brief] generation failed for ${today} (${result.reason}, ${result.meta.correlationId}):`,
+        result.detail.join(' | '));
       await lap('release', () => deps.store.fail(key, claim.token, result.reason, failedAt()));
       return done({ status: 'FAILED', reason: result.reason, retryAfterMs: GENERATION_FAILURE_COOLDOWN_MS, fallback, timings });
     }

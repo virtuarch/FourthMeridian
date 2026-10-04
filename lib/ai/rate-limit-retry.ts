@@ -56,8 +56,22 @@ export interface RateLimitRetryOptions {
 
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
+/**
+ * A 429 that waiting cannot cure: the account is out of credits or over its billing quota.
+ *
+ * ⚠️ SAME STATUS, OPPOSITE MEANING. OpenAI answers "you have no credits remaining" with
+ * a 429 and `code: 'insufficient_quota'`. Treated as a rate limit it was retried three
+ * times with backoff — thirty seconds of a Daily Brief's budget spent waiting for
+ * billing to change — and then reported as a generic provider error.
+ */
+export function isQuotaExhaustedError(err: unknown): boolean {
+  if (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'insufficient_quota') return true;
+  return /insufficient_quota|no credits remaining|exceeded your current quota/i.test(messageOf(err));
+}
+
 /** A provider rate limit — by status when the SDK supplies one, else by message (turn.ts's predicate). */
 export function isRateLimitError(err: unknown): boolean {
+  if (isQuotaExhaustedError(err)) return false;
   if (typeof err === 'object' && err !== null && (err as { status?: unknown }).status === 429) return true;
   return /rate limit|429/i.test(messageOf(err));
 }

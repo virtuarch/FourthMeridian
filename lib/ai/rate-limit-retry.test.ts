@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import {
   BACKOFF_MAX_MS, BACKOFF_STEP_MS, DEFAULT_MAX_RATE_LIMIT_RETRIES, SUGGESTED_WAIT_MARGIN_MS,
-  callWithRateLimitRetry, isRateLimitError, rateLimitWaitMs, type RateLimitRetryRecord,
+  callWithRateLimitRetry, isQuotaExhaustedError, isRateLimitError, rateLimitWaitMs, type RateLimitRetryRecord,
 } from './rate-limit-retry';
 
 let failures = 0;
@@ -20,6 +20,9 @@ function check(name: string, cond: boolean, detail?: string) {
 
 const RATE_LIMITED = new Error('429 Rate limit reached for gpt-5.1 in organization org-x on tokens per min (TPM): Limit 500000. Please try again in 12.4s.');
 const BARE_429 = Object.assign(new Error('Too Many Requests'), { status: 429 });
+// The live 2026-10-04 failure, verbatim: a 429 that is a billing state, not a rate.
+const NO_CREDITS = Object.assign(new Error('429 You have no credits remaining. Add credits to continue using the API at '
+  + 'https://platform.openai.com/settings/organization/billing/.'), { status: 429, code: 'insufficient_quota' });
 
 /** A fake provider: fails `failures` times with `err`, then answers. Virtual clock. */
 function harness(failTimes: number, err: unknown = RATE_LIMITED) {
@@ -43,6 +46,11 @@ async function main() {
     check('a 429 by status', isRateLimitError(BARE_429));
     check('a 429 by message', isRateLimitError(RATE_LIMITED) && isRateLimitError(new Error('Rate limit exceeded')));
     check('a timeout, a 5xx, a refusal are not', ![new Error('503 upstream'), new Error('did not arrive within 60000 ms'), 'nope'].some(isRateLimitError));
+    check('an exhausted quota is a 429 but NOT a rate limit — by code, and by message alone',
+      isQuotaExhaustedError(NO_CREDITS) && !isRateLimitError(NO_CREDITS)
+        && isQuotaExhaustedError(new Error(NO_CREDITS.message)) && !isRateLimitError(new Error(NO_CREDITS.message))
+        && !isRateLimitError(new Error('429 You exceeded your current quota, please check your plan and billing details.')));
+    check('…and a true rate limit is not a quota', !isQuotaExhaustedError(RATE_LIMITED) && !isQuotaExhaustedError(BARE_429));
     check('the provider\'s own wait is honoured, plus a margin', rateLimitWaitMs(RATE_LIMITED, 1) === 12_400 + SUGGESTED_WAIT_MARGIN_MS);
     check('no suggestion ⇒ linear backoff, capped', rateLimitWaitMs(BARE_429, 1) === BACKOFF_STEP_MS
       && rateLimitWaitMs(BARE_429, 3) === 3 * BACKOFF_STEP_MS && rateLimitWaitMs(BARE_429, 99) === BACKOFF_MAX_MS);
@@ -54,6 +62,12 @@ async function main() {
     check('one 429 then an answer: two calls, one wait, the answer returned',
       await callWithRateLimitRetry(once.call, once.options) === 'ok' && once.calls.length === 2 && once.sleeps.length === 1
         && once.sleeps[0] === 13_900 && once.retries[0].attempt === 1 && /429/.test(once.retries[0].reason));
+
+    const broke = harness(99, NO_CREDITS);
+    let quotaThrew: unknown;
+    await callWithRateLimitRetry(broke.call, broke.options).catch((e) => { quotaThrew = e; });
+    check('an exhausted quota fails on the FIRST call: no wait, no retry, the provider\'s own error',
+      quotaThrew === NO_CREDITS && broke.calls.length === 1 && broke.sleeps.length === 0 && broke.retries.length === 0);
 
     const forever = harness(99);
     let threw: unknown;
