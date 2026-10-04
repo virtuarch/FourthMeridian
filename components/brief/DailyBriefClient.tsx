@@ -44,6 +44,10 @@ import {
 // ── Formatting (browser-local time; the Brief day itself is a UTC day) ──────────
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+/** "Sat, Oct 3, 12:44 AM" — date AND time, both in the browser's calendar. */
+const stamp = (iso: string) => new Date(iso).toLocaleString([], {
+  weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+});
 const shortDate = (iso: string) => new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 const utcDay = (day: string) => new Date(`${day}T00:00:00Z`).toLocaleDateString([], {
   weekday: "long", month: "short", day: "numeric", timeZone: "UTC",
@@ -71,6 +75,39 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
     <div className="mb-3 flex items-center gap-3">
       <h2 className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{children}</h2>
       <span className="h-px flex-1 bg-[var(--border-hairline)]" aria-hidden />
+    </div>
+  );
+}
+
+/**
+ * A PRIOR DAY'S BRIEF, SAID AS ONE. When today's Brief could not be written, the last successful one
+ * stays on screen — but its observations and dollar figures are what was true, and assumed, when it
+ * was written, while the net worth and data health on the same page are read live. On 2026-10-04 a
+ * Brief written the night before (on the method in force then) sat under a live "as of Oct 4", marked
+ * only "From Saturday, Oct 3". This names the boundary; the Brief's own words are never rewritten.
+ */
+function PriorBriefNotice({ brief, phase }: { brief: BriefArtifactView; phase: BriefView["phase"] }) {
+  const status = phase === "UPDATING" || phase === "WAITING" ? "Updating today’s Brief…"
+    : phase === "COULD_NOT_UPDATE" ? "Couldn’t update today’s Brief" : null;
+  return (
+    <div role="note" aria-label="Last successful Brief"
+      className="mb-4 rounded-md border border-[var(--border-hairline)] px-3 py-2.5 text-xs">
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="font-medium text-[var(--text-primary)]" suppressHydrationWarning>
+          Last successful Brief · {stamp(brief.generatedAt)}
+        </span>
+        {status && (
+          <span role="status" aria-live="polite"
+            className={status.startsWith("Couldn’t") ? "text-[var(--accent-warning)]" : "text-[var(--text-secondary)]"}>
+            {status}
+          </span>
+        )}
+      </p>
+      <p className="mt-1 leading-5 text-[var(--text-muted)]" suppressHydrationWarning>
+        Its observations and dollar figures reflect your accounts and assumptions when it was written
+        {brief.balancesAsOf ? `, with balances as of ${shortDate(brief.balancesAsOf)}` : ""}. Net worth and
+        data freshness under “Live now” are current.
+      </p>
     </div>
   );
 }
@@ -201,11 +238,11 @@ function DataFreshness({ dataHealth, brief }: { dataHealth: BriefDataHealthView 
   );
 }
 
-function Metrics({ metrics }: { metrics: BriefMetricsView }) {
+function Metrics({ metrics, live }: { metrics: BriefMetricsView; live?: boolean }) {
   const change = metrics.monthChange;
   return (
     <Surface className="mb-9 p-4 sm:p-5">
-      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Net worth</p>
+      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{live ? "Live · Net worth" : "Net worth"}</p>
       <div className="mt-1">
         <Figure value={formatCurrency(metrics.netWorth, metrics.currency)} size="figure" />
       </div>
@@ -243,24 +280,39 @@ function Observation({ o, quietStyle }: { o: BriefObservationView; quietStyle?: 
   );
 }
 
-function BriefBody({ brief, metrics, dataHealth, phase }: {
+export function BriefBody({ brief, metrics, dataHealth, phase }: {
   brief: BriefArtifactView; metrics: BriefMetricsView | null; dataHealth: BriefDataHealthView | null; phase: BriefView["phase"];
 }) {
   const notable = brief.observations.filter((o) => o.importance === "NOTABLE");
   const context = brief.observations.filter((o) => o.importance === "CONTEXT");
+  // ⚠️ A PRIOR DAY'S BRIEF IS LAID OUT AS TWO CLOCKS. Its words first, dated; today's live figures
+  // after it, under their own label. A current Brief keeps its layout exactly.
+  const prior = brief.fromPriorDay;
+  const from = prior ? ` · from ${shortDate(brief.generatedAt)}` : "";
+  const live = prior ? (
+    <section aria-label="Live now">
+      <SectionLabel>Live now</SectionLabel>
+      <div className="mb-4"><DataFreshness dataHealth={dataHealth} brief={brief} /></div>
+      {metrics && <Metrics metrics={metrics} live />}
+    </section>
+  ) : (metrics && <Metrics metrics={metrics} />);
   return (
     <>
       <div className="mb-8">
-        <Provenance brief={brief} phase={phase} />
-        <DataFreshness dataHealth={dataHealth} brief={brief} />
+        {prior ? <PriorBriefNotice brief={brief} phase={phase} /> : (
+          <>
+            <Provenance brief={brief} phase={phase} />
+            <DataFreshness dataHealth={dataHealth} brief={brief} />
+          </>
+        )}
         <p className="mt-3 max-w-[62ch] text-lg font-medium leading-relaxed text-[var(--text-primary)] sm:text-xl">{brief.headline}</p>
       </div>
 
-      {metrics && <Metrics metrics={metrics} />}
+      {!prior && live}
 
       {notable.length > 0 && (
-        <section className="mb-9" aria-label="Worth your attention">
-          <SectionLabel>Worth your attention</SectionLabel>
+        <section className="mb-9" aria-label={`Worth your attention${from}`}>
+          <SectionLabel>{`Worth your attention${from}`}</SectionLabel>
           <ul className="space-y-2.5">{notable.map((o, i) => <Observation key={`n${i}`} o={o} />)}</ul>
         </section>
       )}
@@ -273,11 +325,13 @@ function BriefBody({ brief, metrics, dataHealth, phase }: {
       )}
 
       {context.length > 0 && (
-        <section className="mb-9" aria-label="Worth knowing">
-          <SectionLabel>Worth knowing</SectionLabel>
+        <section className="mb-9" aria-label={`Worth knowing${from}`}>
+          <SectionLabel>{`Worth knowing${from}`}</SectionLabel>
           <ul className="space-y-4">{context.map((o, i) => <Observation key={`c${i}`} o={o} quietStyle />)}</ul>
         </section>
       )}
+
+      {prior && live}
     </>
   );
 }
