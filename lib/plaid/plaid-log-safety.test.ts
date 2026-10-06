@@ -98,9 +98,9 @@ function rawAxiosError(): Record<string, unknown> {
     config,
     request,
     data: {
-      error_type: "TRANSACTIONS_ERROR",
-      error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION",
-      error_message: "Underlying transaction data changed since last page was fetched.",
+      error_type: "INSTITUTION_ERROR",
+      error_code: "INSTITUTION_NOT_RESPONDING",
+      error_message: "The institution is not responding to requests.",
       request_id: "req-abc123",
       echoed: "SENTINEL-BODY-FIELD",
     },
@@ -162,7 +162,7 @@ async function main(): Promise<void> {
   leaks("B redactedErrorForLog(raw)", line);
   leaks("B plaidErrorSummary(raw)", plaidErrorSummary(raw));
   check("B: keeps code, type, request_id, status, retry classification",
-    /code=TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION/.test(line) && /type=TRANSACTIONS_ERROR/.test(line)
+    /code=INSTITUTION_NOT_RESPONDING/.test(line) && /type=INSTITUTION_ERROR/.test(line)
     && /request_id=req-abc123/.test(line) && /HTTP 400/.test(line) && /retryable=true/.test(line), line);
 
   console.log("B'. sanitizeProviderErrorInPlace on the raw error");
@@ -199,7 +199,7 @@ async function main(): Promise<void> {
   const retryLines = captured.filter((l) => l.startsWith("[plaid][retry]"));
   check("C: exactly one retry warning was logged", retryLines.length === 1, `${retryLines.length} of ${captured.length} captured`);
   leaks("C everything captured during the retry", captured.join("\n"));
-  check("C: the warning names the code", /TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION/.test(retryLines.join("\n")));
+  check("C: the warning names the code", /INSTITUTION_NOT_RESPONDING/.test(retryLines.join("\n")));
 
   // ── D. free-text scrubbing ────────────────────────────────────────────────
   console.log("D. scrubSecrets / non-HTTP errors");
@@ -209,7 +209,7 @@ async function main(): Promise<void> {
   const wrapper = Object.assign(new Error("sync incomplete"), { cause: rawAxiosError() });
   const w = redactedErrorForLog(wrapper);
   leaks("D wrapper with an HTTP-client cause", w);
-  check("D: the cause is rendered, not dropped", /\[cause\].*code=TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION/.test(w), w);
+  check("D: the cause is rendered, not dropped", /\[cause\].*code=INSTITUTION_NOT_RESPONDING/.test(w), w);
 
   // ── E. the logging surface ────────────────────────────────────────────────
   console.log("E. Plaid logging surface");

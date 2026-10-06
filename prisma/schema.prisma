@@ -849,6 +849,12 @@ model PlaidItem {
   encryptedToken        String // AES-256-GCM encrypted access token — NEVER plaintext
   status                PlaidItemStatus          @default(ACTIVE)
   cursor                String? // /transactions/sync cursor for incremental sync
+  // Where the last COMPLETED /transactions/sync pagination loop ended — the
+  // cursor a new loop starts from. `cursor` advances per page; this does not.
+  // Plaid's TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION requires restarting the
+  // whole loop from here (a mid-loop cursor keeps failing). Null = no loop has
+  // completed yet, so a restart begins at the start of history.
+  syncOriginCursor      String?
   errorCode             String? // last Plaid error code when status = ERROR
   lastSyncedAt          DateTime?
   // D2.x resume — set while an initial/resumed history import is pending or

@@ -155,13 +155,24 @@ const TRANSIENT_CODES = new Set([
   // back when I refresh" behaviour reported 2026-07-23 (observed on a live Amex
   // import at 23:17).
   //
-  // Retrying is precisely what Plaid asks for, and it is safe here: `cursor`
-  // advances only after a page is FULLY persisted (the cursor safety invariant),
-  // so the retry re-issues from the last persisted cursor — "restart pagination
-  // from last update", exactly. Being transient it also classifies to null
-  // health, so a mid-import mutation can no longer mark a connection ERROR.
+  // Being transient it classifies to null health, so a mid-import mutation can
+  // never mark a connection ERROR.
+  //
+  // ⚠️ It is NOT retried in place (isRetryablePlaidError excludes it). "Restart
+  // pagination from last update" means from where the last COMPLETED loop ended
+  // — not the last persisted page. Re-issuing the per-page cursor fails the same
+  // way every time: Preview Sandbox 2026-10-06, a fresh OAuth Item stuck at 100
+  // imported, four calls on the page-1 cursor, all MUTATION_DURING_PAGINATION.
+  // syncTransactionsForItem restarts the loop from PlaidItem.syncOriginCursor.
   "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION",
 ]);
+
+/** Plaid says the Item's data changed mid-pagination: restart the whole loop (see above). */
+export function isPaginationMutation(err: unknown): boolean {
+  const code = (err as { response?: { data?: PlaidErrorBody } } | null)?.response?.data?.error_code;
+  return (err as { isAxiosError?: unknown } | null)?.isAxiosError === true
+    && code === "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION";
+}
 
 export interface PlaidHealthResult {
   status: typeof PlaidItemStatus.NEEDS_REAUTH | typeof PlaidItemStatus.ERROR;
@@ -229,6 +240,7 @@ export function isRetryablePlaidError(err: unknown): boolean {
   const code   = axiosErr.response.data?.error_code;
 
   if (status === 429) return true;
+  if (code === "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION") return false; // restart, not retry
   if (code && TRANSIENT_CODES.has(code)) return true;
 
   return false;

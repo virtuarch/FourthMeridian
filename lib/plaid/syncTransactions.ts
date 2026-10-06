@@ -93,7 +93,7 @@ import { randomUUID } from "node:crypto";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db, systemDb } from "@/lib/db";
-import { redactedErrorForLog } from "@/lib/plaid/errors";
+import { isPaginationMutation, redactedErrorForLog } from "@/lib/plaid/errors";
 import { ProviderType, PlaidItemStatus } from "@prisma/client";
 import { recordSyncIssue, resolveCursorBlockingIssues } from "@/lib/plaid/syncIssues";
 import { activeLedger } from "@/lib/plaid/refresh-ledger";
@@ -217,7 +217,13 @@ export interface SyncTransactionsDeps {
    * before — behavior is unchanged for every existing caller.
    */
   runId?: string;
+  /** Base delay between pagination restarts (multiplied by the restart number). Tests pass 0. */
+  restartDelayMs?: number;
 }
+
+/** Restarts of one run's pagination loop after MUTATION_DURING_PAGINATION before the run fails. */
+const MAX_PAGINATION_RESTARTS = 3;
+const PAGINATION_RESTART_DELAY_MS = 2000;
 
 export interface SyncTransactionsResult {
   /** Count of transactions Plaid reported in its `added` array this run (Plaid's own count, unchanged semantics). */
@@ -322,7 +328,25 @@ export async function syncTransactionsForItem(
   // reached — resetting there would make the customer's progress visibly jump
   // backwards, which is worse than showing nothing at all.
   const importedBase = item.cursor == null ? 0 : (item.syncImportedCount ?? 0);
-  const importedSoFar = () => importedBase + created + updatedByPlaidId + updatedByFingerprint;
+  // Re-based when a pagination restart re-delivers rows already counted.
+  let importedOffset = importedBase;
+  const importedSoFar = () => importedOffset + created + updatedByPlaidId + updatedByFingerprint;
+
+  // ── Where a pagination restart begins ─────────────────────────────────────
+  // TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION means Plaid's data changed
+  // under this loop: the whole loop restarts from where the last COMPLETED loop
+  // ended. `cursor` is persisted per page, so after page 1 it is a mid-loop value
+  // that fails identically forever — the Preview Sandbox OAuth Item stuck at
+  // "100 imported" (2026-10-06). A never-completed import restarts at the start
+  // of history; an Item that completed loops before syncOriginCursor existed
+  // falls back to its current cursor until its next completed loop writes it.
+  // Rows from abandoned pages are already committed; re-delivery is idempotent
+  // (every added/modified row resolves by its unique plaidTransactionId).
+  const originCursor: string | undefined = (item.completedSyncCount ?? 0) === 0
+    ? undefined
+    : (item.syncOriginCursor ?? item.cursor ?? undefined);
+  let paginationRestarts = 0;
+  const restartDelayMs = deps.restartDelayMs ?? PAGINATION_RESTART_DELAY_MS;
 
   // FlowType observability (FLOWTYPE_SHADOW). Classification itself now runs
   // unconditionally (P3 Phase B — it feeds the write); this flag only controls
@@ -393,13 +417,33 @@ export async function syncTransactionsForItem(
     // fully-persisted pages legitimately keep their advanced cursor.
     const pageFailures: PagePersistenceFailure[] = [];
 
-    const resp = await withPlaidRetry(
-      () => plaid.transactionsSync({
-        access_token: accessToken,
-        ...(cursor ? { cursor } : {}),
-      }),
-      "transactionsSync"
-    );
+    let resp: Awaited<ReturnType<typeof plaid.transactionsSync>>;
+    try {
+      resp = await withPlaidRetry(
+        () => plaid.transactionsSync({
+          access_token: accessToken,
+          ...(cursor ? { cursor } : {}),
+        }),
+        "transactionsSync"
+      );
+    } catch (err) {
+      if (!isPaginationMutation(err) || paginationRestarts >= MAX_PAGINATION_RESTARTS) throw err;
+      paginationRestarts++;
+      console.warn(
+        `[plaid sync] item ${plaidItemDbId} — data changed mid-pagination; restarting the loop from ` +
+        `${originCursor ? "the last completed cursor" : "the beginning"} (restart ${paginationRestarts}/${MAX_PAGINATION_RESTARTS})`,
+      );
+      cursor = originCursor;
+      importedOffset = (originCursor === undefined ? 0 : importedBase) - (created + updatedByPlaidId + updatedByFingerprint);
+      // Persist the restart point first: if this run dies or gives up, the next
+      // one begins where Plaid requires instead of on the dead mid-loop cursor.
+      await database.plaidItem.update({
+        where: { id: plaidItemDbId },
+        data:  { cursor: cursor ?? null, syncImportedCount: importedSoFar() },
+      });
+      await new Promise((r) => setTimeout(r, restartDelayMs * paginationRestarts));
+      continue;
+    }
     const { added: addedTxns, modified: modifiedTxns, removed: removedTxns, has_more, next_cursor } = resp.data;
 
     for (const txn of [...addedTxns, ...modifiedTxns]) {
@@ -1179,7 +1223,7 @@ export async function syncTransactionsForItem(
   await setPlaidItemHealth(
     plaidItemDbId,
     { status: PlaidItemStatus.ACTIVE, errorCode: null },
-    { cursor: cursor ?? null, lastSyncedAt: new Date(),
+    { cursor: cursor ?? null, syncOriginCursor: cursor ?? null, lastSyncedAt: new Date(),
       syncIncompleteAt: settledSyncIncompleteAt, completedSyncCount: nextCompletedSyncCount,
       syncImportedCount: importedSoFar() },
     database,
