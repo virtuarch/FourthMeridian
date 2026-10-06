@@ -472,7 +472,8 @@ const getFinancialSnapshot: ToolDefinition = {
   description:
     'The position on a date. Omit `asOf` for today (adds per-account freshness, APRs and ' +
     'available balances); pass `asOf` for a past date (adds the account-level breakdown of ' +
-    'each bucket and the coverage of that date). `liquid` is checking + savings; `checking` ' +
+    'each bucket and the coverage of that date). Today, `liquid` is unrestricted cash: checking + savings, excluding restricted accounts such as an HSA; on a past date it is ' +
+    'the recorded checking + savings balance; historical snapshots do not separate restricted accounts such as an HSA, so it is not comparable to today\'s unrestricted `liquid` when such accounts exist. `checking` ' +
     'is checking alone. Start here for anything broad, and for any "how was I doing on X". ' +
     'Investment values carry no cost basis or account tax treatment: a sale\'s tax effect is ' +
     'unknown here, so name it when selling is on the table.',
@@ -1268,7 +1269,7 @@ const getBaselines: ToolDefinition = {
       ...derived,
       ...(afterLiquidChange ? { afterLiquidChange } : {}),
       liquid: liquid === null ? refuse('no accounts in scope', 'any accounts in scope') : {
-        amount: liquid, basis: 'checking + savings from the current accounts — the same figure as '
+        amount: liquid, basis: 'unrestricted cash: checking + savings, excluding restricted accounts such as an HSA, from the current accounts — the same figure as '
           + 'get_financial_snapshot.liquid; investments and digital assets are not in it',
         ...(liquidBehind > 0 ? { completeness: { tier: 'incomplete' as Tier,
           reason: `${liquidBehind} liquid account(s) need reconnecting; the balance is the last one read` } } : {}) },
@@ -1373,7 +1374,7 @@ const getNetWorthHistory: ToolDefinition = {
     'requested range — `change` gives the measured movement of net worth, liquid, ' +
     'investments, digital assets and debt between the first and last observation. Use it ' +
     'for "what changed", "why did my net worth move", "how does this compare with a month ' +
-    'ago". `liquid` is checking + savings; `checking` is the checking bucket alone — there ' +
+    'ago". `liquid` is the recorded checking + savings balance; historical snapshots do not separate restricted accounts such as an HSA, so it is not comparable to today\'s unrestricted `liquid` when such accounts exist; `checking` is the checking bucket alone — there ' +
     'is deliberately no field called "cash". Ask for `granularity: "monthly"` to get one ' +
     'point per calendar month. A point whose net worth could not be established is returned ' +
     'as null WITH a reason; read `coverage` before describing older history as fact. For an ' +
@@ -1524,7 +1525,7 @@ const getNetWorthHistory: ToolDefinition = {
 
 const BALANCE_METRICS = {
   netWorth:      'net worth',
-  liquid:        'checking + savings',
+  liquid:        'the recorded checking + savings balance (restricted accounts such as an HSA are not separable in history)',
   checking:      'the checking bucket alone',
   investments:   'traditional investments',
   digitalAssets: 'crypto',
@@ -1565,7 +1566,7 @@ const findInBalanceHistory: ToolDefinition = {
     'matching observation, the observation before it, and the coverage it searched.',
   parameters: obj({
     metric: { type: 'string', enum: Object.keys(BALANCE_METRICS),
-      description: 'Which balance. `liquid` is checking + savings; `checking` is the '
+      description: 'Which balance. `liquid` is the recorded checking + savings balance; historical snapshots do not separate restricted accounts such as an HSA, so it is not comparable to today\'s unrestricted `liquid` when such accounts exist; `checking` is the '
         + 'checking bucket alone; `debt` is what is owed, as a positive amount.' },
     operation: { type: 'string', enum: [...TEMPORAL_OPERATIONS],
       description: 'minimum and maximum need no threshold. first_below, first_above, '
@@ -3676,10 +3677,10 @@ const scenarioProjection: ToolDefinition = {
 /** What each line means to a reader. The values themselves are the ledger's. */
 const CROSSING_METRICS: Record<LedgerMetric, string> = {
   netWorth:    'everything owned less everything owed',
-  liquid:      'checking + savings',
+  liquid:      'unrestricted cash: checking + savings, excluding restricted accounts such as an HSA',
   investments: 'traditional investments + crypto',
   debt:        'what is owed, as a positive amount',
-  otherAssets: 'property and anything else that is not cash, an investment or a debt',
+  otherAssets: 'property, restricted cash such as an HSA, and anything else that is not unrestricted cash, an investment or a debt',
 };
 const CROSSING_DIRECTIONS: CrossingDirection[] = ['at_or_above', 'at_or_below'];
 
@@ -3708,7 +3709,7 @@ const scenarioCrossing: ToolDefinition = {
     + RECOMPUTE_SENTENCE,
   parameters: obj({
     metric: { type: 'string', enum: Object.keys(CROSSING_METRICS),
-      description: 'Which line crosses. `liquid` is checking + savings; `debt` is what is owed, '
+      description: 'Which line crosses. `liquid` is unrestricted cash: checking + savings, excluding restricted accounts such as an HSA; `debt` is what is owed, '
         + 'as a positive amount.' },
     direction: { type: 'string', enum: CROSSING_DIRECTIONS,
       description: 'at_or_above for reaching a target; at_or_below for falling to one. '
