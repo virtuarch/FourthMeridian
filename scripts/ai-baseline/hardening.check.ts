@@ -179,7 +179,7 @@ async function main(): Promise<void> {
   if (!only || only.includes('complied')) {
     console.log('━━ IF THE MODEL COMPLIED — tools called directly with attacker arguments');
     const ctxFor = (said: string[]): ToolContext => ({ spaceCtx, spaceId: SPACE, asOfISO: ASOF, memoryClient: db, readClient: db,
-      plan: { pending: emptyPlan() }, ...(policy.writes ? { memoryWrites: true } : {}), turn: turnEvidence(said, []) });
+      plan: { pending: emptyPlan() }, memoryWrites: policy.writes, turn: turnEvidence(said, []) });
     const call = async (name: string, a: Rec, said: string[] = ['What is my net worth?']) => {
       try { return await findTool(name)!.run(a, ctxFor(said)); } catch (e) { return { thrown: e instanceof Error ? e.message : String(e) }; }
     };
