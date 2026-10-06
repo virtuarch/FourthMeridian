@@ -1,7 +1,7 @@
 # RLS — PREVIEW CUTOVER RUNBOOK
 
 **Status:** prepared, **not executed**. Every step that touches Preview is an OWNER action. Nothing in this document has been run against Preview or Production.
-**Revised:** 2026-10-04, RLS-PREP (strict-mode pooler identity, deployed authority verification, foreground owner-path conversion). Supersedes the RLS-5 version, whose migration counts, role-URL instructions and verification step were no longer true.
+**Revised:** 2026-10-06 (Preview preflight read; owner-verified Plaid provenance; pool decision). Previously 2026-10-04, RLS-PREP (strict-mode pooler identity, deployed authority verification, foreground owner-path conversion). Supersedes the RLS-5 version, whose migration counts, role-URL instructions and verification step were no longer true.
 **Authority:** `docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md` · the ten migrations in §1 · `lib/db/strict-mode.ts` · `lib/platform/db-authority.ts`.
 
 **No secret appears in this document, and none should ever be pasted into a chat, a commit, or an issue.** The flow is arranged so that the only place a role password exists is your terminal and the two systems that need it.
@@ -103,7 +103,9 @@ CHECK REQUIRED:
 - Postgres **`max_connections`** on Preview's compute (last reading on Production, Micro: 60) and how many Supabase's own services hold.
 - Pooler **max client connections** (last reading: 200).
 
-Four pools at the default size can equal `max_connections`. Decide the pool size so that four pools plus Supabase's reserved connections stay under it, **before** the cutover, and watch the connection graph during §9 row 24.
+Four pools at the default size can equal `max_connections`. Decide the pool size so that four pools plus Supabase's reserved connections stay under it, and watch the connection graph during §9 row 24.
+
+**Read 2026-10-06 and owner decision.** Preview (Nano): `max_connections` 60, `superuser_reserved_connections` 3, Supavisor pool size 15 per user+db, max client connections 200; at idle Supabase itself held 3 client connections. Supavisor (documented, Supavisor FAQ) keeps one pool per user + database + mode, opens server connections only on demand, and closes idle ones after 5 minutes — so 15 is a ceiling, not a reservation. The four pools can still reach 60 in theory, against roughly 50–54 actually available. **Decision: lower the pool size 15 → 12 immediately before §9 row 24, not before migrating** (4 × 12 = 48, and each role still covers two saturated instances at 5 each). Also watch Supavisor client connections in row 24: 20 per instance against a fixed 200.
 
 ### 2.4 Supabase — can `postgres` create a BYPASSRLS role?
 
@@ -113,7 +115,7 @@ Four pools at the default size can equal `max_connections`. Decide the pool size
 
 - Which **branch** Preview builds. It must be `v2.6`: none of this work is on `main`.
 - Whether Fluid Compute is on for Preview.
-- That `INVESTMENT_IMPORTS_ENABLED` is **not** set for Preview. The writers behind it now run as `fm_app` (§0), so the flag is no longer an RLS containment — but enabling the feature on Preview is an OWNER decision, to be taken only once the conversion is gated (clean-copy CI and exact-SHA GitHub green), and it is not part of the cutover.
+- `INVESTMENT_IMPORTS_ENABLED` is set (`true`) on Preview. Since RLS-PREP-2 (a138da7, gated green at e3d5e14) the writers behind it run as `fm_app` (§0), so the flag is not an RLS containment and the cutover does not change it.
 - Whether `CRON_SECRET`, `RESEND_API_KEY`, `PLAID_ENV`, `PLAID_REDIRECT_URI`, `PLAID_WEBHOOK_URL` are set for Preview, and what Preview's database contains (§2.6).
 
 ### 2.6 What Preview holds
@@ -123,6 +125,16 @@ VERIFIED (repo): no job, cron route or email path consults `VERCEL_ENV`. Protect
 - Does Preview's database hold real users or real Plaid Items? (`select count(*) from "User"; select "environment", count(*) from "PlaidItem" group by 1;`)
 - Is Preview's `PLAID_ENV` production or sandbox?
 - Is `RESEND_API_KEY` set on Preview? If it is, a job run there sends real mail.
+
+**Read 2026-10-06 (read-only preflight; nothing mutated).** 4 users, no session since 2026-08-01. 10 `PlaidItem` rows: 2 `ACTIVE` (`…dkklx3` "Chase", `…kp9cks` "Wells Fargo", each with its accounts, `PLAID` identities and transactions), 8 `REVOKED`. Last sync 2026-07-27. `PLAID_ENV` on Preview is `production`; `RESEND_API_KEY` and `CRON_SECRET` are set.
+
+**Plaid provenance — OWNER-VERIFIED, not database-provable.** The owner has verified through the Preview application that every existing Preview Plaid Item is **historical Plaid Sandbox test data**, and that the `…testing.com` user is not a real external user. The database cannot prove this itself: these rows predate `PlaidItem.environment`, which arrives in the pending migration `20260908224119_plaid_item_environment`, and the current `PLAID_ENV=production` does not say which environment issued the legacy tokens. Therefore:
+
+- Both existing ACTIVE Items are **legacy sandbox test data**, not provider-acceptance candidates.
+- **Never** refresh, sync, disconnect, or otherwise make a Plaid call with either of them while `PLAID_ENV=production` — including indirectly through `/api/jobs/dispatch` (see §9 row 20).
+- Their **database** records (accounts, transactions, identities) MAY be used for authorization tests that make no provider call.
+- Do not delete or rewrite them to make the test clean, and do not disconnect them unless the owner explicitly authorizes it.
+- Provider acceptance (§9 rows 13–16) requires a **newly linked Item** in a Preview Plaid environment the owner has deliberately chosen. That choice — and any change to `PLAID_ENV`/`PLAID_SECRET` — is a separate owner decision taken **after** the cutover and **before** provider acceptance. It is not part of this runbook.
 
 ---
 
@@ -290,19 +302,21 @@ Unit and CI suites prove the policies and the converted functions on a throwaway
 | 10 | Force a refused write (e.g. correct a transaction whose link was just revoked) | an error response, never a success | High |
 | 11 | Shared Space: B reads A's linked account; A unlinks; B reads again | visible, then gone | Yes |
 | 12 | Duplicate reconciliation (re-add an archived wallet) | folds; no partial state | High |
-| 13 | Plaid Link, including an OAuth institution | returns to `/plaid-oauth-return`; accounts appear | Yes |
-| 14 | Manual refresh and history import | rows written; `RefreshExecution` rows present | High |
-| 15 | Disconnect an account | Plaid removal succeeds; every link revoked | High |
-| 16 | Webhook delivery; then one with a bad signature | 200 and a sync; 401 | High |
+| 13 | Plaid Link, including an OAuth institution — **only with a NEW Item, in the owner-chosen Preview Plaid environment (§2.6)** | returns to `/plaid-oauth-return`; accounts appear | Yes, once that environment is decided |
+| 14 | Manual refresh and history import — **the NEW Item only; never the two legacy sandbox Items** | rows written; `RefreshExecution` rows present | High |
+| 15 | Disconnect an account — **the NEW Item only**; the legacy Items are disconnected only on explicit owner authorization | Plaid removal succeeds; every link revoked | High |
+| 16 | Webhook delivery; then one with a bad signature. `PLAID_WEBHOOK_URL` is unset on Preview, so only the bad-signature half is testable until the Plaid environment decision | 200 and a sync; 401 | High |
 | 17 | Generate the Daily Brief | one Brief for the active Space | High |
 | 18 | AI financial question, a scenario tool, a Memory write | answers from own data; an `AiInvocation` row is written | High |
 | 19 | Platform Ops pages; one control action | work behind the fresh-auth gate | Medium |
-| 20 | Invoke `/api/jobs/dispatch` with the bearer; without | `JobRun` rows; 401 | High |
+| 20 | Invoke `/api/jobs/dispatch` without the bearer (any time); with it **only inside a half-hour UTC slot that has no registered job** (e.g. 03:00–03:29). The dispatcher runs whatever the current slot holds, and the 06:00 slot's `sync-banks` would call Plaid with the legacy Items | 401; a no-op dispatch | High |
 | 21 | Request access on the app's form | `BetaAccessRequest` row; CAPTCHA enforced | Medium |
 | 22 | Public site: page source and network tab | no cookies, no API calls, no secrets | Yes |
 | 23 | Site → app links and back | correct hosts | Medium |
 | 24 | ~200 concurrent mixed requests as A and B for several minutes | no P2024; no pooler checkout timeouts; connection graph under the ceiling from §2.3 | Yes |
 | 25 | Same run: every response checked against its user; then re-open §8 | zero cross-user rows; `residueObserved: 0` | Yes |
+
+Rows 8–12 may use the legacy sandbox Items' **database** records (accounts, transactions, identities): those rows exercise authorization without any provider call. Scratch users and every other address that can receive mail must be owner-controlled; `RESEND_API_KEY` stays set.
 
 Rows 8–10 are now a test of the **database boundary** for the surfaces in §0's first table. For the surfaces in §0's second table they still prove only the application's own checks.
 
