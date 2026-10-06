@@ -51,7 +51,7 @@ async function main(): Promise<void> {
       JSON.stringify(readGuidance({ level: 'RECOMMENDATION', adjacencies: ['TAX', 'SECURITIES', 'TAX'] }))
         === JSON.stringify(g('RECOMMENDATION', 'SECURITIES', 'TAX')));
     check('missing adjacencies read as none', JSON.stringify(readGuidance({ level: 'UNDERSTANDING' })) === JSON.stringify(g('UNDERSTANDING')));
-    const props = GUIDANCE_SCHEMA.schema.properties as Record<string, { type: string; enum?: string[]; description?: string }>;
+    const props = GUIDANCE_SCHEMA.schema.properties as unknown as Record<string, { type: string; enum?: string[]; description?: string }>;
     check('the provider schema is strict: the closed level enum plus one required, described flag per adjacency',
       JSON.stringify(props.level.enum) === JSON.stringify(GUIDANCE_LEVELS)
         && Object.keys(props).length === 1 + GUIDANCE_ADJACENCIES.length
