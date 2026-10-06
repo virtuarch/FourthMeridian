@@ -318,7 +318,8 @@ export function derive(args: {
 
   const runway: Derived['runway'] = expense && liquid !== null && Number.isFinite(liquid)
     ? { months: round2(liquid / expense.amount), liquid, monthlyExpense: expense.amount, expenseBasis: expense.basis,
-        basis: 'checking + savings (liquid) ÷ monthly expense baseline; investments and digital assets are '
+        basis: 'unrestricted cash (checking + savings, excluding restricted accounts such as an HSA) ÷ monthly '
+          + 'expense baseline; investments and digital assets are '
           + 'not liquid here; minimum debt service is NOT in the baseline',
         ...(positive(args.minimumDebtService) ? { withMinimumDebtService: {
           months: round2(liquid / (expense.amount + args.minimumDebtService)),

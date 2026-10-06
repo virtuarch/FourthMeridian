@@ -171,7 +171,8 @@ console.log("\nPROBE 7/10 — liquidity consumes reachable; credit is never cash
     (adapters.match(/reachableNow\(accounts, ctx\)/g) ?? []).length === 3 &&
     adapters.includes("function reachableNow"));
   check("the ladder's 'now' tier is the reachable total, not classifyAccounts' liquid sum",
-    /id: "now",\s+label: "Available now",\s+value: reach\.total/.test(adapters));
+    // 2026-10-07 — the label is the shared horizon vocabulary (horizons.ts).
+    /id: "now",\s+label: (?:"Available now"|HORIZON_LABEL\.now),\s+value: reach\.total/.test(adapters));
 
   const a = code(AUTHORITY);
   check("a card never produces a reachable figure",
