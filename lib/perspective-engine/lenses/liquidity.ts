@@ -71,6 +71,9 @@ async function liquidityLens(
   const lensRows: LiquidityAccountRow[] = visRows.map(({ account, visibilityLevel }) => ({
     id:              account.id,
     type:            account.type,
+    // 2026-10-07 — liquidity-access evidence (HSA / retirement / unverified);
+    // a category, not an identity, so the lens privacy contract holds.
+    providerSubtype: account.providerSubtype ?? null,
     balance:         account.balance,
     // MC1 P3 Slice 5 — native currency rides along (non-identifying; the
     // privacy contract of this boundary is about names/institutions).

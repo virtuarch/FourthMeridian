@@ -1255,6 +1255,13 @@ model FinancialAccount {
   // lives on the DebtProfile relation below; effective values prefer DebtProfile
   // when present and fall back to these flat columns otherwise.
   debtSubtype    String? // e.g. credit_card, line_of_credit, heloc, auto_loan, mortgage, personal_loan, student_loan
+  // Provider-reported account subtype (Plaid `subtype`, lowercased: "401k",
+  // "ira", "roth", "hsa", "brokerage", "money market", …). EVIDENCE, not a
+  // second type: `type` stays the broad class; lib/liquidity/access.ts reads
+  // both where the subtype changes what the money can be used for. Null =
+  // genuinely unknown (manual accounts; Plaid rows until their next refresh).
+  // Never inferred from names.
+  providerSubtype String?
   interestRate   Float? // Annual Percentage Rate (APR), e.g. 19.99
   minimumPayment Float? // Minimum monthly payment amount
 

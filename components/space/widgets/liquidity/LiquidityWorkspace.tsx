@@ -54,7 +54,8 @@
 import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { reachableNow } from "@/components/space/widgets/liquidity-adapters";
+import { reachableNow, accessTotals } from "@/components/space/widgets/liquidity-adapters";
+import { HORIZON_COLOR, HORIZON_LABEL, HORIZON_META } from "./horizons";
 import { formatAggregateMoney, useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
@@ -208,7 +209,9 @@ export function LiquidityWorkspace({
   // the Sources ledger rows use, so the headline and its ledger still agree.
   const reach = useMemo(() => reachableNow(accounts as never, ctx), [accounts, ctx]);
   const cashNow = reach.total;
-  const reachableSoon = classification.totalInvestments + classification.totalDigitalAssets;
+  // 2026-10-07 — "within days" is KNOWN brokerage + crypto (liquidityAccess);
+  // retirement/HSA and unverified investments are owned, not reachable soon.
+  const reachableSoon = accessTotals(accounts as never, ctx).marketable;
   const sharePctNow = classification.totalAssets > 0 ? (cashNow / classification.totalAssets) * 100 : null;
   // Count the sources that actually CONTRIBUTE to the headline — an account
   // whose reachable figure is unknown is excluded from the total, so counting it
@@ -467,9 +470,11 @@ export function LiquidityWorkspace({
   // the ledger honestly degrades to tier totals + delta chips here (said in the block header).
   function renderHistoricalTiers(): ReactNode {
     const tiers = [
-      { id: "now",      label: "Available now",     color: "#22c55e", meta: "Checking · savings",              value: metricValue(atAsOf, "cashNow"),    d: delta?.cashNow },
-      { id: "days",     label: "Available in days", color: "#3b82f6", meta: "Brokerage · crypto (settlement)", value: metricValue(atAsOf, "marketable"), d: delta?.marketable },
-      { id: "illiquid", label: "Illiquid",          color: "#6b7280", meta: "Property · other long-term",      value: metricValue(atAsOf, "illiquid"),   d: delta?.illiquid },
+      { id: "now",        label: HORIZON_LABEL.now,        color: HORIZON_COLOR.now,        meta: HORIZON_META.now,        value: metricValue(atAsOf, "cashNow"),    d: delta?.cashNow },
+      { id: "days",       label: HORIZON_LABEL.days,       color: HORIZON_COLOR.days,       meta: HORIZON_META.days,       value: metricValue(atAsOf, "marketable"), d: delta?.marketable },
+      { id: "restricted", label: HORIZON_LABEL.restricted, color: HORIZON_COLOR.restricted, meta: HORIZON_META.restricted, value: metricValue(atAsOf, "restricted"), d: delta?.restricted },
+      { id: "unverified", label: HORIZON_LABEL.unverified, color: HORIZON_COLOR.unverified, meta: HORIZON_META.unverified, value: metricValue(atAsOf, "unverified"), d: delta?.unverified },
+      { id: "illiquid",   label: HORIZON_LABEL.illiquid,   color: HORIZON_COLOR.illiquid,   meta: HORIZON_META.illiquid,   value: metricValue(atAsOf, "illiquid"),   d: delta?.illiquid },
     ].filter((t) => t.value !== 0 || (t.d != null && t.d !== 0));
 
     const credit = metricValue(atAsOf, "availableCredit");

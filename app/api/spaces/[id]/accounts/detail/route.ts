@@ -240,6 +240,9 @@ export async function GET(
           balanceLastUpdatedAt: true,
           creditLimit:    true,
           debtSubtype:    true,
+          // 2026-10-07 — groups privacy aggregates by liquidity access, as the
+          // Space mount loader does, so both surfaces agree on the rows.
+          providerSubtype: true,
           interestRate:   true,
           minimumPayment: true,
           walletAddress:  true,
@@ -393,6 +396,7 @@ export async function GET(
           balanceLastUpdatedAt: a.balanceLastUpdatedAt,
           creditLimit:    a.creditLimit,
           debtSubtype:    a.debtSubtype,
+          providerSubtype: a.providerSubtype,
           interestRate:   a.interestRate,
           minimumPayment: a.minimumPayment,
         },

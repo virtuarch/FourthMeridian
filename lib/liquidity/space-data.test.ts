@@ -55,7 +55,9 @@ function comp(accountId: string, reportingValue: number | null, overallTier: Com
 
 function acct(id: string, type: string, balance: number, tier: CompletenessTier) {
   return {
-    account: { id, type, balance, currency: "USD", creditLimit: null, lastUpdated: "2026-07-16T00:00:00.000Z" },
+    // "brk" is a KNOWN brokerage (2026-10-07: an investment without a provider
+    // subtype is "unverified", not marketable).
+    account: { id, type, providerSubtype: type === "investment" ? "brokerage" : null, balance, currency: "USD", creditLimit: null, lastUpdated: "2026-07-16T00:00:00.000Z" },
     visibilityLevel: "FULL",
     method: tier === "observed" ? "observed" : "held-flat",
     tier,
@@ -99,7 +101,7 @@ const deps: Partial<LiquidityEngineDeps> = {
   computeCurrent: (async (_client: unknown, scope: PerspectiveScope, now: () => Date): Promise<LensResult> => {
     const rows = [
       { id: "chk", type: "checking", balance: STORED.chk, currency: "USD", lastUpdated: "2026-07-16T00:00:00.000Z", visibilityLevel: "FULL" },
-      { id: "brk", type: "investment", balance: STORED.brk, currency: "USD", lastUpdated: "2026-07-16T00:00:00.000Z", visibilityLevel: "FULL" },
+      { id: "brk", type: "investment", providerSubtype: "brokerage", balance: STORED.brk, currency: "USD", lastUpdated: "2026-07-16T00:00:00.000Z", visibilityLevel: "FULL" },
       { id: "wallet", type: "crypto", balance: STORED.wallet, currency: "USD", lastUpdated: "2026-07-16T00:00:00.000Z", visibilityLevel: "FULL" },
     ];
     return computeLiquidity(scope, { now }, rows, identityContext(REPORTING));

@@ -79,6 +79,9 @@ export interface Account {
   // back to the legacy flat columns otherwise.
   creditLimit?:    number;  // populated from Plaid balances.limit or manual entry
   debtSubtype?:    string;  // credit_card | line_of_credit | heloc | auto_loan | mortgage | personal_loan | student_loan
+  /** 2026-10-07 — FinancialAccount.providerSubtype (provider evidence: "hsa",
+   *  "401k", "brokerage", …). Read only by liquidityAccess; null/absent = unknown. */
+  providerSubtype?: string | null;
   interestRate?:   number;  // Annual Percentage Rate (APR), e.g. 19.99
   minimumPayment?: number;  // Minimum monthly payment amount — manual entry, or an estimate (see minimumPaymentIsEstimated)
   /** True when minimumPayment was computed from APR/balance, not entered by the user or provided by the issuer. */

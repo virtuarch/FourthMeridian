@@ -42,6 +42,7 @@ import { db, systemDb } from "@/lib/db";
 // PROV-2 — shared owners: Plaid type→AccountType mapping and the identity→legacy
 // account resolver (was a private mapAccountType copy + two inline lookups here).
 import { mapAccountType } from "@/lib/plaid/account-type";
+import { normalizeProviderSubtype } from "@/lib/account-classifier";
 // PROV-3 — the shared investments-ingest orchestration (was inline here).
 import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
 import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
@@ -231,6 +232,11 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
         availableBalance,
         ...(creditLimit !== undefined && { creditLimit }),
         balanceLastUpdatedAt,
+        // 2026-10-07 — the provider's account subtype, rewritten from THIS
+        // accountsGet answer on every refresh (so rows linked before the column
+        // existed self-correct on their next refresh). Evidence for
+        // liquidityAccess (lib/account-classifier.ts); never inferred.
+        providerSubtype: normalizeProviderSubtype(acct.subtype),
         lastUpdated: new Date(), // ← balance-verified stamp
         syncStatus:  "synced",
       },

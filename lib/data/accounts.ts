@@ -333,6 +333,10 @@ export async function getAccountsWithVisibility(
           balanceLastUpdatedAt: r.balanceLastUpdatedAt
             ? r.balanceLastUpdatedAt.toISOString()
             : null,
+          // 2026-10-07 — what this balance can be used for (HSA, retirement,
+          // unverified). A liquidity total over this tier needs it, and it
+          // describes the balance the tier already discloses.
+          providerSubtype: r.providerSubtype ?? null,
           // v2.6-L3 — same reasoning: a quantity about the balance this tier
           // already discloses. Withholding it would make a liquidity total mix
           // reachable figures with ledger balances, which is worse.
@@ -400,6 +404,7 @@ export async function getAccountsWithVisibility(
       displayName:   r.displayName  ?? undefined,
       creditLimit:    r.creditLimit ?? undefined,
       debtSubtype:    r.debtSubtype ?? undefined,
+      providerSubtype: r.providerSubtype ?? null,
       interestRate:   effectiveApr,
       minimumPayment,
       minimumPaymentIsEstimated: minimumPaymentIsEstimated || undefined,

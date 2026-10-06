@@ -69,7 +69,9 @@ function main(): void {
   const fullRows: LiquidityAccountRow[] = [
     row({ id: "fa_chk", type: "checking",   balance: 10_000 }),
     row({ id: "fa_sav", type: "savings",    balance: 8_400, lastUpdated: "2026-06-28T00:00:00.000Z" }),
-    row({ id: "fa_inv", type: "investment", balance: 40_000 }),
+    // A KNOWN brokerage: an investment with no provider subtype is "unverified"
+    // (2026-10-07, lib/liquidity/access.test.ts), never raisable within days.
+    row({ id: "fa_inv", type: "investment", providerSubtype: "brokerage", balance: 40_000 }),
     row({ id: "fa_cry", type: "crypto",     balance: 12_000 }),
     row({ id: "fa_oth", type: "other",      balance: 300_000 }),
     row({ id: "fa_cc",  type: "debt",       balance: 4_000, creditLimit: 10_000 }),
@@ -97,9 +99,9 @@ function main(): void {
     r1.provenance.dataAsOf === "2026-06-28T00:00:00.000Z");
   check("tierCounts all-full", JSON.stringify(r1.provenance.tierCounts) === JSON.stringify({ full: 6, balanceOnly: 0, summaryOnly: 0 }));
   check("no redactions when nothing withheld", r1.provenance.redactions.length === 0);
-  check("marketable assumptions present (before-costs + retirement)",
+  check("marketable before-costs assumption present; retirement is now DISTINGUISHED, so its disclaimer is gone",
     r1.assumptions.some((a) => a.id === "marketable-before-costs") &&
-    r1.assumptions.some((a) => a.id === "retirement-not-distinguished"));
+    !r1.assumptions.some((a) => a.id === "retirement-not-distinguished"));
   check("credit-not-liquidity assumption present",
     r1.assumptions.some((a) => a.id === "credit-not-liquidity"));
 
@@ -171,7 +173,7 @@ function main(): void {
     computeLiquidity(SCOPE, OPTS, [row({ id: "c", balance: 500 })]).verdict ===
     "About $500 is available as cash now.");
   check("marketable-only verdict branch",
-    computeLiquidity(SCOPE, OPTS, [row({ id: "i", type: "investment", balance: 500 })]).verdict ===
+    computeLiquidity(SCOPE, OPTS, [row({ id: "i", type: "investment", providerSubtype: "brokerage", balance: 500 })]).verdict ===
     "No cash on hand, but roughly $500 could be raised by selling investments.");
 
   // ── 6. Source tripwires (name-freedom at the adapter boundary) ───────────

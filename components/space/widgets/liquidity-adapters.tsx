@@ -28,7 +28,8 @@
 
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
-import { classifyAccounts } from "@/lib/account-classifier";
+import { classifyAccounts, liquidityAccess } from "@/lib/account-classifier";
+import { HORIZON_COLOR, HORIZON_LABEL, HORIZON_META } from "@/components/space/widgets/liquidity/horizons";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import { formatCurrency } from "@/lib/currency";
 import { convertMoney } from "@/lib/money/convert";
@@ -45,6 +46,8 @@ export interface LiquidityAdapterAccount {
   institution: string;
   balance:     number;
   currency:    string;
+  /** 2026-10-07 — provider subtype evidence; read only through liquidityAccess. */
+  providerSubtype?: string | null;
   /**
    * v2.6-L3 — the server-resolved current-state claim (SpaceAccount.currentState).
    * Present on cash accounts only. These widgets all CLAIM reachability, so they
@@ -110,7 +113,9 @@ export function reachableNow(
   accounts: LiquidityAdapterAccount[],
   ctx?: ConversionContext,
 ): ReachableTotal {
-  const cash = accounts.filter((a) => a.type === "checking" || a.type === "savings");
+  // 2026-10-07 — CASH means unrestricted cash (liquidityAccess): an HSA is a
+  // checking account whose money is not ordinary spendable cash.
+  const cash = accounts.filter((a) => liquidityAccess(a) === "cash");
   return totalReachableCash(
     cash.map((a) => ({
       accountId: a.id,
@@ -150,6 +155,25 @@ export function reachableForAccount(
   return inDisp(a.currentState.reachable, a.currency, ctx);
 }
 
+/**
+ * 2026-10-07 — the non-cash asset value by LIQUIDITY ACCESS, in the display
+ * currency. `marketable` is the only one that is reachable "within days";
+ * restricted and unverified money is owned and valued, never reachable here.
+ */
+export function accessTotals(
+  accounts: LiquidityAdapterAccount[],
+  ctx?: ConversionContext,
+): { marketable: number; restricted: number; unverified: number; illiquid: number } {
+  const out = { marketable: 0, restricted: 0, unverified: 0, illiquid: 0 };
+  for (const a of accounts) {
+    const access = liquidityAccess(a);
+    if (access === "marketable" || access === "restricted" || access === "unverified" || access === "illiquid") {
+      out[access] += inDisp(a.balance, a.currency, ctx);
+    }
+  }
+  return out;
+}
+
 // ─── 1. Liquidity Ladder (hero) ───────────────────────────────────────────────
 
 /** Assets grouped by access horizon: now (cash), days (brokerage/crypto
@@ -159,14 +183,18 @@ export function renderLiquidityLadder(
   accounts: LiquidityAdapterAccount[],
   ctx?:     ConversionContext,
 ): React.ReactElement {
-  const c = classifyAccounts(accounts, ctx);
   // v2.6-L3 — the "now" tier is REACHABLE cash, not the ledger sum. The label
   // already said "Available now"; the number now agrees with it.
   const reach = reachableNow(accounts, ctx);
+  // 2026-10-07 — "days" is KNOWN brokerage + crypto only. Retirement/HSA money
+  // and investments of unknown kind are owned and shown, in their own tiers.
+  const t = accessTotals(accounts, ctx);
   const items: BreakdownItem[] = [
-    { id: "now",      label: "Available now",     value: reach.total,                              color: "#22c55e", meta: "Checking · savings" },
-    { id: "days",     label: "Available in days", value: c.totalInvestments + c.totalDigitalAssets, color: "#3b82f6", meta: "Brokerage · crypto (settlement)" },
-    { id: "illiquid", label: "Illiquid",          value: c.totalRealAssets,                        color: "#6b7280", meta: "Property · other long-term" },
+    { id: "now",        label: HORIZON_LABEL.now,        value: reach.total,  color: HORIZON_COLOR.now,        meta: HORIZON_META.now },
+    { id: "days",       label: HORIZON_LABEL.days,       value: t.marketable, color: HORIZON_COLOR.days,       meta: HORIZON_META.days },
+    { id: "restricted", label: HORIZON_LABEL.restricted, value: t.restricted, color: HORIZON_COLOR.restricted, meta: HORIZON_META.restricted },
+    { id: "unverified", label: HORIZON_LABEL.unverified, value: t.unverified, color: HORIZON_COLOR.unverified, meta: HORIZON_META.unverified },
+    { id: "illiquid",   label: HORIZON_LABEL.illiquid,   value: t.illiquid,   color: HORIZON_COLOR.illiquid,   meta: HORIZON_META.illiquid },
   ].filter((i) => i.value > 0);
 
   return (
@@ -195,7 +223,7 @@ export function renderAccessibleCash(
   // cash where attested, else the prediction from provider-observed pending.
   const reach       = reachableNow(accounts, ctx);
   const now         = reach.total;
-  const soon        = c.totalInvestments + c.totalDigitalAssets;
+  const soon        = accessTotals(accounts, ctx).marketable; // 2026-10-07 — known brokerage + crypto only
   const totalAssets = c.totalAssets;
 
   if (totalAssets <= 0) return emptySummary();

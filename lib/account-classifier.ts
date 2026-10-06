@@ -59,6 +59,13 @@ export interface ClassifiableAccount {
    * of syncStatus, since 'other' has no other semantic meaning in the current schema.
    */
   syncStatus?: string;
+  /**
+   * 2026-10-07 — the provider's own account subtype (FinancialAccount.
+   * providerSubtype), when the caller's rows carry it. Read ONLY by
+   * liquidityAccess(): it refines what the money can be used for, never which
+   * net-worth bucket it sits in. Absent/null = unknown.
+   */
+  providerSubtype?: string | null;
 }
 
 // ─── Liquidity tier (Cash Flow liquidity axis) ────────────────────────────────
@@ -104,6 +111,85 @@ export function isDigitalAssetAccountType(type: string | null | undefined): bool
   return type != null && (DIGITAL_ASSET_ACCOUNT_TYPES as readonly string[]).includes(type);
 }
 
+// ─── Liquidity access (what the money can be used for, and how soon) ──────────
+//
+// 2026-10-07. Three questions that must not collapse into one another:
+//   OWNERSHIP / NET WORTH   — does this value belong to the user?  (the buckets)
+//   ASSET CLASS             — cash, investment, crypto, real asset? (`type`)
+//   LIQUIDITY ACCESS        — can it be spent, and how soon?        (this)
+//
+// mapAccountType reduces Plaid's subtype to a broad type and, until 2026-10-07,
+// discarded it: a 401(k) and a taxable brokerage were both `investment` (both
+// "within days" on Assets), and an HSA was `checking` (ordinary cash on runway,
+// AI baselines, the Daily Brief and "share reachable now"). The broad type is
+// RIGHT for those other consumers (an HSA's balance is cash; its transactions
+// are real cash flows), so it stays; access reads the subtype beside it.
+//
+//   cash        unrestricted cash available now (checking/savings; a depository
+//               account with no subtype keeps that existing meaning)
+//   restricted  belongs to the user, but use is restricted or purpose-dependent
+//               (retirement, HSA, education). Withdrawal MAY be possible, with
+//               eligibility rules, taxes or penalties Fourth Meridian does not
+//               know — so it is neither spendable cash nor "within days".
+//   marketable  sellable within days at settlement (known ordinary brokerage;
+//               crypto, as before)
+//   unverified  an investment whose kind is not known (no subtype, or one not
+//               classified below). NOT brokerage and NOT retirement: valued and
+//               counted in wealth, never in verified reachability.
+//   illiquid    real/manual assets (`other`)
+//   null        debt or an unrecognized type — not a liquidity source
+//
+// Nothing here reads a name. A subtype not listed below is unverified (for an
+// investment) or keeps its existing meaning (depository), never guessed.
+export type LiquidityAccess = "cash" | "restricted" | "marketable" | "unverified" | "illiquid";
+
+/** Depository subtypes whose balance is not ordinary spendable cash. */
+const RESTRICTED_DEPOSITORY_SUBTYPES: ReadonlySet<string> = new Set(["hsa"]);
+
+/** Investment subtypes with ordinary brokerage settlement liquidity. */
+const MARKETABLE_INVESTMENT_SUBTYPES: ReadonlySet<string> = new Set([
+  "brokerage", "non-taxable brokerage account", "mutual fund",
+]);
+
+/**
+ * Investment subtypes that are retirement or tax-advantaged / purpose-restricted
+ * (Plaid's investment subtype vocabulary, lowercased).
+ */
+const RESTRICTED_INVESTMENT_SUBTYPES: ReadonlySet<string> = new Set([
+  // retirement — US
+  "401a", "401k", "403b", "457b", "ira", "roth", "roth 401k", "sep ira",
+  "simple ira", "sarsep", "keogh", "pension", "profit sharing plan",
+  "retirement", "thrift savings plan",
+  // retirement — CA / UK
+  "rrsp", "rrif", "lira", "lif", "lrif", "lrsp", "prif", "rlif", "rdsp", "sipp",
+  // tax-advantaged, purpose-restricted
+  "hsa", "health reimbursement arrangement", "529", "education savings account", "resp",
+]);
+
+/** The one normalisation of a stored/provider subtype (lowercase, trimmed; "" ⇒ null). */
+export function normalizeProviderSubtype(subtype: string | null | undefined): string | null {
+  const s = subtype?.trim().toLowerCase();
+  return s ? s : null;
+}
+
+export function liquidityAccess(a: { type: string; providerSubtype?: string | null }): LiquidityAccess | null {
+  const sub = normalizeProviderSubtype(a.providerSubtype);
+  switch (a.type) {
+    case "checking":
+    case "savings":
+      return sub !== null && RESTRICTED_DEPOSITORY_SUBTYPES.has(sub) ? "restricted" : "cash";
+    case "investment":
+      if (sub === null) return "unverified";
+      if (RESTRICTED_INVESTMENT_SUBTYPES.has(sub)) return "restricted";
+      if (MARKETABLE_INVESTMENT_SUBTYPES.has(sub)) return "marketable";
+      return "unverified";
+    case "other":
+      return "illiquid";
+    default:
+      return isDigitalAssetAccountType(a.type) ? "marketable" : null;
+  }
+}
+
 // ─── Classification result ────────────────────────────────────────────────────
 
 /**
@@ -113,8 +199,11 @@ export function isDigitalAssetAccountType(type: string | null | undefined): bool
  */
 export interface AccountClassification<T extends ClassifiableAccount = ClassifiableAccount> {
   // ── Classified buckets ──────────────────────────────────────────────────────
-  /** Checking + savings accounts */
+  /** Checking + savings accounts that are UNRESTRICTED cash (liquidityAccess "cash"). */
   liquid:        T[];
+  /** Checking + savings accounts whose use is restricted (e.g. an HSA). Owned
+   *  cash, in net worth — not spendable cash. */
+  restrictedCash: T[];
   /** Investment (brokerage, IRA, 401k) accounts */
   investments:   T[];
   /** Crypto accounts and wallets */
@@ -129,8 +218,15 @@ export interface AccountClassification<T extends ClassifiableAccount = Classifia
   totalChecking:      number;
   /** Savings account balances only */
   totalSavings:       number;
-  /** totalChecking + totalSavings */
+  /**
+   * UNRESTRICTED cash: checking + savings minus restricted cash. This is what
+   * runway, forecast opening cash, AI baselines / liquid floors, the Daily Brief
+   * and the liquidity grade mean by "liquid". A cash BALANCE figure (net-worth
+   * composition) is totalLiquid + totalRestrictedCash.
+   */
   totalLiquid:        number;
+  /** Checking/savings balances whose use is restricted (liquidityAccess "restricted"). */
+  totalRestrictedCash: number;
   /** Sum of investment account balances */
   totalInvestments:   number;
   /** Sum of crypto account balances */
@@ -142,7 +238,8 @@ export interface AccountClassification<T extends ClassifiableAccount = Classifia
    * Negative balances (card credits) are excluded — they don't reduce net worth.
    */
   totalLiabilities:   number;
-  /** totalLiquid + totalInvestments + totalDigitalAssets + totalRealAssets */
+  /** totalChecking + totalSavings + totalInvestments + totalDigitalAssets + totalRealAssets
+   *  (= totalLiquid + totalRestrictedCash + …): restricted cash is still an asset. */
   totalAssets:        number;
   /** totalAssets − totalLiabilities */
   netWorth:           number;
@@ -217,7 +314,9 @@ export function classifyAccounts<T extends ClassifiableAccount>(
 ): AccountClassification<T> {
   const checking      = accounts.filter((a) => a.type === "checking");
   const savings       = accounts.filter((a) => a.type === "savings");
-  const liquid        = [...checking, ...savings];
+  const isRestricted  = (a: T) => liquidityAccess(a) === "restricted";
+  const liquid        = [...checking, ...savings].filter((a) => !isRestricted(a));
+  const restrictedCash = [...checking, ...savings].filter(isRestricted);
   const investments   = accounts.filter((a) => a.type === "investment");
   const digitalAssets = accounts.filter((a) => isDigitalAssetAccountType(a.type));
   // All 'other' accounts are real/manual assets. syncStatus='manual' is the
@@ -248,7 +347,13 @@ export function classifyAccounts<T extends ClassifiableAccount>(
 
   const totalChecking      = sumBalances(checking, ctx, effectiveValuationDateISO, flag);
   const totalSavings       = sumBalances(savings, ctx, effectiveValuationDateISO, flag);
-  const totalLiquid        = totalChecking + totalSavings;
+  // Byte-identical to the old totalChecking + totalSavings when nothing is
+  // restricted (the same two partial sums, added in the same order).
+  const totalLiquid        = restrictedCash.length === 0
+    ? totalChecking + totalSavings
+    : sumBalances(checking.filter((a) => !isRestricted(a)), ctx, effectiveValuationDateISO, flag)
+      + sumBalances(savings.filter((a) => !isRestricted(a)), ctx, effectiveValuationDateISO, flag);
+  const totalRestrictedCash = sumBalances(restrictedCash, ctx, effectiveValuationDateISO, flag);
   const totalInvestments   = sumBalances(investments, ctx, effectiveValuationDateISO, flag);
   const totalDigitalAssets = sumBalances(digitalAssets, ctx, effectiveValuationDateISO, flag);
   const totalRealAssets    = sumBalances(realAssets, ctx, effectiveValuationDateISO, flag);
@@ -268,11 +373,13 @@ export function classifyAccounts<T extends ClassifiableAccount>(
         return s + amountOwed(c.amount);
       }, 0)
     : liabilities.reduce((s, a) => s + amountOwed(a.balance), 0);
-  const totalAssets        = totalLiquid + totalInvestments + totalDigitalAssets + totalRealAssets;
+  // Unchanged expression: restricted cash stays an asset, so net worth cannot move.
+  const totalAssets        = totalChecking + totalSavings + totalInvestments + totalDigitalAssets + totalRealAssets;
   const netWorth           = totalAssets - totalLiabilities;
 
   return {
     liquid,
+    restrictedCash,
     investments,
     digitalAssets,
     realAssets,
@@ -280,6 +387,7 @@ export function classifyAccounts<T extends ClassifiableAccount>(
     totalChecking,
     totalSavings,
     totalLiquid,
+    totalRestrictedCash,
     totalInvestments,
     totalDigitalAssets,
     totalRealAssets,

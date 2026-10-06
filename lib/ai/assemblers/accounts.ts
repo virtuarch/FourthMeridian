@@ -124,6 +124,8 @@ type AccountLinkRow = {
     balanceLastUpdatedAt: Date | null;
     syncStatus:   string | null;
     debtSubtype:     string | null;
+    /** 2026-10-07 — provider subtype evidence; read only by liquidityAccess. */
+    providerSubtype: string | null;
     // Flat fallback debt fields (provider-sourced or legacy)
     interestRate:    number | null;   // FinancialAccount.interestRate — provider APR fallback
     minimumPayment:  number | null;   // FinancialAccount.minimumPayment — provider min-payment fallback
@@ -203,6 +205,10 @@ async function assembleAccounts(
           balanceLastUpdatedAt: true,
           syncStatus:     true,
           debtSubtype:    true,
+          // 2026-10-07 — without it an HSA (type checking) is unrestricted cash
+          // in totalLiquid, which is what runway, the Brief and the scenario
+          // opening cash read.
+          providerSubtype: true,
           // Flat fallback debt fields — provider-sourced or legacy
           interestRate:   true,
           minimumPayment: true,
@@ -375,6 +381,7 @@ async function assembleAccounts(
     balance:    l.financialAccount.balance,
     currency:   l.financialAccount.currency,
     syncStatus: l.financialAccount.syncStatus ?? undefined,
+    providerSubtype: l.financialAccount.providerSubtype,
   }));
 
   // MC1 Phase 3 Slice 4 — THE AI FLIP (plan seam #3). Totals convert at the

@@ -54,6 +54,7 @@
 import type { FreshnessBasis } from "@/lib/freshness/observation";
 import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — a VERDICT is a sentence (see display-money.ts)
 import { amountOwed } from "@/lib/debt/balance-semantics";
+import { liquidityAccess } from "@/lib/account-classifier";
 import { totalReachableCash, type ReachableInput } from "@/lib/balances/reachable";
 import { convertMoney } from "@/lib/money/convert";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
@@ -69,7 +70,7 @@ import type {
 // ── Version & static copy ─────────────────────────────────────────────────────
 
 /** Bump whenever this lens's math or verdict semantics change. */
-export const LIQUIDITY_LENS_VERSION = 1;
+export const LIQUIDITY_LENS_VERSION = 2; // 2 — 2026-10-07: liquidity access (restricted / unverified)
 
 /**
  * Static empty copy — must read identically whether accounts are absent or
@@ -92,6 +93,12 @@ export interface LiquidityAccountRow {
   id:      string;
   /** AccountType string: checking | savings | investment | crypto | debt | other */
   type:    string;
+  /**
+   * 2026-10-07 — FinancialAccount.providerSubtype (provider evidence). A
+   * CATEGORY ("hsa", "401k"), not an identity, so the privacy contract above
+   * holds. Read only through liquidityAccess.
+   */
+  providerSubtype?: string | null;
   balance: number;
   /**
    * MC1 Phase 3 Slice 5 — native currency of `balance`/`creditLimit` (Phase 0
@@ -123,9 +130,10 @@ export interface LiquidityAccountRow {
 
 // ── Core computation ──────────────────────────────────────────────────────────
 
-const CASH_TYPES       = new Set(["checking", "savings"]);
-const MARKETABLE_TYPES = new Set(["investment", "crypto"]);
-const ILLIQUID_TYPES   = new Set(["other"]);
+// 2026-10-07 — the tier of a row is liquidityAccess (lib/account-classifier.ts),
+// the ONE rule, never a type set of this lens's own: an HSA is `checking` and a
+// 401(k) is `investment`, and neither is cash or sellable-within-days.
+const isCashRow = (r: LiquidityAccountRow) => liquidityAccess(r) === "cash";
 
 export function computeLiquidity(
   scope:   PerspectiveScope,
@@ -197,7 +205,7 @@ export function computeLiquidity(
   }
 
   // ── Sums ──────────────────────────────────────────────────────────────────
-  let marketable = 0, illiquid = 0, credit = 0;
+  let marketable = 0, illiquid = 0, credit = 0, restricted = 0, unverified = 0;
   let creditKnown = false;
   // v2.6-L3 / REVIEW-3 — the reachable-cash RULE (what an unknown does, what is
   // counted, what a positive hold contributes) lives in lib/balances/reachable —
@@ -210,7 +218,8 @@ export function computeLiquidity(
   // counted by the authority, never summed as a ledger balance).
   const cashInputs: ReachableInput[] = [];
   for (const r of contributing) {
-    if (CASH_TYPES.has(r.type)) {
+    const access = liquidityAccess(r);
+    if (access === "cash") {
       cashInputs.push({
         accountId: r.id,
         reachable:
@@ -220,8 +229,10 @@ export function computeLiquidity(
         unexplained: r.unexplainedHold == null ? null : inTarget(r.unexplainedHold, r.currency),
       });
     }
-    else if (MARKETABLE_TYPES.has(r.type)) marketable += inTarget(r.balance, r.currency);
-    else if (ILLIQUID_TYPES.has(r.type))   illiquid   += inTarget(r.balance, r.currency);
+    else if (access === "marketable") marketable += inTarget(r.balance, r.currency);
+    else if (access === "restricted") restricted += inTarget(r.balance, r.currency);
+    else if (access === "unverified") unverified += inTarget(r.balance, r.currency);
+    else if (access === "illiquid")   illiquid   += inTarget(r.balance, r.currency);
     else if (r.type === "debt" && r.visibilityLevel === "FULL" && typeof r.creditLimit === "number") {
       // creditLimit and balance share the row's native currency, so the
       // clamped headroom converts as one native amount (convert-then-clamp
@@ -288,6 +299,13 @@ export function computeLiquidity(
     headline,
     { id: "marketable", label: "Raisable by selling investments", value: marketable, format: "currency" },
     { id: "illiquid",   label: "Held in other assets (not readily sellable)", value: illiquid, format: "currency" },
+    // 2026-10-07 — emitted only when present, so a Space without them is unchanged.
+    ...(restricted !== 0
+      ? [{ id: "restricted", label: "In retirement, HSA or other restricted accounts", value: restricted, format: "currency" } as LensMetric]
+      : []),
+    ...(unverified !== 0
+      ? [{ id: "unverified", label: "Investments with unverified access", value: unverified, format: "currency" } as LensMetric]
+      : []),
   ];
   if (creditKnown) {
     metrics.push({
@@ -304,7 +322,7 @@ export function computeLiquidity(
   // which was an honest statement of the OLD behaviour. They are reflected now,
   // so the assumption states what the figure actually is, and where a reachable
   // figure was unavailable that is disclosed rather than assumed away.
-  const usesReachable = contributing.some((r) => CASH_TYPES.has(r.type) && r.reachableCash !== undefined);
+  const usesReachable = contributing.some((r) => isCashRow(r) && r.reachableCash !== undefined);
   const assumptions: LensAssumption[] = [
     usesReachable
       ? {
@@ -339,12 +357,21 @@ export function computeLiquidity(
         text: "Investment and crypto balances are counted at current value, before any taxes, penalties, fees, or market movement a sale would involve.",
         source: "default",
       },
-      {
-        id: "retirement-not-distinguished",
-        text: "Retirement-restricted accounts cannot be distinguished from other investment accounts and are included in the sellable total.",
-        source: "default",
-      },
     );
+  }
+  if (restricted !== 0) {
+    assumptions.push({
+      id: "restricted-not-accessible",
+      text: "Retirement, HSA and other restricted accounts are part of your wealth but are not counted as cash or as raisable within days: using that money may depend on eligibility, taxes or penalties that are not known here.",
+      source: "provider",
+    });
+  }
+  if (unverified !== 0) {
+    assumptions.push({
+      id: "investment-access-unverified",
+      text: "Some investment accounts have not reported what kind of account they are, so their access is unverified; they are valued in your wealth but not counted as raisable within days.",
+      source: "default",
+    });
   }
   if (creditKnown) {
     assumptions.push({

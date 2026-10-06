@@ -49,6 +49,7 @@ import { AuditAction } from "@/lib/audit-actions";
 import { resolveAccountByFingerprint, resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
 // PROV-2 — the ONE owner of Plaid type/subtype → AccountType (was defined + exported here).
 import { mapAccountType } from "@/lib/plaid/account-type";
+import { normalizeProviderSubtype } from "@/lib/account-classifier";
 // PROV-3 — the shared investments-ingest orchestration (was inline here).
 import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
 // PROV-4 — the canonical per-account conn+SAL spine writer (was inline here).
@@ -330,6 +331,8 @@ export async function performPlaidTokenExchange(
 
   for (const acct of plaidAccounts) {
     const type             = mapAccountType(acct.type, acct.subtype);
+    // 2026-10-07 — the subtype mapAccountType reduces away, kept as evidence.
+    const providerSubtype  = normalizeProviderSubtype(acct.subtype);
     const balance          = acct.balances.current ?? 0;
     const availableBalance = acct.balances.available ?? undefined;
     const creditLimit      = acct.balances.limit ?? undefined;
@@ -372,6 +375,7 @@ export async function performPlaidTokenExchange(
           balance,
           availableBalance,
           ...(creditLimit !== undefined && { creditLimit }),
+          providerSubtype,
           lastUpdated: new Date(),
           syncStatus:  "synced",
           deletedAt:   null,
@@ -447,6 +451,7 @@ export async function performPlaidTokenExchange(
             balance,
             availableBalance,
             ...(creditLimit !== undefined && { creditLimit }),
+            providerSubtype,
             lastUpdated: new Date(),
             syncStatus:  "synced",
             deletedAt:   null,
@@ -463,6 +468,7 @@ export async function performPlaidTokenExchange(
             plaidName:       acct.name,
             officialName:    acct.official_name ?? undefined,
             type,
+            providerSubtype,
             institution:     institution_name,
             institutionId:   institution_id,
             mask:            acct.mask ?? undefined,

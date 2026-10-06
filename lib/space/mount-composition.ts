@@ -124,6 +124,8 @@ export async function loadSpaceAccounts(
           // the same row. Selecting the columns is what makes resolution possible.
           ...ACCOUNT_NAME_SELECT,
           currency: true, lastUpdated: true, creditLimit: true, debtSubtype: true,
+          // 2026-10-07 — liquidity-access evidence (HSA / retirement / unverified).
+          providerSubtype: true,
           interestRate: true, minimumPayment: true,
           // v2.6-L3 — forwarded RAW into lib/balances (the only interpreter);
           // never read as a value in this file.

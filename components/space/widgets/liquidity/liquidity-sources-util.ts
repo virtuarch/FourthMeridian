@@ -8,43 +8,20 @@
  * never read history, and never re-partition the canonical liquidity tiers — the horizon
  * of an account is a pure function of its type, exactly as classifyAccounts buckets it.
  *
- * The three horizons mirror the Liquidity Ladder (liquidity-adapters.tsx doctrine):
- * checking/savings = reachable NOW, investment/crypto = reachable in DAYS (settlement),
- * other = ILLIQUID. The schema has no retirement/settlement typing, so no "locked /
- * penalty" tier is faked — the same honest reduction the adapters enforce.
+ * The horizons mirror the Liquidity Ladder and come from liquidityAccess
+ * (lib/account-classifier.ts): unrestricted cash = NOW, known brokerage + crypto =
+ * DAYS, retirement/HSA = RESTRICTED, investments of unreported kind = UNVERIFIED,
+ * other = ILLIQUID. Names/colours live in ./horizons.ts.
  */
 
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { isDigitalAssetAccountType } from "@/lib/account-classifier";
+import { liquidityAccess } from "@/lib/account-classifier";
 import type { ConversionContext } from "@/lib/money/types";
 import { reachableForAccount, type LiquidityAdapterAccount } from "@/components/space/widgets/liquidity-adapters";
 
-/** The three editorial access horizons, in reachability order (top = reachable). */
-export type SourceHorizon = "now" | "days" | "illiquid";
-
-export const HORIZON_LABEL: Record<SourceHorizon, string> = {
-  now:      "Available now",
-  days:     "Available in days",
-  illiquid: "Illiquid",
-};
-
-/** The quiet sub-label under each horizon heading (what sits in it). */
-export const HORIZON_META: Record<SourceHorizon, string> = {
-  now:      "Checking · savings",
-  days:     "Brokerage · crypto (settlement)",
-  illiquid: "Property · other long-term",
-};
-
-/** Tier colours — identical to the Ladder tiles so the ledger reads as the same family. */
-export const HORIZON_COLOR: Record<SourceHorizon, string> = {
-  now:      "#22c55e",
-  days:     "#3b82f6",
-  illiquid: "#6b7280",
-};
-
-/** Ordered top (reachable now) → bottom (locked away) — the ladder reading order. */
-export const HORIZON_ORDER: SourceHorizon[] = ["now", "days", "illiquid"];
+export { HORIZON_LABEL, HORIZON_META, HORIZON_COLOR, HORIZON_ORDER, type SourceHorizon } from "./horizons";
+import type { SourceHorizon } from "./horizons";
 
 /**
  * One liquidity source prepared for the ledger + detail — display figures computed
@@ -62,14 +39,18 @@ export interface LiquiditySourceRow {
   estimated: boolean;
 }
 
-/** Classify a source into its access horizon — a pure function of account type, the
- *  SAME partition classifyAccounts uses (checking/savings → now, investment/crypto →
- *  days, other → illiquid). Debt/unknown types are not liquidity sources. */
+/** Classify a source into its access horizon — liquidityAccess, the one rule
+ *  (lib/account-classifier.ts): type AND provider subtype. Debt/unknown types are
+ *  not liquidity sources. */
 export function classifySource(a: LiquidityAdapterAccount): SourceHorizon | null {
-  if (a.type === "checking" || a.type === "savings") return "now";
-  if (a.type === "investment" || isDigitalAssetAccountType(a.type)) return "days";
-  if (a.type === "other") return "illiquid";
-  return null; // debt / uncategorized — excluded from the sources ledger
+  switch (liquidityAccess(a)) {
+    case "cash":       return "now";
+    case "marketable": return "days";
+    case "restricted": return "restricted";
+    case "unverified": return "unverified";
+    case "illiquid":   return "illiquid";
+    default:           return null; // debt / uncategorized — excluded from the sources ledger
+  }
 }
 
 /**

@@ -69,6 +69,9 @@ export type SpaceAccount = {
    * one presentation is `describePriceProvenance`.
    */
   cryptoPrice?:   PriceProvenance;
+  /** 2026-10-07 — FinancialAccount.providerSubtype (provider evidence). Read only
+   *  by liquidityAccess (lib/account-classifier.ts); null/absent = unknown. */
+  providerSubtype?: string | null;
   creditLimit?:   number;
   interestRate?:  number;  // APR, e.g. 19.99
   minimumPayment?: number; // monthly minimum

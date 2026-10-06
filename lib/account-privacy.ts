@@ -62,6 +62,7 @@
 import "server-only";
 import { possessive } from "@/lib/format";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
+import { liquidityAccess } from "@/lib/account-classifier";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -140,6 +141,14 @@ export interface NormalizedAccount {
    * in which case it is the OLDEST of them.
    */
   balanceLastUpdatedAt?: string | null;
+  /**
+   * 2026-10-07 — FinancialAccount.providerSubtype (provider evidence, read only
+   * by liquidityAccess). Carried at every tier that discloses a balance: it
+   * says what the money can be used for, which a reachability total needs. On
+   * an aggregate row, members are grouped by liquidity access, so the
+   * aggregate's subtype is a member's and always yields the same access.
+   */
+  providerSubtype?: string | null;
   // Present only on FULL rows:
   institution?:    string;
   creditLimit?:    number | null;
@@ -183,6 +192,9 @@ export interface ShareRow {
     debtSubtype:    string | null;
     interestRate:   number | null;
     minimumPayment: number | null;
+    /** 2026-10-07 — optional so callers that do not select it still compile;
+     *  absent is UNKNOWN (liquidityAccess decides what that means). */
+    providerSubtype?: string | null;
   };
 }
 
@@ -420,6 +432,8 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
       ownerFirstName: string | null;
       baseLabel:      string;  // singular, no owner prefix
       type:           string;
+      /** A member's providerSubtype — every member shares its liquidity access (the key). */
+      providerSubtype: string | null;
       /** Non-debt members only: signed sum (identical to per-member sums). */
       assetTotal:     number;
       /** Debt members only: Σ amountOwed — clamped PER MEMBER, never netted. */
@@ -459,6 +473,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
         debtSubtype:    a.debtSubtype,
         interestRate:   a.interestRate,
         minimumPayment: a.minimumPayment,
+        providerSubtype: a.providerSubtype ?? null,
       });
       continue;
     }
@@ -473,7 +488,11 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
     // so the key stays stable even if first names differ (they shouldn't, but
     // we group by ownerId not ownerFirstName).
     const baseLabel = genericAccountName({ type: a.type, debtSubtype: a.debtSubtype });
-    const key       = `${share.addedByUserId}:${baseLabel}:${a.currency}`;
+    // 2026-10-07 — liquidity access is part of the key: an HSA must not merge
+    // into an ordinary checking aggregate (nor a 401(k) into a brokerage one),
+    // or the sum would carry one member's spendability for both.
+    const access    = liquidityAccess({ type: a.type, providerSubtype: a.providerSubtype }) ?? "none";
+    const key       = `${share.addedByUserId}:${baseLabel}:${a.currency}:${access}`;
 
     // ⚠️ REVIEW-3 B-1 — THE AGGREGATION SITE. Semantics BEFORE aggregation:
     // the raw signed balance is interpreted per member by the balance-semantics
@@ -517,6 +536,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
         ownerFirstName,
         baseLabel,
         type:           a.type,
+        providerSubtype: a.providerSubtype ?? null,
         assetTotal:     memberAsset,
         owedTotal:      memberOwed,
         creditTotal:    memberCred,
@@ -549,6 +569,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
       id:          `balance-only:${key}`,
       name:        displayName,
       type:        g.type,
+      providerSubtype: g.providerSubtype,
       balance,
       currency:    g.currency,
       lastUpdated: g.lastUpdated.toISOString(),

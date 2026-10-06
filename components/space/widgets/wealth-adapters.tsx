@@ -340,7 +340,10 @@ function assetClassItems(
 ): BreakdownItem[] {
   const c = classifyAccounts(accounts, ctx);
   return [
-    { id: "cash",        label: "Cash",        value: c.totalLiquid },
+    // Cash BALANCE (net-worth composition), so restricted cash (an HSA) stays in
+    // it — totalLiquid alone is unrestricted cash since 2026-10-07, and this
+    // breakdown must still add up to totalAssets.
+    { id: "cash",        label: "Cash",        value: c.totalLiquid + c.totalRestrictedCash },
     { id: "investments", label: "Investments", value: c.totalInvestments },
     { id: "crypto",      label: "Crypto",      value: c.totalDigitalAssets },
     { id: "real",        label: "Real assets", value: c.totalRealAssets },

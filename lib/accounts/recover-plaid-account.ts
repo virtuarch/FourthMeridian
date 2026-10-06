@@ -97,6 +97,7 @@ import type { Prisma } from "@prisma/client";
 import { AccountOwnerType, ProviderType, ShareStatus, SyncIssueKind } from "@prisma/client";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { mapAccountType } from "@/lib/plaid/account-type";
+import { normalizeProviderSubtype } from "@/lib/account-classifier";
 import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
 import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
@@ -219,6 +220,7 @@ export async function recoverMissingPlaidAccountsForItem(
           plaidName:        acct.name,
           officialName:     acct.official_name ?? undefined,
           type:             mapAccountType(acct.type, acct.subtype),
+          providerSubtype:  normalizeProviderSubtype(acct.subtype),
           institution:      item.institutionName ?? "",
           institutionId:    item.institutionId ?? undefined,
           mask:             acct.mask ?? undefined,
