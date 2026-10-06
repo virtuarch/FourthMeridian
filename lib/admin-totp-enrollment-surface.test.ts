@@ -346,8 +346,14 @@ check(
   !proxy.includes('pathname.startsWith("/api/user/totp') && !proxy.includes('pathname.startsWith("/api/auth'),
 );
 check(
-  "the matcher is pages + the /api Origin boundary, nothing else",
-  /matcher:\s*\[\s*"\/dashboard\/:path\*",\s*"\/admin\/:path\*",\s*"\/api\/:path\*",?\s*(?:\/\/[^\n]*)?\s*\]/.test(proxy),
+  "the matcher is pages + the /api Origin boundary + the public-site paths, nothing else",
+  /matcher:\s*\[\s*"\/dashboard\/:path\*",\s*"\/admin\/:path\*",\s*"\/api\/:path\*",?\s*(?:\/\/[^\n]*\s*)*"\/",\s*"\/about",\s*"\/legal\/:path\*",\s*"\/privacy",\s*"\/security",\s*"\/terms",?\s*\]/.test(proxy),
+);
+// Domain split: the public-site paths are routed (or passed through) BEFORE the
+// token is read, so no TOTP/role rule can ever apply to them.
+check(
+  "public-site paths return before the token is read",
+  proxy.indexOf("if (!isProtectedPagePath(") > -1 && proxy.indexOf("if (!isProtectedPagePath(") < proxy.indexOf("await getToken("),
 );
 check(
   "the pending allow-list is narrowed to the enrolment sections",
