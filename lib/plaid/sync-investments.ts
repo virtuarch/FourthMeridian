@@ -41,7 +41,7 @@ import { db, systemDb } from "@/lib/db";
 import { plaidClient } from "@/lib/plaid/client";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
-import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
+import { offersInvestments, reconcileInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
 import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
 import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
 import { syncCurrentHoldings } from "@/lib/investments/sync-current-holdings";
@@ -111,10 +111,12 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
 
   // ── Consent (DRIFT-1: change-detect + log; seeds at link since stored=null) ──
   let consent: PlaidInvestmentsConsent | null = storedConsent;
-  const derived = deriveInvestmentsConsent(item);
+  // Stored UNSUPPORTED (learned from the endpoint) is not undone by consent
+  // metadata alone — see reconcileInvestmentsConsent.
+  const derived = reconcileInvestmentsConsent(storedConsent, item);
   if (derived !== null && derived !== storedConsent) {
     await db.plaidItem.update({ where: { id: plaidItemId }, data: { investmentsConsent: derived } });
-    console.log(`${LOG} consent ${storedConsent ?? "unknown"} → ${derived} for item ${plaidItemId} ("${institutionName}")`);
+    console.log(`${LOG} consent ${storedConsent ?? "unknown"} → ${derived} for item ${plaidItemId} ("${institutionName}") — offered by Plaid: ${offersInvestments(item)}`);
   }
   if (derived !== null) consent = derived;
 
@@ -231,6 +233,13 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
       await db.plaidItem.update({ where: { id: plaidItemId }, data: { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED } });
       consent = PlaidInvestmentsConsent.CONSENT_REQUIRED;
       console.log(`${LOG} item ${plaidItemId} ("${institutionName}") lacks Investments consent — holdings skipped until granted via Link update mode`);
+    } else if (getPlaidErrorCode(holdingsErr) === "PRODUCTS_NOT_SUPPORTED") {
+      // The institution offers no Investments product, whatever the consent
+      // list says. Record the endpoint's answer: the call stops repeating on
+      // every refresh, and the card stops claiming "Investments synced".
+      await db.plaidItem.update({ where: { id: plaidItemId }, data: { investmentsConsent: PlaidInvestmentsConsent.UNSUPPORTED } });
+      consent = PlaidInvestmentsConsent.UNSUPPORTED;
+      console.log(`${LOG} item ${plaidItemId} ("${institutionName}") — Investments not supported by the institution; holdings skipped`);
     } else {
       console.warn(`${LOG} investmentsHoldingsGet failed for item ${plaidItemId} (non-fatal): ${plaidErrorSummary(holdingsErr)}`);
     }
