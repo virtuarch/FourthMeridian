@@ -104,6 +104,13 @@ console.log('\n5. WHAT LEAVES THE SERVER');
       && !/evidence:|toolCalls:|usage:/.test(src));
   check('the gaps are forwarded, not re-derived here',
     /turn\.knowledgeGaps/.test(src) && !/missingDebtFields|collectKnowledgeGaps/.test(src));
+  // Advice-boundary slice — the guidance label rides the 200 beside the answer.
+  check('the guidance label is forwarded only when the turn produced one',
+    /turn\.guidance \? \{ guidance: turn\.guidance \}/.test(src));
+  check('…it is the engine\'s label, never classified or tiered here',
+    !/classifyGuidance|disclosureTier|disclosurePlan|GUIDANCE_/.test(src));
+  check('…and a consequential answer is still a 200 — no refusal keyed on guidance',
+    !/guidance[\s\S]{0,120}(refuse\(|status: [45])/.test(src));
   check('an error response carries a sentence, never the error',
     !/error: err|err\.message|String\(err\)|\.stack/.test(src));
   check('…and the error itself is logged server-side', /console\.error\(/.test(src));

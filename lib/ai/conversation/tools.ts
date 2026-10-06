@@ -1105,7 +1105,9 @@ const getBaselines: ToolDefinition = {
     'multiple. Every derived figure ships with its numerator, denominator and basis — quote them. ' +
     'Never divide an orientation or window total to get a monthly figure. For WHEN cash reaches a ' +
     'threshold, give its amount to scenario_crossing — do not divide a shortfall by the surplus. ' +
-    'It does not say what the user SHOULD spend or keep — that judgement is yours, over these numbers.',
+    'It does not say what the user SHOULD spend or keep. The thresholds are reference points to set ' +
+    'side by side, not a standard: say which the evidence favours and why, and leave the choice of ' +
+    'reserve to the user.',
   parameters: obj({
     statedMonthlySpending: num('The monthly spending the user STATED in this conversation, if any '
       + '("use $5k"). Wins over the product setting and the measured figure, and is echoed as STATED.'),

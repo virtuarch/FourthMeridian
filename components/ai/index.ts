@@ -16,6 +16,8 @@ export { KnowledgeGapCard } from "@/components/ai/KnowledgeGapCard";
 export { AiMark } from "@/components/ai/AiMark";
 export { StarterLine } from "@/components/ai/StarterLine";
 export { Markdown } from "@/components/ai/Markdown";
+export { AiDisclosure } from "@/components/ai/AiDisclosure";
+export { GuidanceNote, type GuidanceNoteProps } from "@/components/ai/GuidanceNote";
 export type { AiMessage } from "@/components/ai/types";
 export {
   conversationLayoutMode,

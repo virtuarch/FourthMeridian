@@ -38,10 +38,13 @@ import type { MemoryClient } from './memory-store';
 import { executeTurn, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord } from './turn';
 import { newScenarioSlot, type ScenarioSlot, type ActiveScenario } from './active-scenario';
 import { collectKnowledgeGaps } from './knowledge-gaps';
+import { classifyGuidance, CLASSIFIER_TIMEOUT_MS, type GuidanceModelCall } from './guidance';
+import { generateStructuredWithUsage } from '@/lib/ai/provider';
+import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
 import { todayUTCISO } from '@/lib/time/clock';
 import type { SpaceContext } from '@/lib/space';
 import type { SpaceContext_AI } from '@/lib/ai/types';
-import type { AiKnowledgeGap } from '@/types';
+import type { AiGuidance, AiKnowledgeGap } from '@/types';
 
 /**
  * The model the conversation runs on.
@@ -145,6 +148,12 @@ export async function openTranscript(args: {
    * and have no session at all.
    */
   phase?: AiPhaseRunner;
+  /**
+   * The behavioural instruction, for a harness A/B arm ONLY. Absent ⇒
+   * `SYSTEM_INSTRUCTION`, which is what the product route always sends — it has
+   * no way to pass this, and must never gain one.
+   */
+  instruction?: string;
 }): Promise<OpenTranscript> {
   const { spaceCtx, agentId, asOfISO, model } = args;
   const arm = args.arm ?? CHAT_ARM;
@@ -182,7 +191,7 @@ export async function openTranscript(args: {
     ...(args.memoryWrites === true ? { memoryWrites: true } : {}) };
 
   const messages: unknown[] = [
-    { role: 'system', content: `${SYSTEM_INSTRUCTION}\n\nToday is ${asOfISO}.` },
+    { role: 'system', content: `${args.instruction ?? SYSTEM_INSTRUCTION}\n\nToday is ${asOfISO}.` },
   ];
   if (evidence.body) messages.push({ role: 'user', content: evidence.body });
 
@@ -242,6 +251,15 @@ export interface StatelessTurn {
    * returned.
    */
   knowledgeGaps: AiKnowledgeGap[];
+  /**
+   * What kind of guidance this answer is (lib/ai/conversation/guidance.ts), or
+   * null when there was no answer or the label could not be produced.
+   *
+   * ⚠️ LABELLED AFTER THE ANSWER, AND IT NEVER REACHES THE MODEL. It is not in
+   * `record`, not in the transcript and not in the sealed state; a surface uses
+   * it to frame the answer and nothing else does.
+   */
+  guidance: AiGuidance | null;
 }
 
 /**
@@ -277,6 +295,13 @@ export async function runStatelessTurn(args: {
   memoryWrites?: boolean;
   /** RLS-AI-S11 — the tenant phase runner, when the caller authenticated someone. */
   phase?: AiPhaseRunner;
+  /**
+   * The guidance labeller. Defaults to a structured call on the conversation's
+   * model; `false` skips it (the answer then carries no label). Injected by tests.
+   */
+  classify?: GuidanceModelCall | false;
+  /** Harness A/B only — see `openTranscript`. */
+  instruction?: string;
 }): Promise<StatelessTurn> {
   const asOfISO = args.asOfISO ?? todayUTCISO();
   const model = args.model ?? CHAT_MODEL;
@@ -284,7 +309,7 @@ export async function runStatelessTurn(args: {
   const open = await openTranscript({
     spaceCtx: args.spaceCtx, agentId: args.agentId, asOfISO, model,
     memoryClient: args.memoryClient, readClient: args.readClient,
-    phase: args.phase, memoryWrites: args.memoryWrites });
+    phase: args.phase, memoryWrites: args.memoryWrites, instruction: args.instruction });
   replayHistory(open.messages, args.history);
 
   // ⚠️ A SLOT PER REQUEST, RESTORED — NOT A SLOT THAT LIVES ON THE SERVER. The
@@ -308,7 +333,19 @@ export async function runStatelessTurn(args: {
     userTexts: args.history.filter((m) => m.role === 'user').map((m) => m.content),
   });
 
-  return { answer: record.assistant, record, evidence: open.evidence,
+  // ⚠️ AFTER THE TURN, ON THE SAME LEDGER KEY. The label reads the finished
+  // exchange — the question, the answer, and the turns before it — and its cost
+  // is billed to this turn so "what did this turn cost?" stays one number.
+  const guidance = record.assistant?.trim() && args.classify !== false
+    ? await runWithAiInvocationContext(
+      { correlationId: args.correlationId ?? 'conversation', turnIndex: args.history.length,
+        surface: args.surface ?? 'harness' },
+      () => classifyGuidance(
+        { prior: args.history, asked: args.user, answer: record.assistant as string },
+        args.classify || defaultGuidanceCall(model)))
+    : null;
+
+  return { answer: record.assistant, record, evidence: open.evidence, guidance,
     scenario: slot.active,
     pending: open.toolCtx.plan.pending.clauses.length > 0 ? open.toolCtx.plan.pending : null,
     // The loss stands until a scenario RUNS again in this conversation — a new
@@ -317,4 +354,11 @@ export async function runStatelessTurn(args: {
     // Read off THIS turn's tool results, so a gap is a remark about this answer
     // rather than a standing notice about the Space.
     knowledgeGaps: collectKnowledgeGaps(record.toolCalls) };
+}
+
+/** The production labeller: one strict structured call, short deadline, small budget. */
+function defaultGuidanceCall(model: string): GuidanceModelCall {
+  return async (system, messages, schema) => (await generateStructuredWithUsage<unknown>(
+    system, messages, { name: schema.name, schema: schema.schema as unknown as Record<string, unknown> },
+    { model, timeoutMs: CLASSIFIER_TIMEOUT_MS, maxTokens: 2_000 })).value;
 }

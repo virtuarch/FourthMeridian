@@ -215,6 +215,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const sealed = seal.sealed;
     const body: AiChatResponse = {
       message: turn.answer,
+      // The answer's guidance label (lib/ai/conversation/guidance.ts). Omitted
+      // when it could not be produced; the surface inherits rather than drops.
+      ...(turn.guidance ? { guidance: turn.guidance } : {}),
       ...(turn.knowledgeGaps.length ? { knowledgeGaps: turn.knowledgeGaps } : {}),
       ...(seal.carried === 'LOST' && seal.fresh && seal.loss ? { continuity: { carried: false, reason: seal.loss.reason,
         droppedScenario: seal.loss.droppedScenario, droppedPendingClauses: seal.loss.droppedPendingClauses } } : {}),

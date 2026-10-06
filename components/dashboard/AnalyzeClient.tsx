@@ -40,6 +40,7 @@ import {
   Composer,
   SuggestedPrompt,
   KnowledgeGapCard,
+  GuidanceNote,
   StarterLine,
   conversationLayoutMode,
   readTranscript,
@@ -55,6 +56,7 @@ import {
 } from "@/components/dashboard/KnowledgeAcquisitionCard";
 import type { GapEntry } from "@/components/dashboard/KnowledgeAcquisitionCard";
 import { readKnowledgeGaps } from "@/lib/ai/conversation/knowledge-gaps";
+import { disclosurePlan, readGuidance, type GuidanceEntry } from "@/lib/ai/conversation/guidance";
 import type { AiAdvice, AiChatResponse } from "@/types";
 
 interface Message {
@@ -71,6 +73,12 @@ interface Message {
   knowledgeGapMode?: "clarification" | "form";
   /** FM-AUDIT-018 — the plan built so far could not be carried to the next turn. */
   continuityNotice?: string;
+  /**
+   * Advice-boundary slice — this answer's guidance label, or "UNCLASSIFIED" for
+   * a real answer that came back without one. Absent on user turns, refusals and
+   * restored lines: those are outside the boundary (see `disclosurePlan`).
+   */
+  guidance?: Exclude<GuidanceEntry, null>;
 }
 
 interface Props {
@@ -247,6 +255,9 @@ export function AnalyzeClient({
             {
               role: "assistant",
               content: data.message,
+              // Narrowed, never trusted wholesale; a missing or malformed label
+              // makes the answer UNCLASSIFIED, which inherits — never drops.
+              guidance: readGuidance(data.guidance) ?? "UNCLASSIFIED",
               // Only attach gaps / mode when the answer actually named missing fields.
               ...(gaps.length
                 ? { knowledgeGaps: gaps, knowledgeGapMode: data.knowledgeGapMode }
@@ -288,13 +299,22 @@ export function AnalyzeClient({
   // Behaviour is unchanged from the pre-reshell IIFE — only the presentation frame
   // (KnowledgeGapCard) is new; the interactive cards are reused verbatim.
   // FM-AUDIT-018 — the continuity notice renders beside (never instead of) the gap card.
+  // Advice-boundary slice — the contextual note sits first, directly under the prose
+  // it frames, and never instead of the continuity notice or the gap card.
+  // ⚠️ ONE PLAN FOR THE WHOLE CONVERSATION, recomputed from every answer's label in
+  // order: "full once, then a one-line reminder" is a property of `disclosurePlan`,
+  // not of anything this component remembers.
+  const guidancePlan = disclosurePlan(messages.map((m) => (m.role === "assistant" ? m.guidance ?? null : null)));
+
   function renderExtras(index: number): ReactNode {
     const m = messages[index];
+    const planned = guidancePlan[index];
+    const note = planned ? <GuidanceNote {...planned} /> : null;
     const notice = m.role === "assistant" && m.continuityNotice
       ? <p className="mt-2 text-xs text-muted-foreground" role="note">{m.continuityNotice}</p>
       : null;
     const gaps = renderGapExtras(index);
-    return notice || gaps ? <>{notice}{gaps}</> : null;
+    return note || notice || gaps ? <>{note}{notice}{gaps}</> : null;
   }
 
   function renderGapExtras(index: number): ReactNode {

@@ -36,8 +36,8 @@ import {
 import type { CompactionStats } from './compaction';
 
 /**
- * The behavioural instruction. ~140 words, identical in every arm and every
- * model tier.
+ * The behavioural instruction. ~140 words plus the two measured rules below
+ * (~330 in all), identical in every arm and every model tier.
  *
  * ⚠️ IT IS NOT DOCTRINE AND MUST NOT BECOME IT. No phrase tables, no worked
  * examples, no financial ontology, no rules about which figure may be stated.
@@ -58,7 +58,41 @@ export const EVIDENCE_RULE =
   + 'represent it exactly, say so. When a tool can compute a figure, use its output and never '
   + 'fill in values it did not return.';
 
-export const SYSTEM_INSTRUCTION = [
+/**
+ * The financial-guidance boundary (advice-boundary slice), and the only sentences
+ * about recommending.
+ *
+ * ⚠️ CALIBRATION, NOT CAUTION. It does not ask for disclaimers — the product draws
+ * those, deterministically, from a label on the finished answer
+ * (lib/ai/conversation/guidance.ts) — and it does not ask the model to recommend
+ * less. It asks for the order a good adviser works in: what the numbers show, the
+ * options and what each does, then what the evidence favours. What it removes is
+ * the step the dogfood showed: a rule of thumb ("3–6 months", "cap crypto at
+ * 10–20%") stated as the user's standard, and an amount picked where a missing
+ * APR, tax effect or income question decided the answer.
+ *
+ * ⚠️ THE SECURITIES SENTENCE IS AN INTERIM PRODUCT POSITION, NOT A LEGAL ONE. The
+ * runtime has no market data, so a ticker or fund it named would rest on nothing
+ * it can show; and choosing securities for someone is the clearest place counsel
+ * has to rule before broad launch (docs/systems/ai-financial-guidance-boundary.md).
+ *
+ * ⚠️ MEASURED, NOT ASSUMED — exported so scripts/ai-baseline/advice-boundary.check.ts
+ * can run the same conversations with and without it.
+ */
+export const GUIDANCE_RULE =
+  'When asked what to do, show what their numbers support, the realistic options and what each '
+  + 'would do, then which the evidence favours. A rule of thumb (months of reserve, a savings rate, '
+  + 'an investment mix) is one option for them to choose among, never a target you set. If the answer turns on '
+  + 'something you lack, like an interest rate, taxes or income stability, name it and show how it '
+  + 'changes the answer. Never pick securities or funds for them. Neither claim nor disclaim being '
+  + 'a licensed adviser.';
+
+/** The instruction without the guidance boundary — the A/B arm, never the product. */
+export function systemInstructionWith(rules: { guidance: boolean }): string {
+  return [...INSTRUCTION_BODY, ...(rules.guidance ? ['', GUIDANCE_RULE] : []), '', EVIDENCE_RULE].join('\n');
+}
+
+const INSTRUCTION_BODY = [
   'You are Fourth Meridian, a financial assistant talking to the person whose money this is.',
   '',
   'Answer the question actually asked. Be brief by default — a few sentences — and go',
@@ -79,9 +113,9 @@ export const SYSTEM_INSTRUCTION = [
   'Lead with what matters. Something immaterial does not become important because a field',
   'about it is missing. Correct a wrong premise rather than answering around it.',
   'Form a view when asked for one.',
-  '',
-  EVIDENCE_RULE,
-].join('\n');
+];
+
+export const SYSTEM_INSTRUCTION = systemInstructionWith({ guidance: true });
 
 export interface TurnRecord {
   index: number;

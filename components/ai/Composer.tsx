@@ -8,7 +8,8 @@
  * (auto-grow, capped), a send button that activates on a non-empty draft and a stop
  * button while a reply is in flight. Enter sends, Shift+Enter inserts a newline, an
  * IME-confirming Enter does neither. The draft stays editable while a reply is in
- * flight (the host refuses the send). Presentation + input only — it calls
+ * flight (the host refuses the send). Beneath it, the persistent AI disclosure
+ * (AiDisclosure) at every width. Presentation + input only — it calls
  * `onSubmit` / `onStop`; it never fetches.
  */
 
@@ -16,6 +17,7 @@ import { useId, type Ref } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { Textarea } from "@/components/atlas/fields";
 import { isSendKey } from "@/components/ai/conversation-surface";
+import { AiDisclosure } from "@/components/ai/AiDisclosure";
 
 export interface ComposerProps {
   value: string;
@@ -93,11 +95,16 @@ export function Composer({
           </button>
         )}
       </div>
-      {hint && (
-        <p id={hintId} className="hidden sm:block mt-2 px-1 text-center text-[11px] text-[var(--text-muted)]">
-          {hint}
-        </p>
-      )}
+      {/* Advice-boundary slice — the persistent disclosure, at every width and in
+          both layouts. The keyboard hint stays desktop-only beneath it. */}
+      <div className="mt-2 px-1 text-[11px] text-[var(--text-muted)]">
+        <AiDisclosure />
+        {hint && (
+          <p id={hintId} className="hidden sm:block mt-0.5 text-center">
+            {hint}
+          </p>
+        )}
+      </div>
     </form>
   );
 }

@@ -607,9 +607,29 @@ export interface AiKnowledgeGap {
  * ask. It is declared because the client's rendering branch already reads it —
  * not because the server has an opinion to express through it.
  */
+/**
+ * What kind of guidance an answer is. See lib/ai/conversation/guidance.ts.
+ *
+ * ⚠️ A LABEL ON THE ANSWER, NOT PART OF IT. It is produced after the answer by a
+ * separate classification, never re-enters the transcript, and decides only how
+ * the surface frames the answer (lib `disclosureTier` / `disclosurePlan`).
+ */
+export type AiGuidanceLevel = 'UNDERSTANDING' | 'PLANNING' | 'RECOMMENDATION';
+export type AiGuidanceAdjacency = 'SECURITIES' | 'TAX' | 'LEGAL' | 'RETIREMENT_ACCOUNTS' | 'LEVERAGE';
+export interface AiGuidance {
+  level: AiGuidanceLevel;
+  /** Subjects the product has something specific to say about. Canonical order, no repeats. */
+  adjacencies: AiGuidanceAdjacency[];
+}
+
 export interface AiChatResponse {
   /** The assistant's answer. Markdown, as the surface already renders it. */
   message: string;
+  /**
+   * The answer's guidance level. Omitted when classification failed — the
+   * surface then inherits the conversation's last tier rather than dropping it.
+   */
+  guidance?: AiGuidance;
   /** Evidence the answer wanted and did not have. Omitted when there is none. */
   knowledgeGaps?: AiKnowledgeGap[];
   /** Never emitted by the current runtime. See above. */
