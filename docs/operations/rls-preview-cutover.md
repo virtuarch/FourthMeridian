@@ -45,7 +45,7 @@ The exact residue is machine-readable: `scripts/lib/db-authority-baseline.json` 
 
 ## 1. Migrations
 
-**VERIFIED (repo):** 118 migration directories. The ten below are the RLS programme Preview received on 2026-10-06 (117 applied); `20261006000000_rls_function_execute_least_privilege` follows them (§2.1):
+**VERIFIED (repo):** 119 migration directories. The ten below are the RLS programme Preview received on 2026-10-06 (117 applied); `20261006000000_rls_function_execute_least_privilege` (§2.1) and `20261006010000_platform_area_merchant_ops` (adds the `MERCHANT_OPS` platform area; Merchant Ops is platform authority, not Space membership) follow them:
 
 | Migration | What it does |
 |---|---|
@@ -321,6 +321,25 @@ Rows 8–12 may use the legacy sandbox Items' **database** records (accounts, tr
 Rows 8–10 are now a test of the **database boundary** for the surfaces in §0's first table. For the surfaces in §0's second table they still prove only the application's own checks.
 
 ---
+
+## 9b. Database safety nets and the Production invariant (2026-10-06)
+
+**Idle-in-transaction timeouts — role settings (Preview applied; Production to receive the same at its cutover).**
+
+| Role | `idle_in_transaction_session_timeout` | Why this value |
+|---|---|---|
+| `fm_app`, `fm_auth`, `fm_system` | `15s` | Runtime roles. A live phase is never idle this long (Prisma's interactive timeout is 5 s); a transaction stranded by a suspended Fluid instance ends in 15 s instead of pinning a pooler slot. `withTenantDb` also sets it transaction-locally on every tenant transaction. |
+| `postgres` (migration owner, legacy `db` client) | `30s` | Inventoried, not copied: application owner transactions are ≤5 s (Prisma default, no overrides); `prisma migrate deploy`, `pg_dump`/`db:backup`, restores and the operator scripts issue statements back to back (sub-second gaps). 30 s is 6× the longest legitimate application transaction and bounds a stranded owner transaction (observed 150–326 s) to half a minute. |
+
+Applied on Preview with `ALTER ROLE postgres SET idle_in_transaction_session_timeout = '30s';` (and `'15s'` for the three runtime roles). Role settings reach only **new** backends: verify from a freshly started connection (the session pooler reuses server connections, so open several at once and check `backend_start`), not from the session that ran the `ALTER`.
+
+**Deliberate manual work.** A human running `BEGIN` by hand (psql or the SQL editor) to inspect before committing is the one legitimate long idle transaction. Disable the timer for that session only:
+
+```sql
+SET idle_in_transaction_session_timeout = 0;   -- this session only; never ALTER ROLE
+```
+
+**Production must refuse to start without strict mode.** `lib/db/strict-mode.ts`: on a Vercel Production deployment (`VERCEL_ENV=production`) `FM_RLS_STRICT` must be exactly `true` — absent, `false`, `TRUE`, `1` or anything else refuses to boot — and the three role URLs are validated whatever the flag says (missing, unparseable, owner role, look-alike, wrong role, wrong project all refuse). Preview and local are unchanged. Consequence for the eventual Production cutover: the Production database must be migrated, the role passwords set, `DATABASE_URL_APP/AUTH/SYSTEM` and `FM_RLS_STRICT=true` present in Vercel's Production environment, **before** a commit containing this guard is deployed to Production — otherwise the Production build/start fails closed (which is the point).
 
 ## 10. Rollback
 
