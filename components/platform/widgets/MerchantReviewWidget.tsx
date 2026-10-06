@@ -16,7 +16,7 @@ export function MerchantReviewWidget({ section }: { section: PlatformSection }) 
   return (
     <div className="space-y-2">
       <h3 className="text-sm font-medium">{section.label}</h3>
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-[var(--text-muted)]">
         Review candidate duplicate merchants detected across the platform. A merge
         rewrites merchant identity for every tenant and is recorded in the audit log
         with enough state to restore it by hand.

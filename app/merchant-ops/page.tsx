@@ -44,7 +44,7 @@ export default async function MerchantOpsReviewPage() {
           : `${candidates.length} pending candidate${candidates.length === 1 ? "" : "s"} — every merge is a human decision.`}
       </p>
       {!canDecide && (
-        <p className="mt-1 text-xs text-gray-500">
+        <p className="mt-1 text-xs text-[var(--text-muted)]">
           Read-only: merging or dismissing requires a Merchant Operations WRITE grant.
         </p>
       )}
