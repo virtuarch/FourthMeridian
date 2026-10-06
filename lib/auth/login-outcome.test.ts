@@ -145,8 +145,10 @@ check("authorize's user-lookup catch captures + rethrows the unavailable sentine
 check("authorize's user lookup is wrapped (findFirst appears inside a try)",
   /try\s*{[\s\S]*db\.user\.findFirst/.test(auth));
 check("authorize captures infra failures", auth.includes("captureAuthInfraFailure"));
-check("recordLoginFailure is best-effort (own try/catch)",
-  /recordLoginFailure[\s\S]*?try\s*{[\s\S]*?auditLog\.create[\s\S]*?catch/.test(auth));
+// The write is auditInsert (no RETURNING): fm_auth may INSERT AuditLog but
+// not read it back, so auditLog.create() here raised 42501 on every attempt.
+check("recordLoginFailure is best-effort (own try/catch around a no-RETURNING audit write)",
+  /recordLoginFailure[\s\S]*?try\s*{[\s\S]*?auditInsert\(db,[\s\S]*?catch/.test(auth));
 
 // login page
 // The client form moved to LoginForm.tsx when page.tsx became the server entry
