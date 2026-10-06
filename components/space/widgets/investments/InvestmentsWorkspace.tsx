@@ -51,7 +51,7 @@ import { useInvestmentsSpaceData } from "./useInvestmentsSpaceData";
 import { isHistoricalDay } from "@/lib/time/basis";
 import { InvestmentsActivityCard } from "./InvestmentsActivityCard";
 import { InvestmentsBridgeCard } from "./InvestmentsBridgeCard";
-import { InvestmentConnectionsCard } from "./InvestmentConnectionsCard";
+import { InvestmentAccountsLedger } from "./InvestmentAccountsLedger";
 import { InvestmentAllocationPanel } from "./InvestmentAllocationPanel";
 import { InvestmentsHero } from "./InvestmentsHero";
 import { InvestmentsBalanceHistory } from "./InvestmentsBalanceHistory";
@@ -156,7 +156,22 @@ export function InvestmentsWorkspace({
   // HIST-1D — shared-Space scope disclosure (currency-agnostic; from the UNCONVERTED contract).
   const scopeDivergence = raw?.scopeDivergence ?? null;
 
+  // The investment ACCOUNTS behind the canonical figure (current day). An account
+  // with a balance but no holdings is still an investment asset — it is listed,
+  // not replaced by "No holdings" (lib/investments/investment-accounts.ts).
+  const accountsLedger = !historicalMode && data.accounts && data.accounts.rows.length > 0 ? (
+    <Block id="investments-accounts" label="Accounts"
+      hint={<span className="text-[11px] tabular-nums text-[var(--text-faint)]">{data.accounts.rows.length}</span>}>
+      <InvestmentAccountsLedger slice={data.accounts} />
+    </Block>
+  ) : null;
+
   const isEmpty = primary.holdings.length === 0 && primary.portfolio.unvaluedCount === 0;
+  if (isEmpty && accountsLedger) {
+    // Balances without security-level holdings: the accounts ARE the investment
+    // picture. No $0 "portfolio value", no "connect a brokerage" — the money is here.
+    return <div className="space-y-8 min-w-0">{accountsLedger}</div>;
+  }
   if (isEmpty) {
     return (
       <div className="space-y-8 min-w-0">
@@ -174,7 +189,6 @@ export function InvestmentsWorkspace({
             Connect an investment account →
           </Link>
         </Surface>
-        <InvestmentConnectionsCard spaceId={spaceId} />
       </div>
     );
   }
@@ -196,6 +210,9 @@ export function InvestmentsWorkspace({
           reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
         />
       </div>
+
+      {/* Accounts — every investment account at its balance; holdings enrich it. */}
+      {accountsLedger}
 
       {/* ② Excluded — the positions left out of the headline, stated up front. */}
       {primary.portfolio.unvaluedCount > 0 && (
@@ -263,8 +280,6 @@ export function InvestmentsWorkspace({
         </Block>
       </div>
 
-      {/* Connections — renders its own panel only when an account needs attention. */}
-      <InvestmentConnectionsCard spaceId={spaceId} />
     </div>
   );
 }

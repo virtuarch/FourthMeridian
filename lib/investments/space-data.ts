@@ -43,11 +43,15 @@
  * the optional A10 result) and hands them to the pure assemblers.
  */
 
-import { SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
+import { PlaidItemStatus, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
+import { readSpaceAccountsForSnapshot, consentPendingInvestmentAccountIds } from "@/lib/snapshots/space-accounts";
+import { buildSpaceConversionContext } from "@/lib/money/server-context";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import { assembleInvestmentAccounts, type InvestmentAccountsSlice } from "./investment-accounts";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import type { ReadClient } from "@/lib/db/tenant-context";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
-import { DIGITAL_ASSET_ACCOUNT_TYPES } from "@/lib/account-classifier";
+import { DIGITAL_ASSET_ACCOUNT_TYPES, isDigitalAssetAccountType } from "@/lib/account-classifier";
 import {
   getCurrentPositions,
   type CurrentPositionsScope,
@@ -218,7 +222,86 @@ export async function loadInvestmentsSpaceData(
     : null;
 
   const data = assembleInvestmentsSpaceData({ current, historical });
+
+  // The account ledger (Space reads only). Holdings counts come from the SAME
+  // current-positions read above — enrichment, never added to a balance.
+  const holdingsByAccount = new Map<string, number>();
+  for (const r of positions.rows) holdingsByAccount.set(r.accountId, (holdingsByAccount.get(r.accountId) ?? 0) + 1);
+  const accounts = "spaceId" in scope ? await loadInvestmentAccounts(client, scope.spaceId, holdingsByAccount) : null;
+
   // Attach the disclosure (HIST-1D) only when it applies — it is a currency-agnostic
   // transparency note, not a slice the pure assembler computes.
-  return scopeDivergence ? { ...data, scopeDivergence } : data;
+  return {
+    ...data,
+    ...(scopeDivergence ? { scopeDivergence } : {}),
+    ...(accounts ? { accounts } : {}),
+  };
+}
+
+/**
+ * The investment-account ledger for a Space, from the canonical population:
+ * readSpaceAccountsForSnapshot (the snapshot's own reader) + the shared
+ * consent-pending rule + the snapshot's conversion date. Runs on the caller's
+ * client, so a member sees exactly the links RLS lets them see. Null when the
+ * Space holds no investment or digital-asset account.
+ */
+async function loadInvestmentAccounts(
+  client:            ReadClient,
+  spaceId:           string,
+  holdingsByAccount: Map<string, number>,
+): Promise<InvestmentAccountsSlice | null> {
+  const population = (await readSpaceAccountsForSnapshot(spaceId, client as never))
+    .filter((a) => a.type === "investment" || isDigitalAssetAccountType(a.type));
+  if (population.length === 0) return null;
+  const ids = population.map((a) => a.id);
+
+  const [pending, links, space] = await Promise.all([
+    consentPendingInvestmentAccountIds(client as never, ids),
+    client.spaceAccountLink.findMany({
+      where:  { spaceId, status: "ACTIVE", financialAccountId: { in: ids } },
+      select: {
+        financialAccountId: true,
+        visibilityLevel:    true,
+        financialAccount: {
+          select: {
+            ...ACCOUNT_NAME_SELECT,
+            institution: true,
+            connections: { where: { deletedAt: null }, select: { plaidItem: { select: { status: true } } } },
+          },
+        },
+      },
+    }),
+    client.space.findUnique({ where: { id: spaceId }, select: { reportingCurrency: true } }),
+  ]);
+  if (!space) return null;
+  const byId = new Map(links.map((l) => [l.financialAccountId, l]));
+
+  const valuationDateISO = yesterdayUTCISO(); // the snapshot's valuation date
+  const ctx = await buildSpaceConversionContext(space, {
+    currencies: population.map((a) => a.currency ?? null).filter((c): c is string => !!c),
+    dates:      [valuationDateISO],
+  });
+
+  return assembleInvestmentAccounts(
+    population.map((a) => {
+      const link = byId.get(a.id);
+      const fa = link?.financialAccount;
+      return {
+        id:            a.id,
+        type:          a.type,
+        balance:       a.balance,
+        currency:      a.currency ?? null,
+        name:          fa ? accountDisplayName(fa) : "",
+        institution:   fa?.institution ?? null,
+        detailVisible: !!link && TRANSACTION_DETAIL_VISIBILITY.includes(link.visibilityLevel),
+        consentPending: pending.has(a.id),
+        connectionNeedsAttention: (fa?.connections ?? []).some((c) =>
+          c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH || c.plaidItem?.status === PlaidItemStatus.ERROR),
+        holdings:      holdingsByAccount.get(a.id) ?? 0,
+      };
+    }),
+    space.reportingCurrency,
+    ctx,
+    valuationDateISO,
+  );
 }

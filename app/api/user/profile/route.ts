@@ -14,6 +14,7 @@ import { parseDefaultSpaceInput, isEligibleDefaultSpace } from "@/lib/spaces/def
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { EmploymentStatus, UseCase } from "@prisma/client";
 import { requireUser } from "@/lib/session";
+import { followedPersonalSpaceName } from "@/lib/spaces/personal-space-name";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
 
@@ -161,6 +162,9 @@ export async function PATCH(req: NextRequest) {
   // The update and its audit row in ONE tenant transaction: nothing sits between
   // them, so the shortest coherent operation is both of them together.
   const updated = await withTenantDb(user.id, async (tx) => {
+    const previousFirstName = data.firstName !== undefined
+      ? (await tx.user.findUnique({ where: { id: user.id }, select: { firstName: true } }))?.firstName ?? null
+      : null;
     const row = await tx.user.update({
       where: { id: user.id },
       data,
@@ -173,6 +177,27 @@ export async function PATCH(req: NextRequest) {
         metadata: { fields: Object.keys(data).filter((k) => k !== "dateOfBirthEncrypted") },
       },
     });
+    // The Personal Space's GENERATED name follows a first-name correction
+    // (lib/spaces/personal-space-name.ts); a name the owner chose is never
+    // touched. Only Spaces this user OWNS, in the same transaction, audited as
+    // the Space update it is.
+    if (data.firstName !== undefined) {
+      const owned = await tx.space.findMany({
+        where:  { type: "PERSONAL", members: { some: { userId: user.id, role: "OWNER", status: "ACTIVE" } } },
+        select: { id: true, name: true },
+      });
+      for (const space of owned) {
+        const renamed = followedPersonalSpaceName(space.name, previousFirstName, data.firstName);
+        if (!renamed) continue;
+        await tx.space.update({ where: { id: space.id }, data: { name: renamed } });
+        await tx.auditLog.create({
+          data: {
+            userId: user.id, spaceId: space.id, action: "SPACE_UPDATE",
+            metadata: { name: { from: space.name, to: renamed }, reason: "generated name follows first name" },
+          },
+        });
+      }
+    }
     return row;
   }) as { username: string | null; firstName: string | null; lastName: string | null; name: string | null };
 

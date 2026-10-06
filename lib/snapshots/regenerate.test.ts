@@ -51,7 +51,12 @@ function main(): void {
 
   // ── 3. Legitimate Part-B consent suppression retained ─────────────────────
   console.log("3. Part-B investment-consent suppression retained (no holdings fetched)");
-  check("still suppresses CONSENT_REQUIRED investment accounts", /CONSENT_REQUIRED/.test(code));
+  // The rule moved to ONE shared function (2026-10-07) so the Assets
+  // investment-account ledger applies exactly the same exclusion.
+  const shared = readFileSync(join(process.cwd(), "lib/snapshots/space-accounts.ts"), "utf8");
+  check("still suppresses CONSENT_REQUIRED investment accounts (via the shared rule)",
+    /consentPendingInvestmentAccountIds\(client,/.test(code)
+    && /export async function consentPendingInvestmentAccountIds[\s\S]*?CONSENT_REQUIRED/.test(shared));
 
   // ── 4. Single canonical write path ────────────────────────────────────────
   console.log("4. One write path");

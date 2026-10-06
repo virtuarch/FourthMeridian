@@ -38,6 +38,7 @@ import { limitByUser }               from '@/lib/rate-limit';
 import { resolveSpaceContext }       from '@/lib/space';
 import { db }                        from '@/lib/db';
 import { aiPhaseRunner }             from '@/lib/ai/tenant-phase';
+import { applyPossessiveConvention } from '@/lib/format';
 import { todayUTCISO }               from '@/lib/time/clock';
 import '@/lib/ai/assemblers';
 import { runStatelessTurn } from '@/lib/ai/conversation/engine';
@@ -208,13 +209,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // rather than left holding a scenario the conversation has moved past.
     // FM-AUDIT-018 — state too large to carry is replaced by a sealed continuity
     // marker (never silently dropped), and the response SAYS so.
+    // The product's possessive convention ("Chris'", lib/format.ts), applied to
+    // the model's prose once, here — the seal's tail and the body must carry the
+    // SAME text, because the client echoes this reply back as history.
+    const answer = applyPossessiveConvention(turn.answer);
     const seal = sealRuntimeStateWithReport(
       { scenario: turn.scenario, pending: turn.pending, continuity: turn.continuity }, {
-      ...binding, tail: conversationTail([...history, { role: 'assistant', content: turn.answer }]),
+      ...binding, tail: conversationTail([...history, { role: 'assistant', content: answer }]),
     });
     const sealed = seal.sealed;
     const body: AiChatResponse = {
-      message: turn.answer,
+      message: answer,
       // The answer's guidance label (lib/ai/conversation/guidance.ts). Omitted
       // when it could not be produced; the surface inherits rather than drops.
       ...(turn.guidance ? { guidance: turn.guidance } : {}),

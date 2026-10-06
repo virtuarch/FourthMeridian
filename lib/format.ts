@@ -215,6 +215,21 @@ export function possessive(name: string): string {
 }
 
 /**
+ * The same convention applied to prose a MODEL wrote. possessive() governs
+ * every string the product builds, but Conversations' prose is composed by the
+ * model, which wrote "Chris's account" (Preview dogfood, 2026-10-07) — a style
+ * instruction is something it can forget; this is not.
+ *
+ * Rewrites `Name's` → `Name'` (and `Name’s` → `Name’`) only where Name is a
+ * Capitalized word whose last letter is a lowercase s — a proper name like
+ * Chris or James. Untouched: names not ending in s ("Brandon's", "Alex's"),
+ * lowercase words ("the bus's"), and all-caps tokens ("US's").
+ */
+export function applyPossessiveConvention(text: string): string {
+  return text.replace(/\b([A-Z][a-z]*s)(['’])s\b/g, "$1$2");
+}
+
+/**
  * Display-only normalization for legacy Space names.
  *
  * Catches two independent legacy issues at render time, without touching

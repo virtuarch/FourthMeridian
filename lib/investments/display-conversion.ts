@@ -27,6 +27,7 @@
  * a known rate and asserts EVERY money field moved and every native/share field did not.
  */
 
+import type { InvestmentAccountsSlice } from "./investment-accounts";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
 import type { InvestmentsSpaceData, CurrentPortfolio } from "./space-data-core";
@@ -191,5 +192,17 @@ export function convertInvestmentsSpaceData(
     // can never disagree.
     ...(data.activity ? { activity: convFlows(data.activity, c, ctx.target) } : {}),
     ...(data.trust ? { trust: convTrust(data.trust, c) } : {}),
+    ...(data.scopeDivergence ? { scopeDivergence: data.scopeDivergence } : {}),
+    ...(data.accounts ? { accounts: convAccounts(data.accounts, c, ctx.target) } : {}),
+  };
+}
+
+/** The investment-account ledger — every money field, through the SAME display conversion. */
+function convAccounts(a: InvestmentAccountsSlice, c: Conv, target: string): InvestmentAccountsSlice {
+  return {
+    reportingCurrency: target,
+    rows:              a.rows.map((r) => ({ ...r, value: r.value == null ? null : c(r.value) })),
+    investmentsTotal:  c(a.investmentsTotal),
+    cryptoTotal:       c(a.cryptoTotal),
   };
 }

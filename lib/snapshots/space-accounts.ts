@@ -98,7 +98,7 @@
  * from regenerateSpaceSnapshot may import lib/space.ts or getServerSession.
  */
 
-import { ShareStatus, type Prisma } from "@prisma/client";
+import { PlaidInvestmentsConsent, ShareStatus, type Prisma } from "@prisma/client";
 import { grantsBalanceDisclosure } from "@/lib/account-privacy";
 
 /**
@@ -257,4 +257,32 @@ export async function readSpaceAccountsForSnapshot(
       ...(hasKnownValue(v) && !isFreshCurrentValue(v) ? { cryptoStale: true } : {}),
     };
   });
+}
+
+/**
+ * Investment accounts excluded from whole-Space wealth because Investments
+ * consent is still pending (CONSENT_REQUIRED): holdings were never fetched, so
+ * baking today's balance into the snapshot would fabricate a jump (see
+ * regenerateSpaceSnapshot). ONE rule, two readers — the snapshot and the Assets
+ * investment-account ledger — so what Assets lists as "counted" is exactly what
+ * the canonical investment aggregate counts.
+ */
+export async function consentPendingInvestmentAccountIds(
+  client: {
+    financialAccount: {
+      findMany(args: { where: Prisma.FinancialAccountWhereInput; select: { id: true } }): Promise<Array<{ id: string }>>;
+    };
+  },
+  accountIds: string[],
+): Promise<Set<string>> {
+  if (accountIds.length === 0) return new Set();
+  const rows = await client.financialAccount.findMany({
+    where: {
+      id:          { in: accountIds },
+      type:        "investment",
+      connections: { some: { plaidItem: { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED } } },
+    },
+    select: { id: true },
+  });
+  return new Set(rows.map((r) => r.id));
 }

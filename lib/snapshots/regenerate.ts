@@ -49,6 +49,7 @@
  */
 import { systemDb } from "@/lib/db";
 import {
+  consentPendingInvestmentAccountIds,
   readSpaceAccountsForSnapshot,
   type SnapshotAccountsClient,
 } from "@/lib/snapshots/space-accounts";
@@ -56,7 +57,7 @@ import { classifyAccounts } from "@/lib/account-classifier";
 import { computeSnapshotFields } from "@/lib/snapshots/backfill-core";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { ShareStatus, PlaidInvestmentsConsent, type Prisma } from "@prisma/client";
+import { ShareStatus, type Prisma } from "@prisma/client";
 
 function todayUTC(): Date {
   const d = new Date();
@@ -129,20 +130,11 @@ export async function regenerateSpaceSnapshot(
   // account enters the trend smoothly. Suppress-until-consent (chosen over a
   // distinct "today dot", which needs new chart code) — honestly omits the
   // account until we have real data, rather than fabricating a jump.
+  // The rule is shared with the Assets investment-account ledger
+  // (lib/investments/investment-accounts.ts) so the two can never disagree.
   let eligible = accounts;
   if (accounts.length > 0) {
-    const gated = new Set(
-      (
-        await client.financialAccount.findMany({
-          where: {
-            id:          { in: accounts.map((a) => a.id) },
-            type:        "investment",
-            connections: { some: { plaidItem: { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED } } },
-          },
-          select: { id: true },
-        })
-      ).map((a) => a.id),
-    );
+    const gated = await consentPendingInvestmentAccountIds(client, accounts.map((a) => a.id));
     if (gated.size > 0) {
       eligible = accounts.filter((a) => !gated.has(a.id));
       console.log(`[snapshot] space ${spaceId}: excluding ${gated.size} consent-pending investment account(s) from the snapshot (no fabricated jump).`);

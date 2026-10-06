@@ -30,6 +30,7 @@ import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import { WealthUnavailable, DeltaBadge } from "./wealth-ui";
+import { investedClassLabel } from "@/lib/wealth/invested-label";
 
 /** Hero eyebrow label per metric — mirrors the chart's metric switcher so the
  *  headline reads as whatever series the user selected in Balance history. */
@@ -49,7 +50,9 @@ const SECONDARY: Record<WealthMetricKey, { key: WealthMetricKey; label: string; 
     { key: "totalLiabilities", label: "Liabilities", goodDirection: "down" },
     { key: "liquidNetWorth",   label: "Liquid NW",   goodDirection: "up" },
   ],
-  // "Investments & crypto" — the invested series is stocks + crypto (the two
+  // `invested` rows: the label below is a placeholder — it is replaced at render
+  // by investedClassLabel(asOfState.composition) ("Investments", "Crypto" or
+  // "Investments & crypto", or the row is omitted). The invested series is stocks + crypto (the two
   // disjoint snapshot buckets the Investments lens always plotted), while the
   // composition card below names "Investments" and "Crypto" as separate classes.
   // The stat says which it is so the two never read as one figure disagreeing.
@@ -91,6 +94,13 @@ export function WealthHero({
   cryptoPriceNote?: string | null;
 }) {
   const { asOfState, deltas, compareState } = result;
+  // The `invested` figure is named for the classes actually held (canonical
+  // composition) — never "& crypto" for a user with no crypto. Null ⇒ neither.
+  const investedLabel = investedClassLabel(asOfState.composition);
+  const metricLabel = metric === "invested" ? (investedLabel ?? "Investments") : METRIC_LABEL[metric];
+  const secondaryRows = SECONDARY[metric]
+    .filter((row) => row.key !== "invested" || investedLabel !== null)
+    .map((row) => (row.key === "invested" ? { ...row, label: investedLabel! } : row));
   const compareLabel =
     compareState?.found && compareState.date ? formatWealthDate(compareState.date) : undefined;
   const asOfLabel = asOfState.date ? `As of ${formatWealthDate(asOfState.date)}` : undefined;
@@ -105,7 +115,7 @@ export function WealthHero({
   // Eyebrow + confidence — the quiet label above the figure (prototype hero).
   const eyebrow = (
     <div className="flex items-center justify-between gap-3">
-      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{METRIC_LABEL[metric]}</p>
+      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{metricLabel}</p>
       {confidenceChip}
     </div>
   );
@@ -144,9 +154,9 @@ export function WealthHero({
 
       {/* Secondary stats — the subject's dimensions, each a real WealthMetrics
           key off the same as-of snapshot (label · value · signed change). */}
-      {SECONDARY[metric].length > 0 && (
+      {secondaryRows.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)]">
-          {SECONDARY[metric].map((row) => {
+          {secondaryRows.map((row) => {
             const d = deltas?.[row.key];
             const good = d ? (row.goodDirection === "up" ? d.abs >= 0 : d.abs <= 0) : true;
             return (

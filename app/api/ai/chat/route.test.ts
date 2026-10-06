@@ -95,7 +95,7 @@ console.log('\n5. WHAT LEAVES THE SERVER');
     /const body: AiChatResponse = \{/.test(src)
       && /from '@\/types'/.test(src));
   check('…it is the answer, plus gaps only when there are gaps',
-    /message: turn\.answer,/.test(src)
+    /message: answer,/.test(src)
       && /turn\.knowledgeGaps\.length \? \{ knowledgeGaps: turn\.knowledgeGaps \}/.test(src));
   check('…and a knowledge gap is a 200, never a status of its own',
     !/knowledgeGap[\s\S]{0,120}(refuse\(|status: [45])/.test(src));
