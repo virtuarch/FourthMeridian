@@ -24,6 +24,8 @@
  * Presentational; live state comes from the parent ConnectionsList poller.
  */
 
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   CheckCircle2,
   Circle,
@@ -454,6 +456,103 @@ function BuildingProfileContent({
   );
 }
 
+// ── Import paused (unfinished, nothing running) ──────────────────────────────
+// The first-run import stopped before it finished and the refresh ledger shows
+// nothing running for it. Not a spinner and not "keeps running in the
+// background": that is what this card used to say for an Item stranded at
+// "100 imported" (Preview Sandbox, 2026-10-06). It continues on the next resume
+// (the Connections poller, the server's stale-import job) or a refresh — the ⋯
+// menu is available in this state because nothing is in flight.
+function ImportPausedContent({
+  connection,
+  accounts,
+}: {
+  connection: SyncConnection;
+  accounts:   AccountLite[];
+}) {
+  const imported = connection.importedCount ?? 0;
+  const stages: Stage[] = [
+    { label: "Institution connected", status: "done" },
+    { label: "Accounts discovered", value: String(accounts.length), status: "done" },
+    {
+      label: "Transaction history paused",
+      value: imported > 0 ? `${imported.toLocaleString()} imported so far` : undefined,
+      status: "pending",
+    },
+    { label: "Ready", status: "pending" },
+  ];
+  return (
+    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+      <EyebrowHeading eyebrow="Import paused" institution={connection.institution} />
+      <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
+        The import stopped before it finished, and nothing is running for it right now.
+        It is retried automatically, or you can refresh this connection from its menu to continue now.
+      </p>
+      <StageStepper stages={stages} />
+      <AccountNames accounts={accounts} />
+    </div>
+  );
+}
+
+// ── Timeline not built (transactions ready, nothing building it) ─────────────
+// Transactions are complete but no reconstruction is recorded and nothing is
+// running to produce one. Saying "this finishes in the background" here was the
+// lie; the honest card offers the rebuild — the same action as the ⋯ menu's
+// "Restore financial intelligence" (POST /api/connections/build-intelligence).
+function TimelineNotBuiltContent({
+  connection,
+  accounts,
+  intelligence,
+}: {
+  connection:   SyncConnection;
+  accounts:     AccountLite[];
+  intelligence: ConnectionIntelligenceStatus;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const stages: Stage[] = [
+    { label: "Transactions available", value: String(accounts.length) + (accounts.length === 1 ? " account" : " accounts"), status: "done" },
+    { label: "Accounts connected", status: "done" },
+    { label: "Financial timeline not built yet", status: "pending" },
+  ];
+  const available = formatAvailableHistory(intelligence.availableHistory);
+  async function build() {
+    setBusy(true); setFailed(false);
+    const res = await fetch("/api/connections/build-intelligence", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connectionIds: [connection.id] }),
+    }).catch(() => null);
+    setBusy(false);
+    if (!res || !res.ok) { setFailed(true); return; }
+    router.refresh();
+  }
+  return (
+    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+      <EyebrowHeading eyebrow="Timeline not built" institution={connection.institution} />
+      <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
+        Your transactions are available, but your financial timeline hasn’t been built and nothing is building it right now.
+      </p>
+      <StageStepper stages={stages} />
+      {available !== "No historical data yet" && (
+        <p className="mt-2 text-xs text-[var(--text-muted)]">{available} of history available</p>
+      )}
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={build}
+          disabled={busy}
+          className="rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 py-1.5 text-sm text-[var(--text-primary)] disabled:opacity-60"
+        >
+          {busy ? "Building your timeline…" : "Build timeline"}
+        </button>
+        {failed && <span className="text-xs text-[var(--text-muted)]">Couldn’t start the build — try again.</span>}
+      </div>
+      <AccountNames accounts={accounts} />
+    </div>
+  );
+}
+
 /**
  * CONN-3 — three UNAMBIGUOUS freshness lines. The card must never just say
  * "Synced" (which conflates data, intelligence, and balance). Each line is a
@@ -831,6 +930,9 @@ export function ConnectionCard({ connection, accounts, intelligence, slow, allow
     case "sync_deferred":
       content = <SyncDeferredContent connection={connection} accounts={accounts} />;
       break;
+    case "import_paused":
+      content = <ImportPausedContent connection={connection} accounts={accounts} />;
+      break;
     case "ready":
       // CONN-2G — "ready" transactions ≠ "Fourth Meridian ready". While derived
       // intelligence is still building (BUILDING_INTELLIGENCE), show the
@@ -838,7 +940,9 @@ export function ConnectionCard({ connection, accounts, intelligence, slow, allow
       // intelligence (or no intelligence data — pre-CONN-2 fallback) shows ReadyContent.
       content = intelligence && intelligence.phase === "BUILDING_INTELLIGENCE"
         ? <BuildingProfileContent connection={connection} accounts={accounts} intelligence={intelligence} />
-        : <ReadyContent connection={connection} accounts={accounts} intelligence={intelligence} />;
+        : intelligence && intelligence.phase === "INTELLIGENCE_NOT_BUILT"
+          ? <TimelineNotBuiltContent connection={connection} accounts={accounts} intelligence={intelligence} />
+          : <ReadyContent connection={connection} accounts={accounts} intelligence={intelligence} />;
       break;
     case "needs_reauth":
       content = <NeedsReauthContent connection={connection} accounts={accounts} intelligence={intelligence} />;

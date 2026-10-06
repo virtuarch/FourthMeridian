@@ -93,7 +93,9 @@ export function ConnectionsList({
   // would stop the poller before intelligence finishes; the card would freeze at
   // "ready" mid-build. This superset keeps it live until intelligence is READY.
   const buildingIntelligence = isBuildingIntelligence(Object.values(intelligence));
-  const shouldPoll = status.building || buildingIntelligence;
+  // A paused import keeps the poller alive: the poller is what drives its resume.
+  const anyPaused = status.connections.some((c) => c.state === "import_paused");
+  const shouldPoll = status.building || buildingIntelligence || anyPaused;
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inFlightRef = useRef(false);
@@ -132,7 +134,11 @@ export function ConnectionsList({
     const importingIds = new Set<string>();
 
     for (const c of next.connections) {
-      if (c.provider !== "PLAID" || c.state !== "importing") continue;
+      // "import_paused" is the case resume exists for: the server has positive
+      // evidence that nothing is running, so it needs no client-side grace (the
+      // server's own age gate still applies).
+      const paused = c.state === "import_paused";
+      if (c.provider !== "PLAID" || (c.state !== "importing" && !paused)) continue;
       importingIds.add(c.id);
 
       const entry = map.get(c.id) ?? { firstImportingAt: now, lastResumeAt: 0, attempts: 0 };
@@ -141,7 +147,7 @@ export function ConnectionsList({
       const importingFor = now - entry.firstImportingAt;
       const sinceLast = now - entry.lastResumeAt;
       if (
-        importingFor >= RESUME_GRACE_MS &&
+        (paused || importingFor >= RESUME_GRACE_MS) &&
         sinceLast >= RESUME_INTERVAL_MS &&
         entry.attempts < MAX_RESUME_ATTEMPTS
       ) {
@@ -182,6 +188,7 @@ export function ConnectionsList({
         // once to pull now-complete data (lastSyncedAt, late accounts), then stop.
         const nextShouldPoll =
           next.status.building ||
+          next.status.connections.some((c) => c.state === "import_paused") ||
           isBuildingIntelligence(Object.values(next.intelligenceByConnectionId));
         if (prevShouldPollRef.current && !nextShouldPoll) {
           router.refresh();
@@ -272,7 +279,7 @@ export function ConnectionsList({
   const isInProgress = (c: SyncStatus["connections"][number]) =>
     // OPS-2D-4A — deliberately does NOT include "sync_deferred": nothing is
     // running, so polling for progress would never settle.
-    c.state === "importing" || inProgressPhase(c.id);
+    c.state === "importing" || c.state === "import_paused" || inProgressPhase(c.id);
 
   const anyReady = status.connections.some((c) => intelligence[c.id]?.phase === "READY");
 

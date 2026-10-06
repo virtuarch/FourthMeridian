@@ -75,6 +75,8 @@ export function healthChip(state: SyncConnectionState | null): HealthChip | null
     case "importing":    return { label: "Importing…",         tone: "muted"    };
     // OPS-2D-4A — nothing is running; an ellipsis would imply motion.
     case "sync_deferred": return { label: "Sync pending",        tone: "muted"    };
+    // Unfinished import with nothing running — not "Importing…" (no motion to imply).
+    case "import_paused": return { label: "Import paused",       tone: "warning"  };
     default:             return null; // null state (manual / wallet-only / revoked): no chip
   }
 }

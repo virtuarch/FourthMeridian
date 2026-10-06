@@ -52,7 +52,8 @@
 import type { ReadClient } from "@/lib/db/tenant-context";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { PlaidItemStatus, ConnectionStatus } from "@prisma/client";
-import { getIngestionDeferrals } from "@/lib/platform/refresh/projections";
+import { getIngestionEvidence } from "@/lib/platform/refresh/projections";
+import type { IngestionActivity } from "@/lib/sync/deferred-ingestion";
 import {
   buildSyncStatus,
   finalizeSyncStatus,
@@ -231,6 +232,8 @@ async function loadConnectionIntelligence(
   facetClocksByConnId: Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null }>,
   /** Resolved once per page load — the same policies the Brief's data health uses. */
   policies: RefreshPolicies,
+  /** Plaid item id → whether ingestion is actually running (getIngestionEvidence). */
+  activity: ReadonlyMap<string, IngestionActivity>,
 ): Promise<Record<string, ConnectionIntelligenceStatus>> {
   const now = new Date();
 
@@ -396,6 +399,7 @@ async function loadConnectionIntelligence(
         historySyncedAt,
         earliestTxDate: earliest,
         connectedAt:    connectedAtByConnId.get(c.id) ?? null,
+        ingestionActivity: c.provider === "PLAID" ? (activity.get(c.id) ?? "UNKNOWN") : undefined,
         lastSyncedAt:   c.lastSyncedAt ? new Date(c.lastSyncedAt) : null,
         balancesUpdatedAt: balancesUpdated,
         positionObservedAt,
@@ -443,7 +447,7 @@ export async function loadConnectionsSyncStatus(client: ReadClient, userId: stri
  * connection's accounts are its owner's. So the conversion changes which rows
  * CAN be returned, not which rows ARE returned for an honest caller.
  *
- * ⚠️ ONE READ STAYS ON fm_system, BY DESIGN: `getIngestionDeferrals`, which
+ * ⚠️ ONE READ STAYS ON fm_system, BY DESIGN: `getIngestionEvidence`, which
  * reads the refresh ledger. `RefreshExecution` is REVOKED from fm_app, the
  * function is keyed by item ids this phase has just read as the caller, and it
  * returns a deferral verdict per id and nothing else. It is a capability in
@@ -461,10 +465,14 @@ export async function loadConnectionsSpaceData(client: ReadClient, userId: strin
 
   // OPS-2D-4A — resolve policy deferral from the refresh ledger before deriving
   // state. One query for the whole page; a missing entry means "not deferred".
-  const deferrals = await getIngestionDeferrals(
+  // The same read also answers "is anything actually running?" — the evidence
+  // "importing" and "building your timeline" now require (deriveIngestionActivity).
+  const evidenceNow = new Date();
+  const { deferrals, activity } = await getIngestionEvidence(
     items.map((i) => ({ id: i.id, syncLockedAt: i.syncLockedAt ?? null })),
+    evidenceNow,
   );
-  const status = finalizeSyncStatus([...buildSyncStatus(items, deferrals).connections, ...wallet.connections]);
+  const status = finalizeSyncStatus([...buildSyncStatus(items, deferrals, activity, evidenceNow).connections, ...wallet.connections]);
 
   // Plaid accounts by stable connection id; wallet accounts already come keyed
   // by connection id from loadWalletSyncConnections. One id space, one map.
@@ -510,6 +518,7 @@ export async function loadConnectionsSpaceData(client: ReadClient, userId: strin
     rawByConnId,
     facetClocksByConnId,
     await loadRefreshPolicies(client),
+    activity,
   );
 
   return { status, accountsByConnectionId, intelligenceByConnectionId };

@@ -95,3 +95,57 @@ export function deriveIngestionDeferral(input: IngestionDeferralInput): Ingestio
 
   return { reason: latest.admissionReason };
 }
+
+// ── Is anything actually running? ────────────────────────────────────────────
+//
+// Deferral answers case 4 above. The Connections surface needs the other three
+// separated too, because "importing" with a spinner and "this keeps running in
+// the background" is only true in case 1. Preview Sandbox, 2026-10-06: a fresh
+// OAuth Item's import failed at page 2; the card said "Transaction history
+// importing… 100 imported" with nothing running, and after recovery it said
+// "Building your timeline — this finishes in the background" with nothing
+// building it. Both were inferences from an ABSENT marker.
+//
+// The same ledger row is the evidence. RUNNING is POSITIVE evidence only:
+//   - the per-item sync lock is held, or
+//   - the newest execution is RUNNING,
+// and only while fresh. A lock or RUNNING row older than the lock TTL belongs to
+// a process that died (the lock is reclaimed after that age), so it is not work.
+
+/**
+ * Bound on positive evidence. Equal to lib/plaid/sync-lock.ts LOCK_TTL_MS (one
+ * 300 s function budget plus headroom) — pinned by test; not imported, to keep
+ * this module pure.
+ */
+export const INGESTION_ACTIVITY_STALE_MS = 360_000;
+
+/**
+ * - RUNNING   work is executing now.
+ * - DEFERRED  held by platform policy (deriveIngestionDeferral).
+ * - IDLE      the item has execution history and nothing is running now.
+ * - UNKNOWN   the item has never had an execution (e.g. a Link exchange whose
+ *             first execution row has not been written yet).
+ */
+export type IngestionActivity = "RUNNING" | "DEFERRED" | "IDLE" | "UNKNOWN";
+
+export interface IngestionActivityInput {
+  syncLockedAt: Date | null;
+  latestExecution: {
+    overallStatus: string;
+    admissionReason: string | null;
+    startedAt: Date;
+  } | null;
+}
+
+export function deriveIngestionActivity(input: IngestionActivityInput, now: Date): IngestionActivity {
+  const fresh = (t: Date) => now.getTime() - t.getTime() < INGESTION_ACTIVITY_STALE_MS;
+  if (input.syncLockedAt !== null && fresh(input.syncLockedAt)) return "RUNNING";
+  const latest = input.latestExecution;
+  if (latest !== null && latest.overallStatus === "RUNNING" && fresh(latest.startedAt)) return "RUNNING";
+  // A stale lock / stale RUNNING row is not work — judge the rest as if absent.
+  if (deriveIngestionDeferral({
+    syncLockedAt: null,
+    latestExecution: latest && latest.overallStatus !== "RUNNING" ? latest : null,
+  }) !== null) return "DEFERRED";
+  return latest === null ? "UNKNOWN" : "IDLE";
+}

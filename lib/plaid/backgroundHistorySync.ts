@@ -440,6 +440,15 @@ async function recordSyncComplete(plaidItemId: string): Promise<void> {
     });
     if (!item) return;
 
+    // ONCE per connection. Several paths can finish a first-run import (connect,
+    // webhook, cron resume, browser resume); only the first records it, so the
+    // owner gets one "history ready" bell, not one per path.
+    const already = await db.auditLog.findFirst({
+      where:  { userId: item.userId, action: AuditAction.PLAID_HISTORY_SYNCED, metadata: { path: ["plaidItemId"], equals: plaidItemId } },
+      select: { id: true },
+    });
+    if (already) return;
+
     // Space to surface the activity entry in: the item's accounts' ACTIVE-linked
     // spaces, preferring the user's PERSONAL space (the connect home).
     const conns = await db.accountConnection.findMany({

@@ -40,7 +40,6 @@ const CONVERGED = [
   { file: "app/api/plaid/investments/enable/route.ts", trigger: "MANUAL", profile: "FULL_REFRESH", pre: false },
   { file: "app/api/plaid/sync/route.ts", trigger: "MANUAL", profile: "TRANSACTIONS_ONLY", pre: false },
   { file: "app/api/platform/platform-ops/connections/[id]/resync/route.ts", trigger: "OPERATOR", profile: "TRANSACTIONS_ONLY", pre: false },
-  { file: "app/api/plaid/resume-sync/route.ts", trigger: "RESUME", profile: "IMPORT_RECOVERY", pre: false },
 ] as const;
 
 /** Paths that reach the authority through the shared webhook wrapper. */
@@ -48,6 +47,11 @@ const VIA_WRAPPER = [
   { file: "app/api/plaid/webhook/route.ts", trigger: "WEBHOOK" },
   { file: "app/api/plaid/exchange-token/route.ts", trigger: "RECONNECT" },
   { file: "jobs/resume-stale-imports.ts", trigger: "RESUME" },
+  // 2026-10-06 — the browser-driven resume now runs the SAME full pipeline as the
+  // cron resume. Its private copy (transactions + a bare wealth regeneration)
+  // never wrote the reconstruction anchor, so a rescued import read "Building
+  // your timeline — this finishes in the background" forever.
+  { file: "app/api/plaid/resume-sync/route.ts", trigger: "RESUME" },
 ] as const;
 
 function main() {
@@ -96,7 +100,6 @@ function main() {
     // appear before the engine call in the file.
     const ROUTES_USING_ENGINE = [
       "app/api/plaid/sync/route.ts",
-      "app/api/plaid/resume-sync/route.ts",
       "app/api/platform/platform-ops/connections/[id]/resync/route.ts",
       "app/api/plaid/investments/enable/route.ts",
     ];
@@ -125,7 +128,9 @@ function main() {
 
     const resume = strip("app/api/plaid/resume-sync/route.ts");
     check("resume-sync keeps its AGE gate, not a cooldown", /RESUME_MIN_AGE_MS/.test(resume) && !/checkManualRefreshCooldown/.test(resume));
-    check("resume-sync keeps its best-effort wealth regeneration", /regenerateWealthHistoryForItem/.test(resume));
+    check("resume-sync runs the shared full pipeline as RESUME / IMPORT_RECOVERY, and no private partial copy of it",
+      /syncPlaidItemFromWebhook\(item\.id,\s*"RESUME",\s*"IMPORT_RECOVERY"/.test(resume)
+      && !/regenerateWealthHistoryForItem|syncTransactionsForItem|withPlaidItemSyncLock/.test(resume));
 
     const enable = strip("app/api/plaid/investments/enable/route.ts");
     check("investments/enable still runs the FULL pipeline body", /refreshPlaidItem\(/.test(enable));
@@ -139,7 +144,6 @@ function main() {
     // must NOT claim balances/holdings/snapshot they never ran.
     for (const f of [
       "app/api/plaid/sync/route.ts",
-      "app/api/plaid/resume-sync/route.ts",
       "app/api/platform/platform-ops/connections/[id]/resync/route.ts",
     ]) {
       const src = strip(f);

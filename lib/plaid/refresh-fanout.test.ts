@@ -446,7 +446,8 @@ async function main() {
     for (const [file, marker] of [
       ["jobs/sync-banks.ts", /trigger:\s*"CRON"/],
       ["lib/plaid/webhook-sync.ts", /runFullRefresh<WebhookSyncOutcome>/],
-      ["app/api/plaid/resume-sync/route.ts", /trigger:\s*"RESUME"/],
+      // Delegates to the shared full pipeline (which owns the envelope) as RESUME.
+      ["app/api/plaid/resume-sync/route.ts", /syncPlaidItemFromWebhook\(item\.id,\s*"RESUME"/],
       ["app/api/plaid/sync/route.ts", /profile:\s*"TRANSACTIONS_ONLY"/],
     ] as const) {
       check(`${file}: still reaches the authority as before`, marker.test(strip(file)));

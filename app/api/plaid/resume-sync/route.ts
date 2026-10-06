@@ -12,9 +12,10 @@
  *     post-connect background sync (that runs within the 60s connect budget)
  *     and (b) spaces successive resume attempts ~one budget apart.
  *
- * Resuming is safe and cheap: syncTransactionsForItem resumes from the
- * per-page-persisted cursor (never restarts the full pull) and clears
- * syncIncompleteAt once the loop completes.
+ * Resuming runs the SAME full deferred pipeline as the cron resume, the webhook
+ * and the connect trigger (syncPlaidItemFromWebhook): transactions resume from
+ * the per-page-persisted cursor, and a completed import gets its balances,
+ * history backfill and reconstruction anchor.
  *
  * Body: { plaidItemId: string } — must be an ACTIVE item owned by the caller.
  * Returns { resumed: boolean, complete?: boolean, reason?: string }.
@@ -25,15 +26,9 @@ import { requireUser } from "@/lib/session";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { withApiHandler } from "@/lib/api";
 import { PlaidItemStatus } from "@prisma/client";
-import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
-import { regenerateWealthHistoryForItem } from "@/lib/plaid/backgroundHistorySync";
-import { classifyPlaidErrorForHealth, plaidErrorSummary, redactedErrorForLog } from "@/lib/plaid/errors";
-import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
-import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
-import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-lock";
-import { runFullRefresh } from "@/lib/plaid/refresh-execution";
 import { limitByUser } from "@/lib/rate-limit";
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
+import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
 
 // Resuming a large remaining history can take a while — same budget as the
 // connect flow and the daily cron. Raised 60→300 (Vercel Pro ceiling) after
@@ -130,71 +125,30 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     data:  { syncIncompleteAt: new Date() },
   }));
 
-  // F1 (2026-07-14) — go through the SAME syncLockedAt guard the webhook/connect
-  // pipeline uses. Without this, a resume can run concurrently with a webhook
-  // that fires mid-import (the age gate above only protects against the
-  // in-flight post-connect run; it predates the webhook receiver and knows
-  // nothing about it) — the highest-probability repro of the original
-  // Amex stuck-import incident. See sync-lock.ts + the connections-weirdness
-  // investigation §4.1(a).
-  try {
-    // OPS-2D-1 — canonical envelope, UNCHANGED body. The RESUME_MIN_AGE gate was
-    // enforced above and is not re-evaluated; the lock is still claimed inside.
-    // Profile IMPORT_RECOVERY, not RECONNECT: no token changed hands here — this
-    // continues an incomplete first-run import from its persisted cursor.
-    type TxResult = Awaited<ReturnType<typeof syncTransactionsForItem>>;
-    const lockResult = await runFullRefresh<SyncLockResult<TxResult>>(
-      { itemId: item.id, trigger: "RESUME", profile: "IMPORT_RECOVERY" },
-      {
-        refresh: async ({ recorder, runId }) => {
-          recorder.begin("TRANSACTIONS", "PROVIDER");
-          const res = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id, { runId }));
-          if (!res.ok) {
-            recorder.skip("TRANSACTIONS", "PROVIDER", "IN_FLIGHT");
-            return res;
-          }
-          const tx = res.result;
-          recorder.succeed("TRANSACTIONS", {
-            recordsRead:    tx.added + tx.modified,
-            recordsWritten: tx.created + tx.updatedByPlaidId + tx.updatedByFingerprint,
-            recordsChanged: tx.added + tx.modified + tx.removed,
-          });
-          return res;
-        },
-      },
-    );
-    if (!lockResult.ok) {
-      // Another sync already holds the lock — don't race it. That run's own
-      // completion resolves this item's state; the next resume attempt (or
-      // that run's success) picks it up.
-      return NextResponse.json({ resumed: false, reason: "in-flight" });
-    }
-    // syncTransactionsForItem cleared syncIncompleteAt on a full completion.
-
-    // A9 — the import just finished, so NOW recompute the wealth-history window.
-    // This route drives syncTransactionsForItem directly (for the lock semantics
-    // documented above) and therefore never ran the deferred pipeline's
-    // regeneration. That left the window frozen at whatever connect-time
-    // computed — and at connect Plaid has delivered nothing yet, so it is always
-    // the 30-day fallback. This is the point where MIN(transaction.date) finally
-    // reflects the history that actually arrived. Best-effort by contract: it
-    // swallows its own failures and can never turn a successful resume into a
-    // failed one.
-    await regenerateWealthHistoryForItem(item.id);
-
-    return NextResponse.json({ resumed: true, complete: true });
-  } catch (e) {
-    console.error(`[plaid][resume-sync] resume failed for item ${item.id}: ${plaidErrorSummary(e)}`, redactedErrorForLog(e));
-    const health = classifyPlaidErrorForHealth(e);
-    if (health) {
-      // CH-2 chokepoint (previously a direct db.plaidItem.update here — §5.1
-      // of the connections-weirdness investigation: this failure path bypassed
-      // the durable transition-history record).
-      await setPlaidItemHealth(item.id, { status: health.status, errorCode: health.errorCode });
-      await notifyItemSyncFailed(item.id);
-    }
-    // syncIncompleteAt stays set (re-armed above) so the item still reads as
-    // importing and a later attempt / the daily cron can finish the job.
-    return NextResponse.json({ resumed: true, complete: false });
+  // ONE pipeline. This route used to run its own partial copy — transactions,
+  // then a bare wealth regeneration — and never wrote the reconstruction-complete
+  // anchor (PLAID_HISTORY_SYNCED). An import it rescued therefore read "Building
+  // your timeline — this finishes in the background" forever, with nothing
+  // building it (Preview Sandbox, 2026-10-06). The cron resume
+  // (jobs/resume-stale-imports), the webhook and the connect trigger all finish a
+  // first-run import through this entry point: the per-item sync lock (F1),
+  // transactions from the persisted cursor, balances + today's snapshot, history
+  // backfill, the anchor, and health on failure — one RefreshExecution that stays
+  // RUNNING for the whole of it.
+  const outcome = await syncPlaidItemFromWebhook(item.id, "RESUME", "IMPORT_RECOVERY", admission);
+  if (outcome === "not-admitted") {
+    return NextResponse.json({ resumed: false, reason: "not-admitted" });
   }
+  if (outcome === "skipped-locked") {
+    return NextResponse.json({ resumed: false, reason: "in-flight" });
+  }
+
+  const after = await withTenantDb(user.id, (tx) => tx.plaidItem.findFirst({
+    where:  { id: item.id },
+    select: { syncIncompleteAt: true, status: true },
+  }));
+  return NextResponse.json({
+    resumed:  true,
+    complete: after?.status === PlaidItemStatus.ACTIVE && after.syncIncompleteAt === null,
+  });
 }, "POST /api/plaid/resume-sync");

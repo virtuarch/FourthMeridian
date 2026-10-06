@@ -243,8 +243,9 @@ async function main(): Promise<void> {
       return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     }
 
+    // resume-sync is not listed here: it delegates to syncPlaidItemFromWebhook,
+    // which claims this same lock (asserted for webhook-sync below).
     const lockedCallers = [
-      "app/api/plaid/resume-sync/route.ts",
       "app/api/plaid/sync/route.ts",
       "app/api/plaid/refresh/route.ts",
       "app/api/plaid/investments/enable/route.ts",

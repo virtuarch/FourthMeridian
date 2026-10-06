@@ -36,7 +36,7 @@
 
 import "server-only";
 import { todayUTCISO } from "@/lib/time/clock";
-import { deriveIngestionDeferral, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
+import { deriveIngestionActivity, deriveIngestionDeferral, type IngestionActivity, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
 
 // ⚠️ RLS-P-3a — fm_system, NOT the migration principal. Every `db.` in this file
 // read one of the four DF-2 refresh tables and NOTHING else, all four of which
@@ -490,29 +490,43 @@ export async function getExecutionTimeline(
 export async function getIngestionDeferrals(
   items: { id: string; syncLockedAt: Date | null }[],
 ): Promise<Map<string, IngestionDeferral>> {
-  const out = new Map<string, IngestionDeferral>();
+  return (await getIngestionEvidence(items, new Date())).deferrals;
+}
+
+/**
+ * The same ONE newest-first read, answering both questions the Connections
+ * surface asks of the ledger: is this item held by policy (deferrals — only
+ * deferred items get an entry), and is anything actually running for it
+ * (activity — every item gets an entry). Both rules stay pure in
+ * lib/sync/deferred-ingestion.ts.
+ */
+export async function getIngestionEvidence(
+  items: { id: string; syncLockedAt: Date | null }[],
+  now: Date,
+): Promise<{ deferrals: Map<string, IngestionDeferral>; activity: Map<string, IngestionActivity> }> {
+  const deferrals = new Map<string, IngestionDeferral>();
+  const activity  = new Map<string, IngestionActivity>();
   const ids = items.map((i) => i.id);
-  if (ids.length === 0) return out;
+  if (ids.length === 0) return { deferrals, activity };
 
   const rows = await systemDb.refreshExecution.findMany({
     where:   { plaidItemId: { in: ids } },
     orderBy: { startedAt: "desc" },
-    select:  { plaidItemId: true, overallStatus: true, admissionReason: true },
+    select:  { plaidItemId: true, overallStatus: true, admissionReason: true, startedAt: true },
   });
 
-  const latest = new Map<string, { overallStatus: string; admissionReason: string | null }>();
+  const latest = new Map<string, { overallStatus: string; admissionReason: string | null; startedAt: Date }>();
   for (const r of rows) {
     if (r.plaidItemId !== null && !latest.has(r.plaidItemId)) {
-      latest.set(r.plaidItemId, { overallStatus: r.overallStatus, admissionReason: r.admissionReason });
+      latest.set(r.plaidItemId, { overallStatus: r.overallStatus, admissionReason: r.admissionReason, startedAt: r.startedAt });
     }
   }
 
   for (const item of items) {
-    const d = deriveIngestionDeferral({
-      syncLockedAt:    item.syncLockedAt,
-      latestExecution: latest.get(item.id) ?? null,
-    });
-    if (d !== null) out.set(item.id, d);
+    const latestExecution = latest.get(item.id) ?? null;
+    const d = deriveIngestionDeferral({ syncLockedAt: item.syncLockedAt, latestExecution });
+    if (d !== null) deferrals.set(item.id, d);
+    activity.set(item.id, deriveIngestionActivity({ syncLockedAt: item.syncLockedAt, latestExecution }, now));
   }
-  return out;
+  return { deferrals, activity };
 }

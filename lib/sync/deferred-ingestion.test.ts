@@ -160,8 +160,9 @@ function main() {
       /export async function getIngestionDeferrals/.test(code("lib/platform/refresh/projections.ts")));
     check("the pure rule holds no database access",
       !/db\.|prisma|findMany/.test(code("lib/sync/deferred-ingestion.ts")));
-    check("the customer data path resolves deferrals before deriving state",
-      /getIngestionDeferrals\(/.test(code("lib/connections/space-data.ts")));
+    check("the customer data path resolves deferrals AND activity (one evidence read) before deriving state",
+      /getIngestionEvidence\(/.test(code("lib/connections/space-data.ts"))
+      && /buildSyncStatus\(items,\s*deferrals,\s*activity/.test(code("lib/connections/space-data.ts")));
 
     // The operator surface has its own state, distinct from IMPORTING —
     // asserted as vocabulary, not as union member order or ternary spelling.

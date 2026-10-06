@@ -33,9 +33,15 @@
  * with no fault on the connection and nothing for the customer to do. Rendering
  * the second as the first is the lie this state exists to end.
  */
-import type { IngestionDeferral } from "@/lib/sync/deferred-ingestion";
+import { INGESTION_ACTIVITY_STALE_MS, type IngestionActivity, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
 
-export type SyncConnectionState = "importing" | "sync_deferred" | "ready" | "needs_reauth" | "error";
+/**
+ * "import_paused" — the first-run import is NOT finished and NOTHING is running
+ * for it now (the last attempt ended, typically failed). It continues only when
+ * a resume or a refresh runs it again. Rendering it as "importing" claimed work
+ * that was not happening (Preview Sandbox 2026-10-06: "100 imported" for good).
+ */
+export type SyncConnectionState = "importing" | "import_paused" | "sync_deferred" | "ready" | "needs_reauth" | "error";
 
 /** Provider-agnostic. PLAID + WALLET today; CSV / COINBASE / SCHWAB / … later. */
 export type SyncProvider = "PLAID" | "WALLET";
@@ -182,6 +188,13 @@ export function deriveConnectionState(
    * machine then behaves exactly as it did before.
    */
   deferral: IngestionDeferral | null = null,
+  /**
+   * Whether ingestion work is ACTUALLY running for this item (deriveIngestionActivity).
+   * Omitted by callers that have not resolved it: the state machine then behaves
+   * as before (an incomplete import reads "importing").
+   */
+  activity?: IngestionActivity,
+  now: Date = new Date(),
 ): SyncConnectionState | null {
   switch (item.status) {
     case "REVOKED":
@@ -203,13 +216,27 @@ export function deriveConnectionState(
         // Pending work AND canonical evidence that policy is what is holding it.
         // syncIncompleteAt alone can never reach this branch — see
         // deferred-ingestion.ts for why that distinction is the whole point.
-        return deferral !== null ? "sync_deferred" : "importing";
+        if (deferral !== null) return "sync_deferred";
+        // "importing" needs POSITIVE evidence of work. IDLE = the last attempt
+        // ended and nothing is running. UNKNOWN = no execution yet: honest as
+        // importing only briefly after the marker was set (a Link exchange
+        // writes its first execution within a second), not indefinitely.
+        if (activity === "IDLE") return "import_paused";
+        if (activity === "UNKNOWN" && !freshSince(item.syncIncompleteAt, now)) return "import_paused";
+        return "importing";
       }
-      return item.historyBuildStartedAt != null ? "importing" : "ready";
+      // The wealth-history rebuild marker is set at start and cleared in a
+      // `finally`; only a killed process leaves it behind. A stale one is not work.
+      return item.historyBuildStartedAt != null && freshSince(item.historyBuildStartedAt, now) ? "importing" : "ready";
     default:
       // Unknown/unexpected status — omit rather than guess.
       return null;
   }
+}
+
+/** True while `t` is recent enough to be evidence of live work. */
+function freshSince(t: Date | null | undefined, now: Date): boolean {
+  return t != null && now.getTime() - t.getTime() < INGESTION_ACTIVITY_STALE_MS;
 }
 
 /**
@@ -220,11 +247,17 @@ export function buildSyncStatus(
   items: PlaidItemStateInput[],
   /** itemId → deferral, from resolveIngestionDeferrals. Empty = none resolved. */
   deferrals: ReadonlyMap<string, IngestionDeferral | null> = new Map(),
+  /** itemId → activity, from getIngestionEvidence. Absent = not resolved (legacy behaviour). */
+  activity?: ReadonlyMap<string, IngestionActivity>,
+  now: Date = new Date(),
 ): SyncStatus {
   const connections: SyncConnection[] = [];
 
   for (const item of items) {
-    const state = deriveConnectionState(item, deferrals.get(item.id) ?? null);
+    const state = deriveConnectionState(
+      item, deferrals.get(item.id) ?? null,
+      activity ? (activity.get(item.id) ?? "UNKNOWN") : undefined, now,
+    );
     if (state === null) continue;
 
     connections.push({
@@ -236,13 +269,14 @@ export function buildSyncStatus(
       errorCode:    item.errorCode ?? null,
       investments:  deriveInvestmentsCapability(item.investmentsConsent),
       // Progress is only meaningful mid-import — see the field's contract.
-      importedCount: state === "importing" ? (item.syncImportedCount ?? 0) : null,
+      // A paused import still reports where it stopped ("paused at 100").
+      importedCount: state === "importing" || state === "import_paused" ? (item.syncImportedCount ?? 0) : null,
       // Present only on sync_deferred; the typed reason, never copy. Customer
       // surfaces ignore it; operator surfaces resolve a label from the canonical
       // admission registry with it.
       deferredReason: state === "sync_deferred" ? (deferrals.get(item.id)?.reason ?? null) : null,
       historyBuild:
-        item.historyBuildStartedAt != null && (item.historyBuildTotalDays ?? 0) > 0
+        state === "importing" && item.historyBuildStartedAt != null && (item.historyBuildTotalDays ?? 0) > 0
           ? { doneDays: item.historyBuildDoneDays ?? 0, totalDays: item.historyBuildTotalDays! }
           : null,
     });

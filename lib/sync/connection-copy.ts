@@ -45,6 +45,7 @@ export function providerLine(
   const hasEverSynced = connection.lastSyncedAt !== null;
   switch (connection.state) {
     case "importing":
+    case "import_paused":
       return `Connected via ${name}`;
     case "sync_deferred":
       // The connection is real and healthy — say so. The reason it has no data

@@ -25,10 +25,17 @@
  */
 
 import type { SyncConnection, SyncConnectionState } from "@/lib/sync/status";
+import type { IngestionActivity } from "@/lib/sync/deferred-ingestion";
 import { deriveSourceHealth, type SourceHealth, type SourceHealthInput } from "@/lib/connections/space-data-health.core";
 
-export type TransactionHistoryStatus = "READY" | "IMPORTING" | "UNKNOWN";
-export type IntelligenceStatus = "READY" | "REBUILDING" | "NOT_READY";
+export type TransactionHistoryStatus = "READY" | "IMPORTING" | "PAUSED" | "UNKNOWN";
+/**
+ * NOT_BUILT — transactions are done, no reconstruction is recorded, and NOTHING
+ * is building one. Distinct from REBUILDING, which now requires running work:
+ * "building your timeline — this finishes in the background" was shown for an
+ * Item whose recovery path never built it (Preview Sandbox, 2026-10-06).
+ */
+export type IntelligenceStatus = "READY" | "REBUILDING" | "NOT_BUILT" | "NOT_READY";
 
 /**
  * Derived UI phase (CONN-2E). Provider truth is NOT expanded into these — they
@@ -41,7 +48,9 @@ export type IntelligenceStatus = "READY" | "REBUILDING" | "NOT_READY";
  */
 export type ConnectionLifecyclePhase =
   | "IMPORTING"
+  | "IMPORT_PAUSED"            // import unfinished, nothing running — needs a resume/refresh
   | "BUILDING_INTELLIGENCE"
+  | "INTELLIGENCE_NOT_BUILT"   // transactions ready, timeline never built, nothing building it
   | "READY"
   | "ACTION_REQUIRED";
 
@@ -120,6 +129,12 @@ export interface IntelligenceInput {
   earliestTxDate:  Date | null;
   /** Connection.createdAt — the authorization/connected time, or null. */
   connectedAt:     Date | null;
+  /**
+   * Is ingestion work ACTUALLY running for this connection (Plaid; from
+   * getIngestionEvidence)? Omitted ⇒ unresolved: a Plaid connection without an
+   * anchor then reads REBUILDING, the pre-evidence behaviour.
+   */
+  ingestionActivity?: IngestionActivity;
   /** Connection.lastSyncedAt — last successful acquisition (data freshness), or null. */
   lastSyncedAt:    Date | null;
   /** OLDEST FinancialAccount.lastUpdated across the connection's accounts — balance
@@ -169,6 +184,7 @@ export function computeAvailableHistory(earliest: Date | null, now: Date): Avail
 function deriveTransactionHistory(state: SyncConnectionState): TransactionHistoryStatus {
   switch (state) {
     case "importing": return "IMPORTING";
+    case "import_paused": return "PAUSED";
     // OPS-2D-4A — history has not begun arriving and will not until the platform
     // resumes. Not IMPORTING (nothing is running) and not READY. UNKNOWN is the
     // existing honest member — the arrival time genuinely is not known — rather
@@ -189,19 +205,23 @@ function deriveIntelligence(
   provider: SyncConnection["provider"],
   state: SyncConnectionState,
   historySyncedAt: Date | null,
+  activity: IngestionActivity | undefined,
 ): IntelligenceStatus {
   if (historySyncedAt !== null) return "READY";
   if (provider === "WALLET") return state === "ready" ? "READY" : "NOT_READY";
-  // Plaid, no anchor yet:
-  if (state === "ready") return "REBUILDING"; // transactions done, intelligence building
+  // Plaid, no anchor yet. Transactions done is not evidence that anything is
+  // building the timeline: the pipeline that writes the anchor must be RUNNING.
+  if (state === "ready") return activity === undefined || activity === "RUNNING" ? "REBUILDING" : "NOT_BUILT";
   return "NOT_READY";
 }
 
 function derivePhase(state: SyncConnectionState, intelligence: IntelligenceStatus): ConnectionLifecyclePhase {
   if (state === "needs_reauth" || state === "error") return "ACTION_REQUIRED";
   if (state === "importing") return "IMPORTING";
+  if (state === "import_paused") return "IMPORT_PAUSED";
   if (state === "sync_deferred") return "IMPORTING"; // lifecycle phase: pre-ready, awaiting data
   // state === "ready":
+  if (intelligence === "NOT_BUILT") return "INTELLIGENCE_NOT_BUILT";
   return intelligence === "READY" ? "READY" : "BUILDING_INTELLIGENCE";
 }
 
@@ -211,7 +231,7 @@ export function deriveConnectionIntelligence(
   now: Date,
 ): ConnectionIntelligenceStatus {
   const transactionHistory = deriveTransactionHistory(input.state);
-  const intelligence = deriveIntelligence(input.provider, input.state, input.historySyncedAt);
+  const intelligence = deriveIntelligence(input.provider, input.state, input.historySyncedAt, input.ingestionActivity);
   const phase = derivePhase(input.state, intelligence);
   return {
     transactionHistory,

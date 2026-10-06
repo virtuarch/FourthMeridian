@@ -26,6 +26,7 @@ import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wal
 import { deriveConnectionIntelligence, formatAvailableHistory } from "@/lib/connections/intelligence";
 import { deriveConnectionHealthState, staleWindowMs, type HealthState } from "@/lib/connections/health";
 import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
+import { getIngestionEvidence } from "@/lib/platform/refresh/projections";
 
 export interface ConnectionDiagnostic {
   id:          string;   // the operator handle (already used by resync/reauth)
@@ -48,12 +49,12 @@ export interface ConnectionDiagnostic {
      * it needs the pause lifted. Folding it into IMPORTING would hide how many
      * connections a pause is actually holding.
      */
-    syncStatus:            "IMPORTING" | "SYNC_DEFERRED" | "READY" | "ACTION_REQUIRED";
+    syncStatus:            "IMPORTING" | "IMPORT_PAUSED" | "SYNC_DEFERRED" | "READY" | "ACTION_REQUIRED";
     errorCode:             string | null;
   };
   intelligence: {
     lastBuiltAt:      string | null;
-    status:           "READY" | "REBUILDING" | "NOT_READY";
+    status:           "READY" | "REBUILDING" | "NOT_BUILT" | "NOT_READY";
     accountsCovered:  number;
     availableHistory: string; // formatted "~N" / "No historical data yet"
   };
@@ -86,6 +87,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
       select:  {
         id: true, institutionName: true, status: true, errorCode: true,
         lastSyncedAt: true, syncIncompleteAt: true, createdAt: true,
+        syncLockedAt: true, historyBuildStartedAt: true,
         user: { select: { id: true } },
         connections: { where: { deletedAt: null }, select: { financialAccountId: true } },
       },
@@ -194,14 +196,24 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
     return max;
   };
 
+  const evidence = await getIngestionEvidence(
+    plaidItems.map((p) => ({ id: p.id, syncLockedAt: p.syncLockedAt })), now,
+  );
+
   const out: ConnectionDiagnostic[] = [];
 
   for (const p of plaidItems) {
     const faIds = faByConn.get(p.id) ?? [];
     const tx = txForConn(faIds);
-    const state = deriveConnectionState({ status: p.status, syncIncompleteAt: p.syncIncompleteAt }) ?? "error";
+    // The same ledger evidence the customer card uses: "importing" and
+    // "rebuilding" only when work is actually running.
+    const activity = evidence.activity.get(p.id) ?? "UNKNOWN";
+    const state = deriveConnectionState(
+      { status: p.status, syncIncompleteAt: p.syncIncompleteAt, historyBuildStartedAt: p.historyBuildStartedAt },
+      evidence.deferrals.get(p.id) ?? null, activity, now,
+    ) ?? "error";
     const intel = deriveConnectionIntelligence(
-      { provider: "PLAID", state, historySyncedAt: anchorByConn.get(p.id) ?? null, earliestTxDate: tx.min, connectedAt: p.createdAt, lastSyncedAt: p.lastSyncedAt , balancesUpdatedAt: null },
+      { provider: "PLAID", state, historySyncedAt: anchorByConn.get(p.id) ?? null, earliestTxDate: tx.min, connectedAt: p.createdAt, lastSyncedAt: p.lastSyncedAt , balancesUpdatedAt: null, ingestionActivity: activity },
       now,
     );
     out.push({
@@ -215,7 +227,8 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
         // OPS-2D-4A — a policy-held connection is not IMPORTING (nothing is running)
         // and not ACTION_REQUIRED (there is nothing for anyone to fix on it).
         syncStatus: state === "sync_deferred" ? "SYNC_DEFERRED"
-          : state === "importing" ? "IMPORTING" : state === "ready" ? "READY" : "ACTION_REQUIRED",
+          : state === "importing" ? "IMPORTING" : state === "import_paused" ? "IMPORT_PAUSED"
+          : state === "ready" ? "READY" : "ACTION_REQUIRED",
         errorCode: p.errorCode ?? null,
       },
       intelligence: {
@@ -267,7 +280,8 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
         // OPS-2D-4A — a policy-held connection is not IMPORTING (nothing is running)
         // and not ACTION_REQUIRED (there is nothing for anyone to fix on it).
         syncStatus: state === "sync_deferred" ? "SYNC_DEFERRED"
-          : state === "importing" ? "IMPORTING" : state === "ready" ? "READY" : "ACTION_REQUIRED",
+          : state === "importing" ? "IMPORTING" : state === "import_paused" ? "IMPORT_PAUSED"
+          : state === "ready" ? "READY" : "ACTION_REQUIRED",
         errorCode: w.errorCode ?? null,
       },
       intelligence: {
