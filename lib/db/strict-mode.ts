@@ -87,6 +87,24 @@ export function strictRlsEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
   return env[STRICT_ENV] === "true";
 }
 
+/**
+ * PRODUCTION REQUIRES STRICT MODE (launch-readiness, 2026-10-06).
+ *
+ * The adoption fallback above exists so code can land before credentials. In
+ * Production that window is closed: a Production process without strict mode is
+ * one missing variable away from running every tenant query as `postgres`
+ * (BYPASSRLS) while looking healthy. So on a Vercel Production deployment the
+ * flag is not optional — absent, "false", "TRUE", "1" or anything other than the
+ * exact string "true" is a refusal to start, and the role URLs are validated
+ * whatever the flag says.
+ *
+ * `VERCEL_ENV` is the authority on Vercel (lib/env.ts); Preview and local
+ * development keep their current behaviour.
+ */
+export function productionRequiresStrict(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.VERCEL_ENV === "production";
+}
+
 /** The username in a connection string, or null. Never returns the password. */
 export function principalOf(raw: string | undefined): string | null {
   if (!raw) return null;
@@ -187,8 +205,16 @@ export type StrictConfigProblem = { variable: string; reason: string };
  * Configuration-level verdict. Pure, so CI can assert it without a database.
  */
 export function strictConfigProblems(env: NodeJS.ProcessEnv = process.env): StrictConfigProblem[] {
-  if (!strictRlsEnabled(env)) return [];
+  const production = productionRequiresStrict(env);
+  if (!strictRlsEnabled(env) && !production) return [];
   const problems: StrictConfigProblem[] = [];
+  if (production && !strictRlsEnabled(env)) {
+    const raw = env[STRICT_ENV];
+    problems.push({
+      variable: STRICT_ENV,
+      reason: `is ${raw === undefined ? "unset" : `"${raw}"`} on a Production deployment (VERCEL_ENV=production). Production must run with ${STRICT_ENV}=true exactly: without it a missing role URL silently falls back to the migration principal, which carries BYPASSRLS.`,
+    });
+  }
   const projectRef = migrationProjectRef(env);
 
   for (const [v, expected] of Object.entries(ROLE_URL_VARS) as [RoleUrlVar, string][]) {
@@ -222,7 +248,7 @@ export function assertStrictRoleConfiguration(env: NodeJS.ProcessEnv = process.e
   if (problems.length === 0) return;
   throw new Error(
     [
-      `${STRICT_ENV}=true, but the database role configuration is not safe to run under:`,
+      `${strictRlsEnabled(env) ? `${STRICT_ENV}=true, but the` : "Production requires strict RLS mode, and the"} database role configuration is not safe to run under:`,
       ...problems.map((p) => `  - ${p.variable} ${p.reason}`),
       "",
       "  Refusing to start. Either provision the role URLs, or unset",

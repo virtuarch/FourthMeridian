@@ -18,6 +18,7 @@ import {
   strictRlsEnabled, strictConfigProblems, assertStrictRoleConfiguration,
   principalOf, isMigrationPrincipal, verifyAuthority, ROLE_URL_VARS,
   rolePrincipalProblem, isSupabasePoolerHost, splitPrincipal, migrationProjectRef,
+  productionRequiresStrict,
 } from "./strict-mode";
 
 let failures = 0;
@@ -216,6 +217,61 @@ void (async () => {
     { $queryRawUnsafe: async () => { throw new Error("connection refused"); } });
   check("an uninterrogable connection FAILS rather than passing by default",
     !unreachable.ok && /could not be interrogated/.test(unreachable.problems.join()));
+
+  // ── PRODUCTION REQUIRES STRICT MODE (launch-readiness, 2026-10-06) ────────
+  {
+    const env = (o: Record<string, string | undefined>) => o as unknown as NodeJS.ProcessEnv;
+    const REF = "abcdefghijklmnopqrst";
+    const POOLER = "aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true";
+    const PROD_OK = env({
+      VERCEL_ENV: "production", FM_RLS_STRICT: "true",
+      DATABASE_URL:        `postgresql://postgres.${REF}:x@${POOLER}`,
+      DATABASE_URL_APP:    `postgresql://fm_app.${REF}:x@${POOLER}`,
+      DATABASE_URL_AUTH:   `postgresql://fm_auth.${REF}:x@${POOLER}`,
+      DATABASE_URL_SYSTEM: `postgresql://fm_system.${REF}:x@${POOLER}`,
+    });
+    const without = (k: string, extra: Record<string, string | undefined> = {}) => env({ ...(PROD_OK as Record<string, string>), [k]: undefined, ...extra });
+    const refuses = (e: NodeJS.ProcessEnv) => { try { assertStrictRoleConfiguration(e); return false; } catch { return true; } };
+    const flagProblem = (e: NodeJS.ProcessEnv) => strictConfigProblems(e).some((p) => p.variable === "FM_RLS_STRICT");
+
+    check("Production is recognised only by VERCEL_ENV=production",
+      productionRequiresStrict(env({ VERCEL_ENV: "production" })) && !productionRequiresStrict(env({ VERCEL_ENV: "preview" }))
+      && !productionRequiresStrict(env({})) && !productionRequiresStrict(env({ NODE_ENV: "production" })));
+
+    // NEGATIVE CONTROL — the exact unsafe state: Production, no flag, no role URLs.
+    // Before this guard it returned [] and booted on postgres (BYPASSRLS).
+    const unsafe = env({ VERCEL_ENV: "production", DATABASE_URL: `postgresql://postgres.${REF}:x@${POOLER}` });
+    check("NEGATIVE CONTROL: Production with the flag ABSENT and no role URLs refuses to start (was: silent postgres fallback)",
+      refuses(unsafe) && flagProblem(unsafe) && strictConfigProblems(unsafe).filter((p) => p.variable.startsWith("DATABASE_URL_")).length === 3,
+      JSON.stringify(strictConfigProblems(unsafe).map((p) => p.variable)));
+    check("…and the same configuration on Preview is the unchanged adoption fallback (no problems)",
+      strictConfigProblems(env({ ...(unsafe as Record<string, string>), VERCEL_ENV: "preview" })).length === 0);
+
+    for (const v of [undefined, "false", "TRUE", "1", "yes", " true", ""]) {
+      const e = without("FM_RLS_STRICT", { FM_RLS_STRICT: v });
+      check(`Production refuses FM_RLS_STRICT=${v === undefined ? "<unset>" : JSON.stringify(v)} even with valid role URLs`, refuses(e) && flagProblem(e));
+    }
+
+    check("POSITIVE: Production with FM_RLS_STRICT=true and three valid pooler role URLs starts",
+      !refuses(PROD_OK) && strictConfigProblems(PROD_OK).length === 0, JSON.stringify(strictConfigProblems(PROD_OK)));
+    for (const k of ["DATABASE_URL_APP", "DATABASE_URL_AUTH", "DATABASE_URL_SYSTEM"]) {
+      const e = without(k);
+      check(`Production refuses a missing ${k}`, refuses(e) && strictConfigProblems(e).some((p) => p.variable === k));
+    }
+    const owner     = env({ ...(PROD_OK as Record<string, string>), DATABASE_URL_APP: `postgresql://postgres.${REF}:x@${POOLER}` });
+    const lookalike = env({ ...(PROD_OK as Record<string, string>), DATABASE_URL_APP: `postgresql://fm_appx.${REF}:x@${POOLER}` });
+    const wrongRole = env({ ...(PROD_OK as Record<string, string>), DATABASE_URL_AUTH: `postgresql://fm_app.${REF}:x@${POOLER}` });
+    const wrongRef  = env({ ...(PROD_OK as Record<string, string>), DATABASE_URL_SYSTEM: `postgresql://fm_system.zzzzzzzzzzzzzzzzzzzz:x@${POOLER}` });
+    const garbage   = env({ ...(PROD_OK as Record<string, string>), DATABASE_URL_APP: "not a url" });
+    check("Production keeps refusing an owner-role URL", refuses(owner));
+    check("Production keeps refusing a look-alike role (fm_appx)", refuses(lookalike));
+    check("Production keeps refusing the wrong role in a slot", refuses(wrongRole));
+    check("Production keeps refusing a role URL for a different project", refuses(wrongRef));
+    check("Production refuses an unparseable role URL", refuses(garbage));
+
+    // Preview compatibility: Preview's live configuration shape (strict + three pooler role URLs) still starts.
+    check("Preview with its current strict configuration still starts", !refuses(env({ ...(PROD_OK as Record<string, string>), VERCEL_ENV: "preview" })));
+  }
 
   if (failures > 0) { console.error(`\nstrict-mode: ${failures} failure(s).`); process.exit(1); }
   console.log("\nstrict-mode: all passed.");
