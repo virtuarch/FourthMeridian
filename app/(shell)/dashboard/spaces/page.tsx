@@ -1,10 +1,9 @@
 import { getServerSession } from "next-auth";
-import { cookies }          from "next/headers";
 import { authOptions }      from "@/lib/auth";
 import { redirect }         from "next/navigation";
 import { db }               from "@/lib/db";
 import { SpacesClient }     from "@/components/dashboard/SpacesClient";
-import { ACTIVE_SPACE_COOKIE } from "@/lib/space";
+import { getSpaceContext } from "@/lib/space";
 import { getSpaceNetWorthSummaries } from "@/lib/data/snapshots";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceCardFreshness } from "@/lib/freshness/space-card-freshness";
@@ -44,9 +43,15 @@ export default async function SpacesPage() {
 
   const userId = session.user.id;
 
-  // ── Active space from cookie ──────────────────────────────────────────
-  const jar               = await cookies();
-  const activeSpaceId = jar.get(ACTIVE_SPACE_COOKIE)?.value ?? null;
+  // ── The Space the viewer is ACTUALLY in ──────────────────────────────
+  // The SERVER's answer (getSpaceContext: active-Space cookie → preferred
+  // Space → personal), not the raw cookie. With no cookie the client used to
+  // assume "personal", while every page under this shell resolved the
+  // PREFERRED Space — so once a non-personal default was set, opening the
+  // personal Space here looked already-active, pushed to /dashboard without a
+  // switch, and landed back in the default (owner's Preview, 2026-10-06).
+  // cache()-deduped: the dashboard layout already resolved it this request.
+  const activeSpaceId = await getSpaceContext().then((ctx) => ctx.spaceId, () => null);
 
   // ── Preferred space, my memberships, pending invites, platform Spaces ─
   const [preferredSpaceRow, myMemberships, pendingInvites, platformSpaces] = await Promise.all([

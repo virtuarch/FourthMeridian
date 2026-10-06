@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isUsernameAvailable } from "@/lib/users/availability";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
+import { parseDefaultSpaceInput, isEligibleDefaultSpace } from "@/lib/spaces/default-space";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { EmploymentStatus, UseCase } from "@prisma/client";
 import { requireUser } from "@/lib/session";
@@ -124,19 +125,24 @@ export async function PATCH(req: NextRequest) {
     }
   }
 
+  // The Default Space is a PREFERENCE (lib/spaces/default-space.ts): this writes
+  // the caller's own User row and nothing else — no membership, no visibility.
+  // `""` and `null` both clear it (the Preferences picker sends `""` for
+  // "Personal Space (default)"; treating that as a Space id is what told the
+  // owner on Preview they were "Not a member" of the Space they were returning
+  // to). A named Space must be one the resolver would actually land on.
   if (preferredSpaceId  !== undefined) {
-    // Validate that user is actually a member of this space (or null to clear)
-    if (preferredSpaceId !== null) {
+    const parsed = parseDefaultSpaceInput(preferredSpaceId);
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+    if (parsed.spaceId !== null) {
+      const targetId = parsed.spaceId;
       // Their OWN membership, so the tenant role answers it.
-      const membership = await withTenantDb(user.id, (tx) => tx.spaceMember.findUnique({
-        where: { spaceId_userId: { spaceId: preferredSpaceId, userId: user.id } },
-        select: { status: true },
-      }));
-      if (!membership || membership.status !== "ACTIVE") {
+      const eligible = await withTenantDb(user.id, (tx) => isEligibleDefaultSpace(tx, user.id, targetId));
+      if (!eligible) {
         return NextResponse.json({ error: "Not a member of that Space" }, { status: 403 });
       }
     }
-    data.preferredSpaceId = preferredSpaceId;
+    data.preferredSpaceId = parsed.spaceId;
   }
 
   // Keep display name in sync

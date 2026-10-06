@@ -19,6 +19,7 @@ import { Select } from "@/components/atlas/fields";
 import { InlineBanner } from "@/components/atlas/InlineBanner";
 import { useToast } from "@/components/atlas/Toast";
 import { displaySpaceName } from "@/lib/format";
+import { effectiveDefaultSpaceId } from "@/lib/spaces/default-space";
 import { Loader2, LayoutDashboard, Coins, Globe } from "lucide-react";
 import type { PreferencesData, SpaceOption } from "@/lib/settings/loaders";
 
@@ -55,7 +56,18 @@ function PreferredSpaceCard({
   saveField:          (payload: Record<string, string>) => Promise<string | null>;
 }) {
   const { toast } = useToast();
-  const [preferredId, setPreferredId] = useState(initialPreferredId ?? "");
+  // "" is "Personal Space (default)" — the server clears the preference for it
+  // (lib/spaces/default-space.ts). A stored value that is the personal Space
+  // itself (registration seeds it) or a Space no longer in this list (left,
+  // archived, trashed) IS the personal default as far as the resolver is
+  // concerned, so the picker shows that rather than an option that is not there.
+  const [preferredId, setPreferredId] = useState(
+    effectiveDefaultSpaceId(
+      initialPreferredId,
+      spaces.filter((w) => w.type !== "PERSONAL").map((w) => w.id),
+      null,
+    ) ?? "",
+  );
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState("");
 

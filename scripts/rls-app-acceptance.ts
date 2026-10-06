@@ -2539,6 +2539,116 @@ async function main(): Promise<void> {
     psql(h.ownerUrl, `delete from "FinancialAccount" where id in (${PID_ACCOUNTS});`);
   }
 
+  // ── [default-space] the Default Space is a preference, never an authority ──
+  //
+  // DEFAULT-SPACE (owner's Preview, 2026-10-06). Changing the default left every
+  // membership untouched; the user was told "Not a member of that Space" because
+  // Settings → Preferences sends "" for "Personal Space (default)" and the
+  // route looked "" up as a Space id. These run what PATCH /api/user/profile
+  // runs — parseDefaultSpaceInput, isEligibleDefaultSpace on the caller's
+  // tenant transaction, then the caller's own User update — and resolve the
+  // current Space through the real resolveSpaceContext, as the fixtures' Alice
+  // (personal space_a + SHARED space_s, owner) and Bob (personal space_b +
+  // space_s, viewer). lib/spaces/default-space.test.ts pins the routes.
+  {
+    const ds = await import("@/lib/spaces/default-space");
+    const { resolveSpaceContext } = await import("@/lib/space");
+    const truth = (sql: string) => psql(h.ownerUrl, sql).out.trim();
+    const membershipFingerprint = () => truth(
+      `select md5(string_agg(id||':'||"spaceId"||':'||"userId"||':'||role||':'||status, ',' order by id)) from "SpaceMember"`);
+    const spaceFingerprint = () => truth(
+      `select md5(string_agg(id||':'||type||':'||"isPublic"||':'||coalesce("archivedAt"::text,'-')||':'||coalesce("deletedAt"::text,'-'), ',' order by id)) from "Space"`);
+    const preferred = (u: string) => truth(`select coalesce("preferredSpaceId", '<null>') from "User" where id='${u}'`);
+    /** Exactly the route's sequence. */
+    const setDefault = async (userId: string, raw: unknown): Promise<"ok" | "400" | "403"> => {
+      const parsed = ds.parseDefaultSpaceInput(raw);
+      if (!parsed.ok) return "400";
+      if (parsed.spaceId !== null) {
+        const target = parsed.spaceId;
+        const eligible = await tenant.withTenantDb(userId, (tx) => ds.isEligibleDefaultSpace(tx, userId, target));
+        if (!eligible) return "403";
+      }
+      await tenant.withTenantDb(userId, (tx) => tx.user.update({ where: { id: userId }, data: { preferredSpaceId: parsed.spaceId } }));
+      return "ok";
+    };
+
+    // 90 — the owner's first action: a SHARED Space becomes the default.
+    const memBefore = membershipFingerprint();
+    const spcBefore = spaceFingerprint();
+    const set90 = await setDefault("alice", "space_s");
+    const cur90 = await resolveSpaceContext("alice", preferred("alice"));
+    check(90, "[default-space] Alice makes her SHARED Space the default from Preferences: it is stored, the current Space (no cookie ⇒ preference) is that Space, and NOT ONE SpaceMember or Space row changed",
+      set90 === "ok" && preferred("alice") === "space_s" && cur90.spaceId === "space_s"
+      && membershipFingerprint() === memBefore && spaceFingerprint() === spcBefore,
+      `set=${set90} pref=${preferred("alice")} current=${cur90.spaceId}`);
+
+    // 91 — the owner's second action, reproduced: "Personal Space (default)".
+    const oldRefusal = await tenant.withTenantDb("alice", (tx) => ds.isEligibleDefaultSpace(tx, "alice", ""));
+    const stillMember = truth(`select status from "SpaceMember" where "spaceId"='space_a' and "userId"='alice'`);
+    const set91 = await setDefault("alice", "");
+    const cur91 = await resolveSpaceContext("alice", preferred("alice") === "<null>" ? null : preferred("alice"));
+    check(91, "[default-space] THE OWNER'S SEQUENCE: \"\" was looked up as a Space id and refused (the old 403 \"Not a member\") while her personal membership was ACTIVE throughout; \"\" now CLEARS the preference and the current Space is her personal Space",
+      oldRefusal === false && stillMember === "ACTIVE" && set91 === "ok" && preferred("alice") === "<null>"
+      && cur91.spaceId === "space_a" && membershipFingerprint() === memBefore,
+      `oldEligible=${oldRefusal} member=${stillMember} set=${set91} pref=${preferred("alice")} current=${cur91.spaceId}`);
+
+    // 92 — cross-tenant: another tenant's private Space can never be the default.
+    const set92 = await setDefault("alice", "space_b");
+    const seen92 = await tenant.withTenantDb("alice", (tx) => tx.spaceMember.count({ where: { spaceId: "space_b" } }));
+    const bad92 = await setDefault("alice", 42);
+    check(92, "[default-space] Alice cannot make Bob's PRIVATE Space her default (403), cannot even see its membership as fm_app (0 vs 1 as owner), the preference is unchanged, and malformed input is a 400",
+      set92 === "403" && seen92 === 0 && truth(`select count(*) from "SpaceMember" where "spaceId"='space_b'`) === "1"
+      && preferred("alice") === "<null>" && bad92 === "400",
+      `set=${set92} seen=${seen92} malformed=${bad92}`);
+
+    // 93 — membership removed from the configured default: fails closed for THAT Space only.
+    await setDefault("alice", "space_s");
+    psql(h.ownerUrl, `update "SpaceMember" set status='LEFT' where id='m_sa'`);
+    const cur93 = await resolveSpaceContext("alice", preferred("alice"));
+    const elig93 = await tenant.withTenantDb("alice", (tx) => ds.isEligibleDefaultSpace(tx, "alice", "space_s"));
+    const own93 = await resolveSpaceContext("alice", "space_a");
+    const bob93 = await resolveSpaceContext("bob", "space_s");
+    const reset93 = await setDefault("alice", "space_s");
+    psql(h.ownerUrl, `update "SpaceMember" set status='ACTIVE' where id='m_sa'`);
+    check(93, "[default-space] when Alice LEAVES the Space her default names, the stale default resolves to her personal Space (not stranded, not the left Space), it is no longer eligible, her other Space still opens, and Bob's access to it is untouched",
+      cur93.spaceId === "space_a" && elig93 === false && reset93 === "403"
+      && own93.spaceId === "space_a" && bob93.spaceId === "space_s" && bob93.role === "VIEWER",
+      `current=${cur93.spaceId} eligible=${elig93} reset=${reset93} own=${own93.spaceId} bob=${bob93.spaceId}/${bob93.role}`);
+
+    // 94 — an archived default is stale too.
+    psql(h.ownerUrl, `update "Space" set "archivedAt"=now() where id='space_s'`);
+    const cur94 = await resolveSpaceContext("alice", "space_s");
+    const elig94 = await tenant.withTenantDb("alice", (tx) => ds.isEligibleDefaultSpace(tx, "alice", "space_s"));
+    psql(h.ownerUrl, `update "Space" set "archivedAt"=null where id='space_s'`);
+    check(94, "[default-space] an ARCHIVED default falls back to the personal Space and cannot be chosen as a default",
+      cur94.spaceId === "space_a" && elig94 === false, `current=${cur94.spaceId} eligible=${elig94}`);
+
+    // 95 — a corrupt / legacy preference naming another tenant's Space.
+    psql(h.ownerUrl, `update "User" set "preferredSpaceId"='space_b' where id='alice'`);
+    const cur95 = await resolveSpaceContext("alice", preferred("alice"));
+    check(95, "[default-space] a stale preference naming ANOTHER tenant's private Space resolves to Alice's own personal Space — never Bob's; so the AI chat's re-resolution (spaceCtx.spaceId !== requested ⇒ 403) refuses it",
+      cur95.spaceId === "space_a" && cur95.userId === "alice",
+      `current=${cur95.spaceId}`);
+
+    // 96 — navigation among every authorized Space, both tenants.
+    const nav = await Promise.all([
+      resolveSpaceContext("alice", "space_a"), resolveSpaceContext("alice", "space_s"),
+      resolveSpaceContext("bob", "space_b"), resolveSpaceContext("bob", "space_s"), resolveSpaceContext("bob", "space_a"),
+    ]);
+    check(96, "[default-space] with a default set, every authorized Space still opens for both users (Alice personal+shared, Bob personal+shared as VIEWER), and Bob naming Alice's private Space lands on his own",
+      nav.map((c) => c.spaceId).join() === "space_a,space_s,space_b,space_s,space_b" && nav[3].role === "VIEWER",
+      nav.map((c) => `${c.userId}:${c.spaceId}`).join(" "));
+
+    // 97 — the preference write is self-only on fm_app.
+    const bobWrites = await tenant.withTenantDb("bob", (tx) => tx.user.updateMany({ where: { id: "alice" }, data: { preferredSpaceId: "space_s" } }));
+    check(97, "[default-space] Bob, as fm_app, cannot write Alice's default (0 rows — her User row is invisible to him); the preference stays hers alone",
+      bobWrites.count === 0 && preferred("alice") === "space_b", `count=${bobWrites.count} pref=${preferred("alice")}`);
+
+    psql(h.ownerUrl, `update "User" set "preferredSpaceId"=null where id in ('alice','bob')`);
+    check(98, "[default-space] the whole block left every membership and Space exactly as the fixtures seeded them",
+      membershipFingerprint() === memBefore && spaceFingerprint() === spcBefore);
+  }
+
   // ── [role] the owner is not in the tenant path ────────────────────────────
   check(17, "[role] the tenant client is NOT the migration principal",
     dbMod.tenantDb !== dbMod.db, "tenantDb fell back to the shared client");

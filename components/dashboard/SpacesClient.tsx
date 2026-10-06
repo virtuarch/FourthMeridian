@@ -16,8 +16,8 @@
  *   Create Space — persistent right-side panel (scrolls with the page,
  *   per Phase G — no longer sticky)
  *
- * Backend is untouched: same /api/spaces, /api/space/switch,
- * /api/user/profile endpoints, and the same `space-list-changed` /
+ * Backend is untouched: same /api/spaces and /api/space/switch
+ * endpoints, and the same `space-list-changed` /
  * `space-invites-changed` events other components (Sidebar) already
  * listen for. Only the presentation layer and the "Space" → "Space"
  * terminology changed.
@@ -61,6 +61,7 @@ import {
 } from "@/lib/space-presets";
 import { DEFAULT_DISPLAY_CURRENCY, compactCurrencyOptions } from "@/lib/currency";
 import { displaySpaceName, formatDate } from "@/lib/format";
+import { effectiveDefaultSpaceId } from "@/lib/spaces/default-space";
 import {
   SPACE_LIST_CHANGED_EVENT,
   SPACE_INVITES_CHANGED_EVENT,
@@ -386,9 +387,7 @@ function SpaceCard({
   interactive = true,
   onOpen,
   onManage,
-  onSetDefault,
   switching,
-  settingDefault,
 }: {
   space: SpaceItem;
   isActive?: boolean;
@@ -397,9 +396,7 @@ function SpaceCard({
   interactive?: boolean;
   onOpen?: () => void;
   onManage?: () => void;
-  onSetDefault?: () => void;
   switching?: boolean;
-  settingDefault?: boolean;
 }) {
   const canManage = interactive && !!onManage && ["OWNER", "ADMIN"].includes(space.myRole ?? "") && !isPersonal;
   const tone: "positive" | "danger" | "neutral" =
@@ -499,21 +496,16 @@ function SpaceCard({
         />
       </button>
 
-      {/* Row actions — siblings of the enter button, revealed on hover/focus. */}
-      {interactive && (isDefault || onSetDefault || canManage) && (
+      {/* Row actions — siblings of the enter button, revealed on hover/focus.
+          The crown is an INDICATOR only. Choosing the default Space lives in
+          ONE place — Settings → Preferences → Default Space — so this row no
+          longer carries a second "Set as default Space" control. */}
+      {interactive && (isDefault || canManage) && (
         <div className="flex items-center gap-0.5 pr-3 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-          {isDefault ? (
+          {isDefault && (
             <span title="Default landing Space" className="p-1.5">
               <Crown size={13} className="text-[var(--brass-400)]" />
             </span>
-          ) : onSetDefault && (
-            <button
-              onClick={onSetDefault}
-              title="Set as default Space"
-              className="rounded-[var(--radius-xs)] p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover-strong)] hover:text-[var(--text-primary)]"
-            >
-              {settingDefault ? <Loader2 size={13} className="animate-spin" /> : <Crown size={13} />}
-            </button>
           )}
           {canManage && (
             <button
@@ -996,9 +988,7 @@ export function SpacesClient({
   const [, startTransition] = useTransition();
 
   const [activeId, setActiveId]               = useState<string | null>(initialActiveId);
-  const [preferredId, setPreferredId]          = useState<string | null>(initialPreferredId);
   const [switchingId, setSwitchingId]          = useState<string | null>(null);
-  const [settingDefaultId, setSettingDefaultId] = useState<string | null>(null);
   const [managingSpace, setManagingSpace]      = useState<SpaceItem | null>(null);
   const [showAllSpaces, setShowAllSpaces]      = useState(false);
   const [viewingPublicSpace, setViewingPublicSpace] = useState<SpaceItem | null>(null);
@@ -1069,24 +1059,12 @@ export function SpacesClient({
     }
   }, [router]);
 
-  async function handleSetDefault(spaceId: string) {
-    const newVal = preferredId === spaceId ? "" : spaceId;
-    setSettingDefaultId(spaceId);
-    try {
-      const res = await fetch("/api/user/profile", {
-        method:  "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ preferredSpaceId: newVal || null }),
-      });
-      if (res.ok) setPreferredId(newVal || null);
-    } finally {
-      setSettingDefaultId(null);
-    }
-  }
-
   const personal = mine.find((w) => w.type === "PERSONAL" && w.myRole === "OWNER");
   const others   = mine.filter((w) => w.id !== personal?.id);
   const ordered  = personal ? [personal, ...others] : others;
+  // Display only — the Space resolveSpaceContext would land on with no cookie:
+  // the preference while it names a Space still in `mine`, else personal.
+  const defaultId = effectiveDefaultSpaceId(initialPreferredId, mine.map((w) => w.id), personal?.id ?? null);
 
   // Caps the initial grid so the canvas reads the same whether someone has
   // 1 Space or 50+ — the rest are one click away via "Show N more" instead
@@ -1139,13 +1117,11 @@ export function SpacesClient({
               key={space.id}
               space={space}
               isActive={resolvedActiveId === space.id}
-              isDefault={preferredId ? preferredId === space.id : space.id === personal?.id}
+              isDefault={defaultId === space.id}
               isPersonal={space.id === personal?.id}
               onOpen={() => handleOpen(space)}
               onManage={() => setManagingSpace(space)}
-              onSetDefault={space.id === personal?.id ? undefined : () => handleSetDefault(space.id)}
               switching={switchingId === space.id}
-              settingDefault={settingDefaultId === space.id}
             />
           ))}
         </ul>
