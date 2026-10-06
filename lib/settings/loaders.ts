@@ -18,6 +18,7 @@
 import { cache } from "react";
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
+import { redirectToLogin } from "@/lib/auth/login-redirect";
 import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { totpEnrollmentPathFor } from "@/lib/admin-totp-enrollment";
@@ -59,7 +60,7 @@ const requireUserId = cache(async (
   opts?: { allowTotpSetupPending?: boolean },
 ): Promise<string> => {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) redirect("/login");
+  if (!session?.user?.id) return redirectToLogin();
   if (session.requireTotpSetup && !opts?.allowTotpSetupPending) {
     redirect(totpEnrollmentPathFor(session.user.role));
   }
@@ -98,7 +99,7 @@ export async function getAccount(): Promise<AccountData> {
     dateOfBirthEncrypted: string | null;
   } | null;
 
-  if (!user) redirect("/login");
+  if (!user) return redirectToLogin();
 
   return {
     email:            user.email,
@@ -125,7 +126,7 @@ export async function getSecurity(): Promise<SecurityData> {
     where:  { id: userId },
     select: { email: true },
   });
-  if (!user) redirect("/login");
+  if (!user) return redirectToLogin();
   return { email: user.email };
 }
 
@@ -155,7 +156,7 @@ export async function getPreferences(): Promise<PreferencesData> {
     }),
   ]);
 
-  if (!user) redirect("/login");
+  if (!user) return redirectToLogin();
 
   return {
     reportingCurrency: user.reportingCurrency ?? "USD",

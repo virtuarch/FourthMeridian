@@ -1,6 +1,6 @@
 import { getServerSession } from "next-auth";
 import { authOptions }      from "@/lib/auth";
-import { redirect }         from "next/navigation";
+import { redirectToLogin }  from "@/lib/auth/login-redirect";
 import { db }               from "@/lib/db";
 import { SpacesClient }     from "@/components/dashboard/SpacesClient";
 import { getSpaceContext } from "@/lib/space";
@@ -39,7 +39,7 @@ import { getSpaceCardFreshness } from "@/lib/freshness/space-card-freshness";
 // of a public Space receives). Each is annotated at its call site below.
 export default async function SpacesPage() {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) redirect("/login");
+  if (!session?.user?.id) return redirectToLogin();
 
   const userId = session.user.id;
 

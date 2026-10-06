@@ -8,11 +8,9 @@
  * marketing component stays server-only (see lib/marketing-boundary.test.ts).
  *
  * It posts to POST /api/access-request through lib/marketing/request-access.ts,
- * which is the entire dynamic seam of the landing page (investigation §3). That
- * endpoint is built by Wave 1② and may not have landed yet: on a 404 the
- * wrapper returns { status: "queued", degraded: true } and this form shows the
- * same success shell it would on a real submit — the form is never a dead end
- * during rollout.
+ * which is the entire dynamic seam of the landing page (investigation §3). Only
+ * a 2xx is shown as success; every other outcome (404 included) is an error the
+ * visitor can retry.
  *
  * CAPTCHA (Wave 2⑥): when NEXT_PUBLIC_TURNSTILE_SITE_KEY is configured, the
  * Turnstile widget renders and its token is sent to /api/access-request (the
@@ -63,7 +61,7 @@ export function RequestAccessForm() {
     const result: AccessRequestResult = await submitAccessRequest({ email, note, captchaToken });
 
     if (result.status === "queued") {
-      // Success — whether the endpoint accepted it or isn't live yet (degraded).
+      // Success — the endpoint accepted it (2xx).
       setStatus("success");
       return;
     }

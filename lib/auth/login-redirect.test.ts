@@ -77,15 +77,11 @@ function readerChecks() {
 }
 
 function census() {
-  console.log("\n3. bare redirect(\"/login\") call sites — the deferred set may only shrink");
-  // Deferred: files owned by the in-flight RLS tenant-authority conversion.
-  // Convert each to `return redirectToLogin()` once that file leaves its scope.
-  const DEFERRED: Record<string, number> = {
-    "app/(shell)/dashboard/spaces/page.tsx": 1,                  // db-authority-baseline.json
-    "app/(shell)/dashboard/platform/[area]/page.tsx": 1,         // db-authority-baseline.json (systemDb allowlist pending)
-    "app/(shell)/dashboard/settings/archived-assets/page.tsx": 1, // pinned by lib/rls-server-component-authority.test.ts
-    "lib/settings/loaders.ts": 4,                                // db-authority-baseline.json
-  };
+  console.log("\n3. bare redirect(\"/login\") call sites — none may exist");
+  // The seven STAGE-A5 deferrals (RLS-owned files at the time) were converted
+  // to `return redirectToLogin()` in the domain-split Preview lane. A revoked
+  // session on any page now returns to that page after signing in again.
+  const DEFERRED: Record<string, number> = {};
   const found: Record<string, number> = {};
   const walk = (dir: string) => {
     for (const e of readdirSync(dir)) {
@@ -104,15 +100,19 @@ function census() {
       `allowance ${DEFERRED[f] ?? 0} — use \`return redirectToLogin()\` (lib/auth/login-redirect.ts)`);
   }
   const total = Object.values(found).reduce((a, b) => a + b, 0);
-  check(`deferred bare sites: ${total} (7 at STAGE-A5)`, total <= 7);
-  for (const f of ["app/(shell)/dashboard/settings/page.tsx", "app/admin/security/page.tsx"]) {
+  check(`bare sites: ${total} (7 at STAGE-A5, 0 since the domain-split Preview lane)`, total === 0);
+  for (const f of [
+    "app/(shell)/dashboard/settings/page.tsx",
+    "app/admin/security/page.tsx",
+    "app/(shell)/dashboard/spaces/page.tsx",
+    "app/(shell)/dashboard/platform/[area]/page.tsx",
+    "app/(shell)/dashboard/settings/archived-assets/page.tsx",
+    "lib/settings/loaders.ts",
+  ]) {
     const s = readFileSync(path.join(ROOT, f), "utf8");
     check(`${f} uses redirectToLogin`, /return redirectToLogin\(\)/.test(s) && !found[f]);
   }
-  const baseline = readFileSync(path.join(ROOT, "scripts/lib/db-authority-baseline.json"), "utf8");
-  for (const f of ["app/(shell)/dashboard/spaces/page.tsx", "app/(shell)/dashboard/platform/[area]/page.tsx", "lib/settings/loaders.ts"]) {
-    check(`deferral reason still holds: ${f} is in the RLS baseline`, baseline.includes(`"${f}"`));
-  }
+
 }
 
 proxyChecks()

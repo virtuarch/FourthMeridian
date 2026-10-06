@@ -18,6 +18,8 @@
  *     redirect to the appropriate setup page for their role:
  *       SYSTEM_ADMIN → /admin/security?setup2fa=true
  *       USER         → /dashboard/settings/security?setup2fa=true
+ *   - Domain split: with NEXT_PUBLIC_SITE_URL set, "/" → /dashboard (307) and
+ *     the marketing/legal pages → the same path on the public site (308).
  *
  * (UserRole has exactly two members — USER and SYSTEM_ADMIN. Earlier revisions
  * of this comment referred to an "ADMIN" role that does not exist.)
@@ -50,6 +52,7 @@ import {
 } from "./lib/auth/session-cookie";
 import { evaluateWriteOrigin, selfOriginOf, WRITE_ORIGIN_REFUSED_ERROR } from "./lib/security/write-origin";
 import { RETURN_TO_HEADER } from "./lib/auth/return-to";
+import { PUBLIC_SITE_ORIGIN, routePublicSiteRequest } from "./lib/marketing/public-site";
 
 /**
  * Expire any pre-`__Host-` auth cookie the browser still sends. After the
@@ -86,6 +89,28 @@ async function route(req: NextRequest): Promise<NextResponse> {
         { status: 403 },
       );
     }
+    return NextResponse.next();
+  }
+
+  // ── Public-site paths (domain split) ────────────────────────────────────
+  // Once NEXT_PUBLIC_SITE_URL names a separate public site, "/" on the
+  // application enters the application and the marketing/legal pages move to
+  // the public site (lib/marketing/public-site.ts). Unset ⇒ inert: the application still
+  // serves its own app/(public) pages (Production on the apex, local dev).
+  const publicSite = routePublicSiteRequest({
+    pathname:   req.nextUrl.pathname,
+    search:     req.nextUrl.search,
+    siteOrigin: PUBLIC_SITE_ORIGIN,
+    selfOrigin: selfOriginOf(req.headers, req.nextUrl.protocol),
+  });
+  if (publicSite.kind === "app-root") {
+    return NextResponse.redirect(new URL(publicSite.location, req.url), 307);
+  }
+  if (publicSite.kind === "public-site") {
+    return NextResponse.redirect(publicSite.location, 308);
+  }
+  if (!isProtectedPagePath(req.nextUrl.pathname)) {
+    // A public-site path on the deployment that still serves it.
     return NextResponse.next();
   }
 
@@ -174,10 +199,23 @@ async function route(req: NextRequest): Promise<NextResponse> {
   return NextResponse.next({ request: { headers: forwarded } });
 }
 
+function isProtectedPagePath(pathname: string): boolean {
+  return pathname === "/dashboard" || pathname.startsWith("/dashboard/")
+      || pathname === "/admin"     || pathname.startsWith("/admin/");
+}
+
 export const config = {
   matcher: [
     "/dashboard/:path*",
     "/admin/:path*",
     "/api/:path*",   // Origin boundary only — see the /api branch in route()
+    // Public-site paths only — see routePublicSiteRequest above. Must list the
+    // same pages as PUBLIC_SITE_PATHS in lib/marketing/public-site.ts (pinned by its test).
+    "/",
+    "/about",
+    "/legal/:path*",
+    "/privacy",
+    "/security",
+    "/terms",
   ],
 };

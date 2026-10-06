@@ -66,6 +66,7 @@
 
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
+import { redirectToLogin } from "@/lib/auth/login-redirect";
 import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { PlatformArea } from "@prisma/client";
@@ -90,7 +91,7 @@ export default async function PlatformSpacePage({
 
   // 2. Session (same pattern as app/(shell)/dashboard/spaces/page.tsx).
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) redirect("/login");
+  if (!session?.user?.id) return redirectToLogin();
 
   // 3. ACTIVE grant on this area — access-derived, no SpaceMember lookup.
   // RLS-T3 — on `db` explicitly; see the header. fm_app could serve this one

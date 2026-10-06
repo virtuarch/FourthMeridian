@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { authOptions }      from "@/lib/auth";
 import { withTenantDb }     from "@/lib/db/tenant-context";
-import { redirect }         from "next/navigation";
+import { redirectToLogin }  from "@/lib/auth/login-redirect";
 import {
   ArchiveBinClient,
   type ArchivedAsset,
@@ -22,7 +22,7 @@ function deriveSource(a: { syncStatus: string | null; walletAddress: string | nu
 
 export default async function ArchivedAssetsPage() {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) redirect("/login");
+  if (!session?.user?.id) return redirectToLogin();
 
   const userId = session.user.id;
 
