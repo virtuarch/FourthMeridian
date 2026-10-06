@@ -85,6 +85,17 @@ check("role clients are cached across dev hot-reload (no pool exhaustion)",
 check("documents that the identity must not come from client input",
   /never a request body|Never a request body/i.test(ctx) && /cookie/i.test(ctx));
 
+// ── RLS-PREVIEW-13b: a tenant transaction cannot stay idle indefinitely ──────
+// A phase orphaned by a failing sibling, in a suspended instance, sat idle in
+// transaction for 150 s+ until a manual terminate. The server-side timeout must be
+// set on EVERY tenant transaction, transaction-locally, in the identity statement.
+check("every tenant transaction sets idle_in_transaction_session_timeout TRANSACTION-LOCALLY, in the identity statement",
+  /SELECT set_config\(\$\{TENANT_GUC\}, \$\{userId\}, true\), set_config\('idle_in_transaction_session_timeout', \$\{TENANT_IDLE_IN_TRANSACTION_TIMEOUT\}, true\)/.test(ctxCode),
+  "the identity statement no longer carries the transaction-local idle timeout");
+check("…and the timeout is a short bound (≤ 30 s), not disabled",
+  /TENANT_IDLE_IN_TRANSACTION_TIMEOUT = "(\d+)s"/.test(ctx) && Number(/TENANT_IDLE_IN_TRANSACTION_TIMEOUT = "(\d+)s"/.exec(ctx)?.[1]) > 0
+  && Number(/TENANT_IDLE_IN_TRANSACTION_TIMEOUT = "(\d+)s"/.exec(ctx)?.[1]) <= 30);
+
 check("server-only, so the channel cannot be imported into a client bundle",
   ctx.includes('import "server-only"'));
 

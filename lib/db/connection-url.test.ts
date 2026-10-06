@@ -31,12 +31,30 @@ console.log("PROD-POOLER-AUTH-INCIDENT-1 — runtime connection-limit normalisat
 function main() {
   // ── The chosen value ────────────────────────────────────────────────────────
   check("the runtime limit is no longer 1", RUNTIME_CONNECTION_LIMIT > 1);
-  check("…and is conservative (aggregate 19 instances x limit stays under the fixed 200 client ceiling)",
-    19 * RUNTIME_CONNECTION_LIMIT < 200,
-    `19 x ${RUNTIME_CONNECTION_LIMIT} = ${19 * RUNTIME_CONNECTION_LIMIT}`);
-  check("…and covers the observed 7-14 request burst within the 10s pool_timeout even at 2.4s/query",
-    (14 * 2.4) / RUNTIME_CONNECTION_LIMIT < 10,
-    `${((14 * 2.4) / RUNTIME_CONNECTION_LIMIT).toFixed(1)}s`);
+  check("RLS-PREVIEW-13b: the runtime limit is exactly 3 (sizes db + three role clients per process)",
+    RUNTIME_CONNECTION_LIMIT === 3, `got ${RUNTIME_CONNECTION_LIMIT}`);
+  // Supavisor's 200 is PROJECT-wide and shared by every role. A warm instance holds
+  // ~2L + 2 client connections (db and fm_app saturate, fm_auth / fm_system ~1 each).
+  // Stage 13b ran out at L = 5 with ~13-18 instances; the limit must leave room for
+  // at least 20 such instances.
+  check("…and ~20 warm instances at ~2L + 2 clients each stay under the 200 project ceiling",
+    20 * (2 * RUNTIME_CONNECTION_LIMIT + 2) < 200,
+    `20 x ${2 * RUNTIME_CONNECTION_LIMIT + 2} = ${20 * (2 * RUNTIME_CONNECTION_LIMIT + 2)}`);
+  check("…and even if all FOUR pools saturated, 16 instances stay at or under it",
+    16 * 4 * RUNTIME_CONNECTION_LIMIT <= 200, `16 x 4 x ${RUNTIME_CONNECTION_LIMIT} = ${16 * 4 * RUNTIME_CONNECTION_LIMIT}`);
+  // The revocation read (2.4 s measured in July) now runs on fm_auth behind a 30 s
+  // cache with coalescing; the request phases that queue on these pools are ~0.4 s.
+  check("…and a 14-request burst of ~0.4 s phases clears the in-process queue well inside the 10 s pool_timeout",
+    (14 * 0.4) / RUNTIME_CONNECTION_LIMIT < 5,
+    `${((14 * 0.4) / RUNTIME_CONNECTION_LIMIT).toFixed(1)}s`);
+  const ROLE = "postgresql://fm_app.qirfzvvaeddukjiphims:pw@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true";
+  const roleFixed = new URL(withConnectionLimit(ROLE)!);
+  check("a role URL (fm_app.<ref>, port 6543, pgbouncer) gains connection_limit=3 and keeps everything else",
+    roleFixed.searchParams.get("connection_limit") === "3" && roleFixed.searchParams.get("pgbouncer") === "true"
+    && roleFixed.port === "6543" && roleFixed.username === "fm_app.qirfzvvaeddukjiphims", roleFixed.toString());
+  check("lib/db.ts sizes BOTH the legacy client and every role client through this module",
+    /runtimeDatasourceUrl\(\)/.test(readFileSync(path.join(process.cwd(), "lib/db.ts"), "utf8"))
+    && /withConnectionLimit\(raw\)/.test(readFileSync(path.join(process.cwd(), "lib/db.ts"), "utf8")));
 
   // ── The leaked value is REPLACED, not appended ──────────────────────────────
   const fixed = withConnectionLimit(POOLED)!;

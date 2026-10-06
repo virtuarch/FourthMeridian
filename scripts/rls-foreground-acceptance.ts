@@ -659,6 +659,56 @@ async function main(): Promise<void> {
       after.v.kind === "authenticated" && after.ms < 1000 && stuckAuth() === 0, `verdict=${after.v.kind} ${after.ms}ms idleInTx=${stuckAuth()}`);
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // T. A TENANT TRANSACTION CANNOT STAY IDLE  (RLS-PREVIEW-13b)
+  // ════════════════════════════════════════════════════════════════════════
+  // Stage 13b: a tenant phase orphaned by a failing sibling, in a suspended
+  // instance, sat idle in transaction for 150 s+ until a manual terminate.
+  // Prisma's own 5 s timeout cannot fire in a suspended process; the server's can.
+  // The harness roles carry NO role-level timeout, so what is proven here is the
+  // transaction-local one withTenantDb sets itself.
+  {
+    const { TENANT_IDLE_IN_TRANSACTION_TIMEOUT } = await import("@/lib/db/tenant-context");
+    const inside = await as("alice", async (tx) => tx.$queryRaw<Array<{ uid: string; idle: string; who: string }>>`
+      SELECT current_setting('app.user_id', true) AS uid,
+             current_setting('idle_in_transaction_session_timeout') AS idle, current_user::text AS who`);
+    const roleDefault = truth(`select coalesce((select array_to_string(setconfig, ',') from pg_db_role_setting s join pg_roles r on r.oid = s.setrole where r.rolname = 'fm_app'), 'none')`);
+    const afterwards = await Promise.all(Array.from({ length: 6 }, () => dbMod.tenantDb.$queryRaw<Array<{ uid: string | null; idle: string }>>`
+      SELECT nullif(current_setting('app.user_id', true), '') AS uid, current_setting('idle_in_transaction_session_timeout') AS idle`));
+    check(50, "[idle] inside every tenant transaction the identity AND a 15 s idle-in-transaction timeout are in force as fm_app, and neither survives onto the pooled connection afterwards",
+      inside[0]?.uid === "alice" && inside[0]?.idle === TENANT_IDLE_IN_TRANSACTION_TIMEOUT && inside[0]?.who === "fm_app"
+      && roleDefault === "none" && afterwards.every((r) => r[0]?.uid === null && r[0]?.idle === "0"),
+      `inside=${JSON.stringify(inside[0])} roleSetting=${roleDefault} afterwards=${JSON.stringify(afterwards.map((r) => r[0]))}`);
+
+    // Prisma's interactive-transaction timeout is lifted to 40 s so that ONLY the
+    // server-side timer can end this: the transaction reads, then goes idle.
+    const stuckApp = () => Number(truth(`select count(*) from pg_stat_activity where usename='fm_app' and state like 'idle in transaction%'`));
+    const t0 = Date.now();
+    let idleAt3s = -1, idleAt10s = -1;
+    const abandoned = await attempt(() => withTenantDb("alice", async (tx) => {
+      await tx.$queryRaw`SELECT 1`;
+      await new Promise((r) => setTimeout(r, 3_000));
+      idleAt3s = stuckApp();
+      await new Promise((r) => setTimeout(r, 7_000));
+      idleAt10s = stuckApp();       // past Prisma's default 5 s: still open, so only the server can end it
+      await new Promise((r) => setTimeout(r, 8_000));
+      return tx.$queryRaw`SELECT 1`;
+    }, { timeout: 40_000 }));
+    const endedAfterS = Math.round((Date.now() - t0) / 1000);
+    await new Promise((r) => setTimeout(r, 500));
+    check(51, "[idle] a tenant transaction left idle is ENDED BY POSTGRES at ~15 s — not by Prisma, not by a human — and leaves no fm_app session idle in transaction",
+      idleAt3s >= 1 && idleAt10s >= 1 && !abandoned.ok
+      && !/expired|already closed|Transaction API error|timeout for this transaction/i.test(abandoned.error)
+      && endedAfterS >= 18 && endedAfterS < 25 && stuckApp() === 0,
+      `idleAt3s=${idleAt3s} idleAt10s=${idleAt10s} ended=${abandoned.ok ? "COMPLETED (timeout did not fire)" : abandoned.error.slice(0, 160)} after ${endedAfterS}s residue=${stuckApp()}`);
+
+    const recovered = await attempt(() => as("alice", (tx) => tx.transaction.count()));
+    const bobSees = await attempt(() => as("bob", (tx) => tx.transaction.count({ where: { id: "tx_alice_1" } })));
+    check(52, "[idle] the fm_app pool recovers after the server ended a connection, and isolation is unchanged (Alice reads her rows; Bob still cannot see hers)",
+      recovered.ok && recovered.value > 0 && bobSees.ok && bobSees.value === 0,
+      `alice=${recovered.ok ? recovered.value : recovered.error.slice(0, 120)} bob=${bobSees.ok ? bobSees.value : bobSees.error.slice(0, 120)}`);
+  }
+
   for (const c of [dbMod.tenantDb, dbMod.authDb, dbMod.systemDb, dbMod.db]) {
     await (c as { $disconnect: () => Promise<void> }).$disconnect();
   }

@@ -48,6 +48,24 @@ import { tenantDb, activeDbRoles } from "@/lib/db";
 /** The setting the policies read. Must match the migration. */
 export const TENANT_GUC = "app.user_id";
 
+/**
+ * How long a tenant transaction may sit idle before Postgres ends it (RLS-PREVIEW-13b).
+ *
+ * Preview, Stage 13b: when one parallel loader failed fast (Supavisor EMAXCONN), the
+ * request answered 500 while a sibling's tenant phase was still in flight. Nothing
+ * awaited it any more, the instance was suspended, and the transaction sat "idle in
+ * transaction" — 150 s+, holding a pooler server slot — until a manual terminate.
+ * Reproduced locally (rejected sibling + SIGSTOP). Prisma's own 5 s transaction
+ * timeout cannot fire in a suspended process; the SERVER's timer can.
+ *
+ * Set transaction-locally (is_local = true) in the same statement as the identity,
+ * so it costs no round trip, ends with the transaction, and protects every tenant
+ * phase in every environment whatever the role's own setting. The role-level
+ * setting stays as the second net. A live phase is never idle this long: phases are
+ * short reads and writes, and the interactive-transaction timeout is 5 s.
+ */
+export const TENANT_IDLE_IN_TRANSACTION_TIMEOUT = "15s";
+
 /** A transaction-scoped client whose statements carry a tenant identity. */
 export type TenantClient = Prisma.TransactionClient;
 
@@ -111,7 +129,8 @@ export async function withTenantDb<T>(
   return (tenantDb as PrismaClient).$transaction(
     async (tx) => {
       // is_local = true. See the header: this is the whole security property.
-      await tx.$executeRaw`SELECT set_config(${TENANT_GUC}, ${userId}, true)`;
+      // The second set_config bounds how long this transaction can be left idle.
+      await tx.$executeRaw`SELECT set_config(${TENANT_GUC}, ${userId}, true), set_config('idle_in_transaction_session_timeout', ${TENANT_IDLE_IN_TRANSACTION_TIMEOUT}, true)`;
       return fn(tx);
     },
     opts,

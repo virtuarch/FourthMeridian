@@ -69,6 +69,29 @@
  *
  * Scripts under `scripts/` construct their own PrismaClient and are unaffected;
  * migrations use `DIRECT_URL` (port 5432) and are likewise untouched.
+ *
+ * ── WHY 3 NOW (RLS-PREVIEW-13b, 2026-10-06) ─────────────────────────────────
+ * The derivation above assumed ONE pool per process. Since RLS-2 every process
+ * holds FOUR — `db`, and the fm_app / fm_auth / fm_system role clients — and this
+ * constant sizes all four (lib/db.ts: runtimeDatasourceUrl() and roleClient()).
+ * Two of its premises also moved: the 2.4 s revocation query now runs on fm_auth
+ * behind a 30 s per-process cache with coalescing, and Supavisor's 200 is a
+ * PROJECT-wide client ceiling shared by every role, not a per-pool one.
+ *
+ * Measured on Preview (Nano, transaction pooler, pool_size 12 per role) under 200
+ * concurrent request loops: Supavisor refused clients with
+ * "(EMAXCONN) max client connections reached, limit: 200" while Postgres held
+ * only 50 backends. Prisma opens connections on demand, grows each pool to its
+ * limit under concurrency, and KEEPS them idle (measured), so a warm instance
+ * holds ~2L + 2 clients (db and fm_app saturate; fm_auth and fm_system stay
+ * near 1). At L = 5 that is ~12 per instance and ~16 instances to the ceiling;
+ * at L = 3, ~8 and ~25.
+ *
+ * Throughput does not fall with it: each role's SERVER pool (12) is the real
+ * concurrency ceiling, so client connections past it only queue in Supavisor.
+ * 3 also keeps the original reason not to go lower: the in-process queue for a
+ * 14-request burst of ~0.4 s phases is ~1.9 s, far inside the 10 s pool_timeout,
+ * and 1 would bring back the serial queue that produced P2024 in July.
  */
 
 /**
@@ -76,7 +99,7 @@
  * derivation above before changing this — it is an evidence-backed number, not
  * a preference.
  */
-export const RUNTIME_CONNECTION_LIMIT = 5;
+export const RUNTIME_CONNECTION_LIMIT = 3;
 
 /** The parameter this module owns. */
 const CONNECTION_LIMIT_PARAM = "connection_limit";
