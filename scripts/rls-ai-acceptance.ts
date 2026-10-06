@@ -343,7 +343,7 @@ async function main(): Promise<void> {
     const props = ((t.parameters as { properties?: Record<string, unknown> }).properties) ?? {};
     for (const k of Object.keys(props)) if (identityKeys.test(k)) offenders.push(`${t.name}.${k}`);
   }
-  check(28, "[identity] not one of the 20 tool schemas declares a user or Space identity parameter",
+  check(28, `[identity] not one of the ${tools.TOOLS.length} tool schemas declares a user or Space identity parameter`,
     offenders.length === 0, offenders.join(", "));
 
   const smuggled = await runRecall("alice", "space_s",

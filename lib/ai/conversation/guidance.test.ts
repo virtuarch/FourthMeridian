@@ -177,8 +177,8 @@ async function main(): Promise<void> {
     check('guidance.ts reads no question text with a pattern (no keyword rules)',
       !/\.test\((args\.)?asked|asked\.match|\/\\bshould/.test(guidanceSrc));
     const route = readFileSync(path.join(process.cwd(), 'app/api/ai/chat/route.ts'), 'utf8');
-    check('the sealed runtime state does not carry it',
-      /sealRuntimeStateWithReport\(\s*\{ scenario: turn\.scenario, pending: turn\.pending, continuity: turn\.continuity \}/.test(route));
+    const sealArgs = /sealRuntimeStateWithReport\(\s*\{([^}]*)\}/.exec(route)?.[1] ?? '';
+    check('the sealed runtime state does not carry it', sealArgs.includes('turn.scenario') && !/guidance/.test(sealArgs));
   }
 
   console.log('6. the instruction: calibrated, not cautious');

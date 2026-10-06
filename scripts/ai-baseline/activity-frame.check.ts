@@ -35,11 +35,10 @@ function check(name: string, cond: boolean, detail?: string) {
 }
 
 const tok = (s: string) => Math.ceil(s.length / 4);
-const HEAD = 'FINANCIAL ORIENTATION\n';
 type Frame = { window: { from: string; to: string; days: number }; income: number;
   spending: number; cardAndDebtPayments: number; netCashFlow: number; transactionCount: number };
 type Core = Record<string, unknown> & { recent?: Frame; activity?: Frame };
-const core = (body: string | null) => JSON.parse((body ?? '').slice(HEAD.length)) as Core;
+const core = (body: string | null) => JSON.parse((body ?? '').slice((body ?? '').indexOf('{'))) as Core;
 
 async function main() {
   const spaceId = process.env.CHECK_SPACE_ID ?? 'cmrrm846r000j7znwsl67gt1g';

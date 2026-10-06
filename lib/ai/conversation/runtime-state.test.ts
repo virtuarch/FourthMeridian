@@ -175,9 +175,18 @@ console.log('\n7. IT IS NOT PERSISTENCE');
   // result, no transcript, no memory.
   // FM-AUDIT-018 added a third slot: a LOSS descriptor (what could not be carried) —
   // counts and a timestamp, never a result, never a clause.
-  check('it carries the scenario, the staged plan and a continuity-loss descriptor, and NOTHING else',
+  // The hardening slice added a fourth: the PROVENANCE of the last answer — the calls
+  // it ran and where each figure came from (provenance.ts). Still never a result: the
+  // record is an index the next turn re-runs, and the tool stays the authority.
+  check('it carries the scenario, the staged plan, a continuity-loss descriptor and the last answer\'s provenance, and NOTHING else',
     !/evidence|toolResult|messages|memory|body/.test(src)
-    && /interface RuntimeState \{\s*scenario: ActiveScenario \| null;[\s\S]*?pending\?: PendingPlan \| null;[\s\S]*?continuity\?: ContinuityLoss \| null;\s*\}/.test(src));
+    && /interface RuntimeState \{\s*scenario: ActiveScenario \| null;[\s\S]*?pending\?: PendingPlan \| null;[\s\S]*?continuity\?: ContinuityLoss \| null;[\s\S]*?provenance\?: AnswerProvenance \| 'NOT_CARRIED' \| null;\s*\}/.test(src));
+  {
+    const prov = readFileSync('lib/ai/conversation/provenance.ts', 'utf8');
+    check('…and the provenance record holds calls and figure sources, never a tool result',
+      /export interface AnswerProvenance \{\s*calls:\s*\{ tool: string; args: unknown; failed\?: true \}\[\];\s*figures:\s*FigureSource\[\];/.test(prov)
+        && !/result:/.test(prov.slice(prov.indexOf('export interface AnswerProvenance'), prov.indexOf('/** Ceilings'))));
+  }
   check('the loss descriptor holds counts and a timestamp — no figure, no clause',
     /interface ContinuityLoss \{[\s\S]*?reason: 'TOO_LARGE';[\s\S]*?droppedScenario: boolean;[\s\S]*?droppedPendingClauses: number;[\s\S]*?wouldHaveSealedTo: number;[\s\S]*?at: string;\s*\}/.test(src));
 }

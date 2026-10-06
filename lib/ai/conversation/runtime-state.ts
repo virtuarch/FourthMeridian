@@ -30,6 +30,7 @@ import { createHash } from 'crypto';
 import {
   sealWithPurpose, openWithPurpose, EncryptionPurpose,
 } from '@/lib/plaid/encryption';
+import { readProvenance, type AnswerProvenance } from './provenance';
 import type { ActiveScenario } from './active-scenario';
 import { isPendingPlan, type PendingPlan } from './pending-plan';
 
@@ -100,6 +101,14 @@ export interface RuntimeState {
   pending?: PendingPlan | null;
   /** A plan this conversation built that could NOT be carried (FM-AUDIT-018). Absent when none. */
   continuity?: ContinuityLoss | null;
+  /**
+   * HARDENING — what the LAST answer rested on (provenance.ts): the calls it ran
+   * and where each figure came from. Bound, like the rest, to the digest of that
+   * very answer. The LOWEST-priority slot: when the seal would not fit, it is
+   * replaced by 'NOT_CARRIED' before anything about the plan is touched, and the
+   * next turn is told.
+   */
+  provenance?: AnswerProvenance | 'NOT_CARRIED' | null;
 }
 
 /**
@@ -169,11 +178,16 @@ function sealPayload(payload: SealedPayload): string {
 export function sealRuntimeStateWithReport(state: RuntimeState, binding: StateBinding): SealReport {
   const pending = state.pending && state.pending.clauses.length > 0 ? state.pending : null;
   const continuity = state.continuity ?? null;
-  if (!state.scenario && !pending && !continuity) return { sealed: null, carried: 'NONE' };
+  const provenance = state.provenance ?? null;
+  if (!state.scenario && !pending && !continuity && !provenance) return { sealed: null, carried: 'NONE' };
   const base = { v: VERSION, iat: Date.now(), ...binding };
   try {
-    const sealed = sealPayload({ ...base, scenario: state.scenario,
-      ...(pending ? { pending } : {}), ...(continuity ? { continuity } : {}) });
+    const plan = { ...base, scenario: state.scenario,
+      ...(pending ? { pending } : {}), ...(continuity ? { continuity } : {}) };
+    // Provenance first in, first out: the plan's slots never pay for it.
+    const withRecord = provenance ? sealPayload({ ...plan, provenance }) : null;
+    const sealed = withRecord && withRecord.length <= MAX_SEALED_CHARS ? withRecord
+      : sealPayload({ ...plan, ...(provenance ? { provenance: 'NOT_CARRIED' as const } : {}) });
     if (sealed.length <= MAX_SEALED_CHARS) {
       return continuity ? { sealed, carried: 'LOST', loss: continuity, fresh: false } : { sealed, carried: 'FULL' };
     }
@@ -234,8 +248,10 @@ export function openRuntimeState(
     || typeof scenario.assumptions !== 'object' || scenario.assumptions === null
     || typeof scenario.result !== 'object' || scenario.result === null)) return null;
   const continuity = isContinuityLoss(payload.continuity) ? payload.continuity : null;
-  if (!scenario && !pending && !continuity) return null;
-  return { scenario, ...(pending ? { pending } : {}), ...(continuity ? { continuity } : {}) };
+  const provenance = readProvenance(payload.provenance);
+  if (!scenario && !pending && !continuity && !provenance) return null;
+  return { scenario, ...(pending ? { pending } : {}), ...(continuity ? { continuity } : {}),
+    ...(provenance ? { provenance } : {}) };
 }
 
 function isContinuityLoss(x: unknown): x is ContinuityLoss {

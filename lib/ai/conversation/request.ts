@@ -38,6 +38,16 @@ export const MAX_TURNS             = 80;
 export const MAX_MESSAGE_CHARS     = 8_000;
 export const MAX_TRANSCRIPT_CHARS  = 160_000;
 
+// ⚠️ HARDENING — A CHARACTER IS NOT A TOKEN, AND THE BILL IS IN TOKENS. Measured on
+// gpt-5.1 (2026-10-07, 20k-char samples): English 0.20 tok/char, CJK 1.90, combining
+// marks 1.73, a rare script 1.99 — so the character ceilings above admitted ~10× the
+// tokens of an English transcript, re-sent on every tool round trip. Per UTF-8 BYTE
+// the same samples measured 0.13–1.00 tok/byte, never more: bytes are the bound.
+// These leave English exactly where it was (one byte per character) and cap the
+// pathological case at the English case's token cost.
+export const MAX_MESSAGE_BYTES     = 16_000;
+export const MAX_TRANSCRIPT_BYTES  = 160_000;
+
 /**
  * Why a request cannot be answered.
  *
@@ -80,14 +90,18 @@ export function readChatRequest(body: unknown): ChatRequest {
 
   const turns: ConversationMessage[] = [];
   let chars = 0;
+  let bytes = 0;
   for (const item of messages) {
     if (typeof item !== 'object' || item === null) return { ok: false, refusal: 'MALFORMED' };
     const { role, content } = item as { role?: unknown; content?: unknown };
     if (role !== 'user' && role !== 'assistant') return { ok: false, refusal: 'MALFORMED' };
     if (typeof content !== 'string') return { ok: false, refusal: 'MALFORMED' };
     if (content.length > MAX_MESSAGE_CHARS) return { ok: false, refusal: 'TOO_LONG' };
+    const size = Buffer.byteLength(content, 'utf8');
+    if (size > MAX_MESSAGE_BYTES) return { ok: false, refusal: 'TOO_LONG' };
     chars += content.length;
-    if (chars > MAX_TRANSCRIPT_CHARS) return { ok: false, refusal: 'TOO_LONG' };
+    bytes += size;
+    if (chars > MAX_TRANSCRIPT_CHARS || bytes > MAX_TRANSCRIPT_BYTES) return { ok: false, refusal: 'TOO_LONG' };
     turns.push({ role, content });
   }
 

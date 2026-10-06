@@ -83,8 +83,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const [user, authErr] = await requireUser();
   if (authErr) return authErr;
 
+  // ⚠️ HARDENING — TWO WINDOWS, AND NOBODY IS EXEMPT FROM THE SECOND. A turn costs up
+  // to MAX_TOOL_ROUNDTRIPS model calls over a prompt of up to MAX_TRANSCRIPT_BYTES,
+  // plus up to MAX_TOOL_CALLS_PER_TURN tool phases and one guidance label. The
+  // surface sends one question at a time and a turn takes 5–70 s, so a person
+  // cannot approach 10 a minute; the hour window bounds a script — or a stolen
+  // admin session — that can.
   if (user.role !== 'SYSTEM_ADMIN') {
-    const limited = await limitByUser(user.id, 'ai-chat', { limit: 30, windowSec: 60 });
+    const limited = await limitByUser(user.id, 'ai-chat', { limit: 10, windowSec: 60 });
+    if (limited) return limited;
+  }
+  {
+    const limited = await limitByUser(user.id, 'ai-chat-hour', { limit: 60, windowSec: 3600 });
     if (limited) return limited;
   }
 
@@ -154,6 +164,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       pending: carried?.pending ?? null,
       // FM-AUDIT-018 — a plan the previous turn could not carry; this turn is told.
       continuity: carried?.continuity ?? null,
+      // HARDENING — what the previous answer rested on, for "how did you calculate that?".
+      provenance: carried?.provenance ?? null,
       asOfISO: todayUTCISO(),
       // ⚠️ RLS-AI-S11 — THE AUTHORITY HAS MOVED, AND THESE TWO FIELDS ARE NOW THE
       // FALLBACK RATHER THAN THE ANSWER.
@@ -214,7 +226,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // SAME text, because the client echoes this reply back as history.
     const answer = applyPossessiveConvention(turn.answer);
     const seal = sealRuntimeStateWithReport(
-      { scenario: turn.scenario, pending: turn.pending, continuity: turn.continuity }, {
+      { scenario: turn.scenario, pending: turn.pending, continuity: turn.continuity, provenance: turn.provenance }, {
       ...binding, tail: conversationTail([...history, { role: 'assistant', content: answer }]),
     });
     const sealed = seal.sealed;

@@ -111,6 +111,7 @@ import type { SpaceContext } from '@/lib/space';
 // reach db.spaceMemory and nothing else". One loose assertion covering both
 // would have protected neither.
 import { MEMORY_TOOLS } from './memory-tools';
+import { describeFourthMeridian } from './product';
 import type { TurnEvidence } from './memory-model';
 // ⚠️ READING memory, never writing it. `recallMemories` is the store's read half;
 // the write half lives in the turn loop (slice 7) and in `remember`. This file
@@ -1107,6 +1108,8 @@ const getBaselines: ToolDefinition = {
     'multiple. Every derived figure ships with its numerator, denominator and basis — quote them. ' +
     'Never divide an orientation or window total to get a monthly figure. For WHEN cash reaches a ' +
     'threshold, give its amount to scenario_crossing — do not divide a shortfall by the surplus. ' +
+    'For runway or reserves AFTER a one-off cash movement (paying a card, a purchase, a windfall), pass ' +
+    '`liquidChange` and quote `afterLiquidChange` — never subtract from cash or divide in prose. ' +
     'It does not say what the user SHOULD spend or keep. The thresholds are reference points to set ' +
     'side by side, not a standard: say which the evidence favours and why, and leave the choice of ' +
     'reserve to the user.',
@@ -1123,6 +1126,8 @@ const getBaselines: ToolDefinition = {
         + '— a MULTIPLIER of the baseline, not an averaging window. 3, 6 and 12 are always returned. '
         + 'Each comes back in dollars with the rule, the baseline it multiplied, and the gap to '
         + 'current cash.' },
+    liquidChange: num('A one-off change to liquid cash in dollars, to price runway and reserves after it: '
+      + 'paying $5,000 to a card is -5000. Nothing else moves.'),
     asOf: str('Information ceiling: pretend today is this date. Nothing after it is read.'),
   }),
   async run(a, ctx) {
@@ -1206,6 +1211,19 @@ const getBaselines: ToolDefinition = {
     const derived = derive({ expense, income, liquid,
       minimumDebtService: aggregate.minimumPayment > 0 ? aggregate.minimumPayment : null,
       monthsOfExpenses: wanted });
+    // ⚠️ HARDENING — THE FIGURE THE MODEL USED TO WORK OUT IN PROSE. "If I paid $5,000
+    // toward my cards, how much runway is left?" was answered 10,925.25 ÷ 5,438.35 in
+    // the answer's own words, and its later explanation was a reconstruction. The same
+    // `derive` over the moved cash makes it a tool figure with a derivation.
+    const change = typeof a.liquidChange === 'number' && Number.isFinite(a.liquidChange) ? round2(a.liquidChange) : null;
+    const moved = change !== null && liquid !== null ? derive({ expense, income, liquid: liquid + change,
+      minimumDebtService: aggregate.minimumPayment > 0 ? aggregate.minimumPayment : null, monthsOfExpenses: wanted }) : null;
+    // Only what the change MOVES: surplus and savings rate do not depend on cash.
+    const afterLiquidChange = moved && change !== null && liquid !== null ? {
+      liquidChange: change, liquidAfter: round2(liquid + change),
+      basis: 'current liquid plus this one-off change; spending, income and every other balance unchanged',
+      runway: moved.runway, thresholds: moved.thresholds,
+    } : null;
 
     // ⚠️ THE SPREAD OF LEGITIMATE FIGURES, FROM ONE READ. "Monthly spending" has a
     // different honest answer over 3, 6 and 12 complete months; showing them side
@@ -1248,6 +1266,7 @@ const getBaselines: ToolDefinition = {
         : refuse('no income baseline: nothing stated, no settled recurring deposits, '
         + 'and no complete month of observed income', 'anything to build an income baseline from'),
       ...derived,
+      ...(afterLiquidChange ? { afterLiquidChange } : {}),
       liquid: liquid === null ? refuse('no accounts in scope', 'any accounts in scope') : {
         amount: liquid, basis: 'checking + savings from the current accounts — the same figure as '
           + 'get_financial_snapshot.liquid; investments and digital assets are not in it',
@@ -4505,6 +4524,7 @@ export const TOOLS: readonly ToolDefinition[] = [
   scenarioProjection, scenarioCrossing, scenarioGoalSeek, reconcileProjection,
   stageAssumptions,
   ...MEMORY_TOOLS,
+  describeFourthMeridian,
 ];
 
 /** OpenAI function-tool definitions for the tool-capable arms. */

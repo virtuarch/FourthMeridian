@@ -38,6 +38,7 @@ import type { MemoryClient } from './memory-store';
 import { executeTurn, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord } from './turn';
 import { newScenarioSlot, type ScenarioSlot, type ActiveScenario } from './active-scenario';
 import { collectKnowledgeGaps } from './knowledge-gaps';
+import { buildProvenance, injectProvenance, type AnswerProvenance } from './provenance';
 import { classifyGuidance, CLASSIFIER_TIMEOUT_MS, type GuidanceModelCall } from './guidance';
 import { generateStructuredWithUsage } from '@/lib/ai/provider';
 import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
@@ -260,6 +261,11 @@ export interface StatelessTurn {
    * it to frame the answer and nothing else does.
    */
   guidance: AiGuidance | null;
+  /**
+   * HARDENING — what this answer rested on, for the NEXT turn's explanation.
+   * Null when there was no answer. Sealed by the route, never sent to a browser.
+   */
+  provenance: AnswerProvenance | null;
 }
 
 /**
@@ -302,6 +308,8 @@ export async function runStatelessTurn(args: {
   classify?: GuidanceModelCall | false;
   /** Harness A/B only — see `openTranscript`. */
   instruction?: string;
+  /** What the PREVIOUS answer rested on, if the seal carried it (or that it could not). */
+  provenance?: AnswerProvenance | 'NOT_CARRIED' | null;
 }): Promise<StatelessTurn> {
   const asOfISO = args.asOfISO ?? todayUTCISO();
   const model = args.model ?? CHAT_MODEL;
@@ -311,6 +319,9 @@ export async function runStatelessTurn(args: {
     memoryClient: args.memoryClient, readClient: args.readClient,
     phase: args.phase, memoryWrites: args.memoryWrites, instruction: args.instruction });
   replayHistory(open.messages, args.history);
+  // The record of the last answer sits after the prose it describes. Only when
+  // there IS a last answer: a first turn has nothing to explain.
+  if (args.history.some((m) => m.role === 'assistant')) injectProvenance(open.messages, args.provenance ?? null);
 
   // ⚠️ A SLOT PER REQUEST, RESTORED — NOT A SLOT THAT LIVES ON THE SERVER. The
   // continuity is the caller's to carry; this only reconstitutes it for the
@@ -345,7 +356,11 @@ export async function runStatelessTurn(args: {
         args.classify || defaultGuidanceCall(model)))
     : null;
 
-  return { answer: record.assistant, record, evidence: open.evidence, guidance,
+  const provenance = record.assistant?.trim() ? buildProvenance({
+    answer: record.assistant, toolCalls: record.toolCalls, orientation: open.evidence.body ?? null,
+    userTexts: [...args.history.filter((m) => m.role === 'user').map((m) => m.content), args.user] }) : null;
+
+  return { answer: record.assistant, record, evidence: open.evidence, guidance, provenance,
     scenario: slot.active,
     pending: open.toolCtx.plan.pending.clauses.length > 0 ? open.toolCtx.plan.pending : null,
     // The loss stands until a scenario RUNS again in this conversation — a new

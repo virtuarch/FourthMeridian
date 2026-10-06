@@ -78,7 +78,7 @@ async function main(): Promise<void> {
 
   // ── 1. one argument, twenty tools ────────────────────────────────────────
   console.log('1. one shared argument; the tool count is unchanged');
-  check('20 production tools', TOOLS.length === 20, String(TOOLS.length));
+  check('21 production tools (20 + describe_fourth_meridian)', TOOLS.length === 21, String(TOOLS.length));
   for (const t of ['scenario_projection', 'scenario_crossing', 'scenario_goal_seek']) {
     check(`${t} declares \`spendingChanges\``, 'spendingChanges' in (findTool(t)!.parameters as Rec).properties);
   }

@@ -82,7 +82,8 @@ async function main(): Promise<void> {
   const spaceCtx = { userId: owner.userId, spaceId: SPACE, role: 'OWNER',
     permissions: { canInvite: true, canManage: true, canWrite: true, canRead: true, isOwner: true }, space } as unknown as SpaceContext;
   console.log(`advice-boundary — Space ${SPACE} as of ${ASOF} on ${live} — GUIDANCE_RULE ${RULE ? 'ON' : 'OFF'}\n`);
-  const instruction = systemInstructionWith({ guidance: RULE });
+  // ADVICE_CONV=off isolates the hardening slice's CONVERSATION_RULE (regression A/B).
+  const instruction = systemInstructionWith({ guidance: RULE, conversation: process.env.ADVICE_CONV !== 'off' });
   const counts = { standard: 0, pick: 0, collapse: 0, turns: 0, labelled: 0, planHits: 0, planChecked: 0 };
 
   const record: unknown[] = [];

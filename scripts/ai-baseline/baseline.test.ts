@@ -105,7 +105,11 @@ console.log('2. system instruction');
   // ⚠️ 240 → 329 IN THE ADVICE-BOUNDARY SLICE, BY ONE MEASURED RULE (GUIDANCE_RULE,
   // A/B in scripts/ai-baseline/advice-boundary.check.ts). It is the product's
   // recommending policy, not doctrine: no figures, no examples, no tool names.
-  check(`~100–330 words (is ${words})`, words >= 90 && words <= 330, String(words));
+  // ⚠️ 329 → 444 IN THE HARDENING SLICE: the identity line (+20, names the product
+  // and points product questions at describe_fourth_meridian) and CONVERSATION_RULE
+  // (84 words, A/B in scripts/ai-baseline/hardening.check.ts). Scope, data-as-
+  // evidence, claimed authority, challenged answers — each a recorded failure.
+  check(`~100–450 words (is ${words})`, words >= 90 && words <= 450, String(words));
   check('no worked example', !/for example|e\.g\.|example:/i.test(SYSTEM_INSTRUCTION));
   check('no phrase table', !/say "|respond with "|use the phrase/i.test(SYSTEM_INSTRUCTION));
   // The goldens evaluate behaviour; their wording must not become the prompt.
@@ -142,7 +146,7 @@ console.log('2a. exploratory hypotheticals');
   // ⚠️ THE CEILING MOVED ONCE, BY ONE MEASURED SENTENCE. Slice C added the
   // evidence rule (no tool names, no examples) after the structural fixes, and
   // measured it against the same conversation with and without it.
-  check(`the instruction is still ~100–330 words (is ${words})`, words >= 90 && words <= 330);
+  check(`the instruction is still ~100–450 words (is ${words})`, words >= 90 && words <= 450);
 }
 
 // ══ 3. Arms get what they claim, and nothing more ════════════════════════════
@@ -192,7 +196,7 @@ console.log('4. tool surface');
   // Two heads, not a catalogue: no per-question measure tool exists.
   // +1 — `stage_assumptions`, the carrier for conditions stated before a scenario
   // has run (planning continuity). Its keys are derived from SCENARIO_INPUTS.
-  check('twenty tools', TOOLS.length === 20, String(TOOLS.length));
+  check('twenty-one tools (describe_fourth_meridian is the 21st)', TOOLS.length === 21, String(TOOLS.length));
   check('names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length);
   check('every tool describes itself', TOOLS.every((t) => t.description.length > 40));
   check('every schema is a closed object',
@@ -2007,12 +2011,12 @@ console.log('19a. memory line');
   // instruction, which is ~140 words and whose growth is itself a finding.
   check('the system instruction still says nothing about memory',
     !/recall|remember|memory|intention|goal/i.test(SYSTEM_INSTRUCTION));
-  // ⚠️ `<=`, THE CEILING THE OTHER TWO PINS STATE (90–330 inclusive since the
-  // advice-boundary slice's one measured rule). This one alone read `< 240`; I1
+  // ⚠️ `<=`, THE CEILING THE OTHER TWO PINS STATE (90–450 inclusive since the
+  // hardening slice's identity line and measured rule). This one alone read `< 240`; I1
   // spent the last six words of headroom on one measured sentence ("Run tools
   // rather than offering to.") and met the disagreement.
   check('…and it is still a short instruction',
-    SYSTEM_INSTRUCTION.split(/\s+/).length <= 330, String(SYSTEM_INSTRUCTION.split(/\s+/).length));
+    SYSTEM_INSTRUCTION.split(/\s+/).length <= 450, String(SYSTEM_INSTRUCTION.split(/\s+/).length));
 
   // ⚠️ NO BALANCE REACHES THE ORIENTATION THROUGH MEMORY. Only subjects, targets,
   // dates and horizons are ever emitted.

@@ -147,13 +147,13 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
                 if (line.match(/^\*\*[A-Z]/)) {
                   return (
                     <p key={i} className="text-xs font-bold text-white mt-3 mb-1"
-                       dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.*?)\*\*/g, "$1") }}
+                       dangerouslySetInnerHTML={{ __html: escapeHtml(line).replace(/\*\*(.*?)\*\*/g, "$1") }}
                     />
                   );
                 }
                 return (
                   <p key={i} className="text-xs text-[var(--text-secondary)] leading-relaxed"
-                     dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.*?)\*\*/g, "<strong class='text-[var(--text-primary)]'>$1</strong>") }}
+                     dangerouslySetInnerHTML={{ __html: escapeHtml(line).replace(/\*\*(.*?)\*\*/g, "<strong class='text-[var(--text-primary)]'>$1</strong>") }}
                   />
                 );
               })}
@@ -200,4 +200,13 @@ export function AdviceBanner({ advice }: Props) {
       {open && <AnalysisModal advice={advice} onClose={() => setOpen(false)} />}
     </>
   );
+}
+
+/**
+ * ⚠️ HARDENING — `adviceText` reaches innerHTML. It is seed-only today (no runtime
+ * writer), but it is AI-advice text rendered on the Conversations page, and the
+ * only markup this banner means to produce is its own <strong>. Escape first.
+ */
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
