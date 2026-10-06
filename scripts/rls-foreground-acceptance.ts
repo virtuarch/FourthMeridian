@@ -561,6 +561,104 @@ async function main(): Promise<void> {
   check(42, "[source] the two writers and the resolver hold NO database client, import no incident recorder, and never call recordIssue inside a tenant phase body",
     holdsClient.length === 0 && telemetryInsidePhase.length === 0, `holdsClient=[${holdsClient.join(",")}] inside=[${telemetryInsidePhase.join(",")}]`);
 
+  // ════════════════════════════════════════════════════════════════════════
+  // S. SESSION ACTIVITY BOOKKEEPING ON fm_auth  (RLS-PREVIEW-13)
+  // ════════════════════════════════════════════════════════════════════════
+  // Preview, Stage 13: a fire-and-forget `updateMany` (BEGIN/UPDATE/COMMIT) on
+  // fm_auth was suspended with its instance between UPDATE and COMMIT. It held
+  // the UserSession row lock as "idle in transaction"; every later touch queued
+  // behind it holding a pool slot; the revocation read starved; every signed-in
+  // request 503'd. Here that open transaction is reproduced on the real fm_auth
+  // role, and the replacement is attacked with it.
+  {
+    const { touchSessionActivity } = await import("@/lib/auth/session-activity");
+    const { factsFromRow, judgeSession, SESSION_ROW_SELECT } = await import("@/lib/auth/session-proof");
+    const { resolveRevocation, invalidateSession } = await import("@/lib/session-cache");
+    const auth = dbMod.authDb;
+
+    const LIVE_TOK = "rlsfg_alice_session_live_0001";
+    const REV_TOK  = "rlsfg_alice_session_revoked_01";
+    const seeded = psql(h.ownerUrl, `
+      insert into "UserSession" (id,"userId","sessionToken","lastActiveAt") values
+        ('us_alice_live','alice','${LIVE_TOK}', (now() at time zone 'utc') - interval '10 minutes'),
+        ('us_alice_rev', 'alice','${REV_TOK}',  (now() at time zone 'utc') - interval '10 minutes');`);
+    if (!seeded.ok) throw new Error(`session fixture seed failed: ${seeded.err}`);
+    const stale = (id: string) => psql(h.ownerUrl,
+      `update "UserSession" set "lastActiveAt" = (now() at time zone 'utc') - interval '10 minutes' where id='${id}'`);
+    const ageS = (id: string) => Number(truth(
+      `select extract(epoch from (now() at time zone 'utc') - "lastActiveAt")::int from "UserSession" where id='${id}'`));
+    const stuckAuth = () => Number(truth(
+      `select count(*) from pg_stat_activity where usename='fm_auth' and state like 'idle in transaction%'`));
+    const validate = async (tok: string) => {
+      invalidateSession(tok);
+      const outcome = await resolveRevocation(tok, async () => factsFromRow(
+        await auth.userSession.findFirst({ where: { sessionToken: tok }, select: SESSION_ROW_SELECT }),
+        async () => false,
+      ));
+      return judgeSession({ userId: "alice", sessionToken: tok }, outcome);
+    };
+    const timed = async <T,>(fn: () => PromiseLike<T>) => { const t0 = Date.now(); const v = await fn(); return { v, ms: Date.now() - t0 }; };
+
+    // 43 — validation is untouched, and a validated stale session is recorded once.
+    const v43 = await validate(LIVE_TOK);
+    const t43 = await timed(() => touchSessionActivity(auth, LIVE_TOK, "alice"));
+    check(43, "[session] validation still authenticates a live session on fm_auth, and a stale session's activity is written exactly once, to now",
+      v43.kind === "authenticated" && t43.v === 1 && ageS("us_alice_live") <= 5,
+      `verdict=${v43.kind} rows=${t43.v} age=${ageS("us_alice_live")}s`);
+
+    // 44 — throttle, and identity: a fresh row is not rewritten; another user's id matches nothing.
+    const again = await touchSessionActivity(auth, LIVE_TOK, "alice");
+    stale("us_alice_live");
+    const wrongOwner = await touchSessionActivity(auth, LIVE_TOK, "bob");
+    check(44, "[session] a row touched within the granularity is not rewritten, and a token presented with another user's id writes nothing",
+      again === 0 && wrongOwner === 0 && ageS("us_alice_live") >= 590, `again=${again} wrongOwner=${wrongOwner} age=${ageS("us_alice_live")}s`);
+
+    // 45/46 — THE INCIDENT. An fm_auth transaction runs the OLD write and never
+    // commits (a suspended instance), holding the row lock.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const holder = auth.$transaction(async (tx) => {
+      await tx.userSession.updateMany({ where: { sessionToken: LIVE_TOK, userId: "alice" }, data: { lastActiveAt: new Date() } });
+      await gate;
+    }, { timeout: 60_000, maxWait: 10_000 });
+    await new Promise((r) => setTimeout(r, 400));
+    // The holder's uncommitted write is invisible to everyone else: for them the row is still stale.
+    const heldBy = stuckAuth();
+
+    const legacy = auth.userSession.updateMany({ where: { sessionToken: LIVE_TOK, userId: "alice" }, data: { lastActiveAt: new Date() } });
+    const legacyRace = await Promise.race([legacy.then(() => "finished"), new Promise((r) => setTimeout(() => r("blocked"), 1500))]);
+    const t45 = await timed(() => touchSessionActivity(auth, LIVE_TOK, "alice"));
+    const burst = await timed(() => Promise.all(Array.from({ length: 20 }, () => touchSessionActivity(auth, LIVE_TOK, "alice"))));
+    const v45 = await timed(() => validate(LIVE_TOK));
+    check(45, "[session] REPRODUCED: with an fm_auth transaction left open on the row, the OLD updateMany queues behind it",
+      heldBy >= 1 && legacyRace === "blocked", `openTx=${heldBy} legacy=${legacyRace}`);
+    check(46, "[session] against that same held lock the NEW touch skips at once (0 rows, no wait), a burst of 20 does too, and validation still answers",
+      t45.v === 0 && t45.ms < 1000 && burst.v.every((x) => x === 0) && burst.ms < 2000 && v45.v.kind === "authenticated" && v45.ms < 2000,
+      `touch=${t45.v}/${t45.ms}ms burst=${burst.v.join("")}/${burst.ms}ms validate=${v45.v.kind}/${v45.ms}ms`);
+    release();
+    await holder; await legacy;
+
+    // 47 — the hot row under concurrency, with nothing held: no queue, one write.
+    stale("us_alice_live");
+    const herd = await timed(() => Promise.all(Array.from({ length: 40 }, () => touchSessionActivity(auth, LIVE_TOK, "alice"))));
+    const written = herd.v.reduce((a, b) => a + b, 0);
+    await new Promise((r) => setTimeout(r, 200));
+    check(47, "[session] 40 concurrent touches of one session write the row ONCE, finish promptly, and leave NO fm_auth session idle in transaction",
+      written === 1 && herd.ms < 3000 && stuckAuth() === 0, `written=${written} in ${herd.ms}ms idleInTx=${stuckAuth()}`);
+
+    // 48 — revocation semantics are unchanged, and a revoked session is never touched.
+    psql(h.ownerUrl, `update "UserSession" set "revokedAt" = now() where id='us_alice_rev'`);
+    const v48 = await validate(REV_TOK);
+    const revTouch = await touchSessionActivity(auth, REV_TOK, "alice");
+    check(48, "[session] a revoked session is still REFUSED by validation, and its activity is never written",
+      v48.kind === "refused" && revTouch === 0 && ageS("us_alice_rev") >= 590, `verdict=${v48.kind} rows=${revTouch}`);
+
+    // 49 — the fm_auth pool recovers fully once the holder is gone.
+    const after = await timed(() => validate(LIVE_TOK));
+    check(49, "[session] after the open transaction ends the fm_auth pool serves validation promptly and no fm_auth transaction remains open",
+      after.v.kind === "authenticated" && after.ms < 1000 && stuckAuth() === 0, `verdict=${after.v.kind} ${after.ms}ms idleInTx=${stuckAuth()}`);
+  }
+
   for (const c of [dbMod.tenantDb, dbMod.authDb, dbMod.systemDb, dbMod.db]) {
     await (c as { $disconnect: () => Promise<void> }).$disconnect();
   }

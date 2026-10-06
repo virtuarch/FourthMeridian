@@ -41,6 +41,7 @@ import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
 import { resolveRevocation, invalidateSession } from "@/lib/session-cache";
 import { readSessionClaims, factsFromRow, judgeSession, SESSION_ROW_SELECT } from "@/lib/auth/session-proof";
+import { touchSessionActivity } from "@/lib/auth/session-activity";
 import { checkKeyLimitStrict, peekKey } from "@/lib/rate-limit";
 import { captureAuthInfraFailure, captureSessionRevocationFailure } from "@/lib/monitoring/capture";
 import { SESSION_INDETERMINATE_FLAG } from "@/lib/auth/session-outcome";
@@ -658,16 +659,17 @@ export const authOptions: NextAuthOptions = {
       // exists: a bare expired session — middleware will redirect to /login.
       if (verdict.kind === "refused") return refusedSession(session);
 
-      // Bump lastActiveAt (fire-and-forget — don't block the response). Only on
-      // a genuine live check, as before: a COALESCED caller is riding someone
-      // else's query and must not add a second write, and a STALE_HIT means the
-      // database is already refusing connections — piling on a write there
-      // would add pressure to the exact resource that is failing.
+      // Record activity. Only on a genuine live check, as before: a COALESCED
+      // caller is riding someone else's query and must not add a second write,
+      // and a STALE_HIT means the database is already refusing connections —
+      // piling on a write there would add pressure to the exact resource that
+      // is failing. AWAITED, and one non-blocking statement: it was once a
+      // fire-and-forget updateMany (BEGIN/UPDATE/COMMIT) that a suspended
+      // instance left open, holding this row lock until every signed-in
+      // request 503'd. See lib/auth/session-activity.ts. Bookkeeping only —
+      // the verdict above is already final, so a failure here is ignored.
       if (outcome.disposition === "LIVE") {
-        db.userSession.updateMany({
-          where: { sessionToken, userId: verdict.userId },
-          data:  { lastActiveAt: new Date() },
-        }).catch(() => {});
+        await touchSessionActivity(db, sessionToken, verdict.userId).then(undefined, () => 0);
       }
 
       session.user.id        = verdict.userId;
