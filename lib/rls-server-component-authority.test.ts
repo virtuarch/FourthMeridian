@@ -123,6 +123,12 @@ console.log("1. dashboard/spaces/page.tsx — every viewer read is a tenant read
     "expected withTenantDb(userId, (tx) => getSpaceNetWorthSummaries(tx, …))");
   check("net worth is never read on the migration principal",
     !/getSpaceNetWorthSummaries\(\s*db\b/.test(src));
+  // Launch-readiness audit (2026-10-06): account freshness is metadata ABOUT the
+  // money, read on the owner client — so it is asked only for Spaces the viewer
+  // belongs to, never for the public Spaces they have not joined.
+  check("account freshness is resolved for MEMBER Spaces only, never for unjoined public Spaces",
+    /getSpaceCardFreshness\(\s*mySpaceIds\s*\)/.test(src) && !/getSpaceCardFreshness\(\s*allIds\s*\)/.test(src),
+    "expected getSpaceCardFreshness(mySpaceIds)");
 
   // The public-Space list is a TENANT read that still returns rows — it works
   // only because Space.fm_app_sel has the isPublic arm (pinned in §4 below).

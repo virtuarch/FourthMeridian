@@ -4,8 +4,16 @@
  * MC1 Phase 1 Slice 2 — the ONE database touchpoint of the FX layer
  * (plan §3.1). Prisma-backed implementation of the FxArchive contract:
  *
- *   - INSERT-ONLY. writeBatch uses createMany({ skipDuplicates: true }) so a
- *     re-fetch is a no-op against the @@unique([date, base, quote]) anchor.
+ *   - INSERT-ONLY. writeBatch is ONE autocommit INSERT … ON CONFLICT DO NOTHING
+ *     against the @@unique([date, base, quote]) anchor, so a re-fetch is a no-op.
+ *     It used to be createMany({ skipDuplicates: true }), which Prisma 5 sends as
+ *     BEGIN / INSERT / COMMIT (measured, launch-readiness audit 2026-10-06). The
+ *     write runs detached from the request (lib/money/server-context.ts), so a
+ *     Fluid Compute instance suspended between INSERT and COMMIT would leave an
+ *     open transaction holding those unique keys; every other instance's identical
+ *     refresh would queue behind it on the shared `db` pool that getSpaceContext
+ *     needs on every request. One statement commits on the server whatever the
+ *     client does next.
  *   - CLOSED DATES ONLY. Rows dated after yesterday UTC are rejected
  *     (assertClosedDateISO) — this is the application-level enforcement of
  *     the append-only doctrine (plan D8).
@@ -18,6 +26,9 @@
  * fakes of the FxArchiveReader seam (types.ts) so the suite runs without
  * `prisma generate` (plan §4).
  */
+
+import { randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 
 import { db } from "@/lib/db";
 import { assertClosedDateISO, assertISODate, toISODateUTC } from "./config";
@@ -81,16 +92,17 @@ export const fxArchive: FxArchive = {
     // silently dropping it would hide that bug.
     for (const r of rows) assertClosedDateISO(r.dateISO);
 
-    const res = await db.fxRate.createMany({
-      data: rows.map((r: RateResult) => ({
-        date:  isoToDate(r.dateISO),
-        base:  r.base,
-        quote: r.quote,
-        rate:  r.rate,
-        source,
-      })),
-      skipDuplicates: true, // idempotent re-fetch; existing rows are never touched
-    });
-    return { attempted: rows.length, inserted: res.count };
+    if (rows.length === 0) return { attempted: 0, inserted: 0 };
+    // One statement, no transaction (see header). `id` has no database default
+    // (Prisma generates it client-side), so it is minted here; `fetchedAt` keeps
+    // its DB default. ON CONFLICT DO NOTHING = the old skipDuplicates: existing
+    // rows are never touched.
+    const values = rows.map((r: RateResult) =>
+      Prisma.sql`(${randomUUID()}, ${r.dateISO}::date, ${r.base}, ${r.quote}, ${r.rate}, ${source})`);
+    const inserted = await db.$executeRaw`
+      INSERT INTO "FxRate" ("id", "date", "base", "quote", "rate", "source")
+      VALUES ${Prisma.join(values)}
+      ON CONFLICT ("date", "base", "quote") DO NOTHING`;
+    return { attempted: rows.length, inserted };
   },
 };

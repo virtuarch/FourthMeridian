@@ -281,7 +281,14 @@ export default async function SpacesPage() {
   // v2.6-L4F — per-Space ACCOUNT freshness, so the card's "updated" line is the
   // Slice 1 claim (anchored on the OLDEST observation, with its qualifier) and
   // not the snapshot date it used to show.
-  const freshnessBySpace = await getSpaceCardFreshness(allIds);
+  //
+  // MEMBER Spaces only (launch-readiness audit, 2026-10-06). getSpaceCardFreshness
+  // reads the account subtree on the owner client and answers for whatever ids it
+  // is handed; given `allIds` it published, for public Spaces the viewer has NOT
+  // joined, when their accounts were last observed and how many are stale. That is
+  // the same line "membership gates money" draws above, applied to the metadata
+  // about the money. A Space absent from the result renders no "updated" line.
+  const freshnessBySpace = await getSpaceCardFreshness(mySpaceIds);
 
   // ── Serialization helpers ─────────────────────────────────────────────────
 

@@ -18,7 +18,7 @@
  *     4. Cause retire-superseded-item to fail (it queries for a new PlaidItem
  *        with the same userId as the old one — admin userId wouldn't match).
  *
- * AUTH: SYSTEM_ADMIN only (requireSystemAdmin).
+ * AUTH: SYSTEM_ADMIN only, re-read live (requireFreshSystemAdmin) — a CONTROL action.
  *
  * Body: { publicToken: string, oldPlaidItemId: string }
  *
@@ -41,7 +41,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { requireSystemAdmin } from "@/lib/session";
+import { requireFreshSystemAdmin } from "@/lib/session";
 import { db } from "@/lib/db";
 import { resolveSpaceContext } from "@/lib/space";
 import { performPlaidTokenExchange, parsePlaidError, AdmissionDeniedError } from "@/lib/plaid/exchangeToken";
@@ -53,7 +53,10 @@ import { redactedErrorForLog } from "@/lib/plaid/errors";
 export async function POST(req: NextRequest) {
   // Capture the acting admin for attribution. The guard returns before any state
   // change, so a rejected caller never reaches the success-path audit write.
-  const [admin, err] = await requireSystemAdmin();
+  // Fresh: this is a CONTROL action (it retires a live Plaid item / disconnects
+  // accounts), so the admin role is re-read live rather than trusted from the
+  // 30 s session cache — a just-revoked admin cannot act inside that window.
+  const [admin, err] = await requireFreshSystemAdmin();
   if (err) return err;
 
   // ── Parse body ────────────────────────────────────────────────────────────
