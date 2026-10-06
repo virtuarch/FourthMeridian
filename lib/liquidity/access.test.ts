@@ -77,7 +77,8 @@ console.log("2. Reconciliation — net worth and investment wealth never move");
 
 console.log("3. Assets reachability — Brandon's figures, recomputed from the rule");
 {
-  const lensRows = (accts: typeof BRANDON): LiquidityAccountRow[] => accts.map((a, i) => ({
+  type Acct = Omit<(typeof BRANDON)[number], "providerSubtype"> & { providerSubtype: string | null };
+  const lensRows = (accts: Acct[]): LiquidityAccountRow[] => accts.map((a, i) => ({
     id: `a${i}`, type: a.type, providerSubtype: a.providerSubtype, balance: a.balance,
     lastUpdated: "2026-10-06T00:00:00.000Z", visibilityLevel: "FULL",
     ...(a.type === "checking" || a.type === "savings" ? { reachableCash: a.available, unexplainedHold: null } : {}),
