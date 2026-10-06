@@ -31,7 +31,7 @@ import { authDb as db } from "@/lib/db";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
-import { buildAuditData } from "@/lib/audit";
+import { auditInsert, buildAuditData } from "@/lib/audit";
 import { requiresTotpEnrollment } from "@/lib/auth-totp-policy";
 import { PlatformSettingKey } from "@/lib/platform-settings";
 import { verifyTOTP } from "@/lib/totp";
@@ -90,15 +90,14 @@ async function recordLoginFailure(args: {
   // errors: a genuine invalid_password stays invalid even if the DB is
   // struggling. (The write is still attempted; only its failure is contained.)
   try {
-    await db.auditLog.create({
-      data: {
-        ...(userId ? { userId } : {}),
-        action:    AuditAction.LOGIN_FAILED,
-        ipAddress,
-        userAgent,
-        metadata:  { identifier, reason, ...(role ? { role } : {}) },
-      },
-    });
+    // fm_auth may INSERT AuditLog but not read it back — never create() (lib/audit.ts auditInsert).
+    await auditInsert(db, {
+      ...(userId ? { userId } : {}),
+      action:    AuditAction.LOGIN_FAILED,
+      ipAddress,
+      userAgent,
+      metadata:  { identifier, reason, ...(role ? { role } : {}) },
+    }).write;
     if (ANOMALY_SUSPICIOUS_REASONS.has(reason)) {
       await reportLoginFailureAnomalies({ identifier, ip: ipAddress, reason, userId, userEmail });
     }
@@ -433,20 +432,19 @@ export const authOptions: NextAuthOptions = {
         // notify. Email is NON-THROWING: a delivery failure never blocks the
         // reactivation or the login.
         if (user.deactivatedAt && wantsReactivation) {
-          const [, reactivationAudit] = await db.$transaction([
+          const reactivationAudit = auditInsert(db, {
+            userId:   user.id,
+            action:   AuditAction.ACCOUNT_REACTIVATED,
+            ipAddress,
+            userAgent,
+            metadata: { deactivatedAt: user.deactivatedAt.toISOString() },
+          });
+          await db.$transaction([
             db.user.update({
               where: { id: user.id },
               data:  { deactivatedAt: null },
             }),
-            db.auditLog.create({
-              data: {
-                userId:   user.id,
-                action:   AuditAction.ACCOUNT_REACTIVATED,
-                ipAddress,
-                userAgent,
-                metadata: { deactivatedAt: user.deactivatedAt.toISOString() },
-              },
-            }),
+            reactivationAudit.write,
           ]);
 
           const emailResult = await sendEmail("security-alert", user.email, {
@@ -471,20 +469,19 @@ export const authOptions: NextAuthOptions = {
         // deactivatedAt lockout they were set alongside, audit, and notify.
         // Mirrors the reactivation leg above; email is NON-THROWING.
         if (user.deletionScheduledAt && wantsCancelDeletion) {
-          const [, cancellationAudit] = await db.$transaction([
+          const cancellationAudit = auditInsert(db, {
+            userId:   user.id,
+            action:   AuditAction.ACCOUNT_DELETION_CANCELLED,
+            ipAddress,
+            userAgent,
+            metadata: { deletionScheduledAt: user.deletionScheduledAt.toISOString() },
+          });
+          await db.$transaction([
             db.user.update({
               where: { id: user.id },
               data:  { deletionRequestedAt: null, deletionScheduledAt: null, deactivatedAt: null },
             }),
-            db.auditLog.create({
-              data: {
-                userId:   user.id,
-                action:   AuditAction.ACCOUNT_DELETION_CANCELLED,
-                ipAddress,
-                userAgent,
-                metadata: { deletionScheduledAt: user.deletionScheduledAt.toISOString() },
-              },
-            }),
+            cancellationAudit.write,
           ]);
 
           const emailResult = await sendEmail("security-alert", user.email, {
@@ -515,23 +512,22 @@ export const authOptions: NextAuthOptions = {
               userAgent,
             },
           }),
-          db.auditLog.create({
-            // PO-1 — normalise onto the operator/security audit shape
-            // (lib/audit.ts). Keeps action = LOGIN and metadata.role for the
-            // existing security-history/activity consumers, and ADDS actorType +
-            // result + the second-factor method so an admin login records "TOTP
-            // verified" honestly. Written in the same $transaction as the
-            // session row, so the session and its audit fact commit atomically.
-            data: buildAuditData({
-              actorId:   user.id,
-              actorType: user.role === UserRole.SYSTEM_ADMIN ? "SYSTEM_ADMIN" : "USER",
-              action:    AuditAction.LOGIN,
-              result:    "SUCCESS",
-              ipAddress,
-              userAgent,
-              metadata:  { role: user.role, mfa: mfaMethod },
-            }),
-          }),
+          // PO-1 — normalise onto the operator/security audit shape
+          // (lib/audit.ts). Keeps action = LOGIN and metadata.role for the
+          // existing security-history/activity consumers, and ADDS actorType +
+          // result + the second-factor method so an admin login records "TOTP
+          // verified" honestly. Written in the same $transaction as the
+          // session row, so the session and its audit fact commit atomically.
+          // auditInsert, never create(): fm_auth cannot read the row back.
+          auditInsert(db, buildAuditData({
+            actorId:   user.id,
+            actorType: user.role === UserRole.SYSTEM_ADMIN ? "SYSTEM_ADMIN" : "USER",
+            action:    AuditAction.LOGIN,
+            result:    "SUCCESS",
+            ipAddress,
+            userAgent,
+            metadata:  { role: user.role, mfa: mfaMethod },
+          })).write,
         ]);
 
         return {
@@ -708,9 +704,7 @@ export const authOptions: NextAuthOptions = {
               data:  { revokedAt: new Date() },
             }).catch(() => {})
           : Promise.resolve(),
-        db.auditLog.create({
-          data: { userId, action: "LOGOUT" },
-        }).catch(() => {}),
+        auditInsert(db, { userId, action: "LOGOUT" }).write.catch(() => {}),
       ]);
     },
   },

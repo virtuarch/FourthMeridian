@@ -52,6 +52,7 @@
  * without a consumer.
  */
 
+import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import type { AuditActionType } from "@/lib/audit-actions";
 
@@ -111,4 +112,32 @@ export function buildAuditData(input: AuditEventInput): Prisma.AuditLogUnchecked
     ...(performedByAdminId ? { performedByAdminId } : {}),
     metadata: mergedMetadata as unknown as Prisma.InputJsonValue,
   };
+}
+
+/**
+ * Insert one AuditLog row with NO `RETURNING`, and hand back its id.
+ *
+ * WHY. Prisma's `auditLog.create()` is `INSERT … RETURNING`, and RETURNING needs
+ * SELECT on the table plus a SELECT policy the new row passes. The pre-identity
+ * role `fm_auth` holds INSERT ONLY on AuditLog (FORCE RLS, no fm_auth SELECT
+ * policy) — deliberately: the role that reads credentials must not read the
+ * audit trail. So every `create()` through `authDb` failed with 42501, and
+ * because authorize() writes the LOGIN row in the same transaction as the
+ * session row, no login could succeed on a strict deployment (Preview,
+ * 2026-10-06; the UI reported it as an invalid password). `createMany` is a
+ * plain INSERT, which the grant allows.
+ *
+ * `write` is the un-awaited PrismaPromise, so it can sit inside an array
+ * `$transaction([...])` or be awaited inside an interactive one. The id is
+ * generated here because nothing comes back from the INSERT; callers that link
+ * a notification to the row use it.
+ *
+ * Use this for every AuditLog write made through `authDb`.
+ */
+export function auditInsert(
+  client: { auditLog: Prisma.TransactionClient["auditLog"] },
+  data: Prisma.AuditLogUncheckedCreateInput,
+): { id: string; write: Prisma.PrismaPromise<Prisma.BatchPayload> } {
+  const id = data.id ?? randomUUID();
+  return { id, write: client.auditLog.createMany({ data: [{ ...data, id }] }) };
 }

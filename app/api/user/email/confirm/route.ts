@@ -52,6 +52,7 @@ import { authDb as db } from "@/lib/db";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditInsert } from "@/lib/audit";
 import { limitByIp } from "@/lib/rate-limit";
 import { isEmailChangeAlreadyApplied } from "@/lib/email/email-change-confirm";
 import { createNotification } from "@/lib/notifications/create";
@@ -136,13 +137,13 @@ export async function POST(req: NextRequest) {
     // the new email.
     const revokedSessions = await revokeAllUserSessions(user.id);
 
-    const auditRow = await db.auditLog.create({
-      data: {
-        userId:   user.id,
-        action:   AuditAction.EMAIL_CHANGE_COMPLETED,
-        metadata: { oldEmail, newEmail, revokedSessions },
-      },
+    // auditInsert, never create(): fm_auth may INSERT AuditLog but not read it back.
+    const auditRow = auditInsert(db, {
+      userId:   user.id,
+      action:   AuditAction.EMAIL_CHANGE_COMPLETED,
+      metadata: { oldEmail, newEmail, revokedSessions },
     });
+    await auditRow.write;
 
     // OPS-3 S5 Wave 1 — bell mirror, seen on next sign-in (all sessions were
     // just revoked). Non-throwing.

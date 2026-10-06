@@ -846,6 +846,73 @@ async function main(): Promise<void> {
       dismissed.ok ? "" : dismissed.error.slice(0, 160));
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // H. CREDENTIAL LOGIN ON fm_auth  (POST /api/auth/callback/credentials)
+  // ════════════════════════════════════════════════════════════════════════
+  // fm_auth holds INSERT ONLY on AuditLog (FORCE RLS, no fm_auth SELECT policy).
+  // Prisma's create() is INSERT … RETURNING, which that grant refuses — so on
+  // Preview (2026-10-06) authorize() verified the password and then lost its
+  // session transaction to "permission denied for table AuditLog": no login
+  // succeeded on the role topology, every failure audit vanished, and the UI
+  // said "invalid password". Nothing here had driven authorize() itself.
+  {
+    const bcrypt = (await import("bcryptjs")).default;
+    const { authOptions } = await import("@/lib/auth");
+    const { verifyRecoveryCode } = await import("@/lib/recovery-codes");
+    const provider = authOptions.providers[0] as unknown as {
+      options: { authorize: (c: Record<string, string>, r: { headers: Record<string, string> }) => Promise<{ id: string; sessionToken: string } | null> };
+    };
+    const authorize = (identifier: string, password: string) =>
+      provider.options.authorize({ identifier, password }, { headers: { "user-agent": "rls-acceptance" } });
+    const PASSWORD = "rls-acceptance-only-pw";
+    const seeded = psql(h.ownerUrl, `
+      update "User" set "passwordHash" = '${await bcrypt.hash(PASSWORD, 4)}', "emailVerifiedAt" = now(), username = 'alice_u' where id = 'alice';
+      update "User" set "passwordHash" = '${await bcrypt.hash(PASSWORD, 4)}', "emailVerifiedAt" = now(), "totpEnabled" = true, "totpSecret" = 'v2:unused' where id = 'bob';
+      insert into "RecoveryCode" (id, "userId", "codeHash") values ('rc_bob_1', 'bob', '${await bcrypt.hash("BOB-RECOVERY-1", 4)}');`);
+    if (!seeded.ok) throw new Error(`login fixture seed failed: ${seeded.err}`);
+    const audits = (action: string, userId: string) =>
+      truth(`select count(*) from "AuditLog" where action='${action}' and "userId"='${userId}'`);
+
+    // 63 — the real authorize(), on the real fm_auth role, with the right password.
+    const ok = await attempt(() => authorize("alice_u", PASSWORD));
+    const token = ok.ok ? ok.value?.sessionToken ?? "" : "";
+    check(63, "[login] the right password signs in on fm_auth: authorize() returns the user, and the session row AND its LOGIN audit commit together",
+      ok.ok && ok.value?.id === "alice" && token.length > 0
+      && truth(`select "userId" from "UserSession" where "sessionToken"='${token}'`) === "alice"
+      && audits("LOGIN", "alice") === "1",
+      ok.ok ? `session=${token ? "yes" : "no"} LOGIN=${audits("LOGIN", "alice")}` : ok.error.slice(0, 200));
+
+    // 64 — the wrong password is refused AND its audit lands (it used to be swallowed).
+    const bad = await attempt(() => authorize("alice_u", "not-the-password"));
+    check(64, "[login] a wrong password returns null and its LOGIN_FAILED(invalid_password) record is written, not silently lost",
+      bad.ok && bad.value === null
+      && truth(`select count(*) from "AuditLog" where action='LOGIN_FAILED' and "userId"='alice' and metadata->>'reason'='invalid_password'`) === "1",
+      bad.ok ? `value=${JSON.stringify(bad.value)}` : bad.error.slice(0, 200));
+
+    // 65 — the recovery-code second factor (pre-identity, on fm_auth) consumes the code and audits it.
+    const used = await attempt(() => verifyRecoveryCode(dbMod.authDb, "bob", "BOB-RECOVERY-1"));
+    check(65, "[login] a recovery code is consumed on fm_auth, with its RECOVERY_CODE_USED record in the same transaction",
+      used.ok && used.value === true
+      && truth(`select ("usedAt" is not null)::text from "RecoveryCode" where id='rc_bob_1'`) === "true"
+      && audits("RECOVERY_CODE_USED", "bob") === "1",
+      used.ok ? `used=${used.value}` : used.error.slice(0, 200));
+
+    // 66 — NEGATIVE CONTROL: the grant is unchanged. create() is still refused, and fm_auth still cannot read the trail.
+    const created = await attempt(() => dbMod.authDb.auditLog.create({ data: { userId: "alice", action: "RLS_NEGATIVE_CONTROL" } }));
+    const readBack = await attempt(() => dbMod.authDb.auditLog.findMany({ take: 1 }));
+    check(66, "[login] NEGATIVE CONTROL — fm_auth's auditLog.create() (INSERT … RETURNING) is still refused, and fm_auth cannot read AuditLog",
+      !created.ok && /permission denied|row-level security/i.test(created.error)
+      && !readBack.ok && /permission denied/i.test(readBack.error),
+      `create=${created.ok ? "SUCCEEDED" : created.error.slice(0, 80)} read=${readBack.ok ? "SUCCEEDED" : "refused"}`);
+
+    // 67 — ratchet: no file holding authDb writes the audit trail with create().
+    const AUTH_FILES = ["lib/auth.ts", "lib/recovery-codes.ts", "app/api/user/email/confirm/route.ts",
+      "lib/session.ts", "lib/auth/session-activity.ts", "app/api/user/totp/status/route.ts"];
+    const offenders = AUTH_FILES.filter((f) => /auditLog\s*\.\s*create\s*\(/.test(code(f)));
+    check(67, `[source] none of the ${AUTH_FILES.length} files on the fm_auth path writes AuditLog with create() — auditInsert only`,
+      offenders.length === 0, offenders.join(", "));
+  }
+
   for (const c of [dbMod.tenantDb, dbMod.authDb, dbMod.systemDb, dbMod.db]) {
     await (c as { $disconnect: () => Promise<void> }).$disconnect();
   }

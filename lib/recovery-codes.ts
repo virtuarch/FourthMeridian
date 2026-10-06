@@ -11,6 +11,7 @@ import bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditInsert } from "@/lib/audit";
 
 /**
  * ── RLS-13 — AUTHORITY FOLLOWS THE EXECUTION PHASE, NOT THE MODULE ──────────
@@ -102,14 +103,13 @@ export async function generateRecoveryCodes(
   await inOneTransaction(client, async (tx) => {
     await tx.recoveryCode.deleteMany({ where: { userId, usedAt: null } });
     await tx.recoveryCode.createMany({ data: hashes.map((codeHash) => ({ userId, codeHash })) });
-    await tx.auditLog.create({
-      data: {
-        userId,
-        action: isRegen ? AuditAction.RECOVERY_CODES_REGENERATED : AuditAction.RECOVERY_CODES_GENERATED,
-        performedByAdminId: adminId ?? null,
-        metadata: { codeCount: CODE_COUNT, triggeredByAdmin: !!adminId },
-      },
-    });
+    // auditInsert, never create(): fm_auth may INSERT AuditLog but not read it back.
+    await auditInsert(tx, {
+      userId,
+      action: isRegen ? AuditAction.RECOVERY_CODES_REGENERATED : AuditAction.RECOVERY_CODES_GENERATED,
+      performedByAdminId: adminId ?? null,
+      metadata: { codeCount: CODE_COUNT, triggeredByAdmin: !!adminId },
+    }).write;
   });
 
   return plaintextCodes;
@@ -134,7 +134,7 @@ export async function verifyRecoveryCode(
     if (match) {
       await inOneTransaction(client, async (tx) => {
         await tx.recoveryCode.update({ where: { id: row.id }, data: { usedAt: new Date() } });
-        await tx.auditLog.create({ data: { userId, action: AuditAction.RECOVERY_CODE_USED } });
+        await auditInsert(tx, { userId, action: AuditAction.RECOVERY_CODE_USED }).write;
       });
       return true;
     }
