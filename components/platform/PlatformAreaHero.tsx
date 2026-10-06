@@ -49,6 +49,11 @@ const AREA_COPY: Record<PlatformArea, AreaCopy> = {
     question: "How are customers doing?",
     lede: "The health of the people using Fourth Meridian — operational signals and account activity, never their financial data.",
   },
+  MERCHANT_OPS: {
+    eyebrow: "Merchant Operations",
+    question: "Is merchant identity right?",
+    lede: "Merchant merge review across the platform. A merge rewrites merchant identity for every tenant, cannot be undone automatically, and is audited.",
+  },
 };
 
 export function PlatformAreaHero({

@@ -262,6 +262,9 @@ enum PlatformArea {
   SECURITY_OPS
   GROWTH_REVENUE
   CUSTOMER_SUCCESS
+  /// Merchant identity operations (merge review). Platform authority, never Space
+  /// membership: a merge rewrites merchant identity for every tenant.
+  MERCHANT_OPS
 }
 
 /// Ranked access level within one PlatformArea. CONTROL ≥ WRITE ≥ READ

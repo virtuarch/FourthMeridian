@@ -2,7 +2,10 @@
  * POST /api/merchant-ops/decide  (MI2 S2 — merge review)
  *
  * Records a human verdict on one candidate pair. Thin orchestration only:
- *   • gate on Merchant Operations Space membership (NOT role === SYSTEM_ADMIN),
+ *   • gate on a FRESH MERCHANT_OPS platform grant at WRITE (MERCHANT-OPS
+ *     AUTHORITY, 2026-10-06). It used to be MEMBER of an ordinary Space named by
+ *     MERCHANT_OPS_SPACE_ID — anyone that Space's admins invited could rewrite
+ *     merchant identity for every tenant. Space membership confers nothing here,
  *   • parse/validate the body,
  *   • delegate to Merchant Intelligence (applyMergeReviewDecision), which runs
  *     the merge ENGINE for MERGED and records the decision.
@@ -15,16 +18,20 @@
 import { NextRequest, NextResponse } from "next/server";
 // RLS-C-S6 — fm_system. MerchantMergeDecision is revoked from the tenant role,
 // and a merge rewrites merchant identity for EVERY tenant that saw the absorbed
-// name; neither is a tenant-scoped act. Gated by Merchant Operations Space
-// membership above. The decision store and the merge engine take their client
+// name; neither is a tenant-scoped act. Gated by the MERCHANT_OPS platform grant
+// above. The decision store and the merge engine take their client
 // as a parameter, so the authority is chosen here, at the execution phase.
 import { systemDb as db } from "@/lib/db";
-import { requireMerchantOpsMember } from "@/lib/merchant-ops-access";
-import { applyMergeReviewDecision } from "@/lib/transactions/merchant-merge-review";
+import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
+import { applyMergeReviewDecision, MergeReviewIneligibleError } from "@/lib/transactions/merchant-merge-review";
 
 export async function POST(req: NextRequest) {
-  const [user, err] = await requireMerchantOpsMember();
+  // Fresh: both verdicts change platform-wide merchant identity state (a merge
+  // rewrites it; a dismissal suppresses a future candidate), so the grant is
+  // re-read live and a just-revoked operator cannot act inside the session cache.
+  const [auth, err] = await requireFreshPlatformAccess("MERCHANT_OPS", "WRITE");
   if (err) return err;
+  const user = auth.user;
 
   let body: Record<string, unknown>;
   try {
@@ -61,6 +68,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result);
   } catch (e) {
     const message = e instanceof Error ? e.message : "merge review decision failed";
+    if (e instanceof MergeReviewIneligibleError) return NextResponse.json({ error: message }, { status: 422 });
     return NextResponse.json({ error: message }, { status: 409 });
   }
 }

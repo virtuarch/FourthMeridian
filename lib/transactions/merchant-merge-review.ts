@@ -32,7 +32,9 @@ import {
   loadDecidedPairKeys,
   filterPendingCandidates,
   recordMergeDecision,
+  mergePairKey,
 } from "@/lib/transactions/merchant-merge-decisions";
+import { AuditAction } from "@/lib/audit-actions";
 
 /** Per-merchant review counts shown beside a candidate. */
 export interface MerchantReviewFacts {
@@ -125,27 +127,64 @@ export interface MergeReviewDecision {
   evidenceSignal?: string | null;
 }
 
+/** The pair is not one the detector currently proposes (or it was already decided). */
+export class MergeReviewIneligibleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MergeReviewIneligibleError";
+  }
+}
+
 /**
- * Apply a human verdict.
- *   MERGED    → resolve the two canonicalKeys to merchant ids, run the engine
- *               (the ONLY execution path), then record the MERGED decision. If
- *               the engine throws, NO decision is recorded (the merge is atomic).
- *   DISMISSED → record the DISMISSED decision only; NO merchant record is touched.
- * Returns the persisted pairKey. Throws on unresolved keys or a same-merchant pair.
+ * Apply a human verdict (MERCHANT-OPS AUTHORITY, 2026-10-06).
+ *
+ *   ELIGIBILITY — the pair must be a CURRENT pending candidate from the detector
+ *               (same unordered pair; the operator may flip which side survives).
+ *               The evidence tier/signal recorded are the DETECTOR's, never the
+ *               request's. A pair nobody proposed cannot be merged or dismissed.
+ *   MERGED    → resolve the two canonicalKeys, run the engine (the ONLY execution
+ *               path). The decision row AND an AuditLog record carrying the full
+ *               merge report and a recovery snapshot of the merged-away merchant
+ *               are written INSIDE the merge transaction: all commit together or
+ *               none do.
+ *   DISMISSED → record the decision and its AuditLog record in one transaction;
+ *               no merchant record is touched.
  */
 export async function applyMergeReviewDecision(
   client: PrismaClient,
   decision: MergeReviewDecision,
   decidedByUserId: string,
 ): Promise<{ pairKey: string; merged: boolean }> {
+  const pending = await getPendingMergeCandidates(client);
+  const candidate = pending.find((c) =>
+    (c.survivorKey === decision.survivorKey && c.absorbedKey === decision.absorbedKey) ||
+    (c.survivorKey === decision.absorbedKey && c.absorbedKey === decision.survivorKey));
+  if (!candidate) {
+    throw new MergeReviewIneligibleError(
+      `not a pending merge candidate (${decision.survivorKey} / ${decision.absorbedKey}); only detector-proposed, undecided pairs can be decided`,
+    );
+  }
+  const evidenceTier = candidate.tier;
+  const evidenceSignal = candidate.signal ?? null;
+  const pairKey = mergePairKey(decision.survivorKey, decision.absorbedKey);
+
   if (decision.verdict === "DISMISSED") {
-    const { pairKey } = await recordMergeDecision(client, {
-      survivorKey: decision.survivorKey,
-      absorbedKey: decision.absorbedKey,
-      verdict: "DISMISSED",
-      evidenceTier: decision.evidenceTier,
-      evidenceSignal: decision.evidenceSignal ?? null,
-      decidedByUserId,
+    await client.$transaction(async (tx) => {
+      await recordMergeDecision(tx, {
+        survivorKey: decision.survivorKey,
+        absorbedKey: decision.absorbedKey,
+        verdict: "DISMISSED",
+        evidenceTier,
+        evidenceSignal,
+        decidedByUserId,
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: decidedByUserId,
+          action: AuditAction.MERCHANT_MERGE_DISMISSED,
+          metadata: { pairKey, survivorKey: decision.survivorKey, absorbedKey: decision.absorbedKey, evidenceTier, evidenceSignal },
+        },
+      });
     });
     return { pairKey, merged: false };
   }
@@ -159,21 +198,36 @@ export async function applyMergeReviewDecision(
   if (!absorbed) throw new Error(`absorbed merchant not found (canonicalKey=${decision.absorbedKey})`);
   if (survivor.id === absorbed.id) throw new Error("survivor and absorbed resolve to the same merchant");
 
-  // The single sanctioned execution path. Atomic; throws leave nothing recorded.
+  // The single sanctioned execution path. Atomic: the merge, the decision and the
+  // audit record commit together; any throw leaves nothing changed or recorded.
   await mergeMerchants(client, {
     survivorId: survivor.id,
     duplicateIds: [absorbed.id],
-    evidence: { tier: decision.evidenceTier, signal: decision.evidenceSignal ?? undefined, note: "merge-review" },
+    evidence: { tier: evidenceTier, signal: evidenceSignal ?? undefined, note: "merge-review" },
     dryRun: false,
-  });
-
-  const { pairKey } = await recordMergeDecision(client, {
-    survivorKey: decision.survivorKey,
-    absorbedKey: decision.absorbedKey,
-    verdict: "MERGED",
-    evidenceTier: decision.evidenceTier,
-    evidenceSignal: decision.evidenceSignal ?? null,
-    decidedByUserId,
+    withinTransaction: async (tx, applied) => {
+      await recordMergeDecision(tx, {
+        survivorKey: decision.survivorKey,
+        absorbedKey: decision.absorbedKey,
+        verdict: "MERGED",
+        evidenceTier,
+        evidenceSignal,
+        decidedByUserId,
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: decidedByUserId,
+          action: AuditAction.MERCHANT_MERGE_APPLIED,
+          metadata: JSON.parse(JSON.stringify({
+            pairKey,
+            evidence: { tier: evidenceTier, signal: evidenceSignal },
+            survivor: applied.survivor,
+            perDuplicate: applied.perDuplicate,
+            recovery: applied.snapshots,
+          })),
+        },
+      });
+    },
   });
   return { pairKey, merged: true };
 }

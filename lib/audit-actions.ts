@@ -240,6 +240,12 @@ export const AuditAction = {
   ADMIN_PLAID_HISTORY_TOKEN_EXCHANGED: "ADMIN_PLAID_HISTORY_TOKEN_EXCHANGED",
   ADMIN_PLAID_ITEM_RETIRED:            "ADMIN_PLAID_ITEM_RETIRED",
 
+  // ── Merchant operations (MERCHANT_OPS platform area) ─────────────────────
+  // A merge rewrites merchant identity for every tenant and is irreversible in
+  // the database; its record carries the full report and a recovery snapshot.
+  MERCHANT_MERGE_APPLIED:              "MERCHANT_MERGE_APPLIED",
+  MERCHANT_MERGE_DISMISSED:            "MERCHANT_MERGE_DISMISSED",
+
   // ── Platform access (PO1.0) ─────────────────────────────────────────────
   // Grant lifecycle on a platform area (user × area × level). Never free
   // strings — the SECOPS vocabulary lesson applied from birth. Written

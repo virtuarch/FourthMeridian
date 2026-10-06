@@ -165,6 +165,9 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
   CUSTOMER_SUCCESS: [
     { workspaceId: "platform-overview", sections: ["cs_sync_issues"] },
   ],
+  MERCHANT_OPS: [
+    { workspaceId: "platform-overview", sections: ["merchant_review"] },
+  ],
 };
 
 // ── Consolidation: which sections a CONSOLIDATING section stands in for ─────────

@@ -123,7 +123,6 @@ const _e = {
   // the merge-review surface fails CLOSED (no one is a member of "no space"), so
   // access is a deliberate SYSTEM_ADMIN act of creating the Space, setting this,
   // and granting membership. Config, not schema, per the ratified refinement.
-  MERCHANT_OPS_SPACE_ID: process.env.MERCHANT_OPS_SPACE_ID,
 
   // ── Price / FX vendor keys (A-track investment history + MC1 FX archive) ─────
   // Declared here for documentation + value-free env reporting. Each SDK/adapter
@@ -561,7 +560,6 @@ export const env = {
 
   // ── Merchant Operations (MI2 S2) ────────────────────────────────────────────
   /** The designated Merchant Operations Space id, or null when unset (gate fails closed). */
-  get merchantOpsSpaceId() { return _e.MERCHANT_OPS_SPACE_ID ?? null; },
 
   // ── Price / FX vendor keys ──────────────────────────────────────────────────
   // NOTE: the price/FX registries read process.env directly at their call sites;

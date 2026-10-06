@@ -765,6 +765,87 @@ async function main(): Promise<void> {
       `auth=${authSession.ok ? JSON.stringify(authSession.value) : authSession.error.slice(0, 100)} system=${systemRead.ok ? systemRead.value : systemRead.error.slice(0, 100)}`);
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // M. MERCHANT OPS: MERGE AUDIT, RECOVERY, ELIGIBILITY, ATOMICITY  (2026-10-06)
+  // ════════════════════════════════════════════════════════════════════════
+  // Run on the real fm_system client the decide route uses. The route's gate
+  // (fresh MERCHANT_OPS WRITE) is pinned by capability-control.test.ts; this
+  // proves what the merge itself guarantees against a real database.
+  {
+    const { applyMergeReviewDecision, MergeReviewIneligibleError } = await import("@/lib/transactions/merchant-merge-review");
+    const { mergeMerchants } = await import("@/lib/transactions/merchant-merge");
+    const sys = dbMod.systemDb;
+    const seededM = psql(h.ownerUrl, `
+      insert into "Merchant" (id,"canonicalKey","displayName","updatedAt") values
+        ('m_wgu','WESTERN GOVERNORS UNIVERSITY','Western Governors University',now()),
+        ('m_wgu_trunc','WESTERN GOVERNORS UN','Western Governors Un',now()),
+        ('m_roll_s','ACME HARDWARE SUPPLY','Acme Hardware Supply',now()),
+        ('m_roll_d','ACME HARDWARE SUP','Acme Hardware Sup',now()),
+        ('m_unrelated','ZEBRA PETS','Zebra Pets',now());
+      insert into "MerchantAlias" (id,"aliasKey",source,"merchantId","updatedAt") values
+        ('ma_trunc','wgu-trunc-alias','PLAID','m_wgu_trunc',now()),
+        ('ma_roll','acme-trunc-alias','PLAID','m_roll_d',now());
+      update "Transaction" set "merchantId"='m_wgu_trunc' where id in ('tx_alice_2','tx_bob_1');
+      update "Transaction" set "merchantId"='m_roll_d' where id = 'tx_alice_1';`);
+    if (!seededM.ok) throw new Error(`merchant fixture seed failed: ${seededM.err}`);
+    const auditCount = (action: string) => Number(truth(`select count(*) from "AuditLog" where action='${action}'`));
+
+    // 58 — a real cross-tenant merge: Alice's AND Bob's rows re-pointed, decision and audit committed with it.
+    await applyMergeReviewDecision(sys,
+      { verdict: "MERGED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "FORGED" }, "alice");
+    const audit58 = truth(`select metadata::text from "AuditLog" where action='MERCHANT_MERGE_APPLIED' order by "createdAt" desc limit 1`);
+    const meta58 = audit58 ? JSON.parse(audit58) as { evidence: { tier: string }; recovery: Array<{ merchant: { id: string; displayName: string }; aliases: Array<{ aliasKey: string; source: string }>; transactionIds: string[] }> } : null;
+    const rec = meta58?.recovery?.[0];
+    check(58, "[merchant-ops] a real merge re-points BOTH tenants' rows, deletes the duplicate, and commits the decision + a MERCHANT_MERGE_APPLIED audit record WITH it (fm_system)",
+      truth(`select count(*) from "Merchant" where id='m_wgu_trunc'`) === "0"
+      && truth(`select string_agg(id, ',' order by id) from "Transaction" where "merchantId"='m_wgu'`) === "tx_alice_2,tx_bob_1"
+      && truth(`select verdict from "MerchantMergeDecision" where "survivorKey"='WESTERN GOVERNORS UNIVERSITY'`) === "MERGED"
+      && auditCount("MERCHANT_MERGE_APPLIED") === 1,
+      `audit=${auditCount("MERCHANT_MERGE_APPLIED")}`);
+    check(59, "[merchant-ops] the audit record is a recovery record: the deleted merchant row, its aliases with their ORIGINAL source (PLAID, now overwritten to USER), every re-pointed transaction across tenants, and the DETECTOR's evidence — not the request's",
+      rec?.merchant?.id === "m_wgu_trunc" && rec?.merchant?.displayName === "Western Governors Un"
+      && rec?.aliases?.[0]?.aliasKey === "wgu-trunc-alias" && rec?.aliases?.[0]?.source === "PLAID"
+      && truth(`select source from "MerchantAlias" where id='ma_trunc'`) === "USER"
+      && [...(rec?.transactionIds ?? [])].sort().join() === "tx_alice_2,tx_bob_1"
+      && meta58?.evidence?.tier !== "FORGED" && typeof meta58?.evidence?.tier === "string",
+      JSON.stringify(rec ?? null).slice(0, 300));
+
+    // 60 — atomicity: the in-transaction write fails AFTER the merge statements ran ⇒ everything rolls back.
+    const before60 = { audits: auditCount("MERCHANT_MERGE_APPLIED"), decisions: truth(`select count(*) from "MerchantMergeDecision"`) };
+    const rolled = await attempt(() => mergeMerchants(sys, {
+      survivorId: "m_roll_s", duplicateIds: ["m_roll_d"], dryRun: false,
+      withinTransaction: async (tx) => {
+        await tx.auditLog.create({ data: { action: "MERCHANT_MERGE_APPLIED", metadata: { probe: true } } });
+        throw new Error("simulated failure after the merge statements and the audit write");
+      },
+    }));
+    check(60, "[merchant-ops] ATOMIC: when the audit/decision step fails, the merge rolls back — duplicate still present, alias source and transaction untouched, no audit row, no decision",
+      !rolled.ok && truth(`select count(*) from "Merchant" where id='m_roll_d'`) === "1"
+      && truth(`select source from "MerchantAlias" where id='ma_roll'`) === "PLAID"
+      && truth(`select "merchantId" from "Transaction" where id='tx_alice_1'`) === "m_roll_d"
+      && auditCount("MERCHANT_MERGE_APPLIED") === before60.audits
+      && truth(`select count(*) from "MerchantMergeDecision"`) === before60.decisions,
+      `rolled=${rolled.ok ? "COMPLETED" : rolled.error.slice(0, 80)}`);
+
+    // 61 — eligibility: a pair the detector does not propose is refused before anything runs.
+    const ineligible = await attempt(() => applyMergeReviewDecision(sys,
+      { verdict: "MERGED", survivorKey: "ZEBRA PETS", absorbedKey: "ACME HARDWARE SUPPLY", evidenceTier: "T1" }, "alice"));
+    check(61, "[merchant-ops] a pair the detector does not propose cannot be merged — refused as ineligible, both merchants intact",
+      !ineligible.ok && /not a pending merge candidate/.test(ineligible.error)
+      && truth(`select count(*) from "Merchant" where id in ('m_unrelated','m_roll_s')`) === "2",
+      ineligible.ok ? "MERGED" : ineligible.error.slice(0, 120));
+    void MergeReviewIneligibleError;
+
+    // 62 — a dismissal is audited in the same transaction as its decision, and changes no merchant.
+    const dismissed = await attempt(() => applyMergeReviewDecision(sys,
+      { verdict: "DISMISSED", survivorKey: "ACME HARDWARE SUPPLY", absorbedKey: "ACME HARDWARE SUP", evidenceTier: "T2" }, "alice"));
+    check(62, "[merchant-ops] a dismissal records its decision AND a MERCHANT_MERGE_DISMISSED audit record, and touches no merchant",
+      dismissed.ok && auditCount("MERCHANT_MERGE_DISMISSED") === 1
+      && truth(`select count(*) from "Merchant" where id in ('m_roll_s','m_roll_d')`) === "2"
+      && truth(`select verdict from "MerchantMergeDecision" where "absorbedKey"='ACME HARDWARE SUP'`) === "DISMISSED",
+      dismissed.ok ? "" : dismissed.error.slice(0, 160));
+  }
+
   for (const c of [dbMod.tenantDb, dbMod.authDb, dbMod.systemDb, dbMod.db]) {
     await (c as { $disconnect: () => Promise<void> }).$disconnect();
   }

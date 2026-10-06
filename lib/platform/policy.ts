@@ -194,6 +194,21 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "cs_sync_issues", label: "Sync Incidents", order: 0 },
     ],
   },
+  // MERCHANT-OPS AUTHORITY (2026-10-06) — merchant identity operations. A merge
+  // rewrites merchant identity for every tenant, so it is platform authority:
+  // READ views the merge-review candidates, a FRESH WRITE grant merges or
+  // dismisses. The review itself stays at /merchant-ops; this workspace is the
+  // doorway to it.
+  MERCHANT_OPS: {
+    key: "MERCHANT_OPS",
+    label: "Merchant Operations",
+    spaceName: "Merchant Operations",
+    spaceDescription:
+      "Merchant identity review across the platform. Merges are irreversible and audited.",
+    sections: [
+      { key: "merchant_review", label: "Merge Review", order: 0 },
+    ],
+  },
 };
 
 /** Every known area, derived from the registry (stays in sync with the enum). */

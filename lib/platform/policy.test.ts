@@ -57,6 +57,7 @@ const AREAS: PlatformArea[] = [
   "SECURITY_OPS",
   "GROWTH_REVENUE",
   "CUSTOMER_SUCCESS",
+  "MERCHANT_OPS",
 ];
 const LEVELS:   PlatformAccessLevel[]  = ["READ", "WRITE", "CONTROL"];
 const STATUSES: PlatformGrantStatus[]  = ["ACTIVE", "REVOKED"];
@@ -113,8 +114,9 @@ for (const grantArea of AREAS) {
     }
   }
 }
-// 4 grantAreas × 3 grantLevels × 2 statuses × 4 askAreas × 3 needed = 288
-check(`matrix covered exactly 288 combinations (got ${combos})`, combos === 288);
+// 5 grantAreas × 3 grantLevels × 2 statuses × 5 askAreas × 3 needed = 450
+// (MERCHANT_OPS added 2026-10-06; was 4 × 3 × 2 × 4 × 3 = 288.)
+check(`matrix covered exactly 450 combinations (got ${combos})`, combos === 450);
 
 // ── B. Named invariant cases ──────────────────────────────────────────────────
 
@@ -182,7 +184,7 @@ check(`matrix covered exactly 288 combinations (got ${combos})`, combos === 288)
 
 // PLATFORM_AREAS is exhaustive over the enum and self-consistent (key === map key).
 {
-  check("reg PLATFORM_AREAS has exactly 4 areas", ALL_PLATFORM_AREAS.length === 4,
+  check("reg PLATFORM_AREAS has exactly 5 areas", ALL_PLATFORM_AREAS.length === 5,
     `got ${ALL_PLATFORM_AREAS.length}`);
   check("reg every area covered", AREAS.every((a) => PLATFORM_AREAS[a] !== undefined));
   const keyConsistent = AREAS.every((a) => PLATFORM_AREAS[a].key === a);
@@ -275,7 +277,7 @@ function oracleDecide(
       }
     }
   }
-  check(`dec USER matrix covered 288 combinations (got ${decCombos})`, decCombos === 288);
+  check(`dec USER matrix covered 450 combinations (got ${decCombos})`, decCombos === 450);
 }
 
 // Spec (b): the real authorize.ts implements exactly this branch + the tuple
@@ -330,7 +332,7 @@ function oracleDecide(
       }
     }
   }
-  check(`regress pinned 16 pre-CONTROL decisions (got ${pinned})`, pinned === 16);
+  check(`regress pinned 20 pre-CONTROL decisions (got ${pinned})`, pinned === 20);
 
   // Revoked and cross-area denials are unchanged for the pre-CONTROL levels.
   for (const grantLevel of PRE_CONTROL_LEVELS) {

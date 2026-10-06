@@ -126,6 +126,21 @@ export const MUTATION_FAMILIES: readonly MutationFamily[] = [
     ],
   },
   {
+    key: "merchant-identity-decisions",
+    label: "Merchant merge review — merge or dismiss a detector-proposed duplicate pair",
+    status: "SHIPPED",
+    capability: "WRITE",
+    rationale:
+      "Applies the existing merge engine to one pair the detector already proposed; it " +
+      "does not change how merchants are detected or resolved. Ordinary operational work " +
+      "under the classification rule — but a merge is irreversible in the database and " +
+      "rewrites merchant identity for every tenant, so it carries compensating controls: " +
+      "a FRESH grant check, eligibility against the detector, and the decision plus an " +
+      "AuditLog record (full report + recovery snapshot) written in the merge transaction. " +
+      "Before 2026-10-06 this was gated by ordinary Space membership.",
+    routes: ["app/api/merchant-ops/decide/route.ts"],
+  },
+  {
     key: "beta-access-decisions",
     label: "Beta access requests — approve / deny / resend / revoke, invitations",
     status: "SHIPPED",

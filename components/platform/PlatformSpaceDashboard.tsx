@@ -87,6 +87,7 @@ import { OpsUsersWidget } from "./widgets/OpsUsersWidget";
 import { OpsActivityWidget } from "./widgets/OpsActivityWidget";
 import { OpsGrowthWidget } from "./widgets/OpsGrowthWidget";
 import { CsSyncIssuesWidget } from "./widgets/CsSyncIssuesWidget";
+import { MerchantReviewWidget } from "./widgets/MerchantReviewWidget";
 
 type Section = PlatformSection;
 
@@ -158,6 +159,8 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   growth_funnel:        OpsGrowthWidget,
   // Customer Success
   cs_sync_issues: CsSyncIssuesWidget,
+  // Merchant Operations — a doorway to the merge review (/merchant-ops).
+  merchant_review: MerchantReviewWidget,
 };
 
 /**

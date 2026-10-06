@@ -67,6 +67,42 @@ export interface MergeInput {
   evidence?: MergeEvidence;
   /** When true (the DEFAULT), no writes occur — the report is a projection. */
   dryRun?: boolean;
+  /**
+   * MERCHANT-OPS AUTHORITY (2026-10-06). Runs INSIDE the merge transaction, after
+   * every duplicate has been merged and before COMMIT, with the applied result and
+   * a pre-mutation snapshot of each merged-away merchant. Whatever it writes (the
+   * decision, the audit record) commits or rolls back WITH the merge; if it
+   * throws, the merge is rolled back. Ignored on dry-run. When absent, no snapshot
+   * is captured and the engine behaves exactly as before.
+   */
+  withinTransaction?: (tx: Prisma.TransactionClient, applied: AppliedMerge) => Promise<void>;
+}
+
+/**
+ * Everything needed to restore a merged-away merchant BY HAND: the merge deletes
+ * the row, overwrites alias sources, re-points transactions and may delete folded
+ * rules, so none of that is recoverable from the database afterwards. Captured
+ * inside the merge transaction, immediately before the duplicate is touched.
+ */
+export interface MergedAwaySnapshot {
+  /** The duplicate Merchant row as it was (every scalar column). */
+  merchant: Record<string, unknown>;
+  /** Its aliases as they were — including each alias's ORIGINAL `source`. */
+  aliases: Record<string, unknown>[];
+  /** Its rules as they were (every scalar column), before move or fold. */
+  rules: Record<string, unknown>[];
+  /** Transactions whose merchantId was re-pointed from the duplicate. */
+  transactionIds: string[];
+  /** Folded rules: the deleted rule, the survivor rule it folded into, and the
+   *  transactions whose categoryRuleId was re-pointed. */
+  foldedRules: { ruleId: string; intoRuleId: string; transactionIds: string[] }[];
+}
+
+/** What the in-transaction hook receives. */
+export interface AppliedMerge {
+  survivor: { id: string; canonicalKey: string; displayName: string };
+  perDuplicate: DuplicateMergeResult[];
+  snapshots: MergedAwaySnapshot[];
 }
 
 /** Per-duplicate outcome (actual counts after apply; projected counts on dry-run). */
@@ -286,8 +322,30 @@ export async function mergeMerchants(
   let survivorPlaidEntityId = survivorRow.plaidEntityId;
   const perDuplicate: DuplicateMergeResult[] = [];
 
+  const hook = input.withinTransaction;
+  const snapshots: MergedAwaySnapshot[] = [];
+
   await client.$transaction(async (tx) => {
     for (const dup of dups) {
+      // 0) Recovery snapshot, BEFORE anything about this duplicate changes.
+      let snapshot: MergedAwaySnapshot | null = null;
+      if (hook) {
+        const [merchantRow, aliasRows, ruleRows, txnRows] = await Promise.all([
+          tx.merchant.findUnique({ where: { id: dup.id } }),
+          tx.merchantAlias.findMany({ where: { merchantId: dup.id } }),
+          tx.merchantRule.findMany({ where: { merchantId: dup.id } }),
+          tx.transaction.findMany({ where: { merchantId: dup.id }, select: { id: true } }),
+        ]);
+        snapshot = {
+          merchant: (merchantRow ?? {}) as Record<string, unknown>,
+          aliases: aliasRows as unknown as Record<string, unknown>[],
+          rules: ruleRows as unknown as Record<string, unknown>[],
+          transactionIds: txnRows.map((t) => t.id),
+          foldedRules: [],
+        };
+        snapshots.push(snapshot);
+      }
+
       // 1) Re-point aliases (M5 pointAlias semantics: explicit teach → USER source).
       const aliases = await tx.merchantAlias.updateMany({
         where: { merchantId: dup.id },
@@ -306,6 +364,10 @@ export async function mergeMerchants(
       for (const rule of dup.rules) {
         const disposition = await ruleDisposition(tx, survivorRow.id, rule);
         if (disposition.kind === "fold") {
+          if (snapshot) {
+            const linked = await tx.transaction.findMany({ where: { categoryRuleId: rule.id }, select: { id: true } });
+            snapshot.foldedRules.push({ ruleId: rule.id, intoRuleId: disposition.conflictId, transactionIds: linked.map((t) => t.id) });
+          }
           // Re-point provenance links BEFORE deleting the dup rule (never SetNull).
           await tx.transaction.updateMany({
             where: { categoryRuleId: rule.id },
@@ -353,6 +415,9 @@ export async function mergeMerchants(
         deleted: true,
       });
     }
+
+    // The caller's in-transaction writes (decision, audit) commit WITH the merge.
+    if (hook) await hook(tx, { survivor, perDuplicate, snapshots });
   });
 
   return {
