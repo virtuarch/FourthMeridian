@@ -45,7 +45,7 @@ The exact residue is machine-readable: `scripts/lib/db-authority-baseline.json` 
 
 ## 1. Migrations
 
-**VERIFIED (repo):** 117 migration directories. The last ten are the RLS programme:
+**VERIFIED (repo):** 118 migration directories. The ten below are the RLS programme Preview received on 2026-10-06 (117 applied); `20261006000000_rls_function_execute_least_privilege` follows them (§2.1):
 
 | Migration | What it does |
 |---|---|
@@ -86,7 +86,7 @@ Last reading (investigation doc): on Preview, `anon` and `authenticated` held fu
 
 - Confirm the current state in the dashboard (API settings → exposed schemas/tables; Security Advisor).
 - Turn **off** "automatically expose new tables" and un-expose `public` before migrating. With it on, the 19 non-RLS migrations create tables that are granted to `anon` until `rls_roles_and_policies` revokes them later in the same deploy.
-- After migrating, re-read with the queries in §5. VERIFIED (repo): the migration revokes **tables** and default privileges from `anon` / `authenticated` / `service_role`, but it does **not** revoke function `EXECUTE` from `PUBLIC` and does not revoke existing sequences. If the Data API stays enabled for `public`, the five `fm_*` functions may be callable as RPC. Keeping `public` un-exposed removes the question.
+- After migrating, re-read with the queries in §5. VERIFIED (repo): the migration revokes **tables** and default privileges from `anon` / `authenticated` / `service_role`, but it did **not** revoke function `EXECUTE` from `PUBLIC` (confirmed on Preview 2026-10-06: all five `fm_*` functions PUBLIC-executable; `fm_may_join_space` is SECURITY DEFINER). `20261006000000_rls_function_execute_least_privilege` closes it: PUBLIC none, `fm_app` all five, `fm_auth` only `fm_beta_request_is_intake`, `fm_system`/`fm_backup` none — derived from which roles' policies evaluate each function (foreground acceptance 53–57). It does not revoke existing sequences.
 
 ### 2.2 Supabase — pooler, and the username form for a custom role
 

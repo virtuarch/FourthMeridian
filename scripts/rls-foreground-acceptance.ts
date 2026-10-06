@@ -709,6 +709,62 @@ async function main(): Promise<void> {
       `alice=${recovered.ok ? recovered.value : recovered.error.slice(0, 120)} bob=${bobSees.ok ? bobSees.value : bobSees.error.slice(0, 120)}`);
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // X. POLICY FUNCTIONS: LEAST-PRIVILEGE EXECUTE  (20261006000000)
+  // ════════════════════════════════════════════════════════════════════════
+  // The five functions the policies call were executable by PUBLIC. The grant
+  // set is derived from which roles' policies evaluate each one (pg_policies):
+  // fm_app all five; fm_auth only the intake predicate; nobody else.
+  {
+    const FNS: Record<string, string> = {
+      current_fm_user_id:        "public.current_fm_user_id()",
+      fm_visible_space_ids:      "public.fm_visible_space_ids()",
+      fm_account_visible:        "public.fm_account_visible(text)",
+      fm_may_join_space:         "public.fm_may_join_space(text)",
+      fm_beta_request_is_intake: `public.fm_beta_request_is_intake("BetaAccessRequestStatus", text, timestamp, timestamp, timestamp, text, timestamp, text)`,
+    };
+    // A role holding NOTHING but PUBLIC's privileges — what PUBLIC itself can do.
+    psql(h.ownerUrl, `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='fm_probe_public') THEN CREATE ROLE fm_probe_public NOLOGIN; END IF; END $$;`);
+    const can = (role: string, sig: string) => truth(`select has_function_privilege('${role}', '${sig.replace(/'/g, "''")}', 'EXECUTE')`) === "t";
+    const matrix: Record<string, string> = {};
+    for (const [n, sig] of Object.entries(FNS)) {
+      matrix[n] = ["fm_probe_public", "fm_app", "fm_auth", "fm_system", "fm_backup"].map((r) => `${r.replace("fm_probe_", "")}=${can(r, sig) ? "Y" : "n"}`).join(" ");
+    }
+    const expected = (n: string) => `public=n fm_app=Y fm_auth=${n === "fm_beta_request_is_intake" ? "Y" : "n"} fm_system=n fm_backup=n`;
+    check(53, "[execute] the privilege matrix is exactly least privilege: PUBLIC none; fm_app all five; fm_auth only the intake predicate; fm_system and fm_backup none",
+      Object.keys(FNS).every((n) => matrix[n] === expected(n)), JSON.stringify(matrix));
+
+    const publicFns = truth(`select coalesce(string_agg(p.proname, ','), 'none') from pg_proc p join pg_namespace s on s.oid = p.pronamespace
+                              where s.nspname = 'public' and has_function_privilege('fm_probe_public', p.oid, 'EXECUTE')`);
+    check(54, "[execute] NO function in schema public is executable by PUBLIC (a future function that forgets its REVOKE fails here)",
+      publicFns === "none", `PUBLIC can execute: ${publicFns}`);
+
+    const authCall   = psql(h.authUrl,   `select current_fm_user_id();`, false);
+    const systemCall = psql(h.systemUrl, `select fm_may_join_space('space_a');`, false);
+    const authIntake = psql(h.authUrl,   `select fm_beta_request_is_intake('PENDING', null, null, null, null, null, null, null);`, false);
+    check(55, "[execute] fm_auth and fm_system are REFUSED the tenant functions at the database, while fm_auth can still evaluate the intake predicate",
+      !authCall.ok && /permission denied for function/i.test(authCall.err) && !systemCall.ok && /permission denied for function/i.test(systemCall.err)
+      && authIntake.ok && authIntake.out.trim() === "t",
+      `auth->current_fm_user_id: ${authCall.err.split("\n")[0]} | system->fm_may_join_space: ${systemCall.err.split("\n")[0]} | auth->intake: ${authIntake.ok ? authIntake.out.trim() : authIntake.err.split("\n")[0]}`);
+
+    // The policies that call them still evaluate for the role they target.
+    const aliceTx  = await attempt(() => as("alice", (tx) => tx.transaction.count()));
+    const aliceVis = await attempt(() => as("alice", (tx) => tx.$queryRaw<Array<{ v: boolean }>>`SELECT fm_account_visible('acct_alice') AS v`));
+    const bobTx    = await attempt(() => as("bob",   (tx) => tx.transaction.count({ where: { id: "tx_alice_1" } })));
+    const intakeOk = psql(h.authUrl, `insert into "BetaAccessRequest" (id, email) values ('bar_exec_probe', 'exec-probe@example.test');`, false);
+    const intakeBad = psql(h.authUrl, `insert into "BetaAccessRequest" (id, email, status) values ('bar_exec_bad', 'exec-bad@example.test', 'APPROVED');`, false);
+    check(56, "[execute] every policy that calls them still works for its own role: tenant reads through fm_visible_space_ids/fm_account_visible, isolation for Bob, and the fm_auth intake INSERT (a verdict still refused)",
+      aliceTx.ok && aliceTx.value > 0 && aliceVis.ok && aliceVis.value[0]?.v === true && bobTx.ok && bobTx.value === 0
+      && intakeOk.ok && !intakeBad.ok && /row-level security/i.test(intakeBad.err),
+      `aliceTx=${aliceTx.ok ? aliceTx.value : aliceTx.error.slice(0, 100)} aliceVis=${aliceVis.ok ? JSON.stringify(aliceVis.value) : aliceVis.error.slice(0, 100)} bob=${bobTx.ok ? bobTx.value : bobTx.error.slice(0, 80)} intake=${intakeOk.ok ? "ok" : intakeOk.err.split("\n")[0]} verdict=${intakeBad.ok ? "ACCEPTED" : intakeBad.err.split("\n")[0]}`);
+
+    const authSession = await attempt(() => dbMod.authDb.userSession.findFirst({ where: { sessionToken: "rlsfg_alice_session_live_0001" }, select: { userId: true } }));
+    const systemRead  = await attempt(() => dbMod.systemDb.transaction.count());
+    check(57, "[execute] auth and system paths that never called these functions are unaffected: fm_auth session lookup and an fm_system read both succeed",
+      authSession.ok && authSession.value?.userId === "alice" && systemRead.ok && systemRead.value > 0,
+      `auth=${authSession.ok ? JSON.stringify(authSession.value) : authSession.error.slice(0, 100)} system=${systemRead.ok ? systemRead.value : systemRead.error.slice(0, 100)}`);
+  }
+
   for (const c of [dbMod.tenantDb, dbMod.authDb, dbMod.systemDb, dbMod.db]) {
     await (c as { $disconnect: () => Promise<void> }).$disconnect();
   }
