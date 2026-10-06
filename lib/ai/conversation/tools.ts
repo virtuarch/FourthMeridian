@@ -472,7 +472,9 @@ const getFinancialSnapshot: ToolDefinition = {
     'The position on a date. Omit `asOf` for today (adds per-account freshness, APRs and ' +
     'available balances); pass `asOf` for a past date (adds the account-level breakdown of ' +
     'each bucket and the coverage of that date). `liquid` is checking + savings; `checking` ' +
-    'is checking alone. Start here for anything broad, and for any "how was I doing on X".',
+    'is checking alone. Start here for anything broad, and for any "how was I doing on X". ' +
+    'Investment values carry no cost basis or account tax treatment: a sale\'s tax effect is ' +
+    'unknown here, so name it when selling is on the table.',
   parameters: obj({
     asOf: str('YYYY-MM-DD. Omit for today. A past date returns the position AS IT WAS then.'),
   }),
@@ -1272,7 +1274,8 @@ const getInvestments: ToolDefinition = {
     'What the user is invested in. Returns the canonical composition (traditional ' +
     'investments vs digital assets, disjoint) AND the position-level detail, which ' +
     'is a SUBSET limited to positions that could be priced. Every concentration ' +
-    'figure states the population it is a share of. Pass `asOf` for a past date.',
+    'figure states the population it is a share of. Pass `asOf` for a past date. No cost ' +
+    'basis or account tax treatment is known: a sale\'s tax effect is never in this data.',
   parameters: obj({
     asOf: str('YYYY-MM-DD. Omit for today. A past date returns the composition as it was.'),
   }),

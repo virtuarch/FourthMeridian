@@ -196,28 +196,53 @@ export const GUIDANCE_CLASSIFIER_INSTRUCTION = [
   '  to take; including a short follow-up that continues such a decision. A question that asks this',
   '  is RECOMMENDATION even when the answer declines, hedges or only lays out options.',
   '',
-  'adjacencies — only subjects the latest question or answer actually bears on, else []:',
-  '- SECURITIES: buying, selling or choosing particular securities or funds, or a portfolio allocation.',
-  '- TAX: how something would be taxed, or a tax consequence of an action.',
-  '- LEGAL: a legal right, obligation or determination.',
-  '- RETIREMENT_ACCOUNTS: withdrawing from, borrowing from or contributing to retirement accounts.',
-  '- LEVERAGE: borrowing to invest, margin, or other leverage.',
-  'Describing what they already hold is not SECURITIES.',
+  'Then answer each subject flag on its own: true only when that subject bears on the decision',
+  'or question in the latest exchange.',
 ].join('\n');
 
-/** The JSON schema the classifier answers in. `strict` makes both fields required. */
+/**
+ * One required, described boolean per subject — the model judges each subject on
+ * its own rather than composing a list.
+ *
+ * ⚠️ MEASURED: as a free list, "Should I sell $20k of investments to pay this
+ * loan?" came back LEVERAGE (the answer said "you're still levered") on Preview,
+ * and TAX in 0 of 5 relabels even with TAX defined to include sales. The flags
+ * are the classifier's own shape; `fromClassifierOutput` maps them onto the public
+ * `AiGuidance`, which did not change.
+ */
+const FLAG_DESCRIPTIONS: Record<AiGuidanceAdjacency, [string, string]> = {
+  SECURITIES: ['securities', 'Buying, selling or choosing securities or funds — including selling investments to raise '
+    + 'cash — or a portfolio allocation. Describing what they already hold is false.'],
+  TAX: ['tax', 'Taxes bear on it: something would be taxed, or the action has a tax consequence (selling '
+    + 'investments, withdrawing from a retirement account) — true even when the answer never mentions tax.'],
+  LEGAL: ['legal', 'A legal right, obligation or determination.'],
+  RETIREMENT_ACCOUNTS: ['retirementAccounts', 'Withdrawing from, borrowing from or contributing to retirement accounts.'],
+  LEVERAGE: ['leverage', 'Borrowing money in order to invest (margin, loans against investments). Having, owing or '
+    + 'paying down ordinary debt is false.'],
+};
+
+/** The JSON schema the classifier answers in. `strict` makes every field required. */
 export const GUIDANCE_SCHEMA = {
   name: 'guidance_signal',
   schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['level', 'adjacencies'],
+    required: ['level', ...GUIDANCE_ADJACENCIES.map((a) => FLAG_DESCRIPTIONS[a][0])],
     properties: {
       level: { type: 'string', enum: [...GUIDANCE_LEVELS] },
-      adjacencies: { type: 'array', items: { type: 'string', enum: [...GUIDANCE_ADJACENCIES] } },
+      ...Object.fromEntries(GUIDANCE_ADJACENCIES.map((a) =>
+        [FLAG_DESCRIPTIONS[a][0], { type: 'boolean', description: FLAG_DESCRIPTIONS[a][1] }])),
     },
   },
 } as const;
+
+/** The classifier's flags → the public signal. Off-shape ⇒ null, like `readGuidance`. */
+export function fromClassifierOutput(raw: unknown): AiGuidance | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  return readGuidance({ level: r.level,
+    adjacencies: GUIDANCE_ADJACENCIES.filter((a) => r[FLAG_DESCRIPTIONS[a][0]] === true) });
+}
 
 /** How much of the exchange the classifier reads. Enough for a follow-up; never the evidence. */
 export const CLASSIFIER_PRIOR_MESSAGES = 4;
@@ -270,7 +295,7 @@ export async function classifyGuidance(
 ): Promise<AiGuidance | null> {
   try {
     const raw = await call(GUIDANCE_CLASSIFIER_INSTRUCTION, classifierMessages(exchange), GUIDANCE_SCHEMA);
-    return readGuidance(raw);
+    return fromClassifierOutput(raw);
   } catch (err) {
     console.warn('[guidance] classification failed (non-fatal):', err instanceof Error ? err.message : err);
     return null;

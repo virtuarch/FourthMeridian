@@ -20,7 +20,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
-  readGuidance, disclosureTier, disclosurePlan, classifyGuidance, classifierMessages,
+  readGuidance, fromClassifierOutput, disclosureTier, disclosurePlan, classifyGuidance, classifierMessages,
   GUIDANCE_LEVELS, GUIDANCE_ADJACENCIES, GUIDANCE_SCHEMA, GUIDANCE_CLASSIFIER_INSTRUCTION,
   CLASSIFIER_PRIOR_MESSAGES, type GuidanceEntry,
 } from './guidance';
@@ -51,10 +51,25 @@ async function main(): Promise<void> {
       JSON.stringify(readGuidance({ level: 'RECOMMENDATION', adjacencies: ['TAX', 'SECURITIES', 'TAX'] }))
         === JSON.stringify(g('RECOMMENDATION', 'SECURITIES', 'TAX')));
     check('missing adjacencies read as none', JSON.stringify(readGuidance({ level: 'UNDERSTANDING' })) === JSON.stringify(g('UNDERSTANDING')));
-    check('the provider schema is strict over the same closed sets',
-      JSON.stringify(GUIDANCE_SCHEMA.schema.properties.level.enum) === JSON.stringify(GUIDANCE_LEVELS)
-        && JSON.stringify(GUIDANCE_SCHEMA.schema.properties.adjacencies.items.enum) === JSON.stringify(GUIDANCE_ADJACENCIES)
+    const props = GUIDANCE_SCHEMA.schema.properties as Record<string, { type: string; enum?: string[]; description?: string }>;
+    check('the provider schema is strict: the closed level enum plus one required, described flag per adjacency',
+      JSON.stringify(props.level.enum) === JSON.stringify(GUIDANCE_LEVELS)
+        && Object.keys(props).length === 1 + GUIDANCE_ADJACENCIES.length
+        && Object.entries(props).filter(([k]) => k !== 'level').every(([, v]) => v.type === 'boolean' && (v.description ?? '').length > 20)
+        && GUIDANCE_SCHEMA.schema.required.length === Object.keys(props).length
         && GUIDANCE_SCHEMA.schema.additionalProperties === false);
+    check('flags map onto the public signal in canonical order',
+      JSON.stringify(fromClassifierOutput({ level: 'RECOMMENDATION', securities: true, tax: true, legal: false, retirementAccounts: false, leverage: false }))
+        === JSON.stringify(g('RECOMMENDATION', 'SECURITIES', 'TAX')));
+    check('…and off-shape flags are rejected or ignored, never trusted',
+      fromClassifierOutput({ level: 'ADVICE', tax: true }) === null
+        && JSON.stringify(fromClassifierOutput({ level: 'PLANNING', tax: 'yes' })) === JSON.stringify(g('PLANNING')));
+    // Preview, 2026-10-07: "Should I sell $20k of investments to pay this loan?" came back LEVERAGE
+    // (the answer said "you're still levered") and never TAX, so the note spoke about borrowing to
+    // invest. Per-subject flags with these definitions: SECURITIES+TAX 5/5 on the same exchange.
+    check('ordinary debt is not LEVERAGE; a sale carries TAX even when the answer omits it',
+      /ordinary debt is false/.test(props.leverage?.description ?? '') && /even when the answer never mentions tax/.test(props.tax?.description ?? '')
+        && /selling investments to raise/.test(props.securities?.description ?? ''));
   }
 
   console.log('2. THE TABLE — every cell');
@@ -127,7 +142,7 @@ async function main(): Promise<void> {
     ];
     let seen: { system: string; body: string; schema: unknown } | null = null;
     const label = await classifyGuidance({ prior, asked: 'What about $10k instead?', answer: 'At $10k …' },
-      async (system, messages, schema) => { seen = { system, body: messages[0].content, schema }; return { level: 'RECOMMENDATION', adjacencies: [] }; });
+      async (system, messages, schema) => { seen = { system, body: messages[0].content, schema }; return { level: 'RECOMMENDATION', securities: false, tax: false, legal: false, retirementAccounts: false, leverage: false }; });
     const s = seen as { system: string; body: string; schema: unknown } | null;
     check('a follow-up is classified WITH the decision it continues (prior turns are in the input)',
       !!s && s.body.includes('Should I use $20k') && s.body.includes('What about $10k instead?') && s.body.includes('At $10k'));
@@ -191,6 +206,9 @@ async function main(): Promise<void> {
     const baselines = findTool('get_baselines')?.description ?? '';
     check('get_baselines offers 3/6/12 months as reference points, not a standard',
       /reference points to set side by side, not a standard/.test(baselines) && /leave the choice of reserve to the user/.test(baselines));
+    check('the position contracts say a sale\'s tax effect is not in the data (DATA OWNS TRUTH)',
+      /a sale's tax effect is\s+unknown here/.test(findTool('get_financial_snapshot')?.description ?? '')
+        && /a sale's tax effect is never in this data/.test(findTool('get_investments')?.description ?? ''));
     check('negative control: the pre-slice contract handed the reserve judgement to the model',
       !/that judgement is yours/.test(baselines));
     check('no figures, no worked example, no disclaimer copy in the rule',

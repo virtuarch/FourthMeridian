@@ -41,7 +41,9 @@ turn (unchanged) ──answer──▶ classifyGuidance (separate structured cal
 ```
 
 * **Meaning — `classifyGuidance`** (`lib/ai/conversation/guidance.ts`). One strict structured
-  call on the conversation model after the answer exists. Input: the last 4 prior prose turns,
+  call on the conversation model after the answer exists. The schema is the closed level enum
+  plus one required, described boolean per subject (mapped by `fromClassifierOutput` onto the
+  public `{level, adjacencies}`) — a free list mislabelled a Preview answer (below). Input: the last 4 prior prose turns,
   the question, the answer (clipped; no evidence, no tool results). It never re-enters the
   transcript, the sealed runtime state, or the turn record, so the answer and every figure are
   exactly what they would have been. Failure ⇒ `null`, never a failed turn. Cost is billed to
@@ -151,7 +153,19 @@ question, labelled "Which stock should I buy?" PLANNING (7/8). One run labelled 
 "What about $10k instead?" PLANNING; the shipped plan keeps the reminder on a PLANNING answer
 that follows a consequential one, so that case renders COMPACT as intended.
 
-Classifier latency on real answers: median ~1.3 s, max ~1.5 s, added after turns that take
+**Preview finding, fixed in the follow-up commit.** On Preview, "Should I sell $20k of
+investments to pay this loan?" was labelled `RECOMMENDATION + LEVERAGE` (the answer said "you're
+still levered"), so the heightened note spoke about borrowing to invest, and TAX was never set.
+Re-labelling that exact exchange 5×: free list → LEVERAGE 3/5, TAX 0/5; per-subject flags with
+"ordinary debt is false" / "true even when the answer never mentions tax" → SECURITIES + TAX 5/5,
+LEVERAGE 1/5. Two local runs on the final code: 15/16 notes as expected, 0/0/0 markers; the one
+miss labelled a cash-to-debt answer that proposed moving cash into investments `+SECURITIES`
+(HEIGHTENED instead of STANDARD — the over-disclosing direction). Separately, the answer's own
+mention of tax on a sale was 4 of 9 local runs, independent of the rule; the position contracts
+(`get_financial_snapshot`, `get_investments`) now state that a sale's tax effect is not in the
+data, and the TAX note says it deterministically when the label carries it.
+
+Classifier latency on real answers: median ~1.3–1.6 s, max ~1.75 s, added after turns that take
 10–70 s.
 
 ## Deferred
