@@ -512,8 +512,14 @@ const getFinancialSnapshot: ToolDefinition = {
       /** Unrestricted cash. Deliberately not named `cash` — see get_net_worth_history. */
       liquid: acc.totalLiquid,
       // The authority's own restricted total: owned (in netWorth/totalAssets), not in `liquid`.
+      // ⚠️ THE RELATION IS STATED, NOT LEFT TO INFERENCE. Shown beside `liquid` with no
+      // relation, the model read restricted as a PART of liquid and subtracted it again
+      // ("$56,580 − $6,009 = $50,571", Preview 3ae6fbe). It is already out of `liquid`.
       ...(typeof acc.totalRestrictedCash === 'number' && acc.totalRestrictedCash !== 0
-        ? { restrictedCash: { amount: acc.totalRestrictedCash, meaning: LIQUIDITY_ACCESS_MEANING.restricted } } : {}),
+        ? { restrictedCash: { amount: acc.totalRestrictedCash,
+          relation: 'already EXCLUDED from `liquid` — `liquid` is the unrestricted amount, so do not subtract '
+            + 'this from it; included in totalAssets and netWorth',
+          meaning: LIQUIDITY_ACCESS_MEANING.restricted } } : {}),
       counts: acc.counts,
       // CF-7's composer is the authority on what "investments" means; the two
       // components are disjoint by construction and must not be re-derived.

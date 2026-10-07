@@ -138,6 +138,8 @@ async function main(): Promise<void> {
       /\.\.\.accessOf\(a2\)/.test(src) && /accessMeaning: LIQUIDITY_ACCESS_MEANING/.test(src)
         && /from '@\/lib\/account-classifier'/.test(src));
     check('…and the authority\'s restricted total, not a re-sum', /restrictedCash: \{ amount: acc\.totalRestrictedCash/.test(src));
+    check('…stating its relation: already excluded from liquid, included in assets and net worth (a live double subtraction)',
+      /already EXCLUDED from `liquid`/.test(src) && /do not subtract/.test(src) && /included in totalAssets and netWorth/.test(src));
     check('Conversations holds NO subtype knowledge of its own (no hsa/401k/ira/roth literals, no providerSubtype comparisons)',
       !/['"](hsa|401k|403b|ira|roth|529)['"]/i.test(body) && !/providerSubtype\s*===/.test(body));
     const { LIQUIDITY_ACCESS_MEANING } = await import('@/lib/account-classifier');
