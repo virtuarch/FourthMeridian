@@ -197,6 +197,22 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
       "Sync transactions for every active Plaid bank connection (fleet). Each item runs under its per-item sync lock (skipped if a sync is already in flight), so this respects the same locks the cron and per-item refresh use; per-item failures are isolated. Idempotent; retries previously-failed connections.",
     kinds: ["run-now", "dry-run"],
   },
+  {
+    // OPERATIONALIZATION P0 — the alert evaluation as a lever. Vercel fires crons
+    // on PRODUCTION deployments only, evaluate-alerts has no per-job fallback
+    // route, and CRON_SECRET is held by nobody (generated and piped straight into
+    // Vercel), so on Preview the alert path could never run at all — which means
+    // a configured PLATFORM_ALERTS_EMAIL could not be PROVEN to deliver before
+    // Production depended on it. The body is the OPS-5 S5 orchestrator verbatim:
+    // reads three authorities, suppresses breaches already delivered within the
+    // re-notify window (so a manual run after a cron run sends nothing twice),
+    // never throws, and ledgers its summary exactly as a cron run does.
+    targetJob: "evaluate-alerts",
+    label: "Alert Evaluation",
+    description:
+      "Evaluate every live alert rule against the current job-health, connection-health, resource-freshness and AI-failure authorities and deliver any breach not already notified within the re-notify window to PLATFORM_ALERTS_EMAIL. Read-only over product data; writes one JobRun summary (the alert history). Idempotent; never throws.",
+    kinds: ["run-now", "dry-run"],
+  },
 ];
 
 /**
