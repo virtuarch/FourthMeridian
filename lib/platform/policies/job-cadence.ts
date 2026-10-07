@@ -25,7 +25,10 @@
 
 import "server-only";
 import type { PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+// fm_system, never the migration principal: the service is an OPERATOR write path
+// (CONTROL-gated) and reads/writes PlatformSetting + AuditLog, both of which
+// fm_system holds. Defaulting to `db` would grow the db-authority ratchet.
+import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { recordOperatorAction, type OperatorReason } from "@/lib/audit";
 import {
@@ -67,7 +70,7 @@ export interface JobCadenceReadModel {
 type ReadClient = Pick<PrismaClient, "platformSetting" | "jobRun">;
 
 export async function loadJobCadenceReadModel(
-  client: ReadClient = db,
+  client: ReadClient = systemDb,
   now: Date = new Date(),
   jobs: readonly ScheduledJobFacts[] = SCHEDULED_JOB_FACTS,
 ): Promise<JobCadenceReadModel> {
@@ -155,7 +158,7 @@ function versionMatches(expected: string | null, row: { updatedAt: Date } | null
 
 export async function updateJobCadence(
   input: UpdateJobCadenceInput,
-  client: Client = db,
+  client: Client = systemDb,
   now: Date = new Date(),
 ): Promise<JobCadenceMutationResult> {
   const job = editableJob(input.job);
@@ -204,7 +207,7 @@ export async function updateJobCadence(
 
 export async function resetJobCadence(
   input: ResetJobCadenceInput,
-  client: Client = db,
+  client: Client = systemDb,
   now: Date = new Date(),
 ): Promise<JobCadenceMutationResult> {
   const job = editableJob(input.job);
