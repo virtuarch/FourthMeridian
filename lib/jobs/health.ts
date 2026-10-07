@@ -41,10 +41,14 @@
  * ledger, never a fabricated figure. No new status logic beyond the two new
  * states above; the metrics are additive projections of the same rows.
  *
- * CADENCE is DERIVED from each job's fire slots (lib/jobs/cadence.ts
- * slotPeriodHours: once daily → 24, [0,6,12,18] → 6) unless the registry entry
- * overrides it with expectedEveryHours. GRACE absorbs slot jitter and dispatch
- * latency.
+ * CADENCE (P1 HUMAN OPERABILITY) is the job's RESOLVED EXECUTION CADENCE
+ * (lib/jobs/cadence-policy.core.ts: the refresh policy for refresh jobs, the
+ * bounded operator setting for fx/prices/alerts, the fixed period otherwise) —
+ * the very number the dispatcher judges due-ness by, so a cadence change moves
+ * the expectation with it. A pure caller with no policies falls back to the
+ * registry's daily anchor (slotPeriodHours). GRACE absorbs wake jitter and
+ * dispatch latency. "Next expected" is lastStart + cadence (− the dispatcher's
+ * tolerance): the schedule has no slots left to read it from.
  *
  * PLATFORM OPS POLICIES (Slice 1) — OPPORTUNITY vs EXPECTATION. A job's health
  * asks "did the scheduler get its opportunity?": sync-crypto is expected every
@@ -70,8 +74,11 @@
 
 import { db } from "@/lib/db";
 import { SCHEDULED_JOBS, type ScheduledJob } from "@/lib/jobs/registry";
-import { attemptPeriodHours, slotPeriodHours } from "@/lib/jobs/cadence";
+import { slotPeriodHours } from "@/lib/jobs/cadence";
 import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refresh-policy";
+import { floorHoursFor } from "@/lib/platform/scheduler-capability";
+import { defaultJobCadencePolicies, loadJobCadencePolicies, type JobCadencePolicies } from "@/lib/jobs/cadence-policy";
+import { DUE_TOLERANCE_MS, type JobCadenceOrigin } from "@/lib/jobs/cadence-policy.core";
 import {
   defaultRefreshPolicies, schedulerCanHonour,
   type RefreshCadence, type RefreshPolicy, type RefreshSourceKind,
@@ -116,9 +123,9 @@ export interface JobSourcePolicy {
   /** The resolved policy cadence for that source kind (a setting or its default). */
   policyCadence: RefreshCadence;
   policyExpectedEveryHours: number;
-  /** How often the deployed schedule attempts the source kind (derived from the registry). */
-  attemptPeriodHours: number | null;
-  /** Whether the attempt schedule can deliver the policy cadence exactly. */
+  /** The source kind's safety floor, in hours (null: no registered job refreshes it). */
+  floorHours: number | null;
+  /** Whether the policy cadence is at or above the floor (the platform may execute it). */
   policyHonoured: boolean;
   /** For a continuation entry, the primary job it finishes work for. */
   continuationOf: string | null;
@@ -127,8 +134,10 @@ export interface JobSourcePolicy {
 export interface JobHealthReport {
   job: string;
   status: JobHealthStatus;
-  /** The job's own attempt expectation: its slot period (or a registry override). */
+  /** The job's resolved execution cadence (the dispatcher's own number); the daily anchor for a pure caller. */
   expectedEveryHours: number;
+  /** Where that cadence came from. Null for a pure caller with no policies. */
+  cadenceOrigin: JobCadenceOrigin | null;
   /** Present only for jobs that refresh a source kind. */
   source: JobSourcePolicy | null;
   /** startedAt of the newest run; null when never-ran. */
@@ -207,7 +216,13 @@ export type ClassifiableJob = Pick<ScheduledJob, "name" | "expectedEveryHours"> 
 /** The resolved policy context for source-bound jobs. Optional: without it, `source` is null. */
 export interface JobPolicyContext {
   policy: RefreshPolicy;
-  attemptPeriodHours: number | null;
+  floorHours: number | null;
+}
+
+/** The job's resolved cadence, when the caller has one. */
+export interface JobCadenceContext {
+  hours: number;
+  origin: JobCadenceOrigin;
 }
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
@@ -222,30 +237,15 @@ function isFailureForStreak(run: JobRunHealthRow, now: Date): boolean {
 }
 
 /**
- * The next scheduled fire time strictly after `now`, derived from a job's
- * registry slot(s). JobRun records only the past, so "next expected run" comes
- * from the schedule — not lastStartedAt + cadence, which drifts and cannot
- * answer for a never-ran job. Pure; returns null when the slot is unknown
- * (e.g. a bare {name} in a unit test). Distinct from dispatch.dueJobs(), which
- * asks the backward-looking "is a job due at this tick?".
+ * The next instant the dispatcher will judge a job due: its newest run's start
+ * plus its cadence, less the dispatcher's tolerance — the same arithmetic
+ * lib/jobs/cadence-policy.core.ts nextDueAt uses, so this surface can never
+ * disagree with the dispatcher. Null for a job that never ran: it is due at the
+ * next wake, and a time nobody computed would be a fabrication. Pure.
  */
-export function nextExpectedRun(
-  hourUTC: number | number[] | undefined,
-  minuteUTC: 0 | 30 | undefined,
-  now: Date,
-): Date | null {
-  if (hourUTC === undefined || minuteUTC === undefined) return null;
-  const hours = (Array.isArray(hourUTC) ? [...hourUTC] : [hourUTC]).sort((a, b) => a - b);
-  // Today's remaining slots, then tomorrow's first — Date.UTC handles rollover.
-  for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
-    for (const h of hours) {
-      const d = new Date(
-        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + dayOffset, h, minuteUTC, 0, 0),
-      );
-      if (d.getTime() > now.getTime()) return d;
-    }
-  }
-  return null;
+export function nextExpectedRun(lastStartedAt: Date | null, cadenceHours: number): Date | null {
+  if (!lastStartedAt) return null;
+  return new Date(lastStartedAt.getTime() + cadenceHours * HOUR_MS - DUE_TOLERANCE_MS);
 }
 
 // ── Pure classification + metrics ─────────────────────────────────────────────
@@ -260,17 +260,19 @@ export function classifyJobHealth(
   runs: readonly JobRunHealthRow[],
   now: Date,
   policyCtx?: JobPolicyContext | null,
+  cadence?: JobCadenceContext | null,
 ): JobHealthReport {
-  const expectedEveryHours =
-    job.expectedEveryHours ?? (job.hourUTC !== undefined ? slotPeriodHours(job.hourUTC) : DEFAULT_CADENCE_HOURS);
-  const nextExpectedAt = nextExpectedRun(job.hourUTC, job.minuteUTC, now);
+  const expectedEveryHours = cadence?.hours
+    ?? job.expectedEveryHours ?? (job.hourUTC !== undefined ? slotPeriodHours(job.hourUTC) : DEFAULT_CADENCE_HOURS);
+  const cadenceOrigin = cadence?.origin ?? null;
+  const nextExpectedAt = nextExpectedRun(runs[0]?.startedAt ?? null, expectedEveryHours);
   const source: JobSourcePolicy | null = job.refreshes && policyCtx
     ? {
         sourceKind: job.refreshes,
         policyCadence: policyCtx.policy.cadence,
         policyExpectedEveryHours: policyCtx.policy.expectedEveryHours,
-        attemptPeriodHours: policyCtx.attemptPeriodHours,
-        policyHonoured: schedulerCanHonour(policyCtx.policy.cadence, policyCtx.attemptPeriodHours),
+        floorHours: policyCtx.floorHours,
+        policyHonoured: schedulerCanHonour(policyCtx.policy.cadence, policyCtx.floorHours),
         continuationOf: job.continuationOf ?? null,
       }
     : null;
@@ -320,7 +322,7 @@ export function classifyJobHealth(
     nextExpectedAt,
   };
 
-  const base = { job: job.name, expectedEveryHours, source, ...metrics };
+  const base = { job: job.name, expectedEveryHours, cadenceOrigin, source, ...metrics };
 
   if (runs.length === 0) {
     return { ...base, status: "never-ran", lastStartedAt: null, lastRunStatus: null, consecutiveFailures: 0 };
@@ -379,16 +381,24 @@ export async function checkScheduledJobHealth(
   client: JobRunReadClient = db as unknown as JobRunReadClient,
   now: Date = new Date(),
   jobs: readonly ScheduledJob[] = SCHEDULED_JOBS,
-  opts: { policies?: RefreshPolicies } = {},
+  opts: { policies?: RefreshPolicies; cadences?: JobCadencePolicies } = {},
 ): Promise<ScheduledJobsHealth> {
   const reports: JobHealthReport[] = [];
 
-  // The resolved refresh policies, for source-bound jobs. Injected by tests;
-  // loaded through the one loader when the client can read settings; the
-  // product defaults otherwise (a pure fake client never touches a database).
+  // The resolved refresh policies, for source-bound jobs, and the resolved
+  // execution cadences (P1). Injected by tests; loaded through the one loader
+  // when the client can read settings; the product defaults otherwise (a pure
+  // fake client never touches a database).
   const policies = opts.policies ?? (canReadSettings(client) ? await loadRefreshPolicies(client) : defaultRefreshPolicies());
+  const cadences = opts.cadences ?? (canReadSettings(client)
+    ? await loadJobCadencePolicies(client, jobs, { refreshPolicies: policies })
+    : defaultJobCadencePolicies(jobs, policies));
   const contextFor = (job: ScheduledJob): JobPolicyContext | null =>
-    job.refreshes ? { policy: policies[job.refreshes], attemptPeriodHours: attemptPeriodHours(jobs, job.refreshes) } : null;
+    job.refreshes ? { policy: policies[job.refreshes], floorHours: floorHoursFor(job.refreshes, jobs) } : null;
+  const cadenceFor = (job: ScheduledJob): JobCadenceContext | null => {
+    const c = cadences.get(job.name);
+    return c ? { hours: c.hours, origin: c.origin } : null;
+  };
 
   for (const job of jobs) {
     const runs = await client.jobRun.findMany({
@@ -404,7 +414,7 @@ export async function checkScheduledJobHealth(
         errorSummary: true,
       },
     });
-    reports.push(classifyJobHealth(job, runs, now, contextFor(job)));
+    reports.push(classifyJobHealth(job, runs, now, contextFor(job), cadenceFor(job)));
   }
 
   return {

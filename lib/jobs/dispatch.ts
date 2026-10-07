@@ -1,35 +1,43 @@
 /**
- * lib/jobs/dispatch.ts  (OPS-4 S2)
+ * lib/jobs/dispatch.ts  (OPS-4 S2 · P1 scheduling control)
  *
- * The dispatcher: selects the registry entries due at the current half-hour
- * slot and executes each through runJob() with per-job isolation. Invoked by
- * the single Vercel cron endpoint (app/api/jobs/dispatch/route.ts).
+ * The dispatcher: on every wake, decide from the LEDGER and the CADENCE POLICY
+ * which registered jobs are due, and execute each through runJob() with per-job
+ * isolation. Invoked by the single Vercel cron endpoint
+ * (app/api/jobs/dispatch/route.ts), which now wakes every 15 minutes.
  *
- * RESPONSIBILITIES (frozen S2 scope): dispatch · sequencing (registry
- * order) · runJob wrapping · isolation (one failing job can never block a
- * sibling) · logging. NOTHING ELSE — no retries, no dead-job detection, no
- * digests, no metrics (S3+/PO1 by the S0 rulings).
+ * RESPONSIBILITIES (unchanged fence): dispatch · sequencing (registry order) ·
+ * runJob wrapping · isolation (one failing job can never block a sibling) ·
+ * logging. NOTHING ELSE — no retries, no dead-job detection, no digests.
  *
- * SLOT MATCHING: a job is due when the invocation time falls in its
- * half-hour UTC slot (hourUTC + minuteUTC..minuteUTC+29). Deliberately NOT
- * exact-minute matching: Vercel may fire a cron a few minutes late, and a
- * late tick must not silently skip the slot's job. hourUTC may be a single
- * hour OR an array of fire hours (the intraday-repeat shape — CH-3
- * sync-crypto: [0, 6, 12, 18]); a job matches when the tick's hour is any of
- * them. The cron fires only at registered slots (vercel.json), so slots
- * without entries are no-op ticks, logged and cheap.
+ * ── P1: DUE-NESS IS A LEDGER FACT, NOT A SLOT ────────────────────────────────
+ * Until P1 a job was due when the wake fell in its half-hour UTC slot, so the
+ * registry's fire hours WERE the execution policy and changing Plaid's
+ * frequency meant editing code and vercel.json. Now:
  *
- * ISOLATION & OUTCOME: each job runs in its own try/catch; a failure is
- * ledgered by runJob (status "failed"), logged here, recorded in the
- * outcome, and the loop continues. The route maps any failure to a 500 so
- * a failed slot stays visible in Vercel's cron dashboard — the same signal
- * the three pre-S2 per-job crons produced.
+ *   • each job's cadence is resolved by lib/jobs/cadence-policy.core.ts
+ *     (refresh policy · bounded operator setting · fixed);
+ *   • a job is due when it never ran, or its newest run started at least
+ *     (cadence − tolerance) ago;
+ *   • a job whose newest row is `running` and younger than the in-flight window
+ *     is NOT due — the overlap guard: two wakes never execute one job twice;
+ *   • a continuation is due only when its primary's newest run reported
+ *     deferred work, enough time has passed, and it has not run since.
+ *
+ * The decision is pure (selectDueJobs); only the facts are read here. Every
+ * wake returns what it considered and why it skipped — counts and job names,
+ * never user content.
  */
 
 import { runJob, summarizeError, type JobTrigger } from "@/lib/jobs/run";
 import { SCHEDULED_JOBS, type ScheduledJob } from "@/lib/jobs/registry";
+import { systemDb } from "@/lib/db";
+import { loadJobCadencePolicies, type JobCadencePolicies } from "@/lib/jobs/cadence-policy";
+import {
+  decideJobDue, type JobDueDecision, type JobLedgerFact,
+} from "@/lib/jobs/cadence-policy.core";
 
-/** Per-job outcome of one dispatch tick. */
+/** Per-job outcome of one dispatch wake. */
 export interface DispatchOutcome {
   job: string;
   ok: boolean;
@@ -37,32 +45,83 @@ export interface DispatchOutcome {
   error?: string;
 }
 
+export interface DispatchSkip {
+  job: string;
+  reason: Extract<JobDueDecision, { due: false }>["reason"];
+  nextDueAt: string | null;
+}
+
 export interface DispatchResult {
-  /** The matched slot, e.g. "06:30 UTC". */
+  /** The wake instant, e.g. "06:15 UTC". */
   slot: string;
+  /** Every registered job was considered; these were not due. */
+  skipped: DispatchSkip[];
   dispatched: DispatchOutcome[];
   failures: number;
 }
 
-/** The half-hour slot (0 or 30) a date falls in. */
-function slotMinute(date: Date): 0 | 30 {
-  return date.getUTCMinutes() < 30 ? 0 : 30;
+/** The ledger facts the selection needs, per job name. */
+export type JobLedgerFacts = ReadonlyMap<string, JobLedgerFact>;
+
+export interface DueSelection {
+  due: ScheduledJob[];
+  skipped: DispatchSkip[];
 }
 
-/** True when `hour` is one of a job's fire hours (single hour or array). */
-function firesAtHour(hourUTC: number | number[], hour: number): boolean {
-  return Array.isArray(hourUTC) ? hourUTC.includes(hour) : hourUTC === hour;
-}
-
-/** Pure selection: the registry entries due at `now`'s half-hour UTC slot. */
-export function dueJobs(
+/** Pure selection: the registry entries due at `now`, given the ledger facts and cadence policies. */
+export function selectDueJobs(
   now: Date,
-  jobs: readonly ScheduledJob[] = SCHEDULED_JOBS,
-): ScheduledJob[] {
-  const hour = now.getUTCHours();
-  const minute = slotMinute(now);
-  return jobs.filter((j) => firesAtHour(j.hourUTC, hour) && j.minuteUTC === minute);
+  jobs: readonly ScheduledJob[],
+  facts: JobLedgerFacts,
+  policies: JobCadencePolicies,
+): DueSelection {
+  const due: ScheduledJob[] = [];
+  const skipped: DispatchSkip[] = [];
+  for (const job of jobs) {
+    const policy = policies.get(job.name);
+    if (!policy) { skipped.push({ job: job.name, reason: "NOT_YET_DUE", nextDueAt: null }); continue; }
+    const decision = decideJobDue(job, policy, facts.get(job.name), now, job.continuationOf ? facts.get(job.continuationOf) : null);
+    if (decision.due) due.push(job);
+    else skipped.push({ job: job.name, reason: decision.reason, nextDueAt: decision.nextDueAt?.toISOString() ?? null });
+  }
+  return { due, skipped };
 }
+
+// ── Facts ─────────────────────────────────────────────────────────────────────
+
+export interface JobLedgerReadClient {
+  jobRun: {
+    findMany(args: {
+      where: { jobName: { in: string[] } };
+      orderBy: { startedAt: "desc" };
+      distinct: ["jobName"];
+      select: { jobName: true; startedAt: true; status: true; summary: true };
+    }): Promise<{ jobName: string; startedAt: Date; status: string; summary: unknown }[]>;
+  };
+}
+
+/**
+ * One query: the newest JobRun per registered job. A `running` newest row is
+ * kept as such (the in-flight guard reads it); its summary is null, so a
+ * continuation reads deferred work from the newest COMPLETED primary run only
+ * when that is the newest row.
+ */
+export async function loadJobLedgerFacts(
+  client: JobLedgerReadClient,
+  jobs: readonly Pick<ScheduledJob, "name">[],
+): Promise<JobLedgerFacts> {
+  const rows = await client.jobRun.findMany({
+    where: { jobName: { in: jobs.map((j) => j.name) } },
+    orderBy: { startedAt: "desc" },
+    distinct: ["jobName"],
+    select: { jobName: true, startedAt: true, status: true, summary: true },
+  });
+  const facts = new Map<string, JobLedgerFact>();
+  for (const r of rows) facts.set(r.jobName, { lastStartedAt: r.startedAt, lastStatus: r.status, lastSummary: r.summary });
+  return facts;
+}
+
+// ── Execution ─────────────────────────────────────────────────────────────────
 
 /** Test injection seam — production callers never pass `runner`. */
 export type JobRunner = (
@@ -71,22 +130,33 @@ export type JobRunner = (
   options: { trigger: JobTrigger },
 ) => Promise<unknown>;
 
+export interface DispatchDeps {
+  jobs?: readonly ScheduledJob[];
+  runner?: JobRunner;
+  /** Injected facts/policies (tests). Production reads both. */
+  facts?: JobLedgerFacts;
+  policies?: JobCadencePolicies;
+}
+
+const wakeLabel = (now: Date) =>
+  `${String(now.getUTCHours()).padStart(2, "0")}:${String(now.getUTCMinutes()).padStart(2, "0")} UTC`;
+
 /**
  * Run every job due at `now`, sequentially in registry order, each through
  * runJob() (individually ledgered), each isolated. Never throws: failures
  * are returned in the outcome.
  */
-export async function dispatchDueJobs(
-  now: Date,
-  opts?: { jobs?: readonly ScheduledJob[]; runner?: JobRunner },
-): Promise<DispatchResult> {
+export async function dispatchDueJobs(now: Date, opts?: DispatchDeps): Promise<DispatchResult> {
   const runner: JobRunner = opts?.runner ?? runJob;
-  const due = dueJobs(now, opts?.jobs);
-  const slot = `${String(now.getUTCHours()).padStart(2, "0")}:${String(slotMinute(now)).padStart(2, "0")} UTC`;
+  const jobs = opts?.jobs ?? SCHEDULED_JOBS;
+  const facts = opts?.facts ?? await loadJobLedgerFacts(systemDb as unknown as JobLedgerReadClient, jobs);
+  const policies = opts?.policies ?? await loadJobCadencePolicies(systemDb, jobs);
+  const { due, skipped } = selectDueJobs(now, jobs, facts, policies);
+  const slot = wakeLabel(now);
 
   if (due.length === 0) {
-    console.log(`[dispatch] ${slot}: no jobs due — no-op tick`);
-    return { slot, dispatched: [], failures: 0 };
+    console.log(`[dispatch] ${slot}: no jobs due — no-op wake (${skipped.length} considered)`);
+    return { slot, skipped, dispatched: [], failures: 0 };
   }
 
   const dispatched: DispatchOutcome[] = [];
@@ -105,6 +175,6 @@ export async function dispatchDueJobs(
     }
   }
 
-  console.log(`[dispatch] ${slot}: ${dispatched.length} job(s) run, ${failures} failed`);
-  return { slot, dispatched, failures };
+  console.log(`[dispatch] ${slot}: ${dispatched.length} job(s) run, ${failures} failed, ${skipped.length} not due`);
+  return { slot, skipped, dispatched, failures };
 }

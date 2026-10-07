@@ -160,10 +160,10 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     { workspaceId: "platform-overview", sections: ["sec_auth_posture", "sec_operator_actions", "sec_audit_feed", "sec_sessions", "sec_anomalies"] },
   ],
   GROWTH_REVENUE: [
-    { workspaceId: "platform-overview", sections: ["growth_signups", "growth_beta_requests", "growth_users", "growth_activity", "growth_funnel"] },
+    { workspaceId: "platform-overview", sections: ["growth_signups", "growth_beta_requests", "growth_users", "growth_activity", "growth_funnel", "growth_policy_groups"] },
   ],
   CUSTOMER_SUCCESS: [
-    { workspaceId: "platform-overview", sections: ["cs_sync_issues"] },
+    { workspaceId: "platform-overview", sections: ["cs_customers", "cs_sync_issues"] },
   ],
   MERCHANT_OPS: [
     { workspaceId: "platform-overview", sections: ["merchant_review"] },

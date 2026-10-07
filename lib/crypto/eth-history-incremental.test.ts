@@ -297,7 +297,10 @@ async function main() {
     const code = (p: string) => readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
     check("the scheduled job passes the sweep's reconstruction boundary to the ONE planner",
       /positionHistoryImpactedFromISO: result\.historyImpactedFromISO/.test(code("jobs/sync-crypto.ts")));
-    check("…the manual route passes its own", /positionHistoryImpactedFromISO: result\.historyRefresh\?\.impactedFromISO/.test(code("app/api/accounts/[id]/sync/route.ts")));
+    // P1 REFRESH ALL — the manual route's post-sync body is lib/refresh/wallet-post-sync.ts
+    // (shared with Refresh All); the boundary travels as `outcome.historyRefresh?.impactedFromISO`
+    // there. Scanned together with the route so the pin still holds the real body.
+    check("…the manual route passes its own", /positionHistoryImpactedFromISO: (result|outcome)\.historyRefresh\?\.impactedFromISO/.test(code("app/api/accounts/[id]/sync/route.ts") + code("lib/refresh/wallet-post-sync.ts")));
     check("…the binding merges it into measured change only", /earliestImpactedFrom\(impactedFromISO, args\.positionHistoryImpactedFromISO\)/.test(code("lib/snapshots/historical-work-window.ts")));
     check("…and it travels from the reconstruction through the refresh and the sweep",
       /impactedFromISO: result\.impactedFromISO \?\? null/.test(code("lib/crypto/wallet-history-refresh.ts"))

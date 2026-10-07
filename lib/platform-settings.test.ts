@@ -52,17 +52,20 @@ async function main(): Promise<void> {
     check("wallet 6h accepted", accepted("refresh_cadence_wallet", "6h") === "6h");
     check("wallet ' 12H ' normalises to 12h", accepted("refresh_cadence_wallet", " 12H ") === "12h");
     check("wallet 24h accepted", accepted("refresh_cadence_wallet", "24h") === "24h");
-    check("wallet 4h refused (faster than the 6-hourly attempts)", /every 6 hours/.test(refused("refresh_cadence_wallet", "4h") ?? ""));
-    check("wallet 8h refused (would execute as 12h)", /12 hours/.test(refused("refresh_cadence_wallet", "8h") ?? ""));
+    // P1 — due-ness left the slots: a cadence is honourable iff it is at or
+    // above the source kind's safety FLOOR (WALLET 4h, BANK 6h), never a slot multiple.
+    check("wallet 4h accepted (at the 4-hour wallet floor)", accepted("refresh_cadence_wallet", "4h") === "4h");
+    check("wallet 8h accepted (no longer a slot-multiple question)", accepted("refresh_cadence_wallet", "8h") === "8h");
     check("wallet '5h' refused (not in the menu)", /one of/.test(refused("refresh_cadence_wallet", "5h") ?? ""));
     check("wallet 'every 5 minutes' refused", refused("refresh_cadence_wallet", "every 5 minutes") !== null);
     check("bank 24h accepted", accepted("refresh_cadence_bank", "24h") === "24h");
-    check("bank 12h refused (banks are attempted daily)", /every 24 hours/.test(refused("refresh_cadence_bank", "12h") ?? ""));
-    check("bank 6h refused", refused("refresh_cadence_bank", "6h") !== null);
+    check("bank 12h accepted", accepted("refresh_cadence_bank", "12h") === "12h");
+    check("bank 6h accepted (at the 6-hour bank floor)", accepted("refresh_cadence_bank", "6h") === "6h");
+    check("bank 4h refused (below the 6-hour bank floor)", /floor of 6 hours/.test(refused("refresh_cadence_bank", "4h") ?? ""));
     let thrown: unknown = null;
-    try { await setSetting("refresh_cadence_wallet", "4h"); } catch (e) { thrown = e; }
-    check("setSetting refuses an unhonourable cadence with the scheduler's reason",
-      thrown instanceof PlatformSettingValidationError && /every 6 hours/.test(thrown.reason));
+    try { await setSetting("refresh_cadence_bank", "4h"); } catch (e) { thrown = e; }
+    check("setSetting refuses a below-floor cadence with the floor's reason",
+      thrown instanceof PlatformSettingValidationError && /floor of 6 hours/.test(thrown.reason));
   }
 
   console.log("\n3. existing security settings keep working");
@@ -92,7 +95,7 @@ async function main(): Promise<void> {
     check("no security-sensitive or financial-semantic key can become a Platform Ops control", forbidden.length === 0, forbidden.map((d) => d.key).join(", "));
     const ops = settingKeysForSurface("PLATFORM_OPS");
     check("Platform Ops owns exactly the operational policies",
-      [...ops].sort().join(",") === ["ingestion_paused", "maintenance_mode", "refresh_cadence_bank", "refresh_cadence_wallet"].join(","), ops.join(","));
+      [...ops].sort().join(",") === ["ingestion_paused", "job_cadence_hours_evaluate-alerts", "job_cadence_hours_fetch-fx-rates", "job_cadence_hours_fetch-security-prices", "maintenance_mode", "refresh_cadence_bank", "refresh_cadence_wallet"].join(","), ops.join(","));
     check("every Platform Ops key is operator-configurable, resettable, and gated at the reserved capability",
       ops.every((k) => SETTING_DESCRIPTORS[k].operatorConfigurable && SETTING_DESCRIPTORS[k].resettable && SETTING_DESCRIPTORS[k].writeCapability === "CONTROL"));
     check("security keys are not operator-configurable and not resettable",
@@ -140,15 +143,15 @@ async function main(): Promise<void> {
       },
     } as never;
     let thrown: unknown = null;
-    try { await createSettingIfAbsent(client, "refresh_cadence_wallet", "8h", "u"); } catch (e) { thrown = e; }
-    check("create refuses an unhonourable cadence BEFORE touching the client", thrown instanceof PlatformSettingValidationError && calls.length === 0);
+    try { await createSettingIfAbsent(client, "refresh_cadence_bank", "4h", "u"); } catch (e) { thrown = e; }
+    check("create refuses a below-floor cadence BEFORE touching the client", thrown instanceof PlatformSettingValidationError && calls.length === 0);
     check("create stores the normalised value", await createSettingIfAbsent(client, "refresh_cadence_wallet", " 12H ", "u") === true && rows.get("refresh_cadence_wallet")?.value === "12h");
     check("a second create of the same key is false (P2002), never an overwrite", await createSettingIfAbsent(client, "refresh_cadence_wallet", "24h", "u") === false && rows.get("refresh_cadence_wallet")?.value === "12h");
     check("update with the right version succeeds", await updateSettingIfVersion(client, "refresh_cadence_wallet", "24h", new Date(1), "u") === true && rows.get("refresh_cadence_wallet")?.value === "24h");
     check("update with a stale version is false and writes nothing", await updateSettingIfVersion(client, "refresh_cadence_wallet", "12h", new Date(1), "u") === false && rows.get("refresh_cadence_wallet")?.value === "24h");
     thrown = null;
-    try { await updateSettingIfVersion(client, "refresh_cadence_bank", "12h", new Date(2), "u"); } catch (e) { thrown = e; }
-    check("update refuses an unhonourable bank cadence", thrown instanceof PlatformSettingValidationError);
+    try { await updateSettingIfVersion(client, "refresh_cadence_bank", "4h", new Date(2), "u"); } catch (e) { thrown = e; }
+    check("update refuses a bank cadence below the 6-hour floor", thrown instanceof PlatformSettingValidationError);
     check("delete with a stale version is false", await deleteSettingIfVersion(client, "refresh_cadence_wallet", new Date(1)) === false && rows.has("refresh_cadence_wallet"));
     check("delete with the right version removes the row", await deleteSettingIfVersion(client, "refresh_cadence_wallet", new Date(2)) === true && !rows.has("refresh_cadence_wallet"));
     thrown = null;

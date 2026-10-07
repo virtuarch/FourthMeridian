@@ -46,10 +46,10 @@ export function effectiveHeadline(view: RefreshPolicyView): { value: string; qua
 export function schedulerSupportText(view: RefreshPolicyView): { word: string; reason: string | null } {
   if (view.capability.effectiveHonoured) return { word: "Supported", reason: null };
   const opt = view.capability.options.find((o) => o.cadence === view.effective.cadence);
-  return { word: "Not supported", reason: opt?.reason ?? "The deployed scheduler cannot honour this cadence." };
+  return { word: "Not supported", reason: opt?.reason ?? "The platform cannot execute this cadence." };
 }
 
-/** "6h · 12h · 24h" — the cadences the deployed scheduler can honour. */
+/** "6h · 12h · 24h" — the cadences at or above the safety floor. */
 export function availableCadencesText(view: RefreshPolicyView): string {
   return view.capability.honourable.length > 0 ? view.capability.honourable.join(" · ") : "None";
 }
@@ -61,11 +61,14 @@ export function unsupportedOptions(view: RefreshPolicyView): { cadence: string; 
     .map((o) => ({ cadence: o.cadence, reason: o.reason ?? "" }));
 }
 
-/** "Attempted at 00:00, 06:00, 12:00, 18:00 UTC" — the schedule's own slots. */
+/**
+ * "Executed when due; the platform is woken every 15 minutes · floor 6 hours" —
+ * P1: there are no slots to list. The cadence is executed from the ledger at the
+ * first wake after it elapses, and the floor is the safety bound the menu stops at.
+ */
 export function attemptScheduleText(view: RefreshPolicyView): string {
-  const slots = view.capability.attemptSlotsUTC;
-  if (slots.length === 0) return "No scheduled attempt";
-  return `Attempted at ${slots.join(", ")} UTC`;
+  if (view.capability.floorHours === null) return "No scheduled attempt";
+  return `Executed when due; the platform is woken every ${view.capability.wakeEveryMinutes} minutes · floor ${hoursText(view.capability.floorHours)}`;
 }
 
 /** The ACTUAL state as a word, with its evidence sentence. */
@@ -86,7 +89,7 @@ export function lastChangedText(view: RefreshPolicyView, formatDate: (iso: strin
 
 /** The honesty line for the whole surface. */
 export const POLICIES_FOOTNOTE =
-  "Effective values are resolved from platform settings at read time; scheduler support is derived from the job registry; " +
+  "Effective values are resolved from platform settings at read time; support is the code-owned safety floor; " +
   "the actual state is read from the job ledger. Nothing here refreshes a source or changes a policy.";
 
 // ── PLATFORM OPS POLICIES (Slice 2) — editor wording ──────────────────────────
@@ -114,7 +117,7 @@ export function opportunityChangeText(fromHours: number, toHours: number): strin
 export function consequenceLines(view: RefreshPolicyView, cadence: RefreshCadence): string[] {
   const option = view.capability.options.find((o) => o.cadence === cadence);
   if (!option) return [];
-  if (!option.honourable) return [option.reason ?? "The deployed scheduler cannot honour this cadence."];
+  if (!option.honourable) return [option.reason ?? "The platform cannot execute this cadence."];
   const hours = Number.parseInt(cadence, 10);
   // The resolver's own grace rule (refresh-policy.core.ts) — never restated here.
   const lines = [`Sources would be considered overdue after ${hoursText(hours + graceHoursFor(hours))}.`];
@@ -123,6 +126,31 @@ export function consequenceLines(view: RefreshPolicyView, cadence: RefreshCadenc
   lines.push("Changing the cadence refreshes nothing now; the next scheduled attempt applies it.");
   return lines;
 }
+
+// ── P1 — execution cadence (per job) wording ──────────────────────────────────
+
+export type JobCadenceOriginWord = "Platform default" | "Override set on the platform" | "Default in force — stored override is invalid" | "Governed by the refresh policy" | "Follows its primary job" | "Fixed";
+
+export function jobCadenceOriginText(origin: string): JobCadenceOriginWord {
+  switch (origin) {
+    case "SETTING":         return "Override set on the platform";
+    case "INVALID_SETTING": return "Default in force — stored override is invalid";
+    case "REFRESH_POLICY":  return "Governed by the refresh policy";
+    case "FOLLOWS_PRIMARY": return "Follows its primary job";
+    case "FIXED":           return "Fixed";
+    default:                return "Platform default";
+  }
+}
+
+/** "Every 6 hours (allowed 1–168)" for an editable job; "Every 24 hours" otherwise. */
+export function jobCadenceText(hours: number, editable: boolean, minHours: number, maxHours: number): string {
+  const base = cadenceText(String(hours));
+  return editable ? `${base} (allowed ${minHours}–${maxHours})` : base;
+}
+
+export const JOB_CADENCE_FOOTNOTE =
+  "The platform is woken on a fixed infrastructure cadence; whether a job runs at a wake is decided from its last run and the cadence shown here. " +
+  "Changing a cadence runs nothing now and requires a reason; the next wake applies it.";
 
 /** Are there honourable cadences other than the one in force? Decides whether Edit is offered. */
 export function hasAlternativeCadence(view: RefreshPolicyView): boolean {

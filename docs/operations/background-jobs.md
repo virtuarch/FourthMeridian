@@ -6,24 +6,35 @@
 
 ## 1. Architecture in one paragraph
 
-One Vercel cron (`vercel.json`: `GET /api/jobs/dispatch`, CRON_SECRET bearer auth — live schedule `0,30 0,6,7,12,18 * * *`) fires the dispatcher (`lib/jobs/dispatch.ts`), which selects jobs due at the current half-hour UTC slot from the typed registry (`lib/jobs/registry.ts`) and runs each through `runJob()` (`lib/jobs/run.ts`) — every run leaves an append-only `JobRun` row (start write + exactly one completion write; counts-only summaries, never user content or monetary values). Jobs are idempotent, sequentially executed in registry order, and individually isolated: one failure never blocks a sibling. Slot matching (not exact-minute) tolerates late cron fire.
+**P1 HUMAN OPERABILITY (2026-10-08) — WAKE ≠ EXECUTION.** One Vercel cron (`vercel.json`: `GET /api/jobs/dispatch`, CRON_SECRET bearer auth) now WAKES the dispatcher every 15 minutes (`*/15 * * * *`). It decides nothing. The dispatcher (`lib/jobs/dispatch.ts`) reads the newest `JobRun` per registered job and each job's resolved EXECUTION CADENCE (`lib/jobs/cadence-policy.core.ts`) and runs, through `runJob()`, every job that is DUE: never ran, or its newest run started at least (cadence − 5 min) ago. A job whose newest row is `running` and younger than six minutes is in flight and is never dispatched twice (the overlap guard). A continuation (`sync-crypto-continuation`) runs only after its primary's newest run reported deferred work, ≥ 15 min later, once per primary run. Every run still leaves an append-only `JobRun` row; jobs stay idempotent, sequential in registry order, and individually isolated.
 
-## 2. The scheduled jobs (expected daily execution)
+**Where cadence comes from (one knob per job, never two):**
 
-| UTC slot | JobRun name | Body | What it does |
+| Origin | Jobs | How an operator changes it |
+|---|---|---|
+| `REFRESH_POLICY` | `sync-banks` (BANK, default 24h, floor 6h), `sync-crypto` (WALLET, default 6h, floor 4h) | Policies workspace → Bank/Wallet refresh cadence (fresh PLATFORM_OPS CONTROL). The refresh policy IS the execution cadence. |
+| `FOLLOWS_PRIMARY` | `sync-crypto-continuation` | Not editable; runs after deferred work. |
+| `SETTING` / `DEFAULT` | `fetch-fx-rates` (default 24h, 6–168h), `fetch-security-prices` (24h, 6–168h), `evaluate-alerts` (6h, 1–168h) | Policies workspace → Execution cadence (fresh CONTROL **+ a structured reason**; audited as `JOB_CADENCE_CHANGED` / `JOB_CADENCE_RESET`). Stored as `PlatformSetting` `job_cadence_hours_<job>`; reset = delete the row. |
+| `FIXED` | `process-deletions` (24h — the 7-day grace is legal semantics), `notification-cleanup`, `notification-retry`, `purge-trash`, `rate-limit-sweep` (24h) | Not editable. |
+
+Floors and bounds are code-owned (`lib/jobs/registry.core.ts` `cadence`, `lib/platform/refresh-policy.core.ts` `REFRESH_CADENCE_FLOOR_HOURS`): no operator setting may ask the platform to call a provider more often than its floor. Changing a cadence runs nothing; the next wake applies it. The historical `hourUTC`/`minuteUTC` on each registry entry now derive only the DEFAULT cadence (daily anchors → 24h; `[0,6,12,18]` → 6h); the dispatcher no longer matches slots, so any wake may run any due job.
+
+## 2. The scheduled jobs (expected execution)
+
+| Default cadence (origin) | JobRun name | Body | What it does |
 |---|---|---|---|
-| 06:00 | `sync-banks` | `jobs/sync-banks.ts` | Plaid incremental transaction sync, every ACTIVE item of non-deactivated users; per-item isolation; failures classify to `PlaidItem.status` + user notification |
-| 06:30 | `fetch-fx-rates` | `jobs/fetch-fx-rates.ts` | Previous closed UTC day's missing FX quotes via provider failover; append-only archive; re-run is a no-op |
-| 07:00 | `process-deletions` | `jobs/process-deletions.ts` | Irreversible account purge for users past the grace window; resumable — "the cron IS the retry" |
-| 07:30 | `notification-cleanup` | `lib/notifications/cleanup.ts` | OPS-3 retention: auto-archive read, delete aged-archived, reap expired |
-| 07:30 | `notification-retry` | `jobs/retry-notifications.ts` | Retries failed email deliveries (see §4) — runs AFTER cleanup by registry order, never re-mails aged-out rows |
-| 07:30 | `purge-trash` | `jobs/purge-trash.ts` | Deletes goals trashed > 7 days |
-| 07:30 | `rate-limit-sweep` | `jobs/sweep-rate-limits.ts` | Deletes RateLimit window rows older than 24h |
-| 06:30 | `fetch-security-prices` | `jobs/fetch-security-prices.ts` | Daily historical security prices. **Vendor-gated** — a successful no-op until a price adapter is registered |
-| 00/06/12/18 | `sync-crypto` | `jobs/sync-crypto.ts` | BTC wallet balance sweep every 6h (`expectedEveryHours: 6`); regenerates wealth history for the wallets it synced |
-| 00/06/07/12/18 :30 | `evaluate-alerts` | `jobs/evaluate-alerts.ts` | Alert pass over job-health / connection-health / resource-freshness / **AI failures** (`lib/platform/ai/failures.ts`). Every :30 slot since 2026-10-07 (was 07:30 only — a 24h detection latency); sequenced last in each slot; 20h re-notify window ⇒ an ongoing breach mails about once a day. Its JobRun summary IS the alert history + suppression store. Delivery requires `PLATFORM_ALERTS_EMAIL` (production-required since 2026-10-07; unset ⇒ every breach records `skipped`) |
+| 24h (BANK refresh policy) | `sync-banks` | `jobs/sync-banks.ts` | Plaid incremental transaction sync, every ACTIVE item of non-deactivated users; per-item isolation; failures classify to `PlaidItem.status` + user notification |
+| 24h (editable 6–168h) | `fetch-fx-rates` | `jobs/fetch-fx-rates.ts` | Previous closed UTC day's missing FX quotes via provider failover; append-only archive; re-run is a no-op |
+| 24h (fixed) | `process-deletions` | `jobs/process-deletions.ts` | Irreversible account purge for users past the grace window; resumable — "the cron IS the retry" |
+| 24h (fixed) | `notification-cleanup` | `lib/notifications/cleanup.ts` | OPS-3 retention: auto-archive read, delete aged-archived, reap expired |
+| 24h (fixed) | `notification-retry` | `jobs/retry-notifications.ts` | Retries failed email deliveries (see §4) — runs AFTER cleanup by registry order, never re-mails aged-out rows |
+| 24h (fixed) | `purge-trash` | `jobs/purge-trash.ts` | Deletes goals trashed > 7 days |
+| 24h (fixed) | `rate-limit-sweep` | `jobs/sweep-rate-limits.ts` | Deletes RateLimit window rows older than 24h |
+| 24h (editable 6–168h) | `fetch-security-prices` | `jobs/fetch-security-prices.ts` | Daily historical security prices. **Vendor-gated** — a successful no-op until a price adapter is registered |
+| 6h (WALLET refresh policy) | `sync-crypto` | `jobs/sync-crypto.ts` | Every-syncable-wallet sweep; regenerates wealth history for the wallets it synced. `sync-crypto-continuation` follows it when the work budget deferred wallets |
+| 6h (editable 1–168h) | `evaluate-alerts` | `jobs/evaluate-alerts.ts` | Alert pass over job-health / connection-health / resource-freshness / **AI failures** (`lib/platform/ai/failures.ts`). Every :30 slot since 2026-10-07 (was 07:30 only — a 24h detection latency); sequenced last in each slot; 20h re-notify window ⇒ an ongoing breach mails about once a day. Its JobRun summary IS the alert history + suppression store. Delivery requires `PLATFORM_ALERTS_EMAIL` (production-required since 2026-10-07; unset ⇒ every breach records `skipped`) |
 
-**A normal day = 17 JobRun rows** from the 10 registered jobs (`sync-crypto` fires four times, `evaluate-alerts` five), plus `resume-stale-imports` on its own `*/5` cron. The dispatcher logs a no-op line for any tick with nothing due — **and writes nothing**, which is why a dispatcher tick is not an observable fact anywhere in the product (see §9).
+**A normal day at the defaults ≈ 17 JobRun rows** from the 11 registered jobs (`sync-crypto` and `evaluate-alerts` four times each, the daily jobs once, the continuation only when work was deferred), plus `resume-stale-imports` on its own `*/5` cron. The dispatcher is woken 96 times a day; a wake with nothing due logs a no-op line — **and writes nothing**, which is why a dispatcher wake is not an observable fact anywhere in the product (see §9). The Jobs workspace shows each job's cadence (origin) · last run · next due.
 
 ## 3. Production verification (after any deploy touching jobs)
 
@@ -40,7 +51,7 @@ One Vercel cron (`vercel.json`: `GET /api/jobs/dispatch`, CRON_SECRET bearer aut
 
 ## 5. Dead-job detection
 
-`lib/jobs/health.ts` (read-only over JobRun): per job — `never-ran` (no rows) → `overdue` (newest run older than `expectedEveryHours`(24) + 2h grace) → `failing` (3 consecutive failures; a `running` row older than 2h counts as a crashed run) → `healthy`. Run it: `npx tsx scripts/check-job-health.ts` (nonzero exit when unhealthy). It is NOT itself scheduled and sends nothing — detection only, by S5's fence. `/api/health` deliberately carries no job state (public endpoint).
+`lib/jobs/health.ts` (read-only over JobRun): per job — `never-ran` (no rows) → `overdue` (newest run older than its RESOLVED cadence + 2h grace — the same cadence the dispatcher executes by, so a cadence change moves the expectation with it) → `failing` (3 consecutive failures; a `running` row older than 2h counts as a crashed run) → `healthy`. Run it: `npx tsx scripts/check-job-health.ts` (nonzero exit when unhealthy). It is NOT itself scheduled and sends nothing — detection only, by S5's fence. `/api/health` deliberately carries no job state (public endpoint).
 
 ## 6. Failure handling & manual recovery
 

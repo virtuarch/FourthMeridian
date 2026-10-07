@@ -6,8 +6,8 @@
  *   DESIRED      the PlatformSetting row, or its absence. What was stored.
  *   EFFECTIVE    the resolved policy actually in force (refresh-policy.core.ts).
  *                Differs from DESIRED exactly when the row is unreadable.
- *   CAPABILITY   what the deployed scheduler can attempt, derived from the
- *                registry (scheduler-capability.ts). Never a promise.
+ *   CAPABILITY   what the platform may execute: the source kind's safety floor
+ *                and the wake cadence (scheduler-capability.ts). Never a promise.
  *   ACTUAL       what the latest recorded sweep says it ran under — the policy
  *                version the job stamped into its JobRun summary. Evidence, or
  *                an honest UNKNOWN.
@@ -163,14 +163,14 @@ export function composeRefreshPolicyView(input: ComposeRefreshPolicyInput): Refr
     updatedAt: row ? row.updatedAt.toISOString() : null,
     updatedBy: row?.updatedById ? { id: row.updatedById, name: input.updatedByName } : null,
   };
-  const effectiveHonoured = schedulerCanHonour(policy.cadence, capability.attemptPeriodHours);
+  const effectiveHonoured = schedulerCanHonour(policy.cadence, capability.floorHours);
 
   let mismatch: RefreshPolicyMismatch | null = null;
   if (policy.origin === "INVALID_SETTING") {
     mismatch = { kind: "INVALID_OVERRIDE",
       message: `The stored override "${row?.value ?? ""}" is unreadable; the default of ${cadenceHours(policy.cadence)} hours is in force.` };
   } else if (!effectiveHonoured) {
-    const reason = capability.options.find((o) => o.cadence === policy.cadence)?.reason ?? "The deployed scheduler cannot honour this cadence.";
+    const reason = capability.options.find((o) => o.cadence === policy.cadence)?.reason ?? "The platform cannot execute this cadence.";
     mismatch = { kind: "UNHONOURABLE_EFFECTIVE", message: reason };
   }
 

@@ -75,51 +75,19 @@ console.log("\n3. the real registry binds each source kind exactly once (literal
     !/SCHEDULER_FLOOR_HOURS/.test(registry + readFileSync("lib/platform/refresh-policy.core.ts", "utf8")));
 }
 
-console.log("\n4. deployment drift — the registry's attempt period equals what vercel.json's wakes deliver");
+console.log("\n4. deployment — vercel.json is a WAKE schedule; execution is judged from the ledger (P1)");
 {
-  /** Parse the dispatcher cron's "m1,m2 h1,h2,… * * *" into the set of wakes it fires. */
-  function wakesOf(cron: string): { minutes: number[]; hours: number[]; wakes: Set<string> } {
-    const [m, h] = cron.trim().split(/\s+/);
-    const minutes = m.split(",").map(Number);
-    const hours = h.split(",").map(Number);
-    const wakes = new Set<string>();
-    for (const hh of hours) for (const mm of minutes) wakes.add(`${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`);
-    return { minutes, hours, wakes };
-  }
-  /** The attempt period the DEPLOYMENT delivers for a job: its slots that the cron actually fires. */
-  function deployedPeriod(job: SlotFacts, cron: string): number | null {
-    const { minutes, hours, wakes } = wakesOf(cron);
-    if (!minutes.includes(job.minuteUTC)) return null;
-    const jobHours = (Array.isArray(job.hourUTC) ? job.hourUTC : [job.hourUTC]).filter((x) => hours.includes(x));
-    if (jobHours.length === 0) return null;
-    const labels = slotLabels(job);
-    if (!labels.every((l) => wakes.has(l))) return null; // a declared slot the cron never fires
-    return slotPeriodHours(jobHours);
-  }
-
   const vercel = readFileSync("vercel.json", "utf8");
   const entries = [...vercel.matchAll(/"path":\s*"([^"]+)"[\s\S]*?"schedule":\s*"([^"]+)"/g)].map((m) => ({ path: m[1], schedule: m[2] }));
   const dispatcher = entries.find((e) => e.path === "/api/jobs/dispatch");
   check("vercel.json has exactly one dispatcher cron", !!dispatcher && entries.filter((e) => e.path === "/api/jobs/dispatch").length === 1);
-  const cron = dispatcher?.schedule ?? "";
-
-  for (const kind of ["WALLET", "BANK"] as const) {
-    const { primary } = refreshFamily(SCHEDULED_JOBS, kind);
-    for (const job of primary) {
-      const fromRegistry = attemptPeriodHours(SCHEDULED_JOBS, kind);
-      const fromDeployment = deployedPeriod(job, cron);
-      check(`${kind}: every declared slot of ${job.name} is a cron wake`, slotLabels(job).every((l) => wakesOf(cron).wakes.has(l)),
-        `slots ${slotLabels(job).join(",")} vs cron ${cron}`);
-      check(`${kind}: registry-derived period (${fromRegistry}h) equals the deployment's (${fromDeployment}h)`,
-        fromRegistry !== null && fromRegistry === fromDeployment);
-    }
+  check("the dispatcher is woken every 15 minutes — a wake, not a slot the registry must mirror", dispatcher?.schedule === "*/15 * * * *", dispatcher?.schedule);
+  // The historical anchors still derive each job's DEFAULT cadence, and every
+  // default is a whole number of hours a 15-minute wake can honour to within a wake.
+  for (const job of SCHEDULED_JOBS) {
+    const period = slotPeriodHours(job.hourUTC);
+    check(`${job.name}: default cadence ${period}h is reachable by the 15-minute wake`, Number.isInteger(period) && period >= 1 && (period * 60) % 15 === 0);
   }
-  // The tripwire trips: drop 18:00 from the cron and the wallet period the
-  // deployment delivers is no longer what the registry derives.
-  const drifted = "0,30 0,6,7,12 * * *";
-  const crypto = SCHEDULED_JOBS.find((j) => j.name === "sync-crypto")!;
-  check("a cron missing a registered slot is DETECTED (18:00 dropped ⇒ mismatch)",
-    deployedPeriod(crypto, drifted) !== attemptPeriodHours(SCHEDULED_JOBS, "WALLET"));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

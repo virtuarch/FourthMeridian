@@ -64,6 +64,8 @@ export interface SettingDescriptor<K extends string = string> {
   allowedValues?: readonly string[];
   /** Lower bound for `integer` keys. */
   min?: number;
+  /** Upper bound for `integer` keys (P1 — bounded operator cadences). */
+  max?: number;
   /** The documented default, as stored. */
   default: string;
   missingRow: MissingRowSemantics;
@@ -123,6 +125,9 @@ export function validateSettingValue(descriptor: SettingDescriptor, raw: unknown
       const n = Number.parseInt(trimmed, 10);
       if (descriptor.min !== undefined && n < descriptor.min) {
         return { ok: false, reason: `Value must be at least ${descriptor.min}.` };
+      }
+      if (descriptor.max !== undefined && n > descriptor.max) {
+        return { ok: false, reason: `Value must be at most ${descriptor.max}.` };
       }
       value = String(n);
       break;

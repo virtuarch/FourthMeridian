@@ -225,8 +225,15 @@ async function main(): Promise<void> {
       rec.toolCalls.length === 80 && rec.toolCalls.filter((c) => /tool budget/.test(c.error ?? '')).length === 80 - MAX_TOOL_CALLS_PER_TURN);
     check('…and the turn still answers', rec.assistant === 'done');
     const route = read('app/api/ai/chat/route.ts');
-    check('two rate windows: 10/min, and 60/hour for EVERY role', /'ai-chat', \{ limit: 10, windowSec: 60 \}/.test(route)
-      && /\{\s*const limited = await limitByUser\(user\.id, 'ai-chat-hour', \{ limit: 60, windowSec: 3600 \}\)/.test(route));
+    // P1 — the two windows are the customer's EFFECTIVE ENTITLEMENT: the minute
+    // window is the plan's pacing, the hour window is resolved under a platform
+    // CEILING of 60 that no Policy Group or overlay can exceed
+    // (lib/entitlements/consume.test.ts proves the ceiling across every group ×
+    // overlay). No role is exempt from either: the old SYSTEM_ADMIN exemption is gone.
+    check('two rate windows, both from the effective entitlement, for EVERY role',
+      /limitByUser\(user\.id, 'ai-chat', \{ limit: countLimit\(entitlements, 'aiTurnsPerMinute'\), windowSec: 60 \}\)/.test(route)
+      && /limitByUser\(user\.id, 'ai-chat-hour', \{ limit: countLimit\(entitlements, 'aiTurnsPerHour'\), windowSec: 3600 \}\)/.test(route)
+      && !/user\.role !== 'SYSTEM_ADMIN'/.test(route));
     check('…both before the body is read', route.indexOf("'ai-chat-hour'") < route.indexOf('req.json()'));
   }
 

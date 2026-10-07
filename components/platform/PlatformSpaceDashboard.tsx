@@ -52,6 +52,8 @@ import { SecOperatorActionsWidget } from "./widgets/SecOperatorActionsWidget";
 import { SecAuthPostureWidget } from "./widgets/SecAuthPostureWidget";
 import { SecSessionsWidget } from "./widgets/SecSessionsWidget";
 import { SecAnomaliesWidget } from "./widgets/SecAnomaliesWidget";
+import { CsCustomersWidget } from "./widgets/CsCustomersWidget";
+import { GrowthPolicyGroupsWidget } from "./widgets/GrowthPolicyGroupsWidget";
 import { OpsJobHealthWidget } from "./widgets/OpsJobHealthWidget";
 import { OpsRateLimitsWidget } from "./widgets/OpsRateLimitsWidget";
 import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
@@ -157,7 +159,9 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   growth_users:         OpsUsersWidget,
   growth_activity:      OpsActivityWidget,
   growth_funnel:        OpsGrowthWidget,
+  growth_policy_groups: GrowthPolicyGroupsWidget,
   // Customer Success
+  cs_customers:   CsCustomersWidget,
   cs_sync_issues: CsSyncIssuesWidget,
   // Merchant Operations — a doorway to the merge review (/merchant-ops).
   merchant_review: MerchantReviewWidget,

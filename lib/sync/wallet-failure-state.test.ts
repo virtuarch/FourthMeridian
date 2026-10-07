@@ -207,10 +207,20 @@ const TERMINAL_CODES = [
 
 // ══ 12. NO FAILURE PATH TRIGGERS HISTORY OR SNAPSHOT WORK ═════════════════════
 {
-  const syncRoute = code(read("app", "api", "accounts", "[id]", "sync", "route.ts"));
+  // P1 REFRESH ALL — the route's post-sync body (snapshot scope, capability-gated
+  // history regen, the canonical planner) is lib/refresh/wallet-post-sync.ts
+  // `finalizeWalletSync`, shared with the customer's Refresh All. The route is
+  // scanned TOGETHER with that module so every pin below holds the real body.
+  const syncRoute = code(read("app", "api", "accounts", "[id]", "sync", "route.ts")) + "\n" + code(read("lib", "refresh", "wallet-post-sync.ts"));
+  // Snapshot regen runs only over a non-empty outcome scope (empty for a failed
+  // sync — lib/crypto/wallet-snapshot-scope.ts); history regen only inside the
+  // revalued branch, which requires `ok`. Both indices must exist AND be ordered.
+  const scopeGate = syncRoute.indexOf("if (snapshotAccounts.length > 0)");
+  const revaluedGate = syncRoute.indexOf("if (outcomeRevalued(outcome)");
   check("12. snapshot + history regen sit inside the success branch only",
-    syncRoute.indexOf("if (result.ok)") < syncRoute.indexOf("regenerateSnapshotsForAccounts(")
-      && syncRoute.indexOf("if (result.ok)") < syncRoute.indexOf("regenerateWealthHistoryForAccounts("));
+    scopeGate >= 0 && revaluedGate >= 0
+      && scopeGate < syncRoute.indexOf("regenerateSnapshotsForAccounts(")
+      && revaluedGate < syncRoute.indexOf("regenerateWealthHistoryForAccounts("));
   const walletRoute = code(read("app", "api", "accounts", "wallet", "route.ts"));
   // W6f — was `feedsLegacyWealthHistory`, emptied for every chain by W6c; the
   // gate it pinned had silently stopped firing. Capability is the real question.

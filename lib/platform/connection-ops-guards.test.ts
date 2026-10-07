@@ -32,8 +32,12 @@ for (const [file, action] of [[RESYNC, "CONNECTION_RESYNC_TRIGGERED"], [REAUTH, 
   const s = src(file);
   check(`${action}: fresh PLATFORM_OPS WRITE gate`,
     /requireFreshPlatformAccess\(\s*["']PLATFORM_OPS["']\s*,\s*["']WRITE["']\s*\)/.test(s));
-  check(`${action}: writes AuditLog ${action} with performedByAdminId`,
-    s.includes("auditLog.create") && s.includes(`AuditAction.${action}`) && s.includes("performedByAdminId"));
+  // P1 — the audit row is written through the operator-action chokepoint
+  // (recordOperatorAction sets performedByAdminId = the operator); the pre-P1
+  // direct-create form is still accepted so an older route is not misreported.
+  check(`${action}: writes AuditLog ${action} through recordOperatorAction (or directly with performedByAdminId)`,
+    s.includes(`AuditAction.${action}`)
+      && (s.includes("recordOperatorAction(") || (s.includes("auditLog.create") && s.includes("performedByAdminId"))));
 }
 
 console.log("sync safety — reuse the ONE per-item path, preserve lock + cooldown");

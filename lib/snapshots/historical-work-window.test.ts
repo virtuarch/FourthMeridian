@@ -138,7 +138,10 @@ function main(): void {
       src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     const wallet = stripComments(readFileSync("app/api/accounts/wallet/route.ts", "utf8"));
     const cron   = stripComments(readFileSync("jobs/sync-crypto.ts", "utf8"));
-    const manual = stripComments(readFileSync("app/api/accounts/[id]/sync/route.ts", "utf8"));
+    // P1 REFRESH ALL — the manual route's post-sync body (planner included) lives in
+    // lib/refresh/wallet-post-sync.ts, shared with Refresh All; scanned together.
+    const manual = stripComments(readFileSync("app/api/accounts/[id]/sync/route.ts", "utf8"))
+      + "\n" + stripComments(readFileSync("lib/refresh/wallet-post-sync.ts", "utf8"));
     const plaid  = stripComments(readFileSync("lib/plaid/backgroundHistorySync.ts", "utf8"));
 
     for (const [name, src] of [["wallet connect", wallet], ["crypto cron", cron], ["manual sync", manual]] as const) {

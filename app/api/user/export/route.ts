@@ -22,6 +22,7 @@ import { todayUTCISO } from "@/lib/time/clock"; // B-6 — THE clock seam
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireFreshUser } from "@/lib/session";
 import { limitByUser } from "@/lib/rate-limit";
+import { entitlementsForUser, countLimit } from "@/lib/entitlements/consume";
 import { sendEmail } from "@/lib/email/send";
 import { formatDateTime } from "@/lib/format";
 import { AuditAction } from "@/lib/audit-actions";
@@ -35,8 +36,10 @@ export async function POST() {
     const [user, err] = await requireFreshUser();
     if (err) return err;
 
-    // 3 exports per day per user.
-    const limited = await limitByUser(user.id, "data-export", { limit: 3, windowSec: 86_400 });
+    // P1 — exports per day is the customer's `exportsPerDay` entitlement
+    // (BETA_FULL_ACCESS_V1: 3; the founder overlay: the ceiling of 10).
+    const entitlements = await entitlementsForUser(user.id);
+    const limited = await limitByUser(user.id, "data-export", { limit: countLimit(entitlements, "exportsPerDay"), windowSec: 86_400 });
     if (limited) return limited;
 
     // Compose the bundle from the existing readers, then zip it.

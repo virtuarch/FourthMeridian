@@ -24,6 +24,8 @@ import { db } from "@/lib/db";
 import { PlaidItemStatus } from "@prisma/client";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
+import { recordOperatorAction } from "@/lib/audit";
+import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-lock";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { runFullRefresh, recordAdmissionDenial } from "@/lib/plaid/refresh-execution";
@@ -65,16 +67,20 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     );
   }
 
-  const auditResync = (outcome: string, extra: Record<string, unknown> = {}) =>
-    db.auditLog.create({
-      data: {
-        // No userId: a connection action has no USER subject — the target is the
-        // connection (institution), surfaced via metadata in the operator feed.
-        // performedByAdminId is the acting operator.
-        performedByAdminId: auth.user.id,
-        action:             AuditAction.CONNECTION_RESYNC_TRIGGERED,
-        metadata:           { connectionId: item.id, provider: "PLAID", institution: item.institutionName, outcome, ...extra },
-      },
+  // P1 — the operator-action chokepoint: target = the PLAID_ITEM (a connection
+  // action has no USER subject), execution = the RefreshExecution this resync
+  // opened, captured from runFullRefresh's runId below. performedByAdminId is
+  // the acting operator; the institution stays a label in detail, never an
+  // email, never a balance.
+  let refreshExecutionId: string | null = null;
+  const auditResync = (outcome: string, result: "SUCCESS" | "FAILURE" | "REFUSED", extra: Record<string, unknown> = {}) =>
+    recordOperatorAction(db, {
+      actor:     operatorActorFrom(auth, "PLATFORM_OPS"),
+      action:    AuditAction.CONNECTION_RESYNC_TRIGGERED,
+      target:    { kind: "PLAID_ITEM", id: item.id },
+      execution: { refreshExecutionId },
+      result,
+      detail:    { connectionId: item.id, provider: "PLAID", institution: item.institutionName, outcome, ...extra },
     });
 
   // ── OPS-2D-3 — ADMISSION ────────────────────────────────────────────────────
@@ -101,7 +107,8 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       profile:         "TRANSACTIONS_ONLY",
       admissionReason: admission.reason!,
     });
-    await auditResync("not-admitted", { admissionReason: admission.reason, runId });
+    refreshExecutionId = runId;
+    await auditResync("not-admitted", "REFUSED", { admissionReason: admission.reason, runId });
     return NextResponse.json(
       {
         error:       "not-admitted",
@@ -132,6 +139,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       { itemId: item.id, trigger: "OPERATOR", profile: "TRANSACTIONS_ONLY" },
       {
         refresh: async ({ recorder, runId }) => {
+          refreshExecutionId = runId;
           recorder.begin("TRANSACTIONS", "PROVIDER");
           const res = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id, { runId }));
           if (!res.ok) {
@@ -153,7 +161,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       return NextResponse.json({ error: "in-flight" }, { status: 409 });
     }
     const r = lockResult.result;
-    await auditResync("synced", { added: r.added, modified: r.modified, removed: r.removed });
+    await auditResync("synced", "SUCCESS", { added: r.added, modified: r.modified, removed: r.removed });
     return NextResponse.json({
       ok: true,
       outcome: "synced",
@@ -166,7 +174,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       await setPlaidItemHealth(item.id, { status: health.status, errorCode: health.errorCode });
       await notifyItemSyncFailed(item.id);
     }
-    await auditResync("failed");
+    await auditResync("failed", "FAILURE");
     return NextResponse.json({ error: "Resync failed" }, { status: 500 });
   }
 }

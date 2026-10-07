@@ -23,6 +23,8 @@ import {
   type RefreshCadence, type RefreshSourceKind,
 } from "@/lib/platform/refresh-policy.core";
 import { cadenceIsHonourable } from "@/lib/platform/scheduler-capability";
+import { SCHEDULED_JOB_FACTS } from "@/lib/jobs/registry.core";
+import { defaultCadenceHours } from "@/lib/jobs/cadence-policy.core";
 import {
   PlatformSettingValidationError, descriptorsForSurface, validateSettingValue,
   type SettingDescriptor, type SettingValidation, type SettingWriteSurface,
@@ -65,6 +67,14 @@ export const PlatformSettingKey = {
   // enum, grace and defaults live in refresh-policy.core.ts.
   REFRESH_CADENCE_BANK:      REFRESH_CADENCE_SETTING_KEY.BANK,
   REFRESH_CADENCE_WALLET:    REFRESH_CADENCE_SETTING_KEY.WALLET,
+  // P1 HUMAN OPERABILITY — per-job EXECUTION cadence for the jobs that are not
+  // governed by a refresh policy and are not fixed: hours between runs, bounded
+  // by the registry's code-owned min/max (lib/jobs/registry.core.ts `cadence`).
+  // Read only through lib/jobs/cadence-policy.ts; written only through
+  // lib/platform/policies/job-cadence.ts behind CONTROL, with a reason.
+  JOB_CADENCE_FX:            "job_cadence_hours_fetch-fx-rates",
+  JOB_CADENCE_PRICES:        "job_cadence_hours_fetch-security-prices",
+  JOB_CADENCE_ALERTS:        "job_cadence_hours_evaluate-alerts",
 } as const;
 
 export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof PlatformSettingKey];
@@ -107,7 +117,18 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   ingestion_paused:          "false",
   refresh_cadence_bank:      DEFAULT_REFRESH_CADENCE.BANK,
   refresh_cadence_wallet:    DEFAULT_REFRESH_CADENCE.WALLET,
+  "job_cadence_hours_fetch-fx-rates":        String(jobCadenceDefault("fetch-fx-rates")),
+  "job_cadence_hours_fetch-security-prices": String(jobCadenceDefault("fetch-security-prices")),
+  "job_cadence_hours_evaluate-alerts":       String(jobCadenceDefault("evaluate-alerts")),
 };
+
+/** The registry-derived default and bounds for an editable job's cadence. */
+function jobCadenceFacts(name: string): { defaultHours: number; minHours: number; maxHours: number } {
+  const job = SCHEDULED_JOB_FACTS.find((j) => j.name === name);
+  if (!job?.cadence) throw new Error(`[platform-settings] ${name} has no editable cadence in the registry`);
+  return { defaultHours: defaultCadenceHours(job), minHours: job.cadence.minHours, maxHours: job.cadence.maxHours };
+}
+function jobCadenceDefault(name: string): number { return jobCadenceFacts(name).defaultHours; }
 
 // ── Descriptors — one per key; the shape is descriptor.core.ts ────────────────
 
@@ -141,6 +162,18 @@ const refreshCadence = (sourceKind: RefreshSourceKind, label: string, descriptio
     return a.honourable ? null : a.reason;
   },
 });
+
+const jobCadence = (key: PlatformSettingKeyType, jobName: string, label: string, description: string): Descriptor => {
+  const facts = jobCadenceFacts(jobName);
+  return {
+    key, label, description,
+    class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: facts.minHours, max: facts.maxHours,
+    default: String(facts.defaultHours), missingRow: "FALLBACK_TO_DEFAULT",
+    // The one application writer is lib/platform/policies/job-cadence.ts, behind CONTROL, with a reason.
+    writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
+    operatorConfigurable: true, resettable: true,
+  };
+};
 
 const admissionFact = (key: PlatformSettingKeyType, label: string, description: string): Descriptor => ({
   key, label, description,
@@ -201,6 +234,18 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
   refresh_cadence_wallet: refreshCadence(
     "WALLET", "Wallet refresh cadence",
     "How often every wallet is expected to refresh. The scheduled sweep attempts a wallet once it is due under this cadence.",
+  ),
+  "job_cadence_hours_fetch-fx-rates": jobCadence(
+    "job_cadence_hours_fetch-fx-rates", "fetch-fx-rates", "FX rates cadence (hours)",
+    "Hours between FX archive fetches. The archive closes daily, so the floor keeps fetches from being waste.",
+  ),
+  "job_cadence_hours_fetch-security-prices": jobCadence(
+    "job_cadence_hours_fetch-security-prices", "fetch-security-prices", "Security prices cadence (hours)",
+    "Hours between historical security-price fetches (vendor-gated; a no-op until a price vendor is keyed).",
+  ),
+  "job_cadence_hours_evaluate-alerts": jobCadence(
+    "job_cadence_hours_evaluate-alerts", "evaluate-alerts", "Alert evaluation cadence (hours)",
+    "Hours between alert passes over the health authorities. Re-notification is suppressed for 20 hours, so a tighter cadence costs reads, not mail.",
   ),
 };
 

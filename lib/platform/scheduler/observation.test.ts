@@ -20,6 +20,8 @@ import {
   buildSchedulerObservation,
 } from "@/lib/platform/scheduler/observation-core";
 import { deriveNextSlot } from "@/lib/platform/scheduler/observation";
+import { defaultJobCadencePolicies } from "@/lib/jobs/cadence-policy";
+import type { JobLedgerFacts } from "@/lib/jobs/dispatch";
 import type { ScheduledJob } from "@/lib/jobs/registry";
 import type { JobHealthReport } from "@/lib/jobs/health";
 
@@ -128,21 +130,30 @@ function main() {
   }
 
   // ── expected is configuration, deterministic ──────────────────────────────────
-  console.log("expected · deterministic from the registry only");
+  console.log("expected · deterministic from the ledger facts and the cadence policy (P1)");
   {
     const jobs = [job("early", 6, 0), job("late", 7, 30), job("intraday", [0, 6, 12, 18], 0)];
     const now = D("2026-07-25T05:00:00.000Z");
-    const a = deriveNextSlot(jobs, now);
-    const b = deriveNextSlot(jobs, now);
-    check("same inputs ⇒ same slot (deterministic)", a.at?.toISOString() === b.at?.toISOString());
-    check("the EARLIEST declared slot wins", a.at?.toISOString().slice(11, 16) === "06:00");
+    const policies = defaultJobCadencePolicies(jobs);
+    // early ran 23h ago (daily ⇒ due at 06:00 − tolerance); late ran 1h ago (daily ⇒ tomorrow); intraday ran 5h ago (6h ⇒ 06:00 − tolerance).
+    const facts: JobLedgerFacts = new Map([
+      ["early",    { lastStartedAt: D("2026-07-24T06:00:00.000Z"), lastStatus: "succeeded" }],
+      ["late",     { lastStartedAt: D("2026-07-25T04:00:00.000Z"), lastStatus: "succeeded" }],
+      ["intraday", { lastStartedAt: D("2026-07-25T00:00:00.000Z"), lastStatus: "succeeded" }],
+    ]);
+    const a = deriveNextSlot(jobs, now, facts, policies);
+    const b = deriveNextSlot(jobs, now, facts, policies);
+    check("same inputs ⇒ same instant (deterministic)", a.at?.toISOString() === b.at?.toISOString());
+    check("the EARLIEST next-due instant wins (last start + cadence − tolerance)", a.at?.toISOString() === "2026-07-25T05:55:00.000Z");
     check(
-      "what fires is decided by the dispatcher's own selector",
+      "what runs then is decided by the dispatcher's own selector",
       a.jobs.includes("early") && a.jobs.includes("intraday") && !a.jobs.includes("late"),
     );
+    const neverRan = deriveNextSlot(jobs, now, new Map(), policies);
+    check("a job that never ran is due NOW (the instant is clamped to now, never invented)", neverRan.at?.toISOString() === now.toISOString() && neverRan.jobs.length === 3);
 
-    const noSlots = deriveNextSlot([], now);
-    check("no registry jobs ⇒ null slot, never a guessed one", noSlots.at === null && noSlots.jobs.length === 0);
+    const noSlots = deriveNextSlot([], now, new Map(), defaultJobCadencePolicies([]));
+    check("no registry jobs ⇒ null instant, never a guessed one", noSlots.at === null && noSlots.jobs.length === 0);
 
     const o = buildSchedulerObservation({
       jobs, health: [], runs: [], nextSlotAt: a.at, jobsInNextSlot: a.jobs, window: WINDOW,
@@ -178,7 +189,7 @@ function main() {
     check("the honest field name is used instead", /lastRecordedExecutionAt/.test(core));
     check("overdue is not recomputed in the core", !/GRACE_HOURS|expectedEveryHours|DEAD_CADENCE/.test(core));
     check("the authority composes checkScheduledJobHealth", /checkScheduledJobHealth/.test(auth));
-    check("the authority reuses the dispatcher's own selector", /dueJobs\(/.test(auth));
+    check("the authority reuses the dispatcher's own selector", /selectDueJobs\(/.test(auth));
     check("the pure core does no I/O", !/@\/lib\/db|fetch\(|server-only/.test(core));
     check("nothing writes", !/\.(create|update|upsert|delete)\w*\(/.test(all));
   }

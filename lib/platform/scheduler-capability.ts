@@ -1,35 +1,37 @@
 /**
- * lib/platform/scheduler-capability.ts  (PLATFORM OPS POLICIES — Slice 1)
+ * lib/platform/scheduler-capability.ts  (PLATFORM OPS POLICIES — Slice 1 · P1 scheduling control)
  *
- * CAN THE DEPLOYED SCHEDULER HONOUR THIS CADENCE? — the one binding of the pure
- * rule (refresh-policy.core.ts assessCadence) to the real registry.
+ * MAY THE PLATFORM EXECUTE THIS CADENCE? — the one binding of the pure rule
+ * (refresh-policy.core.ts assessCadence) to the deployed facts.
  *
- * Every consumer that needs to know what the scheduler can attempt — the Policies
- * read model, the setting validator, job health — asks HERE. Nothing else may
- * hold a list of honourable cadences or an attempt period: they are derived from
- * SCHEDULED_JOB_FACTS (`refreshes` + fire slots, lib/jobs/cadence.ts) at call time,
- * and lib/jobs/cadence.test.ts pins that derivation to vercel.json.
+ * Until P1 the question was "can the deployed SLOT schedule deliver this cadence
+ * exactly?" and the answer was derived from the registry's fire hours. The
+ * dispatcher is now woken every WAKE_EVERY_MINUTES and judges due-ness from the
+ * ledger and the stored cadence (lib/jobs/cadence-policy.core.ts), so every menu
+ * cadence is deliverable to within a wake. What bounds the menu is the source
+ * kind's code-owned FLOOR (REFRESH_CADENCE_FLOOR_HOURS) — provider and economic
+ * safety — and whether any registered job refreshes the kind at all.
  *
- * Reads the scheduling FACTS (lib/jobs/registry.core.ts), never the executable
- * registry: this module is on the auth path (lib/auth.ts → platform-settings →
- * here), and the executable registry's dynamic-imported job bodies are
- * compiled into every route that reaches it (PERF-1; 34e592c had pulled the
- * jobs tree and the Plaid SDK into every authenticated route this way).
+ * Every consumer that needs the answer — the Policies read model, the setting
+ * validator, job health — asks HERE. Reads the scheduling FACTS
+ * (lib/jobs/registry.core.ts), never the executable registry: this module is on
+ * the auth path (lib/auth.ts → platform-settings → here), PERF-1.
  */
 
 import { SCHEDULED_JOB_FACTS } from "@/lib/jobs/registry.core";
-import { attemptPeriodHours, attemptSlotsUTC, refreshFamily, type SlotFacts } from "@/lib/jobs/cadence";
+import { refreshFamily, type SlotFacts } from "@/lib/jobs/cadence";
+import { WAKE_EVERY_MINUTES } from "@/lib/jobs/cadence-policy.core";
 import {
-  REFRESH_CADENCES, assessCadence,
+  REFRESH_CADENCES, REFRESH_CADENCE_FLOOR_HOURS, assessCadence,
   type CadenceAssessment, type RefreshCadence, type RefreshSourceKind,
 } from "@/lib/platform/refresh-policy.core";
 
 export interface RefreshSchedulerCapability {
   sourceKind: RefreshSourceKind;
-  /** How often the schedule attempts this source kind. Null: nothing refreshes it. */
-  attemptPeriodHours: number | null;
-  /** The UTC slots at which attempts happen ("06:00", …). */
-  attemptSlotsUTC: string[];
+  /** The safety floor for this kind, in hours. Null: no registered job refreshes it. */
+  floorHours: number | null;
+  /** How often the platform is woken to judge due work. Infrastructure cadence. */
+  wakeEveryMinutes: number;
   /** The registry job(s) that ARE the opportunity, and the ones that finish deferred work. */
   primaryJobs: string[];
   continuationJobs: string[];
@@ -41,18 +43,23 @@ export interface RefreshSchedulerCapability {
 
 const SOURCE_NOUN: Record<RefreshSourceKind, string> = { BANK: "bank", WALLET: "wallet" };
 
-/** The deployed scheduler's capability for one source kind, from the registry. */
+/** The floor for a kind — null when no registered job refreshes it (nothing could honour any cadence). */
+export function floorHoursFor(sourceKind: RefreshSourceKind, jobs: readonly SlotFacts[] = SCHEDULED_JOB_FACTS): number | null {
+  return refreshFamily(jobs, sourceKind).primary.length === 0 ? null : REFRESH_CADENCE_FLOOR_HOURS[sourceKind];
+}
+
+/** The platform's capability for one source kind. */
 export function schedulerCapability(
   sourceKind: RefreshSourceKind,
   jobs: readonly SlotFacts[] = SCHEDULED_JOB_FACTS,
 ): RefreshSchedulerCapability {
-  const period = attemptPeriodHours(jobs, sourceKind);
+  const floor = floorHoursFor(sourceKind, jobs);
   const family = refreshFamily(jobs, sourceKind);
-  const options = REFRESH_CADENCES.map((c) => assessCadence(c, period, SOURCE_NOUN[sourceKind]));
+  const options = REFRESH_CADENCES.map((c) => assessCadence(c, floor, SOURCE_NOUN[sourceKind]));
   return {
     sourceKind,
-    attemptPeriodHours: period,
-    attemptSlotsUTC: attemptSlotsUTC(jobs, sourceKind),
+    floorHours: floor,
+    wakeEveryMinutes: WAKE_EVERY_MINUTES,
     primaryJobs: family.primary.map((j) => j.name),
     continuationJobs: family.continuations.map((j) => j.name),
     options,
@@ -67,11 +74,11 @@ export function schedulerCapabilities(
   return { BANK: schedulerCapability("BANK", jobs), WALLET: schedulerCapability("WALLET", jobs) };
 }
 
-/** Is `cadence` honourable for `sourceKind` on the deployed schedule? One answer, one place. */
+/** Is `cadence` honourable for `sourceKind`? One answer, one place. */
 export function cadenceIsHonourable(
   sourceKind: RefreshSourceKind,
   cadence: RefreshCadence,
   jobs: readonly SlotFacts[] = SCHEDULED_JOB_FACTS,
 ): CadenceAssessment {
-  return assessCadence(cadence, attemptPeriodHours(jobs, sourceKind), SOURCE_NOUN[sourceKind]);
+  return assessCadence(cadence, floorHoursFor(sourceKind, jobs), SOURCE_NOUN[sourceKind]);
 }

@@ -62,6 +62,13 @@ const PERMITTED_DIRECT_READERS = new Set<string>([
   "lib/plaid/historical-stage-recorder.ts",
   "lib/platform/refresh/projections.ts",
   "lib/platform/refresh/execution-query.ts",
+  // P1 HUMAN OPERABILITY — the Customer Success per-customer reader. CUSTOMER_SUCCESS
+  // is the identity-resolving area by owner ruling, and "which refreshes touched
+  // THIS customer's connections" is a per-customer question the fleet seams
+  // (projections/execution-query) deliberately cannot ask, since they carry no
+  // owner. Read-only, fm_system, bounded (last 20 rows), projects trigger /
+  // status / timestamps only — never payloads. A doctrine decision, recorded.
+  "lib/platform/customer/customer-detail.ts",
 ]);
 
 /** This guard names the models in its own regex/allowlist — never scan itself. */

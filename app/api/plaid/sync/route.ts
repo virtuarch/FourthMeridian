@@ -26,7 +26,8 @@ import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-lock";
 import { runFullRefresh } from "@/lib/plaid/refresh-execution";
-import { checkManualRefreshCooldown, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
+import { checkManualRefreshCooldown, cooldownMsFromMinutes, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
+import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import { limitByUser } from "@/lib/rate-limit";
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
 
@@ -71,6 +72,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   }
 
 
+  // P1 — the manual cooldown is the customer's effective entitlement, not a literal.
+  const entitlements = await withTenantDb(user.id, (tx) => loadEffectiveEntitlements(tx, user.id));
+  const cooldownMs = cooldownMsFromMinutes(Number(entitlements.dimensions.manualBankRefreshCooldownMinutes.value));
+
   const body = await req.json().catch(() => ({})) as SyncBody;
 
   const items = await withTenantDb(user.id, (tx) => tx.plaidItem.findMany({
@@ -90,7 +95,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // a hard 429 before touching Plaid. The "all active items" path never
   // fails the whole request — see the partition below instead.
   if (body.plaidItemId) {
-    const cooldown = checkManualRefreshCooldown(items[0].lastManualRefreshAt);
+    const cooldown = checkManualRefreshCooldown(items[0].lastManualRefreshAt, cooldownMs);
     if (cooldown.onCooldown) {
       return NextResponse.json(
         { error: "cooldown", retryAfterSeconds: cooldown.retryAfterSeconds },
@@ -110,7 +115,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   const eligibleIds: string[] = [];
 
   for (const item of items) {
-    const cooldown = checkManualRefreshCooldown(item.lastManualRefreshAt);
+    const cooldown = checkManualRefreshCooldown(item.lastManualRefreshAt, cooldownMs);
     if (cooldown.onCooldown) {
       results.push({
         plaidItemId:       item.id,

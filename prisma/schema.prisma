@@ -478,6 +478,11 @@ model User {
   // Daily Briefs generated FOR this user (see DailyBrief). Owner-scoped because
   // the narration reads the owner's own memory, even in a shared Space.
   dailyBriefs                 DailyBrief[]        @relation("DailyBriefOwner")
+  // P1 HUMAN OPERABILITY — which Policy Group (and overlay) this customer is on,
+  // and which rollout cohorts they belong to. Definitions live in code
+  // (lib/entitlements/catalogue.ts); only the ASSIGNMENT is data.
+  policyAssignment            CustomerPolicyAssignment?
+  cohorts                     CustomerCohort[]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1040,6 +1045,13 @@ model Connection {
   cursor               String? // sync cursor, where the provider supports one
   errorCode            String?
   lastSyncedAt         DateTime?
+  // P1 REFRESH ALL — the two guards the Plaid path has had since D2 Step 7B and
+  // the wallet path lacked: a per-connection sync claim (serialises concurrent
+  // manual/scheduled wallet syncs; stale-claim recovery is time-based, like
+  // PlaidItem.syncLockedAt) and the manual-refresh clock the customer's
+  // entitlement cooldown is judged against. Both nullable; null = never.
+  syncLockedAt         DateTime?
+  lastManualRefreshAt  DateTime?
   // ───────────────────────────────────────────────────────────────────────────
   // CRYPTO-FRESHNESS-1 — PER-FACET SUCCESS CLOCKS.
   //
@@ -4309,4 +4321,62 @@ model BetaAccessRequestEvent {
 
   @@index([email, receivedAt])
   @@index([receivedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P1 HUMAN OPERABILITY (2026-10-08) — CUSTOMER POLICY + COHORT. Two small
+// ASSIGNMENT tables; the DEFINITIONS (what BETA_FULL_ACCESS_V1 allows, what a
+// cohort means, the platform ceilings) are versioned in code
+// (lib/entitlements/catalogue.ts) — the same doctrine as AI_RATES and
+// DEFAULT_REFRESH_CADENCE: definitions in code, assignments as data, the
+// effective value a read-time reduction (lib/entitlements/resolve.ts).
+//
+// COHORT ≠ POLICY. A cohort says why/how/when a customer joined a rollout
+// population (CLOSED_BETA_2026); a Policy Group says what they may use
+// (BETA_FULL_ACCESS_V1). A customer moves between policies without losing
+// cohort history, so cohorts are append-only rows and the policy is one row.
+//
+// RLS: user-scoped. The customer may READ their own rows (fm_app SELECT
+// "userId" = me) so product routes can resolve entitlements on the tenant
+// role; only fm_system (operators, through the audited assignment service)
+// and fm_auth (the invite redemption at registration) may write.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Which Policy Group a customer is on. One row per user; absent = the
+/// catalogue default (DEFAULT_POLICY_GROUP), reported as such.
+model CustomerPolicyAssignment {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Catalogue key, e.g. "BETA_FULL_ACCESS_V1". An unknown key (a retired
+  /// group) resolves to the default and is reported as such — never silently.
+  policyGroup  String
+  /// Optional named OVERLAY from the catalogue (e.g. "FOUNDER_INTERNAL_V1") —
+  /// the explicit, audited Founder / Super User override. Overlay values are
+  /// code-owned and still clamped to the platform ceilings at read time.
+  overlay      String?
+  /// Soft reference to the operator who last set it (null = set at registration).
+  assignedById String?
+  assignedAt   DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([policyGroup])
+}
+
+/// One rollout-population membership. Append-only in practice: a cohort is
+/// historical identity, never edited to reflect a later policy change.
+model CustomerCohort {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Catalogue key, e.g. "CLOSED_BETA_2026".
+  cohort       String
+  joinedAt     DateTime @default(now())
+  /// How membership was established: "INVITE" (redeemed a beta invite) or
+  /// "OPERATOR" (assigned from Customer Success).
+  source       String
+  assignedById String?
+
+  @@unique([userId, cohort])
+  @@index([cohort])
 }

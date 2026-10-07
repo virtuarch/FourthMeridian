@@ -60,7 +60,7 @@ import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-loc
 import { withPlaidRetry } from "@/lib/plaid/retry";
 // DF-2A — the observational stage recorder for the per-item refresh execution
 // ledger. Optional; when absent, refreshPlaidItem behaves byte-identically.
-import type { RefreshStageRecorder, AccountCoverageFact } from "@/lib/plaid/refresh-execution-types";
+import type { RefreshStageRecorder, AccountCoverageFact, RefreshTrigger } from "@/lib/plaid/refresh-execution-types";
 
 // ── M2 — balance↔transaction reconciliation helpers ──────────────────────────
 
@@ -141,6 +141,8 @@ export interface RefreshItemResult {
   skipped?:               "cooldown" | "in-flight";
   /** D2 Step 7B — only set when skipped === "cooldown". */
   retryAfterSeconds?:     number;
+  /** P1 — the RefreshExecution this item ran under (runManualItemRefresh). */
+  executionId?:           string;
 }
 
 interface ReconcileTarget { id: string; type: string; kind: "cash" | "card"; balanceBefore: number; balanceAfter: number }
@@ -514,6 +516,13 @@ export interface ManualItemRefreshDeps {
   runFullRefresh?: RunFullRefreshFn;
   refreshItem?:    typeof refreshPlaidItem;
   withLock?:       typeof withPlaidItemSyncLock;
+  /**
+   * P1 — the initiating business event. MANUAL (the customer's own Refresh All
+   * / Refresh) by default; OPERATOR when Customer Success refreshes on a
+   * customer's behalf. Same envelope, same lock, same ledger — only the trigger
+   * the RefreshExecution records differs.
+   */
+  trigger?:        RefreshTrigger;
 }
 
 /**
@@ -564,12 +573,15 @@ export async function runManualItemRefresh(
   const withLock    = deps.withLock    ?? withPlaidItemSyncLock;
 
   return runFullRefresh<SyncLockResult<RefreshItemResult>>(
-    { itemId: plaidItemDbId, trigger: "MANUAL", profile: "FULL_REFRESH" },
+    { itemId: plaidItemDbId, trigger: deps.trigger ?? "MANUAL", profile: "FULL_REFRESH" },
     {
       refresh: async ({ recorder, runId }) => {
         const lockResult = await withLock(plaidItemDbId, () =>
           refreshItem(plaidItemDbId, { deferSnapshot: true, recorder, runId }),
         );
+        // P1 — surface the execution id so a Refresh All outcome can point at
+        // the ledger row this item ran under.
+        if (lockResult.ok) lockResult.result.executionId = runId;
         if (!lockResult.ok) {
           // Nothing was attempted — deriveOverallStatus turns a stage set of
           // pure SKIPPEDs into SKIPPED, so the execution reads as contention
@@ -663,6 +675,8 @@ export interface RefreshAllDeps {
   runItem?:                (plaidItemDbId: string) => Promise<SyncLockResult<RefreshItemResult>>;
   onItemFailure?:          (plaidItemDbId: string, err: unknown) => Promise<void>;
   regenerateCompleted?:    (succeededAccountIds: string[], failedItemIds: string[]) => Promise<string[]>;
+  /** P1 — forwarded to runManualItemRefresh (MANUAL by default, OPERATOR on a customer's behalf). */
+  trigger?:                RefreshTrigger;
 }
 
 /**
@@ -774,7 +788,7 @@ export async function refreshAllActiveItemsForUser(
   const listItems           = deps.listActiveItems        ?? listActiveItemsForUser;
   const hasLinkedAccount    = deps.hasActiveLinkedAccount ?? hasActiveLinkedAccount;
   const selfHealOrphaned    = deps.selfHealOrphaned       ?? selfHealOrphanedPlaidItem;
-  const runItem             = deps.runItem                ?? runManualItemRefresh;
+  const runItem             = deps.runItem                ?? ((id: string) => runManualItemRefresh(id, { trigger: deps.trigger }));
   const onItemFailure       = deps.onItemFailure          ?? reportItemRefreshFailure;
   const regenerateCompleted = deps.regenerateCompleted    ?? regenerateCompletedSpaces;
 

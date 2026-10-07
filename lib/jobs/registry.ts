@@ -8,10 +8,10 @@
  * app/api/jobs/dispatch/route.ts) selects due entries from this table and
  * executes each through runJob().
  *
- * SCHEDULE SEMANTICS: each entry names its daily UTC fire slot(s) on a
- * half-hour boundary (minuteUTC ∈ {0, 30}). Slot matching (not exact-minute
- * matching) makes dispatch robust to Vercel firing a cron a few minutes late
- * — see dueJobs() in lib/jobs/dispatch.ts. The 06:00/06:30/07:00 slots are
+ * SCHEDULE SEMANTICS (P1): execution is decided from the JobRun ledger and each
+ * job's resolved cadence (lib/jobs/cadence-policy.core.ts); the fire slots below are
+ * each job's historical daily anchor and derive only its DEFAULT cadence
+ * — see selectDueJobs() in lib/jobs/dispatch.ts. The 06:00/06:30/07:00 slots are
  * EXACTLY the three pre-S2 vercel.json schedules; the S3 maintenance jobs
  * occupy the 07:30 slot the paid-tier cron expression ("0,30 6-7 * * *")
  * already fires — S3 adds NO vercel.json entry. A job that repeats INTRADAY

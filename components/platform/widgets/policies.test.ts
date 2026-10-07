@@ -39,9 +39,9 @@ console.log("1. the default picture (the real database today)");
   check("wallet: Every 6 hours · overdue after 8 hours", /Every 6 hours/.test(html) && /8 hours/.test(html));
   check("origin reads as the platform default", (html.match(/Platform default/g) ?? []).length === 2);
   check("scheduler support reads Supported for both (the word, not a reason)", (html.match(/>Supported</g) ?? []).length === 2 && !/>Not supported</.test(html));
-  check("available cadences: wallet 6h · 12h · 24h, bank 24h", /6h · 12h · 24h/.test(html) && />24h</.test(html));
-  check("unsupported options carry their reasons", /effective execution would be 12 hours/.test(html) && /attempts occur every 6 hours/.test(html));
-  check("attempt schedule is stated as UTC slots", /00:00, 06:00, 12:00, 18:00 UTC/.test(html) && /06:00 UTC/.test(html));
+  check("available cadences: wallet the whole menu, bank from 6h", /4h · 6h · 8h · 12h · 24h/.test(html) && /6h · 8h · 12h · 24h/.test(html));
+  check("unsupported options carry their reasons (the bank floor)", /floor of 6 hours/.test(html));
+  check("execution is stated as wake + floor, not UTC slots", /woken every 15 minutes/.test(html) && /floor 4 hours/.test(html) && !/00:00, 06:00/.test(html));
   check("latest sweep is Unknown with its reason, never a fabricated verdict", /Unknown/.test(html) && /unknown/.test(html));
   check("last changed: never overridden", (html.match(/Never overridden/g) ?? []).length === 2);
   check("grace is stated once as the code-owned rule", /larger of 2 hours and 25%/.test(html));
@@ -85,7 +85,7 @@ console.log("\n5. read-only for READ and WRITE operators — the Slice 1 card, n
   const html = render({ data: model, loading: false, error: null }, false);
   check("no select, input, button or form in the markup without canControl", !/<select|<input|<button|<form/.test(html));
   check("no Edit, Save or Reset affordance", !/ Edit<\/button>|Save|Reset to default/.test(html));
-  check("the same policy information is still shown (effective, overdue, capability, actual)", /Every 12 hours/.test(html) && /15 hours/.test(html) && /6h · 12h · 24h/.test(html) && /Unknown/.test(html));
+  check("the same policy information is still shown (effective, overdue, capability, actual)", /Every 12 hours/.test(html) && /15 hours/.test(html) && /4h · 6h · 8h · 12h · 24h/.test(html) && /Unknown/.test(html));
   check("no email, no secret-shaped text", !/@|token|secret/i.test(html));
 }
 
@@ -93,8 +93,8 @@ console.log("\n6. the control (Slice 2) — rendered only behind canControl");
 {
   const model = composeRefreshPoliciesReadModel([input("BANK"), input("WALLET")], NOW);
   const html = render({ data: model, loading: false, error: null }, true);
-  check("wallet offers Edit (alternatives exist); no Reset (no override)", (html.match(/ Edit<\/button>/g) ?? []).length === 1 && !/Reset to default/.test(html));
-  check("bank offers neither Edit (24h is the only honourable cadence) nor Reset (no override)", (html.match(/<button/g) ?? []).length === 1);
+  check("wallet offers Edit (alternatives exist); no Reset (no override)", / Edit<\/button>/.test(html) && !/Reset to default/.test(html));
+  check("bank offers Edit too since P1 (6h–24h are honourable); neither offers Reset (no override)", (html.match(/ Edit<\/button>/g) ?? []).length === 2 && !/Reset to default/.test(html));
   const withOverride = composeRefreshPoliciesReadModel([input("BANK", { row: { value: "24h", updatedAt: NOW, updatedById: null } }), input("WALLET")], NOW);
   const html2 = render({ data: withOverride, loading: false, error: null }, true);
   check("a bank override makes Reset available even though no alternative cadence exists", /Reset to default/.test(html2));
@@ -111,7 +111,7 @@ console.log("\n7. the editor: bounded options, unsupported disabled with reasons
     renderToStaticMarkup(createElement(PolicyEditor, { view, selected, busy, notice: null, onSelect: () => {}, onSave: () => {}, onCancel: () => {} }));
   const at12 = editor("12h");
   check("all five cadences are listed", ["Every 4 hours", "Every 6 hours", "Every 8 hours", "Every 12 hours", "Every 24 hours"].every((t) => at12.includes(t)));
-  check("4h and 8h are disabled with the scheduler's reasons", (at12.match(/disabled=""/g) ?? []).length >= 2 && /attempts occur every 6 hours/.test(at12) && /effective execution would be 12 hours/.test(at12));
+  check("every wallet cadence is selectable (all at or above the 4h floor); only Save gating disables", !/Unavailable/.test(at12));
   check("12h consequences: overdue after 15 hours, half as many opportunities, no refresh now",
     /overdue after 15 hours/.test(at12) && /half as many scheduled refresh opportunities/.test(at12) && /refreshes nothing now/.test(at12));
   const at24 = editor("24h");
@@ -129,7 +129,9 @@ console.log("\n6. the wording helpers");
   const v = model.policies[0];
   check("cadenceText", cadenceText("6h") === "Every 6 hours" && cadenceText("1h") === "Every 1 hour");
   check("originText for an override", originText(v) === "Override set on the platform");
-  check("an unhonourable effective cadence reads Not supported with the reason", schedulerSupportText(v).word === "Not supported" && /12 hours/.test(schedulerSupportText(v).reason ?? ""));
+  check("an 8h wallet override reads Supported since P1", schedulerSupportText(v).word === "Supported");
+  const below = composeRefreshPoliciesReadModel([input("BANK", { row: { value: "4h", updatedAt: NOW, updatedById: null } })], NOW).policies[0];
+  check("a cadence below the floor reads Not supported with the floor's reason", schedulerSupportText(below).word === "Not supported" && /floor of 6 hours/.test(schedulerSupportText(below).reason ?? ""));
   check("effectiveHeadline for a valid override", effectiveHeadline(v).value === "Every 8 hours");
 }
 

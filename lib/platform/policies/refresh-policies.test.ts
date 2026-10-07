@@ -69,14 +69,17 @@ async function main(): Promise<void> {
   console.log("\nD/E. capability: supported vs unsupported");
   {
     const six = composeRefreshPolicyView(wallet());
-    check("D. 6h wallet policy is honoured by the deployed schedule", six.capability.effectiveHonoured && six.capability.honourable.join(",") === "6h,12h,24h");
+    check("D. 6h wallet policy is honoured (at or above the 4h floor); the whole menu is honourable for wallets", six.capability.effectiveHonoured && six.capability.honourable.join(",") === "4h,6h,8h,12h,24h");
     const eight = composeRefreshPolicyView(wallet({ row: row("8h") }));
-    check("E. an 8h override (legacy row) is effective but NOT honoured, with the reason",
-      eight.effective.cadence === "8h" && !eight.capability.effectiveHonoured && eight.mismatch?.kind === "UNHONOURABLE_EFFECTIVE" && /12 hours/.test(eight.mismatch.message));
-    check("E. unsupported options carry reasons; supported ones carry none",
-      six.capability.options.every((o) => (o.honourable ? o.reason === null : typeof o.reason === "string" && o.reason.length > 0)));
+    check("E. an 8h override is effective AND honoured since P1 (no slot to be a multiple of)",
+      eight.effective.cadence === "8h" && eight.capability.effectiveHonoured && eight.mismatch === null);
     const b = composeRefreshPolicyView(bank());
-    check("bank: only 24h is available; 4h/6h/8h/12h unsupported", b.capability.honourable.join(",") === "24h" && b.capability.options.filter((o) => !o.honourable).length === 4);
+    check("E. unsupported options carry reasons; supported ones carry none",
+      b.capability.options.every((o) => (o.honourable ? o.reason === null : typeof o.reason === "string" && o.reason.length > 0)));
+    check("bank: 4h is below the 6h floor; 6h/8h/12h/24h available", b.capability.honourable.join(",") === "6h,8h,12h,24h" && b.capability.options.filter((o) => !o.honourable).map((o) => o.cadence).join() === "4h");
+    const fourBank = composeRefreshPolicyView(bank({ row: row("4h") }));
+    check("a bank 4h override is effective but NOT honoured, with the floor's reason",
+      fourBank.effective.cadence === "4h" && !fourBank.capability.effectiveHonoured && fourBank.mismatch?.kind === "UNHONOURABLE_EFFECTIVE" && /floor of 6 hours/.test(fourBank.mismatch.message));
   }
 
   console.log("\nF/G/H. actual: UNKNOWN / CURRENT / PENDING");
@@ -140,9 +143,16 @@ async function main(): Promise<void> {
         && !/export async function (PUT|POST)/.test(route));
     check("the read model is composed at read time, never persisted", !/\.(create|upsert|update|delete)\(/.test(loader + code("lib/platform/policies/refresh-policies.core.ts")));
     const widget = code("components/platform/widgets/OpsPoliciesWidget.tsx");
-    check("the widget renders no free-form input (its controls are bounded buttons behind canControl)",
-      !/<select|<input|<form|onChange|onSubmit/.test(widget) && /canControl/.test(widget));
-    check("the widget talks only to the policies route", (widget.match(/\/api\/platform\/platform-ops\/[a-z-]+/g) ?? []).every((u) => u === "/api/platform/platform-ops/policies"));
+    // P1 — the refresh-cadence editor stays bounded buttons; the execution-cadence
+    // editor (JobCadenceEditor) takes a bounded integer, a reason code from the
+    // closed OPERATOR_REASON_CODES list and a ≤280-char note the server scrubs.
+    const refreshPart = widget.slice(0, widget.indexOf("export function JobCadenceEditor"));
+    check("the refresh-cadence surface renders no free-form input (its controls are bounded buttons behind canControl)",
+      !/<select|<input|<form|onSubmit/.test(refreshPart) && /canControl/.test(widget));
+    check("the execution-cadence editor bounds its inputs (min/max from the view, maxLength on the note, a closed reason list)",
+      /min=\{view\.minHours\} max=\{view\.maxHours\}/.test(widget) && /maxLength=\{280\}/.test(widget) && /OPERATOR_REASON_CODES\.map/.test(widget));
+    check("the widget talks only to the policies and job-cadence routes",
+      (widget.match(/\/api\/platform\/platform-ops\/[a-z-]+/g) ?? []).every((u) => u === "/api/platform/platform-ops/policies" || u === "/api/platform/platform-ops/job-cadence"));
   }
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

@@ -124,7 +124,9 @@ console.log('\n6. CONTINUITY WITHOUT PERSISTENCE');
 {
   check('nothing about the conversation is written',
     !/db\.[\w.]*\.(create|createMany|update|updateMany|upsert|delete)/.test(src)
-      && !/aiAdvice|Conversation/.test(src));
+      // P1 — `\bConversation\b` names a persistence MODEL; the product noun
+      // "Conversations" (now in the entitlement refusal) is not a store.
+      && !/aiAdvice|\bConversation\b/.test(src));
   // ⚠️ RLS-AI-S11 — THE ONE READ IS STILL THE AGENT ID, AND IT NO LONGER GOES
   // THROUGH `db`. It runs inside a short tenant phase (`phase.run('ai_agent', …)`)
   // like every other read this surface makes, so the pin is on the READ, not on

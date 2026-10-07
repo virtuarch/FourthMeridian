@@ -30,7 +30,8 @@ import {
   type JobRunReadClient,
 } from "@/lib/jobs/health";
 import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
-import { attemptPeriodHours } from "@/lib/jobs/cadence";
+import { floorHoursFor } from "@/lib/platform/scheduler-capability";
+import { DUE_TOLERANCE_MS } from "@/lib/jobs/cadence-policy.core";
 import { defaultRefreshPolicies, resolveRefreshPolicy } from "@/lib/platform/refresh-policy.core";
 
 let failures = 0;
@@ -164,22 +165,12 @@ async function main(): Promise<void> {
 
   // ── 3d. nextExpectedRun — schedule projection (pure) ───────────────────────
   {
-    const AT_0530 = new Date("2026-07-09T05:30:00Z"); // before the 06:00 daily slot
-    const daily6 = nextExpectedRun(6, 0, AT_0530);
-    check("daily slot: next run is today's 06:00 when now is before it",
-      daily6?.toISOString() === "2026-07-09T06:00:00.000Z");
-    const AT_0700 = new Date("2026-07-09T07:00:00Z"); // after the 06:00 slot → tomorrow
-    const daily6b = nextExpectedRun(6, 0, AT_0700);
-    check("daily slot: rolls to tomorrow once today's slot has passed",
-      daily6b?.toISOString() === "2026-07-10T06:00:00.000Z");
-    const intraday = nextExpectedRun([0, 6, 12, 18], 0, new Date("2026-07-09T07:00:00Z"));
-    check("intraday array: picks the next fire hour (12:00)",
-      intraday?.toISOString() === "2026-07-09T12:00:00.000Z");
-    const wrap = nextExpectedRun([0, 6, 12, 18], 0, new Date("2026-07-09T19:00:00Z"));
-    check("intraday array: wraps past the last slot to tomorrow's first",
-      wrap?.toISOString() === "2026-07-10T00:00:00.000Z");
-    check("half-hour minute honored", nextExpectedRun(6, 30, AT_0530)?.toISOString() === "2026-07-09T06:30:00.000Z");
-    check("unknown slot → null (bare job in a unit test)", nextExpectedRun(undefined, undefined, NOW) === null);
+    // P1 — next expected = last start + cadence − the dispatcher's tolerance; never ran ⇒ null (due at the next wake).
+    const last = new Date("2026-07-09T06:00:00Z");
+    check("next expected is lastStart + cadence − tolerance (6h cadence)",
+      nextExpectedRun(last, 6)?.toISOString() === new Date(last.getTime() + 6 * 3_600_000 - DUE_TOLERANCE_MS).toISOString());
+    check("daily cadence: tomorrow minus the tolerance", nextExpectedRun(last, 24)?.toISOString() === new Date(last.getTime() + 24 * 3_600_000 - DUE_TOLERANCE_MS).toISOString());
+    check("never ran → null (due at the next wake; a time nobody computed is not fabricated)", nextExpectedRun(null, 24) === null);
     check("real registry jobs all resolve a next expected run",
       SCHEDULED_JOBS.every((jb) => classifyJobHealth(jb, [run(1, "succeeded")], NOW).nextExpectedAt instanceof Date));
   }
@@ -263,28 +254,31 @@ async function main(): Promise<void> {
   }
 
   // ── 8. PLATFORM OPS POLICIES (Slice 1) — opportunity vs expectation ───────
-  console.log("8. source-bound jobs: the job's expectation is its slot; the source's policy rides beside it");
+  console.log("8. source-bound jobs: the job's expectation IS the resolved cadence (P1); the source's policy rides beside it");
   {
     const crypto = SCHEDULED_JOBS.find((j) => j.name === "sync-crypto")!;
-    const attempt = attemptPeriodHours(SCHEDULED_JOBS, "WALLET");
-    const six = { policy: defaultRefreshPolicies().WALLET, attemptPeriodHours: attempt };
-    const twelve = { policy: resolveRefreshPolicy({ sourceKind: "WALLET" }, { value: "12h", updatedAt: NOW }), attemptPeriodHours: attempt };
-    const eight = { policy: resolveRefreshPolicy({ sourceKind: "WALLET" }, { value: "8h", updatedAt: NOW }), attemptPeriodHours: attempt };
+    const floor = floorHoursFor("WALLET", SCHEDULED_JOBS);
+    const six = { policy: defaultRefreshPolicies().WALLET, floorHours: floor };
+    const twelve = { policy: resolveRefreshPolicy({ sourceKind: "WALLET" }, { value: "12h", updatedAt: NOW }), floorHours: floor };
+    const eight = { policy: resolveRefreshPolicy({ sourceKind: "WALLET" }, { value: "8h", updatedAt: NOW }), floorHours: floor };
 
     check("sync-crypto's expectation is derived from its slots (6h), with no registry literal",
       classifyJobHealth(crypto, [run(1, "succeeded")], NOW).expectedEveryHours === 6 && crypto.expectedEveryHours === undefined);
     check("wallet policy 6h: a run 7h ago is healthy and the source policy is carried beside the job",
       (() => { const r = classifyJobHealth(crypto, [run(7, "succeeded")], NOW, six);
         return r.status === "healthy" && r.source?.sourceKind === "WALLET" && r.source.policyCadence === "6h"
-          && r.source.attemptPeriodHours === 6 && r.source.policyHonoured === true; })());
-    check("wallet policy 12h: the job is still expected every 6h (it fires and finds nothing due) — a 7h-old run is healthy, not overdue",
-      (() => { const r = classifyJobHealth(crypto, [run(7, "succeeded")], NOW, twelve);
-        return r.status === "healthy" && r.expectedEveryHours === 6 && r.source?.policyExpectedEveryHours === 12 && r.source.policyHonoured === true; })());
-    check("wallet policy 12h: a missed SLOT is still overdue (the scheduler opportunity, not the policy, was missed)",
-      classifyJobHealth(crypto, [run(9, "succeeded")], NOW, twelve).status === "overdue");
-    check("an unhonourable policy (8h) is reported as not honoured beside the job, without changing the job's own health",
+          && r.source.floorHours === 4 && r.source.policyHonoured === true; })());
+    check("wallet policy 12h WITH the resolved cadence (P1): the job is expected every 12h — a 9h-old run is healthy, not overdue",
+      (() => { const r = classifyJobHealth(crypto, [run(9, "succeeded")], NOW, twelve, { hours: 12, origin: "REFRESH_POLICY" });
+        return r.status === "healthy" && r.expectedEveryHours === 12 && r.cadenceOrigin === "REFRESH_POLICY" && r.source?.policyExpectedEveryHours === 12; })());
+    check("without a cadence context a pure caller falls back to the daily anchor (6h) and a 9h-old run reads overdue",
+      classifyJobHealth(crypto, [run(9, "succeeded")], NOW, twelve).status === "overdue" && classifyJobHealth(crypto, [run(9, "succeeded")], NOW, twelve).cadenceOrigin === null);
+    check("an 8h wallet policy is honoured since P1 (at or above the 4h floor; the dispatcher has no slots to be a multiple of)",
       (() => { const r = classifyJobHealth(crypto, [run(1, "succeeded")], NOW, eight);
-        return r.status === "healthy" && r.source?.policyHonoured === false; })());
+        return r.status === "healthy" && r.source?.policyHonoured === true; })());
+    check("a policy below the floor is reported as not honoured beside the job",
+      classifyJobHealth(SCHEDULED_JOBS.find((j) => j.name === "sync-banks")!, [run(1, "succeeded")], NOW,
+        { policy: resolveRefreshPolicy({ sourceKind: "BANK" }, { value: "4h", updatedAt: NOW }), floorHours: floorHoursFor("BANK", SCHEDULED_JOBS) }).source?.policyHonoured === false);
     check("the continuation carries its primary's name in the source block",
       classifyJobHealth(SCHEDULED_JOBS.find((j) => j.name === "sync-crypto-continuation")!, [run(1, "succeeded")], NOW, six).source?.continuationOf === "sync-crypto");
     check("a non-refresh job carries no source block and keeps its daily expectation",
@@ -297,10 +291,11 @@ async function main(): Promise<void> {
     // client (no platformSetting) falls back to the defaults, never a database.
     const client: JobRunReadClient = { jobRun: { findMany: async () => [run(1, "succeeded")] } };
     const withTwelve = await checkScheduledJobHealth(client, NOW, SCHEDULED_JOBS, { policies: { BANK: defaultRefreshPolicies().BANK, WALLET: twelve.policy } });
-    check("checkScheduledJobHealth threads the injected wallet policy to sync-crypto and sync-banks gets BANK",
+    check("checkScheduledJobHealth threads the injected wallet policy to sync-crypto (its cadence follows it: 12h) and sync-banks gets BANK",
       withTwelve.jobs.find((j) => j.job === "sync-crypto")?.source?.policyCadence === "12h"
+        && withTwelve.jobs.find((j) => j.job === "sync-crypto")?.expectedEveryHours === 12
         && withTwelve.jobs.find((j) => j.job === "sync-banks")?.source?.sourceKind === "BANK"
-        && withTwelve.jobs.find((j) => j.job === "sync-banks")?.source?.attemptPeriodHours === 24);
+        && withTwelve.jobs.find((j) => j.job === "sync-banks")?.source?.floorHours === 6);
     const defaults = await checkScheduledJobHealth(client, NOW, SCHEDULED_JOBS);
     check("a fake client without settings resolves the product defaults (6h wallets, 24h banks)",
       defaults.jobs.find((j) => j.job === "sync-crypto")?.source?.policyCadence === "6h"

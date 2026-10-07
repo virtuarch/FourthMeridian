@@ -8,14 +8,16 @@
  * jobs/sync-banks.ts. That keeps the scheduled job outside this cooldown by
  * construction, not by a conditional check that could later rot.
  *
- * The cooldown window is a local constant for now. Provider-level config
- * (e.g. a ProviderCatalog-driven, per-provider limit) is a later decision —
- * out of scope for this slice.
+ * P1 HUMAN OPERABILITY — the window is now the customer's EFFECTIVE ENTITLEMENT
+ * (lib/entitlements: `manualBankRefreshCooldownMinutes`, policy 60, founder
+ * overlay 15, platform floor 15). `MANUAL_REFRESH_COOLDOWN_MS` remains the
+ * catalogue default for callers that have not loaded entitlements; the check
+ * takes the window as a parameter so one rule serves banks AND wallets.
  */
 
 import { db } from "@/lib/db";
 
-/** 60 minutes. See module header for why this isn't provider-configurable yet. */
+/** 60 minutes — the catalogue default (BETA_FULL_ACCESS_V1.manualBankRefreshCooldownMinutes); callers with entitlements pass their own. */
 export const MANUAL_REFRESH_COOLDOWN_MS = 60 * 60 * 1000;
 
 export interface CooldownCheck {
@@ -28,16 +30,25 @@ export interface CooldownCheck {
  * Pure check against an already-fetched PlaidItem.lastManualRefreshAt — no
  * DB call. `null` (never manually refreshed) is always off cooldown.
  */
-export function checkManualRefreshCooldown(lastManualRefreshAt: Date | null): CooldownCheck {
+export function checkManualRefreshCooldown(
+  lastManualRefreshAt: Date | null,
+  cooldownMs: number = MANUAL_REFRESH_COOLDOWN_MS,
+  nowMs: number = Date.now(),
+): CooldownCheck {
   if (!lastManualRefreshAt) return { onCooldown: false };
 
-  const elapsedMs = Date.now() - lastManualRefreshAt.getTime();
-  if (elapsedMs >= MANUAL_REFRESH_COOLDOWN_MS) return { onCooldown: false };
+  const elapsedMs = nowMs - lastManualRefreshAt.getTime();
+  if (elapsedMs >= cooldownMs) return { onCooldown: false };
 
   return {
     onCooldown: true,
-    retryAfterSeconds: Math.ceil((MANUAL_REFRESH_COOLDOWN_MS - elapsedMs) / 1000),
+    retryAfterSeconds: Math.ceil((cooldownMs - elapsedMs) / 1000),
   };
+}
+
+/** The entitlement dimension is in minutes; the check is in milliseconds. */
+export function cooldownMsFromMinutes(minutes: number): number {
+  return Math.max(0, Math.floor(minutes)) * 60 * 1000;
 }
 
 /**

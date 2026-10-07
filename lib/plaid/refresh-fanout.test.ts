@@ -402,8 +402,11 @@ async function main() {
       !/withPlaidItemSyncLock\s*\(/.test(fanoutBody));
     check("the fan-out body delegates to the injected per-item unit",
       /runItem\(item\.id\)/.test(fanoutBody));
+    // P1 — the default is the envelope with the fan-out's trigger threaded
+    // through (MANUAL by default, OPERATOR for Customer Success), not a bare
+    // reference; it must still be runManualItemRefresh and nothing else.
     check("the injected default IS the execution envelope",
-      /deps\.runItem\s*\?\?\s*runManualItemRefresh/.test(fanoutBody));
+      /deps\.runItem\s*\?\?\s*\(\(id: string\) => runManualItemRefresh\(id, \{ trigger: deps\.trigger \}\)\)/.test(fanoutBody));
 
     // The per-item unit: the authority is entered BEFORE the lock is claimed.
     const unitAt = src.indexOf("export async function runManualItemRefresh");
@@ -412,8 +415,10 @@ async function main() {
       /await import\("@\/lib\/plaid\/refresh-execution"\)\)\.runFullRefresh/.test(unit));
     check("the lock is claimed INSIDE the envelope (authority first, lock second)",
       unit.indexOf("runFullRefresh<") >= 0 && unit.indexOf("withLock(") > unit.indexOf("runFullRefresh<"));
-    check("it declares MANUAL / FULL_REFRESH",
-      /trigger:\s*"MANUAL"/.test(unit) && /profile:\s*"FULL_REFRESH"/.test(unit));
+    // P1 — the trigger is a dep so an operator refresh on a customer's behalf can
+    // record OPERATOR; MANUAL must remain the DEFAULT (the customer's own gesture).
+    check("it declares MANUAL (as the default trigger) / FULL_REFRESH",
+      /trigger:\s*deps\.trigger\s*\?\?\s*"MANUAL"/.test(unit) && /profile:\s*"FULL_REFRESH"/.test(unit));
     check("it passes deferSnapshot: true", /deferSnapshot:\s*true/.test(unit));
     check("it writes no route-local execution record",
       !/\.(refreshExecution|refreshEndpointResult|providerCall|refreshEndpointAccountCoverage)\s*\./.test(unit));
@@ -438,8 +443,15 @@ async function main() {
     const route = strip("app/api/plaid/refresh/route.ts");
     check("branch A still wraps runFullRefresh in the lock (unchanged this slice)",
       /withPlaidItemSyncLock\(item\.id,\s*\(\)\s*=>[\s\S]{0,120}runFullRefresh\(/.test(route));
-    check("branch B still delegates to refreshAllActiveItemsForUser",
-      /refreshAllActiveItemsForUser\(user\.id/.test(route));
+    // P1 REFRESH ALL — branch B now delegates to the provider-agnostic
+    // orchestrator (Plaid-only here), which is the ONE caller of the canonical
+    // fan-out. The chain route → refreshAllForUser → refreshAllActiveItemsForUser
+    // is pinned in two halves so neither link can be removed unnoticed.
+    const orchestrator = strip("lib/refresh/refresh-all.ts");
+    check("branch B delegates to the orchestrator",
+      /refreshAllForUser\(/.test(route) && !/refreshAllActiveItemsForUser\(/.test(route));
+    check("…and the orchestrator runs the canonical fan-out",
+      /refreshAllActiveItemsForUser\(userId,\s*\{\s*excludeItemIds\s*\},\s*\{\s*trigger\s*\}\)/.test(orchestrator));
     check("the route still writes no execution record of its own",
       !/\.(refreshExecution|refreshEndpointResult|providerCall)\s*\./.test(route));
 

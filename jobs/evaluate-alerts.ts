@@ -1,12 +1,12 @@
 /**
  * jobs/evaluate-alerts.ts  (OPS-5 S5 — Alerting)
  *
- * The alert-evaluation job body. Registered in lib/jobs/registry.core.ts on
- * EVERY :30 slot the dispatcher fires (00:30/06:30/07:30/12:30/18:30 UTC —
- * OPERATIONALIZATION P0, 2026-10-07; it was once daily at 07:30, a 24h detection
- * latency), sequenced LAST in each slot so it evaluates fresh state (after the
- * 06:00/06:30 sync/fx/health jobs in the morning). NO vercel.json change: the
- * single dispatcher cron already wakes at those slots. The dispatcher runs it
+ * The alert-evaluation job body. Registered in lib/jobs/registry.core.ts with an
+ * operator-editable EXECUTION CADENCE (P1 HUMAN OPERABILITY, 2026-10-08:
+ * `job_cadence_hours_evaluate-alerts`, default every 6 hours, floor 1 hour —
+ * P0 had moved it from once daily to every :30 slot; the slot is gone, the
+ * cadence stays), sequenced LAST in registry order so a wake that also runs
+ * sync/fx jobs evaluates the fresh state they leave. The dispatcher runs it
  * through runJob(), which writes its returned
  * AlertRunSummary into the JobRun ledger — that ledger row IS the alert history
  * and the next cycle's suppression input (no new table).

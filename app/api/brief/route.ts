@@ -15,6 +15,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireUser } from '@/lib/session';
+import { entitlementsForUser, refuseIfDisabled } from '@/lib/entitlements/consume';
 import { readBriefResponse } from '@/lib/ai/brief/view';
 
 export const preferredRegion = 'sin1';
@@ -26,6 +27,10 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const [user, authErr] = await requireUser();
   if (authErr) return authErr;
+
+  // P1 — the Daily Brief is the `dailyBrief` entitlement (same gate as generation).
+  const disabled = refuseIfDisabled(await entitlementsForUser(user.id), 'dailyBrief', 'The Daily Brief');
+  if (disabled) return disabled;
 
   const spaceId = req.nextUrl.searchParams.get('spaceId');
   if (!spaceId) return NextResponse.json({ error: 'spaceId is required' }, { status: 400, headers: NO_STORE });

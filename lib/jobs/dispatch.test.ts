@@ -1,276 +1,216 @@
 /**
- * lib/jobs/dispatch.test.ts  (OPS-4 S2)
+ * lib/jobs/dispatch.test.ts  (OPS-4 S2 · P1 scheduling control)
  *
- * Pure guards for the dispatcher. Standalone tsx script (house pattern):
+ * Pure guards for the ledger-driven dispatcher. Standalone tsx script:
  * npx tsx lib/jobs/dispatch.test.ts — exits 0/1.
  *
- * NO LIVE DATABASE: dispatchDueJobs takes an injected jobs list + runner, so
- * no real job body (and no Prisma) ever executes here. Covers: slot matching
- * (exact minute, late-fire tolerance within the half-hour, slot boundaries,
- * empty slots) · registry integrity (S2 jobs at their pre-S2 slots, S3
- * maintenance jobs at 07:30, unique names, half-hour minutes) · execution through the runner
- * (= runJob in production) with trigger "cron" · sequencing (registry
- * order) · isolation (a failing job never blocks a sibling; dispatch never
- * throws) · no-op ticks · source scans (single vercel.json cron on the
- * dispatcher · per-job fallback routes retained with CRON_SECRET ·
- * jobs/scheduler.ts retired · no queue/retry/telemetry infrastructure).
+ * NO LIVE DATABASE: selectDueJobs is pure over injected facts + policies, and
+ * dispatchDueJobs takes an injected jobs list, facts, policies and runner, so no
+ * real job body (and no Prisma) ever executes here. Covers: due-ness from the
+ * ledger (never ran · cadence elapsed · tolerance · not yet due) · the overlap
+ * guard (a live `running` row is never re-dispatched; a stale one is) ·
+ * continuations (only after deferred work, after the delay, once per primary
+ * run) · registry integrity · execution through the runner with trigger "cron"
+ * · sequencing · isolation · no-op wakes · source scans (one dispatcher cron at
+ * the 15-minute wake · fallback routes · no queue/retry infrastructure).
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dispatchDueJobs, dueJobs } from "@/lib/jobs/dispatch";
+import { dispatchDueJobs, selectDueJobs, type JobLedgerFacts } from "@/lib/jobs/dispatch";
 import { SCHEDULED_JOBS, type ScheduledJob } from "@/lib/jobs/registry";
+import { defaultJobCadencePolicies } from "@/lib/jobs/cadence-policy";
+import {
+  CONTINUATION_DELAY_MS, DUE_TOLERANCE_MS, IN_FLIGHT_WINDOW_MS, WAKE_EVERY_MINUTES, resolveJobCadences,
+  type JobCadencePolicy,
+} from "@/lib/jobs/cadence-policy.core";
+import { defaultRefreshPolicies } from "@/lib/platform/refresh-policy.core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
-  if (cond) {
-    console.log(`  ✓ ${name}`);
-  } else {
-    failures++;
-    console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`);
-  }
+  if (cond) console.log(`  ✓ ${name}`);
+  else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
-
-// Environment tolerance (see lib/notifications/create.test.ts): PrismaClient
-// engine warm-up floating-rejects on platform-mismatched sandboxes; nothing
-// here executes a job body, so no Prisma runs.
 process.on("unhandledRejection", (err) => {
-  if ((err as { constructor?: { name?: string } })?.constructor?.name === "PrismaClientInitializationError") {
-    return;
-  }
+  if ((err as { constructor?: { name?: string } })?.constructor?.name === "PrismaClientInitializationError") return;
   console.error("  ✗ unexpected unhandled rejection:", err);
   process.exit(1);
 });
 
-const utc = (h: number, m: number) => new Date(Date.UTC(2026, 6, 8, h, m, 0));
+const NOW = new Date(Date.UTC(2026, 9, 8, 6, 7, 0));
+const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
+const HOUR_MS = 3_600_000;
 
 function fakeJobs(): ScheduledJob[] {
   return [
-    { name: "a", hourUTC: 6, minuteUTC: 0, run: async () => ({ ok: 1 }) },
-    { name: "b", hourUTC: 6, minuteUTC: 0, run: async () => ({ ok: 2 }) },
-    { name: "c", hourUTC: 6, minuteUTC: 30, run: async () => ({ ok: 3 }) },
+    { name: "a", hourUTC: 6, minuteUTC: 0, cadence: { minHours: 6, maxHours: 168 }, run: async () => ({ ok: 1 }) },
+    { name: "b", hourUTC: [0, 6, 12, 18], minuteUTC: 0, cadence: { minHours: 1, maxHours: 168 }, run: async () => ({ ok: 2 }) },
+    { name: "c", hourUTC: 7, minuteUTC: 30, run: async () => ({ ok: 3 }) }, // FIXED daily
   ];
 }
+const policiesFor = (jobs: readonly ScheduledJob[]) => resolveJobCadences(jobs, new Map(), defaultRefreshPolicies());
+const facts = (m: Record<string, { at: Date | null; status?: string; summary?: unknown }>): JobLedgerFacts =>
+  new Map(Object.entries(m).map(([k, v]) => [k, { lastStartedAt: v.at, lastStatus: v.status ?? (v.at ? "succeeded" : null), lastSummary: v.summary }]));
 
 function muteConsole<T>(fn: () => Promise<T>): Promise<T> {
-  const origLog = console.log;
-  const origErr = console.error;
-  console.log = () => {};
-  console.error = () => {};
-  return fn().finally(() => {
-    console.log = origLog;
-    console.error = origErr;
-  });
+  const origLog = console.log; const origErr = console.error;
+  console.log = () => {}; console.error = () => {};
+  return fn().finally(() => { console.log = origLog; console.error = origErr; });
 }
 
 async function main(): Promise<void> {
-  console.log("dispatcher (OPS-4 S2)");
+  console.log("dispatcher (P1 — ledger-driven)");
 
-  // ── 1. Slot matching ─────────────────────────────────────────────────────
+  // ── 1. Due-ness from the ledger ───────────────────────────────────────────
   {
-    const jobs = fakeJobs();
-    check("exact minute matches its slot", dueJobs(utc(6, 0), jobs).map((j) => j.name).join() === "a,b");
-    check("late fire within the half-hour still matches (Vercel delay tolerance)",
-      dueJobs(utc(6, 7), jobs).map((j) => j.name).join() === "a,b");
-    check("last minute of the slot still matches", dueJobs(utc(6, 29), jobs).map((j) => j.name).join() === "a,b");
-    check(":30 slot is a different slot", dueJobs(utc(6, 30), jobs).map((j) => j.name).join() === "c");
-    check("empty slot matches nothing", dueJobs(utc(7, 30), jobs).length === 0);
-    check("wrong hour matches nothing", dueJobs(utc(5, 59), jobs).length === 0);
+    const jobs = fakeJobs(); const pol = policiesFor(jobs);
+    const names = (f: JobLedgerFacts) => selectDueJobs(NOW, jobs, f, pol).due.map((j) => j.name).join();
+    check("a job that never ran is due at the first wake", names(facts({})) === "a,b,c");
+    check("cadence elapsed (24h daily job, 25h ago) ⇒ due", names(facts({ a: { at: hoursAgo(25) }, b: { at: hoursAgo(1) }, c: { at: hoursAgo(1) } })) === "a");
+    check("not yet due (daily job, 3h ago) ⇒ skipped with NOT_YET_DUE and a next-due instant",
+      (() => { const r = selectDueJobs(NOW, jobs, facts({ a: { at: hoursAgo(3) }, b: { at: hoursAgo(1) }, c: { at: hoursAgo(1) } }), pol);
+        const sk = r.skipped.find((x) => x.job === "a"); return r.due.length === 0 && sk?.reason === "NOT_YET_DUE" && sk.nextDueAt === new Date(hoursAgo(3).getTime() + 24 * HOUR_MS - DUE_TOLERANCE_MS).toISOString(); })());
+    check("tolerance: a 6-hourly job 5h55m ago is due (a wake 5 minutes early does not cost a whole wake)",
+      names(facts({ a: { at: hoursAgo(1) }, b: { at: new Date(NOW.getTime() - 6 * HOUR_MS + 5 * 60_000 - 1) }, c: { at: hoursAgo(1) } })) === "b");
+    check("…but 5h50m ago is not", names(facts({ a: { at: hoursAgo(1) }, b: { at: new Date(NOW.getTime() - 6 * HOUR_MS + 10 * 60_000) }, c: { at: hoursAgo(1) } })) === "");
+    check("the FIXED daily job follows the same rule", names(facts({ a: { at: hoursAgo(1) }, b: { at: hoursAgo(1) }, c: { at: hoursAgo(26) } })) === "c");
   }
 
-  // ── 2. Registry integrity — pre-S2 jobs at their slots + S3 maintenance ───
+  // ── 2. Overlap guard ──────────────────────────────────────────────────────
+  {
+    const jobs = fakeJobs(); const pol = policiesFor(jobs);
+    const live = facts({ a: { at: new Date(NOW.getTime() - 2 * 60_000), status: "running" }, b: { at: hoursAgo(1) }, c: { at: hoursAgo(1) } });
+    const r = selectDueJobs(NOW, jobs, live, pol);
+    check("a live `running` row (2 min old) is IN_FLIGHT — never dispatched twice", r.due.length === 0 && r.skipped.find((x) => x.job === "a")?.reason === "IN_FLIGHT");
+    const stale = facts({ a: { at: new Date(NOW.getTime() - IN_FLIGHT_WINDOW_MS - 1), status: "running" }, b: { at: hoursAgo(1) }, c: { at: hoursAgo(1) } });
+    check("a stale `running` row (older than the in-flight window) is a crashed run, not a lock — judged by age like any run",
+      selectDueJobs(NOW, jobs, stale, pol).skipped.find((x) => x.job === "a")?.reason === "NOT_YET_DUE");
+    const crashedLongAgo = facts({ a: { at: hoursAgo(30), status: "running" }, b: { at: hoursAgo(1) }, c: { at: hoursAgo(1) } });
+    check("a crashed run 30h ago leaves the daily job due", selectDueJobs(NOW, jobs, crashedLongAgo, pol).due.map((j) => j.name).join() === "a");
+  }
+
+  // ── 3. Continuations ──────────────────────────────────────────────────────
+  {
+    const jobs: ScheduledJob[] = [
+      { name: "sweep", hourUTC: [0, 6, 12, 18], minuteUTC: 0, refreshes: "WALLET", run: async () => ({}) },
+      { name: "sweep-continuation", hourUTC: [0, 6, 12, 18], minuteUTC: 30, refreshes: "WALLET", continuationOf: "sweep", run: async () => ({}) },
+    ];
+    const pol = policiesFor(jobs);
+    const cont = (f: JobLedgerFacts) => selectDueJobs(NOW, jobs, f, pol);
+    const twentyMinAgo = new Date(NOW.getTime() - 20 * 60_000);
+    check("primary never ran ⇒ continuation PRIMARY_NOT_RUN", cont(facts({})).skipped.find((x) => x.job === "sweep-continuation")?.reason === "PRIMARY_NOT_RUN");
+    check("primary finished with nothing deferred ⇒ NO_DEFERRED_WORK",
+      cont(facts({ sweep: { at: twentyMinAgo, summary: { deferred: 0 } } })).skipped.find((x) => x.job === "sweep-continuation")?.reason === "NO_DEFERRED_WORK");
+    check("deferred work but too soon ⇒ CONTINUATION_TOO_SOON with the earliest instant",
+      (() => { const r = cont(facts({ sweep: { at: new Date(NOW.getTime() - 5 * 60_000), summary: { deferred: 3 } } })).skipped.find((x) => x.job === "sweep-continuation");
+        return r?.reason === "CONTINUATION_TOO_SOON" && r.nextDueAt === new Date(NOW.getTime() - 5 * 60_000 + CONTINUATION_DELAY_MS).toISOString(); })());
+    check("deferred work, delay passed, not yet continued ⇒ due",
+      cont(facts({ sweep: { at: twentyMinAgo, summary: { deferred: 3 } } })).due.map((j) => j.name).join() === "sweep-continuation");
+    check("already continued since that primary run ⇒ ALREADY_CONTINUED",
+      cont(facts({ sweep: { at: twentyMinAgo, summary: { deferred: 3 } }, "sweep-continuation": { at: new Date(NOW.getTime() - 60_000) } }))
+        .skipped.find((x) => x.job === "sweep-continuation")?.reason === "ALREADY_CONTINUED");
+    check("the primary itself (6h wallet cadence, 20 min ago) is not due", cont(facts({ sweep: { at: twentyMinAgo, summary: { deferred: 3 } } })).skipped.find((x) => x.job === "sweep")?.reason === "NOT_YET_DUE");
+  }
+
+  // ── 4. Registry integrity ─────────────────────────────────────────────────
   {
     const byName = new Map(SCHEDULED_JOBS.map((j) => [j.name, j]));
-    check("registry holds the eight S2+S3+S4 jobs + A8-3 price fetch + CH-3 sync-crypto (+ continuation) + OPS-5 S5 alert evaluator",
-      SCHEDULED_JOBS.length === 11, `got ${SCHEDULED_JOBS.length}`);
+    const pol = defaultJobCadencePolicies(SCHEDULED_JOBS);
+    const hours = (n: string) => pol.get(n)?.hours;
+    const origin = (n: string) => pol.get(n)?.origin;
+    check("registry holds eleven jobs", SCHEDULED_JOBS.length === 11, `got ${SCHEDULED_JOBS.length}`);
     check("names unique", byName.size === SCHEDULED_JOBS.length);
-    check("sync-banks keeps its 06:00 UTC slot",
-      byName.get("sync-banks")?.hourUTC === 6 && byName.get("sync-banks")?.minuteUTC === 0);
-    check("fetch-fx-rates keeps its 06:30 UTC slot",
-      byName.get("fetch-fx-rates")?.hourUTC === 6 && byName.get("fetch-fx-rates")?.minuteUTC === 30);
-    check("fetch-security-prices (A8-3) shares the 06:30 external-fetch slot",
-      byName.get("fetch-security-prices")?.hourUTC === 6 && byName.get("fetch-security-prices")?.minuteUTC === 30);
-    check("process-deletions keeps its 07:00 UTC slot",
-      byName.get("process-deletions")?.hourUTC === 7 && byName.get("process-deletions")?.minuteUTC === 0);
-    check("S3/S4 maintenance jobs occupy the 07:30 slot (no new cron entry needed)",
-      (["notification-cleanup", "notification-retry", "purge-trash", "rate-limit-sweep"] as const).every(
-        (name) => byName.get(name)?.hourUTC === 7 && byName.get(name)?.minuteUTC === 30,
-      ));
+    check("sync-banks runs on the BANK refresh policy (24h default)", hours("sync-banks") === 24 && origin("sync-banks") === "REFRESH_POLICY");
+    check("sync-crypto runs on the WALLET refresh policy (6h default)", hours("sync-crypto") === 6 && origin("sync-crypto") === "REFRESH_POLICY");
+    check("sync-crypto-continuation follows its primary", origin("sync-crypto-continuation") === "FOLLOWS_PRIMARY" && hours("sync-crypto-continuation") === 6);
+    check("fetch-fx-rates / fetch-security-prices default daily, editable 6–168h",
+      (["fetch-fx-rates", "fetch-security-prices"] as const).every((n) => hours(n) === 24 && origin(n) === "DEFAULT" && pol.get(n)?.editable && pol.get(n)?.minHours === 6 && pol.get(n)?.maxHours === 168));
+    check("evaluate-alerts defaults to 6h, editable down to hourly", hours("evaluate-alerts") === 6 && origin("evaluate-alerts") === "DEFAULT" && pol.get("evaluate-alerts")?.minHours === 1);
+    check("process-deletions and the maintenance jobs are FIXED daily (legal/retention semantics, not operator preference)",
+      (["process-deletions", "notification-cleanup", "notification-retry", "purge-trash", "rate-limit-sweep"] as const).every((n) => origin(n) === "FIXED" && hours(n) === 24 && !pol.get(n)?.editable));
     check("notification-retry sequenced AFTER notification-cleanup (never re-mail aged-out rows)",
-      SCHEDULED_JOBS.findIndex((j) => j.name === "notification-retry") >
-        SCHEDULED_JOBS.findIndex((j) => j.name === "notification-cleanup"));
-    // OPERATIONALIZATION P0 — every :30 slot the dispatcher already fires, so a
-    // breach is noticed within ~6h rather than up to 24h. Still no cron change.
-    const alerts = byName.get("evaluate-alerts");
-    check("evaluate-alerts rides EVERY :30 dispatcher slot (00/06/07/12/18 — no new cron entry needed)",
-      Array.isArray(alerts?.hourUTC) && (alerts!.hourUTC as number[]).join() === "0,6,7,12,18" && alerts?.minuteUTC === 30);
-    check("evaluate-alerts sequenced LAST (reads the freshest state after the sync/fx jobs)",
-      SCHEDULED_JOBS.findIndex((j) => j.name === "evaluate-alerts") === SCHEDULED_JOBS.length - 1);
-    check("all slots on half-hour boundaries", SCHEDULED_JOBS.every((j) => j.minuteUTC === 0 || j.minuteUTC === 30));
-    check("deferred work stays deferred (no digest / quiet-hours jobs)",
-      !SCHEDULED_JOBS.some((j) => /digest|quiet/i.test(j.name)));
-
-    // CH-3 — sync-crypto: the intraday-repeat shape (hourUTC array), 6-hourly.
-    const crypto = byName.get("sync-crypto");
-    check("sync-crypto fires every 6 hours (00/06/12/18 UTC, :00 slot)",
-      Array.isArray(crypto?.hourUTC) &&
-        (crypto!.hourUTC as number[]).join() === "0,6,12,18" && crypto?.minuteUTC === 0);
-    check("sync-crypto's 6-hourly expectation is DERIVED from its slots (no literal) and it refreshes WALLET",
-      crypto?.expectedEveryHours === undefined && crypto?.refreshes === "WALLET" && crypto?.continuationOf === undefined);
-    const continuation = byName.get("sync-crypto-continuation");
-    check("sync-crypto-continuation runs at :30 of the same four hours (ticks vercel.json already fires)",
-      Array.isArray(continuation?.hourUTC) && (continuation!.hourUTC as number[]).join() === "0,6,12,18"
-        && continuation?.minuteUTC === 30 && continuation?.expectedEveryHours === undefined);
-    check("the continuation names sync-crypto as its primary and binds the same source kind",
-      continuation?.continuationOf === "sync-crypto" && continuation?.refreshes === "WALLET");
+      SCHEDULED_JOBS.findIndex((j) => j.name === "notification-retry") > SCHEDULED_JOBS.findIndex((j) => j.name === "notification-cleanup"));
+    check("evaluate-alerts sequenced LAST (reads the freshest state in a wake)", SCHEDULED_JOBS.findIndex((j) => j.name === "evaluate-alerts") === SCHEDULED_JOBS.length - 1);
+    check("deferred work stays deferred (no digest / quiet-hours jobs)", !SCHEDULED_JOBS.some((j) => /digest|quiet/i.test(j.name)));
     check("sync-banks refreshes BANK; no other job binds a source kind",
       byName.get("sync-banks")?.refreshes === "BANK"
         && SCHEDULED_JOBS.filter((j) => j.refreshes).map((j) => j.name).sort().join() === "sync-banks,sync-crypto,sync-crypto-continuation");
+    const editable = SCHEDULED_JOBS.filter((j) => j.cadence).map((j) => j.name).sort().join();
+    check("exactly three jobs carry an editable cadence of their own", editable === "evaluate-alerts,fetch-fx-rates,fetch-security-prices", editable);
   }
 
-  // ── 2b. Multi-slot (array hourUTC) dispatch — CH-3 ────────────────────────
+  // ── 5. Execution through the runner, in registry order, trigger "cron" ────
   {
-    const jobs: ScheduledJob[] = [
-      { name: "six-hourly", hourUTC: [0, 6, 12, 18], minuteUTC: 0, run: async () => ({ ok: 1 }) },
-      { name: "daily", hourUTC: 6, minuteUTC: 0, run: async () => ({ ok: 2 }) },
-    ];
-    check("array-hour job is due at every listed hour",
-      [0, 6, 12, 18].every((h) => dueJobs(utc(h, 0), jobs).some((j) => j.name === "six-hourly")));
-    check("array-hour job co-tenants the 06:00 slot with a single-hour job",
-      dueJobs(utc(6, 0), jobs).map((j) => j.name).sort().join() === "daily,six-hourly");
-    check("array-hour job is NOT due at an unlisted hour", dueJobs(utc(7, 0), jobs).length === 0);
-    check("array-hour job honors the minute slot (not due at :30)",
-      dueJobs(utc(12, 30), jobs).length === 0);
-  }
-
-  // ── 3. Execution through the runner, in registry order, trigger "cron" ────
-  {
-    const ran: string[] = [];
-    const triggers: string[] = [];
-    const result = await muteConsole(() =>
-      dispatchDueJobs(utc(6, 0), {
-        jobs: fakeJobs(),
-        runner: async (name, fn, options) => {
-          ran.push(name);
-          triggers.push(options.trigger);
-          return fn();
-        },
-      }),
-    );
-    check("every due job executes through the runner (runJob seam)", ran.join() === "a,b");
-    check("sequencing follows registry order", ran[0] === "a" && ran[1] === "b");
+    const ran: string[] = []; const triggers: string[] = [];
+    const jobs = fakeJobs();
+    const result = await muteConsole(() => dispatchDueJobs(NOW, {
+      jobs, facts: facts({}), policies: policiesFor(jobs),
+      runner: async (name, fn, options) => { ran.push(name); triggers.push(options.trigger); return fn(); },
+    }));
+    check("every due job executes through the runner (runJob seam)", ran.join() === "a,b,c");
+    check("sequencing follows registry order", ran[0] === "a" && ran[1] === "b" && ran[2] === "c");
     check("trigger is \"cron\"", triggers.every((t) => t === "cron"));
-    check("outcome reports each job ok", result.dispatched.every((d) => d.ok) && result.failures === 0);
-    check("slot label rendered", result.slot === "06:00 UTC");
+    check("outcome reports each job ok and nothing skipped", result.dispatched.every((d) => d.ok) && result.failures === 0 && result.skipped.length === 0);
+    check("wake label rendered", result.slot === "06:07 UTC");
   }
 
-  // ── 4. Isolation — a failing job never blocks a sibling ───────────────────
+  // ── 6. Isolation ──────────────────────────────────────────────────────────
   {
     const ran: string[] = [];
     const jobs = fakeJobs();
     jobs[0].run = async () => { throw new Error("first job exploded"); };
-    const result = await muteConsole(() =>
-      dispatchDueJobs(utc(6, 3), {
-        jobs,
-        runner: async (name, fn) => { ran.push(name); return fn(); },
-      }),
-    );
-    check("sibling still runs after a failure", ran.join() === "a,b");
+    const result = await muteConsole(() => dispatchDueJobs(NOW, {
+      jobs, facts: facts({}), policies: policiesFor(jobs),
+      runner: async (name, fn) => { ran.push(name); return fn(); },
+    }));
+    check("siblings still run after a failure", ran.join() === "a,b,c");
     check("dispatch never throws; failure recorded in outcome",
-      result.failures === 1 &&
-        result.dispatched[0].ok === false &&
-        result.dispatched[0].error === "first job exploded" &&
-        result.dispatched[1].ok === true);
+      result.failures === 1 && result.dispatched[0].ok === false && result.dispatched[0].error === "first job exploded" && result.dispatched[1].ok === true);
   }
 
-  // ── 5. No-op tick ──────────────────────────────────────────────────────────
+  // ── 7. No-op wake ─────────────────────────────────────────────────────────
   {
-    const result = await muteConsole(() =>
-      dispatchDueJobs(utc(7, 30), { jobs: fakeJobs(), runner: async () => { throw new Error("must not run"); } }),
-    );
-    check("empty slot is a clean no-op", result.dispatched.length === 0 && result.failures === 0);
+    const jobs = fakeJobs();
+    const result = await muteConsole(() => dispatchDueJobs(NOW, {
+      jobs, facts: facts({ a: { at: hoursAgo(1) }, b: { at: hoursAgo(1) }, c: { at: hoursAgo(1) } }), policies: policiesFor(jobs),
+      runner: async () => { throw new Error("must not run"); },
+    }));
+    check("a wake with nothing due is a clean no-op that still reports what it considered",
+      result.dispatched.length === 0 && result.failures === 0 && result.skipped.length === 3 && result.skipped.every((s) => s.reason === "NOT_YET_DUE"));
   }
 
-  // ── 6. Source scans — S2 structure ────────────────────────────────────────
+  // ── 8. Source scans — wake vs execution ───────────────────────────────────
   {
-    // PAID-TIER CRON DOCTRINE (CH-3, supersedes the add7c5e Hobby doctrine):
-    // the Vercel plan upgrade removed the sub-daily deploy-time restriction, so
-    // the dispatcher now runs on a SINGLE multi-slot entry that reaches every
-    // registered slot. "0,30 0,6,7,12,18 * * *" fires the 06:00/06:30/07:00/
-    // 07:30 paid-tier slots (restoring sync-banks / fetch-fx-rates /
-    // fetch-security-prices / process-deletions / the 07:30 maintenance jobs to
-    // cron) PLUS CH-3 sync-crypto's 00:00/12:00/18:00 slots. The 00:30/12:30/
-    // 18:30 ticks it also fires hold no registered job — cheap no-op ticks. It
-    // stays ONE cron entry (one path), so no duplicate-path deploy risk.
-    const ACTIVE_SCHEDULE = "0,30 0,6,7,12,18 * * *"; // paid-tier: every registered slot
-    const HOBBY_SCHEDULE  = "0 6 * * *";              // retired: the once/day Hobby entry
     const vercel = readFileSync("vercel.json", "utf8");
     const cronPaths = [...vercel.matchAll(/"path":\s*"([^"]+)"/g)].map((m) => m[1]);
     const schedules = [...vercel.matchAll(/"schedule":\s*"([^"]+)"/g)].map((m) => m[1]);
-    // The invariant is NO DUPLICATE PATHS (the deploy risk this guard names),
-    // and that ALL REGISTRY-DRIVEN work goes through the one dispatcher entry —
-    // not that vercel.json may only ever hold a single cron.
-    //
-    // Relaxed 2026-07-23 for /api/jobs/resume-stale-imports. That job cannot live
-    // in the registry: dueJobs() matches a whole half-hour slot, so a dispatcher
-    // firing often enough to be a user-facing backstop (every 5 min) would run
-    // every daily job six times per slot. And a backstop measured in hours is not
-    // a backstop for an import a user is watching — which is exactly what failed
-    // that day, a Schwab import stalled behind a closed browser tab with nothing
-    // server-side to finish it.
-    //
-    // So: exactly one DISPATCHER entry, no duplicate paths, and any additional
-    // cron must be a distinct non-registry path.
-    check("no duplicate cron paths in vercel.json",
-      new Set(cronPaths).size === cronPaths.length);
-    check("exactly one dispatcher cron entry",
-      cronPaths.filter((p) => p === "/api/jobs/dispatch").length === 1);
+    check("no duplicate cron paths in vercel.json", new Set(cronPaths).size === cronPaths.length);
+    check("exactly one dispatcher cron entry", cronPaths.filter((p) => p === "/api/jobs/dispatch").length === 1);
     const dispatcherIdx = cronPaths.indexOf("/api/jobs/dispatch");
-    check("the dispatcher cron is the paid-tier multi-slot schedule (off Hobby)",
-      schedules[dispatcherIdx] === ACTIVE_SCHEDULE);
-    check("the once/day Hobby schedule is retired from the active config",
-      !vercel.includes(HOBBY_SCHEDULE));
-    // Every hour any registered entry fires at must appear in the cron's hour
-    // field, or that job would silently never run on cron.
-    const cronHours = new Set((schedules[dispatcherIdx].split(/\s+/)[1] ?? "").split(",").map(Number));
-    const registeredHours = new Set(
-      SCHEDULED_JOBS.flatMap((j) => (Array.isArray(j.hourUTC) ? j.hourUTC : [j.hourUTC])),
-    );
-    check("every registered fire-hour is reached by the active cron",
-      [...registeredHours].every((h) => cronHours.has(h)),
-      `cron hours {${[...cronHours].sort((a, b) => a - b)}} vs registered {${[...registeredHours].sort((a, b) => a - b)}}`);
+    check(`the dispatcher is WOKEN every ${WAKE_EVERY_MINUTES} minutes (vercel.json is infrastructure cadence, not execution policy)`,
+      schedules[dispatcherIdx] === `*/${WAKE_EVERY_MINUTES} * * * *`, schedules[dispatcherIdx]);
+    check("the retired slot schedules are gone from the active config", !/0,30 0,6,7,12,18/.test(vercel) && !vercel.includes("0 6 * * *"));
 
     const dispatchRoute = readFileSync("app/api/jobs/dispatch/route.ts", "utf8");
-    check("dispatcher route keeps CRON_SECRET protection",
-      dispatchRoute.includes("CRON_SECRET") && dispatchRoute.includes("401"));
-
+    check("dispatcher route keeps CRON_SECRET protection", dispatchRoute.includes("CRON_SECRET") && dispatchRoute.includes("401"));
     check("per-job fallback routes retained (individual revertibility)",
-      ["sync-banks", "fetch-fx-rates", "process-deletions"].every((name) =>
-        existsSync(`app/api/jobs/${name}/route.ts`)));
-
+      ["sync-banks", "fetch-fx-rates", "process-deletions"].every((name) => existsSync(`app/api/jobs/${name}/route.ts`)));
     check("jobs/scheduler.ts is retired (deleted)", !existsSync("jobs/scheduler.ts"));
 
-    // Strip comments (doctrine text legitimately NAMES the forbidden things).
-    const code = ["lib/jobs/dispatch.ts", "lib/jobs/registry.ts", "app/api/jobs/dispatch/route.ts"]
+    const code = ["lib/jobs/dispatch.ts", "lib/jobs/registry.ts", "lib/jobs/cadence-policy.core.ts", "app/api/jobs/dispatch/route.ts"]
       .map((p) => readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, ""))
       .join("\n");
-    // (Since S4 the registry legitimately calls retryNotifications() — the
-    // registered consumer body; framework-style retry constructs remain
-    // banned and are scanned in lib/jobs/notification-retry.test.ts.)
     check("no queue/telemetry/scheduler infrastructure in dispatcher code",
-      !/setInterval|setTimeout|node-cron|BullMQ|new Queue|SQS|EventBridge|startScheduler/i.test(code) &&
-        !/\b(withRetry|pRetry|retryWrapper|backoff)\w*\(/i.test(code) &&
-        !/telemetry/i.test(code));
+      !/setInterval|setTimeout|node-cron|BullMQ|new Queue|SQS|EventBridge|startScheduler/i.test(code)
+        && !/\b(withRetry|pRetry|retryWrapper|backoff)\w*\(/i.test(code) && !/telemetry/i.test(code));
+    const dispatchSrc = readFileSync("lib/jobs/dispatch.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    check("the dispatcher no longer matches slots (no getUTCHours-based selection)", !/firesAtHour|slotMinute|minuteUTC ===/.test(dispatchSrc));
+    check("the dispatcher reads the ledger through the system role, not the migration principal", /systemDb/.test(dispatchSrc) && !/import \{ db \}/.test(dispatchSrc));
   }
 
-  if (failures > 0) {
-    console.error(`\ndispatcher tests: ${failures} FAILED`);
-    process.exit(1);
-  }
+  if (failures > 0) { console.error(`\ndispatcher tests: ${failures} FAILED`); process.exit(1); }
   console.log("\ndispatcher tests: all passed");
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error("  ✗ test harness error:", err);
-  process.exit(1);
-});
+main().catch((err) => { console.error("  ✗ test harness error:", err); process.exit(1); });
+export type { JobCadencePolicy };

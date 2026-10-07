@@ -179,6 +179,10 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "growth_activity", label: "User Activity", order: 3 },
       // OPS-6F Growth — beta conversion + activation funnel (projection).
       { key: "growth_funnel", label: "Growth Funnel", order: 4 },
+      // P1 — the Policy Group catalogue (definitions, ceilings, overlays, cohorts):
+      // GROWTH_REVENUE owns definitions and rollout policy; assignment is a
+      // Customer Success action. Backfilled onto the live Space by ensurePlatformSections.
+      { key: "growth_policy_groups", label: "Policy Groups", order: 5 },
     ],
   },
   CUSTOMER_SUCCESS: {
@@ -186,12 +190,15 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
     label: "Customer Success",
     spaceName: "Customer Success",
     spaceDescription:
-      "Operational health signals. No purpose-built customer-success primitives exist yet.",
+      "The customer spine: who each customer is, what they are entitled to and why, their beta lifecycle, Spaces, connections, incidents and AI usage — and the safe actions available.",
     sections: [
+      // P1 — the Customer Success customer spine (identity-resolving by the
+      // 2026-10-07 owner ruling). Backfilled onto the live Space by ensurePlatformSections.
+      { key: "cs_customers", label: "Customers", order: 0 },
       // OPS-2D-5D-1 — "incidents", not "issues": the surface renders EPISODES
       // with their occurrence depth, not one row per failed attempt. The section
       // key is unchanged (it is persisted layout identity, not wording).
-      { key: "cs_sync_issues", label: "Sync Incidents", order: 0 },
+      { key: "cs_sync_issues", label: "Sync Incidents", order: 1 },
     ],
   },
   // MERCHANT-OPS AUTHORITY (2026-10-06) — merchant identity operations. A merge

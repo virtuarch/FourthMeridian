@@ -20,45 +20,36 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-console.log("1. the pure rule: a cadence is honourable iff it is a whole multiple of the attempt period");
+console.log("1. the pure rule (P1): a cadence is honourable iff it is at or above the source kind's safety floor");
 {
-  check("6h on 6-hourly attempts → honourable", assessCadence("6h", 6).honourable);
-  check("12h on 6-hourly attempts → honourable", assessCadence("12h", 6).honourable);
-  check("24h on 6-hourly attempts → honourable", assessCadence("24h", 6).honourable);
-  const four = assessCadence("4h", 6, "wallet");
-  check("4h on 6-hourly attempts → not honourable, effective 6h",
-    !four.honourable && four.effectiveHours === 6 && /every 6 hours/.test(four.reason ?? ""), four.reason ?? "");
-  const eight = assessCadence("8h", 6, "wallet");
-  check("8h on 6-hourly attempts → NOT honourable (the correction): effective execution would be 12 hours",
-    !eight.honourable && eight.effectiveHours === 12 && /12 hours/.test(eight.reason ?? ""), eight.reason ?? "");
-  check("24h on daily attempts → honourable; 12h is not", assessCadence("24h", 24).honourable && !assessCadence("12h", 24).honourable);
+  check("6h on a 4h floor → honourable", assessCadence("6h", 4).honourable);
+  check("4h on a 4h floor → honourable (at the floor)", assessCadence("4h", 4).honourable);
+  check("8h on a 4h floor → honourable (no slot to be a multiple of since the 15-minute wake)", assessCadence("8h", 4).honourable && assessCadence("8h", 4).effectiveHours === 8);
+  const four = assessCadence("4h", 6, "bank");
+  check("4h on a 6h floor → not honourable, effective = the floor, reason names the floor",
+    !four.honourable && four.effectiveHours === 6 && /floor of 6 hours/.test(four.reason ?? ""), four.reason ?? "");
   const none = assessCadence("6h", null);
-  check("no attempt period → nothing is honourable, with a reason", !none.honourable && /No scheduled job/.test(none.reason ?? ""));
-  check("honourableCadences(6) is exactly 6h, 12h, 24h", honourableCadences(6).join(",") === "6h,12h,24h");
-  check("honourableCadences(24) is exactly 24h", honourableCadences(24).join(",") === "24h");
-  check("schedulerCanHonour agrees with assessCadence", schedulerCanHonour("12h", 6) && !schedulerCanHonour("8h", 6));
+  check("no floor (no job refreshes the kind) → nothing is honourable, with a reason", !none.honourable && /No scheduled job/.test(none.reason ?? ""));
+  check("honourableCadences(4) is the whole menu", honourableCadences(4).join(",") === "4h,6h,8h,12h,24h");
+  check("honourableCadences(6) excludes 4h only", honourableCadences(6).join(",") === "6h,8h,12h,24h");
+  check("schedulerCanHonour agrees with assessCadence", schedulerCanHonour("12h", 6) && !schedulerCanHonour("4h", 6));
 }
 
 console.log("\n2. the deployed capability, from the real registry (literal expectations)");
 {
   const caps = schedulerCapabilities();
-  check("WALLET: attempted every 6 hours at 00:00, 06:00, 12:00, 18:00 UTC",
-    caps.WALLET.attemptPeriodHours === 6 && caps.WALLET.attemptSlotsUTC.join(",") === "00:00,06:00,12:00,18:00");
-  check("WALLET: honourable cadences are 6h, 12h, 24h", caps.WALLET.honourable.join(",") === "6h,12h,24h");
-  check("WALLET: 4h and 8h are unsupported, each with a reason",
-    caps.WALLET.options.filter((o) => !o.honourable).map((o) => o.cadence).join(",") === "4h,8h"
-      && caps.WALLET.options.filter((o) => !o.honourable).every((o) => !!o.reason));
+  check("WALLET: floor 4 hours; the platform is woken every 15 minutes", caps.WALLET.floorHours === 4 && caps.WALLET.wakeEveryMinutes === 15);
+  check("WALLET: every menu cadence is honourable", caps.WALLET.honourable.join(",") === "4h,6h,8h,12h,24h");
   check("WALLET: the continuation is named but never an opportunity",
     caps.WALLET.primaryJobs.join() === "sync-crypto" && caps.WALLET.continuationJobs.join() === "sync-crypto-continuation");
-  check("BANK: attempted every 24 hours at 06:00 UTC",
-    caps.BANK.attemptPeriodHours === 24 && caps.BANK.attemptSlotsUTC.join(",") === "06:00");
-  check("BANK: honourable cadence is 24h only", caps.BANK.honourable.join(",") === "24h");
-  check("BANK: 4h, 6h, 8h, 12h are unsupported",
-    caps.BANK.options.filter((o) => !o.honourable).map((o) => o.cadence).join(",") === "4h,6h,8h,12h");
+  check("BANK: floor 6 hours (Plaid Item-month economics + webhooks between runs)", caps.BANK.floorHours === 6);
+  check("BANK: 4h is unsupported with a reason; 6h–24h honourable",
+    caps.BANK.honourable.join(",") === "6h,8h,12h,24h" && (caps.BANK.options.find((o) => o.cadence === "4h")?.reason?.includes("floor") ?? false));
   check("cadenceIsHonourable is the same answer as the capability's options",
-    cadenceIsHonourable("WALLET", "8h").honourable === false && cadenceIsHonourable("WALLET", "12h").honourable === true
+    cadenceIsHonourable("BANK", "4h").honourable === false && cadenceIsHonourable("WALLET", "4h").honourable === true
       && cadenceIsHonourable("BANK", "24h").honourable === true);
   check("the menu is complete (every cadence assessed)", schedulerCapability("WALLET").options.length === 5);
+  check("a kind no job refreshes has no floor and no honourable cadence", schedulerCapability("BANK", []).floorHours === null && schedulerCapability("BANK", []).honourable.length === 0);
 }
 
 console.log("\n3. no second list of honourable cadences exists");

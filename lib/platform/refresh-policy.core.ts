@@ -21,15 +21,15 @@
  * absorbs sync duration and provider latency at longer cadences. Operators edit
  * the cadence, never the grace.
  *
- * ⚠️ POLICY IS NOT A PROMISE THE SCHEDULER CAN KEEP BY ITSELF. The dispatcher
- * fires on fixed half-hour slots (vercel.json), so a source kind is ATTEMPTED at
- * a fixed period (lib/jobs/cadence.ts derives it from the registry — nothing here
- * copies it). A cadence is honourable only when it is a MULTIPLE of that period:
- * faster than the period, nothing attempts it; not a multiple (8h on 6-hourly
- * slots), the due filter lands on the next slot and the real interval is 12h.
- * `assessCadence` is the one authority for that judgement and for its reason;
- * the future write path refuses what it rejects. The enum keeps 4h and 8h for
- * the day the scheduler can.
+ * ⚠️ POLICY IS EXECUTION, BOUNDED BY A FLOOR (P1 HUMAN OPERABILITY, 2026-10-08).
+ * The dispatcher is woken every 15 minutes and judges each job due from its
+ * last run and this cadence (lib/jobs/cadence-policy.core.ts), so any cadence in
+ * the menu can be delivered to within a wake — the old "multiple of the slot
+ * period" rule has no slot to be a multiple of. What remains is a code-owned
+ * FLOOR per source kind (REFRESH_CADENCE_FLOOR_HOURS): the provider/economic
+ * safety bound below which no policy may ask the platform to call a provider.
+ * `assessCadence` is the one authority for that judgement and its reason; the
+ * write path refuses what it rejects.
  *
  * ⚠️ TIER SEAM, NOT TIERS. `RefreshPolicyRequest.tier` is reserved and typed
  * `never`: a future Free/Paid override is added HERE, and every consumer keeps
@@ -56,6 +56,16 @@ export const DEFAULT_REFRESH_CADENCE: Readonly<Record<RefreshSourceKind, Refresh
   WALLET: '6h',
 };
 
+/**
+ * The FLOOR per source kind — the hours below which no policy may schedule
+ * provider work. Plaid: six hours (Items refresh via webhooks between runs; a
+ * tighter sweep multiplies Item-month cost for nothing). Wallets: four hours
+ * (public explorers and RPCs share one server IP). Code-owned: never a setting.
+ */
+export const REFRESH_CADENCE_FLOOR_HOURS: Readonly<Record<RefreshSourceKind, number>> = {
+  BANK:   6,
+  WALLET: 4,
+};
 export const GRACE_FLOOR_HOURS = 2;
 export const GRACE_SHARE = 0.25;
 
@@ -121,49 +131,45 @@ export function resolveRefreshPolicy(
 
 export interface CadenceAssessment {
   cadence: RefreshCadence;
-  /** True when the deployed attempt schedule can deliver exactly this cadence. */
+  /** True when the platform may execute at this cadence (at or above the floor). */
   honourable: boolean;
   /** Why not, in the operator's words. Null when honourable. */
   reason: string | null;
-  /** The interval the schedule would actually deliver for this cadence, in hours. */
+  /** The interval the platform would deliver for this cadence, in hours (the cadence itself when honourable). */
   effectiveHours: number | null;
 }
 
 /**
- * Can an attempt period of `attemptPeriodHours` deliver `cadence`? The ONE rule:
- * the cadence must be a whole multiple of the period. Pure; the period comes from
- * the registry (lib/platform/scheduler-capability.ts), never from a constant here.
+ * May the platform execute `cadence`? The ONE rule since P1: the cadence must be
+ * at or above the source kind's FLOOR (`floorHours`). Null floor = no scheduled
+ * job refreshes the kind at all. Pure; the floor comes from
+ * REFRESH_CADENCE_FLOOR_HOURS through lib/platform/scheduler-capability.ts.
  */
 export function assessCadence(
   cadence: RefreshCadence,
-  attemptPeriodHours: number | null,
+  floorHours: number | null,
   sourceNoun = 'source',
 ): CadenceAssessment {
   const hours = cadenceHours(cadence);
-  if (attemptPeriodHours === null) {
+  if (floorHours === null) {
     return { cadence, honourable: false, effectiveHours: null,
       reason: `No scheduled job refreshes this ${sourceNoun}; no cadence can be honoured.` };
   }
-  if (hours < attemptPeriodHours) {
-    return { cadence, honourable: false, effectiveHours: attemptPeriodHours,
-      reason: `Not supported by the current scheduler; ${sourceNoun} attempts occur every ${attemptPeriodHours} hours.` };
-  }
-  if (hours % attemptPeriodHours !== 0) {
-    const effective = Math.ceil(hours / attemptPeriodHours) * attemptPeriodHours;
-    return { cadence, honourable: false, effectiveHours: effective,
-      reason: `Cannot be represented by the current ${attemptPeriodHours}-hour attempt schedule; effective execution would be ${effective} hours.` };
+  if (hours < floorHours) {
+    return { cadence, honourable: false, effectiveHours: floorHours,
+      reason: `Below the ${sourceNoun} safety floor of ${floorHours} hours; the platform will not call the provider more often than that.` };
   }
   return { cadence, honourable: true, reason: null, effectiveHours: hours };
 }
 
-/** Is this cadence one the deployed attempt period can deliver exactly? */
-export function schedulerCanHonour(cadence: RefreshCadence, attemptPeriodHours: number | null): boolean {
-  return assessCadence(cadence, attemptPeriodHours).honourable;
+/** Is this cadence at or above the floor? */
+export function schedulerCanHonour(cadence: RefreshCadence, floorHours: number | null): boolean {
+  return assessCadence(cadence, floorHours).honourable;
 }
 
-/** Every cadence in the menu the given attempt period can honour, in menu order. */
-export function honourableCadences(attemptPeriodHours: number | null): RefreshCadence[] {
-  return REFRESH_CADENCES.filter((c) => schedulerCanHonour(c, attemptPeriodHours));
+/** Every cadence in the menu at or above the floor, in menu order. */
+export function honourableCadences(floorHours: number | null): RefreshCadence[] {
+  return REFRESH_CADENCES.filter((c) => schedulerCanHonour(c, floorHours));
 }
 
 /** The product defaults, resolved — for callers with no settings client. */

@@ -25,11 +25,14 @@
  * convergence lands. The outcome states which applies rather than leaving the
  * caller to infer it.
  *
- * CH-3 — per-user rate limit (6 / hour). NOT a Plaid-style per-item cooldown:
- * the risk this mitigates is a shared-IP explorer ban (every wallet sync leaves
- * Fourth Meridian's single server IP), not metered per-item cost — so a
- * generous per-user cap is the right shape, not a strict per-item one.
- * SYSTEM_ADMIN exempt, matching the house call-site idiom.
+ * CH-3 — per-user rate limit (6 / hour by policy, the platform ceiling). The risk
+ * it mitigates is a shared-IP explorer ban (every wallet sync leaves Fourth
+ * Meridian's single server IP), so it is a CEILING, not metered per-item cost.
+ * P1 — the limit, and a new per-connection cooldown, come from the customer's
+ * EFFECTIVE ENTITLEMENTS (lib/entitlements); the SYSTEM_ADMIN exemption is gone
+ * (it exempted an account the role wall keeps out of the product). A wallet
+ * sync also now claims Connection.syncLockedAt (lib/refresh/wallet-lock.ts) so
+ * two syncs of one wallet cannot race, and asks platform admission first.
  *
  * ── RLS-ACC-S1 — THE GATE IS A TENANT PHASE; THE SYNC IS NOT ─────────────────
  * This handler has exactly ONE database read of its own — the owner-only
@@ -54,14 +57,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { limitByUser } from "@/lib/rate-limit";
-import {
-  syncWalletByChain, isSyncableChain, chainSupportsHistory, SYNCABLE_CHAINS, outcomeRevalued,
-} from "@/lib/crypto/wallet-sync-dispatch";
-import { snapshotAccountsForOutcome } from "@/lib/crypto/wallet-snapshot-scope";
-import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
-import { regenerateWealthHistoryForAccounts } from "@/lib/snapshots/regenerate-history";
-import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
-import { redactedErrorForLog } from "@/lib/plaid/errors";
+import { syncWalletByChain, isSyncableChain, SYNCABLE_CHAINS } from "@/lib/crypto/wallet-sync-dispatch";
+import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
+import { checkManualRefreshCooldown, cooldownMsFromMinutes } from "@/lib/plaid/refreshCooldown";
+import { tenantRefreshDeps } from "@/lib/refresh/deps";
+import { finalizeWalletSync } from "@/lib/refresh/wallet-post-sync";
+import { admitOperationalWork } from "@/lib/platform/admission/facts";
 
 export async function POST(
   _req: NextRequest,
@@ -73,16 +74,21 @@ export async function POST(
   const [user, err] = await requireUser();
   if (err) return err;
 
-  if (user.role !== "SYSTEM_ADMIN") {
-    const limited = await limitByUser(user.id, "wallet-resync", { limit: 6, windowSec: 3600 });
-    if (limited) return limited;
-  }
 
   // The authorization gate, and the only read this route owns. One short tenant
   // phase — see the header on why the sync itself must stay outside it.
-  const account = await withTenantDb(user.id, (tx) => tx.financialAccount.findUnique({
-    where: { id },
-    select: { id: true, ownerUserId: true, walletChain: true, deletedAt: true },
+  const { account, entitlements } = await withTenantDb(user.id, async (tx) => ({
+    account: await tx.financialAccount.findUnique({
+      where: { id },
+      select: {
+        id: true, ownerUserId: true, walletChain: true, deletedAt: true,
+        connections: {
+          where: { deletedAt: null, connectionId: { not: null } },
+          select: { connection: { select: { id: true, lastManualRefreshAt: true } } },
+        },
+      },
+    }),
+    entitlements: await loadEffectiveEntitlements(tx, user.id),
   }));
 
   // Owner-only, and no existence disclosure for accounts the user doesn't own.
@@ -105,6 +111,40 @@ export async function POST(
     }, { status: 400 });
   }
 
+  // ── P1 REFRESH ALL — the guards the Plaid path has had since D2 Step 7B ─────
+  // Order: admission → the customer's ENTITLED cooldown (one contract for banks
+  // and wallets) → the ENTITLED per-user hourly ceiling → the per-connection
+  // claim. None of these is a role check: the founder overlay changes the
+  // numbers, never the rule.
+  const admission = await admitOperationalWork({ work: "REFRESH_EXECUTION" });
+  if (admission.decision === "DENY") {
+    return NextResponse.json(
+      { error: "not-admitted", reason: admission.reason, message: admission.label, evaluatedAt: admission.evaluatedAt },
+      { status: 503 },
+    );
+  }
+  const connection = account.connections.map((c) => c.connection).find((c): c is NonNullable<typeof c> => c !== null) ?? null;
+  const cooldownMs = cooldownMsFromMinutes(Number(entitlements.dimensions.manualBankRefreshCooldownMinutes.value));
+  const cooldown = checkManualRefreshCooldown(connection?.lastManualRefreshAt ?? null, cooldownMs);
+  if (cooldown.onCooldown) {
+    return NextResponse.json({ error: "cooldown", retryAfterSeconds: cooldown.retryAfterSeconds }, { status: 429 });
+  }
+  const walletsPerHour = Number(entitlements.dimensions.manualWalletRefreshPerHour.value);
+  const limited = await limitByUser(user.id, "wallet-resync", { limit: walletsPerHour, windowSec: 3600 });
+  if (limited) return limited;
+  // The claim, the clock and the release are the SAME tenant-phase guard
+  // primitives the customer's Refresh All composes (lib/refresh/deps.ts), so a
+  // single wallet and many are governed by one implementation. Each is its own
+  // short phase inside the builder; the gate above stays this handler's one.
+  const guards = tenantRefreshDeps(user.id);
+  let claimed = false;
+  if (connection) {
+    const at = new Date();
+    claimed = await guards.claimWallet(connection.id, at);
+    if (!claimed) return NextResponse.json({ error: "in-flight" }, { status: 409 });
+    await guards.markWalletAttempt(connection.id, at);
+  }
+
   // V26-ORCH-1 — stamped BEFORE the sync so rows it writes fall at/after it,
   // which is what lets the planner MEASURE what changed instead of guessing.
   const syncStartedAt = new Date();
@@ -123,63 +163,13 @@ export async function POST(
   // for exactly that reason).
   const result = await syncWalletByChain(id, account.walletChain, { trigger: "MANUAL" });
 
-  // TODAY's snapshots: this account when the run produced new valuation
-  // evidence, plus every holder of a re-quoted asset (a quote is shared — see
-  // snapshotAccountsForOutcome). Best-effort/non-fatal, as on every
-  // account-mutation path.
-  const snapshotAccounts = await snapshotAccountsForOutcome(result).catch(() => (outcomeRevalued(result) ? [id] : []));
-  if (snapshotAccounts.length > 0) {
-    try {
-      await regenerateSnapshotsForAccounts(snapshotAccounts);
-    } catch (snapshotErr) {
-      console.warn(`[POST /api/accounts/${id}/sync] snapshot regen failed (non-fatal):`, redactedErrorForLog(snapshotErr));
-    }
-  }
-
-  // Wealth HISTORY regenerates only from NEW valuation evidence for THIS
-  // account: an ok run with no canonical close refreshed the quantity but not
-  // the value (see outcomeRevalued). Quotes never enter history.
-  if (outcomeRevalued(result)) {
-    // Part-2 — also regenerate the wealth HISTORY so the per-day valuation runs
-    // for a real account sync, not just today's flat row. Best-effort/non-fatal;
-    // gated on WEALTH_REGENERATION_ENABLED.
-    //
-    // V26-ORCH-1 — this used a FIXED 30-DAY window, silently narrower than the
-    // Plaid item path's, so the same account got different history depending on
-    // which trigger touched it. It now uses the canonical planner.
-    //
-    // SCOPE: planned for THIS account only, so syncing one account never
-    // rebuilds unrelated accounts' floors. The regeneration itself is
-    // Space-grained — SpaceSnapshot rows are shared — and the regenerator
-    // already re-clamps per account, so a Space-level rebuild cannot invent days
-    // an account did not have. The planned window and its reasons are logged so
-    // that widening is attributable to this account's evidence.
-    //
-    // W-M1d — HISTORY_SUPPORTED CHAINS ONLY. A balance-only chain has no
-    // movement ledger, so there is no historical quantity to derive and every
-    // day would refuse. Skipping is the honest outcome; the current position is
-    // already on the canonical spine either way.
-    // W6f — THE GATE WAS DEAD. This asked `feedsLegacyWealthHistory`, which W6c
-    // emptied for every chain when Bitcoin's historical authority moved onto the
-    // spine — so from that commit until this one, pressing Sync regenerated no
-    // history at all. The comment above already described the intent correctly:
-    // HISTORY_SUPPORTED chains only. It now asks that question instead of the
-    // storage question that used to answer it by coincidence.
-    if (chainSupportsHistory(account.walletChain)) try {
-      const plan = await resolveHistoricalWorkWindow({
-        financialAccountIds: [id],
-        changedSince:        syncStartedAt,
-        // The reconstruction's own measured boundary, when it changed stored history.
-        positionHistoryImpactedFromISO: result.historyRefresh?.impactedFromISO,
-      });
-      console.log(
-        `[POST /api/accounts/${id}/sync] historical window ${plan.fromDate}..${plan.toDate} ` +
-        `(${plan.mode}) — ${plan.reasons.join("; ")}`,
-      );
-      await regenerateWealthHistoryForAccounts([id], { fromDate: plan.fromDate, toDate: plan.toDate });
-    } catch (wealthErr) {
-      console.warn(`[POST /api/accounts/${id}/sync] wealth-history regen failed (non-fatal):`, redactedErrorForLog(wealthErr));
-    }
+  // P1 — the post-sync steps (today's snapshots, planned history) are the
+  // shared finaliser the customer's Refresh All uses, so one wallet and many
+  // finish the same way. Best-effort/non-fatal inside.
+  try {
+    await finalizeWalletSync({ accountId: id, chain: account.walletChain, outcome: result, syncStartedAt, logPrefix: `[POST /api/accounts/${id}/sync]` });
+  } finally {
+    if (claimed && connection) await guards.releaseWallet(connection.id);
   }
 
   // Account remains visible and "pending" on failure — report the outcome

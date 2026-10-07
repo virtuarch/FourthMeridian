@@ -92,6 +92,11 @@ const PRODUCERS = [
   { file: "lib/plaid/exchangeToken.ts",                 migrated: true, note: "connection establishment + initial ingestion (two work classes)" },
   // The scheduled wallet sweep (every syncable chain) — provider ingestion, gated once per sweep like sync-banks.
   { file: "lib/crypto/wallet-refresh.ts",               migrated: true, note: "the scheduled wallet sweep" },
+  // P1 REFRESH ALL — the provider-agnostic orchestrator asks ONCE per decision
+  // layer (every authority is REFUSED NOT_ADMITTED on a denial, no clock touched);
+  // the manual wallet sync route gained the gate it lacked (it had none).
+  { file: "lib/refresh/refresh-all.ts",                 migrated: true, note: "customer / operator Refresh All (every authority)" },
+  { file: "app/api/accounts/[id]/sync/route.ts",         migrated: true, note: "owner manual wallet sync (gained the gate in P1)" },
 ] as const;
 
 function main() {
@@ -224,7 +229,7 @@ function main() {
     // list forces a deliberate decision rather than defaulting to "migrated".
     check("every censused producer is migrated (OPS-2D-4)",
       PRODUCERS.filter((p) => p.migrated).length === PRODUCERS.length);
-    check("the census still holds all ten known producers", PRODUCERS.length === 10);
+    check("the census still holds all twelve known producers", PRODUCERS.length === 12);
 
     // No producer OUTSIDE the census may consume admission.
     const consumers = [...walk("app"), ...walk("jobs"), ...walk("lib")]

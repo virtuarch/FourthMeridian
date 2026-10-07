@@ -177,8 +177,11 @@ function main() {
              /hasPlatformAccess\(\s*[^)]*"CONTROL"/.test(src) ||
              /decidePlatformAccess\(\s*[^)]*"CONTROL"/.test(src);
     });
-    check(`the policies route is the only route requiring CONTROL (scanned ${routes.length})`,
-      requiring.length === 1 && requiring[0] === CONTROL_ROUTE, requiring.join(", "));
+    // P1 — the execution-cadence route is the second CONTROL consumer (the same
+    // rank, the same validated + audited pattern, plus a required reason).
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts"].sort();
+    check(`the policies and job-cadence routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+      requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
     const control = code(CONTROL_ROUTE);
     check("its mutations require FRESH CONTROL (live revocation check), never cached",
       (control.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 2 && !/requirePlatformAccess\([^)]*"CONTROL"/.test(control));
@@ -206,6 +209,12 @@ function main() {
       // MERCHANT-OPS AUTHORITY (2026-10-06): merge / dismiss, fresh WRITE on the
       // MERCHANT_OPS area — no longer ordinary Space membership.
       "app/api/merchant-ops/decide/route.ts",
+      // P1 — Customer Success spine: policy / cohort assignment and the operator
+      // Refresh All on a customer's behalf, fresh WRITE on CUSTOMER_SUCCESS; each
+      // audited through recordOperatorAction (the first two with a required reason).
+      "app/api/platform/customer-success/customers/[userId]/policy/route.ts",
+      "app/api/platform/customer-success/customers/[userId]/cohort/route.ts",
+      "app/api/platform/customer-success/customers/[userId]/refresh/route.ts",
     ];
     for (const f of WRITE_GATED) {
       const src = code(f);

@@ -40,7 +40,21 @@ const ACTION_LABEL: Record<string, string> = {
   CONNECTION_REAUTH_REQUESTED:  "Requested reauthorization",
   ACCOUNT_DEACTIVATED:          "Deactivated an account",
   ACCOUNT_REACTIVATED:          "Reactivated an account",
+  // P1 — customer policy / cohort, execution cadence, operator refresh-all.
+  CUSTOMER_POLICY_ASSIGNED:        "Assigned a policy group",
+  CUSTOMER_POLICY_OVERLAY_CHANGED: "Changed a policy overlay",
+  CUSTOMER_COHORT_ASSIGNED:        "Assigned a cohort",
+  JOB_CADENCE_CHANGED:             "Changed a job cadence",
+  JOB_CADENCE_RESET:               "Reset a job cadence",
+  OPERATOR_REFRESH_ALL:            "Refreshed a customer's authorities",
+  PLAID_ITEM_REVOCATION_RETRY_REQUESTED: "Retried provider cleanup",
 };
+/** Reason codes, humanised. Unknown → the raw code. */
+const REASON_LABEL: Record<string, string> = {
+  BETA_ONBOARDING: "beta onboarding", SUPPORT_REQUEST: "support request", DOGFOOD: "dogfood", TESTING: "testing",
+  POLICY_ROLLOUT: "policy rollout", INCIDENT: "incident", ABUSE: "abuse", OTHER: "other",
+};
+const RESULT_TONE: Record<string, string> = { SUCCESS: "var(--success-400, #34d399)", FAILURE: "var(--danger-400, #f87171)", REFUSED: "var(--accent-warning, #fbbf24)" };
 
 export function SecOperatorActionsWidget({ section }: { section: PlatformSection }) {
   const { data, loading, error } = useWidgetFetch<OperatorActionsResponse>(
@@ -66,9 +80,17 @@ export function SecOperatorActionsWidget({ section }: { section: PlatformSection
                   {/* Show "→ target" only when the target differs from the actor
                       (a platform-setting change like mode has no distinct subject). */}
                   {e.target && e.target !== e.operator ? ` → ${e.target}` : ""}
+                  {/* P1 envelope: the reason CODE (never the note) and the execution handle. */}
+                  {e.reasonCode ? ` · ${REASON_LABEL[e.reasonCode] ?? e.reasonCode}` : ""}
+                  {e.execution?.jobRunId ? ` · run …${e.execution.jobRunId.slice(-6)}` : e.execution?.refreshExecutionId ? ` · refresh …${e.execution.refreshExecutionId.slice(-6)}` : ""}
                 </span>
               </span>
-              <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-faint)]">{timeAgo(e.at)}</span>
+              <span className="flex shrink-0 items-center gap-2 text-[11px] tabular-nums text-[var(--text-faint)]">
+                {e.result && e.result !== "SUCCESS" && (
+                  <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: RESULT_TONE[e.result] }}>{e.result.toLowerCase()}</span>
+                )}
+                {timeAgo(e.at)}
+              </span>
             </li>
           ))}
         </ul>

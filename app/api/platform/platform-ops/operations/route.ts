@@ -27,6 +27,8 @@ import { db } from "@/lib/db";
 import { withApiHandler } from "@/lib/api";
 import { limitByUser } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
+import { recordOperatorAction } from "@/lib/audit";
+import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import {
   requirePlatformAccess,
   requireFreshPlatformAccess,
@@ -115,6 +117,7 @@ export interface OperationActionResponse {
   summary?: unknown;
   error?: string;
   plan?: DryRunPlan;
+  jobRunId?: string | null;
 }
 
 export const POST = withApiHandler(async (req: NextRequest) => {
@@ -143,22 +146,24 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   const result = await runOperation(command, realOperationDeps(db));
 
   // Audit EVERY invocation (mutating run and dry-run alike) so the manual-ops
-  // surface stays fully observable. metadata carries operation identity +
-  // outcome only — job internals/values live in the JobRun row, never here.
-  await db.auditLog.create({
-    data: {
-      userId: auth.user.id,
-      performedByAdminId: auth.user.id,
-      action: command.mutates
-        ? AuditAction.PLATFORM_OPERATION_EXECUTED
-        : AuditAction.PLATFORM_OPERATION_DRY_RUN,
-      metadata: {
-        commandId: command.id,
-        kind: command.kind,
-        targetJob: command.targetJob,
-        outcome: result.outcome,
-        ...(result.status ? { jobRunStatus: result.status } : {}),
-      },
+  // surface stays fully observable — P1: through the operator-action chokepoint,
+  // target = the JOB, execution = the command and the JobRun it opened, so the
+  // audit row and the ledger row are joined by id rather than by time. Metadata
+  // carries operation identity + outcome only — job internals/values live in
+  // the JobRun row, never here. Written AFTER execution on purpose: the JobRun
+  // is the primary record of what ran; this row records who asked.
+  await recordOperatorAction(db, {
+    actor: operatorActorFrom(auth, "PLATFORM_OPS"),
+    action: command.mutates
+      ? AuditAction.PLATFORM_OPERATION_EXECUTED
+      : AuditAction.PLATFORM_OPERATION_DRY_RUN,
+    target: { kind: "JOB", id: command.targetJob },
+    execution: { commandId: command.id, jobRunId: result.jobRunId ?? null },
+    result: result.outcome === "in-flight" ? "REFUSED" : result.outcome === "failed" ? "FAILURE" : "SUCCESS",
+    detail: {
+      kind: command.kind,
+      outcome: result.outcome,
+      ...(result.status ? { jobRunStatus: result.status } : {}),
     },
   });
 

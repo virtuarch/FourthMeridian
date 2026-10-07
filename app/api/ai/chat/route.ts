@@ -44,6 +44,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID }                from 'crypto';
 import { requireUser }               from '@/lib/session';
 import { limitByUser }               from '@/lib/rate-limit';
+import { entitlementsForUser, refuseIfDisabled, countLimit } from '@/lib/entitlements/consume';
 import { resolveSpaceContext }       from '@/lib/space';
 import { db }                        from '@/lib/db';
 import { aiPhaseRunner }             from '@/lib/ai/tenant-phase';
@@ -98,12 +99,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // surface sends one question at a time and a turn takes 5–70 s, so a person
   // cannot approach 10 a minute; the hour window bounds a script — or a stolen
   // admin session — that can.
-  if (user.role !== 'SYSTEM_ADMIN') {
-    const limited = await limitByUser(user.id, 'ai-chat', { limit: 10, windowSec: 60 });
+  //
+  // P1 — BOTH WINDOWS ARE THE CUSTOMER'S EFFECTIVE ENTITLEMENT, NOT A LITERAL AND
+  // NOT A ROLE. `aiTurnsPerMinute` is the plan's pacing (the founder overlay
+  // raises it, to its ceiling); `aiTurnsPerHour` is resolved under a platform
+  // CEILING of 60 that no Policy Group or overlay can exceed, so this window
+  // still bounds a stolen session exactly as before. The old
+  // `role !== 'SYSTEM_ADMIN'` exemption exempted nobody who can reach this
+  // route (the proxy keeps SYSTEM_ADMIN off /dashboard) and is gone. Whether the
+  // surface is available at all is the `conversations` dimension — a refusal
+  // here costs no model call.
+  const entitlements = await entitlementsForUser(user.id);
+  const disabled = refuseIfDisabled(entitlements, 'conversations', 'Conversations');
+  if (disabled) return disabled;
+  {
+    const limited = await limitByUser(user.id, 'ai-chat', { limit: countLimit(entitlements, 'aiTurnsPerMinute'), windowSec: 60 });
     if (limited) return limited;
   }
   {
-    const limited = await limitByUser(user.id, 'ai-chat-hour', { limit: 60, windowSec: 3600 });
+    const limited = await limitByUser(user.id, 'ai-chat-hour', { limit: countLimit(entitlements, 'aiTurnsPerHour'), windowSec: 3600 });
     if (limited) return limited;
   }
 

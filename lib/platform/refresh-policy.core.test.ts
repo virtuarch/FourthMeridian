@@ -74,17 +74,18 @@ console.log('\nF/G. version and environment');
     /platformSetting\.findMany/.test(loader) && !/process\.env/.test(loader + readFileSync('lib/platform/refresh-policy.core.ts', 'utf8')));
 }
 
-console.log('\nscheduler honesty — a cadence is honourable iff it is a whole multiple of the attempt period');
+console.log('\nscheduler honesty — a cadence is honourable iff it is at or above the safety floor (P1: due-ness is ledger-driven, not slot membership)');
 {
-  // The attempt periods here are LITERAL fixtures (6-hourly, daily); the real
-  // registry is bound and pinned in lib/platform/scheduler-capability.test.ts
-  // and lib/jobs/cadence.test.ts — this file never reads a floor constant.
-  check('6-hourly attempts honour 6h, 12h, 24h', honourableCadences(6).join() === '6h,12h,24h');
-  check('6-hourly attempts do NOT honour 4h (nothing attempts that fast)', !schedulerCanHonour('4h', 6));
-  check('6-hourly attempts do NOT honour 8h — the due filter lands on the 12h slot', !schedulerCanHonour('8h', 6)
-    && assessCadence('8h', 6).effectiveHours === 12);
-  check('daily attempts honour 24h only', honourableCadences(24).join() === '24h');
-  check('no attempt period honours nothing', honourableCadences(null).length === 0);
+  // The floors here are LITERAL fixtures (6-hour, daily); the real floors are
+  // bound and pinned in lib/platform/scheduler-capability.test.ts and
+  // lib/jobs/cadence-policy.test.ts — this file never reads a floor constant.
+  check('a 6-hour floor honours 6h, 8h, 12h, 24h', honourableCadences(6).join() === '6h,8h,12h,24h');
+  check('a 6-hour floor does NOT honour 4h (below the provider floor)', !schedulerCanHonour('4h', 6)
+    && assessCadence('4h', 6).effectiveHours === 6 && /floor/.test(assessCadence('4h', 6).reason ?? ''));
+  check('a 6-hour floor honours 8h at exactly 8h (no slot rounding any more)', schedulerCanHonour('8h', 6)
+    && assessCadence('8h', 6).effectiveHours === 8);
+  check('a daily floor honours 24h only', honourableCadences(24).join() === '24h');
+  check('no floor (no job refreshes the kind) honours nothing', honourableCadences(null).length === 0);
   const wallet = resolveRefreshPolicy({ sourceKind: 'WALLET' }, null);
   check('a wallet refreshed 30 min ago is not due (the :30 continuation skips it)', !isDueForScheduledRefresh(hoursAgo(0.5), wallet, NOW));
   check('…one refreshed at the previous 6-hourly slot is due', isDueForScheduledRefresh(hoursAgo(5.9), wallet, NOW));

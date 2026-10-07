@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs";
 import { IndeterminateWriteError } from "@/lib/db/conditional-write";
 import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
-import { attemptPeriodHours } from "@/lib/jobs/cadence";
+import { floorHoursFor } from "@/lib/platform/scheduler-capability";
 import { classifyJobHealth } from "@/lib/jobs/health";
 import { deriveSpaceDataHealth } from "@/lib/connections/space-data-health.core";
 import { AuditAction } from "@/lib/audit-actions";
@@ -174,18 +174,24 @@ async function main(): Promise<void> {
 
   console.log("\n3. unsupported values are refused by the scheduler-capability rule — nothing written, nothing audited");
   {
-    const cases: [ "BANK" | "WALLET", string ][] = [["WALLET", "4h"], ["WALLET", "8h"], ["BANK", "4h"], ["BANK", "6h"], ["BANK", "8h"], ["BANK", "12h"]];
+    // P1: the rule is the source kind's safety floor (BANK 6h, WALLET 4h); every menu value at or above it is accepted.
+    const cases: [ "BANK" | "WALLET", string ][] = [["BANK", "4h"]];
     for (const [kind, cadence] of cases) {
       const { db, state } = makeDb();
       const r = await updateRefreshCadence({ sourceKind: kind, cadence, expectedUpdatedAt: null, actor: ACTOR }, db);
-      check(`${kind} ${cadence}: VALIDATION refusal with the scheduler's reason; no row; no audit`,
-        !r.ok && r.code === "VALIDATION" && /every \d+ hours|would be \d+ hours/.test(r.reason) && state.settings.size === 0 && state.audits.length === 0, r.ok ? "accepted" : r.reason);
+      check(`${kind} ${cadence}: VALIDATION refusal with the floor's reason; no row; no audit`,
+        !r.ok && r.code === "VALIDATION" && /floor of \d+ hours/.test(r.reason) && state.settings.size === 0 && state.audits.length === 0, r.ok ? "accepted" : r.reason);
+    }
+    for (const [kind, cadence] of [["WALLET", "4h"], ["WALLET", "8h"], ["BANK", "6h"], ["BANK", "8h"], ["BANK", "12h"]] as [ "BANK" | "WALLET", string ][]) {
+      const { db } = makeDb();
+      const r = await updateRefreshCadence({ sourceKind: kind, cadence, expectedUpdatedAt: null, actor: ACTOR }, db);
+      check(`${kind} ${cadence}: accepted since P1 (at or above the floor)`, r.ok, r.ok ? "" : r.reason);
     }
     const { db, state } = makeDb();
     const garbage = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "soon", expectedUpdatedAt: null, actor: ACTOR }, db);
     check("a value outside the menu is refused by the descriptor", !garbage.ok && garbage.code === "VALIDATION" && state.settings.size === 0);
     const supported = await updateRefreshCadence({ sourceKind: "BANK", cadence: "24h", expectedUpdatedAt: null, actor: ACTOR }, db);
-    check("BANK 24h (the only honourable bank cadence) is accepted", supported.ok);
+    check("BANK 24h is accepted", supported.ok);
   }
 
   console.log("\n4. invalid legacy row: a CONTROL operator can replace it or reset it, concurrency intact");
@@ -323,7 +329,7 @@ async function main(): Promise<void> {
     }], "v", NOW, policies).sources[0].state;
     check("source health (Brief + Connections authority): 14h-old wallet CURRENT, 16h-old OUT_OF_DATE under 12h", health(14) === "CURRENT" && health(16) === "OUT_OF_DATE");
     const crypto = SCHEDULED_JOBS.find((j) => j.name === "sync-crypto")!;
-    const jh = classifyJobHealth(crypto, [{ startedAt: hours(1), status: "succeeded" }], NOW, { policy: policies.WALLET, attemptPeriodHours: attemptPeriodHours(SCHEDULED_JOBS, "WALLET") });
+    const jh = classifyJobHealth(crypto, [{ startedAt: hours(1), status: "succeeded" }], NOW, { policy: policies.WALLET, floorHours: floorHoursFor("WALLET", SCHEDULED_JOBS) });
     check("job source block reflects 12h while the job's own expectation stays the 6h slot",
       jh.source?.policyExpectedEveryHours === 12 && jh.source.policyHonoured && jh.expectedEveryHours === 6);
     const w = r.ok ? walletView(r.model) : null;

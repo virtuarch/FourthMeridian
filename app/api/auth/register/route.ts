@@ -35,6 +35,7 @@ import { verifyCaptchaToken } from "@/lib/captcha";
 import { AuditAction } from "@/lib/audit-actions";
 import { getMinPasswordLength, getRegistrationMode } from "@/lib/platform-settings";
 import { validateInvite, redeemBetaInvite, InviteNotConsumedError } from "@/lib/registration-policy";
+import { DEFAULT_POLICY_GROUP, INVITE_COHORT } from "@/lib/entitlements/catalogue";
 import { getTemplateForCategory } from "@/lib/space-templates/registry";
 import { planTemplateApplication } from "@/lib/space-templates/apply";
 
@@ -306,6 +307,23 @@ export async function POST(req: NextRequest) {
       // non-null and the single-use invite reusable for ever. Under a tenant or
       // pre-identity role a policy refusal produces the identical silent zero.
       // redeemBetaInvite() raises instead; see lib/registration-policy.ts.
+      // P1 HUMAN OPERABILITY — the customer's Policy Group and cohort are set
+      // AT BIRTH, in this same transaction. Every new account is placed on the
+      // catalogue default (BETA_FULL_ACCESS_V1); only an account that entered by
+      // redeeming a beta invitation joins the CLOSED_BETA_2026 cohort — an
+      // open-mode signup did not come through that door, so it gets no cohort
+      // (cohort ≠ policy: the cohort is historical identity, the policy is what
+      // they may use). Existing users are never backfilled here: an operator
+      // assigns them from Customer Success, which is audited.
+      await tx.customerPolicyAssignment.create({
+        data: { userId: newUser.id, policyGroup: DEFAULT_POLICY_GROUP },
+      });
+      if (betaRequestId) {
+        await tx.customerCohort.create({
+          data: { userId: newUser.id, cohort: INVITE_COHORT, source: "INVITE" },
+        });
+      }
+
       if (betaRequestId) {
         await redeemBetaInvite(tx, { requestId: betaRequestId, redeemedUserId: newUser.id });
         await tx.auditLog.create({

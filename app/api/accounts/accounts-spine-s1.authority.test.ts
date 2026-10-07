@@ -189,13 +189,17 @@ console.log("\nPOST /api/accounts/[id]/sync — THE BOUNDARY DOES NOT SPAN THE P
     !!region && /tx\.financialAccount\.findUnique/.test(region));
   // The load-bearing half. `withTenantDb` holds an interactive transaction open
   // for the whole callback; a block-explorer round trip inside one pins a pooled
-  // connection across the network. These three must stay OUTSIDE.
+  // connection across the network. The provider call and the post-sync
+  // finaliser must stay OUTSIDE. P1 REFRESH ALL moved the four post-sync steps
+  // (snapshot scope, snapshot regen, history window, history regen) into
+  // lib/refresh/wallet-post-sync.ts `finalizeWalletSync`, shared with the
+  // customer's Refresh All; the route calls that one name now. The guard
+  // writes it gained (claim / clock / release) go through lib/refresh/deps.ts,
+  // each its own short phase inside the builder — the gate stays this handler's
+  // one literal phase.
   for (const outside of [
     "syncWalletByChain",
-    "snapshotAccountsForOutcome",
-    "regenerateSnapshotsForAccounts",
-    "regenerateWealthHistoryForAccounts",
-    "resolveHistoricalWorkWindow",
+    "finalizeWalletSync",
   ]) {
     check(`${outside} is NOT inside the tenant transaction`,
       !!region && !region.includes(outside));

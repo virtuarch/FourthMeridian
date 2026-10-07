@@ -13,6 +13,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireUser } from '@/lib/session';
 import { limitByUser } from '@/lib/rate-limit';
+import { entitlementsForUser, refuseIfDisabled } from '@/lib/entitlements/consume';
 import { generateBriefResponse } from '@/lib/ai/brief/view';
 
 export const preferredRegion = 'sin1';
@@ -27,7 +28,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const [user, authErr] = await requireUser();
   if (authErr) return authErr;
 
-  if (user.role !== 'SYSTEM_ADMIN') {
+  // P1 — the Daily Brief is the `dailyBrief` entitlement; a customer whose
+  // Policy Group turns it off gets a plain 403 and no claim, no model call. The
+  // 20/min pacing below is an ABUSE CONTROL, not a plan quota, and it now applies
+  // to everyone: the old SYSTEM_ADMIN exemption exempted nobody who can reach
+  // this route (the role wall keeps SYSTEM_ADMIN off /dashboard).
+  const entitlements = await entitlementsForUser(user.id);
+  const disabled = refuseIfDisabled(entitlements, 'dailyBrief', 'The Daily Brief');
+  if (disabled) return disabled;
+  {
     const limited = await limitByUser(user.id, 'ai-brief-generate', { limit: 20, windowSec: 60 });
     if (limited) return limited;
   }

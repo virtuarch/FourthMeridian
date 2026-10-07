@@ -81,8 +81,14 @@ const body = (s: string) => {
 //
 // The regeneration existed and asked the wrong question.
 {
+  // P1 REFRESH ALL — the manual route's post-sync body (snapshot scope, capability-
+  // gated history regen, the canonical planner) now lives in
+  // lib/refresh/wallet-post-sync.ts `finalizeWalletSync`, shared with the
+  // customer's Refresh All. The route is scanned TOGETHER with that module so
+  // every invariant below still pins the real post-sync body, unweakened.
+  const POST_SYNC_BODY: Record<string, string[]> = { "app/api/accounts/[id]/sync/route.ts": ["lib/refresh/wallet-post-sync.ts"] };
   for (const route of ["app/api/accounts/[id]/sync/route.ts", "app/api/accounts/wallet/route.ts"]) {
-    const s = code(read(...route.split("/")));
+    const s = [route, ...(POST_SYNC_BODY[route] ?? [])].map((f) => code(read(...f.split("/")))).join("\n");
     check(`${route} gates regeneration on CAPABILITY`,
       /chainSupportsHistory\(/.test(s));
     check(`${route} no longer gates on the emptied storage predicate`,
@@ -156,12 +162,14 @@ async function skipIsNotFailure(): Promise<void> {
   check("the sync outcome carries what the refresh did",
     /historyRefresh\?: WalletHistoryRefresh;/.test(dispatch)
       && /historyRefresh: historyRefresh \?\? undefined/.test(dispatch));
-  const route = code(read("app", "api", "accounts", "[id]", "sync", "route.ts"));
+  // P1 REFRESH ALL — the route's post-sync body is lib/refresh/wallet-post-sync.ts
+  // (shared with Refresh All); scanned together so the pins hold the real body.
+  const route = code(read("app", "api", "accounts", "[id]", "sync", "route.ts")) + "\n" + code(read("lib", "refresh", "wallet-post-sync.ts"));
   check("the route still plans a BOUNDED window rather than rebuilding everything",
-    /resolveHistoricalWorkWindow/.test(route) && /regenerateWealthHistoryForAccounts\(\[id\]/.test(route),
+    /resolveHistoricalWorkWindow/.test(route) && /regenerateWealthHistoryForAccounts\(\[(id|accountId)\]/.test(route),
     "scoped to this account; no unrelated Space is rebuilt");
   check("…and a regeneration failure stays non-fatal to the sync",
-    /wealth-history regen failed \(non-fatal\)/.test(read("app", "api", "accounts", "[id]", "sync", "route.ts")));
+    /wealth-history regen failed \(non-fatal\)/.test(read("lib", "refresh", "wallet-post-sync.ts")));
 }
 
 void (async () => {

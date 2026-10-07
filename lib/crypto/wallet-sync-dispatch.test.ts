@@ -18,6 +18,7 @@
  */
 
 import { readFileSync } from "fs";
+import { ENTITLEMENT_DIMENSIONS } from "@/lib/entitlements/catalogue";
 import { join } from "path";
 import {
   walletChainSupport, isSyncableChain, chainSupportsHistory, feedsLegacyWealthHistory,
@@ -222,7 +223,15 @@ check("the dispatcher writes nothing itself (no DB access at all)",
 
 // ── PART B2 — the MANUAL SYNC route ─────────────────────────────────────────
 
-const syncRoute = code(read("app", "api", "accounts", "[id]", "sync", "route.ts"));
+// P1 REFRESH ALL — the route's post-sync body (snapshot scope, capability-gated
+// history regen, the canonical planner) is lib/refresh/wallet-post-sync.ts
+// `finalizeWalletSync`, shared with the customer's Refresh All. The route is
+// scanned TOGETHER with that module so every pin below holds the real body.
+const syncRouteFile = code(read("app", "api", "accounts", "[id]", "sync", "route.ts"));
+const postSync = code(read("lib", "refresh", "wallet-post-sync.ts"));
+// The module's own imports are stripped so `body()` (which slices after the
+// LAST import) still yields the route body followed by the post-sync body.
+const syncRoute = syncRouteFile + "\n" + body(postSync);
 
 check("the sync route names no chain and no adapter",
   !/syncBtcWallet|syncEthWallet|syncSolWallet/.test(syncRoute)
@@ -244,15 +253,20 @@ check("the BTC-only rejection message is gone",
 // BTC COMPATIBILITY — the surrounding behaviour is untouched.
 check("owner-only + no existence disclosure is unchanged",
   /ownerUserId !== user\.id/.test(syncRoute) && /Wallet not found/.test(syncRoute));
-check("the per-user rate limit is unchanged",
-  /limitByUser\(user\.id, "wallet-resync", \{ limit: 6, windowSec: 3600 \}\)/.test(syncRoute));
+// P1 — the per-user limit is the customer's ENTITLED value, whose catalogue
+// CEILING is the same 6/h the shared-IP explorer protection always required;
+// no entitlement or overlay can raise it (resolve.ts clamps to the ceiling).
+check("the per-user rate limit is the entitled value under the unchanged 6/h ceiling",
+  /limitByUser\(user\.id, "wallet-resync", \{ limit: walletsPerHour, windowSec: 3600 \}\)/.test(syncRoute)
+    && /manualWalletRefreshPerHour/.test(syncRoute)
+    && ENTITLEMENT_DIMENSIONS.manualWalletRefreshPerHour.ceiling === 6);
 check("the honest 200/502 contract is unchanged",
   /status: result\.ok \? 200 : 502/.test(syncRoute));
 // 2026-09-21 — the scope is `snapshotAccountsForOutcome(result)`: this account
 // when revalued, plus every holder of a re-quoted asset (executed in
 // lib/prices/current-quote.test.ts / btc-partial-sync.test.ts).
 check("snapshot regen runs over the outcome's scope (this account ∪ re-quoted holders)",
-  /snapshotAccountsForOutcome\(result\)/.test(syncRoute) && /regenerateSnapshotsForAccounts\(snapshotAccounts\)/.test(syncRoute));
+  /snapshotAccountsForOutcome\((result|outcome)\)/.test(syncRoute) && /regenerateSnapshotsForAccounts\(snapshotAccounts\)/.test(syncRoute));
 check("the ORCH-1 changedSince stamp still precedes the sync",
   body(syncRoute).indexOf("syncStartedAt = new Date()") < body(syncRoute).indexOf("syncWalletByChain("));
 
@@ -262,8 +276,8 @@ check("the ORCH-1 changedSince stamp still precedes the sync",
 // and W6c broke the coincidence: the predicate went empty for every chain and
 // this call site silently stopped regenerating anything. The assertion pinned
 // the defect in place, so it now pins the question the comment always described.
-check("wealth-history regen is gated on the CAPABILITY predicate",
-  /if \(chainSupportsHistory\(account\.walletChain\)\)/.test(syncRoute));
+check("wealth-history regen is gated on the CAPABILITY predicate (inside the revalued branch)",
+  /if \(outcomeRevalued\(outcome\) && chainSupportsHistory\(chain\)\)/.test(syncRoute));
 check("…and not on the emptied storage predicate",
   !/feedsLegacyWealthHistory\(/.test(syncRoute));
 check("…and still uses the canonical planner for the chains that have it",
@@ -375,7 +389,10 @@ check("…and its only account UPDATE touches lifecycle, never a balance",
   // 2026-09-21 — the gate is `outcomeRevalued(result)`, strictly narrower than
   // `result.ok` (false whenever ok is false; also false for an unpriced BTC run),
   // executed in btc-partial-sync.test.ts.
-  const gate = "if (outcomeRevalued(result))";
+  // P1 — the gate now reads `if (outcomeRevalued(outcome) && chainSupportsHistory(chain))`
+  // in lib/refresh/wallet-post-sync.ts: the same revalued predicate (⊂ ok), AND-ed
+  // with the capability predicate, so it is strictly narrower than before.
+  const gate = "if (outcomeRevalued(outcome)";
   // Snapshots follow the outcome's scope (empty for a failed sync — a failed
   // sync is neither revalued nor re-quoted); wealth HISTORY stays behind the gate.
   check("wealth history regen runs ONLY inside the revalued (⊂ ok) branch",

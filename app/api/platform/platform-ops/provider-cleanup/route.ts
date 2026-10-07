@@ -53,6 +53,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { systemDb } from "@/lib/db";
 import { requirePlatformAccess, requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
+import { recordOperatorAction } from "@/lib/audit";
+import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import {
@@ -101,7 +103,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const item = await systemDb.plaidItem.findUnique({ where: { id: plaidItemId }, select: { id: true, institutionName: true, userId: true } });
+  const item = await systemDb.plaidItem.findUnique({ where: { id: plaidItemId }, select: { id: true, institutionName: true } });
   if (!item) {
     // The marker outlives its item by design; there is nothing left to revoke.
     return NextResponse.json(
@@ -127,18 +129,22 @@ export async function POST(req: NextRequest) {
   // `disconnectPlaidItemIfOrphaned` writes REVOKED whatever Plaid answered.
   const stillOwed = await isProviderCleanupOwed(plaidItemId);
 
-  await systemDb.auditLog.create({
-    data: {
-      userId:             item.userId,
-      action:             AuditAction.PLAID_ITEM_REVOCATION_RETRY_REQUESTED,
-      performedByAdminId: auth.user.id,
-      metadata: {
-        provider:    "PLAID",
-        plaidItemId,
-        institution: item.institutionName,
-        // The outcome as the MARKER sees it, which is the only honest reading.
-        outcome:     stillOwed ? "STILL_UNCONFIRMED" : "CONFIRMED",
-      },
+  // P1 — the operator-action chokepoint: target = the PLAID_ITEM; the owner is
+  // no longer written as the row's userId (a connection action has no USER
+  // subject — the Customer Success panel resolves it through the item). Result
+  // follows the MARKER: a retry that left the obligation standing did not
+  // achieve what it was asked to.
+  await recordOperatorAction(systemDb, {
+    actor:  operatorActorFrom(auth, "PLATFORM_OPS"),
+    action: AuditAction.PLAID_ITEM_REVOCATION_RETRY_REQUESTED,
+    target: { kind: "PLAID_ITEM", id: plaidItemId },
+    result: stillOwed ? "FAILURE" : "SUCCESS",
+    detail: {
+      provider:    "PLAID",
+      plaidItemId,
+      institution: item.institutionName,
+      // The outcome as the MARKER sees it, which is the only honest reading.
+      outcome:     stillOwed ? "STILL_UNCONFIRMED" : "CONFIRMED",
     },
   });
 

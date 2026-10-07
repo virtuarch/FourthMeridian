@@ -28,7 +28,7 @@ import { getPipelineStatus } from "@/lib/platform/refresh/projections";
 import { getConnectionHealth } from "@/lib/connections/health";
 import { checkScheduledJobHealth } from "@/lib/jobs/health";
 import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
-import { deriveNextSlot } from "@/lib/platform/scheduler/observation";
+import { deriveNextDueFromLedger } from "@/lib/platform/scheduler/observation";
 import { getAiOperations } from "@/lib/platform/ai/invocations";
 import { getBriefOps } from "@/lib/platform/ai/brief-ops";
 import { getPlaidUsage } from "@/lib/platform/plaid/usage";
@@ -74,7 +74,9 @@ export async function getOperationsOverview(now: Date = new Date()): Promise<Ope
     else if (j.status === "dead") jobs.dead++;
     else if (j.status === "never-ran") jobs.neverRan++;
   }
-  const nextSlot = deriveNextSlot(SCHEDULED_JOBS, now).at;
+  // P1 — the next DUE instant from the ledger and the execution cadence policy
+  // (there are no registry slots left to read a "next slot" from).
+  const nextSlot = (await deriveNextDueFromLedger(now, SCHEDULED_JOBS)).at;
   const currentCycle = plaid.cycles[0];
 
   const core = buildOverview(

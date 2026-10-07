@@ -278,6 +278,18 @@ export const AuditAction = {
   // updatedAt }, next: { … } }: policy facts only, never a secret or a value.
   PLATFORM_POLICY_CHANGED:      "PLATFORM_POLICY_CHANGED",
   PLATFORM_POLICY_RESET:        "PLATFORM_POLICY_RESET",
+  // P1 HUMAN OPERABILITY — consequential operator actions on a CUSTOMER's
+  // policy/cohort (Customer Success), on platform execution cadence (Platform
+  // Ops CONTROL), and the two refresh-all authorities (the customer's own, and
+  // an operator's on their behalf). All written through recordOperatorAction()
+  // (lib/audit.ts) with a structured reason where REASON_REQUIRED_ACTIONS says so.
+  CUSTOMER_POLICY_ASSIGNED:        "CUSTOMER_POLICY_ASSIGNED",
+  CUSTOMER_POLICY_OVERLAY_CHANGED: "CUSTOMER_POLICY_OVERLAY_CHANGED",
+  CUSTOMER_COHORT_ASSIGNED:        "CUSTOMER_COHORT_ASSIGNED",
+  JOB_CADENCE_CHANGED:             "JOB_CADENCE_CHANGED",
+  JOB_CADENCE_RESET:               "JOB_CADENCE_RESET",
+  REFRESH_ALL_REQUESTED:           "REFRESH_ALL_REQUESTED",
+  OPERATOR_REFRESH_ALL:            "OPERATOR_REFRESH_ALL",
 
   // ── Security Ops anomalies (Wave 3 ⑧) ────────────────────────────────────
   // Written once per open anomaly window by lib/security/anomaly-alerts.ts when
@@ -402,6 +414,15 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.CONNECTION_REAUTH_REQUESTED,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
+  // P1 — customer policy / cohort, execution cadence, operator refresh-all.
+  AuditAction.CUSTOMER_POLICY_ASSIGNED,
+  AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
+  AuditAction.CUSTOMER_COHORT_ASSIGNED,
+  AuditAction.JOB_CADENCE_CHANGED,
+  AuditAction.JOB_CADENCE_RESET,
+  AuditAction.OPERATOR_REFRESH_ALL,
+  // Pre-existing operator action that was never listed (the provider-cleanup retry).
+  AuditAction.PLAID_ITEM_REVOCATION_RETRY_REQUESTED,
 ];
 
 /** Actions counted by the admin audit "security only" quick-filter. */
