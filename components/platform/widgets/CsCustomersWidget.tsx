@@ -94,8 +94,19 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
     setActing(key); setActionError(null);
     try {
       const r = await fetch(url, { credentials: "same-origin", ...init });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error((body as { error?: string }).error ?? (r.status === 403 ? "Not authorized for this action" : `Action failed (${r.status})`));
+      const isJson = (r.headers.get("content-type") ?? "").includes("application/json");
+      const body = isJson ? await r.json().catch(() => ({})) : {};
+      if (!r.ok) {
+        // A refusal that never reached a Fourth Meridian handler (an expired
+        // deployment-protection or app session, a stale tab after a deploy) comes
+        // back as HTML, not JSON. Say so, with the status, instead of a generic line.
+        const reason = (body as { error?: string }).error
+          ?? (r.status === 403 ? "Not authorized for this action"
+          : r.status === 401 ? "Your session is no longer valid here — reload and sign in again"
+          : !isJson ? `The request did not reach Fourth Meridian (HTTP ${r.status}) — reload the page and try again`
+          : `Action failed (${r.status})`);
+        throw new Error(reason);
+      }
       onDone?.(body);
       if (selectedId) await loadDetail(selectedId);
       await loadList(search);
@@ -108,8 +119,12 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
     json({ policyGroup, overlay: overlay === "" ? null : overlay, reason }));
   const addCohort = () => detail && reason && cohort && run("cohort", `/api/platform/customer-success/customers/${detail.identity.id}/cohort`,
     json({ cohort, reason }), () => { setCohort(""); });
-  const refreshAll = () => detail && run("refresh", `/api/platform/customer-success/customers/${detail.identity.id}/refresh`, { method: "POST" },
-    (body) => setRefreshReport(body as RefreshAllReport));
+  const refreshAll = () => {
+    if (!detail) return;
+    setRefreshReport(null); // never let the previous outcome pose as this click's result
+    void run("refresh", `/api/platform/customer-success/customers/${detail.identity.id}/refresh`, { method: "POST" },
+      (body) => setRefreshReport(body as RefreshAllReport));
+  };
   const toggleActive = () => detail?.actions.deactivate && run("active", detail.actions.deactivate.url,
     json({ action: detail.actions.deactivate.currently === "ACTIVE" ? "deactivate" : "reactivate", reason: reason ?? { code: "SUPPORT_REQUEST" } }));
 
@@ -287,6 +302,9 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                   full per-authority list stays in the detail body; this is the same one-line
                   description the customer's own Refresh button shows. */}
               {acting === "refresh" && <p className="w-full text-[11px] text-[var(--text-muted)]">Refreshing every eligible authority…</p>}
+              {actionError && acting === null && (
+                <p className="w-full text-[11px]" role="alert" style={{ color: "var(--danger-400, #f87171)" }}>Last action failed: {actionError}</p>
+              )}
               {refreshReport && acting !== "refresh" && (
                 <p className="w-full text-[11px] text-[var(--text-primary)]" role="status">
                   Refresh all: {describeRefreshOutcomes(refreshReport.outcomes)}

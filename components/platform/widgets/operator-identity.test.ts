@@ -48,6 +48,12 @@ console.log("a consequential action answers where it was pressed");
   check("the describer is the SHARED one from the outcome vocabulary", /from "@\/lib\/refresh\/outcomes"/.test(cs) && /export function describeRefreshOutcomes/.test(strip("lib/refresh/outcomes.ts")));
   check("the customer hook imports the same describer (no second semantics)", /from "@\/lib\/refresh\/outcomes"/.test(strip("components/plaid/useManualRefresh.ts")) && !/export function describeRefreshOutcomes/.test(strip("components/plaid/useManualRefresh.ts")));
   check("the reason is kept between consecutive actions (not cleared on success)", !/setReasonCode\(""\); setReasonNote\(""\)/.test(cs));
+  // Preview 2026-10-07: a stale tab showed the FIRST round's cooldown outcomes while a
+  // new click's request never reached a handler, and the failure text sat at the top
+  // of the panel. Both are now impossible to misread.
+  check("a new refresh clears the previous report BEFORE the request", /setRefreshReport\(null\);[\s\S]{0,120}run\("refresh"/.test(cs));
+  check("a failed action is announced beside the footer buttons as an alert", /role="alert"[^>]*>Last action failed/.test(footer));
+  check("a non-JSON refusal is named with its HTTP status (edge/auth, stale tab)", /did not reach Fourth Meridian \(HTTP \$\{r\.status\}\)/.test(cs) && /content-type/.test(cs));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
