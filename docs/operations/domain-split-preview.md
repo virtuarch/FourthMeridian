@@ -204,6 +204,30 @@ While `preview.` served the app it issued `__Host-` session cookies, host-only t
 - The Preview probe row `fm-preview-domain-split-probe@example.com` (BetaAccessRequest, PENDING) was left in place; delete it if wanted.
 - Failed `/api/auth/pre-login` attempts (wrong password) write no `LOGIN_FAILED` audit row; only the credentials callback audits. Observability gap, not a boundary issue.
 
-- **The site's Ignored Build Step (`git diff --quiet HEAD^ HEAD -- .`) only looks at the tip commit.** A push whose last commit does not touch `site/` skips the site build even when earlier commits in the push did. On Preview the site was deployed by the API at the exact SHA with a per-deployment override (`projectSettings.commandForIgnoringBuildStep: "exit 1"`); the project setting was not changed. Recommended owner change: `git diff --quiet $VERCEL_GIT_PREVIOUS_SHA HEAD -- .`.
+- **FIXED 2026-10-07: the site's Ignored Build Step looked only at the tip commit** (`git diff --quiet HEAD^ HEAD -- .`). A push whose last commit did not touch `site/` skipped the site build even when earlier commits in the push did (it happened here: `cf7323a` was deployed by the API with a per-deployment override). fourth-meridian-site (only; fintracker1 has no ignore step and was not changed) now uses:
+
+  ```sh
+  [ -n "$VERCEL_GIT_PREVIOUS_SHA" ] && git diff --quiet "$VERCEL_GIT_PREVIOUS_SHA" HEAD -- . 2>/dev/null; [ $? -eq 0 ] && exit 0 || exit 1
+  ```
+
+  - **Vercel semantics (docs, confirmed live):**
+    - The command runs in the Root Directory (`site`), so `-- .` is the `site/` scope; `-- site/` would mean `site/site`.
+    - Exit `0` ⇒ CANCELED; exit `1` ⇒ build.
+    - `VERCEL_GIT_PREVIOUS_SHA` is the last *successful* deployment for this project and branch, and is empty on a branch's first deployment. It counts API-created deployments: the first live run reported `cf7323a`.
+    - The clone is shallow (`--depth=10`).
+  - **🚨 Any other non-zero exit marks the deployment ERROR, not "build"**, contrary to Vercel's KB ("1 or greater builds"). The plain `git diff --quiet "$VERCEL_GIT_PREVIOUS_SHA" HEAD -- .` hit this live: previous `cf7323a` was not in the 10-deep clone of `3ff9e0f` ⇒ `fatal: bad object` (128) ⇒ ERROR. The final form maps every git failure to exit 1 ⇒ build. It fails safe: an unknown previous SHA, an empty one, or one older than the clone depth all build.
+  - **Live proofs (Preview, site project, API deployments on ref v2.6):**
+
+    | Deployment | Previous SHA | Range | Result |
+    |---|---|---|---|
+    | `60af144` (four times) | `cf7323a` | no `site/` change | CANCELED, "the Ignored Build Step command returned exit code 0" |
+    | `3ff9e0f` | `cf7323a`, not in clone | — | first form: **ERROR**; final form: READY (fail-safe build) |
+    | `6c7cea5` | `3ff9e0f` (its parent, in clone) | `site/` changed | READY (diff-path build) |
+    | `60af144` | `6c7cea5`, outside depth 10 | contains `site/` changes, tip commit does not | READY (fail-safe build); `preview.` back on the tip, `dpl_ECSQL23GRQdKZoc1qu8REJjwWWsv` |
+    | `60af144` | `60af144` | empty | CANCELED |
+
+    Local, same command in a depth-10 clone: `cf7323a..60af144` ⇒ 0; `553d9b3..3c12c47` (`site/` changed in `6c7cea5`, the tip does not touch `site/`) ⇒ 1, where the old tip-only command gave 0; `6c7cea5..3c12c47` ⇒ 0; empty ⇒ 1; unknown SHA ⇒ 1.
+  - **Cost:** after more than 10 app-only commits since the last successful site deployment, the next push rebuilds the site once (fail-safe), and that build resets the previous SHA.
+  - **Note:** this project setting is not per-environment. It also governs the site project's Production builds from `main`, which today has no Production deployment or domain.
 - The legacy-path forwarder is client-side (static export). It covers browsers following old links, not API clients. Server-side 308s on the public host would need a runtime on the site (plan §18.6 option a).
 - `GET /api/plaid/link-token` is a GET that calls Plaid. A sibling page can trigger it with the victim's Lax cookie but cannot read the response (no CORS). This is not a data or authority leak. It is the plan §16.1 "GET must be safe" residual, now named.
