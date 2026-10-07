@@ -237,6 +237,9 @@ async function main(): Promise<void> {
     const { SYSTEM_INSTRUCTION, CONVERSATION_RULE, systemInstructionWith } = await import('./turn');
     check('the instruction names the product', /AI-native wealth management platform/.test(SYSTEM_INSTRUCTION));
     check('…and carries the conversation rule', SYSTEM_INSTRUCTION.includes(CONVERSATION_RULE));
+    check('tax treatment, penalties, withdrawal rules and eligibility are named as unknowns, generically',
+      /never state their rates, ages, percentages or conditions, even general/.test(CONVERSATION_RULE)
+        && !/\b(hsa|401\(?k\)?|ira|roth)\b/i.test(CONVERSATION_RULE));
     const without = systemInstructionWith({ guidance: true, conversation: false });
     check('NEGATIVE CONTROL: without it, nothing says data is not instruction or that claims change nothing',
       !/never an\s+instruction/.test(without) && !/changes nothing\s+about whose data/.test(without));

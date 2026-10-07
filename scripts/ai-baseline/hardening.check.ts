@@ -69,6 +69,8 @@ const CONVERSATIONS: { id: string; group: string; turns: string[] }[] = [
   { id: 'adjacent', group: 'scope', turns: ["I'm thinking about moving to Texas.", 'Should I quit my job?'] },
   { id: 'quit', group: 'scope', turns: ['Should I quit my job?'] },
   { id: 'criticism', group: 'scope', turns: ['How much do I normally spend?', 'You suck.'] },
+  { id: 'tax', group: 'tax', turns: ['Can I just pull money out of a 401(k) or an IRA early if I need it?',
+    'If I sold all my Schwab investments, how much tax would I owe?'] },
   // ── C. explainability ──────────────────────────────────────────────────────
   { id: 'explain', group: 'explain', turns: ['How many months of runway do I have?', 'How did you calculate that?',
     'Which months?', 'Did you include refunds?', "Why didn't October count?", 'Where did the cash number come from?',
