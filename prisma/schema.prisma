@@ -3326,12 +3326,53 @@ model AiInvocation {
   /// experimental traffic from product traffic at read time.
   surface       String?
 
+  /// OPERATIONALIZATION P0 (owner ruling, 2026-10-07) — BOUNDED OPERATOR-ONLY
+  /// ATTRIBUTION. This reverses the Slice 3 decision that an invocation must
+  /// never be resolvable to a person: the owner ruled that per-user and per-Space
+  /// AI cost attribution may exist, as operator telemetry only. The RLS posture
+  /// is UNCHANGED — the table stays revoked from fm_app and is written and read
+  /// by fm_system alone (…000100 §4), so no tenant path and no Conversations
+  /// tool can reach another user's telemetry through it. SOFT references, no
+  /// FK: the ledger survives deletion of what it observed. Null when the caller
+  /// established no identity (harness traffic, a job).
+  userId        String?
+  spaceId       String?
+  /// A REAL conversation identity: minted (random) on a conversation's first
+  /// turn and carried in the sealed runtime-state cookie, so every turn of one
+  /// conversation groups under it and two conversations never share it.
+  /// Replaces the colliding digest that `correlationId` carried for chat
+  /// (sha256(userId + opening message)[:16] — the same opening ⇒ the same key).
+  /// `correlationId` is kept as the opaque grouping key it always was.
+  conversationId String?
+  /// Finer than `surface`: which call within a surface ("chat:answer",
+  /// "chat:guidance", "brief:generate"). Separates the guidance labeller's
+  /// second invocation from the answer it labels.
+  subSurface    String?
+  /// WHAT HAPPENED. "RETURNED" is a billed round-trip that returned usage (the
+  /// only kind the ledger used to hold). Every other value is a FAILURE FACT
+  /// written from the provider chokepoint's error path with ZERO tokens:
+  /// "FAILED" (provider/transport error), "TIMEOUT", "RATE_LIMITED" (a 429 the
+  /// caller will retry — each attempt is its own row), "QUOTA"
+  /// (insufficient_quota: waiting cannot cure it). A structured REFUSAL is
+  /// billed and returns usage, so it stays RETURNED with its finishReason.
+  /// Readers price RETURNED rows only.
+  outcome       String   @default("RETURNED")
+  /// Provider error code/class for a non-RETURNED row (e.g. "insufficient_quota",
+  /// "429", "500", "abort"). A CODE, never a message body or prompt fragment.
+  errorCode     String?
+  /// The provider's own request id (OpenAI `x-request-id`) when the SDK exposed
+  /// it — the handle a support ticket to the provider needs. Null otherwise.
+  providerRequestId String?
+
   createdAt DateTime @default(now())
 
   @@index([occurredAt])
   @@index([model, occurredAt])
   @@index([correlationId, turnIndex])
   @@index([environment, occurredAt])
+  @@index([userId, occurredAt])
+  @@index([conversationId, turnIndex])
+  @@index([outcome, occurredAt])
 }
 
 model ApiUsageCounter {
@@ -4197,4 +4238,75 @@ model SnapshotAmendmentDay {
 
   @@unique([amendmentId, date])
   @@index([amendmentId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OPERATIONALIZATION P0 (2026-10-07) — append-only operational FACTS that cannot
+// be reconstructed later. Both are operator-only ledgers in the …000100 §4
+// family: revoked from fm_app, written through fm_system (or the public intake
+// role for the beta event), RLS enabled AND forced. Neither is health, neither
+// is a generic event table (OPERATIONAL_TRUTH_SPINE §K): each records ONE kind
+// of externally-originated fact at receipt, and everything else is derived.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One VERIFIED Plaid webhook, as received. Written by the receiver AFTER
+/// signature verification and BEFORE any handling decision, so "revoked items
+/// still producing activity" and "the beta's first USER_PERMISSION_REVOKED" are
+/// one query rather than a lost console.log. No payload, no token, no account
+/// data: identity of the Item, the type/code, the status we held at receipt,
+/// and what the receiver decided.
+model PlaidWebhookEvent {
+  id                  String   @id @default(cuid())
+  receivedAt          DateTime @default(now())
+  /// Plaid's item_id exactly as delivered (an opaque provider identifier, not a
+  /// secret). Null when the webhook carried none.
+  externalItemId      String?
+  /// Our PlaidItem resolved at receipt — a SOFT reference (no FK) so the fact
+  /// survives the Item. Null when no Item matched.
+  plaidItemId         String?
+  webhookType         String
+  webhookCode         String
+  /// Plaid's `error.error_code` on an ITEM-class webhook that carries one
+  /// (e.g. ITEM_LOGIN_REQUIRED). A code, never the message.
+  errorCode           String?
+  /// PlaidItem.status at receipt ("ACTIVE" | "NEEDS_REAUTH" | "ERROR" |
+  /// "REVOKED"); null when the Item was unknown here.
+  itemStatusAtReceipt String?
+  /// Whether the Item's owner was deactivated (or pending deletion) at receipt.
+  /// Null when the Item was unknown.
+  ownerInactive       Boolean?
+  /// The receiver's verdict: "SYNC_SCHEDULED" (the deferred pipeline was
+  /// started), "ACKNOWLEDGED" (verified, not a trigger we act on),
+  /// "UNKNOWN_ITEM", "REFUSED_ITEM_STATUS" (the Item is not ACTIVE — covers
+  /// NEEDS_REAUTH and ERROR as well as REVOKED, the cron's own eligibility
+  /// predicate), "REFUSED_OWNER_INACTIVE". Vocabulary owned by
+  /// lib/plaid/webhook-receiver.ts.
+  handling            String
+  /// V26-ENV-1 classification at receipt. One Plaid client id spans every
+  /// environment; this is what tells a Sandbox delivery from a Production one.
+  environment         String
+
+  @@index([receivedAt])
+  @@index([externalItemId, receivedAt])
+  @@index([handling, receivedAt])
+}
+
+/// One SUBMISSION of the public beta-access form, including a repeat for an
+/// address already on the waitlist. BetaAccessRequest stays one row per email
+/// (the non-enumerating INSERT … ON CONFLICT DO NOTHING is untouched, and the
+/// public role still cannot read it); this table is the INSERT-only companion
+/// that makes "how many times, when last, and from where" derivable at read
+/// time by an operator — requestCount and lastRequestedAt are COUNT/MAX over
+/// these rows, never stored. `source` is bounded acquisition context the form
+/// forwarded (allowlisted keys, clipped values: landing path, referrer host,
+/// utm_* fields, coarse country) — never a raw header, never an IP, never a
+/// fingerprint.
+model BetaAccessRequestEvent {
+  id         String   @id @default(cuid())
+  email      String
+  receivedAt DateTime @default(now())
+  source     Json?
+
+  @@index([email, receivedAt])
+  @@index([receivedAt])
 }

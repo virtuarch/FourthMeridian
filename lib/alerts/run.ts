@@ -2,7 +2,7 @@
  * lib/alerts/run.ts  (OPS-5 S5)
  *
  * The impure orchestrator — the ONE place that touches I/O for alerting:
- *   1. GATHER the three existing authorities, each best-effort (a gather failure
+ *   1. GATHER the four existing authorities, each best-effort (a gather failure
  *      → null, never a fabricated or suppressed breach).
  *   2. Resolve enabled state from PlatformSetting overrides.
  *   3. Read recent evaluate-alerts JobRun summaries → the suppression state (the
@@ -25,6 +25,7 @@ import { sendEmail } from "@/lib/email/send";
 import { checkScheduledJobHealth } from "@/lib/jobs/health";
 import { getConnectionHealth } from "@/lib/connections/health";
 import { checkResourceFreshness } from "@/lib/platform/resource-freshness";
+import { getAiFailureHealth } from "@/lib/platform/ai/failures";
 import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity } from "@/lib/alerts/rules";
 import type { AuthorityOutputs } from "@/lib/alerts/authorities";
 import {
@@ -49,7 +50,7 @@ const RECENT_RUNS_EXAMINED = 10;
 
 export interface AlertRunDeps {
   now?: Date;
-  /** Gather the three authority outputs (each best-effort → null on failure). */
+  /** Gather the four authority outputs (each best-effort → null on failure). */
   gatherAuthorities?: () => Promise<AuthorityOutputs>;
   /** PlatformSetting overrides of rule enabled state (key → "true"/"false"). */
   loadSettings?: () => Promise<ReadonlyMap<string, string>>;
@@ -68,12 +69,14 @@ export interface AlertRunDeps {
 // ── Real default I/O ─────────────────────────────────────────────────────────────
 
 async function gatherAuthoritiesDefault(): Promise<AuthorityOutputs> {
-  const [jobHealth, connectionHealth, resourceFreshness] = await Promise.all([
+  const [jobHealth, connectionHealth, resourceFreshness, aiFailures] = await Promise.all([
     checkScheduledJobHealth().catch((e) => (warn("job-health", e), null)),
     getConnectionHealth().catch((e) => (warn("connection-health", e), null)),
     checkResourceFreshness().catch((e) => (warn("resource-freshness", e), null)),
+    // OPERATIONALIZATION P0 — the AI failure fold over the last 24h.
+    getAiFailureHealth(24).catch((e) => (warn("ai-failures", e), null)),
   ]);
-  return { jobHealth, connectionHealth, resourceFreshness };
+  return { jobHealth, connectionHealth, resourceFreshness, aiFailures };
 }
 
 function warn(what: string, e: unknown): void {

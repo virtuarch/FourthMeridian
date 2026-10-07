@@ -42,7 +42,13 @@ import { isPendingPlan, type PendingPlan } from './pending-plan';
 // cookie), and an explicit CONTINUITY marker when state cannot be carried. A v2
 // seal is discarded, never coerced — the next turn simply starts without state,
 // which is what a fresh conversation does.
-const VERSION = 3;
+// 4 — OPERATIONALIZATION P0: the seal carries the conversation's IDENTITY
+// (`conversationId`, random, minted on the first turn) so the AI cost ledger can
+// group a conversation's turns under a key that two conversations never share —
+// the sha256(userId + opening) digest it replaced collided whenever two chats
+// opened with the same words (dev: 51 rows → 2 keys). A v3 seal is discarded,
+// never coerced: the next turn mints a fresh identity, as a new chat would.
+const VERSION = 4;
 
 /**
  * How long a sealed state may be presented.
@@ -109,6 +115,14 @@ export interface RuntimeState {
    * next turn is told.
    */
   provenance?: AnswerProvenance | 'NOT_CARRIED' | null;
+  /**
+   * OPERATIONALIZATION P0 — the conversation's identity for the AI cost ledger
+   * (AiInvocation.conversationId). A random UUID the route mints on the first
+   * turn and carries here; never content-derived, never read by the model, and
+   * the ONE slot that is carried even when nothing else is — a conversation
+   * without a hypothetical is still one conversation. Operator telemetry only.
+   */
+  conversationId?: string | null;
 }
 
 /**
@@ -179,8 +193,11 @@ export function sealRuntimeStateWithReport(state: RuntimeState, binding: StateBi
   const pending = state.pending && state.pending.clauses.length > 0 ? state.pending : null;
   const continuity = state.continuity ?? null;
   const provenance = state.provenance ?? null;
-  if (!state.scenario && !pending && !continuity && !provenance) return { sealed: null, carried: 'NONE' };
-  const base = { v: VERSION, iat: Date.now(), ...binding };
+  const conversationId = isConversationId(state.conversationId) ? state.conversationId : null;
+  if (!state.scenario && !pending && !continuity && !provenance && !conversationId) return { sealed: null, carried: 'NONE' };
+  // The identity rides in `base`, so BOTH the full seal and the continuity
+  // marker carry it: losing the plan must not also lose which conversation it was.
+  const base = { v: VERSION, iat: Date.now(), ...binding, ...(conversationId ? { conversationId } : {}) };
   try {
     const plan = { ...base, scenario: state.scenario,
       ...(pending ? { pending } : {}), ...(continuity ? { continuity } : {}) };
@@ -249,9 +266,15 @@ export function openRuntimeState(
     || typeof scenario.result !== 'object' || scenario.result === null)) return null;
   const continuity = isContinuityLoss(payload.continuity) ? payload.continuity : null;
   const provenance = readProvenance(payload.provenance);
-  if (!scenario && !pending && !continuity && !provenance) return null;
+  const conversationId = isConversationId(payload.conversationId) ? payload.conversationId : null;
+  if (!scenario && !pending && !continuity && !provenance && !conversationId) return null;
   return { scenario, ...(pending ? { pending } : {}), ...(continuity ? { continuity } : {}),
-    ...(provenance ? { provenance } : {}) };
+    ...(provenance ? { provenance } : {}), ...(conversationId ? { conversationId } : {}) };
+}
+
+/** A conversation identity is a UUID the route minted — nothing else is carried as one. */
+function isConversationId(x: unknown): x is string {
+  return typeof x === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x);
 }
 
 function isContinuityLoss(x: unknown): x is ContinuityLoss {

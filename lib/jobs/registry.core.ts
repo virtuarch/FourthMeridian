@@ -116,8 +116,15 @@ export const SCHEDULED_JOB_FACTS = declareJobs([
   { name: "notification-retry", hourUTC: 7, minuteUTC: 30 },
   { name: "purge-trash", hourUTC: 7, minuteUTC: 30 },
   { name: "rate-limit-sweep", hourUTC: 7, minuteUTC: 30 },
-  // OPS-5 S5 — sequenced LAST in the 07:30 slot so it reads the freshest state.
-  { name: "evaluate-alerts", hourUTC: 7, minuteUTC: 30 },
+  // OPS-5 S5 — sequenced LAST so it reads the freshest state of each slot.
+  // OPERATIONALIZATION P0 (2026-10-07): every :30 slot the dispatcher already
+  // fires (vercel.json "0,30 0,6,7,12,18"), not once daily at 07:30 — a breach
+  // is noticed within ~6h instead of up to 24h, and the 20h re-notify window
+  // (lib/alerts/evaluate.ts) keeps an ongoing one at about one mail a day.
+  // Derived cadence: slotPeriodHours([0,6,7,12,18]) = 6 (the widest gap), so
+  // job-health calls it overdue after 8h of silence — honest for a job that
+  // never waits longer than 6h between opportunities.
+  { name: "evaluate-alerts", hourUTC: [0, 6, 7, 12, 18], minuteUTC: 30 },
 ]);
 
 /** Every registered job name — the key set lib/jobs/registry.ts must give a body to. */

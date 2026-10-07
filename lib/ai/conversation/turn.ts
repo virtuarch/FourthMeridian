@@ -26,7 +26,7 @@ import { injectContinuity } from './continuity';
 import { generateWithTools } from '@/lib/ai/provider';
 import { callWithRateLimitRetry } from '@/lib/ai/rate-limit-retry';
 import { findTool, type ToolContext } from './tools';
-import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
+import { runWithAiInvocationContext, type AiAttribution } from '@/lib/ai/invocation-context';
 import { checkpointProjection } from './memory-tools';
 import { CHECKPOINT_PHASE } from '@/lib/ai/tenant-phase';
 import { turnEvidence } from './memory-model';
@@ -259,6 +259,13 @@ export async function executeTurn(args: {
    */
   surface?: string;
   /**
+   * OPERATIONALIZATION P0 — operator-only attribution for the cost ledger (the
+   * signed-in user, the Space, the conversation identity). Telemetry only: not
+   * sent to the provider, not in the transcript, not read by any tool. Absent
+   * for the harness, whose rows stay unattributed.
+   */
+  attribution?: AiAttribution;
+  /**
    * The conversation's single hypothetical slot, if it has one.
    *
    * ⚠️ OWNED BY THE CALLER, NOT BY THE TURN. A turn reads it to inject and writes
@@ -284,9 +291,10 @@ export async function executeTurn(args: {
 }): Promise<TurnRecord> {
   // A tool loop makes SEVERAL invocations for ONE user turn; the ambient context
   // is what lets the ledger sum them back into that turn.
+  const surface = args.surface ?? 'harness';
   return runWithAiInvocationContext(
     { correlationId: args.correlationId ?? 'conversation', turnIndex: args.index,
-      surface: args.surface ?? 'harness' },
+      surface, subSurface: `${surface}:answer`, ...(args.attribution ?? {}) },
     () => executeTurnInner(args),
   );
 }

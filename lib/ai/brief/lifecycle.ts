@@ -84,7 +84,8 @@ export interface LifecycleDeps {
    * cannot know WHY the evidence moved — a
    * reconnect, a sync or a new transaction all look the same here — and says so.)
    */
-  generate(pkg: BriefPackage, now: Date, reason?: GenerationReason): Promise<BriefGenerationResult>;
+  /** `scope` is passed for cost-ledger attribution only (OPERATIONALIZATION P0); the package is what the model sees. */
+  generate(pkg: BriefPackage, now: Date, reason?: GenerationReason, scope?: BriefScope): Promise<BriefGenerationResult>;
   /**
    * Whether the Space holds any active account link. A Space with nothing in it
    * has nothing to brief, so no model call is spent on it. Optional only so pure
@@ -122,7 +123,8 @@ export async function briefLifecycleDeps(rt: BriefRuntime): Promise<LifecycleDep
     watermark: async (scope, now) =>
       (await rt.asOwner((c) => sourceWatermark(c, scope, now))).watermark,
     loadPackage: (spaceCtx, now) => loadBriefPackage({ spaceCtx, now, runtime: rt }),
-    generate: (pkg, now, reason) => generateBriefFromPackage(pkg, { model: CHAT_MODEL, now, surface: 'brief', reason }),
+    generate: (pkg, now, reason, scope) => generateBriefFromPackage(pkg, { model: CHAT_MODEL, now, surface: 'brief', reason,
+      ...(scope ? { attribution: { userId: scope.ownerUserId, spaceId: scope.spaceId } } : {}) }),
     hasFinancialData: async (scope) =>
       (await rt.asOwner((c) => c.spaceAccountLink.count({
         where: { spaceId: scope.spaceId, status: 'ACTIVE' } }))) > 0,
@@ -299,7 +301,7 @@ export async function ensureDailyBrief(
       ? { facts: readStandingFacts(latestPrior.content), briefDay: latestPrior.briefDay } : null);
     const reason: GenerationReason = state.kind === 'NEEDS_GENERATION' ? 'daily'
       : digest !== state.row.materialDigest ? 'change' : 'version';
-    const result = await lap('generate', () => deps.generate(modelPkg, now, reason));
+    const result = await lap('generate', () => deps.generate(modelPkg, now, reason, key));
     if (!result.ok) {
       // ⚠️ THE ROW KEEPS THE TYPED REASON; THE LOG KEEPS WHY. "Couldn't update" with
       // PROVIDER_ERROR on the row was all an operator had on 2026-10-04, when the

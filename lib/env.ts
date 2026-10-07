@@ -72,17 +72,24 @@ const _e = {
   // when unset (still env-gated by RESEND_API_KEY like all mail).
   SECURITY_ALERTS_EMAIL: process.env.SECURITY_ALERTS_EMAIL,
 
-  // Platform Ops alert destination (OPS-5 S5). Optional — the alert evaluator
-  // emails the operator here on any breach. When UNSET there is no destination:
-  // alerts are still evaluated and recorded, but no mail is sent (an honest
-  // "skipped", surfaced in the Alerts widget) rather than sent to a guessed
-  // mailbox that might bounce. Still env-gated by RESEND_API_KEY like all mail.
+  // Platform Ops alert destination (OPS-5 S5). The alert evaluator emails the
+  // operator here on any breach. When UNSET there is no destination: alerts are
+  // still evaluated and recorded, but no mail is sent (an honest "skipped",
+  // surfaced in the Alerts widget) rather than sent to a guessed mailbox that
+  // might bounce. Still env-gated by RESEND_API_KEY like all mail.
+  //
+  // OPERATIONALIZATION P0 (2026-10-07): optional in dev/test/preview, REQUIRED
+  // in a production deployment (PROD_REQUIRED_KEYS below). An alert engine with
+  // no destination is a silent one, and "skipped" in a widget nobody opens is
+  // how the owner learns about breakage from a user.
   PLATFORM_ALERTS_EMAIL: process.env.PLATFORM_ALERTS_EMAIL,
 
-  // PO-3B — beta-request intake notification destination. Same honest-skip
-  // pattern as PLATFORM_ALERTS_EMAIL: null when unset ⇒ no operator notification
-  // is sent (the request is still recorded + reviewable in the queue). Never a
-  // hardcoded personal address.
+  // PO-3B — beta-request intake notification destination. Honest-skip: null
+  // when unset ⇒ no operator notification is sent (the request is still
+  // recorded + reviewable in the queue). Never a hardcoded personal address.
+  // Deliberately NOT production-required (unlike PLATFORM_ALERTS_EMAIL): the
+  // Growth & Revenue queue is the authority for intake and the mail is a
+  // convenience; a missed breach has no such second surface.
   BETA_REQUESTS_EMAIL: process.env.BETA_REQUESTS_EMAIL,
 
   // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Both optional — absent means
@@ -297,6 +304,13 @@ const PROD_REQUIRED_KEYS: (keyof typeof _e)[] = [
   // FALSE — Preview matched NODE_ENV="production" and so was forced to carry a
   // production-only DSN just to pass boot validation.
   "NEXT_PUBLIC_SENTRY_DSN",
+  // OPERATIONALIZATION P0 (2026-10-07) — the alert destination. Without it the
+  // evaluate-alerts job records every breach as deliveryStatus "skipped" and
+  // nobody is told; the Oct 4 Brief outage was reported by a user for exactly
+  // that reason. Production has NO such record today, so this is a CONFIG ACT
+  // before the next Production deploy (docs/operations/production-readiness-
+  // checklist.md §1), not a code change — boot refuses to start silent.
+  "PLATFORM_ALERTS_EMAIL",
 ];
 
 // ── Structured report (PO1.2 — additive; names only, never values) ─────────────

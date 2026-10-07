@@ -367,3 +367,79 @@ export function captureLedgerWriteFailure(
     // Monitoring must never take down the request it is observing.
   }
 }
+
+// ── OPERATIONALIZATION P0 (2026-10-07) — the two failures the owner heard about
+// from users first ─────────────────────────────────────────────────────────────
+//
+// A scheduled job that threw was a `failed` JobRun row and nothing else; an AI
+// provider failure (the Oct 4 Brief outage: `insufficient_quota`) was a console
+// line. Neither reached Sentry, so neither reached a person before a user did.
+// Both captures below carry static identifiers only — a registry job name, an
+// outcome word, a provider error CODE, a surface name, a model name — never a
+// prompt, a completion, a summary, a user id or a monetary value.
+
+/**
+ * Build the Sentry payload for a scheduled job whose body threw. Pure, so the
+ * tags and the absence of any content are provable without a Sentry double.
+ */
+export function buildJobFailureCapture(args: {
+  /** Static registry identifier (lib/jobs/registry.core.ts). Never user content. */
+  jobName: string;
+  /** The runJob execution id — an opaque correlation handle into the JobRun ledger. */
+  executionId?: string | null;
+}): { tags: Record<string, string>; level: "error" } {
+  return {
+    tags: {
+      area:    "scheduled-job",
+      jobName: args.jobName,
+      ...(args.executionId ? { executionId: args.executionId } : {}),
+    },
+    level: "error",
+  };
+}
+
+/** Capture a scheduled job failure. Never throws. */
+export function captureJobFailure(jobName: string, error: unknown, executionId?: string | null): void {
+  try {
+    Sentry.captureException(error, buildJobFailureCapture({ jobName, executionId }));
+  } catch {
+    // Monitoring must never take down the job it is observing.
+  }
+}
+
+/**
+ * Build the Sentry payload for an AI provider call that did not return usage.
+ * `outcome` is the AiInvocation outcome word ("FAILED" | "TIMEOUT" |
+ * "RATE_LIMITED" | "QUOTA"); `errorCode` is a provider CODE or HTTP status, never
+ * a message. A rate limit the caller will retry is a warning; everything else —
+ * and QUOTA above all, since waiting cannot cure it — is an error.
+ */
+export function buildAiProviderFailureCapture(args: {
+  outcome:   string;
+  errorCode: string | null;
+  surface:   string | null;
+  model:     string;
+}): { tags: Record<string, string>; level: "error" | "warning" } {
+  return {
+    tags: {
+      area:       "ai-provider",
+      ai_outcome: args.outcome,
+      model:      args.model,
+      ...(args.errorCode ? { error_code: args.errorCode } : {}),
+      ...(args.surface ? { surface: args.surface } : {}),
+    },
+    level: args.outcome === "RATE_LIMITED" ? "warning" : "error",
+  };
+}
+
+/** Capture an AI provider failure. Never throws. */
+export function captureAiProviderFailure(
+  args: { outcome: string; errorCode: string | null; surface: string | null; model: string },
+  error: unknown,
+): void {
+  try {
+    Sentry.captureException(error, buildAiProviderFailureCapture(args));
+  } catch {
+    // Monitoring must never take down the call it is observing.
+  }
+}

@@ -1,13 +1,13 @@
 import { PageHeader } from "@site/components/PageHeader";
 import { Container } from "@site/components/Container";
-import { SECURITY } from "@site/content/copy";
+import { SECURITY, SUPPORT_EMAIL } from "@site/content/copy";
 import { pageMetadata } from "@site/lib/page-metadata";
 import ui from "@site/components/ui.module.css";
 
 export const metadata = pageMetadata(
   "/security",
   "Security — Fourth Meridian",
-  "How Fourth Meridian protects your financial data: encrypted credentials, two-factor authentication, least-privilege access, audit logging, and rate limiting.",
+  "How Fourth Meridian protects your financial data today: bcrypt-hashed passwords, AES-256-GCM encrypted bank tokens, read-only connections, two-factor authentication, audit logging, rate limiting, export and a seven-day deletion window.",
 );
 
 export default function SecurityPage() {
@@ -23,7 +23,11 @@ export default function SecurityPage() {
             </div>
           ))}
         </div>
-        <p className={ui.footnote}>{SECURITY.footnote}</p>
+        <p className={ui.footnote}>
+          {SECURITY.footnote}{" "}
+          {/* The published support destination — a plain mailto, no form, no API (this site has neither). */}
+          <a className={ui.quietLink} href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>
+        </p>
       </Container>
     </>
   );

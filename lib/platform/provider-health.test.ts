@@ -202,7 +202,7 @@ async function main(): Promise<void> {
       checkedAt: NOW, allFresh: true, resources: [freshReport({})],
     };
     const connections: ConnectionHealthResult = {
-      total: 2, counts: { HEALTHY: 2, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [],
+      total: 2, counts: { HEALTHY: 2, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 },
     };
 
     const result = await getProviderHealth({

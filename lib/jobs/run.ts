@@ -42,6 +42,14 @@
  * is stored as `summary` only if it JSON-serializes cleanly; callers must
  * return counts/kinds/dates/IDs only — never user content or monetary values.
  *
+ * ...AND THE JOB'S OWN FAILURE IS REPORTED TOO (OPERATIONALIZATION P0,
+ * 2026-10-07). A body that threw became a `failed` ledger row and a rethrow —
+ * correct, and invisible until the once-daily alert pass or an operator opened
+ * the Jobs workspace. The same R8 reading applies: this is not telemetry, it is
+ * the one error the wrapper already holds, handed to the error monitor
+ * (captureJobFailure — static job name + execution id, never the summary or any
+ * content). The rethrow is unchanged; a capture failure cannot fail the job.
+ *
  * DELIBERATELY NOT HERE (rulings R3–R8): CRON_SECRET auth (stays in the
  * routes — R3), dispatcher/registry (S2), retries/backoff, dead-job
  * detection, alerting, metrics/telemetry (PO1), retention sweeps (S3).
@@ -51,7 +59,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { db } from "@/lib/db";
-import { captureLedgerWriteFailure } from "@/lib/monitoring/capture";
+import { captureLedgerWriteFailure, captureJobFailure } from "@/lib/monitoring/capture";
 import { currentDeploymentSha } from "@/lib/monitoring/deployment";
 
 /** How a run was initiated. "cron" for the Vercel-cron routes. */
@@ -222,6 +230,9 @@ export async function runJob<T>(
       durationMs: Date.now() - t0,
       errorSummary: summarizeError(err),
     });
+    // The ledger has the fact; the error monitor gets the error. Static
+    // identifiers only — the job name and this run's execution id.
+    captureJobFailure(jobName, err, executionId);
     throw err;
   }
 }

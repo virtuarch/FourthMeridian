@@ -9,20 +9,29 @@
  *     One canonical alert evaluation · no duplicated health computation ·
  *     consume existing health authorities.
  *
- * Every live rule reads one of three authorities that already ship:
+ * Every live rule reads one of four authorities that already ship:
  *   - OPS-4 Jobs         checkScheduledJobHealth()  (lib/jobs/health.ts)
  *   - OPS-5 Freshness    checkResourceFreshness()   (lib/platform/resource-freshness.ts)
  *   - Connection health  getConnectionHealth()      (lib/connections/health.ts)
+ *   - AI failures        getAiFailureHealth()       (lib/platform/ai/failures.ts)
  * and the destination is OPS-1's sendEmail() (lib/email/send.ts). The engine
  * (lib/alerts/evaluate.ts) NEVER queries a product table or re-derives a health
  * state — it only classifies signals over authority OUTPUT.
  *
- * ── The five initial rules (intentionally small; NOT a generic engine) ────────
+ * ── The six rules (intentionally small; NOT a generic engine) ────────────────
  *   resource-stale       an archive's newest observation is stale/empty    (LIVE)
  *   provider-unhealthy   a syncing provider connection is not healthy       (LIVE)
  *   job-failing          a scheduled job's last runs all failed             (LIVE)
  *   scheduler-silent     a scheduled job is overdue (dispatcher/cron silent)(LIVE)
+ *   ai-provider-failing  the AI provider is refusing/failing calls          (LIVE)
  *   quota-low            a provider's remaining API quota is low         (DORMANT)
+ *
+ * ai-provider-failing (OPERATIONALIZATION P0, 2026-10-07) exists because the
+ * Oct 4 Daily Brief outage — the OpenAI account out of credits — was found by a
+ * USER. Until then the AiInvocation ledger held billed, returned calls only, so
+ * there was no fact to alert on. The provider chokepoint now writes a zero-token
+ * failure row (outcome QUOTA / RATE_LIMITED / TIMEOUT / FAILED) and this rule
+ * reads the fold of those rows over the last 24h.
  *
  * ── Dormant rules (future-safe, not recreated) ───────────────────────────────
  * `quota-low` is a first-class rule KIND but has NO authority to consume yet:
@@ -45,6 +54,7 @@ export type AlertRuleKind =
   | "provider-unhealthy"
   | "job-failing"
   | "scheduler-silent"
+  | "ai-failing"
   | "quota-low";
 
 /** Two levels only — a solo operator's pager does not need more (alert fatigue
@@ -120,6 +130,16 @@ export const ALERT_RULES: readonly AlertRuleDefinition[] = [
     description:
       "A scheduled job is overdue — its schedule has silently stopped (a dead cron/dispatcher, or a misconfigured CRON_SECRET). Reads the OPS-4 job-health authority (`overdue` state).",
     authority: "job-health",
+    live: true,
+    defaultEnabled: true,
+  },
+  {
+    id: "ai-provider-failing",
+    kind: "ai-failing",
+    title: "AI provider failing",
+    description:
+      "The AI provider is refusing or failing calls. Critical when the account is out of credits / over quota (insufficient_quota — waiting cannot cure it) or when every call in the window failed; warning when several calls failed or timed out while others returned. Reads the AiInvocation outcome fold (lib/platform/ai/failures.ts); never calls the provider.",
+    authority: "ai-failures",
     live: true,
     defaultEnabled: true,
   },

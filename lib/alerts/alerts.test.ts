@@ -30,6 +30,7 @@ import {
 import { evaluatePlatformAlerts } from "@/lib/alerts/run";
 import type { ConnectionHealthResult, HealthState } from "@/lib/connections/health";
 import type { ResourceFreshnessResult, ResourceFreshnessReport, FreshnessHealthState } from "@/lib/platform/resource-freshness";
+import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -61,7 +62,10 @@ function jobHealth(jobs: AlertJobHealthReport[]): AlertJobHealth {
 function connHealth(counts: Partial<Record<HealthState, number>>): ConnectionHealthResult {
   const full: Record<HealthState, number> = { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0, ...counts };
   const total = (Object.values(full) as number[]).reduce((a, b) => a + b, 0);
-  return { total, counts: full, unhealthy: [] };
+  return { total, counts: full, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 } };
+}
+function aiHealth(o: Partial<AiFailureHealth>): AiFailureHealth {
+  return { windowHours: 24, returned: 0, failed: 0, timeouts: 0, rateLimited: 0, quota: 0, lastFailureAt: null, lastQuotaAt: null, checkedAt: NOW.toISOString(), ...o };
 }
 function resource(id: string, state: FreshnessHealthState, trustLevel: "high" | "medium" | "low" | "unknown" = "low"): ResourceFreshnessReport {
   return {
@@ -74,17 +78,18 @@ function freshness(resources: ResourceFreshnessReport[]): ResourceFreshnessResul
   return { checkedAt: NOW, allFresh: resources.every((r) => r.healthState === "fresh" || r.healthState === "idle"), resources };
 }
 function outputs(o: Partial<AuthorityOutputs>): AuthorityOutputs {
-  return { jobHealth: null, connectionHealth: null, resourceFreshness: null, ...o };
+  return { jobHealth: null, connectionHealth: null, resourceFreshness: null, aiFailures: null, ...o };
 }
 const ALL_ON = () => true;
 
 // ── Registry shape ───────────────────────────────────────────────────────────────
 
 console.log("registry");
-check("five initial rules", ALERT_RULES.length === 5);
-check("four live rules", ALERT_RULES.filter((r) => r.live).length === 4);
+check("six rules (five initial + ai-provider-failing)", ALERT_RULES.length === 6);
+check("five live rules", ALERT_RULES.filter((r) => r.live).length === 5);
 check("quota-low is the sole dormant rule", ALERT_RULES.filter((r) => !r.live).map((r) => r.id).join() === "quota-low");
-check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 5);
+check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 6);
+check("ai-provider-failing reads the ai-failures authority", ALERT_RULES.find((r) => r.id === "ai-provider-failing")?.authority === "ai-failures");
 
 // ── Engine: job-failing ──────────────────────────────────────────────────────────
 
@@ -122,6 +127,35 @@ console.log("engine · provider-unhealthy");
   const crit = evaluateAlertRules(outputs({ connectionHealth: connHealth({ HEALTHY: 1, ERROR: 1, STALE: 1 }) }), ALL_ON).filter((s) => s.kind === "provider-unhealthy");
   check("ERROR present ⇒ critical", crit[0].severity === "critical");
   check("summary counts the unhealthy (2 of 3)", crit[0].summary.includes("2 of 3"));
+
+  // OPERATIONALIZATION P0 — a revoked connection is a FORMER connection. The
+  // authority retires it out of the population; if one ever reaches the engine
+  // it is degraded at most, never a permanent critical.
+  const retiredOnly = evaluateAlertRules(
+    outputs({ connectionHealth: { ...connHealth({ HEALTHY: 2 }), retired: { revoked: 3, ownerInactive: 1 } } }), ALL_ON,
+  ).filter((s) => s.kind === "provider-unhealthy");
+  check("retired (revoked / owner-inactive) connections produce no signal", retiredOnly.length === 0);
+  const revokedLeak = evaluateAlertRules(outputs({ connectionHealth: connHealth({ HEALTHY: 2, REVOKED: 1 }) }), ALL_ON).filter((s) => s.kind === "provider-unhealthy");
+  check("a REVOKED row that reaches the engine is NOT acute (warning, not critical)", revokedLeak.length === 1 && revokedLeak[0].severity === "warning");
+}
+
+// ── Engine: ai-failing ───────────────────────────────────────────────────────────
+
+console.log("engine · ai-failing");
+{
+  const sig = (o: Partial<AiFailureHealth>) =>
+    evaluateAlertRules(outputs({ aiFailures: aiHealth(o) }), ALL_ON).filter((s) => s.kind === "ai-failing");
+  check("quiet provider ⇒ no signal", sig({ returned: 40 }).length === 0);
+  const quota = sig({ returned: 5, quota: 1, lastQuotaAt: NOW.toISOString() });
+  check("ANY insufficient_quota ⇒ critical on its own key", quota.length === 1 && quota[0].severity === "critical" && quota[0].dedupeKey === "ai-provider-failing:quota");
+  check("quota summary names the cause, counts only", /insufficient quota/.test(quota[0].summary) && !/\$/.test(quota[0].summary));
+  const dark = sig({ returned: 0, failed: 2 });
+  check("every call failed (0 returned) ⇒ critical :errors", dark.length === 1 && dark[0].severity === "critical" && dark[0].dedupeKey === "ai-provider-failing:errors");
+  check("a few errors beside returned calls ⇒ warning", sig({ returned: 20, failed: 2, timeouts: 1 })[0]?.severity === "warning");
+  check("fewer than the warning count ⇒ no signal", sig({ returned: 20, failed: 2 }).length === 0);
+  check("rate limits alone never fire (retried by design)", sig({ returned: 3, rateLimited: 9 }).length === 0);
+  const both = sig({ returned: 0, failed: 1, quota: 2 });
+  check("quota + total failure ⇒ two independent breaches", both.length === 2 && new Set(both.map((s) => s.dedupeKey)).size === 2);
 }
 
 // ── Engine: resource-stale ───────────────────────────────────────────────────────
@@ -199,7 +233,7 @@ console.log("history derivation");
   check("prior-fired keeps the newest delivery per key", prior.get("job-failing:a") === Date.parse("2026-07-15T07:30:00Z"));
 
   const views = deriveAlertRuleViews(ALERT_RULES, ALL_ON, [s2, s1]);
-  check("a view per rule", views.length === 5);
+  check("a view per rule", views.length === 6);
   check("last-triggered is the newest across runs", views.find((v) => v.id === "job-failing")!.lastTriggeredAtISO === "2026-07-15T07:30:00Z");
   check("never-fired rule has null last-triggered", views.find((v) => v.id === "scheduler-silent")!.lastTriggeredAtISO === null);
   check("dormant rule reported not-live", views.find((v) => v.id === "quota-low")!.live === false);
@@ -247,7 +281,7 @@ async function orchestratorTests() {
   check("delivered both", s1.counts.delivered === 2 && s1.deliveryStatus === "sent");
   check("one email to the destination", sent.length === 1 && sent[0].to === "ops@fourthmeridian.com" && sent[0].count === 2);
   check("summary records fired for suppression/history", s1.fired.length === 2);
-  check("per-rule outcomes list all five rules", s1.rules.length === 5);
+  check("per-rule outcomes list all six rules", s1.rules.length === 6);
   check("dormant rule not firing in outcomes", s1.rules.find((r) => r.id === "quota-low")!.firing === false);
 
   // Second cycle sees the first as recent history ⇒ suppresses (no second email).
@@ -285,6 +319,9 @@ console.log("doctrine");
   check("orchestrator consumes the OPS-4 job-health authority", /checkScheduledJobHealth/.test(runSrc));
   check("orchestrator consumes the connection-health authority", /getConnectionHealth/.test(runSrc));
   check("orchestrator consumes the OPS-5 resource-freshness authority", /checkResourceFreshness/.test(runSrc));
+  check("orchestrator consumes the AI failure authority (OPERATIONALIZATION P0)", /getAiFailureHealth\(/.test(runSrc));
+  check("REVOKED is no longer an acute connection state (revoked connections are retired, not unhealthy)",
+    !/CRITICAL_CONNECTION_STATES[\s\S]*?"REVOKED"[\s\S]*?\]\)/.test(evaluateSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "")));
   check("destination is the OPS-1 email seam", /@\/lib\/email\/send/.test(runSrc));
 }
 
@@ -295,7 +332,7 @@ function summaryWith(fired: { ruleId: string; dedupeKey: string; at: string }[])
     evaluatedAtISO: fired[fired.length - 1]?.at ?? NOW.toISOString(),
     destination: "ops@fourthmeridian.com",
     deliveryStatus: fired.length ? "sent" : "none",
-    counts: { evaluated: 5, live: 4, enabled: 4, firing: fired.length, delivered: fired.length, suppressed: 0 },
+    counts: { evaluated: 6, live: 5, enabled: 5, firing: fired.length, delivered: fired.length, suppressed: 0 },
     rules: [],
     fired: fired.map((f) => ({ ruleId: f.ruleId, kind: "job-failing", dedupeKey: f.dedupeKey, severity: "critical", summary: "x", deliveredAtISO: f.at })),
   };

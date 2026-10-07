@@ -7,7 +7,7 @@
  * (evaluate.ts) classifies signals over authority output without ever touching a
  * product table or re-deriving a health state.
  *
- * The impure gather (lib/alerts/run.ts) is the ONE place that calls the three
+ * The impure gather (lib/alerts/run.ts) is the ONE place that calls the four
  * authority functions; this module is the shared contract between gather and
  * engine.
  */
@@ -15,13 +15,17 @@
 import type { JobHealthStatus } from "@/lib/jobs/health";
 import type { ConnectionHealthResult } from "@/lib/connections/health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
+import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 
 /** The authority a rule reads. `provider-quota` names the not-yet-shipped
- *  OPS-5 S3 authority the dormant `quota-low` rule will bind to. */
+ *  OPS-5 S3 authority the dormant `quota-low` rule will bind to.
+ *  `ai-failures` (OPERATIONALIZATION P0) is the AiInvocation ledger's outcome
+ *  dimension, folded by lib/platform/ai/failures.ts. */
 export type AlertAuthority =
   | "job-health"
   | "connection-health"
   | "resource-freshness"
+  | "ai-failures"
   | "provider-quota";
 
 /**
@@ -53,4 +57,6 @@ export interface AuthorityOutputs {
   jobHealth: AlertJobHealth | null;
   connectionHealth: ConnectionHealthResult | null;
   resourceFreshness: ResourceFreshnessResult | null;
+  /** AI provider failure facts over the evaluation window (null = did not gather). */
+  aiFailures: AiFailureHealth | null;
 }

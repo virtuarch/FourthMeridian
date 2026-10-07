@@ -190,6 +190,11 @@ export interface GenerateBriefOptions {
   now?: Date;
   /** The whole model phase's budget, waits included. Default GENERATION_CALL_BUDGET_MS. */
   budgetMs?: number;
+  /**
+   * OPERATIONALIZATION P0 — operator-only cost-ledger attribution: whose Brief,
+   * in which Space. Telemetry only; the package the model sees is unchanged.
+   */
+  attribution?: { userId?: string; spaceId?: string };
   deps?: {
     structured?: StructuredCall; client?: StructuredClient; sinks?: UsageSinks;
     /** Injectable for tests: the wait between rate-limited attempts, and the clock the budget reads. */
@@ -233,7 +238,8 @@ export async function generateBriefFromPackage(
     // not get longer because the provider was busy.
     result = await callWithRateLimitRetry(() => {
       const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? STRUCTURED_TIMEOUT_MS, deadlineAt - clock()));
-      return runWithAiInvocationContext({ correlationId, turnIndex: 0, surface }, () =>
+      return runWithAiInvocationContext({ correlationId, turnIndex: 0, surface, subSurface: `${surface}:generate`,
+        ...(options.attribution ?? {}) }, () =>
         structured<unknown>(
           BRIEF_SYSTEM_PROMPT,
           [{ role: 'user', content: briefUserMessage(pkg) }],

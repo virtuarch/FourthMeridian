@@ -37,6 +37,8 @@ const PROD_EXTRA = {
   CRON_SECRET:            "cron-test",
   // V25-FINAL-2 (Area A) — production error monitoring is now a required key.
   NEXT_PUBLIC_SENTRY_DSN: "https://examplePublicKey@o0.ingest.sentry.io/0",
+  // OPERATIONALIZATION P0 — the alert destination is production-required.
+  PLATFORM_ALERTS_EMAIL:  "ops@example.com",
 };
 
 // ── Child mode: import lib/env under the env this process was given ──────────

@@ -132,6 +132,17 @@ export function OpsConnectionHealthWidget({ section }: { section: PlatformSectio
             <WidgetStat value={data.total - data.counts.HEALTHY} label="Unhealthy" />
             <WidgetStat value={data.total} label="Total" />
           </div>
+          {(data.retired.revoked > 0 || data.retired.ownerInactive > 0) && (
+            // OPERATIONALIZATION P0 — former connections are not unhealthy ones.
+            // They leave the population above and are named here, so a count
+            // never disappears silently.
+            <p className="text-[11px] text-[var(--text-muted)]">
+              Not counted: {data.retired.revoked > 0 ? `${data.retired.revoked} revoked` : null}
+              {data.retired.revoked > 0 && data.retired.ownerInactive > 0 ? " · " : null}
+              {data.retired.ownerInactive > 0 ? `${data.retired.ownerInactive} with a deactivated owner` : null}
+              {" "}(retired, not unhealthy).
+            </p>
+          )}
           {data.unhealthy.length === 0 ? (
             <p className="text-xs text-[var(--text-secondary)]">All provider connections healthy.</p>
           ) : (

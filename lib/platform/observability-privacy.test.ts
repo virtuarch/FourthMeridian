@@ -33,6 +33,7 @@ const READERS = [
   "lib/platform/ai/invocations.ts",
   "lib/platform/ai/invocations-core.ts",
   "lib/platform/ai/brief-ops.ts",
+  "lib/platform/ai/failures.ts",
   "lib/platform/plaid/usage.ts",
   "lib/platform/refresh/inspection.ts",
   "lib/platform/refresh/execution-query.ts",

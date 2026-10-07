@@ -20,7 +20,17 @@
  * ip/user-agent so the intake is forensically visible even though the request
  * row itself keeps minimal PII.
  *
- * Body: { email: string, note?: string, captchaToken?: string }
+ * OPERATIONALIZATION P0 (2026-10-07) — ACQUISITION FACTS. Every submission,
+ * including a repeat for an address already on the waitlist, ALSO inserts one
+ * BetaAccessRequestEvent row carrying a BOUNDED `source` (lib/marketing/
+ * acquisition.ts: allowlisted utm_* / ref / source keys, the landing path the
+ * public site forwarded, a cross-origin referrer's host, and the edge's
+ * two-letter country — never an IP, user agent or raw header). The parent row
+ * is untouched, the count from createMany is still discarded, and the response
+ * is still the identical 200: requestCount and lastRequestedAt are COUNT/MAX
+ * over these rows by an operator, never a branch here.
+ *
+ * Body: { email: string, note?: string, captchaToken?: string, source?: object }
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -31,6 +41,7 @@ import { getRequestMeta } from "@/lib/api";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
+import { boundAcquisitionSource, withCountry } from "@/lib/marketing/acquisition";
 
 export const runtime = "nodejs";
 
@@ -44,7 +55,7 @@ export async function POST(req: NextRequest) {
 
     const meta = getRequestMeta(req);
     const body = await req.json().catch(() => ({}));
-    const { email, note, captchaToken } = body ?? {};
+    const { email, note, captchaToken, source } = body ?? {};
 
     // Basic shape validation. An invalid email is a real 400 (it's not a
     // state-disclosure — any client can tell a malformed address from a valid
@@ -86,6 +97,20 @@ export async function POST(req: NextRequest) {
     await db.betaAccessRequest.createMany({
       data: [{ email: normalizedEmail, note: trimmedNote || null }],
       skipDuplicates: true,
+    });
+
+    // The submission FACT — one row per submission, first or repeat, never
+    // conditional on the createMany outcome above. `source` is bounded by the
+    // shared allowlist; the country comes from the edge header (Cloudflare's
+    // cf-ipcountry via getRequestMeta, else Vercel's x-vercel-ip-country), and
+    // nothing else about the request is kept here (ip/user-agent live on the
+    // AuditLog forensic row below, as before).
+    const acquisition = withCountry(
+      boundAcquisitionSource(source),
+      meta.country ?? req.headers.get("x-vercel-ip-country"),
+    );
+    await db.betaAccessRequestEvent.create({
+      data: { email: normalizedEmail, ...(acquisition ? { source: acquisition } : {}) },
     });
 
     // Forensic trail — no userId (there is no account), ip/user-agent captured.

@@ -20,6 +20,8 @@
  * any other non-2xx, non-429 response.
  */
 
+import type { AcquisitionSource } from "@/lib/marketing/acquisition";
+
 /** The one URL that is the entire beta-gate seam. Relative on purpose: same
  *  origin today; a config value when the marketing site splits out. */
 export const ACCESS_REQUEST_ENDPOINT = "/api/access-request";
@@ -31,6 +33,10 @@ export type AccessRequestInput = {
   /** Cloudflare Turnstile token (Wave 2 ⑥). Sent when a site key is configured;
    *  the server verifies it (env-gated — skipped when CAPTCHA is unconfigured). */
   captchaToken?: string | null;
+  /** Bounded acquisition context (lib/marketing/acquisition.ts) — utm_* / ref,
+   *  the public-site page the visitor came from, a referrer host. Omitted when
+   *  there is nothing to attribute. */
+  source?: AcquisitionSource | null;
 };
 
 export type AccessRequestResult =
@@ -54,6 +60,7 @@ export async function submitAccessRequest(
   const email = input.email.trim().toLowerCase();
   const note = input.note?.trim();
   const captchaToken = input.captchaToken || undefined;
+  const source = input.source && Object.keys(input.source).length > 0 ? input.source : undefined;
 
   if (!isProbablyEmail(email)) {
     return { status: "error", message: "Please enter a valid email address." };
@@ -68,6 +75,7 @@ export async function submitAccessRequest(
         email,
         ...(note ? { note } : {}),
         ...(captchaToken ? { captchaToken } : {}),
+        ...(source ? { source } : {}),
       }),
     });
   } catch {

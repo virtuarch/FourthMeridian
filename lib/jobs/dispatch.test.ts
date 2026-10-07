@@ -98,8 +98,11 @@ async function main(): Promise<void> {
     check("notification-retry sequenced AFTER notification-cleanup (never re-mail aged-out rows)",
       SCHEDULED_JOBS.findIndex((j) => j.name === "notification-retry") >
         SCHEDULED_JOBS.findIndex((j) => j.name === "notification-cleanup"));
-    check("OPS-5 S5 evaluate-alerts rides the 07:30 slot (no new cron entry needed)",
-      byName.get("evaluate-alerts")?.hourUTC === 7 && byName.get("evaluate-alerts")?.minuteUTC === 30);
+    // OPERATIONALIZATION P0 — every :30 slot the dispatcher already fires, so a
+    // breach is noticed within ~6h rather than up to 24h. Still no cron change.
+    const alerts = byName.get("evaluate-alerts");
+    check("evaluate-alerts rides EVERY :30 dispatcher slot (00/06/07/12/18 — no new cron entry needed)",
+      Array.isArray(alerts?.hourUTC) && (alerts!.hourUTC as number[]).join() === "0,6,7,12,18" && alerts?.minuteUTC === 30);
     check("evaluate-alerts sequenced LAST (reads the freshest state after the sync/fx jobs)",
       SCHEDULED_JOBS.findIndex((j) => j.name === "evaluate-alerts") === SCHEDULED_JOBS.length - 1);
     check("all slots on half-hour boundaries", SCHEDULED_JOBS.every((j) => j.minuteUTC === 0 || j.minuteUTC === 30));

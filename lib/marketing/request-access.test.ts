@@ -51,6 +51,15 @@ async function main() {
   check("normalised email, trimmed note, captcha token", calls[0]?.body === JSON.stringify({ email: "person@example.com", note: "hi", captchaToken: "tok" }));
 
   calls.length = 0;
+  stub(() => new Response("{}", { status: 200 }));
+  await submitAccessRequest({ email: "p@example.com", source: { utmSource: "nl", landingPath: "/about" } });
+  check("acquisition source rides in the body when present",
+    calls[0]?.body === JSON.stringify({ email: "p@example.com", source: { utmSource: "nl", landingPath: "/about" } }), calls[0]?.body);
+  calls.length = 0;
+  await submitAccessRequest({ email: "p@example.com", source: {} });
+  check("an empty source is omitted, not sent", calls[0]?.body === JSON.stringify({ email: "p@example.com" }), calls[0]?.body);
+
+  calls.length = 0;
   const bad = await submitAccessRequest({ email: "nope" });
   check("invalid email ⇒ error without a request", bad.status === "error" && calls.length === 0);
 }

@@ -18,7 +18,11 @@ import 'server-only';
 import OpenAI from 'openai';
 import { recordApiUsage } from '@/lib/usage/record';
 import { aiUsageUnits, type OpenAiUsage } from '@/lib/usage/ai-tokens';
-import { recordAiInvocation, type AiInvocationWriteClient } from '@/lib/ai/invocation';
+import {
+  recordAiInvocation, recordAiInvocationFailure, classifyAiFailure, type AiInvocationWriteClient,
+} from '@/lib/ai/invocation';
+import { getAiInvocationContext } from '@/lib/ai/invocation-context';
+import { captureAiProviderFailure } from '@/lib/monitoring/capture';
 
 // ── Client ───────────────────────────────────────────────────────────────────
 // Lazy-initialised singleton. Fails loudly if the key is absent so
@@ -96,6 +100,8 @@ function recordOpenAiUsage(args: {
   latencyMs: number;
   toolCallCount?: number;
   finishReason?: string | null;
+  /** The SDK's `_request_id` on the completion, when present. */
+  providerRequestId?: string | null;
   sinks?: UsageSinks;
 }): void {
   const { model, usage } = args;
@@ -120,7 +126,47 @@ function recordOpenAiUsage(args: {
     latencyMs: args.latencyMs,
     toolCallCount: args.toolCallCount ?? 0,
     finishReason: args.finishReason ?? null,
+    providerRequestId: args.providerRequestId ?? null,
   }, args.sinks?.invocationClient);
+}
+
+/**
+ * OPERATIONALIZATION P0 — THE FAILURE PATH IS A FACT TOO.
+ *
+ * Record one provider call that THREW: a zero-token AiInvocation row with an
+ * outcome (QUOTA / RATE_LIMITED / TIMEOUT / FAILED) and an error CODE, under the
+ * same ambient attribution a success carries, plus a Sentry capture so the
+ * owner hears about it before a user does. Called from the catch path of every
+ * `create` in this module and NOWHERE else, then the error is rethrown
+ * UNCHANGED — callers' behaviour (the retry predicate, the Brief's typed
+ * reasons, the chat route's sentence) is byte-identical to before.
+ *
+ * Fire-and-forget and non-throwing, like the success writer: a telemetry
+ * failure must never replace the error it describes.
+ */
+function recordOpenAiFailure(args: { model: string; err: unknown; latencyMs: number; sinks?: UsageSinks }): void {
+  try {
+    const { outcome, errorCode } = classifyAiFailure(args.err);
+    const rid = (args.err as { requestID?: unknown; request_id?: unknown } | null)?.requestID
+      ?? (args.err as { request_id?: unknown } | null)?.request_id;
+    void recordAiInvocationFailure({
+      provider: 'OPENAI', model: args.model, outcome, errorCode,
+      latencyMs: args.latencyMs,
+      providerRequestId: typeof rid === 'string' ? rid : null,
+    }, args.sinks?.invocationClient);
+    captureAiProviderFailure(
+      { outcome, errorCode, surface: getAiInvocationContext()?.surface ?? null, model: args.model },
+      args.err,
+    );
+  } catch {
+    // Telemetry about a failure must never become a second failure.
+  }
+}
+
+/** The SDK attaches `_request_id` to every parsed completion (openai ≥ 4). */
+function requestIdOf(completion: unknown): string | null {
+  const rid = (completion as { _request_id?: unknown } | null)?._request_id;
+  return typeof rid === 'string' && rid !== '' ? rid : null;
 }
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -149,15 +195,21 @@ export async function generateChatReply(
   const client = getClient();
 
   const started = Date.now();
-  const completion = await client.chat.completions.create({
-    model: CHAT_MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      ...messages,
-    ],
-    temperature: 0.3,
-    max_tokens:  1024,
-  });
+  let completion: OpenAI.Chat.Completions.ChatCompletion & { _request_id?: string | null };
+  try {
+    completion = await client.chat.completions.create({
+      model: CHAT_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages,
+      ],
+      temperature: 0.3,
+      max_tokens:  1024,
+    }) as typeof completion;
+  } catch (err) {
+    recordOpenAiFailure({ model: CHAT_MODEL, err, latencyMs: Date.now() - started });
+    throw err;
+  }
   const latencyMs = Date.now() - started;
 
   // Wave 2 S7 + cost Slice 3 — the day aggregate and the invocation fact.
@@ -166,6 +218,7 @@ export async function generateChatReply(
     // This path cannot request tools, so zero is a FACT rather than a missing value.
     toolCallCount: 0,
     finishReason: completion.choices[0]?.finish_reason ?? null,
+    providerRequestId: requestIdOf(completion),
   });
 
   const reply = completion.choices[0]?.message?.content ?? '';
@@ -267,11 +320,17 @@ export async function generateWithTools(args: {
   } as unknown as Parameters<typeof client.chat.completions.create>[0];
 
   const started = Date.now();
-  const completion = await client.chat.completions.create(body) as {
+  let completion: {
     choices: { message: { content: string | null; tool_calls?: { id: string;
       function: { name: string; arguments: string } }[] }; finish_reason?: string }[];
     usage?: OpenAiUsage;
   };
+  try {
+    completion = await client.chat.completions.create(body) as typeof completion;
+  } catch (err) {
+    recordOpenAiFailure({ model, err, latencyMs: Date.now() - started });
+    throw err;
+  }
   const latencyMs = Date.now() - started;
 
   const usage = completion.usage;
@@ -282,6 +341,7 @@ export async function generateWithTools(args: {
     // reason a single turn can produce several invocations.
     toolCallCount: choice?.message?.tool_calls?.length ?? 0,
     finishReason: choice?.finish_reason ?? null,
+    providerRequestId: requestIdOf(completion),
   });
 
   return {
@@ -310,7 +370,7 @@ export async function generateWithTools(args: {
  */
 export const STRUCTURED_TIMEOUT_MS = 60_000;
 
-/** The structured call was abandoned at its deadline. Nothing was recorded. */
+/** The structured call was abandoned at its deadline. Nothing BILLED was recorded; a zero-token TIMEOUT fact was. */
 export class StructuredOutputTimeoutError extends Error {
   constructor(readonly timeoutMs: number) {
     super(`[ai/provider] Structured response did not arrive within ${timeoutMs} ms.`);
@@ -408,8 +468,10 @@ export async function generateStructuredWithUsage<T>(
   try {
     completion = await client.chat.completions.create(body, { signal: controller.signal }) as typeof completion;
   } catch (err) {
-    if (controller.signal.aborted) throw new StructuredOutputTimeoutError(timeoutMs);
-    throw err;
+    // The deadline is OURS, so the fact says TIMEOUT rather than the SDK's abort.
+    const thrown = controller.signal.aborted ? new StructuredOutputTimeoutError(timeoutMs) : err;
+    recordOpenAiFailure({ model, err: thrown, latencyMs: Date.now() - started, sinks: deps?.sinks });
+    throw thrown;
   } finally {
     clearTimeout(timer);
   }
@@ -421,6 +483,7 @@ export async function generateStructuredWithUsage<T>(
     model, usage: completion.usage, latencyMs,
     toolCallCount: 0,   // structured output, not tools
     finishReason,
+    providerRequestId: requestIdOf(completion),
     sinks: deps?.sinks,
   });
 

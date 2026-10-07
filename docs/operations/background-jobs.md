@@ -21,9 +21,9 @@ One Vercel cron (`vercel.json`: `GET /api/jobs/dispatch`, CRON_SECRET bearer aut
 | 07:30 | `rate-limit-sweep` | `jobs/sweep-rate-limits.ts` | Deletes RateLimit window rows older than 24h |
 | 06:30 | `fetch-security-prices` | `jobs/fetch-security-prices.ts` | Daily historical security prices. **Vendor-gated** — a successful no-op until a price adapter is registered |
 | 00/06/12/18 | `sync-crypto` | `jobs/sync-crypto.ts` | BTC wallet balance sweep every 6h (`expectedEveryHours: 6`); regenerates wealth history for the wallets it synced |
-| 07:30 | `evaluate-alerts` | `jobs/evaluate-alerts.ts` | Alert pass over job-health / connection-health / resource-freshness. Sequenced last; its JobRun summary IS the alert history + suppression store |
+| 00/06/07/12/18 :30 | `evaluate-alerts` | `jobs/evaluate-alerts.ts` | Alert pass over job-health / connection-health / resource-freshness / **AI failures** (`lib/platform/ai/failures.ts`). Every :30 slot since 2026-10-07 (was 07:30 only — a 24h detection latency); sequenced last in each slot; 20h re-notify window ⇒ an ongoing breach mails about once a day. Its JobRun summary IS the alert history + suppression store. Delivery requires `PLATFORM_ALERTS_EMAIL` (production-required since 2026-10-07; unset ⇒ every breach records `skipped`) |
 
-**A normal day = 13 JobRun rows** from the 10 registered jobs (`sync-crypto` fires four times), plus `resume-stale-imports` on its own `*/5` cron. The dispatcher logs a no-op line for any tick with nothing due — **and writes nothing**, which is why a dispatcher tick is not an observable fact anywhere in the product (see §9).
+**A normal day = 17 JobRun rows** from the 10 registered jobs (`sync-crypto` fires four times, `evaluate-alerts` five), plus `resume-stale-imports` on its own `*/5` cron. The dispatcher logs a no-op line for any tick with nothing due — **and writes nothing**, which is why a dispatcher tick is not an observable fact anywhere in the product (see §9).
 
 ## 3. Production verification (after any deploy touching jobs)
 

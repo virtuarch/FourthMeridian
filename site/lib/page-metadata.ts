@@ -8,6 +8,6 @@ export function pageMetadata(route: SiteRoute, title: string, description: strin
     description,
     alternates: { canonical: route },
     openGraph: { title, description, url: route, siteName: "Fourth Meridian", type: "website" },
-    twitter: { card: "summary", title, description },
+    twitter: { card: "summary_large_image", title, description },
   };
 }

@@ -1,10 +1,11 @@
 /**
- * lib/ai/invocation-context.ts  (Platform Ops cost accounting — Slice 3)
+ * lib/ai/invocation-context.ts  (Platform Ops cost accounting — Slice 3;
+ * attribution added by OPERATIONALIZATION P0, 2026-10-07)
  *
- * OPAQUE CORRELATION FOR AI INVOCATIONS, propagated via AsyncLocalStorage so the
- * ONE provider chokepoint (lib/ai/provider.ts) can group a turn's invocations
- * without threading context through every generator signature, every tool loop
- * and every caller.
+ * CORRELATION AND ATTRIBUTION FOR AI INVOCATIONS, propagated via
+ * AsyncLocalStorage so the ONE provider chokepoint (lib/ai/provider.ts) can
+ * group and attribute a turn's invocations without threading context through
+ * every generator signature, every tool loop and every caller.
  *
  * ⚠️ DELIBERATELY THE SAME MECHANISM AS PLAID'S. `lib/plaid/provider-call-context.ts`
  * already solves exactly this problem for RefreshExecution attribution, for the
@@ -20,11 +21,16 @@
  * losing the row because nobody set a context would make the ledger a floor
  * rather than a total.
  *
- * ⚠️ THE IDENTIFIERS ARE OPAQUE GROUPING KEYS AND NOTHING ELSE. `correlationId`
- * is not a foreign key, not a `Conversation` row, not resolvable to a person, and
- * carries no meaning outside this ledger. It exists so invocations can be summed
- * into turns and sessions; it must never become a business entity, and no other
- * subsystem may key off it.
+ * ⚠️ THE 2026-10-07 OWNER RULING. Slice 3 held that an invocation must never be
+ * resolvable to a person, so the context carried opaque grouping keys only. The
+ * owner has ruled that per-user and per-Space AI cost attribution MAY exist, as
+ * BOUNDED OPERATOR-ONLY TELEMETRY: `userId`, `spaceId` and a real
+ * `conversationId` now ride here and land on AiInvocation. What did NOT change
+ * is the authority: AiInvocation stays revoked from fm_app and is written and
+ * read by fm_system alone, so no tenant path — and no Conversations tool — can
+ * reach another user's telemetry through it. The identifiers are still soft
+ * references (no FK, no join from a tenant surface), never financial truth,
+ * never Memory, never conversational context the model sees.
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -32,7 +38,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 export interface AiInvocationContext {
   /**
    * Groups every invocation of one conversation/session. Opaque — any stable
-   * string the caller already has. Never a user id, never an account id.
+   * string the caller already has. For chat this IS the conversationId.
    */
   correlationId: string;
   /**
@@ -46,6 +52,22 @@ export interface AiInvocationContext {
   turnIndex?: number;
   /** Where the call came from — "chat", "brief", "harness". Separates traffic. */
   surface?: string;
+  /**
+   * Which call within the surface — "chat:answer", "chat:guidance",
+   * "brief:generate". The guidance labeller is a second invocation on the same
+   * (correlationId, turnIndex); without this it is indistinguishable from the
+   * answer it labels.
+   */
+  subSurface?: string;
+  /** The authenticated user the call is made for. Absent for harness/job traffic. */
+  userId?: string;
+  /** The Space whose context the call reads. Absent when there is none. */
+  spaceId?: string;
+  /**
+   * A REAL conversation identity (random, minted on the first turn, carried in
+   * the sealed runtime-state cookie). Never derived from content.
+   */
+  conversationId?: string;
 }
 
 const storage = new AsyncLocalStorage<AiInvocationContext>();
@@ -58,4 +80,14 @@ export function runWithAiInvocationContext<T>(ctx: AiInvocationContext, fn: () =
 /** The active context, or undefined when the caller established none. */
 export function getAiInvocationContext(): AiInvocationContext | undefined {
   return storage.getStore();
+}
+
+/**
+ * The attribution a surface hands the turn loop. One small object, so the
+ * route → engine → turn → labeller chain threads one argument, not four.
+ */
+export interface AiAttribution {
+  userId?: string;
+  spaceId?: string;
+  conversationId?: string;
 }

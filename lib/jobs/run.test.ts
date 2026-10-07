@@ -260,6 +260,13 @@ async function main(): Promise<void> {
     );
     // The escalation must not have quietly become fatal: the swallow is the
     // contract. Neither catch may rethrow.
+    // OPERATIONALIZATION P0 — the job's OWN failure reaches the error monitor
+    // (not only the ledger), after the "failed" completion write and before the
+    // unchanged rethrow. Static identifiers only.
+    check(
+      "job-body failure is captured to the error monitor (captureJobFailure after the failed completion write)",
+      /status:\s*"failed"[\s\S]*?captureJobFailure\(\s*jobName\s*,\s*err\s*,\s*executionId\s*\)[\s\S]*?throw err/.test(src),
+    );
     check(
       "capture did not make ledger writes fatal — neither catch rethrows",
       !/catch\s*\(\s*err\s*\)\s*\{[^}]*captureLedgerWriteFailure[^}]*\bthrow\b/.test(src),

@@ -125,8 +125,11 @@ console.log("\n4b. the tenant boundary — entered per phase, never around the m
   check("…and neither falls back to one: incomplete deps without a runtime THROWS",
     /needs either a complete set of deps or a runtime/.test(LIFECYCLE)
       && /needs either a complete set of deps or a runtime/.test(LOAD));
+  // OPERATIONALIZATION P0 — the optional `scope` is cost-ledger ATTRIBUTION (owner
+  // user id + Space id, lib/ai/invocation-context.ts), not a database client; the
+  // claim this pins is still that no client and no transaction reach the model call.
   check("the model call takes no database client, so no transaction can span it",
-    /generate\(pkg: BriefPackage, now: Date, reason\?: GenerationReason\)/.test(LIFECYCLE)
+    /generate\(pkg: BriefPackage, now: Date, reason\?: GenerationReason(?:, scope\?: BriefScope)?\)/.test(LIFECYCLE)
       && !/withTenantDb/.test(LIFECYCLE));
   const phased = STORE.slice(STORE.indexOf("export function phaseBriefStore"));
   check("every artifact-store method is its own phase — the claim is not split",

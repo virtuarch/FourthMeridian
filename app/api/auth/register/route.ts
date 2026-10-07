@@ -46,7 +46,7 @@ const VERIFICATION_TTL_MS = 60 * 60 * 1000;
 
 // PO-5A — the Terms/Privacy policy version recorded on consent. Bump when the
 // legal documents materially change (so re-consent can be required later).
-const TERMS_VERSION = "2026-07-19";
+const TERMS_VERSION = "2026-10-07";
 
 export async function POST(req: NextRequest) {
   try {

@@ -36,6 +36,7 @@ import type {
   BetaInvitationRow,
 } from "@/app/api/platform/growth-revenue/requests/route";
 import type { BetaStatusResponse } from "@/app/api/platform/growth-revenue/beta-status/route";
+import { describeAcquisitionSource } from "@/lib/marketing/acquisition";
 
 type Mode = BetaStatusResponse["registrationMode"];
 type ProductStatus = BetaStatusResponse["productStatus"];
@@ -55,6 +56,20 @@ function until(iso: string): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `in ${h}h`;
   return `in ${Math.floor(h / 24)}d`;
+}
+
+/**
+ * The last invite EMAIL attempt, in words that never claim delivery: Fourth
+ * Meridian records the provider hand-off (OPS-1 EmailResult), not a receipt.
+ */
+function inviteEmailLabel(o: BetaInvitationRow["inviteEmail"]): string {
+  switch (o.status) {
+    case "sent":     return "handed to provider (not delivery-confirmed)";
+    case "captured": return "captured — not sent (no provider key)";
+    case "error":    return "failed";
+    case "skipped":  return "skipped (no recipient)";
+    default:         return "unknown";
+  }
 }
 
 const MODES: { value: Mode; label: string }[] = [
@@ -227,12 +242,12 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
           <div className="grid grid-cols-4 gap-2 border-t border-[var(--border-hairline)] pt-3">
             <WidgetStat value={reqs.counts.pending} label="Pending" />
             <WidgetStat value={reqs.counts.approved} label="Approved" />
-            <WidgetStat value={reqs.counts.redeemed} label="Activated" />
+            <WidgetStat value={reqs.counts.redeemed} label="Redeemed" />
             <WidgetStat value={reqs.counts.denied} label="Declined" />
           </div>
           {status && (
             <div className="grid grid-cols-4 gap-2">
-              <WidgetStat value={status.invitations.sent} label="Sent" />
+              <WidgetStat value={status.invitations.sent} label="Emailed" />
               <WidgetStat value={status.invitations.accepted} label="Accepted" />
               <WidgetStat value={status.invitations.expired} label="Expired" />
               <WidgetStat value={status.invitations.revoked} label="Revoked" />
@@ -301,7 +316,13 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                       <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-[var(--meridian-400)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
                       <span className="min-w-0">
                         <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{r.email}</span>
-                        <span className="block text-[10px] text-[var(--text-muted)]">{timeAgo(r.createdAt)} ago</span>
+                        <span className="block text-[10px] text-[var(--text-muted)]">
+                          {timeAgo(r.createdAt)} ago
+                          {r.requestCount > 1 && r.lastRequestedAt ? ` · requested ${r.requestCount}× · last ${timeAgo(r.lastRequestedAt)} ago` : ""}
+                        </span>
+                        {describeAcquisitionSource(r.acquisition) && (
+                          <span className="block truncate text-[10px] text-[var(--text-muted)]">{describeAcquisitionSource(r.acquisition)}</span>
+                        )}
                       </span>
                     </button>
                   </li>
@@ -327,6 +348,7 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                         <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{inv.email}</span>
                         <span className="block text-[10px] text-[var(--text-muted)]">
                           {inv.invitedAt ? `invited ${timeAgo(inv.invitedAt)} ago` : "invited"}
+                          {` · email ${inviteEmailLabel(inv.inviteEmail)}`}
                         </span>
                       </span>
                       <span
@@ -350,6 +372,12 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                 <PanelContent>
                   <div className="flex flex-col gap-3 text-xs">
                     <Row label="Requested" value={`${timeAgo(selectedRequest.createdAt)} ago`} />
+                    {selectedRequest.requestCount > 1 && (
+                      <Row label="Submissions" value={`${selectedRequest.requestCount}× · last ${selectedRequest.lastRequestedAt ? `${timeAgo(selectedRequest.lastRequestedAt)} ago` : "—"}`} />
+                    )}
+                    {describeAcquisitionSource(selectedRequest.acquisition) && (
+                      <Row label="Source" value={describeAcquisitionSource(selectedRequest.acquisition) as string} />
+                    )}
                     <Row label="Status" value="Pending" />
                     {selectedRequest.note && (
                       <div className="flex flex-col gap-1 border-t border-[var(--border-hairline)] pt-3">
@@ -391,6 +419,11 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                       ? (selectedInvitation.expired ? `expired ${timeAgo(selectedInvitation.inviteExpiresAt)} ago` : until(selectedInvitation.inviteExpiresAt))
                       : "—"} />
                     <Row label="Status" value={selectedInvitation.expired ? "Expired" : "Pending"} />
+                    <Row label="Invite email" value={inviteEmailLabel(selectedInvitation.inviteEmail)} />
+                    <p className="text-[11px] leading-snug text-[var(--text-muted)]">
+                      Email status is the provider hand-off recorded at send time — Fourth Meridian holds no delivery
+                      receipt, so &ldquo;handed to provider&rdquo; is not &ldquo;delivered&rdquo;.
+                    </p>
                     <p className="border-t border-[var(--border-hairline)] pt-3 text-[11px] leading-snug text-[var(--text-muted)]">
                       Resend rotates the single-use token and re-emails it (email-binding + expiry preserved). Revoke kills
                       the invitation only — it never removes users or existing access.

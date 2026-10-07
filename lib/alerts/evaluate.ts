@@ -24,6 +24,7 @@ import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity, type AlertSi
 import type { AuthorityOutputs, AlertJobHealth } from "@/lib/alerts/authorities";
 import type { ConnectionHealthResult, HealthState } from "@/lib/connections/health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
+import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -33,17 +34,25 @@ export function alertEnabledKey(ruleId: string): string {
 }
 
 /** Re-notify window: an already-delivered breach is suppressed until this much
- *  time has passed, then it re-alerts. 20h < the 24h daily eval cadence, so an
- *  ongoing breach re-alerts once per day but a same-day re-run never double-sends. */
+ *  time has passed, then it re-alerts. The evaluator runs at every dispatcher
+ *  slot (00:30/06:30/07:30/12:30/18:30 UTC — OPERATIONALIZATION P0; it was once
+ *  daily at 07:30), so a NEW breach is noticed within ~6h, while an ONGOING one
+ *  still re-alerts about once a day rather than five times. */
 export const DEFAULT_RENOTIFY_HOURS = 20;
 const HOUR_MS = 60 * 60 * 1000;
 
-/** Connection health states that make a provider ACUTELY (not just degraded) unhealthy. */
+/** Connection health states that make a provider ACUTELY (not just degraded)
+ *  unhealthy. REVOKED is deliberately NOT here: a revoked connection is a FORMER
+ *  connection, which the authority now excludes from its population
+ *  (`retired`, lib/connections/health.ts). Before that it fired a permanent
+ *  critical for every disconnected Item — Production carried three. */
 const CRITICAL_CONNECTION_STATES: ReadonlySet<HealthState> = new Set<HealthState>([
   "ERROR",
-  "REVOKED",
   "NEEDS_REAUTH",
 ]);
+
+/** Failed/timed-out calls beside returned ones at which the AI rule warns. */
+export const AI_FAILURE_WARNING_COUNT = 3;
 
 // ── Enabled resolution ──────────────────────────────────────────────────────────
 
@@ -143,6 +152,39 @@ export function evaluateResourceStale(rule: AlertRuleDefinition, fresh: Resource
     }));
 }
 
+/** AI failure facts → provider-failing signals. Two independent breaches, each
+ *  with its own dedupe key so a quota outage and an error burst re-alert on
+ *  their own clocks:
+ *    :quota   ANY insufficient_quota in the window — critical. Waiting cannot
+ *             cure it; a person has to pay the provider.
+ *    :errors  every call failed (returned 0, ≥1 failure) — critical; or at least
+ *             AI_FAILURE_WARNING_COUNT failed/timed-out beside returned calls —
+ *             warning. Rate limits are excluded here: they are retried by design
+ *             and each attempt is its own row, so counting them would page on
+ *             ordinary backpressure. */
+export function evaluateAiFailing(rule: AlertRuleDefinition, ai: AiFailureHealth): AlertSignal[] {
+  const out: AlertSignal[] = [];
+  if (ai.quota > 0) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "critical", dedupeKey: `${rule.id}:quota`,
+      summary: `AI provider refused ${ai.quota} call(s) for insufficient quota in the last ${ai.windowHours}h — the provider account is out of credits or over its billing quota.`,
+    });
+  }
+  const errors = ai.failed + ai.timeouts;
+  if (errors > 0 && ai.returned === 0) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "critical", dedupeKey: `${rule.id}:errors`,
+      summary: `Every AI call in the last ${ai.windowHours}h failed (${ai.failed} failed, ${ai.timeouts} timed out, 0 returned).`,
+    });
+  } else if (errors >= AI_FAILURE_WARNING_COUNT) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "warning", dedupeKey: `${rule.id}:errors`,
+      summary: `${errors} AI call(s) failed or timed out beside ${ai.returned} returned in the last ${ai.windowHours}h (${ai.failed} failed, ${ai.timeouts} timed out).`,
+    });
+  }
+  return out;
+}
+
 // ── THE canonical evaluation ────────────────────────────────────────────────────
 
 /**
@@ -170,6 +212,9 @@ export function evaluateAlertRules(
         break;
       case "resource-stale":
         if (authorities.resourceFreshness) signals.push(...evaluateResourceStale(rule, authorities.resourceFreshness));
+        break;
+      case "ai-failing":
+        if (authorities.aiFailures) signals.push(...evaluateAiFailing(rule, authorities.aiFailures));
         break;
       case "quota-low":
         // Dormant — no authority to read. `live: false` already excluded it above;

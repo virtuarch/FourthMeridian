@@ -41,7 +41,7 @@ import { collectKnowledgeGaps } from './knowledge-gaps';
 import { buildProvenance, injectProvenance, type AnswerProvenance } from './provenance';
 import { classifyGuidance, CLASSIFIER_TIMEOUT_MS, type GuidanceModelCall } from './guidance';
 import { generateStructuredWithUsage } from '@/lib/ai/provider';
-import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
+import { runWithAiInvocationContext, type AiAttribution } from '@/lib/ai/invocation-context';
 import { todayUTCISO } from '@/lib/time/clock';
 import type { SpaceContext } from '@/lib/space';
 import type { SpaceContext_AI } from '@/lib/ai/types';
@@ -293,6 +293,8 @@ export async function runStatelessTurn(args: {
   model?:    string;
   correlationId?: string;
   surface?:  string;
+  /** OPERATIONALIZATION P0 — operator-only cost-ledger attribution (user, Space, conversation). Telemetry only. */
+  attribution?: AiAttribution;
   /** RLS slice A — the authority this turn's memory reads and writes run under. */
   memoryClient: MemoryClient;
   /** RLS-C-S3 — the authority this turn's FINANCIAL reads run under. */
@@ -338,7 +340,7 @@ export async function runStatelessTurn(args: {
   const record = await executeTurn({
     messages: open.messages, user: args.user, index: args.history.length,
     model, toolSchemas: open.toolSchemas, toolCtx: open.toolCtx,
-    scenario: slot, correlationId: args.correlationId, surface: args.surface,
+    scenario: slot, correlationId: args.correlationId, surface: args.surface, attribution: args.attribution,
     // The user's own prior turns, for the memory gate — never the transcript's
     // `role: 'user'` messages, which include the orientation.
     userTexts: args.history.filter((m) => m.role === 'user').map((m) => m.content),
@@ -350,7 +352,8 @@ export async function runStatelessTurn(args: {
   const guidance = record.assistant?.trim() && args.classify !== false
     ? await runWithAiInvocationContext(
       { correlationId: args.correlationId ?? 'conversation', turnIndex: args.history.length,
-        surface: args.surface ?? 'harness' },
+        surface: args.surface ?? 'harness', subSurface: `${args.surface ?? 'harness'}:guidance`,
+        ...(args.attribution ?? {}) },
       () => classifyGuidance(
         { prior: args.history, asked: args.user, answer: record.assistant as string },
         args.classify || defaultGuidanceCall(model)))

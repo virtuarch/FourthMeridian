@@ -26,9 +26,12 @@ test("no route handlers, no /api tree, no middleware or proxy", () => {
   }
 });
 
-test("the only metadata routes are robots and sitemap, both force-static", () => {
+test("the only metadata routes are robots, sitemap and the Open Graph image, all force-static", () => {
+  // opengraph-image.tsx is a build-time PNG (next/og ImageResponse) emitted into
+  // the static export; like the other two it declares dynamic = "force-static",
+  // so there is still no server runtime behind any route.
   const metaRoutes = readdirSync(APP_DIR).filter((f) => /\.(ts|tsx)$/.test(f) && !/^(layout|page|not-found)\.tsx$/.test(f));
-  assert.deepEqual(metaRoutes.sort(), ["robots.ts", "sitemap.ts"]);
+  assert.deepEqual(metaRoutes.sort(), ["opengraph-image.tsx", "robots.ts", "sitemap.ts"]);
   for (const f of metaRoutes) {
     let forceStatic = false;
     visit(parse(path.join(APP_DIR, f)), (n) => {

@@ -9,12 +9,13 @@
  *
  * WHAT THE AUTHORITY CAN AND CANNOT SAY — stated on the result, not implied:
  *   · surface / model / provider / environment / day / request+turn: recorded;
- *   · user / Space: NOT recorded, by explicit doctrine (lib/ai/invocation.ts) —
- *     an invocation is never resolvable to a person, so per-user cost is not a
- *     missing feature, it is a boundary. The result names it.
- *   · failures: NOT recorded — the ledger holds billed, returned calls only
- *     (a timeout writes no row). "Invocation count" is therefore a count of
- *     successful provider round-trips, and the result says so.
+ *   · user / Space / conversation: RECORDED since 2026-10-07 (owner ruling,
+ *     lib/ai/invocation.ts) but NOT exposed by this fleet-level fold — a
+ *     per-user reader is P1 and belongs to an identity-fenced area;
+ *   · failures: RECORDED since 2026-10-07 as zero-token rows (outcome !=
+ *     RETURNED). The groups folded HERE are RETURNED rows only — the reader
+ *     filters them — so "invocation count" is still a count of billed provider
+ *     round-trips, and failures are reported separately (invocations.ts).
  */
 
 import { priceAiUsage, type AiRate, AI_RATES, type UsageRowLike } from "@/lib/usage/pricing";

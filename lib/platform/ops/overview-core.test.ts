@@ -35,7 +35,7 @@ function pipeline(over: Partial<PipelineStatus>): PipelineStatus {
   };
 }
 function sources(counts: Partial<ConnectionHealthResult["counts"]>, total: number): ConnectionHealthResult {
-  return { total, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0, ...counts }, unhealthy: [] };
+  return { total, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0, ...counts }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 } };
 }
 const policies = defaultRefreshPolicies();
 
@@ -76,9 +76,23 @@ console.log("jobs");
 
 console.log("ai / brief / plaid");
 {
-  const ai = deriveAi({ invocations: 15, usd: 0.48, unpricedTokens: 0, cacheShare: 0.52, windowLabel: "last 24 h" });
-  check("AI health is UNKNOWN by construction, activity still reported", ai.state === "UNKNOWN" && /15 invocations/.test(ai.headline) && /\$0\.48/.test(ai.headline), ai.headline);
-  check("AI with nothing recorded says so", /No AI invocations/.test(deriveAi({ invocations: 0, usd: null, unpricedTokens: 0, cacheShare: null, windowLabel: "w" }).headline));
+  // OPERATIONALIZATION P0 — failures are facts, so AI is a REAL health domain now.
+  const noF = { failed: 0, timeouts: 0, rateLimited: 0, quota: 0 };
+  const ai = deriveAi({ invocations: 15, usd: 0.48, unpricedTokens: 0, cacheShare: 0.52, windowLabel: "last 24 h", failures: noF });
+  check("AI returned-only → HEALTHY, activity + cost in the headline", ai.state === "HEALTHY" && /15 invocations/.test(ai.headline) && /\$0\.48/.test(ai.headline) && !/unknown/i.test(ai.headline), ai.headline);
+  const none = deriveAi({ invocations: 0, usd: null, unpricedTokens: 0, cacheShare: null, windowLabel: "w", failures: noF });
+  check("AI with nothing recorded → UNKNOWN and says so", none.state === "UNKNOWN" && /No AI invocations/.test(none.headline));
+  check("some hard failures beside returns → DEGRADED",
+    deriveAi({ invocations: 10, usd: 0.1, unpricedTokens: 0, cacheShare: null, windowLabel: "w", failures: { ...noF, failed: 2 } }).state === "DEGRADED");
+  check("failures and nothing returned → FAILED",
+    deriveAi({ invocations: 0, usd: null, unpricedTokens: 0, cacheShare: null, windowLabel: "w", failures: { ...noF, timeouts: 1 } }).state === "FAILED");
+  const quota = deriveAi({ invocations: 30, usd: 1, unpricedTokens: 0, cacheShare: null, windowLabel: "w", failures: { ...noF, quota: 1 } });
+  check("ANY quota refusal → FAILED even beside returns, and the headline names the cause", quota.state === "FAILED" && /QUOTA/.test(quota.headline) && /out of credit/.test(quota.headline), quota.headline);
+  check("retried rate limits beside returns → still HEALTHY (noise, not breakage)",
+    deriveAi({ invocations: 5, usd: 0.1, unpricedTokens: 0, cacheShare: null, windowLabel: "w", failures: { ...noF, rateLimited: 3 } }).state === "HEALTHY");
+  check("rate limits and nothing returned → DEGRADED",
+    deriveAi({ invocations: 0, usd: null, unpricedTokens: 0, cacheShare: null, windowLabel: "w", failures: { ...noF, rateLimited: 3 } }).state === "DEGRADED");
+  check("facts carry Failed / Quota refusals / Rate-limited", ["Failed", "Quota refusals", "Rate-limited"].every((l) => quota.facts.some((f) => f.label === l)));
   check("brief quiet window → UNKNOWN, not failure", deriveBrief({ windowLabel: "w", generated: 0, failed: 0, inProgress: 0, versionStale: 0, usd: null, uncorrelatedGenerations: 0 }).state === "UNKNOWN");
   check("brief generated → HEALTHY", deriveBrief({ windowLabel: "w", generated: 2, failed: 0, inProgress: 0, versionStale: 1, usd: 0.01, uncorrelatedGenerations: 0 }).state === "HEALTHY");
   check("brief failed only → FAILED", deriveBrief({ windowLabel: "w", generated: 0, failed: 1, inProgress: 0, versionStale: 0, usd: null, uncorrelatedGenerations: 0 }).state === "FAILED");
@@ -96,7 +110,7 @@ console.log("buildOverview");
     pipeline: pipeline({ executions: 2, byStatus: { SUCCEEDED: 2 } }), pipelineWindowLabel: "w",
     sources: sources({ HEALTHY: 2, STALE: 1 }, 3),
     jobs: { healthy: 1, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 10 },
-    ai: { invocations: 0, usd: null, unpricedTokens: 0, cacheShare: null, windowLabel: "w" },
+    ai: { invocations: 0, usd: null, unpricedTokens: 0, cacheShare: null, windowLabel: "w", failures: { failed: 0, timeouts: 0, rateLimited: 0, quota: 0 } },
     brief: { windowLabel: "w", generated: 0, failed: 0, inProgress: 0, versionStale: 0, usd: null, uncorrelatedGenerations: 0 },
     plaid: { billableItems: 1, byStatus: { ACTIVE: 1 }, currentCycle: { transactions: 1, investments: 0, usd: 0.3, agree: true, label: "current" }, priceConfigured: true },
     policies,

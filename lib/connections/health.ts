@@ -39,7 +39,21 @@
  * Nullable: degrades gracefully if no transition row exists.
  *
  * NO PII: rows carry institution/provider/status/errorCode/timestamps only — no
- * userId, no email — matching PO1's aggregate-only posture.
+ * userId, no email — matching PO1's aggregate-only posture. The owner's
+ * `deactivatedAt` is READ (to exclude the item) and never emitted.
+ *
+ * THE POPULATION IS THE LIVE FLEET (OPERATIONALIZATION P0, 2026-10-07). A
+ * REVOKED connection is not an unhealthy connection: it is a FORMER one — the
+ * customer removed it (or itemRemove ran), its token is dead, and the CH-2
+ * chokepoint refuses ever to flip it back to ACTIVE. Counting it made the
+ * provider-unhealthy alert fire CRITICAL every cycle for as long as the row
+ * existed (Production carries 3 such Items), which is exactly the
+ * "everything is critical" noise that teaches an operator to ignore mail.
+ * Likewise an Item whose owner is deactivated / pending deletion is not
+ * synced by anything (jobs/sync-banks.ts filters `user.deactivatedAt: null`),
+ * so judging it STALE reports a fault nothing will fix. Both are EXCLUDED
+ * from `total`/`counts`/`unhealthy` and reported under `retired`, so nothing
+ * disappears silently — the widget can still say "3 revoked (retired)".
  */
 
 import { db } from "@/lib/db";
@@ -65,6 +79,13 @@ export interface ConnectionHealthResult {
   total:     number;
   counts:    Record<HealthState, number>;
   unhealthy: ConnectionHealthRow[]; // worst-first, capped
+  /**
+   * Connections EXCLUDED from the population above, by reason — former
+   * connections, not unhealthy ones. `revoked` = status REVOKED (either table);
+   * `ownerInactive` = a non-revoked connection whose owner is deactivated or
+   * pending deletion (nothing syncs it, so nothing can heal it).
+   */
+  retired:   { revoked: number; ownerInactive: number };
 }
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -140,7 +161,8 @@ async function loadBrokenSince(): Promise<Map<string, string>> {
 }
 
 /**
- * Normalized connection-health snapshot across all providers. `cap` bounds the
+ * Normalized connection-health snapshot across the LIVE fleet (REVOKED and
+ * owner-inactive connections are `retired`, not members). `cap` bounds the
  * returned non-healthy list (default 20); `counts` and `total` are unbounded.
  */
 export async function getConnectionHealth(
@@ -150,12 +172,16 @@ export async function getConnectionHealth(
   const now = Date.now();
 
   const [plaidItems, connections, brokenSince, resolved] = await Promise.all([
+    // The owner's lifecycle flag is selected ONLY to decide membership of the
+    // population; it never reaches a row. No email, no name.
     db.plaidItem.findMany({
-      select: { id: true, institutionName: true, status: true, errorCode: true, lastSyncedAt: true },
+      select: { id: true, institutionName: true, status: true, errorCode: true, lastSyncedAt: true,
+                user: { select: { deactivatedAt: true } } },
     }),
     db.connection.findMany({
       where:  { provider: { notIn: [ProviderType.PLAID, ProviderType.MANUAL, ProviderType.CSV] } },
-      select: { id: true, provider: true, externalConnectionId: true, status: true, errorCode: true, lastSyncedAt: true },
+      select: { id: true, provider: true, externalConnectionId: true, status: true, errorCode: true, lastSyncedAt: true,
+                user: { select: { deactivatedAt: true } } },
     }),
     loadBrokenSince(),
     policies ? Promise.resolve(policies) : loadRefreshPolicies(db),
@@ -164,8 +190,16 @@ export async function getConnectionHealth(
   const walletStaleMs = staleWindowMs(resolved.WALLET);
 
   const rows: ConnectionHealthRow[] = [];
+  const retired = { revoked: 0, ownerInactive: 0 };
+  /** True when the connection is a former one and must leave the population. */
+  const isRetired = (c: { status: string; user: { deactivatedAt: Date | null } | null }): boolean => {
+    if (c.status === "REVOKED") { retired.revoked++; return true; }
+    if (c.user?.deactivatedAt != null) { retired.ownerInactive++; return true; }
+    return false;
+  };
 
   for (const it of plaidItems) {
+    if (isRetired(it)) continue;
     const healthState = deriveConnectionHealthState(it.status, it.errorCode, it.lastSyncedAt, plaidStaleMs, now);
     rows.push({
       source:       "PLAID",
@@ -180,6 +214,7 @@ export async function getConnectionHealth(
   }
 
   for (const c of connections) {
+    if (isRetired(c)) continue;
     const healthState = deriveConnectionHealthState(c.status, c.errorCode, c.lastSyncedAt, walletStaleMs, now);
     rows.push({
       source:       c.provider,
@@ -210,5 +245,5 @@ export async function getConnectionHealth(
     })
     .slice(0, cap);
 
-  return { total: rows.length, counts, unhealthy };
+  return { total: rows.length, counts, unhealthy, retired };
 }

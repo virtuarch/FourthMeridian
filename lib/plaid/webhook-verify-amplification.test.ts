@@ -126,12 +126,24 @@ async function main(): Promise<void> {
     check("tampered signature → rejected", !r.ok && /signature/.test(r.reason ?? ""), r.reason);
     check("signed by another key under a cached kid → rejected", !forged.ok, forged.reason);
     check("no provider call (the key was cached by A)", p.calls.length === 0, `${p.calls.length}`);
-    const route = readFileSync(join(process.cwd(), "app/api/plaid/webhook/route.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    const at = (s: string) => route.indexOf(s);
-    check("the route verifies BEFORE parsing the body or reaching any Item / sync / database work",
-      at("verifyPlaidWebhook(") > -1 && at("verifyPlaidWebhook(") < at("JSON.parse(")
-      && at("verifyPlaidWebhook(") < at("syncPlaidItemFromWebhook(")
-      && /if \(!verified\.ok\)[\s\S]{0,200}status: 401/.test(route));
+    // OPERATIONALIZATION P0 — the receiver's decision logic moved into
+    // lib/plaid/webhook-receiver.ts (handlePlaidWebhook) so it can be tested with
+    // injected deps; the route is a thin adapter that hands it the REAL verifier.
+    // The ordering claim is therefore pinned on the receiver, and the route is
+    // pinned to delegate with verifyPlaidWebhook and nothing else in front of it.
+    const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const route = strip(readFileSync(join(process.cwd(), "app/api/plaid/webhook/route.ts"), "utf8"));
+    const receiver = strip(readFileSync(join(process.cwd(), "lib/plaid/webhook-receiver.ts"), "utf8"));
+    const handler = receiver.slice(receiver.indexOf("export async function handlePlaidWebhook"));
+    const at = (s: string) => handler.indexOf(s);
+    check("the receiver verifies BEFORE parsing the body or reaching any Item / sync / database work",
+      at("deps.verify(") > -1 && at("deps.verify(") < at("JSON.parse(")
+      && at("deps.verify(") < at("deps.lookupItem(") && at("deps.verify(") < at("deps.scheduleSync(")
+      && at("deps.verify(") < at("deps.recordEvent(")
+      && /if \(!verified\.ok\)[\s\S]{0,200}status: 401/.test(handler));
+    check("the route delegates to the receiver with the real verifier, reading nothing but the raw body first",
+      /verify:\s*verifyPlaidWebhook/.test(route) && route.indexOf("req.text()") < route.indexOf("handlePlaidWebhook(")
+      && !/JSON\.parse\(/.test(route));
   }
 
   // ════════════════════ PART 2 — isolated state: bounds, rotation, time ═══════

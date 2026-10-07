@@ -141,7 +141,11 @@ async function main() {
     check('a call that never returns is abandoned at the deadline', err instanceof StructuredOutputTimeoutError);
     check('…promptly', Date.now() - t0 < 2000, `${Date.now() - t0} ms`);
     check('…the signal reached the client', calls[0].opts?.signal instanceof AbortSignal);
-    check('…and nothing was recorded, because nothing returned', s.rows.length === 0);
+    // OPERATIONALIZATION P0 — a timeout is a FACT now: one zero-token row with
+    // outcome TIMEOUT. Nothing BILLED was recorded, which is what this used to say.
+    check('…and the only row is a zero-token TIMEOUT fact, not a billed invocation',
+      s.rows.length === 1 && s.rows[0].outcome === 'TIMEOUT' && s.rows[0].promptTokens === 0 && s.rows[0].completionTokens === 0,
+      JSON.stringify(s.rows));
 
     const { client: fast, calls: fastCalls } = fakeClient(ok('{}'));
     await generateStructuredWithUsage('s', [], SCHEMA, { model: 'gpt-5.1', timeoutMs: 40 }, { client: fast, sinks: fakeSinks().sinks });

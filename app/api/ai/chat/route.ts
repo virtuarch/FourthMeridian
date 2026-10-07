@@ -29,10 +29,19 @@
  * crosses the gap in a sealed cookie the browser cannot read or alter
  * (lib/ai/conversation/runtime-state.ts); everything else is rebuilt from the
  * ledger on every turn. A conversation that ends is gone.
+ *
+ * ── Telemetry identity (OPERATIONALIZATION P0, 2026-10-07) ──────────────────
+ * The same sealed carrier holds a random `conversationId`, minted on the first
+ * turn, so the AI cost ledger (AiInvocation) can group a conversation's
+ * invocations under a key two conversations never share. It replaced a digest
+ * of (userId + opening message), which gave every chat that opened with the
+ * same words the same key. Together with the signed-in user id and the Space
+ * id it is operator-only attribution (owner ruling 2026-10-07): written by
+ * fm_system, never read by the model, never a Conversations tool input.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createHash }                from 'crypto';
+import { randomUUID }                from 'crypto';
 import { requireUser }               from '@/lib/session';
 import { limitByUser }               from '@/lib/rate-limit';
 import { resolveSpaceContext }       from '@/lib/space';
@@ -152,6 +161,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const binding = { userId: user.id, spaceId: spaceCtx.spaceId,
       tail: conversationTail(history) };
     const carried = openRuntimeState(req.cookies.get(STATE_COOKIE)?.value, binding);
+    // A seal that did not open — a new chat, another Space, an older version —
+    // means a new conversation, and a new conversation gets a new identity.
+    const conversationId = carried?.conversationId ?? randomUUID();
 
     const turn = await runStatelessTurn({
       spaceCtx,
@@ -195,8 +207,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       memoryClient: db,
       readClient: db,
       phase,
-      correlationId: conversationKey(user.id, history[0]?.content ?? asked),
+      correlationId: conversationId,
       surface: 'chat',
+      // Operator-only attribution for the AI cost ledger — see the header.
+      attribution: { userId: user.id, spaceId: spaceCtx.spaceId, conversationId },
       // FM-AUDIT-019 — the product route is where durable memory is a feature: the
       // signed-in user's own memory, in their own Space. Every other caller of the
       // turn loop (the dogfood / evaluation harnesses) is read-only unless opted in.
@@ -226,7 +240,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // SAME text, because the client echoes this reply back as history.
     const answer = applyPossessiveConvention(turn.answer);
     const seal = sealRuntimeStateWithReport(
-      { scenario: turn.scenario, pending: turn.pending, continuity: turn.continuity, provenance: turn.provenance }, {
+      { scenario: turn.scenario, pending: turn.pending, continuity: turn.continuity, provenance: turn.provenance,
+        conversationId }, {
       ...binding, tail: conversationTail([...history, { role: 'assistant', content: answer }]),
     });
     const sealed = seal.sealed;
@@ -256,16 +271,4 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     console.error('[ai/chat] turn failed:', err);
     return refuse(SAY.failed, 503);
   }
-}
-
-/**
- * An opaque, stable grouping key for one conversation's invocations.
- *
- * ⚠️ TELEMETRY ONLY, AND DERIVED — NOT STORED, NOT A CONVERSATION ROW, AND NOT
- * RESOLVABLE TO A PERSON. A conversation is identified by the question that
- * started it, so every turn of it groups together and a new conversation gets a
- * new key; the digest is what goes in the ledger, never the question.
- */
-function conversationKey(userId: string, opening: string): string {
-  return `chat:${createHash('sha256').update(`${userId}:${opening}`).digest('hex').slice(0, 16)}`;
 }

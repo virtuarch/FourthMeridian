@@ -12,9 +12,16 @@
  *   · dollars from the ONE rate card via the pure fold (invocations-core.ts).
  *
  * Filters are the ledger's own recorded dimensions: window, surface, model,
- * environment. There is deliberately no user or Space filter — the ledger does
- * not record them (lib/ai/invocation.ts), and the result says so rather than
- * accepting a parameter it cannot honour.
+ * environment. There is no user or Space filter YET: the ledger records both
+ * since 2026-10-07 (owner ruling, lib/ai/invocation.ts), but a per-user reader
+ * is a P1 surface with its own identity-fence ruling (CUSTOMER_SUCCESS), so
+ * this fleet-level PLATFORM_OPS reader exposes neither and says so.
+ *
+ * OUTCOMES (OPERATIONALIZATION P0): the ledger now holds FAILURE rows beside
+ * billed ones (outcome != RETURNED, zero tokens). Every token, latency and
+ * dollar figure here is folded over RETURNED rows ONLY — a failure costs
+ * nothing and must not dilute a mean latency — and failures are reported as
+ * their own counts.
  */
 
 import "server-only";
@@ -43,9 +50,15 @@ export interface RecentInvocation {
   model: string;
   surface: string | null;
   environment: string;
-  /** Opaque conversation/brief correlator (a digest), never a user id. */
+  /** Opaque conversation/brief correlator (for chat, the conversation id), never a user id. */
   correlationId: string | null;
   turnIndex: number | null;
+  /** "chat:answer" | "chat:guidance" | "brief:generate" | null. */
+  subSurface: string | null;
+  /** RETURNED | FAILED | TIMEOUT | RATE_LIMITED | QUOTA. */
+  outcome: string;
+  /** Provider error CODE for a non-RETURNED row; null otherwise. */
+  errorCode: string | null;
   promptTokens: number;
   cachedPromptTokens: number;
   completionTokens: number;
@@ -62,23 +75,44 @@ export interface AiOperations extends AiOperationsCore {
   available: { surfaces: string[]; models: string[]; environments: string[] };
   recent: RecentInvocation[];
   pricingConfigured: boolean;
+  /** Provider calls in the window that did NOT return usage, by outcome. Unpriced by construction. */
+  failures: AiFailureCounts;
   /**
-   * What this authority does NOT record, stated so a reader never infers a
-   * zero: no failures (billed, returned calls only) and no user/Space.
+   * What this authority records and does not expose, stated so a reader never
+   * infers a zero: failures ARE recorded (since 2026-10-07); user and Space ARE
+   * recorded but not exposed on this fleet-level reader.
    */
   limits: {
-    failuresRecorded: false;
-    userDimension: "NOT_RECORDED";
-    spaceDimension: "NOT_RECORDED";
+    failuresRecorded: true;
+    userDimension: "RECORDED_NOT_EXPOSED";
+    spaceDimension: "RECORDED_NOT_EXPOSED";
     note: string;
   };
   checkedAt: string;
 }
 
+export interface AiFailureCounts {
+  failed: number;
+  timeouts: number;
+  rateLimited: number;
+  quota: number;
+  total: number;
+}
+
+/** Pure: fold (outcome, count) groups into the failure counts. RETURNED is excluded. */
+export function buildAiFailureCounts(groups: readonly { outcome: string; count: number }[]): AiFailureCounts {
+  const n = (o: string) => groups.filter((g) => g.outcome === o).reduce((a, g) => a + g.count, 0);
+  const failed = n("FAILED"), timeouts = n("TIMEOUT"), rateLimited = n("RATE_LIMITED"), quota = n("QUOTA");
+  return { failed, timeouts, rateLimited, quota, total: failed + timeouts + rateLimited + quota };
+}
+
 export interface AiOperationsReaders {
   now(): Date;
+  /** RETURNED rows only — the billed population. */
   groups(since: Date, until: Date, f: AiOperationsFilter): Promise<InvocationGroup[]>;
   recent(since: Date, until: Date, f: AiOperationsFilter, take: number): Promise<RecentInvocation[]>;
+  /** Non-RETURNED rows, grouped by outcome. */
+  failures(since: Date, until: Date, f: AiOperationsFilter): Promise<{ outcome: string; count: number }[]>;
 }
 
 export const RECENT_INVOCATIONS = 20;
@@ -110,7 +144,7 @@ function realReaders(): AiOperationsReaders {
                sum("latencyMs")::bigint AS "latency_total",
                max("latencyMs")::bigint AS "latency_max"
         FROM "AiInvocation"
-        WHERE ${where(since, until, f)}
+        WHERE ${where(since, until, f)} AND "outcome" = 'RETURNED'
         GROUP BY 1, 2, 3, 4, 5`;
       return rows.map((r) => ({
         provider: r.provider, model: r.model, surface: r.surface, environment: r.environment, day: r.day,
@@ -131,16 +165,32 @@ function realReaders(): AiOperationsReaders {
         take,
         select: {
           occurredAt: true, provider: true, model: true, surface: true, environment: true,
-          correlationId: true, turnIndex: true, promptTokens: true, cachedPromptTokens: true,
+          correlationId: true, turnIndex: true, subSurface: true, outcome: true, errorCode: true,
+          promptTokens: true, cachedPromptTokens: true,
           completionTokens: true, reasoningTokens: true, toolCallCount: true, latencyMs: true, finishReason: true,
         },
       });
       return rows.map((r) => ({
         occurredAt: r.occurredAt.toISOString(), provider: r.provider, model: r.model, surface: r.surface,
         environment: r.environment, correlationId: r.correlationId, turnIndex: r.turnIndex,
+        subSurface: r.subSurface, outcome: r.outcome, errorCode: r.errorCode,
         promptTokens: r.promptTokens, cachedPromptTokens: r.cachedPromptTokens, completionTokens: r.completionTokens,
         reasoningTokens: r.reasoningTokens, toolCalls: r.toolCallCount, latencyMs: r.latencyMs, finishReason: r.finishReason,
       }));
+    },
+    async failures(since, until, f) {
+      const rows = await db.aiInvocation.groupBy({
+        by: ["outcome"],
+        where: {
+          occurredAt: { gte: since, lte: until },
+          outcome: { not: "RETURNED" },
+          ...(f.surface ? { surface: f.surface } : {}),
+          ...(f.model ? { model: f.model } : {}),
+          ...(f.environment ? { environment: f.environment } : {}),
+        },
+        _count: { _all: true },
+      });
+      return rows.map((r) => ({ outcome: r.outcome, count: r._count._all }));
     },
   };
 }
@@ -160,10 +210,11 @@ export async function getAiOperations(
   // The filter values are sourced from the unfiltered window so a chosen
   // surface never hides the others from the control that chose it.
   const unfiltered: AiOperationsFilter = { window: filter.window };
-  const [groups, allGroups, recent] = await Promise.all([
+  const [groups, allGroups, recent, failureGroups] = await Promise.all([
     readers.groups(since, now, filter),
     readers.groups(since, now, unfiltered),
     readers.recent(since, now, filter, RECENT_INVOCATIONS),
+    readers.failures(since, now, filter),
   ]);
   const core = buildAiOperations(groups);
   const distinct = (pick: (g: InvocationGroup) => string | null) =>
@@ -179,11 +230,12 @@ export async function getAiOperations(
     },
     recent,
     pricingConfigured: isPricingConfigured(),
+    failures: buildAiFailureCounts(failureGroups),
     limits: {
-      failuresRecorded: false,
-      userDimension: "NOT_RECORDED",
-      spaceDimension: "NOT_RECORDED",
-      note: "The invocation ledger records billed, returned provider calls only — a timeout or refused request writes no row — and carries no user or Space identity by design.",
+      failuresRecorded: true,
+      userDimension: "RECORDED_NOT_EXPOSED",
+      spaceDimension: "RECORDED_NOT_EXPOSED",
+      note: "Tokens, latency and dollars fold over RETURNED (billed) rows only; provider calls that threw are recorded as zero-token failure rows and counted under 'failures'. User and Space are recorded (owner ruling 2026-10-07) but not exposed on this fleet-level reader.",
     },
     checkedAt: now.toISOString(),
   };

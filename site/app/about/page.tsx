@@ -8,7 +8,7 @@ import ui from "@site/components/ui.module.css";
 export const metadata = pageMetadata(
   "/about",
   "About — Fourth Meridian",
-  "Why Fourth Meridian exists: one honest reading of your financial position, built to be trusted more and looked at less.",
+  "Why Fourth Meridian exists: an AI-native wealth management platform built around one honest reading of your financial position — trusted more, looked at less. Closed beta.",
 );
 
 export default function AboutPage() {

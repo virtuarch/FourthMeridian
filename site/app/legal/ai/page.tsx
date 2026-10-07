@@ -6,7 +6,7 @@ import { pageMetadata } from "@site/lib/page-metadata";
 export const metadata = pageMetadata(
   "/legal/ai",
   "AI Disclosures — Fourth Meridian",
-  "How Fourth Meridian uses AI to generate briefings, what's shared with model providers, and the limits of AI-generated output.",
+  "How Fourth Meridian uses AI in the Daily Brief and Conversations, what is sent to OpenAI, what Fourth Meridian remembers, and the limits of AI-generated output.",
 );
 
 export default function LegalAiPage() {

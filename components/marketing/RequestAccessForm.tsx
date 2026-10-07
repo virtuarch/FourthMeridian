@@ -17,6 +17,12 @@
  * server verifies it, env-gated). Unconfigured → the form works exactly as
  * before. The widget lives in the marketing tree (marketing-local copy) so this
  * form never imports the app's component library — the split seam.
+ *
+ * ACQUISITION (OPERATIONALIZATION P0): on submit the form attaches the bounded
+ * acquisition context of THIS page — utm_* / ref / source from the URL, the
+ * public-site page forwarded as `from`, or a referrer's host — built by the
+ * pure lib/marketing/acquisition.ts and bounded again server-side. Nothing is
+ * stored in the browser; it is read from window.location at submit time only.
  */
 
 import { useState } from "react";
@@ -26,6 +32,7 @@ import {
   type AccessRequestResult,
 } from "@/lib/marketing/request-access";
 import { TurnstileWidget } from "@/components/marketing/TurnstileWidget";
+import { acquisitionFromLocation } from "@/lib/marketing/acquisition";
 import { REQUEST_ACCESS } from "@/content/marketing/copy";
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
@@ -58,7 +65,10 @@ export function RequestAccessForm() {
     setStatus("submitting");
     setMessage("");
 
-    const result: AccessRequestResult = await submitAccessRequest({ email, note, captchaToken });
+    const source = typeof window === "undefined"
+      ? null
+      : acquisitionFromLocation(window.location.search, document.referrer, window.location.origin);
+    const result: AccessRequestResult = await submitAccessRequest({ email, note, captchaToken, source });
 
     if (result.status === "queued") {
       // Success — the endpoint accepted it (2xx).

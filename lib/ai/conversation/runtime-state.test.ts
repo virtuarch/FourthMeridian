@@ -178,9 +178,11 @@ console.log('\n7. IT IS NOT PERSISTENCE');
   // The hardening slice added a fourth: the PROVENANCE of the last answer — the calls
   // it ran and where each figure came from (provenance.ts). Still never a result: the
   // record is an index the next turn re-runs, and the tool stays the authority.
-  check('it carries the scenario, the staged plan, a continuity-loss descriptor and the last answer\'s provenance, and NOTHING else',
+  // OPERATIONALIZATION P0 added a fifth: the conversation's IDENTITY for the cost
+  // ledger — a random UUID, never content, never read by the model.
+  check('it carries the scenario, the staged plan, a continuity-loss descriptor, the last answer\'s provenance and the conversation identity, and NOTHING else',
     !/evidence|toolResult|messages|memory|body/.test(src)
-    && /interface RuntimeState \{\s*scenario: ActiveScenario \| null;[\s\S]*?pending\?: PendingPlan \| null;[\s\S]*?continuity\?: ContinuityLoss \| null;[\s\S]*?provenance\?: AnswerProvenance \| 'NOT_CARRIED' \| null;\s*\}/.test(src));
+    && /interface RuntimeState \{\s*scenario: ActiveScenario \| null;[\s\S]*?pending\?: PendingPlan \| null;[\s\S]*?continuity\?: ContinuityLoss \| null;[\s\S]*?provenance\?: AnswerProvenance \| 'NOT_CARRIED' \| null;[\s\S]*?conversationId\?: string \| null;\s*\}/.test(src));
   {
     const prov = readFileSync('lib/ai/conversation/provenance.ts', 'utf8');
     check('…and the provenance record holds calls and figure sources, never a tool result',
@@ -227,6 +229,31 @@ console.log('\n8. A STAGED PLAN — carried beside the scenario, never as one');
   check('the fullest plan the caps allow, beside a scenario, still fits the seal',
     sealedWorst !== null && sealedWorst.length <= MAX_SEALED_CHARS,
     `${sealedWorst?.length ?? 'refused'} chars / ${worst.clauses.length} clauses`);
+}
+
+console.log('\n9. THE CONVERSATION IDENTITY (OPERATIONALIZATION P0)');
+{
+  const ID = '6f1d2c3b-1111-4222-8333-444455556666';
+  const alone = sealRuntimeState({ scenario: null, conversationId: ID }, BINDING);
+  check('an identity ALONE is carried — a conversation without a hypothetical is still one conversation',
+    typeof alone === 'string' && alone.length > 0);
+  check('…and opens to the same identity with no other slot', (() => {
+    const o = openRuntimeState(alone, BINDING);
+    return o !== null && o.conversationId === ID && o.scenario === null && o.pending === undefined && o.provenance === undefined;
+  })());
+  check('beside a scenario it rides along', openRuntimeState(sealRuntimeState({ scenario: SCENARIO, conversationId: ID }, BINDING), BINDING)?.conversationId === ID);
+  check('the identity is not readable in the carrier', !alone!.includes(ID) && !alone!.includes(ID.slice(0, 8)));
+  check('it cannot be moved to another user / Space / conversation',
+    openRuntimeState(alone, { ...BINDING, userId: 'usr_2' }) === null
+    && openRuntimeState(alone, { ...BINDING, spaceId: 'spc_2' }) === null
+    && openRuntimeState(alone, { ...BINDING, tail: 'tail_b' }) === null);
+  check('a non-UUID is not an identity: nothing to carry', sealRuntimeState({ scenario: null, conversationId: 'chat:584c9ebcdb19017a' }, BINDING) === null);
+  check('a missing identity still means "nothing to carry" for an empty state', sealRuntimeState({ scenario: null }, BINDING) === null);
+  // The version bump: a v3 payload (no identity slot) must be discarded, never coerced.
+  const src = readFileSync('lib/ai/conversation/runtime-state.ts', 'utf8');
+  check('the seal VERSION was bumped for the identity slot (v4)', /const VERSION = 4;/.test(src));
+  check('the continuity MARKER carries the identity too (losing the plan does not lose which conversation it was)',
+    /const base = \{ v: VERSION, iat: Date\.now\(\), \.\.\.binding, \.\.\.\(conversationId \? \{ conversationId \} : \{\}\) \};/.test(src));
 }
 
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);

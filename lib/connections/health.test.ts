@@ -71,5 +71,16 @@ const src = readFileSync("lib/connections/health.ts", "utf8").replace(/\/\*[\s\S
 check("no hardcoded staleness window survives in the module", !/STALE_MS\s*=|\b48\s*\*\s*HOUR_MS|\b12\s*\*\s*HOUR_MS/.test(src));
 check("the operator model resolves the policy through the one loader", /loadRefreshPolicies\(/.test(src));
 
+// OPERATIONALIZATION P0 — the population is the LIVE fleet. REVOKED and
+// owner-inactive connections are retired out of total/counts/unhealthy and
+// reported, never silently dropped. Pinned at the source since the loader is
+// not injectable; the pure derivation above is unchanged (REVOKED still derives).
+console.log("population");
+check("both loaders read the owner's deactivatedAt (and nothing else about the owner)",
+  (src.match(/user:\s*\{\s*select:\s*\{\s*deactivatedAt:\s*true\s*\}\s*\}/g) ?? []).length === 2 && !/email:\s*true/.test(src));
+check("REVOKED rows are retired, not counted", /status === "REVOKED"\) \{ retired\.revoked\+\+; return true; \}/.test(src));
+check("owner-inactive rows are retired, not counted", /deactivatedAt != null\) \{ retired\.ownerInactive\+\+; return true; \}/.test(src));
+check("the result reports what was retired", /return \{ total: rows\.length, counts, unhealthy, retired \};/.test(src));
+
 console.log(failures === 0 ? "\nAll deriveConnectionHealthState checks passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);

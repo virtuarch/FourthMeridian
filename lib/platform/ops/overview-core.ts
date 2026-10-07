@@ -49,11 +49,18 @@ export interface DomainStatus {
 export interface JobHealthCounts { healthy: number; running: number; overdue: number; failing: number; dead: number; neverRan: number }
 
 export interface AiOverviewInput {
+  /** Billed (RETURNED) invocations in the window. */
   invocations: number;
   usd: number | null;
   unpricedTokens: number;
   cacheShare: number | null;
   windowLabel: string;
+  /**
+   * OPERATIONALIZATION P0 — provider calls in the window that threw, from the
+   * ledger's failure rows (lib/ai/invocation.ts). Before these existed the AI
+   * domain was UNKNOWN by construction; now it is a real health domain.
+   */
+  failures: { failed: number; timeouts: number; rateLimited: number; quota: number };
 }
 
 export interface BriefOverviewInput {
@@ -183,18 +190,35 @@ export function deriveJobs(j: JobHealthCounts, nextSlotAt: string | null, now: D
 }
 
 export function deriveAi(a: AiOverviewInput): DomainStatus {
-  // The ledger records billed, returned calls only, so health is not observable.
-  const state: DomainState = "UNKNOWN";
-  const headline = a.invocations === 0
-    ? `No AI invocations recorded in the ${a.windowLabel}.`
-    : `${a.invocations} invocation${a.invocations === 1 ? "" : "s"} in the ${a.windowLabel}, ${usd(a.usd)} estimated; failures are not recorded, so health is unknown.`;
+  const f = a.failures;
+  // Rate limits the caller retried are noise unless nothing got through; the
+  // hard failures are the ones that mean a user saw "couldn't update".
+  const hard = f.failed + f.timeouts + f.quota;
+  const total = a.invocations + hard + f.rateLimited;
+  const state: DomainState =
+    total === 0 ? "UNKNOWN"
+    : f.quota > 0 ? "FAILED"
+    : hard > 0 && a.invocations === 0 ? "FAILED"
+    : hard > 0 ? "DEGRADED"
+    : f.rateLimited > 0 && a.invocations === 0 ? "DEGRADED"
+    : "HEALTHY";
+  const headline =
+    state === "UNKNOWN" ? `No AI invocations recorded in the ${a.windowLabel}.`
+    : f.quota > 0 ? `${f.quota} provider call${f.quota === 1 ? "" : "s"} refused for QUOTA in the ${a.windowLabel} — the OpenAI account is out of credit; waiting will not cure it.`
+    : state === "FAILED" ? `${hard} provider call${hard === 1 ? "" : "s"} failed in the ${a.windowLabel} and none returned.`
+    : state === "DEGRADED" && hard > 0 ? `${hard} of ${a.invocations + hard} provider calls failed in the ${a.windowLabel}; ${a.invocations} returned, ${usd(a.usd)} estimated.`
+    : state === "DEGRADED" ? `${f.rateLimited} rate-limited attempt${f.rateLimited === 1 ? "" : "s"} and no returned call in the ${a.windowLabel}.`
+    : `${a.invocations} invocation${a.invocations === 1 ? "" : "s"} returned in the ${a.windowLabel}, none failed, ${usd(a.usd)} estimated.`;
   const facts: DomainFact[] = [
-    { label: "Invocations", value: String(a.invocations) },
+    { label: "Returned", value: String(a.invocations) },
+    { label: "Failed", value: String(hard), tone: hard > 0 ? "bad" : "ok" },
+    { label: "Quota refusals", value: String(f.quota), tone: f.quota > 0 ? "bad" : undefined },
+    { label: "Rate-limited", value: String(f.rateLimited), tone: f.rateLimited > 0 ? "warn" : undefined },
     { label: "Estimated spend", value: usd(a.usd), tone: a.usd === null && a.invocations > 0 ? "muted" : undefined },
     { label: "Cache share", value: pct(a.cacheShare) },
     { label: "Unpriced tokens", value: String(a.unpricedTokens), tone: a.unpricedTokens ? "warn" : undefined },
   ];
-  return { key: "ai", title: "AI invocations", state, headline, facts, basis: "AiInvocation ledger priced by the code-owned rate card", workspace: "platform-ai" };
+  return { key: "ai", title: "AI invocations", state, headline, facts, basis: "AiInvocation ledger (billed and failed rows) priced by the code-owned rate card", workspace: "platform-ai" };
 }
 
 export function deriveBrief(b: BriefOverviewInput): DomainStatus {

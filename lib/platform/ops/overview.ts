@@ -83,7 +83,11 @@ export async function getOperationsOverview(now: Date = new Date()): Promise<Ope
       pipelineWindowLabel: "window since yesterday (UTC)",
       sources,
       jobs,
-      ai: { invocations: ai.totals.invocations, usd: ai.totals.usd, unpricedTokens: ai.totals.unpricedTokens, cacheShare: ai.totals.cacheShare, windowLabel: "last 24 h" },
+      ai: {
+        invocations: ai.totals.invocations, usd: ai.totals.usd, unpricedTokens: ai.totals.unpricedTokens,
+        cacheShare: ai.totals.cacheShare, windowLabel: "last 24 h",
+        failures: { failed: ai.failures.failed, timeouts: ai.failures.timeouts, rateLimited: ai.failures.rateLimited, quota: ai.failures.quota },
+      },
       brief: {
         windowLabel: "last 24 h",
         generated: brief.counts.generated, failed: brief.counts.failed, inProgress: brief.counts.inProgress,

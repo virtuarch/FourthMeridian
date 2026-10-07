@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Container } from "./Container";
 import { Wordmark } from "./Wordmark";
+import { AppLink } from "./AppLink";
 import styles from "./SiteNav.module.css";
 
 const links = [
@@ -16,7 +17,9 @@ const links = [
  * The application links arrive as PROPS from the server layout, already
  * absolute. This client island never reads configuration or the environment,
  * and it does not know (or try to learn) whether the visitor is signed in:
- * "Sign in" is a plain top-level navigation, and the app decides.
+ * "Sign in" is a plain top-level navigation, and the app decides. "Get Started"
+ * is an AppLink: the same navigation, carrying the page's acquisition context
+ * (lib/acquisition.ts) so a campaign or referrer survives the click.
  */
 export interface SiteNavProps {
   signInHref: string;
@@ -48,7 +51,7 @@ export function SiteNav({ signInHref, requestAccessHref }: SiteNavProps) {
         </nav>
         <div className={styles.actions}>
           <a className={styles.signIn} href={signInHref}>Sign In</a>
-          <a className={styles.cta} href={requestAccessHref}>Get Started</a>
+          <AppLink className={styles.cta} href={requestAccessHref}>Get Started</AppLink>
           <button className={styles.menuButton} type="button" aria-expanded={open} aria-controls="mobile-site-menu" aria-label={open ? "Close menu" : "Open menu"} onClick={() => setOpen((value) => !value)}><MenuIcon open={open} /></button>
         </div>
       </Container>

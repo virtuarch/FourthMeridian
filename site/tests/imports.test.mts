@@ -15,7 +15,9 @@ const APP_PACKAGES = new Set(["next", "react", "react-dom", "react-markdown", "r
 /** Additional packages tests and tooling may import (dev dependencies). */
 const TOOLING_PACKAGES = new Set(["typescript", "eslint", "eslint-config-next"]);
 /** next/* entry points the static site may use. next/headers, next/server, next/cache… are server authority. */
-const NEXT_ENTRYPOINTS = new Set(["next", "next/link", "next/image"]);
+// next/og: ImageResponse for the static Open Graph image (app/opengraph-image.tsx). It runs at
+// BUILD time only and renders a PNG into the export; it reads no request and opens no channel.
+const NEXT_ENTRYPOINTS = new Set(["next", "next/link", "next/image", "next/og"]);
 
 const BUILTINS = new Set(builtinModules.flatMap((m) => [m, `node:${m}`]));
 const SITE_ALIAS = "@site/";
@@ -68,7 +70,9 @@ test("every module reference resolves inside site/ or to an allowed, declared pa
 });
 
 test("Node built-ins are confined to build-time modules (never shipped to a browser)", () => {
-  const BUILD_TIME = new Set(["next.config.ts", "lib/legal-content.ts"]);
+  // app/opengraph-image.tsx reads the brand mark from public/ to embed it in the
+  // build-time PNG; it is force-static and never runs in a browser or a server.
+  const BUILD_TIME = new Set(["next.config.ts", "lib/legal-content.ts", "app/opengraph-image.tsx"]);
   const offenders = appSourceFiles()
     .filter((f) => !BUILD_TIME.has(rel(f)))
     .flatMap((f) => moduleReferences(f).filter((r) => BUILTINS.has(r.specifier)).map((r) => `${rel(f)}:${r.line} ${r.specifier}`));
