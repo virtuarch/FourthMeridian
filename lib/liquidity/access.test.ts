@@ -161,6 +161,9 @@ console.log("7. Write path and consumers — one authority, provider evidence on
   check("no subtype is inferred from a name anywhere in the rule", !/name/i.test(src("lib/account-classifier.ts").split("export function liquidityAccess")[1].split("\n}\n")[0]));
   check("AI accounts assembler selects and classifies with providerSubtype (runway, Brief, scenarios read its totalLiquid)",
     /providerSubtype: true/.test(src("lib/ai/assemblers/accounts.ts")) && /providerSubtype: l\.financialAccount\.providerSubtype/.test(src("lib/ai/assemblers/accounts.ts")));
+  check("REGRESSION: the AI per-account rows carry providerSubtype (full AND privacy-aggregated), so a per-account verdict matches the totals",
+    /providerSubtype: fa\.providerSubtype \?\? null/.test(src("lib/ai/assemblers/accounts.ts"))
+    && /providerSubtype: row\.providerSubtype \?\? null/.test(src("lib/ai/assemblers/accounts.ts")));
   check("Space mount loader selects providerSubtype", /providerSubtype: true/.test(src("lib/space/mount-composition.ts")));
   check("historical (as-of) liquidity rows carry providerSubtype too", /providerSubtype: r\.account\.providerSubtype/.test(src("lib/liquidity/space-data.ts")));
   check("REGRESSION: Assets 'within days' is marketable only, not investments + crypto",

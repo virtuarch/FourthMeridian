@@ -252,6 +252,14 @@ export interface AccountSummaryItem {
   id:               string;
   name:             string;
   type:             string;
+  /**
+   * 2026-10-07 — FinancialAccount.providerSubtype (provider evidence), so a
+   * consumer can state THIS account's liquidityAccess verdict. Without it every
+   * row classified as subtype-unknown: on Preview the HSA read access=cash next
+   * to a restricted-cash total that contained it. On an aggregate row it is the
+   * members' (aggregates are keyed by access, so they share the verdict).
+   */
+  providerSubtype?: string | null;
   institution?:     string;
   balance:          number;
   currency:         string;

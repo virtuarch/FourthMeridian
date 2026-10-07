@@ -561,6 +561,7 @@ async function assembleAccounts(
           id:              fa.id,
           name:            resolveDisplayName(fa),
           type:            fa.type,
+          providerSubtype: fa.providerSubtype ?? null,
           institution:     fa.institution,
           balance:         fa.balance,
           currency:        fa.currency,
@@ -677,6 +678,7 @@ async function assembleAccounts(
         id:       row.id, // authority synthetic id: balance-only:{owner}:{label}:{currency}
         name:     row.name,
         type:     row.type,
+        providerSubtype: row.providerSubtype ?? null,
         balance:  row.balance, // debt: Σ per-member amountOwed (≥ 0); assets: signed member sum
         currency: row.currency,
         reportingBalance: rep.reportingBalance,
