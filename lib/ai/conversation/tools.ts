@@ -112,6 +112,21 @@ import type { SpaceContext } from '@/lib/space';
 // would have protected neither.
 import { MEMORY_TOOLS } from './memory-tools';
 import { describeFourthMeridian } from './product';
+import { liquidityAccess, LIQUIDITY_ACCESS_MEANING, type LiquidityAccess } from '@/lib/account-classifier';
+
+/**
+ * The liquidity authority's per-account verdict, projected beside each account so
+ * the model reads it instead of guessing from a name. PROJECTION, NOT A RULE: the
+ * verdict is `liquidityAccess()`'s and its wording is `LIQUIDITY_ACCESS_MEANING`'s,
+ * both owned by lib/account-classifier.ts. It exists because an HSA (type checking,
+ * subtype hsa) arrived with an `available` balance and no verdict, and the model
+ * called the HSA-inclusive total "the stricter can-I-spend-it-today view" and
+ * supplied HSA tax rules of its own.
+ */
+function accessOf(a: { type: string; providerSubtype?: string | null }): { access?: LiquidityAccess } {
+  const v = liquidityAccess(a);
+  return v ? { access: v } : {};
+}
 import type { TurnEvidence } from './memory-model';
 // ⚠️ READING memory, never writing it. `recallMemories` is the store's read half;
 // the write half lives in the turn loop (slice 7) and in `remember`. This file
@@ -494,8 +509,11 @@ const getFinancialSnapshot: ToolDefinition = {
       asOf: ctx.asOfISO, basis: 'CURRENT_ACCOUNTS',
       netWorth: acc.netWorth, totalAssets: acc.totalAssets,
       totalLiabilities: acc.totalLiabilities,
-      /** Checking + savings. Deliberately not named `cash` — see get_net_worth_history. */
+      /** Unrestricted cash. Deliberately not named `cash` — see get_net_worth_history. */
       liquid: acc.totalLiquid,
+      // The authority's own restricted total: owned (in netWorth/totalAssets), not in `liquid`.
+      ...(typeof acc.totalRestrictedCash === 'number' && acc.totalRestrictedCash !== 0
+        ? { restrictedCash: { amount: acc.totalRestrictedCash, meaning: LIQUIDITY_ACCESS_MEANING.restricted } } : {}),
       counts: acc.counts,
       // CF-7's composer is the authority on what "investments" means; the two
       // components are disjoint by construction and must not be re-derived.
@@ -509,7 +527,9 @@ const getFinancialSnapshot: ToolDefinition = {
         freshness: a2.balanceFreshness?.band, needsReauth: a2.needsReauth,
         available: a2.availableQuantity?.label && a2.availableQuantity?.amount !== undefined
           ? { label: a2.availableQuantity.label, amount: a2.availableQuantity.amount } : undefined,
+        ...accessOf(a2),
       })),
+      accessMeaning: LIQUIDITY_ACCESS_MEANING,
       missingDebtFields: acc.knowledgeGaps,
       totalsEstimated: acc.totalsEstimated,
     };

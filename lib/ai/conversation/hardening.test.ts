@@ -130,6 +130,21 @@ async function main(): Promise<void> {
       /const moved = change !== null && liquid !== null \? derive\(\{ expense, income, liquid: liquid \+ change,/.test(src));
   }
 
+  console.log('1c. owned vs freely spendable — projected from the liquidity authority, never decided here');
+  {
+    const src = read('lib/ai/conversation/tools.ts');
+    const body = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    check('the snapshot carries the authority\'s per-account verdict (liquidityAccess) and its wording',
+      /\.\.\.accessOf\(a2\)/.test(src) && /accessMeaning: LIQUIDITY_ACCESS_MEANING/.test(src)
+        && /from '@\/lib\/account-classifier'/.test(src));
+    check('…and the authority\'s restricted total, not a re-sum', /restrictedCash: \{ amount: acc\.totalRestrictedCash/.test(src));
+    check('Conversations holds NO subtype knowledge of its own (no hsa/401k/ira/roth literals, no providerSubtype comparisons)',
+      !/['"](hsa|401k|403b|ira|roth|529)['"]/i.test(body) && !/providerSubtype\s*===/.test(body));
+    const { LIQUIDITY_ACCESS_MEANING } = await import('@/lib/account-classifier');
+    check('the restricted meaning states what Fourth Meridian does not know, and invents no rule',
+      /does not know/.test(LIQUIDITY_ACCESS_MEANING.restricted) && !/\d/.test(LIQUIDITY_ACCESS_MEANING.restricted));
+  }
+
   // ════ 2. PRODUCT IDENTITY ═════════════════════════════════════════════════
   console.log('2. product identity — one authority, tied to code');
   {
