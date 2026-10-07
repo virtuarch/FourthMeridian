@@ -22,7 +22,8 @@ import { PlatformWidgetCard, WidgetMessage, WidgetStat, timeAgo, type PlatformSe
 import { RightPanel, PanelHeader, PanelContent, PanelFooter } from "@/components/atlas/panels";
 import type { CustomerListResponse } from "@/app/api/platform/customer-success/customers/route";
 import type { CustomerDetailResponse } from "@/app/api/platform/customer-success/customers/[userId]/route";
-import type { RefreshAllReport } from "@/lib/refresh/outcomes";
+import { describeRefreshOutcomes, type RefreshAllReport } from "@/lib/refresh/outcomes";
+import { operatorDisplayName } from "@/lib/platform/customer/customer-core";
 import { COHORTS, OVERLAYS, POLICY_GROUPS } from "@/lib/entitlements/catalogue";
 import { OPERATOR_REASON_CODES } from "@/lib/audit";
 
@@ -104,9 +105,9 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
 
   const json = (payload: unknown): RequestInit => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
   const assignPolicy = () => detail && reason && run("policy", `/api/platform/customer-success/customers/${detail.identity.id}/policy`,
-    json({ policyGroup, overlay: overlay === "" ? null : overlay, reason }), () => { setReasonCode(""); setReasonNote(""); });
+    json({ policyGroup, overlay: overlay === "" ? null : overlay, reason }));
   const addCohort = () => detail && reason && cohort && run("cohort", `/api/platform/customer-success/customers/${detail.identity.id}/cohort`,
-    json({ cohort, reason }), () => { setCohort(""); setReasonCode(""); setReasonNote(""); });
+    json({ cohort, reason }), () => { setCohort(""); });
   const refreshAll = () => detail && run("refresh", `/api/platform/customer-success/customers/${detail.identity.id}/refresh`, { method: "POST" },
     (body) => setRefreshReport(body as RefreshAllReport));
   const toggleActive = () => detail?.actions.deactivate && run("active", detail.actions.deactivate.url,
@@ -137,7 +138,7 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                   <button type="button" onClick={() => select(c.id)}
                     className="flex w-full items-center justify-between gap-2 px-1 py-2 text-left text-xs transition-colors hover:bg-[var(--surface-hover)]">
                     <span className="flex min-w-0 flex-col">
-                      <span className="truncate text-[var(--text-primary)]">{c.email}</span>
+                      <span className="truncate text-[var(--text-primary)]">{operatorDisplayName(c)}</span>
                       <span className="truncate text-[11px] text-[var(--text-muted)]">
                         {c.policyGroup}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"} · {c.cohorts.length ? c.cohorts.join(", ") : "no cohort"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
                       </span>
@@ -161,7 +162,9 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
               {detail && (
                 <div className="flex flex-col gap-4 text-xs">
                   <Section title="Identity">
-                    <Row label="Name" value={detail.identity.name ?? detail.identity.username ?? "—"} />
+                    <Row label="Username" value={detail.identity.username ?? "— (none recorded)"} />
+                    <Row label="Name" value={detail.identity.name ?? "—"} />
+                    <Row label="Email" value={detail.identity.email} />
                     <Row label="Role" value={detail.identity.role} />
                     <Row label="Registered" value={ago(detail.identity.createdAt)} />
                     <Row label="Email verified" value={detail.identity.emailVerifiedAt ? "yes" : "no"} />
@@ -280,6 +283,16 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
               )}
             </PanelContent>
             <PanelFooter>
+              {/* P1 operability — a consequential action answers WHERE it was pressed. The
+                  full per-authority list stays in the detail body; this is the same one-line
+                  description the customer's own Refresh button shows. */}
+              {acting === "refresh" && <p className="w-full text-[11px] text-[var(--text-muted)]">Refreshing every eligible authority…</p>}
+              {refreshReport && acting !== "refresh" && (
+                <p className="w-full text-[11px] text-[var(--text-primary)]" role="status">
+                  Refresh all: {describeRefreshOutcomes(refreshReport.outcomes)}
+                </p>
+              )}
+              {!reason && detail && <p className="w-full text-[10px] text-[var(--text-muted)]">Policy and cohort changes need a reason code (above).</p>}
               {detail?.actions.refreshAll && (
                 <button type="button" onClick={refreshAll} disabled={acting !== null}
                   className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"

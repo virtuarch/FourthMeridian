@@ -10,6 +10,7 @@
  * Self-managed fetch/action state (mutates + refetches), like the beta queue.
  */
 
+import { operatorDisplayName } from "@/lib/platform/customer/customer-core";
 import { useCallback, useEffect, useState } from "react";
 import { Users, Loader2, UserX, UserCheck } from "lucide-react";
 import {
@@ -147,7 +148,7 @@ export function OpsUsersWidget({ section }: { section: PlatformSection }) {
                 <li key={u.id} className="flex items-center gap-2 rounded-[var(--radius-sm)] border px-2.5 py-2" style={{ borderColor: "var(--border-hairline)", background: "var(--glass-ultrathin)" }}>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-medium text-[var(--text-primary)] truncate">
-                      {u.email}
+                      {operatorDisplayName(u)}
                       {u.deactivatedAt ? <span className="text-[var(--danger-400,#f87171)]"> · deactivated</span> : !u.emailVerifiedAt ? <span className="text-[var(--text-muted)]"> · unverified</span> : null}
                     </p>
                     <p className="text-[10px] text-[var(--text-muted)]">

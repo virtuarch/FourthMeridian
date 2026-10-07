@@ -26,16 +26,13 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { SPACE_DATA_REFRESHED_EVENT } from "@/lib/space-nav";
 
-export type RefreshPhase = "idle" | "loading" | "done" | "error" | "cooldown" | "partial";
-
-/** The subset of lib/refresh/outcomes.ts the client reads. */
-interface Outcome {
-  kind?: string;
-  label?: string;
-  decision?: "STARTED" | "SKIPPED" | "REFUSED" | "FAILED";
-  reason?: string | null;
-  retryAfterSeconds?: number;
-}
+// P1 — the outcome vocabulary and its one-sentence description live with the
+// vocabulary (lib/refresh/outcomes.ts) so the operator's Customer Success action
+// and this customer button describe the SAME report the same way. Re-exported
+// here for the callers and tests that import them from the hook.
+export { describeRefreshOutcomes, phaseForOutcomes } from "@/lib/refresh/outcomes";
+export type { RefreshPhase } from "@/lib/refresh/outcomes";
+import { describeRefreshOutcomes, phaseForOutcomes, type RefreshOutcomeLike, type RefreshPhase } from "@/lib/refresh/outcomes";
 
 export interface ManualRefreshState {
   phase: RefreshPhase;
@@ -48,43 +45,6 @@ function signalDataRefreshed(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent(SPACE_DATA_REFRESHED_EVENT));
   }
-}
-
-/** secs → "42m" (ceil), or "" when unknown. */
-function minutesLabel(secs: unknown): string {
-  return typeof secs === "number" && secs > 0 ? ` (${Math.ceil(secs / 60)}m)` : "";
-}
-
-/** PURE — the terse banner: "3 refreshed · 1 on cooldown (42m) · 1 not refreshable". Exported for tests. */
-export function describeRefreshOutcomes(outcomes: Outcome[]): string {
-  const started = outcomes.filter((o) => o.decision === "STARTED").length;
-  const cooldown = outcomes.filter((o) => o.reason === "COOLDOWN");
-  const inFlight = outcomes.filter((o) => o.reason === "IN_FLIGHT").length;
-  const rate = outcomes.filter((o) => o.reason === "RATE_LIMITED").length;
-  const notRefreshable = outcomes.filter((o) => o.reason === "NOT_REFRESHABLE" || o.reason === "NOT_ENTITLED").length;
-  const paused = outcomes.filter((o) => o.reason === "NOT_ADMITTED").length;
-  const budget = outcomes.filter((o) => o.reason === "BUDGET").length;
-  const failed = outcomes.filter((o) => o.decision === "FAILED").length;
-  const longestWait = cooldown.reduce((m, o) => Math.max(m, o.retryAfterSeconds ?? 0), 0);
-  const parts: string[] = [];
-  if (started) parts.push(`${started} refreshed`);
-  if (cooldown.length) parts.push(`${cooldown.length} on cooldown${minutesLabel(longestWait)}`);
-  if (inFlight) parts.push(`${inFlight} already syncing`);
-  if (rate) parts.push(`${rate} over the hourly limit`);
-  if (notRefreshable) parts.push(`${notRefreshable} not refreshable`);
-  if (paused) parts.push(`${paused} paused by the platform`);
-  if (budget) parts.push(`${budget} deferred`);
-  if (failed) parts.push(`${failed} failed`);
-  return parts.join(" · ");
-}
-
-/** PURE — the phase a report resolves to. Exported for tests. */
-export function phaseForOutcomes(outcomes: Outcome[]): Exclude<RefreshPhase, "idle" | "loading"> {
-  const started = outcomes.filter((o) => o.decision === "STARTED").length;
-  const failed = outcomes.filter((o) => o.decision === "FAILED").length;
-  if (outcomes.length === 0 || started === outcomes.length) return "done";
-  if (started > 0) return "partial";
-  return failed > 0 ? "error" : "cooldown";
 }
 
 export function useManualRefresh(): ManualRefreshState {
@@ -102,7 +62,7 @@ export function useManualRefresh(): ManualRefreshState {
       const res = await fetch("/api/refresh/all", { method: "POST" });
       if (!res.ok) throw new Error("Refresh failed");
 
-      const report = (await res.json().catch(() => ({}))) as { outcomes?: Outcome[] };
+      const report = (await res.json().catch(() => ({}))) as { outcomes?: RefreshOutcomeLike[] };
       const outcomes = Array.isArray(report.outcomes) ? report.outcomes : [];
       const next = phaseForOutcomes(outcomes);
       setPhase(next);

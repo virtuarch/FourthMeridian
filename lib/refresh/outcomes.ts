@@ -77,3 +77,55 @@ export function summarizeRefreshOutcomes(outcomes: readonly RefreshAuthorityOutc
   }
   return s;
 }
+
+// ── Presentation of a report — ONE sentence, shared by the customer's Refresh
+// button and the operator's Customer Success action, so neither surface invents
+// its own semantics for the same outcomes ───────────────────────────────────────
+
+export type RefreshPhase = "idle" | "loading" | "done" | "error" | "cooldown" | "partial";
+
+/** The subset of an outcome a surface reads to describe it. */
+export interface RefreshOutcomeLike {
+  kind?: string;
+  label?: string;
+  decision?: RefreshDecision;
+  reason?: string | null;
+  retryAfterSeconds?: number;
+}
+
+/** secs → " (42m)" (ceil), or "" when unknown. */
+function minutesLabel(secs: unknown): string {
+  return typeof secs === "number" && secs > 0 ? ` (${Math.ceil(secs / 60)}m)` : "";
+}
+
+/** PURE — the terse banner: "3 refreshed · 1 on cooldown (42m) · 1 not refreshable". */
+export function describeRefreshOutcomes(outcomes: readonly RefreshOutcomeLike[]): string {
+  const started = outcomes.filter((o) => o.decision === "STARTED").length;
+  const cooldown = outcomes.filter((o) => o.reason === "COOLDOWN");
+  const inFlight = outcomes.filter((o) => o.reason === "IN_FLIGHT").length;
+  const rate = outcomes.filter((o) => o.reason === "RATE_LIMITED").length;
+  const notRefreshable = outcomes.filter((o) => o.reason === "NOT_REFRESHABLE" || o.reason === "NOT_ENTITLED").length;
+  const paused = outcomes.filter((o) => o.reason === "NOT_ADMITTED").length;
+  const budget = outcomes.filter((o) => o.reason === "BUDGET").length;
+  const failed = outcomes.filter((o) => o.decision === "FAILED").length;
+  const longestWait = cooldown.reduce((m, o) => Math.max(m, o.retryAfterSeconds ?? 0), 0);
+  const parts: string[] = [];
+  if (started) parts.push(`${started} refreshed`);
+  if (cooldown.length) parts.push(`${cooldown.length} on cooldown${minutesLabel(longestWait)}`);
+  if (inFlight) parts.push(`${inFlight} already syncing`);
+  if (rate) parts.push(`${rate} over the hourly limit`);
+  if (notRefreshable) parts.push(`${notRefreshable} not refreshable`);
+  if (paused) parts.push(`${paused} paused by the platform`);
+  if (budget) parts.push(`${budget} deferred`);
+  if (failed) parts.push(`${failed} failed`);
+  return parts.length ? parts.join(" · ") : "nothing to refresh";
+}
+
+/** PURE — the phase a report resolves to. */
+export function phaseForOutcomes(outcomes: readonly RefreshOutcomeLike[]): Exclude<RefreshPhase, "idle" | "loading"> {
+  const started = outcomes.filter((o) => o.decision === "STARTED").length;
+  const failed = outcomes.filter((o) => o.decision === "FAILED").length;
+  if (outcomes.length === 0 || started === outcomes.length) return "done";
+  if (started > 0) return "partial";
+  return failed > 0 ? "error" : "cooldown";
+}

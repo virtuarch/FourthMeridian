@@ -6,7 +6,7 @@
 import { resolveEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import {
   actionTouchesItems, firstConnectedAt, projectActivity, projectAiUsage, projectCohorts, projectConnections, projectIdentity,
-  projectIncidents, projectLifecycle, projectOperatorAction, projectPolicy, projectSpaces, requestStage,
+  projectIncidents, projectLifecycle, projectOperatorAction, projectPolicy, projectSpaces, requestStage, operatorDisplayName,
 } from "./customer-core";
 
 let failures = 0;
@@ -119,6 +119,15 @@ console.log("operator actions");
   check("legacy row projects without reason and drops the email", legacy.reasonCode === null && !JSON.stringify(legacy).includes("x@y.z"));
   check("connection action matched by legacy key", actionTouchesItems({ id: "a3", action: "CONNECTION_RESYNC_TRIGGERED", createdAt: T("2026-10-01T00:00:00Z"), performedByAdminId: "op", metadata: { connectionId: "p1" } }, new Set(["p1"])));
   check("…and not for another customer's item", !actionTouchesItems({ id: "a4", action: "CONNECTION_RESYNC_TRIGGERED", createdAt: T("2026-10-01T00:00:00Z"), performedByAdminId: "op", metadata: { connectionId: "p9" } }, new Set(["p1"])));
+}
+
+
+console.log("operator identity label — username first, never email");
+{
+  check("username wins", operatorDisplayName({ id: "abcdefgh123456", username: "chrstn", name: "Chris" }) === "chrstn");
+  check("name when the username is missing", operatorDisplayName({ id: "abcdefgh123456", username: null, name: "Chris" }) === "Chris");
+  check("opaque reference when both are missing", operatorDisplayName({ id: "abcdefgh123456", username: "  ", name: null }) === "user …123456");
+  check("never derived from an email", !/@/.test(operatorDisplayName({ id: "x1y2z3", username: null, name: null, ...({ email: "someone@example.com" } as object) })));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

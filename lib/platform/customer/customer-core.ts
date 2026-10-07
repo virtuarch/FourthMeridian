@@ -321,3 +321,21 @@ export function actionTouchesItems(r: AuditRowFacts, itemIds: ReadonlySet<string
   const candidates = [m.connectionId, m.plaidItemId, (m.target as { id?: unknown } | undefined)?.id];
   return candidates.some((c) => typeof c === "string" && itemIds.has(c));
 }
+
+// ── Operator-facing identity label (owner ruling, 2026-10-08) ───────────────────
+//
+// USERNAME FIRST. Operator lists, tables and search results identify a customer
+// by username; email stays in the detail view, the identity model, auth, search
+// and audit. `User.username` is nullable in the schema (`String? @unique`) but
+// required at registration and present on every row of the dev and Preview
+// corpora (verified 2026-10-08), so the fallback below exists for a legacy or
+// partially-registered row and NEVER fabricates a username from an email: it
+// shows the name when one exists, else an opaque reference to the id.
+
+export interface OperatorIdentityLike { id: string; username: string | null; name?: string | null }
+
+export function operatorDisplayName(u: OperatorIdentityLike): string {
+  if (u.username && u.username.trim()) return u.username.trim();
+  if (u.name && u.name.trim()) return u.name.trim();
+  return `user …${u.id.slice(-6)}`;
+}
