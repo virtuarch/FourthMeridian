@@ -23,7 +23,7 @@ import { RightPanel, PanelHeader, PanelContent, PanelFooter } from "@/components
 import type { CustomerListResponse } from "@/app/api/platform/customer-success/customers/route";
 import type { CustomerDetailResponse } from "@/app/api/platform/customer-success/customers/[userId]/route";
 import { describeRefreshOutcomes, type RefreshAllReport } from "@/lib/refresh/outcomes";
-import { operatorDisplayName } from "@/lib/platform/customer/customer-core";
+import { operatorDisplayName } from "@/lib/platform/customer/identity-label";
 import { COHORTS, OVERLAYS, POLICY_GROUPS } from "@/lib/entitlements/catalogue";
 import { OPERATOR_REASON_CODES } from "@/lib/audit";
 

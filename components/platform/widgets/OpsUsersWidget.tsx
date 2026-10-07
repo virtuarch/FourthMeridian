@@ -10,7 +10,7 @@
  * Self-managed fetch/action state (mutates + refetches), like the beta queue.
  */
 
-import { operatorDisplayName } from "@/lib/platform/customer/customer-core";
+import { operatorDisplayName } from "@/lib/platform/customer/identity-label";
 import { useCallback, useEffect, useState } from "react";
 import { Users, Loader2, UserX, UserCheck } from "lucide-react";
 import {

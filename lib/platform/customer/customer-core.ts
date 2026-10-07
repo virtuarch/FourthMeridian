@@ -322,20 +322,7 @@ export function actionTouchesItems(r: AuditRowFacts, itemIds: ReadonlySet<string
   return candidates.some((c) => typeof c === "string" && itemIds.has(c));
 }
 
-// ── Operator-facing identity label (owner ruling, 2026-10-08) ───────────────────
-//
-// USERNAME FIRST. Operator lists, tables and search results identify a customer
-// by username; email stays in the detail view, the identity model, auth, search
-// and audit. `User.username` is nullable in the schema (`String? @unique`) but
-// required at registration and present on every row of the dev and Preview
-// corpora (verified 2026-10-08), so the fallback below exists for a legacy or
-// partially-registered row and NEVER fabricates a username from an email: it
-// shows the name when one exists, else an opaque reference to the id.
-
-export interface OperatorIdentityLike { id: string; username: string | null; name?: string | null }
-
-export function operatorDisplayName(u: OperatorIdentityLike): string {
-  if (u.username && u.username.trim()) return u.username.trim();
-  if (u.name && u.name.trim()) return u.name.trim();
-  return `user …${u.id.slice(-6)}`;
-}
+// ── Operator-facing identity label — defined in the pure, import-free
+// identity-label.ts so client widgets can use it without reaching this module's
+// server-only imports; re-exported here for server callers.
+export { operatorDisplayName, type OperatorIdentityLike } from "./identity-label";
