@@ -181,4 +181,16 @@ No remaining dependency is a **beta blocker** once the two config acts (alerts e
 
 ## Preview alert-path proof addendum
 
-_Pending the operator's Run Now on Preview (Platform Operations → manual operations → "Alert Evaluation"). Evidence to record: the `evaluate-alerts` JobRun summary on Preview (`destination` configured, `deliveryStatus`, `counts.firing/delivered`, the fired breaches) and the owner's confirmation that the alert email arrived at the monitored inbox._
+**Trigger:** the owner pressed Run Now → "Alert Evaluation" on the Preview deployment of `8d64468` at ≈10:09 local (2026-10-07 19:09:08 UTC). Audit row `PLATFORM_OPERATION_EXECUTED` `{kind: run-now, commandId: run-now:evaluate-alerts, outcome: executed, jobRunStatus: succeeded}` at 19:09:09 UTC.
+
+**Execution (Preview `JobRun`, read-only):** `evaluate-alerts` started 19:09:08.654, completed 19:09:09.222, `status: succeeded`, 568 ms. This is the FIRST `evaluate-alerts` run Preview has ever recorded.
+
+**Evaluation:** `counts: {evaluated: 6, live: 5, enabled: 5, firing: 3, delivered: 3, suppressed: 0}`. Three genuine breaches of Preview's real state qualified for delivery — nothing was manufactured and no protection was weakened:
+- `resource-stale:fx-rates` (warning) — newest FX data 94 d old against a 2 d threshold (Preview receives no cron, so its archives are genuinely stale);
+- `resource-stale:security-prices` (warning) — 75 d old;
+- `provider-unhealthy` (warning) — 1 of 3 provider connections STALE (the REVOKED Sandbox items are now retired out of the population, so this is the live fleet only).
+No critical breach fired; `ai-provider-failing` evaluated and did not fire (no failure rows yet on Preview); `quota-low` stays dormant.
+
+**Delivery:** `destination` configured (non-null in the summary; the address itself never leaves the environment), `deliveryStatus: "sent"` — the OPS-1 email seam handed one alert email carrying the three breaches to the provider at 19:09:08.672 UTC. **Receipt confirmed by the owner** at the monitored `support@fourthmeridian.com` inbox. Nothing was suppressed (first delivery of each dedupe key) and nothing was skipped. The three breaches are now recorded as fired, so a re-run inside the 20 h re-notify window delivers nothing — the suppression contract is intact.
+
+**Verdict:** the alert path on Preview executes, evaluates, delivers to the monitored inbox, and ledgers its own evidence. Production carries the same `PLATFORM_ALERTS_EMAIL` value; its first evaluation will run at the next dispatcher slot after the Production cutover.
