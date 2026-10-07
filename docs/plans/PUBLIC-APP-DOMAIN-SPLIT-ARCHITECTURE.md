@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Investigation complete. Verdict: **ARCHITECTURE READY FOR IMPLEMENTATION** (Stages A and B). **Stage A implemented 2026-10-03, partially** (§16.0). **Stage B implemented 2026-10-04** (§18): `site/`, not yet a Vercel project. Stages C and D are gated on §16.7 and §18.6. |
+| **Status** | Investigation complete. Verdict: **ARCHITECTURE READY FOR IMPLEMENTATION** (Stages A and B). **Stage A implemented 2026-10-03, partially** (§16.0). **Stage B implemented 2026-10-04** (§18): `site/`, not yet a Vercel project. Stages C and D are gated on §16.7 and §18.6. **Stages C, D and F rehearsed end to end on Preview 2026-10-07** (`preview.` = public site, `preview-app.` = app; `docs/operations/domain-split-preview.md`, which also lists the exact Production steps). Production unchanged. |
 | **Date** | 2026-10-02 |
 | **Repo state investigated** | `v2.6` at `3d10fe7`, with the RLS tenant-authority conversion in flight in the working tree |
 | **Method** | Read only. The repo was read with no edits, no app/test/DB/network runs, no Vercel/DNS/Supabase/Plaid changes, and no secret values read. |
