@@ -14,7 +14,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { classifyAccounts, liquidityAccess, normalizeProviderSubtype } from "@/lib/account-classifier";
+import { classifyAccounts, liquidityAccess, normalizeProviderSubtype, LIQUIDITY_ACCESS_MEANING } from "@/lib/account-classifier";
 import { computeLiquidity, type LiquidityAccountRow } from "@/lib/perspective-engine/lenses/liquidity.core";
 import { normalizeSharedAccounts, type ShareRow } from "@/lib/account-privacy";
 
@@ -42,6 +42,9 @@ console.log("1. The rule — every branch explicit");
   check("investment with an unclassified subtype → unverified, never guessed", A("investment", "variable annuity") === "unverified" && A("investment", "stock plan") === "unverified");
   check("crypto → marketable (preserved)", A("crypto") === "marketable");
   check("other → illiquid; debt → not a liquidity source", A("other") === "illiquid" && A("debt") === null);
+  check("every verdict has one stated meaning, and the restricted one invents no amount or rate",
+    (["cash", "restricted", "marketable", "unverified", "illiquid"] as const).every((k) => LIQUIDITY_ACCESS_MEANING[k].length > 0)
+    && !/\$|\d/.test(LIQUIDITY_ACCESS_MEANING.restricted));
   check("normalizeProviderSubtype: trim/lowercase, empty ⇒ null", normalizeProviderSubtype(" 401K ") === "401k" && normalizeProviderSubtype("") === null && normalizeProviderSubtype(undefined) === null);
 }
 

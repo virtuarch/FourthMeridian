@@ -143,6 +143,20 @@ export function isDigitalAssetAccountType(type: string | null | undefined): bool
 // investment) or keeps its existing meaning (depository), never guessed.
 export type LiquidityAccess = "cash" | "restricted" | "marketable" | "unverified" | "illiquid";
 
+/**
+ * What each verdict MEANS — the one wording, owned here beside the rule, for any
+ * surface or contract that has to state it (Conversations projects it per
+ * account; nothing re-describes it). Deliberately invents no amount, rate,
+ * eligibility or age.
+ */
+export const LIQUIDITY_ACCESS_MEANING: Readonly<Record<LiquidityAccess, string>> = {
+  cash:       "unrestricted cash, available now",
+  restricted: "owned, but use is restricted or purpose-dependent (e.g. retirement, HSA, education): withdrawal may be possible, with eligibility rules, taxes or penalties Fourth Meridian does not know; not spendable cash and not reachable within days",
+  marketable: "sellable within days at settlement (known ordinary brokerage, or crypto)",
+  unverified: "an investment whose account type the provider has not reported; valued in wealth, but its access is unverified and it is not counted as reachable",
+  illiquid:   "a real or other long-term asset, not readily sellable",
+};
+
 /** Depository subtypes whose balance is not ordinary spendable cash. */
 const RESTRICTED_DEPOSITORY_SUBTYPES: ReadonlySet<string> = new Set(["hsa"]);
 

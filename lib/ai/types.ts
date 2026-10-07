@@ -462,6 +462,13 @@ export interface AccountsSectionData {
   totalLiabilities:   number;
   netWorth:           number;
   totalLiquid:        number;
+  /**
+   * 2026-10-07 — classifyAccounts().totalRestrictedCash: checking/savings value
+   * whose use is restricted (e.g. an HSA). Owned and in netWorth/totalAssets,
+   * NOT in totalLiquid. Optional so older payloads/fixtures still type-check;
+   * ABSENT means "not reported", never 0.
+   */
+  totalRestrictedCash?: number;
   totalInvestments:   number;
   totalDigitalAssets: number;
   totalRealAssets:    number;

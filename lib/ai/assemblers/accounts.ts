@@ -795,6 +795,7 @@ async function assembleAccounts(
     totalLiabilities:   classification.totalLiabilities,
     netWorth:           classification.netWorth,
     totalLiquid:        classification.totalLiquid,
+    totalRestrictedCash: classification.totalRestrictedCash,
     totalInvestments:   classification.totalInvestments,
     totalDigitalAssets: classification.totalDigitalAssets,
     totalRealAssets:    classification.totalRealAssets,
