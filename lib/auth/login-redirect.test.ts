@@ -113,6 +113,18 @@ function census() {
     check(`${f} uses redirectToLogin`, /return redirectToLogin\(\)/.test(s) && !found[f]);
   }
 
+  // A revoked session keeps a validly signed JWT, so proxy.ts lets it through.
+  // The shell LAYOUTS must catch it with the revocation-aware read BEFORE any
+  // page asks for a Space context (which throws without a session ⇒ error page).
+  const dash = readFileSync(path.join(ROOT, "app/(shell)/dashboard/layout.tsx"), "utf8");
+  const guard = dash.indexOf("if (!session?.user?.id) return redirectToLogin();");
+  check("dashboard layout: revoked session ⇒ redirectToLogin, before getSpaceContext()",
+    guard > -1 && guard < dash.indexOf("await getSpaceContext()"));
+  const admin = readFileSync(path.join(ROOT, "app/admin/layout.tsx"), "utf8");
+  const aGuard = admin.indexOf("if (!session?.user?.id) return redirectToLogin();");
+  check("admin layout: revoked session ⇒ redirectToLogin (not /dashboard, whose shell would fail)",
+    aGuard > -1 && aGuard < admin.indexOf('redirect("/dashboard")'));
+
 }
 
 proxyChecks()
