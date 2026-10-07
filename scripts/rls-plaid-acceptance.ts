@@ -595,7 +595,18 @@ async function main(): Promise<void> {
       // half, and the two fail for different reasons.
       && /\bsystemDb\b/.test(code("lib/plaid/refresh-execution.ts"))
       && !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*["']@\/lib\/db["']/.test(code("lib/plaid/refresh-execution.ts"))
-      && openings.length === 3
+      // The READ seams are NAMED, not counted: the two fleet seams, the historical
+      // stage recorder, and — P1 HUMAN OPERABILITY — the Customer Success
+      // per-customer reader (lib/platform/customer/customer-detail.ts), which asks
+      // "which refreshes touched THIS customer's connections", a question the
+      // fleet seams carry no owner to answer. Recorded as a doctrine decision in
+      // lib/platform/refresh/read-boundary.test.ts as well; both lists must agree.
+      && [...openings].sort().join(",") === [
+        "lib/plaid/historical-stage-recorder.ts",
+        "lib/platform/customer/customer-detail.ts",
+        "lib/platform/refresh/execution-query.ts",
+        "lib/platform/refresh/projections.ts",
+      ].join(",")
       && openingsThatWrite.length === 0,
       `writers=[${writers.join(",")}] binders=[${binders.join(",")}] openings=[${openings.join(",")}] openingsThatWrite=[${openingsThatWrite.join(",")}]`);
   }
