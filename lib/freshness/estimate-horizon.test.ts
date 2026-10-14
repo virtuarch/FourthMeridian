@@ -86,6 +86,12 @@ check("AI: manual rows carry valuationSource USER_ESTIMATE",
   AI.includes("fa.syncStatus === 'manual' ? { valuationSource: 'USER_ESTIMATE' as const } : {}"));
 check("AI: the stale-manual count uses the estimate horizon (no 30-day literal)",
   AI.includes("daysSince >= ESTIMATE_STALE_AFTER_DAYS") && !/daysSince > 30\b/.test(AI));
+const TOOLS = code("lib", "ai", "conversation", "tools.ts");
+check("AI: get_financial_snapshot passes valuationSource through to the model",
+  TOOLS.includes("...(a2.valuationSource ? { valuationSource: a2.valuationSource } : {})"));
+const BRIEF = code("lib", "ai", "brief", "package.ts");
+check("Brief freshness judges manual assets on the estimate horizon",
+  BRIEF.includes("userEstimate: a.valuationSource === 'USER_ESTIMATE'"));
 const DET = code("lib", "ai", "signals", "detectors", "accounts.ts");
 check("AI signal title states the horizon it uses", DET.includes("${ESTIMATE_STALE_AFTER_DAYS}+ days") && !DET.includes("30+ days"));
 

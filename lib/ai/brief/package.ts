@@ -231,6 +231,9 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
           ingestedAt: a.lastUpdated,
           providerBalanceAt: a.balanceLastUpdatedAt ?? null,
           balance: a.reportingBalance ?? a.balance,
+          // RWA-1C — a manual asset is judged on the estimate horizon, as on the
+          // Space header (lib/freshness/space-freshness.ts).
+          userEstimate: a.valuationSource === 'USER_ESTIMATE',
         })), i.now);
         const stale = staleSourcesForBrief(i.dataHealth ?? null);
         // The same rows, in the same order, as the sources they were projected
