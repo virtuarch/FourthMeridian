@@ -79,7 +79,7 @@ export function OpsAlertsWidget({ section }: { section: PlatformSection }) {
               {recent.map((h, i) => (
                 <li key={`${h.dedupeKey}:${i}`} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 py-1.5 text-xs">
                   <span className="min-w-0 text-[var(--text-secondary)]">
-                    <ToneBadge word={h.severity} tone={h.severity === "critical" ? "bad" : h.severity === "error" ? "bad" : h.severity === "warning" ? "warn" : "info"} />{" "}
+                    <ToneBadge word={h.severity} tone={h.severity === "critical" ? "bad" : "warn"} />{" "}
                     {h.summary}
                   </span>
                   <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{timeAgo(h.deliveredAtISO)} ago</span>
