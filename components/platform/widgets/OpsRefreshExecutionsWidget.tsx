@@ -29,13 +29,27 @@
  * not a group. Only the deploymentSha recorded on THAT execution is shown;
  * nothing here claims "current", and the panel receives it only as header
  * context.
+ *
+ * UX-P1 (Agent 4) — three refinements, the table and the drawer untouched:
+ *   · the local pill group became the shared `PillGroup` (same markup, same
+ *     `role="group"` + `aria-pressed`);
+ *   · "Load older" is a real control over the seam's `nextCursor`: each older
+ *     page is a keyed body (`OlderPage key={cursor}`) appended BELOW the page
+ *     before it, so the list stays flat and newest-first across pages and the
+ *     deployment rule still fires on the boundary between two pages. No page
+ *     ever shows a total — the seam does not count, and neither does this;
+ *   · below `md` a row collapses to source · status · started, and the three
+ *     columns that drop out (trigger, duration, verdict) reappear in an inline
+ *     `<details>` under the row — the Jobs rule: a phone loses layout, never a
+ *     fact. The disclosure sits BESIDE the row button, never inside it, so no
+ *     interactive content nests.
  */
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ListOrdered } from "lucide-react";
-import { PlatformWidgetCard, WidgetMessage, timeAgo, useWidgetFetch, type PlatformSection } from "../widget-kit";
+import { WidgetMessage, timeAgo, useWidgetFetch, type PlatformSection } from "../widget-kit";
 import { useKeyedFetch } from "../keyed-fetch";
-import { SectionSurface, TONE_COLOR, TwoLine } from "../platform-surface";
+import { PillGroup, SectionSurface, TONE_COLOR, TwoLine } from "../platform-surface";
 import type { ExecutionPageDTO, ExecutionRowDTO } from "@/lib/platform/refresh/execution-query-core";
 import { ExecutionTimelinePanel } from "./ExecutionTimelinePanel";
 import { formatDuration, humanizeToken, isDeploymentBoundary, shortSha } from "./refresh-format";
@@ -98,14 +112,38 @@ const FOOTNOTE =
 const COLS = "minmax(0,1.8fr) 6rem 6.5rem 7rem 5.5rem minmax(0,1.6fr)";
 const HEADINGS = ["Source", "Trigger", "Status", "Started", "Duration", "Verdict"] as const;
 
-export function ExecutionRows({ rows, onSelect }: { rows: readonly ExecutionRowDTO[]; onSelect: (s: ExecutionSelection) => void }) {
+/** One labelled fact inside the below-`md` disclosure. */
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">{label}</dt>
+      <dd className="text-xs text-[var(--text-primary)]">{children}</dd>
+    </div>
+  );
+}
+
+export function ExecutionRows({
+  rows,
+  onSelect,
+  precededBy = null,
+}: {
+  rows: readonly ExecutionRowDTO[];
+  onSelect: (s: ExecutionSelection) => void;
+  /** The last row of the page rendered above this one, so the deployment rule can fire across a page boundary. */
+  precededBy?: ExecutionRowDTO | null;
+}) {
+  // The sequence the boundary rule reads: the previous page's tail, then this page.
+  const sequence = precededBy ? [precededBy, ...rows] : rows;
+  const offset = precededBy ? 1 : 0;
   return (
     <div className="overflow-x-auto">
-      <div className="mb-1 hidden items-center gap-3 border-b px-1 pb-2 md:grid" style={{ gridTemplateColumns: COLS, borderColor: "var(--border-hairline)" }}>
-        {HEADINGS.map((h) => (
-          <span key={h} className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">{h}</span>
-        ))}
-      </div>
+      {precededBy == null && (
+        <div className="mb-1 hidden items-center gap-3 border-b px-1 pb-2 md:grid" style={{ gridTemplateColumns: COLS, borderColor: "var(--border-hairline)" }}>
+          {HEADINGS.map((h) => (
+            <span key={h} className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">{h}</span>
+          ))}
+        </div>
+      )}
       <ul className="flex flex-col">
         {rows.map((row, i) => {
           const source = describeSource(row);
@@ -117,12 +155,13 @@ export function ExecutionRows({ rows, onSelect }: { rows: readonly ExecutionRowD
             : row.outcome === "NO_CHANGE" ? "no change (verified)"
             : row.overallStatus === "SUCCEEDED" ? "outcome not proven"
             : "";
+          const errorLine = row.hasError && row.errorSummary ? row.errorSummary : undefined;
           return (
-            <li key={row.id}>
+            <li key={row.id} className="border-b last:border-b-0" style={{ borderColor: "var(--border-hairline)" }}>
               {/* An inline RULE between two time-ordered rows — never a heading
                   that owns the rows beneath it. The list is never grouped by
                   deployment; this only marks where the attribute changed. */}
-              {isDeploymentBoundary(rows, i) && (
+              {isDeploymentBoundary(sequence, i + offset) && (
                 <div className="my-1 flex items-center gap-2" aria-hidden>
                   <span className="h-px flex-1" style={{ background: "var(--border-hairline)" }} />
                   <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">deployment changed · {shortSha(row.deploymentSha)}</span>
@@ -132,28 +171,113 @@ export function ExecutionRows({ rows, onSelect }: { rows: readonly ExecutionRowD
               <button
                 type="button"
                 onClick={() => onSelect(selectionFor(row))}
-                className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 border-b px-1 py-2.5 text-left transition-colors last:border-b-0 hover:bg-[var(--surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)] md:grid"
-                style={{ gridTemplateColumns: COLS, borderColor: "var(--border-hairline)", minHeight: 48 }}
+                className="flex w-full items-center gap-3 px-1 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)] md:grid"
+                style={{ gridTemplateColumns: COLS, minHeight: 48 }}
                 aria-label={`Inspect ${triggerWord(row.trigger)} execution of ${source.label}`}
                 title={`run ${row.runId} · deployment ${row.deploymentSha ?? "not observed"}`}
               >
-                <TwoLine value={<span className="font-medium">{source.label}</span>} qualifier={`${source.kind} · ${humanizeToken(row.profile)}`} />
-                <span className="text-xs text-[var(--text-primary)]">{triggerWord(row.trigger)}</span>
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium" style={{ color: status }}>
+                <span className="min-w-0 flex-1 md:flex-none">
+                  <TwoLine value={<span className="font-medium">{source.label}</span>} qualifier={`${source.kind} · ${humanizeToken(row.profile)}`} />
+                </span>
+                <span className="hidden text-xs text-[var(--text-primary)] md:block">{triggerWord(row.trigger)}</span>
+                <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium" style={{ color: status }}>
                   <span aria-hidden className="rounded-full" style={{ width: 6, height: 6, background: status }} />
                   {humanizeToken(row.overallStatus)}
                 </span>
-                <TwoLine value={`${timeAgo(row.startedAt)} ago`} qualifier={`${row.startedAt.slice(0, 16).replace("T", " ")} UTC`} />
-                <span className="text-xs tabular-nums text-[var(--text-primary)]">{formatDuration(row.durationMs)}</span>
-                <TwoLine
-                  value={<span style={row.failureStage ? { color: TONE_COLOR.bad } : undefined}>{verdict || "—"}</span>}
-                  qualifier={row.hasError && row.errorSummary ? row.errorSummary : undefined}
-                />
+                <span className="shrink-0">
+                  <TwoLine value={`${timeAgo(row.startedAt)} ago`} qualifier={`${row.startedAt.slice(0, 16).replace("T", " ")} UTC`} />
+                </span>
+                <span className="hidden text-xs tabular-nums text-[var(--text-primary)] md:block">{formatDuration(row.durationMs)}</span>
+                <span className="hidden md:block">
+                  <TwoLine
+                    value={<span style={row.failureStage ? { color: TONE_COLOR.bad } : undefined}>{verdict || "—"}</span>}
+                    qualifier={errorLine}
+                  />
+                </span>
               </button>
+              {/* RESPONSIVE — the three columns that drop below `md` reappear here.
+                  A native disclosure: no state, keyboard-reachable, and a sibling
+                  of the row button rather than a child of it. */}
+              <details className="px-1 pb-2 md:hidden">
+                <summary className="cursor-pointer text-[11px] text-[var(--text-muted)]">Trigger · duration · verdict</summary>
+                <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2">
+                  <Fact label="Trigger">{triggerWord(row.trigger)}</Fact>
+                  <Fact label="Duration"><span className="tabular-nums">{formatDuration(row.durationMs)}</span></Fact>
+                  <div className="col-span-2">
+                    <Fact label="Verdict">
+                      <span style={row.failureStage ? { color: TONE_COLOR.bad } : undefined}>{verdict || "—"}</span>
+                      {errorLine && <span className="block text-[11px] text-[var(--text-muted)]">{errorLine}</span>}
+                    </Fact>
+                  </div>
+                </dl>
+              </details>
             </li>
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+// ── Older pages (the seam's keyset cursor, as a control) ─────────────────────
+
+/**
+ * One OLDER page: a keyed body remounted per cursor (`key={cursor}` at the call
+ * site), fetching `…&cursor=` through the shared keyed reader and appending its
+ * rows below the page it continues. Its own "Load older" recurses, so pages
+ * chain without any list state and nothing is ever re-counted or re-sorted.
+ */
+function OlderPage({ query, cursor, precededBy, onSelect }: {
+  query: string;
+  cursor: string;
+  precededBy: ExecutionRowDTO | null;
+  onSelect: (s: ExecutionSelection) => void;
+}) {
+  const { data, loading, error } = useKeyedFetch<ExecutionPageDTO>(
+    `/api/platform/platform-ops/refresh/executions?${query}&cursor=${encodeURIComponent(cursor)}`,
+  );
+  if (loading || error || !data) return <div className="mt-2"><WidgetMessage loading={loading} error={error} /></div>;
+  if (data.rows.length === 0) {
+    return <p className="mt-2 text-[11px] text-[var(--text-muted)]">No older executions — the end of the ledger for this view.</p>;
+  }
+  return (
+    <>
+      <ExecutionRows rows={data.rows} onSelect={onSelect} precededBy={precededBy} />
+      <LoadOlder page={data} query={query} onSelect={onSelect} appended />
+    </>
+  );
+}
+
+/**
+ * The control under a page. A cursor means older rows exist beyond this page —
+ * how many is deliberately not said, because the seam does not count. Pressing
+ * it mounts the next keyed page in place.
+ */
+function LoadOlder({ page, query, onSelect, appended = false }: {
+  page: ExecutionPageDTO;
+  query: string;
+  onSelect: (s: ExecutionSelection) => void;
+  appended?: boolean;
+}) {
+  const [opened, setOpened] = useState(false);
+  if (!page.nextCursor) {
+    return appended ? <p className="mt-2 text-[11px] text-[var(--text-muted)]">No older executions — the end of the ledger for this view.</p> : null;
+  }
+  if (opened) {
+    const last = page.rows[page.rows.length - 1] ?? null;
+    return <OlderPage key={page.nextCursor} query={query} cursor={page.nextCursor} precededBy={last} onSelect={onSelect} />;
+  }
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-3">
+      <button
+        type="button"
+        onClick={() => setOpened(true)}
+        className="rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]"
+        style={{ borderColor: "var(--border-hairline-strong)" }}
+      >
+        Load older
+      </button>
+      <span className="text-[11px] text-[var(--text-muted)]">Older executions exist beyond this page; no total is counted.</span>
     </div>
   );
 }
@@ -173,38 +297,8 @@ function FilteredExecutions({ query, onSelect }: { query: string; onSelect: (s: 
   return (
     <>
       <ExecutionRows rows={data.rows} onSelect={onSelect} />
-      {data.nextCursor && <p className="mt-2 text-[11px] text-[var(--text-muted)]">Older executions exist beyond this page.</p>}
+      <LoadOlder page={data} query={query} onSelect={onSelect} />
     </>
-  );
-}
-
-// ── Filter control ───────────────────────────────────────────────────────────
-
-function Segmented<V extends string>({ label, value, options, onChange }: {
-  label: string; value: V; options: readonly { value: V; label: string }[]; onChange: (v: V) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-1" role="group" aria-label={label}>
-      {options.map((o) => {
-        const active = o.value === value;
-        return (
-          <button
-            key={o.value || "all"}
-            type="button"
-            onClick={() => onChange(o.value)}
-            aria-pressed={active}
-            className="rounded-[var(--radius-sm)] border px-2 py-0.5 text-[11px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]"
-            style={{
-              borderColor: active ? "var(--meridian-400)" : "var(--border-hairline)",
-              color: active ? "var(--text-primary)" : "var(--text-secondary)",
-              background: active ? "color-mix(in srgb, var(--meridian-500) 10%, transparent)" : "transparent",
-            }}
-          >
-            {o.label}
-          </button>
-        );
-      })}
-    </div>
   );
 }
 
@@ -233,9 +327,9 @@ export function OpsRefreshExecutionsWidget({ section }: { section: PlatformSecti
 
   if (loading || error || !data) {
     return (
-      <PlatformWidgetCard label={section.label} icon={ListOrdered}>
+      <SectionSurface icon={ListOrdered} title={section.label}>
         <WidgetMessage loading={loading} error={error} />
-      </PlatformWidgetCard>
+      </SectionSurface>
     );
   }
 
@@ -244,14 +338,14 @@ export function OpsRefreshExecutionsWidget({ section }: { section: PlatformSecti
       <SectionSurface icon={ListOrdered} title={section.label} footnote={FOOTNOTE}>
         <div className="mb-5 flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <Segmented label="Source" value={sourceKind} options={SOURCE_OPTIONS} onChange={(v) => { setSourceKind(v); if (v !== "WALLET") setNetwork(""); }} />
+            <PillGroup label="Source" value={sourceKind} options={SOURCE_OPTIONS} onChange={(v) => { setSourceKind(v); if (v !== "WALLET") setNetwork(""); }} />
             {sourceKind === "WALLET" && (
-              <Segmented label="Network" value={network} options={NETWORK_OPTIONS.map((n) => ({ value: n, label: n || "Any network" }))} onChange={setNetwork} />
+              <PillGroup label="Network" value={network} options={NETWORK_OPTIONS.map((n) => ({ value: n, label: n || "Any network" }))} onChange={setNetwork} />
             )}
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <Segmented label="Status" value={status} options={STATUS_OPTIONS} onChange={setStatus} />
-            <Segmented label="Trigger" value={trigger} options={TRIGGER_OPTIONS} onChange={setTrigger} />
+            <PillGroup label="Status" value={status} options={STATUS_OPTIONS} onChange={setStatus} />
+            <PillGroup label="Trigger" value={trigger} options={TRIGGER_OPTIONS} onChange={setTrigger} />
           </div>
         </div>
 
@@ -269,9 +363,7 @@ export function OpsRefreshExecutionsWidget({ section }: { section: PlatformSecti
         ) : (
           <>
             <ExecutionRows rows={data.rows} onSelect={setSelected} />
-            {data.nextCursor && (
-              <p className="mt-2 text-[11px] text-[var(--text-muted)]">Older executions exist beyond this page.</p>
-            )}
+            <LoadOlder page={data} query={query} onSelect={setSelected} />
           </>
         )}
       </SectionSurface>
