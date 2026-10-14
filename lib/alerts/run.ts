@@ -39,6 +39,7 @@ import {
   type AlertRuleOutcome,
   type AlertRunSummary,
 } from "@/lib/alerts/evaluate";
+import { latestAlertEvaluation, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
 
 /** JobRun name of the alert-evaluation job (registered in lib/jobs/registry.ts). */
 export const ALERT_JOB_NAME = "evaluate-alerts";
@@ -106,6 +107,16 @@ export async function loadRecentAlertRuns(limit: number = RECENT_RUNS_EXAMINED):
     if (s && Array.isArray(s.fired)) out.push(s);
   }
   return out;
+}
+
+/**
+ * UX-P1 — the LATEST evaluation's per-rule outcomes, projected without the
+ * destination address. This is the one read that may call a rule "firing": it
+ * is the most recent cycle's verdict, not the delivery history. Null when the
+ * evaluator has never recorded a run.
+ */
+export async function loadLatestAlertEvaluation(): Promise<AlertLatestEvaluation | null> {
+  return latestAlertEvaluation(await loadRecentAlertRuns(1));
 }
 
 function resolveDestinationDefault(): string | null {
