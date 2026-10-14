@@ -262,7 +262,7 @@ export async function getConnectionHealth(
                 // UX-P1 — the chain a wallet denominates lives on its linked
                 // account (FinancialAccount.walletChain, the UI-C1 seam the
                 // diagnostics reader already walks). Chain symbol only: no
-                // address, no balance, no account name.
+                // address, no monetary field, no account name.
                 accountConnections: { where: { deletedAt: null }, select: { financialAccount: { select: { walletChain: true } } } } },
     }),
     loadBrokenSince(),

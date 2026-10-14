@@ -80,7 +80,10 @@ check("both loaders read the owner's deactivatedAt (and nothing else about the o
   (src.match(/user:\s*\{\s*select:\s*\{\s*deactivatedAt:\s*true\s*\}\s*\}/g) ?? []).length === 2 && !/email:\s*true/.test(src));
 check("REVOKED rows are retired, not counted", /status === "REVOKED"\) \{ retired\.revoked\+\+; return true; \}/.test(src));
 check("owner-inactive rows are retired, not counted", /deactivatedAt != null\) \{ retired\.ownerInactive\+\+; return true; \}/.test(src));
-check("the result reports what was retired", /return \{ total: rows\.length, counts, unhealthy, retired \};/.test(src));
+check("the result reports what was retired",
+  // UX-P1 — the result gained checkedAt / cap / listedScope (additive); the pin
+  // is that `retired` is still reported beside total/counts/unhealthy.
+  /return \{\s*total: rows\.length, counts, unhealthy, retired,\s*checkedAt: new Date\(now\)\.toISOString\(\), cap, listedScope: "unhealthy",\s*\};/.test(src));
 
 console.log(failures === 0 ? "\nAll deriveConnectionHealthState checks passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);
