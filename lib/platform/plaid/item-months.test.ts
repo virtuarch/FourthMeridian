@@ -10,7 +10,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   itemMonths, priceCycle, priceCycleBothReadings, censusCoverage, retiredAtFrom,
-  monthCycle, isBillableItem, SEEDED_ITEM_PREFIX,
+  monthCycle, isBillableItem, isSandboxItem, isInvestmentsBillable, plaidEnvironmentBucket,
+  SEEDED_ITEM_PREFIX, PLAID_SANDBOX_ENVIRONMENT, INVESTMENTS_BILLABLE_CONSENT,
   type PlaidItemFact, type PlaidItemTransition,
 } from "@/lib/platform/plaid/item-months";
 import { PLAID_RATES, plaidRateAt, type PlaidRate } from "@/lib/usage/pricing";
@@ -30,7 +31,7 @@ const AUG  = monthCycle("2026-08");
 let n = 0;
 const item = (o: Partial<PlaidItemFact> = {}): PlaidItemFact => ({
   id: `i${++n}`, externalItemId: `real_${n}`, createdAt: "2026-06-01",
-  status: "ACTIVE", investmentsConsent: null, environment: "production", ...o });
+  status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production", ...o });
 const rev = (id: string, at: string): PlaidItemTransition =>
   ({ plaidItemId: id, at, from: "ACTIVE", to: "REVOKED" });
 
@@ -59,6 +60,34 @@ console.log("2. seeded fixtures are not billable");
     read("prisma/seed.ts").includes(`"${SEEDED_ITEM_PREFIX}`));
   const mixed = [item({ externalItemId: "demo_item_a" }), item({ externalItemId: "real_x" })];
   check("a census counts only the real one", itemMonths(mixed, [], JULY).length === 1);
+}
+
+console.log("2b. BETA C1 — sandbox Items are not billable; unknown is a priced floor");
+{
+  check("the literal is what Plaid calls it", PLAID_SANDBOX_ENVIRONMENT === "sandbox");
+  check("a sandbox Item is excluded", !isBillableItem(item({ plaidEnvironment: "sandbox" })));
+  check("…and recognised as sandbox", isSandboxItem(item({ plaidEnvironment: "sandbox" })));
+  // ⚠️ UNKNOWN IS NOT FREE. A legacy production Item has a null Plaid environment.
+  check("a null Plaid environment stays billable (floor, never free)", isBillableItem(item({ plaidEnvironment: null })));
+  check("an ABSENT Plaid environment (pre-C1 fixture shape) stays billable", isBillableItem(item({ plaidEnvironment: undefined })));
+  check("development is billed (Plaid's limited-production tier)", isBillableItem(item({ plaidEnvironment: "development" })));
+  check("production is billed", isBillableItem(item({ plaidEnvironment: "production" })));
+  check("an unexpected literal buckets as unknown, never as sandbox",
+    plaidEnvironmentBucket({ plaidEnvironment: "Sandbox" }) === "unknown" && isBillableItem(item({ plaidEnvironment: "Sandbox" })));
+  check("buckets: the three environments and unknown",
+    plaidEnvironmentBucket({ plaidEnvironment: "sandbox" }) === "sandbox"
+      && plaidEnvironmentBucket({ plaidEnvironment: "development" }) === "development"
+      && plaidEnvironmentBucket({ plaidEnvironment: "production" }) === "production"
+      && plaidEnvironmentBucket({ plaidEnvironment: null }) === "unknown");
+  const pop = [item({ plaidEnvironment: "sandbox" }), item({ plaidEnvironment: null }), item({ plaidEnvironment: "production" })];
+  check("a census prices the unknown and production rows and not the sandbox one",
+    itemMonths(pop, [], JULY).length === 2 && near(priceCycle(pop, [], JULY, "presentDuringCycle").usd, 0.60));
+  // The Vercel deployment and the Plaid environment are independent axes.
+  check("a Preview deployment on Plaid sandbox is excluded; a Preview deployment on Plaid production is billed",
+    !isBillableItem(item({ environment: "preview", plaidEnvironment: "sandbox" }))
+      && isBillableItem(item({ environment: "preview", plaidEnvironment: "production" })));
+  check("a seeded fixture claiming production is still excluded (seed wins)",
+    !isBillableItem(item({ externalItemId: "demo_item_z", plaidEnvironment: "production" })));
 }
 
 console.log("3. lifecycle — created, retired, and never projected backward");
@@ -125,6 +154,22 @@ console.log("5. products, and consent that carries no timestamp");
     now.find((r) => r.product === "investments")!.productEvidenced === true);
   const priced = priceCycle(withInv, [], JULY, "presentDuringCycle", { today: "2026-09-09" });
   check("unevidenced product-months are reported, not hidden", priced.unevidencedProductItemMonths === 1);
+
+  // ⚠️ BETA C2 — ENABLED-ONLY. Plaid adds the Investments subscription when
+  // holdings are fetched, which happens only on an ENABLED Item.
+  console.log("5b. BETA C2 — Investments is priced only when consent is ENABLED");
+  check("the billable consent is the literal ENABLED", INVESTMENTS_BILLABLE_CONSENT === "ENABLED");
+  for (const c of ["CONSENT_REQUIRED", "UNSUPPORTED", "GRANTED", "enabled", null]) {
+    const rows = itemMonths([item({ investmentsConsent: c })], [], monthCycle("2026-09"), "2026-09-09");
+    check(`consent ${String(c)} bills ONE product line (transactions only)`,
+      rows.length === 1 && rows[0].product === "transactions" && !isInvestmentsBillable({ investmentsConsent: c }));
+  }
+  const enabledNow = priceCycle([item({ investmentsConsent: "ENABLED" })], [], monthCycle("2026-09"), "presentDuringCycle", { today: "2026-09-09" });
+  check("ENABLED prices both lines at $0.30 + $0.35",
+    enabledNow.itemMonths.investments === 1 && near(enabledNow.usd, 0.65));
+  const requiredNow = priceCycle([item({ investmentsConsent: "CONSENT_REQUIRED" })], [], monthCycle("2026-09"), "presentDuringCycle", { today: "2026-09-09" });
+  check("CONSENT_REQUIRED prices transactions alone at $0.30",
+    requiredNow.itemMonths.investments === 0 && near(requiredNow.usd, 0.30) && requiredNow.unevidencedProductItemMonths === 0);
 }
 
 console.log("6. environment stays separable, and unknown stays unknown");
@@ -150,6 +195,15 @@ console.log("6. environment stays separable, and unknown stays unknown");
     /environment:\s+deploymentEnvironment\(\)/.test(src) && /create: \{[\s\S]{0,400}environment:/.test(src));
   check("…and reuses the existing V26-ENV-1 classifier",
     /deploymentEnvironment/.test(src) && !/VERCEL_ENV|NODE_ENV/.test(src));
+  // BETA C1 — the PLAID environment rides the same create-only block.
+  check("the Plaid environment is stamped at the same chokepoint, on create only, from PLAID_ENV",
+    /create: \{[\s\S]{0,900}plaidEnvironment:\s+PLAID_ENV/.test(src)
+      && !/update: \{[^}]*plaidEnvironment/.test(src));
+  check("…imported from the Plaid client (the validated configuration), not re-read from process.env",
+    /import \{ plaidClient, PLAID_ENV \} from "@\/lib\/plaid\/client"/.test(src) && !/process\.env\.PLAID_ENV/.test(src));
+  const reader = code(read("lib/platform/plaid/usage.ts"));
+  check("the usage reader selects plaidEnvironment and still no token/institution/user column",
+    /plaidEnvironment:\s*true/.test(reader) && !/encryptedToken|institutionName|userId:\s*true/.test(reader));
 }
 
 console.log("7. pricing is effective-dated and never fabricated");
@@ -194,8 +248,13 @@ console.log("9. no parallel collector, no mirrored AI shape");
   const schema = read("prisma/schema.prisma");
   check("no PlaidInvocation or PlaidBillingEvent table was created",
     !/model PlaidInvocation|model PlaidBillingEvent|model PlaidItemMonth/.test(schema));
-  check("the only Plaid schema change is one nullable environment column",
-    /model PlaidItem \{[\s\S]*?environment\s+String\?/.test(schema));
+  check("the Plaid schema changes are two nullable environment columns (Vercel + Plaid), nothing else",
+    /model PlaidItem \{[\s\S]*?\n  environment\s+String\?/.test(schema)
+      && /model PlaidItem \{[\s\S]*?\n  plaidEnvironment\s+String\?/.test(schema));
+  check("the C1 migration is one additive ALTER with no backfill",
+    (() => { const m = read("prisma/migrations/20261015100000_plaid_item_environment/migration.sql");
+      const sql = m.replace(/^--.*$/gm, "").trim();
+      return sql === 'ALTER TABLE "PlaidItem" ADD COLUMN "plaidEnvironment" TEXT;' && !/UPDATE|DEFAULT|NOT NULL/i.test(sql); })());
   const src = code(read("lib/platform/plaid/item-months.ts"));
   check("the derivation stores nothing", !/\.(create|update|upsert|delete)\(/.test(src));
   check("…and reads only injected facts", !/@\/lib\/db|prisma/.test(src));

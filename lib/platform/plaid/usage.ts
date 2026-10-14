@@ -25,11 +25,16 @@ import { AuditAction } from "@/lib/audit-actions";
 import { PLAID_RATES, type PlaidRate } from "@/lib/usage/pricing";
 import {
   censusCoverage,
-  isBillableItem,
+  isInvestmentsBillable,
+  isSandboxItem,
+  isSeededItem,
   monthCycle,
+  plaidEnvironmentBucket,
   priceCycleBothReadings,
+  PLAID_ENVIRONMENT_BUCKETS,
   type BillingCycle,
   type PlaidCycleCost,
+  type PlaidEnvironmentBucket,
   type PlaidItemFact,
   type PlaidItemTransition,
 } from "@/lib/platform/plaid/item-months";
@@ -39,11 +44,21 @@ export interface PlaidUsage {
   checkedAt: string;
   population: {
     total: number;
-    /** Excluding seeded demo fixtures — the rows the census bills. */
+    /** Excluding seeded demo fixtures AND sandbox Items — the rows the census bills. */
     billable: number;
     seeded: number;
+    /** BETA C1 — Items stamped with the Plaid sandbox environment (never invoiced). */
+    sandbox: number;
     byStatus: Readonly<Record<string, number>>;
+    /** The VERCEL deployment that minted each Item (null → "unknown"). */
     byEnvironment: Readonly<Record<string, number>>;
+    /**
+     * BETA C1 — the PLAID environment that minted each Item. `unknown` (legacy
+     * rows, never backfilled) is PRICED as a floor: only `sandbox` is free.
+     */
+    byPlaidEnvironment: Readonly<Record<PlaidEnvironmentBucket, number>>;
+    plaidEnvironmentNote: string;
+    /** BETA C2 — Items whose Investments consent is ENABLED (the only consent that is priced). */
     investmentsConsented: number;
     /** Items that produced a recorded status transition (the retirement evidence). */
     withTransitions: number;
@@ -77,7 +92,7 @@ function realReaders(): PlaidUsageReaders {
     today: () => todayUTCISO(),
     async items() {
       const rows = await db.plaidItem.findMany({
-        select: { id: true, externalItemId: true, createdAt: true, status: true, investmentsConsent: true, environment: true },
+        select: { id: true, externalItemId: true, createdAt: true, status: true, investmentsConsent: true, environment: true, plaidEnvironment: true },
       });
       return rows.map((r) => ({ ...r, status: String(r.status), investmentsConsent: r.investmentsConsent ? String(r.investmentsConsent) : null }));
     },
@@ -118,13 +133,18 @@ export function buildPlaidUsage(
 ): Omit<PlaidUsage, "checkedAt"> {
   const byStatus: Record<string, number> = {};
   const byEnvironment: Record<string, number> = {};
-  let seeded = 0; let consented = 0;
+  const byPlaidEnvironment = Object.fromEntries(PLAID_ENVIRONMENT_BUCKETS.map((b) => [b, 0])) as Record<PlaidEnvironmentBucket, number>;
+  let seeded = 0; let sandbox = 0; let consented = 0;
   for (const i of items) {
     byStatus[i.status] = (byStatus[i.status] ?? 0) + 1;
     const env = i.environment ?? "unknown";
     byEnvironment[env] = (byEnvironment[env] ?? 0) + 1;
-    if (!isBillableItem(i)) seeded++;
-    if (i.investmentsConsent) consented++;
+    byPlaidEnvironment[plaidEnvironmentBucket(i)] += 1;
+    // Seeded first: a demo fixture is excluded for being fabricated, whatever
+    // environment it claims, so it is never double-counted as sandbox too.
+    if (isSeededItem(i)) seeded++;
+    else if (isSandboxItem(i)) sandbox++;
+    if (isInvestmentsBillable(i)) consented++;
   }
   const current = today.slice(0, 7);
   const cycles = [
@@ -140,10 +160,14 @@ export function buildPlaidUsage(
   return {
     population: {
       total: items.length,
-      billable: items.length - seeded,
+      billable: items.length - seeded - sandbox,
       seeded,
+      sandbox,
       byStatus,
       byEnvironment,
+      byPlaidEnvironment,
+      plaidEnvironmentNote:
+        "Plaid environment is stamped at Item creation and never backfilled. Only sandbox Items are excluded from cost; development is billed by Plaid; unknown (legacy rows) is priced as a floor, never as free.",
       investmentsConsented: consented,
       withTransitions: new Set(transitions.map((t) => t.plaidItemId)).size,
     },

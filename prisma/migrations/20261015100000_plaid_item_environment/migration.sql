@@ -1,0 +1,12 @@
+-- PlaidItem.plaidEnvironment — the PLAID environment ("sandbox" | "development"
+-- | "production") an Item was minted in, stamped once at the exchangeToken
+-- chokepoint from the validated PLAID_ENV. Distinct from "environment", which
+-- is the Vercel deployment: Preview runs against Plaid sandbox, so its Items
+-- were priced as if production (BETA C1, 2026-10-15).
+--
+-- Additive and nullable, NO backfill: null means UNKNOWN. A legacy row's Plaid
+-- environment is not recorded anywhere, and guessing it from a cutover date
+-- would zero real charges, so the cost census prices unknown as billable (a
+-- floor), never as free. Table-level grants cover the new column; no RLS
+-- policy names columns.
+ALTER TABLE "PlaidItem" ADD COLUMN "plaidEnvironment" TEXT;

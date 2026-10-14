@@ -931,6 +931,21 @@ model PlaidItem {
   // "production cost to serve" are the same number forever. Capture cannot be
   // reconstructed later, which is why it lands before the accounting needs it.
   environment           String?
+  // BETA C1 (2026-10-15) — the PLAID environment this Item was minted in:
+  // "sandbox" | "development" | "production" (the validated PLAID_ENV the
+  // exchange ran under), stamped once at the exchangeToken chokepoint and never
+  // updated. DISTINCT from `environment` above, which is the VERCEL deployment
+  // (local / preview / production): one deployment can point at any Plaid
+  // environment (Preview has used sandbox since 2026-10-06), and only the Plaid
+  // environment decides whether an Item can ever appear on an invoice — a
+  // sandbox Item is never billed, so the cost census excludes it
+  // (lib/platform/plaid/item-months.ts).
+  //
+  // ⚠️ NULLABLE AND NEVER BACKFILLED, for the same reason as `environment`:
+  // nothing on a legacy row records which Plaid environment minted it, and a
+  // cutover-date guess would silently zero real production charges. Null means
+  // UNKNOWN and is priced as a floor (billable), never as free.
+  plaidEnvironment      String?
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
 
