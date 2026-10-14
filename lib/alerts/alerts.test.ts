@@ -62,7 +62,7 @@ function jobHealth(jobs: AlertJobHealthReport[]): AlertJobHealth {
 function connHealth(counts: Partial<Record<HealthState, number>>): ConnectionHealthResult {
   const full: Record<HealthState, number> = { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0, ...counts };
   const total = (Object.values(full) as number[]).reduce((a, b) => a + b, 0);
-  return { total, counts: full, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 } };
+  return { total, counts: full, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: NOW.toISOString(), cap: 20, listedScope: "unhealthy" };
 }
 function aiHealth(o: Partial<AiFailureHealth>): AiFailureHealth {
   return { windowHours: 24, returned: 0, failed: 0, timeouts: 0, rateLimited: 0, quota: 0, lastFailureAt: null, lastQuotaAt: null, checkedAt: NOW.toISOString(), ...o };

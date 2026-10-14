@@ -35,7 +35,7 @@ function pipeline(over: Partial<PipelineStatus>): PipelineStatus {
   };
 }
 function sources(counts: Partial<ConnectionHealthResult["counts"]>, total: number): ConnectionHealthResult {
-  return { total, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0, ...counts }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 } };
+  return { total, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0, ...counts }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T00:00:00.000Z", cap: 20, listedScope: "unhealthy" };
 }
 const policies = defaultRefreshPolicies();
 

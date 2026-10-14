@@ -40,6 +40,10 @@ const READERS = [
   "lib/platform/refresh/projections.ts",
   "lib/platform/connection-diagnostics.ts",
   "lib/platform/convergence/convergence.ts",
+  // UX-P1 — the fleet connection reader (PLATFORM_OPS, identity-free) and the
+  // CUSTOMER_SUCCESS owner reader (id / username / name only, never email).
+  "lib/connections/health.ts",
+  "lib/platform/customer/connection-owners.ts",
 ];
 const ROUTES = [
   "app/api/platform/platform-ops/overview/route.ts",
@@ -49,6 +53,9 @@ const ROUTES = [
   "app/api/platform/platform-ops/refresh/executions/[id]/route.ts",
   "app/api/platform/platform-ops/alerts/route.ts",
   "app/api/platform/platform-ops/connection-diagnostics/route.ts",
+  // UX-P1 — the owner route (CUSTOMER_SUCCESS READ; scanned for secrets and
+  // env, not for the PLATFORM_OPS gate — its gate is pinned below).
+  "app/api/platform/customer-success/connection-owners/route.ts",
 ];
 
 console.log("source · no customer identity or secret is selected");
@@ -63,6 +70,22 @@ console.log("source · no customer identity or secret is selected");
   check("convergence labels by institution or an opaque reference", /Account …\$\{a\.id\.slice\(-6\)\}/.test(strip("lib/platform/convergence/convergence.ts")));
   check("connection diagnostics exposes an opaque ownerRef, not an owner email",
     /ownerRef/.test(strip("lib/platform/connection-diagnostics.ts")) && !/owner:\s*[a-z.]*email/.test(strip("lib/platform/connection-diagnostics.ts")));
+}
+
+console.log("source · owner resolution is a separate CUSTOMER_SUCCESS read (owner decision D4)");
+{
+  const owners = strip("lib/platform/customer/connection-owners.ts");
+  const route = strip("app/api/platform/customer-success/connection-owners/route.ts");
+  const fleet = strip("lib/connections/health.ts");
+  check("the owner reader selects id, username and name only", /select:\s*\{\s*id:\s*true,\s*user:\s*\{\s*select:\s*\{\s*id:\s*true,\s*username:\s*true,\s*name:\s*true\s*\}\s*\}\s*\}/.test(owners));
+  check("the owner reader labels through operatorDisplayName (username → name → opaque)", /operatorDisplayName\(/.test(owners) && /from "\.\/identity-label"/.test(owners));
+  check("the owner reader is bounded", /CONNECTION_OWNERS_MAX\s*=\s*50/.test(owners));
+  check("the owner route requires CUSTOMER_SUCCESS READ and returns the error first",
+    /requirePlatformAccess\(\s*["']CUSTOMER_SUCCESS["']\s*,\s*["']READ["']\s*\)/.test(route) && /if\s*\(\s*err\s*\)\s*return\s+err/.test(route));
+  check("the owner route never requests WRITE and exports no mutating verb", !/["']WRITE["']/.test(route) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route));
+  check("the owner route answers 400 on a malformed request", /status:\s*400/.test(route));
+  check("the fleet reader never selects a user id, email or name onto a row", !/user:\s*\{\s*select:\s*\{[^}]*(id|email|name|username):\s*true/.test(fleet));
+  check("the fleet reader's row type carries no owner identity", !/^\s*(userId|email|ownerEmail|owner)\s*:/m.test(fleet.slice(fleet.indexOf("interface ConnectionHealthRow"), fleet.indexOf("interface ConnectionHealthResult"))));
 }
 
 console.log("source · no raw environment value reaches a payload");
