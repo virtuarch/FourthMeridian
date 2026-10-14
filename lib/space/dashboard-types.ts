@@ -72,6 +72,13 @@ export type SpaceAccount = {
   /** 2026-10-07 — FinancialAccount.providerSubtype (provider evidence). Read only
    *  by liquidityAccess (lib/account-classifier.ts); null/absent = unknown. */
   providerSubtype?: string | null;
+  /**
+   * RWA-1 — present (true) only on a FULL row whose balance is a USER ESTIMATE
+   * (a manual asset, syncStatus "manual"). Read by freshness, so a home valued
+   * weeks ago is judged on the estimate horizon, not the 7-day feed cut. Never
+   * set on an aggregated privacy row (it names no single account).
+   */
+  userEstimate?:  true;
   creditLimit?:   number;
   interestRate?:  number;  // APR, e.g. 19.99
   minimumPayment?: number; // monthly minimum

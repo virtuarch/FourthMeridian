@@ -75,7 +75,7 @@ import {
 import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { amountOwed, creditBalance, liabilityState, type LiabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
-import { resolveAccountFreshness } from '@/lib/freshness/observation';
+import { resolveAccountFreshness, ESTIMATE_STALE_AFTER_DAYS } from '@/lib/freshness/observation';
 import { resolveAccountBalances, reconcileAccount } from '@/lib/balances/account-balances';
 import { loadPendingEvidence, NO_PENDING } from '@/lib/balances/pending-evidence';
 import { registerAssembler } from '@/lib/ai/assembler-registry';
@@ -350,13 +350,15 @@ async function assembleAccounts(
   };
 
   const freshnessFact = (
-    fa: { id: string; lastUpdated: Date; balanceLastUpdatedAt: Date | null },
+    fa: { id: string; lastUpdated: Date; balanceLastUpdatedAt: Date | null; syncStatus: string | null },
     at: Date,
   ) => {
     const f = resolveAccountFreshness({
       accountId:         fa.id,
       ingestedAt:        fa.lastUpdated,
       providerBalanceAt: fa.balanceLastUpdatedAt,
+      // RWA-1 — a manual asset's value is the user's estimate: estimate horizon.
+      userEstimate:      fa.syncStatus === 'manual',
     }, at).balance;
     return {
       basis:                f.basis,
@@ -442,10 +444,11 @@ async function assembleAccounts(
       }
     }
 
-    // Stale manual asset (not updated in 30+ days)
+    // Stale manual asset — RWA-1: judged on the ESTIMATE horizon (was 30 days,
+    // which called a home valued five weeks ago "stale").
     if (fa.syncStatus === 'manual') {
       const daysSince = (now.getTime() - fa.lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
-      if (daysSince > 30) {
+      if (daysSince >= ESTIMATE_STALE_AFTER_DAYS) {
         staleCount++;
         if (isFullView) {
           staleAccountNames.push(resolveDisplayName(fa));
@@ -570,6 +573,7 @@ async function assembleAccounts(
           ...(rep.unavailable ? { reportingBalanceUnavailable: true } : {}),
           lastUpdated:          fa.lastUpdated.toISOString(),
           balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
+          ...(fa.syncStatus === 'manual' ? { valuationSource: 'USER_ESTIMATE' as const } : {}),
           balanceFreshness:     freshnessFact(fa, now),
           ...balanceFacts(fa, now),
           syncStatus:      fa.syncStatus,
@@ -690,6 +694,8 @@ async function assembleAccounts(
           id:                   row.id,
           lastUpdated:          new Date(row.lastUpdated),
           balanceLastUpdatedAt: row.balanceLastUpdatedAt ? new Date(row.balanceLastUpdatedAt) : null,
+          // An aggregate is never presented as one user estimate (feed horizon).
+          syncStatus:           null,
         }, now),
         ...(aggState
           ? {

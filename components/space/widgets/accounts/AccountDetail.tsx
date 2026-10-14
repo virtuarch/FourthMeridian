@@ -39,6 +39,7 @@ import {
   accountBalanceClaimLabel, balanceBasisCaveat, describeLedgerCoverage,
   type LedgerCoverage,
 } from "@/lib/freshness/observation";
+import { ESTIMATE_DISCLOSURE } from "@/lib/assets/manual-asset";
 import { RECONCILIATION_LABEL } from "@/lib/balances/reconciliation-labels";
 import { ACCOUNT_TYPE_LABELS, healthChip } from "./AccountsPerspective";
 
@@ -121,7 +122,9 @@ export function AccountDetail({
   const imports  = row.importBatchCount;
   // v2.6-L1 — the caveat that keeps our fetch clock from reading as the
   // institution's. Null when there is nothing to caveat.
-  const basisCaveat = balanceBasisCaveat(row.freshness.balance);
+  // RWA-1 — a USER ESTIMATE has no fetch clock to caveat: the user typed the
+  // value, so the honest caveat is that it is an estimate, not a market price.
+  const basisCaveat = row.isUserEstimate ? ESTIMATE_DISCLOSURE : balanceBasisCaveat(row.freshness.balance);
 
   // v2.6-L2 — the canonical claims, resolved server-side and consumed here. This
   // component names quantities; it never interprets `availableBalance`.
@@ -301,7 +304,7 @@ export function AccountDetail({
             used when the institution attested its own computation time; otherwise
             it is "Balance checked", which claims nothing but our own fetch. */}
         <FactRow
-          label={accountBalanceClaimLabel(row.freshness.balance.basis)}
+          label={row.isUserEstimate ? "Estimate updated" : accountBalanceClaimLabel(row.freshness.balance.basis)}
           value={
             row.freshness.balance.observedAt
               ? formatRelativeTime(row.freshness.balance.observedAt)

@@ -113,6 +113,8 @@ interface FallbackAccount {
    *  read would, instead of silently dropping it. */
   lastUpdated?:          string;
   balanceLastUpdatedAt?: string | null;
+  /** RWA-1 — SpaceAccount.userEstimate: a manual asset's value, judged on the estimate horizon. */
+  userEstimate?:         true;
   /** REVIEW-3 B-1 — present only on aggregated BALANCE_ONLY rows (SpaceAccount.aggregate). */
   aggregate?: {
     memberAccountIds: string[];
@@ -131,6 +133,7 @@ function fallbackFreshness(a: FallbackAccount, now: Date) {
     ingestedAt:        a.lastUpdated ?? null,
     providerBalanceAt: a.balanceLastUpdatedAt ?? null,
     balance:           a.balance,
+    userEstimate:      a.userEstimate === true, // RWA-1 — estimate horizon
   }, now);
 }
 
@@ -163,6 +166,8 @@ function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[
     balance:            a.balance,
     currency:           a.currency,
     isManual:           false,
+    isUserEstimate:     false,
+    canManage:          false,
     connectionState:    null,
     importBatchCount:   0,
     // v2.6-L1 — freshness from the host's own account row. `ledgerQueried` is

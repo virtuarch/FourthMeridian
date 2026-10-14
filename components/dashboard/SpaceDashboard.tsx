@@ -341,6 +341,7 @@ export function SpaceDashboard({
               ingestedAt:         a.lastUpdated,
               providerBalanceAt:  a.balanceLastUpdatedAt ?? null,
               balance:            a.balance,
+              userEstimate:       a.userEstimate === true, // RWA-1 — estimate horizon
             })),
             new Date(),
           )

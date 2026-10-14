@@ -4,7 +4,7 @@
  * Signal detectors for the 'accounts' domain.
  *
  * Signals emitted:
- *   STALE_CONNECTION — one or more manual accounts not updated in 30+ days
+ *   STALE_CONNECTION — one or more manual asset values not updated in ESTIMATE_STALE_AFTER_DAYS (180)+ days
  *   NEEDS_REAUTH     — one or more Plaid connections require re-authentication
  *
  * Rules are deterministic — both conditions are pre-computed by the accounts
@@ -15,6 +15,7 @@
 import { FinanceDomains } from '@/lib/ai/types';
 import type { ContextDomainSection, ContextSignal, AccountsSectionData } from '@/lib/ai/types';
 import { SignalType } from '@/lib/ai/signals/types';
+import { ESTIMATE_STALE_AFTER_DAYS } from '@/lib/freshness/observation';
 import { registerDetector } from '@/lib/ai/signals/registry';
 
 // ---------------------------------------------------------------------------
@@ -35,7 +36,8 @@ function detectAccountSignals(
   // ── STALE_CONNECTION ──────────────────────────────────────────────────────
   // Rule: health.staleCount > 0
   // Condition pre-computed by accounts assembler: manual account with
-  // syncStatus='manual' and lastUpdated > 30 days ago.
+  // syncStatus='manual' and lastUpdated at least ESTIMATE_STALE_AFTER_DAYS ago
+  // (RWA-1 — a user estimate's horizon, not the old 30-day cut).
 
   if (data.health.staleCount > 0) {
     const n = data.health.staleCount;
@@ -45,7 +47,7 @@ function detectAccountSignals(
       domain:     FinanceDomains.ACCOUNTS,
       spaceId,
       severity:   'warning',
-      title:      `${n} manual account${n > 1 ? 's' : ''} not updated in 30+ days`,
+      title:      `${n} manual asset value${n > 1 ? 's' : ''} not updated in ${ESTIMATE_STALE_AFTER_DAYS}+ days`,
       value:      n,
       metadata: {
         count:        n,

@@ -58,7 +58,8 @@ export async function getSpaceCardFreshness(
     select: {
       spaceId: true,
       financialAccount: {
-        select: { id: true, balance: true, lastUpdated: true, balanceLastUpdatedAt: true },
+        // RWA-1 — syncStatus marks a USER ESTIMATE (manual asset); compared, never returned.
+        select: { id: true, balance: true, lastUpdated: true, balanceLastUpdatedAt: true, syncStatus: true },
       },
     },
   });
@@ -80,6 +81,7 @@ export async function getSpaceCardFreshness(
         ingestedAt:        r.financialAccount.lastUpdated,
         providerBalanceAt: r.financialAccount.balanceLastUpdatedAt,
         balance:           r.financialAccount.balance,
+        userEstimate:      r.financialAccount.syncStatus === "manual",
       })),
       now,
     );

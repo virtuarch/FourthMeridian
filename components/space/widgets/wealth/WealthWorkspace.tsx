@@ -14,7 +14,9 @@
  *             Investments living INSIDE the page as sections (the former
  *             Liquidity and Investments workspaces, embedded — same hooks, same
  *             authorities, same surfaces; only their duplicate hero/chart
- *             wrappers are folded into the page's own).
+ *             wrappers are folded into the page's own). RWA-1 adds a third
+ *             section, Real assets — the user's manual estimates (homes,
+ *             vehicles, valuables) with Add asset / Update value / Archive.
  *   Debt    — the complete Debt workspace, rendered as a mode.
  *
  * Cash and Investments are NOT navigation. Navigation represents concepts;
@@ -67,6 +69,7 @@ import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/LiquidityWorkspace";
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
+import { RealAssetsSection } from "./RealAssetsSection";
 import { WealthHero } from "./WealthHero";
 import { WealthTrendChart } from "./WealthTrendChart";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
@@ -101,6 +104,7 @@ export function assetsSections(args: { hasHistory: boolean }): SpaceChromeSectio
     ] : []),
     { label: "Cash",        anchor: "wealth-cash" },
     { label: "Investments", anchor: "wealth-investments" },
+    { label: "Real assets", anchor: "wealth-real-assets" },
   ];
 }
 
@@ -346,7 +350,7 @@ export function WealthWorkspace({
     />
   ) : undefined;
 
-  // ── The embedded Assets sections (Cash · Investments) ───────────────────────
+  // ── The embedded Assets sections (Cash · Investments · Real assets) ─────────
   // Same hooks, same authorities, same surfaces as the former peer lenses; each
   // keeps its own per-figure trust and stays silent toward the shell.
   const assetsSectionsBody = mode === "assets" ? (
@@ -385,6 +389,10 @@ export function WealthWorkspace({
           accounts={accounts}
           ctx={ctx}
         />
+      </section>
+      <section id="wealth-real-assets" className="scroll-mt-20 border-t border-[var(--border-hairline)] pt-8">
+        <SectionTitle>Real assets</SectionTitle>
+        <RealAssetsSection spaceId={spaceId} active={active} />
       </section>
     </>
   ) : null;

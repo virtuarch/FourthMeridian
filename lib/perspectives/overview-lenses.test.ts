@@ -111,11 +111,11 @@ console.log("5. Sidebar — every published anchor renders");
     WEALTH_TOTAL_SECTIONS.map((s) => s.label).join(" · ") === "Summary · Balance history · Composition · What moved it · Explanation");
   check("every Total anchor is an id in WealthWorkspace", WEALTH_TOTAL_SECTIONS.every((s) => s.anchor && wealthIds.has(s.anchor)));
   const assets = assetsSections({ hasHistory: true });
-  check("Assets publishes the wealth slots + Cash + Investments",
-    assets.map((s) => s.label).join(" · ") === "Summary · Balance history · Composition · What moved it · Cash · Investments");
+  check("Assets publishes the wealth slots + Cash + Investments + Real assets (RWA-1)",
+    assets.map((s) => s.label).join(" · ") === "Summary · Balance history · Composition · What moved it · Cash · Investments · Real assets");
   check("every Assets anchor is an id in WealthWorkspace", assets.every((s) => s.anchor && wealthIds.has(s.anchor)));
-  check("with no snapshot history Assets publishes only Cash + Investments (the sections that still render)",
-    assetsSections({ hasHistory: false }).map((s) => s.label).join() === "Cash,Investments");
+  check("with no snapshot history Assets publishes only Cash + Investments + Real assets (the sections that still render)",
+    assetsSections({ hasHistory: false }).map((s) => s.label).join() === "Cash,Investments,Real assets");
   check("Explanation is Total-only (not an Assets anchor)", !assets.some((s) => s.label === "Explanation"));
   check("the embedded sections keep their inner ids for deep anchors", liqIds.has("liquidity-sources") && invIds.has("investments-holdings"));
   // Debt — the pre-existing absent-anchor bug is fixed.

@@ -531,6 +531,9 @@ const getFinancialSnapshot: ToolDefinition = {
         liabilityState: a2.liabilityState,
         apr: a2.apr, minimumPayment: a2.minimumPayment,
         freshness: a2.balanceFreshness?.band, needsReauth: a2.needsReauth,
+        // RWA-1C — a manual asset's balance is the USER'S ESTIMATE, not a market
+        // price; the assembler marks it and this row must not drop the mark.
+        ...(a2.valuationSource ? { valuationSource: a2.valuationSource } : {}),
         available: a2.availableQuantity?.label && a2.availableQuantity?.amount !== undefined
           ? { label: a2.availableQuantity.label, amount: a2.availableQuantity.amount } : undefined,
         ...accessOf(a2),

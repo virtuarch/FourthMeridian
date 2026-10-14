@@ -112,8 +112,12 @@ console.log('\nG. names follow the detail grant');
 console.log('\nH. manual balances');
 {
   check('a manual balance 10 days old is current (entered, not synced)', derive([manual(10)]).sources[0].state === 'CURRENT');
-  const old = derive([manual(45), manual(5, 'Car')]).sources[0];
-  check('manual accounts form one source dated by the oldest; 45 days → OUT_OF_DATE, not actionable on Connections',
+  // RWA-1B — a manual balance is the user's ESTIMATE: out of date on the estimate
+  // horizon (ESTIMATE_STALE_AFTER_DAYS = 180), not the old 30-day cut.
+  check('a manual estimate 45 days old is current (RWA-1B: estimate horizon, was OUT_OF_DATE at 30)',
+    derive([manual(45)]).sources[0].state === 'CURRENT');
+  const old = derive([manual(200), manual(5, 'Car')]).sources[0];
+  check('manual accounts form one source dated by the oldest; 200 days → OUT_OF_DATE, not actionable on Connections',
     old.label === 'Manual accounts' && old.state === 'OUT_OF_DATE' && old.actionable === false && old.accountCount === 2);
   check('an account with no connection and no manual status is not reported (no honest clock)',
     derive([{ ...manual(1), syncStatus: 'pending' }]).sources.length === 0);
@@ -121,7 +125,7 @@ console.log('\nH. manual balances');
 
 console.log('\nI. nothing internal crosses; the model sees only what the page shows');
 {
-  const h = derive([bank({ status: 'NEEDS_REAUTH' }), wallet({ errorCode: 'RPC_TIMEOUT_SECRET' }), manual(40)]);
+  const h = derive([bank({ status: 'NEEDS_REAUTH' }), wallet({ errorCode: 'RPC_TIMEOUT_SECRET' }), manual(200)]);
   const json = JSON.stringify(h);
   check('no connection id, owner id or provider error code', !/SECRET|user_viewer|errorCode|ownerUserId|key/.test(json), json.slice(0, 200));
   check('attention first, most severe first', h.sources.map((s) => s.state).join(',') === 'NEEDS_RECONNECT,SYNC_INCOMPLETE,OUT_OF_DATE');
