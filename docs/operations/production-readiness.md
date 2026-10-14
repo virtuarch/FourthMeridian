@@ -1,5 +1,15 @@
 # Audit — Production Readiness
 
+> **Reconciliation note (2026-10-14).** The verdict below ("not ready for external users; the gap is configuration and operations") still holds, but several rows are superseded by later, dated records — read them before acting on a row here:
+>
+> - **Readiness verdict and gates:** the first-five beta verdict is **GO, conditional** on owner configuration acts ([P0 report §I](../plans/OPERATIONALIZATION-P0-REPORT-2026-10-07.md), [P1 report §O](../plans/OPERATIONALIZATION-P1-REPORT-2026-10-08.md)). The binding path to Production is the [production cutover plan](production-cutover-plan.md) (PLAN ONLY, NO-GO until its §6 gates are green).
+> - **Closed since this doc's last reconciliation (2026-10-07, P0):** blocker 1 / gate 9 (AI disclosure now names OpenAI and the data sent; the retention window is still withheld pending the provider answer); blocker 9 / gate 6 (support address published; see `legal-factual-basis-2026-10-07.md`).
+> - **Superseded facts:** gate 1 — `NEXT_PUBLIC_SENTRY_DSN` was measured **present** on Production on 2026-10-06 (cutover plan §1). New since P0: `PLATFORM_ALERTS_EMAIL` is required on Production and is **absent** (a candidate deploy will not boot without it).
+> - **Still open as written:** Turnstile keys (gate 4), external uptime monitor (7), backup/restore drill (8; the cutover plan rehearses a dump/restore in a clone), `registration_mode` re-verification (5; last verified 2026-08-17), `PLAID_ENV` / `INVESTMENT_OBSERVATIONS_ENABLED` value verification (2, 3).
+> - **Not covered here at all:** the RLS role topology and strict mode Production must adopt at cutover, and the session-model change (`environment-separation.md`, `rls-preview-cutover.md`).
+>
+> Current state is tracked in [`/STATUS.md`](../../STATUS.md) §7–§8, §11–§14.
+
 *The single living production-readiness snapshot. Regenerated from the beta-blocker analysis; supersedes the readiness tables previously scattered across STATUS and the prelaunch audit. The audits category expires at first production release.*
 
 **Verdict:** Not ready for external users. The core platform architecture is largely built; the binding gap is **verification / configuration / operations**, not feature construction.

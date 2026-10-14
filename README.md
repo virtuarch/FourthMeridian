@@ -7,7 +7,7 @@ A multi-tenant personal-finance intelligence platform built on Next.js 16 / Pris
 ## Project Status & Documentation
 
 - **[`STATUS.md`](STATUS.md)** — the current-state snapshot (version, active work, blockers, next steps, production readiness).
-- **[`docs/`](docs/README.md)** — the durable documentation set: `doctrine/` (the rules that bind the code), `systems/` (why each subsystem exists + its contracts), `architecture/` (decision records), `plans/` (roadmap + parked ideas), `operations/`, `releases/`, `audits/`, `design/`.
+- **[`docs/`](docs/README.md)** — the durable documentation set: `architecture/` (the binding doctrine), `systems/` (why each subsystem exists + its contracts), `decisions/` (ADRs), `plans/` (roadmap, parked ideas, investigations and program reports), `operations/` (runbooks, cutover plans, environment facts), `releases/`, `audits/` (the live defect register), `design-system/` and `design-studies/`.
 
 Features, APIs, and schemas evolve between versions. `docs/` is the source of intent; the code is the source of truth.
 

@@ -38,6 +38,9 @@ guide that ties everything together).
 | [`plans/`](plans/) | **Active** roadmap, parked ideas, and open initiative follow-ups. |
 | [`releases/`](releases/) | Honest per-version release notes. |
 | [`archive/completed-plans/`](archive/completed-plans/) | **Historical decision context only** — security reviews, the frozen Phase-2 baseline, rejected proposals, closed migration plans. Small by design; not a dumping ground. |
+| [`audits/`](audits/) | The live defect register: the pre-S1 full-system audit (FM-AUDIT-001…073). Per-finding state is tracked by commits citing the id; `STATUS.md` says how far that has been verified. |
+| [`design-studies/`](design-studies/) | Dated visual design studies for the Platform Spaces (Customer Success, Growth & Revenue, Platform refresh, Security Operations); the reference shape for Platform UI work. |
+| [`initiatives/`](initiatives/) | Implementation checklists for named initiatives (currently KD-15). |
 | [`bugfixes/`](bugfixes/) | A few closed bug writeups kept for operational reference. |
 | [`images/`](images/) | Shared screenshots and diagrams. |
 

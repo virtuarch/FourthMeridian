@@ -1,78 +1,192 @@
 # Fourth Meridian — STATUS
 
-*The current-state snapshot. Completed work is **linked, never described** — see git history and [release notes](docs/releases/). Doctrine, systems, and plans live under [`docs/`](docs/README.md); if this file conflicts with the code, fix this file.*
+*The one authoritative current-state document. Completed work is **linked, never re-described** — the record is git history, the reports under [`docs/plans/`](docs/plans/) and the runbooks under [`docs/operations/`](docs/operations/). Doctrine lives under [`docs/`](docs/README.md). If this file conflicts with the code, the code wins; fix this file.*
+
+**Last updated: 2026-10-14 (documentation consolidation pass; repository read at local `749bdf0` → `1bea4cc`, remote `origin/v2.6` at `dd39087`).**
+
+**Evidence labels used below:** **VERIFIED** = read in the repository, in GitHub CI results or in a dated report in this repository · **NOT VERIFIED** = stated by a report or memory but not re-checked in this pass · **UNKNOWN** = no evidence available without an action this pass was not authorised to take (no database, Vercel or Production access was used).
+
+---
+
+## 1. Project overview
+
+Fourth Meridian is a multi-tenant personal-finance intelligence platform: Next.js 16 (App Router) + Prisma + PostgreSQL (Supabase) on Vercel. Members organise accounts into collaborative **Spaces**; a deterministic financial spine (ledger, snapshots, forecast and scenario engine) computes every figure, and a model-driven conversation layer and Daily Brief narrate those figures without calculating them. Operators run the product from five **Platform Spaces** (Platform Operations, Security Operations, Growth & Revenue, Customer Success, Merchant Operations) inside the same application. The public marketing site is a separate, zero-authority project (`site/`).
+
+What it is and how it fits: [`docs/architecture/FOURTH_MERIDIAN_DOCTRINE.md`](docs/architecture/FOURTH_MERIDIAN_DOCTRINE.md).
+
+## 2. Version and branch
 
 | | |
 |---|---|
-| **Version** | **`2.6.0` — IN DEVELOPMENT** on branch `v2.6` (`package.json`, the sole version authority; mirrored in `package-lock.json`). Last release: **`2.5.0`**, tagged `v2.5.0`, carried by `main`. Production verified: B4 migration applied (88 migrations, 0 failed), index `isvalid`, `/api/health` reports the deployed release commit and `db: ok`, first-day logs clean. |
-| **Active branch** | `v2.6` (branched from the `v2.5.0` tag). `main` carries the release. |
-| **Deployed** | Vercel (sin1) + Supabase Postgres |
-| **Recently landed** | **REVIEW-3 EXECUTION (2026-08-17) — Semantic Authority Convergence closed as a program.** One coordinated pass (64 commits, branch `v2.6-review3`): population authority (privacy aggregation AFTER semantics, issuer credits never net against debt), chronology authority (`lib/time`, FIRST_PENDING_OBSERVATION wired, event/row economic date agree by construction), AI/Brief convergence (canonical folds, real income classification, canonical net, authority debt legs, reporting-currency prose, assessment insufficiency declared), snapshot read boundary (launcher through aggregate authorisation + read ratchet), retired product surface deleted (Overview canvas / section-widget registry cut, category allowlist, platform ops untouched), scripts governance extended, crypto/flag boundary documented. Net **−6,690 LOC** (336 files, +9,636/−16,326); 165→163 routes; 105→77 scripts; eslint 28→3 warnings. All 12 measured REVIEW-3 contradictions verified non-reproducible by an independent falsification pass. Full record: [plans/v2.6-REVIEW-3-EXECUTION-REPORT.md](docs/plans/v2.6-REVIEW-3-EXECUTION-REPORT.md), baseline: [plans/v2.6-REVIEW-3-EXECUTION-BASELINE.md](docs/plans/v2.6-REVIEW-3-EXECUTION-BASELINE.md). **v2.6 historical-truth arc — the financial model became interrogable.** *Engine correctness:* replay + corporate actions + BTC ledger completeness (`b07c094`), historical ownership (`ed6fb61`), historical holdings + point detail (`42b9cbb`), frozen rows + universal composition states (`a80766c`). *Crypto provider-bound history:* recorded availability (`6edc746`), canonical crypto status (`7ac4937`), provider-bounded windows (`96f595b`), capability-triggered history (`c79cf85`), resumable staged execution (`56f87b6`). *Authorities:* aggregate authorisation (`be39b1d`), Net Worth composition (`e947c46`), account series (`eb10b30`), holding series (`5ceff2e`), evidence-based account coverage (`af1b3bd`). *Regeneration:* per-component authorisation + the 375-row debt repair + read-only integrity audit (`5d32626` diagnosis, `86f3b74` repair). *Exploration:* the shared panel (`a9e1c7f`), universal lens roots (`bf0a6f2`), chart entry points + formula deduplication (`f36693b`) — [plans/v2.6-INVESTIGATION-UNIVERSAL-LENS-ROOTS.md](docs/plans/v2.6-INVESTIGATION-UNIVERSAL-LENS-ROOTS.md). **v2.5 architectural completion wave.** **Transaction Explorer TX-1→TX-4** — read-scale investigation (`8d3823a`), bounded loaders + completeness note (`b241cc2`, `be836db`), keyset `queryTransactions()` authority (`537b817`, hardened `4cf86a0`), consumer migration and the closed find→inspect→act loop (`b1c9550`, `cd28478`, `5761892`), parity matrix + analytics cleanup (`6061966`) — [systems/transactions.md](docs/systems/transactions.md). **CONN-1→CONN-4A connection lifecycle** — lifecycle projection (`26c0a54`), financial-intelligence reconstruction (`7f521de`→`3412fb8`), freshness pipeline (`25ef845`), disconnect doctrine + Model A (`da679b0`, `9c9b4c0`) — [plans/connection-lifecycle-roadmap.md](docs/plans/connection-lifecycle-roadmap.md). **TimelineLens v4** promoted to sole canonical time selector (`05c7c80`→`8665d64`, exclusivity-guarded). **Platform Ops foundations** — operator connection controls (`5184c8b`), beta-readiness audit (`f1a0901`), beta launch-gate hardening (`630a84e`). **Admin TOTP enrollment lifecycle** fixed (`22810da`). **Marketing boundary** hardened to structural rules (`04c416d`). **v2.5 close-out slices:** **V25-FINAL-1 FX honesty** (`e3c91d0`) — unavailable conversion is `amount: null`, never a native relabel or fake zero; **V25-SIDE-1 liability balance semantics** (`f4e357f`) — one `lib/debt/balance-semantics.ts` authority for owed-vs-credit; **V25-FINAL-2 production ops gate** (`f8ad187`) — Sentry monitoring, runtime `DISABLE_SYSTEM_ADMIN` enforcement, production Plaid-env validation, admin-Plaid-audit verified, Emergency-access doctrine documented; **V25-FINAL-3 closure gate** — verified no v2.5 architectural/correctness/security blocker remains (verdict **B**: close with named before-beta gates). **V26-PRE B1–B5 production hardening** (`8ab0193`, `bad65e0`, `afe1c3e`, `64cf263`, `b2a8449`) — five independently-audited and independently-certified production blockers, integrated byte-identically to certification: update-path semantic-fact preservation (B1), AI snapshot convergence onto the canonical authority (B2), a single effective-debt-terms authority (B3), the BTC transaction identity backstop — tombstone-aware dedupe + `skipDuplicates` + active-row partial unique index, **no sync lock by design** (B4), and CI verification integrity — `jobs/`+`scripts/` discovery rescuing a never-executed incident regression guard (B5). |
-| **Active initiative** | **v2.6 — Semantic Authority Convergence** (first workstream), opened from the `v2.5.0` baseline. See [plans/ROADMAP.md](docs/plans/ROADMAP.md). v2.5 is closed: architecture, the financial semantic spine, the Truth Spine, Platform Ops hardening and the V26-PRE B1–B5 production blockers are all released and production-verified. The remaining gate before external users is beta config/ops, not construction. |
+| **Version** | `2.6.0` — **IN DEVELOPMENT** (`package.json`, the sole version authority; mirrored in `package-lock.json`; pinned by `lib/release-version.test.ts`). |
+| **Last release** | `2.5.0`, tag `v2.5.0`, carried by `main` — [releases/v2.5.md](docs/releases/v2.5.md). |
+| **Development branch** | `v2.6` (branched from the `v2.5.0` tag). `main` = Production. `main` is exactly one content-identical cherry-pick (`87e4df7`) ahead of what `v2.6` contains (VERIFIED by the cutover plan's merge-tree check, 2026-10-06). |
+| **Node** | 24 (`.nvmrc`, `engines`, Vercel, CI). |
+| **Protected branches** | `uxp1/base` + `uxp1/agent-1…5` are Claude 1's live Platform Spaces UX Refinement branches (see §6). Do not touch. |
 
-## Production readiness
+## 3. Latest verified commits
 
-**Not ready for external users.** The binding gap is verification / configuration / operations, not feature construction. Full blocker list: [audits/production-readiness.md](docs/operations/production-readiness.md). The most urgent single act is verifying production `registration_mode=invite_only` (DB default is `open`).
-
-## Blockers (beta gate)
-
-*Registration consent capture closed in `630a84e` (PO-5A) — `User.acceptedTermsAt` + `acceptedTermsVersion` (`prisma/schema.prisma:367`), migration `20260719191719_po5a_terms_consent`, enforced at `app/api/auth/register/route.ts:76` and gated in the register UI. Verified V25-CLOSE-1.*
-
-1. LLM/OpenAI disclosure + retention posture in `/legal/ai` — decision + copy. *(`content/marketing/legal-ai.md` names neither the provider nor a retention window. Its "not a chat window you have to prompt" line no longer contradicts a shipped surface — the [AI conversation reset](docs/plans/AI-CONVERSATION-RESET.md) removed the conversation layer and `/api/ai/chat` now returns `503 AWAITING_REDESIGN` — but the disclosure is still owed, because `buildContext` and the provider seam remain and the next layer will need it in place before it ships.)*
-2. ~~Sentry error monitoring — not configured~~ **code-closed (V25-FINAL-2 `f8ad187`); remaining act = set `NEXT_PUBLIC_SENTRY_DSN` in production** (prod boot now fails without it).
-3. Production config verification — `invite_only`, Turnstile keys, **production Plaid credentials + `PLAID_ENV=production`** (the sandbox-in-prod *guard* is code-closed in V25-FINAL-2; the credentials remain a config act), uptime monitor, backup-restore drill, Resend/domain.
-4. Published support address — exists only as a sender identity in `lib/email/senders.ts`; zero occurrences in user-facing surfaces.
-5. ~~**Sync cursor-ahead-of-data robustness**~~ **CODE CLOSED (PRE-V26-PLAID-CLOSE, `986d97a`).** A page with any unmet persistence obligation (`MISSING_ACCOUNT` or a transaction `UPSERT_ERROR`) no longer writes its cursor — it throws `PlaidSyncIncompleteError`, so the same page replays and a returned result now *means* complete persistence. Replay is idempotent (`plaidTransactionId` unique, findUnique→update before create, fingerprint fallback). Stalls are visible in Platform Ops with duration + distinct failed attempts, and sync-incomplete state reaches the financial trust envelope (`657e850`).
-6. ~~**Account-deletion Plaid `itemRemove` fail-open**~~ **CODE CLOSED (PRE-BETA-OPS-CLOSE, `657e850`).** Revocation failure no longer destroys the retry path: only a *confirmed* outcome marks the item `REVOKED`, a retryable failure holds the deletion (token and User row intact) and the existing daily cron retries. Bounded to 3 daily attempts (≈72h) counted in distinct calendar days so a duplicate cron run cannot burn the budget; after that the deletion completes and writes durable `ACCOUNT_DELETED_UNREVOKED` evidence (item id + institution, **never a token**) that survives the User delete.
-7. **Set `NEXT_PUBLIC_SENTRY_DSN` in Vercel Production** — it is in `PROD_REQUIRED_KEYS` (`lib/env.ts`), enforced at boot by `instrumentation.ts`. Verified absent from the Production environment: **deploying this branch without it fails boot.** Config act, not code.
-8. **Verify `PLAID_ENV=production` and `INVESTMENT_OBSERVATIONS_ENABLED=true` in Vercel Production** — both keys confirmed PRESENT (REVIEW-3 census, values sensitive/write-only). Production carries 294 `PositionObservation` rows, so the observations pipeline is effectively live; the flag-off state is now also HONEST (`positions_unknown`, never a silent empty portfolio — REVIEW-3 slice H). Explicit value verification still recommended at the next config touch.
-9. **Turnstile production keys** — both absent from Production. `verifyCaptchaToken` returns `true` when no secret is configured (`lib/captcha.ts`), so **CAPTCHA is currently a no-op in production**. Before external beta.
-10. ~~Verify `registration_mode = invite_only`~~ **VERIFIED (REVIEW-3 Phase 0, 2026-08-17)** — read-only production census confirmed `registration_mode = invite_only`.
-
-## Next 3–5 steps
-
-1. **OPS-1 LLM disclosure** (C-S2) — smallest copy closing the largest remaining gate; consent capture (C-S1) is already done.
-2. **OPS-1 ops floor + production config flips** (C-S3) — verify `invite_only` first, then Sentry, uptime, backup drill, Turnstile, Plaid.
-3. **Design the replacement conversation layer from exemplar conversations** — not from the removed architecture, and not before the exemplars exist. See [plans/AI-CONVERSATION-RESET.md](docs/plans/AI-CONVERSATION-RESET.md) §"What comes next". (This supersedes AI5-0/AI5-1: the failure corpus they were to reconstruct measured a pipeline that no longer exists.)
-4. **v2.5.5 convergence** — DayFacts sole-fold + named net measures (data-semantics only; see [ROADMAP](docs/plans/ROADMAP.md)). *Classifier v3 landed (CCPAY-2); the remaining CCPAY debt is the [recorded follow-ups](docs/plans/ccpay-follow-ups.md) — btc-sync flow-authority convergence + the never-classified seed backlog.*
-
-## Where things stand
-
-- **v2.6 (historical truth):** the stock-lens financial model is **interrogable end to end** — every chart point explains itself down to the holding, through one explorer, one URL model and one reconciliation vocabulary, from nine canonical roots (net-worth, assets, liquid-net-worth, investments, crypto, cash, savings, debt, liquidity). Aggregates carry their own authorisation; unavailable history states its reason and supported interval rather than showing a zero. **Standing production requirement:** the local debt repair (`86f3b74`) does **not** imply production is repaired — deploy the history code, run `scripts/audit-snapshot-integrity.ts` (read-only) against production, dry-run and apply only what it reports, prove a zero-write second pass, then smoke-test the explorer. Known limits: the Net Worth lens reads a trailing 365-snapshot window so its chart cannot reach older history (the API resolves it); investment history before an account's position spine is genuinely unsupported and is refused rather than estimated; Cash/Savings/Crypto have no chart surface of their own and are reachable by deep link or from within the tree. Flow lenses (Income, Spending, Cash Flow) are out of scope by design.
-- **v2.5 (architecture):** **COMPLETE — every scoped exit criterion met.** Host decomposition done (SD-7 landed, SD-8 census clean); legacy `Account` physically retired; one dashboard system serves Personal and shared Spaces; TimelineLens is the sole canonical time selector; Transaction Explorer read path is bounded and server-paged (TX-1→TX-4); connection lifecycle is modelled in three layers (CONN-1→CONN-4A). The V25-CLOSE-x arc closed the rest: ledger + artifact containment (CLOSE-1), CI green (CLOSE-1A), and guard hardening (CLOSE-2 — Atlas ratchet across `components/**`+`app/**`, prototype-route containment guard, Space visibility-resolver parity guard). The V25-FINAL slices closed the remaining correctness/security review findings (FX honesty, liability semantics, ops gate). **The V25-FINAL-3 closure gate (2026-07-22) re-verified the foundation and returned verdict B: the architecture is closed. The two fault-tolerance items it named (sync cursor-ahead robustness, deletion `itemRemove` fail-open) were then CLOSED IN CODE by PRE-V26-PLAID-CLOSE (`986d97a`) and PRE-BETA-OPS-CLOSE (`657e850`). The final closure review (`tsc` clean, lint clean, no regressions, no schema migration or backfill required) found no remaining v2.5 code blocker. *Claim correction (V26-PRE B5): the previously-cited "339/339 tests" and "13/13 architectural guard suites" figures were not reproducible from the repository (the suite had grown past both numbers and no 13-suite enumeration exists anywhere); CI discovery also silently excluded `jobs/` and `scripts/`, leaving `jobs/recovery-isolation.test.ts` — an incident-born regression guard — never executed. Discovery now covers both directories (`scripts/run-tests.ts`); the suite count is whatever `npm run test:unit` prints, which is the only authoritative number.* — what remains is a release gate: production configuration and operator acts, none of which is an architectural defect.**
-- **v2.5.5 (Financial Intelligence):** canonical aggregation is substantially landed (CF-3 `DayFacts` is the projection; Summary/History/Calendar parity test-enforced). Remaining is convergence + test enforcement, not construction.
-- **OPS-1 / beta:** legal/public (S9) and beta-access (S10) substantially shipped; **consent capture landed (PO-5A `630a84e`)**. Remaining is LLM disclosure copy + the production ops/config floor — configuration and prose, not construction.
-- **AI (reset, 2026-09-07):** the conversational layer was **deleted, not disabled** — see [plans/AI-CONVERSATION-RESET.md](docs/plans/AI-CONVERSATION-RESET.md). `/api/ai/chat` returns an explicit `503 AWAITING_REDESIGN`; there is no prompt builder, router, planner, figure licence, answer verifier, repair loop or deterministic fallback in the repository, and six AI flags went with them. **The deterministic substrate is untouched and is the whole point of the reset:** `buildContext` + assemblers, the coverage envelope, `computeAssessment`, the forecast engine, the visibility gate and the single provider seam all survive with their tests. **No replacement architecture has been chosen**, and the next design starts from exemplar conversations rather than from the removed layer. Conversational persistence (`conversationId`) remains unbuilt and is now a question for that design, not a backlog item against the old one.
-
-## Open known issues
-
-Active tickets only (fixed defects live in git history):
-
-| ID | Issue | Severity | Milestone |
+| Commit | Date | What | Verification |
 |---|---|---|---|
-| KD-8 | ~~Master-mode chat: unbounded prompt remains.~~ **MOOT — the prompt builder was deleted (AI conversation reset).** Re-open against the replacement if it reintroduces a cross-Space prompt; the deduped account figure and the UNAVAILABLE-Space disclosure are the recorded requirements. | — | closed |
-| KD-12 | ~~Audit-log write amplification (2 rows/chat/Space).~~ **Reduced by the AI conversation reset:** the retrieval-plan row and the output-validation row are gone with their writers; `AI_CONTEXT_ASSEMBLED` remains, once per `buildContext`. | Low | v2.6b |
-| KD-14 | `AiAdvice` still has no production write path (advice generation) | Medium | v2.6b |
-| KD-16 | ~~Per-turn window re-derivation.~~ **MOOT — there are no turns (AI conversation reset).** The availability authority it constrained (`lib/ai/coverage-envelope.ts`) survives and still derives every window string from the fetched window. | — | closed |
+| `dd39087` | 2026-10-08 | OPERATIONALIZATION-P1-REPORT (docs only) — `origin/v2.6` HEAD | GitHub CI run 37701282029 `success` (VERIFIED) |
+| `83bb03e` | 2026-10-08 | Last **code** commit; the Production **candidate** named by the P1 report | GitHub CI 37699926892 `success`; Preview `/api/health` reported `commit: 83bb03e` (VERIFIED by the P1 report §L/§M) |
+| `749bdf0` | 2026-10-14 | UX-P1-BASE — local, **not pushed**; shared primitives + Overview composer stubs for the UX P1 program; no migration | Gate state **UNKNOWN** (the commit records no gate run; owned by Claude 1) |
+| `1bea4cc` | 2026-10-14 | UX-P1-HERO — local, **not pushed**; the Platform area hero trimmed (one file, coordinator-owned) | Gate state **UNKNOWN** (in-flight program; owned by Claude 1) |
 
-**Closed since the last reconciliation** (verified in code, V25-CLOSE-1 — kept here for one cycle so the correction is visible, then delete):
+Every commit in the Operationalization series (`0c73f31` → `83bb03e`) has an exact-SHA GitHub run marked `success` (VERIFIED via `gh run list`).
 
-- **KD-21** — *closed.* All four sub-items land: A10 investments valuation via the new `lib/investments/account-scope.ts` scope authority (`ebda4b2`, consumed at `valuation.ts:284` + `investments-time-machine.ts:120`); Goals via `resolveFullVisibleAccountIds` + `filterVisibleContributions` (`6921337`, `app/api/spaces/[id]/goals/route.ts:62`); banking import authorization via the shared `grantsTransactionDetail` guard (`lib/imports/authorize.ts:109`); activity-feed account-name ruling implemented as `lib/activity/scrub-account-name.ts` + `account-name-privacy.ts`. Each is regression-pinned. *This was the only issue milestoned `v2.5` and was therefore falsely presenting as a v2.5 blocker.*
-- **KD-22** — *closed.* `46772f4`; `lib/ai/intelligence/annotations/metrics.ts:177` now returns `incomeTotal + refundTotal - expenseTotal - debtPaymentTotal`, pinned by `lib/ai/intelligence/spending-trends-net.test.ts`.
+## 4. Current development phase
 
-## Documentation map
+**Pre-beta: code-complete for the first five beta users, awaiting Production cutover.** The Operationalization P0 and P1 programs closed on 2026-10-07/08 with the verdict *FIRST-FIVE BETA OPERATIONAL VERDICT: GO*, conditional on owner configuration acts and the Production cutover ([P0 report](docs/plans/OPERATIONALIZATION-P0-REPORT-2026-10-07.md), [P1 report](docs/plans/OPERATIONALIZATION-P1-REPORT-2026-10-08.md)). Production still serves the July release (§13). In parallel, **Platform Spaces UX Refinement P1 is IN PROGRESS** (§6).
 
-*(The documentation tree was restructured into a specification — start at [`docs/README.md`](docs/README.md) and [`docs/architecture/README.md`](docs/architecture/README.md).)*
+## 5. Completed milestones (linked, newest first)
+
+- **2026-10-14 — UX P1 base** (`749bdf0`): five shared primitives, status-token aliases, `WidgetMessage` live regions, the Overview composer with frozen block contract. Local only. The investigation and coordination contract: [investigation](docs/plans/PLATFORM-SPACES-UX-REFINEMENT-P1-INVESTIGATION-2026-10-14.md) · [coordination](docs/plans/PLATFORM-SPACES-UX-REFINEMENT-P1-COORDINATION.md).
+- **2026-10-07/08 — Operationalization P0 + P1** (`0c73f31`, `8d64468`, `cc790cd`; `da015fe` → `83bb03e`): AI attribution and failure rows, Plaid webhook facts, alerting floor with the Preview alert path proven, beta intake, factual public/legal copy (`docs/operations/legal-factual-basis-2026-10-07.md`); then the Customer Success spine, entitlement catalogue + resolver, policy groups and cohorts, 15-minute dispatcher wake with ledger-driven cadence, Refresh All, the operator action envelope with reason and before/after. Migrations `20261007100000_operationalization_p0_facts`, `20261008000000_p1_customer_policy_cohort`.
+- **2026-10-07 — Conversations: advice boundary, hardening, liquidity access** (`df61ac6`, `3ff9e0f`, `a6a9c61` → `049c669`, `e8fc400`): deterministic guidance notes, Markdown image exfiltration sink closed, provenance carrier, `providerSubtype` + liquidity access (HSA / retirement out of unrestricted cash). Doctrine: [`docs/systems/ai-financial-guidance-boundary.md`](docs/systems/ai-financial-guidance-boundary.md), [`docs/systems/ai-conversations-security-model.md`](docs/systems/ai-conversations-security-model.md).
+- **2026-10-02 → 10-07 — Public/app domain split**: architecture ([plan](docs/plans/PUBLIC-APP-DOMAIN-SPLIT-ARCHITECTURE.md)), Stage A/B (`f75f792`), `site/` as a separate zero-authority Vercel project, Preview two-origin rehearsal run end to end ([record](docs/operations/domain-split-preview.md), `60af144`), Ignored-Build-Step fix (`f541133`), revoked-session shell fix (`c7e72ed`), environment separation inventory ([record](docs/operations/environment-separation.md), `d2869a2`).
+- **2026-10-04 → 10-07 — Plaid hardening**: DB-level PLAID identity exclusivity (`d02b61b`/`16c638a`), liveness (`772f845`), revoke (`f339e57`), pagination-mutation restart (`1988067`), webhook `kid` verification fix (`ea48807`), Connections truth (`fc86771`), Investments consent truth (`7e91477`), Preview Plaid Sandbox lane ([record](docs/operations/plaid-sandbox-lane-2026-10-06.md), `0bc1fed`).
+- **2026-10-01 → 10-06 — Postgres Row-Level Security rollout** (`RLS-0`…`RLS-16`, the C/AI/P/ACC/D1/PREP series, `RLS-EXECUTE` `1ef016c`, `STRICT-PRODUCTION` `dc3755f`, `TENANT-IDLE` `b280766`, `LOGIN-FM_AUTH` `bfb6cbd`): three runtime roles (`fm_app`, `fm_auth`, `fm_system`) plus `fm_backup`, strict mode, the `db-authority` ratchet. Architecture: [investigation](docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md). Runbook: [rls-preview-cutover.md](docs/operations/rls-preview-cutover.md). Merchant Operations platform area (`ff6395c`, `01ab98a`).
+- **2026-10-03/04 — PERF-1…4** dev-server memory (`f930ac5`); goal-seek return + spending baseline (`a9430a4`, `ec741ba`; [investigation](docs/plans/V26-INVESTIGATION-SHORT-HORIZON-GOAL-SEEK-AND-SPENDING-BASELINE.md)); Brief quota handling (`db1950b`); Plaid cleanup ops (`158a427`).
+- **2026-10-01 — Crypto refresh incident and repair** ([incident](docs/plans/CRYPTO-REFRESH-INCIDENT-2026-10-01.md), [closure](docs/plans/CRYPTO-REFRESH-REPAIR-CLOSURE-2026-10-01.md), [operator procedure](docs/plans/CRYPTO-REFRESH-REPAIR-OPERATOR-PROCEDURE.md)).
+- **2026-09-21/22 — Pre-S1 full-system audit + gate repair + S1 category spending**: the [PRE-S1 audit](docs/audits/PRE-S1-FULL-SYSTEM-AUDIT-2026-09-21.md) (`7a0a3ef`, 73 findings — the live defect register, §10), gate repair (`52d91a7`), CI parity on Node 24 with the clean-copy `npm run ci` contract (`c0edb87`, `8ceafec`), S1 (`377ef1e` → `e750055`; [investigation](docs/plans/AI-CATEGORY-SPENDING-S1-INVESTIGATION.md)).
+- **2026-09-20/21 — Space and finance surfaces**: Debt Overview APR + per-liability payoff (`c357660`, `1192598`, `1134b65`), Cash Flow spending reconciliation and tiers (`7bdae15`, `3702bb3`; [investigation](docs/plans/TRANSACTION-REFUND-ECONOMICS-INVESTIGATION.md)), refund economics (`382897e`), money presentation contract (`6c40490`, `2a201f7`), workspace sidebar + Net Worth parent + Markets skeleton (`12a6e44` → `f3ef01b`, `496bf7b`), Space history contract (`a6c098c`), one primary nav (`0a60cc2`), site nav inside a Space (`2ff01a2`).
+- **2026-09-20/21 — AI programs on the promoted runtime**: post-M1 architecture program (`b9e9fd6`, 47 commits; [closure](docs/plans/AI-POSTM1-ARCHITECTURE-PROGRAM-CLOSURE.md)), Financial Memory V2 ([design](docs/plans/AI-FINANCIAL-MEMORY-V2-DESIGN.md)), planning continuity (`264d91e`; [closure](docs/plans/AI-PREEXECUTION-PLANNING-CONTINUITY-CLOSURE.md)), I1 income changes ([closure](docs/plans/AI-INCOME-CHANGES-I1-CLOSURE.md)), M1 measures/comparison (`d056898`), L1 liability dynamics (`2c59c04`).
+- **2026-09-13/15 — Conversation runtime promoted to production** (`989d63d`, `POST /api/ai/chat`, model `gpt-5.1`; [record](docs/plans/AI-PRODUCTION-PROMOTION.md), [dogfood gate](docs/plans/AI-GPT51-PROMOTION-DOGFOOD-GATE.md)); Daily Brief 1–4.1 (`0e1cf1e` → `fd41f5a`); scenario continuity + liquid floor + checkpoints + elapsed time; exact temporal predicates (`0700c56`); transcript cache (`e01414b`); Platform Ops policies, control and cockpit (`34e592c`, `27d6d22`, `e94da68`, `a655b38`; [investigation](docs/plans/PLATFORM-OPS-CONTROL-PLANE-INVESTIGATION.md)); incremental ETH history (`891458f`); the dev-database guard (`cdeac7e`, `b26fbeb`) after the [2026-09-15 recovery](docs/plans/DATABASE-ROLLBACK-RECOVERY-2026-09-15.md) — [`docs/operations/database-safety.md`](docs/operations/database-safety.md) is binding.
+- **2026-09-07 → 09-09 — AI conversation reset and rebuild**: the previous conversation layer was deleted (`95512bb`; [record](docs/plans/AI-CONVERSATION-RESET.md)), then re-designed from exemplar conversations through a measured baseline harness and a series of recorded experiments (`docs/plans/AI-CONVERSATION-*.md`, `AI-GPT51-*.md`, [cost economics](docs/plans/AI-BETA-COST-ECONOMICS-INVESTIGATION.md)). Platform Ops cost accounting (`26ca0b9` → `2ae717d`).
+- **2026-08-17 — v2.6 REVIEW-3 Semantic Authority Convergence** closed as a program (64 commits; [report](docs/plans/v2.6-REVIEW-3-EXECUTION-REPORT.md)); the **historical-truth arc** (replay, provider-bound crypto history, aggregate authorisation, universal lens roots — [investigation](docs/plans/v2.6-INVESTIGATION-UNIVERSAL-LENS-ROOTS.md)).
+- **2026-07-27 — v2.5 released** ([releases/v2.5.md](docs/releases/v2.5.md)); V26-PRE B1–B5 production hardening integrated and production-verified.
+
+## 6. Active workstreams and ownership
+
+| Workstream | State | Owner | Record |
+|---|---|---|---|
+| **Platform Spaces UX Refinement P1** | **IN PROGRESS** (started 2026-10-14). Base `749bdf0` committed locally on `v2.6` and mirrored as `uxp1/base`; five agent worktrees (`/Users/chrstn/dev/FourthMeridian-uxp1/agent-1…5`, branches `uxp1/agent-1…5`). At the time of this pass all five branches were still at the base commit with clean trees (VERIFIED). Merge order 1 → 5 into `v2.6` with `--no-ff`, then build, `npm run ci`, push, GitHub CI, Preview seed (label converge only) and verification. | Claude 1 (coordinator) + agents 1–5; owner decisions D1–D14 in force | [coordination](docs/plans/PLATFORM-SPACES-UX-REFINEMENT-P1-COORDINATION.md) · [investigation](docs/plans/PLATFORM-SPACES-UX-REFINEMENT-P1-INVESTIGATION-2026-10-14.md) |
+| **Production cutover** (v2.6 + RLS authority + `NEXTAUTH_SECRET` / `CRON_SECRET` rotation) | **PLAN ONLY — NO-GO** until the plan's §6 preflight gates and §8 issues 1–6 are green. Nothing executed on Production. | Owner (every Production step needs explicit authorisation, verbatim scope in the plan's §10) | [production-cutover-plan.md](docs/operations/production-cutover-plan.md) |
+| **Domain split, Production** | Rehearsed on Preview; Production steps **NOT done** (they follow the cutover) | Owner | [domain-split-preview.md §6](docs/operations/domain-split-preview.md) |
+| **Status documentation** | This pass (2026-10-14): STATUS rewritten, drift audits retired (§15) | — | this file |
+
+File ownership during the UX P1 program is exclusive and listed in the coordination contract (platform widgets, `lib/platform/**`, platform routes, navigation files, the shared primitives). Anything not listed there must not be edited without asking the coordinator.
+
+## 7. Outstanding tasks
+
+**Before the Production cutover (from the plan, all owner-gated):**
+1. Fix the candidate SHA: the no-content merge of `origin/main` into `v2.6` so `main` fast-forwards to the tested SHA; the candidate must be at or after `83bb03e` (the plan's addenda name `1988067`, `ea48807`, `fc86771`, `7e91477` as mandatory).
+2. Plaid Sandbox provider acceptance on Preview **on the candidate**; every scheduled job body exercised once on Preview under the role topology (no scheduled job has ever run in a deployed v2.6 environment — 0 `JobRun` rows on Preview, ever).
+3. Clone rehearsal of the 35 pending migrations + the `economicDate` backfill + audits + `rls:accept` on a copy of Production's rows; staged-URL login rehearsal; backup/restore rehearsal.
+4. Owner configuration acts: `PLATFORM_ALERTS_EMAIL` on Production (the candidate **refuses to boot** without it), `FM_RLS_STRICT=true` + the three role URLs at cutover, Turnstile keys, confirm the operator account's grants and the monitored `support@` inbox.
+
+**After the cutover:** domain-split Production steps 1–10 (`app.` host, Plaid allowlist, apex move, per-Item webhook URL update before the apex moves, second `NEXTAUTH_SECRET` rotation); `main` fast-forward.
+
+**Engineering P2 (deferred by the P0/P1 reports, not beta-blocking):** beta-queue and `/admin` break-glass actions onto the operator envelope; AuditLog DB-level append-only; `next build` added to the local CI contract; readers/retention for `PlaidWebhookEvent` and `BetaAccessRequestEvent`; `AiInvocation.userId` scrub on purge; an operator "pause this job" lever; wallet Refresh All proven on Preview (no wallet connection exists there).
+
+**Documentation re-baseline owed (P1-7 of the operationalization investigation):** `docs/systems/ai-foundation.md` (carries its own stale banner, FM-AUDIT-066), `docs/systems/platform-operations.md` (2026-07-25), `docs/operations/admin-operations.md`, `incident-response.md`, `background-jobs.md` (July), `app/api/platform/README.md` (2026-07-13), and the header of `docs/operations/rls-preview-cutover.md` (still says "not executed" — see §13 Preview). The [roadmap](docs/plans/ROADMAP.md) needs an owner re-baseline (§15).
+
+**Owner / counsel decisions (unchanged since P0):** OpenAI API retention window; whether Vercel/Supabase/Resend/Sentry are named as sub-processors; regulatory sufficiency of the guidance posture; counsel review of terms/privacy (deferred to v3.0 by the readiness doc).
+
+## 8. Known blockers and risks
+
+| # | Blocker / risk | Evidence | Class |
+|---|---|---|---|
+| 1 | **Production runs the July release** (`87e4df7`, deployed 2026-07-27): pre-RLS, pre-P1 session model (a JWT signed with the shared `NEXTAUTH_SECRET` is accepted without a session-row proof), 35 migrations behind, Plaid webhook `kid` defect (`ea48807`) present on `main`. | cutover plan §1 (measured 2026-10-06, read-only) | Cutover |
+| 2 | **v2.6's Plaid paths have never touched Production Plaid Items**; after promotion `sync-banks` (06:00) and inbound webhooks run v2.6 code against 3 ACTIVE real Items. | cutover plan §8 issue 1 | FIX BEFORE CUTOVER (or explicit owner risk acceptance) |
+| 3 | `PLATFORM_ALERTS_EMAIL` absent from Production and now in `PROD_REQUIRED_KEYS` — a Production deploy of the candidate will not boot until it is set. | cutover plan §1; P0 report §I | Config act |
+| 4 | Turnstile keys absent from Production ⇒ CAPTCHA is a no-op (`verifyCaptchaToken` returns true without a secret). | readiness doc gate 4; cutover plan §1 env list (not present) | Config act before external beta |
+| 5 | `registration_mode = invite_only` verified on Production 2026-08-17; **not re-verified since**. | REVIEW-3 census | NOT VERIFIED |
+| 6 | `ENCRYPTION_KEY` and `PLAID_CLIENT_ID` are one record shared by Preview and Production; no keyring, so rotation is not possible without re-encryption. `OPENAI_API_KEY` owner-stated same value in both. | environment-separation.md §4 | Launch debt, SAFE TO DEFER |
+| 7 | `DISABLE_SYSTEM_ADMIN` Production value unknown; the admin account may be locked out (the owner operates as `USER` with grants). | cutover plan §8 issue 11 | UNKNOWN, deferable |
+| 8 | Preview is behind Vercel SSO and Vercel never runs crons there, so Preview cannot prove scheduled execution or public-internet exposure; four named differences from Production. | environment-separation.md §3; domain-split-preview.md §6.3 | Accepted limitation |
+| 9 | The local CI contract has no `next build`; one server-only/client-boundary defect reached a Preview build before it was caught (`c20c741`). | P1 report §N | P2 |
+| 10 | Money is `Float` ([ADR-005](docs/decisions/ADR-005-numeric-precision.md)); solo-maintainer bus factor; documentation weight versus maintenance capacity. | readiness doc | Standing |
+| 11 | Dev database was reset by a non-interactive `prisma migrate dev` on 2026-09-15 and restored from the 2026-08-26 backup; the guard that prevents a repeat is in place (`cdeac7e`, `b26fbeb`). | [recovery record](docs/plans/DATABASE-ROLLBACK-RECOVERY-2026-09-15.md) | Closed in code; data loss on Dev stands |
+
+## 9. Architecture and infrastructure status
+
+- **Application:** Next.js 16 App Router, TypeScript strict, Prisma, Tailwind v4, NextAuth (session rows with revocation on `v2.6`), AES-256-GCM with HKDF per-purpose keys. Region `sin1`. Hosting project `fintracker1` (app) and `fourth-meridian-site` (public site, `site/`).
+- **Domains (target topology, rehearsed on Preview):** `fourthmeridian.com` = public site, `app.fourthmeridian.com` = application. Preview: `preview.fourthmeridian.com` (site) and `preview-app.fourthmeridian.com` (app). **Production today:** the apex serves the application; `app.` is not configured.
+- **Financial spine:** one ledger with canonical balances, snapshot read boundary, Financial Truth Spine and Time Model doctrine ([`docs/architecture/`](docs/architecture/)); forecast + scenario engine with liability dynamics, income changes, category spending, liquid floor and goal seek ([`docs/systems/forecast.md`](docs/systems/forecast.md)).
+- **AI:** `POST /api/ai/chat` is live (model `gpt-5.1`, via the single provider seam) — a tool-calling conversation engine under `lib/ai/conversation`, the active-scenario envelope in a sealed `HttpOnly` cookie, Financial Memory V2 (user-stated money only), the Daily Brief with per-source data health, `AiInvocation` cost and attribution facts. The guidance boundary and conversations security model are doctrine ([`docs/systems/`](docs/systems/)). *`docs/systems/ai-foundation.md` still describes the pre-reset state and says so in its banner.*
+- **Jobs:** `vercel.json` schedules `/api/jobs/dispatch` every 15 minutes (wake only; per-job cadence resolved by `lib/jobs/cadence-policy.core.ts` from policy and ledger) and `/api/jobs/resume-stale-imports` every 5 minutes (VERIFIED in `vercel.json`). Runbook `docs/operations/background-jobs.md` predates the cadence policy.
+- **Platform Spaces:** five areas with READ / WRITE / CONTROL grants, fresh-session gating on writes, the operator action envelope (`recordOperatorAction`: actor, target, reason, before/after), identity-minimised PLATFORM_OPS projections, Customer Success spine with entitlement resolution (POLICY → OVERLAY → CEILING). Design studies: [`docs/design-studies/`](docs/design-studies/).
+- **Providers:** Plaid (bank/brokerage; sandbox on Preview since the 2026-10-06 lane, production secret on Production), BTC via Esplora/blockstream, ETH via Alchemy, SOL, CoinGecko quotes, Open Exchange Rates, Tiingo. Provider-neutral ingestion remains deferred by design ([ADR-006](docs/decisions/ADR-006-provider-abstraction-timing.md)).
+
+## 10. Known issues register
+
+**The live defect register is [`docs/audits/PRE-S1-FULL-SYSTEM-AUDIT-2026-09-21.md`](docs/audits/PRE-S1-FULL-SYSTEM-AUDIT-2026-09-21.md)** (73 numbered findings, FM-AUDIT-001…073). Since it was written, commit messages have cited 19 distinct FM-AUDIT ids as addressed (VERIFIED by `git log`); a citation is not a verified closure, and no closure census has been run since — treat the per-finding state as NOT VERIFIED until one is.
+
+Legacy KD tickets still carried:
+
+| ID | Issue | State (2026-10-14) |
+|---|---|---|
+| KD-12 | Audit-log write amplification per chat turn | Open, low. `AI_CONTEXT_ASSEMBLED` once per context build; the promoted runtime's per-turn audit shape has not been re-measured (NOT VERIFIED). |
+| KD-14 | `AiAdvice` has no production write path | **Open.** Zero `aiAdvice.create/upsert/createMany` call sites repo-wide (VERIFIED 2026-10-14). The Daily Brief ships without it. |
+| KD-15 | UI transaction-privacy leak | The KD-15 visibility predicate exists in code (`lib/transactions/detail-query.ts` and consumers); the [checklist](docs/initiatives/kd15/KD-15_IMPLEMENTATION_CHECKLIST.md) still reads "awaiting approval". Closure NOT VERIFIED against the checklist. |
+| KD-8, KD-16 | Cross-Space prompt bound; per-turn window re-derivation | Previously marked MOOT because the prompt builder was deleted; **that ground expired** when the conversation runtime was promoted (2026-09-13). Needs re-assessment against the live runtime (UNKNOWN). |
+| FM-AUDIT-066 | `docs/systems/ai-foundation.md` describes the deleted conversation layer | Open; banner in place. |
+
+## 11. Database and migration status
+
+| Environment | Migrations | Roles / RLS | Evidence |
+|---|---|---|---|
+| **Repository** | **123** on disk; newest `20261008000000_p1_customer_policy_cohort`. The UX P1 base adds none. | Ten RLS migrations + function least-privilege (`20261006000000`) | VERIFIED (`prisma/migrations`) |
+| **Dev** | P1 migration applied via `db:migrate:safe` on 2026-10-08; `migrate diff` clean apart from a pre-existing truncated index name | Guarded by `FM_DB_GUARD`; agent worktrees carry no `DATABASE_URL` (clone-only) | P1 report §K — NOT re-verified (no database access this pass) |
+| **Preview** (`lqagrryecvhbaqvczjgc`) | Up to date at the P1 migration ("Database schema is up to date!", 2026-10-08); platform sections seeded | `fm_app` / `fm_auth` / `fm_system` live, `FM_RLS_STRICT=true`, `db-authority` green | P1 report §K; environment-separation.md §4 — NOT re-verified |
+| **Production** (`qirfzvvaeddukjiphims`, Micro, PG 17.6) | **88 applied, 35 pending** (additive, old-client compatible per the plan); `economicDate` backfill ×2 pending | No `fm_*` roles; 0/55 tables RLS; Data API exposes 0 tables | cutover plan §1 (measured 2026-10-06) — NOT re-verified; **Production not accessed this pass** |
+
+Binding rules: [`docs/operations/database-safety.md`](docs/operations/database-safety.md) (never `prisma migrate dev` non-interactively; `db:migrate:safe`; `DATABASE_URL`/`DIRECT_URL` sameness is provable). The `db-authority` baseline (`scripts/lib/db-authority-baseline.json`: owner-client importers, owner-default sites, implicit owner calls) may only shrink.
+
+## 12. Security and authorization status
+
+- **Tenancy:** Postgres RLS with role-scoped runtime principals on `v2.6` (Preview live; Production pending cutover). Tenant phases via `withTenantDb`; system work as `fm_system`; residue on the migration principal is enumerated and ratcheted (`rls-preview-cutover.md` §0).
+- **Sessions:** `v2.6` requires a session-row proof and revokes cleanly (revoked-session shell fix `c7e72ed`); Production's deployed model is the pre-P1 shared-secret JWT (cutover plan §1). Preview `NEXTAUTH_SECRET` and `CRON_SECRET` are separated from Production; the Production rotation is part of the cutover.
+- **Plaid:** webhook verification no longer fetches keys for an unauthenticated attacker-chosen `kid` (`ea48807`, on `v2.6` only); access tokens AES-256-GCM `v2:`; identity exclusivity enforced by a partial unique index; secrets never reach logs from any catch block (`706e62a`).
+- **Platform access:** three-rank grants with fresh-session gating; every platform route calls `requirePlatformAccess(area, level)`; CONTROL mutations audited with reason; PLATFORM_OPS projections carry no email, user id, address or token (pinned by `observability-privacy.test.ts`, `read-boundary.test.ts`, `capability-control.test.ts`).
+- **Public site:** zero-authority project; `lib/public-site-boundary.test.ts` pins the content twins and the boundary.
+- **Monitoring:** Sentry wired; `NEXT_PUBLIC_SENTRY_DSN` **present** on Production as of the 2026-10-06 measurement (the readiness doc's older "absent" row is superseded).
+- **Open:** CAPTCHA no-op on Production (§8 #4); CSP is Report-Only per the readiness doc (NOT re-verified); failed `/api/auth/pre-login` attempts write no `LOGIN_FAILED` row (observability gap, domain-split record §6.3).
+- Doctrine: [`docs/architecture/SECURITY_MODEL.md`](docs/architecture/SECURITY_MODEL.md); checklists under [`docs/operations/`](docs/operations/) (July baseline, pre-RLS).
+
+## 13. Testing and CI status
+
+- **GitHub CI** (`ci.yml`): `test`, `Architecture audits`, `Public site (zero-authority boundary)`. Last run on the pushed HEAD `dd39087`: 37701282029 `success` (VERIFIED). `status-drift-guard.yml` is an advisory, PR-only tripwire that flags migrations landing without a STATUS.md change.
+- **Local contract:** `npm run ci` runs GitHub's jobs on a clean copy of committed HEAD, on Node 24, against a throwaway `postgres:16` (`c0edb87`). It does **not** run `next build` (§8 #9). Push explicit SHAs after a green run.
+- **Last recorded figures** (P1 report at `83bb03e`): 692/692 unit test files; typecheck clean on committed trees; lint no errors in tracked files; ratchets green (`db-authority`, `read-boundary`, `platform-surface`, `observability-privacy`, `security-surface`); site 45/45; `rls:accept:foreground` 67/67 and all five RLS suites green in the clean copy. These figures are not re-measured here; the authoritative count is whatever `npm run test:unit` prints.
+- **Known harness caveat:** `npm run ci` has blocked on a varying child test with 0% CPU (root cause unknown); affected tests pass alone. Never kill `fm-ci-*` processes unscoped — a peer's gate may be live.
+
+## 14. Deployment status by environment
+
+| | Dev | Preview | Production |
+|---|---|---|---|
+| **Code** | Main worktree on `v2.6` at the unpushed UX P1 commits (`749bdf0` base, `1bea4cc` hero, this docs commit); five agent worktrees cut from the base, with agents 1–3 already carrying uncommitted edits at the time of this pass | Follows the newest `v2.6` deployment. Last **verified** health commit `83bb03e` (P1 report). `dd39087` (docs-only) was pushed afterwards, so Preview is expected to be on it — **NOT VERIFIED** this pass | `87e4df7` on `main`, deployment created 2026-07-27, aliases `fourthmeridian.com` (cutover plan §1, measured 2026-10-06) — **not accessed this pass** |
+| **Database** | Dev DB with `FM_DB_GUARD`; restored 2026-09-15 from the 2026-08-26 backup | 123 migrations, RLS roles, strict mode (§11) | 88 migrations, no RLS (§11) |
+| **Auth / secrets** | `.env.local` | Own `NEXTAUTH_SECRET` and `CRON_SECRET` on the `v2.6` scope; behind Vercel SSO | Shared `NEXTAUTH_SECRET` record with generic Preview; `PLATFORM_ALERTS_EMAIL` absent |
+| **Plaid** | per `.env.local` | Sandbox lane (2026-10-06); legacy Preview Items are owner-verified sandbox data | `PLAID_ENV=production`; 3 ACTIVE, 1 NEEDS_REAUTH, 3 REVOKED Items (2026-10-06) |
+| **Jobs** | manual | Vercel crons never run on Preview (proven: 0 `JobRun` rows ever) | Crons healthy at measurement (0 failures in 7 days) |
+| **Public site** | `site/` | `preview.fourthmeridian.com` (separate project) | Apex still served by the app; site project's Production branch is `main` |
+| **Users** | local | test accounts + Sandbox lane customer | 2 users (1 SYSTEM_ADMIN), both TOTP-enrolled; 1 active in the last 30 days |
+
+**Do not assume Production matches Preview.** Production is a July build with a July schema; every v2.6 behaviour described in this file is Preview-proven at best until the cutover runs.
+
+## 15. Next priorities (in order)
+
+1. **Land Platform Spaces UX Refinement P1** (Claude 1): agent work → merge 1→5 → build + `npm run ci` → push explicit SHA → GitHub CI → Preview seed and verification → report.
+2. **Production cutover preflight** (owner): fix the candidate SHA, Preview provider acceptance and job-body execution on the candidate, clone rehearsal, staged-login rehearsal, config acts (§7). Then the cutover itself under the verbatim authorisation in the plan's §10.
+3. **Domain split on Production** (owner), after the cutover.
+4. **Documentation re-baseline** of the systems and operations docs named in §7, plus an owner re-baseline of the roadmap (the v2.6 workstream order it records was overtaken in practice by the conversation runtime, RLS and operationalization programs).
+5. **P2 engineering list** (§7), starting with `next build` in the CI contract.
+
+## 16. Documentation map
 
 | Looking for… | Read |
 |---|---|
-| Current state | **this file** |
-| What is Fourth Meridian / how it all fits | [`docs/architecture/FOURTH_MERIDIAN_DOCTRINE.md`](docs/architecture/FOURTH_MERIDIAN_DOCTRINE.md) |
-| The rules that bind the code | [`docs/architecture/`](docs/architecture/) (Financial Truth Spine · Space Architecture · Security Model · Time Model · UI Interaction Model) |
-| Why a subsystem exists & its contracts | [`docs/systems/`](docs/systems/) (transactions, investments, wealth, cash-flow, liquidity, debt, connections, money-and-fx, historical-data, ai-foundation, platform-operations) |
-| Decisions & rejected alternatives (ADRs) | [`docs/decisions/`](docs/decisions/) |
-| Roadmap / active plans / parked ideas | [`docs/plans/`](docs/plans/) |
-| Runbooks / deploy / admin ops / readiness | [`docs/operations/`](docs/operations/) |
+| Current state | **this file** (the drift-audit series under `docs/audits/status-drift/` was retired on 2026-10-14 after this rewrite consumed its findings; history is in git) |
+| What is Fourth Meridian / how it fits | [`docs/architecture/FOURTH_MERIDIAN_DOCTRINE.md`](docs/architecture/FOURTH_MERIDIAN_DOCTRINE.md) |
+| The rules that bind the code | [`docs/architecture/`](docs/architecture/) |
+| Why a subsystem exists & its contracts | [`docs/systems/`](docs/systems/) |
+| Decisions & rejected alternatives | [`docs/decisions/`](docs/decisions/) |
+| Live defect register | [`docs/audits/PRE-S1-FULL-SYSTEM-AUDIT-2026-09-21.md`](docs/audits/PRE-S1-FULL-SYSTEM-AUDIT-2026-09-21.md) |
+| Roadmap / plans / investigations / program reports | [`docs/plans/`](docs/plans/) ([ROADMAP.md](docs/plans/ROADMAP.md), [parked-ideas.md](docs/plans/parked-ideas.md)) |
+| Runbooks / cutover / readiness / environment facts | [`docs/operations/`](docs/operations/) |
 | What shipped per version | [`docs/releases/`](docs/releases/) |
-| Design language / Atlas | [`docs/design-system/`](docs/design-system/) |
+| Design language / Atlas / Platform design studies | [`docs/design-system/`](docs/design-system/) · [`docs/design-studies/`](docs/design-studies/) |
 | Historical decision context | [`docs/archive/completed-plans/`](docs/archive/completed-plans/) |
