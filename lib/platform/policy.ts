@@ -183,6 +183,11 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // GROWTH_REVENUE owns definitions and rollout policy; assignment is a
       // Customer Success action. Backfilled onto the live Space by ensurePlatformSections.
       { key: "growth_policy_groups", label: "Policy Groups", order: 5 },
+      // BETA A5/V3 — first-party product analytics (fleet, identity-minimised):
+      // registrations, present vs engaged D/W/M, retention cohorts, onboarding
+      // funnel, feature adoption, cost per engaged user. Seeded onto every env
+      // with platform:seed-spaces (create-only).
+      { key: "growth_product_analytics", label: "Product Analytics", order: 6 },
     ],
   },
   CUSTOMER_SUCCESS: {

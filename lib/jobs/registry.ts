@@ -130,6 +130,8 @@ const JOB_BODIES: { readonly [N in ScheduledJobName]: ScheduledJob["run"] } = {
   "purge-trash": async () => (await import("@/jobs/purge-trash")).purgeTrash(),
   // Bounds the RateLimit table (OPS-4 investigation §4.6).
   "rate-limit-sweep": async () => (await import("@/jobs/sweep-rate-limits")).sweepRateLimits(),
+  "plaid-removal-retry": async () => (await import("@/jobs/plaid-removal-retry")).retryPlaidRemovals(),
+  "product-event-retention": async () => (await import("@/jobs/product-event-retention")).retainProductEvents(),
   // OPS-5 S5 — never throws (evaluatePlatformAlerts is best-effort), so the
   // alerter can never itself become a failing job. Its own JobRun row is the
   // alert history + suppression store.

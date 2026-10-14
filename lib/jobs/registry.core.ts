@@ -137,6 +137,14 @@ export const SCHEDULED_JOB_FACTS = declareJobs([
   { name: "notification-retry", hourUTC: 7, minuteUTC: 30 },
   { name: "purge-trash", hourUTC: 7, minuteUTC: 30 },
   { name: "rate-limit-sweep", hourUTC: 7, minuteUTC: 30 },
+  // BETA C4 — re-attempts Plaid /item/remove for connections the product shows
+  // REVOKED while Plaid never confirmed the removal (an UNCONFIRMED marker):
+  // every such Item keeps billing until Plaid forgets it. Daily, fixed.
+  { name: "plaid-removal-retry", hourUTC: 7, minuteUTC: 30 },
+  // BETA A6 — deletes behavioural product-event rows (the PRODUCT_EVENT_ACTIONS
+  // subset of AuditLog) older than the 13-month retention window the owner set
+  // on 2026-10-15. Security and operator actions are never touched. Daily, fixed.
+  { name: "product-event-retention", hourUTC: 7, minuteUTC: 30 },
   // OPS-5 S5 — sequenced LAST so it reads the freshest state of each slot.
   // OPERATIONALIZATION P0 (2026-10-07): every :30 slot the dispatcher already
   // fires (vercel.json "0,30 0,6,7,12,18"), not once daily at 07:30 — a breach

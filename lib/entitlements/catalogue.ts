@@ -54,6 +54,16 @@ export const ENTITLEMENT_DIMENSIONS = {
   /** Full data exports per day. Consumer: app/api/user/export. */
   exportsPerDay: { kind: "count", ceiling: 10,
     label: "Exports per day", description: "Full data exports per day." },
+  /** BETA C7 — estimated AI spend (USD, whole dollars) a customer may cause per UTC day across
+   *  Conversations and the Daily Brief, priced by the code-owned rate card over the invocation
+   *  ledger. Consumer: app/api/ai/chat (refuses above the allowance; an unpriceable model never
+   *  counts as zero — it refuses). */
+  aiDailyUsdAllowance: { kind: "count", ceiling: 20,
+    label: "AI daily allowance (USD, estimated)", description: "Estimated AI spend a customer may cause per UTC day." },
+  /** BETA C7' — connected provider Items (Plaid Items + wallet connections) a customer may hold
+   *  at once, counting every non-REVOKED Item. Consumer: app/api/plaid/link-token, app/api/accounts/wallet. */
+  maxConnections: { kind: "count", ceiling: 25,
+    label: "Maximum connections", description: "Connected Items a customer may hold at once." },
 } as const;
 
 export type EntitlementDimensionKey = keyof typeof ENTITLEMENT_DIMENSIONS;
@@ -91,6 +101,9 @@ export const BETA_FULL_ACCESS_V1: PolicyGroupDefinition = {
     manualBankRefreshCooldownMinutes: 60,
     manualWalletRefreshPerHour: 6,
     exportsPerDay: 3,
+    // BETA (owner, 2026-10-15): $5 estimated per UTC day; 10 Items.
+    aiDailyUsdAllowance: 5,
+    maxConnections: 10,
   },
 };
 
@@ -129,6 +142,8 @@ export const FOUNDER_INTERNAL_V1: OverlayDefinition = {
     aiTurnsPerMinute: 30,
     manualBankRefreshCooldownMinutes: 15,
     exportsPerDay: 10,
+    aiDailyUsdAllowance: 20,
+    maxConnections: 25,
   },
 };
 

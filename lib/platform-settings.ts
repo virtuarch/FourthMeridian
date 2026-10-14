@@ -75,6 +75,13 @@ export const PlatformSettingKey = {
   JOB_CADENCE_FX:            "job_cadence_hours_fetch-fx-rates",
   JOB_CADENCE_PRICES:        "job_cadence_hours_fetch-security-prices",
   JOB_CADENCE_ALERTS:        "job_cadence_hours_evaluate-alerts",
+  // BETA C7 — the two spend-alert thresholds the `ai-spend-high` rule judges
+  // against (estimated USD over the trailing 24 h, priced by the code-owned
+  // rate card). Whole dollars; read only through lib/alerts; written through the
+  // validated setting path behind CONTROL. Provisional values set by the owner
+  // on 2026-10-15: fleet $10, per customer $3.
+  AI_SPEND_ALERT_FLEET_USD:  "ai_spend_alert_fleet_usd_24h",
+  AI_SPEND_ALERT_USER_USD:   "ai_spend_alert_user_usd_24h",
 } as const;
 
 export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof PlatformSettingKey];
@@ -120,6 +127,8 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   "job_cadence_hours_fetch-fx-rates":        String(jobCadenceDefault("fetch-fx-rates")),
   "job_cadence_hours_fetch-security-prices": String(jobCadenceDefault("fetch-security-prices")),
   "job_cadence_hours_evaluate-alerts":       String(jobCadenceDefault("evaluate-alerts")),
+  ai_spend_alert_fleet_usd_24h: "10",
+  ai_spend_alert_user_usd_24h:  "3",
 };
 
 /** The registry-derived default and bounds for an editable job's cadence. */
@@ -247,6 +256,22 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
     "job_cadence_hours_evaluate-alerts", "evaluate-alerts", "Alert evaluation cadence (hours)",
     "Hours between alert passes over the health authorities. Re-notification is suppressed for 20 hours, so a tighter cadence costs reads, not mail.",
   ),
+  ai_spend_alert_fleet_usd_24h: {
+    key: "ai_spend_alert_fleet_usd_24h", label: "AI spend alert — fleet (USD / 24 h)",
+    description: "Estimated AI spend across every customer surface in the trailing 24 h at or above which the ai-spend-high rule fires. Whole dollars.",
+    class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: 1, max: 100000,
+    default: DEFAULTS.ai_spend_alert_fleet_usd_24h, missingRow: "FALLBACK_TO_DEFAULT",
+    writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
+    operatorConfigurable: true, resettable: true,
+  },
+  ai_spend_alert_user_usd_24h: {
+    key: "ai_spend_alert_user_usd_24h", label: "AI spend alert — per customer (USD / 24 h)",
+    description: "Estimated AI spend one customer caused in the trailing 24 h at or above which the ai-spend-high rule fires. Whole dollars.",
+    class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: 1, max: 10000,
+    default: DEFAULTS.ai_spend_alert_user_usd_24h, missingRow: "FALLBACK_TO_DEFAULT",
+    writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
+    operatorConfigurable: true, resettable: true,
+  },
 };
 
 export function listSettingDescriptors(): Descriptor[] {

@@ -66,6 +66,7 @@ import { SecSessionsWidget } from "./widgets/SecSessionsWidget";
 import { SecAnomaliesWidget } from "./widgets/SecAnomaliesWidget";
 import { CsCustomersWidget } from "./widgets/CsCustomersWidget";
 import { GrowthPolicyGroupsWidget } from "./widgets/GrowthPolicyGroupsWidget";
+import { GrowthProductAnalyticsWidget } from "./widgets/GrowthProductAnalyticsWidget";
 import { OpsJobHealthWidget } from "./widgets/OpsJobHealthWidget";
 import { OpsRateLimitsWidget } from "./widgets/OpsRateLimitsWidget";
 import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
@@ -172,6 +173,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   growth_activity:      OpsActivityWidget,
   growth_funnel:        OpsGrowthWidget,
   growth_policy_groups: GrowthPolicyGroupsWidget,
+  growth_product_analytics: GrowthProductAnalyticsWidget,
   // Customer Success
   cs_customers:   CsCustomersWidget,
   cs_sync_issues: CsSyncIssuesWidget,
