@@ -71,6 +71,22 @@ export const VERY_STALE_AFTER_DAYS = 30;
 export const LIVE_WITHIN_DAYS = 1;
 
 /**
+ * RWA-1 — the horizon for a USER ESTIMATE (a manual asset: a home, a vehicle, a
+ * valuable). The 7/30-day cuts above judge a FEED — how long since we last asked
+ * an institution — and a feed that has not answered in a week has a problem. An
+ * estimate has no feed: the user typed it, and a home valued three weeks ago is
+ * not "stale" in any sense a reader should be warned about. Judged on the feed
+ * horizon, one $500k house updated 8 days ago marked most of a Space's value
+ * "unverified" in the header. An estimate is STALE once it is half a year old
+ * (worth revisiting) and VERY_STALE past a year.
+ *
+ * The CLOCK is unchanged (basis stays INGESTION: we know only when the value was
+ * written — here, when the user wrote it); only the band's thresholds differ.
+ */
+export const ESTIMATE_STALE_AFTER_DAYS = 180;
+export const ESTIMATE_VERY_STALE_AFTER_DAYS = 365;
+
+/**
  * Clock skew we tolerate before calling the provider clock and our own clock
  * contradictory. A provider cannot have computed a balance meaningfully AFTER we
  * fetched it; a few minutes is timezone/rounding noise, an hour is a disagreement.
@@ -136,6 +152,12 @@ export interface AccountFreshness {
    * value. Never a financial output of this module.
    */
   absValue: number;
+  /**
+   * RWA-1 — present (true) only when the balance is a USER ESTIMATE; its band was
+   * judged against the estimate horizon. Absent on every observed account, so
+   * no existing consumer's payload changes shape.
+   */
+  userEstimate?: true;
 }
 
 /** Everything the authority needs, in provider-neutral terms. */
@@ -158,6 +180,12 @@ export interface AccountFreshnessInput {
   ledgerQueried?: boolean;
   /** Account balance, any sign. Absolute value is used for weighting only. */
   balance?: number | null;
+  /**
+   * RWA-1 — the balance is a value the USER entered (a manual asset), not an
+   * observation of any feed. Judged against ESTIMATE_* thresholds. Only set it
+   * for syncStatus "manual" accounts; never infer it from a missing provider.
+   */
+  userEstimate?: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -181,6 +209,15 @@ export function bandForAge(ageDays: number | null): FreshnessBand {
   if (ageDays < LIVE_WITHIN_DAYS) return "LIVE";
   if (ageDays < STALE_AFTER_DAYS) return "RECENT";
   if (ageDays < VERY_STALE_AFTER_DAYS) return "STALE";
+  return "VERY_STALE";
+}
+
+/** RWA-1 — the band for a USER ESTIMATE's age (see ESTIMATE_STALE_AFTER_DAYS). */
+export function bandForEstimateAge(ageDays: number | null): FreshnessBand {
+  if (ageDays === null) return "UNKNOWN";
+  if (ageDays < LIVE_WITHIN_DAYS) return "LIVE";
+  if (ageDays < ESTIMATE_STALE_AFTER_DAYS) return "RECENT";
+  if (ageDays < ESTIMATE_VERY_STALE_AFTER_DAYS) return "STALE";
   return "VERY_STALE";
 }
 
@@ -239,7 +276,7 @@ export function resolveAccountFreshness(
     observedAt: observed === null ? null : observed.toISOString(),
     basis,
     ageDays,
-    band: bandForAge(ageDays),
+    band: input.userEstimate === true ? bandForEstimateAge(ageDays) : bandForAge(ageDays),
     providerClockUnknown: attested === null,
     ingestedAt: ingested === null ? null : ingested.toISOString(),
     providerAttestedAt: attested === null ? null : attested.toISOString(),
@@ -251,6 +288,7 @@ export function resolveAccountFreshness(
     balance,
     ledger: resolveLedgerCoverage(input, now),
     absValue: Math.abs(input.balance ?? 0),
+    ...(input.userEstimate === true ? { userEstimate: true as const } : {}),
   };
 }
 

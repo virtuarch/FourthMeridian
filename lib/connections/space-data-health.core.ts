@@ -52,7 +52,7 @@
  * never an account, an id or an amount.
  */
 
-import { bandForAge, isStaleBand, VERY_STALE_AFTER_DAYS } from "@/lib/freshness/observation";
+import { bandForAge, isStaleBand, ESTIMATE_STALE_AFTER_DAYS } from "@/lib/freshness/observation";
 import { isOverdue, type RefreshPolicy } from "@/lib/platform/refresh-policy.core";
 import { classifyAccounts } from "@/lib/account-classifier";
 
@@ -213,10 +213,11 @@ export function deriveSourceHealth(input: SourceHealthInput, now: Date): SourceH
     const state = walletState(input.wallet, clock, now, input.policy);
     return { state, lastUpdatedAt: clock?.toISOString() ?? null, needsAttention: state !== "CURRENT" && state !== "IMPORTING" };
   }
-  // Manual balances are entered, not synced: they are out of date only past
-  // the very-stale band (the accounts assembler's existing 30-day rule).
+  // Manual balances are entered, not synced: they are the user's ESTIMATES and
+  // go out of date on the estimate horizon (RWA-1 — the same cut the freshness
+  // authority, the Space header and the accounts assembler use; was 30 days).
   const age = ageDays(accountsClock, now);
-  const state: DataSourceState = age === null ? "NEVER_UPDATED" : age >= VERY_STALE_AFTER_DAYS ? "OUT_OF_DATE" : "CURRENT";
+  const state: DataSourceState = age === null ? "NEVER_UPDATED" : age >= ESTIMATE_STALE_AFTER_DAYS ? "OUT_OF_DATE" : "CURRENT";
   return { state, lastUpdatedAt: accountsClock?.toISOString() ?? null, needsAttention: state !== "CURRENT" };
 }
 

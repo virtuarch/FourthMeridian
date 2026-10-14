@@ -126,6 +126,9 @@ export async function loadSpaceAccounts(
           currency: true, lastUpdated: true, creditLimit: true, debtSubtype: true,
           // 2026-10-07 — liquidity-access evidence (HSA / retirement / unverified).
           providerSubtype: true,
+          // RWA-1 — marks a USER ESTIMATE (manual asset); read below into the
+          // additive `userEstimate` flag, never forwarded as a raw column.
+          syncStatus: true,
           interestRate: true, minimumPayment: true,
           // v2.6-L3 — forwarded RAW into lib/balances (the only interpreter);
           // never read as a value in this file.
@@ -265,6 +268,11 @@ export async function loadSpaceAccounts(
   // count, and today no write path can produce such a link — the lens path
   // (lib/data/accounts.ts → debt/liquidity cores) is the disclosure surface).
   const { accounts: normalized } = normalizeSharedAccounts(effectiveLinks);
+  // RWA-1 — FULL rows keep their real id, so the estimate flag is a lookup by
+  // id; an aggregated row's synthetic id matches nothing and carries no flag.
+  const estimateIds = new Set(
+    links.filter((l) => l.financialAccount.syncStatus === "manual").map((l) => l.financialAccount.id),
+  );
   return sortAccountsForDisplay(normalized.map((a) => {
     // REVIEW-3 B-1 — an aggregated row's current-state claim is composed from
     // its members' ALREADY-RESOLVED claims (the synthetic id maps to no single
@@ -282,6 +290,7 @@ export async function loadSpaceAccounts(
       earliestTxDate: floorByAccount.get(a.id) ?? null,
       ...(currentState ? { currentState } : {}),
       ...(cryptoPrice ? { cryptoPrice } : {}),
+      ...(!a.aggregate && estimateIds.has(a.id) ? { userEstimate: true as const } : {}),
     };
   })) as unknown as SpaceAccount[];
 }

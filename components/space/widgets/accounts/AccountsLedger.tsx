@@ -71,6 +71,8 @@ interface FallbackAccount {
    *  read would, instead of silently dropping it. */
   lastUpdated?:          string;
   balanceLastUpdatedAt?: string | null;
+  /** RWA-1 — SpaceAccount.userEstimate: a manual asset's value, judged on the estimate horizon. */
+  userEstimate?:         true;
   /** REVIEW-3 B-1 — present only on aggregated BALANCE_ONLY rows (SpaceAccount.aggregate). */
   aggregate?: {
     memberAccountIds: string[];
@@ -106,6 +108,7 @@ function fallbackFreshness(a: FallbackAccount, now: Date) {
     ingestedAt:        a.lastUpdated ?? null,
     providerBalanceAt: a.balanceLastUpdatedAt ?? null,
     balance:           a.balance,
+    userEstimate:      a.userEstimate === true, // RWA-1 — estimate horizon
   }, now);
 }
 

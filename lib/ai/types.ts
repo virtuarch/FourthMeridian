@@ -309,6 +309,14 @@ export interface AccountSummaryItem {
    * "Fourth Meridian fetched it then", and `ageDays` is a LOWER BOUND on the true
    * age of the figure.
    */
+  /**
+   * RWA-1 — present only on a manual asset (syncStatus "manual"): the balance is
+   * a value the USER ENTERED — their estimate of a home, vehicle or valuable —
+   * not a market price and not anything Fourth Meridian fetched. On such a row
+   * `balanceFreshness.basis` INGESTION dates when the user last entered it, and
+   * its band is judged on the estimate horizon (stale after 180 days).
+   */
+  valuationSource?: 'USER_ESTIMATE';
   balanceFreshness?: {
     /** PROVIDER_ATTESTED | INGESTION | UNOBSERVED. */
     basis:      string;

@@ -34,6 +34,17 @@
  * Value weighting is the part that matters most: 24 stale accounts out of 35 is a
  * countable annoyance, but 96.4% of the money is the actual finding. A count-only
  * qualifier would have understated the live corpus by an order of magnitude.
+ *
+ * ── RWA-1 — USER ESTIMATES ARE NOT FEED OBSERVATIONS ─────────────────────────
+ * A manual asset's value was written by the user, not fetched. Its band is
+ * judged on the estimate horizon (observation.ts, ESTIMATE_STALE_AFTER_DAYS), so
+ * it counts as stale — and its value as unverified — only once the ESTIMATE is
+ * old, never because no feed refreshed it this week. And it does not set the
+ * header's "Last checked" anchor or the spread while any fed account is
+ * observed: "Last checked 3 months ago" over a Space whose banks synced this
+ * morning would describe the user's typing, not anything Fourth Meridian
+ * checked. A Space holding ONLY estimates still anchors on them (there is
+ * nothing else to say). `estimateCount` reports how many there are.
  */
 
 import {
@@ -77,6 +88,8 @@ export interface SpaceFreshness {
   observedCount: number;
   /** Accounts with NO freshness evidence. Never folded into an age. */
   unknownCount: number;
+  /** RWA-1 — accounts whose balance is a USER ESTIMATE (manual assets). */
+  estimateCount: number;
 
   /**
    * THE claim. Always the OLDEST observation across the Space — a header rendered
@@ -160,8 +173,16 @@ export function summarizeSpaceFreshness(
 
   let oldest: AccountFreshness | null = null;
   let newest: AccountFreshness | null = null;
+  let estimateCount = 0;
+
+  // RWA-1 — the anchor and spread describe FED observations whenever any exist;
+  // estimates set them only in a Space that holds nothing else (see header).
+  const anchorOnEstimates = !accounts.some(
+    (a) => a.userEstimate !== true && a.balance.observedAt !== null,
+  );
 
   for (const a of accounts) {
+    if (a.userEstimate === true) estimateCount++;
     bandCounts[a.balance.band]++;
     basisCounts[a.balance.basis]++;
     totalValue += a.absValue;
@@ -177,6 +198,7 @@ export function summarizeSpaceFreshness(
       staleAccountCount++;
       staleValue += a.absValue;
     }
+    if (a.userEstimate === true && !anchorOnEstimates) continue;
     if (oldest === null || a.balance.observedAt < oldest.balance.observedAt!) oldest = a;
     if (newest === null || a.balance.observedAt > newest.balance.observedAt!) newest = a;
   }
@@ -206,6 +228,7 @@ export function summarizeSpaceFreshness(
   let oldestMaterial: SpaceFreshness["oldestMaterial"] = null;
   for (const a of accounts) {
     if (a.absValue < materialFloor) continue;
+    if (a.userEstimate === true && !anchorOnEstimates) continue; // RWA-1 — see header
     if (a.balance.observedAt === null) {
       // Material value with NO freshness evidence outranks any dated row: it is
       // the least defensible thing in the Space.
@@ -237,6 +260,7 @@ export function summarizeSpaceFreshness(
     accountCount: accounts.length,
     observedCount,
     unknownCount,
+    estimateCount,
     anchor: {
       accountId: oldest?.accountId ?? null,
       observedAt: oldest?.balance.observedAt ?? null,

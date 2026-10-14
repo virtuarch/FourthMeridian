@@ -42,7 +42,7 @@ export const SignalType = {
   // W2 — GOAL_COMPLETED deleted with its detector (Goals retired).
 
   // ── Accounts ─────────────────────────────────────────────────────────────
-  /** One or more manually-entered accounts have not been updated in 30+ days. */
+  /** One or more manual asset values (user estimates) have not been updated within the estimate horizon (ESTIMATE_STALE_AFTER_DAYS, 180 days — RWA-1B). */
   STALE_CONNECTION: 'STALE_CONNECTION',
   /** One or more Plaid connections require the user to re-authenticate. */
   NEEDS_REAUTH: 'NEEDS_REAUTH',

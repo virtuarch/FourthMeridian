@@ -446,6 +446,8 @@ export async function GET(
       providerBalanceAt: a.balanceLastUpdatedAt,
       ledgerThroughDate: ledgerThroughByAccount.get(a.id) ?? null,
       ledgerQueried:     true,
+      // RWA-1 — a user estimate is judged on the estimate horizon.
+      userEstimate:      a.syncStatus === "manual",
       balance:           a.balance,
     }, now);
 
