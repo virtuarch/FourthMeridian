@@ -254,27 +254,27 @@ interface Props {
 }
 
 
-/** A summary→detail doorway button (Overview only). */
+/** A summary→detail doorway (Overview only).
+ *
+ * UX-P1 (D11) — a quiet text link in one "Explore" row, no longer a card. Every
+ * Overview block now ends in its own doorway into the workspace that holds its
+ * detail, so this row is the generic fallback the composition still declares
+ * (workspaces.test.ts pins ≥1 doorway), not a second card grid competing with
+ * the blocks. Same `onOpen` mechanism as every block — one navigation path. */
 function WorkspaceDoorway({ targetId, onOpen }: { targetId: string; onOpen: (id: string) => void }) {
   const def = getPlatformWorkspace(targetId);
   if (!def) return null;
   const Icon = WORKSPACE_ICONS[def.icon] ?? ArrowRight;
   return (
     <button
+      type="button"
       onClick={() => onOpen(targetId)}
-      className="flex items-center justify-between gap-2 rounded-[var(--radius-lg)] border p-4 text-left transition-colors hover:bg-[var(--glass-ultrathin)]"
-      style={{ background: "var(--surface-muted)", borderColor: "var(--border-hairline)" }}
+      className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] hover:bg-[var(--glass-ultrathin)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]"
+      style={{ borderColor: "var(--border-hairline)" }}
+      aria-label={`Open ${def.label}`}
     >
-      <span className="flex items-center gap-2">
-        <span
-          className="w-7 h-7 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0"
-          style={{ background: "var(--glass-ultrathin)", color: "var(--text-muted)" }}
-        >
-          <Icon size={14} />
-        </span>
-        <span className="text-sm font-semibold text-[var(--text-primary)]">Open {def.label}</span>
-      </span>
-      <ArrowRight size={14} className="text-[var(--text-muted)]" />
+      <Icon size={12} aria-hidden className="text-[var(--text-muted)]" />
+      {def.label}
     </button>
   );
 }
@@ -338,13 +338,11 @@ export function PlatformWorkspaceBody({
       )}
 
       {doorways && doorways.length > 0 && (
-        <section aria-label="Explore">
-          <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] mb-3">Explore</p>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(220px,100%),1fr))] gap-3">
-            {doorways.map((id) => (
-              <WorkspaceDoorway key={id} targetId={id} onOpen={onOpen} />
-            ))}
-          </div>
+        <section aria-label="Explore" className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] mr-1">Explore</span>
+          {doorways.map((id) => (
+            <WorkspaceDoorway key={id} targetId={id} onOpen={onOpen} />
+          ))}
         </section>
       )}
     </div>
