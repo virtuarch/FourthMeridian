@@ -147,8 +147,15 @@ async function main(): Promise<void> {
     // editor (JobCadenceEditor) takes a bounded integer, a reason code from the
     // closed OPERATOR_REASON_CODES list and a ≤280-char note the server scrubs.
     const refreshPart = widget.slice(0, widget.indexOf("export function JobCadenceEditor"));
-    check("the refresh-cadence surface renders no free-form input (its controls are bounded buttons behind canControl)",
-      !/<select|<input|<form|onSubmit/.test(refreshPart) && /canControl/.test(widget));
+    // UX-P1 D7 — the refresh editor shares the job editor's CadenceForm: the
+    // cadence itself stays bounded buttons (aria-pressed), and the only inputs
+    // are the REQUIRED reason (a closed select over OPERATOR_REASON_CODES) and the
+    // ≤280-char note the server scrubs. No form, no free-form value.
+    check("the refresh-cadence surface's value control is bounded buttons; its only inputs are the D7 reason (closed list) and the bounded note",
+      !/<form|onSubmit/.test(refreshPart) && /aria-pressed=\{isSelected\}/.test(refreshPart)
+        && (refreshPart.match(/<select/g) ?? []).length === 1 && /OPERATOR_REASON_CODES\.map/.test(refreshPart)
+        && (refreshPart.match(/<input/g) ?? []).length === 1 && /maxLength=\{280\}/.test(refreshPart)
+        && /canControl/.test(widget));
     check("the execution-cadence editor bounds its inputs (min/max from the view, maxLength on the note, a closed reason list)",
       /min=\{view\.minHours\} max=\{view\.maxHours\}/.test(widget) && /maxLength=\{280\}/.test(widget) && /OPERATOR_REASON_CODES\.map/.test(widget));
     check("the widget talks only to the policies and job-cadence routes",

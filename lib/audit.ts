@@ -193,6 +193,10 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.CUSTOMER_COHORT_ASSIGNED,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
+  // UX-P1 D7 — the financial-refresh cadence (bank / wallet) is the same class
+  // of consequential platform policy as a job cadence; it now carries a reason.
+  AuditAction.PLATFORM_POLICY_CHANGED,
+  AuditAction.PLATFORM_POLICY_RESET,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
   // Break-glass /admin actions (grants, 2FA reset) stay on their existing audit

@@ -20,7 +20,13 @@
  *                            null for "no override". A row that moved, appeared
  *                            or vanished since ⇒ CONFLICT, nothing written.
  *   4. ONE TRANSACTION       the setting mutation and its canonical audit row
- *                            commit together or not at all.
+ *                            commit together or not at all. UX-P1 D7: the audit
+ *                            is the P1 operator-action envelope
+ *                            (recordOperatorAction) and PLATFORM_POLICY_CHANGED /
+ *                            PLATFORM_POLICY_RESET are reason-required by
+ *                            lib/audit.ts, so a refresh-cadence change can never
+ *                            commit without a structured { code, note? } reason —
+ *                            the same contract the job cadences carry.
  *   5. THE CANONICAL RESULT  the caller gets the Policies read model reloaded —
  *                            there is no second representation of policy.
  *
@@ -38,7 +44,7 @@ import "server-only";
 import type { PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
-import { buildAuditData } from "@/lib/audit";
+import { recordOperatorAction, type OperatorReason } from "@/lib/audit";
 import {
   PlatformSettingValidationError, createSettingIfAbsent, deleteSettingIfVersion, updateSettingIfVersion,
   validateSetting, type PlatformSettingKeyType,
@@ -76,6 +82,8 @@ export interface UpdateRefreshCadenceInput {
   cadence: unknown;
   /** The override's updatedAt the caller observed (ISO), or null when it observed NO override. */
   expectedUpdatedAt: string | null;
+  /** D7 — why. Required: the recorder refuses to commit the change without it. */
+  reason: OperatorReason;
   actor: PolicyActor;
 }
 
@@ -83,6 +91,8 @@ export interface ResetRefreshCadenceInput {
   sourceKind: RefreshSourceKind;
   /** The override's updatedAt the caller observed (ISO). Reset requires an observed override. */
   expectedUpdatedAt: string;
+  /** D7 — why. Required: the recorder refuses to commit the reset without it. */
+  reason: OperatorReason;
   actor: PolicyActor;
 }
 
@@ -164,19 +174,23 @@ export async function updateRefreshCadence(
 
       const after = await tx.platformSetting.findUnique({ where: { key }, select: { value: true, updatedAt: true } });
 
-      // 4b. The canonical audit row, in the same transaction.
-      await tx.auditLog.create({
-        data: buildAuditData({
-          actorId: input.actor.id,
-          actorType: "PLATFORM_OPERATOR",
-          action: AuditAction.PLATFORM_POLICY_CHANGED,
-          result: "SUCCESS",
-          target: { type: "platform-setting", id: key },
-          metadata: { key, sourceKind: input.sourceKind, previous: factsOf(input.sourceKind, before), next: factsOf(input.sourceKind, after) },
-          performedByAdminId: input.actor.id,
-          ipAddress: input.actor.ipAddress ?? null,
-          userAgent: input.actor.userAgent ?? null,
-        }),
+      // 4b. The canonical audit row, in the same transaction — the operator-action
+      //     envelope (actor / target / reason / change / result). The pre-D7
+      //     `previous` / `next` facts stay in the row as detail so nothing that
+      //     read them loses its evidence; `change` carries the same facts under
+      //     the envelope's fixed key.
+      const previous = factsOf(input.sourceKind, before);
+      const next = factsOf(input.sourceKind, after);
+      await recordOperatorAction(tx, {
+        actor: { userId: input.actor.id, via: "PLATFORM_GRANT", area: "PLATFORM_OPS" },
+        action: AuditAction.PLATFORM_POLICY_CHANGED,
+        target: { kind: "PLATFORM_SETTING", id: key },
+        reason: input.reason,
+        change: { before: { ...previous }, after: { ...next } },
+        detail: { key, sourceKind: input.sourceKind, previous, next },
+        result: "SUCCESS",
+        ipAddress: input.actor.ipAddress ?? null,
+        userAgent: input.actor.userAgent ?? null,
       });
     });
   } catch (err) {
@@ -213,18 +227,18 @@ export async function resetRefreshCadence(
       const deleted = await deleteSettingIfVersion(tx, key, before.updatedAt);
       if (!deleted) throw new PolicyConflict("This policy changed while the reset was being saved.");
 
-      await tx.auditLog.create({
-        data: buildAuditData({
-          actorId: input.actor.id,
-          actorType: "PLATFORM_OPERATOR",
-          action: AuditAction.PLATFORM_POLICY_RESET,
-          result: "SUCCESS",
-          target: { type: "platform-setting", id: key },
-          metadata: { key, sourceKind: input.sourceKind, previous: factsOf(input.sourceKind, before), next: factsOf(input.sourceKind, null) },
-          performedByAdminId: input.actor.id,
-          ipAddress: input.actor.ipAddress ?? null,
-          userAgent: input.actor.userAgent ?? null,
-        }),
+      const previous = factsOf(input.sourceKind, before);
+      const next = factsOf(input.sourceKind, null);
+      await recordOperatorAction(tx, {
+        actor: { userId: input.actor.id, via: "PLATFORM_GRANT", area: "PLATFORM_OPS" },
+        action: AuditAction.PLATFORM_POLICY_RESET,
+        target: { kind: "PLATFORM_SETTING", id: key },
+        reason: input.reason,
+        change: { before: { ...previous }, after: { ...next } },
+        detail: { key, sourceKind: input.sourceKind, previous, next },
+        result: "SUCCESS",
+        ipAddress: input.actor.ipAddress ?? null,
+        userAgent: input.actor.userAgent ?? null,
       });
     });
   } catch (err) {

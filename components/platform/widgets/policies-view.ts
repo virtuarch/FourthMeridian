@@ -9,8 +9,9 @@
  * No React, no clock: deterministic under test.
  */
 
-import { graceHoursFor, type RefreshCadence } from "@/lib/platform/refresh-policy.core";
-import type { RefreshPolicyView } from "@/lib/platform/policies/refresh-policies.core";
+import { DEFAULT_REFRESH_CADENCE, graceHoursFor, type RefreshCadence } from "@/lib/platform/refresh-policy.core";
+import type { RefreshPolicyView, RefreshPoliciesReadModel } from "@/lib/platform/policies/refresh-policies.core";
+import type { JobCadenceView } from "@/lib/platform/policies/job-cadence";
 
 export const POLICIES_SUBJECT = "refresh policies";
 
@@ -87,10 +88,20 @@ export function lastChangedText(view: RefreshPolicyView, formatDate: (iso: strin
   return `${formatDate(view.desired.updatedAt)}${by}`;
 }
 
-/** The honesty line for the whole surface. */
-export const POLICIES_FOOTNOTE =
-  "Effective values are resolved from platform settings at read time; support is the code-owned safety floor; " +
-  "the actual state is read from the job ledger. Nothing here refreshes a source or changes a policy.";
+/**
+ * The honesty line for the whole surface. UX-P1: the grace rule moved here from
+ * the header's actions slot (it is a footnote fact, not a toolbar), and the
+ * retired sentence "Nothing here … changes a policy" is gone — this surface IS
+ * where policy changes, behind CONTROL, and the line must not deny it.
+ */
+export function policiesFootnote(grace: RefreshPoliciesReadModel["grace"]): string {
+  return (
+    "Effective values are resolved from platform settings at read time; the floor is the code-owned safety bound the scheduler can honour; " +
+    "the latest sweep is read from the job ledger. " +
+    `Grace is code-owned: the larger of ${grace.floorHours} hours and ${Math.round(grace.share * 100)}% of the cadence. ` +
+    "Changing a policy refreshes nothing now and requires a reason; the next scheduled attempt applies it."
+  );
+}
 
 // ── PLATFORM OPS POLICIES (Slice 2) — editor wording ──────────────────────────
 
@@ -158,3 +169,123 @@ export function hasAlternativeCadence(view: RefreshPolicyView): boolean {
 }
 
 export const CONFLICT_TEXT = "This policy changed since you opened the editor. The current values are shown below; edit again if you still want to change it.";
+
+// ── UX-P1 — legend, provenance, grouping and observation wording ──────────────
+//
+// One effective-value grammar for every row: the figure, then a four-chip
+// legend Default · Override · Floor · Max (defaults, overrides, the hard safety
+// floor and the read-only ceiling made distinct by chip, not prose), then a
+// Provenance chip naming where the value in force came from. Declared policy
+// sits above; what the ledger OBSERVED (latest sweep, last run, next due) is one
+// quiet line beneath, never mixed into the declaration.
+
+export interface CadenceLegendItem {
+  label: "Default" | "Override" | "Floor" | "Max";
+  value: string;
+}
+
+/** "24 h" — the chip spelling of an hour count; "none" when there is no bound. */
+export function hoursChip(hours: number | null): string {
+  return hours === null ? "none" : `${hours} h`;
+}
+
+/** The four chips for a financial-refresh policy. Override reads "—" when none is stored. */
+export function refreshLegend(view: RefreshPolicyView): CadenceLegendItem[] {
+  const menuMax = view.capability.options.reduce((m, o) => Math.max(m, Number.parseInt(o.cadence, 10)), 0);
+  const override = !view.desired.present ? "—"
+    : view.effective.origin === "INVALID_SETTING" ? `${view.desired.raw ?? ""} (invalid)`
+    : hoursChip(view.effective.expectedEveryHours);
+  return [
+    { label: "Default", value: hoursChip(Number.parseInt(DEFAULT_REFRESH_CADENCE[view.sourceKind], 10)) },
+    { label: "Override", value: override },
+    { label: "Floor", value: hoursChip(view.capability.floorHours) },
+    { label: "Max", value: menuMax > 0 ? hoursChip(menuMax) : "none" },
+  ];
+}
+
+/** The four chips for an editable job cadence (the registry's own bounds). */
+export function jobLegend(view: JobCadenceView): CadenceLegendItem[] {
+  const override = view.origin === "SETTING" ? hoursChip(view.hours)
+    : view.origin === "INVALID_SETTING" ? "invalid"
+    : "—";
+  return [
+    { label: "Default", value: hoursChip(view.defaultHours) },
+    { label: "Override", value: override },
+    { label: "Floor", value: hoursChip(view.minHours) },
+    { label: "Max", value: hoursChip(view.maxHours) },
+  ];
+}
+
+/** "Platform default" · "Override set 13 Sep 2026, 18:32 UTC by Chris" · "Default in force — stored override is invalid". */
+export function refreshProvenance(view: RefreshPolicyView, formatDate: (iso: string) => string): string {
+  switch (view.effective.origin) {
+    case "DEFAULT": return "Platform default";
+    case "INVALID_SETTING": return "Default in force — stored override is invalid";
+    case "SETTING": {
+      const when = view.desired.updatedAt ? ` ${formatDate(view.desired.updatedAt)}` : "";
+      const by = view.desired.updatedBy?.name ? ` by ${view.desired.updatedBy.name}` : "";
+      return `Override set${when}${by}`;
+    }
+  }
+}
+
+/**
+ * The job row's provenance. The job read model carries the override's version
+ * clock but not its writer, so an override names its date only — a name is
+ * never invented.
+ */
+export function jobProvenance(view: JobCadenceView, formatDate: (iso: string) => string): string {
+  switch (view.origin) {
+    case "SETTING": return `Override set${view.updatedAt ? ` ${formatDate(view.updatedAt)}` : ""}`;
+    case "INVALID_SETTING": return "Default in force — stored override is invalid";
+    case "REFRESH_POLICY": return "Refresh policy";
+    case "FOLLOWS_PRIMARY": return view.primary ? `Follows ${view.primary}` : "Follows its primary job";
+    case "FIXED": return "Fixed";
+    default: return "Platform default";
+  }
+}
+
+export type JobCadenceGroupKey = "editable" | "governed" | "fixed";
+
+export const JOB_GROUP_TEXT: Readonly<Record<JobCadenceGroupKey, { title: string; sentence: string }>> = {
+  editable: {
+    title: "Editable",
+    sentence: "These jobs take an operator-set cadence within the registry's code-owned floor and max. A change requires a reason, runs nothing now, and applies at the next wake.",
+  },
+  governed: {
+    title: "Governed by the refresh policy",
+    sentence: "These jobs run at the Bank and Wallet refresh cadences above; the continuation follows its primary job. Change them through the refresh policy, not here.",
+  },
+  fixed: {
+    title: "Fixed",
+    sentence: "Maintenance jobs run on a fixed, code-owned cadence. There is no override and nothing to edit.",
+  },
+};
+
+/** The three declared groups, each keeping the registry's order. */
+export function groupJobCadences(jobs: readonly JobCadenceView[]): Record<JobCadenceGroupKey, JobCadenceView[]> {
+  const out: Record<JobCadenceGroupKey, JobCadenceView[]> = { editable: [], governed: [], fixed: [] };
+  for (const j of jobs) {
+    if (j.editable) out.editable.push(j);
+    else if (j.origin === "REFRESH_POLICY" || j.origin === "FOLLOWS_PRIMARY") out.governed.push(j);
+    else out.fixed.push(j);
+  }
+  return out;
+}
+
+/** "Every 6 hours" — the figure alone; bounds live in the legend now. */
+export function jobFigureText(view: JobCadenceView): string {
+  return cadenceText(String(view.hours));
+}
+
+/** The one quiet observation line under a job row: what the ledger recorded, never what the policy declares. */
+export function jobObservationText(view: JobCadenceView, formatDate: (iso: string) => string): string {
+  const last = view.lastStartedAt ? `Last run ${formatDate(view.lastStartedAt)}${view.lastStatus ? ` (${view.lastStatus})` : ""}` : "Never ran";
+  const next = view.primary ? `next after ${view.primary} defers work` : view.nextDueAt ? `next due ${formatDate(view.nextDueAt)}` : "due at the next wake";
+  return `${last} · ${next}`;
+}
+
+export const RESET_TEXT = "Remove the stored override so the platform default is in force again. Nothing is refreshed now; the next scheduled attempt applies it.";
+export const REASON_PLACEHOLDER = "Choose a reason…";
+export const NOTE_PLACEHOLDER = "Note (optional, no personal data)";
+export const FIXED_GROUP_SUMMARY = (n: number) => `Fixed (${n} maintenance job${n === 1 ? "" : "s"})`;
