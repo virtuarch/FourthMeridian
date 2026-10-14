@@ -26,7 +26,7 @@
  * Context MUST be provided by the caller.
  */
 
-import { plaidClient } from "@/lib/plaid/client";
+import { plaidClient, PLAID_ENV } from "@/lib/plaid/client";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import { withTenantDb } from "@/lib/db/tenant-context";
@@ -118,10 +118,47 @@ export interface ExchangeTokenResult {
  * connect UI already surfaces `{ error }` from a non-2xx exchange response.
  */
 export class DuplicateInstitutionError extends Error {
-  constructor(public readonly institutionName: string) {
-    super(`You already have ${institutionName} connected — refresh it instead of reconnecting.`);
+  /** The 409 body's stable discriminator (additive to the `{ error }` contract). */
+  public readonly code = "DUPLICATE_INSTITUTION" as const;
+  constructor(
+    public readonly institutionName: string,
+    /** The Item the user already holds for this institution — the re-link target. */
+    public readonly existingItemId: string,
+    /** Its PRODUCT status (ACTIVE | NEEDS_REAUTH | ERROR); never REVOKED here. */
+    public readonly existingStatus: string,
+  ) {
+    super(duplicateInstitutionMessage(institutionName, existingStatus));
     this.name = "DuplicateInstitutionError";
   }
+}
+
+/**
+ * BETA C4 — the customer-facing sentence names the action that does NOT mint a
+ * second Item. A broken Item (NEEDS_REAUTH / ERROR) is healed by Reconnect
+ * (Link update mode keeps the item_id); a healthy one is just refreshed.
+ */
+export function duplicateInstitutionMessage(institutionName: string, existingStatus: string): string {
+  return existingStatus === "ACTIVE"
+    ? `You already have ${institutionName} connected — refresh it instead of reconnecting.`
+    : `You already have ${institutionName} connected and it needs attention — use Reconnect on its card instead of adding it again.`;
+}
+
+/**
+ * BETA C4 — the duplicate gate's selector, pure so it can be pinned without a
+ * database. ANY non-REVOKED Item of the same institution blocks a FRESH link:
+ * before this it was ACTIVE-only, so a customer re-linking a NEEDS_REAUTH or
+ * ERROR bank minted a SECOND billable Item while the first kept billing until
+ * someone revoked it (growth vector 1, AI-PLAID-COST-ECONOMICS-ASSESSMENT §6.2).
+ * A REVOKED Item is the one case a fresh link is the right answer: the user
+ * removed it, and a relink legitimately creates a new Item.
+ */
+export function duplicateGateWhere(userId: string, institutionId: string, newItemId: string) {
+  return {
+    userId,
+    institutionId,
+    status: { not: PlaidItemStatus.REVOKED },
+    externalItemId: { not: newItemId },
+  } as const;
 }
 
 /**
@@ -201,24 +238,27 @@ export async function performPlaidTokenExchange(
   // 2. Duplicate-institution GATE (real, not log-only). An update-mode reconnect
   // reuses the existing access_token, so Plaid returns the SAME item_id and the
   // upsert below heals the existing row. A genuine duplicate is a FRESH Link
-  // session for an already-connected institution: a NEW item_id. If an ACTIVE
-  // PlaidItem already exists for (userId, institutionId) under a DIFFERENT
-  // item_id, block instead of creating a second parallel connection. Best-effort
-  // itemRemove the just-created item so it doesn't linger unused at Plaid.
+  // session for an already-connected institution: a NEW item_id. If ANY
+  // non-REVOKED PlaidItem already exists for (userId, institutionId) under a
+  // DIFFERENT item_id, block instead of creating a second parallel connection.
+  // BETA C4 — widened from ACTIVE-only (see duplicateGateWhere): a broken Item
+  // is still a live, billed subscription, and the right repair is Reconnect on
+  // the existing Item, which the 409 body now names. Best-effort itemRemove the
+  // just-created item so it doesn't linger — and bill — unused at Plaid.
   const duplicate = await db.plaidItem.findFirst({
-    where:  { userId, institutionId: institution_id, status: PlaidItemStatus.ACTIVE, externalItemId: { not: item_id } },
-    select: { id: true, institutionName: true },
+    where:  duplicateGateWhere(userId, institution_id, item_id),
+    select: { id: true, institutionName: true, status: true },
   });
   if (duplicate) {
     console.warn(
-      `[plaid] duplicate connect blocked — user ${userId} already has ACTIVE item ${duplicate.id} for institution "${institution_name}" (${institution_id}); removing the new item ${item_id} at Plaid`,
+      `[plaid] duplicate connect blocked — user ${userId} already has ${duplicate.status} item ${duplicate.id} for institution "${institution_name}" (${institution_id}); removing the new item ${item_id} at Plaid`,
     );
     try {
       await plaidClient.itemRemove({ access_token });
     } catch (removeErr) {
       console.warn(`[plaid] best-effort itemRemove of duplicate item ${item_id} failed (non-fatal):`, redactedErrorForLog(removeErr));
     }
-    throw new DuplicateInstitutionError(institution_name);
+    throw new DuplicateInstitutionError(institution_name, duplicate.id, String(duplicate.status));
   }
 
   // 3. Encrypt access_token before it touches the DB
@@ -256,6 +296,13 @@ export async function performPlaidTokenExchange(
       // where this Item was minted, not where it is being read from. Set only on
       // create so a relink from another environment cannot rewrite the origin.
       environment:     deploymentEnvironment(),
+      // BETA C1 — the PLAID environment, also create-only. `PLAID_ENV` is the
+      // raw configured value; the exchange above has already run through the
+      // validating client, so at this point it is one of the three Plaid
+      // environments (an unset or invalid value would have thrown before the
+      // token was spent). Stamped as-is rather than normalised: the census
+      // keys on the literal "sandbox", and anything else stays what it was.
+      plaidEnvironment: PLAID_ENV,
       status:          PlaidItemStatus.ACTIVE,
       syncIncompleteAt,
     },

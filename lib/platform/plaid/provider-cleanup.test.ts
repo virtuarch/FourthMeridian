@@ -97,6 +97,7 @@ async function main(): Promise<void> {
     check("the oldest-outstanding summary matches it",
       r.oldestOwedForHours === 30 && r.oldestOwedSinceISO === o.owedSinceISO);
     check("the provider's own latest error code is carried", o.latestErrorCode === "INTERNAL_SERVER_ERROR");
+    check("with a single attempt, last-attempt equals owed-since", o.lastAttemptAtISO === o.owedSinceISO);
     check("PRODUCT state is reported separately and is REVOKED", o.productStatus === "REVOKED");
   }
 
@@ -119,6 +120,9 @@ async function main(): Promise<void> {
     check("the age is measured from the FIRST failure, not the latest retry",
       r.owed[0].owedForHours === 50, `${r.owed[0].owedForHours}`);
     check("the latest error code is the LATEST one", r.owed[0].latestErrorCode === "INVALID_ACCESS_TOKEN");
+    // BETA C4 — "last retried at": the NEWEST attempt, which a scheduled retry moves while owedSince stays.
+    check("lastAttemptAtISO is the newest marker's time (2h ago), not the obligation's start",
+      r.owed[0].lastAttemptAtISO === hoursAgo(2).toISOString() && r.owed[0].owedSinceISO === hoursAgo(50).toISOString());
   }
 
   // ══ 4. A LATER CONFIRMED REMOVES IT FROM THE OWED POPULATION ══════════════

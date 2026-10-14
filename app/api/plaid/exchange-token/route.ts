@@ -143,7 +143,13 @@ export async function POST(req: NextRequest) {
     }
     if (err instanceof DuplicateInstitutionError) {
       console.warn(`[plaid] exchange-token: ${err.message}`);
-      return NextResponse.json({ error: err.message }, { status: 409 });
+      // BETA C4 — additive fields beside the existing `{ error }` shape: the
+      // Item the customer already holds and its status, so the client can offer
+      // Reconnect (Link update mode on that Item) instead of a second link.
+      return NextResponse.json(
+        { error: err.message, code: err.code, existingItemId: err.existingItemId, existingStatus: err.existingStatus },
+        { status: 409 },
+      );
     }
     const { message, status, code } = parsePlaidError(err, "Failed to connect account");
     console.error(`[plaid] exchange-token error (code: ${code ?? "unknown"}):`, message);
