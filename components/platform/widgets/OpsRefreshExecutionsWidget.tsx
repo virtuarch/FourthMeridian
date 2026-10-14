@@ -45,7 +45,7 @@
  *     interactive content nests.
  */
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ListOrdered } from "lucide-react";
 import { WidgetMessage, timeAgo, useWidgetFetch, type PlatformSection } from "../widget-kit";
 import { useKeyedFetch } from "../keyed-fetch";
@@ -113,7 +113,7 @@ const COLS = "minmax(0,1.8fr) 6rem 6.5rem 7rem 5.5rem minmax(0,1.6fr)";
 const HEADINGS = ["Source", "Trigger", "Status", "Started", "Duration", "Verdict"] as const;
 
 /** One labelled fact inside the below-`md` disclosure. */
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-0.5">
       <dt className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">{label}</dt>

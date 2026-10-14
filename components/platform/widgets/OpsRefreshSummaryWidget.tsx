@@ -23,6 +23,7 @@
  * null is not zero.
  */
 
+import type { ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { WidgetMessage, useWidgetFetch, type PlatformSection } from "../widget-kit";
 import { BigStat, DistributionBar, SectionSurface, TONE_COLOR } from "../platform-surface";
@@ -38,7 +39,7 @@ const COLS = "minmax(0,1.6fr) 6.5rem 5rem 5rem 6rem";
 const HEADINGS = ["Endpoint", "OK / attempted", "Failed", "Skipped", "Δ records"] as const;
 
 /** A fact cell below `md` carries its own label; at `md` the column header carries it. */
-function Labelled({ label, children }: { label: string; children: React.ReactNode }) {
+function Labelled({ label, children }: { label: string; children: ReactNode }) {
   return (
     <span className="flex items-baseline gap-1.5 md:block">
       <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)] md:hidden">{label}</span>

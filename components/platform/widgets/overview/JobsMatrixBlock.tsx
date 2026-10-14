@@ -23,6 +23,7 @@
  * column alignment and never a fact. Collapse is by `md:` class only.
  */
 
+import type { ReactNode } from "react";
 import { ArrowRight, Timer } from "lucide-react";
 import { WidgetMessage, useWidgetFetch } from "../../widget-kit";
 import { SectionSurface, StatusBadge, TONE_COLOR, TwoLine, Unavailable } from "../../platform-surface";
@@ -64,7 +65,7 @@ function Doorway({ onOpenWorkspace }: { onOpenWorkspace?: (id: string) => void }
 }
 
 /** A fact cell below `md` carries its own label; at `md` the column header carries it. */
-function Labelled({ label, children }: { label: string; children: React.ReactNode }) {
+function Labelled({ label, children }: { label: string; children: ReactNode }) {
   return (
     <span className="flex min-w-0 items-baseline gap-1.5 md:block">
       <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)] md:hidden">{label}</span>

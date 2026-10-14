@@ -23,6 +23,7 @@
  * reason tallies beneath.
  */
 
+import type { ReactNode } from "react";
 import { Target } from "lucide-react";
 import { WidgetMessage, useWidgetFetch, type PlatformSection } from "../widget-kit";
 import { SectionSurface, TONE_COLOR } from "../platform-surface";
@@ -35,7 +36,7 @@ const FOOTNOTE =
 const COLS = "minmax(0,1.6fr) 7rem 5rem 5rem 5rem";
 const HEADINGS = ["Endpoint", "Covered", "Skipped", "Failed", "Fresh"] as const;
 
-function Labelled({ label, children }: { label: string; children: React.ReactNode }) {
+function Labelled({ label, children }: { label: string; children: ReactNode }) {
   return (
     <span className="flex items-baseline gap-1.5 md:block">
       <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)] md:hidden">{label}</span>
