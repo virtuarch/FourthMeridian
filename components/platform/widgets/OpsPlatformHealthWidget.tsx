@@ -1,70 +1,60 @@
 "use client";
 
 /**
- * components/platform/widgets/OpsPlatformHealthWidget.tsx  (PM-1 · ops_platform_health)
+ * components/platform/widgets/OpsPlatformHealthWidget.tsx  (PM-1 · UX-P1 · ops_platform_health)
  *
- * The consolidated supporting surface for Platform Operations Overview:
- * Alerts · Providers · Freshness · Configuration, as FOUR GROUPS INSIDE ONE
- * SURFACE instead of five equal-weight cards in a flat grid.
+ * The COMPACT TECHNICAL POSTURE of Platform Operations: Alerts · Providers ·
+ * Freshness · Configuration, as FOUR GROUPS INSIDE ONE SURFACE. The Overview's
+ * status board carries the same four verdicts as chips; this surface is where
+ * an operator reads the rows behind them without leaving the Overview.
  *
- * ── WHAT CHANGED IS THE FRAMING, NOT THE FACTS ───────────────────────────────
- * Nothing was removed and nothing new was computed. The five routes it reads —
- * alerts, provider-health, resource-freshness, rate-limits, env-status — are the
- * ones that already shipped, called exactly as authored. What goes away is five
- * bordered cards each with its own eyebrow and its own three-figure stat grid,
- * which gave five supporting reads the same weight as the two surfaces that
- * actually decide the operator's next move (Scheduler, Jobs).
+ * ── WHAT CHANGED IN UX-P1, AND WHAT DID NOT ──────────────────────────────────
+ * The five routes it reads — alerts, provider-health, resource-freshness,
+ * rate-limits, env-status — are the ones that already shipped, called exactly
+ * as authored, each with its own four fetch states. What changed is density and
+ * honesty: each group leads with a ToneBadge, one headline and at most two rows;
+ * everything else — the remaining rows, the provenance and the authority's
+ * caveat — lives in a per-group "Details" disclosure, so no module path is
+ * visible by default. The Alerts group's word now derives from the LATEST
+ * evaluation's `firing` outcomes, and the delivery history is a labelled list
+ * in its disclosure — a critical delivered two days ago no longer keeps
+ * "Action needed" lit (platform-health-view.ts).
  *
  * ── CONFIGURATION IS NOT OPTIONAL ────────────────────────────────────────────
  * `ops_rate_limits` and `ops_env_status` are composed ONLY into the Overview
  * workspace. If this surface superseded them without representing them, both
- * would become unreachable in the product — a consolidation that quietly deletes
- * two reads. Hence a Configuration group with two sources, each with its own
- * fetch state, so one failing never hides the other.
+ * would become unreachable in the product. Hence a Configuration group with two
+ * sources, each with its own fetch state, so one failing never hides the other.
  *
  * ── THE SPLIT, AND WHY ───────────────────────────────────────────────────────
  * `OpsPlatformHealthWidget` fetches; `PlatformHealthSurface` renders. That is
- * the IncidentPreview precedent, and it is the reason loading / failed / empty /
- * populated can each be PROVEN by rendering the real component in a test rather
- * than asserted about a mock (server rendering never runs an effect, so a
- * self-fetching component can only ever demonstrate its first frame).
+ * what lets loading / failed / empty / populated be PROVEN by rendering the real
+ * component in a test (server rendering never runs an effect, so a self-fetching
+ * component can only ever demonstrate its first frame).
  *
  * ── FOUR STATES, NEVER COLLAPSED ─────────────────────────────────────────────
  * Per source: loading, failed, "the registry is empty", and answered. A failed
  * fetch says the platform could not be asked; it never renders as zero, as
  * nominal, or as nothing-to-see. Colour never carries meaning alone — every
- * status is a word first (see StatusWord in platform-surface.tsx).
+ * status is a word first (ToneBadge).
  *
  * ── PER-GROUP DOORWAYS (PM-1 S3) ─────────────────────────────────────────────
- * Each group now ends with the prototype's doorway — `Alerts →`, `Providers →`,
- * `Providers →`, `Operations →` — because a group that summarises a workspace
- * and does not say so leaves the operator to guess where the full read lives.
- *
- * It is NOT a second navigation mechanism. The rail is local state owned by
- * `PlatformSpaceDashboard`, and its ONLY existing summary→detail affordance is
- * the `onOpen(workspaceId)` callback it already threads to `WorkspaceDoorway`
- * (there is no `?workspace=` url, no route, and no context — verified). The same
- * callback is taken here as an OPTIONAL prop, and when the host has not supplied
- * one the doorway RENDERS NOTHING rather than a button that does nothing. See
- * the integration note in the migration plan.
- *
- * ── NON-GOALS ────────────────────────────────────────────────────────────────
- * No new route, projection, authority or schema. No drill panel and no per-row
- * click targets: the migration plan §6 rules this a consolidated READ, not N
- * objects. The doorway opens a WORKSPACE, never an object.
+ * Each group ends with a doorway into the workspace that owns its detail,
+ * through the host's `onOpen(workspaceId)` callback (the rail's one navigation
+ * mechanism). Without the callback the doorway renders nothing.
  */
 
 import { useState, type ReactNode } from "react";
 import { Activity, AlertTriangle, ArrowRight, Loader2 } from "lucide-react";
 import { useWidgetFetch, type PlatformSection } from "../widget-kit";
-import { GroupLabel, Provenance, SectionSurface, StatusWord, TwoLine } from "../platform-surface";
+import { GroupLabel, Provenance, SectionSurface, ToneBadge, TwoLine } from "../platform-surface";
 import { getPlatformWorkspace } from "@/lib/platform/workspaces";
 import {
   GROUP_DOORWAY,
   GROUP_LABEL,
   LINE_TOKEN,
   LOADING_TEXT,
-  STATUS_TOKEN,
+  STATUS_TONE,
   STATUS_WORD,
   SURFACE_FOOTNOTE,
   alertsView,
@@ -75,6 +65,7 @@ import {
   rateLimitsView,
   unavailableText,
   type HealthGroupId,
+  type HealthLine,
   type SourceView,
 } from "./platform-health-view";
 import type { PlatformAlertsResponse } from "@/app/api/platform/platform-ops/alerts/route";
@@ -90,6 +81,34 @@ export interface FetchedResource<T> {
   error:   string | null;
 }
 
+function Lines({ lines }: { lines: readonly HealthLine[] }) {
+  if (lines.length === 0) return null;
+  return (
+    <ul className="flex flex-col gap-1.5">
+      {lines.map((line, i) => (
+        <li key={`${line.label}:${i}`}>
+          <TwoLine value={line.label} qualifier={line.detail} qualifierTone={LINE_TOKEN[line.tone]} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The per-source disclosure: provenance, the authority's caveat, the remaining rows. */
+function Details({ provenance, note, lines }: { provenance: string; note?: string; lines: readonly HealthLine[] }) {
+  return (
+    <details>
+      <summary className="cursor-pointer text-[11px] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]">
+        Details{lines.length > 0 ? ` (${lines.length} more)` : ""}
+      </summary>
+      <div className="mt-2 flex flex-col gap-2">
+        <Lines lines={lines} />
+        <Provenance source={provenance}>{note}</Provenance>
+      </div>
+    </details>
+  );
+}
+
 /** One authority's block: its own state, its own words, its own system of record. */
 function SourceBlock<T>({
   subject,
@@ -100,7 +119,7 @@ function SourceBlock<T>({
 }: {
   /** Names this source in the failure sentence, e.g. "Provider health". */
   subject:    string;
-  /** The module or table that actually answers — never omitted. */
+  /** The module or table that actually answers — in the disclosure, never the lead. */
   provenance: string;
   /** Shown only where a group holds more than one source. */
   caption?:   string;
@@ -120,7 +139,6 @@ function SourceBlock<T>({
         <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]" role="status">
           <Loader2 size={12} className="animate-spin" aria-hidden /> {LOADING_TEXT}
         </p>
-        <Provenance source={provenance} />
       </div>
     );
   }
@@ -135,7 +153,7 @@ function SourceBlock<T>({
           <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden />
           <span>{unavailableText(subject)}</span>
         </p>
-        <Provenance source={provenance} />
+        <Details provenance={provenance} lines={[]} />
       </div>
     );
   }
@@ -150,21 +168,13 @@ function SourceBlock<T>({
           authority (rate-limit pressure) has status null and shows no verdict at
           all rather than borrowing a reassuring one. */}
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        {view.status && <StatusWord word={STATUS_WORD[view.status]} token={STATUS_TOKEN[view.status]} />}
+        {view.status && <ToneBadge word={STATUS_WORD[view.status]} tone={STATUS_TONE[view.status]} />}
         <span className="text-xs text-[var(--text-secondary)]">{view.headline}</span>
       </div>
 
-      {view.lines.length > 0 && (
-        <ul className="flex flex-col gap-1.5">
-          {view.lines.map((line, i) => (
-            <li key={`${line.label}:${i}`}>
-              <TwoLine value={line.label} qualifier={line.detail} qualifierTone={LINE_TOKEN[line.tone]} />
-            </li>
-          ))}
-        </ul>
-      )}
+      <Lines lines={view.lines} />
 
-      <Provenance source={provenance}>{view.note}</Provenance>
+      <Details provenance={provenance} note={view.note} lines={view.details} />
     </div>
   );
 }
@@ -175,8 +185,7 @@ function SourceBlock<T>({
  * The LABEL is the workspace registry's own (`getPlatformWorkspace`), so a
  * renamed workspace renames its doorway and cannot drift into a promise the
  * rail does not keep. A target the registry does not know renders nothing —
- * as does a surface whose host has not wired `onOpen`, because a doorway that
- * cannot open is worse than no doorway at all.
+ * as does a surface whose host has not wired `onOpen`.
  */
 function GroupDoorway({
   group,
@@ -193,18 +202,10 @@ function GroupDoorway({
       type="button"
       onClick={() => onOpen(targetId)}
       aria-label={doorwayLabel(def.label, group)}
-      /* TOUCH TARGET. The prototype's doorway is an 11px text link, which lays out
-         a ~21px-tall hit area — under the 44px minimum, and these are the only
-         interactive elements on the surface.
-         The target is enlarged by an OVERLAY (a `before` pseudo-element centred on
-         the button), not by padding or min-height, because those would change the
-         box the grid measures and push every group taller — a spacing regression
-         against the prototype at exactly the widths where parity was verified.
-         The overlay affects hit-testing only: text treatment, layout and the
-         rendered box are byte-identical at every width, so this needs no
-         breakpoint and cannot regress desktop.
-         Vertical growth is ~11px per edge, well inside the `gap-8` (32px) that
-         separates groups, so no two targets can overlap. */
+      /* TOUCH TARGET. An 11px text link lays out a ~21px hit area — under the
+         44px minimum. The target is enlarged by an OVERLAY (a `before`
+         pseudo-element centred on the button), not by padding or min-height, so
+         the box the grid measures is byte-identical at every width. */
       className="relative mt-auto flex w-fit items-center gap-1 pt-1 text-[11px] text-[var(--meridian-400)] transition-colors hover:text-[var(--meridian-300)] before:absolute before:left-1/2 before:top-1/2 before:h-11 before:w-full before:min-w-[44px] before:-translate-x-1/2 before:-translate-y-1/2 before:content-['']"
     >
       {def.label} <ArrowRight size={10} aria-hidden />
@@ -212,8 +213,7 @@ function GroupDoorway({
   );
 }
 
-/** One labelled group inside the surface. Its label renders whatever its sources
- *  say; its doorway names the workspace that carries the same question in full. */
+/** One labelled group inside the surface. */
 function HealthGroup({
   group,
   onOpen,
@@ -254,16 +254,13 @@ export function PlatformHealthSurface({
   env:        FetchedResource<PlatformEnvStatusResponse>;
   /** Injected clock — relative ages are deterministic under test. */
   nowMs:      number;
-  /** The host's rail-switch callback — the SAME `onOpen(workspaceId)` signature
-   *  `PlatformSpaceDashboard` already threads to `WorkspaceDoorway`. Optional:
-   *  without it the doorways do not render (see the header note). */
+  /** The host's rail-switch callback. Optional: without it the doorways do not render. */
   onOpenWorkspace?: (workspaceId: string) => void;
 }) {
   return (
     <SectionSurface icon={Activity} title={section.label} footnote={SURFACE_FOOTNOTE}>
       {/* One frame, four groups, separated by space rather than by more boxes.
-          Columns collapse through `md:`/`xl:` variants — production scans this
-          tree, so the prototype's viewport-as-state hook is not needed here. */}
+          Columns collapse through `md:`/`xl:` variants. */}
       <div className="grid gap-8 md:grid-cols-2 xl:grid-cols-4">
         <HealthGroup group="alerts" onOpen={onOpenWorkspace}>
           <SourceBlock
@@ -320,8 +317,7 @@ export function OpsPlatformHealthWidget({
   onOpenWorkspace,
 }: {
   section: PlatformSection;
-  /** Passed straight through to the surface. Supplied by the workspace host;
-   *  see the header note on why it is optional and what happens without it. */
+  /** Passed straight through to the surface. Supplied by the workspace host. */
   onOpenWorkspace?: (workspaceId: string) => void;
 }) {
   // Five reads, one per literal URL — the `useWidgetFetch` static-url contract
@@ -333,11 +329,8 @@ export function OpsPlatformHealthWidget({
   const rateLimits = useWidgetFetch<PlatformRateLimitsResponse>("/api/platform/platform-ops/rate-limits");
   const env        = useWidgetFetch<PlatformEnvStatusResponse>("/api/platform/platform-ops/env-status");
 
-  // ONE instant for the whole surface, captured at mount. Every relative age
-  // below is measured from it, so two groups can never disagree about "now" —
-  // the same reason the workspace owns one operational session (OPS-2C-6).
-  // Read once rather than per render: a clock read during render is impure and
-  // would make the same data render differently on an unrelated re-render.
+  // ONE instant for the whole surface, captured at mount, so two groups can
+  // never disagree about "now".
   const [nowMs] = useState(() => Date.now());
 
   return (

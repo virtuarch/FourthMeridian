@@ -12,6 +12,20 @@
  *   Plaid              getPlaidUsage              (PlaidItem census ⨝ rates)
  *   policies           loadRefreshPolicies        (PlatformSetting)
  *
+ * UX-P1 — the four Platform Health groups fold into the same read as a POSTURE
+ * row (overview-core.ts derivePosture), so the status board is ONE request:
+ *
+ *   alerts             loadLatestAlertEvaluation  (latest evaluate-alerts run — firing NOW,
+ *                                                  never the delivery history)
+ *   providers          getProviderHealth          (handed the SAME freshness and connection
+ *                                                  reads above, so nothing is read twice)
+ *   freshness          checkResourceFreshness     (stored data, never a job's exit status)
+ *   configuration      getEnvReport               (names and verdicts, never values)
+ *
+ * Each posture authority is BEST-EFFORT: a loader that throws yields a chip in
+ * the `unavailable` state — the board says it could not ask, never zero and
+ * never fine — while the six domain verdicts still render.
+ *
  * The refresh policies are loaded ONCE and handed to every consumer that
  * judges against them, so the overview cannot disagree with itself.
  *
@@ -32,7 +46,19 @@ import { deriveNextDueFromLedger } from "@/lib/platform/scheduler/observation";
 import { getAiOperations } from "@/lib/platform/ai/invocations";
 import { getBriefOps } from "@/lib/platform/ai/brief-ops";
 import { getPlaidUsage } from "@/lib/platform/plaid/usage";
-import { buildOverview, type DomainStatus, type JobHealthCounts, type OverviewCore } from "@/lib/platform/ops/overview-core";
+import { getProviderHealth } from "@/lib/platform/provider-health";
+import { checkResourceFreshness } from "@/lib/platform/resource-freshness";
+import { getEnvReport } from "@/lib/env";
+import { loadLatestAlertEvaluation } from "@/lib/alerts/run";
+import { ALERT_RULES } from "@/lib/alerts/rules";
+import {
+  buildOverview,
+  derivePosture,
+  type DomainStatus,
+  type JobHealthCounts,
+  type OverviewCore,
+  type PostureChip,
+} from "@/lib/platform/ops/overview-core";
 import type { ExecutionRowDTO } from "@/lib/platform/refresh/execution-query-core";
 import { projectExecutionRow } from "@/lib/platform/refresh/execution-query-core";
 
@@ -43,6 +69,18 @@ export interface OperationsOverview extends OverviewCore {
    *  from "something is wrong" to "this exact execution". */
   latestFailures: readonly ExecutionRowDTO[];
   nextSlotAt: string | null;
+  /** UX-P1 — Alerts · Providers · Freshness · Configuration, in that order. */
+  posture: readonly PostureChip[];
+}
+
+/** A best-effort read: the value, or null when the authority could not be asked. */
+async function attempt<T>(what: string, read: () => Promise<T>): Promise<T | null> {
+  try {
+    return await read();
+  } catch (e) {
+    console.warn(`[overview] posture authority "${what}" could not be read (non-fatal):`, e);
+    return null;
+  }
 }
 
 function minusDays(dayISO: string, days: number): string {
@@ -56,14 +94,26 @@ export async function getOperationsOverview(now: Date = new Date()): Promise<Ope
   const today = todayUTCISO(now);
   const yesterday = minusDays(today, 1);
 
-  const [pipeline, sources, jobHealth, ai, brief, plaid] = await Promise.all([
+  // The connection read is shared with the provider roll-up below (one read).
+  const sourcesP = getConnectionHealth(20, policies);
+  const freshnessP = attempt("resource-freshness", () => checkResourceFreshness(undefined, now));
+
+  const [pipeline, sources, jobHealth, ai, brief, plaid, freshness, providers, alerts] = await Promise.all([
     getPipelineStatus({ from: yesterday, to: today }),
-    getConnectionHealth(20, policies),
+    sourcesP,
     checkScheduledJobHealth(undefined, now, SCHEDULED_JOBS, { policies }),
     getAiOperations({ window: "24h" }),
     getBriefOps("24h"),
     getPlaidUsage(),
+    freshnessP,
+    attempt("provider-health", async () => {
+      const fresh = await freshnessP;
+      if (!fresh) throw new Error("freshness unavailable");
+      return getProviderHealth({ now, loadFreshness: () => Promise.resolve(fresh), loadConnections: () => sourcesP });
+    }),
+    attempt("alerts", async () => ({ latest: await loadLatestAlertEvaluation(), rulesRegistered: ALERT_RULES.length })),
   ]);
+  const configuration = attemptSync("env-report", getEnvReport);
 
   const jobs: JobHealthCounts = { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0 };
   for (const j of jobHealth.jobs) {
@@ -120,7 +170,17 @@ export async function getOperationsOverview(now: Date = new Date()): Promise<Ope
     windows: { pipeline: `${yesterday} .. ${today} (UTC)`, ai: "24h", brief: "24h" },
     latestFailures: pipeline.latestFailures.map((f) => projectExecutionRow(f, "operator")),
     nextSlotAt: nextSlot ? nextSlot.toISOString() : null,
+    posture: derivePosture({ alerts, providers, freshness, configuration }),
   };
+}
+
+function attemptSync<T>(what: string, read: () => T): T | null {
+  try {
+    return read();
+  } catch (e) {
+    console.warn(`[overview] posture authority "${what}" could not be read (non-fatal):`, e);
+    return null;
+  }
 }
 
 export type { DomainStatus };
