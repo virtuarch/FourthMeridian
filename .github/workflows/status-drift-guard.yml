@@ -4,18 +4,27 @@ name: STATUS drift guard
 # FOURTH_MERIDIAN_STATUS_DRIFT_INVESTIGATION_2026-07-13.md: initiatives shipping
 # migrations / closeouts with NO STATUS.md update, leaving the ledger stale.
 #
-# It flags — it does not block. If a pull request adds a prisma/migrations/
+# It flags — it does not block. If a change set adds a prisma/migrations/
 # folder or a docs/initiatives/** closeout without touching STATUS.md, this job
 # emits a GitHub warning annotation + a step summary so the reviewer notices.
 # It always exits 0 so it can never break the existing CI gate (ci.yml) or wedge
-# a legitimately doc-exempt PR. A maintainer who wants it to be blocking can flip
-# the single `exit 0` at the end to `exit 1`.
+# a legitimately doc-exempt change. A maintainer who wants it to be blocking can
+# flip the single `exit 0` at the end to `exit 1`.
 #
-# PR-only by design: the base ref needed for a reliable diff exists only on
-# pull_request events (a bare push has no unambiguous base to diff against).
+# Two triggers (owner decision 2026-10-14, STATUS.md §13):
+#   - pull_request: the change set is the PR diff against its base branch.
+#   - push to v2.6:  the change set is everything the push brought in, diffed
+#     against the commit the branch pointed at before the push
+#     (`github.event.before`). This repository has never used pull requests
+#     (direct pushes to v2.6 are the real workflow), so until this trigger
+#     existed the guard had never run. A brand-new branch or a force-push
+#     whose `before` is unreachable falls back to the pushed HEAD's first
+#     parent, and the summary says so.
 
 on:
   pull_request:
+  push:
+    branches: ["v2.6"]
 
 permissions:
   contents: read
@@ -29,17 +38,39 @@ jobs:
           fetch-depth: 0
 
       - name: Flag migrations/closeouts landing without a STATUS.md update
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          BASE="${{ github.event.pull_request.base.ref }}"
-          git fetch --no-tags --depth=200 origin "$BASE"
 
-          # Files changed by this PR relative to the merge base with the target branch.
-          CHANGED="$(git diff --name-only "origin/${BASE}...HEAD")"
+          # Resolve the comparison base for this event, and describe it.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags --depth=200 origin "$PR_BASE_REF"
+            BASE="origin/${PR_BASE_REF}"
+            RANGE="${BASE}...HEAD"
+            DESCRIBE="pull request against ${PR_BASE_REF}"
+          else
+            if [ -n "$PUSH_BEFORE" ] \
+               && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] \
+               && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+              BASE="$PUSH_BEFORE"
+              DESCRIBE="push, compared with the previous branch tip ${PUSH_BEFORE:0:7}"
+            else
+              BASE="HEAD~1"
+              DESCRIBE="push with no reachable previous tip (new branch or force-push); compared with HEAD~1 only"
+            fi
+            RANGE="${BASE} HEAD"
+          fi
 
-          # Did the PR touch STATUS.md at all?
+          # Files changed by this change set.
+          # shellcheck disable=SC2086
+          CHANGED="$(git diff --name-only $RANGE)"
+
+          # Did the change set touch STATUS.md at all?
           if echo "$CHANGED" | grep -qx 'STATUS.md'; then
-            echo "STATUS.md was updated in this PR — no drift flag." >> "$GITHUB_STEP_SUMMARY"
+            echo "STATUS.md was updated in this change set (${DESCRIBE}) — no drift flag." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -52,15 +83,15 @@ jobs:
             || true)"
 
           if [ -z "$TRIGGERS" ]; then
-            echo "No migration/closeout changes detected — no drift flag." >> "$GITHUB_STEP_SUMMARY"
+            echo "No migration/closeout changes detected (${DESCRIBE}) — no drift flag." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           {
             echo "### ⚠️ STATUS.md drift guard"
             echo ""
-            echo "This PR changes migration/closeout files but does **not** touch \`STATUS.md\`."
-            echo "Per the maintenance rule, initiative work updates the ledger (or the PR states why not)."
+            echo "This change set (${DESCRIBE}) changes migration/closeout files but does **not** touch \`STATUS.md\`."
+            echo "Per the maintenance rule, initiative work updates the ledger (or the commit states why not)."
             echo ""
             echo "Ledger-relevant files changed here:"
             echo ""
@@ -68,10 +99,10 @@ jobs:
             echo "$TRIGGERS"
             echo '```'
             echo ""
-            echo "_Advisory only — this check does not block the merge._"
+            echo "_Advisory only — this check does not block._"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "::warning title=STATUS.md not updated::This PR adds migrations/closeouts without a STATUS.md diff — update the ledger or note in the PR why not."
+          echo "::warning title=STATUS.md not updated::This change set adds migrations/closeouts without a STATUS.md diff — update the ledger or note in the commit why not."
 
           # Advisory: never fail the build. Flip to `exit 1` to make it blocking.
           exit 0
