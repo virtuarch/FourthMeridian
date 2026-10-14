@@ -7,13 +7,20 @@
  * Editorial (v2.5): a solid Atlas Surface with an honest, no-fake-numbers
  * invitation to build the picture, matching the reading language of the rest
  * of the Brief. No cinematic backdrop, no glass.
+ *
+ * RWA-1 — "Add Manual Asset" used to link to /dashboard/connections, which had
+ * no manual-asset action: a dead end in the very first thing a new user sees.
+ * It now opens the asset form in place, and the Brief re-reads once one exists.
  */
 
+import { useState } from "react";
 import Link from "next/link";
+import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { Globe, Link2, PlusCircle } from "lucide-react";
 import { Surface } from "@/components/atlas/Surface";
 
-export function BriefNewUser() {
+export function BriefNewUser({ onAssetAdded }: { onAssetAdded?: () => void } = {}) {
+  const [assetOpen, setAssetOpen] = useState(false);
   return (
     <Surface className="p-8 sm:p-10">
       <div className="mx-auto max-w-md text-center">
@@ -35,15 +42,17 @@ export function BriefNewUser() {
             <Link2 className="size-4" />
             Connect an Account
           </Link>
-          <Link
-            href="/dashboard/connections"
+          <button
+            type="button"
+            onClick={() => setAssetOpen(true)}
             className="flex items-center justify-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-6 py-3 text-sm font-semibold text-[var(--text-secondary)] transition-colors hover:border-[var(--border-hairline-strong)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
           >
             <PlusCircle className="size-4" />
-            Add Manual Asset
-          </Link>
+            Add an asset
+          </button>
         </div>
       </div>
+      {assetOpen && <AddManualAssetModal onClose={() => setAssetOpen(false)} onAdd={onAssetAdded} />}
     </Surface>
   );
 }

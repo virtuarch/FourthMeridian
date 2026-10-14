@@ -163,6 +163,8 @@ function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[
     balance:            a.balance,
     currency:           a.currency,
     isManual:           false,
+    isUserEstimate:     false,
+    canManage:          false,
     connectionState:    null,
     importBatchCount:   0,
     // v2.6-L1 — freshness from the host's own account row. `ledgerQueried` is

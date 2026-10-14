@@ -430,7 +430,7 @@ export function DailyBriefClient({ spaceId, spaceName, firstName, initial }: {
       </header>
 
       {phase === "NO_DATA" ? (
-        <BriefNewUser />
+        <BriefNewUser onAssetAdded={retry} />
       ) : brief ? (
         <BriefBody brief={brief} metrics={metrics} dataHealth={dataHealth} phase={phase} />
       ) : phase === "FAILED_EMPTY" ? (

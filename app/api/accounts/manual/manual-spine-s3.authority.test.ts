@@ -330,8 +330,15 @@ console.log("\nB3. DELETE — THE CAPABILITY, THE ASSERTION, AND THE ORDER");
   // The header must keep saying what was NOT changed, so nobody re-derives it.
   const header = raw(ID_ROUTE);
   check("the header records the ACTIVE-only narrowing of the revoke", /status: ACTIVE/.test(header));
-  check("the header records that snapshots are still not regenerated here",
+  check("the header records the snapshot decision over affectedSpaceIds",
     /affectedSpaceIds/.test(header) && /snapshot/i.test(header));
+  // RWA-1 — the owner-approved product change: both writes regenerate today's
+  // snapshot, DELETE over the Spaces the revoke captured (incl. invisible ones).
+  check("RWA-1: PATCH regenerates through the account's ACTIVE links",
+    c.includes("regenerateSnapshotsForAccounts([outcome.updated.id])"));
+  check("RWA-1: DELETE regenerates over the revoke's captured affectedSpaceIds, AFTER the revoke",
+    /for \(const spaceId of revocation\.affectedSpaceIds\)/.test(c) &&
+    c.indexOf("revocation.affectedSpaceIds") > rev);
 }
 
 if (failures > 0) {

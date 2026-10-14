@@ -109,6 +109,20 @@ export interface AccountDetailRow {
   balance:            number;
   currency:           string;
   isManual:           boolean;     // no provider connection at all (no PlaidItem, no wallet)
+  /**
+   * RWA-1 — the balance is a value the USER typed in (syncStatus "manual",
+   * created by POST /api/accounts/manual), not an observation of any feed. A
+   * narrower claim than `isManual`, which is also true of import-only accounts.
+   * False on BALANCE_ONLY rows (an aggregate is never presented as an estimate).
+   */
+  isUserEstimate:     boolean;
+  /**
+   * RWA-1 — the viewer may revalue / archive this user estimate. Mirrors the
+   * write routes' own gate (owner AND manual, app/api/accounts/manual/[id]) so
+   * the UI never offers an action the server refuses; the server stays the
+   * authority. False on BALANCE_ONLY rows.
+   */
+  canManage:          boolean;
   connectionState:    SyncConnectionState | null; // deriveConnectionState() — null for manual/BALANCE_ONLY, never fabricated
   importBatchCount:   number;      // COMPLETED ImportBatch rows for this account (0 on BALANCE_ONLY)
   /**
@@ -246,6 +260,10 @@ export async function GET(
           interestRate:   true,
           minimumPayment: true,
           walletAddress:  true,
+          // RWA-1 — what makes a balance a USER ESTIMATE, and who may revalue it.
+          // Both are only compared, never returned.
+          syncStatus:     true,
+          ownerUserId:    true,
           // W-M3a — names the wallet's asset, so this surface can tell a chain
           // that writes the balance column from one whose value lives on the spine.
           walletChain:    true,
@@ -461,6 +479,8 @@ export async function GET(
       balance:            a.balance,
       currency:           a.currency,
       isManual:           !hasProvider,
+      isUserEstimate:     a.syncStatus === "manual",
+      canManage:          a.syncStatus === "manual" && a.ownerUserId === viewer.user.id,
       connectionState,
       importBatchCount:   importCountByAccount.get(a.id) ?? 0,
       freshness:          fullFreshness,
@@ -490,6 +510,8 @@ export async function GET(
     balance:            r.balance,
     currency:           r.currency,
     isManual:           false,
+    isUserEstimate:     false,
+    canManage:          false,
     connectionState:    null,
     importBatchCount:   0,
     // The aggregate's freshness is the OLDEST member's (normalizeSharedAccounts

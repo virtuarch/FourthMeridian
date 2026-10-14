@@ -57,13 +57,26 @@
  *     and it is the correct semantics — a revocation that already happened was
  *     not performed by this actor at this instant — and it matches
  *     `disconnect.ts`.
- *   · this route still does NOT regenerate the affected Spaces' snapshots.
- *     `disconnectAccounts` does; the manual-asset delete never has. The
- *     capability now RETURNS `affectedSpaceIds`, including Spaces the actor
- *     cannot see, so the information exists — but starting to regenerate them
- *     here would change product behaviour as a side effect of an authority
- *     migration, which is the drift this programme exists to prevent. Reported
- *     as a follow-up instead.
+ *   · (HISTORICAL — superseded by RWA-1 below) this route did not regenerate
+ *     the affected Spaces' snapshots; the authority migration deliberately left
+ *     that product change for its own decision.
+ *
+ * ── RWA-1 (2026-10-15) — BOTH WRITES NOW REGENERATE TODAY'S SNAPSHOT ─────────
+ * The owner approved exposing "Update value" and "Archive" in the UI, which is
+ * the product decision the note above deferred. Without it a revaluation (or an
+ * archive) changed FinancialAccount.balance while every Space's SpaceSnapshot —
+ * what the Net Worth hero, trend and Brief read — kept the old figure until some
+ * unrelated provider sync regenerated it; a Space holding only manual assets
+ * never did.
+ *   · PATCH regenerates through `regenerateSnapshotsForAccounts([id])` — the
+ *     links are still ACTIVE, so the share lookup finds every Space, exactly as
+ *     POST and restore already do.
+ *   · DELETE regenerates over `affectedSpaceIds`, the list the deployment-wide
+ *     capability captured BEFORE revoking (after the revoke no ACTIVE link is
+ *     left to look up), including Spaces the actor cannot see — the
+ *     `disconnectAccounts` pattern, sequential, outside every transaction.
+ * Both are best-effort and non-fatal, like every other snapshot dispatch: the
+ * write has already committed and must not be reported as failed.
  */
 
 import { NextRequest, NextResponse }   from "next/server";
@@ -72,6 +85,7 @@ import { withTenantDb }                from "@/lib/db/tenant-context";
 import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 import { revokeAccountLinksEverywhere } from "@/lib/accounts/links-everywhere";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { regenerateSnapshotsForAccounts, regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -136,6 +150,14 @@ export const PATCH = withApiHandler(async (
       { error: "Only manually-entered accounts can have their balance updated this way." },
       { status: 400 }
     );
+  }
+
+  // RWA-1 — today's snapshot follows the new value in every Space the asset is
+  // linked into (see the header). Non-fatal: the revaluation has committed.
+  try {
+    await regenerateSnapshotsForAccounts([outcome.updated.id]);
+  } catch (snapshotErr) {
+    console.warn(`[PATCH /api/accounts/manual] snapshot regen failed for account ${outcome.updated.id} (non-fatal):`, snapshotErr);
   }
 
   return NextResponse.json({
@@ -259,7 +281,18 @@ export const DELETE = withApiHandler(async (
     revocation.changedLinkCount,
   );
 
-  // ── PHASE 3 — Audit log ───────────────────────────────────────────────────
+  // ── PHASE 3 — RWA-1: today's snapshot, over the Spaces the revoke captured ─
+  // Sequential and outside every transaction (the disconnectAccounts pattern);
+  // a failure on one Space never stops the others and never fails the archive.
+  for (const spaceId of revocation.affectedSpaceIds) {
+    try {
+      await regenerateSpaceSnapshot(spaceId);
+    } catch (snapshotErr) {
+      console.warn(`[DELETE /api/accounts/manual] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
+    }
+  }
+
+  // ── PHASE 4 — Audit log ───────────────────────────────────────────────────
   await withTenantDb(userId, (tx) => tx.auditLog.create({
     data: {
       userId,
