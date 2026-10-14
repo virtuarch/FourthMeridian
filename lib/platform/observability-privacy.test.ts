@@ -44,6 +44,14 @@ const READERS = [
   // CUSTOMER_SUCCESS owner reader (id / username / name only, never email).
   "lib/connections/health.ts",
   "lib/platform/customer/connection-owners.ts",
+  // UX-P1 — the attention composition, the PLATFORM_OPS incident projection,
+  // the latest-evaluation alert projection and the narrow operator feed.
+  "lib/platform/ops/attention.ts",
+  "lib/platform/ops/attention-core.ts",
+  "lib/platform/incidents/platform-projection.ts",
+  "lib/alerts/latest-evaluation.ts",
+  "lib/platform/activity/operator-feed.ts",
+  "lib/platform/activity/operator-feed-core.ts",
 ];
 const ROUTES = [
   "app/api/platform/platform-ops/overview/route.ts",
@@ -56,6 +64,10 @@ const ROUTES = [
   // UX-P1 — the owner route (CUSTOMER_SUCCESS READ; scanned for secrets and
   // env, not for the PLATFORM_OPS gate — its gate is pinned below).
   "app/api/platform/customer-success/connection-owners/route.ts",
+  // UX-P1 — the three new PLATFORM_OPS read routes.
+  "app/api/platform/platform-ops/attention/route.ts",
+  "app/api/platform/platform-ops/activity/route.ts",
+  "app/api/platform/platform-ops/refresh/daily/route.ts",
 ];
 
 console.log("source · no customer identity or secret is selected");

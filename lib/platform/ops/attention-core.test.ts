@@ -43,11 +43,11 @@ const connections: ConnectionHealthResult = {
   total: 5,
   counts: { HEALTHY: 2, STALE: 1, DEGRADED: 0, NEEDS_REAUTH: 1, ERROR: 1, REVOKED: 0 },
   unhealthy: [
-    { source: "PLAID", id: "item_err", label: "Chase", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "ERROR", lastSyncedAt: AGO(30), since: AGO(26) },
-    { source: "PLAID", id: "item_reauth", label: "Wells Fargo", status: "NEEDS_REAUTH", errorCode: null, healthState: "NEEDS_REAUTH", lastSyncedAt: AGO(50), since: AGO(48) },
-    { source: "WALLET", id: "conn_w", label: "Wallet …abc123", status: "ACTIVE", errorCode: null, healthState: "STALE", lastSyncedAt: AGO(10), since: null },
+    { source: "PLAID", id: "item_err", label: "Chase", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "ERROR", lastSyncedAt: AGO(30), since: AGO(26), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
+    { source: "PLAID", id: "item_reauth", label: "Wells Fargo", status: "NEEDS_REAUTH", errorCode: null, healthState: "NEEDS_REAUTH", lastSyncedAt: AGO(50), since: AGO(48), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
+    { source: "WALLET", id: "conn_w", label: "Wallet …abc123", status: "ACTIVE", errorCode: null, healthState: "STALE", lastSyncedAt: AGO(10), since: null, kind: "WALLET", institution: null, network: "ETH", overdueAfterHours: 6, neverSynced: false, availableActions: [] },
   ],
-  retired: { revoked: 1, ownerInactive: 0 },
+  retired: { revoked: 1, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy",
 };
 
 const jobs: NonNullable<AttentionInputs["jobs"]> = {
@@ -182,7 +182,7 @@ console.log("failed authorities and floors");
   check("failed readers are NAMED", partial.authorities.failed.join(",") === "job-health,incidents");
   check("the rest still answer", partial.authorities.checked.length === 4 && partial.items.some((i) => i.entity.kind === "connection"));
   check("ATTENTION_AUTHORITIES lists every reader exactly once", ATTENTION_AUTHORITIES.length === 6 && new Set(ATTENTION_AUTHORITIES).size === 6);
-  const empty = buildAttention({ connections: { total: 2, counts: { HEALTHY: 2, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 } }, jobs: { jobs: [] }, providers: { ...providers, providers: [] }, resources: { ...resources, resources: [] }, alerts: { latest: null, titles: {} }, incidents: { items: [], activeTotal: 0, truncated: false } }, now);
+  const empty = buildAttention({ connections: { total: 2, counts: { HEALTHY: 2, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" }, jobs: { jobs: [] }, providers: { ...providers, providers: [] }, resources: { ...resources, resources: [] }, alerts: { latest: null, titles: {} }, incidents: { items: [], activeTotal: 0, truncated: false } }, now);
   check("nothing wrong → zero rows and six authorities checked", empty.items.length === 0 && empty.authorities.checked.length === 6 && empty.floors.length === 0);
   const capped = buildAttention({ ...full, connections: { ...connections, total: 40, counts: { ...connections.counts, HEALTHY: 2 } } }, now);
   check("a capped connection list is captioned as a floor", capped.floors.some((f) => /Connections: 3 of 38 unhealthy shown/.test(f)), capped.floors.join(" | "));

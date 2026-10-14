@@ -43,10 +43,10 @@ const inputs: AttentionInputs = {
   connections: {
     total: 3, counts: { HEALTHY: 1, STALE: 1, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 1, REVOKED: 0 },
     unhealthy: [
-      { source: "PLAID", id: "item_err", label: "Chase", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "ERROR", lastSyncedAt: AGO(30), since: AGO(26) },
-      { source: "WALLET", id: "conn_w", label: "Wallet …abc123", status: "ACTIVE", errorCode: null, healthState: "STALE", lastSyncedAt: AGO(10), since: null },
+      { source: "PLAID", id: "item_err", label: "Chase", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "ERROR", lastSyncedAt: AGO(30), since: AGO(26), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
+      { source: "WALLET", id: "conn_w", label: "Wallet …abc123", status: "ACTIVE", errorCode: null, healthState: "STALE", lastSyncedAt: AGO(10), since: null, kind: "WALLET", institution: null, network: "ETH", overdueAfterHours: 6, neverSynced: false, availableActions: [] },
     ],
-    retired: { revoked: 0, ownerInactive: 0 },
+    retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy",
   },
   jobs: { jobs: [{ job: "sync-banks", status: "failing", expectedEveryHours: 24, consecutiveFailures: 3, lastStartedAt: AGO(6), lastFailureAt: AGO(6), lastFailureSummary: "Plaid timed out" }] },
   providers: { checkedAt: NOW, counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 0, UNKNOWN: 0 }, providers: [] },
@@ -120,7 +120,7 @@ function main() {
 
   console.log("4. empty state");
   {
-    const empty = response({}, { connections: { total: 1, counts: { HEALTHY: 1, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 } }, jobs: { jobs: [] }, providers: inputs.providers, resources: inputs.resources, alerts: { latest: null, titles: {} }, incidents: { items: [], activeTotal: 0, truncated: false } });
+    const empty = response({}, { connections: { total: 1, counts: { HEALTHY: 1, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" }, jobs: { jobs: [] }, providers: inputs.providers, resources: inputs.resources, alerts: { latest: null, titles: {} }, incidents: { items: [], activeTotal: 0, truncated: false } });
     const { html, text } = render(empty);
     check("says how many authorities were checked and when", text.includes("Nothing needs attention — 6 authorities checked at 2026-10-14 12:00 UTC."), text);
     check("…as a status, not a verdict", /role="status"/.test(html) && badgeWords(html).length === 0);
@@ -133,7 +133,7 @@ function main() {
     const { html, text } = render(partial);
     check("alert names the readers that could not be asked", /role="alert"/.test(html) && text.includes("2 authorities could not be asked (job-health, incidents)"), text);
     check("the other rows still render", text.includes("Chase"));
-    const emptyButFailed = response({}, { connections: { total: 0, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 } }, jobs: null, providers: null, resources: null, alerts: null, incidents: null });
+    const emptyButFailed = response({}, { connections: { total: 0, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" }, jobs: null, providers: null, resources: null, alerts: null, incidents: null });
     const r2 = render(emptyButFailed);
     check("an empty list beside failed readers counts only the ones that answered", r2.text.includes("1 authority checked") && r2.text.includes("5 authorities could not be asked"), r2.text);
   }

@@ -51,7 +51,7 @@ function pipeline(over: Partial<PipelineStatus>): PipelineStatus {
 
 const inputs: OverviewInputs = {
   pipeline: pipeline({ executions: 1, byStatus: { SUCCEEDED: 1 } }), pipelineWindowLabel: "window since yesterday (UTC)",
-  sources: { total: 4, counts: { HEALTHY: 2, STALE: 2, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 } },
+  sources: { total: 4, counts: { HEALTHY: 2, STALE: 2, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" },
   jobs: { healthy: 0, running: 0, overdue: 0, failing: 1, dead: 0, neverRan: 10 },
   ai: { invocations: 3, usd: 0.02, unpricedTokens: 0, cacheShare: 0.5, windowLabel: "last 24 h", failures: { failed: 0, timeouts: 0, rateLimited: 0, quota: 0 } },
   brief: { windowLabel: "last 24 h", generated: 1, failed: 0, inProgress: 0, versionStale: 0, usd: 0.003, uncorrelatedGenerations: 0 },
@@ -108,7 +108,7 @@ function main() {
 
   console.log("3. UNKNOWN is muted, never ok");
   {
-    const unknown = overview({}, { ...inputs, pipeline: pipeline({}), sources: { total: 0, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 } } });
+    const unknown = overview({}, { ...inputs, pipeline: pipeline({}), sources: { total: 0, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" } });
     const { html, text } = render(unknown);
     check("STATE_TONE maps UNKNOWN to muted", STATE_TONE.UNKNOWN === "muted" && STATE_TONE.HEALTHY === "ok");
     const unknownBadge = html.match(/<span class="inline-flex shrink-0 items-center gap-1.5" style="color:([^"]+)"><span aria-hidden="true" class="rounded-full" style="[^"]*"><\/span><span class="text-xs font-medium">Unknown<\/span>/);
