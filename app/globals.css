@@ -221,6 +221,14 @@ html[data-theme="dark"] {
   --accent-neutral:  var(--ink-300);       /* non-signalling default */
   --accent-info:     var(--meridian-400);  /* interactive / informational */
   --accent-warning:  #FBBF24;              /* amber — genuine warnings only (reauth / medium severity) */
+  /* UX-P1 — status aliases. 22 platform call sites referenced these names with a
+     hex fallback while no definition existed; they now resolve to the canonical
+     tokens platform-surface.tsx documents (success→emerald, warning→accent-warning,
+     danger→coral-400, the accessible end of the coral ramp). Var references, so
+     the light theme's overrides of the targets carry through. */
+  --success-400: var(--emerald-400);
+  --warning-400: var(--accent-warning);
+  --danger-400:  var(--coral-400);
 
   /* ---------- MODAL SURFACE — BriefModal's one-off "smoked crystal" fill ----------
      Kept separate from --glass-thick on purpose (see BriefModal.tsx header

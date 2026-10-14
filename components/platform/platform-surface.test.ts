@@ -473,20 +473,25 @@ function main() {
   {
     const exported = [...src.matchAll(/export function (\w+)/g)].map((m) => m[1]).sort();
     const expected = [
-      "BigStat",        // Scheduler
-      "ExecutionStrip", // Job detail · Recent executions
-      "GroupLabel",     // every surface
-      "KeyRow",         // Job detail
-      "PanelSection",   // Job detail
-      "PolicyChip",     // Jobs row · Job detail
-      "Provenance",     // Scheduler · Jobs · Job detail
-      "RuntimeTrend",   // Job detail · Runtime
-      "SectionSurface", // every surface
-      "StatusBadge",    // Jobs row · Job detail header
-      "StatusWord",     // Platform health headlines
-      "TwoLine",        // Jobs row
-      "Unavailable",    // any unobserved value
-      "VRule",          // Scheduler
+      "BigStat",         // Scheduler
+      "DistributionBar", // UX-P1 · Refresh summary strips · Attention severity · status board posture
+      "ExecutionStrip",  // Job detail · Recent executions
+      "GroupLabel",      // every surface
+      "KeyRow",          // Job detail
+      "MiniBars",        // UX-P1 · AI activity · Refresh activity · Economics (per-UTC-day buckets)
+      "PanelSection",    // Job detail
+      "PillGroup",       // UX-P1 · Pipeline filters · Attention filter · Connection health filter
+      "PolicyChip",      // Jobs row · Job detail
+      "Provenance",      // Scheduler · Jobs · Job detail
+      "RuntimeTrend",    // Job detail · Runtime
+      "SectionSurface",  // every surface
+      "StatusBadge",     // Jobs row · Job detail header
+      "StatusTile",      // UX-P1 · Overview status board
+      "StatusWord",      // Platform health headlines
+      "ToneBadge",       // UX-P1 · Attention · Connection health · Provider health · Pipeline rows
+      "TwoLine",         // Jobs row
+      "Unavailable",     // any unobserved value
+      "VRule",           // Scheduler
     ];
     check("exports exactly the consumed primitives",
       exported.join(",") === expected.join(","), `got ${exported.join(",")}`);

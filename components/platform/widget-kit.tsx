@@ -108,21 +108,24 @@ export function WidgetMessage({
   error?:   string | null;
   empty?:   string;
 }) {
+  // UX-P1 — live regions: the loading→error→empty transitions were silent to
+  // assistive technology across ~29 widgets. `status` is polite (loading/empty),
+  // `alert` is assertive (error). Icons are decorative; the text is the content.
   if (loading) {
     return (
-      <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
-        <Loader2 size={12} className="animate-spin" /> Loading…
+      <p role="status" className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
+        <Loader2 size={12} className="animate-spin" aria-hidden /> Loading…
       </p>
     );
   }
   if (error) {
     return (
-      <p className="flex items-center gap-1.5 text-xs" style={{ color: "var(--danger-400, #f87171)" }}>
-        <AlertTriangle size={12} /> {error}
+      <p role="alert" className="flex items-center gap-1.5 text-xs" style={{ color: "var(--coral-400)" }}>
+        <AlertTriangle size={12} aria-hidden /> {error}
       </p>
     );
   }
-  return <p className="text-xs text-[var(--text-secondary)]">{empty ?? "Nothing to show."}</p>;
+  return <p role="status" className="text-xs text-[var(--text-secondary)]">{empty ?? "Nothing to show."}</p>;
 }
 
 /** Compact relative time ("3m", "2h", "5d") from an ISO timestamp. Pure; falls
