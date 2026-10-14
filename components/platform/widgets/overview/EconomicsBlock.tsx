@@ -76,7 +76,6 @@ export function EconomicsSurface({ plaid, trend, nowMs, onOpenWorkspace }: Econo
             caption={`${ESTIMATE_CAPTION} · a day with no counter row or no rate in force is a gap, never $0`}
           />
         )}
-        <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{NO_LEDGER_NOTE}</p>
       </div>
     </SectionSurface>
   );

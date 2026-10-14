@@ -59,11 +59,12 @@ export function OpsOverviewWidget({
       {/* 3 · Who or what is affected? */}
       <ConnectionHealthBlock {...shared} />
 
-      {/* 4 · What is happening across the platform? */}
-      <div className="grid gap-8 md:gap-10 lg:grid-cols-2">
-        <JobsMatrixBlock {...shared} />
-        <RefreshActivityBlock {...shared} />
-      </div>
+      {/* 4 · What is happening across the platform? Each full width: the jobs
+          matrix is eleven rows of four columns and the refresh strips want the
+          whole measure — side by side, the matrix wrapped every cell and left
+          the refresh column half empty (Preview, 2026-10-14). */}
+      <JobsMatrixBlock {...shared} />
+      <RefreshActivityBlock {...shared} />
 
       {/* 5 · How is platform performance changing? */}
       <div className="grid gap-8 md:gap-10 lg:grid-cols-2">
