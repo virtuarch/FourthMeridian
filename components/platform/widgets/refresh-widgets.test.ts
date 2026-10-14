@@ -16,7 +16,7 @@
  * places renders nothing and fails silently.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 let failures = 0;
@@ -119,6 +119,46 @@ function main() {
       check(`${w.file}: no execution detail panel (2C-3)`, !/RightPanel|getExecutionTimeline/.test(src));
       check(`${w.file}: no OPS-2D control vocabulary`, !/mayRun|admission|pause|resume|disable|maintenanceMode/i.test(src));
     }
+  }
+
+  console.log("UX-P1 · page grain, shared primitives, honest paging");
+  {
+    const exec = strip(widgetPath("OpsRefreshExecutionsWidget"));
+    const summary = strip(widgetPath("OpsRefreshSummaryWidget"));
+    const coverage = strip(widgetPath("OpsRefreshCoverageWidget"));
+
+    check("executions: filter pills are the shared PillGroup", /PillGroup/.test(exec) && !/function Segmented/.test(exec));
+    check("executions: a real 'Load older' control exists", /Load older/.test(exec));
+    check("executions: older pages ride the seam's cursor through the keyed reader", /nextCursor/.test(exec) && /useKeyedFetch<ExecutionPageDTO>\(\s*`[^`]*&cursor=/.test(exec));
+    check("executions: each older page is a keyed body (remounted per cursor)", /<OlderPage\s+key=\{page\.nextCursor\}/.test(exec));
+    check("executions: the control never claims a total", /no total is counted/.test(exec) && !/\d+ older|older \(\d|\{[^}]*\.length[^}]*\} older/i.test(exec));
+    check("executions: below md the dropped columns reappear in an inline disclosure", /<details className="[^"]*md:hidden/.test(exec) && /<summary/.test(exec));
+    check("executions: the disclosure is a sibling of the row button, never nested in it", (() => {
+      const btnStart = exec.indexOf("<button\n                type=\"button\"\n                onClick={() => onSelect(selectionFor(row))}");
+      const btnEnd = exec.indexOf("</button>", btnStart);
+      const details = exec.indexOf("<details", btnStart);
+      return btnStart >= 0 && btnEnd > btnStart && details > btnEnd;
+    })());
+    check("executions: the deployment rule still fires across a page boundary", /precededBy/.test(exec) && /isDeploymentBoundary\(sequence/.test(exec));
+    check("executions: the drawer is untouched (panel receives only the selection)", /executionId=\{selected\?\.id \?\? null\}/.test(exec));
+
+    for (const [name, src] of [["summary", summary], ["coverage", coverage]] as const) {
+      check(`${name}: on the page grain (SectionSurface), not the card grain`, /SectionSurface/.test(src) && !/PlatformWidgetCard/.test(src));
+      check(`${name}: the envelope is the scope line`, /describeWindow\(/.test(src));
+      check(`${name}: has a prop-driven surface for render proofs`, /export function Refresh(Summary|Coverage)Surface\(/.test(src));
+      check(`${name}: grid-row idiom with a shared column definition`, /gridTemplateColumns:\s*COLS/.test(src));
+      check(`${name}: md collapse by class, never matchMedia`, /md:contents|md:hidden/.test(src) && !/matchMedia/.test(src));
+    }
+    check("summary: a BigStat for the execution count", /<BigStat/.test(summary));
+    check("summary: the two strips through the SAME view map the Overview uses", /refresh-activity-view/.test(summary) && /statusSegments\(/.test(summary) && /triggerSegments\(/.test(summary));
+    check("summary: Δ records goes through formatNullable (null ≠ 0)", /formatNullable\(ep\.recordsChanged\)/.test(summary));
+    for (const w of WIDGETS) {
+      check(`${w.file}: no hex colour (tokens only)`, !/#[0-9a-fA-F]{3,8}\b/.test(strip(widgetPath(w.file))));
+    }
+
+    const daily = "app/api/platform/platform-ops/refresh/daily/route.ts";
+    check("the day-series route exists for the Overview block", existsSync(path.join(ROOT, daily)));
+    check("...and is READ-gated", /requirePlatformAccess\(\s*["']PLATFORM_OPS["']\s*,\s*["']READ["']\s*\)/.test(strip(daily)));
   }
 
   console.log("honesty · empty states are explicit in the markup");
