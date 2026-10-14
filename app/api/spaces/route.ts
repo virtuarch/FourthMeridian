@@ -24,6 +24,7 @@ import { Prisma } from "@prisma/client";
 // before `prisma generate` has been re-run with the new schema values.
 // The string values are identical to what Prisma generates.
 import { requireUser } from "@/lib/session";
+import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
 import { SpaceCategory, SUPPORTED_SPACE_CATEGORIES } from "@/lib/space-presets";
 // SP-2.1 — the SP-1 template registry/planner is this route's sole
 // materialization source (same pattern as the register route, SP-2A-3).
@@ -89,9 +90,16 @@ export const GET = withApiHandler(async () => {
   });
   console.log(`[api/spaces] myMemberships: ${Date.now() - t1}ms, total: ${Date.now() - t0}ms`);
 
-  const platform = platformSpaces.map((s) => ({
-    ...s, access: grants.find((g) => g.area === s.platformArea)!.level,
-  }));
+  // UX-P1 Change A — CANONICAL order (the registry's ALL_PLATFORM_AREAS), not
+  // DB insertion order, so the sidebar and the Spaces page list the areas the
+  // same way on every environment. `platformArea` is non-null by construction
+  // (the `where` above admits only platform Spaces).
+  const platform = platformSpaces
+    .slice()
+    .sort((a, b) => ALL_PLATFORM_AREAS.indexOf(a.platformArea!) - ALL_PLATFORM_AREAS.indexOf(b.platformArea!))
+    .map((s) => ({
+      ...s, access: grants.find((g) => g.area === s.platformArea)!.level,
+    }));
 
   return NextResponse.json({
     mine: myMemberships.map((m) => ({ ...m.space, myRole: m.role })),

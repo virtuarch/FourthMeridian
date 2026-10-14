@@ -7,6 +7,7 @@ import { getSpaceContext } from "@/lib/space";
 import { getSpaceNetWorthSummaries } from "@/lib/data/snapshots";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceCardFreshness } from "@/lib/freshness/space-card-freshness";
+import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
 
 // Spaces landing page — the redesigned, premium successor to the old
 // /dashboard/spaces page (see lib/space.ts and space-presets.ts
@@ -445,13 +446,18 @@ async function loadPlatformSpaces(userId: string) {
       select: { id: true, name: true, platformArea: true },
     });
 
-    return spaces.map((s) => ({
-      id:     s.id,
-      name:   s.name,
-      area:   s.platformArea as string,
-      // Non-null by construction: the `where` above only admits a Space whose
-      // platformArea is one of these grants' areas.
-      access: grants.find((g) => g.area === s.platformArea)!.level as string,
-    }));
+    // UX-P1 Change A — CANONICAL order (ALL_PLATFORM_AREAS), the same order
+    // GET /api/spaces returns, so the HQ group reads identically everywhere.
+    return spaces
+      .slice()
+      .sort((a, b) => ALL_PLATFORM_AREAS.indexOf(a.platformArea!) - ALL_PLATFORM_AREAS.indexOf(b.platformArea!))
+      .map((s) => ({
+        id:     s.id,
+        name:   s.name,
+        area:   s.platformArea as string,
+        // Non-null by construction: the `where` above only admits a Space whose
+        // platformArea is one of these grants' areas.
+        access: grants.find((g) => g.area === s.platformArea)!.level as string,
+      }));
   });
 }

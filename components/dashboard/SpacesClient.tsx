@@ -876,9 +876,11 @@ function PlatformSpaceGroup({ spaces }: { spaces: PlatformSpaceItem[] }) {
   if (spaces.length === 0) return null;
 
   return (
-    <div className="mt-10">
+    <div className="mb-10">
       {/* Divider label — the same "operator Spaces, distinct section, same shell"
-          treatment as the prototype's Fourth Meridian HQ (Launcher.tsx §5.2). */}
+          treatment as the prototype's Fourth Meridian HQ (Launcher.tsx §5.2).
+          UX-P1 D2 — the group leads the launcher (above the personal cards),
+          so its spacing is BELOW it. */}
       <div className="mb-3 flex items-center gap-3">
         <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
           Fourth Meridian HQ
@@ -1108,6 +1110,13 @@ export function SpacesClient({
 
         {pendingInvites.length > 0 && <InviteBanner invites={pendingInvites} onAction={refresh} />}
 
+        {/* PO1.0 — Platform group (access-derived; only shown to grant-holders).
+            UX-P1 D2 — ABOVE the personal cards: an operator's HQ Spaces are the
+            first thing on the launcher, in canonical area order (the server
+            sorts by ALL_PLATFORM_AREAS). Still a separate family of cards — a
+            link to the platform host, never a switch target. */}
+        <PlatformSpaceGroup spaces={platformSpaces} />
+
         {/* A LIST, not a grid — rooms you already own, on one reading axis
             (prototype Launcher.tsx). Each row is a solid Atlas Surface; the
             personal Space is pinned first upstream (`ordered`). */}
@@ -1134,9 +1143,6 @@ export function SpacesClient({
             </GlassButton>
           </div>
         )}
-
-        {/* PO1.0 — Platform group (access-derived; only shown to grant-holders). */}
-        <PlatformSpaceGroup spaces={platformSpaces} />
 
         {/* Explore Public Spaces — ALWAYS rendered. When public Spaces exist,
             it shows the compact preview grid; when none exist, it shows an
