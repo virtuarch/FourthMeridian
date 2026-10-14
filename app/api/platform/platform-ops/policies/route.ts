@@ -5,8 +5,15 @@
  *           (BANK, WALLET): what is CONFIGURED, what is EFFECTIVE, what the
  *           deployed scheduler can HONOUR, what the latest sweep ACTUALLY ran
  *           under. Composed at read time; no second store.
- *   PATCH   change one cadence          { sourceKind, cadence, expectedUpdatedAt }
- *   DELETE  reset one cadence to default { sourceKind, expectedUpdatedAt }
+ *   PATCH   change one cadence          { sourceKind, cadence, expectedUpdatedAt, reason }
+ *   DELETE  reset one cadence to default { sourceKind, expectedUpdatedAt, reason }
+ *
+ * REASON IS REQUIRED (UX-P1 D7). A refresh-cadence change is a consequential
+ * platform action, so the body carries a structured { code, note? }
+ * (lib/audit.ts OPERATOR_REASON_CODES, note ≤ 280 chars and scrubbed) and the
+ * service refuses to commit without it: 400 with the parser's sentence when it
+ * is missing or malformed. The reason CODE reaches the operator feeds; the note
+ * stays in the audit row.
  *
  * AUTHORIZATION
  *   GET            requirePlatformAccess("PLATFORM_OPS", "READ")
@@ -23,6 +30,8 @@
  * service's outcome to a status:
  *
  *   200  { …read model }                       applied (or reset)
+ *   400  { error }                             the body is malformed or the
+ *                                              reason is missing / unsafe
  *   400  { error, code: "VALIDATION", model }  the descriptor or the deployed
  *                                              scheduler refused the value
  *   409  { error, code: "CONFLICT", model }    the policy changed since the
@@ -37,6 +46,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePlatformAccess, requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { limitByUser } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/api";
+import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit";
 import { loadRefreshPoliciesReadModel, type RefreshPoliciesReadModel } from "@/lib/platform/policies/refresh-policies";
 import {
   isEditableSourceKind, resetRefreshCadence, updateRefreshCadence, type PolicyMutationResult,
@@ -90,11 +100,15 @@ export async function PATCH(req: NextRequest) {
   if (!("expectedUpdatedAt" in body) || (body.expectedUpdatedAt !== null && typeof body.expectedUpdatedAt !== "string")) {
     return NextResponse.json({ error: "expectedUpdatedAt must be the observed override version (ISO) or null." }, { status: 400 });
   }
+  let reason;
+  try { reason = parseOperatorReason(body.reason); }
+  catch (e) { return NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400 }); }
 
   const result = await updateRefreshCadence({
     sourceKind: body.sourceKind,
     cadence: body.cadence,
     expectedUpdatedAt: body.expectedUpdatedAt as string | null,
+    reason,
     actor: { id: auth.user.id, ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") },
   });
   return respond(result);
@@ -113,10 +127,14 @@ export async function DELETE(req: NextRequest) {
   if (typeof body.expectedUpdatedAt !== "string") {
     return NextResponse.json({ error: "expectedUpdatedAt (the observed override version, ISO) is required to reset." }, { status: 400 });
   }
+  let reason;
+  try { reason = parseOperatorReason(body.reason); }
+  catch (e) { return NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400 }); }
 
   const result = await resetRefreshCadence({
     sourceKind: body.sourceKind,
     expectedUpdatedAt: body.expectedUpdatedAt,
+    reason,
     actor: { id: auth.user.id, ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") },
   });
   return respond(result);

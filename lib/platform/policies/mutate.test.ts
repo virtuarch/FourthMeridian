@@ -21,6 +21,7 @@ import { floorHoursFor } from "@/lib/platform/scheduler-capability";
 import { classifyJobHealth } from "@/lib/jobs/health";
 import { deriveSpaceDataHealth } from "@/lib/connections/space-data-health.core";
 import { AuditAction } from "@/lib/audit-actions";
+import { REASON_REQUIRED_ACTIONS } from "@/lib/audit";
 import { resolveRefreshPolicy } from "@/lib/platform/refresh-policy.core";
 import { EDITABLE_POLICIES, isEditableSourceKind, resetRefreshCadence, updateRefreshCadence } from "./mutate";
 
@@ -122,6 +123,8 @@ function makeDb(initial: Partial<State> = {}, faults: Faults = {}) {
 }
 
 const ACTOR = { id: "op_1", ipAddress: "127.0.0.1", userAgent: "test" };
+/** D7 — every mutation carries a structured reason; the recorder refuses one without. */
+const REASON = { code: "TESTING" as const, note: "mutate.test" };
 const WKEY = EDITABLE_POLICIES.WALLET;
 const walletView = (m: { policies: { sourceKind: string }[] }) => m.policies.find((p) => p.sourceKind === "WALLET") as never as import("./refresh-policies.core").RefreshPolicyView;
 
@@ -130,7 +133,7 @@ async function main(): Promise<void> {
   {
     const { db, state } = makeDb();
     const before = resolveRefreshPolicy({ sourceKind: "WALLET" }, null).version;
-    const r = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, db);
+    const r = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db);
     check("ok", r.ok);
     if (!r.ok) return;
     const row = state.settings.get(WKEY)!;
@@ -143,32 +146,40 @@ async function main(): Promise<void> {
     check("scheduler remains capable (12h honoured)", w.capability.effectiveHonoured);
     check("actual is UNKNOWN — no sweep evidence; never CURRENT because the write succeeded", w.actual.state === "UNKNOWN");
     const a = state.audits[0];
-    check("exactly one audit row, canonical action, operator attributed",
-      state.audits.length === 1 && a.action === AuditAction.PLATFORM_POLICY_CHANGED && a.performedByAdminId === "op_1" && a.userId === "op_1");
-    const meta = a.metadata as { previous: Record<string, unknown>; next: Record<string, unknown>; key: string; result: string; target: { id: string } };
+    // D7 — the operator-action envelope: the operator is performedByAdminId; a
+    // platform-setting target sets no userId (that column is the CUSTOMER when
+    // the target is a USER, never the acting operator).
+    check("exactly one audit row, canonical action, operator attributed through the envelope",
+      state.audits.length === 1 && a.action === AuditAction.PLATFORM_POLICY_CHANGED && a.performedByAdminId === "op_1" && a.userId === undefined);
+    const meta = a.metadata as { previous: Record<string, unknown>; next: Record<string, unknown>; key: string; result: string; target: { kind: string; id: string }; reason: { code: string; note?: string }; change: { before: Record<string, unknown>; after: Record<string, unknown> }; actor: { via: string; area?: string } };
     check("audit metadata: key, previous (absent/DEFAULT/6h/8h) → next (12h/SETTING/15h) with the new updatedAt",
-      meta.key === WKEY && meta.result === "SUCCESS" && meta.target.id === WKEY
+      meta.key === WKEY && meta.result === "SUCCESS" && meta.target.kind === "PLATFORM_SETTING" && meta.target.id === WKEY
         && meta.previous.raw === null && meta.previous.origin === "DEFAULT" && meta.previous.cadence === "6h" && meta.previous.overdueAfterHours === 8
         && meta.next.raw === "12h" && meta.next.origin === "SETTING" && meta.next.overdueAfterHours === 15 && meta.next.updatedAt === row.updatedAt.toISOString());
+    check("D7: the envelope carries the reason code + note, the change before/after and the PLATFORM_OPS actor",
+      meta.reason.code === "TESTING" && meta.reason.note === "mutate.test"
+        && meta.change.before.origin === "DEFAULT" && meta.change.after.raw === "12h"
+        && meta.actor.via === "PLATFORM_GRANT" && meta.actor.area === "PLATFORM_OPS");
     check("no secret-shaped or financial content in the audit row", !/token|secret|balance|@/i.test(JSON.stringify(a)));
   }
 
   console.log("\n2. reset: 12h override → row deleted, DEFAULT in force, reset audited");
   {
     const { db, state } = makeDb();
-    const up = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, db);
+    const up = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db);
     const token = up.ok ? walletView(up.model).desired.updatedAt! : "";
-    const r = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: token, actor: ACTOR }, db);
+    const r = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: token, reason: REASON, actor: ACTOR }, db);
     check("ok", r.ok);
     if (!r.ok) return;
     const w = walletView(r.model);
     check("row deleted; effective 6h; origin DEFAULT; overdue 8h", !state.settings.has(WKEY) && w.effective.cadence === "6h" && w.effective.origin === "DEFAULT" && w.effective.overdueAfterHours === 8);
     check("version is the default version again", w.effective.version === resolveRefreshPolicy({ sourceKind: "WALLET" }, null).version);
     const a = state.audits[1];
-    const meta = a.metadata as { previous: Record<string, unknown>; next: Record<string, unknown> };
+    const meta = a.metadata as { previous: Record<string, unknown>; next: Record<string, unknown>; reason: { code: string }; target: { kind: string } };
     check("reset audited: previous override 12h/SETTING → next DEFAULT/6h with no row",
       a.action === AuditAction.PLATFORM_POLICY_RESET && meta.previous.raw === "12h" && meta.previous.origin === "SETTING"
         && meta.next.raw === null && meta.next.origin === "DEFAULT" && meta.next.cadence === "6h" && meta.next.updatedAt === null);
+    check("D7: the reset carries its reason and the platform-setting target", meta.reason.code === "TESTING" && meta.target.kind === "PLATFORM_SETTING");
     check("desired: no override, no token", !w.desired.present && w.desired.updatedAt === null);
   }
 
@@ -178,19 +189,19 @@ async function main(): Promise<void> {
     const cases: [ "BANK" | "WALLET", string ][] = [["BANK", "4h"]];
     for (const [kind, cadence] of cases) {
       const { db, state } = makeDb();
-      const r = await updateRefreshCadence({ sourceKind: kind, cadence, expectedUpdatedAt: null, actor: ACTOR }, db);
+      const r = await updateRefreshCadence({ sourceKind: kind, cadence, expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db);
       check(`${kind} ${cadence}: VALIDATION refusal with the floor's reason; no row; no audit`,
         !r.ok && r.code === "VALIDATION" && /floor of \d+ hours/.test(r.reason) && state.settings.size === 0 && state.audits.length === 0, r.ok ? "accepted" : r.reason);
     }
     for (const [kind, cadence] of [["WALLET", "4h"], ["WALLET", "8h"], ["BANK", "6h"], ["BANK", "8h"], ["BANK", "12h"]] as [ "BANK" | "WALLET", string ][]) {
       const { db } = makeDb();
-      const r = await updateRefreshCadence({ sourceKind: kind, cadence, expectedUpdatedAt: null, actor: ACTOR }, db);
+      const r = await updateRefreshCadence({ sourceKind: kind, cadence, expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db);
       check(`${kind} ${cadence}: accepted since P1 (at or above the floor)`, r.ok, r.ok ? "" : r.reason);
     }
     const { db, state } = makeDb();
-    const garbage = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "soon", expectedUpdatedAt: null, actor: ACTOR }, db);
+    const garbage = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "soon", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db);
     check("a value outside the menu is refused by the descriptor", !garbage.ok && garbage.code === "VALIDATION" && state.settings.size === 0);
-    const supported = await updateRefreshCadence({ sourceKind: "BANK", cadence: "24h", expectedUpdatedAt: null, actor: ACTOR }, db);
+    const supported = await updateRefreshCadence({ sourceKind: "BANK", cadence: "24h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db);
     check("BANK 24h is accepted", supported.ok);
   }
 
@@ -201,27 +212,27 @@ async function main(): Promise<void> {
     const readA = await (await import("./refresh-policies")).loadRefreshPoliciesReadModel(a.db, new Date());
     const wA = walletView(readA);
     check("the read model shows INVALID_SETTING with the default in force and the row's token", wA.effective.origin === "INVALID_SETTING" && wA.desired.raw === "every 5 minutes" && wA.desired.updatedAt === "2026-09-01T00:00:00.000Z");
-    const rep = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "24h", expectedUpdatedAt: wA.desired.updatedAt, actor: ACTOR }, a.db);
+    const rep = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "24h", expectedUpdatedAt: wA.desired.updatedAt, reason: REASON, actor: ACTOR }, a.db);
     check("A. replaced with a valid honourable value; audit records the invalid previous", rep.ok && a.state.settings.get(WKEY)?.value === "24h"
       && (a.state.audits[0].metadata as { previous: { origin: string; raw: string } }).previous.origin === "INVALID_SETTING");
     const b = makeDb(legacy());
-    const rst = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: "2026-09-01T00:00:00.000Z", actor: ACTOR }, b.db);
+    const rst = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: "2026-09-01T00:00:00.000Z", reason: REASON, actor: ACTOR }, b.db);
     check("B. reset removes the invalid row; audit records INVALID_SETTING → DEFAULT", rst.ok && !b.state.settings.has(WKEY)
       && (b.state.audits[0].metadata as { previous: { origin: string }; next: { origin: string } }).previous.origin === "INVALID_SETTING");
     const c = makeDb(legacy());
-    const stale = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "24h", expectedUpdatedAt: "2026-08-01T00:00:00.000Z", actor: ACTOR }, c.db);
+    const stale = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "24h", expectedUpdatedAt: "2026-08-01T00:00:00.000Z", reason: REASON, actor: ACTOR }, c.db);
     check("a stale token against the invalid row still conflicts", !stale.ok && stale.code === "CONFLICT" && c.state.settings.get(WKEY)?.value === "every 5 minutes");
   }
 
   console.log("\n5. update conflict: A read X, B changed it, A submits X");
   {
     const { db, state } = makeDb();
-    const first = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, db);
+    const first = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db);
     const tokenX = first.ok ? walletView(first.model).desired.updatedAt! : "";
-    const b = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "24h", expectedUpdatedAt: tokenX, actor: { id: "op_2" } }, db);
+    const b = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "24h", expectedUpdatedAt: tokenX, reason: REASON, actor: { id: "op_2" } }, db);
     check("B's change applied", b.ok && state.settings.get(WKEY)?.value === "24h");
     const auditsBefore = state.audits.length;
-    const a = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "6h", expectedUpdatedAt: tokenX, actor: ACTOR }, db);
+    const a = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "6h", expectedUpdatedAt: tokenX, reason: REASON, actor: ACTOR }, db);
     check("A conflicts; B's value preserved; no audit for A; A receives the canonical current state",
       !a.ok && a.code === "CONFLICT" && state.settings.get(WKEY)?.value === "24h" && state.audits.length === auditsBefore
         && walletView(a.model).effective.cadence === "24h");
@@ -230,13 +241,13 @@ async function main(): Promise<void> {
   console.log("\n6. create conflict: both observed no override");
   {
     const { db, state } = makeDb();
-    const one = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, db);
-    const two = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "24h", expectedUpdatedAt: null, actor: { id: "op_2" } }, db);
+    const one = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db);
+    const two = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "24h", expectedUpdatedAt: null, reason: REASON, actor: { id: "op_2" } }, db);
     check("the first wins; the second conflicts (a row now exists); no silent last-write-wins",
       one.ok && !two.ok && two.code === "CONFLICT" && state.settings.get(WKEY)?.value === "12h" && state.audits.length === 1);
     // The tighter race: both pass the read, one create lands first inside the transaction.
     const raced = makeDb({}, { interleave: (st) => st.settings.set(WKEY, { key: WKEY, value: "24h", updatedAt: new Date("2026-09-14T12:30:00.000Z"), updatedById: "op_2" }) });
-    const r = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, raced.db);
+    const r = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, raced.db);
     check("a row appearing between the read and the create is a P2002 ⇒ CONFLICT, the other row preserved",
       !r.ok && r.code === "CONFLICT" && raced.state.settings.get(WKEY)?.value === "24h" && raced.state.audits.length === 0);
   }
@@ -244,21 +255,21 @@ async function main(): Promise<void> {
   console.log("\n7. reset conflict: A read X, B changed it, A resets X");
   {
     const { db, state } = makeDb();
-    const first = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, db);
+    const first = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db);
     const tokenX = first.ok ? walletView(first.model).desired.updatedAt! : "";
-    await updateRefreshCadence({ sourceKind: "WALLET", cadence: "24h", expectedUpdatedAt: tokenX, actor: { id: "op_2" } }, db);
+    await updateRefreshCadence({ sourceKind: "WALLET", cadence: "24h", expectedUpdatedAt: tokenX, reason: REASON, actor: { id: "op_2" } }, db);
     const auditsBefore = state.audits.length;
-    const r = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tokenX, actor: ACTOR }, db);
+    const r = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tokenX, reason: REASON, actor: ACTOR }, db);
     check("A's reset conflicts; B's override (24h) preserved; no reset audit",
       !r.ok && r.code === "CONFLICT" && state.settings.get(WKEY)?.value === "24h" && state.audits.length === auditsBefore);
-    const gone = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tokenX, actor: ACTOR }, makeDb().db);
+    const gone = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tokenX, reason: REASON, actor: ACTOR }, makeDb().db);
     check("resetting when no override exists is a conflict, not a silent no-op", !gone.ok && gone.code === "CONFLICT");
     // The tighter race for reset: the row moves between the read and the delete.
     const seeded = makeDb();
-    const up = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, seeded.db);
+    const up = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, seeded.db);
     const tok = up.ok ? walletView(up.model).desired.updatedAt! : "";
     const moved = makeDb({ settings: new Map(seeded.state.settings) }, { interleave: (st) => st.settings.set(WKEY, { ...st.settings.get(WKEY)!, value: "24h", updatedAt: new Date("2026-09-14T13:00:00.000Z") }) });
-    const late = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tok, actor: ACTOR }, moved.db);
+    const late = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tok, reason: REASON, actor: ACTOR }, moved.db);
     check("a row that moves between the read and the delete is refused (0 rows deleted ⇒ CONFLICT)", !late.ok && late.code === "CONFLICT" && moved.state.settings.get(WKEY)?.value === "24h");
 
     // ── RLS-C-S6a — a row that VANISHES is not the same as a row that moved ──
@@ -269,7 +280,7 @@ async function main(): Promise<void> {
     // LOUD: a rare noisy error on a double reset, instead of a 409 that can
     // never be cleared because nothing is actually competing.
     const vanished = makeDb({ settings: new Map(seeded.state.settings) }, { interleave: (st) => st.settings.delete(WKEY) });
-    const err = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tok, actor: ACTOR }, vanished.db)
+    const err = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tok, reason: REASON, actor: ACTOR }, vanished.db)
       .then(() => null, (e: unknown) => e);
     check("a row that LEAVES THE VISIBLE SET between the read and the delete raises IndeterminateWriteError, never CONFLICT",
       err instanceof IndeterminateWriteError && err.table === "PlatformSetting" && err.operation === "delete",
@@ -279,21 +290,44 @@ async function main(): Promise<void> {
   console.log("\n8. transactional audit: setting and audit commit together or not at all");
   {
     const a = makeDb({}, { auditFails: true });
-    const r1 = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, a.db).catch((e) => e as Error);
+    const r1 = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, a.db).catch((e) => e as Error);
     check("audit failure ⇒ the setting write is rolled back and the error surfaces",
       r1 instanceof Error && !a.state.settings.has(WKEY) && a.state.audits.length === 0);
     const b = makeDb({}, { settingWriteFails: true });
-    const r2 = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, b.db).catch((e) => e as Error);
+    const r2 = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, b.db).catch((e) => e as Error);
     check("setting failure ⇒ no success audit row", r2 instanceof Error && b.state.audits.length === 0 && !b.state.settings.has(WKEY));
     const c = makeDb();
-    await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, c.db);
+    await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, c.db);
     const tok = c.state.settings.get(WKEY)!.updatedAt.toISOString();
     const d = makeDb({ settings: new Map(c.state.settings) }, { auditFails: true });
-    const r3 = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tok, actor: ACTOR }, d.db).catch((e) => e as Error);
+    const r3 = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tok, reason: REASON, actor: ACTOR }, d.db).catch((e) => e as Error);
     check("reset: audit failure ⇒ the row is NOT deleted", r3 instanceof Error && d.state.settings.get(WKEY)?.value === "12h" && d.state.audits.length === 0);
     const src = readFileSync("lib/platform/policies/mutate.ts", "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
     check("the service writes the setting and the audit inside ONE $transaction callback",
       (src.match(/\$transaction\(async/g) ?? []).length === 2 && !/db\.auditLog|db\.platformSetting/.test(src));
+  }
+
+  console.log("\n8b. D7 — a refresh-cadence change cannot commit without a structured reason");
+  {
+    const a = makeDb();
+    const r1 = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: undefined as never, actor: ACTOR }, a.db).catch((e) => e as Error);
+    check("update without a reason throws OperatorActionValidationError and writes NOTHING (the transaction rolls back)",
+      r1 instanceof Error && r1.name === "OperatorActionValidationError" && !a.state.settings.has(WKEY) && a.state.audits.length === 0, r1 instanceof Error ? r1.name : "accepted");
+    const b = makeDb();
+    await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, b.db);
+    const tok = b.state.settings.get(WKEY)!.updatedAt.toISOString();
+    const r2 = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tok, reason: undefined as never, actor: ACTOR }, b.db).catch((e) => e as Error);
+    check("reset without a reason throws and the override row survives",
+      r2 instanceof Error && r2.name === "OperatorActionValidationError" && b.state.settings.get(WKEY)?.value === "12h" && b.state.audits.length === 1);
+    const c = makeDb();
+    const r3 = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: { code: "TESTING", note: "contact me at someone@example.com" }, actor: ACTOR }, c.db).catch((e) => e as Error);
+    check("a note that looks like an email is refused by the scrubber; nothing written",
+      r3 instanceof Error && r3.name === "OperatorActionValidationError" && !c.state.settings.has(WKEY) && c.state.audits.length === 0);
+    check("PLATFORM_POLICY_CHANGED / RESET are reason-required by lib/audit.ts",
+      REASON_REQUIRED_ACTIONS.has(AuditAction.PLATFORM_POLICY_CHANGED) && REASON_REQUIRED_ACTIONS.has(AuditAction.PLATFORM_POLICY_RESET));
+    const route = readFileSync("app/api/platform/platform-ops/policies/route.ts", "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+    check("the route parses the reason on PATCH and on DELETE (parseOperatorReason twice), 400 on a bad one",
+      (route.match(/parseOperatorReason\(body\.reason\)/g) ?? []).length === 2 && /status: 400/.test(route));
   }
 
   console.log("\n9. the closed contract and the absence of side effects");
@@ -317,7 +351,7 @@ async function main(): Promise<void> {
   console.log("\n10. cross-surface: after 6h → 12h every consumer resolves the same policy; actual stays actual");
   {
     const { db, state } = makeDb();
-    const r = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, actor: ACTOR }, db);
+    const r = await updateRefreshCadence({ sourceKind: "WALLET", cadence: "12h", expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db);
     check("applied", r.ok);
     const row = state.settings.get(WKEY)!;
     const policies = { BANK: resolveRefreshPolicy({ sourceKind: "BANK" }, null), WALLET: resolveRefreshPolicy({ sourceKind: "WALLET" }, row) };
