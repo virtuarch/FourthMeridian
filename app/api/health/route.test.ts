@@ -51,13 +51,24 @@ async function main(): Promise<void> {
 
   console.log("2. Per-IP rate limit wraps the endpoint");
   (process.env as Record<string, string | undefined>).RATE_LIMIT_ENABLED = "true";
-  let last: Response | null = null;
-  for (let i = 0; i < 31; i++) {
-    last = await GET(req("10.0.0.2"));
+  // The limiter buckets by fixed calendar-minute windows (floor(now / 60s)).
+  // On the wall clock the 31 calls could straddle a minute boundary, reset the
+  // bucket, and turn call 31 into a 503 (CI 38636373842 attempt 1). Hold the
+  // clock mid-window so "within a minute" is true by construction.
+  const realNow = Date.now;
+  const frozen = Math.floor(realNow() / 60_000) * 60_000 + 30_000;
+  Date.now = () => frozen;
+  try {
+    let last: Response | null = null;
+    for (let i = 0; i < 31; i++) {
+      last = await GET(req("10.0.0.2"));
+    }
+    check("call 31 within a minute is 429", last?.status === 429, `got ${last?.status}`);
+    const other = await GET(req("10.0.0.3"));
+    check("different IP unaffected (503, not 429)", other.status === 503, `got ${other.status}`);
+  } finally {
+    Date.now = realNow;
   }
-  check("call 31 within a minute is 429", last?.status === 429, `got ${last?.status}`);
-  const other = await GET(req("10.0.0.3"));
-  check("different IP unaffected (503, not 429)", other.status === 503, `got ${other.status}`);
   delete process.env.RATE_LIMIT_ENABLED;
 
   console.log(failures === 0 ? "\nAll health-route tests passed." : `\n${failures} failure(s).`);
