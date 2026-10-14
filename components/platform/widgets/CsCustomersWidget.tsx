@@ -26,6 +26,10 @@ import { describeRefreshOutcomes, type RefreshAllReport } from "@/lib/refresh/ou
 import { operatorDisplayName } from "@/lib/platform/customer/identity-label";
 import { COHORTS, OVERLAYS, POLICY_GROUPS } from "@/lib/entitlements/catalogue";
 import { OPERATOR_REASON_CODES } from "@/lib/audit";
+import { ROLLUP_NOTE, rollupCells, type CustomerRollupFields } from "./cs-rollup-view";
+
+/** A list row as the route serves it today, plus the W3 roll-up fields (optional until W3 merges). */
+type CustomerRow = CustomerListResponse["customers"][number] & CustomerRollupFields;
 
 const REASON_LABEL: Record<string, string> = {
   BETA_ONBOARDING: "Beta onboarding", SUPPORT_REQUEST: "Support request", DOGFOOD: "Dogfood", TESTING: "Testing",
@@ -50,6 +54,8 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
   const [acting, setActing] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [refreshReport, setRefreshReport] = useState<RefreshAllReport | null>(null);
+  /** ONE instant for the list's relative times, captured at mount (a clock read during render is impure). */
+  const [nowMs] = useState(() => Date.now());
 
   // Assignment forms
   const [policyGroup, setPolicyGroup] = useState<string>("");
@@ -146,6 +152,7 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
             <WidgetStat value={list.customers.filter((c) => c.connectionCount > 0).length} label="Connected" />
             <WidgetStat value={list.customers.filter((c) => c.deactivatedAt).length} label="Deactivated" />
           </div>
+          <p className="text-[10px] leading-relaxed text-[var(--text-faint)]">{ROLLUP_NOTE}</p>
           {list.customers.length === 0 ? <WidgetMessage empty="No customers match." /> : (
             <ul className="-mx-1 divide-y divide-[var(--border-hairline)]">
               {list.customers.map((c) => (
@@ -156,6 +163,12 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                       <span className="truncate text-[var(--text-primary)]">{operatorDisplayName(c)}</span>
                       <span className="truncate text-[11px] text-[var(--text-muted)]">
                         {c.policyGroup}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"} · {c.cohorts.length ? c.cohorts.join(", ") : "no cohort"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
+                      </span>
+                      {/* BETA — the per-user roll-up (W3 fields, optional until merged): every column word stays visible, an absent field is a dash. */}
+                      <span className="flex flex-wrap gap-x-2 text-[11px] tabular-nums text-[var(--text-muted)]">
+                        {rollupCells(c as CustomerRow, nowMs).map((cell, i) => (
+                          <span key={cell.key}>{i > 0 ? "· " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>
+                        ))}
                       </span>
                     </span>
                     <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : `active ${ago(c.lastActiveAt)}`}</span>
