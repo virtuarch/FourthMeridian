@@ -15,7 +15,7 @@
  *   · every domain names its authority.
  */
 
-import { buildOverview, derivePipeline, deriveSources, deriveJobs, deriveAi, deriveBrief, derivePlaid, type OverviewInputs } from "./overview-core";
+import { buildOverview, derivePipeline, deriveSources, deriveJobs, deriveAi, deriveBrief, derivePlaid, derivePosture, deriveAlertsPosture, type OverviewInputs, type PostureInputs } from "./overview-core";
 import type { PipelineStatus } from "@/lib/platform/refresh/types";
 import type { ConnectionHealthResult } from "@/lib/connections/health";
 import { defaultRefreshPolicies } from "@/lib/platform/refresh-policy.core";
@@ -122,6 +122,59 @@ console.log("buildOverview");
   const allUnknown = buildOverview({ ...inputs, pipeline: pipeline({}), sources: sources({}, 0), jobs: { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 11 }, plaid: { ...inputs.plaid, billableItems: 0 } }, null, now);
   check("everything unknown → worst UNKNOWN, never HEALTHY", allUnknown.worst === "UNKNOWN");
   check("every domain names a workspace and an authority", o.domains.every((d) => d.workspace.startsWith("platform-") && d.basis.length > 0));
+}
+
+console.log("UX-P1 · figures (server-chosen, one per domain)");
+{
+  const p = derivePipeline(pipeline({ executions: 5, byStatus: { SUCCEEDED: 4, FAILED: 1 } }), "since yesterday", now);
+  check("pipeline figure is 'n of m failed'", p.figure.value === "1 of 5 failed" && /5 executions/.test(p.figure.qualifier), JSON.stringify(p.figure));
+  check("unknown pipeline figure says none recorded, never 0 of 0", derivePipeline(pipeline({}), "w", now).figure.value === "none recorded");
+  check("sources figure leads with the count that matters", deriveSources(sources({ HEALTHY: 2, STALE: 2 }, 4), policies).figure.value === "2 stale"
+    && deriveSources(sources({ HEALTHY: 1, NEEDS_REAUTH: 1, STALE: 1 }, 3), policies).figure.value === "1 need attention");
+  const j = deriveJobs({ healthy: 1, running: 0, overdue: 0, failing: 1, dead: 0, neverRan: 10 }, null, now);
+  check("jobs figure '1 failing' with never-ran in the qualifier", j.figure.value === "1 failing" && /10 never ran/.test(j.figure.qualifier), JSON.stringify(j.figure));
+  check("brief figure 'n generated'", deriveBrief({ windowLabel: "last 24 h", generated: 1, failed: 0, inProgress: 0, versionStale: 0, usd: 0.01, uncorrelatedGenerations: 0 }).figure.value === "1 generated");
+  check("ai figure 'n failed'", deriveAi({ invocations: 3, usd: 0.02, unpricedTokens: 0, cacheShare: null, windowLabel: "w", failures: { failed: 0, timeouts: 0, rateLimited: 0, quota: 0 } }).figure.value === "0 failed");
+  check("plaid figure 'n billable Items'", derivePlaid({ billableItems: 12, byStatus: { ACTIVE: 12 }, currentCycle: { transactions: 12, investments: 0, usd: 3.6, agree: true, label: "c" }, priceConfigured: true }).figure.value === "12 billable Items");
+}
+
+console.log("UX-P1 · posture (firing NOW, never the delivery history)");
+{
+  const latest = (firing: boolean, severity: "critical" | "warning" | null = "critical") => ({
+    evaluatedAtISO: now.toISOString(), deliveryStatus: "sent" as const,
+    counts: { evaluated: 2, live: 2, enabled: 2, firing: firing ? 1 : 0, delivered: 0, suppressed: 0 },
+    rules: [
+      { id: "job-failing", kind: "job-failing" as const, enabled: true, live: true, firing, breaches: firing ? 1 : 0, severity: firing ? severity : null },
+      { id: "resource-stale", kind: "resource-stale" as const, enabled: true, live: true, firing: false, breaches: 0, severity: null },
+    ],
+  });
+  check("quiet latest run → Quiet (ok), 0 of 2 firing", deriveAlertsPosture({ latest: latest(false), rulesRegistered: 2 }).word === "Quiet" && deriveAlertsPosture({ latest: latest(false), rulesRegistered: 2 }).count === "0 of 2 firing");
+  check("critical firing → bad tone, worded", deriveAlertsPosture({ latest: latest(true), rulesRegistered: 2 }).tone === "bad" && /Firing/.test(deriveAlertsPosture({ latest: latest(true), rulesRegistered: 2 }).word));
+  check("warning firing → warn tone", deriveAlertsPosture({ latest: latest(true, "warning"), rulesRegistered: 2 }).tone === "warn");
+  check("never evaluated → Unknown (muted), never Quiet", deriveAlertsPosture({ latest: null, rulesRegistered: 2 }).word === "Unknown" && deriveAlertsPosture({ latest: null, rulesRegistered: 2 }).tone === "muted");
+  check("loader failed → Unavailable, muted, 'could not be asked'", deriveAlertsPosture(null).state === "unavailable" && deriveAlertsPosture(null).tone === "muted");
+
+  const inputs: PostureInputs = {
+    alerts: { latest: latest(false), rulesRegistered: 2 },
+    providers: { checkedAt: now, counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 1, UNKNOWN: 0 }, providers: [
+      { key: "PLAID", label: "Plaid", kind: "BANKING", trust: "OPERATIONAL", availability: 1, lastSuccessAt: null, lastFailureAt: null, latencyMs: null, quota: null, remainingQuota: null, coverage: null, coverageUnit: null, freshness: { state: "fresh", asOf: null, ageDays: null, source: "none", detail: "" }, syncFailures: 0, errorRate: null, callsToday: null, calls30d: null, notes: [] },
+      { key: "OXR", label: "OXR", kind: "FX", trust: "FAILING", availability: 0, lastSuccessAt: null, lastFailureAt: null, latencyMs: null, quota: null, remainingQuota: null, coverage: null, coverageUnit: null, freshness: { state: "stale", asOf: null, ageDays: null, source: "none", detail: "" }, syncFailures: 3, errorRate: 1, callsToday: null, calls30d: null, notes: [] },
+    ] },
+    freshness: { checkedAt: now, allFresh: false, resources: [
+      { resource: "fx", label: "FX", newestObservedDate: "2026-09-10", ageHours: 100, ageDays: 4, expectedCadenceHours: 24, cadenceLabel: "daily", staleAfterHours: 48, healthState: "stale", completeness: null, lastSuccessfulRefresh: null, lastAttemptedRefresh: null, lastAttemptStatus: null, trust: { level: "medium", caveats: [] } },
+      { resource: "prices", label: "Prices", newestObservedDate: null, ageHours: null, ageDays: null, expectedCadenceHours: 24, cadenceLabel: "daily", staleAfterHours: 48, healthState: "empty", completeness: null, lastSuccessfulRefresh: null, lastAttemptedRefresh: null, lastAttemptStatus: null, trust: { level: "unknown", caveats: ["no price vendor configured"] } },
+    ] },
+    configuration: { nodeEnv: "test", deploymentEnv: "development", ok: true, counts: { pass: 3, warn: 1, fail: 0 }, keys: [] },
+  };
+  const chips = derivePosture(inputs);
+  check("four chips in order Alerts · Providers · Freshness · Configuration", chips.map((c) => c.key).join(",") === "alerts,providers,freshness,configuration");
+  check("providers: worst-wins trust word, count of operational", chips[1].word === "Failing" && chips[1].count === "1 of 2 operational" && chips[1].tone === "bad");
+  check("freshness: a known-blocked empty is not red; stale leads", chips[2].word === "Stale" && chips[2].tone === "warn" && /1 of 2 not fresh · 1 blocked/.test(chips[2].count), chips[2].count);
+  check("configuration: warn", chips[3].word === "Warning" && /1 of 4 warning/.test(chips[3].count));
+  check("every chip names a platform workspace and a basis", chips.every((c) => c.workspace.startsWith("platform-") && c.basis.length > 10));
+  const allDown = derivePosture({ alerts: null, providers: null, freshness: null, configuration: null });
+  check("every loader failing → four Unavailable chips, none ok", allDown.every((c) => c.state === "unavailable" && c.tone === "muted"));
+  check("empty registries → Unknown, never Fresh/Operational", derivePosture({ ...inputs, providers: { ...inputs.providers!, providers: [] }, freshness: { ...inputs.freshness!, resources: [] } }).slice(1, 3).every((c) => c.word === "Unknown"));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
