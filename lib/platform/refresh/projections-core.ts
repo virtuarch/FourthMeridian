@@ -38,6 +38,9 @@
 import type {
   AccountCoverageRollup,
   CoverageEndpointRollup,
+  RefreshDayBucket,
+  RefreshDailySourceKind,
+  RefreshDailyStatus,
   CoverageFact,
   EndpointFact,
   EndpointRollup,
@@ -480,4 +483,85 @@ export function buildExecutionTimeline(
 
   const complete = execution.completedAt != null && execution.overallStatus !== "RUNNING";
   return { entries, complete, tier: complete ? "observed" : "incomplete" };
+}
+
+// ── Refresh Daily Series (UX-P1 · D8) ───────────────────────────────────────────
+
+const DAY_MS = 86_400_000;
+
+/** The UTC day an instant falls on. */
+function utcDayOf(at: Date): string {
+  return at.toISOString().slice(0, 10);
+}
+
+/** Every YYYY-MM-DD from `from` to `to` inclusive, ascending. Empty when from > to. */
+export function utcDaysBetween(from: string, to: string): string[] {
+  const start = Date.parse(`${from}T00:00:00.000Z`);
+  const end = Date.parse(`${to}T00:00:00.000Z`);
+  if (Number.isNaN(start) || Number.isNaN(end) || start > end) return [];
+  const days: string[] = [];
+  for (let t = start; t <= end; t += DAY_MS) days.push(new Date(t).toISOString().slice(0, 10));
+  return days;
+}
+
+export interface RefreshDailySeriesCore {
+  days: RefreshDayBucket[];
+  executions: number;
+  floor: boolean;
+  tier: OperationalTier;
+}
+
+/**
+ * Bucket executions by the UTC day of `startedAt`.
+ *
+ * Every day of the window is emitted, ascending, with real counts — a day with
+ * no rows is a ZERO, because the ledger is the authority and a closed day it
+ * holds no row for is a day on which nothing ran. The one exception is the
+ * fact cap: the reader loads newest-first up to a ceiling, so when `capHit` is
+ * true the oldest loaded day is only partially known and every day older than
+ * it is unknowable. Those older days are OMITTED (not zero), the partial day is
+ * reported unsettled, and the series says `floor`.
+ *
+ * `settled` per day = the day is strictly before `todayISO` AND holds no open
+ * execution AND was fully loaded. `todayISO` is passed in by the authority so
+ * this core reads no clock (identical inputs ⇒ identical bytes).
+ *
+ * `overallStatus` and `admissionReason` are READ, never re-derived; an unknown
+ * status still counts in `total` and simply has no named column.
+ */
+export function buildRefreshDailySeries(
+  executions: readonly ExecutionFact[],
+  window: { from: string; to: string },
+  opts: { todayISO: string; capHit: boolean },
+): RefreshDailySeriesCore {
+  const byDay = groupBy(executions, (e) => utcDayOf(e.startedAt));
+  const loadedDays = [...byDay.keys()].sort();
+  const oldestLoaded = opts.capHit && loadedDays.length ? loadedDays[0] : null;
+
+  const days: RefreshDayBucket[] = [];
+  for (const day of utcDaysBetween(window.from, window.to)) {
+    // Older than the oldest loaded row under the cap: unknowable, not zero.
+    if (oldestLoaded !== null && day < oldestLoaded) continue;
+    const rows = byDay.get(day) ?? [];
+
+    const byStatus: Record<RefreshDailyStatus, number> = { SUCCEEDED: 0, PARTIAL: 0, FAILED: 0, SKIPPED: 0, RUNNING: 0 };
+    const bySourceKind: Record<RefreshDailySourceKind, number> = { PLAID_ITEM: 0, WALLET: 0 };
+    let admissionDenied = 0;
+    for (const r of rows) {
+      if (r.overallStatus in byStatus) byStatus[r.overallStatus as RefreshDailyStatus] += 1;
+      if (r.sourceKind in bySourceKind) bySourceKind[r.sourceKind as RefreshDailySourceKind] += 1;
+      if (r.admissionReason != null) admissionDenied += 1;
+    }
+
+    const partial = oldestLoaded !== null && day === oldestLoaded;
+    const settled = day < opts.todayISO && countOpenExecutions(rows) === 0 && !partial;
+    days.push({ day, total: rows.length, byStatus, bySourceKind, admissionDenied, settled });
+  }
+
+  return {
+    days,
+    executions: executions.length,
+    floor: opts.capHit,
+    tier: tierFor(executions.length, false),
+  };
 }

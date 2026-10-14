@@ -334,3 +334,64 @@ export interface PipelineStatus extends ProjectionEnvelope {
   latestFailures: readonly ExecutionFact[];
   tier: OperationalTier;
 }
+
+// ── Refresh Daily Series (UX-P1 · D8) ───────────────────────────────────────────
+
+/**
+ * The five execution statuses the day series counts by name. The ledger stores
+ * Strings, so a status outside this list still counts toward a day's `total`
+ * and is never dropped — it simply has no named column until the vocabulary
+ * learns it.
+ */
+export const REFRESH_DAILY_STATUSES = ["SUCCEEDED", "PARTIAL", "FAILED", "SKIPPED", "RUNNING"] as const;
+export type RefreshDailyStatus = (typeof REFRESH_DAILY_STATUSES)[number];
+
+/** The two source kinds the series names. Others count toward `total` only. */
+export const REFRESH_DAILY_SOURCE_KINDS = ["PLAID_ITEM", "WALLET"] as const;
+export type RefreshDailySourceKind = (typeof REFRESH_DAILY_SOURCE_KINDS)[number];
+
+/**
+ * One UTC day of refresh executions, bucketed by `startedAt`.
+ *
+ * `settled` is the per-day half of the envelope's determinism rule: true when
+ * the day is strictly before today (UTC), holds no open execution, and every
+ * row of the day was loaded (the fact cap did not cut into it). A settled day
+ * with `total: 0` is a TRUE ZERO — the ledger is the authority and it holds no
+ * row for that day. An unsettled day's counts are what has been observed so
+ * far, never a final figure.
+ */
+export interface RefreshDayBucket {
+  /** YYYY-MM-DD, UTC. */
+  day: string;
+  total: number;
+  byStatus: Readonly<Record<RefreshDailyStatus, number>>;
+  bySourceKind: Readonly<Record<RefreshDailySourceKind, number>>;
+  /**
+   * Executions the admission authority refused (a typed `admissionReason` on
+   * the row — ledgered as SKIPPED). The ONLY refusal the ledger records: a
+   * customer-facing cooldown refusal (HTTP 429) writes no row and cannot appear.
+   */
+  admissionDenied: number;
+  settled: boolean;
+}
+
+export interface RefreshDailySeries {
+  envelope: ProjectionEnvelope;
+  /**
+   * Ascending by day. Every day of the window is present EXCEPT days the fact
+   * cap made unknowable (older than the oldest loaded row when the cap was hit)
+   * — those are omitted rather than reported as zero, and `floor` says so.
+   */
+  days: readonly RefreshDayBucket[];
+  /** Inclusive day count of the window actually projected. */
+  windowDays: number;
+  /** The ceiling the window was clamped to. */
+  maxWindowDays: number;
+  /** Executions the series was built from (the loaded fact rows). */
+  executions: number;
+  /** True when the fact cap was reached: counts are a floor and older days are missing. */
+  floor: boolean;
+  /** Honesty notes for the consumer, in plain words (what the ledger can and cannot show). */
+  notes: readonly string[];
+  tier: OperationalTier;
+}

@@ -52,9 +52,11 @@ import {
   buildCoverageSummary,
   buildExecutionTimeline,
   buildProviderOperationSummary,
+  buildRefreshDailySeries,
   buildRefreshSummary,
   countOpenExecutions,
   buildPipelineStatus,
+  utcDaysBetween,
 } from "@/lib/platform/refresh/projections-core";
 import type {
   CoverageFact,
@@ -65,13 +67,16 @@ import type {
   ProjectionEnvelope,
   ProviderCallFact,
   ProviderOperationSummary,
+  RefreshDailySeries,
   RefreshSummary,
   PipelineStatus,
 } from "@/lib/platform/refresh/types";
 
 const DEFAULT_WINDOW_DAYS = 14;
 /** Bounds one projection read. Operational windows are small; this is a tripwire. */
-const MAX_FACT_ROWS = 20_000;
+export const MAX_FACT_ROWS = 20_000;
+/** UX-P1 · D8 — the day series never projects more than this many UTC days. */
+export const DAILY_SERIES_MAX_WINDOW_DAYS = 30;
 
 // ── Arguments + injected reads ──────────────────────────────────────────────────
 
@@ -442,6 +447,74 @@ export async function getPipelineStatus(
     lastByKind[kind] = await loaded.readers.lastSucceededByKind(kind);
   }));
   return { ...envelopeFor(loaded), ...buildPipelineStatus(loaded.executions, lastByKind) };
+}
+
+/**
+ * UX-P1 · D8 — Refresh Daily Series: executions per UTC day of `startedAt`,
+ * by status and source kind, with the admission-denied count, over a window of
+ * at most DAILY_SERIES_MAX_WINDOW_DAYS (default: the shared projection window).
+ *
+ * Same window loader, same fail-closed scope, same envelope rule as every
+ * other projection — plus the ONE rule the others leave implicit: the reader
+ * loads at most MAX_FACT_ROWS rows, newest first. When that cap is reached the
+ * series is a FLOOR (older days are missing, the oldest loaded day is partial),
+ * so the envelope reports `deterministic: false` with the cap as its reason.
+ *
+ * A window wider than the ceiling is clamped at its OLD end (the newest days
+ * are the operational ones) and the clamp is stated in `notes` rather than
+ * silently applied or refused.
+ */
+export async function getRefreshDailySeries(
+  args: RefreshProjectionArgs = {},
+  deps?: RefreshProjectionDeps,
+): Promise<RefreshDailySeries> {
+  const readers = resolveReaders(deps);
+  const requested = resolveWindow(args, readers.now);
+  const notes: string[] = [];
+
+  let from = requested.from;
+  if (from > requested.to) {
+    from = requested.to;
+    notes.push(`window start ${requested.from} is after its end ${requested.to}; projected the single day ${requested.to}`);
+  }
+  if (utcDaysBetween(from, requested.to).length > DAILY_SERIES_MAX_WINDOW_DAYS) {
+    from = minusDaysISO(requested.to, DAILY_SERIES_MAX_WINDOW_DAYS - 1);
+    notes.push(`window clamped to ${DAILY_SERIES_MAX_WINDOW_DAYS} days (requested from ${requested.from})`);
+  }
+
+  const loaded = await loadExecutionWindow({ ...args, from, to: requested.to }, deps);
+  const capHit = loaded.executions.length >= MAX_FACT_ROWS;
+  const today = todayISO(loaded.readers.now);
+  const core = buildRefreshDailySeries(loaded.executions, loaded.window, { todayISO: today, capHit });
+
+  const base = envelopeFor(loaded);
+  const env: ProjectionEnvelope = capHit
+    ? {
+        ...base,
+        deterministic: false,
+        indeterminacyReason:
+          `fact cap of ${MAX_FACT_ROWS} rows reached — older days are missing and every count is a floor` +
+          (base.indeterminacyReason ? `; ${base.indeterminacyReason}` : ""),
+      }
+    : base;
+
+  notes.push(
+    "Buckets are UTC days of each execution's startedAt.",
+    "A settled day with no rows is a true zero: the ledger is the authority and holds no execution for that day.",
+    "Executions refused by the admission authority are ledgered as SKIPPED with a typed reason and counted in admissionDenied.",
+    "Customer-facing cooldown refusals (HTTP 429) write no execution row and cannot appear in this series.",
+  );
+
+  return {
+    envelope: env,
+    days: core.days,
+    windowDays: core.days.length,
+    maxWindowDays: DAILY_SERIES_MAX_WINDOW_DAYS,
+    executions: core.executions,
+    floor: core.floor,
+    notes,
+    tier: core.tier,
+  };
 }
 
 export async function getExecutionTimeline(
