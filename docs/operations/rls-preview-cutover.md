@@ -1,6 +1,14 @@
 # RLS — PREVIEW CUTOVER RUNBOOK
 
-**Status:** prepared, **not executed**. Every step that touches Preview is an OWNER action. Nothing in this document has been run against Preview or Production.
+**Status (reconciled 2026-10-14): EXECUTED ON PREVIEW on 2026-10-06; NOT executed on Production.** The header below this line was written before execution and was never updated. The evidence that Preview runs on this topology, none of it from this document:
+- `environment-separation.md` §4 and §8 (dated 2026-10-06 ~17:05Z): `DATABASE_URL_APP` / `_AUTH` / `_SYSTEM` present on the `v2.6` Preview scope, `FM_RLS_STRICT=true`; the deployed `db-authority` endpoint answered 200 `ok=true`, strict, with `fm_app` / `fm_auth` / `fm_system` all `bypassRls=false`; `fm_app` isolation probes returned 0 of another user's accounts and transactions; 0 idle-in-transaction sessions.
+- `plaid-sandbox-lane-2026-10-06.md` (isolation under the real roles) and `domain-split-preview.md` §2.4 (Preview runs through the three role URLs with strict mode).
+- Commits `1ef016c` RLS-EXECUTE ("found on Preview after the RLS cutover") and `b280766` TENANT-IDLE ("Preview RLS cutover, Stage 13b, 2026-10-06"), both repairs of defects observed on the executed Preview topology.
+- `OPERATIONALIZATION-P1-REPORT-2026-10-08.md` §K: Preview migrations up to date at 123 and the `audit-db-authority` ratchet honoured on every candidate.
+
+What the evidence does **not** show, and this document does not claim: a per-row sign-off of §2–§9 by the owner (no such ledger was kept); the Production rows (§9b's invariant applies at the Production cutover, governed by `production-cutover-plan.md`). Every step that touches a database remains an OWNER action; nothing in this document has been run against Production.
+
+*Original header, kept for the record:* prepared, **not executed**. Every step that touches Preview is an OWNER action. Nothing in this document has been run against Preview or Production.
 **Revised:** 2026-10-06 (Preview preflight read; owner-verified Plaid provenance; pool decision). Previously 2026-10-04, RLS-PREP (strict-mode pooler identity, deployed authority verification, foreground owner-path conversion). Supersedes the RLS-5 version, whose migration counts, role-URL instructions and verification step were no longer true.
 **Authority:** `docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md` · the ten migrations in §1 · `lib/db/strict-mode.ts` · `lib/platform/db-authority.ts`.
 
