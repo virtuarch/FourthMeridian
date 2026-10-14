@@ -2,101 +2,145 @@
 
 /**
  * components/platform/widgets/OpsConnectionHealthWidget.tsx
- *   (Wave 2 S7 / CH-1 · ops_connection_health · PO-4A operator controls)
+ *   (Wave 2 S7 / CH-1 · ops_connection_health · PO-4A operator controls · UX-P1 table)
  *
- * Provider-connection health, over GET /api/platform/platform-ops/connection-health
- * (requirePlatformAccess PLATFORM_OPS READ). Headline healthy/total + the
- * non-healthy connections worst-first, each opening a RightPanel of operational
- * FACTS (institution/provider/status/health/timestamps — NO PII, never balances
- * or transactions) with two WRITE ACTIONS for Plaid connections:
+ * Provider-connection health at PAGE grain, over
+ * GET /api/platform/platform-ops/connection-health (PLATFORM_OPS READ). One
+ * `SectionSurface`: the fleet composition as a DistributionBar, an All / Needs
+ * action filter, and the shared connection table (connection-health-table.tsx)
+ * over the authority's worst-first unhealthy list. A row opens the RightPanel
+ * of FACTS (institution / provider / status / health / threshold / timestamps —
+ * NO PII, never balances or transactions) with the two WRITE actions for Plaid
+ * connections, rendered only when the operator's resolved access can write:
  *   - Resync now — re-run the per-item sync (PO-4A)
  *   - Request reauthorization — ask the customer to reconnect (never removes)
  * Both POST to requireFreshPlatformAccess(PLATFORM_OPS, WRITE) routes behind a
- * ConfirmDialog, then refetch. Manages its own fetch/action state (it mutates).
+ * ConfirmDialog, then the surface REMOUNTS its reader (the keyed-fetch idiom)
+ * so what it shows afterwards is the canonical read, not a client-side guess.
+ *
+ * OWNER COLUMN (owner decision D4): the fleet projection carries no identity.
+ * `OwnerResolution` asks the separate CUSTOMER_SUCCESS route for the rows on
+ * screen; the column exists only when that read returned 200. A 403 — the
+ * common case for a PLATFORM_OPS-only operator — renders no column at all.
+ *
+ * Composed in Pipeline (platform-refresh) and Providers (platform-providers).
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { PlugZap, RefreshCw, KeyRound, Loader2 } from "lucide-react";
-import {
-  PlatformWidgetCard,
-  WidgetMessage,
-  WidgetStat,
-  timeAgo,
-  type PlatformSection,
-} from "../widget-kit";
+import { WidgetMessage, useWidgetFetch, type PlatformSection } from "../widget-kit";
+import { DistributionBar, PillGroup, SectionSurface, TONE_COLOR } from "../platform-surface";
 import { RightPanel, PanelHeader, PanelContent, PanelFooter } from "@/components/atlas/panels";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
+import type { SpaceMountAccess } from "@/lib/space/mount-context";
 import type { ConnectionHealthResponse } from "@/app/api/platform/platform-ops/connection-health/route";
 import type { ConnectionHealthRow } from "@/lib/connections/health";
+import {
+  compositionCaption,
+  compositionSegments,
+  describeConnection,
+  filterOptions,
+  filterRows,
+  listCoverage,
+  rowKey,
+  type ConnectionFilter,
+} from "./connection-health-view";
+import { ConnectionFacts, ConnectionHealthTable, OwnerResolution } from "./connection-health-table";
 
-const STATE_LABEL: Record<string, string> = {
-  REVOKED:      "Revoked",
-  ERROR:        "Error",
-  NEEDS_REAUTH: "Needs re-auth",
-  DEGRADED:     "Degraded",
-  STALE:        "Stale",
-  HEALTHY:      "Healthy",
-};
+export const CONNECTION_HEALTH_FOOTNOTE =
+  "Population: the live fleet — revoked connections and those whose owner is deactivated are retired, not unhealthy, and are named above when present. " +
+  "STALE is judged against the refresh policy's overdue threshold, the same one the customer's Connections page and the Brief read. " +
+  "Owner labels come from Customer Success and appear only for operators holding that grant; an email never leaves the Customer Success detail. " +
+  "Resync and reauthorization run through the same lock and cooldown as the fleet and never remove a connection.";
 
-export function OpsConnectionHealthWidget({ section }: { section: PlatformSection }) {
-  const [data, setData]       = useState<ConnectionHealthResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState<string | null>(null);       // load error (hides the widget)
-  const [actionError, setActionError] = useState<string | null>(null); // action error (inline, keeps the list)
-  const [acting, setActing]   = useState<string | null>(null);      // "resync" | "reauth"
+type ActionKind = "resync" | "reauth";
+
+export function OpsConnectionHealthWidget({ section, access }: { section: PlatformSection; onOpenWorkspace?: (id: string) => void; access?: SpaceMountAccess }) {
+  // A mutation bumps the epoch, which REMOUNTS the reader below — the honest
+  // refetch under the static-url contract of useWidgetFetch.
+  const [epoch, setEpoch] = useState(0);
+  const [filter, setFilter] = useState<ConnectionFilter>("all");
+  return (
+    <ConnectionHealthReader
+      key={epoch}
+      title={section.label}
+      access={access}
+      filter={filter}
+      onFilter={setFilter}
+      onMutated={() => setEpoch((e) => e + 1)}
+    />
+  );
+}
+
+function ConnectionHealthReader(props: Omit<Parameters<typeof ConnectionHealthSurface>[0], "data" | "loading" | "error">) {
+  const { data, loading, error } = useWidgetFetch<ConnectionHealthResponse>("/api/platform/platform-ops/connection-health");
+  return <ConnectionHealthSurface {...props} data={data} loading={loading} error={error} />;
+}
+
+/**
+ * The whole surface, given a fetch RESULT rather than performing one — so the
+ * loading, failed, all-healthy and populated states are renderable in a test.
+ */
+export function ConnectionHealthSurface({
+  title,
+  data,
+  loading,
+  error,
+  access,
+  filter,
+  onFilter,
+  onMutated,
+  nowMs,
+}: {
+  title: string;
+  data: ConnectionHealthResponse | null;
+  loading: boolean;
+  error: string | null;
+  access?: SpaceMountAccess;
+  filter: ConnectionFilter;
+  onFilter: (f: ConnectionFilter) => void;
+  /** Called after a successful WRITE; the host remounts the reader. */
+  onMutated: () => void;
+  /** Injected clock for the relative Last-sync words. Omitted in production. */
+  nowMs?: number;
+}) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<null | "resync" | "reauth">(null);
+  const [confirm, setConfirm] = useState<ActionKind | null>(null);
+  const [acting, setActing] = useState<ActionKind | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await fetch("/api/platform/platform-ops/connection-health", { credentials: "same-origin" });
-      if (!r.ok) throw new Error(r.status === 403 ? "Not authorized" : `Request failed (${r.status})`);
-      setData((await r.json()) as ConnectionHealthResponse);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  if (loading || error || !data) {
+    return (
+      <SectionSurface icon={PlugZap} title={title} footnote={CONNECTION_HEALTH_FOOTNOTE}>
+        <WidgetMessage loading={loading} error={error} />
+      </SectionSurface>
+    );
+  }
 
-  useEffect(() => {
-    let alive = true;
-    (async () => { if (alive) await load(); })();
-    return () => { alive = false; };
-  }, [load]);
+  const rows = filterRows(data.unhealthy, filter);
+  const selected: ConnectionHealthRow | null = selectedKey ? data.unhealthy.find((r) => rowKey(r) === selectedKey) ?? null : null;
+  const canWrite = access?.canWrite === true;
+  const coverage = listCoverage(data);
 
-  const selected: ConnectionHealthRow | null =
-    selectedKey && data ? data.unhealthy.find((c) => `${c.source}:${c.id}` === selectedKey) ?? null : null;
-
-  async function act(kind: "resync" | "reauth") {
+  async function act(kind: ActionKind) {
     if (!selected) return;
     const path = kind === "resync" ? "resync" : "request-reauth";
     setActing(kind);
     setActionError(null);
     try {
-      const r = await fetch(`/api/platform/platform-ops/connections/${selected.id}/${path}`, {
-        method: "POST", credentials: "same-origin",
-      });
+      const r = await fetch(`/api/platform/platform-ops/connections/${selected.id}/${path}`, { method: "POST", credentials: "same-origin" });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
-        if (r.status === 429 && body.retryAfterSeconds) {
-          throw new Error(`On cooldown — try again in ~${Math.ceil(body.retryAfterSeconds / 60)} min.`);
-        }
-        if (r.status === 409 && body.error === "in-flight") {
-          throw new Error("A sync is already in flight for this connection.");
-        }
+        if (r.status === 429 && body.retryAfterSeconds) throw new Error(`On cooldown — try again in ~${Math.ceil(body.retryAfterSeconds / 60)} min.`);
+        if (r.status === 409 && body.error === "in-flight") throw new Error("A sync is already in flight for this connection.");
         // OPS-2D-3 — an admission denial carries a human label from the reason
-        // registry. Prefer it over the code: "not-admitted" tells an operator
-        // nothing, while "Provider ingestion is paused platform-wide." tells
-        // them the action was refused by a platform state, not by a fault.
+        // registry; prefer it over the code.
         if (body.message) throw new Error(body.message as string);
         throw new Error(body.error ?? `Action failed (${r.status})`);
       }
       setConfirm(null);
       setSelectedKey(null);
-      await load();
+      onMutated();
     } catch (e) {
       setConfirm(null);
       setActionError(e instanceof Error ? e.message : "Action failed");
@@ -105,151 +149,134 @@ export function OpsConnectionHealthWidget({ section }: { section: PlatformSectio
     }
   }
 
-  // Action availability (Plaid only; a dead credential can't sync, a revoked item is gone).
-  const isPlaid   = selected?.source === "PLAID";
-  const canResync = isPlaid && selected!.healthState !== "REVOKED" && selected!.healthState !== "NEEDS_REAUTH";
-  const canReauth = isPlaid && selected!.healthState !== "REVOKED";
+  const canResync = selected?.availableActions.includes("resync") === true;
+  const canReauth = selected?.availableActions.includes("request-reauth") === true;
+  const isPlaid = selected?.source === "PLAID";
 
   return (
-    <PlatformWidgetCard label={section.label} icon={PlugZap}>
-      {loading || error || !data ? (
-        <>
-          <WidgetMessage loading={loading} error={error} />
-          {error && !loading && (
-            <button type="button" onClick={load} className="mt-1 w-fit text-[11px] text-[var(--meridian-400)] underline">Retry</button>
-          )}
-        </>
-      ) : (
-        <>
-          {actionError && (
-            <p className="rounded-[var(--radius-sm)] border px-2.5 py-1.5 text-[11px]"
-               style={{ color: "var(--danger-400, #f87171)", borderColor: "rgba(248,113,113,.28)", background: "rgba(248,113,113,.08)" }}>
-              {actionError}
-            </p>
-          )}
-          <div className="grid grid-cols-3 gap-3">
-            <WidgetStat value={data.counts.HEALTHY} label="Healthy" />
-            <WidgetStat value={data.total - data.counts.HEALTHY} label="Unhealthy" />
-            <WidgetStat value={data.total} label="Total" />
-          </div>
-          {(data.retired.revoked > 0 || data.retired.ownerInactive > 0) && (
-            // OPERATIONALIZATION P0 — former connections are not unhealthy ones.
-            // They leave the population above and are named here, so a count
-            // never disappears silently.
-            <p className="text-[11px] text-[var(--text-muted)]">
-              Not counted: {data.retired.revoked > 0 ? `${data.retired.revoked} revoked` : null}
-              {data.retired.revoked > 0 && data.retired.ownerInactive > 0 ? " · " : null}
-              {data.retired.ownerInactive > 0 ? `${data.retired.ownerInactive} with a deactivated owner` : null}
-              {" "}(retired, not unhealthy).
-            </p>
-          )}
-          {data.unhealthy.length === 0 ? (
-            <p className="text-xs text-[var(--text-secondary)]">All provider connections healthy.</p>
-          ) : (
-            <ul className="-mx-1 divide-y divide-[var(--border-hairline)]">
-              {data.unhealthy.map((c) => (
-                <li key={`${c.source}:${c.id}`}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedKey(`${c.source}:${c.id}`)}
-                    className="group relative flex w-full items-center justify-between gap-2 overflow-hidden px-1 py-2 text-left transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]"
-                  >
-                    <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-[var(--meridian-400)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
-                    <span className="min-w-0 truncate text-xs text-[var(--text-primary)]">
-                      {c.label} <span className="text-[var(--text-muted)]">· {c.source}</span>
-                    </span>
-                    <span className="shrink-0 text-[11px] text-[var(--text-secondary)]">
-                      {STATE_LABEL[c.healthState] ?? c.healthState}
-                      {c.since ? <span className="text-[var(--text-muted)]"> · {timeAgo(c.since)}</span> : null}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+    <SectionSurface
+      icon={PlugZap}
+      title={title}
+      count={data.total}
+      actions={<PillGroup label="Connection filter" value={filter} options={filterOptions(data.unhealthy)} onChange={onFilter} />}
+      footnote={CONNECTION_HEALTH_FOOTNOTE}
+    >
+      <div className="flex flex-col gap-6">
+        {actionError && (
+          <p
+            role="alert"
+            className="rounded-[var(--radius-sm)] border px-2.5 py-1.5 text-[11px]"
+            style={{
+              color: TONE_COLOR.bad,
+              borderColor: "color-mix(in srgb, var(--coral-500) 28%, transparent)",
+              background: "color-mix(in srgb, var(--coral-500) 8%, transparent)",
+            }}
+          >
+            Last action failed — {actionError}
+          </p>
+        )}
 
-          {/* Detail + operator actions */}
-          <RightPanel open={selected != null} onClose={() => setSelectedKey(null)} ariaLabel="Connection detail">
-            {selected && (
+        <DistributionBar
+          label="Fleet composition"
+          segments={compositionSegments(data.counts)}
+          caption={compositionCaption(data)}
+          floor={coverage.capped}
+          emptyText="no live connections — nothing is syncing for any customer"
+        />
+
+        {data.unhealthy.length === 0 ? (
+          <p className="text-xs text-[var(--text-secondary)]">
+            {data.total === 0 ? "No live connections to judge." : `All ${data.total} live connection${data.total === 1 ? "" : "s"} healthy under the current policy.`}
+          </p>
+        ) : (
+          <OwnerResolution rows={data.unhealthy}>
+            {(owners) => (
               <>
-                <PanelHeader eyebrow="Connection health" title={selected.label} />
-                <PanelContent>
-                  <div className="flex flex-col gap-2.5 text-xs">
-                    <Row label="Institution" value={selected.label} />
-                    <Row label="Provider" value={selected.source} />
-                    <Row label="Status" value={selected.status} />
-                    <Row label="Health state" value={STATE_LABEL[selected.healthState] ?? selected.healthState} />
-                    <Row label="Last sync" value={selected.lastSyncedAt ? `${timeAgo(selected.lastSyncedAt)} ago` : "never"} />
-                    {selected.errorCode && <Row label="Error code" value={selected.errorCode} />}
-                    {selected.since && <Row label="Broken since" value={`${timeAgo(selected.since)} ago`} />}
-                    <p className="border-t border-[var(--border-hairline)] pt-3 text-[11px] leading-snug text-[var(--text-muted)]">
-                      {isPlaid
-                        ? "Resync re-runs the per-item sync (same lock + cooldown as the fleet). Request reauthorization asks the customer to reconnect — it never removes the connection."
-                        : "Operator actions are available for Plaid connections only."}
-                    </p>
-                  </div>
-                </PanelContent>
-                {isPlaid && (
-                  <PanelFooter>
-                    <button
-                      onClick={() => setConfirm("reauth")}
-                      disabled={acting !== null || !canReauth}
-                      title={canReauth ? undefined : "Revoked — the customer must re-add this connection."}
-                      className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
-                      style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}
-                    >
-                      <KeyRound size={13} /> Request reauthorization
-                    </button>
-                    <button
-                      onClick={() => setConfirm("resync")}
-                      disabled={acting !== null || !canResync}
-                      title={canResync ? undefined : "This connection needs reauthorization before it can sync."}
-                      className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
-                      style={{ background: "rgba(52,211,153,.12)", color: "var(--success-400, #34d399)", borderColor: "rgba(52,211,153,.3)" }}
-                    >
-                      {acting === "resync" ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Resync now
-                    </button>
-                  </PanelFooter>
-                )}
+                <ConnectionHealthTable
+                  rows={rows}
+                  owners={owners}
+                  checkedAt={data.checkedAt}
+                  nowMs={nowMs}
+                  onSelect={(row) => { setActionError(null); setSelectedKey(rowKey(row)); }}
+                  emptyMessage="No connection needs action — the remaining unhealthy rows are late, not faulted."
+                />
+
+                <RightPanel open={selected != null} onClose={() => setSelectedKey(null)} ariaLabel="Connection detail">
+                  {selected && (
+                    <>
+                      <PanelHeader eyebrow="Connection health" title={describeConnection(selected).title} />
+                      <PanelContent>
+                        <div className="flex flex-col gap-3 text-xs">
+                          <ConnectionFacts row={selected} owner={owners?.get(rowKey(selected))} checkedAt={data.checkedAt} nowMs={nowMs} />
+                          <p className="border-t border-[var(--border-hairline)] pt-3 text-[11px] leading-snug text-[var(--text-muted)]">
+                            {isPlaid
+                              ? "Resync re-runs the per-item sync (same lock + cooldown as the fleet). Request reauthorization asks the customer to reconnect — it never removes the connection."
+                              : "Operator actions are available for Plaid connections only."}
+                            {isPlaid && !canWrite ? " Running them needs WRITE access to Platform Operations." : null}
+                          </p>
+                        </div>
+                      </PanelContent>
+                      {isPlaid && canWrite && (
+                        <PanelFooter>
+                          <button
+                            type="button"
+                            onClick={() => setConfirm("reauth")}
+                            disabled={acting !== null || !canReauth}
+                            title={canReauth ? undefined : "Revoked — the customer must re-add this connection."}
+                            className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
+                            style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}
+                          >
+                            <KeyRound size={13} aria-hidden /> Request reauthorization
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirm("resync")}
+                            disabled={acting !== null || !canResync}
+                            title={canResync ? undefined : "This connection needs reauthorization before it can sync."}
+                            className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
+                            style={{
+                              background: "color-mix(in srgb, var(--emerald-500) 12%, transparent)",
+                              color: TONE_COLOR.ok,
+                              borderColor: "color-mix(in srgb, var(--emerald-500) 30%, transparent)",
+                            }}
+                          >
+                            {acting === "resync" ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <RefreshCw size={13} aria-hidden />} Resync now
+                          </button>
+                        </PanelFooter>
+                      )}
+                    </>
+                  )}
+                </RightPanel>
               </>
             )}
-          </RightPanel>
+          </OwnerResolution>
+        )}
+      </div>
 
-          {confirm === "resync" && selected && (
-            <ConfirmDialog
-              icon={RefreshCw}
-              title={`Resync ${selected.label} now?`}
-              message="Re-runs this connection's sync through the existing per-item path (respects the in-flight lock and manual cooldown). No customer data is exposed."
-              confirmLabel="Resync now"
-              confirmTone="meridian"
-              busy={acting === "resync"}
-              onConfirm={() => act("resync")}
-              onClose={() => setConfirm(null)}
-            />
-          )}
-          {confirm === "reauth" && selected && (
-            <ConfirmDialog
-              icon={KeyRound}
-              title={`Ask the customer to reauthorize ${selected.label}?`}
-              message="Marks the connection as needing reauthorization and prompts the customer to reconnect. It does NOT remove the connection or any data."
-              confirmLabel="Request reauthorization"
-              confirmTone="meridian"
-              busy={acting === "reauth"}
-              onConfirm={() => act("reauth")}
-              onClose={() => setConfirm(null)}
-            />
-          )}
-        </>
+      {confirm === "resync" && selected && (
+        <ConfirmDialog
+          icon={RefreshCw}
+          title={`Resync ${describeConnection(selected).title} now?`}
+          message="Re-runs this connection's sync through the existing per-item path (respects the in-flight lock and manual cooldown). No customer data is exposed."
+          confirmLabel="Resync now"
+          confirmTone="meridian"
+          busy={acting === "resync"}
+          onConfirm={() => act("resync")}
+          onClose={() => setConfirm(null)}
+        />
       )}
-    </PlatformWidgetCard>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-[var(--text-secondary)]">{label}</span>
-      <span className="text-[var(--text-primary)] text-right">{value}</span>
-    </div>
+      {confirm === "reauth" && selected && (
+        <ConfirmDialog
+          icon={KeyRound}
+          title={`Ask the customer to reauthorize ${describeConnection(selected).title}?`}
+          message="Marks the connection as needing reauthorization and prompts the customer to reconnect. It does NOT remove the connection or any data."
+          confirmLabel="Request reauthorization"
+          confirmTone="meridian"
+          busy={acting === "reauth"}
+          onConfirm={() => act("reauth")}
+          onClose={() => setConfirm(null)}
+        />
+      )}
+    </SectionSurface>
   );
 }
