@@ -7,7 +7,6 @@ import { getSpaceContext } from "@/lib/space";
 import { getSpaceNetWorthSummaries } from "@/lib/data/snapshots";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceCardFreshness } from "@/lib/freshness/space-card-freshness";
-import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
 
 // Spaces landing page — the redesigned, premium successor to the old
 // /dashboard/spaces page (see lib/space.ts and space-presets.ts
@@ -21,9 +20,11 @@ import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
 //
 // ── RLS-T3 — WHICH AUTHORITY EACH READ ON THIS PAGE RUNS UNDER ───────────────
 // Every row this page reads about the VIEWER — their preferred Space, their
-// memberships, their invitations, their platform grants, the platform Spaces
-// those grants reach, and the public Spaces they have not joined — now executes
-// as the viewer through `withTenantDb`. The identity is `session.user.id` from
+// memberships, their invitations, and the public Spaces they have not joined —
+// now executes as the viewer through `withTenantDb`. (The platform grants and
+// the Platform Spaces they reach moved OFF this page with UX-P2 decision N1:
+// lib/platform/directory.server.ts is their one read site, the directory at
+// app/(shell)/dashboard/platform their one home.) The identity is `session.user.id` from
 // getServerSession and nothing else; the active-Space cookie below is read only
 // to highlight a card and is never an authority.
 //
@@ -55,7 +56,7 @@ export default async function SpacesPage() {
   const activeSpaceId = await getSpaceContext().then((ctx) => ctx.spaceId, () => null);
 
   // ── Preferred space, my memberships, pending invites, platform Spaces ─
-  const [preferredSpaceRow, myMemberships, pendingInvites, platformSpaces] = await Promise.all([
+  const [preferredSpaceRow, myMemberships, pendingInvites] = await Promise.all([
     // RLS-T3 — the viewer's own User row. fm_app's `User` SELECT policy is
     // `id = current_fm_user_id()`, so the predicate this call states is also the
     // one the database enforces: `findUnique` on anybody else's id answers null.
@@ -144,8 +145,6 @@ export default async function SpacesPage() {
       orderBy: { createdAt: "desc" },
     })),
 
-    // PO1.0 — platform Spaces the user holds an ACTIVE grant on (access-derived).
-    loadPlatformSpaces(userId),
   ]);
 
   const preferredSpaceId: string | null = preferredSpaceRow?.preferredSpaceId ?? null;
@@ -402,62 +401,6 @@ export default async function SpacesPage() {
       currentUserId={userId}
       activeSpaceId={activeSpaceId}
       preferredSpaceId={preferredSpaceId}
-      platformSpaces={platformSpaces}
     />
   );
-}
-
-// ── PO1.0 platform Spaces, as the tenant — ONE transaction, on purpose ───────
-//
-// RLS-T3. These two reads are ONE coherent answer ("which platform Spaces does
-// this operator's grants reach"), the second is a function of the first, and
-// neither calls out of the process — so they share a transaction and the answer
-// cannot straddle a grant being revoked mid-page.
-//
-// BOTH ARMS ALREADY EXIST IN THE POLICIES, which is why this needed no wider
-// authority and no `systemDb`:
-//   · `PlatformGrant.fm_app_sel` is `"userId" = current_fm_user_id()` (§9), and
-//     the question asked is "my grants" — so the chips do NOT vanish under
-//     fm_app. This was the open question on this page and the answer is that
-//     the tenant role is the RIGHT one here: a grant is a fact about the
-//     viewer.
-//   · `Space.fm_app_sel` carries the platform arm (§11) — `platformArea IS NOT
-//     NULL AND EXISTS (an ACTIVE PlatformGrant for me on that area)` — written
-//     because the four platform Spaces hold ZERO SpaceMember rows and a
-//     membership-only policy would hide them from the operators who own them.
-//     So the Space rows come back too, and an area the viewer holds no grant on
-//     is now refused by the database as well as by the `in` filter.
-//
-// ⚠️ THE ARM STOPS AT `Space`. It does NOT extend to the Space's SECTIONS —
-// `SpaceDashboardSection` is a §7 `spaceId IN fm_visible_space_ids()` table with
-// no platform arm at all — which is the finding that keeps
-// app/(shell)/dashboard/platform/[area]/page.tsx on `db`. See the block at the
-// top of that file.
-async function loadPlatformSpaces(userId: string) {
-  return withTenantDb(userId, async (tx) => {
-    const grants = await tx.platformGrant.findMany({
-      where:  { userId, status: "ACTIVE" },
-      select: { area: true, level: true },
-    });
-    if (grants.length === 0) return [];
-
-    const spaces = await tx.space.findMany({
-      where:  { platformArea: { in: grants.map((g) => g.area) } },
-      select: { id: true, name: true, platformArea: true },
-    });
-
-    // UX-P1 Change A — CANONICAL order (ALL_PLATFORM_AREAS), the same order
-    // GET /api/spaces returns, so the HQ group reads identically everywhere.
-    return spaces
-      .slice()
-      .sort((a, b) => ALL_PLATFORM_AREAS.indexOf(a.platformArea!) - ALL_PLATFORM_AREAS.indexOf(b.platformArea!))
-      .map((s) => ({
-        id:     s.id,
-        name:   s.name,
-        area:   s.platformArea as string,
-        // Non-null by construction: the `where` above only admits a Space whose
-        // platformArea is one of these grants' areas.
-        access: grants.find((g) => g.area === s.platformArea)!.level as string,
-      }));
-  });
 }

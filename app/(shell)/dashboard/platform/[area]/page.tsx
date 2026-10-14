@@ -5,11 +5,17 @@
  *
  * Gate order (never discloses existence — an unknown/ungranted area redirects,
  * it does not 404):
- *   1. [area] must be a known PlatformArea            → else /dashboard/spaces
+ *   1. [area] must be a known PlatformArea            → else /dashboard/platform
  *   2. a session must exist                            → else /login
- *   3. an ACTIVE PlatformGrant on this area must exist → else /dashboard/spaces
+ *   3. an ACTIVE PlatformGrant on this area must exist → else /dashboard/platform
  * SYSTEM_ADMIN never reaches this page — proxy.ts redirects them off
  * /dashboard/* to /admin; they administer grants from there.
+ *
+ * UX-P2 — the redirect target is the Platform Spaces DIRECTORY
+ * (app/(shell)/dashboard/platform/page.tsx), not the launcher: an operator who
+ * mistyped or lost an area lands among the areas they DO hold, and the
+ * directory itself sends a viewer with zero grants on to /dashboard/spaces. One
+ * target here, one zero-grant rule there — simpler than counting grants twice.
  *
  * This page deliberately uses NO customer-Space DATA/AUTH machinery: no
  * resolveSpaceContext, no ACTIVE_SPACE_COOKIE, no SpaceMember lookup, no
@@ -94,7 +100,7 @@ export default async function PlatformSpacePage({
 
   // 1. Known area? (unknown ⇒ redirect, never 404 — no existence disclosure)
   if (!(Object.values(PlatformArea) as string[]).includes(areaParam)) {
-    redirect("/dashboard/spaces");
+    redirect("/dashboard/platform");
   }
   const area = areaParam as PlatformArea;
 
@@ -112,7 +118,7 @@ export default async function PlatformSpacePage({
     select: { area: true, level: true, status: true },
   });
   if (!grant || !hasPlatformAccess(area, "READ", [grant])) {
-    redirect("/dashboard/spaces");
+    redirect("/dashboard/platform");
   }
 
   // 4. The platform Space + its enabled sections (same section model customer
@@ -134,7 +140,7 @@ export default async function PlatformSpacePage({
     },
   });
   // The seed guarantees the Space exists; if it somehow doesn't, fail closed.
-  if (!space) redirect("/dashboard/spaces");
+  if (!space) redirect("/dashboard/platform");
 
   // PS-6A/6C — compose the SAME domain-neutral SpaceMountContext from the ALREADY-
   // AUTHORIZED platform inputs (area validated, ACTIVE PlatformGrant checked via

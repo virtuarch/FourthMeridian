@@ -130,14 +130,11 @@ type Invite = {
   invitedBy: { id: string; name: string | null; username: string | null };
 };
 
-// PO1.0 — access-derived platform Spaces (one ACTIVE grant each). Rendered as
-// a separate card group linking to the platform host; never a switch target.
-type PlatformSpaceItem = {
-  id:     string;
-  name:   string;
-  area:   string;
-  access: string;
-};
+// UX-P2 (decision N1) — the access-derived Platform Spaces no longer render
+// here. Their one home is the Platform Spaces directory
+// (app/(shell)/dashboard/platform, components/platform/PlatformSpaceDirectory),
+// reached through the GlobalHeader's context switch. This launcher is the
+// PERSONAL directory only.
 
 interface Props {
   mine: SpaceItem[];
@@ -146,7 +143,6 @@ interface Props {
   currentUserId: string;
   activeSpaceId: string | null;
   preferredSpaceId: string | null;
-  platformSpaces?: PlatformSpaceItem[];
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -863,63 +859,6 @@ function InviteBanner({ invites, onAction }: { invites: Invite[]; onAction: () =
   );
 }
 
-// ─── Platform card group (PO1.0) ──────────────────────────────────────────────
-//
-// Access-derived (from PlatformGrant); rendered only for grant-holders. Each
-// card is a plain link to /dashboard/platform/[area] — NOT a switch target, so
-// the ambient Space context never points at a platform Space. Visually quieter
-// and distinct from customer Space cards (Shield glyph, access badge) so the two
-// families never read as the same thing.
-
-function PlatformSpaceGroup({ spaces }: { spaces: PlatformSpaceItem[] }) {
-  const router = useRouter();
-  if (spaces.length === 0) return null;
-
-  return (
-    <div className="mb-10">
-      {/* Divider label — the same "operator Spaces, distinct section, same shell"
-          treatment as the prototype's Fourth Meridian HQ (Launcher.tsx §5.2).
-          UX-P1 D2 — the group leads the launcher (above the personal cards),
-          so its spacing is BELOW it. */}
-      <div className="mb-3 flex items-center gap-3">
-        <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-          Fourth Meridian HQ
-        </span>
-        <span className="h-px flex-1 bg-[var(--border-hairline)]" aria-hidden />
-      </div>
-      <ul className="space-y-2.5">
-        {spaces.map((p) => {
-          const href = `/dashboard/platform/${p.area}`;
-          return (
-            <Surface as="li" key={p.id} className="group transition-colors duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:border-[var(--border-hairline-strong)]">
-              <button
-                type="button"
-                onClick={() => router.push(href)}
-                aria-label={`Open ${displaySpaceName(p.name)}`}
-                className="flex w-full items-center gap-4 p-4 text-left sm:p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-inset"
-              >
-                {/* HQ badge — operator identity, never a financial figure. */}
-                <span className="grid size-9 shrink-0 place-items-center rounded-full border border-[var(--border-hairline-strong)] text-[9px] font-semibold text-[var(--brass-300)]">
-                  HQ
-                </span>
-                <div className="min-w-0 flex-1">
-                  <h2 className="truncate font-semibold text-[var(--text-primary)]">{displaySpaceName(p.name)}</h2>
-                  <p className="mt-1 truncate text-xs text-[var(--text-muted)]">Platform area · {p.access}</p>
-                </div>
-                <ArrowUpRight
-                  size={15}
-                  aria-hidden
-                  className="shrink-0 text-[var(--text-muted)] transition-[transform,color] duration-[var(--dur-base)] ease-[var(--ease-standard)] group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-[var(--text-secondary)]"
-                />
-              </button>
-            </Surface>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
 // ─── Header ───────────────────────────────────────────────────────────────────
 //
 // Deliberately not a GlassPanel — a large boxed-in hero reads heavy and
@@ -984,7 +923,6 @@ export function SpacesClient({
   currentUserId,
   activeSpaceId: initialActiveId,
   preferredSpaceId: initialPreferredId,
-  platformSpaces = [],
 }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -1109,13 +1047,6 @@ export function SpacesClient({
         <SpacesHeader onCreateSpace={() => window.dispatchEvent(new CustomEvent(OPEN_CREATE_SPACE_EVENT))} />
 
         {pendingInvites.length > 0 && <InviteBanner invites={pendingInvites} onAction={refresh} />}
-
-        {/* PO1.0 — Platform group (access-derived; only shown to grant-holders).
-            UX-P1 D2 — ABOVE the personal cards: an operator's HQ Spaces are the
-            first thing on the launcher, in canonical area order (the server
-            sorts by ALL_PLATFORM_AREAS). Still a separate family of cards — a
-            link to the platform host, never a switch target. */}
-        <PlatformSpaceGroup spaces={platformSpaces} />
 
         {/* A LIST, not a grid — rooms you already own, on one reading axis
             (prototype Launcher.tsx). Each row is a solid Atlas Surface; the

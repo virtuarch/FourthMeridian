@@ -152,7 +152,9 @@ const server   = stripComments(src("lib/space/mount-context.server.ts"));
 // Route identity + authorization preserved
 check("financial route still resolves via getSpaceContext (cookie→preferred→personal→SpaceMember gate)",
   finPage.includes("getSpaceContext()"));
-check("platform route still validates PlatformArea", platPage.includes("PlatformArea") && platPage.includes("redirect(\"/dashboard/spaces\")"));
+// UX-P2 — an unknown / ungranted area redirects to the Platform Spaces DIRECTORY
+// (/dashboard/platform), which itself sends a zero-grant viewer to the launcher.
+check("platform route still validates PlatformArea", platPage.includes("PlatformArea") && platPage.includes("redirect(\"/dashboard/platform\")"));
 check("platform route still authorizes via PlatformGrant + hasPlatformAccess",
   platPage.includes("platformGrant.findUnique") && platPage.includes("hasPlatformAccess"));
 check("platform route loads canonical Space by platformArea (real Space row)",

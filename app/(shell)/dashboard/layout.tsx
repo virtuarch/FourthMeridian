@@ -7,6 +7,7 @@ import { redirectToLogin } from "@/lib/auth/login-redirect";
 import { resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { yesterdayUTCISO } from "@/lib/fx/config";
+import { hasActivePlatformGrants } from "@/lib/platform/directory.server";
 import { ReactNode } from "react";
 
 // Applies to every page nested under this layout (all /dashboard/* tabs) —
@@ -29,6 +30,14 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   // (lib/auth/login-redirect.ts).
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return redirectToLogin();
+
+  // UX-P2 (decision N2) — does the viewer hold ANY active platform grant? One
+  // indexed tenant count (lib/platform/directory.server.ts), fail-closed: any
+  // failure reads as "no grant" and the header's Platform door stays hidden.
+  // A SERVER prop, not a client fetch: no pop-in after mount and no second
+  // /api/spaces call beside the sidebar's one. SYSTEM_ADMIN never reaches this
+  // layout (proxy.ts sends them to /admin), so there is no special case.
+  const hasPlatformGrants = await hasActivePlatformGrants(session.user.id);
 
   // MC1 Phase 4 Slice 1 (D-1) — resolve the active Space's display currency
   // once for the whole dashboard tree (getSpaceContext() is cache()-deduped,
@@ -66,7 +75,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
 
   return (
     <DisplayCurrencyProvider currency={displayCurrency}>
-      <DashboardChrome>{children}</DashboardChrome>
+      <DashboardChrome hasPlatformGrants={hasPlatformGrants}>{children}</DashboardChrome>
     </DisplayCurrencyProvider>
   );
 }

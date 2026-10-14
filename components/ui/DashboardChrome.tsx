@@ -42,7 +42,16 @@ import { TotpNudgeBanner } from "@/components/dashboard/TotpNudgeBanner";
 import { SpaceChromeProvider } from "@/lib/space/space-chrome-context";
 import { OPEN_CREATE_SPACE_EVENT, isPrimaryDestActive } from "@/lib/space-nav";
 
-export function DashboardChrome({ children }: { children: ReactNode }) {
+export function DashboardChrome({
+  children,
+  hasPlatformGrants = false,
+}: {
+  children: ReactNode;
+  // UX-P2 — a SERVER fact from the layout (the viewer's ACTIVE PlatformGrant
+  // count, as the tenant, fail-closed to false): shows the GlobalHeader's
+  // Personal/Platform context switch. Optional so every other mount is unchanged.
+  hasPlatformGrants?: boolean;
+}) {
   const router = useRouter();
   const pathname = usePathname() ?? "";
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
@@ -67,7 +76,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   return (
     <SpaceChromeProvider>
       <div className="min-h-screen bg-[var(--bg-base)]">
-        <GlobalHeader />
+        <GlobalHeader hasPlatformGrants={hasPlatformGrants} />
 
         <div className="mx-auto flex w-full max-w-[1320px] gap-0 px-4 sm:px-5 lg:gap-8 lg:px-8">
           <ContextualNavbar />
