@@ -58,11 +58,13 @@ const AREA_COPY: Record<PlatformArea, AreaCopy> = {
 
 export function PlatformAreaHero({
   area,
-  accessLevel,
 }: {
   area: PlatformArea;
-  /** The operator's grant level for this area (READ | WRITE) — the operator context. */
-  accessLevel: string;
+  /** UX-P1 — accepted for call-site compatibility, no longer rendered: the
+   *  operator's access level already reads in the sidebar's Space subtitle
+   *  ("Platform · <area> · CONTROL"), and the Overview's first screen is for
+   *  verdicts, not a restatement of the chrome. */
+  accessLevel?: string;
 }) {
   const copy = AREA_COPY[area];
 
@@ -77,10 +79,6 @@ export function PlatformAreaHero({
       </h1>
 
       <p className="mt-2.5 max-w-prose text-sm text-[var(--text-secondary)]">{copy.lede}</p>
-
-      <p className="mt-2 text-[11px] text-[var(--text-faint)]">
-        You&rsquo;re operating Fourth Meridian · {accessLevel} access
-      </p>
     </section>
   );
 }
