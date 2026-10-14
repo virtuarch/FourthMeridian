@@ -24,10 +24,14 @@
  *              destinations: Net Worth · Cash Flow · Markets. There is NO
  *              Sections list inside a customer Space (the page-anchor list was
  *              retired in favour of workspace-level destinations). Inside a
- *              PLATFORM Space it instead carries that HQ workspace's section
- *              anchors plus the same access-derived Platform destinations global
- *              mode shows, so the operator can move between HQ Spaces without
- *              first leaving to the launcher.
+ *              PLATFORM Space the SAME workspace block carries that area's
+ *              workspaces (Overview · Jobs · Policies … — UX-P1 Change B: the
+ *              host publishes them through the one `workspaceNav` channel, so
+ *              at lg+ the sidebar is the primary switcher and the in-content
+ *              rail serves smaller screens), THEN the open workspace's section
+ *              anchors, THEN the same access-derived Platform destinations
+ *              global mode shows, so the operator can move between HQ Spaces
+ *              without first leaving to the launcher.
  *
  * Both modes share DOM position and the left-accent-bar selection idiom, so
  * moving between them reads as the sidebar re-resolving, not one panel replacing
@@ -56,6 +60,13 @@ import {
   LayoutGrid,
   LogOut,
   Waves,
+  LayoutDashboard,
+  Timer,
+  PlugZap,
+  History,
+  Gauge,
+  RefreshCw,
+  SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -95,6 +106,22 @@ const WORKSPACE_ICONS: Record<string, LucideIcon> = {
   cashFlow: Waves,
   markets: ChartCandlestick,
 };
+
+/**
+ * Workspace icons by Lucide NAME — for a host that publishes each item's icon
+ * as the contract's string (a Platform Space: lib/platform/workspaces.ts
+ * `icon`, carried as `MountWorkspaceSummary.icon`). The sidebar resolves the
+ * name here and never imports a domain module to find it; an unknown name
+ * renders without an icon rather than borrowing one.
+ */
+const WORKSPACE_ICONS_BY_NAME: Record<string, LucideIcon> = {
+  LayoutDashboard, Timer, PlugZap, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal,
+};
+
+/** The row icon: the published icon NAME first, else the id-keyed lens map. */
+function workspaceIcon(item: { id: string; icon?: string }): LucideIcon | undefined {
+  return (item.icon ? WORKSPACE_ICONS_BY_NAME[item.icon] : undefined) ?? WORKSPACE_ICONS[item.id];
+}
 
 type PlatformItem = { id: string; name: string; platformArea: string };
 
@@ -393,7 +420,8 @@ function isPlainPrimaryClick(e: React.MouseEvent): boolean {
 
 /**
  * The SPACE WORKSPACE block — the Space's workspace-level destinations (Net Worth
- * · Cash Flow), published by the host from the navigation state it owns. Peers of
+ * · Cash Flow in a customer Space; Overview · Jobs · Policies … in a Platform
+ * Space), published by the host from the navigation state it owns. Peers of
  * the site destinations above: same row, accent bar, icon size and type — never
  * indented like a subsection.
  *
@@ -419,7 +447,7 @@ export function SpaceWorkspaceNav({ nav }: { nav: SpaceChromeWorkspaceNav | null
     <nav aria-label="Space" className="flex flex-col gap-0.5">
       {nav.items.map((item) => {
         const on = item.id === nav.activeId;
-        const Icon = WORKSPACE_ICONS[item.id];
+        const Icon = workspaceIcon(item);
         const children = on && item.children && item.children.length > 0 ? item.children : null;
         return (
           <div key={item.id} className="flex flex-col gap-0.5">
@@ -653,8 +681,9 @@ export function SpaceMode({
           </p>
         )}
 
-        {/* WORKSPACES — Net Worth · Cash Flow, inside the Space block so they
-            read as THIS Space's destinations, attached to its identity. */}
+        {/* WORKSPACES — Net Worth · Cash Flow (or a Platform area's Overview ·
+            Jobs · …), inside the Space block so they read as THIS Space's
+            destinations, attached to its identity. */}
         {workspaceNav && workspaceNav.items.length > 0 && (
           <div className="mt-4">
             <SpaceWorkspaceNav nav={workspaceNav} />
@@ -662,8 +691,10 @@ export function SpaceMode({
         )}
       </div>
 
-      {/* Section anchors survive ONLY on the platform axis (HQ workspaces have
-          no Net Worth / Cash Flow); a customer Space never renders them. */}
+      {/* Section anchors survive ONLY on the platform axis, BELOW the workspace
+          list: "which workspace" above, "what's inside it" beneath (the labels
+          are DB text, the anchors are ids the workspace body really emits);
+          a customer Space never renders them. */}
       {onPlatformAxis && (
         <SectionsNav
           sections={sections}

@@ -17,7 +17,9 @@
  *      the Net Worth modes, is exactly one on Overview, none off it;
  *   D. a plain click selects in place; a modified click is left to the browser;
  *   E. the rest of the sidebar is intact (site nav, identity, Leave Space);
- *   F. platform axis + mobile are unchanged; no duplicate destinations;
+ *   F. the platform axis publishes ITS workspaces to the SAME block (UX-P1
+ *      Change B: canonical ?workspace= hrefs, icons by published name, Sections
+ *      beneath, rail below-lg only); mobile unchanged; no duplicate destinations;
  *   G. the host wiring is navigation only;
  *   H. ONE switcher per width: the in-page lens row is below-lg only in a
  *      customer Space (the sidebar owns lg+), and BottomNav carries no stale
@@ -42,6 +44,9 @@ import { PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
 import { WEALTH_MODES, WEALTH_MODE_LABELS, parseWealthMode, type WealthMode } from "@/lib/wealth/wealth-mode";
 import type { SpaceChromeWorkspaceNav } from "@/lib/space/space-chrome-context";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
+import { SpaceShell } from "@/components/space/shell/SpaceShell";
+import { platformMountContext } from "@/lib/space/mount-context.server";
+import { PLATFORM_DEFAULT_WORKSPACE_ID, platformWorkspaceHref } from "@/lib/space/use-platform-workspace-navigation";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -235,11 +240,63 @@ console.log("E. The rest of the Space sidebar is intact");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("F. Platform axis, mobile, duplicates");
+console.log("F. Platform axis — the SAME workspace block; mobile; duplicates");
 {
-  const hq = spaceMode("/dashboard/platform/PLATFORM_OPS", null);
-  check("a Platform HQ Space keeps its section anchors (HQ has no Net Worth / Cash Flow)",
-    hq.includes('<nav aria-label="Sections"') && !hq.includes('aria-label="Space"'));
+  // The nav exactly as PlatformSpaceDashboard publishes it — from the contract's
+  // projection (the same `available` the rail renders) and the canonical hrefs.
+  const platAvailable = platformMountContext({
+    spaceId: "s", spaceName: "Platform Ops", area: "PLATFORM_OPS" as never, areaLabel: "Platform Operations", accessLevel: "READ" as never, userId: "u",
+  }).workspaces.available;
+  const platNav = (activeId: string): SpaceChromeWorkspaceNav => ({
+    items: platAvailable.map((w) => ({ id: w.key, label: w.label, href: platformWorkspaceHref("PLATFORM_OPS", w.key), icon: w.icon })),
+    activeId, onSelect: () => {},
+  });
+  const hq = spaceMode("/dashboard/platform/PLATFORM_OPS", platNav("platform-policies"));
+  const hqNav = navHtml(hq, "Space");
+  check("a Platform HQ Space publishes its workspaces to the SAME block — one row per workspace, in composition order",
+    text(topLevel(hqNav)) === platAvailable.map((w) => w.label).join(" ") && platAvailable.length >= 2, text(topLevel(hqNav)));
+  const hqLinks = hrefs(topLevel(hqNav));
+  check("each row is a real link to its canonical deep link: the default = the bare area URL, others ?workspace=<id>",
+    hqLinks.join() === platAvailable.map((w) => platformWorkspaceHref("PLATFORM_OPS", w.key)).join() &&
+      hqLinks[0] === "/dashboard/platform/PLATFORM_OPS" && platAvailable[0].key === PLATFORM_DEFAULT_WORKSPACE_ID &&
+      hqLinks.slice(1).every((h) => /^\/dashboard\/platform\/PLATFORM_OPS\?workspace=platform-[a-z]+$/.test(h)), hqLinks.join());
+  check("the open workspace is lit, and only it (the host's activeId, never text)",
+    activeIn(hq, "Space").join() === "Policies" && activeIn(spaceMode("/dashboard/platform/PLATFORM_OPS", platNav(PLATFORM_DEFAULT_WORKSPACE_ID)), "Space").join() === "Overview");
+  check("every platform row renders its icon, resolved from the PUBLISHED icon name (the finance id map has no entry for it)",
+    (topLevel(hqNav).match(/<svg[^>]*width="14"/g) ?? []).length === platAvailable.length && hqNav.includes("lucide-sliders-horizontal") && hqNav.includes("lucide-layout-dashboard"));
+  check("Sections survive on the platform axis, BELOW the workspace list (which workspace, then what's inside)",
+    hq.includes('<nav aria-label="Sections"') && hq.indexOf('aria-label="Space"') < hq.indexOf('aria-label="Sections"'));
+  check("the platform rows are peers of the site nav like the finance ones (same row class, no indentation)",
+    (topLevel(hqNav).match(/py-1\.5 pl-3 pr-2 text-left text-\[13px\]/g) ?? []).length === platAvailable.length && !/\bml-\d|pl-[4-9]/.test(topLevel(hqNav)));
+  check("the sidebar hardcodes no platform workspace id or label (the host publishes them from the contract)",
+    !/platform-overview|platform-jobs|platform-policies|>Policies<|>Jobs</.test(code(read("components", "ui", "ContextualNavbar.tsx"))));
+  check("a customer Space is unaffected: its items carry no icon name and still resolve from the id map",
+    (topLevel(navHtml(spaceMode("/dashboard", publishedNav("OVERVIEW", "wealth")), "Space")).match(/<svg[^>]*width="14"/g) ?? []).length === 3);
+
+  // Host wiring — the SAME channel, hrefs, setter and lifecycle SpaceDashboard uses.
+  const plat = code(read("components", "platform", "PlatformSpaceDashboard.tsx"));
+  check("the platform host publishes `available` through useSpaceWorkspaceNavPublisher: canonical href + the contract's icon NAME",
+    /useSpaceWorkspaceNavPublisher\(\)/.test(plat) &&
+      /available\.map\(\(w\) => \(\{ id: w\.key, label: w\.label, href: platformWorkspaceHref\(area, w\.key\), icon: w\.icon \}\)\)/.test(plat));
+  check("…the sidebar, the rail and the Overview doorways select through ONE setter (the navigation authority's)",
+    /onSelect: setActiveTab/.test(plat) && /onSelectTab=\{setActiveTab\}/.test(plat) && /onOpen=\{setActiveTab\}/.test(plat));
+  check("…and the host clears the channel on unmount", /useEffect\(\(\) => \(\) => publishWorkspaceNav\(null\), \[publishWorkspaceNav\]\)/.test(plat));
+
+  // ONE switcher per width (D1): the sidebar owns lg+, the rail serves below it.
+  check("the platform host hides the rail at lg+ (railVisibility=belowLg) and opts into phone-sized rail targets",
+    (plat.match(/railVisibility="belowLg"/g) ?? []).length === 1 && /<SpaceShell\s[\s\S]*?mobileOptimized/.test(plat));
+  const shellHtml = (over: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(SpaceShell as never, {
+    title: "Platform Ops", subtitle: "Platform · Platform Operations · READ",
+    railOptions: [{ id: "platform-overview", label: "Overview" }, { id: "platform-jobs", label: "Jobs" }],
+    activeTab: "platform-overview", onSelectTab: () => {}, children: createElement("div", null, "body"), ...over,
+  } as never));
+  const dflt = shellHtml(), below = shellHtml({ railVisibility: "belowLg" });
+  check("SpaceShell default: the rail row class is unchanged (personal Spaces byte-identical)", dflt.includes('class="mb-7 flex justify-center"'));
+  check("SpaceShell belowLg: the rail is hidden at lg+ but still RENDERED, and the markup differs ONLY by that class",
+    below.includes('class="lg:hidden mb-7 flex justify-center"') && text(below).includes("Jobs") &&
+      below.replace('class="lg:hidden mb-7 flex justify-center"', 'class="mb-7 flex justify-center"') === dflt);
+  check("the customer host does not opt in (its rail is Overview · Activity · …, not a workspace switcher)",
+    !/railVisibility/.test(code(read("components", "dashboard", "SpaceDashboard.tsx"))));
 
   const rail = read("components", "ui", "ContextualNavbar.tsx");
   check("the sidebar (and so these links) is desktop-only — unchanged <aside hidden … lg:block>",

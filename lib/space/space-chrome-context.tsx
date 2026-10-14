@@ -64,6 +64,12 @@ export interface SpaceChromeWorkspaceItem {
   /** The canonical deep link for this destination (open-in-new-tab, copy link). */
   href: string;
   /**
+   * Optional Lucide icon NAME (client-safe string data, e.g. a Platform
+   * workspace's `MountWorkspaceSummary.icon`), resolved by the sidebar. Omitted
+   * ⇒ the sidebar falls back to its own id-keyed map (the finance lenses).
+   */
+  icon?: string;
+  /**
    * The workspace's own views, shown nested under it WHILE it is the open
    * workspace (collapsed otherwise). Omitted ⇒ a leaf workspace (Cash Flow).
    * The same state the workspace's in-content selector drives — never a copy.

@@ -336,6 +336,82 @@ console.log("16–17. Links — canonical hrefs for new-tab / modified clicks");
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("P. Platform Space — the same contract on the ?workspace= axis (the real hook)");
+{
+  // UX-P1 Change A — usePlatformWorkspaceNavigation is the Platform counterpart
+  // of useSpaceNavigation: one axis (the open workspace), the same seam, the
+  // same declared intent. The harness mirrors the route: the server resolves
+  // `?workspace=` for the first paint (platformMountContext), the hook takes it
+  // from there.
+  const { usePlatformWorkspaceNavigation, PLATFORM_DEFAULT_WORKSPACE_ID } = await import("@/lib/space/use-platform-workspace-navigation");
+  const { platformMountContext } = await import("@/lib/space/mount-context.server");
+  const MOUNT = { spaceId: "s", spaceName: "Platform Ops", area: "PLATFORM_OPS" as never, areaLabel: "Platform Operations", accessLevel: "READ" as never, userId: "u" };
+  const available = platformMountContext(MOUNT).workspaces.available;
+  type PNav = ReturnType<typeof usePlatformWorkspaceNavigation>;
+  let pnav!: PNav;
+  function PlatformHarness({ selectedKey }: { selectedKey: string }) {
+    pnav = usePlatformWorkspaceNavigation({ available, selectedKey });
+    return null;
+  }
+  /** A fresh document load at `url`: SSR resolution first (as the route does), then the client hook. */
+  async function loadPlatform(url: string) {
+    const requested = new URL(url, BASE).searchParams.get("workspace");
+    const { selectedKey } = platformMountContext(MOUNT, { selectedKey: requested }).workspaces;
+    if (root) await act(async () => root!.unmount());
+    entries = [{ url: "/dashboard/spaces", state: { __NA: true } }, { url, state: { __NA: true } }];
+    index = 1; canonicalUrl = url; writes.length = 0;
+    const container = { nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: doc, addEventListener() {}, removeEventListener() {}, childNodes: [], firstChild: null, appendChild() {}, removeChild() {} };
+    root = createRoot(container as never);
+    await act(async () => root!.render(createElement(PlatformHarness, { selectedKey })));
+    return selectedKey;
+  }
+  const ws = () => cur().searchParams.get("workspace");
+  const open = (id: string) => step(() => pnav.setActiveTab(id));   // rail pill / sidebar row / Overview doorway
+
+  const ssr = await loadPlatform("/dashboard/platform/PLATFORM_OPS");
+  check("P1. load the area root: Overview (SSR = client), clean URL, NO write on hydration",
+    ssr === PLATFORM_DEFAULT_WORKSPACE_ID && pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && ws() === null && writes.length === 0 && history.length === 2, writes.join(" | "));
+  await open("platform-jobs");
+  check("P2. Overview → Jobs: a new entry (PUSH), ?workspace=platform-jobs", history.length === 3 && pushes() === 1 && ws() === "platform-jobs" && pnav.activeTab === "platform-jobs", writes.join(" | "));
+  check("    Next's canonical URL IS the Space URL (router synced, no __NA pass-through)", canonicalUrl === rel(cur().href));
+  const before = cur().href; nextCommit();
+  check("    …so Next's HistoryUpdater rewrite is a no-op", cur().href === before);
+  await open("platform-policies");
+  check("P3. Jobs → Policies: a new entry", history.length === 4 && pushes() === 2 && ws() === "platform-policies");
+  await back();
+  check("P4. Back → Jobs: state rebuilt FROM the URL", pnav.activeTab === "platform-jobs" && ws() === "platform-jobs", `${pnav.activeTab} ${ws()}`);
+  await back();
+  check("P5. Back → Overview: the clean area URL restores the default", pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && ws() === null, `${pnav.activeTab} ${ws()}`);
+  await forward();
+  check("P6. Forward → Jobs", pnav.activeTab === "platform-jobs" && ws() === "platform-jobs");
+  check("    Back/Forward created or rewrote NO entry", pushes() === 2 && !writes.some((w) => w.startsWith("replace")) && history.length === 4, writes.join(" | "));
+  const n = writes.length;
+  await open("platform-jobs");
+  check("P7. selecting the OPEN workspace writes nothing", writes.length === n && history.length === 4);
+  await open(PLATFORM_DEFAULT_WORKSPACE_ID);
+  check("P8. → Overview: PUSH with the key DELETED — the canonical URL is the bare area path, not workspace=",
+    writes[writes.length - 1] === "push /dashboard/platform/PLATFORM_OPS" && cur().search === "" && pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID, writes[writes.length - 1]);
+
+  check("P9. deep link: ?workspace=platform-policies is the first paint AND the hydrated state, with no write",
+    (await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-policies")) === "platform-policies" &&
+      pnav.activeTab === "platform-policies" && writes.length === 0 && history.length === 2, writes.join(" | "));
+  await open("platform-ai"); await back();
+  check("    → AI → Back ⇒ Policies", pnav.activeTab === "platform-policies" && ws() === "platform-policies");
+
+  await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=not-a-workspace");
+  check("P10. an unknown id degrades to the default on BOTH sides and canonicalizes IN PLACE (replace, no entry)",
+    pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && cur().search === "" && history.length === 2 && writes.join() === "replace /dashboard/platform/PLATFORM_OPS", writes.join(" | "));
+  await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-overview");
+  check("P11. an explicit default canonicalizes to the clean URL in place", cur().search === "" && history.length === 2 && pushes() === 0, writes.join(" | "));
+  await loadPlatform("/dashboard/platform/PLATFORM_OPS?foo=1&workspace=platform-jobs");
+  await open("platform-ai");
+  check("P12. unrelated params are preserved by the writer (one serializer, no clobber)",
+    cur().search === "?foo=1&workspace=platform-ai" && history.length === 3, cur().search);
+  await open(PLATFORM_DEFAULT_WORKSPACE_ID);
+  check("    …and survive the default's key deletion", cur().search === "?foo=1", cur().search);
+}
+
 if (root) await act(async () => root!.unmount());
 if (failures > 0) { console.error(`\nspace-history: ${failures} failure(s).`); process.exit(1); }
 console.log("\nspace-history: all passed.");

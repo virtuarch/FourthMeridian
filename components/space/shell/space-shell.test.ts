@@ -56,11 +56,15 @@ type _RailOption = Expect<Equal<keyof SpaceShellRailOption, "id" | "label" | "ic
 // UI-Convergence Wave 1 (D2) — `variant` ("space" default | "utility") + the
 // utility-only `headerActions` slot let a GLOBAL-nav destination (Connections /
 // Settings) reuse the frame without taking over the navbar. One prop, one branch.
+// UX-P1 (D1) — `railVisibility` ("always" default | "belowLg") lets a host whose
+// desktop sidebar is the workspace switcher (a Platform Space) show the rail
+// only below lg; the default renders byte-identically for every other host.
 type _SlotApiKeys = Expect<Equal<
   keyof SpaceShellProps,
   | "overlays" | "title" | "subtitle" | "currencyControl" | "onManage"
-  | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "mobileOptimized" | "children"
+  | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "mobileOptimized" | "railVisibility" | "children"
 >>;
+type _RailVisibility = Expect<Equal<SpaceShellProps["railVisibility"], "always" | "belowLg" | undefined>>;
 // The variant discriminator + its optional header-actions slot.
 type _Variant       = Expect<Equal<SpaceShellProps["variant"], "space" | "utility" | undefined>>;
 type _HeaderActions = Expect<Equal<SpaceShellProps["headerActions"], ReactNode | undefined>>;

@@ -78,10 +78,19 @@ export const runtime = "nodejs";
 
 export default async function PlatformSpacePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ area: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { area: areaParam } = await params;
+  // UX-P1 Change A — `?workspace=<id>` is the open workspace (the same param the
+  // client's navigation authority writes), read here so the FIRST PAINT already
+  // shows the deep-linked workspace. A repeated or absent key reads as "none";
+  // validation happens ONCE, in platformMountContext's shared resolver (an
+  // unknown id degrades to the area default, never to a ghost workspace).
+  const { workspace } = await searchParams;
+  const requestedWorkspace = typeof workspace === "string" ? workspace : null;
 
   // 1. Known area? (unknown ⇒ redirect, never 404 — no existence disclosure)
   if (!(Object.values(PlatformArea) as string[]).includes(areaParam)) {
@@ -133,14 +142,17 @@ export default async function PlatformSpacePage({
   // shared contract is domain-neutral: no getSpaceContext, no cookie, no
   // SpaceMember. PS-6C — the dashboard now CONSUMES it for identity / display /
   // navigation / access / shell config, so those are no longer passed separately.
-  const mountContext = platformMountContext({
-    spaceId:     space.id,
-    spaceName:   space.name,
-    area,
-    areaLabel:   PLATFORM_AREAS[area].label,
-    accessLevel: grant.level,
-    userId:      session.user.id,
-  });
+  const mountContext = platformMountContext(
+    {
+      spaceId:     space.id,
+      spaceName:   space.name,
+      area,
+      areaLabel:   PLATFORM_AREAS[area].label,
+      accessLevel: grant.level,
+      userId:      session.user.id,
+    },
+    { selectedKey: requestedWorkspace },
+  );
 
   return (
     <PlatformSpaceDashboard
