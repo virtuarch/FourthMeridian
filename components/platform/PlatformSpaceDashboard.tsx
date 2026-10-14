@@ -17,9 +17,16 @@
  *     `PLATFORM_AREA_WORKSPACES` (lib/platform/workspaces.ts).
  *   • Frame — SpaceShell owns chrome + the rail (Atlas SegmentedControl); this
  *     host only supplies title/subtitle/toolbar/rail + the active workspace body.
- *   • Sidebar — identity AND the active workspace's SECTION anchors are published
- *     up through the ONE SpaceChrome bridge customer workspaces use, so the
- *     ContextualNavbar's Sections block serves both domains from one model.
+ *   • Sidebar — identity, the area's WORKSPACE destinations (UX-P1 Change B:
+ *     the same `workspaceNav` channel a customer Space publishes Net Worth ·
+ *     Cash Flow through, so at lg+ the sidebar is the primary switcher and the
+ *     rail serves smaller screens) AND the active workspace's SECTION anchors
+ *     are published up through the ONE SpaceChrome bridge customer workspaces
+ *     use, so the ContextualNavbar serves both domains from one model.
+ *   • URL — the open workspace is URL state (`?workspace=`), owned by
+ *     lib/space/use-platform-workspace-navigation (the Platform counterpart of
+ *     useSpaceNavigation): deep links, Back/Forward and reload all resolve the
+ *     same workspace; the default writes no param (UX-P1 Change A).
  *   • Data — Platform widgets SELF-FETCH (OPS-5 S6 dataNeeds decision A); this
  *     host passes each its enabled DB `SpaceDashboardSection` row and nothing more.
  *
@@ -33,12 +40,17 @@
  * simply skipped), so the placeholder branch was dead (OPS-5 integration gate §12).
  */
 
-import { useEffect, useMemo, useState, type ComponentType } from "react";
+import { useEffect, useMemo, type ComponentType } from "react";
 import {
   useSpaceChromePublisher,
   useSpaceSectionsPublisher,
+  useSpaceWorkspaceNavPublisher,
   type SpaceChromeSection,
 } from "@/lib/space/space-chrome-context";
+import {
+  platformWorkspaceHref,
+  usePlatformWorkspaceNavigation,
+} from "@/lib/space/use-platform-workspace-navigation";
 import type { SpaceMountContext, SpaceMountAccess } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
 import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, ArrowRight } from "lucide-react";
@@ -347,7 +359,11 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
   const accessLevel = mountContext.access.level;
   const { available, selectedKey } = mountContext.workspaces;
 
-  const [activeTab, setActiveTab] = useState<string>(selectedKey);
+  // UX-P1 Change A — the open workspace is URL state (`?workspace=`), through
+  // the ONE navigation authority for Platform Spaces. `setActiveTab` is the ONE
+  // user-navigation setter: the rail, the sidebar rows and the Overview
+  // doorways all call it, so every entry point declares the same PUSH intent.
+  const { activeTab, setActiveTab } = usePlatformWorkspaceNavigation({ available, selectedKey });
 
   // Operational COMPOSITION (which section keys + doorways each workspace renders)
   // stays Platform-owned — it is data-needs metadata, NOT mount context, and is
@@ -395,12 +411,37 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
     return () => publishSections([]);
   }, [publishSections, chromeSections]);
 
+  // WORKSPACES — UX-P1 Change B: the area's workspace destinations, published
+  // to the SAME `workspaceNav` channel SpaceDashboard feeds (Net Worth · Cash
+  // Flow), so the ContextualNavbar's Space block is the desktop switcher here
+  // too — one sidebar model, not a second Platform nav. Each row carries its
+  // canonical deep link (open-in-new-tab / copy-link) and selects IN PLACE
+  // through the same setter the rail uses; the icon is the contract's icon
+  // NAME (client-safe string data), resolved by the sidebar. Cleared on
+  // unmount exactly like identity and sections.
+  const publishWorkspaceNav = useSpaceWorkspaceNavPublisher();
+  const workspaceItems = useMemo(
+    () => available.map((w) => ({ id: w.key, label: w.label, href: platformWorkspaceHref(area, w.key), icon: w.icon })),
+    [available, area],
+  );
+  const openWorkspaceId = active?.workspaceId ?? activeTab;
+  useEffect(() => {
+    publishWorkspaceNav({ items: workspaceItems, activeId: openWorkspaceId, onSelect: setActiveTab });
+  }, [publishWorkspaceNav, workspaceItems, openWorkspaceId, setActiveTab]);
+  useEffect(() => () => publishWorkspaceNav(null), [publishWorkspaceNav]);
+
   return (
     <SpaceShell
+      // Phone-sized rail targets (the rail is the <lg switcher now).
+      mobileOptimized
+      // UX-P1 D1 — at lg+ the sidebar's workspace rows are THE switcher; the
+      // rail shows only below lg (the exact complement of the sidebar's
+      // `hidden … lg:block`), so exactly one switcher shows at any width.
+      railVisibility="belowLg"
       title={spaceName}
       subtitle={chromeSubtitle}
       railOptions={railOptions}
-      activeTab={active?.workspaceId ?? activeTab}
+      activeTab={openWorkspaceId}
       onSelectTab={setActiveTab}
       // Shell frame variant from the contract (platform resolves to "space" — it
       // delegates identity to the ContextualNavbar exactly like finance; see

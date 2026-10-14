@@ -8,8 +8,9 @@
  * serialization authority — no writer can clobber another's params.
  *
  * The known Space-scoped params are tab · perspective · metric · view · asof ·
- * compareto · preset · account · transaction. The core is deliberately
- * param-agnostic — it sets/deletes exactly the keys a caller names and leaves
+ * compareto · preset · account · transaction · workspace (the Platform Space's
+ * open workspace — UX-P1 Change A; the default workspace writes null so the
+ * canonical area URL stays clean). The core is deliberately param-agnostic — it sets/deletes exactly the keys a caller names and leaves
  * every other key byte-for-byte untouched. The runtime seam
  * (components/space/shell/useSpaceUrl.ts) owns the browser History writes and the
  * single popstate listener; this module owns only the string arithmetic (tested
@@ -27,6 +28,7 @@ export const SPACE_URL_PARAMS = [
   "preset",
   "account",
   "transaction",
+  "workspace",
 ] as const;
 export type SpaceUrlParam = (typeof SPACE_URL_PARAMS)[number];
 

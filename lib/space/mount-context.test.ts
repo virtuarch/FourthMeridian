@@ -30,6 +30,7 @@ import {
 } from "@/lib/perspectives";
 import { getPlatformAreaWorkspaces } from "@/lib/platform/workspaces";
 import { financialMountContext, platformMountContext } from "@/lib/space/mount-context.server";
+import { PLATFORM_DEFAULT_WORKSPACE_ID, platformWorkspaceHref } from "@/lib/space/use-platform-workspace-navigation";
 
 const ROOT = path.resolve(__dirname, "..", "..");
 let failures = 0;
@@ -377,6 +378,35 @@ check("CONSUMPTION: PersonalDashboard neither declares nor forwards mountContext
 // and is a SEPARATE value from the neutral context (never re-enveloped).
 check("finance still hydrates via its own FinancialInitialWorkspacePayload (native route contract intact)",
   finPage.includes("composeFinancialInitialWorkspace") && finShell.includes("FinancialInitialWorkspacePayload"));
+
+// ════════════════════════════════════════════════════════════════════════════
+// UX-P1 Change A — the open workspace is URL state. The route reads
+// `?workspace=` and the resolver validates it ONCE; the client authority's
+// default must be the resolver's default, or the clean URL and the first paint
+// would disagree.
+// ════════════════════════════════════════════════════════════════════════════
+console.log("\nUX-P1 — URL-selected workspace (server first paint ⇔ client authority)");
+{
+  const base = { spaceId: "s", spaceName: "n", area: "PLATFORM_OPS" as never, areaLabel: "l", accessLevel: "READ" as never, userId: "u" };
+  check("no request ⇒ the resolver's default IS the client authority's default (one clean URL)",
+    platformMountContext(base).workspaces.selectedKey === PLATFORM_DEFAULT_WORKSPACE_ID);
+  check("a known `?workspace=` is honoured for the first paint",
+    platformMountContext(base, { selectedKey: "platform-policies" }).workspaces.selectedKey === "platform-policies");
+  check("an unknown value degrades to the default (never a ghost workspace)",
+    platformMountContext(base, { selectedKey: "not-a-workspace" }).workspaces.selectedKey === PLATFORM_DEFAULT_WORKSPACE_ID);
+  check("a workspace another area does not expose degrades to that area's default",
+    platformMountContext({ ...base, area: "SECURITY_OPS" as never }, { selectedKey: "platform-jobs" }).workspaces.selectedKey === PLATFORM_DEFAULT_WORKSPACE_ID);
+  check("the route reads searchParams.workspace (a Promise in Next 16) and hands it to the resolver as selectedKey",
+    /searchParams: Promise</.test(platPage) && /await searchParams/.test(platPage) &&
+      /platformMountContext\(\s*\{[\s\S]*?\},\s*\{ selectedKey: requestedWorkspace \}/.test(platPage));
+  check("the route does NOT validate the key itself (one validator: the resolver)",
+    !/getPlatformAreaWorkspaces|PLATFORM_AREA_WORKSPACES|resolveSelectedWorkspaceKey/.test(platPage));
+  check("the default workspace's canonical href is the bare area URL; any other appends ?workspace=",
+    platformWorkspaceHref("PLATFORM_OPS", PLATFORM_DEFAULT_WORKSPACE_ID) === "/dashboard/platform/PLATFORM_OPS" &&
+      platformWorkspaceHref("PLATFORM_OPS", "platform-policies") === "/dashboard/platform/PLATFORM_OPS?workspace=platform-policies");
+  check("the host composes the Platform navigation authority with the contract's projection (available + selectedKey)",
+    /usePlatformWorkspaceNavigation\(\{ available, selectedKey \}\)/.test(dash));
+}
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed.`); process.exit(1); }
 console.log("\nAll PS-6A mount-context + PS-6B composition + PS-6C adoption checks passed.");

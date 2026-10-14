@@ -39,6 +39,8 @@ import {
 } from "@/lib/markets/markets-mode";
 import type { WealthMode } from "@/lib/wealth/wealth-mode";
 import type { SpaceChromeWorkspaceNav } from "@/lib/space/space-chrome-context";
+import { platformMountContext } from "@/lib/space/mount-context.server";
+import { platformWorkspaceHref } from "@/lib/space/use-platform-workspace-navigation";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -258,10 +260,23 @@ console.log("E. Regression");
   const cf = sidebar(nav("OVERVIEW", "cashFlow"));
   check("35. Cash Flow: a leaf, lit alone, its renderer unchanged", litAll(cf).join() === "Cash Flow" && workspaceChildren("cashFlow") === undefined &&
     /cashFlow: \(ctx\) => \(\s*<CashFlowWorkspace/.test(read("components", "space", "workspaces", "workspaceRenderers.tsx")));
-  const hq = sidebar(null, "/dashboard/platform/PLATFORM_OPS");
-  check("36. Platform HQ: Sections still render, no workspace nav, no Markets",
-    hq.includes('<nav aria-label="Sections"') && !hq.includes('aria-label="Space"') && !/Markets/.test(hq) &&
-      !/markets/i.test(code(read("components", "platform", "PlatformSpaceDashboard.tsx"))));
+  // UX-P1 Change B — a Platform HQ Space publishes ITS workspaces (Overview ·
+  // Jobs · Policies …) to the SAME block, from the contract's projection, with
+  // the canonical ?workspace= deep links; its Sections survive BELOW them.
+  const platAvailable = platformMountContext({
+    spaceId: "s", spaceName: "Platform Ops", area: "PLATFORM_OPS" as never, areaLabel: "Platform Operations", accessLevel: "READ" as never, userId: "u",
+  }).workspaces.available;
+  const hq = sidebar({
+    items: platAvailable.map((w) => ({ id: w.key, label: w.label, href: platformWorkspaceHref("PLATFORM_OPS", w.key), icon: w.icon })),
+    activeId: "platform-policies", onSelect: () => {},
+  }, "/dashboard/platform/PLATFORM_OPS");
+  check("36. Platform HQ: the workspace nav is present with platform hrefs, Sections still render below it, no Markets",
+    hq.includes('aria-label="Space"') &&
+      hrefs(navHtml(hq, "Space")).join() === platAvailable.map((w) => platformWorkspaceHref("PLATFORM_OPS", w.key)).join() &&
+      hrefs(navHtml(hq, "Space")).includes("/dashboard/platform/PLATFORM_OPS?workspace=platform-policies") &&
+      hq.includes('<nav aria-label="Sections"') && hq.indexOf('aria-label="Space"') < hq.indexOf('aria-label="Sections"') &&
+      !/Markets/.test(hq) && !/markets/i.test(code(read("components", "platform", "PlatformSpaceDashboard.tsx"))),
+    hrefs(navHtml(hq, "Space")).join());
   check("37. global navigation unchanged — Markets is not a site destination",
     PRIMARY_NAV.map((d) => d.label).join() === "Brief,My Space,AI,Spaces,Connections" && !/markets/i.test(read("lib", "space-nav.ts")));
 }
