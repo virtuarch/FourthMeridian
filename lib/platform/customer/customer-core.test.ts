@@ -6,7 +6,7 @@
 import { resolveEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import {
   actionTouchesItems, firstConnectedAt, projectActivity, projectAiUsage, projectCohorts, projectConnections, projectIdentity,
-  projectIncidents, projectLifecycle, projectOperatorAction, projectPolicy, projectSpaces, requestStage, operatorDisplayName,
+  projectIncidents, projectLifecycle, projectOperatorAction, projectPolicy, projectRollup, projectSpaces, requestStage, operatorDisplayName,
 } from "./customer-core";
 
 let failures = 0;
@@ -83,6 +83,9 @@ console.log("connections — health from the shared derivation, no secrets");
   check("no token/cursor/credential/balance in the payload", !/TOKEN|CURSOR|xpub|123\.45|balance/.test(out));
   check("wallet label is an opaque tail", rows[1].label === "Wallet …123456");
   check("first connection is the earliest createdAt", firstConnectedAt(plaid, wallets)?.toISOString() === "2026-09-04T00:00:00.000Z");
+  check("BETA — a manual asset created earlier IS the first connection (design §6)",
+    firstConnectedAt(plaid, wallets, [{ createdAt: T("2026-09-02T00:00:00Z") }])?.toISOString() === "2026-09-02T00:00:00.000Z");
+  check("…and nothing at all is null", firstConnectedAt([], [], []) === null);
 }
 
 console.log("incidents");
@@ -121,6 +124,38 @@ console.log("operator actions");
   check("…and not for another customer's item", !actionTouchesItems({ id: "a4", action: "CONNECTION_RESYNC_TRIGGERED", createdAt: T("2026-10-01T00:00:00Z"), performedByAdminId: "op", metadata: { connectionId: "p9" } }, new Set(["p1"])));
 }
 
+
+console.log("BETA — per-user roll-up (projectRollup)");
+{
+  const inv = (over: Partial<Parameters<typeof projectAiUsage>[0][number]>) => ({
+    provider: "OPENAI", model: "gpt-5-mini", occurredAt: T("2026-10-08T00:00:00Z"), outcome: "RETURNED", conversationId: "c1", surface: "chat",
+    promptTokens: 1000, cachedPromptTokens: 0, completionTokens: 200, latencyMs: 100, correlationId: "k1", turnIndex: 0, ...over,
+  });
+  const stage = { createdAt: T("2026-09-01T00:00:00Z"), emailVerifiedAt: T("2026-09-01T00:00:00Z"), firstSession: T("2026-09-01T01:00:00Z"),
+    firstConnection: T("2026-09-02T00:00:00Z"), firstAiTurn: null, firstBriefView: null };
+  const r = projectRollup({
+    invocations30d: [
+      inv({}), inv({ occurredAt: T("2026-10-08T00:00:05Z") }),                       // one turn, two rows (tool loop)
+      inv({ correlationId: "k2", turnIndex: 1, outcome: "FAILED", promptTokens: 0, completionTokens: 0 }), // a failed ask is a turn, never priced
+      inv({ surface: "brief", correlationId: null, turnIndex: null }),                  // brief: priced, not a chat turn
+      inv({ surface: "harness", correlationId: "h", turnIndex: 0 }),                     // harness: nothing
+    ],
+    plaidItemCount: 2, lastEngagedAt: T("2026-10-08T00:00:05Z"), stage,
+  });
+  // gpt-5-mini: $0.25/M in, $2/M out ⇒ 3 priced rows × (250 + 400)/1e6
+  check("turns: 2 (k1 once, k2 once); harness and brief are not turns", r.aiTurns30d === 2);
+  check("est. USD over RETURNED chat + brief rows only", r.aiEstimatedUsd30d !== null && Math.abs(r.aiEstimatedUsd30d - 3 * 650 / 1e6) < 1e-12, String(r.aiEstimatedUsd30d));
+  check("Items and last engaged pass through as count and ISO", r.plaidItemCount === 2 && r.lastEngagedAt === "2026-10-08T00:00:05.000Z");
+  check("funnel stage is the furthest CONTIGUOUS stage, as a label: connected but no AI turn ⇒ 'First connection'", r.funnelStage === "First connection");
+  const unpriced = projectRollup({ invocations30d: [inv({ model: "gpt-unknown" })], plaidItemCount: 0, lastEngagedAt: null, stage });
+  check("an unpriced model ⇒ est. USD null (never 0); zero Items is a real 0; nothing engaged ⇒ null", unpriced.aiEstimatedUsd30d === null && unpriced.plaidItemCount === 0 && unpriced.lastEngagedAt === null);
+  const none = projectRollup({ invocations30d: [], plaidItemCount: 0, lastEngagedAt: null, stage: { ...stage, firstSession: null, firstConnection: null, emailVerifiedAt: null } });
+  check("no invocation ⇒ est. USD is a real 0 and 0 turns; an unverified user is at 'Registered'", none.aiEstimatedUsd30d === 0 && none.aiTurns30d === 0 && none.funnelStage === "Registered");
+  const full = projectRollup({ invocations30d: [], plaidItemCount: 1, lastEngagedAt: T("2026-10-08T00:00:00Z"),
+    stage: { ...stage, firstAiTurn: T("2026-09-03T00:00:00Z"), firstBriefView: T("2026-09-04T00:00:00Z") } });
+  check("every stage reached and engaged after the first visit ⇒ 'Returned'", full.funnelStage === "Returned");
+  check("the roll-up carries exactly the five W4 fields", Object.keys(r).sort().join() === "aiEstimatedUsd30d,aiTurns30d,funnelStage,lastEngagedAt,plaidItemCount");
+}
 
 console.log("operator identity label — username first, never email");
 {
