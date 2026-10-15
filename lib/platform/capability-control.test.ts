@@ -179,8 +179,10 @@ function main() {
     });
     // P1 — the execution-cadence route is the second CONTROL consumer (the same
     // rank, the same validated + audited pattern, plus a required reason).
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts"].sort();
-    check(`the policies and job-cadence routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // AI COST CONTROLS — the third CONTROL consumer: the seven AI cost controls,
+    // the same validated + audited + concurrency-checked pattern, reason required.
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts"].sort();
+    check(`the policies, job-cadence and ai-cost-controls routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
     const control = code(CONTROL_ROUTE);
     check("its mutations require FRESH CONTROL (live revocation check), never cached",

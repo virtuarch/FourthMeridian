@@ -1,0 +1,79 @@
+/**
+ * /api/platform/platform-ops/ai-cost-controls  (AI COST CONTROLS)
+ *
+ *   GET     the read model (AiCostControlsReadModel): the seven controls with
+ *           value / origin / version / writer, the allowance's effective default
+ *           and override list, each alert's status, the kill switch's customer
+ *           sentence, and the caching posture.
+ *   PATCH   { changes: AiCostControlChange[], reason: { code, note? } } — ONE
+ *           transaction, all-or-nothing, one audit row per change; the result
+ *           is the reloaded read model.
+ *
+ * AUTHORIZATION
+ *   GET     requirePlatformAccess("PLATFORM_OPS", "READ")
+ *   PATCH   requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL") — the same
+ *           rank as the refresh-cadence and job-cadence editors. READ and WRITE
+ *           holders receive 403. Paced like the policies route.
+ *
+ * CLOSED CONTRACT. The body names a CONTROL (cost-controls.types.ts), never a
+ * setting key. Every rule — validation, concurrency, the transactional audit —
+ * lives in lib/platform/ai/cost-controls.ts; this route maps outcomes:
+ *
+ *   200  { …read model }                                  applied
+ *   400  { error }                                        malformed body / reason
+ *   400  { error, code: "VALIDATION", control?, model }   a value refused
+ *   404  { error, code: "NOT_FOUND",  control,  model }   a reset with no row
+ *   409  { error, code: "CONFLICT",   control,  model }   a row moved; nothing written
+ *
+ * ⚠️ NO PROVIDER CALL, NO JOB, NO AI CALL — on read or on write.
+ */
+
+import { NextRequest, NextResponse } from "next/server";
+import { requirePlatformAccess, requireFreshPlatformAccess } from "@/lib/platform/authorize";
+import { limitByUser } from "@/lib/rate-limit";
+import { getClientIp } from "@/lib/api";
+import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit";
+import { applyAiCostControlChanges, loadAiCostControlsReadModel, type AiCostControlsMutationResult } from "@/lib/platform/ai/cost-controls";
+import type { AiCostControlsReadModel, AiCostControlsRefusal } from "@/lib/platform/ai/cost-controls.types";
+
+export const runtime = "nodejs";
+
+const NO_STORE = { "Cache-Control": "no-store" } as const;
+
+export type AiCostControlsResponse = AiCostControlsReadModel;
+
+export async function GET() {
+  const [, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
+  if (err) return err;
+  const model = await loadAiCostControlsReadModel();
+  return NextResponse.json(model satisfies AiCostControlsResponse, { headers: NO_STORE });
+}
+
+function respond(result: AiCostControlsMutationResult) {
+  if (result.ok) return NextResponse.json(result.model satisfies AiCostControlsResponse, { headers: NO_STORE });
+  const status = result.code === "CONFLICT" ? 409 : result.code === "NOT_FOUND" ? 404 : 400;
+  const body: AiCostControlsRefusal = { error: result.reason, code: result.code, ...(result.control ? { control: result.control } : {}), model: result.model };
+  return NextResponse.json(body, { status, headers: NO_STORE });
+}
+
+export async function PATCH(req: NextRequest) {
+  const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
+  if (err) return err;
+  const limited = await limitByUser(auth.user.id, "platform-policy", { limit: 30, windowSec: 60 });
+  if (limited) return limited;
+
+  const body = await req.json().catch(() => null) as { changes?: unknown; reason?: unknown } | null;
+  if (!body || typeof body !== "object" || !Array.isArray(body.changes)) {
+    return NextResponse.json({ error: "changes must be an array of { control, value, expectedUpdatedAt }." }, { status: 400, headers: NO_STORE });
+  }
+  let reason;
+  try { reason = parseOperatorReason(body.reason); }
+  catch (e) { return NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400, headers: NO_STORE }); }
+
+  const result = await applyAiCostControlChanges({
+    changes: body.changes,
+    reason,
+    actor: { id: auth.user.id, ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") },
+  });
+  return respond(result);
+}
