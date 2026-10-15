@@ -302,8 +302,8 @@ console.log("\n12. source: the panel's writes, the host's forwarding, the Custom
   const cs = strip("components/platform/widgets/CsCustomersWidget.tsx");
   check("Customer Success posts ONLY the override and the reason to the policy route, and offers Remove override (null)",
     /allowanceOverrideBody\(allowanceCheck\.value, reason\)/.test(cs) && /allowanceOverrideBody\(null, reason\)/.test(cs) && /Remove override/.test(cs) && /customers\/\$\{detail\.identity\.id\}\/policy/.test(cs));
-  check("Customer Success validates client-side before enabling Set override and shows the effective allowance from the (optional) field",
-    /allowanceCheck\.value === null/.test(cs) && /allowanceEffectiveText\(allowance\)/.test(cs) && /aiDailyUsdAllowance\?: AllowanceEffectiveView/.test(cs));
+  check("Customer Success validates client-side before enabling Set override and shows the effective allowance folded from the policy view's aiDailyAllowance + aiDailyUsdAllowanceOverride fields",
+    /allowanceCheck\.value === null/.test(cs) && /allowanceEffectiveText\(allowance\)/.test(cs) && /aiDailyAllowance\.usd/.test(cs) && /aiDailyUsdAllowanceOverride \?\? null/.test(cs));
   check("nothing posts while typing: the input only sets state", /onChange=\{\(e\) => setAllowanceInput\(e\.target\.value\)\}/.test(cs) && !/onChange=\{[^}]*run\(/.test(cs));
   const view = strip("components/platform/widgets/ai-cost-controls-view.ts");
   check("the view-model is pure (no React, no clock, no fetch)", !/from "react"|Date\.now\(\)|new Date\(\)|fetch\(/.test(view));

@@ -19,7 +19,7 @@
  * (USD)": a whole-dollar input + Set override / Remove override, posting ONLY
  * `{ aiDailyUsdAllowanceOverride: number | null, reason }` to …/policy (group
  * and overlay are never mixed into that call). The effective allowance and its
- * source are read from `policy.aiDailyUsdAllowance` when the build carries it
+ * source are read from `policy.aiDailyAllowance` + `policy.aiDailyUsdAllowanceOverride`
  * and degrade to an honest sentence when it does not. Integer ≥ 1 is checked
  * here; the ceiling is the server's refusal and its sentence is shown.
  */
@@ -37,8 +37,17 @@ import { OPERATOR_REASON_CODES } from "@/lib/audit";
 import { ROLLUP_NOTE, rollupCells, type CustomerRollupFields } from "./cs-rollup-view";
 import { allowanceEffectiveText, allowanceOverrideBody, validateAllowanceOverrideInput, type AllowanceEffectiveView } from "./ai-cost-controls-view";
 
-/** The allowance field Agent A appends to CustomerPolicyView — optional here so the editor compiles and degrades before it lands. */
-type PolicyWithAllowance = CustomerDetailResponse["policy"] & { aiDailyUsdAllowance?: AllowanceEffectiveView };
+/**
+ * AI COST CONTROLS — the effective allowance as CustomerPolicyView carries it
+ * (`aiDailyAllowance { usd, source, … }` + `aiDailyUsdAllowanceOverride`), folded
+ * into the editor's one view. Guarded so a response without the fields still
+ * renders (the editor then says the build does not report it).
+ */
+function allowanceOf(policy: CustomerDetailResponse["policy"]): AllowanceEffectiveView | undefined {
+  const p = policy as Partial<CustomerDetailResponse["policy"]>;
+  if (!p.aiDailyAllowance || typeof p.aiDailyAllowance.usd !== "number") return undefined;
+  return { usd: p.aiDailyAllowance.usd, source: p.aiDailyAllowance.source, override: p.aiDailyUsdAllowanceOverride ?? null };
+}
 
 /** A list row as the route serves it today, plus the W3 roll-up fields (optional until W3 merges). */
 type CustomerRow = CustomerListResponse["customers"][number] & CustomerRollupFields;
@@ -96,7 +105,7 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
       if (!r.ok) throw new Error(r.status === 403 ? "Not authorized" : `Request failed (${r.status})`);
       const d = (await r.json()) as CustomerDetailResponse;
       setDetail(d); setPolicyGroup(d.policy.policyGroup); setOverlay(d.policy.overlay ?? "");
-      const allowance = (d.policy as PolicyWithAllowance).aiDailyUsdAllowance;
+      const allowance = allowanceOf(d.policy);
       setAllowanceInput(allowance?.override != null ? String(allowance.override) : "");
     } catch (e) { setActionError(e instanceof Error ? e.message : "Failed to load"); }
     finally { setDetailLoading(false); }
@@ -141,7 +150,7 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
   const assignPolicy = () => detail && reason && run("policy", `/api/platform/customer-success/customers/${detail.identity.id}/policy`,
     json({ policyGroup, overlay: overlay === "" ? null : overlay, reason }));
   // AI COST CONTROLS — the override posts on its own: only the override and the reason.
-  const allowance = detail ? (detail.policy as PolicyWithAllowance).aiDailyUsdAllowance : undefined;
+  const allowance = detail ? allowanceOf(detail.policy) : undefined;
   const allowanceCheck = validateAllowanceOverrideInput(allowanceInput);
   const setAllowanceOverride = () => detail && reason && allowanceCheck.value !== null && run("allowance", `/api/platform/customer-success/customers/${detail.identity.id}/policy`,
     json(allowanceOverrideBody(allowanceCheck.value, reason)));
