@@ -157,7 +157,10 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     { workspaceId: "platform-costs", sections: ["ops_plaid_usage", "ops_cost", "ops_ai_trend"] },
   ],
   SECURITY_OPS: [
-    { workspaceId: "platform-overview", sections: ["sec_auth_posture", "sec_operator_actions", "sec_audit_feed", "sec_sessions", "sec_anomalies"] },
+    // BETA V2 — one "Security posture" surface (hosted by the first composed key,
+    // sec_auth_posture; SecurityPostureWidget) absorbs the four former card-grain
+    // widgets, which stay registered and are REPRESENTED by the host below.
+    { workspaceId: "platform-overview", sections: ["sec_auth_posture"] },
   ],
   GROWTH_REVENUE: [
     { workspaceId: "platform-overview", sections: ["growth_signups", "growth_product_analytics", "growth_beta_requests", "growth_users", "growth_activity", "growth_funnel", "growth_policy_groups"] },
@@ -205,6 +208,11 @@ export const PLATFORM_SECTION_REPRESENTATION: Readonly<Record<string, string>> =
   ops_resource_freshness: "ops_platform_health",
   ops_rate_limits:        "ops_platform_health",
   ops_env_status:         "ops_platform_health",
+  // BETA V2 — absorbed by the Security posture surface (components/platform/widgets/SecurityPostureWidget.tsx).
+  sec_operator_actions:   "sec_auth_posture",
+  sec_audit_feed:         "sec_auth_posture",
+  sec_sessions:           "sec_auth_posture",
+  sec_anomalies:          "sec_auth_posture",
 };
 
 // ── Accessors ───────────────────────────────────────────────────────────────────
