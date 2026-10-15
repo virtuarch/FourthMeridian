@@ -317,6 +317,8 @@ async function main() {
     const now = new Date('2026-09-13T09:42:00.000Z');
     const r = await generateBriefFromPackage(pkg, { model: 'gpt-5.1', now, deps: { client, sinks: {
       invocationClient: { aiInvocation: { create: async ({ data }) => { rows.push(data); } } },
+      // AI COST CONTROLS — the kill switch is judged before the price; with no database it is PAUSED (fail closed), so the admitted reader is injected.
+      paidRequestsAdmission: async () => ({ paused: false as const, state: 'MISSING' as const, raw: null }),
     } } });
     await new Promise((res) => setImmediate(res));
     check('one Brief is one model call', bodies.length === 1);
