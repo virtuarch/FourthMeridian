@@ -4438,6 +4438,10 @@ model CustomerPolicyAssignment {
   /// the explicit, audited Founder / Super User override. Overlay values are
   /// code-owned and still clamped to the platform ceilings at read time.
   overlay      String?
+  /// AI COST CONTROLS — a per-customer daily AI allowance override (whole USD,
+  /// 1 … the catalogue ceiling), the top of the allowance precedence. Null =
+  /// no override. Written only by lib/platform/customer/assign.ts (audited).
+  aiDailyUsdAllowanceOverride Int?
   /// Soft reference to the operator who last set it (null = set at registration).
   assignedById String?
   assignedAt   DateTime @default(now())

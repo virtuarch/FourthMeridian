@@ -71,14 +71,24 @@ export interface CustomerPolicyView {
   overlay: string | null; overlayLabel: string | null; overlayKnown: boolean;
   assignedAt: string | null; assignedById: string | null;
   dimensions: EffectiveDimensionView[];
+  /** AI COST CONTROLS — the per-customer override as stored (null = none). */
+  aiDailyUsdAllowanceOverride: number | null;
+  /** AI COST CONTROLS — the allowance IN FORCE for this customer and where it came from (the ONE precedence function). */
+  aiDailyAllowance: { usd: number; source: string; ceilingUsd: number; platformUsd: number | null; policyUsd: number; overlayUsd: number | null };
 }
 
 export function projectPolicy(e: EffectiveEntitlements): CustomerPolicyView {
+  const a = e.dimensions.aiDailyUsdAllowance;
   return {
     assigned: e.assigned, policyGroup: e.policyGroup, policyGroupLabel: POLICY_GROUPS[e.policyGroup]?.label ?? e.policyGroup,
     policyGroupKnown: e.policyGroupKnown, unknownPolicyGroup: e.unknownPolicyGroup,
     overlay: e.overlay, overlayLabel: e.overlay ? OVERLAYS[e.overlay]?.label ?? e.overlay : null, overlayKnown: e.overlayKnown,
     assignedAt: e.assignedAt, assignedById: e.assignedById,
+    aiDailyUsdAllowanceOverride: e.aiDailyUsdAllowanceOverride ?? null,
+    aiDailyAllowance: {
+      usd: Number(a.value), source: a.source, ceilingUsd: Number(a.ceiling), platformUsd: a.platformValue ?? null,
+      policyUsd: Number(a.policyValue), overlayUsd: a.overlayValue === null ? null : Number(a.overlayValue),
+    },
     dimensions: DIMENSION_KEYS.map((k) => {
       const d = e.dimensions[k];
       return { key: k, label: ENTITLEMENT_DIMENSIONS[k].label, value: d.value, source: d.source, ceiling: d.ceiling,
