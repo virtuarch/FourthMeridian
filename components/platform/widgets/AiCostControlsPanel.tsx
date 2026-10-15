@@ -24,7 +24,8 @@
  * For an operator whose resolved access permits it (`editable` — the host
  * forwards the descriptive flag; the SERVER is the authority and re-checks
  * fresh access on every PATCH), each card offers Edit and, when a stored row
- * exists, Restore defaults, both through the shared CadenceForm grammar:
+ * exists, Restore defaults (never on the kill switch — Pause and Resume are its
+ * only two actions), both through the shared CadenceForm grammar:
  * value control → consequences → reason (required, no default) → optional
  * note → Save changes / Restore defaults / Cancel. Nothing saves while typing;
  * validation (whole dollars, within the read model's bounds, not empty) is
@@ -330,7 +331,7 @@ function KillSwitchCard({ model, editable, onModel }: { model: AiCostControlsRea
   const k = model.killSwitch;
   const c = useCard("killSwitch", model, onModel);
   const paused = k.paused.value;
-  const offerRestore = editable && restoreDefaultsChanges(model, "killSwitch").length > 0;
+  // Exactly two actions, Pause and Resume, both confirmation-gated; no Restore defaults here (restoreDefaultsChanges is [] for this card).
   // The flip is drafted and ARMED at open: opening is step one, Confirm pause / Confirm resume with the reason is step two.
   const control = c.mode !== "view"
     ? <CardEditor key={c.mode} card="killSwitch" model={model} draft={c.draft} armed={c.armed} intent={c.mode} busy={c.busy} notice={c.notice} onDraft={c.onDraft} onSave={c.save} onReset={c.restore} onCancel={c.cancel} />
@@ -340,7 +341,7 @@ function KillSwitchCard({ model, editable, onModel }: { model: AiCostControlsRea
           icon: paused ? <Play size={11} aria-hidden /> : <Pause size={11} aria-hidden />,
           onClick: () => c.open("edit", { "killSwitch.paused": !paused }, true),
         } : null}
-        restore={offerRestore ? () => c.open("reset") : null} />;
+        restore={null} />;
   return (
     <div className="flex flex-col gap-2 border-t pt-6" style={{ borderColor: "var(--border-hairline-strong)" }} role="region" aria-label={EMERGENCY_LABEL}>
       <span className="text-[10px] font-medium uppercase tracking-wide" style={{ color: "var(--brass-300)" }}>{EMERGENCY_LABEL}</span>

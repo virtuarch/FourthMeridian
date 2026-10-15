@@ -145,6 +145,8 @@ console.log("\n3. the PATCH body: ONE call, only the controls that changed, each
 console.log("\n4. Restore defaults: value null for the card's stored rows only");
 {
   check("no stored rows ⇒ nothing to restore", restoreDefaultsChanges(model(), "allowance").length === 0 && restoreDefaultsChanges(model(), "killSwitch").length === 0);
+  const pausedRow = model((x) => { x.killSwitch.paused = cv("killSwitch.paused", "p", true, false, { origin: "SETTING", updatedAt: SET_AT }); });
+  check("the kill switch NEVER restores, even with a stored row (Pause and Resume are its only actions)", restoreDefaultsChanges(pausedRow, "killSwitch").length === 0);
   const m = model((x) => {
     x.allowance.usd = cv("allowance.usd", "u", 7, 5, { origin: "SETTING", updatedAt: SET_AT });
     x.allowance.enforced = cv("allowance.enforced", "e", true, true, { origin: "INVALID_SETTING", updatedAt: "2026-10-13T00:00:00.000Z" });
@@ -162,7 +164,7 @@ console.log("\n5. confirmation gates: disabling enforcement; pausing AND resumin
   const pause = AI_COST_CONTROL_CONFIRMATION["killSwitch.paused"]?.sentence ?? "";
   check("disabling enforcement needs the sentence; enabling does not", confirmationSentences([{ control: "allowance.enforced", value: false, expectedUpdatedAt: null }]).join() === enforce && confirmationSentences([{ control: "allowance.enforced", value: true, expectedUpdatedAt: null }]).length === 0);
   check("pausing AND resuming both need the sentence", confirmationSentences([{ control: "killSwitch.paused", value: true, expectedUpdatedAt: null }]).join() === pause && confirmationSentences([{ control: "killSwitch.paused", value: false, expectedUpdatedAt: SET_AT }]).join() === pause);
-  check("restoring the kill switch (null ⇒ default off) is a resume and confirms", confirmationSentences([{ control: "killSwitch.paused", value: null, expectedUpdatedAt: SET_AT }]).join() === pause);
+  check("a null kill-switch change (never built by the UI) would still resolve to a resume and confirm", confirmationSentences([{ control: "killSwitch.paused", value: null, expectedUpdatedAt: SET_AT }]).join() === pause);
   check("thresholds never confirm; restoring enforcement (null ⇒ default on) does not confirm", confirmationSentences([{ control: "allowance.usd", value: 9, expectedUpdatedAt: null }, { control: "allowance.enforced", value: null, expectedUpdatedAt: SET_AT }]).length === 0);
   check("confirm labels", confirmLabel([{ control: "killSwitch.paused", value: true, expectedUpdatedAt: null }]) === "Confirm pause" && confirmLabel([{ control: "killSwitch.paused", value: false, expectedUpdatedAt: null }]) === "Confirm resume" && confirmLabel([{ control: "allowance.enforced", value: false, expectedUpdatedAt: null }]) === "Confirm and save");
   const lines = cardConsequences("allowance", model(), [{ control: "allowance.usd", value: 9, expectedUpdatedAt: null }]);
@@ -234,7 +236,11 @@ console.log("\n9. the affordances, rendered only behind editable (the host forwa
     x.killSwitch.paused = cv("killSwitch.paused", "p", true, false, { origin: "SETTING", updatedAt: SET_AT });
   });
   const html2 = render(stored, true);
-  check("Restore defaults appears on exactly the cards with a stored row; a paused switch offers Resume", (html2.match(/Restore defaults/g) ?? []).length === 2 && /Resume paid requests/.test(html2) && !/Pause paid requests/.test(html2));
+  const emergency = (h: string) => h.slice(h.indexOf('aria-label="Emergency control"'));
+  check("Restore defaults appears on exactly the cards with a stored row (the allowance); a paused switch offers Resume and NO Restore",
+    (html2.match(/Restore defaults/g) ?? []).length === 1 && /Resume paid requests/.test(html2) && !/Pause paid requests/.test(html2) && !/Restore defaults/.test(emergency(html2)));
+  check("the unpaused emergency control offers Pause and nothing else: no Restore, no Edit, exactly one button", !/Restore defaults/.test(emergency(html)) && !/ Edit<\/button>/.test(emergency(html)) && (emergency(html).match(/<button/g) ?? []).length === 1);
+  check("the paused emergency control offers Resume and nothing else: exactly one button", (emergency(html2).match(/<button/g) ?? []).length === 1 && /Resume paid requests/.test(emergency(html2)));
   check("loading is a status line; failure is an alert naming the subject", /role="status"/.test(render(null, false, true)) && /role="alert"/.test(render(null, false, false, "Request failed (500)")) && /AI cost controls/.test(render(null, false, false, "x")));
 }
 
@@ -260,13 +266,11 @@ console.log("\n10. the editor: validation shown before submission, Save gated, r
     /aria-pressed="true"[^>]*>Paused</.test(pause) && /While paused, customers read/.test(pause) && /role="alert"[^>>]*>Pausing refuses every new paid AI request/.test(pause) && /Confirm pause/.test(pause));
   const pausedModel = model((x) => { x.killSwitch.paused = cv("killSwitch.paused", "p", true, false, { origin: "SETTING", updatedAt: SET_AT }); });
   const resume = editor("killSwitch", pausedModel, { "killSwitch.paused": false }, true);
-  check("resuming confirms too: the same sentence, Confirm resume, and Restore defaults is offered (a row exists)", /Pausing refuses every new paid AI request/.test(resume) && /Confirm resume/.test(resume) && /Restore defaults/.test(resume));
+  check("resuming confirms too: the same sentence, Confirm resume, and NO Restore defaults even though a row exists", /Pausing refuses every new paid AI request/.test(resume) && /Confirm resume/.test(resume) && !/Restore defaults/.test(resume));
   const unarmedResume = editor("killSwitch", pausedModel, { "killSwitch.paused": false }, false);
   check("unarmed resume reads Resume paid requests", /Resume paid requests/.test(unarmedResume) && !/Confirm resume/.test(unarmedResume));
   const reset = editor("allowance", model((x) => { x.allowance.usd = cv("allowance.usd", "u", 7, 5, { origin: "SETTING", updatedAt: SET_AT }); }), {}, false, "reset");
   check("restore intent: the restore sentence, Confirm restore, no value control, reason still required, no Save", new RegExp(RESTORE_TEXT.slice(0, 40)).test(reset) && /Confirm restore/.test(reset) && !/<input type="number"/.test(reset) && /Choose a reason…/.test(reset) && !/Save changes/.test(reset));
-  const resetPause = editor("killSwitch", pausedModel, {}, false, "reset");
-  check("restoring a paused switch carries the pause/resume sentence in the restore text", /Pausing refuses every new paid AI request/.test(resetPause) && /Confirm restore/.test(resetPause));
   const alert = editor("fleetAlert", m, { "fleetAlert.enabled": true, "fleetAlert.thresholdUsd": "25" });
   check("the fleet editor: Enabled / Disabled toggle, threshold within $1–$100000, the trailing-24 h consequence and the fleet scope sentence", /Enabled/.test(alert) && /max \$100000/.test(alert) && /trailing 24 hours at the next evaluation/.test(alert) && /Harness and operator traffic is overhead/.test(alert));
   const facts = renderToStaticMarkup(createElement(ControlFacts, { view: cv("userAlert.thresholdUsd", "Per-user threshold", 3, 3) }));

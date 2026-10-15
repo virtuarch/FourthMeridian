@@ -284,8 +284,15 @@ export function resolveDraft(model: AiCostControlsReadModel, card: CardKey, draf
   return { changes, errors };
 }
 
-/** Restore defaults: `value: null` for every control of the card that has a stored row — the row is deleted, never written as if configured. */
+/**
+ * Restore defaults: `value: null` for every control of the card that has a stored
+ * row — the row is deleted, never written as if configured. NEVER for the kill
+ * switch (coordinator ruling): the emergency control has exactly two actions,
+ * Pause and Resume, both confirmation-gated; a pause left in force as a stored
+ * row is fine and resuming is the only way out.
+ */
 export function restoreDefaultsChanges(model: AiCostControlsReadModel, card: CardKey): AiCostControlChange[] {
+  if (card === "killSwitch") return [];
   return cardViews(model, card)
     .filter((v) => hasStoredRow(v))
     .map((v) => ({ control: v.control, value: null, expectedUpdatedAt: v.updatedAt }));
