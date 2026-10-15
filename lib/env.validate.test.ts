@@ -277,6 +277,16 @@ if (process.argv[2] === "child") {
   check("key row pass with legacy note", row(p29!, "OPENAI_API_KEY")?.status === "pass" && /legacy/.test(row(p29!, "OPENAI_API_KEY")?.note ?? ""));
   check("key never appears", !out29.includes("sk-LEGACYDUMMYNEVERREAL"));
 
+  console.log("30. service-account key (the intended kind) → pass row 'service-account key (project-scoped)', never 'legacy'");
+  const SVC_KEY = "sk-svcacct-ENVTEST-DUMMY-NEVER-REAL-4d5e6f";
+  const out30 = run({ ...CORE, ...VERCEL_PREVIEW, OPENAI_API_KEY: SVC_KEY, OPENAI_PROJECT_ID: DUMMY_PROJECT, OPENAI_EXPECTED_ENVIRONMENT: "preview" });
+  const p30 = parse(out30);
+  check("service-account shape", p30?.openAi.keyKind === "service-account");
+  const note30 = row(p30!, "OPENAI_API_KEY")?.note ?? "";
+  check("key row pass, project-scoped note, no 'legacy'", row(p30!, "OPENAI_API_KEY")?.status === "pass" && /service-account key \(project-scoped\)/.test(note30) && !/legacy/.test(note30));
+  check("pin and guard pass alongside", row(p30!, "OPENAI_PROJECT_ID")?.status === "pass" && row(p30!, "OPENAI_EXPECTED_ENVIRONMENT")?.status === "pass");
+  check("key never appears", !out30.includes(SVC_KEY));
+
   console.log(failures === 0 ? "\nAll env-validation tests passed." : `\n${failures} failure(s).`);
   process.exit(failures === 0 ? 0 : 1);
 }

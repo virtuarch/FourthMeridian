@@ -435,7 +435,11 @@ export function getEnvReport(): EnvReport {
   const openAi = describeOpenAiConfiguration(_e, deploymentEnvironment());
   keys.push(
     openAi.keyConfigured
-      ? { key: "OPENAI_API_KEY", status: "pass", scope: "optional", note: openAi.keyKind === "project" ? "project key" : openAi.keyKind === "legacy" ? "legacy user key — unpinned usage lands in the key's default project" : "unrecognised key shape" }
+      ? { key: "OPENAI_API_KEY", status: "pass", scope: "optional", note:
+          openAi.keyKind === "service-account" ? "service-account key (project-scoped)"
+          : openAi.keyKind === "project" ? "project key (project-scoped)"
+          : openAi.keyKind === "legacy" ? "legacy user key — unpinned usage lands in the key's default project"
+          : "unrecognised key shape" }
       : { key: "OPENAI_API_KEY", status: "warn", scope: "optional", note: "optional vendor key — AI disabled" },
   );
   keys.push(

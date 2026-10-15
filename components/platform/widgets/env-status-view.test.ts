@@ -30,7 +30,7 @@ console.log("1. the healthy picture");
 {
   const lines = openAiFactLines(facts({}));
   check("three lines, in order", lines.map((l) => l.label).join(" · ") === "OpenAI key · Project pin · Environment guard");
-  check("key: project key, ok", lines[0].value === "project key" && lines[0].tone === "ok");
+  check("key: project key (project-scoped), ok", lines[0].value === "project key (project-scoped)" && lines[0].tone === "ok");
   check("pin shown in full", lines[1].value.includes("proj_ViewFixture42") && lines[1].tone === "ok");
   check("guard: match · preview", lines[2].value === "match · preview" && lines[2].tone === "ok");
   check("block tone ok", openAiBlockTone(facts({})) === "ok");
@@ -40,6 +40,8 @@ console.log("2. degraded states are warn, refusals are bad");
 {
   check("key unset ⇒ warn + 'not set'", openAiFactLines(facts({ keyConfigured: false, keyKind: "unknown" }))[0].tone === "warn");
   check("legacy key ⇒ warn", openAiFactLines(facts({ keyKind: "legacy" }))[0].tone === "warn");
+  const svc = openAiFactLines(facts({ keyKind: "service-account" }))[0];
+  check("service-account key ⇒ ok, says project-scoped (never 'legacy')", svc.tone === "ok" && /service-account key \(project-scoped\)/.test(svc.value) && !/legacy/.test(svc.value));
   check("unpinned ⇒ warn", openAiFactLines(facts({ pin: { state: "unpinned", projectId: null } }))[1].tone === "warn");
   check("misconfigured pin ⇒ bad, says refused", (() => { const l = openAiFactLines(facts({ pin: { state: "misconfigured", projectId: null } }))[1]; return l.tone === "bad" && /refused/.test(l.value); })());
   check("guard unset ⇒ warn", openAiFactLines(facts({ guard: { state: "unset", expected: null, actual: "production" } }))[2].tone === "warn");

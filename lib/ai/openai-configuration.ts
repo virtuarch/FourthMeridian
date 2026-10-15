@@ -36,11 +36,18 @@ export type OpenAiExpectedEnvironment = (typeof OPENAI_EXPECTED_ENVIRONMENTS)[nu
 export const OPENAI_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9]+$/;
 
 /**
- * The SHAPE of the key, never the key. `sk-proj-` is the prefix OpenAI gives a
- * project-scoped key; a bare `sk-` is a legacy user key (its usage lands in the
- * key's default project unless the `OpenAI-Project` header names one).
+ * The SHAPE of the key, never the key.
+ *   `sk-svcacct-`  a SERVICE-ACCOUNT key — the intended kind: one service account
+ *                  per project (fm-dev-backend / fm-preview-backend /
+ *                  fm-prod-backend), project-scoped, survives membership changes;
+ *   `sk-proj-`     a project-scoped key issued to a person — also project-scoped;
+ *   bare `sk-`     a legacy user key (its usage lands in the key's default project
+ *                  unless the `OpenAI-Project` header names one).
  */
-export type OpenAiKeyKind = "project" | "legacy" | "unknown";
+export type OpenAiKeyKind = "service-account" | "project" | "legacy" | "unknown";
+
+/** Project-scoped kinds: usage is attributed to the key's own project. */
+export const PROJECT_SCOPED_KEY_KINDS: readonly OpenAiKeyKind[] = ["service-account", "project"];
 
 export interface OpenAiProjectPinFact {
   state: "pinned" | "unpinned" | "misconfigured";
@@ -80,6 +87,7 @@ export function isOpenAiExpectedEnvironment(value: string): value is OpenAiExpec
 
 export function classifyOpenAiKey(apiKey: string | undefined): OpenAiKeyKind {
   if (!apiKey) return "unknown";
+  if (apiKey.startsWith("sk-svcacct-")) return "service-account";
   if (apiKey.startsWith("sk-proj-")) return "project";
   if (apiKey.startsWith("sk-")) return "legacy";
   return "unknown";

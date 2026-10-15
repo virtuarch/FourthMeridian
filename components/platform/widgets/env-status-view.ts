@@ -23,14 +23,16 @@ export interface EnvFactLine {
 }
 
 const KEY_WORD: Record<OpenAiConfigurationFacts["keyKind"], string> = {
-  project: "project key",
+  "service-account": "service-account key (project-scoped)",
+  project: "project key (project-scoped)",
   legacy:  "legacy user key",
   unknown: "unrecognised shape",
 };
 
 export function openAiKeyLine(f: OpenAiConfigurationFacts): EnvFactLine {
   if (!f.keyConfigured) return { label: "OpenAI key", value: "not set — AI disabled", tone: "warn" };
-  return { label: "OpenAI key", value: KEY_WORD[f.keyKind], tone: f.keyKind === "project" ? "ok" : "warn" };
+  const projectScoped = f.keyKind === "service-account" || f.keyKind === "project";
+  return { label: "OpenAI key", value: KEY_WORD[f.keyKind], tone: projectScoped ? "ok" : "warn" };
 }
 
 export function openAiProjectPinLine(f: OpenAiConfigurationFacts): EnvFactLine {

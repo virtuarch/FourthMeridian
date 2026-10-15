@@ -28,7 +28,7 @@ import {
   OpenAiCredentialsError, refusalFor, resolveOpenAiCredentials,
 } from "./openai-credentials";
 import {
-  classifyOpenAiKey, describeOpenAiConfiguration, OPENAI_PROJECT_ID_PATTERN,
+  classifyOpenAiKey, describeOpenAiConfiguration, OPENAI_PROJECT_ID_PATTERN, PROJECT_SCOPED_KEY_KINDS,
 } from "./openai-configuration";
 
 let failures = 0;
@@ -105,6 +105,10 @@ console.log("4. expected-environment guard");
 
 console.log("5. key shape classified, never echoed");
 {
+  const SVC_KEY = "sk-svcacct-DUMMY-NEVER-REAL-7e6d5c4b3a";
+  check("sk-svcacct- ⇒ service-account (the intended kind)", classifyOpenAiKey(SVC_KEY) === "service-account");
+  check("service-account key + pin ⇒ admitted, both passed", (() => { const c = resolveOpenAiCredentials({ OPENAI_API_KEY: SVC_KEY, OPENAI_PROJECT_ID: PROJECT }, "preview"); return c.apiKey === SVC_KEY && c.project === PROJECT && c.keyKind === "service-account"; })());
+  check("service-account and project are the project-scoped kinds", PROJECT_SCOPED_KEY_KINDS.includes("service-account") && PROJECT_SCOPED_KEY_KINDS.includes("project") && !PROJECT_SCOPED_KEY_KINDS.includes("legacy"));
   check("sk-proj- ⇒ project", classifyOpenAiKey(KEY) === "project");
   check("sk- ⇒ legacy", classifyOpenAiKey(LEGACY_KEY) === "legacy");
   check("other ⇒ unknown", classifyOpenAiKey("not-a-key") === "unknown" && classifyOpenAiKey(undefined) === "unknown");
