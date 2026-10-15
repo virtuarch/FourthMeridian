@@ -15,7 +15,11 @@ import type {
   AttentionEvidence,
   AttentionItem,
   AttentionSeverity,
+  UserImpactCore,
+  UserImpactKind,
+  UserImpactReference,
 } from "@/lib/platform/ops/attention-core";
+import type { DistributionSegment } from "../../platform-surface";
 import type { AttentionRecentFirings } from "@/lib/platform/ops/attention";
 
 export const SEVERITY_WORD: Record<AttentionSeverity, string> = {
@@ -105,3 +109,65 @@ export const ATTENTION_FOOTNOTE =
   "An alert rule appears only when it breached in the latest evaluation. The firings listed beneath are history.";
 
 export const CONNECTION_HEALTH_CAP_NOTE = "Connection rows are the health reader's capped list (20).";
+
+// ── BETA V1 · user-impacting failures ────────────────────────────────────────
+//
+// Words and tones for the second composition. The kind word carries the
+// level; the tone only groups outright failures (bad) from partial results
+// and a reconnect the customer can perform (warn).
+
+export const IMPACT_TITLE = "User-impacting failures";
+
+export const IMPACT_KIND_WORD: Record<UserImpactKind, string> = {
+  "refresh-failed": "Refresh failed",
+  "refresh-partial": "Refresh partial",
+  "ai-failure": "AI failure",
+  "brief-failed": "Brief failed",
+  "needs-reauth": "Needs reauthorization",
+};
+
+export const IMPACT_KIND_TONE: Record<UserImpactKind, StatusTone> = {
+  "refresh-failed": "bad",
+  "refresh-partial": "warn",
+  "ai-failure": "bad",
+  "brief-failed": "bad",
+  "needs-reauth": "warn",
+};
+
+export const IMPACT_KIND_ORDER: readonly UserImpactKind[] = ["refresh-failed", "refresh-partial", "ai-failure", "brief-failed", "needs-reauth"];
+
+/** "item …a1b2c3" — the reader's opaque reference, never a person. */
+export function referenceLabel(ref: UserImpactReference | null): string {
+  return ref ? `${ref.kind} …${ref.tail}` : "no reference exposed";
+}
+
+/** Word + count for every kind, including the zero ones (never a hidden segment). */
+export function impactSegments(counts: UserImpactCore["counts"]): DistributionSegment[] {
+  return IMPACT_KIND_ORDER.map((k) => ({ word: IMPACT_KIND_WORD[k], count: counts[k], tone: IMPACT_KIND_TONE[k] }));
+}
+
+export type UsersAffectedReading =
+  | { kind: "figure"; value: string; qualifier: string }
+  | { kind: "unavailable"; reason: string; qualifier: string };
+
+/** The tile: a count only when a reader exposed users; otherwise the reason, in full weight. */
+export function usersAffectedReading(u: UserImpactCore): UsersAffectedReading {
+  const facts = Object.values(u.counts).reduce((n, c) => n + c, 0);
+  const qualifier = `${u.sourcesAffected} source${u.sourcesAffected === 1 ? "" : "s"} affected · ${facts} fact${facts === 1 ? "" : "s"} · last ${u.windowHours} h`;
+  if (u.usersAffected.count === null) return { kind: "unavailable", reason: u.usersAffected.reason ?? "not derivable", qualifier };
+  return { kind: "figure", value: String(u.usersAffected.count), qualifier: u.usersAffected.reason ? `${qualifier} · ${u.usersAffected.reason}` : qualifier };
+}
+
+export function impactEmptyText(u: UserImpactCore): string {
+  const n = u.authorities.checked.length;
+  return `No user-impacting failure recorded in the last ${u.windowHours} h — ${n} reader${n === 1 ? "" : "s"} answered.`;
+}
+
+export function impactFailedText(names: readonly string[]): string | null {
+  if (names.length === 0) return null;
+  return `${names.length} user-impact reader${names.length === 1 ? "" : "s"} could not be asked (${names.join(", ")}) — ${names.length === 1 ? "its" : "their"} failures are not in this group.`;
+}
+
+export const IMPACT_FOOTNOTE =
+  "User-impacting failures restate four readers (refresh executions, AI failures, Brief ops, connection health) over the last 24 h. " +
+  "A reference is the opaque handle its reader exposes; no reader on this surface exposes a user, so the users-affected figure is withheld with its reason rather than guessed from sources.";

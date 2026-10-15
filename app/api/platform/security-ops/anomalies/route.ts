@@ -10,9 +10,15 @@
  *
  * AUTHORIZATION: requirePlatformAccess("SECURITY_OPS", "READ") — the same
  * granted, non-SYSTEM_ADMIN platform staff gate the other Security Ops widgets
- * use (never requireSystemAdmin). PII-minimized: anomaly `key` is a coarse
- * identity ("identifier:…"/"ip:…") the detector already recorded, and no
- * email/user-agent is returned.
+ * use (never requireSystemAdmin).
+ *
+ * PII (BETA V2): the detector's `metadata.key` is NOT coarse — it carries the raw
+ * login identifier (email or username) or a full IP. It is projected server-side
+ * through lib/platform/security/anomalies-core.ts into a key KIND plus an opaque
+ * digest, so the raw key never leaves this process; no email, IP or user-agent
+ * is returned. `summary.failedLoginsWindow` is COUNT(LOGIN_FAILED) platform-wide
+ * over the identifier window — every reason, every account — which the surface
+ * labels as exactly that, not as the detector's per-account measure.
  */
 
 import { NextResponse } from "next/server";
@@ -20,19 +26,13 @@ import { db } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
 import { ANOMALY_THRESHOLDS } from "@/lib/security/anomalies";
+import { projectAnomalyTrip, type AnomalyTripProjection } from "@/lib/platform/security/anomalies-core";
 
 export const runtime = "nodejs";
 
 const RECENT_LIMIT = 15;
 
-export interface AnomalyTrip {
-  id:            string;
-  type:          string;
-  key:           string;
-  count:         number;
-  windowMinutes: number;
-  at:            string; // ISO
-}
+export type AnomalyTrip = AnomalyTripProjection;
 
 export interface AnomaliesResponse {
   trips: AnomalyTrip[];
@@ -63,17 +63,7 @@ export async function GET() {
     db.auditLog.count({ where: { action: AuditAction.SECURITY_ANOMALY_DETECTED, createdAt: { gte: dayStart } } }),
   ]);
 
-  const trips: AnomalyTrip[] = rows.map((r) => {
-    const m = (r.metadata ?? {}) as Record<string, unknown>;
-    return {
-      id:            r.id,
-      type:          typeof m.type === "string" ? m.type : "unknown",
-      key:           typeof m.key === "string" ? m.key : "",
-      count:         typeof m.count === "number" ? m.count : 0,
-      windowMinutes: typeof m.windowMinutes === "number" ? m.windowMinutes : windowMinutes,
-      at:            r.createdAt.toISOString(),
-    };
-  });
+  const trips: AnomalyTrip[] = rows.map((r) => projectAnomalyTrip(r, windowMinutes));
 
   return NextResponse.json({
     trips,

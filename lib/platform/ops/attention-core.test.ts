@@ -15,11 +15,18 @@ import path from "node:path";
 import {
   ATTENTION_AUTHORITIES,
   ATTENTION_SEVERITY_RANK,
+  NO_USER_REFERENCE_REASON,
   SEVERITY_OF,
+  USER_IMPACT_AUTHORITIES,
+  USER_IMPACT_KINDS,
+  USER_IMPACT_WINDOW_HOURS,
   buildAttention,
+  buildUserImpact,
   relativeAge,
   type AttentionInputs,
+  type UserImpactInputs,
 } from "./attention-core";
+import type { ExecutionRowDTO } from "@/lib/platform/refresh/execution-query-core";
 import type { ConnectionHealthResult } from "@/lib/connections/health";
 import type { ProviderHealth, ProviderHealthResult } from "@/lib/platform/provider-health";
 import type { ResourceFreshnessReport, ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
@@ -206,6 +213,86 @@ console.log("relative age");
   check("null → never recorded", relativeAge(null, now) === "never recorded");
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// BETA V1 · USER-IMPACTING FAILURES
+// ═════════════════════════════════════════════════════════════════════════════
+
+const exec = (over: Partial<ExecutionRowDTO> & { id: string; overallStatus: string }): ExecutionRowDTO => ({
+  runId: `run_${over.id}`, plaidItemId: null, sourceKind: "PLAID_ITEM", sourceRef: null, network: null, trigger: "cron", profile: "incremental",
+  startedAt: AGO(2), completedAt: AGO(2), durationMs: 1000, parentJobRunId: null, hasError: true, deploymentSha: null, errorSummary: null,
+  admissionReason: null, failureStage: null, failureCategory: null, outcome: null, ...over,
+});
+
+const impactFull: UserImpactInputs = {
+  refresh: {
+    rows: [
+      exec({ id: "exec_a", overallStatus: "FAILED", plaidItemId: "item_12345678", startedAt: AGO(3), failureCategory: "credential", errorSummary: "ITEM_LOGIN_REQUIRED" }),
+      exec({ id: "exec_b", overallStatus: "PARTIAL", sourceKind: "WALLET", sourceRef: "acct_abcdef12", network: "ETH", startedAt: AGO(1), failureStage: "history" }),
+      exec({ id: "exec_c", overallStatus: "FAILED", plaidItemId: "item_12345678", startedAt: AGO(20), hasError: true }), // same item — one source, two facts
+      exec({ id: "exec_d", overallStatus: "SUCCEEDED", startedAt: AGO(1), hasError: false }),                            // not a user impact even if the seam returned it
+    ],
+    more: false,
+  },
+  ai: { windowHours: 24, returned: 100, failed: 3, timeouts: 1, rateLimited: 0, quota: 2, lastFailureAt: AGO(2), lastQuotaAt: AGO(4), checkedAt: now.toISOString() },
+  brief: {
+    counts: { rows: 4, generated: 2, failed: 2, inProgress: 0, empty: 0, versionStale: 0, coolingDown: 1, distinctSpaces: 4, distinctOwners: 4 },
+    rows: [
+      { spaceRef: "…sp0001", briefDay: "2026-10-14", state: "FAILED", generationReason: null, versionStale: false, coolingDown: true, generatedAt: null, lastFailedAt: AGO(5), lastFailureReason: "QUOTA", model: null, generationVersion: null, invocation: null },
+      { spaceRef: "…sp0002", briefDay: "2026-10-13", state: "FAILED", generationReason: null, versionStale: false, coolingDown: false, generatedAt: null, lastFailedAt: AGO(30), lastFailureReason: "TIMEOUT", model: null, generationVersion: null, invocation: null }, // outside 24 h
+      { spaceRef: "…sp0003", briefDay: "2026-10-14", state: "GENERATED", generationReason: "daily", versionStale: false, coolingDown: false, generatedAt: AGO(6), lastFailedAt: null, lastFailureReason: null, model: "m", generationVersion: "v", invocation: null },
+    ],
+  },
+  connections,
+};
+
+console.log("BETA V1 · user impact — restates four readers, 24 h, newest first");
+{
+  const out = buildUserImpact(impactFull, now);
+  const ids = out.rows.map((r) => r.id);
+  check("window is 24 h by default", out.windowHours === 24 && USER_IMPACT_WINDOW_HOURS === 24);
+  check("FAILED and PARTIAL refresh rows are kept apart; a SUCCEEDED row the seam returned is not a user impact",
+    ids.includes("refresh:exec_a") && ids.includes("refresh:exec_b") && ids.includes("refresh:exec_c") && !ids.includes("refresh:exec_d"));
+  check("AI outcomes are COUNTED rows, zero outcomes omitted", ids.filter((i) => i.startsWith("ai:")).sort().join(",") === "ai:FAILED,ai:QUOTA,ai:TIMEOUT");
+  check("an AI row's count is the outcome's count and QUOTA carries its own newest instant",
+    out.rows.find((r) => r.id === "ai:FAILED")?.count === 3 && out.rows.find((r) => r.id === "ai:QUOTA")?.at === impactFull.ai!.lastQuotaAt && out.rows.find((r) => r.id === "ai:TIMEOUT")?.at === impactFull.ai!.lastFailureAt);
+  check("a Brief failure outside the window is dropped; a GENERATED row is never a failure", ids.includes("brief:…sp0001:2026-10-14") && !ids.some((i) => i.includes("sp0002")) && !ids.some((i) => i.includes("sp0003")));
+  check("the Brief reference strips the reader's leading ellipsis (the UI adds its own)", out.rows.find((r) => r.kind === "brief-failed")?.reference?.tail === "sp0001");
+  check("NEEDS_REAUTH mirrors the severity table's row; ERROR and STALE do not", ids.includes("reauth:PLAID:item_reauth") && !ids.some((i) => i.startsWith("reauth:") && !i.endsWith("item_reauth")));
+  check("sorted newest first, a row without an instant last", out.rows.every((r, i) => i === 0 || !r.at || !out.rows[i - 1].at || r.at <= (out.rows[i - 1].at as string)), out.rows.map((r) => `${r.id}@${r.at}`).join(" | "));
+  check("counts are per kind and weighted by count", out.counts["refresh-failed"] === 2 && out.counts["refresh-partial"] === 1 && out.counts["ai-failure"] === 6 && out.counts["brief-failed"] === 1 && out.counts["needs-reauth"] === 1);
+  check("USER_IMPACT_KINDS covers every count key", Object.keys(out.counts).sort().join(",") === [...USER_IMPACT_KINDS].sort().join(","));
+  check("users affected is null WITH the declared reason — no reader exposes a user", out.usersAffected.count === null && out.usersAffected.reason === NO_USER_REFERENCE_REASON);
+  check("sources affected counts DISTINCT non-user references (item ×2 facts = 1 source)", out.sourcesAffected === 4, String(out.sourcesAffected)); // item, account, space, connection
+  check("every reference is an opaque 6-char tail, never the id", out.rows.every((r) => !r.reference || (r.reference.tail.length <= 6 && !r.reference.tail.includes("item_"))));
+  check("every row names its basis and its evidence", out.rows.every((r) => r.basis.length > 20 && r.evidence.workspace.startsWith("platform-")));
+  check("a refresh row's evidence is its execution", out.rows.find((r) => r.id === "refresh:exec_a")?.evidence.kind === "execution");
+  check("four authorities checked, none failed", out.authorities.checked.length === 4 && out.authorities.failed.length === 0 && USER_IMPACT_AUTHORITIES.length === 4);
+  check("Brief: more failed in the window than rows listed ⇒ a floor caption (the reader's day-grain window)", out.floors.some((f) => /Brief: 1 of 2 failed rows shown/.test(f)), out.floors.join(" | "));
+}
+
+console.log("BETA V1 · user impact — failed readers, floors, empty, window");
+{
+  const partial = buildUserImpact({ ...impactFull, ai: null, brief: null }, now);
+  check("failed readers are NAMED and contribute no rows", partial.authorities.failed.join(",") === "ai-failures,brief-ops" && !partial.rows.some((r) => r.kind === "ai-failure" || r.kind === "brief-failed"));
+  const more = buildUserImpact({ ...impactFull, refresh: { ...impactFull.refresh!, more: true } }, now);
+  check("a further page from the seam is a floor caption", more.floors.some((f) => /Refresh: 4 FAILED\/PARTIAL executions shown — the seam had a further page/.test(f)), more.floors.join(" | "));
+  const empty = buildUserImpact({ refresh: { rows: [], more: false }, ai: { ...impactFull.ai!, failed: 0, timeouts: 0, rateLimited: 0, quota: 0, lastFailureAt: null, lastQuotaAt: null }, brief: { counts: { ...impactFull.brief!.counts, failed: 0 }, rows: [] }, connections: { ...connections, unhealthy: [] } }, now);
+  check("nothing in the window ⇒ zero rows, users affected 0 with no reason, no floors", empty.rows.length === 0 && empty.usersAffected.count === 0 && empty.usersAffected.reason === null && empty.floors.length === 0 && empty.sourcesAffected === 0);
+  const wide = buildUserImpact(impactFull, now, 48);
+  check("a wider window admits the older Brief failure", wide.windowHours === 48 && wide.rows.some((r) => r.id.includes("sp0002")));
+  const allFailed = buildUserImpact({ refresh: null, ai: null, brief: null, connections: null }, now);
+  check("every reader failed ⇒ four named, zero checked, users affected 0 (no rows) — the UI's alert carries the caveat", allFailed.authorities.failed.length === 4 && allFailed.authorities.checked.length === 0 && allFailed.rows.length === 0);
+}
+
+console.log("BETA V1 · privacy — the user-impact DTO carries no customer identity");
+{
+  const json = JSON.stringify(buildUserImpact(impactFull, now));
+  check("no email-shaped string", !/[\w.+-]+@[\w-]+\.[\w.]+/.test(json));
+  check("no key named email/userId/username/address/token", !/"(email|userId|username|ownerUserId|walletAddress|address|accessToken|token)"\s*:/.test(json));
+  check("no full item / account / space id reaches the DTO", !/item_12345678|acct_abcdef12|sp0001"\s*:|ownerUserId/.test(json.replace(/"id":"[^"]*"/g, "")));
+  check("the reference vocabulary is closed (user · item · account · space · connection)", [...json.matchAll(/"kind":"(user|item|account|space|connection)"/g)].length > 0 && !/"kind":"(email|owner|customer)"/.test(json));
+}
+
 // ── Source pins ──────────────────────────────────────────────────────────────
 
 console.log("source · the reader composes EXISTING authorities and owns no database client");
@@ -226,6 +313,13 @@ console.log("source · the reader composes EXISTING authorities and owns no data
   check("the reader hands provider health the SAME freshness and connection reads (no duplicate read)", /loadFreshness:\s*\(\)\s*=>/.test(reader) && /loadConnections:\s*\(\)\s*=>/.test(reader));
   check("history is returned as its own field, never folded into items", /recentFirings:/.test(reader) && /collectAlertHistory/.test(reader));
   check("incidents pass through the D5 projection", reader.includes("projectIncidentForPlatform"));
+  // BETA V1 — the three user-impact readers are seams/readers, each best-effort, never a ledger accessor.
+  check("BETA V1: the reader composes the three user-impact readers", ["queryRefreshExecutions", "getAiFailureHealth", "getBriefOps"].every((fn) => reader.includes(fn)));
+  check("BETA V1: the execution seam is asked as OPERATOR for FAILED/PARTIAL only, bounded", /audience:\s*"operator"/.test(reader) && /overallStatus:\s*\["FAILED",\s*"PARTIAL"\]/.test(reader) && /limit:\s*USER_IMPACT_EXECUTIONS_LIMIT/.test(reader));
+  check("BETA V1: each user-impact reader runs under attempt() and is named", ["refresh-executions", "ai-failures", "brief-ops"].every((n) => new RegExp(`attempt\\("${n}"`).test(reader)));
+  check("BETA V1: the response carries userImpact as its own field, built by the core", /userImpact,?\s*\}/.test(reader) && /buildUserImpact\(/.test(reader));
+  check("BETA V1: the user-impact composition reuses the SAME connection-health read (no second read)", /buildUserImpact\(\{[^}]*connections \}/.test(reader) && (reader.match(/getConnectionHealth\(/g) ?? []).length === 1);
+  check("BETA V1: the core exports a sort for the UI to never re-sort", /export function sortUserImpact/.test(core));
   check("the core never sorts in the UI's place — sortAttention is exported from the core", /export function sortAttention/.test(core));
   check("route: requires PLATFORM_OPS READ", /requirePlatformAccess\(\s*["']PLATFORM_OPS["']\s*,\s*["']READ["']\s*\)/.test(route));
   check("route: returns the auth error before reading", /if\s*\(\s*err\s*\)\s*return\s+err/.test(route) && route.indexOf("requirePlatformAccess") < route.indexOf("getAttention()"));

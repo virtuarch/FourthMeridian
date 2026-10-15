@@ -33,16 +33,20 @@
 import { useState, type ReactNode } from "react";
 import { AlertTriangle, ChevronRight, KeyRound, RefreshCw } from "lucide-react";
 import { WidgetMessage, useWidgetFetch } from "../../widget-kit";
-import { PillGroup, SectionSurface, ToneBadge, TwoLine } from "../../platform-surface";
+import { BigStat, DistributionBar, GroupLabel, PillGroup, SectionSurface, TONE_COLOR, ToneBadge, TwoLine, Unavailable } from "../../platform-surface";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { getPlatformWorkspace } from "@/lib/platform/workspaces";
 import { relTime } from "../job-health-format";
 import type { AttentionResponse } from "@/lib/platform/ops/attention";
-import type { AttentionAction, AttentionItem } from "@/lib/platform/ops/attention-core";
+import type { AttentionAction, AttentionItem, UserImpactCore, UserImpactRow } from "@/lib/platform/ops/attention-core";
 import { ExecutionTimelinePanel } from "../ExecutionTimelinePanel";
 import {
   ATTENTION_FOOTNOTE,
   ENTITY_WORD,
+  IMPACT_FOOTNOTE,
+  IMPACT_KIND_TONE,
+  IMPACT_KIND_WORD,
+  IMPACT_TITLE,
   SEVERITY_TONE,
   SEVERITY_WORD,
   actionLabel,
@@ -51,8 +55,13 @@ import {
   failedAuthoritiesText,
   filterItems,
   filterOptions,
+  impactEmptyText,
+  impactFailedText,
+  impactSegments,
   recentFiringsEmpty,
   recentFiringsHeading,
+  referenceLabel,
+  usersAffectedReading,
   utcStamp,
   type AttentionFilter,
 } from "./attention-view";
@@ -223,6 +232,109 @@ function AttentionRow(props: {
   );
 }
 
+// ── BETA V1 · User-impacting failures (a separate composition, rendered first) ─
+
+/** ONE grid for the impact rows: Kind | Reference | Problem | When | Evidence. */
+const IMPACT_COLS = "9rem minmax(0,1fr) minmax(0,2.2fr) 6.5rem minmax(0,1.2fr)";
+const IMPACT_HEADINGS = ["Kind", "Reference", "Problem", "When", "Evidence"] as const;
+
+function ImpactEvidence({ row, onOpenWorkspace, onSelectExecution }: {
+  row: UserImpactRow;
+  onOpenWorkspace?: (id: string) => void;
+  onSelectExecution: (s: ExecutionSelection) => void;
+}) {
+  const e = row.evidence;
+  if (e.kind === "execution") {
+    return (
+      <button type="button" onClick={() => onSelectExecution({ id: e.id, eyebrow: `${row.label} · evidence`, title: referenceLabel(row.reference) })}
+        aria-label={`Inspect execution …${e.id.slice(-6)} for ${referenceLabel(row.reference)}`} className={LINK_CLASS}>
+        {evidenceLabel(e, null)}
+      </button>
+    );
+  }
+  const label = workspaceLabel(e.workspace);
+  if (!onOpenWorkspace || !label) return <span className="text-[11px] text-[var(--text-muted)]">{label ?? "no doorway"}</span>;
+  return (
+    <button type="button" onClick={() => onOpenWorkspace(e.workspace)} aria-label={`${evidenceLabel(e, label)} — evidence for ${row.label}`} className={LINK_CLASS}>
+      {evidenceLabel(e, label)}
+    </button>
+  );
+}
+
+/** A table cell that carries its column word below `md`, where the header row is hidden. */
+function ImpactCell({ heading, children }: { heading: string; children: ReactNode }) {
+  return (
+    <span className="flex min-w-0 flex-col">
+      <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)] md:hidden">{heading}</span>
+      {children}
+    </span>
+  );
+}
+
+/** Exported for the test. Rows render in the server's order; this never re-sorts. */
+export function UserImpactGroup({ impact, nowMs, onOpenWorkspace, onSelectExecution }: {
+  impact: UserImpactCore;
+  nowMs: number;
+  onOpenWorkspace?: (id: string) => void;
+  onSelectExecution: (s: ExecutionSelection) => void;
+}) {
+  const reading = usersAffectedReading(impact);
+  const failed = impactFailedText(impact.authorities.failed);
+  return (
+    <div className="mb-8 border-b pb-6" style={{ borderColor: "var(--border-hairline)" }}>
+      <GroupLabel hint={IMPACT_FOOTNOTE}>{IMPACT_TITLE}</GroupLabel>
+      <div className="mt-4 grid gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+        <BigStat
+          label={`Users affected · last ${impact.windowHours} h`}
+          value={reading.kind === "figure" ? reading.value : <Unavailable reason={reading.reason} />}
+          qualifier={reading.qualifier}
+        />
+        <DistributionBar
+          label={`Facts by kind · last ${impact.windowHours} h`}
+          segments={impactSegments(impact.counts)}
+          floor={impact.floors.length > 0}
+          emptyText={impactEmptyText(impact)}
+        />
+      </div>
+      {failed && <p role="alert" className="mt-3 text-[11px] leading-relaxed" style={{ color: "var(--coral-400)" }}>{failed}</p>}
+
+      {impact.rows.length === 0 ? (
+        <p role="status" className="mt-4 text-xs text-[var(--text-secondary)]">{impactEmptyText(impact)}</p>
+      ) : (
+        <div className="mt-4 overflow-x-auto">
+          <div className="mb-1 hidden items-center gap-3 border-b px-1 pb-2 md:grid" style={{ gridTemplateColumns: IMPACT_COLS, borderColor: "var(--border-hairline)" }}>
+            {IMPACT_HEADINGS.map((h) => <span key={h} className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">{h}</span>)}
+          </div>
+          <ul className="flex flex-col">
+            {impact.rows.map((row) => (
+              <li key={row.id} className="flex flex-wrap gap-x-3 gap-y-2 border-b px-1 py-2.5 last:border-b-0 md:grid md:items-start" style={{ gridTemplateColumns: IMPACT_COLS, borderColor: "var(--border-hairline)" }}>
+                <ImpactCell heading="Kind">
+                  {/* Dot + WORD in the kind's tone — the word carries the level, the dot is decorative. Not a ToneBadge: badges are the severity table's rows. */}
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-medium" style={{ color: TONE_COLOR[IMPACT_KIND_TONE[row.kind]] }}>
+                    <span aria-hidden className="rounded-full" style={{ width: 6, height: 6, background: TONE_COLOR[IMPACT_KIND_TONE[row.kind]] }} />
+                    {IMPACT_KIND_WORD[row.kind]}{row.count > 1 ? ` ×${row.count}` : ""}
+                  </span>
+                </ImpactCell>
+                <ImpactCell heading="Reference"><TwoLine value={referenceLabel(row.reference)} qualifier={row.label} /></ImpactCell>
+                <ImpactCell heading="Problem"><span className="text-xs leading-snug break-words text-[var(--text-primary)]">{row.problem}</span></ImpactCell>
+                <ImpactCell heading="When">
+                  {row.at ? <TwoLine value={relTime(row.at, nowMs)} qualifier={utcStamp(row.at) ?? row.at} /> : <TwoLine value="not recorded" qualifier="no instant from the reader" />}
+                </ImpactCell>
+                <ImpactCell heading="Evidence"><ImpactEvidence row={row} onOpenWorkspace={onOpenWorkspace} onSelectExecution={onSelectExecution} /></ImpactCell>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {impact.floors.length > 0 && (
+        <ul className="mt-3 flex flex-col gap-0.5 text-[10px] leading-relaxed text-[var(--text-faint)]">
+          {impact.floors.map((f) => <li key={f}>{f}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // ── Table ─────────────────────────────────────────────────────────────────────
 
 /** The aligned grid and its rows, in the server's order. Exported for the test. */
@@ -317,6 +429,9 @@ export function AttentionSurface({ data, nowMs, canWrite, onOpenWorkspace, onCha
         {failed && (
           <p role="alert" className="mb-3 text-[11px] leading-relaxed" style={{ color: "var(--coral-400)" }}>{failed}</p>
         )}
+
+        {/* BETA V1 — failures that reached a customer, first; the platform severity table follows. */}
+        <UserImpactGroup impact={data.userImpact} nowMs={nowMs} onOpenWorkspace={onOpenWorkspace} onSelectExecution={setExecution} />
 
         {data.items.length === 0 ? (
           <p role="status" className="text-xs text-[var(--text-secondary)]">{emptyText(data.authoritiesChecked.count, data.checkedAt)}</p>
