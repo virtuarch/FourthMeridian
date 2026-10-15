@@ -234,6 +234,7 @@ function main() {
     // widget branches on the descriptive `canControl` flag, never on the level.
     const mentionsControl = [...walk("components"), ...walk("app").filter((f) => /\.tsx$/.test(f))]
       .filter((f) => f !== ADMIN_SURFACE)
+      .filter((f) => !/\.test\.tsx?$/.test(f)) // a test FIXTURE naming a grant level is not a UI surface (same exclusion as the consumer scan below)
       .filter((f) => /\bCONTROL\b/.test(code(f)));
     check("the literal CONTROL appears in no UI outside the admin grant matrix", mentionsControl.length === 0, mentionsControl.join(", "));
 
