@@ -63,8 +63,12 @@ const ARCHIVE_PAGE  = "app/(shell)/dashboard/settings/archived-assets/page.tsx";
 const PLATFORM_PAGE = "app/(shell)/dashboard/platform/[area]/page.tsx";
 const SPACES_CLIENT = "components/dashboard/SpacesClient.tsx";
 const AUDIT_SCRIPT  = "scripts/audit-db-authority.ts";
+// UX-P2 — the platform reads' one site and its two consumers.
+const DIRECTORY_SERVER = "lib/platform/directory.server.ts";
+const DIRECTORY_PAGE   = "app/(shell)/dashboard/platform/page.tsx";
+const LAYOUT           = "app/(shell)/dashboard/layout.tsx";
 
-for (const rel of [SPACES_PAGE, ARCHIVE_PAGE, PLATFORM_PAGE, SPACES_CLIENT, AUDIT_SCRIPT]) {
+for (const rel of [SPACES_PAGE, ARCHIVE_PAGE, PLATFORM_PAGE, SPACES_CLIENT, AUDIT_SCRIPT, DIRECTORY_SERVER, DIRECTORY_PAGE, LAYOUT]) {
   if (!existsSync(path.join(ROOT, rel))) {
     console.error(`  ✗ fixture missing: ${rel}`);
     failures++;
@@ -101,11 +105,12 @@ console.log("1. dashboard/spaces/page.tsx — every viewer read is a tenant read
     `found [${dbSites.join(", ")}], expected [${EXPECTED_DB.join(", ")}]`,
   );
 
-  // The six reads that moved. `space.findMany` twice: the public list and the
-  // platform list inside loadPlatformSpaces.
+  // The four reads that moved to the tenant and STAYED on this page. (UX-P2
+  // decision N1 moved `platformGrant.findMany` and the platform `space.findMany`
+  // off the launcher entirely — they are pinned in §1b below, at their one new
+  // read site. Anything platform-shaped reappearing here fails this.)
   const EXPECTED_TX = [
-    "platformGrant.findMany",
-    "space.findMany", "space.findMany",
+    "space.findMany",
     "spaceInvite.findMany",
     "spaceMember.findMany",
     "user.findUnique",
@@ -155,6 +160,57 @@ console.log("1. dashboard/spaces/page.tsx — every viewer read is a tenant read
     /const\s+userId\s*=\s*session\.user\.id/.test(src));
   check("no withTenantDb is ever handed the active-Space cookie",
     !/withTenantDb\(\s*activeSpaceId/.test(src));
+  check("the launcher no longer loads platform Spaces at all (UX-P2 N1: one home, one read site)",
+    !/loadPlatformSpaces|platformGrant|platformSpaces/.test(src));
+}
+
+// ── 1b. The Platform Spaces directory — ONE read site, as the tenant ──────────
+
+console.log("\n1b. lib/platform/directory.server.ts — the platform reads' one site");
+{
+  const src = code(DIRECTORY_SERVER);
+
+  // Every platform read in the shell goes through here. The count feeds the
+  // GlobalHeader's context switch (layout.tsx), the two-read transaction feeds
+  // the directory page. All three are tenant reads keyed on the viewer's own id.
+  const EXPECTED_TX = ["platformGrant.count", "platformGrant.findMany", "space.findMany"].sort();
+  const txSites = callSites(src, TX_CALL);
+  check(`the ${EXPECTED_TX.length} platform reads are enumerated, all as the tenant`,
+    JSON.stringify(txSites) === JSON.stringify(EXPECTED_TX),
+    `found [${txSites.join(", ")}]`);
+  const dbSites = callSites(src, DB_CALL);
+  check("zero db call sites", dbSites.length === 0, `found [${dbSites.join(", ")}]`);
+  check("no systemDb either (a grant is a fact about the viewer; fm_app answers it)",
+    !/\bsystemDb\b/.test(src));
+  check("the grant count is keyed on the caller's own userId and ACTIVE status",
+    /platformGrant\.count\(\{\s*where:\s*\{\s*userId,\s*status:\s*"ACTIVE"\s*\}/.test(src));
+  check("the grant list is keyed the same way",
+    /platformGrant\.findMany\(\{\s*where:\s*\{\s*userId,\s*status:\s*"ACTIVE"\s*\}/.test(src));
+  check("the header flag fails CLOSED (any failure ⇒ false)",
+    /catch\s*\{\s*return false;?\s*\}/.test(src));
+  check("the Space list is filtered to the granted areas (the `in` filter, beside the policy arm)",
+    /platformArea:\s*\{\s*in:\s*grants\.map/.test(src));
+  check("the rows are shaped by the pure mapper (registry order, one row shape)",
+    /platformDirectoryRows\(spaces,\s*grants\)/.test(src));
+
+  // The two consumers read NOTHING themselves: they call the helper.
+  for (const rel of [LAYOUT, DIRECTORY_PAGE]) {
+    const consumer = code(rel);
+    check(`${rel}: zero db/tx call sites (reads only through the helper)`,
+      callSites(consumer, DB_CALL).length === 0 && callSites(consumer, TX_CALL).length === 0);
+    check(`${rel}: imports the helper`, /@\/lib\/platform\/directory\.server/.test(consumer));
+  }
+  check("layout: the flag is computed AFTER the session guard and handed to DashboardChrome as a prop",
+    (() => {
+      const raw = read(LAYOUT);
+      const guard = raw.indexOf("if (!session?.user?.id) return redirectToLogin();");
+      const flag = raw.indexOf("await hasActivePlatformGrants(session.user.id)");
+      return guard > -1 && flag > guard && /<DashboardChrome hasPlatformGrants=\{hasPlatformGrants\}>/.test(raw);
+    })());
+  check("directory page: zero grants ⇒ redirect to the launcher (never an empty directory, never a 404)",
+    /if \(spaces\.length === 0\) redirect\("\/dashboard\/spaces"\)/.test(code(DIRECTORY_PAGE)));
+  check("directory page: no customer-Space authority (no cookie, no resolveSpaceContext, no SpaceMember)",
+    !/ACTIVE_SPACE_COOKIE|resolveSpaceContext|getSpaceContext|spaceMember/.test(code(DIRECTORY_PAGE)));
 }
 
 // ── 2. archived-assets/page.tsx ───────────────────────────────────────────────
@@ -317,6 +373,9 @@ console.log("\n6. Mutation test: each needle fires on a counterexample");
     /FOREACH t IN ARRAY ARRAY\[[\s\S]{0,400}?'PlatformGrant'[\s\S]{0,900}?"userId" = current_fm_user_id\(\)/
       .test(`FOREACH t IN ARRAY ARRAY['Connection', 'PlatformGrant'] LOOP\n USING ("userId" = current_fm_user_id())`));
   m("accountCount property read detected", /[.?]\s*accountCount\b/.test("{space.accountCount}"));
+  m("TX_CALL sees a count", callSites("await tx.platformGrant.count({ where: {} });", TX_CALL).length === 1);
+  m("fail-closed catch detected", /catch\s*\{\s*return false;?\s*\}/.test("} catch {\n    return false;\n  }"));
+  m("platform reads on the launcher would be detected", /loadPlatformSpaces|platformGrant|platformSpaces/.test("tx.platformGrant.findMany("));
   m("comment stripping actually strips",
     !/db\.spaceMember/.test(stripComments("// db.spaceMember.findMany is gone\nconst a = 1;")));
 }

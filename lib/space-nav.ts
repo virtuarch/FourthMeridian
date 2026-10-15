@@ -110,10 +110,44 @@ export const PRIMARY_NAV: PrimaryDest[] = [
   { id: "connections", label: "Connections", href: "/dashboard/connections" },
 ];
 
-function primaryHref(id: PrimaryDestId): string {
+/** The canonical route of a primary destination — the ONE place a destination's
+ *  href is spelled, so no consumer restates it (the sidebar's "Personal Spaces"
+ *  exit row links here rather than to a literal). */
+export function primaryHref(id: PrimaryDestId): string {
   const dest = PRIMARY_NAV.find((d) => d.id === id);
   if (!dest) throw new Error(`PRIMARY_NAV has no "${id}" destination`);
   return dest.href;
+}
+
+/**
+ * UX-P2 — the two navigation CONTEXTS of the dashboard shell, derived from the
+ * route and nothing else.
+ *
+ *   personal — the launcher, My Space, Brief, AI, Connections, settings: the
+ *              SpaceMember axis. The five primary destinations lead.
+ *   platform — the Platform Spaces directory (`/dashboard/platform`) and every
+ *              Platform Space beneath it (`/dashboard/platform/<AREA>`): the
+ *              PlatformGrant axis. The granted areas lead; the primary
+ *              destinations are retained but demoted.
+ *
+ * A ROUTE fact, never an access fact: it says which axis the viewer is standing
+ * on, not whether they may see anything. Visibility stays with the server
+ * (`[area]/page.tsx` redirects an ungranted area; the header control and the
+ * sidebar's Platform list are fed by server-computed grants). PRIMARY_NAV is
+ * untouched by this: the context changes ORDER and adds an exit row, never a
+ * sixth destination.
+ */
+export type NavContext = "personal" | "platform";
+
+/** The Platform Spaces directory — a page, not a Space (it is OFF the Space
+ *  axis: `isPlatformSpaceRoute` is false here, so no Space chrome mounts). */
+export const PLATFORM_DIRECTORY_HREF = "/dashboard/platform";
+
+export function navContext(pathname: string | null | undefined): NavContext {
+  if (typeof pathname !== "string") return "personal";
+  return pathname === PLATFORM_DIRECTORY_HREF || pathname.startsWith(`${PLATFORM_DIRECTORY_HREF}/`)
+    ? "platform"
+    : "personal";
 }
 
 /**
