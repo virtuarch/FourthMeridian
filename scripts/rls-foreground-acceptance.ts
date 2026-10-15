@@ -581,7 +581,11 @@ async function main(): Promise<void> {
     const seeded = psql(h.ownerUrl, `
       insert into "UserSession" (id,"userId","sessionToken","lastActiveAt") values
         ('us_alice_live','alice','${LIVE_TOK}', (now() at time zone 'utc') - interval '10 minutes'),
-        ('us_alice_rev', 'alice','${REV_TOK}',  (now() at time zone 'utc') - interval '10 minutes');`);
+        ('us_alice_rev', 'alice','${REV_TOK}',  (now() at time zone 'utc') - interval '25 hours');`);
+    // (The second session is seeded as last touched YESTERDAY: the presence
+    // dedupe infers "today's row already exists" from any OTHER live session of
+    // the user touched today, so a fixture touched "10 minutes ago" without a
+    // day row would suppress the row 43 and 47 prove. It is revoked at 48.)
     if (!seeded.ok) throw new Error(`session fixture seed failed: ${seeded.err}`);
     const stale = (id: string) => psql(h.ownerUrl,
       `update "UserSession" set "lastActiveAt" = (now() at time zone 'utc') - interval '10 minutes' where id='${id}'`);
@@ -599,12 +603,26 @@ async function main(): Promise<void> {
     };
     const timed = async <T,>(fn: () => PromiseLike<T>) => { const t0 = Date.now(); const v = await fn(); return { v, ms: Date.now() - t0 }; };
 
-    // 43 — validation is untouched, and a validated stale session is recorded once.
+    // BETA A2 — the touch statement now RETURNS the number of SESSION_ACTIVE_DAY
+    // presence rows it inserted into AuditLog (0 or 1), not the session rows it
+    // touched; the touch itself is observed through the row's age. A session
+    // whose previous touch was on an EARLIER UTC day writes the day's presence
+    // row ON fm_auth (INSERT only — 66 proves it still cannot read the trail).
+    const yesterday = (id: string) => psql(h.ownerUrl,
+      `update "UserSession" set "lastActiveAt" = (now() at time zone 'utc') - interval '25 hours' where id='${id}'`);
+    const dayRows = () => Number(truth(
+      `select count(*) from "AuditLog" where "userId"='alice' and action='SESSION_ACTIVE_DAY'
+         and metadata->>'day' = to_char((now() at time zone 'utc'), 'YYYY-MM-DD')
+         and "ipAddress" is null and "userAgent" is null and "spaceId" is null`));
+
+    // 43 — validation is untouched; a session last touched yesterday is touched
+    // to now AND the day's presence row is written exactly once, on fm_auth.
+    yesterday("us_alice_live");
     const v43 = await validate(LIVE_TOK);
     const t43 = await timed(() => touchSessionActivity(auth, LIVE_TOK, "alice"));
-    check(43, "[session] validation still authenticates a live session on fm_auth, and a stale session's activity is written exactly once, to now",
-      v43.kind === "authenticated" && t43.v === 1 && ageS("us_alice_live") <= 5,
-      `verdict=${v43.kind} rows=${t43.v} age=${ageS("us_alice_live")}s`);
+    check(43, "[session] validation still authenticates a live session on fm_auth; a session last touched yesterday is touched to now and its SESSION_ACTIVE_DAY presence row (no forensics, no Space) is written exactly once on fm_auth",
+      v43.kind === "authenticated" && t43.v === 1 && ageS("us_alice_live") <= 5 && dayRows() === 1,
+      `verdict=${v43.kind} dayRows=${t43.v}/${dayRows()} age=${ageS("us_alice_live")}s`);
 
     // 44 — throttle, and identity: a fresh row is not rewritten; another user's id matches nothing.
     const again = await touchSessionActivity(auth, LIVE_TOK, "alice");
@@ -638,13 +656,17 @@ async function main(): Promise<void> {
     release();
     await holder; await legacy;
 
-    // 47 — the hot row under concurrency, with nothing held: no queue, one write.
-    stale("us_alice_live");
+    // 47 — the hot row under concurrency, with nothing held: no queue, and the
+    // day's first touch yields exactly ONE presence row across 40 racing callers
+    // (SKIP LOCKED hands the session row to one of them; the rest write nothing).
+    yesterday("us_alice_live");
+    const before47 = dayRows();
     const herd = await timed(() => Promise.all(Array.from({ length: 40 }, () => touchSessionActivity(auth, LIVE_TOK, "alice"))));
     const written = herd.v.reduce((a, b) => a + b, 0);
     await new Promise((r) => setTimeout(r, 200));
-    check(47, "[session] 40 concurrent touches of one session write the row ONCE, finish promptly, and leave NO fm_auth session idle in transaction",
-      written === 1 && herd.ms < 3000 && stuckAuth() === 0, `written=${written} in ${herd.ms}ms idleInTx=${stuckAuth()}`);
+    check(47, "[session] 40 concurrent first-of-day touches of one session write ONE presence row, touch the row once, finish promptly, and leave NO fm_auth session idle in transaction",
+      written === 1 && dayRows() === before47 + 1 && ageS("us_alice_live") <= 5 && herd.ms < 3000 && stuckAuth() === 0,
+      `written=${written} dayRows=${before47}→${dayRows()} in ${herd.ms}ms idleInTx=${stuckAuth()}`);
 
     // 48 — revocation semantics are unchanged, and a revoked session is never touched.
     psql(h.ownerUrl, `update "UserSession" set "revokedAt" = now() where id='us_alice_rev'`);
