@@ -156,6 +156,9 @@ export function projectSnapshotSection(
       ...(contaminated
         ? { digitalAssetsUnavailableReason: r.cryptoUnavailableReason ?? "HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE" }
         : {}),
+      // RWA-2B — carried, never decided here: the read boundary says whether
+      // this reconstructed day's real-asset component is a modeled value.
+      ...(r.realAssetsModeled === true ? { realAssetsModeled: true as const } : {}),
     };
   });
 

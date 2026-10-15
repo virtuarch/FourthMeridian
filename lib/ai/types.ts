@@ -1436,6 +1436,16 @@ export interface SnapshotDataPoint {
    *     availability scalar; nothing attests to how its number was produced.
    */
   digitalAssetsUnavailableReason?: string;
+  /**
+   * RWA-2B — present (true) ONLY when this reconstructed point's real-asset
+   * component is a MODELED value: a straight line between two of the user's
+   * dated estimates for a manual asset, not an observed or walked-back figure.
+   * `netWorth` and `totalAssets` include that component; `liabilities`,
+   * `liquid`, `investments`, `digitalAssets`, `cashOnHand`, `netLiquid` do not.
+   * Resolved at the canonical read boundary (lib/data/snapshots.ts); a fact in
+   * the data, never instruction text.
+   */
+  realAssetsModeled?: true;
 }
 
 /**
