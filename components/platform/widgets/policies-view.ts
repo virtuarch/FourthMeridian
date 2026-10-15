@@ -286,6 +286,52 @@ export function jobObservationText(view: JobCadenceView, formatDate: (iso: strin
 }
 
 export const RESET_TEXT = "Remove the stored override so the platform default is in force again. Nothing is refreshed now; the next scheduled attempt applies it.";
+
+// ── AI COST CONTROLS — the shared editor grammar's pure parts ────────────────
+//
+// The date wording, the notice shape and the outcome resolution moved here from
+// the widget so the AI Cost Controls panel (its own file) shares them without a
+// circular import. Pure: no React, no clock, no fetch.
+
+/** "13 Sep 2026, 18:32 UTC" — one date wording for the whole Policies surface (and its neighbours). */
+export function formatUtc(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const d = new Date(t);
+  const day = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${day}, ${hh}:${mm} UTC`;
+}
+
+/** One operator notice: the outcome of the last save/reset, or a refusal. */
+export interface PolicyNotice {
+  tone: "ok" | "warn" | "bad";
+  text: string;
+}
+
+/** What a mutation call came back as, after the status mapping (200 / 409 / 400 / 403 / transport). */
+export type MutationOutcome<M> =
+  | { kind: "applied"; model: M }
+  | { kind: "conflict"; model: M; reason: string }
+  | { kind: "refused"; reason: string; model: M | null }
+  | { kind: "failed"; reason: string };
+
+/**
+ * THE ONE OUTCOME RULE every editor on the surface follows:
+ *   applied  ⇒ publish the canonical model, close the editor, say it was applied;
+ *   conflict ⇒ publish the canonical model (it replaces the surface), close the editor, tell the operator;
+ *   refused  ⇒ keep the editor open with the server's sentence; publish the model if the refusal carried one;
+ *   failed   ⇒ keep the editor open with the transport / authorization sentence.
+ */
+export function resolveMutationOutcome<M>(outcome: MutationOutcome<M>, appliedText: string): { model: M | null; close: boolean; notice: PolicyNotice } {
+  switch (outcome.kind) {
+    case "applied":  return { model: outcome.model, close: true, notice: { tone: "ok", text: appliedText } };
+    case "conflict": return { model: outcome.model, close: true, notice: { tone: "warn", text: CONFLICT_TEXT } };
+    case "refused":  return { model: outcome.model, close: false, notice: { tone: "bad", text: outcome.reason } };
+    case "failed":   return { model: null, close: false, notice: { tone: "bad", text: outcome.reason } };
+  }
+}
 export const REASON_PLACEHOLDER = "Choose a reason…";
 export const NOTE_PLACEHOLDER = "Note (optional, no personal data)";
 export const FIXED_GROUP_SUMMARY = (n: number) => `Fixed (${n} maintenance job${n === 1 ? "" : "s"})`;

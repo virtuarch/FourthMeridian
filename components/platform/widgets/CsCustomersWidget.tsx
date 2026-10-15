@@ -14,6 +14,14 @@
  * reason where consequential): POST …/policy, …/cohort, …/refresh. Deactivate /
  * reactivate and invite resend stay on their existing GROWTH_REVENUE routes and
  * are offered as links through their own gates (a 403 is shown, not hidden).
+ *
+ * AI COST CONTROLS — beside the overlay select, "Daily AI allowance override
+ * (USD)": a whole-dollar input + Set override / Remove override, posting ONLY
+ * `{ aiDailyUsdAllowanceOverride: number | null, reason }` to …/policy (group
+ * and overlay are never mixed into that call). The effective allowance and its
+ * source are read from `policy.aiDailyUsdAllowance` when the build carries it
+ * and degrade to an honest sentence when it does not. Integer ≥ 1 is checked
+ * here; the ceiling is the server's refusal and its sentence is shown.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -27,6 +35,10 @@ import { operatorDisplayName } from "@/lib/platform/customer/identity-label";
 import { COHORTS, OVERLAYS, POLICY_GROUPS } from "@/lib/entitlements/catalogue";
 import { OPERATOR_REASON_CODES } from "@/lib/audit";
 import { ROLLUP_NOTE, rollupCells, type CustomerRollupFields } from "./cs-rollup-view";
+import { allowanceEffectiveText, allowanceOverrideBody, validateAllowanceOverrideInput, type AllowanceEffectiveView } from "./ai-cost-controls-view";
+
+/** The allowance field Agent A appends to CustomerPolicyView — optional here so the editor compiles and degrades before it lands. */
+type PolicyWithAllowance = CustomerDetailResponse["policy"] & { aiDailyUsdAllowance?: AllowanceEffectiveView };
 
 /** A list row as the route serves it today, plus the W3 roll-up fields (optional until W3 merges). */
 type CustomerRow = CustomerListResponse["customers"][number] & CustomerRollupFields;
@@ -63,6 +75,8 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
   const [cohort, setCohort] = useState<string>("");
   const [reasonCode, setReasonCode] = useState<string>("");
   const [reasonNote, setReasonNote] = useState<string>("");
+  /** AI COST CONTROLS — the override input as typed (raw); nothing posts while typing. */
+  const [allowanceInput, setAllowanceInput] = useState<string>("");
 
   const loadList = useCallback(async (q: string) => {
     setLoading(true); setError(null);
@@ -81,6 +95,8 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
       if (!r.ok) throw new Error(r.status === 403 ? "Not authorized" : `Request failed (${r.status})`);
       const d = (await r.json()) as CustomerDetailResponse;
       setDetail(d); setPolicyGroup(d.policy.policyGroup); setOverlay(d.policy.overlay ?? "");
+      const allowance = (d.policy as PolicyWithAllowance).aiDailyUsdAllowance;
+      setAllowanceInput(allowance?.override != null ? String(allowance.override) : "");
     } catch (e) { setActionError(e instanceof Error ? e.message : "Failed to load"); }
     finally { setDetailLoading(false); }
   }, []);
@@ -123,6 +139,13 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
   const json = (payload: unknown): RequestInit => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
   const assignPolicy = () => detail && reason && run("policy", `/api/platform/customer-success/customers/${detail.identity.id}/policy`,
     json({ policyGroup, overlay: overlay === "" ? null : overlay, reason }));
+  // AI COST CONTROLS — the override posts on its own: only the override and the reason.
+  const allowance = detail ? (detail.policy as PolicyWithAllowance).aiDailyUsdAllowance : undefined;
+  const allowanceCheck = validateAllowanceOverrideInput(allowanceInput);
+  const setAllowanceOverride = () => detail && reason && allowanceCheck.value !== null && run("allowance", `/api/platform/customer-success/customers/${detail.identity.id}/policy`,
+    json(allowanceOverrideBody(allowanceCheck.value, reason)));
+  const removeAllowanceOverride = () => detail && reason && run("allowance", `/api/platform/customer-success/customers/${detail.identity.id}/policy`,
+    json(allowanceOverrideBody(null, reason)), () => setAllowanceInput(""));
   const addCohort = () => detail && reason && cohort && run("cohort", `/api/platform/customer-success/customers/${detail.identity.id}/cohort`,
     json({ cohort, reason }), () => { setCohort(""); });
   const refreshAll = () => {
@@ -234,6 +257,32 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                         style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
                         {acting === "policy" ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />} Apply policy
                       </button>
+                    </div>
+                    {/* AI COST CONTROLS — the per-customer allowance override, its own call, the same reason fields. */}
+                    <div className="mt-2 flex flex-col gap-2 rounded-[var(--radius-sm)] border p-2.5" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-inset)" }}>
+                      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Daily AI allowance override (USD)</p>
+                      <Row label="Effective allowance" value={allowanceEffectiveText(allowance)} />
+                      <label className="flex items-center justify-between gap-2"><span className="text-[var(--text-secondary)]">Override</span>
+                        <input type="number" min={1} step={1} value={allowanceInput} onChange={(e) => setAllowanceInput(e.target.value)} placeholder="whole dollars per UTC day"
+                          aria-label="Daily AI allowance override (USD)" aria-invalid={allowanceInput !== "" && allowanceCheck.error !== null}
+                          className="w-40 rounded border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)]" style={{ borderColor: "var(--border-hairline)" }} /></label>
+                      {allowanceInput !== "" && allowanceCheck.error && <p className="text-[11px]" role="alert" style={{ color: "var(--coral-400)" }}>{allowanceCheck.error}</p>}
+                      <p className="text-[10px] leading-snug text-[var(--text-muted)]">Takes precedence over the overlay, the platform setting and the policy group; the catalogue ceiling clamps last and the server refuses a value above it. Estimated USD per UTC day, never a bill.</p>
+                      <ReasonFields code={reasonCode} note={reasonNote} setCode={setReasonCode} setNote={setReasonNote} />
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button type="button" onClick={setAllowanceOverride} disabled={acting !== null || !reason || allowanceCheck.value === null}
+                          className="inline-flex w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
+                          style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
+                          {acting === "allowance" ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />} Set override
+                        </button>
+                        {allowance?.override != null && (
+                          <button type="button" onClick={removeAllowanceOverride} disabled={acting !== null || !reason}
+                            className="inline-flex w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
+                            style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>
+                            Remove override
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="mt-2 flex flex-col gap-2 rounded-[var(--radius-sm)] border p-2.5" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-inset)" }}>
                       <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Add to cohort</p>

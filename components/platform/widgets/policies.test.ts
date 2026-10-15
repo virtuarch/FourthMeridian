@@ -7,7 +7,9 @@
  * apart from the observation line, the three declared job groups (Fixed
  * collapsed), the unified editor with a required reason (D7), and the copy fixes
  * (grace in the footnote, the retired "Nothing here … changes a policy" line,
- * no per-row explanatory sentence).
+ * no per-row explanatory sentence). AI COST CONTROLS retires the read-only
+ * "Cost safeguards" group in favour of the editable "AI Cost Controls" group
+ * (pinned in depth by ai-cost-controls.test.ts; §10b pins the composition).
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/platform/widgets/policies.test.ts
  */
@@ -19,8 +21,8 @@ import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
 import { schedulerCapability } from "@/lib/platform/scheduler-capability";
 import { composeRefreshPoliciesReadModel, type ComposeRefreshPolicyInput } from "@/lib/platform/policies/refresh-policies.core";
 import type { JobCadenceView } from "@/lib/platform/policies/job-cadence";
-import { CostSafeguardsPanel, JobCadenceEditor, JobCadencePanel, PoliciesSurface, PolicyEditor } from "./OpsPoliciesWidget";
-import type { AiSpendResponse } from "@/app/api/platform/platform-ops/ai-spend/route";
+import { JobCadenceEditor, JobCadencePanel, PoliciesSurface, PolicyEditor } from "./OpsPoliciesWidget";
+import { AI_COST_CONTROL_SETTING_KEYS, type AiCostControlKey, type AiCostControlsReadModel, type ControlValueView } from "@/lib/platform/ai/cost-controls.types";
 import {
   cadenceText, effectiveHeadline, groupJobCadences, jobLegend, jobProvenance, originText, policiesFootnote, refreshLegend, refreshProvenance,
   schedulerSupportText,
@@ -217,44 +219,33 @@ console.log("\n10. the wording helpers");
   check("policiesFootnote carries the grace rule and the reason requirement", /larger of 2 hours and 25%/.test(policiesFootnote({ floorHours: 2, share: 0.25 })) && /requires a reason/.test(policiesFootnote({ floorHours: 2, share: 0.25 })));
 }
 
-console.log("\n10b. BETA C7 — the Cost safeguards group: two thresholds + the allowance dimension, DISPLAY ONLY");
+console.log("\n10b. AI COST CONTROLS — the Cost safeguards group is RETIRED; the AI Cost Controls group is composed in its place");
 {
-  const safeguards = (over: Partial<AiSpendResponse["safeguards"]["thresholds"]> = {}): AiSpendResponse["safeguards"] => ({
-    thresholds: {
-      fleet: { key: "ai_spend_alert_fleet_usd_24h", label: "AI spend alert — fleet (USD / 24 h)", usd: 10, defaultUsd: 10, origin: "DEFAULT", updatedAt: null },
-      user: { key: "ai_spend_alert_user_usd_24h", label: "AI spend alert — per customer (USD / 24 h)", usd: 3, defaultUsd: 3, origin: "DEFAULT", updatedAt: null },
-      ...over,
-    },
-    allowance: { key: "aiDailyUsdAllowance", label: "AI daily allowance (USD, estimated)", description: "Estimated AI spend a customer may cause per UTC day.", ceilingUsd: 20,
-      policy: { key: "BETA_FULL_ACCESS_V1", label: "Beta — full access (v1)", usd: 5 }, overlay: { key: "FOUNDER_INTERNAL_V1", label: "Founder / internal (v1)", usd: 20 } },
-    // AI COST CONTROLS — the rule split (ai-spend-high → fleet + user) and the controls route; shape pins re-pinned by Agent A.
-    alertRuleId: "ai-spend-fleet-high and ai-spend-user-high", alertRuleIds: { fleet: "ai-spend-fleet-high", user: "ai-spend-user-high" },
-    thresholdWritePath: "set in Policies → AI Cost Controls (/api/platform/platform-ops/ai-cost-controls, CONTROL, reason required)",
-    controlsUrl: "/api/platform/platform-ops/ai-cost-controls", checkedAt: NOW.toISOString(),
+  const cv = <V extends boolean | number>(control: AiCostControlKey, label: string, value: V): ControlValueView<V> => ({
+    control, settingKey: AI_COST_CONTROL_SETTING_KEYS[control], label, description: "d", value, defaultValue: value, origin: "DEFAULT", updatedAt: null, updatedByName: null,
+    bounds: typeof value === "number" ? { min: 1, max: 20 } : null,
   });
-  const panel = (s: AiSpendResponse["safeguards"] | null, loading = false, error: string | null = null) =>
-    renderToStaticMarkup(createElement(CostSafeguardsPanel, { state: { data: s ? { spend: null as never, safeguards: s } : null, loading, error } }));
-  const html = panel(safeguards());
-  check("the group is titled Cost safeguards and states the governing sentence (estimate, never a bill; no editor)", /Cost safeguards/.test(html) && /never a bill/.test(html) && /no editor here/.test(html));
-  check("both thresholds: figure per 24 h, the default, the provenance", /\$10 \/ 24 h/.test(html) && /\$3 \/ 24 h/.test(html) && /default \$10/.test(html) && /default \$3/.test(html) && (html.match(/Platform default/g) ?? []).length === 2);
-  check("the allowance dimension: policy value, overlay value, ceiling, per UTC day, estimated, catalogue provenance",
-    /Beta — full access \(v1\) \$5 · Founder \/ internal \(v1\) \$20 · ceiling \$20 · per UTC day, estimated/.test(html) && /Catalogue \(code-owned\)/.test(html));
-  check("the allowance line says where it is refused and which rule judges the thresholds", /Conversations and Daily Brief routes/.test(html) && /rule ai-spend-fleet-high and ai-spend-user-high/.test(html));
-  check("READ-ONLY: no button, select, input or form; no Edit, Save or Reset", !/<button|<select|<input|<form/.test(html) && !/ Edit<\/button>|Save|Reset to default/.test(html));
-  check("no email, no secret-shaped text", !/@|token|secret/i.test(html));
-  const set = panel(safeguards({ fleet: { key: "ai_spend_alert_fleet_usd_24h", label: "AI spend alert — fleet (USD / 24 h)", usd: 25, defaultUsd: 10, origin: "SETTING", updatedAt: "2026-10-14T09:00:00.000Z" } }));
-  check("a stored threshold reads as set via admin settings with its UTC date, the default still named", /\$25 \/ 24 h/.test(set) && /Set via admin settings 14 Oct 2026, 09:00 UTC/.test(set) && /default \$10/.test(set));
-  const bad = panel(safeguards({ user: { key: "ai_spend_alert_user_usd_24h", label: "AI spend alert — per customer (USD / 24 h)", usd: 3, defaultUsd: 3, origin: "INVALID_SETTING", updatedAt: "2026-10-14T09:00:00.000Z" } }));
-  check("an unreadable stored value: the default is in force and the row SAYS so (alert), never 'no threshold'", /\$3 \/ 24 h/.test(bad) && /stored value is invalid/.test(bad) && /role="alert"/.test(bad) && /default is in force/.test(bad));
-  check("loading is a status line; failure is an alert naming the subject", /role="status"/.test(panel(null, true)) && /role="alert"/.test(panel(null, false, "Request failed (500)")) && /cost safeguards/.test(panel(null, false, "x")));
-  // Inside the Policies surface, for a READ operator: still no control anywhere.
+  const controls: AiCostControlsReadModel = {
+    checkedAt: NOW.toISOString(),
+    allowance: { enforced: cv("allowance.enforced", "Allowance enforced", true), usd: cv("allowance.usd", "Daily allowance (USD)", 5), ceilingUsd: 20, effectiveDefaultUsd: 5, effectiveDefaultSource: "POLICY", overrides: { count: 0, customers: [] }, enforcementNote: "Judged at the routes." },
+    userAlert: { ruleId: "ai-spend-user-high", enabled: cv("userAlert.enabled", "Per-user alert enabled", true), thresholdUsd: cv("userAlert.thresholdUsd", "Per-user threshold (USD / 24 h)", 3), status: { live: true, firingNow: false, lastFiredAt: null, recent: [] } },
+    fleetAlert: { ruleId: "ai-spend-fleet-high", enabled: cv("fleetAlert.enabled", "Fleet alert enabled", true), thresholdUsd: cv("fleetAlert.thresholdUsd", "Fleet threshold (USD / 24 h)", 10), status: { live: true, firingNow: false, lastFiredAt: null, recent: [] } },
+    killSwitch: { paused: cv("killSwitch.paused", "Paid AI requests paused", false), customerMessage: "AI features are paused." },
+    propagation: { cached: false, note: "A change is visible to the very next decision." },
+  };
   const model = composeRefreshPoliciesReadModel([input("BANK"), input("WALLET")], NOW);
-  const inSurface = render({ data: model, loading: false, error: null }, false, { cadence: cadenceState, safeguards: { data: { spend: null as never, safeguards: safeguards() }, loading: false, error: null } });
-  check("composed into the Policies surface below the cadence panel, and the whole surface stays control-free for READ", /Cost safeguards/.test(inSurface) && /\$10 \/ 24 h/.test(inSurface) && !/<button|<select|<input|<form/.test(inSurface));
-  const forControl = render({ data: model, loading: false, error: null }, true, { cadence: cadenceState, safeguards: { data: { spend: null as never, safeguards: safeguards() }, loading: false, error: null } });
-  check("even for a control-plane operator the safeguards group offers no editor (no Edit/Reset near a threshold)", !/\$10 \/ 24 h[\s\S]{0,600}Edit<\/button>/.test(forControl));
+  const inSurface = render({ data: model, loading: false, error: null }, false, { cadence: cadenceState, costControls: { data: controls, loading: false, error: null } });
+  check("the Cost safeguards group is gone (no title, no 'Set via admin settings', no catalogue line, no ai-spend-high)", !/Cost safeguards/.test(inSurface) && !/Set via admin settings/.test(inSurface) && !/Catalogue \(code-owned\)/.test(inSurface) && !/rule ai-spend-high\b/.test(inSurface));
+  check("the AI Cost Controls group is composed beneath the cadence panel with its four cards", inSurface.indexOf("Execution cadence") < inSurface.indexOf("AI Cost Controls") && /Per-user daily AI allowance/.test(inSurface) && /Per-user spending alert/.test(inSurface) && /Fleet-wide spending alert/.test(inSurface) && /Pause paid AI requests/.test(inSurface));
+  check("the thresholds live there once each: $3 and $10 appear as the values in force, no second display", (inSurface.match(/>\$3</g) ?? []).length === 1 && (inSurface.match(/>\$10</g) ?? []).length === 1);
+  check("the whole surface stays control-free for READ", !/<button|<select|<input|<form/.test(inSurface));
+  check("no email, no secret-shaped text", !/@|token|secret/i.test(inSurface));
+  const forControl = render({ data: model, loading: false, error: null }, true, { cadence: cadenceState, costControls: { data: controls, loading: false, error: null } });
+  check("for a control-plane operator the group offers Edit on the three policy cards and the pause affordance on the emergency control", (forControl.match(/ Edit<\/button>/g) ?? []).length >= 3 && /Pause paid requests/.test(forControl));
+  const noControls = render({ data: model, loading: false, error: null }, false, { cadence: cadenceState });
+  check("a caller without the cost-controls read renders no AI Cost Controls group (and no safeguards either)", !/AI Cost Controls/.test(noControls) && !/Cost safeguards/.test(noControls));
   const widget = readFileSync("components/platform/widgets/OpsPoliciesWidget.tsx", "utf8");
-  check("source: the safeguards read is a GET of the ai-spend route; the widget never PATCHes it", /AI_SPEND_URL = "\/api\/platform\/platform-ops\/ai-spend"/.test(widget) && !/method: "PATCH"[\s\S]{0,200}ai-spend|ai-spend[\s\S]{0,200}method: "PATCH"/.test(widget));
+  check("source: the widget reads the cost-controls url through the session and never the ai-spend route", /useSharedWidgetFetch<AiCostControlsReadModel>\(COST_CONTROLS_URL\)/.test(widget) && /COST_CONTROLS_URL = "\/api\/platform\/platform-ops\/ai-cost-controls"/.test(widget) && !/ai-spend/.test(widget));
 }
 
 console.log("\n11. source: the PATCH and DELETE bodies carry the reason; canControl gates rendering only");
