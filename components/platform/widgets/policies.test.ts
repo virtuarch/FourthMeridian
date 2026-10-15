@@ -249,7 +249,7 @@ console.log("\n10b. BETA C7 — the Cost safeguards group: two thresholds + the 
   const inSurface = render({ data: model, loading: false, error: null }, false, { cadence: cadenceState, safeguards: { data: { spend: null as never, safeguards: safeguards() }, loading: false, error: null } });
   check("composed into the Policies surface below the cadence panel, and the whole surface stays control-free for READ", /Cost safeguards/.test(inSurface) && /\$10 \/ 24 h/.test(inSurface) && !/<button|<select|<input|<form/.test(inSurface));
   const forControl = render({ data: model, loading: false, error: null }, true, { cadence: cadenceState, safeguards: { data: { spend: null as never, safeguards: safeguards() }, loading: false, error: null } });
-  check("even for a CONTROL operator the safeguards group offers no editor (no Edit/Reset near a threshold)", !/\$10 \/ 24 h[\s\S]{0,600}Edit<\/button>/.test(forControl));
+  check("even for a control-plane operator the safeguards group offers no editor (no Edit/Reset near a threshold)", !/\$10 \/ 24 h[\s\S]{0,600}Edit<\/button>/.test(forControl));
   const widget = readFileSync("components/platform/widgets/OpsPoliciesWidget.tsx", "utf8");
   check("source: the safeguards read is a GET of the ai-spend route; the widget never PATCHes it", /AI_SPEND_URL = "\/api\/platform\/platform-ops\/ai-spend"/.test(widget) && !/method: "PATCH"[\s\S]{0,200}ai-spend|ai-spend[\s\S]{0,200}method: "PATCH"/.test(widget));
 }

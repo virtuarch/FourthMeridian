@@ -256,7 +256,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // only the operator can close. The FAILED / UNPRICED_MODEL fact was already
       // written by the chokepoint, attributed to this conversation.
       if (isUnpricedModelFailure(turn.record.error)) {
-        console.error('[ai/chat] turn refused — unpriced model:', turn.record.error);
+        console.error('[ai/chat] turn refused (unpriceable model) —', turn.record.error);
         return refuse(SAY.unpriced, 503);
       }
       // The turn record holds why (budget exhausted, finish_reason, round-trip
