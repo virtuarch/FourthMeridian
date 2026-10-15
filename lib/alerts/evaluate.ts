@@ -25,6 +25,7 @@ import type { AuthorityOutputs, AlertJobHealth } from "@/lib/alerts/authorities"
 import type { ConnectionHealthResult, HealthState } from "@/lib/connections/health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
+import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,9 @@ const CRITICAL_CONNECTION_STATES: ReadonlySet<HealthState> = new Set<HealthState
 
 /** Failed/timed-out calls beside returned ones at which the AI rule warns. */
 export const AI_FAILURE_WARNING_COUNT = 3;
+
+/** The multiple of a spend threshold at which `ai-spend-high` escalates from warning to critical. */
+export const AI_SPEND_CRITICAL_MULTIPLE = 2;
 
 // ── Enabled resolution ──────────────────────────────────────────────────────────
 
@@ -185,6 +189,56 @@ export function evaluateAiFailing(rule: AlertRuleDefinition, ai: AiFailureHealth
   return out;
 }
 
+const usd = (n: number) => `$${n.toFixed(2)}`;
+
+/** BETA C7 — the AI spend fold → spend-high signals. THREE independent breaches,
+ *  each on its own dedupe key per UTC day so an ongoing condition re-alerts
+ *  about once a day and a new day is a new breach:
+ *    :fleet:<day>        estimated fleet USD (customer surfaces) ≥ fleet threshold —
+ *                        warning; critical at ≥ AI_SPEND_CRITICAL_MULTIPLE × it.
+ *    :user:<day>:<ref>   the largest per-customer estimated USD ≥ user threshold —
+ *                        same two levels; the key carries the OPAQUE "user …abc123"
+ *                        reference, never an email.
+ *    :unpriced:<day>     ANY invocation on a model the rate card cannot price —
+ *                        warning REGARDLESS of spend (fail closed): the dollar
+ *                        figures above are partial and the summary says so.
+ *  Every summary names the estimated USD and the threshold it was judged
+ *  against, and carries the unpriced line as its own sentence. */
+export function evaluateAiSpendHigh(rule: AlertRuleDefinition, spend: AiSpendHealth): AlertSignal[] {
+  const out: AlertSignal[] = [];
+  const day = spend.checkedAt.slice(0, 10);
+  const unpricedLine = spend.unpricedInvocations > 0
+    ? ` ${spend.unpricedInvocations} invocation(s) on unpriced models (${spend.unpricedModels.join(", ")}) — not counted; see rate card.`
+    : "";
+  const level = (value: number, threshold: number): AlertSeverity =>
+    value >= threshold * AI_SPEND_CRITICAL_MULTIPLE ? "critical" : "warning";
+
+  if (spend.fleetUsd !== null && spend.fleetUsd >= spend.thresholds.fleetUsd) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: level(spend.fleetUsd, spend.thresholds.fleetUsd),
+      dedupeKey: `${rule.id}:fleet:${day}`,
+      summary: `Estimated AI spend across customer surfaces in the last ${spend.windowHours}h is ${usd(spend.fleetUsd)} — at or above the fleet threshold of $${spend.thresholds.fleetUsd} (${spend.customerInvocations} invocations, ${spend.customers} customer(s); estimate, not a bill).${unpricedLine}`,
+    });
+  }
+  if (spend.maxUserUsd !== null && spend.maxUserRef && spend.maxUserUsd >= spend.thresholds.userUsd) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: level(spend.maxUserUsd, spend.thresholds.userUsd),
+      dedupeKey: `${rule.id}:user:${day}:${spend.maxUserRef.slice(-6)}`,
+      summary: `One customer (${spend.maxUserRef}) caused an estimated ${usd(spend.maxUserUsd)} of AI spend in the last ${spend.windowHours}h — at or above the per-customer threshold of $${spend.thresholds.userUsd}`
+        + (spend.customersAtOrOverThreshold > 1 ? ` (${spend.customersAtOrOverThreshold} customers are at or above it; the largest is named)` : "")
+        + ` (estimate, not a bill).${unpricedLine}`,
+    });
+  }
+  if (spend.unpricedInvocations > 0) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "warning",
+      dedupeKey: `${rule.id}:unpriced:${day}`,
+      summary: `${spend.unpricedInvocations} invocation(s) on unpriced models (${spend.unpricedModels.join(", ")}) in the last ${spend.windowHours}h — not counted; see rate card. The spend figures for this window are partial, so the thresholds cannot be trusted until a rate is added.`,
+    });
+  }
+  return out;
+}
+
 // ── THE canonical evaluation ────────────────────────────────────────────────────
 
 /**
@@ -215,6 +269,9 @@ export function evaluateAlertRules(
         break;
       case "ai-failing":
         if (authorities.aiFailures) signals.push(...evaluateAiFailing(rule, authorities.aiFailures));
+        break;
+      case "ai-spend":
+        if (authorities.aiSpend) signals.push(...evaluateAiSpendHigh(rule, authorities.aiSpend));
         break;
       case "quota-low":
         // Dormant — no authority to read. `live: false` already excluded it above;

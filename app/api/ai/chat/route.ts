@@ -45,6 +45,8 @@ import { randomUUID }                from 'crypto';
 import { requireUser }               from '@/lib/session';
 import { limitByUser }               from '@/lib/rate-limit';
 import { entitlementsForUser, refuseIfDisabled, countLimit } from '@/lib/entitlements/consume';
+import { dailyAiAllowanceFor, allowanceRefusal } from '@/lib/ai/allowance';
+import { UnpricedModelError, isUnpricedModelFailure } from '@/lib/ai/provider';
 import { resolveSpaceContext }       from '@/lib/space';
 import { db }                        from '@/lib/db';
 import { aiPhaseRunner }             from '@/lib/ai/tenant-phase';
@@ -77,6 +79,8 @@ const SAY = {
     + 'Please try again.',
   silent:    'I wasn’t able to put an answer together for that one. Try rephrasing it, '
     + 'or ask me something narrower.',
+  unpriced:  'Conversations are paused: the model in use can’t be priced yet, so your '
+    + 'daily AI allowance can’t be checked. Nothing was changed. Please try again later.',
 } as const;
 
 const refuse = (message: string, status: number) =>
@@ -119,6 +123,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   {
     const limited = await limitByUser(user.id, 'ai-chat-hour', { limit: countLimit(entitlements, 'aiTurnsPerHour'), windowSec: 3600 });
     if (limited) return limited;
+  }
+  // BETA C7 — THE DAILY ALLOWANCE, AFTER THE PACING WINDOWS AND BEFORE ANY MODEL
+  // WORK. `aiDailyUsdAllowance` is the customer's estimated-dollar bound per UTC
+  // day across Conversations and the Daily Brief, priced by the rate card over
+  // the invocation ledger (read on fm_system — the ledger is revoked from the
+  // tenant role). Refused at or over the line with `{ error, code: "AI_ALLOWANCE",
+  // spentUsd, allowanceUsd }`; refused outright (fail closed) when any of today's
+  // invocations could not be priced, because an unknown spend is never "under".
+  {
+    const allowance = await dailyAiAllowanceFor(user.id, entitlements);
+    const refused = allowanceRefusal(allowance, 'Conversations');
+    if (refused) return refused;
   }
 
   // ── The request ────────────────────────────────────────────────────────────
@@ -232,6 +248,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     });
 
     if (!turn.answer) {
+      // BETA C7 — THE CHOKEPOINT'S REFUSAL ARRIVES HERE, NOT IN THE CATCH BELOW.
+      // The turn loop records a provider throw as the turn's error rather than
+      // rethrowing it (a provider failure is a result, not a crash), so an
+      // unpriceable model surfaces as a turn with no text. It gets its own
+      // sentence and status: the customer is not told to rephrase against a gap
+      // only the operator can close. The FAILED / UNPRICED_MODEL fact was already
+      // written by the chokepoint, attributed to this conversation.
+      if (isUnpricedModelFailure(turn.record.error)) {
+        console.error('[ai/chat] turn refused (unpriceable model) —', turn.record.error);
+        return refuse(SAY.unpriced, 503);
+      }
       // The turn record holds why (budget exhausted, finish_reason, round-trip
       // ceiling). That reason is for the server's log; the user gets a sentence.
       console.error('[ai/chat] turn produced no text:', turn.record.error);
@@ -283,6 +310,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // sentence and the truth that nothing was changed — this route writes no
     // financial data on any path.
     console.error('[ai/chat] turn failed:', err);
+    // BETA C7 — a chokepoint refusal thrown OUTSIDE the turn loop (the loop
+    // itself records one as the turn's error — handled above). Same sentence.
+    if (err instanceof UnpricedModelError) return refuse(SAY.unpriced, 503);
     return refuse(SAY.failed, 503);
   }
 }

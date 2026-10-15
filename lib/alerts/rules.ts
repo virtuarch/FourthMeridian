@@ -18,12 +18,13 @@
  * (lib/alerts/evaluate.ts) NEVER queries a product table or re-derives a health
  * state — it only classifies signals over authority OUTPUT.
  *
- * ── The six rules (intentionally small; NOT a generic engine) ────────────────
+ * ── The seven rules (intentionally small; NOT a generic engine) ──────────────
  *   resource-stale       an archive's newest observation is stale/empty    (LIVE)
  *   provider-unhealthy   a syncing provider connection is not healthy       (LIVE)
  *   job-failing          a scheduled job's last runs all failed             (LIVE)
  *   scheduler-silent     a scheduled job is overdue (dispatcher/cron silent)(LIVE)
  *   ai-provider-failing  the AI provider is refusing/failing calls          (LIVE)
+ *   ai-spend-high        estimated AI spend is at/over an operator threshold(LIVE)
  *   quota-low            a provider's remaining API quota is low         (DORMANT)
  *
  * ai-provider-failing (OPERATIONALIZATION P0, 2026-10-07) exists because the
@@ -32,6 +33,15 @@
  * there was no fact to alert on. The provider chokepoint now writes a zero-token
  * failure row (outcome QUOTA / RATE_LIMITED / TIMEOUT / FAILED) and this rule
  * reads the fold of those rows over the last 24h.
+ *
+ * ai-spend-high (BETA C7, 2026-10-15) is the first COST safeguard: the same
+ * ledger's RETURNED customer-surface rows, priced by the code-owned rate card
+ * over the trailing 24 h, judged against two operator thresholds
+ * (PlatformSetting `ai_spend_alert_fleet_usd_24h`, `ai_spend_alert_user_usd_24h`).
+ * It also fires — regardless of spend — when ANY invocation in the window was
+ * on a model the rate card cannot price: a spend figure that silently omits
+ * part of the spend is not a safeguard (owner rule: an unpriceable model never
+ * counts as zero).
  *
  * ── Dormant rules (future-safe, not recreated) ───────────────────────────────
  * `quota-low` is a first-class rule KIND but has NO authority to consume yet:
@@ -55,6 +65,7 @@ export type AlertRuleKind =
   | "job-failing"
   | "scheduler-silent"
   | "ai-failing"
+  | "ai-spend"
   | "quota-low";
 
 /** Two levels only — a solo operator's pager does not need more (alert fatigue
@@ -140,6 +151,16 @@ export const ALERT_RULES: readonly AlertRuleDefinition[] = [
     description:
       "The AI provider is refusing or failing calls. Critical when the account is out of credits / over quota (insufficient_quota — waiting cannot cure it) or when every call in the window failed; warning when several calls failed or timed out while others returned. Reads the AiInvocation outcome fold (lib/platform/ai/failures.ts); never calls the provider.",
     authority: "ai-failures",
+    live: true,
+    defaultEnabled: true,
+  },
+  {
+    id: "ai-spend-high",
+    kind: "ai-spend",
+    title: "AI spend high",
+    description:
+      "Estimated AI spend over the trailing 24 h is at or above an operator threshold: the FLEET across customer surfaces (Conversations + Daily Brief; harness traffic is overhead and excluded) against ai_spend_alert_fleet_usd_24h, or ONE customer against ai_spend_alert_user_usd_24h. Warning at or above the threshold; critical at or above twice it. Also fires a warning whenever any invocation in the window ran on a model the rate card cannot price — those invocations are counted, never priced at $0, and the summary names them. Reads the AiInvocation spend fold (lib/platform/ai/spend-health.ts) priced by lib/usage/pricing.ts; every figure is an estimate, not a bill.",
+    authority: "ai-spend",
     live: true,
     defaultEnabled: true,
   },

@@ -53,6 +53,9 @@ import { BigStat, GroupLabel, KeyRow, PolicyChip, Provenance, SectionSurface, St
 import { LOADING_TEXT, unavailableText } from "./platform-health-view";
 import type { PlatformPoliciesResponse } from "@/app/api/platform/platform-ops/policies/route";
 import type { JobCadenceResponse } from "@/app/api/platform/platform-ops/job-cadence/route";
+import type { AiSpendResponse } from "@/app/api/platform/platform-ops/ai-spend/route";
+import type { AiSpendThreshold } from "@/lib/platform/ai/spend-thresholds";
+import { COST_SAFEGUARDS_SENTENCE, COST_SAFEGUARDS_SUBJECT, allowanceText, thresholdDefaultText, thresholdFigure, thresholdProvenance } from "./cost-safeguards-view";
 import type { JobCadenceView } from "@/lib/platform/policies/job-cadence";
 import { OPERATOR_REASON_CODES, type OperatorReasonCode } from "@/lib/audit";
 import type { RefreshPolicyView } from "@/lib/platform/policies/refresh-policies.core";
@@ -66,6 +69,9 @@ import {
 
 const POLICIES_URL = "/api/platform/platform-ops/policies";
 const JOB_CADENCE_URL = "/api/platform/platform-ops/job-cadence";
+// BETA C7 — the cost safeguards (two spend-alert thresholds + the daily-allowance
+// dimension), read from the ai-spend route and DISPLAYED ONLY: no editor here.
+const AI_SPEND_URL = "/api/platform/platform-ops/ai-spend";
 const JOBS_WORKSPACE = "platform-jobs";
 
 /** "13 Sep 2026, 18:32 UTC" — one date wording for the whole surface. */
@@ -585,9 +591,54 @@ export function JobCadencePanel({ state, canControl, onModel, onOpenWorkspace }:
   );
 }
 
+// ── BETA C7 — COST SAFEGUARDS (read-only) ─────────────────────────────────────
+
+function ThresholdRow({ t }: { t: AiSpendThreshold }) {
+  return (
+    <li className="flex flex-col gap-1 border-t border-[var(--border-hairline)] py-3">
+      <KeyRow label={t.label} value={thresholdFigure(t)} />
+      <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <Provenance source={thresholdProvenance(t, formatUtc)} />
+        <span className="text-[10px] text-[var(--text-muted)]">{thresholdDefaultText(t)}</span>
+      </span>
+      {t.origin === "INVALID_SETTING" && (
+        <p className="text-[11px]" style={{ color: TONE_COLOR.warn }} role="alert">The stored value is unreadable; the default is in force.</p>
+      )}
+    </li>
+  );
+}
+
+/** The read-only cost-safeguards group: two thresholds with provenance, the allowance dimension. Prop-driven and fetch-free. */
+export function CostSafeguardsPanel({ state }: { state: SharedFetchState<AiSpendResponse> }) {
+  const data = state.error ? null : state.data?.safeguards ?? null;
+  return (
+    <div className="flex flex-col gap-2">
+      <GroupLabel hint={COST_SAFEGUARDS_SENTENCE}>Cost safeguards</GroupLabel>
+      <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{COST_SAFEGUARDS_SENTENCE}</p>
+      {state.loading ? (
+        <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]" role="status"><Loader2 size={12} className="animate-spin" aria-hidden /> {LOADING_TEXT}</p>
+      ) : !data ? (
+        <p className="flex items-start gap-1.5 text-xs" style={{ color: "var(--coral-400)" }} role="alert"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden /><span>{unavailableText(COST_SAFEGUARDS_SUBJECT)}</span></p>
+      ) : (
+        <ul className="flex flex-col">
+          <ThresholdRow t={data.thresholds.fleet} />
+          <ThresholdRow t={data.thresholds.user} />
+          <li className="flex flex-col gap-1 border-t border-[var(--border-hairline)] py-3">
+            <KeyRow label={data.allowance.label} value={allowanceText(data.allowance)} />
+            <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <Provenance source="Catalogue (code-owned)" />
+              <span className="text-[10px] text-[var(--text-muted)]">{data.allowance.description} Refused at the Conversations and Daily Brief routes at or over the day’s estimate; the two thresholds above are judged by rule {data.alertRuleId}.</span>
+            </span>
+          </li>
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** The presentational surface. Prop-driven and fetch-free. */
 export function PoliciesSurface({
-  section, state, canControl = false, onModel = () => {}, cadence, onCadenceModel = () => {}, onOpenWorkspace,
+  section, state, canControl = false, onModel = () => {}, cadence, onCadenceModel = () => {}, safeguards, onOpenWorkspace,
 }: {
   section: PlatformSection;
   state: SharedFetchState<PlatformPoliciesResponse>;
@@ -596,6 +647,8 @@ export function PoliciesSurface({
   /** P1 — the execution-cadence read; omitted by callers that render only the refresh columns. */
   cadence?: SharedFetchState<JobCadenceResponse>;
   onCadenceModel?: (model: JobCadenceResponse) => void;
+  /** BETA C7 — the cost-safeguards read (display only); omitted by callers that do not have it. */
+  safeguards?: SharedFetchState<AiSpendResponse>;
   onOpenWorkspace?: (workspaceId: string) => void;
 }) {
   const data = state.error ? null : state.data;
@@ -621,6 +674,7 @@ export function PoliciesSurface({
             ))}
           </div>
           {cadence && <JobCadencePanel state={cadence} canControl={canControl} onModel={onCadenceModel} onOpenWorkspace={onOpenWorkspace} />}
+          {safeguards && <CostSafeguardsPanel state={safeguards} />}
         </div>
       )}
     </SectionSurface>
@@ -636,8 +690,9 @@ export function OpsPoliciesWidget({ section, access, onOpenWorkspace }: {
   const publish = useSharedWidgetPublish<PlatformPoliciesResponse>(POLICIES_URL);
   const cadence = useSharedWidgetFetch<JobCadenceResponse>(JOB_CADENCE_URL);
   const publishCadence = useSharedWidgetPublish<JobCadenceResponse>(JOB_CADENCE_URL);
+  const safeguards = useSharedWidgetFetch<AiSpendResponse>(AI_SPEND_URL);
   return (
     <PoliciesSurface section={section} state={state} canControl={access?.canControl ?? false} onModel={publish}
-      cadence={cadence} onCadenceModel={publishCadence} onOpenWorkspace={onOpenWorkspace} />
+      cadence={cadence} onCadenceModel={publishCadence} safeguards={safeguards} onOpenWorkspace={onOpenWorkspace} />
   );
 }

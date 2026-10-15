@@ -17,12 +17,14 @@ import type { AiUsageTrend } from "@/lib/platform/ai/ai-usage";
 import type { AiOperations } from "@/lib/platform/ai/invocations";
 import type { PlaidUsage } from "@/lib/platform/plaid/usage";
 import type { OperatorFeedResponse } from "@/lib/platform/activity/operator-feed-core";
+import type { AiSpendResponse } from "@/app/api/platform/platform-ops/ai-spend/route";
 import { AiActivitySurface } from "./AiActivityBlock";
 import { EconomicsSurface } from "./EconomicsBlock";
 import { ActivityFeedSurface } from "./ActivityFeedBlock";
 import { AiTrendSurface } from "../OpsAiTrendWidget";
 import {
-  aiOutcomeSegments, aiSpendReading, callsPerDay, plaidCycleReading, spendPerDay, utcDayKeys,
+  aiOutcomeSegments, aiSpendReading, callsPerDay, counterCrossCheckText, customerSpendPerDay, customerSpendReading, overheadText, plaidCycleReading,
+  spendPerDay, unpricedText, utcDayKeys,
 } from "./ai-economics-view";
 import { relativeText, resultTone, resultWord, utcStamp } from "./activity-feed-view";
 
@@ -79,6 +81,28 @@ const feed = (over: Partial<OperatorFeedResponse> = {}): OperatorFeedResponse =>
       target: "job …-banks", result: "FAILURE", reasonCode: null, evidence: { jobRunId: "run_000000abc123", workspace: "platform-jobs" } },
   ],
   checkedAt: new Date(NOW).toISOString(), ...over,
+});
+
+// BETA C6 — spend allocated by surface (customer vs overhead vs unpriced), from the ai-spend route.
+const fig = (usd: number | null, invocations = 1, unpriced = 0) => ({ usd, invocations, pricedInvocations: invocations - unpriced, unpricedInvocations: unpriced, tokens: 1_000 });
+const spendResp = (over: Partial<AiSpendResponse["spend"]> = {}): AiSpendResponse => ({
+  spend: {
+    customer: { chat: fig(0.30, 10), brief: fig(0.10, 2), total: fig(0.40, 12) },
+    overhead: { harness: fig(1.90, 372), other: fig(null, 0), total: fig(1.90, 372) },
+    unpriced: { tokens: 0, invocations: 0, models: [] },
+    byDay: [{ day: "2026-10-12", customerUsd: 0.3, overheadUsd: 1.9, unpricedInvocations: 0 }, { day: "2026-10-14", customerUsd: 0.1, overheadUsd: null, unpricedInvocations: 0 }],
+    window: { days: 30, from: "2026-09-15", to: "2026-10-14" }, pricingConfigured: true, estimateNote: "Not a bill.", checkedAt: new Date(NOW).toISOString(),
+    ...over,
+  },
+  safeguards: {
+    thresholds: {
+      fleet: { key: "ai_spend_alert_fleet_usd_24h", label: "AI spend alert — fleet", usd: 10, defaultUsd: 10, origin: "DEFAULT", updatedAt: null },
+      user: { key: "ai_spend_alert_user_usd_24h", label: "AI spend alert — per customer", usd: 3, defaultUsd: 3, origin: "DEFAULT", updatedAt: null },
+    },
+    allowance: { key: "aiDailyUsdAllowance", label: "AI daily allowance (USD, estimated)", description: "Estimated AI spend a customer may cause per UTC day.", ceilingUsd: 20,
+      policy: { key: "BETA_FULL_ACCESS_V1", label: "Beta — full access (v1)", usd: 5 }, overlay: { key: "FOUNDER_INTERNAL_V1", label: "Founder / internal (v1)", usd: 20 } },
+    alertRuleId: "ai-spend-high", thresholdWritePath: "set via admin settings (validated setting path)", checkedAt: new Date(NOW).toISOString(),
+  },
 });
 
 const surfaces = (html: string) => (html.match(/<section/g) ?? []).length;
@@ -150,6 +174,35 @@ console.log("\n4. Economics surface");
   check("no AI pricing: Unavailable with reason and NO spend bars", /no AI pricing configured/.test(noPricing) && !/Estimated AI spend per UTC day/.test(noPricing));
   const plaidFailed = renderToStaticMarkup(createElement(EconomicsSurface, { plaid: failed, trend: ok(trend()), nowMs: NOW }));
   check("each authority keeps its own fetch state: Plaid alert beside a live AI figure", /role="alert"/.test(plaidFailed) && /\$0\.53/.test(plaidFailed));
+}
+
+console.log("\n4b. BETA C6 — spend by surface: the headline is CUSTOMER spend; the harness is overhead beside it, never inside it");
+{
+  const s = spendResp().spend;
+  const r = customerSpendReading(s);
+  check("customer reading = chat + brief, with the split, the invocation count, the estimate caption and the coverage statement",
+    r.kind === "figure" && r.value === "$0.40" && /chat \$0\.30 · brief \$0\.10/.test(r.qualifier) && /12 invocations/.test(r.qualifier) && /estimate, not a bill/.test(r.qualifier) && /every invocation priced/.test(r.qualifier));
+  check("the overhead line names the harness dollars and says it is not customer spend", /harness \$1\.90/.test(overheadText(s)) && /372 invocations/.test(overheadText(s)) && /not customer spend/.test(overheadText(s)));
+  const gap = spendResp({ unpriced: { tokens: 500, invocations: 3, models: ["OPENAI:gpt-7"] } }).spend;
+  check("unpriced invocations are COUNTED with their model and pointed at the rate card, never priced at $0", /3 unpriced invocations not counted \(OPENAI:gpt-7\)/.test(unpricedText(gap)) && /see rate card/.test(unpricedText(gap)));
+  check("no pricing ⇒ unavailable with the reason", customerSpendReading(spendResp({ pricingConfigured: false }).spend).kind === "unavailable");
+  const empty = customerSpendReading(spendResp({ customer: { chat: fig(null, 0), brief: fig(null, 0), total: fig(null, 0) } }).spend);
+  check("no customer invocation ⇒ unavailable with THAT reason, not $0", empty.kind === "unavailable" && /no customer invocations/.test(empty.reason));
+  const pts = customerSpendPerDay(s, NOW);
+  check("customer per-day carries the customer figure only; unobserved days are gaps; the harness never leaks into a bar",
+    pts.find((p) => p.key === "2026-10-12")?.value === 0.3 && pts.find((p) => p.key === "2026-10-13")?.value === null && pts.every((p) => p.value !== 1.9));
+  check("the counter figure is named as the cross-check it is", counterCrossCheckText(trend()) === "counter cross-check (all surfaces): $0.53" && /unavailable/.test(counterCrossCheckText(trend({ pricingConfigured: false }))));
+
+  const html = renderToStaticMarkup(createElement(AiActivitySurface, { trend: ok(trend()), ops: ok(ops()), spend: ok(spendResp()), nowMs: NOW }));
+  check("AI activity: the headline is the CUSTOMER estimate; harness stated beside it as overhead; the counter as cross-check",
+    /Estimated customer spend/.test(html) && /\$0\.40/.test(html) && /harness \$1\.90/.test(html) && /not customer spend/.test(html) && /counter cross-check \(all surfaces\): \$0\.53/.test(html));
+  const econ = renderToStaticMarkup(createElement(EconomicsSurface, { plaid: ok(plaid()), trend: ok(trend()), spend: ok(spendResp()), nowMs: NOW }));
+  check("Economics: customer estimate headline and CUSTOMER per-day bars, labelled as such", /customer estimate/.test(econ) && /\$0\.40/.test(econ) && /Estimated customer AI spend per UTC day/.test(econ) && /never \$0/.test(econ));
+  const trendHtml = renderToStaticMarkup(createElement(AiTrendSurface, { section: { id: "ops_ai_trend", label: "AI usage trend" } as never, data: trend(), spend: ok(spendResp()), nowMs: NOW }));
+  check("Trend widget: a Customer spend stat beside the counter estimate, the counter labelled as every surface, harness included", /Customer spend/.test(trendHtml) && /Counter estimate/.test(trendHtml) && /harness included/.test(trendHtml));
+  const spendFailed = renderToStaticMarkup(createElement(EconomicsSurface, { plaid: ok(plaid()), trend: ok(trend()), spend: failed, nowMs: NOW }));
+  check("allocation unavailable ⇒ the counter figure stands, SAID to cover every surface (never presented as customer spend)", /\$0\.53/.test(spendFailed) && /allocation unavailable/.test(spendFailed) && /covers every surface/.test(spendFailed) && !/customer estimate/.test(spendFailed));
+  check("every surface states the customer/overhead rule in its footnote", [html, econ, trendHtml].every((h) => /never inside it/.test(h)));
 }
 
 console.log("\n5. activity feed view");

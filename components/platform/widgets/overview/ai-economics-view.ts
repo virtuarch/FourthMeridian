@@ -26,6 +26,8 @@ import type { MiniBarPoint, DistributionSegment, StatusTone } from "../../platfo
 import type { AiUsageTrend } from "@/lib/platform/ai/ai-usage";
 import type { AiFailureCounts } from "@/lib/platform/ai/invocations";
 import type { PlaidUsage } from "@/lib/platform/plaid/usage";
+import type { AiSpendOverview } from "@/lib/platform/ai/spend-by-surface";
+import type { SpendFigure } from "@/lib/platform/ai/spend-by-surface-core";
 
 const DAY_MS = 86_400_000;
 
@@ -107,6 +109,65 @@ export function aiOutcomeSegments(returned: number, failures: AiFailureCounts): 
     { word: "rate limited", count: failures.rateLimited, tone: tone("warn") },
     { word: "quota", count: failures.quota, tone: tone("bad") },
   ];
+}
+
+// ── Spend by surface (BETA C6) ───────────────────────────────────────────────
+
+export const CUSTOMER_SPEND_NOTE = "Customer spend = Conversations + Daily Brief from the invocation ledger; the evaluation harness and any other or unattributed surface are overhead, shown beside it, never inside it.";
+
+type SpendShape = Pick<AiSpendOverview, "customer" | "overhead" | "unpriced" | "pricingConfigured">;
+
+const figureUsd = (f: SpendFigure): string => (f.usd === null ? "—" : fmtUsd(f.usd));
+
+/** "3 unpriced invocations not counted (OPENAI:gpt-7)" or "every invocation priced". Never folds unpriced at $0. */
+export function unpricedText(spend: Pick<AiSpendOverview, "unpriced">): string {
+  const u = spend.unpriced;
+  if (u.invocations === 0) return "every invocation priced";
+  return `${fmtCount(u.invocations)} unpriced invocation${u.invocations === 1 ? "" : "s"} not counted (${u.models.join(", ") || "no model named"}) — see rate card`;
+}
+
+/** The overhead line: what the platform, not a customer, caused. */
+export function overheadText(spend: Pick<AiSpendOverview, "overhead">): string {
+  const o = spend.overhead;
+  const parts = [`harness ${figureUsd(o.harness)}`];
+  if (o.other.invocations > 0) parts.push(`other/unattributed ${figureUsd(o.other)}`);
+  return `overhead ${figureUsd(o.total)} (${parts.join(" · ")}; ${fmtCount(o.total.invocations)} invocation${o.total.invocations === 1 ? "" : "s"}) — not customer spend`;
+}
+
+/** The counter-based figure, named as the cross-check it is. */
+export function counterCrossCheckText(trend: Pick<AiUsageTrend, "totals" | "pricingConfigured">): string {
+  if (!trend.pricingConfigured || trend.totals.estimatedSpendUsd == null) return "counter cross-check (all surfaces): unavailable";
+  return `counter cross-check (all surfaces): ${fmtUsd(trend.totals.estimatedSpendUsd)}`;
+}
+
+/** The headline: estimated CUSTOMER spend with chat/brief split, coverage and the estimate caption. */
+export function customerSpendReading(spend: SpendShape):
+  | { kind: "figure"; value: string; qualifier: string }
+  | { kind: "unavailable"; reason: string; qualifier: string } {
+  const coverage = unpricedText(spend);
+  if (!spend.pricingConfigured) return { kind: "unavailable", reason: "no AI pricing configured — usage is shown, spend is not", qualifier: coverage };
+  const c = spend.customer;
+  if (c.total.usd === null) {
+    const reason = c.total.invocations === 0 ? "no customer invocations in the window" : "no customer invocation in the window could be priced";
+    return { kind: "unavailable", reason, qualifier: `${ESTIMATE_CAPTION} · ${coverage}` };
+  }
+  return {
+    kind: "figure",
+    value: fmtUsd(c.total.usd),
+    qualifier: `chat ${figureUsd(c.chat)} · brief ${figureUsd(c.brief)} · ${fmtCount(c.total.invocations)} invocation${c.total.invocations === 1 ? "" : "s"} · ${ESTIMATE_CAPTION} · ${coverage}`,
+  };
+}
+
+/** Estimated CUSTOMER spend per UTC day; a day with no priced customer invocation is a gap, never $0. */
+export function customerSpendPerDay(spend: Pick<AiSpendOverview, "byDay" | "pricingConfigured">, nowMs: number, days: number = AI_WINDOW_DAYS): MiniBarPoint[] {
+  const byDay = new Map(spend.byDay.map((d) => [d.day, d] as const));
+  return utcDayKeys(nowMs, days).map((key) => {
+    const d = byDay.get(key);
+    if (!d || !spend.pricingConfigured || d.customerUsd == null) {
+      return { key, value: null, title: d ? `${key}: no priced customer invocation${d.unpricedInvocations ? ` (${d.unpricedInvocations} unpriced)` : ""}` : `${key}: no observation` };
+    }
+    return { key, value: d.customerUsd, title: `${key}: ${fmtUsd(d.customerUsd)} customer estimate${d.unpricedInvocations ? ` · ${d.unpricedInvocations} unpriced not counted` : ""}` };
+  });
 }
 
 // ── Economics ────────────────────────────────────────────────────────────────

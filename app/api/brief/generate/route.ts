@@ -11,9 +11,14 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'crypto';
 import { requireUser } from '@/lib/session';
 import { limitByUser } from '@/lib/rate-limit';
 import { entitlementsForUser, refuseIfDisabled } from '@/lib/entitlements/consume';
+import { dailyAiAllowanceFor, allowanceRefusal } from '@/lib/ai/allowance';
+import { assertPricedModel, UnpricedModelError, UNPRICED_MODEL_CODE } from '@/lib/ai/provider';
+import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
+import { BRIEF_MODEL } from '@/lib/ai/brief/daily-brief';
 import { generateBriefResponse } from '@/lib/ai/brief/view';
 
 export const preferredRegion = 'sin1';
@@ -23,6 +28,10 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
+
+// BETA C7 — the customer's sentence when the Brief's model cannot be priced.
+const UNPRICED_BRIEF = 'The Daily Brief is paused: the model in use can’t be priced yet, so your '
+  + 'daily AI allowance can’t be checked. Nothing was changed. Please try again later.';
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const [user, authErr] = await requireUser();
@@ -40,6 +49,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const limited = await limitByUser(user.id, 'ai-brief-generate', { limit: 20, windowSec: 60 });
     if (limited) return limited;
   }
+  // BETA C7 — the daily allowance, after the pacing window and before any claim
+  // or model call. The same verdict and the same refusal body as Conversations
+  // (`{ error, code: "AI_ALLOWANCE", spentUsd, allowanceUsd }`): the allowance is
+  // ONE bound across both surfaces. Fail closed when today's usage has an
+  // unpriceable invocation. The stored Brief stays readable through GET /api/brief.
+  {
+    const allowance = await dailyAiAllowanceFor(user.id, entitlements);
+    const refused = allowanceRefusal(allowance, 'The Daily Brief');
+    if (refused) return refused;
+  }
 
   let spaceId: unknown;
   try {
@@ -49,6 +68,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
   if (typeof spaceId !== 'string' || spaceId.length === 0) {
     return NextResponse.json({ error: 'spaceId is required' }, { status: 400, headers: NO_STORE });
+  }
+
+  // BETA C7 — THE MODEL MUST BE PRICEABLE BEFORE A CLAIM IS TAKEN. Generation
+  // runs inside the lifecycle, which types a provider throw as PROVIDER_ERROR
+  // ("Couldn't update" on the page — no sentence of its own reaches the customer)
+  // and a failed claim starts the generation cooldown. So the provider
+  // chokepoint's own check runs here first, under the Brief's attribution: an
+  // unpriceable model refuses with a clear 503 and ONE FAILED / UNPRICED_MODEL
+  // fact, and nothing is claimed. (Conversations answers the same gap from the
+  // turn loop's recorded error — app/api/ai/chat.) A priced model costs nothing here.
+  // Attributed to the AUTHENTICATED user only: the Space named in the body is not
+  // yet proven to be theirs (generateBriefResponse resolves membership), and an
+  // unverified id is not written onto a ledger row.
+  try {
+    runWithAiInvocationContext(
+      { correlationId: randomUUID(), turnIndex: 0, surface: 'brief', subSurface: 'brief:preflight', userId: user.id },
+      () => assertPricedModel(BRIEF_MODEL));
+  } catch (err) {
+    if (err instanceof UnpricedModelError) {
+      return NextResponse.json({ error: UNPRICED_BRIEF, code: UNPRICED_MODEL_CODE }, { status: 503, headers: NO_STORE });
+    }
+    console.error('[brief] pricing pre-flight failed:', err);
+    return NextResponse.json({ error: 'The brief could not be prepared right now.' }, { status: 503, headers: NO_STORE });
   }
 
   try {

@@ -31,6 +31,7 @@ import { evaluatePlatformAlerts } from "@/lib/alerts/run";
 import type { ConnectionHealthResult, HealthState } from "@/lib/connections/health";
 import type { ResourceFreshnessResult, ResourceFreshnessReport, FreshnessHealthState } from "@/lib/platform/resource-freshness";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
+import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -67,6 +68,9 @@ function connHealth(counts: Partial<Record<HealthState, number>>): ConnectionHea
 function aiHealth(o: Partial<AiFailureHealth>): AiFailureHealth {
   return { windowHours: 24, returned: 0, failed: 0, timeouts: 0, rateLimited: 0, quota: 0, lastFailureAt: null, lastQuotaAt: null, checkedAt: NOW.toISOString(), ...o };
 }
+function aiSpend(o: Partial<AiSpendHealth>): AiSpendHealth {
+  return { windowHours: 24, fleetUsd: null, maxUserUsd: null, maxUserRef: null, customers: 0, customersAtOrOverThreshold: 0, customerInvocations: 0, unpricedInvocations: 0, unpricedModels: [], thresholds: { fleetUsd: 10, userUsd: 3 }, checkedAt: NOW.toISOString(), ...o };
+}
 function resource(id: string, state: FreshnessHealthState, trustLevel: "high" | "medium" | "low" | "unknown" = "low"): ResourceFreshnessReport {
   return {
     resource: id, label: id, newestObservedDate: null, ageHours: state === "stale" ? 96 : null, ageDays: state === "stale" ? 4 : null,
@@ -78,18 +82,19 @@ function freshness(resources: ResourceFreshnessReport[]): ResourceFreshnessResul
   return { checkedAt: NOW, allFresh: resources.every((r) => r.healthState === "fresh" || r.healthState === "idle"), resources };
 }
 function outputs(o: Partial<AuthorityOutputs>): AuthorityOutputs {
-  return { jobHealth: null, connectionHealth: null, resourceFreshness: null, aiFailures: null, ...o };
+  return { jobHealth: null, connectionHealth: null, resourceFreshness: null, aiFailures: null, aiSpend: null, ...o };
 }
 const ALL_ON = () => true;
 
 // ── Registry shape ───────────────────────────────────────────────────────────────
 
 console.log("registry");
-check("six rules (five initial + ai-provider-failing)", ALERT_RULES.length === 6);
-check("five live rules", ALERT_RULES.filter((r) => r.live).length === 5);
+check("seven rules (five initial + ai-provider-failing + ai-spend-high)", ALERT_RULES.length === 7);
+check("six live rules", ALERT_RULES.filter((r) => r.live).length === 6);
 check("quota-low is the sole dormant rule", ALERT_RULES.filter((r) => !r.live).map((r) => r.id).join() === "quota-low");
-check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 6);
+check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 7);
 check("ai-provider-failing reads the ai-failures authority", ALERT_RULES.find((r) => r.id === "ai-provider-failing")?.authority === "ai-failures");
+check("ai-spend-high reads the ai-spend authority and says critical = twice the threshold", ALERT_RULES.find((r) => r.id === "ai-spend-high")?.authority === "ai-spend" && /critical at or above twice/.test(ALERT_RULES.find((r) => r.id === "ai-spend-high")!.description));
 
 // ── Engine: job-failing ──────────────────────────────────────────────────────────
 
@@ -156,6 +161,50 @@ console.log("engine · ai-failing");
   check("rate limits alone never fire (retried by design)", sig({ returned: 3, rateLimited: 9 }).length === 0);
   const both = sig({ returned: 0, failed: 1, quota: 2 });
   check("quota + total failure ⇒ two independent breaches", both.length === 2 && new Set(both.map((s) => s.dedupeKey)).size === 2);
+}
+
+// ── Engine: ai-spend (BETA C7) ───────────────────────────────────────────────────
+
+console.log("engine · ai-spend");
+{
+  const sig = (o: Partial<AiSpendHealth>) =>
+    evaluateAlertRules(outputs({ aiSpend: aiSpend(o) }), ALL_ON).filter((s) => s.kind === "ai-spend");
+  check("quiet fleet, every invocation priced ⇒ no signal", sig({ fleetUsd: 2.5, maxUserUsd: 1.2, maxUserRef: "user …abc123", customers: 3, customerInvocations: 40 }).length === 0);
+  check("nothing priced and nothing unpriced (empty window) ⇒ no signal", sig({}).length === 0);
+
+  const fleet = sig({ fleetUsd: 10, maxUserUsd: 2, maxUserRef: "user …abc123", customers: 5, customerInvocations: 120 });
+  check("fleet at the threshold ⇒ ONE warning on the per-day fleet key", fleet.length === 1 && fleet[0].severity === "warning" && fleet[0].dedupeKey === "ai-spend-high:fleet:2026-07-16");
+  check("fleet summary names the estimated USD and the threshold", /\$10\.00/.test(fleet[0].summary) && /threshold of \$10/.test(fleet[0].summary) && /estimate, not a bill/.test(fleet[0].summary));
+  check("fleet summary carries no unpriced line when everything was priced", !/unpriced/.test(fleet[0].summary));
+  check("fleet at twice the threshold ⇒ critical", sig({ fleetUsd: 20 })[0]?.severity === "critical");
+  check("fleet just under twice ⇒ still a warning", sig({ fleetUsd: 19.99 })[0]?.severity === "warning");
+  check("fleet just under the threshold ⇒ no signal", sig({ fleetUsd: 9.99 }).length === 0);
+
+  const user = sig({ fleetUsd: 4, maxUserUsd: 3, maxUserRef: "user …abc123", customers: 2, customerInvocations: 30 });
+  check("one customer at the per-user threshold ⇒ warning on a per-day, per-opaque-ref key", user.length === 1 && user[0].severity === "warning" && user[0].dedupeKey === "ai-spend-high:user:2026-07-16:abc123");
+  check("user summary names the opaque ref, the USD and the threshold — no email, no full id", /user …abc123/.test(user[0].summary) && /\$3\.00/.test(user[0].summary) && /threshold of \$3/.test(user[0].summary) && !/@/.test(user[0].summary));
+  check("one customer at twice the per-user threshold ⇒ critical", sig({ maxUserUsd: 6, maxUserRef: "user …abc123" })[0]?.severity === "critical");
+  check("a lone breacher's summary does not claim company", !/customers are at or above/.test(user[0].summary));
+  const crowd = sig({ fleetUsd: 4, maxUserUsd: 3.5, maxUserRef: "user …abc123", customers: 4, customersAtOrOverThreshold: 3, customerInvocations: 30 });
+  check("several customers at or over the per-user threshold ⇒ ONE signal that names the largest and says how many are over",
+    crowd.length === 1 && /user …abc123/.test(crowd[0].summary) && /3 customers are at or above it/.test(crowd[0].summary));
+  check("per-user just under the threshold ⇒ no signal", sig({ maxUserUsd: 2.99, maxUserRef: "user …abc123" }).length === 0);
+
+  // ⚠️ FAIL CLOSED. An unpriced invocation fires on its own, whatever the dollars say.
+  const unpriced = sig({ fleetUsd: 0.4, maxUserUsd: 0.2, maxUserRef: "user …abc123", unpricedInvocations: 3, unpricedModels: ["OPENAI:gpt-7-preview"] });
+  check("any unpriced invocation ⇒ a warning even when spend is far under both thresholds", unpriced.length === 1 && unpriced[0].severity === "warning" && unpriced[0].dedupeKey === "ai-spend-high:unpriced:2026-07-16");
+  check("the unpriced summary counts them, names the model and says not counted / see rate card", /3 invocation\(s\) on unpriced models \(OPENAI:gpt-7-preview\)/.test(unpriced[0].summary) && /not counted; see rate card/.test(unpriced[0].summary));
+  const both = sig({ fleetUsd: 12, maxUserUsd: 1, maxUserRef: "user …abc123", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] });
+  check("fleet breach + unpriced ⇒ two independent breaches, and the fleet summary carries the unpriced line", both.length === 2 && new Set(both.map((s) => s.dedupeKey)).size === 2 && /not counted; see rate card/.test(both.find((s) => s.dedupeKey.includes(":fleet:"))!.summary));
+  check("no dollar value in any dedupe key", [...fleet, ...user, ...unpriced, ...both].every((s) => !/\$|\d+\.\d{2}/.test(s.dedupeKey)));
+
+  // Dedupe across cycles: the same day's breach is suppressed within the window; a new UTC day is a new key.
+  const first = decideDeliveries(fleet, new Map(), NOW_MS);
+  check("first cycle delivers the fleet breach", first.toSend.length === 1);
+  const again = decideDeliveries(fleet, new Map([[fleet[0].dedupeKey, NOW_MS - 2 * HOUR]]), NOW_MS + 4 * HOUR);
+  check("same UTC day, within the re-notify window ⇒ suppressed", again.suppressed.length === 1 && again.toSend.length === 0);
+  const nextDay = sig({ fleetUsd: 10, checkedAt: "2026-07-17T08:00:00Z" });
+  check("the next UTC day is a new breach key", nextDay[0].dedupeKey === "ai-spend-high:fleet:2026-07-17" && decideDeliveries(nextDay, new Map([[fleet[0].dedupeKey, NOW_MS]]), NOW_MS + 24 * HOUR).toSend.length === 1);
 }
 
 // ── Engine: resource-stale ───────────────────────────────────────────────────────
@@ -233,7 +282,7 @@ console.log("history derivation");
   check("prior-fired keeps the newest delivery per key", prior.get("job-failing:a") === Date.parse("2026-07-15T07:30:00Z"));
 
   const views = deriveAlertRuleViews(ALERT_RULES, ALL_ON, [s2, s1]);
-  check("a view per rule", views.length === 6);
+  check("a view per rule", views.length === 7);
   check("last-triggered is the newest across runs", views.find((v) => v.id === "job-failing")!.lastTriggeredAtISO === "2026-07-15T07:30:00Z");
   check("never-fired rule has null last-triggered", views.find((v) => v.id === "scheduler-silent")!.lastTriggeredAtISO === null);
   check("dormant rule reported not-live", views.find((v) => v.id === "quota-low")!.live === false);
@@ -281,7 +330,7 @@ async function orchestratorTests() {
   check("delivered both", s1.counts.delivered === 2 && s1.deliveryStatus === "sent");
   check("one email to the destination", sent.length === 1 && sent[0].to === "ops@fourthmeridian.com" && sent[0].count === 2);
   check("summary records fired for suppression/history", s1.fired.length === 2);
-  check("per-rule outcomes list all six rules", s1.rules.length === 6);
+  check("per-rule outcomes list all seven rules", s1.rules.length === 7);
   check("dormant rule not firing in outcomes", s1.rules.find((r) => r.id === "quota-low")!.firing === false);
 
   // Second cycle sees the first as recent history ⇒ suppresses (no second email).
@@ -320,6 +369,11 @@ console.log("doctrine");
   check("orchestrator consumes the connection-health authority", /getConnectionHealth/.test(runSrc));
   check("orchestrator consumes the OPS-5 resource-freshness authority", /checkResourceFreshness/.test(runSrc));
   check("orchestrator consumes the AI failure authority (OPERATIONALIZATION P0)", /getAiFailureHealth\(/.test(runSrc));
+  check("orchestrator consumes the AI spend authority (BETA C7)", /getAiSpendHealth\(24\)/.test(runSrc));
+  check("the engine judges against the thresholds the authority carried, never a literal of its own",
+    /spend\.thresholds\.fleetUsd/.test(evaluateSrc) && /spend\.thresholds\.userUsd/.test(evaluateSrc) && !/ai_spend_alert/.test(evaluateSrc));
+  check("the thresholds are resolved through the platform-settings descriptors (validated, default on missing or invalid)",
+    /validateSetting\(/.test(read("lib/platform/ai/spend-thresholds.ts")) && /getSettingDescriptor\(/.test(read("lib/platform/ai/spend-thresholds.ts")) && /INVALID_SETTING/.test(read("lib/platform/ai/spend-thresholds.ts")));
   check("REVOKED is no longer an acute connection state (revoked connections are retired, not unhealthy)",
     !/CRITICAL_CONNECTION_STATES[\s\S]*?"REVOKED"[\s\S]*?\]\)/.test(evaluateSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "")));
   check("destination is the OPS-1 email seam", /@\/lib\/email\/send/.test(runSrc));
@@ -332,7 +386,7 @@ function summaryWith(fired: { ruleId: string; dedupeKey: string; at: string }[])
     evaluatedAtISO: fired[fired.length - 1]?.at ?? NOW.toISOString(),
     destination: "ops@fourthmeridian.com",
     deliveryStatus: fired.length ? "sent" : "none",
-    counts: { evaluated: 6, live: 5, enabled: 5, firing: fired.length, delivered: fired.length, suppressed: 0 },
+    counts: { evaluated: 7, live: 6, enabled: 6, firing: fired.length, delivered: fired.length, suppressed: 0 },
     rules: [],
     fired: fired.map((f) => ({ ruleId: f.ruleId, kind: "job-failing", dedupeKey: f.dedupeKey, severity: "critical", summary: "x", deliveredAtISO: f.at })),
   };
