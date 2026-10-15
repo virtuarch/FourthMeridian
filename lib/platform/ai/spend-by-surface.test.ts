@@ -151,7 +151,9 @@ async function main() {
       fleet: { key: AI_SPEND_THRESHOLD_KEYS.fleet, label: "f", usd: 10, defaultUsd: 10, origin: "DEFAULT", updatedAt: null },
       user: { key: AI_SPEND_THRESHOLD_KEYS.user, label: "u", usd: 3, defaultUsd: 3, origin: "DEFAULT", updatedAt: null },
     }) });
-    check("names the rule and the write path, never a control", c.alertRuleId === "ai-spend-high" && /admin settings/.test(c.thresholdWritePath));
+    check("names BOTH spend rules (the C7 rule was split) and points the write path at the cost-controls route, never a control of its own",
+      c.alertRuleIds.fleet === "ai-spend-fleet-high" && c.alertRuleIds.user === "ai-spend-user-high" && c.alertRuleId === "ai-spend-fleet-high and ai-spend-user-high"
+      && /ai-cost-controls/.test(c.thresholdWritePath) && c.controlsUrl === "/api/platform/platform-ops/ai-cost-controls");
   }
 
   console.log("\n6. the allowance's ledger read — ONE customer, today (BETA C7)");

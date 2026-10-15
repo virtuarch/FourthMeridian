@@ -29,6 +29,8 @@ import {
   PlatformSettingValidationError, descriptorsForSurface, validateSettingValue,
   type SettingDescriptor, type SettingValidation, type SettingWriteSurface,
 } from "@/lib/platform/settings/descriptor.core";
+import { ENTITLEMENT_DIMENSIONS } from "@/lib/entitlements/catalogue";
+import { AI_COST_CONTROL_DEFAULTS, AI_SPEND_RULE_IDS } from "@/lib/platform/ai/cost-controls.types";
 
 export { PlatformSettingValidationError } from "@/lib/platform/settings/descriptor.core";
 export type { SettingDescriptor, SettingValidation, SettingWriteSurface, PolicyClass } from "@/lib/platform/settings/descriptor.core";
@@ -75,13 +77,37 @@ export const PlatformSettingKey = {
   JOB_CADENCE_FX:            "job_cadence_hours_fetch-fx-rates",
   JOB_CADENCE_PRICES:        "job_cadence_hours_fetch-security-prices",
   JOB_CADENCE_ALERTS:        "job_cadence_hours_evaluate-alerts",
-  // BETA C7 — the two spend-alert thresholds the `ai-spend-high` rule judges
-  // against (estimated USD over the trailing 24 h, priced by the code-owned
-  // rate card). Whole dollars; read only through lib/alerts; written through the
-  // validated setting path behind CONTROL. Provisional values set by the owner
-  // on 2026-10-15: fleet $10, per customer $3.
+  // BETA C7 — the two spend-alert thresholds the `ai-spend-fleet-high` and
+  // `ai-spend-user-high` rules judge against (estimated USD over the trailing
+  // 24 h, priced by the code-owned rate card). Whole dollars; read only through
+  // lib/alerts; written through the validated setting path behind CONTROL
+  // (AI COST CONTROLS: lib/platform/ai/cost-controls.ts). Provisional values
+  // set by the owner on 2026-10-15: fleet $10, per customer $3.
   AI_SPEND_ALERT_FLEET_USD:  "ai_spend_alert_fleet_usd_24h",
   AI_SPEND_ALERT_USER_USD:   "ai_spend_alert_user_usd_24h",
+  // AI COST CONTROLS (2026-10-15) — the five keys behind the remaining operator
+  // controls (lib/platform/ai/cost-controls.types.ts is the frozen contract):
+  //   · ai_daily_allowance_enforced   whether ALLOWANCE_EXHAUSTED is refused at
+  //                                   all (pricing validation stays either way);
+  //   · ai_daily_allowance_usd        the PLATFORM value of the per-customer
+  //                                   daily allowance, between policy and overlay
+  //                                   in precedence, bounded by the catalogue
+  //                                   ceiling (derived, never hand-copied);
+  //   · alert_rule_enabled:<rule>     the alert engine's own enabled-override
+  //                                   convention (lib/alerts/evaluate.ts
+  //                                   alertEnabledKey) for the two spend rules,
+  //                                   registered so they validate and audit like
+  //                                   every other key;
+  //   · ai_paid_requests_paused       the kill switch. ABSENT_MEANS_OFF and an
+  //                                   unreadable row DENIES (the admission-fact
+  //                                   idiom, lib/platform/ai/paid-requests-admission.ts).
+  // Read only through lib/platform/ai; written only by the cost-controls
+  // mutation service behind CONTROL, with a reason. Reset = delete.
+  AI_DAILY_ALLOWANCE_ENFORCED: "ai_daily_allowance_enforced",
+  AI_DAILY_ALLOWANCE_USD:      "ai_daily_allowance_usd",
+  ALERT_RULE_ENABLED_AI_SPEND_USER_HIGH:  "alert_rule_enabled:ai-spend-user-high",
+  ALERT_RULE_ENABLED_AI_SPEND_FLEET_HIGH: "alert_rule_enabled:ai-spend-fleet-high",
+  AI_PAID_REQUESTS_PAUSED:     "ai_paid_requests_paused",
 } as const;
 
 export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof PlatformSettingKey];
@@ -127,9 +153,20 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   "job_cadence_hours_fetch-fx-rates":        String(jobCadenceDefault("fetch-fx-rates")),
   "job_cadence_hours_fetch-security-prices": String(jobCadenceDefault("fetch-security-prices")),
   "job_cadence_hours_evaluate-alerts":       String(jobCadenceDefault("evaluate-alerts")),
-  ai_spend_alert_fleet_usd_24h: "10",
-  ai_spend_alert_user_usd_24h:  "3",
+  // AI COST CONTROLS — every default is the frozen contract's, never retyped here.
+  ai_spend_alert_fleet_usd_24h: String(AI_COST_CONTROL_DEFAULTS["fleetAlert.thresholdUsd"]),
+  ai_spend_alert_user_usd_24h:  String(AI_COST_CONTROL_DEFAULTS["userAlert.thresholdUsd"]),
+  ai_daily_allowance_enforced:  String(AI_COST_CONTROL_DEFAULTS["allowance.enforced"]),
+  ai_daily_allowance_usd:       String(AI_COST_CONTROL_DEFAULTS["allowance.usd"]),
+  "alert_rule_enabled:ai-spend-user-high":  String(AI_COST_CONTROL_DEFAULTS["userAlert.enabled"]),
+  "alert_rule_enabled:ai-spend-fleet-high": String(AI_COST_CONTROL_DEFAULTS["fleetAlert.enabled"]),
+  // Ships OFF, and absence IS off (ABSENT_MEANS_OFF): the default documents the
+  // contract; the admission reader tells MISSING from INVALID itself.
+  ai_paid_requests_paused:      String(AI_COST_CONTROL_DEFAULTS["killSwitch.paused"]),
 };
+
+/** The catalogue ceiling of the per-customer daily allowance — the platform value's upper bound, derived. */
+export const AI_DAILY_ALLOWANCE_CEILING_USD: number = ENTITLEMENT_DIMENSIONS.aiDailyUsdAllowance.ceiling;
 
 /** The registry-derived default and bounds for an editable job's cadence. */
 function jobCadenceFacts(name: string): { defaultHours: number; minHours: number; maxHours: number } {
@@ -190,6 +227,25 @@ const admissionFact = (key: PlatformSettingKeyType, label: string, description: 
   // Absence is OFF by contract (policy-core.ts); an explicit "false" row is
   // equivalent, and reset = delete returns to the never-configured state.
   missingRow: "ABSENT_MEANS_OFF",
+  writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
+  operatorConfigurable: true, resettable: true,
+});
+
+/**
+ * AI COST CONTROLS — an operator-configurable boolean written only by the
+ * cost-controls mutation service behind CONTROL. `missingRow` is the one thing
+ * that differs between them: the enforcement flag and the two alert-enabled
+ * keys FALL BACK to their default (an invalid row ⇒ enforced / enabled), while
+ * the kill switch is an admission fact (absence is OFF; an unreadable row
+ * denies — judged by lib/platform/ai/paid-requests-admission.ts).
+ */
+const aiCostBoolean = (
+  key: PlatformSettingKeyType, label: string, description: string,
+  missingRow: Descriptor["missingRow"] = "FALLBACK_TO_DEFAULT",
+): Descriptor => ({
+  key, label, description,
+  class: "OPERATOR_CONFIGURABLE", valueType: "boolean", default: DEFAULTS[key],
+  missingRow,
   writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
   operatorConfigurable: true, resettable: true,
 });
@@ -258,7 +314,7 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
   ),
   ai_spend_alert_fleet_usd_24h: {
     key: "ai_spend_alert_fleet_usd_24h", label: "AI spend alert — fleet (USD / 24 h)",
-    description: "Estimated AI spend across every customer surface in the trailing 24 h at or above which the ai-spend-high rule fires. Whole dollars.",
+    description: `Estimated AI spend across every customer surface in the trailing 24 h at or above which the ${AI_SPEND_RULE_IDS.fleet} rule fires. Whole dollars.`,
     class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: 1, max: 100000,
     default: DEFAULTS.ai_spend_alert_fleet_usd_24h, missingRow: "FALLBACK_TO_DEFAULT",
     writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
@@ -266,12 +322,38 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
   },
   ai_spend_alert_user_usd_24h: {
     key: "ai_spend_alert_user_usd_24h", label: "AI spend alert — per customer (USD / 24 h)",
-    description: "Estimated AI spend one customer caused in the trailing 24 h at or above which the ai-spend-high rule fires. Whole dollars.",
+    description: `Estimated AI spend one customer caused in the trailing 24 h at or above which the ${AI_SPEND_RULE_IDS.user} rule fires. Whole dollars.`,
     class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: 1, max: 10000,
     default: DEFAULTS.ai_spend_alert_user_usd_24h, missingRow: "FALLBACK_TO_DEFAULT",
     writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
     operatorConfigurable: true, resettable: true,
   },
+  // ── AI COST CONTROLS ────────────────────────────────────────────────────────
+  ai_daily_allowance_enforced: aiCostBoolean(
+    "ai_daily_allowance_enforced", "AI daily allowance enforced",
+    "While on, a customer at or over their estimated daily AI allowance is refused their next Conversations turn or Daily Brief generation. While off, usage and estimated cost are still recorded and the spend alerts still fire; only the ALLOWANCE_EXHAUSTED refusal is withheld. An unpriceable model still refuses either way.",
+  ),
+  ai_daily_allowance_usd: {
+    key: "ai_daily_allowance_usd", label: "AI daily allowance — platform value (USD / UTC day)",
+    description: "The platform-wide estimated daily AI allowance per customer, in whole dollars. Precedence: a per-customer override, then an assigned overlay, then THIS value, then the policy group; the catalogue ceiling clamps last. Reset = the policy group's value is in force again.",
+    class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: 1, max: AI_DAILY_ALLOWANCE_CEILING_USD,
+    default: DEFAULTS.ai_daily_allowance_usd, missingRow: "FALLBACK_TO_DEFAULT",
+    writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
+    operatorConfigurable: true, resettable: true,
+  },
+  "alert_rule_enabled:ai-spend-user-high": aiCostBoolean(
+    "alert_rule_enabled:ai-spend-user-high", "Per-customer AI spend alert enabled",
+    `Whether the ${AI_SPEND_RULE_IDS.user} rule is evaluated. Disabling it changes evaluation only: the spend fold, the ledger and the Economics figures keep running.`,
+  ),
+  "alert_rule_enabled:ai-spend-fleet-high": aiCostBoolean(
+    "alert_rule_enabled:ai-spend-fleet-high", "Fleet AI spend alert enabled",
+    `Whether the ${AI_SPEND_RULE_IDS.fleet} rule (fleet spend + the unpriced-coverage warning) is evaluated. Disabling it changes evaluation only: the spend fold, the ledger and the Economics figures keep running.`,
+  ),
+  ai_paid_requests_paused: aiCostBoolean(
+    "ai_paid_requests_paused", "Paid AI requests paused",
+    "While on, every new paid AI request — Conversations, the Daily Brief and harness runs — is refused before the allowance is judged and before the provider is reached. No override lifts it. Absence is off; an unreadable value also refuses.",
+    "ABSENT_MEANS_OFF",
+  ),
 };
 
 export function listSettingDescriptors(): Descriptor[] {

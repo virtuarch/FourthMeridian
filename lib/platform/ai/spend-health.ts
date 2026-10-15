@@ -3,7 +3,7 @@
  *
  * ONE small report over the trailing window: estimated USD the FLEET's customer
  * surfaces caused, the LARGEST estimated USD any one customer caused, and how
- * many invocations could not be priced. The `ai-spend-high` rule
+ * many invocations could not be priced. The `ai-spend-fleet-high` / `ai-spend-user-high` rules
  * (lib/alerts) classifies it against the two operator thresholds; nothing here
  * decides a breach.
  *

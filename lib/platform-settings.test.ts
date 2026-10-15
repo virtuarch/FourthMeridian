@@ -13,10 +13,14 @@
 import { readFileSync } from "node:fs";
 import { IndeterminateWriteError } from "@/lib/db/conditional-write";
 import {
-  PlatformSettingKey, PlatformSettingValidationError, SETTING_DESCRIPTORS,
+  AI_DAILY_ALLOWANCE_CEILING_USD, PlatformSettingKey, PlatformSettingValidationError, SETTING_DESCRIPTORS,
   createSettingIfAbsent, deleteSettingIfVersion, isPlatformSettingKey, listSettingDescriptors, setSetting,
   settingKeysForSurface, updateSettingIfVersion, validateSetting,
 } from "@/lib/platform-settings";
+import { AI_COST_CONTROL_DEFAULTS, AI_COST_CONTROL_KEYS, AI_COST_CONTROL_SETTING_KEYS } from "@/lib/platform/ai/cost-controls.types";
+import { ENTITLEMENT_DIMENSIONS } from "@/lib/entitlements/catalogue";
+import { parseAllowanceSettingValue } from "@/lib/entitlements/ai-allowance";
+import { alertEnabledKey } from "@/lib/alerts/evaluate";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -95,7 +99,7 @@ async function main(): Promise<void> {
     check("no security-sensitive or financial-semantic key can become a Platform Ops control", forbidden.length === 0, forbidden.map((d) => d.key).join(", "));
     const ops = settingKeysForSurface("PLATFORM_OPS");
     check("Platform Ops owns exactly the operational policies",
-      [...ops].sort().join(",") === ["ai_spend_alert_fleet_usd_24h", "ai_spend_alert_user_usd_24h", "ingestion_paused", "job_cadence_hours_evaluate-alerts", "job_cadence_hours_fetch-fx-rates", "job_cadence_hours_fetch-security-prices", "maintenance_mode", "refresh_cadence_bank", "refresh_cadence_wallet"].join(","), ops.join(","));
+      [...ops].sort().join(",") === ["ai_daily_allowance_enforced", "ai_daily_allowance_usd", "ai_paid_requests_paused", "ai_spend_alert_fleet_usd_24h", "ai_spend_alert_user_usd_24h", "alert_rule_enabled:ai-spend-fleet-high", "alert_rule_enabled:ai-spend-user-high", "ingestion_paused", "job_cadence_hours_evaluate-alerts", "job_cadence_hours_fetch-fx-rates", "job_cadence_hours_fetch-security-prices", "maintenance_mode", "refresh_cadence_bank", "refresh_cadence_wallet"].join(","), ops.join(","));
     check("every Platform Ops key is operator-configurable, resettable, and gated at the reserved capability",
       ops.every((k) => SETTING_DESCRIPTORS[k].operatorConfigurable && SETTING_DESCRIPTORS[k].resettable && SETTING_DESCRIPTORS[k].writeCapability === "CONTROL"));
     check("security keys are not operator-configurable and not resettable",
@@ -103,6 +107,34 @@ async function main(): Promise<void> {
     check("admission facts declare absence-means-off; cadences fall back to a default",
       SETTING_DESCRIPTORS.maintenance_mode.missingRow === "ABSENT_MEANS_OFF" && SETTING_DESCRIPTORS.refresh_cadence_wallet.missingRow === "FALLBACK_TO_DEFAULT");
     check("every descriptor carries a label and a description", listSettingDescriptors().every((d) => d.label.length > 0 && d.description.length > 0));
+  }
+
+  console.log("\n4b. AI COST CONTROLS — the five new keys: bounds derived, defaults from the frozen contract, kill switch absence-means-off");
+  {
+    for (const control of AI_COST_CONTROL_KEYS) {
+      const key = AI_COST_CONTROL_SETTING_KEYS[control];
+      const d = isPlatformSettingKey(key) ? SETTING_DESCRIPTORS[key] : null;
+      check(`${control} → ${key} is a registered, Platform Ops CONTROL, resettable key`, d !== null && d.writeCapability === "CONTROL" && d.resettable);
+      check(`${key} default equals the contract's`, d?.default === String(AI_COST_CONTROL_DEFAULTS[control]));
+    }
+    check("the allowance's max IS the catalogue ceiling (derived, never hand-copied)",
+      SETTING_DESCRIPTORS.ai_daily_allowance_usd.max === ENTITLEMENT_DIMENSIONS.aiDailyUsdAllowance.ceiling && AI_DAILY_ALLOWANCE_CEILING_USD === ENTITLEMENT_DIMENSIONS.aiDailyUsdAllowance.ceiling && SETTING_DESCRIPTORS.ai_daily_allowance_usd.min === 1);
+    check("allowance 0 refused", refused("ai_daily_allowance_usd", "0") !== null);
+    check("allowance negative refused", refused("ai_daily_allowance_usd", "-3") !== null);
+    check("allowance non-integer refused", refused("ai_daily_allowance_usd", "4.5") !== null);
+    check("allowance above the ceiling refused", /at most 20/.test(refused("ai_daily_allowance_usd", "21") ?? ""));
+    check("allowance 'five' refused", refused("ai_daily_allowance_usd", "five") !== null);
+    check("allowance 20 (the ceiling) and 1 accepted", accepted("ai_daily_allowance_usd", "20") === "20" && accepted("ai_daily_allowance_usd", "1") === "1");
+    check("threshold 0 / negative / non-integer / string refused", refused("ai_spend_alert_user_usd_24h", "0") !== null && refused("ai_spend_alert_fleet_usd_24h", "-1") !== null && refused("ai_spend_alert_user_usd_24h", "2.5") !== null && refused("ai_spend_alert_fleet_usd_24h", "ten") !== null);
+    check("threshold above its max refused", refused("ai_spend_alert_user_usd_24h", "10001") !== null && refused("ai_spend_alert_fleet_usd_24h", "100001") !== null);
+    check("enforced / enabled / paused take only true|false", accepted("ai_daily_allowance_enforced", "false") === "false" && refused("ai_daily_allowance_enforced", "off") !== null
+      && accepted("alert_rule_enabled:ai-spend-user-high", "TRUE") === "true" && refused("alert_rule_enabled:ai-spend-fleet-high", "1") !== null && refused("ai_paid_requests_paused", "yes") !== null);
+    check("the kill switch is ABSENT_MEANS_OFF; the other four fall back to their default",
+      SETTING_DESCRIPTORS.ai_paid_requests_paused.missingRow === "ABSENT_MEANS_OFF" && SETTING_DESCRIPTORS.ai_daily_allowance_enforced.missingRow === "FALLBACK_TO_DEFAULT"
+      && SETTING_DESCRIPTORS["alert_rule_enabled:ai-spend-user-high"].missingRow === "FALLBACK_TO_DEFAULT" && SETTING_DESCRIPTORS.ai_daily_allowance_usd.missingRow === "FALLBACK_TO_DEFAULT");
+    check("the alert-enabled keys are exactly the engine's alertEnabledKey form", alertEnabledKey("ai-spend-user-high") === "alert_rule_enabled:ai-spend-user-high" && alertEnabledKey("ai-spend-fleet-high") === "alert_rule_enabled:ai-spend-fleet-high");
+    check("the pure allowance parser agrees with the descriptor on every integer 0…25",
+      Array.from({ length: 26 }, (_, n) => n).every((n) => (parseAllowanceSettingValue(String(n), 20) !== null) === (accepted("ai_daily_allowance_usd", String(n)) !== null)));
   }
 
   console.log("\n5. the admin security console is no longer an unrestricted PlatformSetting writer");

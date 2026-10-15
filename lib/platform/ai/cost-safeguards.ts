@@ -9,9 +9,14 @@
  *     it (the ceiling, the BETA policy value, the FOUNDER overlay value);
  *   · the alert rule that consumes the thresholds, by id.
  *
- * Display only. The thresholds are changed through the validated setting path
- * (an operator with control-plane access, via the admin settings); the
- * allowance values are code-owned catalogue definitions. Nothing here writes.
+ * Display only. Nothing here writes. AI COST CONTROLS (2026-10-15): the
+ * thresholds, the two alert-enabled flags, the platform allowance value, the
+ * enforcement flag and the kill switch are EDITED through the cost-controls
+ * service (`AI_COST_CONTROLS_URL`); this view keeps its shape for the ai-spend
+ * route's consumers and now points there. The `ai-spend-high` rule was split
+ * into `ai-spend-fleet-high` and `ai-spend-user-high`; `alertRuleIds` names
+ * both and `alertRuleId` carries them as one sentence fragment for the legacy
+ * caption.
  */
 
 import "server-only";
@@ -19,6 +24,7 @@ import {
   BETA_FULL_ACCESS_V1, ENTITLEMENT_DIMENSIONS, FOUNDER_INTERNAL_V1,
 } from "@/lib/entitlements/catalogue";
 import { loadAiSpendThresholds, type AiSpendThreshold } from "@/lib/platform/ai/spend-thresholds";
+import { AI_COST_CONTROLS_URL, AI_SPEND_RULE_IDS } from "@/lib/platform/ai/cost-controls.types";
 
 export interface AllowanceDimensionView {
   key: "aiDailyUsdAllowance";
@@ -33,14 +39,18 @@ export interface AllowanceDimensionView {
 export interface CostSafeguards {
   thresholds: { fleet: AiSpendThreshold; user: AiSpendThreshold };
   allowance: AllowanceDimensionView;
-  /** The rule that judges the thresholds (lib/alerts/rules.ts). */
-  alertRuleId: "ai-spend-high";
-  /** Where a threshold may be changed. Provenance for the operator, not a control. */
+  /** The rules that judge the thresholds (lib/alerts/rules.ts), as one caption fragment: "<fleet> and <user>". */
+  alertRuleId: string;
+  /** The two rule ids, structured (AI COST CONTROLS split). */
+  alertRuleIds: { fleet: string; user: string };
+  /** Where a threshold may be changed. Provenance for the operator; the editor lives at `controlsUrl`. */
   thresholdWritePath: string;
+  /** The cost-controls route (GET read model / PATCH changes). */
+  controlsUrl: string;
   checkedAt: string;
 }
 
-export const THRESHOLD_WRITE_PATH = "set via admin settings (validated setting path)";
+export const THRESHOLD_WRITE_PATH = `set in Policies → AI Cost Controls (${AI_COST_CONTROLS_URL}, CONTROL, reason required)`;
 
 /** PURE — the allowance dimension as the catalogue declares it. */
 export function allowanceDimensionView(): AllowanceDimensionView {
@@ -66,8 +76,10 @@ export async function getCostSafeguards(deps: CostSafeguardsDeps = {}): Promise<
   return {
     thresholds: { fleet: t.fleet, user: t.user },
     allowance: allowanceDimensionView(),
-    alertRuleId: "ai-spend-high",
+    alertRuleId: `${AI_SPEND_RULE_IDS.fleet} and ${AI_SPEND_RULE_IDS.user}`,
+    alertRuleIds: { fleet: AI_SPEND_RULE_IDS.fleet, user: AI_SPEND_RULE_IDS.user },
     thresholdWritePath: THRESHOLD_WRITE_PATH,
+    controlsUrl: AI_COST_CONTROLS_URL,
     checkedAt: now.toISOString(),
   };
 }

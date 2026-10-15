@@ -101,7 +101,8 @@ const spendResp = (over: Partial<AiSpendResponse["spend"]> = {}): AiSpendRespons
     },
     allowance: { key: "aiDailyUsdAllowance", label: "AI daily allowance (USD, estimated)", description: "Estimated AI spend a customer may cause per UTC day.", ceilingUsd: 20,
       policy: { key: "BETA_FULL_ACCESS_V1", label: "Beta — full access (v1)", usd: 5 }, overlay: { key: "FOUNDER_INTERNAL_V1", label: "Founder / internal (v1)", usd: 20 } },
-    alertRuleId: "ai-spend-high", thresholdWritePath: "set via admin settings (validated setting path)", checkedAt: new Date(NOW).toISOString(),
+    alertRuleId: "ai-spend-fleet-high and ai-spend-user-high", alertRuleIds: { fleet: "ai-spend-fleet-high", user: "ai-spend-user-high" },
+    thresholdWritePath: "set in Policies → AI Cost Controls", controlsUrl: "/api/platform/platform-ops/ai-cost-controls", checkedAt: new Date(NOW).toISOString(),
   },
 });
 
