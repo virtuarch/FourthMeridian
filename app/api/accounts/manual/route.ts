@@ -59,6 +59,8 @@ import { isSupportedCurrency }              from "@/lib/fx/config";
 import { withApiHandler }                   from "@/lib/api";
 import { dualWriteSpaceAccountLink }        from "@/lib/accounts/space-account-link";
 import { regenerateSnapshotsForAccounts }   from "@/lib/snapshots/regenerate";
+import { recordInitialValuation, type AcquisitionInput } from "@/lib/assets/valuations";
+import { checkAcquisitionDate, checkEffectiveDate, estimateInstant, isoDateOf } from "@/lib/assets/valuation-series.core";
 
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
@@ -74,6 +76,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     purchaseDate?:  string;
     notes?:         string;
     spaceIds?:  string[];
+    // RWA-2A — optional acquisition facts and the first valuation's date.
+    acquisitionDate?:              string;
+    purchasePriceIsStartingValue?: boolean;
+    valuationDate?:                string;
   };
 
   const {
@@ -111,6 +117,11 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   const normalizedCurrency = currency.trim().toUpperCase();
   if (!isSupportedCurrency(normalizedCurrency))
                                return NextResponse.json({ error: `Unsupported currency "${normalizedCurrency}" — must be USD or one of the supported quote currencies.` }, { status: 400 });
+
+  // ── RWA-2A — the valuation's date and the optional acquisition facts ────────
+  // Validated by the same pure rules the forms use (lib/assets/valuation-series.core.ts).
+  const acquisition = parseAcquisition(body);
+  if ("error" in acquisition) return NextResponse.json({ error: acquisition.error }, { status: 400 });
 
   // ── Get user's personal space ──────────────────────────────────────────
   // ONE short tenant read phase for both membership questions. `SpaceMember`'s
@@ -188,7 +199,8 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         balance,
         currency:    normalizedCurrency,
         syncStatus:  "manual",
-        lastUpdated: new Date(),
+        // RWA-2A — dated by the estimate, so a backdated first value ages correctly.
+        lastUpdated: estimateInstant(acquisition.valuationDate, new Date()),
       },
     });
 
@@ -227,6 +239,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         isCanonical:        true,
       },
     });
+
+    // RWA-2A — the asset's first dated valuation (+ acquisition facts), in the
+    // same transaction, after the links its RLS insert predicate needs.
+    await recordInitialValuation(tx, { financialAccountId: created.id, userId, value: balance, currency: normalizedCurrency, effectiveDate: acquisition.valuationDate, acquisition: acquisition.facts });
 
     return created;
   });
@@ -274,3 +290,32 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     notes,
   }, { status: 201 });
 }, "POST /api/accounts/manual");
+
+/**
+ * RWA-2A — parse + validate the optional acquisition facts and the first
+ * valuation's effective date. The acquisition date may not be in the future; the
+ * valuation may not be in the future or before the acquisition; a purchase price
+ * is finite and ≥ 0; using it as the starting value needs both a date and a price.
+ */
+function parseAcquisition(body: {
+  acquisitionDate?: string; purchasePrice?: number; purchasePriceIsStartingValue?: boolean; valuationDate?: string;
+}): { valuationDate: string; facts: AcquisitionInput } | { error: string } {
+  const today = isoDateOf(new Date());
+  const acquisitionDate = body.acquisitionDate == null || body.acquisitionDate === "" ? null : body.acquisitionDate;
+  if (acquisitionDate !== null) {
+    const c = checkAcquisitionDate(acquisitionDate, today);
+    if (!c.ok) return { error: c.error };
+  }
+  const purchasePrice = body.purchasePrice == null ? null : body.purchasePrice;
+  if (purchasePrice !== null && (typeof purchasePrice !== "number" || !Number.isFinite(purchasePrice) || purchasePrice < 0)) {
+    return { error: "Purchase price must be a non-negative number." };
+  }
+  const startingValue = body.purchasePriceIsStartingValue === true;
+  if (startingValue && (acquisitionDate === null || purchasePrice === null)) {
+    return { error: "Using the purchase price as a starting value needs both an acquisition date and a purchase price." };
+  }
+  const valuationDate = body.valuationDate == null || body.valuationDate === "" ? today : body.valuationDate;
+  const v = checkEffectiveDate(valuationDate, today, acquisitionDate);
+  if (!v.ok) return { error: v.error };
+  return { valuationDate, facts: { acquisitionDate, purchasePrice, purchasePriceIsStartingValue: startingValue } };
+}

@@ -200,6 +200,18 @@ const FK_POLICY_COVERAGE: Readonly<Record<string, Coverage>> = {
   "ProviderAccountIdentity.financialAccountId":  { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
   "ImportBatch.financialAccountId":              { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
 
+  // ── RWA-2A — manual real-world assets. Same subtree construction, written out
+  //    per table in their own migration (AssetValuation is tenant APPEND-ONLY:
+  //    SELECT + INSERT policies only; ManualAssetProfile carries all four).
+  "ManualAssetProfile.financialAccountId": {
+    kind: "PREDICATED", migration: "20261015120000_rls_asset_valuations", names: D1_NAMES,
+    why: "RWA-2A acquisition facts of a manual asset — the account-subtree `(visible OR owned)` predicate, 1:1 like DebtProfile.",
+  },
+  "AssetValuation.financialAccountId": {
+    kind: "PREDICATED", migration: "20261015120000_rls_asset_valuations", names: D1_NAMES,
+    why: "RWA-2A append-only dated valuations of a manual asset — the account-subtree `(visible OR owned)` predicate on SELECT/INSERT; no tenant UPDATE/DELETE grant, so financialAccountId can never be re-pointed.",
+  },
+
   // ── THE PAIR D1's SWEEP COULD NOT SEE, closed by RLS-D1b. Two FK columns on
   //    one table, and the policy is a CONJUNCTION over both — so a single
   //    uncovered column would have been enough to keep the fold failing.

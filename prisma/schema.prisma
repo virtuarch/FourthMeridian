@@ -438,6 +438,9 @@ model User {
   financialAccounts        FinancialAccount[]  @relation("UserOwnedFinancialAccounts")
   accountConnections       AccountConnection[] @relation("UserConnectedAccounts")
   createdFinancialAccounts FinancialAccount[]  @relation("FinancialAccountCreator") // D11 — accounts this user created/connected, independent of ownerType
+  // RWA-2 — dated asset valuations this user recorded (SetNull: a co-member's
+  // deletion never deletes the valuations of an asset they did not own).
+  recordedAssetValuations  AssetValuation[]    @relation("AssetValuationRecorder")
 
   // Member revocation (who revoked whom)
   revokedMembers SpaceMember[] @relation("RevokedByUser")
@@ -1306,6 +1309,10 @@ model FinancialAccount {
   duplicateCandidatesB     DuplicateAccountCandidate[] @relation("DuplicateCandidateB")
   goalContributions        GoalContribution[]
   debtProfile              DebtProfile?
+  // RWA-2 — manual real-world assets: the acquisition facts (1:1) and the
+  // append-only ledger of the user's dated valuations.
+  manualAssetProfile       ManualAssetProfile?
+  assetValuations          AssetValuation[]
   transactions             Transaction[]               @relation("FinancialAccountTransactions")
   // L8 — logical economic events on this account (banking only).
   transactionEvents        TransactionEvent[]          @relation("AccountTransactionEvents")
@@ -1361,6 +1368,67 @@ model DebtProfile {
   updatedAt DateTime @updatedAt
 
   @@index([financialAccountId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ManualAssetProfile (RWA-2)
+// Additive, optional 1:1 extension of a MANUAL asset (FinancialAccount
+// type=other, syncStatus="manual") — the DebtProfile pattern. Facts the user
+// states about how they came to own the asset. A purchase price is a FACT, not a
+// market value: it becomes a valuation anchor ONLY when the user opts in with
+// `purchasePriceIsStartingValue` (resolved at read time by
+// lib/assets/valuation-series.core.ts — it is never copied into AssetValuation).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ManualAssetProfile {
+  id                 String           @id @default(cuid())
+  financialAccountId String           @unique
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+
+  acquisitionDate              DateTime? @db.Date
+  purchasePrice                Float?
+  purchaseCurrency             String?
+  /// The user chose to use the purchase price as their estimate of the asset's
+  /// value on the acquisition date. False = purchase price is informational only.
+  purchasePriceIsStartingValue Boolean   @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([financialAccountId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AssetValuation (RWA-2) — APPEND-ONLY
+// One row per dated valuation the USER recorded for a manual asset. Rows are
+// never updated or deleted by the application (an asset's hard delete cascades).
+// Modeled / interpolated values are NEVER stored here — they are derived at read
+// time from these anchors by lib/assets/valuation-series.core.ts.
+//
+// SAME-DAY CORRECTION RULE: several rows may share (financialAccountId,
+// effectiveDate); the one with the latest `recordedAt` is that date's anchor and
+// the earlier rows remain as the history of the correction.
+//
+// effectiveDate = the date the value describes (user-chosen, never in the
+// future, never before the acquisition date); recordedAt = when it was entered.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AssetValuation {
+  id                 String           @id @default(cuid())
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+
+  effectiveDate    DateTime @db.Date
+  value            Float
+  currency         String
+  /// USER_ESTIMATE today. Reserved for future provenance (e.g. APPRAISAL).
+  source           String   @default("USER_ESTIMATE")
+  recordedAt       DateTime @default(now())
+  recordedByUserId String?
+  recordedByUser   User?    @relation("AssetValuationRecorder", fields: [recordedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([financialAccountId, effectiveDate, recordedAt])
+  @@index([recordedByUserId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

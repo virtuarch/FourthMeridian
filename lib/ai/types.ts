@@ -317,6 +317,37 @@ export interface AccountSummaryItem {
    * its band is judged on the estimate horizon (stale after 180 days).
    */
   valuationSource?: 'USER_ESTIMATE';
+  /**
+   * RWA-2A — the asset's RECORDED valuation anchors: values the USER entered for
+   * those dates (one per date, the latest correction winning), ascending, the
+   * latest 12 only. They are the user's estimates, not market prices.
+   * PURCHASE_PRICE appears only when the user opted to use the purchase price as
+   * the starting value; LEGACY_BALANCE is a pre-ledger asset's last entered value.
+   * Manual FULL rows only.
+   */
+  valuations?: { date: string; value: number; kind: 'USER_VALUATION' | 'PURCHASE_PRICE' | 'LEGACY_BALANCE' }[];
+  /**
+   * RWA-2A — a DESCRIPTOR of the modeled curve between the recorded anchors (no
+   * points): straight-line between two of the user's estimates, carried forward
+   * unchanged after the latest one. Modeled values are NOT observed market
+   * prices. Present only when at least two anchors exist.
+   */
+  modeledHistory?: {
+    basis:              'MODELED';
+    method:             'LINEAR_BETWEEN_ANCHORS';
+    from:               string;
+    to:                 string;
+    anchorCount:        number;
+    carriedForwardFrom: string | null;
+    meaning:            string;
+  };
+  /**
+   * RWA-2A — the USER-REPORTED appreciation (positive) or depreciation (negative)
+   * between the first and the latest recorded anchors, in the asset's currency.
+   * A difference between two of the user's own estimates, not a measured return.
+   * Present only when at least two anchors exist.
+   */
+  valueChangeSinceFirstRecorded?: { from: string; to: string; fromValue: number; toValue: number; change: number };
   balanceFreshness?: {
     /** PROVIDER_ATTESTED | INGESTION | UNOBSERVED. */
     basis:      string;

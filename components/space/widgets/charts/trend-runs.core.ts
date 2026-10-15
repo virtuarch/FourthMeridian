@@ -40,7 +40,16 @@ export const DAY_MS = 86_400_000;
  * the caller already classified; nothing in this module or in TrendChart decides
  * what qualifies.
  */
-export type TrendBasis = "observed" | "reconstructed" | "unreliable";
+export type TrendBasis =
+  | "observed" | "reconstructed" | "unreliable"
+  /**
+   * RWA-2A — a manual asset's USER ESTIMATES (lib/assets/valuation-series.core.ts):
+   * `recorded` = a value the user entered for that date; `modeled` = a straight
+   * line between two recorded values (NOT an observed price); `carried` = the
+   * latest estimate carried forward, never projected. Only the per-asset history
+   * chart passes these; every existing chart is unchanged.
+   */
+  | "recorded" | "modeled" | "carried";
 
 /** A trend point with its epoch time resolved. Index-stable across all three functions. */
 export interface TrendGeomPoint {
@@ -119,6 +128,19 @@ export function toRuns(pts: readonly TrendGeomPoint[], gapDays: number): TrendRu
     const prev = pts[i - 1];
     const hole = prev ? isDateHole(prev, p, gapDays) : false;
     const basis = basisOf(p);
+
+    // RWA-2A — a manual asset's estimates are ONE continuous line whose segments
+    // differ in kind. A recorded value is the shared boundary between the segment
+    // that ends at it and the one that starts from it, so it closes the current
+    // run AND opens the next; no seam is drawn (the recorded dot marks it).
+    if (cur && prev && !hole && isEstimateBasis(basis) && isEstimateBasis(basisOf(prev))) {
+      if (basis === "recorded") { cur.points.push(p); continue; }
+      if (cur.basis === basis && basisOf(prev) !== "recorded") { cur.points.push(p); continue; }
+      cur = { points: [prev, p], basis };
+      runs.push(cur);
+      continue;
+    }
+
     const basisChanged = prev ? basisOf(prev) !== basis : false;
     if (!cur || hole || basisChanged) {
       cur = { points: [p], basis };
@@ -128,6 +150,11 @@ export function toRuns(pts: readonly TrendGeomPoint[], gapDays: number): TrendRu
     }
   }
   return runs.filter((r) => r.points.length > 0);
+}
+
+/** RWA-2A — the user-estimate family (see TrendBasis). */
+export function isEstimateBasis(b: TrendBasis): boolean {
+  return b === "recorded" || b === "modeled" || b === "carried";
 }
 
 /** Every real hole in the series, as index pairs. */
@@ -155,6 +182,9 @@ export function toBasisSeams(pts: readonly TrendGeomPoint[], gapDays: number): T
     const fromBasis = basisOf(prev);
     const toBasis = basisOf(p);
     if (fromBasis === toBasis) continue;
+    // RWA-2A — within a manual asset's estimates the recorded dot is the mark;
+    // a seam per anchor would claim an evidence change that did not happen.
+    if (isEstimateBasis(fromBasis) && isEstimateBasis(toBasis)) continue;
     out.push({
       fromIndex: i - 1, toIndex: i,
       fromBasis, toBasis,

@@ -21,6 +21,13 @@
  * them. The value is labelled as the user's estimate, never a market price, and
  * the currency list is the server's own allowlist (lib/assets/manual-asset.ts).
  *
+ * RWA-2A — OPTIONAL ACQUISITION FACTS, all persisted (ManualAssetProfile +
+ * the first dated AssetValuation): when it was acquired, what was paid, and —
+ * only if the user ticks it — whether that price is their estimate of its value
+ * on that date (which lets the asset's chart model a line from purchase to
+ * today). The value is dated ("as of", default today, never in the future, never
+ * before acquisition). A purchase price alone is never treated as a market value.
+ *
  * After success: calls onAdd() and router.refresh() so the host re-reads.
  *
  * Styling: Atlas Glass modal primitive (FormModal → OverlaySurface) per
@@ -35,6 +42,7 @@ import { displaySpaceName } from "@/lib/format";
 import {
   ESTIMATE_DISCLOSURE, MANUAL_ASSET_CURRENCIES, estimateValueLabel, parseEstimateInput,
 } from "@/lib/assets/manual-asset";
+import { checkAcquisitionDate, checkEffectiveDate, isoDateOf } from "@/lib/assets/valuation-series.core";
 import { FormModal } from "@/components/atlas/FormModal";
 import { GlassButton } from "@/components/atlas/GlassButton";
 
@@ -101,6 +109,13 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
   const [currency, setCurrency] = useState(
     MANUAL_ASSET_CURRENCIES.includes(DEFAULT_DISPLAY_CURRENCY) ? DEFAULT_DISPLAY_CURRENCY : "USD",
   );
+  // RWA-2A — the value's date and the optional acquisition facts.
+  const today = isoDateOf(new Date());
+  const [valuationDate,   setValuationDate]   = useState(today);
+  const [showAcquisition, setShowAcquisition] = useState(false);
+  const [acquisitionDate, setAcquisitionDate] = useState("");
+  const [purchasePrice,   setPurchasePrice]   = useState("");
+  const [useAsStart,      setUseAsStart]      = useState(false);
   const [spaces,        setSpaces]        = useState<SpaceOption[]>([]);
   const [selectedWsIds, setSelectedWsIds] = useState<string[]>(defaultSpaceIds ?? []);
   const [loadingWs,     setLoadingWs]     = useState(true);
@@ -129,7 +144,14 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
   }, []);
 
   const parsedValue = parseEstimateInput(value);
-  const valid       = name.trim().length > 0 && parsedValue !== null;
+  const parsedPrice = purchasePrice.trim() === "" ? null : parseEstimateInput(purchasePrice);
+  // The same rules the route enforces (lib/assets/valuation-series.core.ts).
+  const acqError = acquisitionDate !== "" ? (() => { const c = checkAcquisitionDate(acquisitionDate, today); return c.ok ? null : c.error; })() : null;
+  const dateError = (() => { const c = checkEffectiveDate(valuationDate, today, acquisitionDate || null); return c.ok ? null : c.error; })();
+  const priceError = purchasePrice.trim() !== "" && parsedPrice === null ? "Enter a non-negative amount." : null;
+  const startError = useAsStart && (acquisitionDate === "" || parsedPrice === null)
+    ? "Add the acquisition date and purchase price to use it as a starting value." : null;
+  const valid = name.trim().length > 0 && parsedValue !== null && !acqError && !dateError && !priceError && !startError;
 
   async function handleSubmit() {
     if (!valid || parsedValue === null) return;
@@ -149,6 +171,10 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
         balance:  parsedValue,
         currency,
         spaceIds: shareTo,
+        valuationDate,
+        ...(acquisitionDate ? { acquisitionDate } : {}),
+        ...(parsedPrice !== null ? { purchasePrice: parsedPrice } : {}),
+        ...(useAsStart ? { purchasePriceIsStartingValue: true } : {}),
       }),
     });
 
@@ -225,9 +251,74 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
             </select>
           </Field>
         </div>
+        <Field label="Value as of" htmlFor="manual-asset-value-date" error={dateError}>
+          <input
+            id="manual-asset-value-date"
+            type="date"
+            value={valuationDate}
+            max={today}
+            min={acquisitionDate || undefined}
+            onChange={(e) => setValuationDate(e.target.value)}
+            className={INPUT_CLS}
+            style={INPUT_STYLE}
+          />
+        </Field>
         <p className="-mt-2 text-xs text-[var(--text-muted)]">
           {ESTIMATE_DISCLOSURE} You can update it at any time.
         </p>
+
+        {!showAcquisition ? (
+          <button
+            type="button"
+            onClick={() => setShowAcquisition(true)}
+            className="text-xs font-medium text-[var(--meridian-400)] hover:underline"
+          >
+            + Add when you got it and what you paid (optional)
+          </button>
+        ) : (
+          <div className="space-y-3 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-3">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Acquired on" htmlFor="manual-asset-acq-date" error={acqError}>
+                <input
+                  id="manual-asset-acq-date"
+                  type="date"
+                  value={acquisitionDate}
+                  max={today}
+                  onChange={(e) => setAcquisitionDate(e.target.value)}
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                />
+              </Field>
+              <Field label={`Purchase price (${currency})`} htmlFor="manual-asset-price" error={priceError}>
+                <input
+                  id="manual-asset-price"
+                  type="text"
+                  inputMode="decimal"
+                  value={purchasePrice}
+                  onChange={(e) => setPurchasePrice(e.target.value)}
+                  placeholder="0"
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                />
+              </Field>
+            </div>
+            <label className="flex items-start gap-2.5 text-xs text-[var(--text-secondary)] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useAsStart}
+                onChange={(e) => setUseAsStart(e.target.checked)}
+                className="mt-0.5 rounded border-[var(--border-hairline-strong)] bg-[var(--surface-muted)] text-[var(--meridian-400)]"
+              />
+              <span>
+                Use the purchase price as my estimate of its value on that date.
+                <span className="block text-[var(--text-muted)]">
+                  Its chart then shows a modeled line from purchase to your current estimate — an illustration, not market history.
+                </span>
+              </span>
+            </label>
+            {startError && <p className="text-xs text-[var(--coral-400)]">{startError}</p>}
+          </div>
+        )}
 
         {loadingWs ? (
           <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">

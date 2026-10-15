@@ -48,6 +48,7 @@
  */
 
 import type { ReadClient } from '@/lib/db/tenant-context';
+import { loadHistoriesFor, type ValuationHistory } from '@/lib/assets/valuations';
 import {
   accountDisplayName, ACCOUNT_NAME_SELECT, type AccountNameEvidence,
 } from '@/lib/accounts/display-identity';
@@ -534,6 +535,20 @@ async function assembleAccounts(
   // brief/full debt grades agree by construction. Building the list is pure
   // computation over links already fetched — the gate never saved a query.
 
+  // RWA-2A — the recorded valuations of FULL-view manual assets, ONE bulk read
+  // through this phase's client. BALANCE_ONLY rows never receive them: a dated
+  // value history discloses more than that tier allows.
+  const historyByAccount = await loadHistoriesFor(
+    client,
+    disclosingLinks
+      .filter((l) => grantsAccountDetail(l.visibilityLevel) && l.financialAccount.syncStatus === 'manual')
+      .map((l) => ({
+        id: l.financialAccount.id, currency: l.financialAccount.currency,
+        balance: l.financialAccount.balance, lastUpdated: l.financialAccount.lastUpdated,
+      })),
+    now.toISOString().slice(0, 10),
+  );
+
   const allItems: AccountSummaryItem[] = (() => {
     // FULL rows pass through individually, exactly as before.
     const fullItems = disclosingLinks
@@ -574,6 +589,7 @@ async function assembleAccounts(
           lastUpdated:          fa.lastUpdated.toISOString(),
           balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
           ...(fa.syncStatus === 'manual' ? { valuationSource: 'USER_ESTIMATE' as const } : {}),
+          ...(fa.syncStatus === 'manual' ? valuationFacts(historyByAccount.get(fa.id)) : {}),
           balanceFreshness:     freshnessFact(fa, now),
           ...balanceFacts(fa, now),
           syncStatus:      fa.syncStatus,
@@ -870,3 +886,36 @@ function resolveRateLabel(debtSubtype: string | null | undefined): string {
 // ---------------------------------------------------------------------------
 
 registerAssembler(FinanceDomains.ACCOUNTS, assembleAccounts);
+
+// ---------------------------------------------------------------------------
+// RWA-2A — recorded valuations, as data the model can quote without inferring
+// ---------------------------------------------------------------------------
+
+/** The latest N recorded anchors the model is shown (the chart keeps them all). */
+const MAX_VALUATIONS_SHOWN = 12;
+
+/**
+ * The three RWA-2A fields for one manual asset: its RECORDED anchors (the user's
+ * own dated estimates), the descriptor of the modeled curve between them, and the
+ * user-reported change between the first and latest anchor. Never a modeled
+ * point: the model is told a curve exists and what it is, not handed numbers it
+ * could narrate as observed prices.
+ */
+function valuationFacts(h: ValuationHistory | undefined): Pick<AccountSummaryItem,
+  'valuations' | 'modeledHistory' | 'valueChangeSinceFirstRecorded'> {
+  if (!h) return {};
+  const anchors = h.resolved.anchors;
+  if (anchors.length === 0) return {};
+  const first = anchors[0];
+  const last = anchors[anchors.length - 1];
+  return {
+    valuations: anchors.slice(-MAX_VALUATIONS_SHOWN).map((a) => ({ date: a.date, value: a.value, kind: a.kind })),
+    ...(h.modeled ? { modeledHistory: h.modeled } : {}),
+    ...(anchors.length >= 2 ? {
+      valueChangeSinceFirstRecorded: {
+        from: first.date, to: last.date, fromValue: first.value, toValue: last.value,
+        change: last.value - first.value,
+      },
+    } : {}),
+  };
+}

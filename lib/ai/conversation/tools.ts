@@ -534,6 +534,11 @@ const getFinancialSnapshot: ToolDefinition = {
         // RWA-1C — a manual asset's balance is the USER'S ESTIMATE, not a market
         // price; the assembler marks it and this row must not drop the mark.
         ...(a2.valuationSource ? { valuationSource: a2.valuationSource } : {}),
+        // RWA-2A — the user's recorded valuations, the DESCRIPTOR of the modeled
+        // curve between them (never modeled points) and the user-reported change.
+        ...(a2.valuations ? { valuations: a2.valuations } : {}),
+        ...(a2.modeledHistory ? { modeledHistory: a2.modeledHistory } : {}),
+        ...(a2.valueChangeSinceFirstRecorded ? { valueChangeSinceFirstRecorded: a2.valueChangeSinceFirstRecorded } : {}),
         available: a2.availableQuantity?.label && a2.availableQuantity?.amount !== undefined
           ? { label: a2.availableQuantity.label, amount: a2.availableQuantity.amount } : undefined,
         ...accessOf(a2),

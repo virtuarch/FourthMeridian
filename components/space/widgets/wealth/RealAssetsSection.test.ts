@@ -59,15 +59,21 @@ check("a write refreshes this Space's data (hero/chart follow the card)",
   SECTION.includes("new CustomEvent(SPACE_DATA_REFRESHED_EVENT, { detail: { spaceId } })"));
 
 const UPDATE = code("components", "space", "widgets", "wealth", "UpdateAssetValueModal.tsx");
-check("revaluation PATCHes { balance } only", UPDATE.includes('method:  "PATCH"') && UPDATE.includes("JSON.stringify({ balance: parsed })"));
+check("revaluation PATCHes { balance, effectiveDate } (RWA-2A: a DATED, appended valuation)",
+  UPDATE.includes('method:  "PATCH"') && UPDATE.includes("JSON.stringify({ balance: parsed, effectiveDate: asOf })"));
 
 console.log("AddManualAssetModal — asks only for what is kept");
 const MODAL = code("components", "dashboard", "AddManualAssetModal.tsx");
-for (const field of ["assetKind", "purchasePrice", "purchaseDate", "notes"]) {
-  check(`no longer sends ${field} (the route stores none of them on the asset)`, !MODAL.includes(field));
+// RWA-1: fields with no home on the asset are not collected. RWA-2A gave the
+// acquisition facts a home (ManualAssetProfile), so those are sent again — and
+// persisted; kind and notes still have none.
+for (const field of ["assetKind", "purchaseDate", "notes"]) {
+  check(`does not send ${field} (no column stores it)`, !MODAL.includes(field));
 }
-check("POST body is name/balance/currency/spaceIds",
-  /body: JSON\.stringify\(\{\s*name:\s+name\.trim\(\),\s*balance:\s+parsedValue,\s*currency,\s*spaceIds: shareTo,\s*\}\)/.test(MODAL));
+check("POST body: name/balance/currency/spaceIds + dated value + optional acquisition facts (RWA-2A)",
+  /body: JSON\.stringify\(\{\s*name:\s+name\.trim\(\),\s*balance:\s+parsedValue,\s*currency,\s*spaceIds: shareTo,\s*valuationDate,/.test(MODAL) &&
+  MODAL.includes("acquisitionDate ? { acquisitionDate }") && MODAL.includes("{ purchasePrice: parsedPrice }") &&
+  MODAL.includes("useAsStart ? { purchasePriceIsStartingValue: true }"));
 check("currency options come from the server allowlist", MODAL.includes("MANUAL_ASSET_CURRENCIES.map"));
 check("the value label follows the selected currency (no hard-coded $)",
   MODAL.includes("estimateValueLabel(currency)") && !MODAL.includes("Current value ($)"));

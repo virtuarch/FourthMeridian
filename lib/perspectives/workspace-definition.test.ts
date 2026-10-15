@@ -255,9 +255,10 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
 
   // Data-entry date fields are NOT view-time controls. Exempt by explicit name
   // so adding one is a conscious act, never a silent drift. (W2: AddGoalModal —
-  // the only former exemption — was deleted with the Goals surface; the set is
-  // empty today.)
-  const DATA_ENTRY_EXEMPT = new Set<string>([]);
+  // the only former exemption — was deleted with the Goals surface. RWA-2A:
+  // UpdateAssetValueModal's "value as of" is the EFFECTIVE DATE of a valuation
+  // the user records — data entry, never the shell's view time.)
+  const DATA_ENTRY_EXEMPT = new Set<string>(["UpdateAssetValueModal.tsx"]);
 
   // Owning canonical time = rendering a time selector, holding the time reducer,
   // or dispatching a shell time action directly.
