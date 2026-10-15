@@ -40,6 +40,13 @@ export interface PlaidItemFact {
   investmentsConsent: string | null;
   /** Stamped at creation. Null = genuinely unknown, never assumed. */
   environment: string | null;
+  /**
+   * BETA C1 — the PLAID environment ("sandbox" | "development" | "production"),
+   * stamped at creation. Null / absent = unknown, which is PRICED (a floor):
+   * only a row that says "sandbox" is free. Optional so pre-C1 fixtures and
+   * readers keep compiling; the reader always supplies it.
+   */
+  plaidEnvironment?: string | null;
 }
 
 /** One append-only CH-2 transition row, already decoded from AuditLog metadata. */
@@ -63,8 +70,34 @@ export interface PlaidItemTransition {
  * accounting for no gain. A test pins that the seed still uses this prefix.
  */
 export const SEEDED_ITEM_PREFIX = "demo_item_";
+
+/**
+ * BETA C1 — the one Plaid environment that never reaches an invoice. Plaid bills
+ * subscriptions "as long as a valid access_token exists for the Item" — in
+ * Production. A sandbox Item has no invoice line, so counting it (as Preview's
+ * twelve were, at $4.65) overstates the estimate by exactly the sandbox census.
+ *
+ * ⚠️ ONLY THE LITERAL "sandbox" IS FREE. "development" is Plaid's legacy
+ * limited-production tier and IS billed; null is UNKNOWN and is billed as a
+ * floor — a legacy production Item must never fall out of the estimate because
+ * nobody recorded its environment.
+ */
+export const PLAID_SANDBOX_ENVIRONMENT = "sandbox";
+export const PLAID_ENVIRONMENT_BUCKETS = ["sandbox", "development", "production", "unknown"] as const;
+export type PlaidEnvironmentBucket = (typeof PLAID_ENVIRONMENT_BUCKETS)[number];
+
+/** The census bucket for a row: the three Plaid environments, else unknown (never guessed). */
+export function plaidEnvironmentBucket(i: Pick<PlaidItemFact, "plaidEnvironment">): PlaidEnvironmentBucket {
+  const v = i.plaidEnvironment ?? null;
+  return v === "sandbox" || v === "development" || v === "production" ? v : "unknown";
+}
+
+export const isSeededItem = (i: PlaidItemFact): boolean =>
+  i.externalItemId.startsWith(SEEDED_ITEM_PREFIX);
+export const isSandboxItem = (i: PlaidItemFact): boolean =>
+  plaidEnvironmentBucket(i) === PLAID_SANDBOX_ENVIRONMENT;
 export const isBillableItem = (i: PlaidItemFact): boolean =>
-  !i.externalItemId.startsWith(SEEDED_ITEM_PREFIX);
+  !isSeededItem(i) && !isSandboxItem(i);
 
 const iso = (d: Date | string): string =>
   typeof d === "string" ? d.slice(0, 10) : d.toISOString().slice(0, 10);
@@ -131,7 +164,17 @@ export interface ItemMonth {
  * `investmentsConsent` carries no timestamp, so whether consent was in force
  * during a past cycle is unknowable. `productEvidenced: false` marks that, rather
  * than projecting today's consent backward.
+ *
+ * ⚠️ BETA C2 — AND ONLY WHEN CONSENT IS `ENABLED`. Plaid adds the Investments
+ * subscription when holdings are actually fetched, which the pipeline does only
+ * on an ENABLED Item. CONSENT_REQUIRED and UNSUPPORTED were previously priced
+ * too (any non-null consent), overstating the estimate for every Item whose
+ * institution offers no Investments at all. Owner decision C2: ENABLED-only.
  */
+export const INVESTMENTS_BILLABLE_CONSENT = "ENABLED";
+export const isInvestmentsBillable = (i: Pick<PlaidItemFact, "investmentsConsent">): boolean =>
+  i.investmentsConsent === INVESTMENTS_BILLABLE_CONSENT;
+
 export function itemMonths(
   items: readonly PlaidItemFact[],
   transitions: readonly PlaidItemTransition[],
@@ -158,7 +201,7 @@ export function itemMonths(
     out.push({ itemId: item.id, product: "transactions", cycle,
       environment, presentDuringCycle, presentAtCycleEnd, productEvidenced: true });
 
-    if (item.investmentsConsent) {
+    if (isInvestmentsBillable(item)) {
       out.push({ itemId: item.id, product: "investments", cycle, environment,
         presentDuringCycle, presentAtCycleEnd,
         productEvidenced: cycleIncludesToday });

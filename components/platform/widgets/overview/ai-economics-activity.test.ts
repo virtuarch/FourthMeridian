@@ -61,7 +61,7 @@ const cycleCost = (usd: number | null, tx = 3, inv = 1) => ({
   coverage: { incomplete: false }, byEnvironment: [],
 });
 const plaid = (over: Partial<PlaidUsage> = {}): PlaidUsage => ({
-  checkedAt: "", population: { total: 5, billable: 4, seeded: 1, byStatus: { ACTIVE: 4 }, byEnvironment: { production: 4 }, investmentsConsented: 1, withTransitions: 2 },
+  checkedAt: "", population: { total: 5, billable: 4, seeded: 1, sandbox: 0, byStatus: { ACTIVE: 4 }, byEnvironment: { production: 4 }, byPlaidEnvironment: { sandbox: 0, development: 0, production: 4, unknown: 0 }, plaidEnvironmentNote: "", investmentsConsented: 1, withTransitions: 2 },
   cycles: [
     { cycle: { start: "2026-10-01", end: "2026-10-31" }, label: "current", during: cycleCost(1.4) as never, atEnd: cycleCost(1.05, 2, 1) as never, agree: false },
     { cycle: { start: "2026-09-01", end: "2026-09-30" }, label: "previous", during: cycleCost(1.2) as never, atEnd: cycleCost(1.2) as never, agree: true },

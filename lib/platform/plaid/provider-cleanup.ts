@@ -92,6 +92,14 @@ export type ProviderCleanupItem = {
   owedForHours: number;
   /** How many UNCONFIRMED attempts this item has accumulated, ever. */
   attemptCount: number;
+  /**
+   * BETA C4 — when the NEWEST unconfirmed attempt was made ("last retried at").
+   * Every retry (operator or the daily plaid-removal-retry job) writes a fresh
+   * marker through the canonical path, so this is the latest marker's time —
+   * distinct from `owedSinceISO`, which never moves while the obligation stands.
+   * Equal to the obligation's start when nothing has retried it yet.
+   */
+  lastAttemptAtISO: string;
   /** The provider's own code on the latest failure, when it gave one. */
   latestErrorCode: string | null;
 };
@@ -212,6 +220,7 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
       owedSinceISO:    owedSince.createdAt.toISOString(),
       owedForHours:    hoursSince(owedSince.createdAt, now),
       attemptCount:    unconfirmed.length,
+      lastAttemptAtISO: latest.createdAt.toISOString(),
       latestErrorCode: str((latest.metadata as { plaidErrorCode?: unknown } | null)?.plaidErrorCode),
     };
   }).sort((a, b) => a.owedSinceISO.localeCompare(b.owedSinceISO));

@@ -19,7 +19,7 @@ import { BigStat, GroupLabel, KeyRow, SectionSurface, Unavailable } from "../pla
 import type { PlaidUsage } from "@/lib/platform/plaid/usage";
 
 const FOOTNOTE =
-  "Usage is exact from the Item rows and their status transitions; the invoice's two readings (present during the cycle / present at cycle end) are both shown. Cost is ESTIMATED: Item-months × the invoice-derived rate, null before the rate's evidence. Seeded demo Items are excluded from billing.";
+  "Usage is exact from the Item rows and their status transitions; the invoice's two readings (present during the cycle / present at cycle end) are both shown. Cost is ESTIMATED: Item-months × the invoice-derived rate, null before the rate's evidence. Seeded demo Items and Plaid sandbox Items are excluded from billing; Investments is priced only where consent is ENABLED.";
 
 const usd = (v: number | null) => (v === null ? null : `$${v.toFixed(2)}`);
 
@@ -34,7 +34,7 @@ function Cycle({ c }: { c: PlaidUsage["cycles"][number] }) {
         <KeyRow label="Transactions Item-months" value={c.agree ? d.itemMonths.transactions : `${d.itemMonths.transactions} during · ${a.itemMonths.transactions} at end`} />
         <KeyRow label="Investments Item-months" value={c.agree ? d.itemMonths.investments : `${d.itemMonths.investments} during · ${a.itemMonths.investments} at end`} />
         <KeyRow label="Estimated cost" value={usd(d.usd) === null ? <Unavailable reason={d.unpricedItemMonths ? "before the rate's evidence" : "nothing billable"} /> : c.agree ? usd(d.usd) : `${usd(d.usd)} during · ${usd(a.usd)} at end`} />
-        {d.unevidencedProductItemMonths > 0 && <KeyRow label="Product not evidenced" value={`${d.unevidencedProductItemMonths} Item-months`} />}
+        {d.unevidencedProductItemMonths > 0 && <KeyRow label="Investments not evidenced for this cycle" value={`${d.unevidencedProductItemMonths} Item-months — consent is ENABLED today, but carries no timestamp`} />}
         <KeyRow label="Census coverage" value={d.coverage.incomplete ? "lower bound — evidence begins after the cycle started" : "complete"} />
         {d.byEnvironment.length > 0 && (
           <KeyRow label="By environment" value={d.byEnvironment.map((e) => `${e.environment} ${e.itemMonths}`).join(" · ")} />
@@ -59,7 +59,7 @@ export function OpsPlaidUsageWidget({ section }: { section: PlatformSection }) {
   return (
     <SectionSurface icon={Landmark} title={section.label} footnote={FOOTNOTE}>
       <div className="mb-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-        <BigStat label="Billable Items" value={p.billable} qualifier={`${p.total} total · ${p.seeded} seeded excluded`} />
+        <BigStat label="Billable Items" value={p.billable} qualifier={`${p.total} total · ${p.seeded} seeded excluded · ${p.sandbox} sandbox excluded`} />
         <BigStat label="Active" value={p.byStatus.ACTIVE ?? 0} qualifier={Object.entries(p.byStatus).filter(([k]) => k !== "ACTIVE").map(([k, v]) => `${v} ${k.toLowerCase().replace(/_/g, " ")}`).join(" · ") || "no other status"} />
         <BigStat label="Item-months this cycle" value={`${current.during.itemMonths.transactions} + ${current.during.itemMonths.investments}`} qualifier="transactions + investments" />
         <BigStat
@@ -84,9 +84,11 @@ export function OpsPlaidUsageWidget({ section }: { section: PlatformSection }) {
             <Unavailable reason="no Plaid price authority is configured — usage is shown, cost is not" />
           )}
           <div className="mt-2 flex flex-col gap-1.5">
-            <KeyRow label="Investments consented" value={p.investmentsConsented} />
+            <KeyRow label="Investments ENABLED (priced)" value={p.investmentsConsented} />
             <KeyRow label="Items with status transitions" value={p.withTransitions} />
-            <KeyRow label="By environment" value={Object.entries(p.byEnvironment).map(([k, v]) => `${k} ${v}`).join(" · ")} />
+            <KeyRow label="By deployment" value={Object.entries(p.byEnvironment).map(([k, v]) => `${k} ${v}`).join(" · ")} />
+            <KeyRow label="By Plaid environment" value={Object.entries(p.byPlaidEnvironment).map(([k, v]) => `${k} ${v}`).join(" · ")} />
+            <p className="text-[10px] text-[var(--text-faint)]">{p.plaidEnvironmentNote}</p>
           </div>
         </div>
       </div>

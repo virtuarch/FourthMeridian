@@ -34,6 +34,8 @@ import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client"
 import { limitByUser } from "@/lib/rate-limit";
 import { env } from "@/lib/env";
 import { resolvePlaidRedirectUri } from "@/lib/plaid/redirect-uri";
+// BETA C7′ — the connection-count entitlement (maxConnections), fresh links only.
+import { connectionCapForUser, connectionLimitResponse } from "@/lib/connections/connection-cap";
 
 /**
  * The public URL Plaid should POST webhooks to (TRANSACTIONS/SYNC_UPDATES_AVAILABLE).
@@ -146,6 +148,23 @@ export async function GET(req: NextRequest) {
           );
         }
         // Neither found → accessToken stays undefined → normal fresh-link flow.
+      }
+    }
+
+    // ── BETA C7′ — CONNECTION CAP, FRESH LINKS ONLY ──────────────────────────
+    // Every path above that found an existing credential set `accessToken`
+    // and will open Link in UPDATE mode, which heals an Item the customer
+    // already holds and mints nothing. Only a session that would create a NEW
+    // Item is counted against the customer's effective `maxConnections`
+    // (BETA 10; founder overlay and ceiling 25). Checked BEFORE the Plaid
+    // call so a refused session costs no link token. 403 with the shared
+    // `{ error, code: "CONNECTION_LIMIT", current, limit }` body; the Connect
+    // button renders `error` as-is.
+    if (!accessToken) {
+      const cap = await connectionCapForUser(user.id);
+      if (!cap.allowed) {
+        console.warn(`[plaid] link-token refused for user ${user.id} — ${cap.reason} (${cap.current} of ${cap.limit})`);
+        return connectionLimitResponse(cap);
       }
     }
 

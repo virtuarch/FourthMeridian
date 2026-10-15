@@ -111,6 +111,8 @@ import { BTC_CHAIN } from "@/lib/crypto/btc-sync";
 import { isProductSupportedChain, PRODUCT_CHAIN_VALUES } from "@/lib/crypto/product-chains";
 import { syncWalletByChain, chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch";
 import { isExtendedKey, normalizeExtendedKeyInput } from "@/lib/crypto/btc-address-derivation";
+// BETA C7′ — the connection-count entitlement (maxConnections), new wallets only.
+import { connectionCapForUser, connectionLimitResponse } from "@/lib/connections/connection-cap";
 
 // W-M2c — validation reads the SAME product-surface authority the picker
 // renders. It previously kept its own wider list, so the two could disagree in
@@ -149,6 +151,25 @@ export async function POST(req: NextRequest) {
   const isXpub = chain === BTC_CHAIN && isExtendedKey(walletValue);
 
   const { spaceId, userId } = await getSpaceContext();
+
+  // ── BETA C7′ — CONNECTION CAP, NEW WALLETS ONLY ─────────────────────────────
+  // Plaid Items + wallet connections against the customer's effective
+  // `maxConnections`. A wallet address the customer already holds ACTIVE is a
+  // re-share into this Space (the phase below returns `kind: "active"`) and
+  // creates no connection, so it is never refused; a brand-new or archived
+  // address would. Same 403 body as the Plaid link-token route. Read-only, one
+  // short tenant phase, before any write.
+  const cap = await connectionCapForUser(userId);
+  if (!cap.allowed) {
+    const alreadyActive = await withTenantDb(userId, (tx) => tx.financialAccount.findFirst({
+      where:  { ownerUserId: userId, walletAddress: walletValue, deletedAt: null },
+      select: { id: true },
+    }));
+    if (!alreadyActive) {
+      console.warn(`[POST /api/accounts/wallet] refused for user ${userId} — ${cap.reason} (${cap.current} of ${cap.limit})`);
+      return connectionLimitResponse(cap);
+    }
+  }
 
   // ── RLS-PREP-C — THE RESOLUTION AND ITS WRITES ARE ONE TENANT PHASE ────────
   // Look up → (re-share | reactivate | create) used to be three lookups and two

@@ -21,10 +21,12 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 const items: PlaidItemFact[] = [
-  { id: "i1", externalItemId: "real-1", createdAt: "2026-07-03", status: "ACTIVE", investmentsConsent: "GRANTED", environment: "production" },
-  { id: "i2", externalItemId: "real-2", createdAt: "2026-08-20", status: "NEEDS_REAUTH", investmentsConsent: null, environment: "production" },
-  { id: "i3", externalItemId: "real-3", createdAt: "2026-06-01", status: "REVOKED", investmentsConsent: null, environment: null },
-  { id: "d1", externalItemId: "demo_item_1", createdAt: "2026-06-01", status: "ACTIVE", investmentsConsent: null, environment: "development" },
+  { id: "i1", externalItemId: "real-1", createdAt: "2026-07-03", status: "ACTIVE", investmentsConsent: "ENABLED", environment: "production", plaidEnvironment: "production" },
+  { id: "i2", externalItemId: "real-2", createdAt: "2026-08-20", status: "NEEDS_REAUTH", investmentsConsent: "CONSENT_REQUIRED", environment: "production", plaidEnvironment: null },
+  { id: "i3", externalItemId: "real-3", createdAt: "2026-06-01", status: "REVOKED", investmentsConsent: null, environment: null, plaidEnvironment: null },
+  { id: "d1", externalItemId: "demo_item_1", createdAt: "2026-06-01", status: "ACTIVE", investmentsConsent: null, environment: "development", plaidEnvironment: "sandbox" },
+  // BETA C1 — a Preview Item on Plaid sandbox: counted in the population, never billed.
+  { id: "s1", externalItemId: "real-sbx", createdAt: "2026-08-01", status: "ACTIVE", investmentsConsent: "ENABLED", environment: "preview", plaidEnvironment: "sandbox" },
 ];
 const transitions: PlaidItemTransition[] = [
   { plaidItemId: "i3", at: "2026-08-10T00:00:00.000Z", from: "ACTIVE", to: "REVOKED" },
@@ -34,12 +36,25 @@ const today = "2026-09-15";
 console.log("population census");
 {
   const r = buildPlaidUsage(items, transitions, today);
-  check("total counts every row", r.population.total === 4);
-  check("billable excludes the seeded fixture", r.population.billable === 3 && r.population.seeded === 1);
-  check("by status", r.population.byStatus.ACTIVE === 2 && r.population.byStatus.NEEDS_REAUTH === 1 && r.population.byStatus.REVOKED === 1);
-  check("by environment, null → unknown", r.population.byEnvironment.production === 2 && r.population.byEnvironment.unknown === 1);
-  check("investments consented", r.population.investmentsConsented === 1);
+  check("total counts every row", r.population.total === 5);
+  check("billable excludes the seeded fixture AND the sandbox Item", r.population.billable === 3 && r.population.seeded === 1 && r.population.sandbox === 1);
+  check("a seeded fixture on sandbox is counted once, as seeded", r.population.seeded + r.population.sandbox === 2);
+  check("by status", r.population.byStatus.ACTIVE === 3 && r.population.byStatus.NEEDS_REAUTH === 1 && r.population.byStatus.REVOKED === 1);
+  check("by deployment, null → unknown", r.population.byEnvironment.production === 2 && r.population.byEnvironment.unknown === 1 && r.population.byEnvironment.preview === 1);
+  check("by Plaid environment: every bucket present, null → unknown",
+    r.population.byPlaidEnvironment.production === 1 && r.population.byPlaidEnvironment.sandbox === 2
+      && r.population.byPlaidEnvironment.unknown === 2 && r.population.byPlaidEnvironment.development === 0);
+  check("the Plaid-environment note says unknown is a floor and only sandbox is free",
+    /unknown/.test(r.population.plaidEnvironmentNote) && /floor/.test(r.population.plaidEnvironmentNote) && /sandbox/.test(r.population.plaidEnvironmentNote));
+  check("investments consented counts ENABLED only (C2) — the sandbox ENABLED still counts as consented, it just is not billed",
+    r.population.investmentsConsented === 2);
   check("items with transitions", r.population.withTransitions === 1);
+  const sept = r.cycles[0].during;
+  check("the sandbox Item adds no Item-month (September: i1 + i2 transactions, i1 investments)",
+    sept.itemMonths.transactions === 2 && sept.itemMonths.investments === 1);
+  check("…and CONSENT_REQUIRED adds no investments line", sept.unevidencedProductItemMonths === 0);
+  const withoutSandbox = buildPlaidUsage(items.filter((i) => i.id !== "s1"), transitions, today);
+  check("removing the sandbox row changes no cost", withoutSandbox.cycles[0].during.usd === sept.usd);
 }
 
 console.log("cycles reconcile to the authority");
