@@ -143,6 +143,11 @@ async function main(): Promise<void> {
         && !/export async function (PUT|POST)/.test(route));
     check("the read model is composed at read time, never persisted", !/\.(create|upsert|update|delete)\(/.test(loader + code("lib/platform/policies/refresh-policies.core.ts")));
     const widget = code("components/platform/widgets/OpsPoliciesWidget.tsx");
+    // AI COST CONTROLS — the shared editor grammar (CadenceForm, Notice) moved to
+    // policy-editor-kit.tsx and the AI Cost Controls panel lives in its own file;
+    // the three files together ARE the Policies surface the pins below scan.
+    const kit = code("components/platform/widgets/policy-editor-kit.tsx");
+    const panel = code("components/platform/widgets/AiCostControlsPanel.tsx");
     // P1 — the refresh-cadence editor stays bounded buttons; the execution-cadence
     // editor (JobCadenceEditor) takes a bounded integer, a reason code from the
     // closed OPERATOR_REASON_CODES list and a ≤280-char note the server scrubs.
@@ -151,16 +156,21 @@ async function main(): Promise<void> {
     // cadence itself stays bounded buttons (aria-pressed), and the only inputs
     // are the REQUIRED reason (a closed select over OPERATOR_REASON_CODES) and the
     // ≤280-char note the server scrubs. No form, no free-form value.
-    check("the refresh-cadence surface's value control is bounded buttons; its only inputs are the D7 reason (closed list) and the bounded note",
-      !/<form|onSubmit/.test(refreshPart) && /aria-pressed=\{isSelected\}/.test(refreshPart)
-        && (refreshPart.match(/<select/g) ?? []).length === 1 && /OPERATOR_REASON_CODES\.map/.test(refreshPart)
-        && (refreshPart.match(/<input/g) ?? []).length === 1 && /maxLength=\{280\}/.test(refreshPart)
+    check("the refresh-cadence surface's value control is bounded buttons; its only inputs are the D7 reason (closed list) and the bounded note (in the shared kit)",
+      !/<form|onSubmit/.test(refreshPart + kit + panel) && /aria-pressed=\{isSelected\}/.test(refreshPart)
+        && !/<select|<input/.test(refreshPart)
+        && (kit.match(/<select/g) ?? []).length === 1 && /OPERATOR_REASON_CODES\.map/.test(kit)
+        && (kit.match(/<input/g) ?? []).length === 1 && /maxLength=\{280\}/.test(kit)
         && /canControl/.test(widget));
     check("the execution-cadence editor bounds its inputs (min/max from the view, maxLength on the note, a closed reason list)",
-      /min=\{view\.minHours\} max=\{view\.maxHours\}/.test(widget) && /maxLength=\{280\}/.test(widget) && /OPERATOR_REASON_CODES\.map/.test(widget));
-    // BETA C7 — the read-only "Cost safeguards" group reads the ai-spend route (display only; no editor).
-    check("the widget talks only to the policies, job-cadence and ai-spend routes",
-      (widget.match(/\/api\/platform\/platform-ops\/[a-z-]+/g) ?? []).every((u) => u === "/api/platform/platform-ops/policies" || u === "/api/platform/platform-ops/job-cadence" || u === "/api/platform/platform-ops/ai-spend"));
+      /min=\{view\.minHours\} max=\{view\.maxHours\}/.test(widget) && /maxLength=\{280\}/.test(kit) && /OPERATOR_REASON_CODES\.map/.test(kit));
+    // AI COST CONTROLS — the panel's only free input is the bounded threshold (min/max from the read model's bounds);
+    // toggles are buttons; the reason and note come from the shared kit.
+    check("the AI Cost Controls panel bounds its threshold input from the read model and adds no select or form of its own",
+      (panel.match(/<input/g) ?? []).length === 1 && /min=\{view\.bounds/.test(panel) && /max=\{view\.bounds/.test(panel) && !/<select/.test(panel));
+    check("the Policies surface talks only to the policies, job-cadence and ai-cost-controls routes",
+      ((widget + panel + kit).match(/\/api\/platform\/platform-ops\/[a-z-]+/g) ?? []).every((u) =>
+        u === "/api/platform/platform-ops/policies" || u === "/api/platform/platform-ops/job-cadence" || u === "/api/platform/platform-ops/ai-cost-controls"));
   }
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

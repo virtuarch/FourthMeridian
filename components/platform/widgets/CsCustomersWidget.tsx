@@ -50,6 +50,7 @@ const REASON_LABEL: Record<string, string> = {
 
 const SOURCE_TONE: Record<string, string> = {
   POLICY: "var(--text-secondary)", POLICY_DEFAULT: "var(--text-muted)", OVERLAY: "var(--accent-warning)", CEILING: "var(--accent-positive)",
+  USER_OVERRIDE: "var(--accent-warning)", PLATFORM_SETTING: "var(--text-secondary)",
 };
 
 function fmtValue(v: boolean | number): string { return typeof v === "boolean" ? (v ? "on" : "off") : String(v); }
