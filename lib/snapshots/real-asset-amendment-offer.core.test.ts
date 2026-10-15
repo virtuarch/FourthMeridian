@@ -10,9 +10,12 @@
  *
  *   npx tsx lib/snapshots/real-asset-amendment-offer.core.test.ts
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import {
   clipAmendmentPreview, realAssetAmendmentOffer, yesterdayOf, type PreviewDay,
 } from "./real-asset-amendment-offer.core";
+import { HISTORICAL_AMENDMENT_ENABLED } from "./amendment-availability";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -21,11 +24,28 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 const TODAY = "2026-10-15";
 
-console.log("1. when to ask");
+console.log("0. F1 — the amendment action is disabled by the owner's ruling (2026-10-15)");
+{
+  const src = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8");
+  check("the switch is OFF until the slice-amendment correction lands", HISTORICAL_AMENDMENT_ENABLED === false);
+  check("while OFF, a PERSONAL Space with history before today is NEVER offered",
+    realAssetAmendmentOffer({ spaceType: "PERSONAL", firstAnchorDate: "2026-01-01", today: TODAY }) === null);
+  const route = src("app/api/spaces/[id]/wealth/amend/route.ts");
+  const guard = route.indexOf("if (!HISTORICAL_AMENDMENT_ENABLED)");
+  check("the amend route refuses (503, AMENDMENT_DISABLED) after the owner gate and BEFORE reading the body or reaching the engine",
+    guard > 0 && guard > route.indexOf("requireSpaceRole(id") && guard < route.indexOf("await req.json()")
+    && guard < route.indexOf("previewAmendment(request)") && /status: 503/.test(route.slice(guard, guard + 400)));
+  check("the switch module is pure (no server-only, no imports)",
+    !/server-only|^import /m.test(src("lib/snapshots/amendment-availability.ts")));
+}
+
+console.log("1. when to ask (the rule as it applies once the switch is ON)");
 {
   const offer = realAssetAmendmentOffer({ spaceType: "PERSONAL", firstAnchorDate: "2026-01-01", today: TODAY });
-  check("PERSONAL + an anchor before today → offered over [first anchor, yesterday]",
-    JSON.stringify(offer) === JSON.stringify({ fromDate: "2026-01-01", toDate: "2026-10-14" }));
+  check("PERSONAL + an anchor before today → offered over [first anchor, yesterday] (null while the switch is OFF)",
+    HISTORICAL_AMENDMENT_ENABLED
+      ? JSON.stringify(offer) === JSON.stringify({ fromDate: "2026-01-01", toDate: "2026-10-14" })
+      : offer === null);
   check("SHARED → never", realAssetAmendmentOffer({ spaceType: "SHARED", firstAnchorDate: "2026-01-01", today: TODAY }) === null);
   check("unknown Space type → never (fail closed)",
     realAssetAmendmentOffer({ spaceType: undefined, firstAnchorDate: "2026-01-01", today: TODAY }) === null

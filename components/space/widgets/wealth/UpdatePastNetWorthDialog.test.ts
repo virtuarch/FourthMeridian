@@ -17,6 +17,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAmendmentOffer } from "./RealAssetsSection";
+import { HISTORICAL_AMENDMENT_ENABLED } from "@/lib/snapshots/amendment-availability";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -35,8 +36,12 @@ async function main(): Promise<void> {
     const history = (anchors: { date: string }[]) => async () => { reads++; return { anchors }; };
 
     const personal = await resolveAmendmentOffer({ spaceType: "PERSONAL", accountId: "a1", today: TODAY, fetchHistory: history([{ date: "2026-01-01" }, { date: TODAY }]) });
-    check("PERSONAL + a backdated anchor → offered over [first anchor, yesterday]",
-      JSON.stringify(personal) === JSON.stringify({ fromDate: "2026-01-01", toDate: "2026-10-14" }));
+    // F1 (owner ruling 2026-10-15): while the amendment action is disabled the
+    // offer is null even on the personal path; the range pin applies once it is ON.
+    check("PERSONAL + a backdated anchor → offered over [first anchor, yesterday] (null while the F1 switch is OFF)",
+      HISTORICAL_AMENDMENT_ENABLED
+        ? JSON.stringify(personal) === JSON.stringify({ fromDate: "2026-01-01", toDate: "2026-10-14" })
+        : personal === null);
 
     reads = 0;
     const shared = await resolveAmendmentOffer({ spaceType: "SHARED", accountId: "a1", today: TODAY, fetchHistory: history([{ date: "2026-01-01" }]) });

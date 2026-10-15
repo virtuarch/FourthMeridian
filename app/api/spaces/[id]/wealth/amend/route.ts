@@ -24,6 +24,9 @@ import { SpaceMemberRole, SnapshotAmendmentKind } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import { previewAmendment, applyAmendment, SharedSpaceAmendmentError } from "@/lib/snapshots/snapshot-amendment";
 import { withTenantDb } from "@/lib/db/tenant-context";
+import {
+  HISTORICAL_AMENDMENT_DISABLED_CODE, HISTORICAL_AMENDMENT_DISABLED_MESSAGE, HISTORICAL_AMENDMENT_ENABLED,
+} from "@/lib/snapshots/amendment-availability";
 
 const VALID_KINDS = new Set<string>(Object.values(SnapshotAmendmentKind));
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -39,6 +42,16 @@ export const POST = withApiHandler(async (
   const [auth, err] = await requireSpaceRole(id, SpaceMemberRole.OWNER);
   if (err) return err;
   const { user } = auth;
+
+  // F1 (owner ruling 2026-10-15): the amendment action is disabled — preview AND
+  // consent — before any body is read or any engine work starts. The owner gate
+  // above still runs first so the refusal discloses nothing to a non-owner.
+  if (!HISTORICAL_AMENDMENT_ENABLED) {
+    return NextResponse.json(
+      { error: HISTORICAL_AMENDMENT_DISABLED_MESSAGE, code: HISTORICAL_AMENDMENT_DISABLED_CODE },
+      { status: 503 },
+    );
+  }
 
   let body: Record<string, unknown>;
   try {

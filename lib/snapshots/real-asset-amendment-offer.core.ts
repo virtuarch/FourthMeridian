@@ -27,6 +27,8 @@
  *     something the user was shown.
  */
 
+import { HISTORICAL_AMENDMENT_ENABLED } from "./amendment-availability";
+
 export interface AmendmentOffer {
   /** YYYY-MM-DD — the first anchor. */
   fromDate: string;
@@ -54,6 +56,9 @@ export function realAssetAmendmentOffer(args: {
   firstAnchorDate: string | null | undefined;
   today: string;
 }): AmendmentOffer | null {
+  // F1 (owner ruling 2026-10-15): while the amendment action is disabled the
+  // offer is never made — see amendment-availability.ts.
+  if (!HISTORICAL_AMENDMENT_ENABLED) return null;
   if (args.spaceType !== "PERSONAL") return null;
   const first = args.firstAnchorDate ?? null;
   if (first === null || first >= args.today) return null;
