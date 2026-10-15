@@ -33,7 +33,7 @@ guide that ties everything together).
 | [`architecture/`](architecture/) | **Binding doctrine.** The doctrine reader's guide, the Financial Truth Spine, Space Architecture, the Security Model, the Time Model, the UI Interaction Model. |
 | [`systems/`](systems/) | **Subsystem reference** — why each part exists, its authority, contracts, invariants: transactions, investments, wealth, cash-flow, liquidity, debt, connections, crypto-networks, money-and-fx, historical-data, ai-foundation, platform-operations. |
 | [`decisions/`](decisions/) | **ADRs** — decisions already made, alternatives rejected. Do not revisit a decision here without a new ADR. Includes the immutable Phase-2 decision matrix. |
-| [`operations/`](operations/) | Runbooks, deployment, incident response, admin operations, key rotation, and the living production-readiness doc + checklists. |
+| [`operations/`](operations/) | Runbooks, deployment, incident response, admin operations, key rotation, environment separation (incl. [one OpenAI project per environment](operations/openai-environment-separation.md)), and the living production-readiness doc + checklists. |
 | [`design-system/`](design-system/) | The Atlas design authority (glass/liquid material, modal doctrine, material classification) + the product language guide. |
 | [`plans/`](plans/) | **Active** roadmap, parked ideas, and open initiative follow-ups. |
 | [`releases/`](releases/) | Honest per-version release notes. |

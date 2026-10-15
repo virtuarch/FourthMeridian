@@ -106,6 +106,8 @@ The Preview override above stops *new* `v2.6` deployments from receiving it. It 
 
 ## 7. OpenAI: what only the owner can do
 
+**2026-10-15 (AI COST CONTROLS, Agent C):** the full runbook is now `openai-environment-separation.md` — one OpenAI project per environment (`fourth-meridian-dev` / `-preview` / `-prod`), the two new optional variables `OPENAI_PROJECT_ID` (the `proj_…` pin sent as the `OpenAI-Project` header, shown value-free in the env-status widget) and `OPENAI_EXPECTED_ENVIRONMENT` (a record copied to the wrong environment is refused before any call), the key-free verification (env-status pin → one turn → OpenAI usage per project ↔ the ledger's `environment` column), and the recommended per-project alerts and hard limits. The steps below remain correct as the minimal Preview-only version.
+
 The repo cannot tell which OpenAI project a key belongs to without calling OpenAI with that key, and the keys are not readable. The owner's steps:
 
 1. platform.openai.com → Projects → create `fourth-meridian-preview` with a monthly budget cap.
