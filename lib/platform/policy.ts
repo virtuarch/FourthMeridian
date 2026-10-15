@@ -140,6 +140,10 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "ops_ai_invocations", label: "AI Invocations", order: 24 },
       { key: "ops_brief_ops",      label: "Daily Brief",    order: 25 },
       { key: "ops_plaid_usage",    label: "Plaid Usage",    order: 26 },
+      // AI COST CONTROLS — budget utilization (estimated AI spend against the
+      // allowance and the two alert thresholds) on the Economics workspace.
+      // Needs `platform:seed-spaces` on every environment after this registry change.
+      { key: "ops_ai_budget",      label: "AI Budget",      order: 27 },
     ],
   },
   SECURITY_OPS: {

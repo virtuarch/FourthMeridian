@@ -25,6 +25,7 @@ import { getAiInvocationContext } from '@/lib/ai/invocation-context';
 import { captureAiProviderFailure } from '@/lib/monitoring/capture';
 import { rateAt } from '@/lib/usage/pricing';
 import { todayUTCISO } from '@/lib/time/clock';
+import { resolveOpenAiCredentials } from '@/lib/ai/openai-credentials';
 
 // ── Client ───────────────────────────────────────────────────────────────────
 // Lazy-initialised singleton. Fails loudly if the key is absent so
@@ -36,16 +37,10 @@ let _client: OpenAI | null = null;
 function getClient(): OpenAI {
   if (_client) return _client;
 
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) {
-    throw new Error(
-      '[ai/provider] OPENAI_API_KEY is not set. ' +
-      'Add it to .env.local for local development and to your Vercel ' +
-      'environment variables for deployed environments.',
-    );
-  }
-
-  _client = new OpenAI({ apiKey: key });
+  // OPENAI ENVIRONMENT SEPARATION — the one credential seam (lib/ai/openai-credentials.ts):
+  // one key name, an optional project pin, no fallback across names or environments.
+  const creds = resolveOpenAiCredentials();
+  _client = new OpenAI({ apiKey: creds.apiKey, ...(creds.project ? { project: creds.project } : {}) });
   return _client;
 }
 

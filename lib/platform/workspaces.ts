@@ -154,7 +154,7 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     { workspaceId: "platform-ai", sections: ["ops_ai_invocations", "ops_brief_ops", "ops_ai_trend"] },
     // Economics — Plaid Item-months and their estimated cost, the operational
     // cost & latency intelligence, and the AI spend trend. Composition only.
-    { workspaceId: "platform-costs", sections: ["ops_plaid_usage", "ops_cost", "ops_ai_trend"] },
+    { workspaceId: "platform-costs", sections: ["ops_ai_budget", "ops_plaid_usage", "ops_cost", "ops_ai_trend"] },
   ],
   SECURITY_OPS: [
     // BETA V2 — one "Security posture" surface (hosted by the first composed key,

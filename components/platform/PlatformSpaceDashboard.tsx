@@ -95,6 +95,7 @@ import { OpsOverviewWidget } from "./widgets/OpsOverviewWidget";
 import { OpsAiInvocationsWidget } from "./widgets/OpsAiInvocationsWidget";
 import { OpsBriefOpsWidget } from "./widgets/OpsBriefOpsWidget";
 import { OpsPlaidUsageWidget } from "./widgets/OpsPlaidUsageWidget";
+import { OpsAiBudgetWidget } from "./widgets/OpsAiBudgetWidget";
 import { WorkspaceSessionProvider } from "./workspace-session";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
 import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
@@ -166,6 +167,8 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   ops_ai_invocations:     OpsAiInvocationsWidget,
   ops_brief_ops:          OpsBriefOpsWidget,
   ops_plaid_usage:        OpsPlaidUsageWidget,
+  // AI COST CONTROLS — budget utilization on Economics (Agent B replaces the stub).
+  ops_ai_budget:          OpsAiBudgetWidget,
   // Growth & Revenue
   growth_signups:       GrowthSignupsWidget,
   growth_beta_requests: GrowthBetaRequestsWidget,
