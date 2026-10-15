@@ -23,6 +23,11 @@ import {
 } from "@/lib/data/snapshot-summary.core";
 import type { ConversionContext } from "@/lib/money/types";
 import { Snapshot } from "@/types";
+// RWA-2B — whether a reconstructed row's real-asset component is a MODELED
+// value, re-derived from the manual assets' valuation ledger through the same
+// resolver the history engine wrote it with. The stored row cannot say it.
+import { loadRealAssetBasisByDate } from "@/lib/snapshots/real-asset-basis";
+import { isRealAssetsModeled } from "@/lib/snapshots/real-asset-basis.core";
 
 /**
  * Resolve the stamp-conversion context for a set of snapshot rows against the
@@ -168,9 +173,18 @@ export async function getRecentSnapshots(
   });
   const { target, ctx: stampCtx } = await resolveStampContext(space?.reportingCurrency ?? "USD", rows);
 
+  // RWA-2B — the real-asset basis per date, from the ledger, on THIS client.
+  // Decided on the STORED (pre-conversion) row like every other provenance
+  // field: it is a statement about evidence, not presentation.
+  const realAssetBasis = await loadRealAssetBasisByDate(
+    client, spaceId, rows.map((r) => r.date.toISOString().slice(0, 10)), new Date().toISOString().slice(0, 10),
+  );
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return rows.map((r: any) => {
     const stamp = r.reportingCurrency ?? "USD";
+    const dateISO = r.date.toISOString().slice(0, 10);
+    const modeled = isRealAssetsModeled(r, realAssetBasis.get(dateISO)) ? { realAssetsModeled: true as const } : {};
     const raw = {
       netWorth:         r.netWorth,
       totalAssets:      r.totalAssets,
@@ -211,6 +225,7 @@ export async function getRecentSnapshots(
         // assumed. On the fast path it is the row's own stamp.
         currency: target,
         ...provenance,
+        ...modeled,
       };
     }
 
@@ -223,6 +238,7 @@ export async function getRecentSnapshots(
       isEstimated: (r.isEstimated ?? false) || converted.estimated,
       currency: target,
       ...provenance,
+      ...modeled,
       // MC1 QA Q4b — additive: only a genuine rate MISS (native pass-through)
       // sets this; resolving off-stamp rows omit it, so homogeneous histories
       // stay byte-identical. The hero series drops these points downstream.

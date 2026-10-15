@@ -112,6 +112,13 @@ export interface WealthDelta {
 export interface WealthChartPoint extends WealthMetrics {
   date:        string;
   isEstimated: boolean;
+  /**
+   * RWA-2B — this reconstructed point's real-asset component is a MODELED value
+   * (a straight line between two of the user's dated estimates for a manual
+   * asset). Carried from the Snapshot DTO; present only when true. `netWorth`
+   * and `totalAssets` include that component; the other series never did.
+   */
+  realAssetsModeled?: true;
 }
 
 export interface WealthDriver {
@@ -228,6 +235,8 @@ function toChartPoint(s: Snapshot): WealthChartPoint {
     netWorth: st.netWorth, totalAssets: st.totalAssets,
     totalLiabilities: st.totalLiabilities, liquidNetWorth: st.liquidNetWorth,
     cash: st.cash, invested: st.invested,
+    // RWA-2B — only ever carried, never decided here; absent ⇒ byte-identical.
+    ...(s.realAssetsModeled && st.isEstimated ? { realAssetsModeled: true as const } : {}),
   };
 }
 
