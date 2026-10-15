@@ -56,7 +56,12 @@ interface SpaceOption {
 
 interface Props {
   onClose: () => void;
-  onAdd?:  () => void;
+  /**
+   * RWA-2B — reports the created asset so a host in a PERSONAL Space can offer
+   * "Update past net worth?" when the asset was given history (a backdated or
+   * purchase-price starting value). Zero-argument callers are unaffected.
+   */
+  onAdd?:  (created: { accountId: string }) => void;
   /** Pre-checks these Space ids in the sharing picker (e.g. the Space the user
    *  is adding from, or one just created in onboarding). Purely a default — the
    *  picker stays freely editable. The personal Space is always included by the
@@ -186,7 +191,7 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
       return;
     }
 
-    onAdd?.();
+    onAdd?.({ accountId: String(data.accountId ?? "") });
     onClose();
     router.refresh();
   }
