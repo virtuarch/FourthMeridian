@@ -183,6 +183,18 @@ export interface DayRegenInput {
   /** Trust tier of the walked-back cash/card component (typically "derived"). */
   cashCardTier: CompletenessTier;
   /**
+   * RWA-2B — the trust of the day's REAL-ASSET component when a manual asset was
+   * valued from its valuation ledger (lib/snapshots/manual-asset-history.core.ts):
+   * "estimated" when any value is modeled between two of the user's dated
+   * estimates or carried forward from the latest one, "observed" when every
+   * value is a recorded anchor. Absent/null when no manual asset was valued
+   * that day, so every pre-existing caller is unchanged. The VALUE itself
+   * already arrived in `base.totalRealAssets` (through classifyAccounts, like
+   * the flat-held value before it); this only constrains the row's tier so a
+   * modeled day can never be written observed.
+   */
+  realAssetTier?: CompletenessTier | null;
+  /**
    * V26-INVESTMENTS-HISTORY — composition of the day's INVESTMENT valuation:
    * how many holdings contributed to `investmentValue`, and how many were
    * considered. Pass-through metadata: neither participates in any decision
@@ -524,6 +536,9 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   // BTC evidence it must not drag an otherwise-observed day down.
   const tiers: CompletenessTier[] = [input.cashCardTier, investmentTier];
   if (input.hasDigitalAssetEvidence) tiers.push(input.digitalAssetTier);
+  // RWA-2B — a real-asset value modeled or carried from the valuation ledger is
+  // an estimate and says so; absent, the day is exactly as it was.
+  if (input.realAssetTier) tiers.push(input.realAssetTier);
   const tier = worstTier(tiers);
   // FLIP: observed only when every component is observed; otherwise the row is a
   // reconstruction and stays estimated (a derived date is never "observed"). An
@@ -535,6 +550,11 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   const parts: string[] = [];
   if (!refusedBy.has("stocks") && input.hasInvestmentEvidence) parts.push("investments at A8 historical value");
   if (!refusedBy.has("crypto") && input.hasDigitalAssetEvidence) parts.push("crypto at historical price × today's quantity");
+  if (input.realAssetTier) {
+    parts.push(input.realAssetTier === "observed"
+      ? "real assets at the user's recorded estimate for the date"
+      : "real assets modeled between / carried from the user's dated estimates");
+  }
 
   return {
     date,
