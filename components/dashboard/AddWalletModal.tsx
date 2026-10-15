@@ -76,9 +76,15 @@ export function AddWalletModal({ onClose, onAdd, zIndex }: Props) {
     router.refresh();
   }
 
+  const dirty = name !== "" || address !== "" || chain !== "BTC";
+  const requestClose = () => {
+    if (!loading && (!dirty || window.confirm("Discard your unsaved wallet details?"))) onClose();
+  };
+
   return (
     <FormModal
       open
+      dirty={dirty}
       onClose={() => { if (!loading) onClose(); }}
       title="Track a Wallet"
       icon={Wallet}
@@ -87,7 +93,7 @@ export function AddWalletModal({ onClose, onAdd, zIndex }: Props) {
       preventClose={loading}
       footer={
         <div className="flex gap-3">
-          <GlassButton onClick={onClose} disabled={loading} tone="neutral" fullWidth>
+          <GlassButton onClick={requestClose} disabled={loading} tone="neutral" fullWidth>
             Cancel
           </GlassButton>
           <GlassButton onClick={handleSubmit} disabled={loading} tone="meridian" fullWidth>

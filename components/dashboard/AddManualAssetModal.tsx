@@ -128,6 +128,13 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
 
+  // Capture editable defaults once so returning to the initial values clears dirty state.
+  const [initial] = useState(() => ({ currency, valuationDate, spaceIds: [...selectedWsIds] }));
+  const dirty = name !== "" || value !== "" || currency !== initial.currency
+    || valuationDate !== initial.valuationDate || acquisitionDate !== "" || purchasePrice !== ""
+    || useAsStart || selectedWsIds.length !== initial.spaceIds.length
+    || selectedWsIds.some((id) => !initial.spaceIds.includes(id));
+
   // ── Shared Spaces for the optional sharing picker ──────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -199,6 +206,7 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
   return (
     <FormModal
       open
+      dirty={dirty}
       onClose={() => { if (!loading) onClose(); }}
       title="Add asset"
       subtitle="A home, vehicle, jewelry or anything else you own"
