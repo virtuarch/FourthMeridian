@@ -22,10 +22,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { AttentionBlock, AttentionRowDetail, AttentionSurface } from "./AttentionBlock";
-import { buildAttention, type AttentionInputs } from "@/lib/platform/ops/attention-core";
+import { AttentionBlock, AttentionRowDetail, AttentionSurface, UserImpactGroup } from "./AttentionBlock";
+import { NO_USER_REFERENCE_REASON, buildAttention, buildUserImpact, type AttentionInputs, type UserImpactInputs } from "@/lib/platform/ops/attention-core";
 import type { AttentionResponse } from "@/lib/platform/ops/attention";
-import { ATTENTION_FOOTNOTE, filterItems } from "./attention-view";
+import { ATTENTION_FOOTNOTE, IMPACT_FOOTNOTE, IMPACT_TITLE, filterItems } from "./attention-view";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -62,9 +62,31 @@ const inputs: AttentionInputs = {
   },
 };
 
-function response(over: Partial<AttentionResponse> = {}, inp: AttentionInputs = inputs): AttentionResponse {
+// BETA V1 — the user-impact composition's inputs: one FAILED Plaid refresh, one
+// PARTIAL wallet refresh, AI failure COUNTS, one failed Brief, and the SAME
+// connection-health read (the ERROR row is not a reauth; a NEEDS_REAUTH row is
+// added below where a test wants one).
+const impactInputs: UserImpactInputs = {
+  refresh: {
+    rows: [
+      { id: "exec_f1a2b3", runId: "run_1", plaidItemId: "item_zz9988", sourceKind: "PLAID_ITEM", sourceRef: null, network: null, trigger: "cron", profile: "incremental", startedAt: AGO(3), completedAt: AGO(3), durationMs: 1200, overallStatus: "FAILED", parentJobRunId: null, hasError: true, deploymentSha: null, errorSummary: "ITEM_LOGIN_REQUIRED", admissionReason: null, failureStage: "provider", failureCategory: "credential", outcome: "failed" },
+      { id: "exec_p4c5d6", runId: "run_2", plaidItemId: null, sourceKind: "WALLET", sourceRef: "acct_ww7766", network: "ETH", trigger: "cron", profile: "incremental", startedAt: AGO(1), completedAt: AGO(1), durationMs: 800, overallStatus: "PARTIAL", parentJobRunId: null, hasError: true, deploymentSha: null, errorSummary: null, admissionReason: null, failureStage: null, failureCategory: null, outcome: "partial" },
+    ],
+    more: false,
+  },
+  ai: { windowHours: 24, returned: 40, failed: 2, timeouts: 0, rateLimited: 0, quota: 1, lastFailureAt: AGO(2), lastQuotaAt: AGO(5), checkedAt: NOW.toISOString() },
+  brief: { counts: { rows: 3, generated: 2, failed: 1, inProgress: 0, empty: 0, versionStale: 0, coolingDown: 1, distinctSpaces: 3, distinctOwners: 3 }, rows: [
+    { spaceRef: "…sp4455", briefDay: "2026-10-14", state: "FAILED", generationReason: null, versionStale: false, coolingDown: true, generatedAt: null, lastFailedAt: AGO(4), lastFailureReason: "QUOTA", model: null, generationVersion: null, invocation: null },
+    { spaceRef: "…sp0001", briefDay: "2026-10-14", state: "GENERATED", generationReason: "daily", versionStale: false, coolingDown: false, generatedAt: AGO(6), lastFailedAt: null, lastFailureReason: null, model: "m", generationVersion: "v", invocation: null },
+  ] },
+  connections: inputs.connections,
+};
+const EMPTY_IMPACT: UserImpactInputs = { refresh: { rows: [], more: false }, ai: { windowHours: 24, returned: 10, failed: 0, timeouts: 0, rateLimited: 0, quota: 0, lastFailureAt: null, lastQuotaAt: null, checkedAt: NOW.toISOString() }, brief: { counts: { rows: 0, generated: 0, failed: 0, inProgress: 0, empty: 0, versionStale: 0, coolingDown: 0, distinctSpaces: 0, distinctOwners: 0 }, rows: [] }, connections: { total: 0, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: NOW.toISOString(), cap: 20, listedScope: "unhealthy" } };
+
+function response(over: Partial<AttentionResponse> = {}, inp: AttentionInputs = inputs, impact: UserImpactInputs = impactInputs): AttentionResponse {
   const core = buildAttention(inp, NOW);
   return {
+    userImpact: buildUserImpact(impact, NOW),
     checkedAt: NOW.toISOString(),
     items: core.items,
     counts: core.counts,
@@ -189,6 +211,52 @@ function main() {
     check("no sort in the block (one ordering authority)", !/\.sort\(/.test(src));
     check("imports no reader or server module", !/@\/lib\/platform\/ops\/attention"|@\/lib\/db|server-only|customer-core/.test(src.replace(/import type[^;]+;/g, "")));
     check("no raw hex, no palette class", !/#[0-9a-fA-F]{3,8}\b/.test(src) && !/\b(?:bg|text|border)-(?:gray|blue|red|emerald|green)-\d{2,3}\b/.test(src));
+  }
+
+  console.log("11. BETA V1 · user-impacting failures — a separate composition, rendered first");
+  {
+    const data = response();
+    const { html, text } = render(data);
+    check("the group is titled and precedes the severity table", text.indexOf(IMPACT_TITLE) >= 0 && text.indexOf(IMPACT_TITLE) < text.indexOf("Severity"), text.slice(0, 400));
+    check("users affected is withheld WITH the reason — never a figure invented from sources", text.includes("—") && text.includes(NO_USER_REFERENCE_REASON), text);
+    check("the qualifier counts sources and facts over the window (3 AI facts = 2 FAILED + 1 QUOTA)", /3 sources affected · 6 facts · last 24 h/.test(text), text);
+    check("every kind word is in the legend, zeros included", ["Refresh failed", "Refresh partial", "AI failure", "Brief failed", "Needs reauthorization"].every((w) => text.includes(w)));
+    check("the distribution is word + count, with an accessible summary", /aria-label="Facts by kind · last 24 h: 1 Refresh failed, 1 Refresh partial, 3 AI failure, 1 Brief failed, 0 Needs reauthorization"/.test(html), html.match(/aria-label="Facts by kind[^"]*"/)?.[0]);
+    for (const h of ["Kind", "Reference", "Problem", "When", "Evidence"]) check(`impact column "${h}"`, text.includes(h));
+    check("impact rows render in the server's order (newest first)", (() => {
+      const refs = [...html.matchAll(/<span class="text-xs[^"]*tabular-nums[^"]*">((?:item|account|space|connection) …[a-z0-9]+|no reference exposed)<\/span>/g)].map((m) => m[1]);
+      return refs.join(",") === data.userImpact.rows.map((r) => (r.reference ? `${r.reference.kind} …${r.reference.tail}` : "no reference exposed")).join(",");
+    })(), html);
+    check("references are opaque tails typed by kind", text.includes("item …zz9988") && text.includes("account …ww7766") && text.includes("space …sp4455"));
+    check("an AI roll-up row says it exposes no reference and carries its count", text.includes("no reference exposed") && /AI failure ×2/.test(text) && !/AI failure ×1\b/.test(text), text);
+    check("a refresh row's evidence opens the execution panel", /aria-label="Inspect execution …f1a2b3 for item …zz9988"/.test(html) && /aria-label="Inspect execution …p4c5d6 for account …ww7766"/.test(html));
+    check("an AI / Brief row's evidence is a registry-labelled doorway to AI", /Open AI — evidence for AI · provider call/.test(html) && /Open AI — evidence for Brief · generation/.test(html), html);
+    check("impact kinds are not severity badges (the table's badge count is unchanged)", badgeWords(html).length === data.items.length, badgeWords(html).join(","));
+    check("impact header is hidden below md and the cells carry their column word", /class="mb-1 hidden items-center gap-3 border-b px-1 pb-2 md:grid"/.test(html) && /text-\[10px\] uppercase tracking-wide text-\[var\(--text-faint\)\] md:hidden">Reference</.test(html));
+    check("the identity rule is the group's hint, reachable by assistive technology (aria-label + title)", html.includes(`aria-label="${IMPACT_FOOTNOTE}"`) && html.includes(`title="${IMPACT_FOOTNOTE}"`), html.match(/aria-label="User-impacting[^"]*"/)?.[0]);
+    check("no email, username or resolvable id in the group", !/[\w.+-]+@[\w-]+\.[\w.]+/.test(html) && !/item_zz9988|acct_ww7766|exec_f1a2b3|user …/.test(text), text);
+
+    // Empty: a sentence counting readers, never a health claim; no bar, no rows.
+    const empty = render(response({}, inputs, EMPTY_IMPACT));
+    check("empty group says how many readers answered", empty.text.includes("No user-impacting failure recorded in the last 24 h — 4 readers answered."), empty.text);
+    check("empty group shows users affected 0 with no reason, and no reference cell", /0 sources affected · 0 facts/.test(empty.text) && !/no reference exposed/.test(empty.text), empty.text);
+
+    // Failed readers are named apart from the severity table's own alert.
+    const partial = render(response({}, inputs, { ...impactInputs, ai: null, brief: null }));
+    check("a failed impact reader is announced by name", partial.text.includes("2 user-impact readers could not be asked (ai-failures, brief-ops)"), partial.text);
+    check("…and its rows are absent, the others present", !/AI failure ×/.test(partial.text) && partial.text.includes("item …zz9988"));
+
+    // NEEDS_REAUTH mirrors the severity table's row with a connection reference.
+    const reauth = render(response({}, inputs, { ...impactInputs, connections: { ...inputs.connections!, unhealthy: [...inputs.connections!.unhealthy, { source: "PLAID", id: "item_reauth1", label: "Wells Fargo", status: "NEEDS_REAUTH", errorCode: null, healthState: "NEEDS_REAUTH", lastSyncedAt: AGO(50), since: AGO(48), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth"] }] } }));
+    check("a NEEDS_REAUTH connection is an impact row with an opaque connection reference", reauth.text.includes("connection …eauth1") && reauth.text.includes("Connection · Wells Fargo") && /Open Providers — evidence for Connection · Wells Fargo/.test(reauth.html), reauth.text);
+
+    // Floors are captioned inside the group.
+    const floored = render(response({}, inputs, { ...impactInputs, refresh: { ...impactInputs.refresh!, more: true } }));
+    check("a further page is a floor caption and the bar says so", floored.text.includes("the seam had a further page (a floor, not a total)") && /\(at least\)"/.test(floored.html), floored.text);
+
+    // The group alone, as the host renders it (exported for this test).
+    const alone = renderToStaticMarkup(createElement(UserImpactGroup, { impact: data.userImpact, nowMs: NOW.getTime(), onOpenWorkspace: () => {}, onSelectExecution: () => {} }));
+    check("the group renders standalone with no section frame of its own (one frame = the surface)", !/var\(--shadow-e2\)/.test(alone) && alone.includes(IMPACT_TITLE));
   }
 
   if (failures > 0) { console.error(`\nattention-block.test: ${failures} failure(s).`); process.exit(1); }

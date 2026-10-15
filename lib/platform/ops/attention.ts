@@ -38,12 +38,21 @@ import { getIncidentDetail } from "@/lib/platform/incidents/projections";
 import { projectIncidentForPlatform, type PlatformIncidentProjection } from "@/lib/platform/incidents/platform-projection";
 import {
   ATTENTION_AUTHORITIES,
+  USER_IMPACT_WINDOW_HOURS,
   buildAttention,
+  buildUserImpact,
   type AttentionAuthority,
   type AttentionCore,
   type AttentionInputs,
   type AttentionItem,
+  type UserImpactAuthority,
+  type UserImpactCore,
 } from "@/lib/platform/ops/attention-core";
+// BETA V1 — the three user-impact readers. Seams and readers only: this file
+// still imports no database client and touches no ledger accessor.
+import { queryRefreshExecutions } from "@/lib/platform/refresh/execution-query";
+import { getAiFailureHealth } from "@/lib/platform/ai/failures";
+import { getBriefOps } from "@/lib/platform/ai/brief-ops";
 
 /** Active incidents asked for. More than the preview's six; still a floor when exceeded. */
 export const ATTENTION_INCIDENT_LIMIT = 20;
@@ -51,6 +60,8 @@ export const ATTENTION_INCIDENT_LIMIT = 20;
 const INCIDENT_EVIDENCE_LOOKUPS = 10;
 /** Delivery-history rows returned (the retained runs hold at most ~10 cycles). */
 const RECENT_FIRINGS_CAP = 10;
+/** BETA V1 — FAILED/PARTIAL executions asked of the seam for the 24 h window; a further page is a floor. */
+export const USER_IMPACT_EXECUTIONS_LIMIT = 50;
 
 export interface AttentionRecentFirings {
   /** How many evaluation runs the history was collected from. */
@@ -72,9 +83,11 @@ export interface AttentionResponse {
   floors: string[];
   /** HISTORICAL — never mixed into `items`. */
   recentFirings: AttentionRecentFirings;
+  /** BETA V1 — failures that reached a customer in the last 24 h, a separate composition (attention-core.ts). */
+  userImpact: UserImpactCore;
 }
 
-async function attempt<T>(what: AttentionAuthority | "alert-history", read: () => Promise<T>): Promise<T | null> {
+async function attempt<T>(what: AttentionAuthority | UserImpactAuthority | "alert-history", read: () => Promise<T>): Promise<T | null> {
   try {
     return await read();
   } catch (e) {
@@ -103,7 +116,8 @@ export async function getAttention(now: Date = new Date()): Promise<AttentionRes
   const connectionsP = attempt("connection-health", () => getConnectionHealth(20));
   const freshnessP = attempt("resource-freshness", () => checkResourceFreshness(undefined, now));
 
-  const [connections, jobs, resources, providers, alerts, incidents, history] = await Promise.all([
+  const impactSince = new Date(now.getTime() - USER_IMPACT_WINDOW_HOURS * 3_600_000);
+  const [connections, jobs, resources, providers, alerts, incidents, history, impactRefresh, impactAi, impactBrief] = await Promise.all([
     connectionsP,
     attempt("job-health", () => checkScheduledJobHealth(undefined, now)),
     freshnessP,
@@ -118,6 +132,16 @@ export async function getAttention(now: Date = new Date()): Promise<AttentionRes
     })),
     attempt("incidents", readIncidents),
     attempt("alert-history", () => loadRecentAlertRuns()),
+    // BETA V1 — user-impact readers, each best-effort and named when it fails.
+    attempt("refresh-executions", async () => {
+      const page = await queryRefreshExecutions({ audience: "operator", filter: { overallStatus: ["FAILED", "PARTIAL"], since: impactSince }, limit: USER_IMPACT_EXECUTIONS_LIMIT });
+      return { rows: page.rows, more: page.nextCursor !== null };
+    }),
+    attempt("ai-failures", () => getAiFailureHealth(USER_IMPACT_WINDOW_HOURS, now)),
+    attempt("brief-ops", async () => {
+      const ops = await getBriefOps("24h");
+      return { counts: ops.counts, rows: ops.rows };
+    }),
   ]);
 
   const core = buildAttention(
@@ -141,6 +165,8 @@ export async function getAttention(now: Date = new Date()): Promise<AttentionRes
     now,
   );
 
+  const userImpact = buildUserImpact({ refresh: impactRefresh, ai: impactAi, brief: impactBrief, connections }, now);
+
   const runs = history ?? [];
   const fired = collectAlertHistory(runs, RECENT_FIRINGS_CAP);
   return {
@@ -157,5 +183,6 @@ export async function getAttention(now: Date = new Date()): Promise<AttentionRes
       count: fired.length,
       items: fired,
     },
+    userImpact,
   };
 }

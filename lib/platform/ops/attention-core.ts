@@ -44,6 +44,9 @@ import type { AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
 import type { AlertSeverity } from "@/lib/alerts/rules";
 import type { PlatformIncidentProjection } from "@/lib/platform/incidents/platform-projection";
 import type { SyncIssueSeverity } from "@/lib/platform/sync-issue-semantics";
+import type { ExecutionRowDTO } from "@/lib/platform/refresh/execution-query-core";
+import type { AiFailureHealth } from "@/lib/platform/ai/failures";
+import type { BriefOps } from "@/lib/platform/ai/brief-ops";
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
 
@@ -64,8 +67,8 @@ export interface AttentionEntity {
 export type AttentionEvidence =
   /** A RefreshExecution the operator can inspect in place. */
   | { kind: "execution"; id: string; workspace: "platform-refresh" }
-  /** The workspace that holds the full read. */
-  | { kind: "connection" | "job" | "provider" | "resource" | "alert" | "incident"; id?: string; workspace: string };
+  /** The workspace that holds the full read. (`ai` / `brief` — BETA V1 user-impact rows.) */
+  | { kind: "connection" | "job" | "provider" | "resource" | "alert" | "incident" | "ai" | "brief"; id?: string; workspace: string };
 
 export type AttentionAction =
   | { kind: "open-workspace"; workspace: string }
@@ -376,4 +379,233 @@ export function buildAttention(inputs: AttentionInputs, now: Date): AttentionCor
 
   const sorted = sortAttention(items);
   return { items: sorted, counts: countBySeverity(sorted), authorities: { checked, failed }, floors };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BETA V1 · USER-IMPACTING FAILURES — "failed operations affecting users"
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// A SECOND, SEPARATE composition on the same surface. The severity table above
+// answers "what is broken on the platform"; this group answers "which failures
+// reached a customer in the last 24 h". It restates four EXISTING readers —
+// never the ledgers — and, like the table, makes no new verdict:
+//
+//   refresh executions   queryRefreshExecutions (the OPS-2B row seam), FAILED /
+//                        PARTIAL since the window start, operator audience
+//   AI failures          getAiFailureHealth — FAILED / TIMEOUT / RATE_LIMITED /
+//                        QUOTA are COUNTS by outcome (the reader lists no rows)
+//   Brief failures       getBriefOps("24h") rows in state FAILED
+//   NEEDS_REAUTH         the connection-health rows already in the table
+//
+// IDENTITY. The design asks for an opaque `user …last6` on each row. None of
+// the four readers exposes a user reference today (the refresh seam names an
+// item or an account; the AI reader counts; the Brief reader names a Space;
+// connection health is identity-free by design), so each row carries the
+// OPAQUE reference its reader DOES expose, typed by kind, and the "users
+// affected" figure is `null` WITH THE REASON rather than a number invented
+// from sources. When a reader gains a `userRef` the row picks it up and the
+// figure becomes a count — the shape does not change. Never an email, never a
+// username, never a resolvable id.
+//
+// PURE: no DB, no clock read (`now` is a parameter), no I/O.
+
+export const USER_IMPACT_WINDOW_HOURS = 24;
+
+export type UserImpactKind = "refresh-failed" | "refresh-partial" | "ai-failure" | "brief-failed" | "needs-reauth";
+
+export const USER_IMPACT_KINDS: readonly UserImpactKind[] = ["refresh-failed", "refresh-partial", "ai-failure", "brief-failed", "needs-reauth"];
+
+/** An opaque reference — `${kind} …${tail}` — enough to correlate, never resolvable to a person here. */
+export interface UserImpactReference {
+  kind: "user" | "item" | "account" | "space" | "connection";
+  tail: string;
+}
+
+export interface UserImpactRow {
+  id: string;
+  kind: UserImpactKind;
+  /** The failing thing, in words ("Refresh · Plaid item", "AI · provider call", "Brief · generation", "Connection · Chase"). */
+  label: string;
+  problem: string;
+  /** ISO instant of the newest fact behind the row; null when the reader records none. */
+  at: string | null;
+  /** The reader's own opaque reference, or null when it exposes none. */
+  reference: UserImpactReference | null;
+  evidence: AttentionEvidence;
+  /** How many facts the row stands for (AI outcomes are counted, not listed). */
+  count: number;
+  basis: string;
+}
+
+export const USER_IMPACT_AUTHORITIES = ["refresh-executions", "ai-failures", "brief-ops", "connection-health"] as const;
+export type UserImpactAuthority = (typeof USER_IMPACT_AUTHORITIES)[number];
+
+export interface UserImpactInputs {
+  /** FAILED / PARTIAL rows the seam returned for the window; `more` when a further page existed. */
+  refresh: { rows: readonly ExecutionRowDTO[]; more: boolean } | null;
+  ai: AiFailureHealth | null;
+  /** The Brief ops read for the 24 h window — counts over every row, `rows` the bounded list. */
+  brief: Pick<BriefOps, "counts" | "rows"> | null;
+  /** The SAME connection-health read the table used (null = could not be read). */
+  connections: ConnectionHealthResult | null;
+}
+
+export interface UserImpactCore {
+  windowHours: number;
+  rows: readonly UserImpactRow[];
+  /** Facts per kind (a roll-up row counts for its `count`). */
+  counts: Record<UserImpactKind, number>;
+  /** Distinct `user` references; null — with the reason — when no reader exposed one. */
+  usersAffected: { count: number | null; reason: string | null };
+  /** Distinct non-user references (items, accounts, Spaces, connections). */
+  sourcesAffected: number;
+  authorities: { checked: UserImpactAuthority[]; failed: UserImpactAuthority[] };
+  floors: string[];
+}
+
+const tail6 = (id: string): string => id.slice(-6);
+
+function refreshImpactRows(r: NonNullable<UserImpactInputs["refresh"]>): UserImpactRow[] {
+  const out: UserImpactRow[] = [];
+  for (const row of r.rows) {
+    const kind: UserImpactKind | null = row.overallStatus === "FAILED" ? "refresh-failed" : row.overallStatus === "PARTIAL" ? "refresh-partial" : null;
+    if (!kind) continue; // the seam was asked for FAILED/PARTIAL; anything else is not a user impact
+    const source = row.sourceKind === "PLAID_ITEM" ? "Plaid item" : `${row.network ?? "wallet"} wallet`;
+    const category = row.failureCategory ?? row.failureStage ?? null;
+    out.push({
+      id: `refresh:${row.id}`,
+      kind,
+      label: `Refresh · ${source}`,
+      problem: `${row.overallStatus === "FAILED" ? "Failed" : "Partial"}${category ? ` — ${category}` : ""}${row.errorSummary ? ` · ${row.errorSummary}` : row.hasError ? " · error recorded" : ""}.`,
+      at: row.startedAt,
+      reference: row.plaidItemId ? { kind: "item", tail: tail6(row.plaidItemId) } : row.sourceRef ? { kind: "account", tail: tail6(row.sourceRef) } : null,
+      evidence: { kind: "execution", id: row.id, workspace: "platform-refresh" },
+      count: 1,
+      basis: "RefreshExecution.overallStatus via the execution query seam (operator audience); at = the execution's start; the reference is the item or account the seam names — it exposes no user",
+    });
+  }
+  return out;
+}
+
+const AI_OUTCOMES: ReadonlyArray<{ key: keyof Pick<AiFailureHealth, "failed" | "timeouts" | "rateLimited" | "quota">; outcome: string; note: string }> = [
+  { key: "failed", outcome: "FAILED", note: "provider or transport error" },
+  { key: "timeouts", outcome: "TIMEOUT", note: "abandoned at the caller's deadline" },
+  { key: "rateLimited", outcome: "RATE_LIMITED", note: "429, retried — one row per attempt" },
+  { key: "quota", outcome: "QUOTA", note: "insufficient quota — waiting cannot cure it" },
+];
+
+function aiImpactRows(ai: AiFailureHealth): UserImpactRow[] {
+  const out: UserImpactRow[] = [];
+  for (const o of AI_OUTCOMES) {
+    const n = ai[o.key];
+    if (n <= 0) continue;
+    out.push({
+      id: `ai:${o.outcome}`,
+      kind: "ai-failure",
+      label: "AI · provider call",
+      problem: `${n} ${o.outcome} call${n === 1 ? "" : "s"} in ${ai.windowHours} h — ${o.note}.`,
+      at: o.outcome === "QUOTA" ? ai.lastQuotaAt : ai.lastFailureAt,
+      reference: null,
+      evidence: { kind: "ai", workspace: "platform-ai" },
+      count: n,
+      basis: "AiInvocation.outcome counts from the AI failure reader (zero-token failure rows since 2026-10-07); at = the newest failure of any outcome (QUOTA: its own newest); the reader exposes no user",
+    });
+  }
+  return out;
+}
+
+function briefImpactRows(b: NonNullable<UserImpactInputs["brief"]>, since: Date): UserImpactRow[] {
+  const out: UserImpactRow[] = [];
+  for (const row of b.rows) {
+    if (row.state !== "FAILED" || !row.lastFailedAt || Date.parse(row.lastFailedAt) < since.getTime()) continue;
+    out.push({
+      id: `brief:${row.spaceRef}:${row.briefDay}`,
+      kind: "brief-failed",
+      label: "Brief · generation",
+      problem: `Failed for ${row.briefDay}${row.lastFailureReason ? ` — ${row.lastFailureReason}` : ""}${row.coolingDown ? " · cooling down" : ""}.`,
+      at: row.lastFailedAt,
+      reference: { kind: "space", tail: row.spaceRef.replace(/^…/, "") },
+      evidence: { kind: "brief", workspace: "platform-ai" },
+      count: 1,
+      basis: "DailyBrief.lastFailedAt newer than generatedAt (Brief ops reader, 24 h window); the reference is the Space the reader names — it exposes no owner",
+    });
+  }
+  return out;
+}
+
+function reauthImpactRows(c: ConnectionHealthResult): UserImpactRow[] {
+  return c.unhealthy
+    .filter((row) => row.healthState === "NEEDS_REAUTH")
+    .map((row) => ({
+      id: `reauth:${row.source}:${row.id}`,
+      kind: "needs-reauth" as const,
+      label: `Connection · ${row.label}`,
+      problem: `Needs reauthorization — the customer must reconnect${row.errorCode ? ` (${row.errorCode})` : ""}.`,
+      at: row.since,
+      reference: { kind: "connection" as const, tail: tail6(row.id) },
+      evidence: { kind: "connection" as const, id: row.id, workspace: "platform-providers" },
+      count: 1,
+      basis: "connection health state NEEDS_REAUTH (the same row the severity table carries); at = the recorded transition; the fleet reader is identity-free by design",
+    }));
+}
+
+/** Newest first; a row with no instant last; id for stability. The UI never re-sorts. */
+export function sortUserImpact(rows: readonly UserImpactRow[]): UserImpactRow[] {
+  return [...rows].sort((a, b) => {
+    if (a.at && b.at) { const t = b.at.localeCompare(a.at); if (t !== 0) return t; }
+    else if (a.at) return -1;
+    else if (b.at) return 1;
+    return a.id.localeCompare(b.id);
+  });
+}
+
+export const NO_USER_REFERENCE_REASON =
+  "no reader on this surface exposes a user reference — refresh executions name an item or account, AI failures are counted, Brief failures name a Space, connection health is identity-free; per-user detail lives in Customer Success";
+
+export function buildUserImpact(inputs: UserImpactInputs, now: Date, windowHours: number = USER_IMPACT_WINDOW_HOURS): UserImpactCore {
+  const since = new Date(now.getTime() - windowHours * 3_600_000);
+  const rows: UserImpactRow[] = [];
+  const checked: UserImpactAuthority[] = [];
+  const failed: UserImpactAuthority[] = [];
+  const floors: string[] = [];
+
+  if (inputs.refresh) {
+    checked.push("refresh-executions");
+    rows.push(...refreshImpactRows(inputs.refresh));
+    if (inputs.refresh.more) floors.push(`Refresh: ${inputs.refresh.rows.length} FAILED/PARTIAL executions shown — the seam had a further page (a floor, not a total).`);
+  } else failed.push("refresh-executions");
+
+  if (inputs.ai) { checked.push("ai-failures"); rows.push(...aiImpactRows(inputs.ai)); } else failed.push("ai-failures");
+
+  if (inputs.brief) {
+    checked.push("brief-ops");
+    const briefRows = briefImpactRows(inputs.brief, since);
+    rows.push(...briefRows);
+    if (inputs.brief.counts.failed > briefRows.length) {
+      floors.push(`Brief: ${briefRows.length} of ${inputs.brief.counts.failed} failed rows shown — the ops reader lists a bounded page and its window is the Brief day, not the hour (a floor, not a total).`);
+    }
+  } else failed.push("brief-ops");
+
+  if (inputs.connections) { checked.push("connection-health"); rows.push(...reauthImpactRows(inputs.connections)); } else failed.push("connection-health");
+
+  const sorted = sortUserImpact(rows);
+  const counts: Record<UserImpactKind, number> = { "refresh-failed": 0, "refresh-partial": 0, "ai-failure": 0, "brief-failed": 0, "needs-reauth": 0 };
+  const users = new Set<string>();
+  const sources = new Set<string>();
+  let withoutUser = 0;
+  for (const r of sorted) {
+    counts[r.kind] += r.count;
+    if (r.reference?.kind === "user") users.add(r.reference.tail);
+    else {
+      withoutUser += 1;
+      if (r.reference) sources.add(`${r.reference.kind}:${r.reference.tail}`);
+    }
+  }
+  const usersAffected =
+    sorted.length === 0 ? { count: 0, reason: null }
+    : users.size === 0 ? { count: null, reason: NO_USER_REFERENCE_REASON }
+    : withoutUser > 0 ? { count: users.size, reason: `a floor — ${withoutUser} row${withoutUser === 1 ? "" : "s"} carr${withoutUser === 1 ? "ies" : "y"} no user reference` }
+    : { count: users.size, reason: null };
+
+  return { windowHours, rows: sorted, counts, usersAffected, sourcesAffected: sources.size, authorities: { checked, failed }, floors };
 }
