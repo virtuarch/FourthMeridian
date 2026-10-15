@@ -23,6 +23,9 @@ import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import type { PortfolioValuePoint } from "@/lib/investments/portfolio-series";
 import type { TrendPoint } from "@/components/space/widgets/charts/TrendChart";
 
+/** The series whose value INCLUDES the real-asset component (computeSnapshotFields). */
+const REAL_ASSET_SERIES: ReadonlySet<WealthMetricKey> = new Set<WealthMetricKey>(["netWorth", "totalAssets"]);
+
 export function projectWealthTrendPoints(
   result: WealthResult,
   metric: WealthMetricKey,
@@ -33,7 +36,15 @@ export function projectWealthTrendPoints(
 ): TrendPoint[] {
   const points = result.chart.points;
   if (metric !== "invested" || !investedSeries) {
-    return points.map((p) => ({ date: p.date, value: p[metric], estimated: p.isEstimated }));
+    return points.map((p) => ({
+      date: p.date, value: p[metric], estimated: p.isEstimated,
+      // RWA-2B — a reconstructed point whose real-asset component is MODELED
+      // (a straight line between two of the user's dated estimates) is drawn
+      // with the RWA-2A "modeled" basis, so the legend says modeled and the
+      // tooltip says "not a market price" — never observed, and not merely
+      // "rebuilt" either. Only the two series that contain real assets.
+      ...(p.realAssetsModeled && p.isEstimated && REAL_ASSET_SERIES.has(metric) ? { basis: "modeled" as const } : {}),
+    }));
   }
   const byDate = new Map(investedSeries.map((p) => [p.date, p] as const));
   const out: TrendPoint[] = [];

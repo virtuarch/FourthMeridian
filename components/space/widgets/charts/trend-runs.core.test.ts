@@ -192,6 +192,44 @@ function main(): void {
   check("median spacing of daily points is 1", medianSpacingDays(INCIDENT.map((p) => p.t)) === 1);
   check("DAY_MS is a day", DAY_MS === 24 * 60 * 60 * 1000);
 
+  // RWA-2B — the Net Worth series may now mix RECONSTRUCTED days with MODELED
+  // ones (a manual asset's straight line between two estimates), beside the
+  // OBSERVED days the live writer froze. A modeled stretch is its own run with
+  // its own legend entry, bounded by seams on both sides, and never bridged
+  // into a reconstructed or observed neighbour — the step at its edge is a
+  // change of basis, not a market move. No point is dropped.
+  console.log("7. RWA-2B — modeled real-asset days inside a reconstructed/observed Net Worth series");
+  {
+    const mixed: TrendGeomPoint[] = [
+      { ...pt("2026-09-01", 100_000, true) },
+      { ...pt("2026-09-02", 100_100, true) },
+      { ...pt("2026-09-03", 101_000, true),  basis: "modeled" },
+      { ...pt("2026-09-04", 101_500, true),  basis: "modeled" },
+      { ...pt("2026-09-05", 102_000, true),  basis: "modeled" },
+      { ...pt("2026-09-06", 102_100, true) },
+      { ...pt("2026-09-07", 104_000, false) },
+      { ...pt("2026-09-08", 104_050, false) },
+    ];
+    const runs = toRuns(mixed, 3);
+    check("four runs: reconstructed · modeled · reconstructed · observed",
+      runs.map((r) => r.basis).join(",") === "reconstructed,modeled,reconstructed,observed", runs.map((r) => r.basis).join(","));
+    check("the modeled run holds exactly the three modeled days and shares no boundary point",
+      runs[1].points.map((p) => p.date).join() === "2026-09-03,2026-09-04,2026-09-05"
+        && runs[0].points.length === 2 && runs[2].points.length === 1 && runs[3].points.length === 2);
+    check("no point dropped or reordered",
+      runs.flatMap((r) => r.points.map((p) => p.date)).join() === mixed.map((p) => p.date).join());
+    const seams = toBasisSeams(mixed, 3);
+    check("seams at BOTH edges of the modeled stretch and at the observed edge (3)",
+      seams.length === 3
+        && seams[0].fromBasis === "reconstructed" && seams[0].toBasis === "modeled" && seams[0].toDate === "2026-09-03"
+        && seams[1].fromBasis === "modeled" && seams[1].toBasis === "reconstructed" && seams[1].toDate === "2026-09-06"
+        && seams[2].fromBasis === "reconstructed" && seams[2].toBasis === "observed");
+    check("no seam inside the modeled stretch (one line, one legend entry)",
+      !seams.some((s) => s.fromBasis === "modeled" && s.toBasis === "modeled"));
+    check("a modeled point is never classified observed", mixed.filter((p) => p.basis === "modeled").every((p) => basisOf(p) !== "observed"));
+    check("no date gaps were invented", toDateGaps(mixed, 3).length === 0);
+  }
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);
     process.exit(1);

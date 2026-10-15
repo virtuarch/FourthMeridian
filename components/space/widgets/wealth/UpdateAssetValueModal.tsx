@@ -36,7 +36,8 @@ export function UpdateAssetValueModal({
   /** RWA-2A — when known, a valuation may not be dated before it. */
   acquisitionDate?: string | null;
   onClose:      () => void;
-  onSaved:      () => void;
+  /** RWA-2B — reports the dated valuation written, so the host can offer "Update past net worth?". */
+  onSaved:      (saved: { accountId: string; effectiveDate: string }) => void;
 }) {
   const [value,   setValue]   = useState(String(currentValue));
   const [saving,  setSaving]  = useState(false);
@@ -62,7 +63,7 @@ export function UpdateAssetValueModal({
       setError(data.error ?? "Couldn't update the value. Please try again.");
       return;
     }
-    onSaved();
+    onSaved({ accountId, effectiveDate: asOf });
     onClose();
   }
 

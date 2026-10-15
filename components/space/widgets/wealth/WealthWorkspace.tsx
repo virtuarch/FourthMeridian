@@ -148,8 +148,15 @@ export function WealthWorkspace({
   debt,
   onEnvelopeChange,
   backfillInProgress,
+  spaceType,
 }: {
   spaceId:          string;
+  /**
+   * RWA-2B — "PERSONAL" | "SHARED", display-only: the Real assets section offers
+   * "Update past net worth?" only in a PERSONAL Space (the amend route refuses a
+   * SHARED one anyway). Absent ⇒ never offered (fail closed).
+   */
+  spaceType?:       string;
   snapshots:        Snapshot[] | null | undefined;
   /** The currency the snapshot totals are stamped in (the FX from-currency). */
   snapshotCurrency: string;
@@ -392,7 +399,7 @@ export function WealthWorkspace({
       </section>
       <section id="wealth-real-assets" className="scroll-mt-20 border-t border-[var(--border-hairline)] pt-8">
         <SectionTitle>Real assets</SectionTitle>
-        <RealAssetsSection spaceId={spaceId} active={active} />
+        <RealAssetsSection spaceId={spaceId} spaceType={spaceType} active={active} />
       </section>
     </>
   ) : null;

@@ -118,5 +118,33 @@ console.log("6. Liquid Net Worth is still computed and still plottable");
   check("as-of state carries liquidNetWorth", result.asOfState.liquidNetWorth === 5_500);
 }
 
+console.log("7. RWA-2B — a modeled real-asset day is drawn MODELED on the series that contain real assets");
+{
+  const MODELED_ROWS: Snapshot[] = [
+    snap("2026-09-01", { totalCash: 1_000, totalSavings: 4_000, totalInvestments: 10_000, totalCrypto: 2_000, totalDebt: 500, real: 100_000, isEstimated: true }),
+    // The engine's modeled day: estimated row whose real-asset component is a straight line between two estimates.
+    snap("2026-09-10", { totalCash: 1_000, totalSavings: 4_000, totalInvestments: 10_000, totalCrypto: 2_000, totalDebt: 500, real: 105_000, isEstimated: true, realAssetsModeled: true }),
+    // A frozen observed day — the flag is never set on one by the read boundary; pin that the projection would not honour it anyway.
+    snap("2026-09-20", { totalCash: 1_000, totalSavings: 4_000, totalInvestments: 10_000, totalCrypto: 2_000, totalDebt: 500, real: 110_000, isEstimated: false, realAssetsModeled: true }),
+    snap("2026-09-30", { totalCash: 1_000, totalSavings: 4_000, totalInvestments: 10_000, totalCrypto: 2_000, totalDebt: 500, real: 110_000, isEstimated: true }),
+  ];
+  const r = computeWealthTimeMachine({ snapshots: MODELED_ROWS, asOf: "2026-09-30", compareTo: "2026-09-01", currency: "USD" });
+  const nw = projectWealthTrendPoints(r, "netWorth");
+  const ta = projectWealthTrendPoints(r, "totalAssets");
+  check("the modeled day plots with basis 'modeled' on Net Worth and Total assets",
+    nw[1].basis === "modeled" && ta[1].basis === "modeled");
+  check("…and stays an estimate (never observed)", nw[1].estimated === true);
+  check("an ordinary reconstructed day carries NO basis (unchanged: drawn as reconstructed)",
+    nw[0].basis === undefined && nw[3].basis === undefined && nw[0].estimated === true);
+  check("an observed day is never relabelled, even if a DTO carried the flag", nw[2].basis === undefined && nw[2].estimated === false);
+  for (const metric of ["cash", "liquidNetWorth", "totalLiabilities"] as const) {
+    const pts = projectWealthTrendPoints(r, metric);
+    check(`${metric} never includes real assets ⇒ never 'modeled'`, pts.every((p) => p.basis === undefined));
+  }
+  check("values are untouched by the label", nw[1].value === r.chart.points[1].netWorth && ta[1].value === 1_000 + 4_000 + 10_000 + 2_000 + 105_000);
+  check("the read model carries the flag only on an estimated point",
+    r.chart.points[1].realAssetsModeled === true && r.chart.points[2].realAssetsModeled === undefined);
+}
+
 if (failures > 0) { console.error(`\n${failures} wealth-trend-points check(s) failed`); process.exit(1); }
 console.log("\nAll wealth-trend-points checks passed");

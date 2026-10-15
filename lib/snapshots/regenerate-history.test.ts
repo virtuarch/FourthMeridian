@@ -198,6 +198,35 @@ function main(): void {
   check("…with a fallback to every asset when NOTHING is held (drained wallets still refuse)",
     /materialCryptoAccounts\.length > 0 \? assetsOf\(materialCryptoAccounts\) : assetsOf\(cryptoAccounts\)/.test(code));
 
+  // ── RWA-2B — MANUAL REAL ASSETS ARE VALUED FROM THEIR LEDGER ───────────────
+  //
+  // A manual asset (type "other", syncStatus "manual") used to sit at its
+  // current balance on any reconstructed day it reached, and reached none (no
+  // transactions ⇒ floor = today). Its past is the user's own dated estimates,
+  // resolved by THE valuation policy — the same resolver the per-asset chart and
+  // the AI read — so the Net Worth history cannot describe the asset's past
+  // differently from its own chart.
+  console.log("8. RWA-2B — manual real assets from the valuation ledger");
+  check("the ledger is read through the RWA-2A reader (one authority, bulk)",
+    /loadHistoriesFor\s*\(/.test(code) && /from\s+["']@\/lib\/assets\/valuations["']/.test(code));
+  check("the per-day value and floor come from the pure core, never a rule written here",
+    /manualAssetValueOn\s*\(/.test(code) && /manualAssetHistoryFloor\s*\(/.test(code)
+      && /from\s+["']@\/lib\/snapshots\/manual-asset-history\.core["']/.test(code));
+  check("manual assets are identified by syncStatus 'manual' on type 'other' (the detail route's own rule)",
+    /syncStatus:\s*true/.test(code) && /a\.type === "other" && a\.syncStatus === "manual"/.test(code));
+  check("the ledger floor is seeded as the account's earliest-transaction equivalent (computeAccountFloors stays the floor authority)",
+    /earliestTxByAccount\.set\(a\.id, fromISO\(manualAssetHistoryFloor\(/.test(code));
+  check("…and never overrides a real transaction floor",
+    /if \(!earliestTxByAccount\.has\(a\.id\)\)/.test(code));
+  check("a legacy asset is recognised so its floor stays today (no change without a user action)",
+    /isLegacyManualAsset\(\{ resolved: h\.resolved, hasProfile: h\.profile !== null \}\)/.test(code));
+  check("an unvalued day EXCLUDES the asset (no zero, no carried balance)",
+    /const v = manualAssetValueOn\(ledger, dISO\);\s*if \(!v\) return \[\];/.test(code));
+  check("the day's real-asset basis reaches the core as a tier (a modeled day can never be written observed)",
+    /realAssetTier: realAssetTierFor\(dayRealAssetBases\)/.test(code));
+  check("the manual-asset branch sits BEFORE the flat fallback in the day map",
+    code.indexOf("manualHistoryByAccount.get(a.id)") < code.indexOf("return [{ type: a.type, balance: a.balance, currency: a.currency }]"));
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);
     process.exit(1);

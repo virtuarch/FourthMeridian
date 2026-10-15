@@ -697,6 +697,7 @@ export function SpaceDashboard({
 
   const renderCtx: WorkspaceRenderCtx = {
     spaceId,
+    spaceType,
     snapshotCurrency: effectiveSnapshotCurrency,
     ficoScore,
     ficoUpdatedAt,

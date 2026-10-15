@@ -81,6 +81,15 @@ import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
 import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
+// RWA-2B — a manual real-world asset's past comes from ITS valuation ledger,
+// through THE one valuation policy (lib/assets/valuation-series.core.ts) every
+// other reader of that asset uses, never a second rule written here.
+import { loadHistoriesFor } from "@/lib/assets/valuations";
+import type { ValuationBasis } from "@/lib/assets/valuation-series.core";
+import {
+  isLegacyManualAsset, manualAssetHistoryFloor, manualAssetValueOn, realAssetTierFor,
+  type ManualAssetHistoryInput,
+} from "@/lib/snapshots/manual-asset-history.core";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -227,7 +236,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: {
       createdAt: true,
-      financialAccount: { select: { id: true, name: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true, lastUpdated: true, walletChain: true } },
+      financialAccount: { select: { id: true, name: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true, lastUpdated: true, walletChain: true, syncStatus: true } },
     },
   });
   if (linkRows.length === 0) return zero;
@@ -236,6 +245,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     id: l.financialAccount.id,
     name: l.financialAccount.name,
     type: l.financialAccount.type as string,
+    // RWA-2B — "manual" marks a USER-ESTIMATED real asset (POST /api/accounts/manual),
+    // the only account kind whose history lives in a valuation ledger.
+    syncStatus: l.financialAccount.syncStatus,
     balance: l.financialAccount.balance,
     currency: l.financialAccount.currency,
     debtSubtype: l.financialAccount.debtSubtype,
@@ -683,6 +695,49 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       if (g.financialAccountId && g._min.date) earliestTxByAccount.set(g.financialAccountId, truncDateUTC(g._min.date));
     }
   }
+  // ── RWA-2B — MANUAL REAL ASSETS ARE VALUED FROM THEIR LEDGER, NOT HELD FLAT ──
+  //
+  // A manual asset has no transactions, so until now it had no floor but
+  // "today" and sat at its current balance on any day it reached. Its history
+  // is the user's own dated estimates (AssetValuation + ManualAssetProfile),
+  // resolved by THE valuation policy: recorded on an anchor date, a straight
+  // line between two anchors (modeled), the latest estimate carried forward
+  // after the last one, and NOTHING before the first anchor. Loaded once for
+  // the window; answered per day in memory below.
+  //
+  // The FLOOR is the first anchor (manual-asset-history.core.ts), seeded here as
+  // the account's "earliest transaction" so computeAccountFloors — the single
+  // floor authority — still applies the SHARED-Space link-date bound on top: in
+  // a shared Space an asset's contribution begins at the later of its first
+  // anchor and the day it was linked in, never earlier.
+  //
+  // A LEGACY asset (no ledger rows, no profile) keeps floor = today, byte-for-
+  // byte the previous behaviour, so no existing Space's history changes without
+  // a user action (owner decision; see the core module's header).
+  const manualAssets = accounts.filter((a) => a.type === "other" && a.syncStatus === "manual");
+  const manualHistoryByAccount = new Map<string, ManualAssetHistoryInput>();
+  if (manualAssets.length > 0) {
+    const histories = await loadHistoriesFor(
+      client,
+      manualAssets.map((a) => ({ id: a.id, currency: a.currency, balance: a.balance, lastUpdated: a.lastUpdated })),
+      isoDate(today),
+    );
+    for (const a of manualAssets) {
+      const h = histories.get(a.id);
+      if (!h) continue;
+      const input: ManualAssetHistoryInput = {
+        resolved: h.resolved,
+        isLegacy: isLegacyManualAsset({ resolved: h.resolved, hasProfile: h.profile !== null }),
+      };
+      manualHistoryByAccount.set(a.id, input);
+      // The ledger floor stands in for the earliest transaction (a manual asset
+      // has none); it never overrides a real transaction floor if one existed.
+      if (!earliestTxByAccount.has(a.id)) {
+        earliestTxByAccount.set(a.id, fromISO(manualAssetHistoryFloor(input, isoDate(today))));
+      }
+    }
+  }
+
   // REG-2 — balance-bearing cash/savings/debt accounts with NO reconstructable
   // transaction history are HELD FLAT at their current balance across the window
   // (an honest estimate) rather than floored to today and dropped from every
@@ -868,13 +923,26 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // fallback below; note its presence so the day's cash/card tier degrades to
     // "estimated" (a held-flat balance is a weaker estimate than a walk-back).
     let dayHasHeldFlat = false;
+    // RWA-2B — the basis of every manual-asset value that entered this day
+    // (recorded / modeled / carried), so the row's tier can say what it rests on.
+    const dayRealAssetBases: ValuationBasis[] = [];
     const dayAccounts = accounts
       .filter((a) => floorByAccount.get(a.id)!.getTime() <= d.getTime())
-      .map((a) => {
+      .flatMap((a) => {
         if (heldFlatIds.has(a.id)) dayHasHeldFlat = true;
-        if (cashMap.has(a.id)) return { type: a.type, balance: cashMap.get(a.id)!, currency: a.currency };
-        if (cardMap?.has(a.id)) return { type: a.type, balance: cardMap.get(a.id)!, currency: a.currency };
-        return { type: a.type, balance: a.balance, currency: a.currency };
+        if (cashMap.has(a.id)) return [{ type: a.type, balance: cashMap.get(a.id)!, currency: a.currency }];
+        if (cardMap?.has(a.id)) return [{ type: a.type, balance: cardMap.get(a.id)!, currency: a.currency }];
+        // RWA-2B — a manual asset answers from its ledger: the resolver's value
+        // for THIS day, or nothing at all (not yet held / not yet valued — never
+        // today's balance painted backward, never a zero).
+        const ledger = manualHistoryByAccount.get(a.id);
+        if (ledger) {
+          const v = manualAssetValueOn(ledger, dISO);
+          if (!v) return [];
+          dayRealAssetBases.push(v.basis);
+          return [{ type: a.type, balance: v.value, currency: a.currency }];
+        }
+        return [{ type: a.type, balance: a.balance, currency: a.currency }];
       });
     // Skip a day only when there is nothing at all to value — but a holdings-only
     // Space (investment/crypto floored to today, so dayAccounts is empty) or a
@@ -1053,6 +1121,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // "estimated" (not "derived") value, so the row is honestly labeled a weaker
       // estimate. Still isEstimated=true either way; never presented as observed.
       cashCardTier: dayHasHeldFlat ? "estimated" : "derived",
+      // RWA-2B — a real-asset value modeled between, or carried from, the user's
+      // dated estimates makes the day an estimate; a recorded anchor adds nothing.
+      realAssetTier: realAssetTierFor(dayRealAssetBases),
       // 2026-07-15 §9 fix — any account revoked strictly after this day was
       // plausibly still a member of the Space as of this day; the `accounts`
       // array above only reflects CURRENTLY active links, so writing this day

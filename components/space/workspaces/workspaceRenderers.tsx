@@ -43,6 +43,8 @@ import type { Snapshot, Transaction } from "@/types";
 export interface WorkspaceRenderCtx {
   // Identity / props
   spaceId:                 string;
+  /** RWA-2B — "PERSONAL" | "SHARED"; gates the Real assets consent offer (display only). */
+  spaceType?:              string;
   /** Resolved snapshot-stamp currency (host's `snapshotCurrency ?? displayCurrency`). */
   snapshotCurrency:        string;
   ficoScore?:              number | null;
@@ -161,6 +163,7 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
   wealth: (ctx) => (
     <WealthWorkspace
       spaceId={ctx.spaceId}
+      spaceType={ctx.spaceType}
       snapshots={ctx.snapshots}
       snapshotCurrency={ctx.snapshotCurrency}
       asOf={ctx.asOf}

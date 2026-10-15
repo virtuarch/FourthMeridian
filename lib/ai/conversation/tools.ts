@@ -465,6 +465,15 @@ async function historicalSnapshot(ctx: ToolContext, asOf: string) {
             note: 'netWorth, totalAssets and digitalAssets are null because a component '
               + 'could not be valued on that date. They are NOT zero and NOT measured.' }
         : {}),
+      // RWA-2B — a fact in the data: on this date the real-asset part of
+      // netWorth / totalAssets is a straight-line model between two of the
+      // user's dated estimates for a manual asset, not an observed value.
+      ...(point.realAssetsModeled
+        ? { realAssetsModeled: true,
+            realAssetsNote: 'The real-asset component of netWorth and totalAssets on this date is MODELED '
+              + '(a straight line between two of the user\'s dated estimates for a manual asset), '
+              + 'not observed. Describe it as modeled or estimated, never as observed.' }
+        : {}),
       historyAvailableFrom: section.oldestDate, historyAvailableTo: section.newestDate,
     },
     buckets: BUCKETS.map((lens, i) => {
@@ -1498,10 +1507,15 @@ const getNetWorthHistory: ToolDefinition = {
       debt: p.liabilities,
       ...(p.digitalAssetsUnavailableReason
         ? { unassertableBecause: p.digitalAssetsUnavailableReason } : {}),
+      // RWA-2B — present only when the real-asset part of this point is modeled.
+      ...(p.realAssetsModeled ? { realAssetsModeled: true } : {}),
     });
 
     const unassertable = picked.filter((p) => p.netWorth === null);
     const firstAssertable = inRange.find((p) => p.netWorth !== null)?.date ?? null;
+    // RWA-2B — how many points in range rest on a modeled real-asset value, so a
+    // series that is partly modeled is never described as wholly observed.
+    const modeledRealAssets = inRange.filter((p) => p.realAssetsModeled).length;
 
     return {
       window: { from, to, granularity },
@@ -1540,6 +1554,14 @@ const getNetWorthHistory: ToolDefinition = {
         historyAvailableFrom: section.oldestDate,
         historyAvailableTo:   section.newestDate,
         ...(clamped ? { maxPointsClamped: MAX_DAILY_POINTS } : {}),
+        ...(modeledRealAssets > 0 ? {
+          pointsWithModeledRealAssets: modeledRealAssets,
+          modeledRealAssetsNote:
+            `On ${modeledRealAssets} observation(s) in this range (flagged realAssetsModeled) the real-asset part of `
+            + 'netWorth and totalAssets is MODELED — a straight line between two of the user\'s dated estimates '
+            + 'for a manual asset — not observed. liquid, checking, investments, digitalAssets and debt on '
+            + 'those dates are unaffected. Describe such net worth as modeled or estimated, never observed.',
+        } : {}),
       },
       first: pt(inRange[0]), last: pt(inRange[inRange.length - 1]),
       // ⚠️ MEASURED MOVEMENT, NOT ATTRIBUTION. Each entry is the closing
@@ -1692,23 +1714,45 @@ const findInBalanceHistory: ToolDefinition = {
         result: null, unmatched: 'NO_OBSERVATION_MEETS_THE_CONDITION', coverage };
     }
 
+    // RWA-2B — only netWorth composes the real-asset component; the other
+    // metrics never did, so a modeled real asset cannot touch their answers.
+    const modeledDates = metric === 'netWorth'
+      ? new Set(inRange.filter((p) => p.realAssetsModeled).map((p) => p.date)) : new Set<string>();
+    const matchDate = isoDay(found.match.date);
+
     return {
       metric, metricMeans: BALANCE_METRICS[metric], operation,
       ...(threshold !== undefined ? { threshold } : {}),
       result: {
-        date: isoDay(found.match.date),
+        date: matchDate,
         value: found.match.value,
         ...(found.previous
           ? { previousObservation: { date: isoDay(found.previous.date), value: found.previous.value } }
           : {}),
+        // RWA-2B — the matched day's net worth rests partly on a modeled real-asset value.
+        ...(modeledDates.has(matchDate) ? { realAssetsModeled: true } : {}),
       },
       // ⚠️ OBSERVED, NOT INTERPOLATED, AND THE ANSWER SHOULD SAY SO WHEN IT
       // MATTERS. Debt was $17.12 on the 19th and $0 on the 22nd; nothing was
       // measured in between, so the 22nd is the first day it was OBSERVED at
       // zero, not provably the day it became zero.
+      //
+      // RWA-2B — ONE exception, stated only when it applies: a day's net worth
+      // may include a manual asset's MODELED value (a straight line between two
+      // of the user's dated estimates). The snapshot for that day is still a
+      // dated row that was searched, not an interpolation between rows — but
+      // its real-asset part is not observed, and the answer must not call it so.
       basis: 'Observed daily snapshots only — nothing between two observations is modelled. '
-        + 'Describe the answer as the first/last OBSERVED date where that distinction matters.',
-      coverage,
+        + 'Describe the answer as the first/last OBSERVED date where that distinction matters.'
+        + (modeledDates.size > 0
+          ? ` Exception: on ${modeledDates.size} searched day(s) the real-asset part of net worth is MODELED `
+            + 'between the user\'s dated estimates for a manual asset (the matched day is flagged '
+            + 'realAssetsModeled when it is one of them); describe such a net worth as modeled or estimated, never observed.'
+          : ''),
+      coverage: {
+        ...coverage,
+        ...(modeledDates.size > 0 ? { observationsWithModeledRealAssets: modeledDates.size } : {}),
+      },
     };
   },
 };

@@ -273,6 +273,16 @@ export interface Snapshot {
   completenessRecorded?:       boolean;
   contributingComponentCount?: number | null;
   totalComponentCount?:        number | null;
+  /**
+   * RWA-2B — true when this RECONSTRUCTED row's real-asset component rests on a
+   * MODELED value: a straight line between two of the user's dated estimates
+   * for a manual asset (lib/assets/valuation-series.core.ts), not an observed
+   * or walked-back figure. Resolved ONCE at the read boundary from the asset's
+   * valuation ledger (lib/snapshots/real-asset-basis.core.ts); present only
+   * when true, so every other row's DTO is byte-identical. `netWorth` and
+   * `totalAssets` include that component; `netLiquid`, cash and debt never did.
+   */
+  realAssetsModeled?:          true;
 }
 
 export type TransactionCategory =

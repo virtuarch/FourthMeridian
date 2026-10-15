@@ -35,6 +35,9 @@ import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { UpdateAssetValueModal } from "./UpdateAssetValueModal";
 import { AssetValuationHistory } from "./AssetValuationHistory";
+import { UpdatePastNetWorthDialog } from "./UpdatePastNetWorthDialog";
+import { isoDateOf } from "@/lib/assets/valuation-series.core";
+import { realAssetAmendmentOffer, type AmendmentOffer } from "@/lib/snapshots/real-asset-amendment-offer.core";
 
 /** The rows this section lists: FULL, user-estimate rows only. Exported for the test. */
 export function selectRealAssetRows(rows: AccountDetailRow[]): AccountDetailRow[] {
@@ -45,7 +48,46 @@ export function selectRealAssetRows(rows: AccountDetailRow[]): AccountDetailRow[
 
 type LoadState = "loading" | "ready" | "failed";
 
-export function RealAssetsSection({ spaceId, active = true }: { spaceId: string; active?: boolean }) {
+/** RWA-2B — an open "Update past net worth?" offer for one asset. */
+interface PendingOffer {
+  accountId: string;
+  name:      string;
+  currency:  string;
+  offer:     AmendmentOffer;
+}
+
+/**
+ * RWA-2B — after a write, decide whether to OFFER updating past net worth.
+ * Reads the asset's resolved history (the owner's own read) for its FIRST
+ * anchor; the pure rule then answers: PERSONAL Space only, and only when that
+ * anchor precedes today. Never applies anything — the dialog previews first and
+ * writes only on the user's explicit confirmation. Exported for the test.
+ */
+export async function resolveAmendmentOffer(args: {
+  spaceType: string | undefined;
+  accountId: string;
+  today:     string;
+  fetchHistory: (accountId: string) => Promise<{ anchors?: { date: string }[] } | null>;
+}): Promise<AmendmentOffer | null> {
+  // Fail closed BEFORE reading anything: a shared or unknown Space never asks.
+  if (args.spaceType !== "PERSONAL") return null;
+  const history = await args.fetchHistory(args.accountId);
+  const firstAnchorDate = history?.anchors?.[0]?.date ?? null;
+  return realAssetAmendmentOffer({ spaceType: args.spaceType, firstAnchorDate, today: args.today });
+}
+
+async function fetchValuationHistory(accountId: string): Promise<{ anchors?: { date: string }[] } | null> {
+  const res = await fetch(`/api/accounts/manual/${encodeURIComponent(accountId)}/valuations`, { cache: "no-store" });
+  if (!res.ok) return null;
+  return (await res.json().catch(() => null)) as { anchors?: { date: string }[] } | null;
+}
+
+export function RealAssetsSection({ spaceId, spaceType, active = true }: {
+  spaceId: string;
+  /** RWA-2B — "PERSONAL" | "SHARED"; the consent offer is PERSONAL-only (absent ⇒ never). */
+  spaceType?: string;
+  active?: boolean;
+}) {
   const [rows,  setRows]  = useState<AccountDetailRow[]>([]);
   const [state, setState] = useState<LoadState>("loading");
   const [adding,     setAdding]     = useState(false);
@@ -57,6 +99,8 @@ export function RealAssetsSection({ spaceId, active = true }: { spaceId: string;
   const [historyFor, setHistoryFor] = useState<string | null>(null);
   // Bumped after a write, so an open history re-reads the ledger.
   const [historyNonce, setHistoryNonce] = useState(0);
+  // RWA-2B — the pending "Update past net worth?" offer (one at a time).
+  const [pendingOffer, setPendingOffer] = useState<PendingOffer | null>(null);
 
   const load = useCallback(() => {
     fetch(`/api/spaces/${spaceId}/accounts/detail`, { cache: "no-store" })
@@ -88,6 +132,25 @@ export function RealAssetsSection({ spaceId, active = true }: { spaceId: string;
     setHistoryNonce((n) => n + 1);
     window.dispatchEvent(new CustomEvent(SPACE_DATA_REFRESHED_EVENT, { detail: { spaceId } }));
   }, [spaceId]);
+
+  // RWA-2B — after a write that may have given the asset history: announce the
+  // change as before, then OFFER (never apply) a consented rebuild of past net
+  // worth. PERSONAL Space only; nothing when no anchor precedes today.
+  const afterWrite = useCallback((written: { accountId: string; name?: string; currency?: string }) => {
+    announceChange();
+    if (!written.accountId) return;
+    void resolveAmendmentOffer({ spaceType, accountId: written.accountId, today: isoDateOf(new Date()), fetchHistory: fetchValuationHistory })
+      .then((offer) => {
+        if (!offer) return;
+        setPendingOffer({
+          accountId: written.accountId,
+          name:      written.name ?? rows.find((r) => r.id === written.accountId)?.name ?? "This asset",
+          currency:  written.currency ?? rows.find((r) => r.id === written.accountId)?.currency ?? "USD",
+          offer,
+        });
+      })
+      .catch(() => { /* the offer is optional; the write already succeeded */ });
+  }, [announceChange, spaceType, rows]);
 
   async function confirmArchive() {
     if (!archiving) return;
@@ -193,7 +256,7 @@ export function RealAssetsSection({ spaceId, active = true }: { spaceId: string;
         <AddManualAssetModal
           defaultSpaceIds={[spaceId]}
           onClose={() => setAdding(false)}
-          onAdd={announceChange}
+          onAdd={(created) => afterWrite({ accountId: created.accountId, name: created.name, currency: created.currency })}
         />
       )}
 
@@ -204,7 +267,19 @@ export function RealAssetsSection({ spaceId, active = true }: { spaceId: string;
           currency={revaluing.currency}
           currentValue={revaluing.balance}
           onClose={() => setRevaluing(null)}
-          onSaved={announceChange}
+          onSaved={(saved) => afterWrite({ accountId: saved.accountId, name: revaluing.name, currency: revaluing.currency })}
+        />
+      )}
+
+      {pendingOffer && (
+        <UpdatePastNetWorthDialog
+          spaceId={spaceId}
+          accountId={pendingOffer.accountId}
+          assetName={pendingOffer.name}
+          currency={pendingOffer.currency}
+          offer={pendingOffer.offer}
+          onClose={() => setPendingOffer(null)}
+          onApplied={announceChange}
         />
       )}
 
