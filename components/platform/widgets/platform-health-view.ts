@@ -44,6 +44,7 @@ import type { PlatformEnvStatusResponse } from "@/app/api/platform/platform-ops/
 import type { ProviderTrust } from "@/lib/platform/provider-health";
 import type { FreshnessHealthState } from "@/lib/platform/resource-freshness";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
+import { openAiFactLines } from "./env-status-view";
 
 // ── Status vocabulary ─────────────────────────────────────────────────────────
 
@@ -440,6 +441,14 @@ export function envView(d: PlatformEnvStatusResponse): SourceView {
       tone: k.status === "fail" ? "bad" : "normal",
     })),
     { label: "Environment", detail: d.deploymentEnv, tone: "normal" },
+    // OPENAI ENVIRONMENT SEPARATION — the value-free OpenAI project pin, SURFACED
+    // HERE because ops_env_status is absorbed by this host (lib/platform/workspaces.ts)
+    // and the standalone widget is never composed: the credential kind, the
+    // project pin (proj_… in full, never the key) and the environment guard. A
+    // refusal state leads the list; the key itself never reaches the report.
+    ...(d.openAi ? openAiFactLines(d.openAi).map((l): HealthLine => ({
+      label: `OpenAI · ${l.label}`, detail: l.value, tone: l.tone === "bad" ? "bad" : "normal",
+    })) : []),
   ];
 
   return {

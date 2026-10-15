@@ -51,7 +51,7 @@ import {
   PlatformHealthSurface,
   type FetchedResource,
 } from "./OpsPlatformHealthWidget";
-import { GROUP_DOORWAY, GROUP_LABEL, LEAD_ROWS, SURFACE_FOOTNOTE, alertsView } from "./platform-health-view";
+import { GROUP_DOORWAY, GROUP_LABEL, LEAD_ROWS, SURFACE_FOOTNOTE, alertsView, envView } from "./platform-health-view";
 import { PLATFORM_AREA_WORKSPACES, getPlatformWorkspace } from "@/lib/platform/workspaces";
 
 let failures = 0;
@@ -541,6 +541,24 @@ function main() {
     check("no doorway is rendered when the host wired no handler",
       !unwired.html.includes('<button type="button" aria-label='), unwired.html.slice(0, 400));
     check("and no dead button of any kind is left behind", !unwired.html.includes("<button"), unwired.html.slice(0, 400));
+  }
+
+  // OPENAI ENVIRONMENT SEPARATION — ops_env_status is absorbed by this host, so the
+  // value-free OpenAI project pin must surface HERE: credential kind, proj_… in full,
+  // guard state; a refusal leads the list; the key itself never appears.
+  {
+    const e = envView(ENV_CLEAN);
+    const allLines = [...e.lines, ...e.details];
+    const pin = allLines.find((l) => l.label === "OpenAI · Project pin");
+    const key = allLines.find((l) => l.label === "OpenAI · OpenAI key");
+    const guard = allLines.find((l) => l.label === "OpenAI · Environment guard");
+    check("env view carries the three OpenAI fact lines", !!pin && !!key && !!guard);
+    check("the project pin shows proj_… in full and the key line names the kind, never a value", !!pin && pin.detail.includes("proj_cleanFixture") && !!key && /project key/.test(key.detail) && !/sk-/.test(JSON.stringify(allLines)));
+    const refused = envView({ ...ENV_CLEAN, openAi: { ...ENV_CLEAN.openAi, expectedEnvironment: { state: "mismatch", expected: "production", actual: "development" }, refused: true } });
+    const lead = refused.lines.find((l) => l.label === "OpenAI · Environment guard");
+    check("a mismatched guard leads the env lines as a bad-toned row", !!lead && lead.tone === "bad" && /mismatch/.test(lead.detail));
+    const svc = envView({ ...ENV_CLEAN, openAi: { ...ENV_CLEAN.openAi, keyKind: "service-account" } });
+    check("a service-account key reads as project-scoped, never legacy", /service-account key \(project-scoped\)/.test([...svc.lines, ...svc.details].find((l) => l.label === "OpenAI · OpenAI key")?.detail ?? ""));
   }
 
   if (failures > 0) { console.error(`\nplatform-health.test: ${failures} failure(s).`); process.exit(1); }
