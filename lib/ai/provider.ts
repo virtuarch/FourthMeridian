@@ -23,6 +23,8 @@ import {
 } from '@/lib/ai/invocation';
 import { getAiInvocationContext } from '@/lib/ai/invocation-context';
 import { captureAiProviderFailure } from '@/lib/monitoring/capture';
+import { rateAt } from '@/lib/usage/pricing';
+import { todayUTCISO } from '@/lib/time/clock';
 
 // ── Client ───────────────────────────────────────────────────────────────────
 // Lazy-initialised singleton. Fails loudly if the key is absent so
@@ -163,6 +165,61 @@ function recordOpenAiFailure(args: { model: string; err: unknown; latencyMs: num
   }
 }
 
+/**
+ * BETA C7 — THE MODEL HAS NO RATE IN FORCE TODAY, SO THE CALL WAS NOT MADE.
+ *
+ * Every cost safeguard (the per-customer daily allowance, the fleet and
+ * per-customer spend alerts) is a reduction over the rate card. A model the
+ * card cannot price would pass through every one of them at $0, which is the
+ * one failure mode the owner ruled out: an unpriceable model never counts as
+ * zero and never bypasses a safeguard — it refuses, and the gap is reported.
+ * Thrown BEFORE the provider is called, so nothing is billed; recorded as a
+ * zero-token FAILED / UNPRICED_MODEL fact so the ledger and the alert engine
+ * see the gap.
+ */
+export const UNPRICED_MODEL_CODE = 'UNPRICED_MODEL';
+const UNPRICED_MODEL_MARKER = `[ai/provider] ${UNPRICED_MODEL_CODE}:`;
+
+export class UnpricedModelError extends Error {
+  constructor(readonly model: string, readonly day: string) {
+    super(`${UNPRICED_MODEL_MARKER} no rate is in force for model "${model}" on ${day}; the call was refused before the provider was reached.`);
+    this.name = 'UnpricedModelError';
+  }
+}
+
+/**
+ * Whether a recorded failure MESSAGE is the chokepoint's refusal. The turn loop
+ * (lib/ai/conversation/turn.ts) types a provider throw as the turn's `error`
+ * string rather than rethrowing it — a provider failure is a result, not a
+ * crash — so a route that wants to answer the unpriced case with its own
+ * sentence reads it back from there. The marker is the code, never prose.
+ */
+export function isUnpricedModelFailure(message: string | null | undefined): boolean {
+  return typeof message === 'string' && message.includes(UNPRICED_MODEL_MARKER);
+}
+
+/**
+ * Refuse a model the rate card cannot price today. Writes the failure fact
+ * through the invocation writer (NOT the provider failure path — that one is
+ * paired with a real `create` attempt and this is the refusal of one) and
+ * throws the typed error. Fire-and-forget on the write, like every fact here.
+ *
+ * Exported for ONE caller outside this file: the Daily Brief route's pre-flight
+ * (app/api/brief/generate), whose lifecycle would otherwise type the refusal as
+ * PROVIDER_ERROR and take a claim it cannot honour. Every provider entry point
+ * below still calls it itself; a caller never needs to.
+ */
+export function assertPricedModel(model: string, sinks?: UsageSinks): void {
+  const day = todayUTCISO();
+  if (rateAt('OPENAI', model, day)) return;
+  const err = new UnpricedModelError(model, day);
+  void recordAiInvocationFailure({
+    provider: 'OPENAI', model, outcome: 'FAILED', errorCode: UNPRICED_MODEL_CODE, latencyMs: 0,
+  }, sinks?.invocationClient);
+  captureAiProviderFailure({ outcome: 'FAILED', errorCode: UNPRICED_MODEL_CODE, surface: getAiInvocationContext()?.surface ?? null, model }, err);
+  throw err;
+}
+
 /** The SDK attaches `_request_id` to every parsed completion (openai ≥ 4). */
 function requestIdOf(completion: unknown): string | null {
   const rid = (completion as { _request_id?: unknown } | null)?._request_id;
@@ -192,6 +249,8 @@ export async function generateChatReply(
   systemPrompt: string,
   messages:     ChatMessage[],
 ): Promise<string> {
+  // BETA C7 — refused before the provider is reached when the rate card cannot price it.
+  assertPricedModel(CHAT_MODEL);
   const client = getClient();
 
   const started = Date.now();
@@ -304,9 +363,11 @@ export async function generateWithTools(args: {
   tools?:   unknown[];
   /** Omit to take the dialect-appropriate budget — see `completionBudgetFor`. */
   maxTokens?: number;
-}): Promise<ToolTurnResult> {
-  const client = getClient();
+}, deps?: { client?: StructuredClient; sinks?: UsageSinks }): Promise<ToolTurnResult> {
   const { model, messages, tools } = args;
+  // BETA C7 — refused before the provider is reached when the rate card cannot price it.
+  assertPricedModel(model, deps?.sinks);
+  const client = deps?.client ?? (getClient() as unknown as StructuredClient);
   const maxTokens = args.maxTokens ?? completionBudgetFor(model);
   const modern = usesModernParams(model);
 
@@ -317,7 +378,7 @@ export async function generateWithTools(args: {
     ...(modern
       ? { max_completion_tokens: maxTokens }
       : { max_tokens: maxTokens, temperature: 0.3 }),
-  } as unknown as Parameters<typeof client.chat.completions.create>[0];
+  };
 
   const started = Date.now();
   let completion: {
@@ -328,7 +389,7 @@ export async function generateWithTools(args: {
   try {
     completion = await client.chat.completions.create(body) as typeof completion;
   } catch (err) {
-    recordOpenAiFailure({ model, err, latencyMs: Date.now() - started });
+    recordOpenAiFailure({ model, err, latencyMs: Date.now() - started, sinks: deps?.sinks });
     throw err;
   }
   const latencyMs = Date.now() - started;
@@ -342,6 +403,7 @@ export async function generateWithTools(args: {
     toolCallCount: choice?.message?.tool_calls?.length ?? 0,
     finishReason: choice?.finish_reason ?? null,
     providerRequestId: requestIdOf(completion),
+    sinks: deps?.sinks,
   });
 
   return {
@@ -436,8 +498,10 @@ export async function generateStructuredWithUsage<T>(
   options?:     StructuredOptions,
   deps?:        { client?: StructuredClient; sinks?: UsageSinks },
 ): Promise<StructuredResult<T>> {
-  const client = deps?.client ?? (getClient() as unknown as StructuredClient);
   const model = options?.model ?? CHAT_MODEL;
+  // BETA C7 — refused before the provider is reached when the rate card cannot price it.
+  assertPricedModel(model, deps?.sinks);
+  const client = deps?.client ?? (getClient() as unknown as StructuredClient);
   const modern = usesModernParams(model);
   const timeoutMs = options?.timeoutMs ?? STRUCTURED_TIMEOUT_MS;
 
