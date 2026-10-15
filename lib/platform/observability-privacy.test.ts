@@ -52,6 +52,14 @@ const READERS = [
   "lib/alerts/latest-evaluation.ts",
   "lib/platform/activity/operator-feed.ts",
   "lib/platform/activity/operator-feed-core.ts",
+  // BETA C6/C7 — the spend-by-surface reader, the spend authority the alert
+  // engine reads (opaque per-user ref only), the thresholds and the safeguards view.
+  "lib/platform/ai/spend-by-surface.ts",
+  "lib/platform/ai/spend-by-surface-core.ts",
+  "lib/platform/ai/spend-health.ts",
+  "lib/platform/ai/spend-thresholds.ts",
+  "lib/platform/ai/cost-safeguards.ts",
+  "lib/platform/ai/customer-spend-today.ts",
 ];
 const ROUTES = [
   "app/api/platform/platform-ops/overview/route.ts",
@@ -68,6 +76,8 @@ const ROUTES = [
   "app/api/platform/platform-ops/attention/route.ts",
   "app/api/platform/platform-ops/activity/route.ts",
   "app/api/platform/platform-ops/refresh/daily/route.ts",
+  // BETA C6/C7 — spend by surface + cost safeguards (PLATFORM_OPS READ; gate pinned in spend-by-surface.test.ts).
+  "app/api/platform/platform-ops/ai-spend/route.ts",
 ];
 
 console.log("source · no customer identity or secret is selected");

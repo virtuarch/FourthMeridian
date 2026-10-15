@@ -16,16 +16,20 @@ import type { JobHealthStatus } from "@/lib/jobs/health";
 import type { ConnectionHealthResult } from "@/lib/connections/health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
+import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 
 /** The authority a rule reads. `provider-quota` names the not-yet-shipped
  *  OPS-5 S3 authority the dormant `quota-low` rule will bind to.
  *  `ai-failures` (OPERATIONALIZATION P0) is the AiInvocation ledger's outcome
- *  dimension, folded by lib/platform/ai/failures.ts. */
+ *  dimension, folded by lib/platform/ai/failures.ts. `ai-spend` (BETA C7) is
+ *  the same ledger's RETURNED customer-surface rows priced by the rate card
+ *  over the trailing 24 h, folded by lib/platform/ai/spend-health.ts. */
 export type AlertAuthority =
   | "job-health"
   | "connection-health"
   | "resource-freshness"
   | "ai-failures"
+  | "ai-spend"
   | "provider-quota";
 
 /**
@@ -59,4 +63,6 @@ export interface AuthorityOutputs {
   resourceFreshness: ResourceFreshnessResult | null;
   /** AI provider failure facts over the evaluation window (null = did not gather). */
   aiFailures: AiFailureHealth | null;
+  /** BETA C7 — estimated AI spend (fleet + max per customer) and the unpriced count over 24 h (null = did not gather). */
+  aiSpend: AiSpendHealth | null;
 }

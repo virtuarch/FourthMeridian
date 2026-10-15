@@ -158,8 +158,9 @@ async function main(): Promise<void> {
         && /canControl/.test(widget));
     check("the execution-cadence editor bounds its inputs (min/max from the view, maxLength on the note, a closed reason list)",
       /min=\{view\.minHours\} max=\{view\.maxHours\}/.test(widget) && /maxLength=\{280\}/.test(widget) && /OPERATOR_REASON_CODES\.map/.test(widget));
-    check("the widget talks only to the policies and job-cadence routes",
-      (widget.match(/\/api\/platform\/platform-ops\/[a-z-]+/g) ?? []).every((u) => u === "/api/platform/platform-ops/policies" || u === "/api/platform/platform-ops/job-cadence"));
+    // BETA C7 — the read-only "Cost safeguards" group reads the ai-spend route (display only; no editor).
+    check("the widget talks only to the policies, job-cadence and ai-spend routes",
+      (widget.match(/\/api\/platform\/platform-ops\/[a-z-]+/g) ?? []).every((u) => u === "/api/platform/platform-ops/policies" || u === "/api/platform/platform-ops/job-cadence" || u === "/api/platform/platform-ops/ai-spend"));
   }
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
