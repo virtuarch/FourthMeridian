@@ -7,12 +7,25 @@
  * redeemed → activated) and the signup activation funnel (users → verified →
  * activated → returning) are all counts + honest ratios over existing rows.
  *
+ * ── BETA A5 — THE ONBOARDING FUNNEL STAGES ────────────────────────────────────
+ * `onboarding` carries the design §6 stages (registered → verified → first
+ * session → first connection [manual included] → first AI turn → first Brief
+ * viewed → returned) as the frozen `FunnelStage` shape, each with a three-state
+ * conversion rate and an abandonment count at the 7-day horizon. The fold is
+ * lib/platform/growth/product-analytics-core.ts's `buildFunnel` — the same one
+ * the product-analytics surface renders — fed by the shared fm_system loader,
+ * so the two surfaces can never disagree about who reached what. The two
+ * existing funnels are untouched.
+ *
  * PURE CORE + INJECTED I/O: counts are read through an injected `GrowthReaders`;
  * the funnel + ratios are a pure function.
  */
 
 import "server-only";
-import { db } from "@/lib/db";
+import { db, systemDb } from "@/lib/db";
+import { buildFunnel, firstConnections, type FunnelInputs } from "@/lib/platform/growth/product-analytics-core";
+import { loadFunnelFacts } from "@/lib/platform/growth/product-analytics";
+import type { FunnelStage } from "@/lib/platform/growth/product-analytics-types";
 
 const DAY_MS = 86_400_000;
 
@@ -37,6 +50,12 @@ export interface ActivationFunnel {
 export interface GrowthFunnel {
   beta: BetaFunnel;
   activation: ActivationFunnel;
+  /**
+   * BETA A5 — the onboarding stages (design §6), strict and monotone; see the
+   * header. Always present from `getGrowthFunnel`; optional in the type only so
+   * literals that predate A5 (the funnel-view test fixtures) still compile.
+   */
+  onboarding?: FunnelStage[];
   checkedAt: string;
 }
 
@@ -48,6 +67,8 @@ export interface GrowthReaders {
   verifiedUsers(): Promise<number>;
   activatedUsers(): Promise<number>;
   returningUsers(activeSince: Date, createdBefore: Date): Promise<number>;
+  /** BETA A5 — the per-user "ever" facts the onboarding funnel folds (shared product-analytics loader). */
+  funnelFacts(): Promise<FunnelInputs>;
 }
 
 function ratio(num: number, den: number): number | null {
@@ -60,6 +81,7 @@ export function buildGrowthFunnel(
   redeemedActivated: number,
   users: { total: number; verified: number; activated: number; returning7: number },
   checkedAt: string,
+  onboarding: FunnelStage[] = [],
 ): GrowthFunnel {
   const pending = beta.PENDING ?? 0;
   const denied = beta.DENIED ?? 0;
@@ -79,6 +101,7 @@ export function buildGrowthFunnel(
       verifyRate: ratio(users.verified, users.total),
       activationRate: ratio(users.activated, users.total),
     },
+    onboarding,
     checkedAt,
   };
 }
@@ -112,6 +135,15 @@ function realReaders(now: Date): GrowthReaders {
       const ids = recent.map((r) => r.userId);
       if (ids.length === 0) return 0;
       return db.user.count({ where: { id: { in: ids }, createdAt: { lt: createdBefore } } });
+    },
+    // fm_system, like every Platform reader of cross-tenant activity; the loader
+    // selects ids and clocks only (pinned by observability-privacy.test.ts).
+    async funnelFacts() {
+      const f = await loadFunnelFacts(systemDb);
+      return {
+        users: f.users, firstSessions: f.firstSessions, firstConnections: firstConnections(f),
+        firstAiTurns: f.firstAiTurns, firstBriefViews: f.firstBriefViews, lastEngagements: f.lastEngagements,
+      };
     },
   };
 }
@@ -169,14 +201,15 @@ export async function getGrowthFunnel(deps: { now?: Date; readers?: GrowthReader
   const r = deps.readers ?? realReaders(now);
   const weekAgo = new Date(now.getTime() - 7 * DAY_MS);
 
-  const [beta, redeemedActivated, total, verified, activated, returning7] = await Promise.all([
+  const [beta, redeemedActivated, total, verified, activated, returning7, facts] = await Promise.all([
     r.betaByStatus(),
     r.redeemedActivated(),
     r.totalUsers(),
     r.verifiedUsers(),
     r.activatedUsers(),
     r.returningUsers(weekAgo, weekAgo),
+    r.funnelFacts(),
   ]);
 
-  return buildGrowthFunnel(beta, redeemedActivated, { total, verified, activated, returning7 }, now.toISOString());
+  return buildGrowthFunnel(beta, redeemedActivated, { total, verified, activated, returning7 }, now.toISOString(), buildFunnel(facts, now));
 }
