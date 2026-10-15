@@ -105,7 +105,7 @@ export async function loadFunnelFacts(client: ProductAnalyticsDb): Promise<Pick<
     client.auditLog.groupBy({ by: ["userId"], where: { userId: { not: null }, action: AuditAction.BRIEF_VIEWED }, _min: { createdAt: true } }),
     loadLastEngagements(client),
     client.plaidItem.findMany({
-      select: { id: true, userId: true, externalItemId: true, createdAt: true, status: true, investmentsConsent: true, environment: true },
+      select: { id: true, userId: true, externalItemId: true, createdAt: true, status: true, investmentsConsent: true, environment: true, plaidEnvironment: true },
     }),
     client.connection.findMany({
       where: { provider: { notIn: [...NON_WALLET_PROVIDERS] } }, select: { userId: true, createdAt: true, status: true },

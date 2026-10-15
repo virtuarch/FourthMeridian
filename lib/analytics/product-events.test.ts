@@ -155,6 +155,8 @@ async function main() {
     const EXPECTED = [
       "app/(shell)/dashboard/page.tsx", "app/(shell)/dashboard/brief/page.tsx", "app/api/brief/route.ts",
       "app/api/spaces/[id]/transactions/query/route.ts", "app/api/accounts/wallet/route.ts", "app/api/accounts/manual/route.ts",
+      // Coordinator (post-RWA-2A): MANUAL_ASSET_VALUE_UPDATED on the PATCH success path.
+      "app/api/accounts/manual/[id]/route.ts",
     ];
     check("the call sites are exactly the ones the design names", JSON.stringify([...importers].sort()) === JSON.stringify([...EXPECTED].sort()),
       importers.join(", "));

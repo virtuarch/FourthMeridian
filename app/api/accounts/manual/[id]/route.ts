@@ -92,6 +92,7 @@ import { revokeAccountLinksEverywhere } from "@/lib/accounts/links-everywhere";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { regenerateSnapshotsForAccounts, regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 import { appendValuation, loadProfileFacts } from "@/lib/assets/valuations";
+import { recordManualAssetValueUpdated } from "@/lib/analytics/product-events";
 import { checkEffectiveDate, estimateInstant, isoDateOf } from "@/lib/assets/valuation-series.core";
 
 export const PATCH = withApiHandler(async (
@@ -171,6 +172,11 @@ export const PATCH = withApiHandler(async (
   if (outcome.kind === "badDate") {
     return NextResponse.json({ error: outcome.error }, { status: 400 });
   }
+
+  // BETA A2 — MANUAL_ASSET_VALUE_UPDATED: one product-event row per successful
+  // revaluation (frequency is the figure), carrying the account id and never the
+  // value. Its own short tenant phase AFTER the commit; the writer never throws.
+  await withTenantDb(userId, (tx) => recordManualAssetValueUpdated(tx, { userId, accountId: outcome.updated.id }));
 
   // RWA-1 — today's snapshot follows the new value in every Space the asset is
   // linked into (see the header). Non-fatal: the revaluation has committed.
