@@ -64,9 +64,28 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
  * times with backoff — thirty seconds of a Daily Brief's budget spent waiting for
  * billing to change — and then reported as a generic provider error.
  */
+/**
+ * The provider's error codes that mean "waiting cannot cure this". Besides
+ * `insufficient_quota` (no credits), a PROJECT or ORGANIZATION hard spend limit
+ * answers 429 with `project_spend_limit_exceeded` / `organization_spend_limit_exceeded`
+ * (OpenAI error-codes guide; AI COST CONTROLS, 2026-10-15). Treated as a rate
+ * limit they were retried with backoff and then typed as a generic failure;
+ * they are QUOTA: no retry, ledger outcome QUOTA (zero tokens — nothing billed),
+ * the routes' quota sentence, and the `ai-provider-failing` rule's critical
+ * `:quota` breach.
+ */
+export const QUOTA_ERROR_CODES: readonly string[] = [
+  'insufficient_quota',
+  'project_spend_limit_exceeded',
+  'organization_spend_limit_exceeded',
+];
+
 export function isQuotaExhaustedError(err: unknown): boolean {
-  if (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'insufficient_quota') return true;
-  return /insufficient_quota|no credits remaining|exceeded your current quota/i.test(messageOf(err));
+  if (typeof err === 'object' && err !== null) {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === 'string' && QUOTA_ERROR_CODES.includes(code)) return true;
+  }
+  return /insufficient_quota|project_spend_limit_exceeded|organization_spend_limit_exceeded|no credits remaining|exceeded your current quota|spend limit/i.test(messageOf(err));
 }
 
 /** A provider rate limit — by status when the SDK supplies one, else by message (turn.ts's predicate). */

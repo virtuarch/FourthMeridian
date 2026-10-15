@@ -29,7 +29,8 @@ const SCHEMA = { name: 't', schema: { type: 'object', properties: {}, additional
 
 function ledger() {
   const rows: Record<string, unknown>[] = [];
-  return { rows, sinks: { invocationClient: { aiInvocation: { create: async ({ data }: { data: Record<string, unknown> }) => { rows.push(data); } } } } };
+  // AI COST CONTROLS — the kill switch is judged first; with no database it is PAUSED (fail closed), so the admitted reader is injected.
+  return { rows, sinks: { invocationClient: { aiInvocation: { create: async ({ data }: { data: Record<string, unknown> }) => { rows.push(data); } } }, paidRequestsAdmission: async () => ({ paused: false as const, state: 'MISSING' as const, raw: null }) } };
 }
 const throwing = (err: unknown): StructuredClient => ({ chat: { completions: { create: async () => { throw err; } } } });
 const apiError = (over: Record<string, unknown>) => Object.assign(new Error('provider said no: <prompt fragment would be here>'), over);
