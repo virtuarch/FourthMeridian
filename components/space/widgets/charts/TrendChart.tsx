@@ -96,6 +96,12 @@ const RUN_STYLE: Record<TrendBasis, { fill: string | null; opacity: number; dash
   observed:      { fill: "url(#tc-fill)",       opacity: 1 },
   reconstructed: { fill: "url(#tc-fill-recon)", opacity: 0.6,  dash: "4 3" },
   unreliable:    { fill: null,                  opacity: 0.34, dash: "1 4" },
+  // RWA-2A — a manual asset's estimates. Recorded is the solid line between two
+  // same-day anchors only; a modeled run is dashed like a reconstruction; a
+  // carried-forward run is a long dash with no fill (nothing new is asserted).
+  recorded:      { fill: "url(#tc-fill)",       opacity: 1 },
+  modeled:       { fill: "url(#tc-fill-recon)", opacity: 0.6,  dash: "4 3" },
+  carried:       { fill: null,                  opacity: 0.6,  dash: "8 4" },
 };
 
 /** The tooltip's one-word provenance suffix. Text, not logic. */
@@ -103,7 +109,13 @@ const BASIS_SUFFIX: Record<TrendBasis, string | null> = {
   observed:      null,
   reconstructed: "rebuilt",
   unreliable:    "low confidence",
+  recorded:      "your estimate",
+  modeled:       "modeled — not a market price",
+  carried:       "latest estimate, carried forward",
 };
+
+/** RWA-2A — the user-estimate bases (a manual asset's chart). */
+const ESTIMATE_BASES: ReadonlySet<TrendBasis> = new Set<TrendBasis>(["recorded", "modeled", "carried"]);
 
 export function TrendChart({
   points,
@@ -360,13 +372,20 @@ export function TrendChart({
               />
             ))}
 
-            {/* Every non-observed point gets a hollow marker, faded by its basis. */}
-            {geom.pts.filter((p) => basisOf(p) !== "observed").map((p) => (
+            {/* Every reconstructed / unreliable point gets a hollow marker, faded by
+                its basis. (RWA-2A: a modeled or carried estimate is shown by its run's
+                stroke alone — a marker per sampled day would read as many entries.) */}
+            {geom.pts.filter((p) => basisOf(p) === "reconstructed" || basisOf(p) === "unreliable").map((p) => (
               <circle
                 key={p.date} cx={geom.x(p.t)} cy={geom.y(p.value)} r="2.5"
                 fill="var(--bg-base)" stroke="var(--meridian-400)" strokeWidth="1.25"
                 strokeOpacity={basisOf(p) === "unreliable" ? 0.4 : 0.7}
               />
+            ))}
+
+            {/* RWA-2A — each value the user RECORDED is a solid dot: the anchors. */}
+            {geom.pts.filter((p) => basisOf(p) === "recorded").map((p) => (
+              <circle key={`rec-${p.date}`} cx={geom.x(p.t)} cy={geom.y(p.value)} r="3" fill="var(--meridian-400)" />
             ))}
 
             {/* The last point — the always-on marker. */}
@@ -376,7 +395,7 @@ export function TrendChart({
             {hover !== null && hoverPt && (
               <g pointerEvents="none">
                 <line x1={geom.x(hoverPt.t)} y1={PAD_T - 4} x2={geom.x(hoverPt.t)} y2={H - PAD_B} stroke="var(--border-hairline-strong)" strokeWidth="1" />
-                <circle cx={geom.x(hoverPt.t)} cy={geom.y(hoverPt.value)} r="4" fill={basisOf(hoverPt) === "observed" ? "var(--meridian-400)" : "var(--bg-base)"} stroke="var(--meridian-400)" strokeWidth="1.5" />
+                <circle cx={geom.x(hoverPt.t)} cy={geom.y(hoverPt.value)} r="4" fill={basisOf(hoverPt) === "observed" || basisOf(hoverPt) === "recorded" ? "var(--meridian-400)" : "var(--bg-base)"} stroke="var(--meridian-400)" strokeWidth="1.5" />
               </g>
             )}
           </svg>
@@ -412,10 +431,32 @@ export function TrendChart({
 
         {/* Legend — honest markers only (Observed / Reconstructed / Never observed). */}
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--text-muted)]">
-          <span className="inline-flex items-center gap-1.5">
-            <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" /></svg>
-            Observed
-          </span>
+          {/* RWA-2A — a chart of user estimates has no observed values, so it never
+              claims an "Observed" line; every other chart is unchanged. */}
+          {!geom.pts.every((p) => ESTIMATE_BASES.has(basisOf(p))) && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" /></svg>
+              Observed
+            </span>
+          )}
+          {geom.pts.some((p) => basisOf(p) === "recorded") && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><circle cx="8" cy="3" r="3" fill="var(--meridian-400)" /></svg>
+              Your estimate
+            </span>
+          )}
+          {geom.pts.some((p) => basisOf(p) === "modeled") && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="4 3" /></svg>
+              Modeled between estimates
+            </span>
+          )}
+          {geom.pts.some((p) => basisOf(p) === "carried") && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="8 4" /></svg>
+              Latest estimate carried forward
+            </span>
+          )}
           {geom.pts.some((p) => basisOf(p) === "reconstructed") && (
             <span className="inline-flex items-center gap-1.5">
               <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="4 3" /></svg>

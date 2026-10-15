@@ -170,6 +170,24 @@ function main(): void {
     check("an all-reconstructed series has no seams either",
       toBasisSeams(allRec, 3).length === 0 && toRuns(allRec, 3).length === 1);
   }
+  // RWA-2A — a manual asset's estimates: recorded anchors are SHARED boundaries.
+  {
+    const e = (date: string, value: number, basis: "recorded" | "modeled" | "carried"): TrendGeomPoint =>
+      ({ ...pt(date, value, false), basis });
+    const series = [
+      e("2026-01-01", 100, "recorded"), e("2026-01-02", 110, "modeled"), e("2026-01-03", 120, "modeled"),
+      e("2026-01-04", 130, "recorded"), e("2026-01-05", 130, "carried"), e("2026-01-06", 130, "carried"),
+    ];
+    const runs = toRuns(series, 3);
+    const shape = runs.map((r) => `${r.basis}:${r.points.map((q) => q.date.slice(8)).join("-")}`).join(" | ");
+    check("estimate runs: modeled and carried segments both include their recorded endpoints (continuous line)",
+      shape === "recorded:01 | modeled:01-02-03-04 | carried:04-05-06", shape);
+    check("no seam inside a manual asset's estimates (the recorded dot is the mark)", toBasisSeams(series, 3).length === 0);
+    const adjacent = [e("2026-01-01", 1, "recorded"), e("2026-01-02", 2, "recorded")];
+    check("two adjacent recorded values still draw one line", toRuns(adjacent, 3).length === 1 && toRuns(adjacent, 3)[0].points.length === 2);
+    const mixed = [pt("2026-01-01", 1, false), e("2026-01-02", 2, "recorded")];
+    check("observed → estimate is still a real seam (unchanged rule)", toBasisSeams(mixed, 3).length === 1);
+  }
   check("median spacing of a single time is 1", medianSpacingDays([t("2026-07-19")]) === 1);
   check("median spacing of daily points is 1", medianSpacingDays(INCIDENT.map((p) => p.t)) === 1);
   check("DAY_MS is a day", DAY_MS === 24 * 60 * 60 * 1000);

@@ -1,10 +1,15 @@
 /**
  * PATCH /api/accounts/manual/[id]
  *
- * Updates the balance of a manually-entered asset account (syncStatus='manual').
+ * Records a new dated valuation of a manually-entered asset (syncStatus='manual').
  * Plaid-synced accounts are explicitly rejected — they update via the sync job.
  *
- * Body: { balance: number }
+ * Body: { balance: number, effectiveDate?: "YYYY-MM-DD" (default today) }
+ *
+ * RWA-2A — APPEND-ONLY. The value is appended to the AssetValuation ledger
+ * (lib/assets/valuations.ts); FinancialAccount.balance then equals the
+ * LATEST-dated valuation, so a backdated correction never overwrites a more
+ * recent one. effectiveDate may not be in the future or before acquisition.
  *
  * Returns: { accountId, balance, lastUpdated }
  *
@@ -86,6 +91,8 @@ import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 import { revokeAccountLinksEverywhere } from "@/lib/accounts/links-everywhere";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { regenerateSnapshotsForAccounts, regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
+import { appendValuation, loadProfileFacts } from "@/lib/assets/valuations";
+import { checkEffectiveDate, estimateInstant, isoDateOf } from "@/lib/assets/valuation-series.core";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -98,8 +105,11 @@ export const PATCH = withApiHandler(async (
   const { id } = await params;
   if (!id) return NextResponse.json({ error: "Missing account id" }, { status: 400 });
 
-  const body = await req.json() as { balance?: number };
+  const body = await req.json() as { balance?: number; effectiveDate?: string };
   const { balance } = body;
+  // RWA-2A — the date the value describes; today unless the user backdates it.
+  const today = isoDateOf(new Date());
+  const effectiveDate = body.effectiveDate == null || body.effectiveDate === "" ? today : body.effectiveDate;
 
   if (balance === undefined || balance === null)
     return NextResponse.json({ error: "balance is required" }, { status: 400 });
@@ -114,16 +124,23 @@ export const PATCH = withApiHandler(async (
   const outcome = await withTenantDb(userId, async (tx) => {
     const fa = await tx.financialAccount.findUnique({
       where: { id },
-      select: { id: true, ownerUserId: true, syncStatus: true, deletedAt: true },
+      select: { id: true, ownerUserId: true, syncStatus: true, deletedAt: true, currency: true, balance: true, lastUpdated: true },
     });
 
     if (!fa || fa.deletedAt) return { kind: "notFound" as const };
     if (fa.ownerUserId !== userId) return { kind: "forbidden" as const };
     if (fa.syncStatus !== "manual") return { kind: "notManual" as const };
 
+    // RWA-2A — APPEND a dated valuation (never overwrite one). The balance then
+    // follows the LATEST-dated anchor, so a backdated correction leaves a more
+    // recent valuation — and today's balance — exactly as they were.
+    const dateCheck = checkEffectiveDate(effectiveDate, today, (await loadProfileFacts(tx, fa.id))?.acquisitionDate ?? null);
+    if (!dateCheck.ok) return { kind: "badDate" as const, error: dateCheck.error };
+    const { latest } = await appendValuation(tx, { financialAccountId: fa.id, userId, value: balance, currency: fa.currency, effectiveDate, legacy: { balance: fa.balance, lastUpdated: fa.lastUpdated } });
+
     const updated = await tx.financialAccount.update({
       where: { id },
-      data:  { balance, lastUpdated: new Date() },
+      data:  { balance: latest.value, lastUpdated: estimateInstant(latest.date, new Date()) },
       select: { id: true, balance: true, lastUpdated: true },
     });
 
@@ -150,6 +167,9 @@ export const PATCH = withApiHandler(async (
       { error: "Only manually-entered accounts can have their balance updated this way." },
       { status: 400 }
     );
+  }
+  if (outcome.kind === "badDate") {
+    return NextResponse.json({ error: outcome.error }, { status: 400 });
   }
 
   // RWA-1 — today's snapshot follows the new value in every Space the asset is

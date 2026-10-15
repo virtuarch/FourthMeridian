@@ -235,6 +235,11 @@ export const AI_EVIDENCE_AUTHORITIES: Readonly<Record<string, EvidenceAuthority>
     why: 'pending/posting observation history behind the balance authority' },
   PositionObservation: { family: PolicyFamily.ACCOUNT_SUBTREE,
     why: 'the canonical investment and wallet quantity spine' },
+  // RWA-2A — manual real-world assets (migration 20261015120000_rls_asset_valuations).
+  AssetValuation: { family: PolicyFamily.ACCOUNT_SUBTREE,
+    why: "a manual asset's recorded dated valuations (the user's estimates) — FULL rows only, by the assembler" },
+  ManualAssetProfile: { family: PolicyFamily.ACCOUNT_SUBTREE,
+    why: "a manual asset's acquisition facts and purchase-price opt-in, resolved into valuation anchors" },
   PositionReconstruction: { family: PolicyFamily.ACCOUNT_SUBTREE,
     why: 'the reconciliation verdict the valuation residue guard reads' },
   PositionCoverage: { family: PolicyFamily.ACCOUNT_SUBTREE,

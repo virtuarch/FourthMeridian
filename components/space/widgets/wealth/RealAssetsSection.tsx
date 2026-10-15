@@ -25,7 +25,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Archive, Loader2, PencilLine, Plus } from "lucide-react";
+import { Archive, ChevronDown, ChevronUp, Loader2, PencilLine, Plus } from "lucide-react";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 import { formatCurrency } from "@/lib/currency";
 import { ESTIMATE_DISCLOSURE, estimateCaption } from "@/lib/assets/manual-asset";
@@ -34,6 +34,7 @@ import { GlassButton } from "@/components/atlas/GlassButton";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { UpdateAssetValueModal } from "./UpdateAssetValueModal";
+import { AssetValuationHistory } from "./AssetValuationHistory";
 
 /** The rows this section lists: FULL, user-estimate rows only. Exported for the test. */
 export function selectRealAssetRows(rows: AccountDetailRow[]): AccountDetailRow[] {
@@ -52,6 +53,10 @@ export function RealAssetsSection({ spaceId, active = true }: { spaceId: string;
   const [archiving,  setArchiving]  = useState<AccountDetailRow | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  // RWA-2A — which card's value history is open (one at a time).
+  const [historyFor, setHistoryFor] = useState<string | null>(null);
+  // Bumped after a write, so an open history re-reads the ledger.
+  const [historyNonce, setHistoryNonce] = useState(0);
 
   const load = useCallback(() => {
     fetch(`/api/spaces/${spaceId}/accounts/detail`, { cache: "no-store" })
@@ -80,6 +85,7 @@ export function RealAssetsSection({ spaceId, active = true }: { spaceId: string;
   // After OUR write: the host re-reads accounts + snapshots (the handler above
   // re-reads this section too).
   const announceChange = useCallback(() => {
+    setHistoryNonce((n) => n + 1);
     window.dispatchEvent(new CustomEvent(SPACE_DATA_REFRESHED_EVENT, { detail: { spaceId } }));
   }, [spaceId]);
 
@@ -156,6 +162,16 @@ export function RealAssetsSection({ spaceId, active = true }: { spaceId: string;
                   {estimateCaption(r.freshness?.balance?.ingestedAt ?? null, now)}
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={() => setHistoryFor(historyFor === r.id ? null : r.id)}
+                aria-expanded={historyFor === r.id}
+                className="inline-flex items-center gap-1 self-start text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              >
+                {historyFor === r.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                Value history
+              </button>
+              {historyFor === r.id && <AssetValuationHistory key={`${r.id}-${historyNonce}`} accountId={r.id} />}
               {r.canManage && (
                 <div className="flex gap-2">
                   <GlassButton tone="neutral" size="sm" onClick={() => setRevaluing(r)}>
