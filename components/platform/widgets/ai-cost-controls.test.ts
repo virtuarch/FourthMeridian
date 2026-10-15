@@ -202,7 +202,7 @@ console.log("\n7. the panel for a READ / WRITE operator: every fact, no control"
   check("the kill switch is a separate emergency region with the sentence customers read and the no-override note", /aria-label="Emergency control"/.test(html) && /paused for maintenance/.test(html) && /No allowance, overlay or override lifts a pause/.test(html));
   check("the propagation posture and the checked time are stated", /visible to the very next admission/.test(html) && /checked 15 Oct 2026, 12:00 UTC/.test(html));
   check("READ-ONLY: no button, select, input or form; no Edit, Save, Restore, Pause", noControls(html) && !/ Edit<\/button>|Save changes|Restore defaults|Pause paid requests/.test(html));
-  check("no email, no secret-shaped text, no raw colour", !/@|token|secret/i.test(html) && !/#[0-9a-f]{6}\b/i.test(html));
+  check("no email, no secret-shaped text, no raw colour", !/@|token|secret/i.test(html.replace(/ class="[^"]*"/g, "")) && !/#[0-9a-f]{6}\b/i.test(html));
 }
 
 console.log("\n8. the panel with every origin, overrides, firing alerts and a pause");
@@ -221,7 +221,7 @@ console.log("\n8. the panel with every origin, overrides, firing alerts and a pa
   check("an unreadable row: the default in force, the chip says so, an alert names when it was last written, never presented as configured",
     /Default in force — stored value invalid/.test(html) && /stored value is unreadable; the default is in force\. Last updated 14 Oct 2026, 09:00 UTC by Dana/.test(html) && /Setting invalid/.test(html));
   check("effective default follows the platform setting", /\$7 per UTC day for a customer on the default policy[^<]*\(platform setting\)/.test(html));
-  check("overrides: the count, opaque refs with their USD and date, and the doorway sentence; never an email or a full id", /2 per-customer overrides in force/.test(html) && /user …abc123/.test(html) && /\$12 per UTC day · set 14 Oct 2026/.test(html) && !/@/.test(html) && !/[a-z0-9]{20,}/.test(html.replace(/[a-z]+-[a-z-]+/g, "")));
+  check("overrides: the count, opaque refs with their USD and date, and the doorway sentence; never an email or a full id", /2 per-customer overrides in force/.test(html) && /user …abc123/.test(html) && /\$12 per UTC day · set 14 Oct 2026/.test(html) && !/@/.test(html.replace(/ class="[^"]*"/g, "")) && !/[a-z0-9]{20,}/.test(html.replace(/[a-z]+-[a-z-]+/g, "")));
   check("a disabled rule reads Disabled; a firing rule reads Firing now with its critical delivery", /Disabled/.test(html) && /Firing now/.test(html) && /critical/.test(html) && /exceeds \$10/.test(html) && /delivered 15 Oct 2026, 12:00 UTC/.test(html));
   check("paused: the state word is Paused", />Paused</.test(html));
   check("still no control without editable", noControls(html));

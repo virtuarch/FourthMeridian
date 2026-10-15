@@ -123,7 +123,7 @@ console.log("\n5. read-only for READ and WRITE operators — the same facts, no 
   check("no select, input, button or form in the markup without canControl", !/<select|<input|<button|<form/.test(html));
   check("no Edit, Save or Reset affordance", !/ Edit<\/button>|Save|Reset to default/.test(html));
   check("the same policy information is still shown (effective, overdue, capability, actual)", /Every 12 hours/.test(html) && /15 hours/.test(html) && /4h · 6h · 8h · 12h · 24h/.test(html) && /Unknown/.test(html));
-  check("no email, no secret-shaped text", !/@|token|secret/i.test(html));
+  check("no email, no secret-shaped text", !/@|token|secret/i.test(html.replace(/ class="[^"]*"/g, "")));
 }
 
 console.log("\n6. the control (Slice 2) — rendered only behind canControl");
@@ -239,7 +239,7 @@ console.log("\n10b. AI COST CONTROLS — the Cost safeguards group is RETIRED; t
   check("the AI Cost Controls group is composed beneath the cadence panel with its four cards", inSurface.indexOf("Execution cadence") < inSurface.indexOf("AI Cost Controls") && /Per-user daily AI allowance/.test(inSurface) && /Per-user spending alert/.test(inSurface) && /Fleet-wide spending alert/.test(inSurface) && /Pause paid AI requests/.test(inSurface));
   check("the thresholds live there once each: $3 and $10 appear as the values in force, no second display", (inSurface.match(/>\$3</g) ?? []).length === 1 && (inSurface.match(/>\$10</g) ?? []).length === 1);
   check("the whole surface stays control-free for READ", !/<button|<select|<input|<form/.test(inSurface));
-  check("no email, no secret-shaped text", !/@|token|secret/i.test(inSurface));
+  check("no email, no secret-shaped text", !/@|token|secret/i.test(inSurface.replace(/ class="[^"]*"/g, "")));
   const forControl = render({ data: model, loading: false, error: null }, true, { cadence: cadenceState, costControls: { data: controls, loading: false, error: null } });
   check("for a control-plane operator the group offers Edit on the three policy cards and the pause affordance on the emergency control", (forControl.match(/ Edit<\/button>/g) ?? []).length >= 3 && /Pause paid requests/.test(forControl));
   const noControls = render({ data: model, loading: false, error: null }, false, { cadence: cadenceState });

@@ -176,6 +176,7 @@ export function CardEditor({
       busy={busy}
       notice={notice}
       canSave={changes.length > 0 && Object.keys(errors).length === 0}
+      dirty={Object.entries(draft).some(([key, value]) => draftFromModel(model, card)[key as AiCostControlKey] !== value)}
       canReset={restore.length > 0}
       saveLabel={saveLabel}
       resetLabel="Restore defaults"
@@ -241,7 +242,7 @@ function Affordances({ notice, edit, restore }: { notice: PolicyNotice | null; e
 
 function CardShell({ card, state, children, control }: { card: CardKey; state: { word: string; tone: "ok" | "warn" | "bad" | "muted" }; children: ReactNode; control: ReactNode }) {
   return (
-    <div className="flex min-w-0 flex-col gap-4" role="group" aria-label={CARD_TITLE[card]}>
+    <div className="flex min-w-0 flex-col gap-4 border-t border-[var(--border-hairline)] pt-5" role="group" aria-label={CARD_TITLE[card]}>
       <div className="flex flex-col gap-1.5">
         <GroupLabel hint={CARD_DESCRIPTION[card]}>{CARD_TITLE[card]}</GroupLabel>
         <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{CARD_DESCRIPTION[card]}</p>
@@ -285,7 +286,7 @@ function AllowanceCard({ model, editable, onModel }: { model: AiCostControlsRead
           <ul className="flex flex-col gap-0.5" aria-label="Per-customer overrides">
             {a.overrides.customers.map((o) => (
               <li key={o.ref} className="flex flex-wrap items-baseline justify-between gap-x-3 text-[11px] text-[var(--text-secondary)]">
-                <span className="font-mono text-[10px] text-[var(--text-primary)]">{o.ref}</span>
+                <span className="min-w-0 break-all font-mono text-[10px] text-[var(--text-primary)]">{o.ref}</span>
                 <span className="tabular-nums">{usdText(o.usd)} per UTC day · set {formatUtc(o.updatedAt)}</span>
               </li>
             ))}
@@ -306,7 +307,7 @@ function AlertCard({ card, model, editable, onModel }: { card: "userAlert" | "fl
       <ControlFacts view={v.enabled} />
       <ControlFacts view={v.thresholdUsd} />
       <div className="flex flex-col gap-1.5">
-        <KeyRow label="Rule" value={<span className="font-mono text-[10px]">{v.ruleId}</span>} />
+        <KeyRow label="Rule" value={<span className="break-all font-mono text-[10px]">{v.ruleId}</span>} />
         <KeyRow label="Status" value={<ToneBadge word={firing.word} tone={firing.tone} />} />
         {v.status.recent.length === 0 ? (
           <p className="text-[11px] text-[var(--text-muted)]" role="status">No recent triggers in the retained evaluation runs.</p>
@@ -315,7 +316,7 @@ function AlertCard({ card, model, editable, onModel }: { card: "userAlert" | "fl
             {v.status.recent.map((t, i) => (
               <li key={`${t.dedupeKey}:${i}`} className="flex flex-wrap items-baseline justify-between gap-x-3 text-[11px] text-[var(--text-secondary)]">
                 <span className="min-w-0"><ToneBadge word={t.severity} tone={t.severity === "critical" ? "bad" : "warn"} /> {t.summary}</span>
-                <span className="shrink-0 tabular-nums text-[var(--text-muted)]">delivered {formatUtc(t.at)}</span>
+                <span className="min-w-0 break-words tabular-nums text-[var(--text-muted)]">delivered {formatUtc(t.at)}</span>
               </li>
             ))}
           </ul>
@@ -378,7 +379,7 @@ export function AiCostControlsPanel({ state, editable = false, onModel = () => {
       ) : (
         <>
           <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">{propagationText(data.propagation)} · checked {formatUtc(data.checkedAt)}</p>
-          <div className="grid gap-8 md:grid-cols-3">
+          <div className="grid gap-x-8 gap-y-7 @min-[48rem]:grid-cols-2 @min-[76rem]:grid-cols-3">
             <AllowanceCard model={data} editable={editable} onModel={onModel} />
             <AlertCard card="userAlert" model={data} editable={editable} onModel={onModel} />
             <AlertCard card="fleetAlert" model={data} editable={editable} onModel={onModel} />

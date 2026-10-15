@@ -39,11 +39,11 @@ import {
 function UtilizationBar({ label, pct }: { label: string; pct: number | null }) {
   const tone = utilizationTone(pct);
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 items-center gap-2">
       <div role="img" aria-label={`${label}: ${pctText(pct)}`} className="h-1.5 w-full max-w-[160px] overflow-hidden rounded-full" style={{ background: "var(--surface-inset)" }}>
-        <span className="block h-full" style={{ width: `${utilizationFill(pct)}%`, background: TONE_COLOR[tone] }} />
+        <span className="block h-full" style={{ width: `${utilizationFill(pct)}%`, minWidth: pct !== null && pct > 0 ? 2 : 0, background: TONE_COLOR[tone] }} />
       </div>
-      <span className="text-[11px] tabular-nums" style={{ color: TONE_COLOR[tone] }}>{pctText(pct)}</span>
+      <span className="shrink-0 text-[11px] tabular-nums" style={{ color: TONE_COLOR[tone] }}>{pctText(pct)}</span>
     </div>
   );
 }
@@ -63,7 +63,7 @@ export function AiBudgetSurface({ section, data }: { section: PlatformSection; d
       footnote={footnote}
     >
       <div className="flex flex-col gap-8">
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid gap-6 @min-[42rem]:grid-cols-2 [&>*]:min-w-0">
           <div className="flex flex-col gap-3">
             <BigStat
               label="Fleet · rolling 24 h estimate"
@@ -75,7 +75,7 @@ export function AiBudgetSurface({ section, data }: { section: PlatformSection; d
             <UtilizationBar label="Fleet utilization of the alert threshold" pct={data.fleet.utilizationPct} />
             <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">{overheadText(data.overhead)}</p>
           </div>
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2 border-t border-[var(--border-hairline)] pt-5 @min-[42rem]:border-t-0 @min-[42rem]:border-l @min-[42rem]:pl-6 @min-[42rem]:pt-0">
             <GroupLabel hint="The controls as the Policies surface declares them; changed there, never here.">Controls in force</GroupLabel>
             <KeyRow label="Paid AI requests" value={<ToneBadge word={paused.word} tone={paused.tone} />} />
             <KeyRow label="Daily allowance" value={<ToneBadge word={enforced.word} tone={enforced.tone} />} />
@@ -83,7 +83,7 @@ export function AiBudgetSurface({ section, data }: { section: PlatformSection; d
           </div>
         </div>
 
-        <div className="grid gap-8 md:grid-cols-2">
+        <div className="grid gap-8 border-t border-[var(--border-hairline)] pt-6 @min-[42rem]:grid-cols-2 [&>*]:min-w-0">
           <div className="flex flex-col gap-2">
             <GroupLabel hint="Top customers by rolling-24 h estimate, as opaque references. Today is what the allowance judges; the rolling window is what the per-customer alert judges.">Customers</GroupLabel>
             {data.customers.length === 0 ? (
@@ -94,7 +94,7 @@ export function AiBudgetSurface({ section, data }: { section: PlatformSection; d
                   const r = customerRowText(c, data.controls.userAlertThresholdUsd);
                   return (
                     <li key={c.ref} className="flex flex-col gap-1 py-2 text-xs">
-                      <span className="font-mono text-[10px] text-[var(--text-primary)]">{c.ref}</span>
+                      <span className="break-all font-mono text-[10px] text-[var(--text-primary)]">{c.ref}</span>
                       <KeyRow label="Today vs allowance" value={r.today} />
                       <UtilizationBar label={`${c.ref} today vs allowance`} pct={r.todayPct} />
                       <KeyRow label="Rolling 24 h vs alert" value={r.rolling} />
@@ -106,7 +106,7 @@ export function AiBudgetSurface({ section, data }: { section: PlatformSection; d
             )}
           </div>
 
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2 border-t border-[var(--border-hairline)] pt-5 @min-[42rem]:border-t-0 @min-[42rem]:border-l @min-[42rem]:pl-6 @min-[42rem]:pt-0">
             <GroupLabel hint="Estimated spend by surface; customer surfaces and overhead are named on every row.">By surface</GroupLabel>
             {data.bySurface.length === 0 ? (
               <p className="text-xs text-[var(--text-secondary)]" role="status">No invocations in the window.</p>
@@ -129,7 +129,7 @@ export function AiBudgetSurface({ section, data }: { section: PlatformSection; d
           </div>
         </div>
 
-        <div className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2 border-t border-[var(--border-hairline)] pt-6">
           <GroupLabel hint={PAST_DELIVERIES_NOTE}>Recent spending alerts</GroupLabel>
           {data.recentAlerts.length === 0 ? (
             <p className="text-xs text-[var(--text-secondary)]" role="status">No spending alert delivered in the retained evaluation runs.</p>
@@ -137,8 +137,8 @@ export function AiBudgetSurface({ section, data }: { section: PlatformSection; d
             <ul className="divide-y divide-[var(--border-hairline)]">
               {data.recentAlerts.map((a, i) => (
                 <li key={`${a.dedupeKey}:${i}`} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 py-1.5 text-xs">
-                  <span className="min-w-0 text-[var(--text-secondary)]"><ToneBadge word={a.severity} tone={severityTone(a.severity)} /> {a.summary}</span>
-                  <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{deliveryText(a, formatUtc)}</span>
+                  <span className="min-w-0 break-words text-[var(--text-secondary)]"><ToneBadge word={a.severity} tone={severityTone(a.severity)} /> {a.summary}</span>
+                  <span className="min-w-0 break-words text-[11px] tabular-nums text-[var(--text-muted)]">{deliveryText(a, formatUtc)}</span>
                 </li>
               ))}
             </ul>

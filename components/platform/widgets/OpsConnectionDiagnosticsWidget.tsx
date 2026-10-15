@@ -81,7 +81,7 @@ export function OpsConnectionDiagnosticsWidget({ section }: { section: PlatformS
                 onClick={() => setSelectedId(c.id)}
                 className="flex w-full items-center justify-between gap-2 px-1 py-2 text-left transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]"
               >
-                <span className="min-w-0 truncate text-xs text-[var(--text-primary)]">
+                <span className="min-w-0 break-words text-xs text-[var(--text-primary)]">
                   {c.source} <span className="text-[var(--text-muted)]">· {c.ownerRef}</span>
                 </span>
                 <span className="shrink-0 text-[11px] text-[var(--text-secondary)]">

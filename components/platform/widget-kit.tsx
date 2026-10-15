@@ -92,7 +92,7 @@ export function PlatformWidgetCard({
 }) {
   return (
     <Block label={label} hint={<Icon size={12} aria-hidden className="text-[var(--text-faint)]" />}>
-      <Surface className="p-4 md:p-5 flex flex-col gap-3">{children}</Surface>
+      <Surface className="min-w-0 p-4 md:p-5 flex flex-col gap-3">{children}</Surface>
     </Block>
   );
 }
@@ -148,7 +148,7 @@ export function timeAgo(iso: string): string {
  *  type as customer-Space figures. */
 export function WidgetStat({ value, label }: { value: string | number; label: string }) {
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex min-w-0 flex-col gap-1 break-words">
       <Figure value={value} size="figure" />
       <span className="text-[11px] uppercase tracking-wide text-[var(--text-secondary)]">{label}</span>
     </div>

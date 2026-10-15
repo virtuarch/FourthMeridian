@@ -114,7 +114,7 @@ function AiBody({ query, onAvailable }: { query: string; onAvailable: (a: AiOper
           <ul className="flex flex-col">
             {data.recent.map((r, i) => (
               <li key={`${r.occurredAt}-${i}`} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 border-b py-2 text-xs last:border-b-0" style={{ borderColor: "var(--border-hairline)" }}>
-                <span className="min-w-0 truncate text-[var(--text-primary)]">
+                <span className="min-w-0 break-words text-[var(--text-primary)]">
                   {r.surface ?? data.unattributedSurfaceKey} · {r.model}
                   <span className="text-[var(--text-muted)]">{r.turnIndex !== null ? ` · turn ${r.turnIndex}` : ""}{r.correlationId ? ` · ${r.correlationId.slice(0, 18)}` : ""}</span>
                 </span>

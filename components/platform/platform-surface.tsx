@@ -135,7 +135,7 @@ export function PolicyChip({ label, tone }: { label: string; tone: "hold" | "off
       : { color: "var(--text-secondary)", borderColor: "var(--border-hairline-strong)" };
   return (
     <span
-      className="inline-flex shrink-0 items-center rounded-[var(--radius-sm)] border px-2 text-[11px] font-medium"
+      className="inline-flex min-w-0 max-w-full items-center break-words rounded-[var(--radius-sm)] border px-2 text-[11px] font-medium"
       style={{ ...style, paddingBlock: 2 }}
     >
       {label}
@@ -155,7 +155,7 @@ export function PolicyChip({ label, tone }: { label: string; tone: "hold" | "off
  */
 export function Unavailable({ reason }: { reason: string }) {
   return (
-    <span className="inline-flex items-baseline gap-1.5">
+    <span className="inline-flex min-w-0 flex-wrap items-baseline gap-1.5">
       <span className="text-[var(--text-muted)]">—</span>
       <span className="text-[10px] text-[var(--text-faint)]">{reason}</span>
     </span>
@@ -191,9 +191,9 @@ export const NO_AUTHORITY = "no authority";
 export function Provenance({ source, children }: { source: string; children?: ReactNode }) {
   const unattributed = source === NO_AUTHORITY;
   return (
-    <span className="inline-flex flex-wrap items-center gap-1.5 text-[10px] text-[var(--text-muted)]">
+    <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1.5 break-words text-[10px] text-[var(--text-muted)]">
       <span
-        className="border px-1.5 font-mono text-[10px]"
+        className="min-w-0 max-w-full break-words border px-1.5 font-mono text-[10px]"
         style={{
           borderRadius: "var(--radius-xs)",
           paddingBlock: 1,
@@ -254,9 +254,9 @@ export function SectionSurface({
 }) {
   return (
     <section id={id} className={id ? "scroll-mt-20" : undefined}>
-      <Surface className="px-5 py-5 md:px-6 md:py-6">
+      <Surface className="@container min-w-0 px-4 py-5 sm:px-5 md:px-6 md:py-6">
         <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
+          <div className="flex min-w-0 items-center gap-2.5">
             {Icon && <Icon size={16} strokeWidth={1.75} className="text-[var(--text-muted)]" aria-hidden />}
             <h2 className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
             {count != null && (
@@ -420,9 +420,9 @@ export function TwoLine({
  */
 export function KeyRow({ label, value }: { label: ReactNode; value: ReactNode }) {
   return (
-    <div className="flex items-baseline justify-between gap-4">
-      <span className="shrink-0 text-xs text-[var(--text-secondary)]">{label}</span>
-      <span className="min-w-0 text-right text-xs tabular-nums text-[var(--text-primary)]">{value}</span>
+    <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+      <span className="min-w-0 max-w-full break-words text-xs text-[var(--text-secondary)]">{label}</span>
+      <span className="min-w-0 max-w-full break-words text-right text-xs tabular-nums text-[var(--text-primary)]">{value}</span>
     </div>
   );
 }

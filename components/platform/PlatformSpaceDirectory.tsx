@@ -68,8 +68,8 @@ export function PlatformSpaceDirectory({ spaces }: { spaces: readonly PlatformDi
                     HQ
                   </span>
                   <div className="min-w-0 flex-1">
-                    <h2 className="truncate font-semibold text-[var(--text-primary)]">{displaySpaceName(p.name)}</h2>
-                    <p className="mt-1 truncate text-xs text-[var(--text-muted)]">Platform area · {p.access}</p>
+                    <h2 className="break-words font-semibold text-[var(--text-primary)]">{displaySpaceName(p.name)}</h2>
+                    <p className="mt-1 break-words text-xs text-[var(--text-muted)]">Platform area · {p.access}</p>
                   </div>
                   <ArrowUpRight
                     size={15}
