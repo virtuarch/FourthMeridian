@@ -33,6 +33,7 @@ import { limitByIp } from "@/lib/rate-limit";
 import { getRequestMeta } from "@/lib/api";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { getMinPasswordLength, getRegistrationMode } from "@/lib/platform-settings";
 import { validateInvite, redeemBetaInvite, InviteNotConsumedError } from "@/lib/registration-policy";
 import { DEFAULT_POLICY_GROUP, INVITE_COHORT } from "@/lib/entitlements/catalogue";
@@ -292,7 +293,8 @@ export async function POST(req: NextRequest) {
           userId:      newUser.id,
           spaceId: space.id,
           action:      AuditAction.REGISTER,
-          metadata:    { email: normalizedEmail, username: normalizedUsername, invited: invitedFlow },
+          // BETA A7 — the address is referenced by digest, never stored (lib/audit.ts auditEmailHash).
+          metadata:    { emailHash: auditEmailHash(normalizedEmail), username: normalizedUsername, invited: invitedFlow },
         },
       });
 
@@ -330,7 +332,7 @@ export async function POST(req: NextRequest) {
           data: {
             userId:   newUser.id,
             action:   AuditAction.BETA_ACCESS_REDEEMED,
-            metadata: { email: normalizedEmail, betaRequestId },
+            metadata: { emailHash: auditEmailHash(normalizedEmail), betaRequestId },
           },
         });
       }

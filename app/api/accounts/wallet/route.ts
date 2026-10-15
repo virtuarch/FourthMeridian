@@ -107,6 +107,7 @@ import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 // PROV-4 — canonical per-account conn+SAL spine writer, shared with Plaid exchange.
 import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
+import { walletAddMetadata } from "@/lib/analytics/product-events";
 import { BTC_CHAIN } from "@/lib/crypto/btc-sync";
 import { isProductSupportedChain, PRODUCT_CHAIN_VALUES } from "@/lib/crypto/product-chains";
 import { syncWalletByChain, chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch";
@@ -410,7 +411,7 @@ export async function POST(req: NextRequest) {
   // is an entirely separate row under the D2 Step 1D corrected model.
   // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine for the
   // brand-new wallet (Connection → ProviderAccountIdentity → AccountConnection).
-  await alignWalletProviderSpine({ userId, financialAccountId: fa.id, address: walletValue, chain, descriptorOnly: isXpub });
+  const walletConnectionId = await alignWalletProviderSpine({ userId, financialAccountId: fa.id, address: walletValue, chain, descriptorOnly: isXpub });
   // D3 Step 3 HOME Semantics Correction — no separate HOME backfill call
   // needed here. computeLinkKind() (inside dualWriteSpaceAccountLink above)
   // now assigns HOME to the Space a brand-new account's first link is
@@ -435,12 +436,17 @@ export async function POST(req: NextRequest) {
   }
   if (chainSupportsHistory(chain)) await regenWalletWealthHistory(fa.id);
 
+  // BETA A7 — ids and kinds only. The wallet ADDRESS used to be written here
+  // (and the account name); an audit row that names a public key names its
+  // owner's on-chain history for ever, which is exactly what AuditLog's
+  // SetNull-on-delete anonymisation cannot undo. The Connection id is the
+  // reference an operator can resolve; the chain is the kind.
   await withTenantDb(userId, (tx) => tx.auditLog.create({
     data: {
       userId,
       spaceId,
-      action:   "WALLET_ADD",
-      metadata: { name: fa.name, chain, address: walletValue },
+      action:   AuditAction.WALLET_ADD,
+      metadata: walletAddMetadata({ connectionId: walletConnectionId, chain }),
     },
   }));
 

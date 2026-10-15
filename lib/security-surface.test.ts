@@ -124,6 +124,9 @@ const writerSurfaces: [string, string][] = [
   ["app/api/user/password/route.ts",        "AuditAction.PASSWORD_CHANGE_FAILED"],
   ["app/api/user/password/route.ts",        "AuditAction.PASSWORD_CHANGED"],
   ["app/api/auth/register/route.ts",        "AuditAction.REGISTER"],
+  // BETA A2 — the two lifecycle writers promoted into the canon.
+  ["app/api/accounts/wallet/route.ts",      "AuditAction.WALLET_ADD"],
+  ["app/api/accounts/manual/route.ts",      "AuditAction.MANUAL_ASSET_ADD"],
 ];
 for (const [file, needle] of writerSurfaces) {
   const s = src(file);
@@ -132,6 +135,28 @@ for (const [file, needle] of writerSurfaces) {
   const literal = needle.split(".")[1];
   const rawAssign = new RegExp(`action:\\s*"${literal}"`);
   check(`${file} writes ${needle} (not the raw literal)`, s.includes(needle) && !rawAssign.test(s));
+}
+
+console.log("5b. BETA A2 — product events are disjoint from every security surface");
+{
+  const canon = src("lib/audit-actions.ts");
+  const list = (name: string): string[] => {
+    const m = new RegExp(`export const ${name}[^=]*=\\s*\\[([\\s\\S]*?)\\n\\];`).exec(canon);
+    return m ? [...m[1].matchAll(/AuditAction\.([A-Z_]+)/g)].map((x) => x[1]) : [];
+  };
+  const product = list("PRODUCT_EVENT_ACTIONS");
+  check("PRODUCT_EVENT_ACTIONS is exactly the five presence/engagement events",
+    product.join() === "SESSION_ACTIVE_DAY,SPACE_VIEWED,BRIEF_VIEWED,TRANSACTIONS_VIEWED,MANUAL_ASSET_VALUE_UPDATED", product.join());
+  for (const name of ["USER_SECURITY_HISTORY_ACTIONS", "OPERATOR_ACTION_FEED_ACTIONS", "ADMIN_SECURITY_FILTER_ACTIONS"]) {
+    const l = list(name);
+    check(`${name} (${l.length} actions) admits no product event`, l.length > 3 && !product.some((a) => l.includes(a)));
+  }
+  const groups = [...canon.matchAll(/AuditAction\.([A-Z_]+),?\s*\n/g)].map((m) => m[1]);
+  const groupsBlock = canon.slice(canon.indexOf("export const AUDIT_ACTION_GROUPS"));
+  check("the admin dropdown groups (AUDIT_ACTION_GROUPS) name no product event", groups.length > 0 && !product.some((a) => new RegExp(`AuditAction\\.${a}\\b`).test(groupsBlock)));
+  const retention = src("jobs/product-event-retention.ts");
+  check("the retention job deletes by PRODUCT_EVENT_ACTIONS from the canon, never a hand-typed list", /import \{ PRODUCT_EVENT_ACTIONS \} from "@\/lib\/audit-actions"/.test(retention)
+    && !/"(LOGIN|REGISTER|ACCOUNT_ADD|WALLET_ADD|MANUAL_ASSET_ADD)"/.test(retention));
 }
 
 console.log("6. SEC-4 — password length reads the admin-configurable policy");

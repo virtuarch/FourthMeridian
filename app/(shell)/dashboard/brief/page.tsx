@@ -17,6 +17,13 @@
  * the page and only a Brief that needs work shows a skeleton. If that read fails,
  * the client simply asks for it.
  *
+ * ⚠️ A VIEW IS RECORDED WHEN A BRIEF IS SHOWN, NOT WHEN IT IS ASKED FOR (BETA A2).
+ * BRIEF_VIEWED is written once per (user, Space, Brief day) by two places and no
+ * other: this page's first render, when the state it paints carries a Brief, and
+ * GET /api/brief, when the response it returns carries one (app/api/brief/route.ts
+ * states the rule). A router prefetch of this page is skipped. Generation (POST)
+ * writes nothing — see the route header for what that leaves to the next read.
+ *
  * ⚠️ THE NAME IS READ AS THE USER (RLS slice A). One row, their own: the tenant
  * policy on `User` is `id = current_fm_user_id()`, so the predicate below and the
  * database now agree about whose name this is. The Brief read beside it enters the
@@ -29,6 +36,8 @@ import { withTenantDb } from "@/lib/db/tenant-context";
 import { readBriefResponse } from "@/lib/ai/brief/view";
 import { DailyBriefClient } from "@/components/brief/DailyBriefClient";
 import type { BriefResponse } from "@/lib/brief-types";
+import { recordBriefViewed } from "@/lib/analytics/product-events";
+import { isRouterPrefetch } from "@/lib/analytics/request-intent";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
@@ -49,6 +58,11 @@ export default async function DailyBriefPage() {
       .catch((err) => { console.error("[brief] initial read failed:", err); return null; }),
   ]);
   const firstName = user?.firstName ?? user?.name?.split(" ")[0] ?? null;
+
+  if (initial?.brief && !(await isRouterPrefetch())) {
+    await withTenantDb(ctx.userId, (tx) =>
+      recordBriefViewed(tx, { userId: ctx.userId, spaceId: ctx.spaceId, briefDay: initial.brief!.briefDay, cached: true }));
+  }
 
   return (
     <DailyBriefClient

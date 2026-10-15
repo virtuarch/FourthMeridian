@@ -6,6 +6,8 @@ import { getSpaceContext }                         from "@/lib/space";
 import { composeFinancialInitialWorkspace }        from "@/lib/space/mount-composition";
 import { withTenantDb }                            from "@/lib/db/tenant-context";
 import { DisplayCurrencyProvider }                 from "@/lib/currency-context";
+import { recordSpaceViewed }                       from "@/lib/analytics/product-events";
+import { isRouterPrefetch }                        from "@/lib/analytics/request-intent";
 
 // Co-locate compute with the Singapore-region Supabase instance — see
 // lib/space.ts / perf audit notes. Applies to this page's serverless
@@ -49,6 +51,18 @@ export default async function DashboardPage() {
     (fn) => withTenantDb(ctx.userId, (tx) => fn(tx)),
     ctx.spaceId,
   );
+
+  // BETA A2 — SPACE_VIEWED: this page rendering for a member IS the view (once
+  // per user, Space, UTC day; the writer dedupes). Every finance Space this page
+  // serves counts — PERSONAL and SHARED — and the platform page never calls this,
+  // so a Platform Space is never a product event. A Next router PREFETCH renders
+  // nothing a person looked at, so it is skipped (lib/analytics/request-intent).
+  // Its own short tenant phase, AFTER the payload: a failed insert cannot abort
+  // the composition's transaction, and the writer never throws into the page.
+  if (!(await isRouterPrefetch())) {
+    await withTenantDb(ctx.userId, (tx) =>
+      recordSpaceViewed(tx, { userId: ctx.userId, spaceId: ctx.spaceId, spaceType: ctx.space.type }));
+  }
 
   // Non-personal spaces render the planning dashboard (client-side data fetching)
   //

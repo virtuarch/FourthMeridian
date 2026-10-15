@@ -39,6 +39,7 @@ import {
 } from "@/lib/data/transaction-query";
 import { countTransactions } from "@/lib/data/transaction-count";
 import { withTenantDb } from "@/lib/db/tenant-context";
+import { recordTransactionsViewed } from "@/lib/analytics/product-events";
 
 export async function GET(
   req: NextRequest,
@@ -72,6 +73,15 @@ export async function GET(
     queryTransactions(tx, { spaceId, query }),
     isFirstPage ? countTransactions(tx, { spaceId, query }) : Promise.resolve(null),
   ]));
+
+  // BETA A2 — TRANSACTIONS_VIEWED: the Transactions workspace loading its FIRST
+  // page is the view (once per user, Space, UTC day; the writer dedupes). A cursor
+  // continuation is scrolling, not viewing, and writes nothing. Its own short
+  // tenant phase, after the read: the writer never throws, and a refused insert
+  // must not abort the transaction the page was read in.
+  if (isFirstPage) {
+    await withTenantDb(ctx.user.id, (tx) => recordTransactionsViewed(tx, { userId: ctx.user.id, spaceId }));
+  }
 
   return NextResponse.json({
     transactions: page.rows,
