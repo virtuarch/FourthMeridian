@@ -117,7 +117,8 @@ async function main(): Promise<void> {
     const pol = defaultJobCadencePolicies(SCHEDULED_JOBS);
     const hours = (n: string) => pol.get(n)?.hours;
     const origin = (n: string) => pol.get(n)?.origin;
-    check("registry holds eleven jobs", SCHEDULED_JOBS.length === 11, `got ${SCHEDULED_JOBS.length}`);
+    // BETA base (b625d45): + plaid-removal-retry, product-event-retention (daily fixed).
+    check("registry holds thirteen jobs", SCHEDULED_JOBS.length === 13, `got ${SCHEDULED_JOBS.length}`);
     check("names unique", byName.size === SCHEDULED_JOBS.length);
     check("sync-banks runs on the BANK refresh policy (24h default)", hours("sync-banks") === 24 && origin("sync-banks") === "REFRESH_POLICY");
     check("sync-crypto runs on the WALLET refresh policy (6h default)", hours("sync-crypto") === 6 && origin("sync-crypto") === "REFRESH_POLICY");

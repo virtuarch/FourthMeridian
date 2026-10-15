@@ -95,7 +95,7 @@ async function main(): Promise<void> {
     check("no security-sensitive or financial-semantic key can become a Platform Ops control", forbidden.length === 0, forbidden.map((d) => d.key).join(", "));
     const ops = settingKeysForSurface("PLATFORM_OPS");
     check("Platform Ops owns exactly the operational policies",
-      [...ops].sort().join(",") === ["ingestion_paused", "job_cadence_hours_evaluate-alerts", "job_cadence_hours_fetch-fx-rates", "job_cadence_hours_fetch-security-prices", "maintenance_mode", "refresh_cadence_bank", "refresh_cadence_wallet"].join(","), ops.join(","));
+      [...ops].sort().join(",") === ["ai_spend_alert_fleet_usd_24h", "ai_spend_alert_user_usd_24h", "ingestion_paused", "job_cadence_hours_evaluate-alerts", "job_cadence_hours_fetch-fx-rates", "job_cadence_hours_fetch-security-prices", "maintenance_mode", "refresh_cadence_bank", "refresh_cadence_wallet"].join(","), ops.join(","));
     check("every Platform Ops key is operator-configurable, resettable, and gated at the reserved capability",
       ops.every((k) => SETTING_DESCRIPTORS[k].operatorConfigurable && SETTING_DESCRIPTORS[k].resettable && SETTING_DESCRIPTORS[k].writeCapability === "CONTROL"));
     check("security keys are not operator-configurable and not resettable",
