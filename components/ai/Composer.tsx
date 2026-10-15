@@ -3,7 +3,7 @@
 /**
  * components/ai/Composer.tsx  (AI Experience Convergence — AI-1, conversation-first AI-3)
  *
- * The one conversation composer, used centered (empty) and docked (conversation) —
+ * The one conversation composer, anchored beneath the reading region —
  * the host decides where it sits. A real <form> around the Atlas `Textarea`
  * (auto-grow, capped), a send button that activates on a non-empty draft and a stop
  * button while a reply is in flight. Enter sends, Shift+Enter inserts a newline, an
@@ -72,15 +72,15 @@ export function Composer({
           placeholder={placeholder}
           aria-describedby={hint ? hintId : undefined}
           enterKeyHint="send"
-          className="flex-1 border-0 px-0 py-2 leading-6 max-sm:text-base sm:text-[15px]"
-          style={{ background: "transparent" }}
+          className="min-w-0 flex-1 !overflow-y-auto border-0 px-0 py-2 leading-6 max-sm:text-base sm:text-[15px]"
+          style={{ background: "transparent", maxHeight: "min(200px, 25dvh)" }}
         />
         {busy && onStop ? (
           <button
             type="button"
             onClick={onStop}
             aria-label="Stop generating"
-            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-colors bg-[var(--surface-hover-strong)] text-[var(--text-primary)] hover:bg-[var(--border-hairline-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]"
+            className="w-11 h-11 rounded-full flex items-center justify-center shrink-0 transition-colors bg-[var(--surface-hover-strong)] text-[var(--text-primary)] hover:bg-[var(--border-hairline-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]"
           >
             <Square size={12} fill="currentColor" />
           </button>
@@ -89,7 +89,7 @@ export function Composer({
             type="submit"
             disabled={!value.trim()}
             aria-label="Send message"
-            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-[opacity,background-color] text-white bg-[var(--accent-info)] disabled:opacity-35 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-base)]"
+            className="w-11 h-11 rounded-full flex items-center justify-center shrink-0 transition-[opacity,background-color] text-white bg-[var(--accent-info)] disabled:opacity-35 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-base)]"
           >
             <ArrowUp size={17} strokeWidth={2.25} />
           </button>
