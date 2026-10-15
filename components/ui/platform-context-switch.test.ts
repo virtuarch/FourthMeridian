@@ -99,7 +99,7 @@ console.log("D. Phone presentation — icon-only inactive segment below sm");
   const platform = links.find((l) => l.includes('aria-label="Platform Spaces"'))!;
   check("the INACTIVE label is sr-only below sm and visible from sm (stays in the DOM)",
     /<span class="sr-only sm:not-sr-only">Personal Spaces<\/span>/.test(personal), personal);
-  check("the ACTIVE label is always visible", /<span class="">Platform Spaces<\/span>/.test(platform), platform);
+  check("the ACTIVE label collapses only below 400px, retaining its accessible name", /<span class="max-\[399px\]:sr-only">Platform Spaces<\/span>/.test(platform), platform);
   check("every segment keeps an explicit accessible name (icon-only never nameless)",
     links.every((l) => /aria-label="(Personal|Platform) Spaces"/.test(l)));
   check("the icon is decorative (aria-hidden) — the label is the name",

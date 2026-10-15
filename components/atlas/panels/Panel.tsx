@@ -31,6 +31,8 @@
  */
 
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { SheetHandle, useSheetResize } from "../SheetHandle";
+import { useVisualViewport } from "../useVisualViewport";
 import { createPortal } from "react-dom";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
@@ -78,6 +80,7 @@ export interface PanelProps {
   /** Blocks Escape + scrim dismissal (e.g. an in-flight commit). Close button still
    *  calls onClose — the caller guards it. */
   preventClose?: boolean;
+  dirty?: boolean;
   /** Scrim click closes. Default true. */
   closeOnScrim?: boolean;
   /** Explicit stacking override; otherwise derived from <PanelStack> depth. */
@@ -93,6 +96,7 @@ export function Panel({
   size,
   ariaLabel,
   preventClose = false,
+  dirty = false,
   closeOnScrim = true,
   zIndex,
   className = "",
@@ -101,6 +105,11 @@ export function Panel({
   const { mounted, state } = usePresence(open, EXIT_MS);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
+  const sheet = useSheetResize();
+  const viewportStyle = useVisualViewport(open);
+  const requestClose = () => {
+    if (!preventClose && (!dirty || window.confirm("Discard unsaved changes?"))) onClose();
+  };
   const [titled, setTitled] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
   const onKeyDownTrap = useFocusTrap(panelRef);
@@ -109,7 +118,7 @@ export function Panel({
   // Shared overlay behavior — identical to the modal's, driven off `open` (not the
   // presence `mounted`, so restore-focus fires when the caller closes, and the lock
   // releases immediately rather than after the exit).
-  useEscapeKey(open, onClose, preventClose);
+  useEscapeKey(open, requestClose, preventClose);
   useBodyScrollLock(open);
   useReturnFocus(open);
   useAutoFocus(open, panelRef);
@@ -131,7 +140,7 @@ export function Panel({
   }, [stack]);
 
   const ctx: PanelContextValue = {
-    onClose,
+    onClose: requestClose,
     side,
     preventClose,
     titleId,
@@ -166,7 +175,7 @@ export function Panel({
       className={`fixed inset-0 flex items-end sm:items-stretch ${
         left ? "sm:justify-start" : "sm:justify-end"
       }`}
-      style={{ zIndex: resolvedZ }}
+      style={{ zIndex: resolvedZ, ...viewportStyle }}
     >
       {/* Scrim. LEFT dims LESS and does not blur — the workspace stays legible beside
           the context. RIGHT dims more and blurs — the detail is the point, the
@@ -176,7 +185,7 @@ export function Panel({
         aria-label="Close panel"
         tabIndex={-1}
         onClick={() => {
-          if (closeOnScrim && !preventClose) onClose();
+          if (closeOnScrim && !preventClose) requestClose();
         }}
         className="absolute inset-0 cursor-default"
         style={{
@@ -194,7 +203,7 @@ export function Panel({
         elevation="e4"
         edge={false}
         className={[
-          "relative flex w-full flex-col",
+          "atlas-sheet-frame relative flex w-full flex-col",
           // Mobile: bottom sheet — full width, capped height, rounded top only.
           "max-h-[92dvh] !rounded-t-[var(--radius-xl)] !rounded-b-none",
           // Desktop: docked full-height to its edge, fixed width, square, hairline seam.
@@ -212,7 +221,8 @@ export function Panel({
         ]
           .filter(Boolean)
           .join(" ")}
-        style={panelStyle}
+        data-sheet-dragging={sheet.dragging}
+        style={{ ...panelStyle, ...sheet.style }}
       >
         <PanelContext.Provider value={ctx}>
           <div
@@ -232,13 +242,11 @@ export function Panel({
             // viewport-relative caps the GlassPanel frame uses directly on this
             // inner flex column (mobile sheet cap → desktop full dvh), so the body
             // has a real height to overflow against. Header/footer stay shrink-0.
-            className="flex min-h-0 flex-col outline-none max-h-[92dvh] sm:h-dvh sm:max-h-none"
+            data-sheet-dragging={sheet.dragging}
+            style={sheet.style}
+            className="atlas-sheet-content flex min-h-0 flex-col outline-none max-h-[92dvh] sm:h-dvh sm:max-h-none"
           >
-            {/* Mobile grab handle — signals the bottom sheet is draggable-feeling;
-                hidden on desktop where the panel is edge-docked. */}
-            <div className="flex justify-center pt-2.5 sm:hidden" aria-hidden>
-              <div className="h-1 w-9 rounded-full bg-[var(--border-hairline-strong)]" />
-            </div>
+            <SheetHandle {...sheet.handle} />
             {children}
           </div>
         </PanelContext.Provider>

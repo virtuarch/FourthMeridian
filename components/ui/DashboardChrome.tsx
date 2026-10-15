@@ -85,7 +85,7 @@ export function DashboardChrome({
             className={
               conversationSurface
                 ? "min-w-0 flex-1 pt-6 pb-[calc(3.5rem+1px+env(safe-area-inset-bottom))] lg:pb-4"
-                : "min-w-0 flex-1 pb-24 pt-6 lg:pb-16"
+                : "min-w-0 flex-1 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-6 lg:pb-16"
             }
           >
             {/* S8 — dismissible 2FA nudge; renders nothing for users with TOTP

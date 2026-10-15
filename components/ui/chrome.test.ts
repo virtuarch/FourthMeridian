@@ -33,7 +33,7 @@ console.log('2FA nudge: not mounted on the AI page, unchanged everywhere else');
   check('the nudge is mounted only when NOT on the AI page (not hidden after mounting)',
     /\{!conversationSurface && <TotpNudgeBanner \/>\}/.test(chrome) && (chrome.match(/<TotpNudgeBanner/g) ?? []).length === 1);
   check('no CSS suppression of the nudge', !/TotpNudgeBanner[^\n]*(hidden|display)/.test(chrome));
-  check('other routes keep the original <main> padding', chrome.includes('"min-w-0 flex-1 pb-24 pt-6 lg:pb-16"'));
+  check('other routes reserve the original spacing plus the safe area', chrome.includes('"min-w-0 flex-1 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-6 lg:pb-16"'));
   check('the nudge itself is untouched: same dismissal key, same status request, still skips SYSTEM_ADMIN',
     nudge.includes('"fm.totpNudge.dismissed"') && nudge.includes('fetch("/api/user/totp/status")') && /isSystemAdmin\) return null/.test(nudge));
 }
@@ -50,8 +50,9 @@ console.log('AI page geometry: the numbers in three files agree');
   check('AI <main> pads by exactly the BottomNav footprint (mobile) and 16px (lg)',
     chrome.includes(`pb-[calc(${reserve})] lg:pb-4`));
   check('AiShell subtracts the same chrome from 100dvh (mobile)',
-    shell.includes('h-[calc(100dvh-4.5625rem-3.5rem-1px-env(safe-area-inset-bottom))]'));
-  check('AiShell desktop height = 100dvh − (49 + 24 + 16)px', shell.includes('lg:h-[calc(100dvh-5.5625rem)]'));
+    shell.includes('h-[calc(var(--ai-viewport-height,100dvh)-4.5625rem-3.5rem-1px-env(safe-area-inset-bottom))]'));
+  check('AiShell desktop height = 100dvh − (49 + 24 + 16)px', shell.includes('lg:h-[calc(var(--ai-viewport-height,100dvh)-5.5625rem)]'));
+  check('visual viewport resize updates the height while keeping 100dvh as fallback', shell.includes('window.visualViewport') && shell.includes('viewport.addEventListener("resize", resize)') && shell.includes('viewport.removeEventListener("resize", resize)'));
   const shellCode = shell.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   check('no ResizeObserver / document-offset sizing left in AiShell (code, not comments)',
     !/ResizeObserver|window\.scrollY|style\.height|paddingBottom/.test(shellCode));

@@ -1,0 +1,38 @@
+import {createRequire} from 'node:module';import path from 'node:path';const {chromium}=createRequire(path.resolve(process.env.FM_UI_BROWSER_TOOLS||'/tmp/fm-ui-browser','package.json'))('playwright');import fs from 'node:fs';import assert from 'node:assert/strict';
+const browser=await chromium.launch({headless:true,...(process.env.FM_UI_CHROME ? {executablePath:process.env.FM_UI_CHROME} : {})});
+const page=await browser.newPage();const results=[];const evidence=path.join(process.cwd(),'docs/plans/ui-hardening-evidence');
+const sizes=[[320,568],[360,640],[375,812],[390,844],[430,932],[600,900],[768,1024],[820,1180],[1024,768],[1280,800],[1366,768],[1440,900],[1728,1117],[1920,1080],[2560,1440],[639,700],[640,700],[1023,768],[1025,768],[844,390]];
+try{for(const [width,height] of sizes){console.log("Checking",width,height);await page.setViewportSize({width,height});await page.goto('http://127.0.0.1:4179');await page.locator('#panel').click();await page.waitForTimeout(350);const dialog=page.getByRole('dialog');await dialog.waitFor();const box=await dialog.boundingBox();assert(box.x>=-1&&box.y>=-1&&box.x+box.width<=width+1&&box.y+box.height<=height+1,JSON.stringify({width,height,box}));assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'horizontal overflow');if(width<640){const handle=page.getByRole('button',{name:/Resize panel/});await handle.focus();await page.keyboard.press('Home');await page.waitForTimeout(300);const small=await dialog.boundingBox();await page.keyboard.press('End');await page.waitForTimeout(300);const large=await dialog.boundingBox();assert(large.height>small.height+100);const h=await handle.boundingBox();await page.mouse.move(h.x+h.width/2,h.y+h.height/2);await page.mouse.down();await page.mouse.move(h.x+h.width/2,h.y+height*.25,{steps:8});await page.mouse.up();await page.waitForTimeout(350);assert((await dialog.boundingBox()).height<large.height-20,'drag shrinks');}
+if([375,768,1280,1920].includes(width))await page.screenshot({path:`${evidence}/panel-${width}.png`});await page.keyboard.press('Escape');await page.waitForTimeout(250);assert.equal(await page.getByRole('dialog').count(),0);await page.locator('#modal').click();await page.waitForTimeout(300);assert(await page.getByRole('dialog').isVisible());await page.keyboard.press('Escape');await page.locator('#ai').click();const composer=page.locator('[data-ai-dock]');const before=await composer.boundingBox();await page.locator('[data-ai-scroll]').evaluate(el=>el.scrollTop=1000);const after=await composer.boundingBox();assert.equal(before.y,after.y,'composer stationary');assert(before.y+before.height<=height-40,'composer above navigation');if([375,768,1280,1920].includes(width))await page.screenshot({path:`${evidence}/ai-${width}.png`});results.push({width,height,panelBounds:'pass',keyboardSnap:width<640?'pass':'desktop',pointerDrag:width<640?'pass':'desktop',aiScroll:'pass'});}
+// Prop-driven operational surfaces use the existing synthetic component-test models.
+for (const [width,height] of sizes) {
+  await page.setViewportSize({width,height}); await page.goto('http://127.0.0.1:4179/?platform');
+  await page.getByText('Controls in force', {exact:true}).waitFor();
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'platform horizontal overflow at '+width);
+  if ([375,768,1280,1920].includes(width)) await page.screenshot({path:`${evidence}/platform-${width}.png`,fullPage:true});
+}
+// Nested Escape must dismiss only the top surface.
+await page.goto('http://127.0.0.1:4179');await page.locator('#panel').click();await page.locator('#nested').click();await page.waitForTimeout(300);assert.equal(await page.getByRole('dialog').count(),2);await page.keyboard.press('Escape');await page.waitForTimeout(250);assert.equal(await page.getByRole('dialog').count(),1);
+await page.locator('#draft').fill('unsaved');page.once('dialog',d=>d.dismiss());await page.keyboard.press('Escape');assert.equal(await page.getByRole('dialog').count(),1);page.once('dialog',d=>d.accept());await page.keyboard.press('Escape');await page.waitForTimeout(250);assert.equal(await page.getByRole('dialog').count(),0);assert.equal(await page.evaluate(()=>document.activeElement.id),'panel');
+// Input growth, inner scrolling and information overlay preserve the conversation frame.
+await page.goto('http://127.0.0.1:4179'); await page.setViewportSize({width:390,height:844}); await page.locator('#ai').click();
+await page.getByRole('textbox',{name:'Message Fourth Meridian AI'}).fill(Array(25).fill('Multiline draft').join('\n'));
+let dock=await page.locator('[data-ai-dock]').boundingBox();assert(dock.y+dock.height<844-40);
+await page.setViewportSize({width:390,height:440});await page.waitForTimeout(250);dock=await page.locator('[data-ai-dock]').boundingBox();assert(dock.y+dock.height<440-40);
+await page.getByRole('button',{name:/About/}).click(); await page.getByRole('dialog').waitFor(); await page.keyboard.press('Escape');
+// Real browser touch events target only the handle, independent of content scrolling.
+await page.goto('http://127.0.0.1:4179'); await page.setViewportSize({width:390,height:844}); await page.locator('#panel').click(); await page.waitForTimeout(300);
+const touchHandle=page.getByRole('button',{name:/Resize panel/});const rect=await touchHandle.boundingBox();const touchStartHeight=(await page.getByRole('dialog').boundingBox()).height;
+const cdp=await page.context().newCDPSession(page);await cdp.send('Emulation.setTouchEmulationEnabled',{enabled:true});
+await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:195,y:rect.y+22}]});
+await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:195,y:rect.y+220}]});
+await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await page.waitForTimeout(350);
+assert((await page.getByRole('dialog').boundingBox()).height<touchStartHeight-50,'touch drag resizes');
+const scrollRegion=page.locator('[role="dialog"] .overflow-y-auto');const retainedHeight=(await page.getByRole('dialog').boundingBox()).height;
+await scrollRegion.evaluate(el=>el.scrollTop=300);assert.equal((await page.getByRole('dialog').boundingBox()).height,retainedHeight);
+await page.keyboard.press('Escape');await page.waitForTimeout(200);await page.evaluate(()=>{window.scrollTo(0,400);document.querySelector('#panel').click();});await page.waitForTimeout(200);
+assert.equal(await page.evaluate(()=>document.body.style.position),'fixed');await page.keyboard.press('Escape');await page.waitForTimeout(200);assert.equal(await page.evaluate(()=>window.scrollY),400);
+// Repeated opening/closing must release the body lock and return focus.
+for(let i=0;i<5;i++){await page.locator('#modal').click();await page.waitForTimeout(50);await page.keyboard.press('Escape');}
+assert.equal(await page.evaluate(()=>document.body.style.position),'');
+fs.writeFileSync(`${evidence}/browser-results.json`,JSON.stringify({scope:'Synthetic fixture rendering actual shared Panel/OverlaySurface/AiShell/Composer and platform Budget/Cost Controls. No authenticated data or workflows.',results,nestedEscape:'pass',unsavedDismissal:'pass',focusRestoration:'pass',platformOverflow:'pass at all 20 widths',multilineAndViewportShrink:'pass (resize simulation)',informationOverlay:'pass',repeatedOpenClose:'pass',touchDrag:'pass (Chromium touch events)',contentScrollDoesNotResize:'pass',bodyScrollRestoration:'pass',softwareKeyboard:'not verified; requires device/browser visual viewport keyboard'},null,2));console.log('PASS',results.length,'viewport fixtures, nested Escape, unsaved dismissal, focus restoration');}finally{await browser.close()}
