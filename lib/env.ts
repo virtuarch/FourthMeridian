@@ -45,6 +45,7 @@
  */
 
 import "server-only";
+import { describeOpenAiConfiguration, type OpenAiConfigurationFacts } from "@/lib/ai/openai-configuration";
 
 // ── Internal snapshot (read once at module load) ──────────────────────────────
 
@@ -60,6 +61,20 @@ const _e = {
   PLAID_ENV:            process.env.PLAID_ENV,
 
   OPENAI_API_KEY:       process.env.OPENAI_API_KEY,
+  // OPENAI ENVIRONMENT SEPARATION (AI COST CONTROLS, Agent C) — two OPTIONAL
+  // companions of the key, read by the credential seam
+  // (lib/ai/openai-credentials.ts) at call time and mirrored here ONLY for the
+  // value-free env report:
+  //   OPENAI_PROJECT_ID           the `proj_…` pin passed to the SDK's `project`
+  //                               option (the OpenAI-Project header). A non-secret
+  //                               identifier — the report shows it in full.
+  //   OPENAI_EXPECTED_ENVIRONMENT development | preview | production. When set it
+  //                               must equal deploymentEnvironment() or the seam
+  //                               REFUSES to build the client: a record copied to
+  //                               the wrong environment fails closed before any call.
+  // Neither is a second name for the key. There is exactly one key name.
+  OPENAI_PROJECT_ID:           process.env.OPENAI_PROJECT_ID,
+  OPENAI_EXPECTED_ENVIRONMENT: process.env.OPENAI_EXPECTED_ENVIRONMENT,
   ALCHEMY_API_KEY:      process.env.ALCHEMY_API_KEY,
   ETHERSCAN_API_KEY:    process.env.ETHERSCAN_API_KEY,
   HELIUS_API_KEY:       process.env.HELIUS_API_KEY,
@@ -341,6 +356,14 @@ export interface EnvReport {
   ok:      boolean;
   counts:  { pass: number; warn: number; fail: number };
   keys:    EnvKeyReport[];
+  /**
+   * OPENAI ENVIRONMENT SEPARATION — the value-free OpenAI configuration facts:
+   * whether the key is set (presence only) and its SHAPE, the project pin
+   * (pinned ⇒ the `proj_…` id in full, a non-secret identifier), and the
+   * expected-environment guard. Never the key; never a value that failed
+   * validation. The same facts the credential seam refuses on.
+   */
+  openAi:  OpenAiConfigurationFacts;
 }
 
 /**
@@ -403,10 +426,39 @@ export function getEnvReport(): EnvReport {
     );
   }
 
+  // OPENAI ENVIRONMENT SEPARATION — the key (presence only), the project pin and
+  // the expected-environment guard. A state the credential seam REFUSES on is a
+  // "fail" here, because the next AI call will fail; it is never a boot throw
+  // (validateEnv below warns loudly instead), because an AI misconfiguration
+  // must not take every route down the way the Preview instrumentation throw
+  // once did. Names, states and two validated identifiers only.
+  const openAi = describeOpenAiConfiguration(_e, deploymentEnvironment());
+  keys.push(
+    openAi.keyConfigured
+      ? { key: "OPENAI_API_KEY", status: "pass", scope: "optional", note: openAi.keyKind === "project" ? "project key" : openAi.keyKind === "legacy" ? "legacy user key — unpinned usage lands in the key's default project" : "unrecognised key shape" }
+      : { key: "OPENAI_API_KEY", status: "warn", scope: "optional", note: "optional vendor key — AI disabled" },
+  );
+  keys.push(
+    openAi.projectPin.state === "pinned"
+      ? { key: "OPENAI_PROJECT_ID", status: "pass", scope: "optional", note: `pinned to ${openAi.projectPin.projectId}` }
+      : openAi.projectPin.state === "unpinned"
+        ? { key: "OPENAI_PROJECT_ID", status: "warn", scope: "optional", note: "unpinned — usage lands in the key's own project" }
+        : { key: "OPENAI_PROJECT_ID", status: "fail", scope: "optional", note: "not a proj_ id — the credential seam refuses every AI call" },
+  );
+  keys.push(
+    openAi.expectedEnvironment.state === "match"
+      ? { key: "OPENAI_EXPECTED_ENVIRONMENT", status: "pass", scope: "optional", note: `guard matches (${openAi.expectedEnvironment.expected})` }
+      : openAi.expectedEnvironment.state === "unset"
+        ? { key: "OPENAI_EXPECTED_ENVIRONMENT", status: "warn", scope: "optional", note: "guard unset — a record copied from another environment would be accepted" }
+        : openAi.expectedEnvironment.state === "mismatch"
+          ? { key: "OPENAI_EXPECTED_ENVIRONMENT", status: "fail", scope: "optional", note: `guard says ${openAi.expectedEnvironment.expected} but this is ${openAi.expectedEnvironment.actual} — the credential seam refuses every AI call` }
+          : { key: "OPENAI_EXPECTED_ENVIRONMENT", status: "fail", scope: "optional", note: "unrecognised value — the credential seam refuses every AI call" },
+  );
+
   const counts = { pass: 0, warn: 0, fail: 0 };
   for (const k of keys) counts[k.status]++;
 
-  return { nodeEnv: _e.NODE_ENV ?? "development", deploymentEnv: deploymentEnvironment(), ok: counts.fail === 0, counts, keys };
+  return { nodeEnv: _e.NODE_ENV ?? "development", deploymentEnv: deploymentEnvironment(), ok: counts.fail === 0, counts, keys, openAi };
 }
 
 /**
@@ -496,6 +548,30 @@ export function validateEnv(): EnvReport {
     );
   }
 
+  // OPENAI ENVIRONMENT SEPARATION — a pin or guard the credential seam will
+  // refuse on is said LOUDLY at boot, never thrown: AI refusing is the correct
+  // fail-closed outcome, and an instrumentation throw would take every route
+  // down with it (the Preview-boot trap above). Names and states only.
+  const openAi = describeOpenAiConfiguration(_e, deploymentEnvironment());
+  if (openAi.projectPin.state === "misconfigured") {
+    console.warn(
+      "[env] OPENAI_PROJECT_ID is set but is not an OpenAI project id (expected proj_ followed by " +
+      "letters and digits). Every AI call will be refused by the credential seam until it is fixed or removed.",
+    );
+  }
+  if (openAi.expectedEnvironment.state === "invalid") {
+    console.warn(
+      "[env] OPENAI_EXPECTED_ENVIRONMENT has an unrecognised value (expected development | preview | " +
+      "production). Every AI call will be refused by the credential seam until it is fixed or removed.",
+    );
+  } else if (openAi.expectedEnvironment.state === "mismatch") {
+    console.warn(
+      `[env] OPENAI_EXPECTED_ENVIRONMENT says "${openAi.expectedEnvironment.expected}" but this is a ` +
+      `"${openAi.expectedEnvironment.actual}" deployment — this OpenAI record belongs to another environment. ` +
+      "Every AI call will be refused by the credential seam until each environment carries its own record.",
+    );
+  }
+
   // Additive: return the structured report on the success path (no throw).
   return getEnvReport();
 }
@@ -524,9 +600,10 @@ export const env = {
   get PLAID_ENV()       { return (_e.PLAID_ENV ?? "sandbox") as "sandbox" | "development" | "production"; },
 
   // ── AI ────────────────────────────────────────────────────────────────────
-  // NOTE: lib/ai/provider.ts (the only OpenAI SDK import site) reads
-  // process.env.OPENAI_API_KEY directly so it can fail loudly at call time;
-  // this accessor exists for feature-flag checks, not for the SDK client.
+  // NOTE: lib/ai/openai-credentials.ts (the credential seam behind
+  // lib/ai/provider.ts, the only OpenAI SDK import site) reads
+  // process.env.OPENAI_API_KEY at call time so it can fail loudly at the first
+  // call; this accessor exists for feature-flag checks, not for the SDK client.
   get OPENAI_API_KEY()  { return _e.OPENAI_API_KEY; },
 
   // ── Crypto ────────────────────────────────────────────────────────────────

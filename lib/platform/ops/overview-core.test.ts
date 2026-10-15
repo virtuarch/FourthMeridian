@@ -164,7 +164,8 @@ console.log("UX-P1 · posture (firing NOW, never the delivery history)");
       { resource: "fx", label: "FX", newestObservedDate: "2026-09-10", ageHours: 100, ageDays: 4, expectedCadenceHours: 24, cadenceLabel: "daily", staleAfterHours: 48, healthState: "stale", completeness: null, lastSuccessfulRefresh: null, lastAttemptedRefresh: null, lastAttemptStatus: null, trust: { level: "medium", caveats: [] } },
       { resource: "prices", label: "Prices", newestObservedDate: null, ageHours: null, ageDays: null, expectedCadenceHours: 24, cadenceLabel: "daily", staleAfterHours: 48, healthState: "empty", completeness: null, lastSuccessfulRefresh: null, lastAttemptedRefresh: null, lastAttemptStatus: null, trust: { level: "unknown", caveats: ["no price vendor configured"] } },
     ] },
-    configuration: { nodeEnv: "test", deploymentEnv: "development", ok: true, counts: { pass: 3, warn: 1, fail: 0 }, keys: [] },
+    configuration: { nodeEnv: "test", deploymentEnv: "development", ok: true, counts: { pass: 3, warn: 1, fail: 0 }, keys: [],
+      openAi: { keyConfigured: false, keyKind: "unknown", projectPin: { state: "unpinned", projectId: null }, expectedEnvironment: { state: "unset", expected: null, actual: "development" }, refused: false } },
   };
   const chips = derivePosture(inputs);
   check("four chips in order Alerts · Providers · Freshness · Configuration", chips.map((c) => c.key).join(",") === "alerts,providers,freshness,configuration");

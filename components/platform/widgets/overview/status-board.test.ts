@@ -71,7 +71,8 @@ function overview(over: Partial<OperationsOverview> = {}, inp: OverviewInputs = 
       alerts: { latest: { evaluatedAtISO: now.toISOString(), deliveryStatus: "none", counts: { evaluated: 1, live: 1, enabled: 1, firing: 0, delivered: 0, suppressed: 0 }, rules: [{ id: "job-failing", kind: "job-failing", enabled: true, live: true, firing: false, breaches: 0, severity: null }] }, rulesRegistered: 1 },
       providers: null,
       freshness: { checkedAt: now, allFresh: true, resources: [] },
-      configuration: { nodeEnv: "test", deploymentEnv: "development", ok: true, counts: { pass: 2, warn: 0, fail: 0 }, keys: [] },
+      configuration: { nodeEnv: "test", deploymentEnv: "development", ok: true, counts: { pass: 2, warn: 0, fail: 0 }, keys: [],
+        openAi: { keyConfigured: false, keyKind: "unknown", projectPin: { state: "unpinned", projectId: null }, expectedEnvironment: { state: "unset", expected: null, actual: "development" }, refused: false } },
     }),
     ...over,
   };

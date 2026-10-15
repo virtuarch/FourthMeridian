@@ -193,6 +193,13 @@ const ENV_CLEAN: PlatformEnvStatusResponse = {
     { key: "DATABASE_URL", status: "pass", scope: "always" },
     { key: "NEXTAUTH_SECRET", status: "pass", scope: "always" },
   ],
+  // OPENAI ENVIRONMENT SEPARATION — the value-free OpenAI facts the report now carries.
+  openAi: {
+    keyConfigured: true, keyKind: "project",
+    projectPin: { state: "pinned", projectId: "proj_cleanFixture" },
+    expectedEnvironment: { state: "match", expected: "development", actual: "development" },
+    refused: false,
+  },
 };
 
 const ok = <T,>(data: T): FetchedResource<T> => ({ data, loading: false, error: null });

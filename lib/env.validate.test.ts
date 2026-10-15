@@ -44,13 +44,21 @@ const PROD_EXTRA = {
 // ── Child mode: import lib/env under the env this process was given ──────────
 if (process.argv[2] === "child") {
   (async () => {
-    const { validateEnv } = await import("@/lib/env");
+    const { validateEnv, getEnvReport } = await import("@/lib/env");
     try {
       validateEnv();
       console.log("VALIDATE_OK");
     } catch (err) {
       console.log(`VALIDATE_THREW: ${(err as Error).message.replace(/\n/g, " | ")}`);
     }
+    // OPENAI ENVIRONMENT SEPARATION — the value-free OpenAI facts and the three
+    // report rows, one JSON line, so the parent can assert on them.
+    const report = getEnvReport();
+    console.log(`REPORT_OPENAI ${JSON.stringify({
+      openAi: report.openAi,
+      rows: report.keys.filter((k) => k.key.startsWith("OPENAI_")),
+      ok: report.ok,
+    })}`);
   })();
 } else {
   // ── Parent mode: run each scenario in an isolated child process ────────────
@@ -206,6 +214,68 @@ if (process.argv[2] === "child") {
   console.log("23. QUANTITY_AUTHORITY_MODE unset/off → silent");
   const out23 = run({ ...CORE, NODE_ENV: "test", QUANTITY_AUTHORITY_MODE: "off" });
   check("VALIDATE_OK, no quantity-authority warning", out23.includes("VALIDATE_OK") && !/QUANTITY_AUTHORITY_MODE/.test(out23));
+
+  // ── OPENAI ENVIRONMENT SEPARATION — the value-free OpenAI facts in the report ─
+  // Distinctive dummies so "never in the output" is a real assertion. The key is
+  // NEVER a real one and the child never calls the provider.
+  const DUMMY_KEY = "sk-proj-ENVTEST-DUMMY-NEVER-REAL-0a1b2c3d";
+  const DUMMY_PROJECT = "proj_EnvTestDummy77";
+  const BAD_PROJECT = "sk-proj-LOOKS-LIKE-A-KEY-IN-THE-WRONG-FIELD";
+  type Parsed = { openAi: { keyConfigured: boolean; keyKind: string; projectPin: { state: string; projectId: string | null }; expectedEnvironment: { state: string; expected: string | null; actual: string }; refused: boolean }; rows: { key: string; status: string; note?: string }[]; ok: boolean };
+  const parse = (out: string): Parsed | null => { const m = out.match(/^REPORT_OPENAI (.*)$/m); return m ? JSON.parse(m[1]) as Parsed : null; };
+  const row = (p: Parsed, key: string) => p.rows.find((r) => r.key === key);
+
+  console.log("24. OpenAI unconfigured → warn rows, report still ok, facts say so");
+  const out24 = run({ ...CORE, NODE_ENV: "test" });
+  const p24 = parse(out24);
+  check("report line present", p24 !== null, out24.slice(0, 200));
+  check("key not configured, unknown shape", !!p24 && !p24.openAi.keyConfigured && p24.openAi.keyKind === "unknown");
+  check("OPENAI_API_KEY row warn (AI disabled)", row(p24!, "OPENAI_API_KEY")?.status === "warn");
+  check("OPENAI_PROJECT_ID row warn (unpinned)", row(p24!, "OPENAI_PROJECT_ID")?.status === "warn" && p24!.openAi.projectPin.state === "unpinned");
+  check("OPENAI_EXPECTED_ENVIRONMENT row warn (unset)", row(p24!, "OPENAI_EXPECTED_ENVIRONMENT")?.status === "warn" && p24!.openAi.expectedEnvironment.state === "unset");
+  check("not refused; report ok", !!p24 && !p24.openAi.refused && p24.ok);
+
+  console.log("25. Vercel PREVIEW, project key + pin + guard=preview → all pass, pin shown in full, key never shown");
+  const out25 = run({ ...CORE, ...VERCEL_PREVIEW, OPENAI_API_KEY: DUMMY_KEY, OPENAI_PROJECT_ID: DUMMY_PROJECT, OPENAI_EXPECTED_ENVIRONMENT: "preview" });
+  const p25 = parse(out25);
+  check("VALIDATE_OK", out25.includes("VALIDATE_OK"), out25.slice(0, 200));
+  check("three OPENAI rows pass", !!p25 && ["OPENAI_API_KEY", "OPENAI_PROJECT_ID", "OPENAI_EXPECTED_ENVIRONMENT"].every((k) => row(p25, k)?.status === "pass"));
+  check("project key shape", p25?.openAi.keyKind === "project");
+  check("pinned, id in full", p25?.openAi.projectPin.state === "pinned" && p25?.openAi.projectPin.projectId === DUMMY_PROJECT && (row(p25!, "OPENAI_PROJECT_ID")?.note ?? "").includes(DUMMY_PROJECT));
+  check("guard match · preview (actual preview)", p25?.openAi.expectedEnvironment.state === "match" && p25?.openAi.expectedEnvironment.actual === "preview");
+  check("THE KEY NEVER APPEARS in the child's output", !out25.includes(DUMMY_KEY));
+
+  console.log("26. Vercel PRODUCTION with a PREVIEW record (guard=preview) → fail row, loud warning, NO boot throw");
+  const out26 = run({ ...CORE, ...PROD_EXTRA, ...VERCEL_PROD, OPENAI_API_KEY: DUMMY_KEY, OPENAI_PROJECT_ID: DUMMY_PROJECT, OPENAI_EXPECTED_ENVIRONMENT: "preview" });
+  const p26 = parse(out26);
+  check("VALIDATE_OK (an AI misconfiguration never takes the deployment down)", out26.includes("VALIDATE_OK"), out26.slice(0, 300));
+  check("loud warning names both environments", /OPENAI_EXPECTED_ENVIRONMENT says "preview" but this is a "production" deployment/.test(out26));
+  check("OPENAI_EXPECTED_ENVIRONMENT row fail", row(p26!, "OPENAI_EXPECTED_ENVIRONMENT")?.status === "fail");
+  check("facts: mismatch, refused, report not ok", p26?.openAi.expectedEnvironment.state === "mismatch" && p26?.openAi.refused === true && p26?.ok === false);
+  check("key never appears", !out26.includes(DUMMY_KEY));
+
+  console.log("27. malformed OPENAI_PROJECT_ID → fail row, warning, value NEVER shown");
+  const out27 = run({ ...CORE, NODE_ENV: "test", OPENAI_API_KEY: DUMMY_KEY, OPENAI_PROJECT_ID: BAD_PROJECT });
+  const p27 = parse(out27);
+  check("VALIDATE_OK (no throw)", out27.includes("VALIDATE_OK"), out27.slice(0, 300));
+  check("warns about the pin", /OPENAI_PROJECT_ID is set but is not an OpenAI project id/.test(out27));
+  check("OPENAI_PROJECT_ID row fail; projectId null", row(p27!, "OPENAI_PROJECT_ID")?.status === "fail" && p27?.openAi.projectPin.state === "misconfigured" && p27?.openAi.projectPin.projectId === null);
+  check("the malformed value and the key never appear", !out27.includes(BAD_PROJECT) && !out27.includes(DUMMY_KEY));
+
+  console.log("28. unrecognised OPENAI_EXPECTED_ENVIRONMENT → fail row, warning, value never shown");
+  const out28 = run({ ...CORE, NODE_ENV: "test", OPENAI_API_KEY: DUMMY_KEY, OPENAI_EXPECTED_ENVIRONMENT: "prodcution" });
+  const p28 = parse(out28);
+  check("VALIDATE_OK (no throw)", out28.includes("VALIDATE_OK"), out28.slice(0, 300));
+  check("warns, names the variable", /OPENAI_EXPECTED_ENVIRONMENT has an unrecognised value/.test(out28));
+  check("row fail; expected null", row(p28!, "OPENAI_EXPECTED_ENVIRONMENT")?.status === "fail" && p28?.openAi.expectedEnvironment.state === "invalid" && p28?.openAi.expectedEnvironment.expected === null);
+  check("value never appears", !out28.includes("prodcution"));
+
+  console.log("29. legacy user key, unpinned → pass row with the legacy note, warn pin");
+  const out29 = run({ ...CORE, NODE_ENV: "test", OPENAI_API_KEY: "sk-LEGACYDUMMYNEVERREAL" });
+  const p29 = parse(out29);
+  check("legacy shape", p29?.openAi.keyKind === "legacy");
+  check("key row pass with legacy note", row(p29!, "OPENAI_API_KEY")?.status === "pass" && /legacy/.test(row(p29!, "OPENAI_API_KEY")?.note ?? ""));
+  check("key never appears", !out29.includes("sk-LEGACYDUMMYNEVERREAL"));
 
   console.log(failures === 0 ? "\nAll env-validation tests passed." : `\n${failures} failure(s).`);
   process.exit(failures === 0 ? 0 : 1);
