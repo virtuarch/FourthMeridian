@@ -256,7 +256,7 @@ export function RealAssetsSection({ spaceId, spaceType, active = true }: {
         <AddManualAssetModal
           defaultSpaceIds={[spaceId]}
           onClose={() => setAdding(false)}
-          onAdd={(created) => afterWrite({ accountId: created.accountId })}
+          onAdd={(created) => afterWrite({ accountId: created.accountId, name: created.name, currency: created.currency })}
         />
       )}
 

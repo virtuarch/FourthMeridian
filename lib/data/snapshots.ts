@@ -28,6 +28,7 @@ import { Snapshot } from "@/types";
 // resolver the history engine wrote it with. The stored row cannot say it.
 import { loadRealAssetBasisByDate } from "@/lib/snapshots/real-asset-basis";
 import { isRealAssetsModeled } from "@/lib/snapshots/real-asset-basis.core";
+import { todayUTCISO } from "@/lib/time/clock";
 
 /**
  * Resolve the stamp-conversion context for a set of snapshot rows against the
@@ -177,7 +178,7 @@ export async function getRecentSnapshots(
   // Decided on the STORED (pre-conversion) row like every other provenance
   // field: it is a statement about evidence, not presentation.
   const realAssetBasis = await loadRealAssetBasisByDate(
-    client, spaceId, rows.map((r) => r.date.toISOString().slice(0, 10)), new Date().toISOString().slice(0, 10),
+    client, spaceId, rows.map((r) => r.date.toISOString().slice(0, 10)), todayUTCISO(),
   );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -61,7 +61,7 @@ interface Props {
    * "Update past net worth?" when the asset was given history (a backdated or
    * purchase-price starting value). Zero-argument callers are unaffected.
    */
-  onAdd?:  (created: { accountId: string }) => void;
+  onAdd?:  (created: { accountId: string; name: string; currency: string }) => void;
   /** Pre-checks these Space ids in the sharing picker (e.g. the Space the user
    *  is adding from, or one just created in onboarding). Purely a default — the
    *  picker stays freely editable. The personal Space is always included by the
@@ -191,7 +191,7 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
       return;
     }
 
-    onAdd?.({ accountId: String(data.accountId ?? "") });
+    onAdd?.({ accountId: String(data.accountId ?? ""), name: String(data.name ?? name.trim()), currency: String(data.currency ?? currency) });
     onClose();
     router.refresh();
   }

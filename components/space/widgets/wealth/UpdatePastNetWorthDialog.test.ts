@@ -102,13 +102,14 @@ async function main(): Promise<void> {
   {
     const SECTION = code("components", "space", "widgets", "wealth", "RealAssetsSection.tsx");
     check("the section offers after Add and after Update value, through ONE path (afterWrite → resolveAmendmentOffer)",
-      /onAdd=\{\(created\) => afterWrite\(\{ accountId: created\.accountId \}\)\}/.test(SECTION)
+      /onAdd=\{\(created\) => afterWrite\(\{ accountId: created\.accountId, name: created\.name, currency: created\.currency \}\)\}/.test(SECTION)
         && /onSaved=\{\(saved\) => afterWrite\(\{ accountId: saved\.accountId/.test(SECTION)
         && /void resolveAmendmentOffer\(\{ spaceType, accountId: written\.accountId/.test(SECTION));
     check("the dialog is mounted only while an offer is pending", /\{pendingOffer && \(\s*<UpdatePastNetWorthDialog/.test(SECTION));
     check("the section never calls the amend route itself (the dialog owns preview + consent)", !SECTION.includes("/wealth/amend"));
     const ADD = code("components", "dashboard", "AddManualAssetModal.tsx");
-    check("Add reports the created account id", /onAdd\?\.\(\{ accountId: String\(data\.accountId \?\? ""\) \}\)/.test(ADD));
+    check("Add reports the created account id, name and currency (the POST response carries them)",
+      /onAdd\?\.\(\{ accountId: String\(data\.accountId \?\? ""\), name: String\(data\.name \?\? name\.trim\(\)\), currency: String\(data\.currency \?\? currency\) \}\)/.test(ADD));
     const UPDATE = code("components", "space", "widgets", "wealth", "UpdateAssetValueModal.tsx");
     check("Update value reports the account and the effective date", /onSaved\(\{ accountId, effectiveDate: asOf \}\)/.test(UPDATE));
     const WEALTH = code("components", "space", "widgets", "wealth", "WealthWorkspace.tsx");
