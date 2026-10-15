@@ -2,7 +2,9 @@
 
 **Scope.** How the application loads its OpenAI credentials, where each deployment environment obtains them, what the code now refuses, and the owner's checklist for moving from one shared key to three OpenAI projects — `fourth-meridian-dev`, `fourth-meridian-preview`, `fourth-meridian-prod` — each with its own key, budget and alert. Companion to `environment-separation.md` (§4 matrix row `OPENAI_API_KEY`, §7) and the coordination doc `docs/plans/AI-COST-CONTROLS-COORDINATION.md`.
 
-**Status.** Code and tests landed on `aicost/c`. **Nothing here is complete until the owner has created the three projects, placed each project's key, project id and expected-environment guard on that environment's own Vercel record, and the routing has been verified per §4–§5.** Production steps are **NOT AUTHORIZED** in this milestone and are marked as such.
+**Status (2026-10-15).** Code and tests landed on `aicost/c` (commit `680dd0c`). **The owner has created the three projects and one service account each, and has generated and retained each service account's API key** (§8). **Nothing here is complete until the owner has placed each project's key, project id and expected-environment guard on that environment's own record (Development and Preview — §3), and the routing has been verified per §4–§5.** Production is **STRICTLY OFF-LIMITS** in this milestone: no Production credential, secret or deployment change; its steps are documented as owner-only and NOT AUTHORIZED NOW.
+
+**Never paste an API key into this conversation, a commit, a file in the repository, or a chat message. The only OpenAI identifiers safe to share are the project ids (`proj_…`) and the project / service-account names.**
 
 **Evidence labels** (reused from `environment-separation.md` §1): **PROVEN** = read from source, a test, or a machine-checked fact · **OWNER-STATED** = the owner said so and no machine check can confirm it · **OPENAI-DOCS** = read on OpenAI's public documentation on the date given · **INFERRED** = a reasonable conclusion that no source states outright.
 
@@ -77,17 +79,55 @@ The guard is checked before the pin and before the key, so a copied record is re
 
 Rules: exactly these three names, the same in every environment; **no** `OPENAI_API_KEY_PREVIEW`-style suffixes (the scan test refuses any other `OPENAI_*` reader); nothing set in `vercel.json` (it holds crons only); nothing in `.env.example` but the placeholders and comments. The public site (`site/`) must never see any of the three — its build env is constructed (§1.1) and its output is scanned for the key name and the key shape.
 
+### 2.1 Exact configuration locations (owner update 2026-10-15)
+
+**Development** — the owner's local `/Users/chrstn/dev/FourthMeridian/.env.local` (gitignored; "Sensitive" does not apply to a local file — keep the file out of cloud-synced folders, `key-rotation.md` "After ANY rotation"). Three lines, values typed by the owner:
+
+```
+OPENAI_API_KEY=<the fm-dev-backend key — never shown anywhere else>
+OPENAI_PROJECT_ID=<proj_… of fourth-meridian-dev>
+OPENAI_EXPECTED_ENVIRONMENT=development
+```
+
+If the owner instead keeps Development values on Vercel and uses `vercel env pull`: the same three names on the Vercel **Development** environment record of project `fintracker1` (team `team_El6zPOppwEP1fKPNOjIQHUJD`); note that Sensitive records pull **empty**, so a pulled `.env.local` must then be completed by hand. Agent worktrees carry no `.env.local` and no `DATABASE_URL` by design and never need these.
+
+**Preview** — Vercel → team `team_El6zPOppwEP1fKPNOjIQHUJD` → project **`fintracker1`** → Settings → Environment Variables → environment **Preview**, branch **`v2.6`**, **Sensitive** checked:
+
+| Record | Environment | Branch | Sensitive | Value |
+|---|---|---|---|---|
+| `OPENAI_API_KEY` | Preview | `v2.6` | yes | the `fm-preview-backend` key (this is a NEW branch-scoped record beside the existing generic Preview record of 2026-07-01 — or edit that record's value if the owner prefers one Preview record; either way the `v2.6` deployment must receive the preview project's key) |
+| `OPENAI_PROJECT_ID` | Preview | `v2.6` | optional (not secret) | `proj_…` of `fourth-meridian-preview` (project → Settings → General) |
+| `OPENAI_EXPECTED_ENVIRONMENT` | Preview | `v2.6` | no | `preview` |
+
+Vercel CLI alternative (run from the main checkout, linked to `fintracker1`; the CLI **prompts** for the value — the owner types it, nothing is passed on the command line, nothing lands in shell history):
+
+```
+vercel env add OPENAI_API_KEY preview v2.6 --sensitive
+vercel env add OPENAI_PROJECT_ID preview v2.6
+vercel env add OPENAI_EXPECTED_ENVIRONMENT preview v2.6
+```
+
+(`vercel env ls preview v2.6` lists names and targets only — Sensitive values are never printed. If a record of the same name and scope already exists, `vercel env rm OPENAI_API_KEY preview v2.6` first, or edit it in the dashboard.)
+
+**After any Preview env change a redeploy is required** — running deployments keep the env they were built with (`environment-separation.md` §2). Push a commit to `v2.6` or use Vercel → Deployments → Redeploy on the latest `v2.6` deployment.
+
+**Production** — Vercel `fintracker1` → Environment Variables → **Production**, Sensitive — **OWNER ONLY, NOT AUTHORIZED NOW.** Same three names; the `fm-prod-backend` key; `proj_…` of `fourth-meridian-prod`; `production`. Documented for completeness; nothing is to be changed there in this milestone.
+
 ## 3. Credential setup checklist for the owner
 
 Never type a key anywhere but the OpenAI dashboard (create) and the Vercel dashboard (paste). Never into chat, a file in the repository, `.env.example`, a Slack message, or a shell command (shell history is a file).
 
-1. **Create the three projects** — platform.openai.com → Settings → Organization → Projects → Create: `fourth-meridian-dev`, `fourth-meridian-preview`, `fourth-meridian-prod`. Note each project's id (`proj_…`, shown on the project's Settings → General page). The ids are not secrets.
-2. **One service-account key per project** — in each project: Settings → API keys (or Service accounts) → create a **service account** and its key, named for the environment (`vercel-preview`, …). A service-account key belongs to the project, not to a person, so it survives membership changes. Set the key's permissions to the minimum the app uses: model capabilities (chat completions) only — no Files, no Fine-tuning, no Admin.
-3. **Budget and alert per project** — in each project: Settings → Limits → Spend: **Edit spend limit** (the hard monthly limit) and a **spend alert** below it, per §6. Also set an organization-level alert as a backstop (Settings → Organization → Limits).
-4. **Development** — put the dev project's key in `.env.local` as `OPENAI_API_KEY`, plus `OPENAI_PROJECT_ID=proj_…` (dev) and `OPENAI_EXPECTED_ENVIRONMENT=development`. Restart `next dev`. Confirm with §4 step 1.
-5. **Preview** — Vercel → Project → Settings → Environment Variables: edit the existing `OPENAI_API_KEY` record targeted **Preview** (Sensitive) and replace its value with the preview project's key; add `OPENAI_PROJECT_ID` (Preview, value `proj_…` of the preview project) and `OPENAI_EXPECTED_ENVIRONMENT` (Preview, value `preview`). Redeploy `v2.6` (a new deployment is required; env changes do not reach running deployments). Verify per §4.
-6. **Production — NOT AUTHORIZED in this milestone.** When the owner later authorizes it (`production-cutover-plan.md` item 9, "SAFE TO DEFER"): the same three records targeted **Production** with the prod project's key, its `proj_…`, and `production`; redeploy; verify per §4; then **revoke the old shared key** in whichever project it lives in, after confirming Preview no longer uses it (§5). Until then Preview and Production share one project by owner statement, and a Preview compromise can spend from and rate-limit the Production project (`environment-separation.md` §7).
-7. **After the switch**, delete the old key from any local file that still holds it, and record the rotation in the incident log if it was exposure-driven (`key-rotation.md` "After ANY rotation").
+**Already done by the owner (2026-10-15, §8):** the three projects exist, each has one service account (`fm-dev-backend`, `fm-preview-backend`, `fm-prod-backend`), and each service account's API key has been generated and is retained by the owner. **Do not create replacement keys**; the steps below only *place* what exists.
+
+1. **Collect the three project ids** — platform.openai.com → each project → Settings → General: `proj_…` for `fourth-meridian-dev`, `fourth-meridian-preview`, `fourth-meridian-prod`. These are not secrets and may be shared in chat.
+2. **Budget and alert per project** — in each project: Settings → Limits → Spend: **Edit spend limit** (the hard monthly limit) and a **spend alert** below it, per §6. Also set an organization-level alert as a backstop (Settings → Organization → Limits). (Production's limits may be set now — they are OpenAI-side settings, not a Production deployment change — but its key placement is not.)
+3. **Development — enter, in `/Users/chrstn/dev/FourthMeridian/.env.local`** (§2.1): `OPENAI_API_KEY=` the `fm-dev-backend` key · `OPENAI_PROJECT_ID=` the dev `proj_…` · `OPENAI_EXPECTED_ENVIRONMENT=development`. Restart `next dev`. Confirm with §4 step 1 and the Development check in §4 step 7.
+4. **Preview — enter, in Vercel `fintracker1` → Environment Variables → Preview, branch `v2.6`, Sensitive** (§2.1 table, or the three `vercel env add … preview v2.6` commands): `OPENAI_API_KEY` = the `fm-preview-backend` key · `OPENAI_PROJECT_ID` = the preview `proj_…` · `OPENAI_EXPECTED_ENVIRONMENT` = `preview`. **Redeploy `v2.6`.** Verify per §4 and reconcile per §5.
+5. **Production — OWNER ONLY, NOT AUTHORIZED NOW.** Later, when the owner authorizes it (`production-cutover-plan.md` item 9): the same three names on the **Production** record with the `fm-prod-backend` key, the prod `proj_…`, `production`; redeploy Production; verify per §4; reconcile per §5. Only after that step does §5.1 permit revoking the legacy key.
+6. **Legacy keys — see §5.1 for the ordering.** Nothing is revoked in this milestone.
+7. **Afterwards**, delete any old key value from local files that still hold it, and record the rotation in the incident log if it was exposure-driven (`key-rotation.md` "After ANY rotation").
+
+The code side of "prepare both environments" is already in place: the seam refuses a malformed pin, an invalid guard, or a guard naming another environment, before any call (§1.5); the widget shows the pin and the guard value-free (§4 step 1). The owner's part is exactly the six values above, entered in the two places above.
 
 ## 4. Safe verification — non-sensitive identifiers only, no curl, no key
 
@@ -95,10 +135,11 @@ Never type a key anywhere but the OpenAI dashboard (create) and the Vercel dashb
 2. **`/api/health` shows nothing of this** — pinned by `lib/security-surface.test.ts` §4 (no `OPENAI_API_KEY` reference; the only env read is the commit sha). It is the public liveness probe and must stay that way; do not add the pin there.
 3. **One AI turn** on the environment (Conversations, any grounded question). Expect a normal answer. A 401 from the provider at this step means key and pin disagree (§1.6) — the pin names a project the key does not belong to; fix the record, never the code.
 4. **The ledger side**: Platform Ops → AI workspace → *Invocations* with `environment` = the environment under test and the window `24h`: the turn's `RETURNED` rows (one per model call; a tool-using turn writes several) with `model gpt-5.1`.
-5. **The OpenAI side**: platform.openai.com → Usage, filtered by **project** = the environment's project, same window: the same number of requests, and **zero** new requests in the other two projects. The request ids match: the ledger stores `providerRequestId` (the SDK's `_request_id`) on every row, and the dashboard's request log shows the same ids.
+5. **The OpenAI side**: platform.openai.com → Usage, filtered by **project** = `fourth-meridian-preview` **and by API key / service account** = `fm-preview-backend` (the dashboards group by API key since 2026-08-04, §6.1), same window: the same number of requests, and **zero** new requests in `fourth-meridian-dev`, `fourth-meridian-prod` and the legacy/default project. The request ids match: the ledger stores `providerRequestId` (the SDK's `_request_id`) on every row, and the dashboard's request log shows the same ids.
 6. **Negative control (Preview only, optional):** temporarily set `OPENAI_EXPECTED_ENVIRONMENT=production` on the Preview record and redeploy: the widget shows `mismatch — says production, this is preview; AI calls refused`, a chat turn is refused with the provider-error sentence, and a zero-token `FAILED` row appears in the ledger with no usage in any OpenAI project. Restore `preview`, redeploy.
+7. **Development, the same locally:** with `.env.local` set per §3 step 3, `next dev` → Platform Ops env-status shows `pinned · proj_…` (dev) · `match · development`; one chat turn; the local database's Invocations with `environment=development` gains the rows; platform.openai.com → Usage filtered by project `fourth-meridian-dev` / service account `fm-dev-backend` shows them and the other projects show none.
 
-Nothing in these six steps reads, prints or transmits a key.
+Nothing in these seven steps reads, prints or transmits a key.
 
 ## 5. Confirming usage lands in the right project
 
@@ -113,6 +154,20 @@ For a window `W` (start with the 24 h after the redeploy):
 | OpenAI | Usage → `fourth-meridian-prod`, window `W` | **unchanged by Preview activity** |
 
 Repeat with the Production environment only after the owner authorizes the Production step. Do not mark this doc complete until the Preview column reconciles and the old project shows no Preview traffic.
+
+### 5.1 Legacy keys — what may be revoked, and strictly when
+
+Legacy credentials after the split:
+- **the pre-split key currently shared by Preview and Production** (OWNER-STATED equal values on the two separate Vercel records, `environment-separation.md` §1/§7), living in whichever project the owner created it in (the organization's legacy/default project, INFERRED);
+- any other key in that legacy/default project.
+
+**Ordering rule — exactly this:**
+1. Preview moves to `fm-preview-backend` and reconciles (§4–§5). **The legacy key is still Production's key at this point and MUST NOT be revoked.** Revoking it now would take Production AI down (every call 401, ledgered `FAILED`).
+2. Development moves to `fm-dev-backend` (§3 step 3). Still no revocation.
+3. **Later, not now — owner only:** Production moves to `fm-prod-backend` (§3 step 5) and reconciles in `fourth-meridian-prod`.
+4. **Only after step 3** is confirmed (one Production turn in `fourth-meridian-prod`, none in the legacy project): revoke the pre-split key in the OpenAI dashboard, then any remaining key in the legacy/default project, then remove the legacy project's spend if it is empty. Record the revocation (`key-rotation.md`).
+
+Nothing is revoked in this milestone.
 
 ## 6. Recommended project budgets and alerts
 
@@ -160,4 +215,15 @@ Owner-only (no agent can do these; none was attempted):
 
 Not owner-only, handed to the provider's owner (Agent A / coordinator): the `organization: null` line in `provider.ts` (§1.2) and the `*_spend_limit_exceeded` quota classification (§6.1).
 
-**Do not mark this doc, or the OpenAI-separation half of the AI COST CONTROLS milestone, complete until the owner has configured the projects and the routing is verified per §4 and §5: the Preview widget shows the Preview project's pin with `match · preview`, one Preview turn appears in `fourth-meridian-preview` and nowhere else, and the ledger's Preview count for the window equals the dashboard's.** Until then the honest status is: *code and tests landed; Preview and Production share one OpenAI project by owner statement.*
+**Do not mark this doc, or the OpenAI-separation half of the AI COST CONTROLS milestone, complete until the owner has placed the records and the routing is verified per §4 and §5: the Preview widget shows the Preview project's pin with `match · preview`, one Preview turn appears in `fourth-meridian-preview` / `fm-preview-backend` and nowhere else, and the ledger's Preview count for the window equals the dashboard's.** Until then the honest status is: *code and tests landed; projects and keys exist on the OpenAI side; no record placed; Preview and Production still share one OpenAI project by owner statement.*
+
+## 8. Owner state 2026-10-15
+
+| Environment | OpenAI project | Service account | Key | Env records (3 names) | Routing verified |
+|---|---|---|---|---|---|
+| Development | `fourth-meridian-dev` | `fm-dev-backend` | generated, retained by owner | **pending owner** — `/Users/chrstn/dev/FourthMeridian/.env.local` (§2.1) | **NO** |
+| Preview | `fourth-meridian-preview` | `fm-preview-backend` | generated, retained by owner | **pending owner** — Vercel `fintracker1` → Preview, branch `v2.6`, Sensitive (§2.1); redeploy after | **NO** |
+| Production | `fourth-meridian-prod` | `fm-prod-backend` | generated, retained by owner | **NOT AUTHORIZED NOW** — owner only, later (§3 step 5) | **NO** |
+| Legacy (pre-split, shared Preview+Production) | legacy/default project (INFERRED) | — | live; **still Production's key — MUST NOT be revoked** until §5.1 step 4 | existing Preview (2026-07-01) and Production (2026-07-02) records | — |
+
+Project ids (`proj_…`) are not recorded here yet because the owner has not shared them; they are safe to add to this table when known. Keys are never recorded anywhere.
