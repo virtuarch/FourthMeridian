@@ -33,6 +33,24 @@
  *              global mode shows, so the operator can move between HQ Spaces
  *              without first leaving to the launcher.
  *
+ * UX-P2 Phase B — THE PLATFORM CONTEXT. Both modes additionally read the
+ * navigation CONTEXT (lib/space-nav `navContext`: a route fact). On the
+ * platform axis — the Platform Spaces directory (/dashboard/platform, global
+ * mode) and inside a Platform Space (space mode) — the ORDER changes:
+ *
+ *   platform — the granted Platform list (PlatformNav) LEADS; then, inside a
+ *              Platform Space, the Space block + its Sections as above; then a
+ *              single "Personal Spaces" exit row back to the launcher; then the
+ *              site nav RETAINED under a hairline — demoted, never removed.
+ *              Desktop has no BottomNav, so Brief / My Space / AI / Connections
+ *              must stay one click away even here (the either/or regression
+ *              site-nav-in-space.test.ts pins is not reintroduced on this axis).
+ *
+ * It is a REORDERING, not a duplication: PrimaryNav is still mounted exactly
+ * twice (once per mode), PlatformNav exactly twice, PRIMARY_NAV mapped once,
+ * /api/spaces fetched once. Inside a PERSONAL Space nothing changes (D2: no
+ * operator door in a member's room).
+ *
  * Both modes share DOM position and the left-accent-bar selection idiom, so
  * moving between them reads as the sidebar re-resolving, not one panel replacing
  * another. This REPLACES the former components/ui/Sidebar.tsx, whose persistent
@@ -49,6 +67,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
+  ArrowLeft,
   House,
   Layers,
   Newspaper,
@@ -79,6 +98,8 @@ import { SpaceControls } from "@/components/space/shell/SpaceControls";
 import {
   PRIMARY_NAV,
   isPrimaryDestActive,
+  navContext,
+  primaryHref,
   type PrimaryDestId,
 } from "@/lib/space-nav";
 import {
@@ -398,16 +419,70 @@ export function PrimaryNav({
   );
 }
 
+// ── the platform context's two fixtures (both modes) ─────────────────────────
+
+/**
+ * The ONE exit from the platform context — a single "Personal Spaces" row back
+ * to the launcher. The href is the Spaces primary destination's own route
+ * (lib/space-nav `primaryHref`), never restated here. It is a plain link: no
+ * cookie, no switch call — leaving the platform axis changes no Space.
+ */
+function PersonalSpacesExit() {
+  return (
+    <nav aria-label="Exit" className="flex flex-col gap-0.5">
+      <Link
+        href={primaryHref("spaces")}
+        className={[
+          "group relative flex items-center gap-2.5 rounded-[var(--radius-sm)] py-1.5 pl-3 pr-2 text-left text-[13px]",
+          "text-[var(--text-secondary)] transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)] hover:text-[var(--text-primary)]",
+        ].join(" ")}
+      >
+        <ArrowLeft size={14} strokeWidth={1.75} className="shrink-0" />
+        <span className="flex-1">Personal Spaces</span>
+      </Link>
+    </nav>
+  );
+}
+
+/**
+ * The site nav, RETAINED under a hairline on the platform context. Demoted in
+ * position only — same block, same five, same active rule — so the operator
+ * never loses Fourth Meridian on desktop, where there is no BottomNav.
+ */
+function DemotedSiteNav({ children }: { children: React.ReactNode }) {
+  return (
+    <div data-nav-context="site" className="border-t border-[var(--border-hairline)] pt-5">
+      {children}
+    </div>
+  );
+}
+
 // ── global mode ──────────────────────────────────────────────────────────────
 
-function GlobalMode({ pathname, pendingInvites }: { pathname: string | null; pendingInvites: number }) {
+/** Exported so the COMPOSITION (which list leads on which context) renders in a test. */
+export function GlobalMode({ pathname, pendingInvites }: { pathname: string | null; pendingInvites: number }) {
   // The access-derived platform destinations — the SAME hook Space mode uses.
   const platform = usePlatformDestinations(true);
+  const site = <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />;
+  const hq = <PlatformNav items={platform} pathname={pathname} />;
+
+  // UX-P2 Phase B — on the Platform Spaces DIRECTORY the operator stands on the
+  // platform axis without being inside a Space: the Platform list leads, one
+  // exit row returns to Personal Spaces, the site nav follows under a hairline.
+  if (navContext(pathname) === "platform") {
+    return (
+      <>
+        {hq}
+        <PersonalSpacesExit />
+        <DemotedSiteNav>{site}</DemotedSiteNav>
+      </>
+    );
+  }
 
   return (
     <>
-      <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />
-      <PlatformNav items={platform} pathname={pathname} />
+      {site}
+      {hq}
     </>
   );
 }
@@ -635,15 +710,25 @@ export function SpaceMode({
   const onPlatformAxis = isPlatformSpaceRoute(pathname);
   const platform = usePlatformDestinations(onPlatformAxis);
 
+  // SITE — the same block global mode renders. Fourth Meridian stays on screen;
+  // the Space is a place INSIDE it, not a shell that replaces it. In a personal
+  // Space it LEADS; in a Platform Space (UX-P2 Phase B) it is retained under a
+  // hairline after the exit row — one element, placed by context, never two.
+  const site = <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />;
+
   return (
     <>
-      {/* SITE — the same block global mode renders. Fourth Meridian stays on
-          screen; the Space is a place INSIDE it, not a shell that replaces it. */}
-      <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />
+      {/* PLATFORM (platform axis only) — the granted HQ Spaces LEAD inside a
+          Platform Space (UX-P2 Phase B), so the operator moves between areas
+          first and reaches the site second. Gated on the route (see above). */}
+      {onPlatformAxis && <PlatformNav items={platform} pathname={pathname} />}
+
+      {!onPlatformAxis && site}
 
       {/* SPACE — under a hairline, so the order reads site → this Space → its
-          workspaces. There is no in-Space "All Spaces" back control: the site's
-          Spaces destination above is the way back up (same route, one hop). */}
+          workspaces (or, on the platform axis, Platform → this Space). There is
+          no in-Space "All Spaces" back control: the site's Spaces destination is
+          the way back up (same route, one hop). */}
       <div data-nav-context="space" className="border-t border-[var(--border-hairline)] pt-5">
         {/* SpaceControls — the canonical FX + Manage cluster, ABOVE the name it
             governs. At this (wide) width it lives here in the Space sidebar.
@@ -703,7 +788,10 @@ export function SpaceMode({
         />
       )}
 
-      {onPlatformAxis && <PlatformNav items={platform} pathname={pathname} className="mt-2" />}
+      {/* UX-P2 Phase B — the way OUT of the platform context, then the site nav
+          retained beneath a hairline (demoted, not removed). */}
+      {onPlatformAxis && <PersonalSpacesExit />}
+      {onPlatformAxis && <DemotedSiteNav>{site}</DemotedSiteNav>}
 
       {onLeaveSpace && (
         <button

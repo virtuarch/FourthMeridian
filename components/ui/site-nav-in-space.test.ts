@@ -18,14 +18,18 @@
  *   C. the Space's navigation is all still there (workspaces, not Sections);
  *   D. active states — one rule, both modes;
  *   E. one definition: no second link list, one component in both modes;
- *   F. the responsive contract is untouched (rail lg+, bar < lg, same width).
+ *   F. the responsive contract is untouched (rail lg+, bar < lg, same width);
+ *   G. UX-P2 Phase B — the PLATFORM context (the directory and inside a
+ *      Platform Space): the granted Platform list leads, one "Personal Spaces"
+ *      exit, the site nav RETAINED under a hairline — a reordering, never a
+ *      removal, never a duplication; a personal Space is untouched (D2).
  */
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { ContextualNavbar, PrimaryNav, SpaceMode } from "@/components/ui/ContextualNavbar";
+import { ContextualNavbar, GlobalMode, PrimaryNav, SpaceMode } from "@/components/ui/ContextualNavbar";
 import { PRIMARY_NAV } from "@/lib/space-nav";
 
 let failures = 0;
@@ -184,6 +188,75 @@ console.log("F. Responsive contract untouched");
     /lg:hidden/.test(bar) && /PRIMARY_NAV\.map/.test(bar) && (chrome.match(/<BottomNav \/>/g) ?? []).length === 1
       && !/\{[^}]*&&\s*<BottomNav/.test(chrome));
   check("content column still shrinks rather than overflowing (min-w-0 flex-1)", chrome.includes("min-w-0 flex-1"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("G. UX-P2 Phase B — the Platform context: granted areas lead, one exit, site nav demoted");
+{
+  const globalMode = (pathname: string | null) =>
+    renderToStaticMarkup(createElement(GlobalMode, { pathname, pendingInvites: 0 }));
+
+  // 1. The Platform Spaces DIRECTORY — global mode on the platform axis. (In a
+  //    DOM-less render the /api/spaces fetch never resolves, so PlatformNav is
+  //    empty here; its LEADING position is pinned in source in §5.)
+  const dir = globalMode("/dashboard/platform");
+  const iExit = dir.indexOf('aria-label="Exit"');
+  const iSite = dir.indexOf('data-nav-context="site"');
+  const iGlobal = dir.indexOf('aria-label="Global"');
+  check("directory: exit row → demoted site nav, in document order, the site nav under a hairline",
+    iExit > -1 && iSite > iExit && iGlobal > iSite &&
+      /data-nav-context="site" class="border-t border-\[var\(--border-hairline\)\] pt-5"/.test(dir), `${iExit} ${iSite} ${iGlobal}`);
+  check("directory: the exit is ONE real link to the launcher — the Spaces destination's own route",
+    /<nav aria-label="Exit"[^>]*><a [^>]*href="\/dashboard\/spaces"/.test(dir) &&
+      (dir.match(/<nav aria-label="Exit"/g) ?? []).length === 1 && text(dir).includes("Personal Spaces"));
+  check("directory: all five site destinations still offered, in PRIMARY_NAV order, once",
+    hrefs(dir).slice(-5).join() === SITE_HREFS.join() && (dir.match(/<nav aria-label="Global"/g) ?? []).length === 1, hrefs(dir).join());
+  check("directory: no site destination is lit (the directory is none of the five)", activeIn(dir, "Global").length === 0);
+  check("directory: the site eyebrow no longer leads the rail", !text(dir).startsWith("Fourth Meridian"));
+
+  // 2. The PERSONAL context is byte-identical to before: site nav leads, no exit, no demotion.
+  for (const p of ["/dashboard/spaces", "/dashboard/brief", "/dashboard/analyze", "/dashboard/connections", "/dashboard/settings/account", null]) {
+    const g = globalMode(p);
+    check(`personal context (${p ?? "null"}): exactly the PrimaryNav block, nothing else`,
+      g === renderToStaticMarkup(createElement(PrimaryNav, { pathname: p, pendingInvites: 0 })) &&
+        !g.includes("Personal Spaces") && !g.includes('data-nav-context="site"'));
+  }
+
+  // 3. Inside a PLATFORM Space: Space block → Sections → exit → demoted site nav → Leave.
+  const hq = spaceMode("/dashboard/platform/PLATFORM_OPS");
+  const order = ['data-nav-context="space"', 'aria-label="Sections"', 'aria-label="Exit"', 'data-nav-context="site"', 'aria-label="Global"']
+    .map((k) => hq.indexOf(k));
+  check("Platform Space: Space block → Sections → exit → demoted site nav, in document order",
+    order.every((i) => i > -1) && order.every((v, i, a) => i === 0 || v > a[i - 1]), order.join());
+  check("Platform Space: the site nav is RETAINED — all five, in order, under the hairline, ONCE",
+    hrefs(hq).slice(-5).join() === SITE_HREFS.join() && (hq.match(/<nav aria-label="Global"/g) ?? []).length === 1 &&
+      hq.indexOf('aria-label="Global"') > hq.indexOf('data-nav-context="space"'));
+  check("Platform Space: nothing lit in the site nav; the Space's workspace lit independently",
+    activeIn(hq, "Global").length === 0 && activeIn(hq, "Space").join() === "Net Worth");
+  check("Platform Space: Leave Space is still last", text(hq).endsWith("Leave Space"));
+
+  // 4. Inside a PERSONAL Space nothing changed (D2 stands).
+  const personal = spaceMode("/dashboard");
+  check("personal Space: site nav first, no exit row, no demotion, no Platform list",
+    hrefs(personal).slice(0, 5).join() === SITE_HREFS.join() && !personal.includes("Personal Spaces") &&
+      !personal.includes('data-nav-context="site"') && !personal.includes('aria-label="Platform"') && !personal.includes('aria-label="Exit"'));
+
+  // 5. Source — the leading position, and the single definitions.
+  const rail = code(read("components", "ui", "ContextualNavbar.tsx"));
+  const sm = rail.slice(rail.indexOf("export function SpaceMode"));
+  check("SpaceMode source: the Platform list is the FIRST block on the platform axis (before the Space block)",
+    sm.indexOf("<PlatformNav") > -1 && sm.indexOf("<PlatformNav") < sm.indexOf('data-nav-context="space"'));
+  const gm = rail.slice(rail.indexOf("export function GlobalMode"), rail.indexOf("export function SpaceMode"));
+  check("GlobalMode source: on the platform context the Platform element precedes the exit, the exit the demoted site nav",
+    /\{hq\}\s*<PersonalSpacesExit \/>\s*<DemotedSiteNav>\{site\}<\/DemotedSiteNav>/.test(gm));
+  check("the exit row is ONE component, rendered by both modes, linking through primaryHref (no route literal)",
+    (rail.match(/<PersonalSpacesExit \/>/g) ?? []).length === 2 && /href=\{primaryHref\("spaces"\)\}/.test(rail));
+  check("the demotion wrapper is ONE component, used by both modes", (rail.match(/<DemotedSiteNav>/g) ?? []).length === 2);
+  check("the context predicate is the shared navContext (global mode) and isPlatformSpaceRoute (space mode)",
+    /navContext\(pathname\) === "platform"/.test(rail) && /onPlatformAxis = isPlatformSpaceRoute\(pathname\)/.test(rail));
+  check("still exactly two PrimaryNav mounts and two PlatformNav mounts — reordered, not duplicated",
+    (rail.match(/<PrimaryNav\b/g) ?? []).length === 2 && (rail.match(/<PlatformNav\b/g) ?? []).length === 2);
+  check("PRIMARY_NAV is still exactly five", PRIMARY_NAV.length === 5);
 }
 
 if (failures > 0) { console.error(`\nsite-nav-in-space: ${failures} failure(s).`); process.exit(1); }
