@@ -40,52 +40,52 @@
  *   • Every response that carries the read model is published back into the
  *     workspace session, so siblings reading the same url show the same truth.
  *
+ * ── AI COST CONTROLS ──────────────────────────────────────────────────────────
+ * The read-only BETA C7 "Cost safeguards" group is RETIRED: the two spend-alert
+ * thresholds, the allowance and the pause now live in ONE editable group,
+ * "AI Cost Controls" (AiCostControlsPanel.tsx, its own file), composed beneath
+ * the execution cadence — no setting is shown twice. The shared editor grammar
+ * (CadenceForm, Notice, mutate, useSettle) moved to policy-editor-kit.tsx so
+ * the panel shares it without a circular import; it is re-exported here.
+ *
  * `OpsPoliciesWidget` fetches and publishes; `PoliciesSurface`, `PolicyColumn`,
- * `PolicyEditor`, `JobCadencePanel`, `JobCadenceRow` and `JobCadenceEditor`
- * render — every state provable by handing them props.
+ * `PolicyEditor`, `JobCadencePanel`, `JobCadenceRow`, `JobCadenceEditor` and
+ * `AiCostControlsPanel` render — every state provable by handing them props.
  */
 
 import { useState, type ReactNode } from "react";
-import { AlertTriangle, Check, Loader2, Pencil, RotateCcw, SlidersHorizontal, X } from "lucide-react";
+import { AlertTriangle, Loader2, Pencil, RotateCcw, SlidersHorizontal } from "lucide-react";
 import type { PlatformSection } from "../widget-kit";
 import { useSharedWidgetFetch, useSharedWidgetPublish, type SharedFetchState } from "../workspace-session";
 import { BigStat, GroupLabel, KeyRow, PolicyChip, Provenance, SectionSurface, StatusWord, TONE_COLOR, VRule } from "../platform-surface";
 import { LOADING_TEXT, unavailableText } from "./platform-health-view";
 import type { PlatformPoliciesResponse } from "@/app/api/platform/platform-ops/policies/route";
 import type { JobCadenceResponse } from "@/app/api/platform/platform-ops/job-cadence/route";
-import type { AiSpendResponse } from "@/app/api/platform/platform-ops/ai-spend/route";
-import type { AiSpendThreshold } from "@/lib/platform/ai/spend-thresholds";
-import { COST_SAFEGUARDS_SENTENCE, COST_SAFEGUARDS_SUBJECT, allowanceText, thresholdDefaultText, thresholdFigure, thresholdProvenance } from "./cost-safeguards-view";
 import type { JobCadenceView } from "@/lib/platform/policies/job-cadence";
-import { OPERATOR_REASON_CODES, type OperatorReasonCode } from "@/lib/audit";
 import type { RefreshPolicyView } from "@/lib/platform/policies/refresh-policies.core";
 import type { RefreshCadence } from "@/lib/platform/refresh-policy.core";
+import type { AiCostControlsReadModel } from "@/lib/platform/ai/cost-controls.types";
+import { AiCostControlsPanel } from "./AiCostControlsPanel";
 import {
-  CONFLICT_TEXT, FIXED_GROUP_SUMMARY, JOB_CADENCE_FOOTNOTE, JOB_GROUP_TEXT, NOTE_PLACEHOLDER, POLICIES_SUBJECT, REASON_PLACEHOLDER, RESET_TEXT,
+  BTN, BTN_NEUTRAL, BTN_PRIMARY, BTN_QUIET, CadenceForm, FIELD, Notice, formatUtc, mutate, useSettle,
+  type OperatorReasonInput, type PolicyNotice,
+} from "./policy-editor-kit";
+import {
+  FIXED_GROUP_SUMMARY, JOB_CADENCE_FOOTNOTE, JOB_GROUP_TEXT, POLICIES_SUBJECT,
   actualText, attemptScheduleText, availableCadencesText, cadenceText, consequenceLines, effectiveHeadline, groupJobCadences,
   hasAlternativeCadence, hoursText, jobFigureText, jobLegend, jobObservationText, jobProvenance, policiesFootnote,
   refreshLegend, refreshProvenance, schedulerSupportText, unsupportedOptions, type CadenceLegendItem,
 } from "./policies-view";
 
+// The shared editor grammar lives in policy-editor-kit.tsx; re-exported so existing importers keep one path.
+export { CadenceForm, Notice, formatUtc };
+export type { OperatorReasonInput, PolicyNotice };
+
 const POLICIES_URL = "/api/platform/platform-ops/policies";
 const JOB_CADENCE_URL = "/api/platform/platform-ops/job-cadence";
-// BETA C7 — the cost safeguards (two spend-alert thresholds + the daily-allowance
-// dimension), read from the ai-spend route and DISPLAYED ONLY: no editor here.
-const AI_SPEND_URL = "/api/platform/platform-ops/ai-spend";
+// AI COST CONTROLS — the literal the session hooks need (the static-url contract); AI_COST_CONTROLS_URL in the types file spells the same path and the panel PATCHes it.
+const COST_CONTROLS_URL = "/api/platform/platform-ops/ai-cost-controls";
 const JOBS_WORKSPACE = "platform-jobs";
-
-/** "13 Sep 2026, 18:32 UTC" — one date wording for the whole surface. */
-function formatUtc(iso: string): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "—";
-  const d = new Date(t);
-  const day = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${day}, ${hh}:${mm} UTC`;
-}
-
-export type OperatorReasonInput = { code: OperatorReasonCode; note?: string };
 
 // ── Shared grammar: legend chips, observation line, doorway ───────────────────
 
@@ -122,101 +122,6 @@ function ObservationLine({ children, onOpenWorkspace }: { children: ReactNode; o
 }
 
 // ── Controls (rendered only for canControl) ───────────────────────────────────
-
-const BTN = "flex items-center gap-1 rounded-[var(--radius-sm)] border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:opacity-40";
-const BTN_QUIET = { background: "color-mix(in srgb, var(--meridian-400) 10%, transparent)", color: "var(--meridian-400)", borderColor: "color-mix(in srgb, var(--meridian-400) 24%, transparent)" };
-const BTN_PRIMARY = { background: "color-mix(in srgb, var(--brass-300) 14%, transparent)", color: "var(--brass-300)", borderColor: "color-mix(in srgb, var(--brass-300) 30%, transparent)" };
-const BTN_NEUTRAL = { background: "transparent", color: "var(--text-muted)", borderColor: "var(--border-hairline)" };
-const FIELD = "rounded-[var(--radius-sm)] border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)]";
-
-/** One operator notice: the outcome of the last save/reset, or a refusal. */
-export interface PolicyNotice {
-  tone: "ok" | "warn" | "bad";
-  text: string;
-}
-
-function Notice({ notice }: { notice: PolicyNotice | null }) {
-  if (!notice) return null;
-  const token = notice.tone === "ok" ? TONE_COLOR.ok : notice.tone === "warn" ? TONE_COLOR.warn : TONE_COLOR.bad;
-  return (
-    <p className="text-[11px] leading-relaxed" style={{ color: token }} role={notice.tone === "ok" ? "status" : "alert"}>
-      {notice.text}
-    </p>
-  );
-}
-
-/**
- * THE ONE EDITOR LAYOUT both cadence kinds share (UX-P1 4A.3 §4 + D7):
- *   value control (the caller's) → consequences → reason select → optional
- *   note → notice → Save / Reset to default / Cancel.
- * `intent` "reset" hides the value control and arms the two-step reset from the
- * start (the view-mode "Reset to default" button opens the form that way). In
- * "edit" intent the form's own Reset button arms it; the second click confirms.
- * The reason has no default: Save and Confirm reset stay disabled until the
- * operator chooses one. Prop-driven.
- */
-export function CadenceForm({
-  ariaLabel, intent, control, consequences, busy, notice, canSave, canReset, onSave, onReset, onCancel,
-}: {
-  ariaLabel: string;
-  intent: "edit" | "reset";
-  control: ReactNode;
-  consequences: readonly string[];
-  busy: boolean;
-  notice: PolicyNotice | null;
-  /** The value control's own gate (changed + in bounds); the reason gate is added here. */
-  canSave: boolean;
-  /** Whether an override exists to reset. */
-  canReset: boolean;
-  onSave: (reason: OperatorReasonInput) => void;
-  onReset: (reason: OperatorReasonInput) => void;
-  onCancel: () => void;
-}) {
-  const [code, setCode] = useState<OperatorReasonCode | "">("");
-  const [note, setNote] = useState("");
-  const [armed, setArmed] = useState(intent === "reset");
-  const reason = (): OperatorReasonInput | null => (code === "" ? null : note.trim() ? { code, note: note.trim() } : { code });
-  const hasReason = code !== "";
-  return (
-    <div className="flex flex-col gap-3 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-3" role="group" aria-label={ariaLabel}>
-      {!armed && control}
-      {!armed && consequences.map((line) => (
-        <p key={line} className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{line}</p>
-      ))}
-      {armed && <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{RESET_TEXT}</p>}
-      <label className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-secondary)]">
-        Reason
-        <select value={code} onChange={(e) => setCode(e.target.value as OperatorReasonCode | "")} disabled={busy} required className={FIELD} style={{ borderColor: "var(--border-hairline)" }}>
-          <option value="">{REASON_PLACEHOLDER}</option>
-          {OPERATOR_REASON_CODES.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ").toLowerCase()}</option>)}
-        </select>
-      </label>
-      <input type="text" value={note} onChange={(e) => setNote(e.target.value)} disabled={busy} maxLength={280} placeholder={NOTE_PLACEHOLDER}
-        aria-label="Reason note (optional)" className={FIELD} style={{ borderColor: "var(--border-hairline)" }} />
-      <Notice notice={notice} />
-      <div className="flex flex-wrap items-center gap-2">
-        {!armed && (
-          <button type="button" onClick={() => { const r = reason(); if (r) onSave(r); }} disabled={busy || !canSave || !hasReason} className={BTN} style={BTN_PRIMARY}>
-            {busy ? <Loader2 size={11} className="animate-spin" aria-hidden /> : <Check size={11} aria-hidden />} Save
-          </button>
-        )}
-        {canReset && !armed && (
-          <button type="button" onClick={() => setArmed(true)} disabled={busy} className={BTN} style={BTN_NEUTRAL}>
-            <RotateCcw size={11} aria-hidden /> Reset to default
-          </button>
-        )}
-        {armed && (
-          <button type="button" onClick={() => { const r = reason(); if (r) onReset(r); }} disabled={busy || !hasReason} className={BTN} style={BTN_PRIMARY}>
-            {busy ? <Loader2 size={11} className="animate-spin" aria-hidden /> : <RotateCcw size={11} aria-hidden />} Confirm reset
-          </button>
-        )}
-        <button type="button" onClick={armed && intent === "edit" ? () => setArmed(false) : onCancel} disabled={busy} className={BTN} style={BTN_NEUTRAL}>
-          <X size={11} aria-hidden /> {armed && intent === "edit" ? "Keep editing" : "Cancel"}
-        </button>
-      </div>
-    </div>
-  );
-}
 
 /**
  * The bounded refresh-cadence editor: every cadence the policy menu knows,
@@ -283,43 +188,10 @@ export function PolicyEditor({
 
 // ── The mutation calls — the ONLY network writes on this surface ──────────────
 
-type MutationOutcome<M> =
-  | { kind: "applied"; model: M }
-  | { kind: "conflict"; model: M; reason: string }
-  | { kind: "refused"; reason: string; model: M | null }
-  | { kind: "failed"; reason: string };
-
-async function mutate<M>(url: string, method: "PATCH" | "DELETE", body: Record<string, unknown>, subject: string): Promise<MutationOutcome<M>> {
-  try {
-    const r = await fetch(url, { method, credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const json = (await r.json().catch(() => null)) as M | { error?: string; model?: M } | null;
-    if (r.ok) return { kind: "applied", model: json as M };
-    const refusal = json as { error?: string; model?: M } | null;
-    if (r.status === 409 && refusal?.model) return { kind: "conflict", model: refusal.model, reason: refusal.error ?? CONFLICT_TEXT };
-    if (r.status === 403) return { kind: "failed", reason: `Not authorized to change this ${subject}.` };
-    return { kind: "refused", reason: refusal?.error ?? `Request failed (${r.status})`, model: refusal?.model ?? null };
-  } catch (e) {
-    return { kind: "failed", reason: e instanceof Error ? e.message : "The request could not be sent." };
-  }
-}
-
 const mutatePolicy = (method: "PATCH" | "DELETE", body: Record<string, unknown>) =>
   mutate<PlatformPoliciesResponse>(POLICIES_URL, method, body, "policy");
 const mutateCadence = (method: "PATCH" | "DELETE", body: Record<string, unknown>) =>
   mutate<JobCadenceResponse>(JOB_CADENCE_URL, method, body, "cadence");
-
-/** Shared outcome handling: publish the canonical model, close the editor, tell the operator. */
-function useSettle<M>(onModel: (m: M) => void) {
-  const [notice, setNotice] = useState<PolicyNotice | null>(null);
-  const [busy, setBusy] = useState(false);
-  const settle = (outcome: MutationOutcome<M>, appliedText: string, close: () => void) => {
-    if (outcome.kind === "applied") { onModel(outcome.model); close(); setNotice({ tone: "ok", text: appliedText }); }
-    else if (outcome.kind === "conflict") { onModel(outcome.model); close(); setNotice({ tone: "warn", text: CONFLICT_TEXT }); }
-    else if (outcome.kind === "refused") { if (outcome.model) onModel(outcome.model); setNotice({ tone: "bad", text: outcome.reason }); }
-    else setNotice({ tone: "bad", text: outcome.reason });
-  };
-  return { notice, setNotice, busy, setBusy, settle };
-}
 
 // ── One source kind's column ──────────────────────────────────────────────────
 
@@ -591,54 +463,9 @@ export function JobCadencePanel({ state, canControl, onModel, onOpenWorkspace }:
   );
 }
 
-// ── BETA C7 — COST SAFEGUARDS (read-only) ─────────────────────────────────────
-
-function ThresholdRow({ t }: { t: AiSpendThreshold }) {
-  return (
-    <li className="flex flex-col gap-1 border-t border-[var(--border-hairline)] py-3">
-      <KeyRow label={t.label} value={thresholdFigure(t)} />
-      <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <Provenance source={thresholdProvenance(t, formatUtc)} />
-        <span className="text-[10px] text-[var(--text-muted)]">{thresholdDefaultText(t)}</span>
-      </span>
-      {t.origin === "INVALID_SETTING" && (
-        <p className="text-[11px]" style={{ color: TONE_COLOR.warn }} role="alert">The stored value is unreadable; the default is in force.</p>
-      )}
-    </li>
-  );
-}
-
-/** The read-only cost-safeguards group: two thresholds with provenance, the allowance dimension. Prop-driven and fetch-free. */
-export function CostSafeguardsPanel({ state }: { state: SharedFetchState<AiSpendResponse> }) {
-  const data = state.error ? null : state.data?.safeguards ?? null;
-  return (
-    <div className="flex flex-col gap-2">
-      <GroupLabel hint={COST_SAFEGUARDS_SENTENCE}>Cost safeguards</GroupLabel>
-      <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{COST_SAFEGUARDS_SENTENCE}</p>
-      {state.loading ? (
-        <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]" role="status"><Loader2 size={12} className="animate-spin" aria-hidden /> {LOADING_TEXT}</p>
-      ) : !data ? (
-        <p className="flex items-start gap-1.5 text-xs" style={{ color: "var(--coral-400)" }} role="alert"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden /><span>{unavailableText(COST_SAFEGUARDS_SUBJECT)}</span></p>
-      ) : (
-        <ul className="flex flex-col">
-          <ThresholdRow t={data.thresholds.fleet} />
-          <ThresholdRow t={data.thresholds.user} />
-          <li className="flex flex-col gap-1 border-t border-[var(--border-hairline)] py-3">
-            <KeyRow label={data.allowance.label} value={allowanceText(data.allowance)} />
-            <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <Provenance source="Catalogue (code-owned)" />
-              <span className="text-[10px] text-[var(--text-muted)]">{data.allowance.description} Refused at the Conversations and Daily Brief routes at or over the day’s estimate; the two thresholds above are judged by rule {data.alertRuleId}.</span>
-            </span>
-          </li>
-        </ul>
-      )}
-    </div>
-  );
-}
-
 /** The presentational surface. Prop-driven and fetch-free. */
 export function PoliciesSurface({
-  section, state, canControl = false, onModel = () => {}, cadence, onCadenceModel = () => {}, safeguards, onOpenWorkspace,
+  section, state, canControl = false, onModel = () => {}, cadence, onCadenceModel = () => {}, costControls, onCostControlsModel = () => {}, onOpenWorkspace,
 }: {
   section: PlatformSection;
   state: SharedFetchState<PlatformPoliciesResponse>;
@@ -647,8 +474,9 @@ export function PoliciesSurface({
   /** P1 — the execution-cadence read; omitted by callers that render only the refresh columns. */
   cadence?: SharedFetchState<JobCadenceResponse>;
   onCadenceModel?: (model: JobCadenceResponse) => void;
-  /** BETA C7 — the cost-safeguards read (display only); omitted by callers that do not have it. */
-  safeguards?: SharedFetchState<AiSpendResponse>;
+  /** AI COST CONTROLS — the read model behind the "AI Cost Controls" group; omitted by callers that do not have it. */
+  costControls?: SharedFetchState<AiCostControlsReadModel>;
+  onCostControlsModel?: (model: AiCostControlsReadModel) => void;
   onOpenWorkspace?: (workspaceId: string) => void;
 }) {
   const data = state.error ? null : state.data;
@@ -674,7 +502,7 @@ export function PoliciesSurface({
             ))}
           </div>
           {cadence && <JobCadencePanel state={cadence} canControl={canControl} onModel={onCadenceModel} onOpenWorkspace={onOpenWorkspace} />}
-          {safeguards && <CostSafeguardsPanel state={safeguards} />}
+          {costControls && <AiCostControlsPanel state={costControls} editable={canControl} onModel={onCostControlsModel} />}
         </div>
       )}
     </SectionSurface>
@@ -690,9 +518,10 @@ export function OpsPoliciesWidget({ section, access, onOpenWorkspace }: {
   const publish = useSharedWidgetPublish<PlatformPoliciesResponse>(POLICIES_URL);
   const cadence = useSharedWidgetFetch<JobCadenceResponse>(JOB_CADENCE_URL);
   const publishCadence = useSharedWidgetPublish<JobCadenceResponse>(JOB_CADENCE_URL);
-  const safeguards = useSharedWidgetFetch<AiSpendResponse>(AI_SPEND_URL);
+  const costControls = useSharedWidgetFetch<AiCostControlsReadModel>(COST_CONTROLS_URL);
+  const publishCostControls = useSharedWidgetPublish<AiCostControlsReadModel>(COST_CONTROLS_URL);
   return (
     <PoliciesSurface section={section} state={state} canControl={access?.canControl ?? false} onModel={publish}
-      cadence={cadence} onCadenceModel={publishCadence} safeguards={safeguards} onOpenWorkspace={onOpenWorkspace} />
+      cadence={cadence} onCadenceModel={publishCadence} costControls={costControls} onCostControlsModel={publishCostControls} onOpenWorkspace={onOpenWorkspace} />
   );
 }

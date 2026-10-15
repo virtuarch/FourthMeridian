@@ -10,6 +10,8 @@
  * beside it, and the counter-based figure as the cross-check) — then estimated
  * customer AI spend per UTC day as MiniBars when a rate was in force, and the
  * one sentence that governs the whole block: no actual-charge ledger exists.
+ * AI COST CONTROLS adds ONE doorway sentence (no new fetch) pointing at the
+ * budget utilization reading in Economics → AI Budget.
  *
  * All three reads are PLATFORM_OPS READ and shared through the workspace
  * session (the AI block reads the same trend and spend). Presentation derives
@@ -27,7 +29,7 @@ import type { AiSpendResponse } from "@/app/api/platform/platform-ops/ai-spend/r
 import type { OverviewBlockProps } from "./block-contract";
 import { BlockDoorway } from "./block-doorway";
 import {
-  AI_WINDOW_DAYS, CUSTOMER_SPEND_NOTE, ESTIMATE_CAPTION, NO_LEDGER_NOTE, aiSpendReading, counterCrossCheckText, customerSpendPerDay,
+  AI_WINDOW_DAYS, BUDGET_DOORWAY_NOTE, CUSTOMER_SPEND_NOTE, ESTIMATE_CAPTION, NO_LEDGER_NOTE, aiSpendReading, counterCrossCheckText, customerSpendPerDay,
   customerSpendReading, fmtUsd, overheadText, plaidCycleReading, spendPerDay,
 } from "./ai-economics-view";
 
@@ -98,6 +100,8 @@ export function EconomicsSurface({ plaid, trend, spend, nowMs, onOpenWorkspace }
             caption={`${ESTIMATE_CAPTION} · a day with no ${s ? "priced customer invocation" : "counter row or no rate in force"} is a gap, never $0`}
           />
         )}
+        {/* AI COST CONTROLS — a doorway sentence, not a figure: the budget reading needs its own fetch, which the Overview does not add. */}
+        <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">{BUDGET_DOORWAY_NOTE}</p>
       </div>
     </SectionSurface>
   );

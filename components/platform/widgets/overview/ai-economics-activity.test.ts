@@ -170,6 +170,7 @@ console.log("\n4. Economics surface");
   check("spend-per-day bars present with the never-\\$0 caption", /Estimated AI spend per UTC day/.test(html) && /never \$0/.test(html));
   check("the no-ledger sentence is stated", /No actual-charge ledger exists/.test(html));
   check("doorway opens Economics", /aria-label="Open Economics"/.test(html));
+  check("AI COST CONTROLS: one doorway SENTENCE to the budget reading, no budget figure and no extra fetch on the Overview", /read in Economics → AI Budget/.test(html) && !/utilization:/.test(html) && !/ai-budget/.test(readFileSync("components/platform/widgets/overview/EconomicsBlock.tsx", "utf8")));
   const noPricing = renderToStaticMarkup(createElement(EconomicsSurface, { plaid: ok(plaid()), trend: ok(trend({ pricingConfigured: false, totals: { ...trend().totals, estimatedSpendUsd: null } })), nowMs: NOW }));
   check("no AI pricing: Unavailable with reason and NO spend bars", /no AI pricing configured/.test(noPricing) && !/Estimated AI spend per UTC day/.test(noPricing));
   const plaidFailed = renderToStaticMarkup(createElement(EconomicsSurface, { plaid: failed, trend: ok(trend()), nowMs: NOW }));
