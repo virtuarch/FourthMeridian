@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Transaction } from "@/types";
 import { FicoCard } from "@/components/dashboard/FicoCard";
+import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import {
   ShieldCheck, Save, Loader2, CreditCard, Pencil, X,
@@ -1124,31 +1125,28 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
 
       {/* ── Transaction modal ── */}
       {showTxModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 backdrop-blur-sm" style={{ background: "var(--scrim)" }} onClick={() => setShowTxModal(false)} />
-          <div className="relative border rounded-3xl w-full sm:max-w-2xl max-h-[88dvh] flex flex-col shadow-2xl" style={{ background: "var(--modal-surface)", borderColor: "var(--border-hairline-strong)" }}>
-
-            {/* Modal header */}
-            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
-              <p className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>All Transactions</p>
-              <button onClick={() => setShowTxModal(false)} className="p-1.5 hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] rounded-xl transition-colors" style={{ color: "var(--text-muted)" }}>
-                <X size={16} />
-              </button>
-            </div>
-
-            {/* Modal filters */}
-            <div className="px-5 py-3 border-b space-y-2 shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
+        <OverlaySurface
+          open
+          onClose={() => setShowTxModal(false)}
+          title="All Transactions"
+          intent="workspace"
+          size="lg"
+          closeOnBackdrop
+          zIndex={100}
+          toolbar={
+            <div className="py-3 border-b space-y-2 shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
               <div className="relative">
                 <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--text-muted)" }} />
                 <input
-                  type="text" placeholder="Search…" value={search}
+                  type="text" aria-label="Search transactions" placeholder="Search…" value={search}
                   onChange={(e) => { setSearch(e.target.value); setModalPage(0); }}
                   className={`w-full border rounded-xl pl-8 pr-3 py-2 text-sm ${INPUT_CLS}`}
                   style={inputStyle}
                 />
-                {search && <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-primary)]" style={{ color: "var(--text-muted)" }}><X size={12} /></button>}
+                {search && <button onClick={() => setSearch("")} aria-label="Clear transaction search" className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-primary)]" style={{ color: "var(--text-muted)" }}><X size={12} /></button>}
               </div>
               <select
+                aria-label="Flow type"
                 value={flowFilter ?? ""}
                 onChange={(e) => { setFlowFilter(e.target.value || null); setModalPage(0); }}
                 className={`w-full border rounded-xl px-3 py-2 text-sm ${INPUT_CLS}`}
@@ -1159,29 +1157,21 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                   <option key={value} value={value}>{label}</option>
                 ))}
               </select>
-              <div className="flex items-center gap-1 text-xs" style={{ color: "var(--text-muted)" }}>
+              <div className="flex flex-wrap items-center gap-1 text-xs" style={{ color: "var(--text-muted)" }}>
                 <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{filteredTxs.length}</span> transactions
                 {totalDebtPaid > 0 && (
                   <span className="ml-3 font-semibold" style={{ color: "var(--text-secondary)" }}>Total Debt Paid: {debtPaidEstimated ? "\u2248 " : ""}{fmtAggFull(totalDebtPaid)}{debtPaidEstimated && <EstimatedChip />}</span>
                 )}
               </div>
             </div>
-
-            {/* Modal list */}
-            <div className="overflow-y-auto flex-1 divide-y divide-[var(--border-hairline)]">
-              {pageSlice.length === 0
-                ? <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>No transactions match your filters.</p>
-                : pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} cards={cards} selectedCardId={selectedCardId} onOpen={() => openTransaction(tx.id)} />)
-              }
-            </div>
-
-            {/* Modal pagination */}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-between px-5 py-3 border-t shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
+          }
+          footer={<>
+{totalPages > 1 && (
+              <div className="flex items-center justify-between py-3 shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
                 <button
                   onClick={() => setModalPage((p) => Math.max(0, p - 1))}
                   disabled={modalPage === 0}
-                  className="flex items-center gap-1 text-xs font-semibold hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="min-h-11 flex items-center gap-1 text-xs font-semibold hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   style={{ color: "var(--text-secondary)" }}
                 >
                   <ChevronLeft size={14} /> Prev
@@ -1190,7 +1180,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                 <button
                   onClick={() => setModalPage((p) => Math.min(totalPages - 1, p + 1))}
                   disabled={modalPage === totalPages - 1}
-                  className="flex items-center gap-1 text-xs font-semibold hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="min-h-11 flex items-center gap-1 text-xs font-semibold hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   style={{ color: "var(--text-secondary)" }}
                 >
                   Next <ChevronRight size={14} />
@@ -1199,7 +1189,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
             )}
 
             {/* Collapse button */}
-            <div className="px-5 pb-5 shrink-0">
+            <div className="shrink-0">
               <button
                 onClick={() => setShowTxModal(false)}
                 className="w-full py-3 rounded-2xl text-sm font-semibold hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors"
@@ -1208,8 +1198,15 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                 Collapse
               </button>
             </div>
-          </div>
-        </div>
+          </>}
+        >
+            <div className="divide-y divide-[var(--border-hairline)]">
+              {pageSlice.length === 0
+                ? <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>No transactions match your filters.</p>
+                : pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} cards={cards} selectedCardId={selectedCardId} onOpen={() => openTransaction(tx.id)} />)
+              }
+            </div>
+        </OverlaySurface>
       )}
 
     </div>

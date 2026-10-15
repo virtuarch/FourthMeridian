@@ -352,3 +352,15 @@ Local checks run for these customer changes:
 - `git diff --check` passed at the time of this audit.
 
 These checks do not exercise dragging, real keyboard focus, dirty dismissal prompts or CSS layout. No authenticated workflow or viewport is claimed passed by this inventory. Whole-repository gates and browser evidence belong to the milestone report.
+
+## Customer legacy overlay migration follow-up
+
+| Consumer | Shared presentation | Preserved workflow | Verification status |
+|---|---|---|---|
+| SpacesClient PublicSpaceDetailModal | OverlaySurface, retained category header toolbar, sticky joining footer | Public preview and disabled future joining action unchanged | Source migrated; browser unverified |
+| DebtClient All Transactions | OverlaySurface workspace, filter toolbar, sticky pagination/Collapse footer | Search, flow filtering, paging and shared transaction detail opening unchanged | Source migrated; browser unverified |
+| DebtPayoffSection fullscreen | OverlaySurface workspace, shared title and account/APR subtitle | Existing payment/account choices and financial engine calls unchanged | Source migrated; browser unverified |
+
+Shared OverlaySurface now owns focus, Escape, body scroll lock, mobile viewport and sheet interaction for these consumers. The planner's duplicate global Escape listener/body lock were removed to avoid competing lifecycle behavior. Inputs are client-side exploratory choices rather than persisted edits; dismissal retains its original semantics. Actual drag, snap and authenticated workflow verification remains pending.
+
+Follow-up verification: ESLint passed for all three migrated customer files; debt-experience server-render checks, template-truthfulness assertions and workspace source invariants all passed. These checks preserve existing financial presentation and registry behavior but do not establish browser interaction success. `git diff --check` passed.
