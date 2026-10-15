@@ -26,6 +26,9 @@ import { captureAiProviderFailure } from '@/lib/monitoring/capture';
 import { rateAt } from '@/lib/usage/pricing';
 import { todayUTCISO } from '@/lib/time/clock';
 import { resolveOpenAiCredentials } from '@/lib/ai/openai-credentials';
+import {
+  AI_PAUSED_CODE, readPaidRequestsAdmission, type PaidRequestsAdmissionReader,
+} from '@/lib/platform/ai/paid-requests-admission';
 
 // ── Client ───────────────────────────────────────────────────────────────────
 // Lazy-initialised singleton. Fails loudly if the key is absent so
@@ -34,13 +37,29 @@ import { resolveOpenAiCredentials } from '@/lib/ai/openai-credentials';
 
 let _client: OpenAI | null = null;
 
+/**
+ * THE ONE ENDPOINT. The installed SDK (openai 6.45.0) reads OPENAI_BASE_URL and
+ * OPENAI_ORG_ID from process.env whenever the option is undefined — an
+ * undeclared environment variable could redirect every call to another host or
+ * re-attribute it to another organization. Both are pinned explicitly here so
+ * no env var the repo never declares can do either (lib/ai/provider-structured.test.ts
+ * pins the source). The project pin stays with the credential seam.
+ */
+export const OPENAI_API_BASE_URL = 'https://api.openai.com/v1';
+
 function getClient(): OpenAI {
   if (_client) return _client;
 
   // OPENAI ENVIRONMENT SEPARATION — the one credential seam (lib/ai/openai-credentials.ts):
   // one key name, an optional project pin, no fallback across names or environments.
   const creds = resolveOpenAiCredentials();
-  _client = new OpenAI({ apiKey: creds.apiKey, ...(creds.project ? { project: creds.project } : {}) });
+  _client = new OpenAI({
+    apiKey: creds.apiKey,
+    ...(creds.project ? { project: creds.project } : {}),
+    // Explicit, so the SDK does not read OPENAI_ORG_ID / OPENAI_BASE_URL for itself.
+    organization: null,
+    baseURL: OPENAI_API_BASE_URL,
+  });
   return _client;
 }
 
@@ -89,6 +108,13 @@ const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
  */
 export interface UsageSinks {
   invocationClient?: AiInvocationWriteClient;
+  /**
+   * AI COST CONTROLS — the kill-switch reader. Defaults to the real fm_system
+   * read (lib/platform/ai/paid-requests-admission.ts); injected by tests that
+   * run the chokepoint with no database, because an UNREADABLE switch is a
+   * PAUSE (fail closed), which is exactly what a database-less test would see.
+   */
+  paidRequestsAdmission?: PaidRequestsAdmissionReader;
 }
 
 function recordOpenAiUsage(args: {
@@ -215,6 +241,47 @@ export function assertPricedModel(model: string, sinks?: UsageSinks): void {
   throw err;
 }
 
+/**
+ * AI COST CONTROLS — THE PLATFORM HAS PAUSED PAID AI REQUESTS, SO THE CALL WAS NOT MADE.
+ *
+ * Judged BEFORE `assertPricedModel` on every entry point, from the one
+ * PlatformSetting row `ai_paid_requests_paused` (absent ⇒ off; unreadable ⇒
+ * paused, fail closed). The routes judge it earlier still — before the
+ * allowance — so a route refusal writes no row; THIS path is what refuses
+ * harness and script traffic, and a pause that lands mid-turn. One zero-token
+ * FAILED / AI_PAUSED fact is written so the ledger and the alert engine see it.
+ * No override lifts it.
+ */
+const AI_PAUSED_MARKER = `[ai/provider] ${AI_PAUSED_CODE}:`;
+
+export class AiPausedError extends Error {
+  constructor(readonly model: string, readonly state: string) {
+    super(`${AI_PAUSED_MARKER} paid AI requests are paused by the platform (${state}); the call to "${model}" was refused before the provider was reached.`);
+    this.name = 'AiPausedError';
+  }
+}
+
+/** Whether a recorded failure MESSAGE is the kill switch's refusal — the `isUnpricedModelFailure` idiom. */
+export function isAiPausedFailure(message: string | null | undefined): boolean {
+  return typeof message === 'string' && message.includes(AI_PAUSED_MARKER);
+}
+
+/**
+ * Refuse every paid request while the platform is paused. Writes the failure
+ * fact through the invocation writer (the refusal of a call, not a failed
+ * one) and throws the typed error. Every provider entry point calls it first.
+ */
+export async function assertPaidRequestsAdmitted(model: string, sinks?: UsageSinks): Promise<void> {
+  const admission = await (sinks?.paidRequestsAdmission ?? readPaidRequestsAdmission)();
+  if (!admission.paused) return;
+  const err = new AiPausedError(model, admission.state);
+  void recordAiInvocationFailure({
+    provider: 'OPENAI', model, outcome: 'FAILED', errorCode: AI_PAUSED_CODE, latencyMs: 0,
+  }, sinks?.invocationClient);
+  captureAiProviderFailure({ outcome: 'FAILED', errorCode: AI_PAUSED_CODE, surface: getAiInvocationContext()?.surface ?? null, model }, err);
+  throw err;
+}
+
 /** The SDK attaches `_request_id` to every parsed completion (openai ≥ 4). */
 function requestIdOf(completion: unknown): string | null {
   const rid = (completion as { _request_id?: unknown } | null)?._request_id;
@@ -244,6 +311,8 @@ export async function generateChatReply(
   systemPrompt: string,
   messages:     ChatMessage[],
 ): Promise<string> {
+  // AI COST CONTROLS — the kill switch, before anything else.
+  await assertPaidRequestsAdmitted(CHAT_MODEL);
   // BETA C7 — refused before the provider is reached when the rate card cannot price it.
   assertPricedModel(CHAT_MODEL);
   const client = getClient();
@@ -360,6 +429,8 @@ export async function generateWithTools(args: {
   maxTokens?: number;
 }, deps?: { client?: StructuredClient; sinks?: UsageSinks }): Promise<ToolTurnResult> {
   const { model, messages, tools } = args;
+  // AI COST CONTROLS — the kill switch, before anything else.
+  await assertPaidRequestsAdmitted(model, deps?.sinks);
   // BETA C7 — refused before the provider is reached when the rate card cannot price it.
   assertPricedModel(model, deps?.sinks);
   const client = deps?.client ?? (getClient() as unknown as StructuredClient);
@@ -494,6 +565,8 @@ export async function generateStructuredWithUsage<T>(
   deps?:        { client?: StructuredClient; sinks?: UsageSinks },
 ): Promise<StructuredResult<T>> {
   const model = options?.model ?? CHAT_MODEL;
+  // AI COST CONTROLS — the kill switch, before anything else.
+  await assertPaidRequestsAdmitted(model, deps?.sinks);
   // BETA C7 — refused before the provider is reached when the rate card cannot price it.
   assertPricedModel(model, deps?.sinks);
   const client = deps?.client ?? (getClient() as unknown as StructuredClient);

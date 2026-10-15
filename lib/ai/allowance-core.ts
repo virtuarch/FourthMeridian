@@ -23,10 +23,28 @@
  * allowance of 0 therefore refuses every turn (the ceiling's floor is a
  * boolean dimension's job, but 0 must still mean 0, never "unlimited").
  *
+ * ── AI COST CONTROLS (2026-10-15) ───────────────────────────────────────────
+ * Two additions, both pure:
+ *   · `enforced` — PlatformSetting `ai_daily_allowance_enforced`. While OFF the
+ *     ALLOWANCE_EXHAUSTED refusal is withheld; the UNPRICED_MODEL refusal
+ *     stays (pricing validation is not the allowance) and everything is still
+ *     recorded. The verdict carries the flag so logs and tests can see it.
+ *   · the IN-FLIGHT RESERVATION (`reservedAllowanceVerdict`). The ledger is
+ *     written after the provider returns, so N simultaneous turns would each
+ *     pass `spent < allowance` on the same stale sum. The loader judges the
+ *     decision under a per-customer advisory lock together with the count of
+ *     turns admitted but not yet returned, and refuses when
+ *         spent + inFlight × RESERVE_USD ≥ allowance.
+ *     THE GUARANTEE, STATED HONESTLY: admitted spend ≤ allowance + Σ over the
+ *     concurrently admitted turns of (that turn's actual cost − RESERVE_USD).
+ *     Overshoot is bounded by one turn's excess over its reserve per
+ *     concurrently admitted turn; it is NOT an absolute hard cap, because a
+ *     turn's cost is only known after the provider returns.
+ *
  * PURE — no I/O, no clock, no database. The loader is lib/ai/allowance.ts.
  */
 
-import { AI_RATES, type AiRate } from "@/lib/usage/pricing";
+import { AI_RATES, rateAt, priceAiUsage, type AiRate } from "@/lib/usage/pricing";
 import { fmtMoney } from "@/lib/ai/format";
 import { priceSpendGroup, type ModelUsageGroup, type SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
 
@@ -59,19 +77,115 @@ export function sumTodaySpend(groups: readonly TodaySpendGroup[], todayISO: stri
 
 export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL";
 
-export type AllowanceVerdict =
-  | { allowed: true; spentUsd: number; allowanceUsd: number; remainingUsd: number }
-  | { allowed: false; reason: AllowanceReason; spentUsd: number; allowanceUsd: number; unpricedInvocations: number };
+/**
+ * How the in-flight reservation was judged:
+ *   RESERVED     the decision ran under the advisory lock with the in-flight
+ *                count, and (when allowed) this turn now holds a reservation;
+ *   UNAVAILABLE  the lock/counter could not be taken (no fm_system transaction,
+ *                the store errored) — the plain stale-sum check decided;
+ *   NONE         the pure check with no reservation concept (tests, the legacy
+ *                injected-client path).
+ */
+export type AllowanceReservationState = "RESERVED" | "UNAVAILABLE" | "NONE";
 
-/** PURE — the decision. */
-export function dailyAllowanceVerdict(input: { spentUsd: number; allowanceUsd: number; unpricedInvocations: number }): AllowanceVerdict {
+interface VerdictCommon {
+  spentUsd: number;
+  allowanceUsd: number;
+  /** PlatformSetting `ai_daily_allowance_enforced` as judged for THIS decision. */
+  enforced: boolean;
+  reservation: AllowanceReservationState;
+  /** Turns admitted and not yet returned at the moment of the decision (this one excluded). */
+  inFlight: number;
+}
+
+export type AllowanceVerdict =
+  | (VerdictCommon & { allowed: true; remainingUsd: number })
+  | (VerdictCommon & { allowed: false; reason: AllowanceReason; unpricedInvocations: number });
+
+/** PURE — the decision (no reservation: `inFlight` 0, `enforced` true unless told otherwise). */
+export function dailyAllowanceVerdict(input: { spentUsd: number; allowanceUsd: number; unpricedInvocations: number; enforced?: boolean }): AllowanceVerdict {
+  return reservedAllowanceVerdict({ ...input, inFlight: 0, reserveUsd: 0, enforced: input.enforced ?? true, reservation: "NONE" });
+}
+
+// ── The reservation ─────────────────────────────────────────────────────────
+
+/**
+ * The model every reservation is priced for, and the per-turn shape it reserves.
+ *
+ * DERIVATION (pinned by lib/ai/allowance.test.ts against the engine and the
+ * rate card, so it cannot drift silently):
+ *   · the conversation engine runs on `CHAT_MODEL = 'gpt-5.1'`
+ *     (lib/ai/conversation/engine.ts) — RESERVE_MODEL mirrors it; the engine
+ *     is not imported here because this module must stay pure and light;
+ *   · a turn is at most MAX_TOOL_ROUNDTRIPS = 6 model calls
+ *     (lib/ai/conversation/turn.ts) — RESERVE_INVOCATIONS_PER_TURN;
+ *   · each call carries ~30,000 prompt tokens (the T0 orientation measured
+ *     ≈32k tokens after the evidence clip, with tool results growing later
+ *     hops while prompt caching shrinks them) and ~1,500 completion tokens
+ *     (CLASSIC_COMPLETION_BUDGET; observed reasoning spend on the modern
+ *     dialect ≈1,500);
+ *   · priced at the rate card's rate for RESERVE_MODEL (the latest rate):
+ *     gpt-5.1 input $1.25 / M, output $10 / M ⇒ 30,000 × 1.25 / 1e6 +
+ *     1,500 × 10 / 1e6 = $0.0525 per call ⇒ $0.315 per turn.
+ * The constant is COMPUTED from the rate card at module load so a rate change
+ * moves it; RESERVE_USD_FALLBACK is used only if the card had no rate for the
+ * model (never 0 — a zero reserve would silently disable the concurrency bound).
+ */
+export const RESERVE_MODEL = "gpt-5.1";
+export const RESERVE_INVOCATIONS_PER_TURN = 6;
+export const RESERVE_PROMPT_TOKENS_PER_INVOCATION = 30_000;
+export const RESERVE_COMPLETION_TOKENS_PER_INVOCATION = 1_500;
+export const RESERVE_USD_FALLBACK = 0.315;
+
+/** PURE — the per-turn reserve for a model from a rate card (null when the card cannot price it). */
+export function reserveUsdFor(model: string, rates: readonly AiRate[] = AI_RATES): number | null {
+  const latest = rateAt("OPENAI", model, "9999-12-31", rates);
+  if (!latest) return null;
+  const metric = `chat.completions:${model}`;
+  const day = latest.effectiveFrom;
+  const p = priceAiUsage([
+    { provider: "OPENAI", metric, unit: "prompt_tokens",        day, count: RESERVE_PROMPT_TOKENS_PER_INVOCATION * RESERVE_INVOCATIONS_PER_TURN },
+    { provider: "OPENAI", metric, unit: "cached_prompt_tokens", day, count: 0 },
+    { provider: "OPENAI", metric, unit: "completion_tokens",    day, count: RESERVE_COMPLETION_TOKENS_PER_INVOCATION * RESERVE_INVOCATIONS_PER_TURN },
+  ], rates);
+  return p.usd !== null && p.usd > 0 ? p.usd : null;
+}
+
+/** The reserve one admitted-but-unreturned turn holds against the allowance, in estimated USD. */
+export const RESERVE_USD: number = reserveUsdFor(RESERVE_MODEL) ?? RESERVE_USD_FALLBACK;
+
+export interface ReservationDecisionInput {
+  spentUsd: number;
+  allowanceUsd: number;
+  unpricedInvocations: number;
+  /** Turns already admitted and not yet returned for this customer. */
+  inFlight: number;
+  /** The reserve each of those holds (RESERVE_USD; 0 for the no-reservation check). */
+  reserveUsd: number;
+  enforced: boolean;
+  reservation: AllowanceReservationState;
+}
+
+/**
+ * PURE — the decision WITH the in-flight reservation:
+ *   1. an unpriced invocation today refuses first (UNPRICED_MODEL), enforced or not;
+ *   2. with enforcement OFF nothing else refuses — the verdict still carries
+ *      the spend and the flag, so the refusal that was withheld is visible;
+ *   3. otherwise refuse when spent + inFlight × reserve ≥ allowance.
+ */
+export function reservedAllowanceVerdict(input: ReservationDecisionInput): AllowanceVerdict {
   const spentUsd = Number.isFinite(input.spentUsd) && input.spentUsd > 0 ? input.spentUsd : 0;
   const allowanceUsd = Number.isFinite(input.allowanceUsd) && input.allowanceUsd > 0 ? input.allowanceUsd : 0;
   const unpricedInvocations = Number.isFinite(input.unpricedInvocations) && input.unpricedInvocations > 0 ? Math.floor(input.unpricedInvocations) : 0;
-  // Fail closed FIRST: an unknown spend is never "under the allowance".
-  if (unpricedInvocations > 0) return { allowed: false, reason: "UNPRICED_MODEL", spentUsd, allowanceUsd, unpricedInvocations };
-  if (spentUsd >= allowanceUsd) return { allowed: false, reason: "ALLOWANCE_EXHAUSTED", spentUsd, allowanceUsd, unpricedInvocations: 0 };
-  return { allowed: true, spentUsd, allowanceUsd, remainingUsd: allowanceUsd - spentUsd };
+  const inFlight = Number.isFinite(input.inFlight) && input.inFlight > 0 ? Math.floor(input.inFlight) : 0;
+  const reserveUsd = Number.isFinite(input.reserveUsd) && input.reserveUsd > 0 ? input.reserveUsd : 0;
+  const enforced = input.enforced !== false;
+  const common = { spentUsd, allowanceUsd, enforced, reservation: input.reservation, inFlight };
+  // Fail closed FIRST: an unknown spend is never "under the allowance" — and this is pricing validation, not the allowance, so it stays when enforcement is off.
+  if (unpricedInvocations > 0) return { ...common, allowed: false, reason: "UNPRICED_MODEL", unpricedInvocations };
+  const committed = spentUsd + inFlight * reserveUsd;
+  if (enforced && committed >= allowanceUsd) return { ...common, allowed: false, reason: "ALLOWANCE_EXHAUSTED", unpricedInvocations: 0 };
+  return { ...common, allowed: true, remainingUsd: Math.max(0, allowanceUsd - committed) };
 }
 
 /** The customer-readable refusal body — one shape for Conversations and the Daily Brief. */

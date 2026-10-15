@@ -47,6 +47,8 @@ function fakeSinks() {
     rows,
     sinks: {
       invocationClient: { aiInvocation: { create: async ({ data }: { data: Record<string, unknown> }) => { rows.push(data); } } },
+      // AI COST CONTROLS — the kill switch is judged first; with no database it is PAUSED (fail closed), so the admitted reader is injected.
+      paidRequestsAdmission: async () => ({ paused: false as const, state: 'MISSING' as const, raw: null }),
     },
   };
 }

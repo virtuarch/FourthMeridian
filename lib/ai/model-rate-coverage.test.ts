@@ -44,7 +44,8 @@ const TODAY = todayUTCISO();
 
 function ledger() {
   const rows: Record<string, unknown>[] = [];
-  return { rows, sinks: { invocationClient: { aiInvocation: { create: async ({ data }: { data: Record<string, unknown> }) => { rows.push(data); } } } } };
+  // AI COST CONTROLS — the kill switch is judged before the price; with no database it is PAUSED (fail closed), so the admitted reader is injected.
+  return { rows, sinks: { invocationClient: { aiInvocation: { create: async ({ data }: { data: Record<string, unknown> }) => { rows.push(data); } } }, paidRequestsAdmission: async () => ({ paused: false as const, state: 'MISSING' as const, raw: null }) } };
 }
 function countingClient(): { client: StructuredClient; calls: number } {
   const c = { client: undefined as unknown as StructuredClient, calls: 0 };

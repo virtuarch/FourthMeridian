@@ -18,13 +18,16 @@
  * (lib/alerts/evaluate.ts) NEVER queries a product table or re-derives a health
  * state — it only classifies signals over authority OUTPUT.
  *
- * ── The seven rules (intentionally small; NOT a generic engine) ──────────────
+ * ── The eight rules (intentionally small; NOT a generic engine) ──────────────
  *   resource-stale       an archive's newest observation is stale/empty    (LIVE)
  *   provider-unhealthy   a syncing provider connection is not healthy       (LIVE)
  *   job-failing          a scheduled job's last runs all failed             (LIVE)
  *   scheduler-silent     a scheduled job is overdue (dispatcher/cron silent)(LIVE)
  *   ai-provider-failing  the AI provider is refusing/failing calls          (LIVE)
- *   ai-spend-high        estimated AI spend is at/over an operator threshold(LIVE)
+ *   ai-spend-fleet-high  fleet AI spend at/over the fleet threshold, or any
+ *                        invocation the rate card cannot price             (LIVE)
+ *   ai-spend-user-high   ONE customer's AI spend at/over the per-customer
+ *                        threshold                                         (LIVE)
  *   quota-low            a provider's remaining API quota is low         (DORMANT)
  *
  * ai-provider-failing (OPERATIONALIZATION P0, 2026-10-07) exists because the
@@ -34,14 +37,21 @@
  * failure row (outcome QUOTA / RATE_LIMITED / TIMEOUT / FAILED) and this rule
  * reads the fold of those rows over the last 24h.
  *
- * ai-spend-high (BETA C7, 2026-10-15) is the first COST safeguard: the same
+ * ai-spend-fleet-high and ai-spend-user-high (BETA C7, 2026-10-15; SPLIT by
+ * AI COST CONTROLS the same day) are the first COST safeguards: the same
  * ledger's RETURNED customer-surface rows, priced by the code-owned rate card
  * over the trailing 24 h, judged against two operator thresholds
  * (PlatformSetting `ai_spend_alert_fleet_usd_24h`, `ai_spend_alert_user_usd_24h`).
- * It also fires — regardless of spend — when ANY invocation in the window was
- * on a model the rate card cannot price: a spend figure that silently omits
- * part of the spend is not a safeguard (owner rule: an unpriceable model never
- * counts as zero).
+ * They were ONE rule (`ai-spend-high`) until the controls milestone needed each
+ * alert independently enable-able through the engine's existing
+ * `alert_rule_enabled:<id>` mechanism — one rule, one enabled key, one dedupe
+ * family. The fleet rule also fires — regardless of spend — when ANY invocation
+ * in the window was on a model the rate card cannot price: a spend figure that
+ * silently omits part of the spend is not a safeguard (owner rule: an
+ * unpriceable model never counts as zero). Disabling either rule changes
+ * evaluation only; the spend fold, the ledger and the Economics figures keep
+ * running. The dedupe keys keep the `<rule>:<fleet|user|unpriced>:<day>` family,
+ * so suppress-while-open (20 h) is unchanged.
  *
  * ── Dormant rules (future-safe, not recreated) ───────────────────────────────
  * `quota-low` is a first-class rule KIND but has NO authority to consume yet:
@@ -65,7 +75,8 @@ export type AlertRuleKind =
   | "job-failing"
   | "scheduler-silent"
   | "ai-failing"
-  | "ai-spend"
+  | "ai-spend-fleet"
+  | "ai-spend-user"
   | "quota-low";
 
 /** Two levels only — a solo operator's pager does not need more (alert fatigue
@@ -155,11 +166,21 @@ export const ALERT_RULES: readonly AlertRuleDefinition[] = [
     defaultEnabled: true,
   },
   {
-    id: "ai-spend-high",
-    kind: "ai-spend",
-    title: "AI spend high",
+    id: "ai-spend-fleet-high",
+    kind: "ai-spend-fleet",
+    title: "AI spend high — fleet",
     description:
-      "Estimated AI spend over the trailing 24 h is at or above an operator threshold: the FLEET across customer surfaces (Conversations + Daily Brief; harness traffic is overhead and excluded) against ai_spend_alert_fleet_usd_24h, or ONE customer against ai_spend_alert_user_usd_24h. Warning at or above the threshold; critical at or above twice it. Also fires a warning whenever any invocation in the window ran on a model the rate card cannot price — those invocations are counted, never priced at $0, and the summary names them. Reads the AiInvocation spend fold (lib/platform/ai/spend-health.ts) priced by lib/usage/pricing.ts; every figure is an estimate, not a bill.",
+      "Estimated AI spend over the trailing 24 h across customer surfaces (Conversations + Daily Brief; harness traffic is overhead and excluded) is at or above the fleet threshold ai_spend_alert_fleet_usd_24h. Warning at or above the threshold; critical at or above twice it. Also fires a warning whenever any invocation in the window ran on a model the rate card cannot price — those invocations are counted, never priced at $0, and the summary names them. Reads the AiInvocation spend fold (lib/platform/ai/spend-health.ts) priced by lib/usage/pricing.ts; every figure is an estimate, not a bill.",
+    authority: "ai-spend",
+    live: true,
+    defaultEnabled: true,
+  },
+  {
+    id: "ai-spend-user-high",
+    kind: "ai-spend-user",
+    title: "AI spend high — one customer",
+    description:
+      "ONE customer caused estimated AI spend over the trailing 24 h at or above the per-customer threshold ai_spend_alert_user_usd_24h. Warning at or above the threshold; critical at or above twice it. The summary names the customer by an opaque reference only and says how many others are at or above it. Reads the same AiInvocation spend fold as the fleet rule; every figure is an estimate, not a bill.",
     authority: "ai-spend",
     live: true,
     defaultEnabled: true,

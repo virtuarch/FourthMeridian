@@ -89,12 +89,14 @@ const ALL_ON = () => true;
 // ── Registry shape ───────────────────────────────────────────────────────────────
 
 console.log("registry");
-check("seven rules (five initial + ai-provider-failing + ai-spend-high)", ALERT_RULES.length === 7);
-check("six live rules", ALERT_RULES.filter((r) => r.live).length === 6);
+check("eight rules (five initial + ai-provider-failing + the two ai-spend rules the AI COST CONTROLS split produced)", ALERT_RULES.length === 8);
+check("seven live rules", ALERT_RULES.filter((r) => r.live).length === 7);
 check("quota-low is the sole dormant rule", ALERT_RULES.filter((r) => !r.live).map((r) => r.id).join() === "quota-low");
-check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 7);
+check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 8);
 check("ai-provider-failing reads the ai-failures authority", ALERT_RULES.find((r) => r.id === "ai-provider-failing")?.authority === "ai-failures");
-check("ai-spend-high reads the ai-spend authority and says critical = twice the threshold", ALERT_RULES.find((r) => r.id === "ai-spend-high")?.authority === "ai-spend" && /critical at or above twice/.test(ALERT_RULES.find((r) => r.id === "ai-spend-high")!.description));
+check("ai-spend-fleet-high reads the ai-spend authority and says critical = twice the threshold", ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")?.authority === "ai-spend" && /critical at or above twice/.test(ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")!.description));
+check("ai-spend-user-high reads the same authority, is live and on by default", ALERT_RULES.find((r) => r.id === "ai-spend-user-high")?.authority === "ai-spend" && ALERT_RULES.find((r) => r.id === "ai-spend-user-high")!.live && ALERT_RULES.find((r) => r.id === "ai-spend-user-high")!.defaultEnabled);
+check("the old ai-spend-high id is gone (one rule, one enabled key, one dedupe family each)", ALERT_RULES.every((r) => r.id !== "ai-spend-high"));
 
 // ── Engine: job-failing ──────────────────────────────────────────────────────────
 
@@ -168,12 +170,12 @@ console.log("engine · ai-failing");
 console.log("engine · ai-spend");
 {
   const sig = (o: Partial<AiSpendHealth>) =>
-    evaluateAlertRules(outputs({ aiSpend: aiSpend(o) }), ALL_ON).filter((s) => s.kind === "ai-spend");
+    evaluateAlertRules(outputs({ aiSpend: aiSpend(o) }), ALL_ON).filter((s) => s.kind === "ai-spend-fleet" || s.kind === "ai-spend-user");
   check("quiet fleet, every invocation priced ⇒ no signal", sig({ fleetUsd: 2.5, maxUserUsd: 1.2, maxUserRef: "user …abc123", customers: 3, customerInvocations: 40 }).length === 0);
   check("nothing priced and nothing unpriced (empty window) ⇒ no signal", sig({}).length === 0);
 
   const fleet = sig({ fleetUsd: 10, maxUserUsd: 2, maxUserRef: "user …abc123", customers: 5, customerInvocations: 120 });
-  check("fleet at the threshold ⇒ ONE warning on the per-day fleet key", fleet.length === 1 && fleet[0].severity === "warning" && fleet[0].dedupeKey === "ai-spend-high:fleet:2026-07-16");
+  check("fleet at the threshold ⇒ ONE warning on the per-day fleet key", fleet.length === 1 && fleet[0].severity === "warning" && fleet[0].dedupeKey === "ai-spend-fleet-high:fleet:2026-07-16");
   check("fleet summary names the estimated USD and the threshold", /\$10\.00/.test(fleet[0].summary) && /threshold of \$10/.test(fleet[0].summary) && /estimate, not a bill/.test(fleet[0].summary));
   check("fleet summary carries no unpriced line when everything was priced", !/unpriced/.test(fleet[0].summary));
   check("fleet at twice the threshold ⇒ critical", sig({ fleetUsd: 20 })[0]?.severity === "critical");
@@ -181,7 +183,7 @@ console.log("engine · ai-spend");
   check("fleet just under the threshold ⇒ no signal", sig({ fleetUsd: 9.99 }).length === 0);
 
   const user = sig({ fleetUsd: 4, maxUserUsd: 3, maxUserRef: "user …abc123", customers: 2, customerInvocations: 30 });
-  check("one customer at the per-user threshold ⇒ warning on a per-day, per-opaque-ref key", user.length === 1 && user[0].severity === "warning" && user[0].dedupeKey === "ai-spend-high:user:2026-07-16:abc123");
+  check("one customer at the per-user threshold ⇒ warning on a per-day, per-opaque-ref key", user.length === 1 && user[0].severity === "warning" && user[0].dedupeKey === "ai-spend-user-high:user:2026-07-16:abc123");
   check("user summary names the opaque ref, the USD and the threshold — no email, no full id", /user …abc123/.test(user[0].summary) && /\$3\.00/.test(user[0].summary) && /threshold of \$3/.test(user[0].summary) && !/@/.test(user[0].summary));
   check("one customer at twice the per-user threshold ⇒ critical", sig({ maxUserUsd: 6, maxUserRef: "user …abc123" })[0]?.severity === "critical");
   check("a lone breacher's summary does not claim company", !/customers are at or above/.test(user[0].summary));
@@ -192,7 +194,7 @@ console.log("engine · ai-spend");
 
   // ⚠️ FAIL CLOSED. An unpriced invocation fires on its own, whatever the dollars say.
   const unpriced = sig({ fleetUsd: 0.4, maxUserUsd: 0.2, maxUserRef: "user …abc123", unpricedInvocations: 3, unpricedModels: ["OPENAI:gpt-7-preview"] });
-  check("any unpriced invocation ⇒ a warning even when spend is far under both thresholds", unpriced.length === 1 && unpriced[0].severity === "warning" && unpriced[0].dedupeKey === "ai-spend-high:unpriced:2026-07-16");
+  check("any unpriced invocation ⇒ a warning even when spend is far under both thresholds", unpriced.length === 1 && unpriced[0].severity === "warning" && unpriced[0].dedupeKey === "ai-spend-fleet-high:unpriced:2026-07-16");
   check("the unpriced summary counts them, names the model and says not counted / see rate card", /3 invocation\(s\) on unpriced models \(OPENAI:gpt-7-preview\)/.test(unpriced[0].summary) && /not counted; see rate card/.test(unpriced[0].summary));
   const both = sig({ fleetUsd: 12, maxUserUsd: 1, maxUserRef: "user …abc123", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] });
   check("fleet breach + unpriced ⇒ two independent breaches, and the fleet summary carries the unpriced line", both.length === 2 && new Set(both.map((s) => s.dedupeKey)).size === 2 && /not counted; see rate card/.test(both.find((s) => s.dedupeKey.includes(":fleet:"))!.summary));
@@ -204,7 +206,23 @@ console.log("engine · ai-spend");
   const again = decideDeliveries(fleet, new Map([[fleet[0].dedupeKey, NOW_MS - 2 * HOUR]]), NOW_MS + 4 * HOUR);
   check("same UTC day, within the re-notify window ⇒ suppressed", again.suppressed.length === 1 && again.toSend.length === 0);
   const nextDay = sig({ fleetUsd: 10, checkedAt: "2026-07-17T08:00:00Z" });
-  check("the next UTC day is a new breach key", nextDay[0].dedupeKey === "ai-spend-high:fleet:2026-07-17" && decideDeliveries(nextDay, new Map([[fleet[0].dedupeKey, NOW_MS]]), NOW_MS + 24 * HOUR).toSend.length === 1);
+  check("the next UTC day is a new breach key", nextDay[0].dedupeKey === "ai-spend-fleet-high:fleet:2026-07-17" && decideDeliveries(nextDay, new Map([[fleet[0].dedupeKey, NOW_MS]]), NOW_MS + 24 * HOUR).toSend.length === 1);
+
+  // AI COST CONTROLS — each rule is independently enable-able through the engine's existing key; disabling one changes evaluation only.
+  const bothBreach = { fleetUsd: 12, maxUserUsd: 4, maxUserRef: "user …abc123", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] };
+  const onlyUser = (id: string) => id === "ai-spend-user-high";
+  const onlyFleet = (id: string) => id === "ai-spend-fleet-high";
+  const userOnly = evaluateAlertRules(outputs({ aiSpend: aiSpend(bothBreach) }), onlyUser);
+  check("fleet rule disabled ⇒ no fleet and no unpriced signal; the user signal still fires", userOnly.length === 1 && userOnly[0].ruleId === "ai-spend-user-high");
+  const fleetOnly = evaluateAlertRules(outputs({ aiSpend: aiSpend(bothBreach) }), onlyFleet);
+  check("user rule disabled ⇒ fleet + unpriced signals only", fleetOnly.length === 2 && fleetOnly.every((s) => s.ruleId === "ai-spend-fleet-high"));
+  const settingsOff = new Map([["alert_rule_enabled:ai-spend-user-high", "false"]]);
+  check("the user rule resolves disabled from its own alert_rule_enabled key, the fleet rule stays on",
+    resolveEnabled(ALERT_RULES.find((r) => r.id === "ai-spend-user-high")!, settingsOff) === false && resolveEnabled(ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")!, settingsOff) === true);
+  // Idempotency: the same breach within the 20 h window is suppressed on BOTH families; the fold is untouched by the rule state.
+  const all = evaluateAlertRules(outputs({ aiSpend: aiSpend(bothBreach) }), ALL_ON);
+  const prior = new Map(all.map((s) => [s.dedupeKey, NOW_MS - 2 * HOUR]));
+  check("the same day's breaches are suppressed within 20 h on every family (idempotent)", decideDeliveries(all, prior, NOW_MS + 10 * HOUR).toSend.length === 0 && decideDeliveries(all, prior, NOW_MS + 17 * HOUR).suppressed.length === 3 && decideDeliveries(all, prior, NOW_MS + 19 * HOUR).toSend.length === 3);
 }
 
 // ── Engine: resource-stale ───────────────────────────────────────────────────────
@@ -282,7 +300,7 @@ console.log("history derivation");
   check("prior-fired keeps the newest delivery per key", prior.get("job-failing:a") === Date.parse("2026-07-15T07:30:00Z"));
 
   const views = deriveAlertRuleViews(ALERT_RULES, ALL_ON, [s2, s1]);
-  check("a view per rule", views.length === 7);
+  check("a view per rule", views.length === 8);
   check("last-triggered is the newest across runs", views.find((v) => v.id === "job-failing")!.lastTriggeredAtISO === "2026-07-15T07:30:00Z");
   check("never-fired rule has null last-triggered", views.find((v) => v.id === "scheduler-silent")!.lastTriggeredAtISO === null);
   check("dormant rule reported not-live", views.find((v) => v.id === "quota-low")!.live === false);
@@ -330,7 +348,7 @@ async function orchestratorTests() {
   check("delivered both", s1.counts.delivered === 2 && s1.deliveryStatus === "sent");
   check("one email to the destination", sent.length === 1 && sent[0].to === "ops@fourthmeridian.com" && sent[0].count === 2);
   check("summary records fired for suppression/history", s1.fired.length === 2);
-  check("per-rule outcomes list all seven rules", s1.rules.length === 7);
+  check("per-rule outcomes list all eight rules", s1.rules.length === 8);
   check("dormant rule not firing in outcomes", s1.rules.find((r) => r.id === "quota-low")!.firing === false);
 
   // Second cycle sees the first as recent history ⇒ suppresses (no second email).
@@ -386,7 +404,7 @@ function summaryWith(fired: { ruleId: string; dedupeKey: string; at: string }[])
     evaluatedAtISO: fired[fired.length - 1]?.at ?? NOW.toISOString(),
     destination: "ops@fourthmeridian.com",
     deliveryStatus: fired.length ? "sent" : "none",
-    counts: { evaluated: 7, live: 6, enabled: 6, firing: fired.length, delivered: fired.length, suppressed: 0 },
+    counts: { evaluated: 8, live: 7, enabled: 7, firing: fired.length, delivered: fired.length, suppressed: 0 },
     rules: [],
     fired: fired.map((f) => ({ ruleId: f.ruleId, kind: "job-failing", dedupeKey: f.dedupeKey, severity: "critical", summary: "x", deliveredAtISO: f.at })),
   };

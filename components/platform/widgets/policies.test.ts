@@ -227,7 +227,10 @@ console.log("\n10b. BETA C7 — the Cost safeguards group: two thresholds + the 
     },
     allowance: { key: "aiDailyUsdAllowance", label: "AI daily allowance (USD, estimated)", description: "Estimated AI spend a customer may cause per UTC day.", ceilingUsd: 20,
       policy: { key: "BETA_FULL_ACCESS_V1", label: "Beta — full access (v1)", usd: 5 }, overlay: { key: "FOUNDER_INTERNAL_V1", label: "Founder / internal (v1)", usd: 20 } },
-    alertRuleId: "ai-spend-high", thresholdWritePath: "set via admin settings (validated setting path)", checkedAt: NOW.toISOString(),
+    // AI COST CONTROLS — the rule split (ai-spend-high → fleet + user) and the controls route; shape pins re-pinned by Agent A.
+    alertRuleId: "ai-spend-fleet-high and ai-spend-user-high", alertRuleIds: { fleet: "ai-spend-fleet-high", user: "ai-spend-user-high" },
+    thresholdWritePath: "set in Policies → AI Cost Controls (/api/platform/platform-ops/ai-cost-controls, CONTROL, reason required)",
+    controlsUrl: "/api/platform/platform-ops/ai-cost-controls", checkedAt: NOW.toISOString(),
   });
   const panel = (s: AiSpendResponse["safeguards"] | null, loading = false, error: string | null = null) =>
     renderToStaticMarkup(createElement(CostSafeguardsPanel, { state: { data: s ? { spend: null as never, safeguards: s } : null, loading, error } }));
@@ -236,7 +239,7 @@ console.log("\n10b. BETA C7 — the Cost safeguards group: two thresholds + the 
   check("both thresholds: figure per 24 h, the default, the provenance", /\$10 \/ 24 h/.test(html) && /\$3 \/ 24 h/.test(html) && /default \$10/.test(html) && /default \$3/.test(html) && (html.match(/Platform default/g) ?? []).length === 2);
   check("the allowance dimension: policy value, overlay value, ceiling, per UTC day, estimated, catalogue provenance",
     /Beta — full access \(v1\) \$5 · Founder \/ internal \(v1\) \$20 · ceiling \$20 · per UTC day, estimated/.test(html) && /Catalogue \(code-owned\)/.test(html));
-  check("the allowance line says where it is refused and which rule judges the thresholds", /Conversations and Daily Brief routes/.test(html) && /rule ai-spend-high/.test(html));
+  check("the allowance line says where it is refused and which rule judges the thresholds", /Conversations and Daily Brief routes/.test(html) && /rule ai-spend-fleet-high and ai-spend-user-high/.test(html));
   check("READ-ONLY: no button, select, input or form; no Edit, Save or Reset", !/<button|<select|<input|<form/.test(html) && !/ Edit<\/button>|Save|Reset to default/.test(html));
   check("no email, no secret-shaped text", !/@|token|secret/i.test(html));
   const set = panel(safeguards({ fleet: { key: "ai_spend_alert_fleet_usd_24h", label: "AI spend alert — fleet (USD / 24 h)", usd: 25, defaultUsd: 10, origin: "SETTING", updatedAt: "2026-10-14T09:00:00.000Z" } }));

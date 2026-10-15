@@ -1,7 +1,7 @@
 /**
  * lib/platform/ai/spend-thresholds.ts  (BETA C7 — the two spend-alert thresholds)
  *
- * The `ai-spend-high` rule judges estimated USD against two PlatformSetting
+ * The `ai-spend-fleet-high` and `ai-spend-user-high` rules judge estimated USD against two PlatformSetting
  * keys the coordinator froze on the base: `ai_spend_alert_fleet_usd_24h`
  * (default 10) and `ai_spend_alert_user_usd_24h` (default 3). Both are
  * OPERATOR_CONFIGURABLE integers written only through the validated setting

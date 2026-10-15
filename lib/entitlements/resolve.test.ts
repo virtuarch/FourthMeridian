@@ -8,6 +8,7 @@ import {
   INVITE_COHORT, COHORTS, isPolicyGroupKey, isOverlayKey,
 } from "./catalogue";
 import { explainEntitlement, loadEffectiveEntitlements, resolveEffectiveEntitlements } from "./resolve";
+import { parseAllowanceSettingValue, resolveAiDailyAllowance } from "./ai-allowance";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -63,6 +64,38 @@ console.log("ceilings win over anything asked");
     const d = e.dimensions[k]; const c = ENTITLEMENT_DIMENSIONS[k];
     return c.kind === "boolean" ? !(d.value && !c.ceiling) : c.kind === "count" ? Number(d.value) <= Number(c.ceiling) : Number(d.value) >= Number(c.ceiling);
   }));
+}
+
+console.log("AI COST CONTROLS — the ONE allowance precedence: USER_OVERRIDE > OVERLAY > PLATFORM_SETTING > POLICY, ceiling last");
+{
+  const r = (o: Partial<Parameters<typeof resolveAiDailyAllowance>[0]>) => resolveAiDailyAllowance({ policyUsd: 5, overlayUsd: null, platformUsd: null, userOverrideUsd: null, ceilingUsd: 20, ...o });
+  check("policy alone ⇒ POLICY 5", r({}).usd === 5 && r({}).source === "POLICY");
+  check("platform setting beats policy ⇒ PLATFORM_SETTING 8", r({ platformUsd: 8 }).usd === 8 && r({ platformUsd: 8 }).source === "PLATFORM_SETTING");
+  check("overlay beats platform ⇒ OVERLAY 20", r({ platformUsd: 8, overlayUsd: 20 }).source === "OVERLAY" && r({ platformUsd: 8, overlayUsd: 20 }).usd === 20);
+  check("user override beats everything ⇒ USER_OVERRIDE 3", r({ platformUsd: 8, overlayUsd: 20, userOverrideUsd: 3 }).source === "USER_OVERRIDE" && r({ platformUsd: 8, overlayUsd: 20, userOverrideUsd: 3 }).usd === 3);
+  const clamped = r({ userOverrideUsd: 50 });
+  check("the ceiling clamps LAST and reports CEILING with what was asked", clamped.usd === 20 && clamped.source === "CEILING" && clamped.askedUsd === 50 && clamped.askedSource === "USER_OVERRIDE" && clamped.clamped);
+  check("a platform value lower than policy still wins (it is a control, not a floor)", r({ platformUsd: 2 }).usd === 2 && r({ platformUsd: 2 }).source === "PLATFORM_SETTING");
+  check("non-candidates are skipped: NaN / negative / non-integer override ⇒ next source", r({ userOverrideUsd: NaN, overlayUsd: 20 }).source === "OVERLAY" && r({ userOverrideUsd: -1 }).source === "POLICY" && r({ userOverrideUsd: 2.5, platformUsd: 7 }).source === "PLATFORM_SETTING");
+  check("zero is a candidate (0 refuses every turn), never unlimited", r({ userOverrideUsd: 0 }).usd === 0 && r({ userOverrideUsd: 0 }).source === "USER_OVERRIDE");
+  check("the stored platform value parses by the descriptor's rule: 1…ceiling integers only", parseAllowanceSettingValue("7", 20) === 7 && parseAllowanceSettingValue("0", 20) === null && parseAllowanceSettingValue("21", 20) === null && parseAllowanceSettingValue("4.5", 20) === null && parseAllowanceSettingValue("x", 20) === null && parseAllowanceSettingValue(null, 20) === null);
+
+  // Through the resolver: the dimension reports the same answer and the new sources.
+  const facts = { policyGroup: "BETA_FULL_ACCESS_V1", overlay: null, assignedAt: now, assignedById: "op1" };
+  const p = resolveEffectiveEntitlements(facts, { aiDailyUsdAllowanceUsd: 9 });
+  check("resolver: platform setting ⇒ PLATFORM_SETTING 9 with platformValue beside", p.dimensions.aiDailyUsdAllowance.value === 9 && p.dimensions.aiDailyUsdAllowance.source === "PLATFORM_SETTING" && p.dimensions.aiDailyUsdAllowance.platformValue === 9 && p.dimensions.aiDailyUsdAllowance.policyValue === 5);
+  const u = resolveEffectiveEntitlements({ ...facts, overlay: "FOUNDER_INTERNAL_V1", aiDailyUsdAllowanceOverride: 4 }, { aiDailyUsdAllowanceUsd: 9 });
+  check("resolver: override ⇒ USER_OVERRIDE 4 over the founder overlay and the platform value", u.dimensions.aiDailyUsdAllowance.value === 4 && u.dimensions.aiDailyUsdAllowance.source === "USER_OVERRIDE" && u.aiDailyUsdAllowanceOverride === 4 && u.dimensions.aiDailyUsdAllowance.overrideValue === 4);
+  check("resolver: unassigned with no platform value stays POLICY_DEFAULT", resolveEffectiveEntitlements(null).dimensions.aiDailyUsdAllowance.source === "POLICY_DEFAULT");
+  check("resolver: unassigned WITH a platform value ⇒ PLATFORM_SETTING", resolveEffectiveEntitlements(null, { aiDailyUsdAllowanceUsd: 6 }).dimensions.aiDailyUsdAllowance.source === "PLATFORM_SETTING");
+  check("every other dimension is untouched by the platform input", p.dimensions.exportsPerDay.source === "POLICY" && p.dimensions.aiTurnsPerHour.value === 60);
+  check("explanations name the new sources", /per-customer override/.test(explainEntitlement(u.dimensions.aiDailyUsdAllowance)) && /platform setting/.test(explainEntitlement(p.dimensions.aiDailyUsdAllowance)));
+  // The loader reads the platform row through the same client when it has the delegate (the tenant phase does), and copes without it.
+  const withSetting = { customerPolicyAssignment: { findUnique: async () => ({ policyGroup: "BETA_FULL_ACCESS_V1", overlay: null, assignedAt: now, assignedById: null, aiDailyUsdAllowanceOverride: null }) },
+    platformSetting: { findUnique: async ({ where }: { where: { key: string } }) => (where.key === "ai_daily_allowance_usd" ? { value: "11" } : null) } };
+  loadEffectiveEntitlements(withSetting, "u1").then((e) => check("loader: the platform allowance row is read in the same phase ⇒ PLATFORM_SETTING 11", e.dimensions.aiDailyUsdAllowance.value === 11 && e.dimensions.aiDailyUsdAllowance.source === "PLATFORM_SETTING"));
+  const invalidSetting = { ...withSetting, platformSetting: { findUnique: async () => ({ value: "lots" }) } };
+  loadEffectiveEntitlements(invalidSetting, "u1").then((e) => check("loader: an invalid platform row is NOT a candidate (policy stands)", e.dimensions.aiDailyUsdAllowance.source === "POLICY" && e.dimensions.aiDailyUsdAllowance.value === 5));
 }
 
 console.log("determinism");

@@ -51,6 +51,12 @@ async function main() {
         && isQuotaExhaustedError(new Error(NO_CREDITS.message)) && !isRateLimitError(new Error(NO_CREDITS.message))
         && !isRateLimitError(new Error('429 You exceeded your current quota, please check your plan and billing details.')));
     check('…and a true rate limit is not a quota', !isQuotaExhaustedError(RATE_LIMITED) && !isQuotaExhaustedError(BARE_429));
+    // AI COST CONTROLS — a project / organization hard spend limit is a 429 that waiting cannot cure either (OpenAI error-codes guide).
+    for (const code of ['project_spend_limit_exceeded', 'organization_spend_limit_exceeded']) {
+      const e = Object.assign(new Error('429 You have exceeded the spend limit configured for this project.'), { status: 429, code });
+      check(`${code} is QUOTA, not a rate limit — by code and by message`, isQuotaExhaustedError(e) && !isRateLimitError(e)
+        && isQuotaExhaustedError(Object.assign(new Error(`429 ${code}`), { status: 429 })) && !isRateLimitError(Object.assign(new Error(`429 ${code}`), { status: 429 })));
+    }
     check('the provider\'s own wait is honoured, plus a margin', rateLimitWaitMs(RATE_LIMITED, 1) === 12_400 + SUGGESTED_WAIT_MARGIN_MS);
     check('no suggestion ⇒ linear backoff, capped', rateLimitWaitMs(BARE_429, 1) === BACKOFF_STEP_MS
       && rateLimitWaitMs(BARE_429, 3) === 3 * BACKOFF_STEP_MS && rateLimitWaitMs(BARE_429, 99) === BACKOFF_MAX_MS);

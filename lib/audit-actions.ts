@@ -311,6 +311,10 @@ export const AuditAction = {
   // (lib/audit.ts) with a structured reason where REASON_REQUIRED_ACTIONS says so.
   CUSTOMER_POLICY_ASSIGNED:        "CUSTOMER_POLICY_ASSIGNED",
   CUSTOMER_POLICY_OVERLAY_CHANGED: "CUSTOMER_POLICY_OVERLAY_CHANGED",
+  // AI COST CONTROLS — the per-customer daily AI allowance override was set or
+  // removed (lib/platform/customer/assign.ts; reason-required; change carries
+  // the before/after USD figure, a policy value, never a balance).
+  CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED: "CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED",
   CUSTOMER_COHORT_ASSIGNED:        "CUSTOMER_COHORT_ASSIGNED",
   JOB_CADENCE_CHANGED:             "JOB_CADENCE_CHANGED",
   JOB_CADENCE_RESET:               "JOB_CADENCE_RESET",
@@ -462,6 +466,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   // P1 — customer policy / cohort, execution cadence, operator refresh-all.
   AuditAction.CUSTOMER_POLICY_ASSIGNED,
   AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
+  AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,
   AuditAction.CUSTOMER_COHORT_ASSIGNED,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
