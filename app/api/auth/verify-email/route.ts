@@ -31,6 +31,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { limitByIp } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
@@ -77,7 +78,8 @@ export async function POST(req: NextRequest) {
       data: {
         userId:   user.id,
         action:   AuditAction.EMAIL_VERIFIED,
-        metadata: { email: user.email },
+        // BETA A7 — the address is referenced by digest, never stored (lib/audit.ts auditEmailHash).
+        metadata: { emailHash: auditEmailHash(user.email) },
       },
     });
 

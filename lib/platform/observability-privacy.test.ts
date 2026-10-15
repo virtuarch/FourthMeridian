@@ -60,6 +60,13 @@ const READERS = [
   "lib/platform/ai/spend-thresholds.ts",
   "lib/platform/ai/cost-safeguards.ts",
   "lib/platform/ai/customer-spend-today.ts",
+  // BETA A1–A8 — the fleet product-analytics reader + pure core (GROWTH_REVENUE,
+  // identity-minimised: ids are joins, never output), and the two Growth readers
+  // that now fold the same facts.
+  "lib/platform/growth/product-analytics.ts",
+  "lib/platform/growth/product-analytics-core.ts",
+  "lib/platform/activity/activity.ts",
+  "lib/platform/growth/growth.ts",
 ];
 const ROUTES = [
   "app/api/platform/platform-ops/overview/route.ts",
@@ -78,6 +85,8 @@ const ROUTES = [
   "app/api/platform/platform-ops/refresh/daily/route.ts",
   // BETA C6/C7 — spend by surface + cost safeguards (PLATFORM_OPS READ; gate pinned in spend-by-surface.test.ts).
   "app/api/platform/platform-ops/ai-spend/route.ts",
+  // BETA A1–A8 — the GROWTH_REVENUE analytics route (its gate is pinned below).
+  "app/api/platform/growth-revenue/product-analytics/route.ts",
 ];
 
 console.log("source · no customer identity or secret is selected");
@@ -131,6 +140,21 @@ console.log("source · every new route is a PLATFORM_OPS READ gate that returns 
     check(`${f}: imports no db and touches no ledger accessor`, !/@\/lib\/db/.test(src) && !/\.(refreshExecution|aiInvocation|dailyBrief|plaidItem)\./.test(src));
     check(`${f}: exports no mutating verb`, !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(src));
   }
+}
+
+console.log("source · BETA — the product-analytics route is a GROWTH_REVENUE READ gate; the reader is fm_system and emits no identity");
+{
+  const route = strip("app/api/platform/growth-revenue/product-analytics/route.ts");
+  check("the analytics route requires GROWTH_REVENUE READ and returns the error first",
+    /requirePlatformAccess\(\s*["']GROWTH_REVENUE["']\s*,\s*["']READ["']\s*\)/.test(route) && /if\s*\(\s*err\s*\)\s*return\s+err/.test(route));
+  check("the analytics route never requests WRITE/CONTROL, exports no mutating verb, imports no db, and is no-store",
+    !/["'](WRITE|CONTROL)["']/.test(route) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route) && !/@\/lib\/db/.test(route) && /no-store/.test(route));
+  const reader = strip("lib/platform/growth/product-analytics.ts");
+  check("the analytics reader reads through fm_system only", /systemDb/.test(reader) && !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*["']@\/lib\/db["']/.test(reader));
+  check("the analytics reader selects no name, username, Space name or institution onto any row", !/\b(name|username|institutionName|institution)\s*:\s*true/.test(reader));
+  check("the analytics reader selects no user relation (no identity is ever joined)", !/user:\s*\{\s*select/.test(reader));
+  const dto = strip("lib/platform/growth/product-analytics-types.ts");
+  check("the frozen DTO declares no identity field", !/^\s*(userId|email|username|name|spaceName)\??\s*:/m.test(dto));
 }
 
 console.log("runtime · builders emit no customer material even when fed it");

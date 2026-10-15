@@ -52,7 +52,41 @@
  * export, weekly-active counts). Nothing reads it for expiry or revocation, so
  * minute granularity loses nothing it is used for. A revoked row is never
  * touched.
+ *
+ * ── BETA A2 — THE PRESENCE ROW RIDES THE SAME STATEMENT ───────────────────────
+ * `SESSION_ACTIVE_DAY` (lib/audit-actions.ts) is the one product event written
+ * on the pre-identity role: "this user had a live session on this UTC day". It
+ * is written by the SAME autocommit statement, as a data-modifying CTE:
+ *
+ *   · the UPDATE now RETURNS the row's PREVIOUS `lastActiveAt` (taken from the
+ *     locked sub-select, which sees the old value) and its `createdAt`;
+ *   · the INSERT fires only when the previous touch was on an EARLIER UTC day,
+ *     or when the row had never been touched since it was created (a session
+ *     created today has `lastActiveAt = createdAt`, both from the one INSERT's
+ *     `now()`), AND no OTHER live session of the user has already been touched
+ *     today — so two devices on one day produce one row, not two.
+ *
+ * WHY THE DEDUPE READS UserSession AND NOT AuditLog. fm_auth holds INSERT on
+ * AuditLog and NO SELECT (20261002000200_rls_auth_surface); a `WHERE NOT
+ * EXISTS (… FROM "AuditLog")` would be refused outright. UserSession IS readable
+ * on this role (it is what the session callback validates), and its touch
+ * clocks carry the same fact. The guarantee is per statement, not per index:
+ * two sessions touched in the same instant can both see the other untouched and
+ * both write, so every reader counts DISTINCT (user, day) — the owner's rule.
+ *
+ * What it costs: nothing new. Still one statement, still no transaction a
+ * suspended instance could hold open, still SKIP LOCKED, still throttled to the
+ * granularity. A session shorter than one granularity window writes no touch and
+ * therefore no day row; the readers union the sign-in day (UserSession.createdAt)
+ * for presence, so such a visit is still present, never engaged.
+ *
+ * The id is generated here because nothing comes back from the INSERT (the
+ * auditInsert lesson, lib/audit.ts). metadata is built in SQL from the database
+ * clock so the day in the row is the day the comparison used.
  */
+
+import { randomUUID } from "crypto";
+import { AuditAction } from "@/lib/audit-actions";
 
 /** Minimum age before `lastActiveAt` is written again. */
 export const SESSION_ACTIVITY_GRANULARITY_SECONDS = 60;
@@ -63,9 +97,10 @@ export interface RawExecutor {
 }
 
 /**
- * Record that a session validated just now was used. Returns the number of rows
- * written: 1 when the row was stale and free, 0 when it was fresh, locked by
- * someone else, revoked, or not this user's. Never waits on a row lock.
+ * Record that a session validated just now was used, and the user's presence on
+ * this UTC day when this is the day's first touch. Returns the number of
+ * SESSION_ACTIVE_DAY rows written (0 or 1); the session touch itself happens
+ * whenever the row was stale and free, and is never waited on.
  *
  * The interval literal is kept in step with SESSION_ACTIVITY_GRANULARITY_SECONDS
  * by lib/auth/session-activity.test.ts.
@@ -75,15 +110,38 @@ export function touchSessionActivity(
   sessionToken: string,
   userId:       string,
 ): PromiseLike<number> {
+  const dayRowId = randomUUID();
+  const action = AuditAction.SESSION_ACTIVE_DAY;
   return client.$executeRaw`
-    UPDATE "UserSession"
-       SET "lastActiveAt" = (now() AT TIME ZONE 'UTC')
-     WHERE "id" = (
-       SELECT "id" FROM "UserSession"
-        WHERE "sessionToken" = ${sessionToken}
-          AND "userId"       = ${userId}
-          AND "revokedAt"    IS NULL
-          AND "lastActiveAt" < (now() AT TIME ZONE 'UTC') - interval '60 seconds'
-        FOR UPDATE SKIP LOCKED
-     )`;
+    WITH touched AS (
+      UPDATE "UserSession" u
+         SET "lastActiveAt" = (now() AT TIME ZONE 'UTC')
+        FROM (
+          SELECT "id", "lastActiveAt" AS "previousActiveAt", "createdAt"
+            FROM "UserSession"
+           WHERE "sessionToken" = ${sessionToken}
+             AND "userId"       = ${userId}
+             AND "revokedAt"    IS NULL
+             AND "lastActiveAt" < (now() AT TIME ZONE 'UTC') - interval '60 seconds'
+           FOR UPDATE SKIP LOCKED
+        ) s
+       WHERE u."id" = s."id"
+       RETURNING u."id", s."previousActiveAt", s."createdAt"
+    )
+    INSERT INTO "AuditLog" ("id", "userId", "action", "metadata", "ipAddress", "userAgent")
+    SELECT ${dayRowId}::text, ${userId}::text, ${action}::text,
+           jsonb_build_object('actorType', 'USER', 'result', 'SUCCESS',
+                              'day', to_char((now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')),
+           NULL, NULL
+      FROM touched t
+     WHERE (t."previousActiveAt" < date_trunc('day', (now() AT TIME ZONE 'UTC'))
+            OR t."previousActiveAt" = t."createdAt")
+       AND NOT EXISTS (
+         SELECT 1 FROM "UserSession" o
+          WHERE o."userId"       = ${userId}
+            AND o."id"          <> t."id"
+            AND o."revokedAt"    IS NULL
+            AND o."lastActiveAt" >= date_trunc('day', (now() AT TIME ZONE 'UTC'))
+            AND o."lastActiveAt" <> o."createdAt"
+       )`;
 }

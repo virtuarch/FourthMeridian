@@ -46,7 +46,11 @@ async function main() {
   check("one call, one statement — no transaction is opened around it",
     calls.length === 1 && !/\bBEGIN\b|\bCOMMIT\b/i.test(sql) && (sql.match(/;/g) ?? []).length === 0, sql);
   check("the token and the user are bound parameters, never interpolated text",
-    JSON.stringify(calls[0]?.values) === JSON.stringify(["tok_abcdefghijklmnop", "user_1"]) && !sql.includes("tok_abcdefghijklmnop"));
+    calls[0]?.values[0] === "tok_abcdefghijklmnop" && calls[0]?.values[1] === "user_1"
+    && !sql.includes("tok_abcdefghijklmnop") && !sql.includes("user_1"));
+  check("every other bound value is the day-row id, the user, or the action — nothing else rides the statement",
+    (calls[0]?.values ?? []).slice(2).every((v) => v === "user_1" || v === "SESSION_ACTIVE_DAY" || (typeof v === "string" && /^[0-9a-f-]{36}$/.test(v))),
+    JSON.stringify(calls[0]?.values));
   check("it never WAITS on a held row: the row is taken FOR UPDATE SKIP LOCKED", /FOR UPDATE SKIP LOCKED/.test(sql), sql);
   check("it is throttled in the database, so the limit holds across every instance",
     /"lastActiveAt" < \(now\(\) AT TIME ZONE 'UTC'\) - interval '(\d+) seconds'/.test(sql), sql);
@@ -57,7 +61,28 @@ async function main() {
     SESSION_ACTIVITY_GRANULARITY_SECONDS >= 30 && SESSION_ACTIVITY_GRANULARITY_SECONDS <= 300);
   check("a revoked session is never touched, and only the owner's row matches",
     /"revokedAt" IS NULL/.test(sql) && /"userId" = \$\?/.test(sql) && /"sessionToken" = \$\?/.test(sql), sql);
-  check("it reports rows written", n === 1);
+  check("it reports day rows written", n === 1);
+
+  // ── BETA A2 — the presence row rides the SAME statement ───────────────────
+  console.log("BETA A2 — SESSION_ACTIVE_DAY in the same statement");
+  check("the UPDATE returns the PREVIOUS lastActiveAt from the locked sub-select, and the row's createdAt",
+    /"lastActiveAt" AS "previousActiveAt"/.test(sql) && /RETURNING u\."id", s\."previousActiveAt", s\."createdAt"/.test(sql), sql);
+  check("the day row is an INSERT INTO AuditLog of SESSION_ACTIVE_DAY, bound not interpolated",
+    /INSERT INTO "AuditLog"/.test(sql) && (calls[0]?.values ?? []).includes("SESSION_ACTIVE_DAY") && !sql.includes("SESSION_ACTIVE_DAY"));
+  check("it fires only on the day's FIRST touch: previous touch on an earlier UTC day, or a never-touched session",
+    /t\."previousActiveAt" < date_trunc\('day', \(now\(\) AT TIME ZONE 'UTC'\)\)/.test(sql)
+    && /OR t\."previousActiveAt" = t\."createdAt"/.test(sql));
+  check("…and only when no OTHER live session of the user was touched today (two devices ⇒ one row)",
+    /NOT EXISTS \(\s*SELECT 1 FROM "UserSession" o/.test(sql) && /o\."id"\s+<> t\."id"/.test(sql)
+    && /o\."lastActiveAt" >= date_trunc\('day'/.test(sql) && /o\."lastActiveAt" <> o\."createdAt"/.test(sql));
+  check("the dedupe reads UserSession, never AuditLog — fm_auth has no SELECT on the audit trail",
+    !/FROM "AuditLog"/.test(sql) && !/RETURNING "id"/.test(sql.slice(sql.indexOf('INSERT INTO "AuditLog"'))));
+  check("the day in the row comes from the database clock, the same clock the comparison used",
+    /'day', to_char\(\(now\(\) AT TIME ZONE 'UTC'\), 'YYYY-MM-DD'\)/.test(sql));
+  check("the row carries no request forensics (ipAddress / userAgent NULL) and no Space",
+    /NULL, NULL\s+FROM touched/.test(sql) && !/"spaceId"/.test(sql));
+  check("metadata is the audit envelope plus the day only",
+    /jsonb_build_object\('actorType', 'USER', 'result', 'SUCCESS',\s*'day'/.test(sql));
 
   // ── The caller ────────────────────────────────────────────────────────────
   const auth = strip(read("lib/auth.ts"));

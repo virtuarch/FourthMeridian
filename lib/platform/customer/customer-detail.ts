@@ -9,6 +9,8 @@
  *   Spaces                   SpaceMember × Space
  *   last active              UserSession.lastActiveAt (LOGIN audit as fallback)
  *   connections + health     PlaidItem, Connection → deriveConnectionHealthState
+ *   first connection         min(PlaidItem, wallet Connection, MANUAL FinancialAccount).createdAt (BETA: manual included)
+ *   roll-up (BETA §8)        AI turns + est. USD 30 d · Items · last engaged · funnel stage (customer-core projectRollup)
  *   incidents                SyncIssue, RefreshExecution, PlaidWebhookEvent (by item)
  *   AI usage / failures      AiInvocation where userId (P0 attribution)
  *   operator actions         AuditLog where userId = customer, performedByAdminId
@@ -23,11 +25,13 @@ import { AuditAction } from "@/lib/audit-actions";
 import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
 import { staleWindowMs } from "@/lib/connections/health";
+import { ENGAGEMENT_AI_SURFACES } from "@/lib/platform/growth/product-analytics-core";
+import { loadLastEngagements } from "@/lib/platform/growth/product-analytics";
 import {
   actionTouchesItems, firstConnectedAt, projectActivity, projectAiUsage, projectCohorts, projectConnections, projectIdentity,
-  projectIncidents, projectLifecycle, projectOperatorAction, projectPolicy, projectSpaces,
+  projectIncidents, projectLifecycle, projectOperatorAction, projectPolicy, projectRollup, projectSpaces,
   type ActivityView, type AiUsageView, type CustomerConnectionView, type CustomerCohortView, type CustomerIdentity,
-  type CustomerPolicyView, type CustomerSpaceView, type IncidentsView, type LifecycleView, type OperatorActionView,
+  type CustomerPolicyView, type CustomerRollup, type CustomerSpaceView, type IncidentsView, type LifecycleView, type OperatorActionView,
 } from "./customer-core";
 
 export const AI_WINDOW_DAYS = 30;
@@ -54,6 +58,8 @@ export interface CustomerDetail {
   connections: CustomerConnectionView[];
   incidents: IncidentsView;
   ai: AiUsageView;
+  /** BETA — the same five fields the list row carries (design §8). */
+  rollup: CustomerRollup;
   operatorActions: OperatorActionView[];
   actions: CustomerActionsView;
   checkedAt: string;
@@ -72,14 +78,14 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
   });
   if (!user) return null;
 
-  const [entitlements, cohorts, request, memberships, sessions, lastLogin, activeSessions, plaid, wallets, policies] = await Promise.all([
+  const [entitlements, cohorts, request, memberships, sessions, lastLogin, activeSessions, plaid, wallets, policies, manualAssets, lastEngagements, firstAiTurn, firstBriefView] = await Promise.all([
     loadEffectiveEntitlements(client, userId),
     client.customerCohort.findMany({ where: { userId }, orderBy: { joinedAt: "asc" }, select: { cohort: true, joinedAt: true, source: true } }),
     client.betaAccessRequest.findUnique({ where: { email: user.email },
       select: { id: true, status: true, createdAt: true, decidedAt: true, invitedAt: true, inviteExpiresAt: true, redeemedAt: true } }),
     client.spaceMember.findMany({ where: { userId },
       select: { role: true, status: true, joinedAt: true, space: { select: { id: true, name: true, type: true, category: true, archivedAt: true, deletedAt: true } } } }),
-    client.userSession.aggregate({ where: { userId }, _max: { lastActiveAt: true } }),
+    client.userSession.aggregate({ where: { userId }, _max: { lastActiveAt: true }, _min: { createdAt: true } }),
     client.auditLog.findFirst({ where: { userId, action: AuditAction.LOGIN }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
     client.userSession.count({ where: { userId, revokedAt: null } }),
     client.plaidItem.findMany({ where: { userId }, orderBy: { createdAt: "asc" },
@@ -87,6 +93,13 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     client.connection.findMany({ where: { userId, provider: { notIn: ["PLAID", "MANUAL", "CSV"] } }, orderBy: { createdAt: "asc" },
       select: { id: true, provider: true, externalConnectionId: true, status: true, errorCode: true, lastSyncedAt: true, createdAt: true } }),
     loadRefreshPolicies(client),
+    // BETA — manual assets are a first connection too (design §6); created-by first, owner as the fallback.
+    client.financialAccount.findMany({
+      where: { OR: [{ createdByUserId: userId }, { ownerUserId: userId }], syncStatus: "manual", deletedAt: null }, select: { createdAt: true },
+    }),
+    loadLastEngagements(client, [userId]),
+    client.aiInvocation.findFirst({ where: { userId, surface: "chat" }, orderBy: { occurredAt: "asc" }, select: { occurredAt: true } }),
+    client.auditLog.findFirst({ where: { userId, action: AuditAction.BRIEF_VIEWED }, orderBy: { createdAt: "asc" }, select: { createdAt: true } }),
   ]);
 
   const itemIds = plaid.map((p) => p.id);
@@ -120,7 +133,7 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     client.aiInvocation.findMany({
       where: { userId, occurredAt: { gte: since } },
       select: { provider: true, model: true, occurredAt: true, outcome: true, conversationId: true, surface: true,
-        promptTokens: true, cachedPromptTokens: true, completionTokens: true, latencyMs: true },
+        promptTokens: true, cachedPromptTokens: true, completionTokens: true, latencyMs: true, correlationId: true, turnIndex: true },
     }),
     client.auditLog.findMany({
       where: { userId, performedByAdminId: { not: null } }, orderBy: { createdAt: "desc" }, take: OPERATOR_ACTIONS,
@@ -140,7 +153,8 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, OPERATOR_ACTIONS).map(projectOperatorAction);
 
   const inviteMeta = (inviteAudit?.metadata ?? null) as { emailStatus?: unknown } | null;
-  const connected = firstConnectedAt(plaid, wallets);
+  const connected = firstConnectedAt(plaid, wallets, manualAssets);
+  const lastEngagedAt = lastEngagements.reduce<Date | null>((best, r) => (!best || r.at > best ? r.at : best), null);
 
   return {
     identity: projectIdentity(user),
@@ -157,6 +171,16 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     connections: projectConnections(plaid, wallets, { bank: staleWindowMs(policies.BANK), wallet: staleWindowMs(policies.WALLET) }, now.getTime()),
     incidents: projectIncidents(issues, executions, webhooks),
     ai: projectAiUsage(invocations, AI_WINDOW_DAYS),
+    rollup: projectRollup({
+      invocations30d: invocations.filter((i) => i.surface !== null && ENGAGEMENT_AI_SURFACES.includes(i.surface)),
+      plaidItemCount: plaid.filter((p) => String(p.status) !== "REVOKED").length,
+      lastEngagedAt,
+      stage: {
+        createdAt: user.createdAt, emailVerifiedAt: user.emailVerifiedAt,
+        firstSession: sessions._min.createdAt, firstConnection: connected,
+        firstAiTurn: firstAiTurn?.occurredAt ?? null, firstBriefView: firstBriefView?.createdAt ?? null,
+      },
+    }),
     operatorActions,
     actions: {
       assignPolicy: true, assignCohort: true, refreshAll: user.deactivatedAt === null,

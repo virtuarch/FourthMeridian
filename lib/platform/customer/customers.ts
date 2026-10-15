@@ -6,6 +6,14 @@
  * on, when they were last active and how many provider connections they hold.
  * Every figure is a join over existing ledgers; nothing is stored here.
  *
+ * BETA (design §8) — each row also carries the per-user usage / cost / stage
+ * ROLL-UP the list renders as one line: chat turns and the rate-card ESTIMATE
+ * over the last 30 days (AiInvocation, customer surfaces only), non-REVOKED
+ * Plaid Items, the newest engagement fact (the frozen predicate, through the
+ * shared product-analytics loader) and the furthest onboarding stage reached
+ * (the same strict fold the Growth funnel uses). `CustomerRollup` in
+ * customer-core.ts is the pure projection; this file only fetches.
+ *
  * fm_system: an operator reaching a customer is acting outside their own
  * tenancy by definition (the Platform page header records the same reasoning).
  */
@@ -14,11 +22,14 @@ import "server-only";
 import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { DEFAULT_POLICY_GROUP } from "@/lib/entitlements/catalogue";
-import { projectActivity } from "./customer-core";
+import { ENGAGEMENT_AI_SURFACES } from "@/lib/platform/growth/product-analytics-core";
+import { loadLastEngagements } from "@/lib/platform/growth/product-analytics";
+import { projectActivity, projectRollup, type CustomerRollup } from "./customer-core";
 
 export const CUSTOMER_LIST_MAX = 200;
+export const ROLLUP_WINDOW_DAYS = 30;
 
-export interface CustomerListRow {
+export interface CustomerListRow extends CustomerRollup {
   id: string; email: string; name: string | null; username: string | null; role: string;
   createdAt: string; deactivatedAt: string | null;
   lastActiveAt: string | null; lastActiveSource: "SESSION" | "LOGIN" | "NONE";
@@ -29,7 +40,8 @@ export interface CustomerListRow {
 
 export interface CustomerList { total: number; customers: CustomerListRow[] }
 
-export async function listCustomers(opts: { search?: string; limit?: number } = {}, client = systemDb): Promise<CustomerList> {
+export async function listCustomers(opts: { search?: string; limit?: number; now?: Date } = {}, client = systemDb): Promise<CustomerList> {
+  const now = opts.now ?? new Date();
   const search = (opts.search ?? "").trim();
   const limit = Math.min(CUSTOMER_LIST_MAX, Math.max(1, Math.floor(opts.limit ?? 50)));
   const where = search
@@ -44,33 +56,75 @@ export async function listCustomers(opts: { search?: string; limit?: number } = 
     client.user.count({ where }),
     client.user.findMany({
       where, orderBy: { createdAt: "desc" }, take: limit,
-      select: { id: true, email: true, name: true, username: true, role: true, createdAt: true, deactivatedAt: true },
+      select: { id: true, email: true, name: true, username: true, role: true, createdAt: true, emailVerifiedAt: true, deactivatedAt: true },
     }),
   ]);
   const ids = users.map((u) => u.id);
   if (ids.length === 0) return { total, customers: [] };
 
-  const [assignments, cohorts, sessions, logins, plaidCounts, connCounts] = await Promise.all([
+  const since = new Date(now.getTime() - ROLLUP_WINDOW_DAYS * 86_400_000);
+  const [
+    assignments, cohorts, sessions, logins, plaidCounts, connCounts,
+    invocations, lastEngagements, plaidFirst, walletFirst, manualFirst, firstAiTurns, firstBriefViews,
+  ] = await Promise.all([
     client.customerPolicyAssignment.findMany({ where: { userId: { in: ids } }, select: { userId: true, policyGroup: true, overlay: true } }),
     client.customerCohort.findMany({ where: { userId: { in: ids } }, select: { userId: true, cohort: true } }),
-    client.userSession.groupBy({ by: ["userId"], where: { userId: { in: ids } }, _max: { lastActiveAt: true } }),
+    client.userSession.groupBy({ by: ["userId"], where: { userId: { in: ids } }, _max: { lastActiveAt: true }, _min: { createdAt: true } }),
     client.auditLog.groupBy({ by: ["userId"], where: { userId: { in: ids }, action: AuditAction.LOGIN }, _max: { createdAt: true } }),
     client.plaidItem.groupBy({ by: ["userId"], where: { userId: { in: ids }, status: { not: "REVOKED" } }, _count: { _all: true } }),
     client.connection.groupBy({ by: ["userId"], where: { userId: { in: ids }, provider: { notIn: ["PLAID", "MANUAL", "CSV"] }, status: { not: "REVOKED" } }, _count: { _all: true } }),
+    // BETA roll-up — customer surfaces only (harness never), the last 30 days; ids, clocks, tokens and the turn key.
+    client.aiInvocation.findMany({
+      where: { userId: { in: ids }, occurredAt: { gte: since }, surface: { in: [...ENGAGEMENT_AI_SURFACES] } },
+      select: { userId: true, provider: true, model: true, occurredAt: true, outcome: true, conversationId: true, surface: true,
+        promptTokens: true, cachedPromptTokens: true, completionTokens: true, latencyMs: true, correlationId: true, turnIndex: true },
+    }),
+    loadLastEngagements(client, ids),
+    // First connection — Plaid, wallet and MANUAL (design §6), revoked included: it still was a first connection.
+    client.plaidItem.groupBy({ by: ["userId"], where: { userId: { in: ids } }, _min: { createdAt: true } }),
+    client.connection.groupBy({ by: ["userId"], where: { userId: { in: ids }, provider: { notIn: ["PLAID", "MANUAL", "CSV"] } }, _min: { createdAt: true } }),
+    client.financialAccount.groupBy({ by: ["createdByUserId"], where: { createdByUserId: { in: ids }, syncStatus: "manual", deletedAt: null }, _min: { createdAt: true } }),
+    client.aiInvocation.groupBy({ by: ["userId"], where: { userId: { in: ids }, surface: "chat" }, _min: { occurredAt: true } }),
+    client.auditLog.groupBy({ by: ["userId"], where: { userId: { in: ids }, action: AuditAction.BRIEF_VIEWED }, _min: { createdAt: true } }),
   ]);
   const assignBy = new Map(assignments.map((a) => [a.userId, a] as const));
   const cohortsBy = new Map<string, string[]>();
   for (const c of cohorts) cohortsBy.set(c.userId, [...(cohortsBy.get(c.userId) ?? []), c.cohort]);
   const sessBy = new Map(sessions.map((s) => [s.userId, s._max.lastActiveAt] as const));
+  const firstSessionBy = new Map(sessions.map((s) => [s.userId, s._min.createdAt] as const));
   const loginBy = new Map(logins.map((l) => [l.userId, l._max.createdAt] as const));
   const plaidBy = new Map(plaidCounts.map((p) => [p.userId, p._count._all] as const));
   const connBy = new Map(connCounts.map((p) => [p.userId, p._count._all] as const));
+  const invocationsBy = new Map<string, typeof invocations>();
+  for (const r of invocations) if (r.userId) invocationsBy.set(r.userId, [...(invocationsBy.get(r.userId) ?? []), r]);
+  const lastEngagedBy = new Map<string, Date>();
+  for (const r of lastEngagements) { const cur = lastEngagedBy.get(r.userId); if (!cur || r.at > cur) lastEngagedBy.set(r.userId, r.at); }
+  const firstConnectionBy = new Map<string, Date>();
+  const earliest = (userId: string | null, at: Date | null) => {
+    if (!userId || !at) return;
+    const cur = firstConnectionBy.get(userId); if (!cur || at < cur) firstConnectionBy.set(userId, at);
+  };
+  for (const p of plaidFirst) earliest(p.userId, p._min.createdAt);
+  for (const w of walletFirst) earliest(w.userId, w._min.createdAt);
+  for (const m of manualFirst) earliest(m.createdByUserId, m._min.createdAt);
+  const firstAiBy = new Map(firstAiTurns.flatMap((r) => (r.userId ? [[r.userId, r._min.occurredAt] as const] : [])));
+  const firstBriefBy = new Map(firstBriefViews.flatMap((r) => (r.userId ? [[r.userId, r._min.createdAt] as const] : [])));
 
   return {
     total,
     customers: users.map((u) => {
       const a = assignBy.get(u.id);
       const act = projectActivity({ lastSessionActiveAt: sessBy.get(u.id) ?? null, lastLoginAt: loginBy.get(u.id) ?? null, activeSessions: 0 });
+      const rollup = projectRollup({
+        invocations30d: invocationsBy.get(u.id) ?? [],
+        plaidItemCount: plaidBy.get(u.id) ?? 0,
+        lastEngagedAt: lastEngagedBy.get(u.id) ?? null,
+        stage: {
+          createdAt: u.createdAt, emailVerifiedAt: u.emailVerifiedAt,
+          firstSession: firstSessionBy.get(u.id) ?? null, firstConnection: firstConnectionBy.get(u.id) ?? null,
+          firstAiTurn: firstAiBy.get(u.id) ?? null, firstBriefView: firstBriefBy.get(u.id) ?? null,
+        },
+      });
       return {
         id: u.id, email: u.email, name: u.name, username: u.username, role: u.role,
         createdAt: u.createdAt.toISOString(), deactivatedAt: u.deactivatedAt?.toISOString() ?? null,
@@ -78,6 +132,7 @@ export async function listCustomers(opts: { search?: string; limit?: number } = 
         policyGroup: a?.policyGroup ?? DEFAULT_POLICY_GROUP, policyAssigned: a !== undefined, overlay: a?.overlay ?? null,
         cohorts: cohortsBy.get(u.id) ?? [],
         connectionCount: (plaidBy.get(u.id) ?? 0) + (connBy.get(u.id) ?? 0),
+        ...rollup,
       };
     }),
   };

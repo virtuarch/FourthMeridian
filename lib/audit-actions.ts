@@ -183,7 +183,33 @@ export const AuditAction = {
   PLAID_ITEM_REVOCATION_RETRY_REQUESTED: "PLAID_ITEM_REVOCATION_RETRY_REQUESTED",
   ACCOUNT_ADD:              "ACCOUNT_ADD",
   ACCOUNT_REMOVE:           "ACCOUNT_REMOVE",
+  // BETA A2 — two writers that pre-dated this canon and wrote raw strings
+  // (app/api/accounts/wallet, app/api/accounts/manual). Promoted so the
+  // product-analytics readers and the feed allowlists name one constant; the
+  // VALUES are unchanged, so historical rows still match. Their metadata is
+  // now ids and kinds only: { connectionId, chain } and { accountId, currency }
+  // — never the address, the name, the balance or the purchase price.
+  WALLET_ADD:               "WALLET_ADD",
+  MANUAL_ASSET_ADD:         "MANUAL_ASSET_ADD",
   REGISTER:                 "REGISTER",
+
+  // ── Product events (BETA A1–A8, lib/analytics/product-events.ts) ──────────
+  // First-party behavioural analytics, written SERVER-SIDE only, one row per
+  // (user, action, day-or-key) where stated, metadata = ids / kinds / UTC day
+  // only. They are PRESENCE and ENGAGEMENT facts, not security or operator
+  // events: PRODUCT_EVENT_ACTIONS below is pinned DISJOINT from every security,
+  // operator and member-feed allowlist, so a product event can never surface
+  // as "something happened to your account".
+  //   SESSION_ACTIVE_DAY          first live session check of a UTC day (presence)
+  //   SPACE_VIEWED                a Space's server page rendered for a member
+  //   BRIEF_VIEWED                a Daily Brief was shown to its reader
+  //   TRANSACTIONS_VIEWED         the Transactions workspace loaded its first page
+  //   MANUAL_ASSET_VALUE_UPDATED  a manual asset's value was changed (no value)
+  SESSION_ACTIVE_DAY:         "SESSION_ACTIVE_DAY",
+  SPACE_VIEWED:               "SPACE_VIEWED",
+  BRIEF_VIEWED:               "BRIEF_VIEWED",
+  TRANSACTIONS_VIEWED:        "TRANSACTIONS_VIEWED",
+  MANUAL_ASSET_VALUE_UPDATED: "MANUAL_ASSET_VALUE_UPDATED",
 
   // ── Imports (D2 Step 4D-3) ───────────────────────────────────────────────────
   // Only the rollback action is added in this slice — IMPORT_BATCH_CREATED /
@@ -333,6 +359,25 @@ export const AuditAction = {
 } as const;
 
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];
+
+/**
+ * BETA A2 — the product-event vocabulary. EXACTLY these five; the retention job
+ * (jobs/product-event-retention.ts) deletes rows of these actions after the
+ * owner's 13-month window and must never touch anything else, and every feed /
+ * security allowlist is pinned disjoint from this set (lib/security-surface.test.ts,
+ * lib/analytics/product-events.test.ts). WALLET_ADD / MANUAL_ASSET_ADD /
+ * ACCOUNT_ADD are product-LIFECYCLE events that the engagement predicate also
+ * reads (lib/platform/growth/product-analytics-core.ts), but they are not
+ * product events: they predate this slice, carry their own retention and
+ * already render in the member Space feed.
+ */
+export const PRODUCT_EVENT_ACTIONS: readonly AuditActionType[] = [
+  AuditAction.SESSION_ACTIVE_DAY,
+  AuditAction.SPACE_VIEWED,
+  AuditAction.BRIEF_VIEWED,
+  AuditAction.TRANSACTIONS_VIEWED,
+  AuditAction.MANUAL_ASSET_VALUE_UPDATED,
+];
 
 // ── Security-event classification (SEC-1) ─────────────────────────────────────
 //

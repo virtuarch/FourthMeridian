@@ -22,6 +22,7 @@ process.on("unhandledRejection", (err) => {
 });
 
 const NOW = new Date("2026-07-17T12:00:00Z");
+const DAY_MS = 86_400_000;
 
 async function main() {
   console.log("buildGrowthFunnel");
@@ -58,9 +59,25 @@ async function main() {
       redeemedActivated: async () => 2,
       totalUsers: async () => 5, verifiedUsers: async () => 4, activatedUsers: async () => 3,
       returningUsers: async () => 1,
+      // BETA A5 — two users: one verified with a session and a connection, one bare registration.
+      funnelFacts: async () => ({
+        users: [
+          { id: "u1", createdAt: new Date(NOW.getTime() - 20 * DAY_MS), emailVerifiedAt: new Date(NOW.getTime() - 20 * DAY_MS), acceptedTermsAt: null, deactivatedAt: null },
+          { id: "u2", createdAt: new Date(NOW.getTime() - 20 * DAY_MS), emailVerifiedAt: null, acceptedTermsAt: null, deactivatedAt: null },
+        ],
+        firstSessions: [{ userId: "u1", at: new Date(NOW.getTime() - 19 * DAY_MS) }],
+        firstConnections: new Map([["u1", new Date(NOW.getTime() - 18 * DAY_MS)]]),
+        firstAiTurns: [], firstBriefViews: [], lastEngagements: [],
+      }),
     };
     const f = await getGrowthFunnel({ now: NOW, readers });
     check("funnel assembled from readers", f.beta.requested === 3 && f.beta.redeemed === 2 && f.activation.totalUsers === 5);
+    check("BETA A5 — onboarding stages ride beside the two funnels: 2 → 1 → 1 → 1 → 0 → 0 → 0, strict and monotone",
+      (f.onboarding ?? []).map((s) => s.count).join() === "2,1,1,1,0,0,0" && f.onboarding?.[0].key === "registered" && f.onboarding?.[6].key === "returned", (f.onboarding ?? []).map((s) => s.count).join());
+    check("…u2 registered 20 days ago and never verified ⇒ abandoned at 'registered'; u1 connected 18 days ago and never asked ⇒ abandoned at 'first connection'",
+      f.onboarding?.[0].abandoned === 1 && f.onboarding?.[3].abandoned === 1 && f.onboarding?.[1].abandoned === 0);
+    check("…rates are conversion from the previous stage (verified 1/2)", f.onboarding?.[1].rate === 0.5 && !("rate" in (f.onboarding?.[0] ?? {})));
+    check("buildGrowthFunnel without stages still builds (callers that predate A5)", buildGrowthFunnel({}, 0, { total: 0, verified: 0, activated: 0, returning7: 0 }, NOW.toISOString()).onboarding?.length === 0);
   }
 
   console.log("doctrine · projection, no writes");
@@ -68,6 +85,8 @@ async function main() {
     const src = readFileSync(path.join(process.cwd(), "lib/platform/growth/growth.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     check("reads BetaAccessRequest + User + UserSession", /betaAccessRequest/.test(src) && /userSession/.test(src));
     check("writes nothing", !/\.(create|update|delete|upsert)\(/.test(src));
+    check("BETA A5 — the onboarding stages come from the ONE shared fold and loader; no stage predicate is restated here",
+      /buildFunnel\(facts, now\)/.test(src) && /loadFunnelFacts\(systemDb\)/.test(src) && !/BRIEF_VIEWED|surface/.test(src));
     check("no new telemetry emission", !/recordApiUsage|\bemit\(/.test(src));
   }
 

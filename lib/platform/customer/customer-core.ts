@@ -24,6 +24,9 @@ import {
 import { explainEntitlement, type EffectiveEntitlements } from "@/lib/entitlements/resolve";
 import { deriveConnectionHealthState, type HealthState } from "@/lib/connections/health";
 import { priceAiUsage, type UsageRowLike } from "@/lib/usage/pricing";
+import {
+  ENGAGEMENT_AI_SURFACES, FUNNEL_STAGE_LABELS, furthestStage, stageReachedAt,
+} from "@/lib/platform/growth/product-analytics-core";
 
 // ── Identity ──────────────────────────────────────────────────────────────────
 
@@ -203,9 +206,17 @@ export function projectConnections(
   return rows;
 }
 
-export function firstConnectedAt(plaid: readonly { createdAt: Date }[], wallets: readonly { createdAt: Date }[]): Date | null {
+/**
+ * The customer's first connection. BETA (design §6): MANUAL assets count — a
+ * person who typed in their house and their car has connected something, and
+ * the onboarding funnel's "first connection" stage says so. Callers that predate
+ * the third argument keep their meaning (an empty manual set changes nothing).
+ */
+export function firstConnectedAt(
+  plaid: readonly { createdAt: Date }[], wallets: readonly { createdAt: Date }[], manual: readonly { createdAt: Date }[] = [],
+): Date | null {
   let best: Date | null = null;
-  for (const r of [...plaid, ...wallets]) if (!best || r.createdAt < best) best = r.createdAt;
+  for (const r of [...plaid, ...wallets, ...manual]) if (!best || r.createdAt < best) best = r.createdAt;
   return best;
 }
 
@@ -243,6 +254,8 @@ export function projectIncidents(issues: readonly SyncIssueFacts[], executions: 
 export interface AiInvocationFacts {
   provider: string; model: string; occurredAt: Date; outcome: string; conversationId: string | null; surface: string | null;
   promptTokens: number; cachedPromptTokens: number; completionTokens: number; latencyMs: number;
+  /** BETA — the turn key (correlationId#turnIndex) for the roll-up's turn count; optional so older callers compile. */
+  correlationId?: string | null; turnIndex?: number | null;
 }
 export interface AiUsageView {
   windowDays: number;
@@ -287,6 +300,72 @@ export function projectAiUsage(rows: readonly AiInvocationFacts[], windowDays: n
     estimatedUsd: priced.usd, unpricedTokens: priced.unpricedTokens,
     lastCallAt: iso(last), lastFailureAt: iso(lastFailure),
     estimateNote: "Estimated from the code-owned rate card over returned calls; not the provider invoice.",
+  };
+}
+
+// ── BETA — the per-user usage / cost / stage roll-up (design §8, Customer Success) ──
+
+/**
+ * The five optional fields the Customer Success list renders as one line
+ * (components/platform/widgets/cs-rollup-view.ts names them; this module
+ * supplies them). Every figure is an ESTIMATE or a ledger count; an honest
+ * unknown is null, never 0.
+ */
+export interface CustomerRollup {
+  /** Chat turns (correlationId#turnIndex; an ungroupable row counts as its own turn) with this userId, last 30 days — any outcome: a failed ask is still an ask. */
+  aiTurns30d: number | null;
+  /** Rate-card ESTIMATE over chat + brief RETURNED rows, last 30 days; null when any token found no rate (never zero for an unpriced call). */
+  aiEstimatedUsd30d: number | null;
+  /** Non-REVOKED Plaid Items (what the connection cap counts). */
+  plaidItemCount: number | null;
+  /** ISO of the newest engagement fact (the frozen predicate: never cron, webhook, operator or harness). */
+  lastEngagedAt: string | null;
+  /** The furthest onboarding stage reached THROUGH (strict), as its label — "First connection", never a key. */
+  funnelStage: string | null;
+}
+
+export interface RollupStageFacts {
+  createdAt: Date; emailVerifiedAt: Date | null;
+  firstSession: Date | null; firstConnection: Date | null; firstAiTurn: Date | null; firstBriefView: Date | null;
+}
+
+const turnKey = (r: AiInvocationFacts): string =>
+  r.correlationId && typeof r.turnIndex === "number" ? `${r.correlationId}#${r.turnIndex}` : `row:${r.occurredAt.toISOString()}:${r.model}`;
+
+export function projectRollup(args: {
+  invocations30d: readonly AiInvocationFacts[]; plaidItemCount: number; lastEngagedAt: Date | null; stage: RollupStageFacts;
+}): CustomerRollup {
+  const turns = new Set<string>();
+  const usage: UsageRowLike[] = [];
+  let returned = 0;
+  for (const r of args.invocations30d) {
+    if (!r.surface || !ENGAGEMENT_AI_SURFACES.includes(r.surface)) continue;   // harness never
+    if (r.surface === "chat") turns.add(turnKey(r));
+    if (r.outcome !== "RETURNED") continue;
+    returned++;
+    const metric = `chat.completions:${r.model}`;
+    usage.push(
+      { provider: r.provider, metric, unit: "prompt_tokens", day: r.occurredAt, count: r.promptTokens },
+      { provider: r.provider, metric, unit: "cached_prompt_tokens", day: r.occurredAt, count: r.cachedPromptTokens },
+      { provider: r.provider, metric, unit: "completion_tokens", day: r.occurredAt, count: r.completionTokens },
+    );
+  }
+  const priced = priceAiUsage(usage);
+  const aiEstimatedUsd30d = returned === 0 ? 0 : priced.unpricedTokens > 0 || priced.usd === null ? null : priced.usd;
+  const reached = stageReachedAt(
+    { id: "", createdAt: args.stage.createdAt, emailVerifiedAt: args.stage.emailVerifiedAt, acceptedTermsAt: null, deactivatedAt: null },
+    {
+      firstSession: args.stage.firstSession ?? undefined, firstConnection: args.stage.firstConnection ?? undefined,
+      firstAiTurn: args.stage.firstAiTurn ?? undefined, firstBriefView: args.stage.firstBriefView ?? undefined,
+      lastEngagement: args.lastEngagedAt ?? undefined,
+    },
+  );
+  return {
+    aiTurns30d: turns.size,
+    aiEstimatedUsd30d,
+    plaidItemCount: args.plaidItemCount,
+    lastEngagedAt: iso(args.lastEngagedAt),
+    funnelStage: FUNNEL_STAGE_LABELS[furthestStage(reached)],
   };
 }
 

@@ -52,6 +52,8 @@
 
 import { NextRequest, NextResponse }        from "next/server";
 import { withTenantDb }                     from "@/lib/db/tenant-context";
+import { AuditAction }                      from "@/lib/audit-actions";
+import { manualAssetAddMetadata }           from "@/lib/analytics/product-events";
 import { getSpaceContext }              from "@/lib/space";
 import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, SpaceMemberStatus, SpaceMemberRole } from "@prisma/client";
 import { requireUser }                      from "@/lib/session";
@@ -262,20 +264,17 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // writers and a shared shape helper with no spaceId parameter), so the tenant
   // role can write it; it is deliberately NOT folded into the create transaction,
   // because that would make an audit failure roll back the asset.
+  // BETA A7 — ids and kinds only. The name, the balance, the purchase price
+  // and date used to be written here, against lib/audit.ts's own contract
+  // ("never financial values or user content"). The account id is the
+  // reference; the currency is the kind. The Space feed renders "Manual asset
+  // added" from the action alone.
   await withTenantDb(userId, (tx) => tx.auditLog.create({
     data: {
       userId,
       spaceId: personalSpaceId,
-      action:      "MANUAL_ASSET_ADD",
-      metadata: {
-        name:           fa.name,
-        balance,
-        currency:       fa.currency,
-        assetKind,
-        purchasePrice,
-        purchaseDate,
-        sharedSpaces: shareTargets,
-      },
+      action:      AuditAction.MANUAL_ASSET_ADD,
+      metadata: manualAssetAddMetadata({ accountId: fa.id, currency: fa.currency }),
     },
   }));
 

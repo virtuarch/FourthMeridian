@@ -52,7 +52,7 @@
  * without a consumer.
  */
 
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import { AuditAction, type AuditActionType } from "@/lib/audit-actions";
 
@@ -82,6 +82,14 @@ export interface AuditEventInput {
   userAgent?: string | null;
   /** Set when a SYSTEM_ADMIN performs this on behalf of another account. */
   performedByAdminId?: string | null;
+  /**
+   * BETA A2 — the Space the event happened in, for Space-scoped product events
+   * (SPACE_VIEWED, BRIEF_VIEWED, TRANSACTIONS_VIEWED). Additive: every existing
+   * caller omits it and gets the shape it always got. Product events pass
+   * `ipAddress: null, userAgent: null` explicitly — presence and engagement
+   * facts carry no request forensics.
+   */
+  spaceId?: string | null;
 }
 
 /**
@@ -91,7 +99,7 @@ export interface AuditEventInput {
 export function buildAuditData(input: AuditEventInput): Prisma.AuditLogUncheckedCreateInput {
   const {
     actorId, actorType, action, result, target,
-    metadata, ipAddress, userAgent, performedByAdminId,
+    metadata, ipAddress, userAgent, performedByAdminId, spaceId,
   } = input;
 
   // metadata is genuinely dynamic JSON (the AuditLog.metadata Json? column), so
@@ -106,12 +114,28 @@ export function buildAuditData(input: AuditEventInput): Prisma.AuditLogUnchecked
 
   return {
     ...(actorId ? { userId: actorId } : {}),
+    ...(spaceId ? { spaceId } : {}),
     action,
     ipAddress: ipAddress ?? null,
     userAgent: userAgent ?? null,
     ...(performedByAdminId ? { performedByAdminId } : {}),
     metadata: mergedMetadata as unknown as Prisma.InputJsonValue,
   };
+}
+
+/**
+ * BETA A7 — the one way an email address may be referenced from audit metadata.
+ *
+ * REGISTER, EMAIL_VERIFIED and BETA_ACCESS_REQUESTED used to store the raw
+ * address, against this module's own contract ("counts/ids/kinds only"). They now
+ * store this digest instead: the same convention lib/account-deletion/purge.ts
+ * uses for the post-deletion record, so a support question ("did this address
+ * ever register?") is still answerable by hashing the address, while a leaked
+ * audit row names nobody. Lower-cased and trimmed before hashing so the digest
+ * matches the normalised `User.email`.
+ */
+export function auditEmailHash(email: string): string {
+  return createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
 }
 
 /**

@@ -664,6 +664,9 @@ export const authOptions: NextAuthOptions = {
       // instance left open, holding this row lock until every signed-in
       // request 503'd. See lib/auth/session-activity.ts. Bookkeeping only —
       // the verdict above is already final, so a failure here is ignored.
+      // BETA A2 — the same statement writes the SESSION_ACTIVE_DAY presence
+      // row on the day's first touch (fm_auth INSERT, no read-back); nothing
+      // else about this call changed.
       if (outcome.disposition === "LIVE") {
         await touchSessionActivity(db, sessionToken, verdict.userId).then(undefined, () => 0);
       }

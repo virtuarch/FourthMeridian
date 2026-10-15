@@ -41,6 +41,7 @@ import { getRequestMeta } from "@/lib/api";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { boundAcquisitionSource, withCountry } from "@/lib/marketing/acquisition";
 
 export const runtime = "nodejs";
@@ -119,7 +120,10 @@ export async function POST(req: NextRequest) {
         action:    AuditAction.BETA_ACCESS_REQUESTED,
         ipAddress: meta.ip,
         userAgent: meta.userAgent,
-        metadata:  { email: normalizedEmail },
+        // BETA A7 — the address is referenced by digest, never stored (lib/audit.ts
+        // auditEmailHash). The BetaAccessRequest row above is the identity-resolving
+        // record; the forensic row only needs to be joinable to it by hash.
+        metadata:  { emailHash: auditEmailHash(normalizedEmail) },
       },
     });
 
