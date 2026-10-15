@@ -121,7 +121,7 @@ The three projects and service accounts exist (owner, 2026-10-15): `fourth-merid
 - **Budgets** (OpenAI alerts notify; hard limits are soft-edged monthly 429 stops, not guaranteed caps; the app allowance + kill switch are the enforcement): dev $10 alert / $25 hard · preview $5 / $15 · prod $60 / $150 (runbook §6 derivation).
 - **Legacy key:** the pre-split key is still Production's key and **must not be revoked** until Production has moved to `fm-prod-backend` (later, owner only).
 
-**The OpenAI project split is NOT complete** until the owner has entered the records and the routing is verified per §4–§5 of the runbook (owner-state table §8 there: keys generated · env records pending · routing verified NO).
+**Read-only audit 2026-10-15 21:30Z (runbook §8):** Development and Preview attribution **VERIFIED through actual API usage** with service-account keys pinned to `proj_FTpqC8eeGaOtJ3ODY1ReSCmk` (dev) and `proj_AfGY4a8iUSURSWLBNPgJCbDr` (preview), guards matching; Preview needed a redeploy of the same commit for the records to take effect (done, no code change). **Production:** records for the pin and guard exist (created today), the key record is the July one with an unreadable value, and the running July-27 deployment (`87e4df7`, healthy) still uses its build-time legacy key; the July code is compatible with a service-account key and ignores the two new variables; a Production deployment is required for anything to change — not authorized. **Legacy key still in use by Production only; nothing revoked.** The split is therefore complete for Development and Preview and open for Production.
 
 ## 10. Remaining owner-only actions
 
