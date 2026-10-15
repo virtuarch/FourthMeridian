@@ -364,3 +364,28 @@ These checks do not exercise dragging, real keyboard focus, dirty dismissal prom
 Shared OverlaySurface now owns focus, Escape, body scroll lock, mobile viewport and sheet interaction for these consumers. The planner's duplicate global Escape listener/body lock were removed to avoid competing lifecycle behavior. Inputs are client-side exploratory choices rather than persisted edits; dismissal retains its original semantics. Actual drag, snap and authenticated workflow verification remains pending.
 
 Follow-up verification: ESLint passed for all three migrated customer files; debt-experience server-render checks, template-truthfulness assertions and workspace source invariants all passed. These checks preserve existing financial presentation and registry behavior but do not establish browser interaction success. `git diff --check` passed.
+
+## Inline route content supplement
+
+The named-component matrix above also includes page-local markup. The following tracked routes declare controls or tables directly in their page source (counts are discovery evidence, not rendered or workflow verification).
+
+| Route | Inline control/table declarations | Verification |
+|---|---|---|
+| `/forgot-password` | 1 form | Source inventoried; browser unverified |
+| `/register` | 1 form, 1 input | Source inventoried; browser unverified |
+| `/reset-password` | 1 form | Source inventoried; browser unverified |
+| `/admin/audit` | 6 input, 1 select, 9 button, 1 table | Source inventoried; browser unverified |
+| `/admin` | 2 table | Source inventoried; browser unverified |
+| `/admin/platform-access` | 1 input, 3 button, 1 table | Source inventoried; browser unverified |
+| `/admin/providers` | 1 table | Source inventoried; browser unverified |
+| `/admin/spaces` | 1 input, 3 select, 3 button | Source inventoried; browser unverified |
+| `/admin/users` | 1 input, 2 select, 3 button, 1 table | Source inventoried; browser unverified |
+| `/plaid-oauth-return` | 1 button | Source inventoried; browser unverified |
+
+The separate `site/` marketing project is a zero-authority sibling. Its mirrored public content is covered by the repository boundary checks; it was not modified by this application UI pass.
+
+### Advice analysis overlay
+
+`AdviceBanner.AnalysisModal` now uses shared OverlaySurface workspace presentation (title/icon, close callback, scroll/focus/viewport/sheet handling). The risk strip, generated timestamp, readiness label, summary, context, risk summary, extracted actions and escaped full analysis rendering are preserved. All extraction and HTML escaping logic is unchanged. Source migration is complete; authenticated browser interaction remains unverified.
+
+Advice analysis migration checks: ESLint passed; `lib/ai/conversation/hardening.test.ts` passed all assertions including AdviceBanner HTML escaping; `git diff --check` passed.
