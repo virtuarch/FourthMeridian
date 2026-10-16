@@ -14,7 +14,7 @@ export function useSheetResize() {
   const [dragging, setDragging] = useState(false);
   const moved = useRef(false);
   const start = useRef<{ y: number; height: number; viewport: number } | null>(null);
-  const style = height === null ? undefined : { "--sheet-height": `${height}dvh` } as CSSProperties;
+  const style = height === null ? undefined : { "--sheet-height": `calc(var(--visible-height, 100dvh) * ${height / 100})` } as CSSProperties;
   return {
     style,
     dragging,

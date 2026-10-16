@@ -220,20 +220,20 @@ Platform overlays include customer detail/assignment, connection diagnostics, re
 
 ## Template inventory
 
-| Template | Picker status | Verification |
-|---|---|---|
-| family | live | Source inventoried; existing-space and picker browser unverified |
-| custom | live | Source inventoried; existing-space and picker browser unverified |
-| business | comingSoon | Source inventoried; existing-space and picker browser unverified |
-| property | comingSoon | Source inventoried; existing-space and picker browser unverified |
-| vehicle | comingSoon | Source inventoried; existing-space and picker browser unverified |
-| trip | comingSoon | Source inventoried; existing-space and picker browser unverified |
-| debt-payoff | hidden | Source inventoried; existing-space and picker browser unverified |
-| emergency-fund | hidden | Source inventoried; existing-space and picker browser unverified |
-| investment | hidden | Source inventoried; existing-space and picker browser unverified |
-| equipment | hidden | Source inventoried; existing-space and picker browser unverified |
-| other | hidden | Source inventoried; existing-space and picker browser unverified |
-| personal | hidden | Source inventoried; existing-space and picker browser unverified |
+| Template | Picker status | Source-reviewed | Component-tested | Browser-tested | Authenticated-workflow-tested |
+|---|---|---|---|---|---|
+| `family` | live | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `custom` | live | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `business` | comingSoon | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `property` | comingSoon | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `vehicle` | comingSoon | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `trip` | comingSoon | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `debt-payoff` | hidden | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `emergency-fund` | hidden | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `investment` | hidden | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `equipment` | hidden | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `other` | hidden | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
+| `personal` | hidden | Registry discovered/reviewed | Template truthfulness/registry contracts pass | No picker or existing-space browser pass | No |
 
 All current category preset section lists are empty (`lib/space-presets.ts`); actual workspace registry and renderers remain authoritative. GOAL and RETIREMENT are retired, not missing coverage.
 
@@ -454,3 +454,16 @@ Advice analysis migration checks: ESLint passed; `lib/ai/conversation/hardening.
 | GROWTH_REVENUE | Registry, composition and relevant shared platform UI reviewed | Platform component/source contracts pass | Shared sheet fixture only; area not rendered | Not tested |
 | CUSTOMER_SUCCESS | Registry, composition and relevant shared platform UI reviewed | Platform component/source contracts pass | Shared sheet fixture only; area not rendered | Not tested |
 | MERCHANT_OPS | Registry, composition and relevant shared platform UI reviewed | Platform component/source contracts pass | Shared sheet fixture only; area not rendered | Not tested |
+
+## Imported non-financial workspace identities
+
+The universal registry also imports these explicit identities from `lib/connections/workspaces.ts` and `lib/settings/workspaces.ts`; their routes already appear above. Commented future Connections Activity/Diagnostics entries are not registered screens.
+
+| Workspace ID | Route | Source-reviewed | Component-tested | Browser-tested | Authenticated-workflow-tested |
+|---|---|---|---|---|---|
+| `connections-overview` | `/dashboard/connections` | Registry and relevant shared form/panel source | Connections workspace/import contracts and shared components pass | Shared sheet fixture only; route untested | No |
+| `settings-account` | `/dashboard/settings/account` | Registry/route discovered; shared components reviewed | Settings/workspace and shared contracts; no direct screen claim | No | No |
+| `settings-security` | `/dashboard/settings/security` | Registry/route discovered; shared components reviewed | Settings/workspace and shared contracts; no direct screen claim | Shared form overlay only; screen untested | No |
+| `settings-preferences` | `/dashboard/settings/preferences` | Registry/route discovered; shared components reviewed | Settings/workspace and shared contracts; no direct screen claim | No | No |
+| `settings-notifications` | `/dashboard/settings/notifications` | Registry/route discovered; shared components reviewed | Settings/workspace and shared contracts; no direct screen claim | No | No |
+| `settings-data` | `/dashboard/settings/data` | Registry/route discovered; shared components reviewed | Settings/workspace and shared contracts; no direct screen claim | No | No |

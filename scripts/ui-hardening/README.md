@@ -18,6 +18,7 @@ python3 -m http.server 4179 --bind 127.0.0.1 --directory /tmp/fm-ui-browser
 # In another terminal:
 node scripts/ui-hardening/browser.mjs
 node scripts/ui-hardening/accessibility.mjs
+node scripts/ui-hardening/visual-viewport.mjs
 ```
 
 Set `FM_UI_BROWSER_TOOLS` to change the external tool directory;
