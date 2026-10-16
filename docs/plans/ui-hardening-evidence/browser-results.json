@@ -1,0 +1,177 @@
+{
+  "scope": "Synthetic fixture rendering actual shared Panel/OverlaySurface/AiShell/Composer and platform Budget/Cost Controls. No authenticated data or workflows.",
+  "results": [
+    {
+      "width": 320,
+      "height": 568,
+      "panelBounds": "pass",
+      "keyboardSnap": "pass",
+      "pointerDrag": "pass",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 360,
+      "height": 640,
+      "panelBounds": "pass",
+      "keyboardSnap": "pass",
+      "pointerDrag": "pass",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 375,
+      "height": 812,
+      "panelBounds": "pass",
+      "keyboardSnap": "pass",
+      "pointerDrag": "pass",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "panelBounds": "pass",
+      "keyboardSnap": "pass",
+      "pointerDrag": "pass",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 430,
+      "height": 932,
+      "panelBounds": "pass",
+      "keyboardSnap": "pass",
+      "pointerDrag": "pass",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 600,
+      "height": 900,
+      "panelBounds": "pass",
+      "keyboardSnap": "pass",
+      "pointerDrag": "pass",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 820,
+      "height": 1180,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 1366,
+      "height": 768,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 1728,
+      "height": 1117,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 2560,
+      "height": 1440,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 639,
+      "height": 700,
+      "panelBounds": "pass",
+      "keyboardSnap": "pass",
+      "pointerDrag": "pass",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 640,
+      "height": 700,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 1023,
+      "height": 768,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 1025,
+      "height": 768,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    },
+    {
+      "width": 844,
+      "height": 390,
+      "panelBounds": "pass",
+      "keyboardSnap": "desktop",
+      "pointerDrag": "desktop",
+      "aiScroll": "pass"
+    }
+  ],
+  "nestedEscape": "pass",
+  "unsavedDismissal": "pass",
+  "focusRestoration": "pass",
+  "platformOverflow": "pass at all 20 widths",
+  "modalBoundsAndFooter": "pass at all 20 widths",
+  "multilineAndViewportShrink": "pass (resize simulation)",
+  "informationOverlay": "pass",
+  "repeatedOpenClose": "pass",
+  "touchDrag": "pass (Chromium touch events)",
+  "contentScrollDoesNotResize": "pass",
+  "bodyScrollRestoration": "pass",
+  "softwareKeyboard": "not verified; requires device/browser visual viewport keyboard"
+}

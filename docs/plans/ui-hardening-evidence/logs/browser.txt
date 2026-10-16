@@ -1,0 +1,21 @@
+Checking 320 568
+Checking 360 640
+Checking 375 812
+Checking 390 844
+Checking 430 932
+Checking 600 900
+Checking 768 1024
+Checking 820 1180
+Checking 1024 768
+Checking 1280 800
+Checking 1366 768
+Checking 1440 900
+Checking 1728 1117
+Checking 1920 1080
+Checking 2560 1440
+Checking 639 700
+Checking 640 700
+Checking 1023 768
+Checking 1025 768
+Checking 844 390
+PASS 20 viewport fixtures, nested Escape, unsaved dismissal, focus restoration

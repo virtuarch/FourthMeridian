@@ -1,0 +1,49 @@
+{
+  "scope": "Shared OverlaySurface fixture; no authenticated form or save operation",
+  "results": [
+    {
+      "width": 375,
+      "height": 812,
+      "bounds": {
+        "x": 0,
+        "y": 0,
+        "width": 375,
+        "height": 779.515625
+      },
+      "footerReachable": true
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "bounds": {
+        "x": 352,
+        "y": 48,
+        "width": 576,
+        "height": 704
+      },
+      "footerReachable": true
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "shortFixtureContent": "long fixture paragraphs removed in browser to inspect content sizing",
+      "bounds": {
+        "x": 352,
+        "y": 308.5,
+        "width": 576,
+        "height": 183
+      }
+    },
+    {
+      "width": 844,
+      "height": 390,
+      "bounds": {
+        "x": 134,
+        "y": 23.40625,
+        "width": 576,
+        "height": 343.1875
+      },
+      "footerReachable": true
+    }
+  ]
+}

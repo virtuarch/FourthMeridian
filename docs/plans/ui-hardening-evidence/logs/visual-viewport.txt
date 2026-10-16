@@ -1,0 +1,1 @@
+PASS visible viewport snap and drag coordinate consistency
