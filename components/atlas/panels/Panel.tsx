@@ -160,11 +160,11 @@ export function Panel({
   const panelTransition = reducedMotion
     ? `opacity var(--dur-fast) ${shown ? "var(--ease-enter)" : "var(--ease-exit)"}`
     : `transform var(--dur-base) ${shown ? "var(--ease-enter)" : "var(--ease-exit)"}, ` +
-      `opacity var(--dur-base) ${shown ? "var(--ease-enter)" : "var(--ease-exit)"}`;
+      `opacity var(--dur-base) ${shown ? "var(--ease-enter)" : "var(--ease-exit)"}, height var(--dur-base) var(--ease-standard)`;
 
   const panelStyle: CSSProperties = {
     opacity: shown ? 1 : 0,
-    transition: panelTransition,
+    transition: sheet.dragging ? "none" : panelTransition,
     // borderRadius is set responsively via `!` utilities below (mobile rounded-top,
     // desktop square) — unset GlassPanel's inline radius so those win.
     borderRadius: undefined,

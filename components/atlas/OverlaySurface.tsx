@@ -240,12 +240,13 @@ export function OverlaySurface({
   // A real foreground tab settles in ~200ms; do not restructure this
   // primitive off of an automation-only repro.
   const panelStyle: CSSProperties = {
+    ...({ "--modal-cap": size === "full" ? "92dvh" : "88dvh" } as CSSProperties),
     opacity: entered ? 1 : 0,
     transform:
       reducedMotion || entered ? "translateY(0)" : "translateY(8px)",
-    transition: reducedMotion
+    transition: sheet.dragging ? "none" : reducedMotion
       ? "opacity var(--dur-fast) var(--ease-enter)"
-      : "opacity var(--dur-base) var(--ease-enter), transform var(--dur-base) var(--ease-enter)",
+      : "opacity var(--dur-base) var(--ease-enter), transform var(--dur-base) var(--ease-enter), height var(--dur-base) var(--ease-standard)",
   };
 
   return createPortal(
@@ -276,7 +277,7 @@ export function OverlaySurface({
         radius="xl"
         glow={glow}
         onKeyDown={onKeyDownTrap}
-        className={`atlas-sheet-frame w-full ${WIDTH_CLASS[size]} ${mobileHeight} ${desktopHeight} flex flex-col focus:outline-none ${className}`}
+        className={`atlas-sheet-frame atlas-modal-frame w-full ${WIDTH_CLASS[size]} ${mobileHeight} ${desktopHeight} flex flex-col focus:outline-none ${className}`}
         data-sheet-dragging={sheet.dragging}
         style={{ ...panelStyle, ...sheet.style }}
       >
@@ -289,7 +290,7 @@ export function OverlaySurface({
             modals like CreateSpace clipped instead of scrolling). The
             viewport-relative caps are definite, so the body now has a real
             height to overflow. Panel classes are unchanged. */}
-        <div data-sheet-dragging={sheet.dragging} className={`atlas-sheet-content min-h-0 flex flex-col p-5 ${mobileHeight} ${desktopHeight}`} style={sheet.style}>
+        <div data-sheet-dragging={sheet.dragging} className={`atlas-sheet-content atlas-modal-content min-h-0 flex flex-col p-5 ${mobileHeight} ${desktopHeight}`} style={sheet.style}>
           <SheetHandle {...sheet.handle} />
           {!hideHeader && (
             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 shrink-0 sm:flex sm:justify-between">

@@ -441,4 +441,5 @@ html[data-theme="light"] .atlas-fresnel-edge::after {
 }
 @media (min-width: 640px) {
   .atlas-sheet-frame, .atlas-sheet-content { max-height: min(100dvh, var(--visible-height, 100dvh)); }
+  .atlas-modal-frame, .atlas-modal-content { max-height: min(var(--modal-cap, 88dvh), calc(var(--visible-height, 100dvh) - 2rem)); }
 }
