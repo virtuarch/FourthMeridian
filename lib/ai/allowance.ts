@@ -108,5 +108,7 @@ const NO_STORE = { "Cache-Control": "no-store" } as const;
  */
 export function allowanceRefusal(v: AllowanceVerdict, surfaceLabel: string): NextResponse | null {
   if (v.allowed) return null;
-  return NextResponse.json(allowanceRefusalBody(v, surfaceLabel), { status: allowanceRefusalStatus(v), headers: NO_STORE });
+  const body = allowanceRefusalBody(v, surfaceLabel);
+  return NextResponse.json(body, { status: allowanceRefusalStatus(v),
+    headers: body.retryAfterSeconds ? { ...NO_STORE, "Retry-After": String(body.retryAfterSeconds) } : NO_STORE });
 }

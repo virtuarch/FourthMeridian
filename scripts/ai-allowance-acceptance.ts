@@ -191,26 +191,33 @@ async function main(): Promise<void> {
     const lockless = await reserveAiTurn("ug", 5);
     const locklessOver = await reserveAiTurn("ug", 3);
     psql(h.ownerUrl, `grant execute on function pg_advisory_xact_lock(bigint) to public;`);
-    check(7, "[channel] the lock REFUSED (execute revoked) ⇒ the transaction aborts, the verdict says reservation UNAVAILABLE, no counter row is left behind, and the plain check still REFUSES over the allowance",
-      revokeLock.ok && lockless.verdict.allowed && lockless.verdict.reservation === "UNAVAILABLE" && inflightRows(h.ownerUrl, "ug") === 0
-        && !locklessOver.verdict.allowed && locklessOver.verdict.reservation === "UNAVAILABLE",
-      `lockless=${lockless.verdict.reservation}/${lockless.verdict.allowed} over=${locklessOver.verdict.allowed}`);
+    const reason = (v: { allowed: boolean }) => (v as { reason?: string }).reason;
+    check(7, "[channel] the lock REFUSED (execute revoked) ⇒ the transaction aborts, no counter row is left behind, and with enforcement ON the turn FAILS CLOSED (RESERVATION_UNAVAILABLE) even under the allowance",
+      revokeLock.ok && !lockless.verdict.allowed && reason(lockless.verdict) === "RESERVATION_UNAVAILABLE" && lockless.verdict.reservation === "UNAVAILABLE"
+        && inflightRows(h.ownerUrl, "ug") === 0 && !locklessOver.verdict.allowed,
+      `lockless=${lockless.verdict.reservation}/${lockless.verdict.allowed}/${reason(lockless.verdict)} over=${locklessOver.verdict.allowed}`);
 
     const revokeCounter = psql(h.ownerUrl, `revoke insert, update on table public."RateLimit" from fm_system;`);
     const noCounter = await reserveAiTurn("ug", 5);
     psql(h.ownerUrl, `grant insert, update on table public."RateLimit" to fm_system;`);
-    check(7, "[channel] the counter write REFUSED mid-transaction ⇒ rolled back (0 rows), UNAVAILABLE, plain check decides",
-      revokeCounter.ok && noCounter.verdict.reservation === "UNAVAILABLE" && inflightRows(h.ownerUrl, "ug") === 0);
+    check(7, "[channel] the counter write REFUSED mid-transaction ⇒ rolled back (0 rows), UNAVAILABLE, refused (fail closed)",
+      revokeCounter.ok && noCounter.verdict.reservation === "UNAVAILABLE" && !noCounter.verdict.allowed
+        && reason(noCounter.verdict) === "RESERVATION_UNAVAILABLE" && inflightRows(h.ownerUrl, "ug") === 0);
 
-    // The fallback's limit, measured rather than asserted: it has no in-flight count.
+    // FAIL CLOSED under concurrency: the plain check has no in-flight count, so it is never the enforcer.
     const broken = new Proxy(systemDb as object, { get: (t, k) => k === "$transaction" ? () => Promise.reject(new Error("transaction unavailable")) : Reflect.get(t, k) }) as unknown as Client;
-    const fallback = await Promise.all(Array.from({ length: 8 }, () => reserveAiTurn("ug", 5, new Date(), broken)));
+    const closed = await Promise.all(Array.from({ length: 8 }, () => reserveAiTurn("ug", 5, new Date(), broken)));
     const reserved = await Promise.all(Array.from({ length: 8 }, () => reserveAiTurn("ug", 5)));
     const reservedAdmitted = reserved.filter((r) => r.verdict.allowed).length;
     await Promise.all(reserved.map((r) => r.release()));
-    check(7, "[service] THE FALLBACK'S LIMIT, MEASURED: with the transaction unavailable, 8 simultaneous turns at $3.80 of $5 are ALL admitted (no in-flight count); with the reservation working the same 8 admit only the bounded number",
-      fallback.every((r) => r.verdict.allowed && r.verdict.reservation === "UNAVAILABLE") && reservedAdmitted === Math.ceil((5 - 3.8) / RESERVE_USD),
-      `fallback admitted=${fallback.filter((r) => r.verdict.allowed).length}/8 reserved admitted=${reservedAdmitted}/8`);
+    check(7, "[service] with the transaction unavailable, 8 simultaneous turns at $3.80 of $5 admit NONE (fail closed, retryable); with the reservation working the same 8 admit only the bounded number",
+      closed.every((r) => !r.verdict.allowed && reason(r.verdict) === "RESERVATION_UNAVAILABLE") && reservedAdmitted === Math.ceil((5 - 3.8) / RESERVE_USD),
+      `closed admitted=${closed.filter((r) => r.verdict.allowed).length}/8 reserved admitted=${reservedAdmitted}/8`);
+    setting(h.ownerUrl, "ai_daily_allowance_enforced", "false");
+    const open = await Promise.all(Array.from({ length: 3 }, () => reserveAiTurn("ug", 5, new Date(), broken)));
+    setting(h.ownerUrl, "ai_daily_allowance_enforced", null);
+    check(7, "[service] enforcement EXPLICITLY OFF by an operator ⇒ the pre-existing plain check decides with the reservation unavailable (admitted, UNAVAILABLE, enforced false)",
+      open.every((r) => r.verdict.allowed && r.verdict.reservation === "UNAVAILABLE" && !r.verdict.enforced));
   }
 
   // ── 8. [source] NO PATH AROUND THE ALLOWANCE ──────────────────────────────

@@ -12,7 +12,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { RESERVE_USD } from "@/lib/ai/allowance-core";
+import { RESERVE_USD, RESERVATION_RETRY_AFTER_SECONDS, allowanceRefusalBody, allowanceRefusalStatus } from "@/lib/ai/allowance-core";
 import {
   INFLIGHT_BUCKET_MS, allowanceLockKey, enforcedFrom, inflightBucket, inflightKey, reserveAiTurn,
   type ReservationClient, type ReservationTx,
@@ -118,11 +118,21 @@ async function main() {
     check("enforced=false ⇒ allowed over the allowance, verdict says enforced:false, still RESERVED (the counter keeps running)", off.verdict.allowed && off.verdict.enforced === false && off.verdict.reservation === "RESERVED");
     const unreadable = await reserveAiTurn("u1", 5, NOW, makeClient({ spentGroups: [{ n: 1, p: 8_000_000, o: 0 }], enforcedFails: true }).client);
     check("an unreadable enforcement flag ENFORCES (FALLBACK_TO_DEFAULT)", !unreadable.verdict.allowed && unreadable.verdict.enforced);
+    // AI RELIABILITY — FAIL CLOSED: with enforcement on, a turn the reservation cannot judge is refused (retryable).
     const fb = makeClient({ spentGroups: [{ n: 1, p: 1_000_000, o: 0 }], txFails: true });
     const r = await reserveAiTurn("u1", 5, NOW, fb.client);
-    check("no transaction ⇒ the plain check decides, reservation UNAVAILABLE, no counter touched", r.verdict.allowed && r.verdict.reservation === "UNAVAILABLE" && r.verdict.inFlight === 0 && fb.inflight() === 0);
-    const fbOver = await reserveAiTurn("u1", 1, NOW, fb.client);
-    check("…and it still refuses over the allowance", !fbOver.verdict.allowed && fbOver.verdict.reservation === "UNAVAILABLE");
+    check("no transaction + enforcement ON ⇒ REFUSED RESERVATION_UNAVAILABLE (fail closed), even well under the allowance, no counter touched",
+      !r.verdict.allowed && r.verdict.reason === "RESERVATION_UNAVAILABLE" && r.verdict.reservation === "UNAVAILABLE" && r.verdict.enforced && fb.inflight() === 0);
+    const body = allowanceRefusalBody(r.verdict as Extract<typeof r.verdict, { allowed: false }>, "Conversations");
+    check("…as a RETRYABLE 503 with retryAfterSeconds, the spend still reported",
+      allowanceRefusalStatus(r.verdict as Extract<typeof r.verdict, { allowed: false }>) === 503 && body.retryable === true
+        && body.retryAfterSeconds === RESERVATION_RETRY_AFTER_SECONDS && close(body.spentUsd, 1.25) && body.code === "AI_ALLOWANCE");
+    const unread = await reserveAiTurn("u1", 5, NOW, makeClient({ spentGroups: [{ n: 1, p: 1_000_000, o: 0 }], txFails: true, enforcedFails: true }).client);
+    check("…an UNREADABLE enforcement flag also fails closed", !unread.verdict.allowed && unread.verdict.reason === "RESERVATION_UNAVAILABLE");
+    const offFb = makeClient({ spentGroups: [{ n: 1, p: 8_000_000, o: 0 }], txFails: true, enforced: "false" });
+    const offR = await reserveAiTurn("u1", 5, NOW, offFb.client);
+    check("enforcement EXPLICITLY OFF ⇒ the pre-existing plain check decides (admitted over the allowance), reservation UNAVAILABLE",
+      offR.verdict.allowed && offR.verdict.reservation === "UNAVAILABLE" && !offR.verdict.enforced && offFb.inflight() === 0);
   }
 
   console.log("\n6. source: fm_system, the lock inside the transaction, no model call inside it");

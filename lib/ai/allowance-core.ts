@@ -75,14 +75,26 @@ export function sumTodaySpend(groups: readonly TodaySpendGroup[], todayISO: stri
   return { spentUsd, invocations, unpricedInvocations, unpricedModels: [...unpricedModels].sort() };
 }
 
-export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL";
+/**
+ * RESERVATION_UNAVAILABLE (AI RELIABILITY 2026-10-16) — enforcement is ON and the
+ * per-customer reservation could not be taken (lock, counter or transaction
+ * failed). FAIL CLOSED: the plain stale-sum check has no in-flight count, so N
+ * simultaneous turns would all pass it (measured 8/8 at $3.80 of $5). Retryable —
+ * 503 with Retry-After; nothing was spent.
+ */
+export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL" | "RESERVATION_UNAVAILABLE";
+
+/** Seconds a client should wait before retrying a RESERVATION_UNAVAILABLE refusal. */
+export const RESERVATION_RETRY_AFTER_SECONDS = 15;
 
 /**
  * How the in-flight reservation was judged:
  *   RESERVED     the decision ran under the advisory lock with the in-flight
  *                count, and (when allowed) this turn now holds a reservation;
  *   UNAVAILABLE  the lock/counter could not be taken (no fm_system transaction,
- *                the store errored) — the plain stale-sum check decided;
+ *                the store errored). With enforcement ON the turn is REFUSED
+ *                (RESERVATION_UNAVAILABLE, fail closed); with enforcement
+ *                explicitly OFF the plain check decides, as before;
  *   NONE         the pure check with no reservation concept (tests, the legacy
  *                injected-client path).
  */
@@ -196,11 +208,21 @@ export interface AllowanceRefusalBody {
   /** Estimated USD, rounded to the cent. */
   spentUsd: number;
   allowanceUsd: number;
+  /** RESERVATION_UNAVAILABLE only — the refusal is transient; retry after this many seconds. */
+  retryable?: true;
+  retryAfterSeconds?: number;
 }
 
 const cents = (n: number) => Math.round(n * 100) / 100;
 
 export function allowanceRefusalBody(v: Extract<AllowanceVerdict, { allowed: false }>, surfaceLabel: string): AllowanceRefusalBody {
+  if (v.reason === "RESERVATION_UNAVAILABLE") {
+    return {
+      error: `${surfaceLabel} is briefly unavailable: your daily AI allowance couldn’t be checked just now. Nothing was changed. Please try again in a moment.`,
+      code: ALLOWANCE_CODE, reason: v.reason, spentUsd: cents(v.spentUsd), allowanceUsd: v.allowanceUsd,
+      retryable: true, retryAfterSeconds: RESERVATION_RETRY_AFTER_SECONDS,
+    };
+  }
   const error = v.reason === "UNPRICED_MODEL"
     ? `${surfaceLabel} is paused for today: some of today’s usage can’t be priced yet, so your daily AI allowance can’t be checked. Nothing was changed. It resets at midnight UTC.`
     // The allowance is denominated in USD by definition (the rate card is USD);
@@ -217,5 +239,5 @@ export function allowanceRefusalBody(v: Extract<AllowanceVerdict, { allowed: fal
  * refuses the model itself, so a customer sees ONE status for the one gap.
  */
 export function allowanceRefusalStatus(v: Extract<AllowanceVerdict, { allowed: false }>): 429 | 503 {
-  return v.reason === "UNPRICED_MODEL" ? 503 : 429;
+  return v.reason === "UNPRICED_MODEL" || v.reason === "RESERVATION_UNAVAILABLE" ? 503 : 429;
 }

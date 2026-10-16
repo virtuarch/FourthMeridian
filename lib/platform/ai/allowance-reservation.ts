@@ -34,11 +34,15 @@
  * after the provider returns, and a lost release over-reserves (refusing too
  * much, never too little) until its bucket ages out.
  *
- * ── Fallback ────────────────────────────────────────────────────────────────
+ * ── When the reservation cannot be taken: FAIL CLOSED ───────────────────────
  * When the transaction cannot run — no fm_system client, the lock or counter
- * errors — the decision falls back to the PRE-EXISTING plain check (today's
- * spend against the allowance, no reservation) and the verdict says
- * `reservation: "UNAVAILABLE"`. This module does not consult RATE_LIMIT_ENABLED:
+ * errors — the verdict says `reservation: "UNAVAILABLE"` and, with enforcement
+ * ON (including an unreadable flag), the turn is REFUSED with the retryable
+ * RESERVATION_UNAVAILABLE (503 + Retry-After). The plain stale-sum check has no
+ * in-flight count, so it would admit every simultaneous turn: measured 8/8 at
+ * $3.80 of $5, and before 2026-10-16 that was every turn on every database
+ * (P2010). Only when an operator has explicitly turned enforcement OFF does the
+ * pre-existing plain check decide (pricing validation still refuses). This module does not consult RATE_LIMIT_ENABLED:
  * the reservation is a cost control, not an abuse limiter, and runs wherever
  * fm_system can open a transaction (local dev included).
  *
@@ -125,8 +129,9 @@ const NO_RELEASE = async () => {};
 
 /**
  * Judge one customer's next turn under the lock and, when admitted, reserve it.
- * Falls back to the plain check (reservation UNAVAILABLE) when the transaction
- * cannot run; throws only when even the plain spend read fails.
+ * When the transaction cannot run: REFUSED (RESERVATION_UNAVAILABLE) with
+ * enforcement on; the plain check with enforcement explicitly off (throws only
+ * when that plain spend read fails).
  */
 export async function reserveAiTurn(
   userId: string,
@@ -180,12 +185,25 @@ export async function reserveAiTurn(
       },
     };
   } catch (err) {
-    console.error("[ai/allowance] reservation unavailable; falling back to the plain check:", err);
+    console.error("[ai/allowance] reservation unavailable:", err);
   }
 
-  // ── Fallback: the pre-existing check, no reservation ───────────────────────
-  const [enforced, groups] = await Promise.all([readEnforced(client), readCustomerSpendGroupsToday(userId, now, client)]);
-  const spend = sumTodaySpend(groups, today);
+  // ── Reservation unavailable: fail closed unless enforcement is explicitly OFF ─
+  const enforced = await readEnforced(client);
+  if (enforced) {
+    // The spend is read for the refusal body only; it cannot admit anything here.
+    let spentUsd = 0;
+    try { spentUsd = sumTodaySpend(await readCustomerSpendGroupsToday(userId, now, client), today).spentUsd; }
+    catch (err) { console.error("[ai/allowance] spend unreadable while refusing (fail closed):", err); }
+    console.error(`[ai/allowance] reservation unavailable; REFUSING (fail closed, enforcement on) user=${userId}`);
+    return {
+      verdict: { allowed: false, reason: "RESERVATION_UNAVAILABLE", unpricedInvocations: 0,
+        spentUsd, allowanceUsd: Math.max(0, allowanceUsd), enforced: true, reservation: "UNAVAILABLE", inFlight: 0 },
+      release: NO_RELEASE,
+    };
+  }
+  // Enforcement explicitly OFF by an operator: the pre-existing plain check, no reservation.
+  const spend = sumTodaySpend(await readCustomerSpendGroupsToday(userId, now, client), today);
   const verdict = reservedAllowanceVerdict({
     spentUsd: spend.spentUsd, allowanceUsd, unpricedInvocations: spend.unpricedInvocations,
     inFlight: 0, reserveUsd: 0, enforced, reservation: "UNAVAILABLE",
