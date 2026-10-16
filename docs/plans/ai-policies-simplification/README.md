@@ -63,11 +63,11 @@ All four AI-card screenshots were visually inspected. Authorized editor layouts 
 
 ## Validation on integrated application code
 
-- Full safe regression runner: **743/743 test files passed**; includes the added interaction/transport test and upstream reliability and Docker teardown tests (`regression.log`).
+- Full safe regression runner: **743/743 test files passed**; includes the added interaction/transport test and upstream reliability and Docker teardown tests (`regression.txt`).
 - TypeScript: **passed**, exit 0.
-- ESLint: **0 errors, 19 pre-existing warnings** (`lint.log`).
-- Required source-based architecture audits: **6/6 passed** (`architecture.log`), including database authority, read identity, account reparenting, tombstones and forecast slice provenance.
-- Local production build: **passed**, exit 0 (`build.log`). No deployment.
+- ESLint: **0 errors, 19 pre-existing warnings** (`lint.txt`).
+- Required source-based architecture audits: **6/6 passed** (`architecture.txt`), including database authority, read identity, account reparenting, tombstones and forecast slice provenance.
+- Local production build: **passed**, exit 0 (`build.txt`). No deployment.
 - Real Docker cleanup smoke: **passed** (`docker-volume-smoke.json`). Created one throwaway Postgres container without starting it, observed its one anonymous volume, removed only that container with `docker rm -f -v`, and verified zero surviving volumes. No database initialization, migrations or seeds.
 - Full CI wrapper and database-dependent audits / RLS acceptance suites: **not run**. The normal runner provisions schemas with migrations and seeds; the owner explicitly prohibits both. No prior CI result is presented as a result for this UI commit.
 - Git scope audit: entire tracked branch diff against `ecf84a4` contains only UI/presentation components, tests, documentation and UI verification scripts. No prohibited paths. All existing UI fetch calls, serialized payloads and asynchronous handlers match the approved baseline (`scope-audit.json`). Backend/API/database/dependency/CI/Docker files have no diff from that baseline.

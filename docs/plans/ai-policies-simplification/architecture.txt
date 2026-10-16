@@ -1,0 +1,254 @@
+
+══════════════════════════════════════════════════════════════════════════════
+ARCHITECTURE AUDITS — 6 selected (tier=explicit)
+══════════════════════════════════════════════════════════════════════════════
+
+══════════════════════════════════════════════════════════════════════════════
+▶ audit-account-reparenting   [REQUIRED]
+══════════════════════════════════════════════════════════════════════════════
+
+audit-account-reparenting — every code site capable of changing a FinancialAccount FK is classified
+
+  [source] 24 capable site(s) found over 1508 scanned file(s); 19 FK relation(s) across 17 model(s) read from prisma/schema.prisma
+
+  ✓ the FK inventory parsed: 19 relations across 17 models
+  ✓ Transaction.counterpartyAccountId is IN the inventory (the second FK no RLS predicate mentions)
+  ✓ the scan found a non-zero population (an empty scan is indistinguishable from a clean one)
+  ✓ every FinancialAccount FK pair has a recorded policy-coverage answer (19 pairs)
+  ✓ no coverage entry describes an FK that no longer exists (the inventory may SHRINK, by deleting the entry)
+  ✓ the retired Class-H FK is selected from the schema, and there is exactly ONE of it (GoalContribution.financialAccountId)
+  ✓ InvestmentEventCoverage.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ ProviderAccountIdentity.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ DebtProfile.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ ManualAssetProfile.financialAccountId — PREDICATED by 20261015120000_rls_asset_valuations, which still names the table, the column and the outer-row correlation
+  ✓ AssetValuation.financialAccountId — PREDICATED by 20261015120000_rls_asset_valuations, which still names the table, the column and the outer-row correlation
+  ✓ AccountConnection.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ SpaceAccountLink.financialAccountId — CLASSIFIED, with a reason no predicate may name it
+  ✓ DuplicateAccountCandidate.accountAId — PREDICATED by 20261003000100_rls_duplicate_candidate_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ DuplicateAccountCandidate.accountBId — PREDICATED by 20261003000100_rls_duplicate_candidate_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ GoalContribution.financialAccountId — PREDICATED by 20261002000100_rls_roles_and_policies, which still names the table, the column and the outer-row correlation
+  ✓ Holding.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ PositionObservation.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ InvestmentEvent.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ PositionCoverage.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ PositionReconstruction.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ Transaction.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ Transaction.counterpartyAccountId — CLASSIFIED, with a reason no predicate may name it
+  ✓ TransactionEvent.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ ImportBatch.financialAccountId — PREDICATED by 20261003000000_rls_account_subtree_owner_arm, which still names the table, the column and the outer-row correlation
+  ✓ the coverage inventory is non-vacuous: 17 PREDICATED pair(s) verified against their migrations
+  [coverage] 19 FK pair(s) — PREDICATED=17 CLASSIFIED=2 (SpaceAccountLink.financialAccountId, Transaction.counterpartyAccountId)
+  ✓ the scanned file set is the enumerate-then-filter form, not a git pathspec glob (1508 files)
+  ✓ every capable site is CLASSIFIED in the closed allowlist
+  ✓ no allowlist entry describes a site that no longer exists (the ratchet may SHRINK, by deleting the entry)
+  ✓ lib/plaid/syncTransactions.ts:transaction.update — 2 statement(s), expected 2 [FK_UNCHANGED_PROVEN]
+  ✓ lib/plaid/syncTransactions.ts:transaction.update — its stated guard is still present (assertAccountFkUnchanged()
+  ✓ lib/investments/investment-event-ingest.ts:investmentEvent.update — 2 statement(s), expected 2 [FK_UNCHANGED_PROVEN]
+  ✓ lib/investments/investment-event-ingest.ts:investmentEvent.update — its stated guard is still present (assertAccountFkUnchanged()
+  ✓ lib/accounts/reconcile.ts:transaction.updateMany — 1 statement(s), expected 1 [SAME_OWNER_PROVEN]
+  ✓ lib/accounts/reconcile.ts:transaction.updateMany — its stated guard is still present (assertAccountReparentingAuthorized()
+  ✓ lib/accounts/reconcile.ts:debtProfile.updateMany — 1 statement(s), expected 1 [SAME_OWNER_PROVEN]
+  ✓ lib/accounts/reconcile.ts:debtProfile.updateMany — its stated guard is still present (assertAccountReparentingAuthorized()
+  ✓ app/api/accounts/[id]/debt-profile/route.ts:debtProfile.upsert — 1 statement(s), expected 1 [CREATE_ARM_ONLY]
+  ✓ lib/accounts/space-account-link.ts:spaceAccountLink.upsert — 2 statement(s), expected 2 [CREATE_ARM_ONLY]
+  ✓ lib/crypto/position-coverage.ts:positionCoverage.upsert — 1 statement(s), expected 1 [SOURCE_IS_DESTINATION]
+  ✓ lib/crypto/wallet-position-capture.ts:positionObservation.upsert — 1 statement(s), expected 1 [SOURCE_IS_DESTINATION]
+  ✓ lib/investments/brokerage-cash.ts:positionObservation.upsert — 1 statement(s), expected 1 [SOURCE_IS_DESTINATION]
+  ✓ lib/investments/position-capture.ts:positionObservation.upsert — 1 statement(s), expected 1 [SOURCE_IS_DESTINATION]
+  ✓ lib/investments/reconstruction-runner.ts:positionReconstruction.upsert — 1 statement(s), expected 1 [SOURCE_IS_DESTINATION]
+  ✓ app/api/accounts/[id]/import/route.ts:transaction.update — 1 statement(s), expected 1 [FK_CLEARED_ONLY]
+  ✓ app/api/accounts/[id]/import/route.ts:transaction.update — its stated guard is still present (computeFlowFields()
+  ✓ lib/accounts/persist-account-spine.ts:accountConnection.update — 1 statement(s), expected 1 [OPAQUE_BUT_FK_FREE]
+  ✓ lib/accounts/provider-identity.ts:providerAccountIdentity.update — 1 statement(s), expected 1 [OPAQUE_BUT_FK_FREE]
+  ✓ lib/investments/investment-import-commit.ts:importBatch.update — 1 statement(s), expected 1 [OPAQUE_BUT_FK_FREE]
+  ✓ lib/transactions/merchant-corrections.ts:transaction.update — 2 statement(s), expected 2 [FK_CLEARED_ONLY]
+  ✓ lib/transactions/merchant-corrections.ts:transaction.update — its stated guard is still present (recomputeFlowFields()
+  ✓ scripts/rls-app-acceptance.ts:holding.update — 1 statement(s), expected 1 [ADVERSARIAL_SUITE]
+  ✓ scripts/rls-app-acceptance.ts:investmentEvent.updateMany — 1 statement(s), expected 1 [ADVERSARIAL_SUITE]
+  ✓ scripts/rls-app-acceptance.ts:positionObservation.updateMany — 1 statement(s), expected 1 [ADVERSARIAL_SUITE]
+  ✓ scripts/backfill-flowtype.ts:$executeRaw — 1 statement(s), expected 1 [OPERATOR_TOOL]
+  ✓ lib/investments/sync-current-holdings.ts — the removed FK write has NOT returned
+  ✓ lib/investments/sync-current-holdings.ts — its replacement payload is still data: u.row
+  ✓ buildFlowWriteFields still assigns counterpartyAccountId the literal null (2 assignment(s) of 3 mention(s))
+  ✓ the guard module exists and exports BOTH halves (a destination-only check is insufficient)
+  ✓ the guard never learns visibilityLevel (RLS = tenancy; the tier is lib/account-privacy.ts's)
+  ✓ the guard imports no client — the probe issues through the writer's own authority
+  ✓ no SECOND copy of the refusal types exists under another name
+  ✓ Transaction.counterpartyAccountId — 34 referencing file(s), all with a recorded role
+  ✓ no recorded counterparty participant has disappeared (the inventory may SHRINK, by deleting the entry)
+  ✓ exactly ONE file persists the counterparty FK, and it resolves the value from the owner's own wallet map
+  ✓ reading it is gated by the APPLICATION (gatedCounterpartyId), independently of RLS
+  [counterparty] 34 participants — AUDIT=12 AUTHORITY=1 DESCRIPTION=2 DTO=3 GATE=1 READ=8 UI=4 WRITE=1 WRITE_NULL=2
+
+  classification of every capable site:
+
+    CREATE_ARM_ONLY       app/api/accounts/[id]/debt-profile/route.ts:debtProfile.upsert  line(s) 132  [PAYLOAD_OPAQUE]
+    FK_CLEARED_ONLY       app/api/accounts/[id]/import/route.ts:transaction.update  line(s) 641  [PAYLOAD_OPAQUE]
+    OPAQUE_BUT_FK_FREE    lib/accounts/persist-account-spine.ts:accountConnection.update  line(s) 188  [PAYLOAD_OPAQUE]
+    OPAQUE_BUT_FK_FREE    lib/accounts/provider-identity.ts:providerAccountIdentity.update  line(s) 484  [PAYLOAD_OPAQUE]
+    SAME_OWNER_PROVEN     lib/accounts/reconcile.ts:debtProfile.updateMany  line(s) 805  [FK_IN_PAYLOAD]
+    SAME_OWNER_PROVEN     lib/accounts/reconcile.ts:transaction.updateMany  line(s) 784  [FK_IN_PAYLOAD]
+    CREATE_ARM_ONLY       lib/accounts/space-account-link.ts:spaceAccountLink.upsert  line(s) 255,291  [PAYLOAD_OPAQUE]
+    SOURCE_IS_DESTINATION lib/crypto/position-coverage.ts:positionCoverage.upsert  line(s) 204  [PAYLOAD_OPAQUE]
+    SOURCE_IS_DESTINATION lib/crypto/wallet-position-capture.ts:positionObservation.upsert  line(s) 115  [PAYLOAD_OPAQUE]
+    SOURCE_IS_DESTINATION lib/investments/brokerage-cash.ts:positionObservation.upsert  line(s) 219  [PAYLOAD_OPAQUE]
+    FK_UNCHANGED_PROVEN   lib/investments/investment-event-ingest.ts:investmentEvent.update  line(s) 543,544  [IDENTITY_IN_PAYLOAD]
+    OPAQUE_BUT_FK_FREE    lib/investments/investment-import-commit.ts:importBatch.update  line(s) 363  [PAYLOAD_OPAQUE]
+    SOURCE_IS_DESTINATION lib/investments/position-capture.ts:positionObservation.upsert  line(s) 250  [PAYLOAD_OPAQUE]
+    SOURCE_IS_DESTINATION lib/investments/reconstruction-runner.ts:positionReconstruction.upsert  line(s) 305  [PAYLOAD_OPAQUE]
+    FK_UNCHANGED_PROVEN   lib/plaid/syncTransactions.ts:transaction.update  line(s) 933,1042  [PAYLOAD_OPAQUE]
+    FK_CLEARED_ONLY       lib/transactions/merchant-corrections.ts:transaction.update  line(s) 237,255  [PAYLOAD_OPAQUE]
+    OPERATOR_TOOL         scripts/backfill-flowtype.ts:$executeRaw  line(s) 286  [RAW_SQL]
+    ADVERSARIAL_SUITE     scripts/rls-app-acceptance.ts:holding.update  line(s) 1322  [PAYLOAD_OPAQUE]
+    ADVERSARIAL_SUITE     scripts/rls-app-acceptance.ts:investmentEvent.updateMany  line(s) 1142  [PAYLOAD_OPAQUE]
+    ADVERSARIAL_SUITE     scripts/rls-app-acceptance.ts:positionObservation.updateMany  line(s) 1148  [PAYLOAD_OPAQUE]
+
+  by verdict: ADVERSARIAL_SUITE=3  CREATE_ARM_ONLY=3  FK_CLEARED_ONLY=3  FK_UNCHANGED_PROVEN=4  OPAQUE_BUT_FK_FREE=3  OPERATOR_TOOL=1  SAME_OWNER_PROVEN=2  SOURCE_IS_DESTINATION=5
+
+audit-account-reparenting: 24 capable site(s) over 1508 file(s), all classified.
+
+
+══════════════════════════════════════════════════════════════════════════════
+▶ audit-db-authority   [REQUIRED]
+══════════════════════════════════════════════════════════════════════════════
+
+audit-db-authority — every runtime database authority is intentional
+
+  ✓ tenantDb is confined to the code that owns that authority
+  ✓ authDb is confined to the code that owns that authority
+  ✓ systemDb is confined to the code that owns that authority
+  ✓ no NEW runtime file reaches the database through the migration principal (163 remain, baseline 163)
+  ✓ the baseline records the defaulted-authority sets (regenerate it if this fails on an old file)
+  ✓ no NEW place resolves a missing client to the migration principal (49 default site(s), baseline 49)
+  ✓ no NEW call reaches the migration principal by passing no authority (61 implicit call(s), baseline 64)
+  · 3 implicit owner call(s) were closed since the baseline — regenerate it to lock that in.
+  ✓ strict mode is asserted BEFORE any role client is constructed
+  ✓ strict mode refuses the migration principal as a role URL
+  ✓ strict mode treats a missing role URL as fatal, not as a fallback
+  ✓ the authoritative check asks the DATABASE who it is, not the URL
+  ✓ the tenant identity is transaction-local (set_config(..., true))
+  ✓ the tenant channel refuses an empty identity
+  ✓ every suite that binds lib/db verifies the BOUND client, not just the URL (4 suite(s))
+
+audit-db-authority: all passed.
+
+
+══════════════════════════════════════════════════════════════════════════════
+▶ audit-goals-tombstone   [REQUIRED]
+══════════════════════════════════════════════════════════════════════════════
+
+[AUDIT] goals tombstone — no runtime path reads, writes, or speaks goal state
+
+  ✓ no non-test source references the retired goals vocabulary
+  ✓ app/api/spaces/[id]/goals stays deleted
+  ✓ components/space/sections/SectionRegistry.tsx stays deleted
+  ✓ components/space/sections/SectionCard.tsx stays deleted
+  ✓ components/space/workspaces/RoutedWorkspaceModal.tsx stays deleted
+  ✓ components/space/workspaces/AddGoalModal.tsx stays deleted
+  ✓ lib/ai/assemblers/goals.ts stays deleted
+  ✓ lib/ai/signals/detectors/goals.ts stays deleted
+  ✓ lib/goals stays deleted
+  ✓ lib/widget-registry.ts stays deleted
+  ✓ lib/perspectives/virtual-sections.ts stays deleted
+  ✓ lib/balances/section-quantity.ts stays deleted
+  ✓ schema still carries the goal models (retire this audit when the migration train drops them)
+
+[AUDIT] PASSED — goals are schema-only residue; no runtime path touches them. ✓
+
+
+══════════════════════════════════════════════════════════════════════════════
+▶ audit-crypto-holding-tombstone   [REQUIRED]
+══════════════════════════════════════════════════════════════════════════════
+
+[AUDIT] crypto Holding tombstone — one current-value authority; no legacy Holding read path
+
+  ✓ no production `holding` accessor outside lib/investments/sync-current-holdings.ts
+  ✓ sync-current-holdings remains a projection writer (plan-read + writes only)
+  ✓ no non-test source speaks the retired legacy-crypto vocabulary
+  ✓ lib/investments/legacy-crypto-holdings.ts stays deleted
+  ✓ lib/investments/canonical-precedence.core.ts stays deleted
+  ✓ AI holdings assembler reads getCurrentPositions (and no bridge)
+  ✓ data export reads getCurrentPositions (and no bridge)
+  ✓ schema still carries the Holding model (migration-train residue; retire clause with the train)
+
+[AUDIT] PASSED — one current-value authority; the legacy Holding read surface stays dead. ✓
+
+
+══════════════════════════════════════════════════════════════════════════════
+▶ audit-read-identity-consumers   [REQUIRED]
+══════════════════════════════════════════════════════════════════════════════
+
+[AUDIT] INV-19 — read surfaces never derive transaction identity from non-event keys
+
+  ✓ the fingerprint module is imported ONLY by the write-path allowlist
+  ✓ every allowlisted write path still exists and still imports it (allowlist is not stale)
+  ✓ similarity excludes candidates the event ledger distinguishes (cross-event exclusion present)
+  ✓ similarity keys on the DF-4 raw descriptor (`description ?? merchant`), not the enriched merchant
+  ✓ the identity-verdict shape is retired (no resolveDuplicate, no `duplicate:` output key)
+  ✓ the drawer's candidate select carries transactionEventId (exclusion structurally possible)
+  ✓ no product surface renders the retired transaction-identity verdict copy ("Possible duplicate — …")
+  ✓ the banking event domain is exactly {PLAID, MANUAL, CSV} — WALLET/EXCHANGE excluded
+  ✓ no crypto writer imports the fingerprint module
+
+[AUDIT] PASSED — event identity is the only read-side transaction identity. ✓
+
+
+══════════════════════════════════════════════════════════════════════════════
+▶ audit-forecast-slice-provenance   [REQUIRED]
+══════════════════════════════════════════════════════════════════════════════
+
+FORECAST-2 (d720d1e)
+  ✓ FORECAST-2: parent abdf72f is the commit's first parent
+  ✓ FORECAST-2: the commit's subject names the slice
+  ✓ FORECAST-2 touched none of: lib/forecast/cadence.ts
+
+FORECAST-3 (f849c05)
+  ✓ FORECAST-3: parent d720d1e is the commit's first parent
+  ✓ FORECAST-3: the commit's subject names the slice
+  ✓ FORECAST-3 touched none of: lib/forecast/cadence.ts, lib/forecast/stream-activity.ts
+
+FORECAST-4 (f0af73d)
+  ✓ FORECAST-4: parent f849c05 is the commit's first parent
+  ✓ FORECAST-4: the commit's subject names the slice
+  ✓ FORECAST-4 touched none of: lib/forecast/cadence.ts, lib/forecast/stream-activity.ts, lib/forecast/future-cash-event.ts
+
+FORECAST-5 (0506c67)
+  ✓ FORECAST-5: parent f0af73d is the commit's first parent
+  ✓ FORECAST-5: the commit's subject names the slice
+  ✓ FORECAST-5 touched none of: lib/forecast/cadence.ts, lib/forecast/stream-activity.ts, lib/forecast/future-cash-event.ts, lib/forecast/obligation.ts
+
+FORECAST-6 (5ca025a)
+  ✓ FORECAST-6: parent 0506c67 is the commit's first parent
+  ✓ FORECAST-6: the commit's subject names the slice
+  ✓ FORECAST-6 touched none of: lib/forecast/cadence.ts, lib/forecast/stream-activity.ts, lib/forecast/future-cash-event.ts, lib/forecast/obligation.ts, lib/forecast/periodic-amount.ts, lib/transactions/flow-predicates.ts
+
+FORECAST-7 (3bcfce3)
+  ✓ FORECAST-7: parent 5ca025a is the commit's first parent
+  ✓ FORECAST-7: the commit's subject names the slice
+  ✓ FORECAST-7 touched none of: lib/forecast/cadence.ts, lib/forecast/stream-activity.ts, lib/forecast/future-cash-event.ts, lib/forecast/obligation.ts, lib/forecast/periodic-amount.ts, lib/forecast/spending-baseline.ts, lib/ai/economic-concepts.ts
+
+FORECAST-8 (109c9e1)
+  ✓ FORECAST-8: parent 3bcfce3 is the commit's first parent
+  ✓ FORECAST-8: the commit's subject names the slice
+  ✓ FORECAST-8 touched none of: lib/forecast/cadence.ts, lib/forecast/stream-activity.ts, lib/forecast/future-cash-event.ts, lib/forecast/obligation.ts, lib/forecast/periodic-amount.ts, lib/forecast/spending-baseline.ts, lib/forecast/operating-state.ts, lib/ai/
+
+FORECAST-9 (714d099)
+  ✓ FORECAST-9: parent 6410d82 is the commit's first parent
+  ✓ FORECAST-9: the commit's subject names the slice
+  ✓ FORECAST-9 touched none of: lib/forecast/cadence.ts, lib/forecast/stream-activity.ts, lib/forecast/future-cash-event.ts, lib/forecast/obligation.ts, lib/forecast/periodic-amount.ts, lib/forecast/operating-state.ts, lib/ai/, app/, components/, prisma/
+
+[AUDIT] PASSED — every recorded FORECAST slice claim holds on its own commit. ✓
+
+
+══════════════════════════════════════════════════════════════════════════════
+SUMMARY
+══════════════════════════════════════════════════════════════════════════════
+  ✓ audit-account-reparenting                      3291ms  [REQUIRED]
+  ✓ audit-db-authority                             2935ms  [REQUIRED]
+  ✓ audit-goals-tombstone                          1652ms  [REQUIRED]
+  ✓ audit-crypto-holding-tombstone                 1908ms  [REQUIRED]
+  ✓ audit-read-identity-consumers                  1824ms  [REQUIRED]
+  ✓ audit-forecast-slice-provenance                4166ms  [REQUIRED]
+
+[AUDITS] PASSED — 6 audit(s), every required invariant holds. ✓
+
