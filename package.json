@@ -94,7 +94,8 @@
     "rls:accept:app": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/rls-app-acceptance.ts",
     "rls:accept:ai": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/rls-ai-acceptance.ts",
     "rls:accept:plaid": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/rls-plaid-acceptance.ts",
-    "rls:accept:foreground": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/rls-foreground-acceptance.ts"
+    "rls:accept:foreground": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/rls-foreground-acceptance.ts",
+    "rls:accept:allowance": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/ai-allowance-acceptance.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

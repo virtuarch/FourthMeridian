@@ -204,6 +204,35 @@ eq('D3 two observations at a new level are not yet a licensed regime', twoNew.as
 check('D4 and it says the level changed too recently',
   !twoNew.assertable && /changed too recently/.test(twoNew.reason), (twoNew as {reason:string}).reason);
 
+// AI RELIABILITY (2026-10-16) — THE HEAD OBEYS THE SAME OUTLIER RULE AS THE BODY.
+// Before: the walk seeded its level from the newest payment, so ONE high latest
+// paycheck became the level, the eleven before it "deviated" as a run, and the
+// stream's amount was refused — the projection then counted $0 of payroll. The
+// live shape: an eleven-payment level within ~1.3%, then one payment +28%.
+const PAYROLL_HEAD = [5267.10, 5267.13, 5286.64, 5286.65, 5286.63, 5286.40, 5306.12, 5286.64, 5286.64, 5286.64, 5286.64, 6770.32];
+const headSpike = derive(PAYROLL_HEAD);
+check('D5 one deviating NEWEST payment on a stable regime is a provisional OUTLIER — the level stands',
+  headSpike.assertable && Math.abs(headSpike.value - 5286.64) < 0.01 && headSpike.observationCount === 11,
+  JSON.stringify(headSpike).slice(0, 300));
+if (headSpike.assertable) {
+  eq('D6 and it is DISCLOSED as latestDeviation, never silently dropped',
+    headSpike.latestDeviation && [headSpike.latestDeviation.value, headSpike.latestDeviation.pctFromLevel > 25],
+    [6770.32, true]);
+  eq('D7 its verdict says OUTLIER', headSpike.verdicts.at(-1)!.excludedBecause, ExclusionReason.OUTLIER);
+  check('D8 the reason says the new level is NOT established', /not established until the next payment/.test(headSpike.reason));
+}
+const headSpikeMid = derive([...PAYROLL_HEAD.slice(0, 5), 6770.32, ...PAYROLL_HEAD.slice(5, 11)]);
+check('D9 the SAME spike mid-series gives the same level — the walk is now symmetric',
+  headSpike.assertable && headSpikeMid.assertable && headSpikeMid.value === headSpike.value && headSpikeMid.latestDeviation === undefined);
+const headDip = derive([...PAYROLL_HEAD.slice(0, 11), 2306.42]);
+check('D10 a single LOW newest payment is held out the same way, and disclosed with its sign',
+  headDip.assertable && headDip.latestDeviation !== undefined && headDip.latestDeviation.pctFromLevel < 0);
+const twoHeads = derive([...PAYROLL_HEAD.slice(0, 10), 6770.32, 6770.32]);
+check('D11 TWO deviating newest payments are a new level — still refused as too young (BREAK_RUN unchanged)',
+  !twoHeads.assertable && /changed too recently/.test(twoHeads.reason), (twoHeads as { reason: string }).reason);
+check('D12 a regime too short to judge the head (3 points) is not rescued by the head rule',
+  !derive([5290, 5288, 9000]).assertable);
+
 // ═══════════════════════════════════════════════════════════════════════════
 // E. Thresholds and minimum evidence
 // ═══════════════════════════════════════════════════════════════════════════
@@ -506,9 +535,9 @@ async function mutations(): Promise<void> {
   // Derived payroll silently becomes take-home pay.
   await mutate('Q1 a derived amount promoted to NET is caught',
     `    basis: AmountBasis.UNKNOWN, basisProvenance: null,
-    regimeStartISO, observationCount: included.length, spread, verdicts,`,
+    regimeStartISO, observationCount: included.length, spread,`,
     `    basis: AmountBasis.NET, basisProvenance: EventProvenance.DERIVED,
-    regimeStartISO, observationCount: included.length, spread, verdicts,`,
+    regimeStartISO, observationCount: included.length, spread,`,
     (m) => {
       const d = m.deriveCurrentPeriodicAmount(obs(VECTRUS), vecCad);
       return d.assertable && d.basis === AmountBasis.UNKNOWN && d.basisProvenance === null;

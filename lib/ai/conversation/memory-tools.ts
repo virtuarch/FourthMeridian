@@ -99,6 +99,10 @@ export function projectionStatement(
   if (!r || r.retrospective === true) return null;
   if ('interval' in r) return null;
   if (!projection || typeof projection.endingCash !== 'number') return null;
+  // AI RELIABILITY (2026-10-16) — AN INCOMPLETE FIGURE IS NOT A STATEMENT. When a
+  // current income stream could not be priced, `endingCash` counts it at $0; it is
+  // a bound, not what we expect, and grading it later would score the omission.
+  if (projection.kind === 'INCOMPLETE_ESTIMATE') return null;
   const horizon = horizonBlock?.to;
   if (typeof horizon !== 'string' || !horizon) return null;
 
@@ -127,6 +131,8 @@ export function projectionStatement(
       // Always empty now: a projection that applied a user's figure is not recorded.
       userAssumptions: [],
       openingCash: basis.openingCash ?? null,
+      incomeProjected: basis.incomeProjected ?? null,
+      outflowsProjected: basis.outflowsProjected ?? null,
     },
     statedAs: `Projected ${projection.endingCash} liquid (checking plus savings) for `
       + `${horizon}, stated on ${asOfISO}.`,

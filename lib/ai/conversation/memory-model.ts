@@ -279,7 +279,10 @@ export function validateFields(cls: StatedClass, fields: unknown): Verdict {
 
 /** The closed, code-written basis of a recorded projection. */
 export const PROJECTION_BASIS_KEYS = ['spendingSource', 'dailyRate', 'monthsAveraged', 'incomeEvents',
-  'userAssumptions', 'openingCash'] as const;
+  'userAssumptions', 'openingCash',
+  // AI RELIABILITY (2026-10-16) — the projection's own income and dated-outflow totals, so a later
+  // variance attributes term by term (lib/ai/conversation/reconcile.ts attributeInFlightVariance).
+  'incomeProjected', 'outflowsProjected'] as const;
 
 /** The payload a class is stored as. `basis`/`scope` on a BASELINE are stamped here, never supplied. */
 export function toPayload(cls: StatedClass, fields: Fields): Record<string, unknown> {

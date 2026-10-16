@@ -181,6 +181,15 @@ jobs:
       - name: RLS foreground-path adversarial suite
         run: npm run rls:accept:foreground
 
+      # AI RELIABILITY — the AI allowance reservation on a real fm_system
+      # principal. The unit suite's fake transaction could not see that Prisma
+      # refuses to deserialize pg_advisory_xact_lock's `void` (P2010), so every
+      # real turn fell back to the plain check and concurrent turns all passed.
+      # Proves the lock, its per-customer scope, concurrent admission, the
+      # override, the toggles, and the fallback against a throwaway database.
+      - name: AI allowance reservation suite
+        run: npm run rls:accept:allowance
+
   site:
     name: Public site (zero-authority boundary)
     runs-on: ubuntu-latest

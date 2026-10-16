@@ -74,6 +74,13 @@ export interface ProjectedCash {
   range: { low: number; high: number } | null;
   /** Events the projection could not use, with the authority's own reason. */
   excluded: { id: string; reason: string }[];
+  /**
+   * AI RELIABILITY (2026-10-16) — the three terms `closing` is the sum of, as the
+   * fold counted them: closing = openingCash + inflow − outflow − spend. Null when
+   * no closing was produced. Carried so a statement can be reconciled term by
+   * term later without re-deriving anything from component labels.
+   */
+  totals: { inflow: number; outflow: number; spend: number; days: number } | null;
 }
 
 
@@ -232,7 +239,7 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
   if (openingCash === null || spending === null || spend === null) {
     return {
       status: ConclusionStatus.REFUSED, closing: null, currency, openingCash,
-      components, assumptions: [], missing, range: null, excluded,
+      components, assumptions: [], missing, range: null, excluded, totals: null,
     };
   }
 
@@ -285,6 +292,7 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
   return {
     status: ConclusionStatus.EVIDENCE_BASED_PROJECTION,
     closing, currency, openingCash, components, assumptions, missing: [], range, excluded,
+    totals: { inflow, outflow, spend, days },
   };
 }
 

@@ -1470,8 +1470,10 @@ console.log('17b. one spine');
   check('there is exactly ONE place a forecast is assembled',
     (src.match(/assembleForecast\(\{/g) ?? []).length === 1,
     String((src.match(/assembleForecast\(\{/g) ?? []).length));
+  // AI RELIABILITY (2026-10-16) — 3 → 4: reconcile_projection's attribution re-runs the SAME
+  // spine standing at the statement's date to measure the elapsed window's income (INCOME_TIMING).
   check('…and every tool that projects reaches it through the same spine',
-    (src.match(/buildCashSpine\(ctx, \{/g) ?? []).length === 3);
+    (src.match(/buildCashSpine\(ctx, \{/g) ?? []).length === 4);
   check('every checkpoint is an INDEPENDENT run from the same asOf',
     /runTo\(date, extra\)\.projection\?\.closing/.test(src) && /const run = runTo\(date\)/.test(src));
   check('the last checkpoint date IS the horizon, monthly and yearly alike',

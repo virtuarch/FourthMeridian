@@ -45,7 +45,7 @@ function makeClient(opts: { spentGroups?: { n: number; p: number; o: number }[];
   };
   const tx: ReservationTx = {
     ...base,
-    $queryRaw: async (_q: TemplateStringsArray, ...v: unknown[]) => { locks.push(String(v[0])); return []; },
+    $executeRaw: async (_q: TemplateStringsArray, ...v: unknown[]) => { locks.push(String(v[0])); return 1; },
     rateLimit: {
       findMany: async ({ where }: { where: { key: string; windowStart: { in: Date[] } } }) => where.windowStart.in.map((w: Date) => ({ count: buckets.get(bucketKey(where.key, w)) ?? 0 })).filter((b: { count: number }) => b.count > 0),
       upsert: async ({ where, create }: { where: { key_windowStart: { key: string; windowStart: Date } }; create: { count: number } }) => { const k = bucketKey(where.key_windowStart.key, where.key_windowStart.windowStart); const n = (buckets.get(k) ?? 0) + create.count; buckets.set(k, n); return { count: n }; },
@@ -129,7 +129,10 @@ async function main() {
   {
     const src = strip("lib/platform/ai/allowance-reservation.ts");
     check("fm_system, never the migration principal", /import \{ systemDb \} from "@\/lib\/db"/.test(src) && !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*"@\/lib\/db"/.test(src));
-    check("pg_advisory_xact_lock(hashtext(…)) is the first statement of the transaction", /\$transaction\(async \(tx\) => \{\s*await tx\.\$queryRaw`SELECT pg_advisory_xact_lock\(hashtext\(/.test(src));
+    check("pg_advisory_xact_lock(hashtext(…)) is the first statement of the transaction", /\$transaction\(async \(tx\) => \{\s*await tx\.\$executeRaw`SELECT pg_advisory_xact_lock\(hashtext\(/.test(src));
+    // P2010 regression — `pg_advisory_xact_lock` returns void and $queryRaw must deserialize it; a fake cannot see that, so this
+    // pin keeps the statement on $executeRaw and scripts/ai-allowance-acceptance.ts proves it against a real fm_system principal.
+    check("the void-returning lock never goes through $queryRaw (P2010 'Failed to deserialize column of type void')", !/\$queryRaw`[^`]*pg_advisory/.test(src) && !/\$queryRaw\b/.test(src));
     check("no provider import — the model call is never inside the lock", !/@\/lib\/ai\/provider|openai/.test(src));
     check("the allowance loader (lib/ai) holds no database client and no delegate call (evidence ratchet)", !/@\/lib\/db|\.(rateLimit|platformSetting|aiInvocation)\./.test(strip("lib/ai/allowance.ts")));
   }

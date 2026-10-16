@@ -65,7 +65,14 @@ export function allowanceLockKey(userId: string): string { return `ai-allowance:
 
 /** The narrow transactional surface the reservation needs — a Prisma transaction or a fake. */
 export interface ReservationTx extends CustomerSpendReadClient {
-  $queryRaw<T = unknown>(query: TemplateStringsArray, ...values: unknown[]): Promise<T>;
+  /**
+   * The lock statement. `$executeRaw`, NEVER `$queryRaw`: `pg_advisory_xact_lock`
+   * returns `void`, and `$queryRaw` must DESERIALIZE every result column — Prisma
+   * refuses a `void` column (P2010 "Failed to deserialize column of type 'void'"),
+   * which threw on every real database and sent every turn down the fallback.
+   * `$executeRaw` runs the same SELECT and returns only the row count.
+   */
+  $executeRaw(query: TemplateStringsArray, ...values: unknown[]): Promise<number>;
   platformSetting: {
     findUnique(args: { where: { key: string }; select: { value: true } }): Promise<{ value: string } | null>;
   };
@@ -135,7 +142,7 @@ export async function reserveAiTurn(
 
   try {
     const verdict = await client.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${allowanceLockKey(userId)}))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${allowanceLockKey(userId)}))`;
       const [enforced, groups, buckets] = await Promise.all([
         readEnforced(tx),
         readCustomerSpendGroupsToday(userId, now, tx),
