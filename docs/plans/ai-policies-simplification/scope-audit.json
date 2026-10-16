@@ -1,0 +1,249 @@
+{
+  "baseline": "ecf84a49aa9db64a79aa598134a3fd4f1dc0b36c",
+  "head": "1f9987f47c7b6437d94cbff39c42e2773af90f4f",
+  "files": [
+    "app/globals.css",
+    "app/layout.tsx",
+    "components/admin/AdminSecurityConsole.tsx",
+    "components/admin/ProviderDiagnosticsDrawer.tsx",
+    "components/ai/AiDisclosure.tsx",
+    "components/ai/AiShell.tsx",
+    "components/ai/Composer.tsx",
+    "components/ai/ai.test.ts",
+    "components/atlas/OverlaySurface.tsx",
+    "components/atlas/SheetHandle.tsx",
+    "components/atlas/panels/Panel.tsx",
+    "components/atlas/panels/PanelParts.tsx",
+    "components/atlas/panels/panels.test.ts",
+    "components/atlas/sheet-resize.test.ts",
+    "components/atlas/useOverlayBehavior.ts",
+    "components/atlas/useVisualViewport.ts",
+    "components/brief/BriefModal.tsx",
+    "components/dashboard/AddManualAssetModal.tsx",
+    "components/dashboard/AddWalletModal.tsx",
+    "components/dashboard/AdviceBanner.tsx",
+    "components/dashboard/DebtClient.tsx",
+    "components/dashboard/SpacesClient.tsx",
+    "components/platform/PlatformSpaceDirectory.tsx",
+    "components/platform/platform-surface.tsx",
+    "components/platform/widget-kit.tsx",
+    "components/platform/widgets/AiCostControlsPanel.tsx",
+    "components/platform/widgets/CsCustomersWidget.tsx",
+    "components/platform/widgets/GrowthPolicyGroupsWidget.tsx",
+    "components/platform/widgets/OpsAiBudgetWidget.tsx",
+    "components/platform/widgets/OpsAiInvocationsWidget.tsx",
+    "components/platform/widgets/OpsConnectionDiagnosticsWidget.tsx",
+    "components/platform/widgets/OpsEmailDeliveryWidget.tsx",
+    "components/platform/widgets/OpsPoliciesWidget.tsx",
+    "components/platform/widgets/ai-budget-view.ts",
+    "components/platform/widgets/ai-budget.test.ts",
+    "components/platform/widgets/ai-cost-controls.test.ts",
+    "components/platform/widgets/ai-policy-mutation.test.ts",
+    "components/platform/widgets/operator-identity.test.ts",
+    "components/platform/widgets/overview/ai-economics-activity.test.ts",
+    "components/platform/widgets/policies.test.ts",
+    "components/platform/widgets/policy-editor-kit.tsx",
+    "components/space/sections/DebtPayoffSection.tsx",
+    "components/space/widgets/investments/HoldingsLedger.tsx",
+    "components/space/widgets/liquidity/SourcesLedger.tsx",
+    "components/ui/BottomNav.tsx",
+    "components/ui/DashboardChrome.tsx",
+    "components/ui/PlatformContextSwitch.tsx",
+    "components/ui/chrome.test.ts",
+    "components/ui/platform-context-switch.test.ts",
+    "docs/plans/UI-HARDENING-REPORT-2026-10-16.md",
+    "docs/plans/UI-PLATFORM-COVERAGE.md",
+    "docs/plans/UI-SURFACE-COVERAGE.md",
+    "docs/plans/ai-cost-controls-review/README.md",
+    "docs/plans/ai-cost-controls-review/desktop-1440-cards-crop.png",
+    "docs/plans/ai-cost-controls-review/desktop-1440.png",
+    "docs/plans/ai-cost-controls-review/laptop-1024.png",
+    "docs/plans/ai-cost-controls-review/mobile-375-expanded.png",
+    "docs/plans/ai-cost-controls-review/scope-audit.json",
+    "docs/plans/ai-cost-controls-review/tablet-768.png",
+    "docs/plans/ui-hardening-evidence/accessibility-results.json",
+    "docs/plans/ui-hardening-evidence/ai-1280.png",
+    "docs/plans/ui-hardening-evidence/ai-1920.png",
+    "docs/plans/ui-hardening-evidence/ai-375.png",
+    "docs/plans/ui-hardening-evidence/ai-768.png",
+    "docs/plans/ui-hardening-evidence/before-ai-1280.png",
+    "docs/plans/ui-hardening-evidence/before-ai-1920.png",
+    "docs/plans/ui-hardening-evidence/before-ai-375.png",
+    "docs/plans/ui-hardening-evidence/before-ai-768.png",
+    "docs/plans/ui-hardening-evidence/before-panel-1280.png",
+    "docs/plans/ui-hardening-evidence/before-panel-1920.png",
+    "docs/plans/ui-hardening-evidence/before-panel-375.png",
+    "docs/plans/ui-hardening-evidence/before-panel-768.png",
+    "docs/plans/ui-hardening-evidence/before-platform-1280.png",
+    "docs/plans/ui-hardening-evidence/before-platform-1920.png",
+    "docs/plans/ui-hardening-evidence/before-platform-375.png",
+    "docs/plans/ui-hardening-evidence/before-platform-768.png",
+    "docs/plans/ui-hardening-evidence/browser-results.json",
+    "docs/plans/ui-hardening-evidence/file-audit.json",
+    "docs/plans/ui-hardening-evidence/inventory-audit.json",
+    "docs/plans/ui-hardening-evidence/logs/accessibility.txt",
+    "docs/plans/ui-hardening-evidence/logs/browser.txt",
+    "docs/plans/ui-hardening-evidence/logs/ci-final.txt",
+    "docs/plans/ui-hardening-evidence/logs/ci-initial-docker-unavailable.txt",
+    "docs/plans/ui-hardening-evidence/logs/lint.txt",
+    "docs/plans/ui-hardening-evidence/logs/production-build.txt",
+    "docs/plans/ui-hardening-evidence/logs/typecheck.txt",
+    "docs/plans/ui-hardening-evidence/logs/unit-tests-739.txt",
+    "docs/plans/ui-hardening-evidence/logs/visual-viewport.txt",
+    "docs/plans/ui-hardening-evidence/modal-1280x800.png",
+    "docs/plans/ui-hardening-evidence/modal-375x812.png",
+    "docs/plans/ui-hardening-evidence/modal-844x390.png",
+    "docs/plans/ui-hardening-evidence/modal-results.json",
+    "docs/plans/ui-hardening-evidence/modal-short-1280x800.png",
+    "docs/plans/ui-hardening-evidence/panel-1280.png",
+    "docs/plans/ui-hardening-evidence/panel-1920.png",
+    "docs/plans/ui-hardening-evidence/panel-375.png",
+    "docs/plans/ui-hardening-evidence/panel-768.png",
+    "docs/plans/ui-hardening-evidence/platform-1280.png",
+    "docs/plans/ui-hardening-evidence/platform-1920.png",
+    "docs/plans/ui-hardening-evidence/platform-375.png",
+    "docs/plans/ui-hardening-evidence/platform-768.png",
+    "docs/plans/ui-hardening-evidence/scope-review.md",
+    "docs/plans/ui-hardening-evidence/verification-summary.json",
+    "docs/plans/ui-hardening-evidence/visual-viewport-results.json",
+    "scripts/ui-hardening/README.md",
+    "scripts/ui-hardening/accessibility.mjs",
+    "scripts/ui-hardening/browser.mjs",
+    "scripts/ui-hardening/build.mjs",
+    "scripts/ui-hardening/fixture.tsx",
+    "scripts/ui-hardening/platform-fixtures.json",
+    "scripts/ui-hardening/visual-viewport.mjs"
+  ],
+  "prohibitedPaths": [],
+  "protectedFilesDiff": "",
+  "comparisons": [
+    {
+      "file": "components/admin/AdminSecurityConsole.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/admin/ProviderDiagnosticsDrawer.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/ai/AiDisclosure.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/ai/AiShell.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/ai/Composer.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/atlas/OverlaySurface.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/atlas/panels/Panel.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/atlas/panels/PanelParts.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/brief/BriefModal.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/dashboard/AddManualAssetModal.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/dashboard/AddWalletModal.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/dashboard/AdviceBanner.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/dashboard/DebtClient.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/dashboard/SpacesClient.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/PlatformSpaceDirectory.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/platform-surface.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widget-kit.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widgets/AiCostControlsPanel.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widgets/CsCustomersWidget.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widgets/GrowthPolicyGroupsWidget.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widgets/OpsAiBudgetWidget.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widgets/OpsAiInvocationsWidget.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widgets/OpsConnectionDiagnosticsWidget.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widgets/OpsEmailDeliveryWidget.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widgets/OpsPoliciesWidget.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widgets/policy-editor-kit.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/space/sections/DebtPayoffSection.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/space/widgets/investments/HoldingsLedger.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/space/widgets/liquidity/SourcesLedger.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/ui/BottomNav.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/ui/DashboardChrome.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/ui/PlatformContextSwitch.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    }
+  ]
+}
