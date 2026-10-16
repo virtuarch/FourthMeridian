@@ -5,7 +5,7 @@
  *
  * THE FOUR POLICY CARDS over GET/PATCH /api/platform/platform-ops/ai-cost-controls
  * (the frozen read model in lib/platform/ai/cost-controls.types.ts), rendered
- * inside the Policies SectionSurface in place of the retired read-only "Cost
+ * alongside the Policies surface in place of the retired read-only "Cost
  * safeguards" group — the thresholds live here now and nowhere else:
  *
  *   Per-user daily AI allowance    enforcement + USD amount · ceiling · the effective
@@ -16,9 +16,8 @@
  *   Pause paid AI requests         THE EMERGENCY CONTROL — its own state word, the sentence
  *                                  customers read, two-step confirmation in BOTH directions
  *
- * ONE grammar per control: the value in force with its origin chip (Default ·
- * Setting · Default in force — stored value invalid), a Default · Setting · Max
- * legend, a Provenance chip naming when and by whom the row was written.
+ * Each card leads with its effective value, status and action. Configuration
+ * bounds, provenance and explanations remain available in expandable details.
  *
  * ── THE EDITOR ────────────────────────────────────────────────────────────────
  * For an operator whose resolved access permits it (`editable` — the host
@@ -45,7 +44,7 @@
 import { useState, type ReactNode } from "react";
 import { AlertTriangle, Loader2, Pause, Pencil, Play, RotateCcw } from "lucide-react";
 import type { SharedFetchState } from "../workspace-session";
-import { GroupLabel, KeyRow, PolicyChip, Provenance, TONE_COLOR, ToneBadge } from "../platform-surface";
+import { KeyRow, PolicyChip, Provenance, TONE_COLOR, ToneBadge } from "../platform-surface";
 import { LOADING_TEXT, unavailableText } from "./platform-health-view";
 import { AI_COST_CONTROLS_URL, type AiCostControlKey, type AiCostControlsReadModel, type ControlValueView } from "@/lib/platform/ai/cost-controls.types";
 import { BTN, BTN_NEUTRAL, BTN_PRIMARY, BTN_QUIET, CadenceForm, FIELD, Notice, formatUtc, mutate, useSettle, type OperatorReasonInput, type PolicyNotice } from "./policy-editor-kit";
@@ -240,24 +239,40 @@ function Affordances({ notice, edit, restore }: { notice: PolicyNotice | null; e
   );
 }
 
-function CardShell({ card, state, children, control }: { card: CardKey; state: { word: string; tone: "ok" | "warn" | "bad" | "muted" }; children: ReactNode; control: ReactNode }) {
+const DISPLAY_TITLE: Record<CardKey, string> = {
+  allowance: "Daily allowance",
+  userAlert: "Per-customer spending alert",
+  fleetAlert: "Fleet-wide spending alert",
+  killSwitch: "Paid AI requests",
+};
+
+function CardShell({ card, state, children, control, primary, caption, signal, showControl }: { card: CardKey; state: { word: string; tone: "ok" | "warn" | "bad" | "muted" }; children: ReactNode; control: ReactNode; primary?: ReactNode; caption?: string; signal?: ReactNode; showControl: boolean }) {
   return (
-    <div className="flex min-w-0 flex-col gap-4 border-t border-[var(--border-hairline)] pt-5" role="group" aria-label={CARD_TITLE[card]}>
-      <div className="flex flex-col gap-1.5">
-        <GroupLabel hint={CARD_DESCRIPTION[card]}>{CARD_TITLE[card]}</GroupLabel>
-        <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{CARD_DESCRIPTION[card]}</p>
-        <ToneBadge word={state.word} tone={state.tone} />
+    <section className="flex min-w-0 flex-col rounded-2xl border border-[var(--border-hairline-strong)] bg-[var(--surface-muted)] p-5 shadow-sm sm:p-6" aria-label={CARD_TITLE[card]}>
+      <div className="flex min-w-0 flex-col items-start gap-3">
+        <h3 className={`${card === "killSwitch" ? "" : "min-h-12"} break-words text-sm font-semibold leading-6 text-[var(--text-primary)]`}>{DISPLAY_TITLE[card]}</h3>
+        <div className="flex flex-wrap items-center gap-2"><ToneBadge word={state.word} tone={state.tone} />{signal}</div>
       </div>
-      {children}
-      {control}
-    </div>
+      {primary && <div className="my-6 min-w-0">
+        <p className="break-words text-3xl font-semibold leading-tight tracking-tight tabular-nums text-[var(--text-primary)]">{primary}</p>
+        <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">{caption}</p>
+      </div>}
+      {showControl && <div className="mt-auto border-t border-[var(--border-hairline)] pt-4">{control}</div>}
+      <details className="mt-4 min-w-0 border-t border-[var(--border-hairline)] pt-4 text-xs text-[var(--text-secondary)]">
+        <summary className="cursor-pointer py-1 font-medium text-[var(--text-secondary)]">Details &amp; provenance</summary>
+        <div className="mt-4 flex min-w-0 flex-col gap-5">
+          <p className="leading-6">{CARD_DESCRIPTION[card]}</p>
+          {children}
+        </div>
+      </details>
+    </section>
   );
 }
 
 /** One of the three ordinary cards (allowance, per-user alert, fleet alert). The facts are the caller's; the editor is shared. */
-function PolicyCard({ card, model, editable, onModel, state, children }: {
+function PolicyCard({ card, model, editable, onModel, state, children, primary, caption, signal }: {
   card: CardKey; model: AiCostControlsReadModel; editable: boolean; onModel: (m: AiCostControlsReadModel) => void;
-  state: { word: string; tone: "ok" | "warn" | "bad" | "muted" }; children: ReactNode;
+  state: { word: string; tone: "ok" | "warn" | "bad" | "muted" }; children: ReactNode; primary: ReactNode; caption: string; signal?: ReactNode;
 }) {
   const c = useCard(card, model, onModel);
   const offerRestore = editable && restoreDefaultsChanges(model, card).length > 0;
@@ -266,7 +281,7 @@ function PolicyCard({ card, model, editable, onModel, state, children }: {
     : <Affordances notice={c.notice}
         edit={editable ? { label: "Edit", icon: <Pencil size={11} aria-hidden />, onClick: () => c.open("edit") } : null}
         restore={offerRestore ? () => c.open("reset") : null} />;
-  return <CardShell card={card} state={state} control={control}>{children}</CardShell>;
+  return <CardShell card={card} state={state} control={control} showControl={editable || c.notice !== null} primary={primary} caption={caption} signal={signal}>{children}</CardShell>;
 }
 
 // ── The four cards ────────────────────────────────────────────────────────────
@@ -274,7 +289,7 @@ function PolicyCard({ card, model, editable, onModel, state, children }: {
 function AllowanceCard({ model, editable, onModel }: { model: AiCostControlsReadModel; editable: boolean; onModel: (m: AiCostControlsReadModel) => void }) {
   const a = model.allowance;
   return (
-    <PolicyCard card="allowance" model={model} editable={editable} onModel={onModel} state={enforcedWord(a.enforced.value)}>
+    <PolicyCard card="allowance" model={model} editable={editable} onModel={onModel} state={enforcedWord(a.enforced.value)} primary={usdText(a.effectiveDefaultUsd)} caption="Effective default per customer · UTC day">
       <ControlFacts view={a.enforced} />
       <ControlFacts view={a.usd} />
       <div className="flex flex-col gap-1.5">
@@ -303,7 +318,7 @@ function AlertCard({ card, model, editable, onModel }: { card: "userAlert" | "fl
   const v = model[card];
   const firing = firingText(v.status, formatUtc);
   return (
-    <PolicyCard card={card} model={model} editable={editable} onModel={onModel} state={stateWord(v.enabled.value)}>
+    <PolicyCard card={card} model={model} editable={editable} onModel={onModel} state={stateWord(v.enabled.value)} signal={v.status.firingNow ? <ToneBadge word={firing.word} tone={firing.tone} /> : null} primary={usdText(v.thresholdUsd.value)} caption={card === "userAlert" ? "Estimated spend per customer · trailing 24h" : "Estimated fleet spend · trailing 24h"}>
       <ControlFacts view={v.enabled} />
       <ControlFacts view={v.thresholdUsd} />
       <div className="flex flex-col gap-1.5">
@@ -344,9 +359,9 @@ function KillSwitchCard({ model, editable, onModel }: { model: AiCostControlsRea
         } : null}
         restore={null} />;
   return (
-    <div className="flex flex-col gap-2 border-t pt-6" style={{ borderColor: "var(--border-hairline-strong)" }} role="region" aria-label={EMERGENCY_LABEL}>
+    <div className="flex flex-col gap-3" style={{ borderColor: "var(--border-hairline-strong)" }} role="region" aria-label={EMERGENCY_LABEL}>
       <span className="text-[10px] font-medium uppercase tracking-wide" style={{ color: "var(--brass-300)" }}>{EMERGENCY_LABEL}</span>
-      <CardShell card="killSwitch" state={pausedWord(paused)} control={control}>
+      <CardShell card="killSwitch" state={pausedWord(paused)} control={control} showControl={editable || c.notice !== null} primary={paused ? "Requests paused" : "Requests admitted"} caption="Emergency control for paid AI requests">
         <ControlFacts view={k.paused} />
         <div className="flex flex-col gap-1.5">
           <KeyRow label="Customers read while paused" value={<q>{k.customerMessage}</q>} />
@@ -369,8 +384,8 @@ export function AiCostControlsPanel({ state, editable = false, onModel = () => {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-1.5">
-        <GroupLabel hint={AI_COST_CONTROLS_SENTENCE}>{AI_COST_CONTROLS_TITLE}</GroupLabel>
-        <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{AI_COST_CONTROLS_SENTENCE}</p>
+        <h2 className="text-lg font-semibold text-[var(--text-primary)]">{AI_COST_CONTROLS_TITLE}</h2>
+        <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">Manage daily allowances, spending alerts, and paid request availability.</p>
       </div>
       {state.loading ? (
         <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]" role="status"><Loader2 size={12} className="animate-spin" aria-hidden /> {LOADING_TEXT}</p>
@@ -378,8 +393,8 @@ export function AiCostControlsPanel({ state, editable = false, onModel = () => {
         <p className="flex items-start gap-1.5 text-xs" style={{ color: TONE_COLOR.bad }} role="alert"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden /><span>{unavailableText(AI_COST_CONTROLS_SUBJECT)}</span></p>
       ) : (
         <>
-          <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">{propagationText(data.propagation)} · checked {formatUtc(data.checkedAt)}</p>
-          <div className="grid gap-x-8 gap-y-7 @min-[48rem]:grid-cols-2 @min-[76rem]:grid-cols-3">
+          <details className="text-xs text-[var(--text-muted)]"><summary className="cursor-pointer">Update timing &amp; last checked</summary><p className="mt-2 leading-5">{AI_COST_CONTROLS_SENTENCE}</p><p className="mt-2 leading-5">{propagationText(data.propagation)} · checked {formatUtc(data.checkedAt)}</p></details>
+          <div className="grid items-stretch gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr))" }}>
             <AllowanceCard model={data} editable={editable} onModel={onModel} />
             <AlertCard card="userAlert" model={data} editable={editable} onModel={onModel} />
             <AlertCard card="fleetAlert" model={data} editable={editable} onModel={onModel} />

@@ -237,7 +237,8 @@ console.log("\n10b. AI COST CONTROLS — the Cost safeguards group is RETIRED; t
   const inSurface = render({ data: model, loading: false, error: null }, false, { cadence: cadenceState, costControls: { data: controls, loading: false, error: null } });
   check("the Cost safeguards group is gone (no title, no 'Set via admin settings', no catalogue line, no ai-spend-high)", !/Cost safeguards/.test(inSurface) && !/Set via admin settings/.test(inSurface) && !/Catalogue \(code-owned\)/.test(inSurface) && !/rule ai-spend-high\b/.test(inSurface));
   check("the AI Cost Controls group is composed beneath the cadence panel with its four cards", inSurface.indexOf("Execution cadence") < inSurface.indexOf("AI Cost Controls") && /Per-user daily AI allowance/.test(inSurface) && /Per-user spending alert/.test(inSurface) && /Fleet-wide spending alert/.test(inSurface) && /Pause paid AI requests/.test(inSurface));
-  check("the thresholds live there once each: $3 and $10 appear as the values in force, no second display", (inSurface.match(/>\$3</g) ?? []).length === 1 && (inSurface.match(/>\$10</g) ?? []).length === 1);
+  const visibleSummary = inSurface.replace(/<details[\s\S]*?<\/details>/g, "");
+  check("each alert threshold appears once in the visible summary; metadata remains in collapsed details", (visibleSummary.match(/>\$3</g) ?? []).length === 1 && (visibleSummary.match(/>\$10</g) ?? []).length === 1);
   check("the whole surface stays control-free for READ", !/<button|<select|<input|<form/.test(inSurface));
   check("no email, no secret-shaped text", !/@|token|secret/i.test(inSurface.replace(/ class="[^"]*"/g, "")));
   const forControl = render({ data: model, loading: false, error: null }, true, { cadence: cadenceState, costControls: { data: controls, loading: false, error: null } });
