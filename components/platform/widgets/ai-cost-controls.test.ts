@@ -81,7 +81,7 @@ const render = (m: AiCostControlsReadModel | null, editable = false, loading = f
   renderToStaticMarkup(createElement(AiCostControlsPanel, { state: { data: m, loading, error }, editable, onModel: () => {} }));
 const editor = (card: "allowance" | "userAlert" | "fleetAlert" | "killSwitch", m: AiCostControlsReadModel, draft: Record<string, boolean | string>, armed = false, intent: "edit" | "reset" = "edit") =>
   renderToStaticMarkup(createElement(CardEditor, { card, model: m, draft, armed, intent, busy: false, notice: null, onDraft: () => {}, onSave: () => {}, onReset: () => {}, onCancel: () => {} }));
-const noControls = (html: string) => !/<button|<select|<input|<form/.test(html);
+const emergency = (html: string) => html.slice(html.indexOf('aria-label="Emergency control"'));
 
 console.log("1. the wording helpers: origin chips, provenance, legend, value words");
 {
@@ -187,61 +187,46 @@ console.log("\n6. the outcome rule (409 handling and its siblings), purely");
   check("403 ⇒ Not authorized, nothing published, editor open", failed.model === null && !failed.close && /Not authorized/.test(failed.notice.text));
 }
 
-console.log("\n7. the panel for a READ / WRITE operator: every fact, no control");
+console.log("\n7. compact cards and disabled administrative controls for READ / WRITE");
 {
   const html = render(model());
-  check("the group is titled AI Cost Controls with the governing sentence (estimate, never a bill)", /AI Cost Controls/.test(html) && /never a bill/.test(html));
-  check("all four cards by name", ["Per-user daily AI allowance", "Per-user spending alert", "Fleet-wide spending alert", "Pause paid AI requests"].every((t) => html.includes(t)));
-  check("state words as ToneBadges: Enforced · Enabled ×2 · Admitting", /font-medium">Enforced</.test(html) && (html.match(/font-medium">Enabled</g) ?? []).length === 2 && /font-medium">Admitting</.test(html));
-  check("every control's value in force carries the Default origin chip", (html.match(/>Default</g) ?? []).length === 7);
-  check("the legend per control: Default · Setting — (no row); numeric controls carry Max", (html.match(/Setting —/g) ?? []).length === 7 && /Max \$20/.test(html) && /Max \$10000/.test(html) && /Max \$100000/.test(html));
-  check("provenance reads Platform default on every control", (html.match(/Platform default/g) ?? []).length === 7);
-  check("allowance: ceiling, effective default with its source, no overrides, the Customer Success doorway sentence, the enforcement note",
-    /Ceiling/.test(html) && /\$5 per UTC day for a customer on the default policy[^<]*\(policy group\) · ceiling \$20/.test(html) && /No per-customer overrides\./.test(html) && /changed in Customer Success/.test(html) && /since midnight UTC/.test(html));
-  check("alerts: rule ids, Never fired, no recent triggers, the fleet-excludes-harness sentence once", /ai-spend-user-high/.test(html) && /ai-spend-fleet-high/.test(html) && (html.match(/Never fired/g) ?? []).length === 2 && (html.match(/Harness and operator traffic is overhead/g) ?? []).length === 1);
-  check("the kill switch is a separate emergency region with the sentence customers read and the no-override note", /aria-label="Emergency control"/.test(html) && /paused for maintenance/.test(html) && /No allowance, overlay or override lifts a pause/.test(html));
-  check("the propagation posture and the checked time are stated", /visible to the very next admission/.test(html) && /checked 15 Oct 2026, 12:00 UTC/.test(html));
-  check("READ-ONLY: no button, select, input or form; no Edit, Save, Restore, Pause", noControls(html) && !/ Edit<\/button>|Save changes|Restore defaults|Pause paid requests/.test(html));
-  check("no email, no secret-shaped text, no raw colour", !/@|token|secret/i.test(html.replace(/ class="[^"]*"/g, "")) && !/#[0-9a-f]{6}\b/i.test(html));
+  const buttons = html.match(/<button\b[^>]*>/g) ?? [];
+  check("all four policy cards remain individually named", ["Per-user daily AI allowance", "Per-user spending alert", "Fleet-wide spending alert", "Pause paid AI requests"].every((t) => html.includes(t)));
+  check("no documentation dropdowns or provenance essays", !/<details|Details &amp; provenance|Platform default|Setting —|checked 15 Oct/.test(html));
+  check("actual values, fixed ceiling and Customer Success reminder are visible", />\$5</.test(html) && /Max spend/.test(html) && /\$20 \/ UTC day · fixed ceiling/.test(html) && /Per-customer overrides are managed in Customer Success./.test(html));
+  check("dynamic enforcement and emergency status", /font-medium">Enforced</.test(html) && /font-medium">ACTIVE</.test(html));
+  check("read-only affordances explain access and every button is disabled", buttons.length > 0 && buttons.every((button) => /disabled=""/.test(button)) && /Read only · Control access required/.test(html) && !/<select|<input|<form/.test(html));
+  check("no emails, secrets or raw colours", !/@|token|secret/i.test(html.replace(/ class="[^"]*"/g, "")) && !/#[0-9a-f]{6}\b/i.test(html));
 }
 
-console.log("\n8. the panel with every origin, overrides, firing alerts and a pause");
+console.log("\n8. persisted state, invalid settings, firing alerts and pause status");
 {
   const m = model((x) => {
     x.allowance.usd = cv("allowance.usd", "Daily allowance (USD)", 7, 5, { origin: "SETTING", updatedAt: SET_AT, updatedByName: "Chris" });
-    x.allowance.enforced = cv("allowance.enforced", "Allowance enforced", true, true, { origin: "INVALID_SETTING", updatedAt: SET_AT, updatedByName: "Dana" });
-    x.allowance.effectiveDefaultUsd = 7; x.allowance.effectiveDefaultSource = "PLATFORM_SETTING";
-    x.allowance.overrides = { count: 2, customers: [{ ref: "user …abc123", usd: 12, updatedAt: SET_AT }, { ref: "user …def456", usd: 20, updatedAt: SET_AT }] };
-    x.userAlert.enabled = cv("userAlert.enabled", "Per-user alert enabled", false, true, { origin: "SETTING", updatedAt: SET_AT, updatedByName: "Chris" });
-    x.fleetAlert.status = { live: true, firingNow: true, lastFiredAt: NOW, recent: [{ at: NOW, severity: "critical", summary: "Fleet estimated spend $12.40 over 24 h exceeds $10", dedupeKey: "ai-spend-fleet-high:fleet:2026-10-15" }] };
-    x.killSwitch.paused = cv("killSwitch.paused", "Paid AI requests paused", true, false, { origin: "SETTING", updatedAt: SET_AT, updatedByName: "Chris" });
+    x.allowance.enforced = cv("allowance.enforced", "Allowance enforced", true, true, { origin: "INVALID_SETTING", updatedAt: SET_AT });
+    x.allowance.effectiveDefaultUsd = 7;
+    x.userAlert.enabled = cv("userAlert.enabled", "Per-user alert enabled", false, true, { origin: "SETTING", updatedAt: SET_AT });
+    x.fleetAlert.status = { live: true, firingNow: true, lastFiredAt: NOW, recent: [] };
+    x.killSwitch.paused = cv("killSwitch.paused", "Paid AI requests paused", true, false, { origin: "SETTING", updatedAt: SET_AT });
   });
   const html = render(m);
-  check("a stored threshold: $7 with the Setting chip, legend Setting $7, provenance Set <UTC> by Chris", />\$7</.test(html) && /Setting \$7/.test(html) && /Set 14 Oct 2026, 09:00 UTC by Chris/.test(html));
-  check("an unreadable row: the default in force, the chip says so, an alert names when it was last written, never presented as configured",
-    /Default in force — stored value invalid/.test(html) && /stored value is unreadable; the default is in force\. Last updated 14 Oct 2026, 09:00 UTC by Dana/.test(html) && /Setting invalid/.test(html));
-  check("effective default follows the platform setting", /\$7 per UTC day for a customer on the default policy[^<]*\(platform setting\)/.test(html));
-  check("overrides: the count, opaque refs with their USD and date, and the doorway sentence; never an email or a full id", /2 per-customer overrides in force/.test(html) && /user …abc123/.test(html) && /\$12 per UTC day · set 14 Oct 2026/.test(html) && !/@/.test(html.replace(/ class="[^"]*"/g, "")) && !/[a-z0-9]{20,}/.test(html.replace(/[a-z]+-[a-z-]+/g, "")));
-  check("a disabled rule reads Disabled; a firing rule reads Firing now with its critical delivery", /Disabled/.test(html) && /Firing now/.test(html) && /critical/.test(html) && /exceeds \$10/.test(html) && /delivered 15 Oct 2026, 12:00 UTC/.test(html));
-  check("paused: the state word is Paused", />Paused</.test(html));
-  check("still no control without editable", noControls(html));
+  check("current allowance follows persisted state; default stays distinct", />\$7</.test(html) && />\$5</.test(html));
+  check("invalid stored settings visibly disclose fallback", /role="alert"[^>]*>A stored setting is invalid. Its default is in effect./.test(html));
+  check("disabled and currently firing states remain visible", /font-medium">Disabled</.test(html) && /Firing now/.test(html));
+  check("pause status and resume action reflect persisted pause", /font-medium">PAUSED</.test(html) && /Resume AI/.test(html) && !/Pause AI/.test(html));
 }
 
-console.log("\n9. the affordances, rendered only behind editable (the host forwards canControl under that name)");
+console.log("\n9. direct authorized controls and applicable revert states");
 {
   const html = render(model(), true);
-  check("three Edit buttons and Pause paid requests; no Restore (no stored rows anywhere)", (html.match(/ Edit<\/button>/g) ?? []).length === 3 && /Pause paid requests/.test(html) && !/Restore defaults/.test(html));
-  const stored = model((x) => {
-    x.allowance.usd = cv("allowance.usd", "u", 7, 5, { origin: "SETTING", updatedAt: SET_AT });
-    x.killSwitch.paused = cv("killSwitch.paused", "p", true, false, { origin: "SETTING", updatedAt: SET_AT });
-  });
-  const html2 = render(stored, true);
-  const emergency = (h: string) => h.slice(h.indexOf('aria-label="Emergency control"'));
-  check("Restore defaults appears on exactly the cards with a stored row (the allowance); a paused switch offers Resume and NO Restore",
-    (html2.match(/Restore defaults/g) ?? []).length === 1 && /Resume paid requests/.test(html2) && !/Pause paid requests/.test(html2) && !/Restore defaults/.test(emergency(html2)));
-  check("the unpaused emergency control offers Pause and nothing else: no Restore, no Edit, exactly one button", !/Restore defaults/.test(emergency(html)) && !/ Edit<\/button>/.test(emergency(html)) && (emergency(html).match(/<button/g) ?? []).length === 1);
-  check("the paused emergency control offers Resume and nothing else: exactly one button", (emergency(html2).match(/<button/g) ?? []).length === 1 && /Resume paid requests/.test(emergency(html2)));
-  check("loading is a status line; failure is an alert naming the subject", /role="status"/.test(render(null, false, true)) && /role="alert"/.test(render(null, false, false, "Request failed (500)")) && /AI cost controls/.test(render(null, false, false, "x")));
+  check("Custom, alert Edit, direct enforcement and Pause AI are exposed", /Custom<\/button>/.test(html) && (html.match(/ Edit<\/button>/g) ?? []).length === 2 && /aria-label="Enforcement"/.test(html) && /Pause AI/.test(html));
+  const reverts = html.match(/<button[^>]*>[\s\S]*?<\/button>/g)?.filter((button) => / Revert<\/button>/.test(button)) ?? [];
+  check("Revert is disabled when no stored configuration exists", reverts.length === 3 && reverts.every((button) => /disabled=""/.test(button)));
+  const stored = model((x) => { x.allowance.usd = cv("allowance.usd", "u", 7, 5, { origin: "SETTING", updatedAt: SET_AT }); });
+  const storedReverts = render(stored, true).match(/<button[^>]*>[\s\S]*?<\/button>/g)?.filter((button) => / Revert<\/button>/.test(button)) ?? [];
+  check("only the allowance's Revert enables for an allowance setting", storedReverts.filter((button) => !/disabled=""/.test(button)).length === 1);
+  check("emergency control has one primary action and no revert", (emergency(html).match(/<button/g) ?? []).length === 1 && !/Revert/.test(emergency(html)));
+  check("loading and error remain honest", /role="status"/.test(render(null, false, true)) && /role="alert"/.test(render(null, false, false, "Request failed (500)")));
 }
 
 console.log("\n10. the editor: validation shown before submission, Save gated, reason required, confirmation armed on the second step");
