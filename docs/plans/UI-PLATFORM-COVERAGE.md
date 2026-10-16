@@ -45,3 +45,16 @@ Verification result: all 29 platform test scripts passed across the initial run 
 `components/admin/AdminSecurityConsole.tsx` now uses the shared OverlaySurface for all three legacy fixed modal shells: Reset 2FA, Regenerate/New Recovery Codes, and User Active Sessions. Header identity and all consequences, confirmation strings, code visibility/copy behavior, session content, and async handlers are retained. The forms use fixed action footers, shared focus/scroll/keyboard handling and draggable sheet presentation, mobile 16px inputs, 44px action targets, associated labels, error announcements and session loading status. Reset is an alert dialog. In-flight reset/code generation blocks dismissal; unfinished confirmation input requires discard confirmation. Closing the one-time generated-code view asks the operator to confirm the codes were stored securely. Reading the sessions list remains dismissible.
 
 Verification: syntax-tree comparison confirmed all nine existing async handlers and clipboard functions are byte-for-byte unchanged from the prior commit. Targeted admin enrollment-surface tests and component lint passed; no security endpoints were called and no real recovery codes generated. Authenticated rendering and live once-only code behavior remain manual/browser verification items.
+
+## Explicit verification levels
+
+| Space | Source-reviewed | Component-tested | Browser-tested | Authenticated-workflow-tested |
+|---|---|---|---|---|
+| Platform Operations | Registries, composition, policy/budget and shared presentation reviewed | 29 platform scripts and full unit suite pass | Actual Budget/Cost Controls in synthetic fixtures at 20 dimensions; shared panels | No |
+| Security Operations | Registry/composition and shared posture presentation reviewed | Related posture/source contracts pass | Shared panel fixture only; area not rendered | No |
+| Growth & Revenue | Registry/composition and catalogue presentation reviewed | Related growth/identity contracts pass | Shared panel fixture only; area not rendered | No |
+| Customer Success | Registry/composition and draft/assignment UI reviewed | Related customer/identity/cost-control contracts pass | Shared dirty-panel fixture only; actual customer detail not rendered | No |
+| Merchant Operations | Registry/composition and shared surfaces reviewed | Registry/shell contracts pass | Shared panel fixture only; area not rendered | No |
+| Legacy admin providers/security | Changed overlay source reviewed; action handlers preserved | Enrollment/hardening/lint checks pass | Shared overlay fixture only; actual admin forms not rendered | No |
+
+Component/source contracts are not end-to-end save tests. No policy mutation, provider operation or security action was invoked.

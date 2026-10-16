@@ -389,3 +389,68 @@ The separate `site/` marketing project is a zero-authority sibling. Its mirrored
 `AdviceBanner.AnalysisModal` now uses shared OverlaySurface workspace presentation (title/icon, close callback, scroll/focus/viewport/sheet handling). The risk strip, generated timestamp, readiness label, summary, context, risk summary, extracted actions and escaped full analysis rendering are preserved. All extraction and HTML escaping logic is unchanged. Source migration is complete; authenticated browser interaction remains unverified.
 
 Advice analysis migration checks: ESLint passed; `lib/ai/conversation/hardening.test.ts` passed all assertions including AdviceBanner HTML escaping; `git diff --check` passed.
+
+## Explicit verification levels (final handoff)
+
+**Source-reviewed** means inspection of the indicated source, not runtime validation. Every route was discovered from tracked routing; a route marked discovery-only was not manually certified in full. **Component-tested** distinguishes related source/render contracts from direct screen tests. **Browser-tested** names the precise synthetic fixture; no row claims an authenticated route pass. **Authenticated-workflow-tested** remains explicitly negative throughout. The tables above carry the detailed forms/tables/widgets/risks; this matrix is the verification authority.
+
+| Surface | Source-reviewed | Component-tested | Browser-tested | Authenticated-workflow-tested |
+|---|---|---|---|---|
+| `/confirm-email-change` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/forgot-password` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/login` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/register` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/reset-password` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/verify-email` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/about` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/legal/ai` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/privacy` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/request-access` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/security` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/terms` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/dashboard/analyze` | Relevant changed UI/shared components reviewed; route inventoried | Related shared/component contracts pass; route not directly tested | AI shell/composer fixture: 20 sizes; route untested | Not tested |
+| `/dashboard/brief` | Relevant changed UI/shared components reviewed; route inventoried | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/connections` | Relevant changed UI/shared components reviewed; route inventoried | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/credit` | Relevant changed UI/shared components reviewed; route inventoried | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/platform/[area]` | Relevant changed UI/shared components reviewed; route inventoried | Related shared/component contracts pass; route not directly tested | Budget/Cost Controls fixtures: 20 sizes; other content untested | Not tested |
+| `/dashboard/platform` | Relevant changed UI/shared components reviewed; route inventoried | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/settings/account` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/settings/archived-assets` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/settings/data` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/settings/notifications` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/settings` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/dashboard/settings/preferences` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/settings/security` | Route/component discovery only | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/spaces` | Relevant changed UI/shared components reviewed; route inventoried | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/dashboard/workspaces` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/admin/audit` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/admin` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/admin/platform-access` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/admin/providers` | Relevant changed UI/shared components reviewed; route inventoried | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/admin/security` | Relevant changed UI/shared components reviewed; route inventoried | Related shared/component contracts pass; route not directly tested | Not route-tested | Not tested |
+| `/admin/spaces` | Relevant changed UI/shared components reviewed; route inventoried | No direct test discovered | Not route-tested | Not tested |
+| `/admin/users` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/admin/workspaces` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/merchant-ops` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| `/plaid-oauth-return` | Route/component discovery only | No direct test discovered | Not route-tested | Not tested |
+| Customer Atlas (`overview`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Wealth (`wealth`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Cash Flow (`cashFlow`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Markets (`markets`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Investments (`investments`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Debt (`debt`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Liquidity (`liquidity`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Tax (`tax`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Property (`property`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Business Health (`businessHealth`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Transactions (`transactions`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Accounts (`accounts`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Activity (`activity`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| Customer Members (`members`) | Registry and shared surfaces reviewed; full screen not certified | Registry/workspace contracts pass; shared component coverage | Shared sheet fixture only; workspace not rendered | Not tested |
+| PLATFORM_OPS | Registry, composition and relevant shared platform UI reviewed | Platform component/source contracts pass | Budget/Cost Controls only | Not tested |
+| SECURITY_OPS | Registry, composition and relevant shared platform UI reviewed | Platform component/source contracts pass | Shared sheet fixture only; area not rendered | Not tested |
+| GROWTH_REVENUE | Registry, composition and relevant shared platform UI reviewed | Platform component/source contracts pass | Shared sheet fixture only; area not rendered | Not tested |
+| CUSTOMER_SUCCESS | Registry, composition and relevant shared platform UI reviewed | Platform component/source contracts pass | Shared sheet fixture only; area not rendered | Not tested |
+| MERCHANT_OPS | Registry, composition and relevant shared platform UI reviewed | Platform component/source contracts pass | Shared sheet fixture only; area not rendered | Not tested |
