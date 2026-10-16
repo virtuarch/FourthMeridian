@@ -25,7 +25,7 @@
  *   URL="postgresql://x:x@127.0.0.1:55433/x"
  *   DATABASE_URL=$URL DIRECT_URL=$URL npx prisma migrate deploy
  *   DATABASE_URL=$URL DIRECT_URL=$URL npm run harness:incident-preview-path
- *   docker rm -f incident-preview-db
+ *   docker rm -f -v incident-preview-db   # -v: also remove its anonymous data volume
  *
  * It refuses to run against anything that looks like the dev or production
  * database, because the cost of being wrong about that is unrecoverable.
