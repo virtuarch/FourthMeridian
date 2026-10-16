@@ -95,7 +95,10 @@ let container: string | null = null;
 let workdir: string | null = null;
 
 function teardown(): void {
-  if (container) { sh("docker", ["rm", "-f", container]); container = null; }
+  // ⚠️ `-v`: the postgres image declares a VOLUME, so every throwaway container owns an anonymous
+  // volume. `--rm` frees it only when the container exits by itself; an explicit `docker rm -f` without
+  // `-v` removes the container and LEAVES the volume — 751 of them (~43 GB) had filled the disk by 2026-10-16.
+  if (container) { sh("docker", ["rm", "-f", "-v", container]); container = null; }
   if (workdir && !KEEP) { rmSync(workdir, { recursive: true, force: true }); workdir = null; }
 }
 process.on("exit", teardown);

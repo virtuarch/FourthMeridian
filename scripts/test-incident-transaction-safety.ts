@@ -11,6 +11,7 @@
  *     DIRECT_URL=postgresql://tx1:tx1@127.0.0.1:55432/tx1 npx prisma migrate deploy
  *     TX1_DATABASE_URL=postgresql://tx1:tx1@127.0.0.1:55432/tx1 \
  *       npm run harness:incident-transaction-safety
+ *     docker rm -f -v ops2dtx1-db   # -v: also remove its anonymous data volume
  *
  * A DISPOSABLE database is mandatory, and its URL must be passed explicitly in
  * TX1_DATABASE_URL — this file never reads .env.local, so it cannot be pointed

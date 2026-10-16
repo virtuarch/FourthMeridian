@@ -12,7 +12,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { RESERVE_USD } from "@/lib/ai/allowance-core";
+import { RESERVE_USD, RESERVATION_RETRY_AFTER_SECONDS, allowanceRefusalBody, allowanceRefusalStatus } from "@/lib/ai/allowance-core";
 import {
   INFLIGHT_BUCKET_MS, allowanceLockKey, enforcedFrom, inflightBucket, inflightKey, reserveAiTurn,
   type ReservationClient, type ReservationTx,
@@ -45,7 +45,7 @@ function makeClient(opts: { spentGroups?: { n: number; p: number; o: number }[];
   };
   const tx: ReservationTx = {
     ...base,
-    $queryRaw: async (_q: TemplateStringsArray, ...v: unknown[]) => { locks.push(String(v[0])); return []; },
+    $executeRaw: async (_q: TemplateStringsArray, ...v: unknown[]) => { locks.push(String(v[0])); return 1; },
     rateLimit: {
       findMany: async ({ where }: { where: { key: string; windowStart: { in: Date[] } } }) => where.windowStart.in.map((w: Date) => ({ count: buckets.get(bucketKey(where.key, w)) ?? 0 })).filter((b: { count: number }) => b.count > 0),
       upsert: async ({ where, create }: { where: { key_windowStart: { key: string; windowStart: Date } }; create: { count: number } }) => { const k = bucketKey(where.key_windowStart.key, where.key_windowStart.windowStart); const n = (buckets.get(k) ?? 0) + create.count; buckets.set(k, n); return { count: n }; },
@@ -118,18 +118,31 @@ async function main() {
     check("enforced=false ⇒ allowed over the allowance, verdict says enforced:false, still RESERVED (the counter keeps running)", off.verdict.allowed && off.verdict.enforced === false && off.verdict.reservation === "RESERVED");
     const unreadable = await reserveAiTurn("u1", 5, NOW, makeClient({ spentGroups: [{ n: 1, p: 8_000_000, o: 0 }], enforcedFails: true }).client);
     check("an unreadable enforcement flag ENFORCES (FALLBACK_TO_DEFAULT)", !unreadable.verdict.allowed && unreadable.verdict.enforced);
+    // AI RELIABILITY — FAIL CLOSED: with enforcement on, a turn the reservation cannot judge is refused (retryable).
     const fb = makeClient({ spentGroups: [{ n: 1, p: 1_000_000, o: 0 }], txFails: true });
     const r = await reserveAiTurn("u1", 5, NOW, fb.client);
-    check("no transaction ⇒ the plain check decides, reservation UNAVAILABLE, no counter touched", r.verdict.allowed && r.verdict.reservation === "UNAVAILABLE" && r.verdict.inFlight === 0 && fb.inflight() === 0);
-    const fbOver = await reserveAiTurn("u1", 1, NOW, fb.client);
-    check("…and it still refuses over the allowance", !fbOver.verdict.allowed && fbOver.verdict.reservation === "UNAVAILABLE");
+    check("no transaction + enforcement ON ⇒ REFUSED RESERVATION_UNAVAILABLE (fail closed), even well under the allowance, no counter touched",
+      !r.verdict.allowed && r.verdict.reason === "RESERVATION_UNAVAILABLE" && r.verdict.reservation === "UNAVAILABLE" && r.verdict.enforced && fb.inflight() === 0);
+    const body = allowanceRefusalBody(r.verdict as Extract<typeof r.verdict, { allowed: false }>, "Conversations");
+    check("…as a RETRYABLE 503 with retryAfterSeconds, the spend still reported",
+      allowanceRefusalStatus(r.verdict as Extract<typeof r.verdict, { allowed: false }>) === 503 && body.retryable === true
+        && body.retryAfterSeconds === RESERVATION_RETRY_AFTER_SECONDS && close(body.spentUsd, 1.25) && body.code === "AI_ALLOWANCE");
+    const unread = await reserveAiTurn("u1", 5, NOW, makeClient({ spentGroups: [{ n: 1, p: 1_000_000, o: 0 }], txFails: true, enforcedFails: true }).client);
+    check("…an UNREADABLE enforcement flag also fails closed", !unread.verdict.allowed && unread.verdict.reason === "RESERVATION_UNAVAILABLE");
+    const offFb = makeClient({ spentGroups: [{ n: 1, p: 8_000_000, o: 0 }], txFails: true, enforced: "false" });
+    const offR = await reserveAiTurn("u1", 5, NOW, offFb.client);
+    check("enforcement EXPLICITLY OFF ⇒ the pre-existing plain check decides (admitted over the allowance), reservation UNAVAILABLE",
+      offR.verdict.allowed && offR.verdict.reservation === "UNAVAILABLE" && !offR.verdict.enforced && offFb.inflight() === 0);
   }
 
   console.log("\n6. source: fm_system, the lock inside the transaction, no model call inside it");
   {
     const src = strip("lib/platform/ai/allowance-reservation.ts");
     check("fm_system, never the migration principal", /import \{ systemDb \} from "@\/lib\/db"/.test(src) && !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*"@\/lib\/db"/.test(src));
-    check("pg_advisory_xact_lock(hashtext(…)) is the first statement of the transaction", /\$transaction\(async \(tx\) => \{\s*await tx\.\$queryRaw`SELECT pg_advisory_xact_lock\(hashtext\(/.test(src));
+    check("pg_advisory_xact_lock(hashtext(…)) is the first statement of the transaction", /\$transaction\(async \(tx\) => \{\s*await tx\.\$executeRaw`SELECT pg_advisory_xact_lock\(hashtext\(/.test(src));
+    // P2010 regression — `pg_advisory_xact_lock` returns void and $queryRaw must deserialize it; a fake cannot see that, so this
+    // pin keeps the statement on $executeRaw and scripts/ai-allowance-acceptance.ts proves it against a real fm_system principal.
+    check("the void-returning lock never goes through $queryRaw (P2010 'Failed to deserialize column of type void')", !/\$queryRaw`[^`]*pg_advisory/.test(src) && !/\$queryRaw\b/.test(src));
     check("no provider import — the model call is never inside the lock", !/@\/lib\/ai\/provider|openai/.test(src));
     check("the allowance loader (lib/ai) holds no database client and no delegate call (evidence ratchet)", !/@\/lib\/db|\.(rateLimit|platformSetting|aiInvocation)\./.test(strip("lib/ai/allowance.ts")));
   }

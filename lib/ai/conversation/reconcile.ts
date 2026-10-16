@@ -28,6 +28,7 @@
  * why.
  */
 
+
 // ── Variance ─────────────────────────────────────────────────────────────────
 
 export const VARIANCE_DIRECTION = {
@@ -165,5 +166,156 @@ export function readCheckpoint(m: {
     id: m.id, subject: m.subject, statedAs: m.statedAs, statedAt: m.statedAt,
     metric: p.metric, horizon: p.horizon, value: p.value,
     basis: (p.basis ?? {}) as Record<string, unknown>,
+  };
+}
+
+// ── Attribution (AI RELIABILITY 2026-10-16) ──────────────────────────────────
+
+/**
+ * ⚠️ A VARIANCE MAY BE EXPLAINED ONLY BY LINES THAT SUM TO IT. On the live Space
+ * (2026-10-16) `reconcile_projection` returned −21,197.12 beside a basis diff of
+ * a spending RATE (unlabelled, read by the model as a positive "drift"), a COUNT
+ * of income events and the opening cash — every one of which moved the figure
+ * UP. Nothing returned named the cause (a payroll stream that had stopped being
+ * counted), so every causal sentence the model produced was unsupported.
+ *
+ * The cash projection is one identity — closing = opening + income − dated
+ * outflows − dailyRate × days — so an in-flight variance decomposes EXACTLY:
+ *
+ *   Δ = (O₁ − O₀) + [(I₁ − X₁) − (I₀ − X₀)] − (r₁ − r₀)·d₀ − r₁·(d₁ − d₀)
+ *
+ * A checkpoint written before its basis carried income and outflows still
+ * determines its own net term, (I₀ − X₀) = V₀ − O₀ + r₀·d₀, so an old statement
+ * attributes exactly too — as ONE net line, never split by a guess. The residual
+ * is computed, not assumed; anything over rounding is reported as unattributed.
+ * PURE.
+ */
+
+export interface AttributionLine {
+  cause: 'OPENING_CASH' | 'INCOME_TIMING' | 'PROJECTED_INCOME' | 'DATED_OUTFLOWS' | 'INCOME_NET_OF_OUTFLOWS'
+    | 'SPENDING_RATE' | 'HORIZON_DAYS' | 'UNATTRIBUTED';
+  /** Signed effect on the projected figure (positive = raised it). */
+  amount: number;
+  derivation: string;
+}
+
+export interface VarianceAttribution {
+  /** True when the lines sum to the variance within rounding (≤ 2 cents). */
+  exact: boolean;
+  lines: AttributionLine[];
+  residual: number;
+  meaning: string;
+}
+
+export interface AttributionSide {
+  value: number;
+  openingCash: number;
+  /** Average daily SPENDING — an outflow. */
+  dailyRate: number;
+  monthsAveraged: readonly string[] | null;
+  /** The projection's own income and dated-outflow totals, when recorded. */
+  incomeProjected: number | null;
+  outflowsProjected: number | null;
+  /** The day the projection stood at. */
+  asOfISO: string;
+}
+
+/**
+ * Whole UTC days from one calendar date to another — the same count
+ * lib/forecast/_time `daysBetween` gives the projection's horizon. Restated here
+ * because this module imports nothing (it is arithmetic; a baseline pin says so).
+ */
+const daysBetween = (fromISO: string, toISO: string): number =>
+  Math.round((Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${fromISO}T00:00:00Z`)) / 86_400_000);
+
+const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+/** The stated side, from a checkpoint's closed basis. Null when the basis cannot carry an attribution. */
+export function attributionSideFromCheckpoint(cp: CheckpointStatement): AttributionSide | null {
+  const b = cp.basis;
+  const openingCash = num(b.openingCash);
+  const dailyRate = num(b.dailyRate);
+  if (openingCash === null || dailyRate === null || b.spendingSource !== 'OBSERVED') return null;
+  return {
+    value: cp.value, openingCash, dailyRate,
+    monthsAveraged: Array.isArray(b.monthsAveraged) ? (b.monthsAveraged as string[]) : null,
+    incomeProjected: num(b.incomeProjected), outflowsProjected: num(b.outflowsProjected),
+    asOfISO: cp.statedAt.slice(0, 10),
+  };
+}
+
+export function attributeInFlightVariance(
+  then: AttributionSide, now: AttributionSide, horizonISO: string,
+  /**
+   * Income the engine projects for the ELAPSED window [then.asOf, now.asOf] when it
+   * stands at then.asOf (today's code, evidence available then). When given, the
+   * income line splits into INCOME_TIMING (−this: those payments are no longer ahead)
+   * and the remainder — still summing exactly, the approximation landing in the remainder.
+   */
+  elapsedIncome: number | null = null,
+): VarianceAttribution {
+  const d0 = Math.max(0, daysBetween(then.asOfISO, horizonISO));
+  const d1 = Math.max(0, daysBetween(now.asOfISO, horizonISO));
+  const net0 = then.value - then.openingCash + then.dailyRate * d0;
+  const net1 = now.value - now.openingCash + now.dailyRate * d1;
+  const lines: AttributionLine[] = [];
+  const money = (n: number) => n.toFixed(2);
+  // ⚠️ TIMING IS PART OF THE INCOME LINE, AND IT IS STRUCTURAL. A payment the earlier
+  // statement projected between its date and today is no longer ahead of today's run:
+  // if it arrived it now sits inside opening cash (the line above), and either way it
+  // is not projected income any more. Said whenever the start moved, never inferred.
+  const split = elapsedIncome !== null && now.asOfISO > then.asOfISO;
+  const timing = now.asOfISO > then.asOfISO && !split
+    ? `. Income the earlier statement projected between ${then.asOfISO} and ${now.asOfISO} is no longer `
+      + 'projected: what arrived is now inside opening cash, so part of this line is timing, not lost income'
+    : split ? ', after removing the timing line above' : '';
+  if (split) {
+    lines.push({ cause: 'INCOME_TIMING', amount: round2(-elapsedIncome),
+      derivation: `income projected for ${then.asOfISO}..${now.asOfISO} (${money(elapsedIncome)}, re-run standing at `
+        + `${then.asOfISO}) is no longer ahead of today's projection — what arrived is inside opening cash. Timing, `
+        + 'not lost income' });
+  }
+
+  lines.push({ cause: 'OPENING_CASH', amount: round2(now.openingCash - then.openingCash),
+    derivation: `liquid cash the projection started from: ${money(then.openingCash)} on ${then.asOfISO}, `
+      + `${money(now.openingCash)} on ${now.asOfISO}` });
+
+  if (then.incomeProjected !== null && then.outflowsProjected !== null
+      && now.incomeProjected !== null && now.outflowsProjected !== null) {
+    lines.push({ cause: 'PROJECTED_INCOME', amount: round2(now.incomeProjected - then.incomeProjected + (split ? elapsedIncome : 0)),
+      derivation: `income the projection counted between its start and ${horizonISO}: `
+        + `${money(then.incomeProjected)} then, ${money(now.incomeProjected)} now${timing}` });
+    lines.push({ cause: 'DATED_OUTFLOWS', amount: round2(-(now.outflowsProjected - then.outflowsProjected)),
+      derivation: `dated obligations inside the horizon: ${money(then.outflowsProjected)} then, `
+        + `${money(now.outflowsProjected)} now` });
+  } else {
+    lines.push({ cause: 'INCOME_NET_OF_OUTFLOWS', amount: round2(net1 - net0 + (split ? elapsedIncome : 0)),
+      derivation: `projected income less dated obligations to ${horizonISO}: ${money(net0)} then `
+        + '(recovered exactly from the stated figure: value − opening cash + daily spending × days, '
+        + `because that statement predates recording income separately), ${money(net1)} now${timing}` });
+  }
+
+  const k0 = then.monthsAveraged?.length ?? null;
+  const k1 = now.monthsAveraged?.length ?? null;
+  lines.push({ cause: 'SPENDING_RATE', amount: round2(-(now.dailyRate - then.dailyRate) * d0),
+    derivation: `average daily SPENDING (an outflow, not a drift): ${money(then.dailyRate)}/day then`
+      + (then.monthsAveraged ? ` (averaged over ${then.monthsAveraged.join(', ')})` : '')
+      + `, ${money(now.dailyRate)}/day now` + (now.monthsAveraged ? ` (over ${now.monthsAveraged.join(', ')})` : '')
+      + `, applied to the ${d0} day(s) the statement covered`
+      + (k0 !== null && k1 !== null && k0 !== k1
+        ? `. The averaging window changed LENGTH (${k0} → ${k1} months), so part of this line is a change in how `
+          + 'spending is measured, not only in what was spent' : '') });
+  lines.push({ cause: 'HORIZON_DAYS', amount: round2(-now.dailyRate * (d1 - d0)),
+    derivation: `${d0} day(s) of spending remained to ${horizonISO} then, ${d1} now, at ${money(now.dailyRate)}/day` });
+
+  const variance = round2(now.value - then.value);
+  const residual = round2(variance - lines.reduce((n, l) => n + l.amount, 0));
+  const exact = Math.abs(residual) <= 0.02;
+  if (!exact) lines.push({ cause: 'UNATTRIBUTED', amount: residual,
+    derivation: 'not explained by the projection identity — do not attribute it to anything' });
+  return {
+    exact, lines, residual,
+    meaning: 'These lines sum to the variance. Explain the change ONLY with them, largest first, in their own '
+      + 'words and figures; a cause that is not a line here is not supported by the evidence.',
   };
 }

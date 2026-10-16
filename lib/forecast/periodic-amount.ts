@@ -127,6 +127,15 @@ export interface AssertablePeriodicAmount {
   observationCount: number;
   /** Widest relative deviation inside the regime, 0..1. Disclosed, never hidden. */
   spread: number;
+  /**
+   * AI RELIABILITY (2026-10-16) — the NEWEST observation sat outside the band of
+   * an otherwise-stable regime and was held out as a PROVISIONAL outlier. One
+   * deviation is an outlier and two in a row are a new level (REGIME.BREAK_RUN),
+   * so whether this payment is a one-off or the first of a new level is not yet
+   * established — the next payment decides. Present only in that case; a
+   * consumer must disclose it rather than state the level as settled.
+   */
+  latestDeviation?: { dateISO: string; value: number; level: number; pctFromLevel: number };
   verdicts: ObservationVerdict[];
   reason: string;
 }
@@ -262,8 +271,34 @@ export function deriveCurrentPeriodicAmount(
   const deviatesFrom = (level: number, value: number) =>
     level !== 0 && Math.abs(value - level) / Math.abs(level) > REGIME.BAND;
 
+  // ⚠️ THE HEAD IS JUDGED BY THE SAME RULE AS EVERY OTHER POINT. The walk seeds
+  // its level from the first point it includes, so a NEWEST payment that
+  // deviates used to become the level itself: every older payment then
+  // "deviated" from it, the run reached BREAK_RUN, and a thirteen-payment
+  // regime collapsed to one point and was refused — the same spike one slot
+  // earlier is an ordinary OUTLIER. Measured on the live payroll (2026-10-16):
+  // one paycheck 28% above an eleven-payment level withdrew the stream's amount
+  // and with it every projected paycheck. So the head is tested against the
+  // MIN_OBSERVATIONS points behind it: when those agree and the head does not,
+  // the head is ONE deviation — a provisional outlier, disclosed as
+  // `latestDeviation`. Two deviating heads still fail the stability test and
+  // fall through to the walk, which reads them as a new level (too young).
+  let headOutlier: ObservationVerdict | null = null;
+  let headLevel = 0;
+  if (eligible.length > REGIME.MIN_OBSERVATIONS) {
+    const head = eligible[eligible.length - 1];
+    const behind = eligible.slice(-1 - REGIME.MIN_OBSERVATIONS, -1).map((v) => v.value);
+    const level = median(behind);
+    if (behind.every((x) => !deviatesFrom(level, x)) && deviatesFrom(level, head.value)) {
+      head.excludedBecause = ExclusionReason.OUTLIER;
+      headOutlier = head;
+      headLevel = level;
+    }
+  }
+
   for (let i = eligible.length - 1; i >= 0; i--) {
     const v = eligible[i];
+    if (v === headOutlier) continue;
     const level = included.length ? median(included) : v.value;
 
     if (deviatesFrom(level, v.value)) {
@@ -316,6 +351,10 @@ export function deriveCurrentPeriodicAmount(
   const value = median(included);
   const spread = Math.max(...included.map((v) => Math.abs(v - value) / Math.abs(value)));
   const regimeStartISO = eligible[regimeStartIndex].dateISO;
+  const latestDeviation = headOutlier
+    ? { dateISO: headOutlier.dateISO, value: headOutlier.value, level: headLevel,
+        pctFromLevel: Number((((headOutlier.value - value) / Math.abs(value)) * 100).toFixed(2)) }
+    : undefined;
 
   return {
     assertable: true, value, currency,
@@ -324,11 +363,18 @@ export function deriveCurrentPeriodicAmount(
     // to infer what it is a level of; writing it out here is what stops a later
     // reader from assuming the field was simply forgotten.
     basis: AmountBasis.UNKNOWN, basisProvenance: null,
-    regimeStartISO, observationCount: included.length, spread, verdicts,
+    regimeStartISO, observationCount: included.length, spread,
+    ...(latestDeviation ? { latestDeviation } : {}),
+    verdicts,
     reason: `${included.length} observations since ${regimeStartISO} hold a level of ${value} ${currency} `
       + `within ${(spread * 100).toFixed(2)}%`
       + (outlierCount ? `, with ${outlierCount} excluded as outlier(s)` : '')
-      + '. Older observations belong to a different level and were not averaged in.',
+      + '. Older observations belong to a different level and were not averaged in.'
+      + (latestDeviation
+        ? ` The newest payment (${latestDeviation.dateISO}, ${latestDeviation.value} ${currency}) is `
+          + `${latestDeviation.pctFromLevel > 0 ? '+' : ''}${latestDeviation.pctFromLevel}% from that level and is held out `
+          + 'as a provisional outlier: whether it is a one-off or a new level is not established until the next payment.'
+        : ''),
   };
 }
 

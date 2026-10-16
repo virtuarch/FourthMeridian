@@ -55,7 +55,10 @@ function sh(cmd: string, args: string[], opts: { input?: string } = {}) {
 }
 
 function teardown() {
-  if (container && !KEEP) spawnSync("docker", ["rm", "-f", container], { stdio: "ignore" });
+  // ⚠️ `-v`: the postgres image declares a VOLUME, so every throwaway container owns an anonymous
+  // volume. `--rm` frees it only when the container exits by itself; an explicit `docker rm -f` without
+  // `-v` removes the container and LEAVES the volume — 751 of them (~43 GB) had filled the disk by 2026-10-16.
+  if (container && !KEEP) spawnSync("docker", ["rm", "-f", "-v", container], { stdio: "ignore" });
   if (workdir   && !KEEP) { try { rmSync(workdir, { recursive: true, force: true }); } catch {} }
 }
 process.on("exit", teardown);

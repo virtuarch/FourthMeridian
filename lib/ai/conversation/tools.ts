@@ -60,7 +60,7 @@ import {
   observedChange, findObservation, NEEDS_THRESHOLD, type TemporalOperation,
 } from '@/lib/data/snapshot-window';
 import {
-  loadForecastIncomeStreams, type IncomeTransactionReader, type AccountTypeReader,
+  loadForecastIncomeStreams, type IncomeTransactionReader, type AccountTypeReader, type ResolvedIncomeStream,
 } from '@/lib/ai/forecast/streams';
 import {
   assembleForecast, projectInterval, monthlyRateAt,
@@ -150,8 +150,9 @@ import {
   EvidenceState, type AbsenceVerdict,
 } from '@/lib/ai/absence';
 import {
-  readCheckpoint, compareToStatement, diffBasis,
+  readCheckpoint, compareToStatement, diffBasis, attributeInFlightVariance, attributionSideFromCheckpoint,
 } from './reconcile';
+import { incomeCompleteness, type IncomeCompleteness } from '@/lib/ai/forecast/income-completeness';
 // ── M1: measures & comparison ────────────────────────────────────────────────
 // ⚠️ THE ARITHMETIC LIVES IN `lib/ai/measures`, NOT HERE. Period resolution, the
 // measure, the comparison, the baselines and every derived figure are pure
@@ -1907,6 +1908,8 @@ interface CashSpine {
                   extraSpendingChanges?: readonly SpendingChangeRule[]) => AssembledForecast;
   /** The canonical spending baseline the observed rate averages — its months, count and basis. */
   spendingBaseline: CanonicalSpendingBaseline;
+  /** The income streams every run folds — so a result can say, per stream, what reached its income term. */
+  streams:       readonly ResolvedIncomeStream[];
 }
 
 async function buildCashSpine(
@@ -2050,6 +2053,7 @@ async function buildCashSpine(
   return {
     asOf, retrospective, openingBasis, accounts: openingAccounts,
     spendingBaseline: canonical.baseline,
+    streams,
     runTo: (end: string, extraSpendingChanges?: readonly SpendingChangeRule[]) => {
       const rules = [...(opts.spendingChanges ?? []), ...(extraSpendingChanges ?? [])];
       return assembleForecast({
@@ -2067,6 +2071,69 @@ async function buildCashSpine(
 }
 
 // ── 8. Cash projection ───────────────────────────────────────────────────────
+
+// ── AI RELIABILITY (2026-10-16) — the income term, stated honestly ───────────
+
+/**
+ * What an INCOMPLETE projection must say beside its figure. Pure arithmetic on
+ * the completeness verdict: which current streams counted $0, the evidence the
+ * platform holds for each, and the ending figure if their omitted payments
+ * arrived at the last observed amount. Nothing here chooses which is right.
+ */
+function incompletenessBlock(income: IncomeCompleteness, closing: number) {
+  const omitted = income.streams.filter((l) => l.role === 'INCOME' && l.status === 'AMOUNT_UNESTABLISHED' && l.material);
+  return {
+    omittedStreams: omitted.map((l) => ({
+      stream: l.stream, occurrencesInHorizon: l.occurrencesInHorizon, countedAt: 0,
+      lastObserved: l.lastObserved, omittedAtLastObserved: l.omittedAtLastObserved ?? null,
+    })),
+    endingCashIfOmittedArriveAtLastObserved: round2(closing + income.omittedAtLastObserved),
+    meaning: '`endingCash` counts the streams above at $0: it is a LOWER BOUND for them, not the expected '
+      + 'balance. Present it only together with `endingCashIfOmittedArriveAtLastObserved`, say which stream is '
+      + 'not counted and why (its amount is not established), and quote its observed deposits. Do not ask the '
+      + 'user for income the platform already holds — at most ask which level applies.',
+  };
+}
+
+/** The qualification sentence, from what actually contributed — never a fixed claim about payroll. */
+function projectionQualification(income: IncomeCompleteness | null): string {
+  const counted = (income?.streams ?? []).filter((l) => l.role === 'INCOME' && l.counted > 0);
+  const deviates = counted.filter((l) => l.status === 'PRESENT_LATEST_DEVIATES');
+  const parts: string[] = [];
+  parts.push(income?.status === 'INCOMPLETE'
+    ? 'An INCOMPLETE estimate: at least one current income stream could not be priced and counts $0 in this '
+      + 'figure (see `incomplete`). Do not present `endingCash` as the expected balance.'
+    : 'An evidence-based estimate, not a guaranteed forecast.');
+  parts.push(counted.length
+    ? `Future income is projected from ${counted.length} income stream(s) at their established level and cadence`
+      + ' (`recurringIncome`)'
+    : 'No recurring income is counted in this figure');
+  for (const l of deviates) {
+    const d = l.latestDeviation!;
+    parts.push(`the newest payment on ${l.stream} (${d.date}, ${d.amount}) is ${d.pctFromLevel}% from its `
+      + `established level ${l.level} and is NOT treated as the new level; if it is, the ${l.counted} projected `
+      + `payment(s) change the figure by ${l.ifLatestIsNewLevel?.total} (\`latestPaymentDeviates\`)`);
+  }
+  const minor = (income?.streams ?? []).filter((l) => l.status === 'AMOUNT_UNESTABLISHED' && !l.material);
+  if (minor.length) {
+    parts.push(`${minor.length} minor stream(s) with no established amount are not counted (at most `
+      + `${round2(minor.reduce((n, l) => n + (l.omittedAtLastObserved ?? 0), 0))} at their last observed amounts)`);
+  }
+  parts.push('investments and debt are held flat. Say so once; do not restate the strict-path refusal as a '
+    + 'second answer.');
+  return parts.join('; ').replace('.; ', '. ');
+}
+
+/** What each diffed basis field IS — `dailyRate` was read as a positive "drift" when it is spending. */
+const BASIS_FIELD_MEANING = {
+  dailyRate: 'average daily SPENDING (an outflow) — higher means the projection falls faster; never a drift or gain',
+  incomeEvents: 'how many income payments the projection COUNTED — a count, not dollars',
+  monthsAveraged: 'the complete months the spending rate averaged; a different count is a different measure',
+  openingCash: 'the liquid cash (checking + savings) the projection started from',
+  incomeProjected: 'projected income counted to the horizon, in dollars',
+  outflowsProjected: 'dated obligations inside the horizon, in dollars',
+} as const;
+
 
 /**
  * An interval of the projection, as the model reads it.
@@ -2128,7 +2195,12 @@ const projectCash: ToolDefinition = {
     'INCOME from a date — a raise, a new salary, an income starting or ending all belong to ' +
     'scenario_projection. `establishment` says how firmly ' +
     'each input is pinned down; it is provenance, not a competing answer. With `from` it ' +
-    'also states what is projected to come in and go out INSIDE a future window.',
+    'also states what is projected to come in and go out INSIDE a future window. ' +
+    // AI RELIABILITY (2026-10-16) — the income term is reported per stream; an
+    // incomplete one is a bound, and the platform's own deposits are the evidence.
+    '`basis.recurringIncome` says, per income stream, what was counted; when `kind` is ' +
+    'INCOMPLETE_ESTIMATE a current stream counted $0 — present `endingCash` only beside ' +
+    '`incomplete.endingCashIfOmittedArriveAtLastObserved`, and never ask the user for income it lists.',
   parameters: obj({
     to: str('YYYY-MM-DD horizon end. Required.'),
     // ⚠️ A WINDOW, NOT A YEAR. "How much will I spend during 2027?" took two
@@ -2251,6 +2323,15 @@ const projectCash: ToolDefinition = {
     const f = runTo(toISO);
     const licensed = 'refused' in f.forecast ? null : f.forecast.fullCashPath;
     const userAssumed = f.appliedFacts.length > 0;
+    // AI RELIABILITY (2026-10-16) — what the income term HOLDS, per stream. A current
+    // income stream whose payments could not be priced counted $0 and used to leave
+    // no trace but a grouped `excluded` note under a complete-looking estimate.
+    const income: IncomeCompleteness | null = f.projection && f.projection.closing !== null
+      ? incomeCompleteness({ streams: spine.streams, events: f.events,
+          excludedIds: new Set(f.projection.excluded.map((x) => x.id)), fromISO: asOf, toISO,
+          openingCash: f.projection.openingCash ?? 0 })
+      : null;
+    const incomplete = income?.status === 'INCOMPLETE';
 
     // ── Checkpoints ──────────────────────────────────────────────────────────
     //
@@ -2316,7 +2397,14 @@ const projectCash: ToolDefinition = {
       // are deliberately not presented as competing candidates.
       projection: f.projection && f.projection.closing !== null ? {
         endingCash: round2(f.projection.closing),
-        kind: 'EVIDENCE_BASED_ESTIMATE',
+        kind: incomplete ? 'INCOMPLETE_ESTIMATE' : 'EVIDENCE_BASED_ESTIMATE',
+        ...(incomplete && income ? { incomplete: incompletenessBlock(income, f.projection.closing) } : {}),
+        ...(income && income.streams.some((l) => l.ifLatestIsNewLevel) ? {
+          latestPaymentDeviates: income.streams.filter((l) => l.ifLatestIsNewLevel).map((l) => ({
+            stream: l.stream, latest: l.latestDeviation, establishedLevel: l.level,
+            endingCashIfLatestIsNewLevel: round2(f.projection!.closing! + l.ifLatestIsNewLevel!.total),
+          })),
+        } : {}),
         checkpoints,
         basis: {
           openingCash: f.projection.openingCash,
@@ -2326,7 +2414,20 @@ const projectCash: ToolDefinition = {
               ? { source: 'OBSERVED', dailyRate: f.observedSpending.dailyRate,
                   monthsAveraged: (f.observedSpending as { months?: string[] }).months ?? null }
               : { source: 'NONE' },
-          incomeEventsCounted: f.events.length,
+          // ⚠️ COUNTED MEANS COUNTED. This was `f.events.length` — every GENERATED
+          // occurrence, priced or not — and said 12 beside an income term of $0.65.
+          incomeEventsCounted: income?.incomeEventsCounted ?? 0,
+          incomeEventsExcluded: income?.incomeEventsExcluded ?? 0,
+          // AI RELIABILITY — the identity, term by term, as the engine folded it:
+          // endingCash = openingCash + incomeProjected − outflowsProjected − spendingProjected.
+          ...(f.projection.totals ? {
+            incomeProjected: round2(f.projection.totals.inflow),
+            outflowsProjected: round2(f.projection.totals.outflow),
+            spendingProjected: round2(f.projection.totals.spend),
+            identity: 'endingCash = openingCash + incomeProjected − outflowsProjected − spendingProjected '
+              + '(spendingProjected = dailyRate × horizon days). dailyRate is SPENDING, an outflow.',
+          } : {}),
+          recurringIncome: income?.streams ?? [],
           // ⚠️ SAID WHERE THE FIGURE IS. This projection is cash only: an existing
           // liability is neither accrued nor paid down by it, and card purchases
           // already sit in the spending rate. A scenario tool moves liabilities.
@@ -2338,11 +2439,11 @@ const projectCash: ToolDefinition = {
           // over thirty years, all saying the same thing about the same streams.
           excluded: compactExcludedEvents(f.projection.excluded as { id: string; reason: string }[]),
           range: f.projection.range,
+          ...(f.projection.range ? { rangeMeaning: 'the ending figure at the HIGHEST and LOWEST spending month of '
+            + 'the averaging window — it varies SPENDING ONLY; income is the same in both ends'
+            + (incomplete ? ', so it does NOT reflect the income stream(s) this estimate omits' : '') } : {}),
         },
-        qualification:
-          'An evidence-based estimate, not a guaranteed forecast: future payroll is '
-          + 'inferred from the observed deposit cadence, and investments and debt are held '
-          + 'flat. Say so once; do not restate the strict-path refusal as a second answer.',
+        qualification: projectionQualification(income),
       } : null,
 
       // ⚠️ PROVENANCE, NOT A RIVAL ANSWER. Kept because its `missing` list is the
@@ -4356,7 +4457,10 @@ const reconcileProjection: ToolDefinition = {
     'would say today. Use it for "were you right?", "how did that projection turn out?", ' +
     '"am I ahead of where you said I would be?". A past horizon is compared against the ' +
     'measured position on that date; a future one against the projection re-run today, which ' +
-    'is the only like-for-like comparison. It also names which part of the basis changed.',
+    'is the only like-for-like comparison. It also names which part of the basis changed. ' +
+    // AI RELIABILITY (2026-10-16) — a variance is explained by its attribution or not at all.
+    'Explain a variance ONLY with its `attribution` lines (they sum to it); a cause that is not a ' +
+    'line there is unsupported. `dailyRate` is SPENDING, never a drift.',
   parameters: obj({
     subject: str('One checkpoint subject, e.g. "liquid-2026-12-31". Omit for all of them.'),
     includeSuperseded: { type: 'boolean',
@@ -4406,6 +4510,9 @@ const reconcileProjection: ToolDefinition = {
       let compared: number | null = null;
       let comparedFrom = '';
       let basisNow: Record<string, unknown> | null = null;
+      let attribution: unknown = null;
+      let incomeNow: unknown = null;
+      let incomeCountedNow: unknown = null;
 
       if (settled) {
         // ⚠️ ACCURACY, MEASURED AGAINST WHAT ACTUALLY HAPPENED. The horizon has
@@ -4427,15 +4534,52 @@ const reconcileProjection: ToolDefinition = {
         const f = spine.runTo(cp.horizon);
         compared = f.projection?.closing ?? null;
         comparedFrom = `the same projection re-run today, to the same horizon (${cp.horizon})`;
+        const nowIncome = f.projection && f.projection.closing !== null
+          ? incomeCompleteness({ streams: spine.streams, events: f.events,
+              excludedIds: new Set(f.projection.excluded.map((x) => x.id)), fromISO: spine.asOf, toISO: cp.horizon,
+              openingCash: f.projection.openingCash ?? 0 })
+          : null;
         const b = (f.projection ? {
           spendingSource: f.observedSpending ? 'OBSERVED' : (f.appliedFacts.length ? 'USER_STATED' : 'NONE'),
           dailyRate: f.observedSpending?.dailyRate ?? null,
           monthsAveraged: (f.observedSpending as { months?: string[] } | undefined)?.months ?? null,
-          incomeEvents: f.events.length,
+          // The count a statement records (project_cash `incomeEventsCounted`) — compared like for like.
+          incomeEvents: nowIncome?.incomeEventsCounted ?? null,
           userAssumptions: f.appliedFacts,
           openingCash: f.projection.openingCash,
         } : null);
         basisNow = b;
+        // AI RELIABILITY (2026-10-16) — THE CAUSE, IN DOLLARS, SUMMING TO THE VARIANCE.
+        const thenSide = attributionSideFromCheckpoint(cp);
+        if (thenSide && f.projection?.closing != null && f.projection.totals && f.observedSpending
+            && f.projection.openingCash !== null) {
+          // The income projected for the ELAPSED window, by the engine standing at the statement's date.
+          let elapsedIncome: number | null = null;
+          if (thenSide.asOfISO < spine.asOf) {
+            const back = await buildCashSpine(ctx, { asOf: thenSide.asOfISO });
+            if (!('unavailable' in back)) {
+              const e = back.runTo(spine.asOf).projection?.totals;
+              elapsedIncome = e ? e.inflow : null;
+            }
+          }
+          attribution = attributeInFlightVariance(thenSide, {
+            value: f.projection.closing, openingCash: f.projection.openingCash,
+            dailyRate: f.observedSpending.dailyRate,
+            monthsAveraged: (f.observedSpending as { months?: string[] }).months ?? null,
+            incomeProjected: f.projection.totals.inflow, outflowsProjected: f.projection.totals.outflow,
+            asOfISO: spine.asOf,
+          }, cp.horizon, elapsedIncome);
+        } else {
+          attribution = { unavailable: 'this statement or today\'s run lacks an observed spending basis, so the '
+            + 'variance cannot be decomposed — report the variance and do NOT name a cause' };
+        }
+        if (nowIncome && nowIncome.status === 'INCOMPLETE') {
+          incomeNow = incompletenessBlock(nowIncome, f.projection!.closing!);
+        }
+        // What today's income term IS, per stream — so an income line is described from these, not guessed.
+        incomeCountedNow = nowIncome?.streams.filter((l) => l.counted > 0 || l.status === 'AMOUNT_UNESTABLISHED')
+          .map((l) => ({ stream: l.stream, status: l.status, payments: l.counted, level: l.level,
+            projectedTotal: l.projectedTotal })) ?? null;
       }
 
       reconciled.push({
@@ -4450,7 +4594,12 @@ const reconcileProjection: ToolDefinition = {
               : 'the projection cannot be re-run to that horizon today' }
           : { variance: compareToStatement(cp.value, compared) }),
         // ⚠️ A VARIANCE WITHOUT ITS CAUSE IS A SCORE, NOT AN EXPLANATION.
-        ...(basisNow ? { basisChanged: diffBasis(cp.basis, basisNow) } : {}),
+        ...(basisNow ? { basisChanged: diffBasis(cp.basis, basisNow),
+          fieldMeaning: BASIS_FIELD_MEANING } : {}),
+        ...(attribution ? { attribution } : {}),
+        // When today's re-run is itself incomplete, the comparison figure is a bound, and says so.
+        ...(incomeNow ? { comparedIsIncomplete: incomeNow } : {}),
+        ...(incomeCountedNow ? { incomeCountedNow } : {}),
         meaning: settled
           ? 'What we said, against what happened. The difference is our error, not the user\'s.'
           : 'Both figures describe the SAME future date — one said then, one said now. This is '

@@ -62,6 +62,11 @@ export const ARCHITECTURE_JOB = [
   // and against an impostor — the only place that verifier meets a database
   // before a cutover does.
   "npm run rls:accept:foreground",
+  // AI RELIABILITY — the allowance reservation on a real fm_system principal.
+  // A fake transaction cannot see that Prisma refuses pg_advisory_xact_lock's
+  // `void` result (P2010); this suite runs the production module against a
+  // throwaway database, concurrently, and measures the fallback's limit.
+  "npm run rls:accept:allowance",
 ] as const;
 
 /**
