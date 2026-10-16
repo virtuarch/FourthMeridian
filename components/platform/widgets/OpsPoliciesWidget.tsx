@@ -481,31 +481,33 @@ export function PoliciesSurface({
 }) {
   const data = state.error ? null : state.data;
   return (
-    <SectionSurface icon={SlidersHorizontal} title={section.label} footnote={data ? policiesFootnote(data.grace) : undefined}>
-      {state.loading ? (
-        <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]" role="status">
-          <Loader2 size={12} className="animate-spin" aria-hidden /> {LOADING_TEXT}
-        </p>
-      ) : !data ? (
-        <p className="flex items-start gap-1.5 text-xs" style={{ color: "var(--coral-400)" }} role="alert">
-          <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden />
-          <span>{unavailableText(POLICIES_SUBJECT)}</span>
-        </p>
-      ) : (
-        <div className="flex flex-col gap-8 md:gap-10">
-          <div className="flex flex-col gap-8 md:flex-row">
-            {data.policies.map((view, i) => (
-              <div key={view.sourceKind} className="contents">
-                {i > 0 && <VRule />}
-                <PolicyColumn view={view} canControl={canControl} onModel={onModel} onOpenWorkspace={onOpenWorkspace} />
-              </div>
-            ))}
+    <div className="flex min-w-0 flex-col gap-8">
+      <SectionSurface icon={SlidersHorizontal} title={section.label} footnote={data ? policiesFootnote(data.grace) : undefined}>
+        {state.loading ? (
+          <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]" role="status">
+            <Loader2 size={12} className="animate-spin" aria-hidden /> {LOADING_TEXT}
+          </p>
+        ) : !data ? (
+          <p className="flex items-start gap-1.5 text-xs" style={{ color: "var(--coral-400)" }} role="alert">
+            <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden />
+            <span>{unavailableText(POLICIES_SUBJECT)}</span>
+          </p>
+        ) : (
+          <div className="flex flex-col gap-8 md:gap-10">
+            <div className="flex flex-col gap-8 md:flex-row">
+              {data.policies.map((view, i) => (
+                <div key={view.sourceKind} className="contents">
+                  {i > 0 && <VRule />}
+                  <PolicyColumn view={view} canControl={canControl} onModel={onModel} onOpenWorkspace={onOpenWorkspace} />
+                </div>
+              ))}
+            </div>
+            {cadence && <JobCadencePanel state={cadence} canControl={canControl} onModel={onCadenceModel} onOpenWorkspace={onOpenWorkspace} />}
           </div>
-          {cadence && <JobCadencePanel state={cadence} canControl={canControl} onModel={onCadenceModel} onOpenWorkspace={onOpenWorkspace} />}
-          {costControls && <AiCostControlsPanel state={costControls} editable={canControl} onModel={onCostControlsModel} />}
-        </div>
-      )}
-    </SectionSurface>
+        )}
+      </SectionSurface>
+      {data && !state.loading && costControls && <AiCostControlsPanel state={costControls} editable={canControl} onModel={onCostControlsModel} />}
+    </div>
   );
 }
 

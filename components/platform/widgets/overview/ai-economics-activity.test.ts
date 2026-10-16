@@ -223,7 +223,7 @@ console.log("\n6. Recent operator activity surface");
   check("tone dots are aria-hidden beside the result word", (html.match(/aria-hidden="true" class="rounded-full"/g) ?? []).length === 2);
   check("evidence: refresh execution opens the drawer; job run is an Open Jobs doorway", /Inspect refresh execution …def456/.test(html) && /Open Jobs for run …abc123/.test(html));
   check("depth stated and security events named as elsewhere", /Showing 2 of the last 20/.test(html) && /security events live in Security Operations/.test(html));
-  check("no email, no id-shaped operator, no link", !/@/.test(html) && !/<a /.test(html) && /aria-label="Open Trends"/.test(html));
+  check("no email, no id-shaped operator, no link", !/@/.test(html.replace(/ class="[^"]*"/g, "")) && !/<a /.test(html) && /aria-label="Open Trends"/.test(html));
   const empty = renderToStaticMarkup(createElement(ActivityFeedSurface, { state: ok(feed({ items: [], depth: { requested: 20, returned: 0 } })), nowMs: NOW }));
   check("empty is the honest sentence, as a status", /No operator actions recorded on platform objects in the window/.test(empty) && /role="status"/.test(empty));
   const err = renderToStaticMarkup(createElement(ActivityFeedSurface, { state: failed, nowMs: NOW }));

@@ -49,6 +49,7 @@ import {
   Sunset, Building2, Shield, ArrowUpRight,
 } from "lucide-react";
 import { Surface, Figure } from "@/components/atlas/Surface";
+import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
@@ -652,7 +653,7 @@ function PublicEmptyState() {
 }
 
 // Read-only detail view for a public Space the viewer hasn't joined. Mirrors
-// ManageSpaceModal's shell (fixed backdrop + GlassPanel depth="thick", same
+// Shared OverlaySurface shell (focus, scrolling and mobile sheet behavior; same
 // header/close-button recipe) so it reads as the same family of surface, but
 // has no tabs and no mutation — just the fuller picture the compact card can't
 // fit. "Join Space" is intentionally inert: public join permissions,
@@ -666,21 +667,17 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
       ? space.trend[space.trend.length - 1] >= space.trend[0] ? "positive" : "danger"
       : "neutral";
 
-  function handleBackdrop(e: React.MouseEvent<HTMLDivElement>) {
-    if (e.target === e.currentTarget) onClose();
-  }
-
   return (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center p-4 sm:p-6"
-      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
-      onClick={handleBackdrop}
-    >
-      <GlassPanel depth="thick" elevation="e4" radius="xl" className="w-full sm:max-w-md">
-        <div className="flex flex-col max-h-[calc(100dvh-2rem)] sm:max-h-[88dvh]">
-          {/* Header */}
-          <div
-            className="flex items-start justify-between gap-3 px-5 pt-5 pb-4"
+    <OverlaySurface
+      open
+      onClose={onClose}
+      title={displaySpaceName(space.name)}
+      size="sm"
+      zIndex={200}
+      hideHeader
+      toolbar={
+        <div
+            className="flex items-start justify-between gap-3 pb-3"
             style={{ borderBottom: "1px solid var(--border-hairline)" }}
           >
             <div className="flex items-start gap-3 min-w-0">
@@ -691,7 +688,7 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
                 <CategoryIcon name={CATEGORY_ICONS[category] ?? "LayoutDashboard"} />
               </div>
               <div className="min-w-0">
-                <p className="text-base font-semibold text-[var(--text-primary)] truncate">{displaySpaceName(space.name)}</p>
+                <p className="text-base font-semibold text-[var(--text-primary)] break-words">{displaySpaceName(space.name)}</p>
                 <p className="text-xs text-[var(--text-muted)] mt-0.5 flex items-center gap-1">
                   {CATEGORY_LABELS[category] ?? "Space"} · <Globe size={10} className="shrink-0" /> Public
                 </p>
@@ -700,20 +697,31 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
             <button
               onClick={onClose}
               aria-label="Close"
-              className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
+              className="min-h-11 min-w-11 flex items-center justify-center rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
             >
               <X size={16} />
             </button>
           </div>
-
-          {/* Body */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-5 min-h-0">
-            <div className="flex items-end justify-between gap-3">
+      }
+      footer={
+        <div className="shrink-0">
+            <GlassButton tone="meridian" fullWidth disabled title="Public Space joining is coming soon">
+              <Users size={13} />
+              Join Space
+            </GlassButton>
+            <p className="text-[11px] text-[var(--text-muted)] text-center mt-2">
+              Public joining is coming soon.
+            </p>
+          </div>
+      }
+    >
+        <div className="space-y-5">
+            <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">
                   {metricLabelForCategory(category)}
                 </p>
-                <p className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">
+                <p className="text-2xl font-bold text-[var(--text-primary)] tabular-nums [overflow-wrap:anywhere]">
                   {space.trend.length > 0 ? `${space.estimated ? "≈" : ""}${formatCurrency(space.netWorth, space.currency)}` : "—"}
                 </p>
               </div>
@@ -721,7 +729,7 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
             </div>
 
             {space.description && (
-              <p className="text-sm text-[var(--text-secondary)] leading-relaxed">{space.description}</p>
+              <p className="text-sm text-[var(--text-secondary)] leading-relaxed break-words">{space.description}</p>
             )}
 
             <div className="grid grid-cols-2 gap-3">
@@ -738,7 +746,7 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
               {owner && (
                 <div className="rounded-[var(--radius-md)] p-3" style={{ background: "var(--surface-muted)" }}>
                   <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Owner</p>
-                  <p className="text-sm text-[var(--text-primary)] truncate">
+                  <p className="text-sm text-[var(--text-primary)] break-words">
                     {owner.user.name ?? `@${owner.user.username}`}
                   </p>
                 </div>
@@ -751,23 +759,7 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
               </div>
             </div>
           </div>
-
-          {/* Footer — "Join Space" is intentionally disabled. See file-level
-              comment: public join backend (permissions, viewer-only
-              membership, audit logs, invite rules, abuse controls) is a
-              dedicated future pass, not part of this presentation redesign. */}
-          <div className="px-5 py-4 shrink-0" style={{ borderTop: "1px solid var(--border-hairline)" }}>
-            <GlassButton tone="meridian" fullWidth disabled title="Public Space joining is coming soon">
-              <Users size={13} />
-              Join Space
-            </GlassButton>
-            <p className="text-[11px] text-[var(--text-muted)] text-center mt-2">
-              Public joining is coming soon.
-            </p>
-          </div>
-        </div>
-      </GlassPanel>
-    </div>
+    </OverlaySurface>
   );
 }
 

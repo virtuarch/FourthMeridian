@@ -110,22 +110,22 @@ console.log("layout mode is derived from the turn count alone");
   check("AnalyzeClient starts with no synthetic greeting turn", /useState<Message\[\]>\(\[\]\)/.test(client));
 }
 
-console.log("1. empty conversation — centered composer + starter, no docked state");
+console.log("1. empty conversation — starter in reading region, anchored composer");
 {
   const html = renderToStaticMarkup(h(AnalyzeClient, {
     advice: null, starterIndex: 2, spaceId: "space_active", spaceName: "Household", starter: composeStarters(null),
     userId: "usr_1", expectTranscript: false,
   }));
   check("layout is empty", html.includes('data-ai-layout="empty"'));
-  check("composer sits in the centered (empty) dock", html.includes('data-ai-dock="empty"') && !html.includes('data-ai-dock="conversation"'));
-  check("no conversation scroll region / log", !html.includes("data-ai-scroll") && !html.includes('role="log"'));
+  check("composer sits in the empty dock", html.includes('data-ai-dock="empty"') && !html.includes('data-ai-dock="conversation"'));
+  check("empty reading region scrolls without a conversation log", html.includes("data-ai-scroll") && !html.includes('role="log"'));
   check("the server-chosen starter line is shown", html.includes(STARTER_LINES[2]));
   check("the starter is a heading under the page h1", /<h1[^>]*>Fourth Meridian AI<\/h1>/.test(html) && /<h2[^>]*>What do you want|<h2[^>]*>Want to project something\?<\/h2>/.test(html));
   check("the composer is present exactly once", (html.match(/<textarea/g) ?? []).length === 1);
   for (const s of EMPTY_STATE_SUGGESTIONS) check(`suggestion chip "${s.label}" shown`, html.includes(`>${s.label}</button>`));
   check("no 'New chat' control before a conversation exists", !html.includes("New chat"));
-  check("the starter precedes the composer, suggestions follow it",
-    html.indexOf(STARTER_LINES[2]) < html.indexOf("<textarea") && html.indexOf("<textarea") < html.indexOf(EMPTY_STATE_SUGGESTIONS[0].label));
+  check("the starter and suggestions precede the anchored composer",
+    html.indexOf(STARTER_LINES[2]) < html.indexOf("<textarea") && html.indexOf(EMPTY_STATE_SUGGESTIONS[0].label) < html.indexOf("<textarea"));
   // AI-4: no Space selector — the active Space is named as plain text.
   check("no Space selector (no <select>, no \"All My Spaces\")", !html.includes("<select") && !html.includes("All My Spaces"));
   check("the active Space name is shown as plain text in the header",
@@ -216,14 +216,12 @@ console.log("2. existing conversation — first paint is already conversation mo
   check("a fade separates the docked composer from scrolling text", html.includes("linear-gradient(to top, var(--bg-base), transparent)"));
 }
 
-console.log("3. first submit — the same composer node moves; the user turn enters conversation mode");
+console.log("3. first submit — composer stays mounted; the user turn enters conversation mode");
 {
   const shell = read("AiShell.tsx");
-  // The composer slot is unconditional and sits in the same parent in both modes — it is never remounted.
-  check("AiShell renders the composer in one unconditional slot", /<div ref=\{composerRef\}>\{composer\}<\/div>/.test(shell));
-  check("mode-only siblings are conditional slots around it", /\{empty && lead\}/.test(shell) && /\{empty && aside\}/.test(shell));
-  check("the move is a FLIP transform, skipped under reduced motion",
-    /translateY\(\$\{delta\}px\)/.test(shell) && /prefers-reduced-motion: reduce/.test(shell));
+  check("AiShell renders the composer in one unconditional slot", (shell.match(/\{composer\}/g) ?? []).length === 1);
+  check("the empty reading content is independent of the composer", /\{lead\}/.test(shell) && /\{aside\}/.test(shell));
+  check("the composer stays anchored in both modes", /data-ai-dock=\{mode\} className="shrink-0 relative pt-1"/.test(shell));
   const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
   check("the user turn is appended before the request is sent",
     client.indexOf("setMessages(nextMessages)") > -1 && client.indexOf("setMessages(nextMessages)") < client.indexOf('fetch("/api/ai/chat"'));
@@ -344,15 +342,16 @@ console.log("7. responsive / layout classes");
   check("composer shares the reading-column width", composer.includes("max-w-3xl mx-auto w-full"));
   check("textarea is 16px below sm (no iOS focus zoom)", composer.includes("max-sm:text-base"));
   check("keyboard hint hidden on touch-sized screens", /class="hidden sm:block[^"]*"/.test(composer));
+  check("textarea has a viewport cap and keeps multiline drafts scrollable", /maxHeight: "min\(200px, 25dvh\)"/.test(read("Composer.tsx")) && /!overflow-y-auto/.test(read("Composer.tsx")));
   check("textarea auto-grows to a cap", /maxHeightPx=\{200\}/.test(read("Composer.tsx")));
   const log = renderToStaticMarkup(h(ConversationView, { messages: [{ role: "user" as const, content: "hi" }] }));
   check("conversation column is max-w-3xl (768px) and centered", log.includes("max-w-3xl mx-auto w-full"));
   check("conversation leaves bottom padding above the dock", /role="log"[^>]*class="[^"]*pb-10/.test(log));
   const shell = read("AiShell.tsx");
   const shellCode = shell.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-  check("shell height uses dynamic viewport units, in CSS", /h-\[calc\(100dvh-/.test(shell) && !/ResizeObserver/.test(shellCode));
-  check("the FLIP still re-measures on resize (animation origin, not sizing)",
-    /window\.addEventListener\("resize", remeasure\)/.test(shell));
+  check("shell height uses dynamic viewport units, in CSS", /h-\[calc\(var\(--ai-viewport-height,100dvh\)-/.test(shell) && !/ResizeObserver/.test(shellCode));
+  check("visual viewport resizing keeps the composer above the keyboard",
+    /viewport\.addEventListener\("resize", resize\)/.test(shell));
   check("scrolling stays inside the conversation container", /overflow-y-auto overscroll-contain/.test(shell) && /closest<HTMLElement>\("\[data-ai-scroll\]"\)/.test(read("ConversationView.tsx")));
 }
 
@@ -369,8 +368,8 @@ console.log("8. the financial-guidance boundary (advice-boundary slice)");
   const disclosure = renderToStaticMarkup(h(AiDisclosure));
   check("…and is not hidden at any width (no hidden/sm: visibility class on it)",
     !/<details[^>]*class="[^"]*\bhidden\b/.test(disclosure));
-  check("…its explanation sits behind a native, closed <details>", /<details[^>]*data-ai-disclosure/.test(disclosure) && !/<details[^>]*\sopen/.test(disclosure)
-    && /<summary/.test(disclosure));
+  check("…its explanation opens with an accessible dialog trigger", /<button[^>]*aria-haspopup="dialog"/.test(disclosure) && /aria-expanded="false"/.test(disclosure) && !disclosure.includes("<details"));
+  check("…uses the shared responsive Panel", /<Panel open=/.test(read("AiDisclosure.tsx")));
   check("…which says: AI-generated, can be wrong, not a licensed professional, not the only basis",
     /generated by AI/.test(AI_DISCLOSURE_ABOUT.join(" ")) && /incomplete or wrong/.test(AI_DISCLOSURE_ABOUT.join(" "))
       && /not a licensed financial adviser, broker, tax adviser or attorney/.test(AI_DISCLOSURE_ABOUT.join(" "))

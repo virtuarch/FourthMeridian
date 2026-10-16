@@ -23,7 +23,7 @@ export const PAST_DELIVERIES_NOTE = "Past deliveries from the alert evaluator, n
 export const FLEET_NOTE = "Fleet = customer surfaces only (Conversations + Daily Brief); harness and unattributed traffic is overhead, stated beside it, never inside it.";
 
 export function pctText(pct: number | null): string {
-  return pct === null ? "—" : `${Math.round(pct)}%`;
+  return pct === null ? "—" : pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
 }
 
 /** Utilization tone: under 80% ok · 80–99% caution · at or over 100% danger · unknown muted. */

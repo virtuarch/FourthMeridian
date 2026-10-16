@@ -209,7 +209,7 @@ function GroupHeading({
       onClick={onOpen}
       aria-label={`${HORIZON_LABEL[horizon]} — show all accounts in this tier`}
       aria-pressed={selected}
-      className="group relative flex w-full items-center justify-between px-4 pt-3 pb-1.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
+      className="group relative flex min-h-11 w-full items-center justify-between gap-2 px-4 pt-3 pb-1.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
     >
       <span
         aria-hidden
@@ -230,7 +230,7 @@ function LedgerRow({ row, currency, onOpen }: { row: LiquiditySourceRow; currenc
     <button
       type="button"
       onClick={onOpen}
-      className="group relative flex w-full items-center gap-3 overflow-hidden px-4 py-3 text-left transition-colors hover:bg-[var(--surface-hover)]"
+      className="group relative flex w-full flex-wrap items-center gap-x-3 gap-y-2 overflow-hidden px-4 py-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--meridian-400)] hover:bg-[var(--surface-hover)]"
     >
       {/* Weight bar — a 2px NEUTRAL rule on the row baseline; length = share of assets. */}
       <span
@@ -244,12 +244,12 @@ function LedgerRow({ row, currency, onOpen }: { row: LiquiditySourceRow; currenc
         className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-[var(--meridian-400)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
       />
 
-      <div className="relative min-w-0 flex-1">
+      <div className="relative min-w-[min(100%,8rem)] flex-1">
         <p className="truncate text-sm font-medium text-[var(--text-primary)]">{a.name}</p>
         {a.institution && <p className="mt-0.5 truncate text-[11px] text-[var(--text-muted)]">{a.institution}</p>}
       </div>
 
-      <div className="relative shrink-0 text-right">
+      <div className="relative ml-auto max-w-full text-right [overflow-wrap:anywhere]">
         <p className="tabular-nums text-sm text-[var(--text-primary)]">{approx}{formatCurrency(row.value, currency)}</p>
         <p className="mt-0.5 tabular-nums text-[11px] text-[var(--text-faint)]">{(row.share * 100).toFixed(0)}%</p>
       </div>

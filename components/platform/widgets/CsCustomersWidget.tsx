@@ -118,7 +118,7 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
   }, [selectedId, loadDetail]);
 
   /** Selection is the one place the detail state changes hands (no setState in an effect). */
-  const select = (id: string | null) => { setSelectedId(id); setDetail(null); setRefreshReport(null); setActionError(null); };
+  const select = (id: string | null) => { setSelectedId(id); setDetail(null); setRefreshReport(null); setActionError(null); setCohort(""); setReasonCode(""); setReasonNote(""); };
 
   const reason = useMemo(() => (reasonCode ? { code: reasonCode, ...(reasonNote.trim() ? { note: reasonNote.trim() } : {}) } : null), [reasonCode, reasonNote]);
 
@@ -152,6 +152,10 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
   // AI COST CONTROLS — the override posts on its own: only the override and the reason.
   const allowance = detail ? allowanceOf(detail.policy) : undefined;
   const allowanceCheck = validateAllowanceOverrideInput(allowanceInput);
+  const dirty = detail !== null && (policyGroup !== detail.policy.policyGroup
+    || overlay !== (detail.policy.overlay ?? "")
+    || allowanceInput !== (allowance?.override != null ? String(allowance.override) : "")
+    || cohort !== "" || reasonCode !== "" || reasonNote !== "");
   const setAllowanceOverride = () => detail && reason && allowanceCheck.value !== null && run("allowance", `/api/platform/customer-success/customers/${detail.identity.id}/policy`,
     json(allowanceOverrideBody(allowanceCheck.value, reason)));
   const removeAllowanceOverride = () => detail && reason && run("allowance", `/api/platform/customer-success/customers/${detail.identity.id}/policy`,
@@ -213,7 +217,7 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
         </>
       )}
 
-      <RightPanel open={selectedId != null} onClose={() => select(null)} ariaLabel="Customer detail">
+      <RightPanel open={selectedId != null} dirty={dirty} onClose={() => select(null)} ariaLabel="Customer detail">
         {selectedId && (
           <>
             <PanelHeader eyebrow="Customer" title={detail?.identity.email ?? "…"} />
@@ -440,9 +444,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-start justify-between gap-2">
-      <span className="shrink-0 text-[var(--text-secondary)]">{label}</span>
-      <span className="text-right text-[var(--text-primary)]">{value}</span>
+    <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+      <span className="min-w-0 break-words text-[var(--text-secondary)]">{label}</span>
+      <span className="min-w-0 max-w-full break-words text-right text-[var(--text-primary)]">{value}</span>
     </div>
   );
 }

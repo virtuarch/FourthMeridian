@@ -81,7 +81,7 @@ console.log("3. Panel behavior contract");
   check("traps Tab focus, captures + restores + auto-focuses",
     P.includes("useFocusTrap(") && P.includes("useReturnFocus(") && P.includes("useAutoFocus("));
   // keyboard escape (guarded)
-  check("escape-to-close, guarded by preventClose", P.includes("useEscapeKey(open, onClose, preventClose)"));
+  check("escape-to-close, guarded by preventClose", P.includes("useEscapeKey(open, requestClose, preventClose)") && P.includes("window.confirm(\"Discard unsaved changes?\")"));
   check("scrim click closes, guarded by preventClose", P.includes("closeOnScrim && !preventClose"));
   // reuse — not a second behavior language
   check("reuses GlassPanel material", P.includes('from "@/components/atlas/GlassPanel"'));
@@ -90,7 +90,7 @@ console.log("3. Panel behavior contract");
     P.includes('from "@/components/atlas/useBodyScrollLock"'));
   // responsive — one component, CSS-driven (mobile sheet vs desktop docked)
   check("mobile bottom sheet (rounded top + grab handle) vs desktop docked (sm:)",
-    P.includes("!rounded-t-") && P.includes("sm:hidden") && P.includes("sm:h-dvh"));
+    P.includes("!rounded-t-") && P.includes("<SheetHandle") && read("../SheetHandle.tsx").includes("sm:hidden") && P.includes("sm:h-dvh"));
   // SCROLL-1: the inner flex column must carry DEFINITE height caps (not `h-full`,
   // which collapses through GlassPanel's non-flex `relative z-10` wrapper) so
   // PanelContent's flex-1/min-h-0/overflow region actually bounds and long lists

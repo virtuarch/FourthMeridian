@@ -36,8 +36,8 @@
  * APR input: its "Add APR" action only takes the user THERE (`onAddApr`).
  */
 
-import { useState, useEffect } from "react";
-import { CreditCard, X } from "lucide-react";
+import { useState } from "react";
+import { CreditCard } from "lucide-react";
 import { formatBalance, formatCurrencyExact, currencySymbol } from "@/lib/currency";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { formatDate } from "@/lib/format";
@@ -47,7 +47,7 @@ import { convertMoney } from "@/lib/money/convert";
 import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
-import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
+import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { planPayoff, DEFAULT_PAYOFF_PAYMENT, type PayoffLiabilityInput } from "@/lib/debt/payoff";
 import { todayUTCISO } from "@/lib/time/clock";
 import {
@@ -149,20 +149,6 @@ export function DebtPayoffSection({
   const [inputStr,    setInputStr]    = useState(String(DEFAULT_PAYOFF_PAYMENT));
   // Track explicit user deselections; new accounts auto-include, removed ones auto-exclude
   const [deselectedIds, setDeselectedIds] = useState<Set<string>>(new Set());
-
-  // Lock body scroll while fullscreen — shared nest-safe helper that also
-  // preserves/restores window.scrollY (doctrine §14). Replaces the former
-  // bare `body.style.overflow` toggle, which is what SpaceDashboard used to
-  // compensate for with a manual scrollY save/restore.
-  useBodyScrollLock(fullscreen);
-
-  // ESC closes fullscreen
-  useEffect(() => {
-    if (!fullscreen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onCloseFullscreen?.(); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [fullscreen, onCloseFullscreen]);
 
   function toggleAccount(id: string) {
     setDeselectedIds((prev) => {
@@ -480,32 +466,16 @@ export function DebtPayoffSection({
   // ── Full-screen modal ─────────────────────────────────────────────────────
   if (fullscreen) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center px-4 backdrop-blur-sm" style={{ background: "var(--scrim)" }}>
-        <div
-          className="w-full sm:max-w-3xl rounded-2xl shadow-2xl flex flex-col max-h-[88dvh] border"
-          style={{ background: "var(--modal-surface)", borderColor: "var(--border-hairline-strong)" }}
-        >
-
-          {/* Header */}
-          <div className="flex items-start justify-between px-5 py-4 border-b shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
-            <div>
-              <p className="text-base font-bold" style={{ color: "var(--text-primary)" }}>Payoff Planner</p>
-              <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-                {debtAccounts.length} account{debtAccounts.length !== 1 ? "s" : ""}
-                {hasRates ? ` · ${weightedApr!.toFixed(2)}% avg APR (reference)` : ""}
-              </p>
-            </div>
-            <button
-              onClick={onCloseFullscreen}
-              className="p-1.5 rounded-lg hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] transition-colors"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <X size={18} />
-            </button>
-          </div>
-
+      <OverlaySurface
+        open
+        onClose={() => onCloseFullscreen?.()}
+        title="Payoff Planner"
+        subtitle={`${debtAccounts.length} account${debtAccounts.length !== 1 ? "s" : ""}${hasRates ? ` · ${weightedApr!.toFixed(2)}% avg APR (reference)` : ""}`}
+        intent="workspace"
+        size="lg"
+      >
           {/* Body — single column on mobile, two columns on desktop */}
-          <div className="flex-1 overflow-y-auto">
+          <div>
 
             {/* ── Mobile layout ─────────────────────────────────── */}
             <div className="sm:hidden px-4 pt-3 pb-6 space-y-3">
@@ -695,8 +665,7 @@ export function DebtPayoffSection({
               </div>
             </div>
           </div>
-        </div>
-      </div>
+      </OverlaySurface>
     );
   }
 

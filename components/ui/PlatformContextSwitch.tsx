@@ -103,7 +103,7 @@ export function PlatformContextSwitchView({
             aria-current={on ? "page" : undefined}
             aria-label={label}
             className={[
-              "relative z-10 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-full)] px-3 py-1.5 text-xs font-medium sm:px-4",
+              "relative z-10 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-full)] min-h-9 min-w-9 justify-center px-2 py-1.5 text-xs font-medium sm:px-4",
               "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-hairline-strong)]",
               on
@@ -123,9 +123,9 @@ export function PlatformContextSwitchView({
             <span aria-hidden className="inline-flex shrink-0">
               <Icon size={13} strokeWidth={1.75} />
             </span>
-            {/* The ACTIVE label is always visible; an inactive one collapses to
+            {/* The active label stays visible from 400px; an inactive one collapses to
                 its icon below sm (sr-only keeps the text in the DOM). */}
-            <span className={on ? "" : "sr-only sm:not-sr-only"}>{label}</span>
+            <span className={on ? "max-[399px]:sr-only" : "sr-only sm:not-sr-only"}>{label}</span>
           </Link>
         );
       })}

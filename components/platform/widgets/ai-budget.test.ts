@@ -61,6 +61,9 @@ const render = (b: AiBudgetUtilization) => renderToStaticMarkup(createElement(Ai
 console.log("1. the view: utilization words, tones and readings");
 {
   check("pctText rounds and names the unknown", pctText(42.4) === "42%" && pctText(130) === "130%" && pctText(null) === "—");
+  check("small nonzero utilization is not presented as zero", pctText(0.01) === "<1%" && pctText(0) === "0%");
+  const tiny = render(budget((b) => { b.fleet.utilizationPct = 0.01; }));
+  check("a small nonzero bar has a visible minimum and honest reading", /min-width:2px/.test(tiny) && /threshold: &lt;1%/.test(tiny));
   check("tone: <80 ok · 80–99 warn · ≥100 bad · null muted", utilizationTone(42) === "ok" && utilizationTone(80) === "warn" && utilizationTone(99.9) === "warn" && utilizationTone(100) === "bad" && utilizationTone(null) === "muted");
   check("fill caps at 100 and floors at 0", utilizationFill(130) === 100 && utilizationFill(42) === 42 && utilizationFill(null) === 0 && utilizationFill(-5) === 0);
   const r = fleetReading(budget());
@@ -96,7 +99,7 @@ console.log("\n2. the surface");
   check("deliveries are history, never open", /never an open incident/.test(html) && !/\bopen\b(?! incident)/i.test(html.replace(/never an open incident/g, "")));
   check("the footnote is the ESTIMATE_NOT_BILLING sentence", html.includes(ESTIMATE_NOT_BILLING.replace(/'/g, "&#x27;")) || html.includes(ESTIMATE_NOT_BILLING));
   check("the fleet rule is on the surface (hint)", /harness and unattributed traffic is overhead/.test(html));
-  check("identity minimisation: no @, no full id (nothing id-shaped beyond the opaque tails)", !/@/.test(html) && !/[a-z0-9]{20,}/.test(html.replace(/[a-z]+-[a-z-]+/g, "")));
+  check("identity minimisation: no @, no full id (nothing id-shaped beyond the opaque tails)", !/@/.test(html.replace(/ class="[^"]*"/g, "")) && !/[a-z0-9]{20,}/.test(html.replace(/[a-z]+-[a-z-]+/g, "")));
   check("read-only: no button, select, input, form or link", !/<button|<select|<input|<form|<a /.test(html));
   check("no hex colour", !/#[0-9a-f]{6}\b/i.test(html));
 }

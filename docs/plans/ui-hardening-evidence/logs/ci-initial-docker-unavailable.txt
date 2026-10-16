@@ -1,0 +1,1052 @@
+
+> fourth-meridian@2.6.0 ci
+> tsx scripts/ci-local.ts
+
+[ci] gating HEAD 9b80c2a3e8fc on Node 24.21.0
+[ci] clean copy: /var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05
+
+══════════════════════════════════════════════════════════════════════════════
+test › npm ci
+══════════════════════════════════════════════════════════════════════════════
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
+npm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated fstream@1.0.12: This package is no longer supported.
+npm warn deprecated uuid@8.3.2: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
+
+added 782 packages, and audited 783 packages in 1m
+
+244 packages are looking for funding
+  run `npm fund` for details
+
+19 vulnerabilities (3 moderate, 14 high, 2 critical)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+npm warn install-scripts 8 packages have install scripts not yet covered by allowScripts:
+npm warn install-scripts   @prisma/client@5.22.0 (postinstall: node scripts/postinstall.js)
+npm warn install-scripts   @prisma/engines@5.22.0 (postinstall: node scripts/postinstall.js)
+npm warn install-scripts   @sentry/cli@2.58.6 (postinstall: node ./scripts/install.js)
+npm warn install-scripts   esbuild@0.28.1 (postinstall: node install.js)
+npm warn install-scripts   fsevents@2.3.3 (install: (install scripts present))
+npm warn install-scripts   prisma@5.22.0 (preinstall: node scripts/preinstall-entry.js)
+npm warn install-scripts   sharp@0.34.5 (install: node install/check.js || npm run build)
+npm warn install-scripts   unrs-resolver@1.12.2 (postinstall: node postinstall.js)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.
+
+══════════════════════════════════════════════════════════════════════════════
+test › npx prisma generate
+══════════════════════════════════════════════════════════════════════════════
+Prisma schema loaded from prisma/schema.prisma
+
+✔ Generated Prisma Client (v5.22.0) to ./node_modules/@prisma/client in 2.47s
+
+Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+
+Tip: Want to turn off tips and other hints? https://pris.ly/tip-4-nohints
+
+
+══════════════════════════════════════════════════════════════════════════════
+test › npm run test:unit
+══════════════════════════════════════════════════════════════════════════════
+
+> fourth-meridian@2.6.0 test:unit
+> prisma generate && tsx scripts/run-tests.ts
+
+Prisma schema loaded from prisma/schema.prisma
+
+✔ Generated Prisma Client (v5.22.0) to ./node_modules/@prisma/client in 2.09s
+
+Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+
+Tip: Interested in query caching in just a few lines of code? Try Accelerate today! https://pris.ly/tip-3-accelerate
+
+┌─────────────────────────────────────────────────────────┐
+│  Update available 5.22.0 -> 8.0.0-rc.23                 │
+│                                                         │
+│  This is a major update - please follow the guide at    │
+│  https://pris.ly/d/major-version-upgrade                │
+│                                                         │
+│  Run the following to update                            │
+│    npm i --save-dev prisma@latest                       │
+│    npm i @prisma/client@latest                          │
+└─────────────────────────────────────────────────────────┘
+run-tests: 739 test file(s) — 734 parallel (concurrency 7), 5 serial
+
+  ✓ lib/atlas/palette-ratchet.test.ts (serial)
+  ✓ lib/forecast/engine.test.ts (serial)
+  ✓ lib/forecast/operating-state.test.ts (serial)
+  ✓ lib/forecast/periodic-amount.test.ts (serial)
+  ✓ lib/forecast/policy.test.ts (serial)
+  ✓ app/api/accounts/accounts-spine-s1.authority.test.ts
+  ✓ app/api/ai/chat/route.test.ts
+  ✓ app/api/accounts/manual/manual-spine-s3.authority.test.ts
+  ✓ app/api/accounts/[id]/transactions/route.test.ts
+  ✓ app/api/brief/brief-authority.test.ts
+  ✓ app/api/ai/memory/route.test.ts
+  ✓ app/api/spaces/[id]/accounts/earliest-tx-floor.test.ts
+  ✓ app/api/spaces/[id]/activity/route.test.ts
+  ✓ app/api/spaces/[id]/personal-delete-invariant.test.ts
+  ✓ app/api/spaces/[id]/personal-single-user.test.ts
+  ✓ app/api/spaces/[id]/rls-t2-route-authority.test.ts
+  ✓ app/api/users/search/route.test.ts
+  ✓ app/api/health/route.test.ts
+  ✓ components/atlas/SegmentedControl.test.ts
+  ✓ components/ai/transcript-cache.test.ts
+  ✓ components/atlas/fields/fields.test.ts
+  ✓ components/atlas/TimelineLens/TimelineLens.test.ts
+  ✓ components/atlas/panels/panels.test.ts
+  ✓ components/atlas/GlassPanel.test.ts
+  ✓ components/atlas/sheet-resize.test.ts
+  ✓ components/brief/brief-flow.test.ts
+  ✓ components/connections/import/import-ui.test.ts
+  ✓ components/dashboard/widgets/transactions/transactions-redesign.test.ts
+  ✓ components/dashboard/memory-panel.test.ts
+  ✓ components/history/exploration-panel.test.ts
+  ✓ components/brief/brief-provenance.test.ts
+  ✓ components/ai/ai.test.ts
+  ✓ components/platform/platform-directory.test.ts
+  ✓ components/notifications/notification-icons.test.ts
+  ✓ components/platform/platform-surface.test.ts
+  ✓ components/platform/widget-fetch-static-url.test.ts
+  ✓ components/platform/widgets/ai-budget.test.ts
+  ✓ components/platform/platform-shell.test.ts
+  ✓ components/platform/widgets/cs-rollup.test.ts
+  ✓ components/platform/widgets/deployment-evidence.test.ts
+  ✓ components/platform/widgets/env-status-view.test.ts
+  ✓ components/platform/widgets/ai-cost-controls.test.ts
+  ✓ components/platform/widgets/execution-panel.test.ts
+  ✓ components/platform/widgets/growth-funnel.test.ts
+  ✓ components/platform/widgets/connection-health.test.ts
+  ✓ components/platform/widgets/operator-identity.test.ts
+  ✓ components/platform/widgets/incident-preview.test.ts
+  ✓ components/platform/widgets/overview-refresh-jobs.test.ts
+  ✓ components/platform/widgets/jobs.test.ts
+  ✓ components/platform/widgets/overview/ai-economics-activity.test.ts
+  ✓ components/platform/widgets/overview/status-board.test.ts
+  ✓ components/platform/widgets/platform-health.test.ts
+  ✓ components/platform/widgets/provider-operations.test.ts
+  ✓ components/platform/widgets/overview/attention-block.test.ts
+  ✓ components/platform/widgets/refresh-format.test.ts
+  ✓ components/platform/widgets/provider-health.test.ts
+  ✓ components/platform/widgets/policies.test.ts
+  ✓ components/platform/widgets/refresh-widgets.test.ts
+  ✓ components/platform/widgets/product-analytics.test.ts
+  ✓ components/platform/workspace-session.test.ts
+  ✓ components/platform/widgets/scheduler.test.ts
+  ✓ components/space/manage/manage-space.test.ts
+  ✓ components/space/shell/space-shell.test.ts
+  ✓ components/space/shell/perspective-time-adapter.test.ts
+  ✓ components/platform/widgets/security-posture.test.ts
+  ✓ components/space/shell/space-url-authority.test.ts
+  ✓ components/space/shell/space-history.test.ts
+  ✓ components/space/shell/timeline-lens-coverage.test.ts
+  ✓ components/space/widgets/accounts/AccountsPerspective.test.ts
+  ✓ components/space/widgets/activity/activity-grouping.test.ts
+  ✓ components/space/widgets/BreakdownWidget.test.ts
+  ✓ components/space/trust/trust-indicator.render.test.ts
+  ✓ components/space/widgets/cashflow/CashFlowWorkspace.test.ts
+  ✓ components/space/widgets/cashflow/cash-flow-insights.test.ts
+  ✓ components/space/shell/timeline-lens-exclusivity.test.ts
+  ✓ components/space/widgets/charts/trend-runs.core.test.ts
+  ✓ components/space/widgets/debt/DebtWorkspace.test.ts
+  ✓ components/space/widgets/cashflow/cash-flow-hero.render.test.ts
+  ✓ components/space/widgets/cashflow/cash-out-hint.render.test.ts
+  ✓ components/space/widgets/cashflow/cash-flow-spending-total.render.test.ts
+  ✓ components/space/widgets/debt/debt-kpis.test.ts
+  ✓ components/space/widgets/debt/debt-signals.test.ts
+  ✓ components/space/widgets/display-currency-fallback.test.ts
+  ✓ components/space/widgets/investments/InvestmentsWorkspace.test.ts
+  ✓ components/space/widgets/investments/investments-activity.test.ts
+  ✓ components/space/widgets/debt/LiabilitiesLedger.render.test.ts
+  ✓ components/space/widgets/investments/investments-bridge.test.ts
+  ✓ components/space/widgets/liquidity/LiquidityWorkspace.test.ts
+  ✓ components/space/widgets/debt/debt-experience.render.test.ts
+  ✓ components/space/widgets/shared/calendar-interaction.test.ts
+  ✓ components/space/widgets/liquidity/liquidity-what-changed.test.ts
+  ✓ components/space/widgets/members/members.test.ts
+  ✓ components/space/widgets/wealth/WealthWorkspace.test.ts
+  ✓ components/space/widgets/wealth/WealthChangeLedger.test.ts
+  ✓ components/space/widgets/wealth/RealAssetsSection.test.ts
+  ✓ components/space/widgets/wealth/wealth-metric-facets.test.ts
+  ✓ components/space/widgets/wealth/UpdatePastNetWorthDialog.test.ts
+  ✓ components/space/widgets/wealth/wealth-composition.test.ts
+  ✓ components/space/widgets/wealth/wealth-trend-points.test.ts
+  ✓ components/space/workspaces/workspaces.test.ts
+  ✓ components/ui/chrome.test.ts
+  ✓ components/transactions/TransactionDetailDrawer.test.ts
+  ✓ components/space/widgets/wealth/wealth-metric-surfaces.test.ts
+  ✓ components/space/widgets/wealth/where-it-sits.test.ts
+  ✓ components/ui/platform-context-switch.test.ts
+  ✓ jobs/product-event-retention.test.ts
+  ✓ components/ui/site-nav-in-space.test.ts
+  ✓ lib/account-classifier.golden.test.ts
+  ✓ jobs/plaid-removal-retry.test.ts
+  ✓ lib/account-count-canonical-invariants.test.ts
+  ✓ components/ui/space-workspace-nav.test.ts
+  ✓ lib/account-deletion/preflight.test.ts
+  ✓ lib/account-deletion/purge-revocation-wiring.test.ts
+  ✓ lib/account-deletion/revocation.test.ts
+  ✓ components/ui/space-markets-nav.test.ts
+  ✓ lib/accounts/account-reparenting.test.ts
+  ✓ lib/account-privacy.test.ts
+  ✓ lib/account-privacy.proof.test.ts
+  ✓ lib/accounts/account-spine-boundary.test.ts
+  ✓ lib/accounts/account-spine-s4.authority.test.ts
+  ✓ lib/accounts/credit-utilization.test.ts
+  ✓ lib/accounts/disconnect.test.ts
+  ✓ lib/accounts/links-everywhere.test.ts
+  ✓ lib/accounts/provider-identity-conflict.test.ts
+  ✓ lib/accounts/wallet-connection.test.ts
+  ✓ lib/accounts/reconcile.test.ts
+  ✓ lib/activity/account-name-privacy.test.ts
+  ✓ lib/activity/normalize-import-batch.test.ts
+  ✓ lib/accounts/display-identity.test.ts
+  ✓ lib/activity/normalize-sync-issue.test.ts
+  ✓ lib/admin-plaid-audit.test.ts
+  ✓ lib/activity/scrub-account-name.test.ts
+  ✓ jobs/recovery-isolation.test.ts
+  ✓ lib/ai/absence.test.ts
+  ✓ lib/admin-totp-enrollment.test.ts
+  ✓ lib/admin-totp-enrollment-surface.test.ts
+  ✓ lib/ai/assemblers/holdings-core.test.ts
+  ✓ lib/ai/assemblers/holdings.test.ts
+  ✓ lib/ai/assemblers/holdings-scope.test.ts
+  ✓ lib/ai/assemblers/position-class.test.ts
+  ✓ lib/ai/assemblers/snapshot.authority.test.ts
+  ✓ lib/ai/assemblers/transactions.privacy.test.ts
+  ✓ lib/ai/assemblers/transactions.fx.test.ts
+  ✓ lib/ai/assemblers/transactions.population.test.ts
+  ✓ lib/ai/assemblers/transactions.kd17.test.ts
+  ✓ lib/ai/asset-valuations-ai.test.ts
+  ✓ lib/ai/assemblers/transactions.parity.test.ts
+  ✓ lib/ai/bounded-selection.test.ts
+  ✓ lib/ai/brief/claim-evidence.test.ts
+  ✓ lib/ai/brief/digest.test.ts
+  ✓ lib/ai/brief/licence.test.ts
+  ✓ lib/ai/brief/load.test.ts
+  ✓ lib/ai/brief/lifecycle.test.ts
+  ✓ lib/ai/brief/package.test.ts
+  ✓ lib/ai/brief/relevance.test.ts
+  ✓ lib/ai/brief/recent-activity.test.ts
+  ✓ lib/ai/allowance.test.ts
+  ✓ lib/ai/brief/generate.test.ts
+  ✓ lib/ai/brief/view-model.test.ts
+  ✓ lib/ai/brief/watermark.test.ts
+  ✓ lib/ai/conversation/chat-request.test.ts
+  ✓ lib/ai/brief/state.test.ts
+  ✓ lib/ai/conversation/history-facts.test.ts
+  ✓ lib/ai/conversation/canonical-spending-surfaces.test.ts
+  ✓ lib/ai/conversation/goal-seek-return-representation.test.ts
+  ✓ lib/ai/conversation/income-clause.test.ts
+  ✓ lib/ai/conversation/conversation-identity.test.ts
+  ✓ lib/ai/conversation/knowledge-gaps.test.ts
+  ✓ lib/ai/conversation/guidance.test.ts
+  ✓ lib/ai/conversation/liability-dynamics.test.ts
+  ✓ lib/ai/conversation/liquid-floor-contribution.test.ts
+  ✓ lib/ai/conversation/pending-plan.test.ts
+  ✓ lib/ai/conversation/memory-model.test.ts
+  ✓ lib/ai/conversation/interest-once.test.ts
+  ✓ lib/ai/conversation/runtime-state.test.ts
+  ✓ lib/ai/conversation/goal-seek-truthfulness.test.ts
+  ✓ lib/ai/conversation/hardening.test.ts
+  ✓ lib/ai/conversation/projection-temporal.test.ts
+  ✓ lib/ai/conversation/scenario-change.test.ts
+  ✓ lib/ai/conversation/scenario-checkpoints.test.ts
+  ✓ lib/ai/conversation/runtime-state-capacity.test.ts
+  ✓ lib/ai/conversation/provenance-origin.test.ts
+  ✓ lib/ai/conversation/scenario-contract.test.ts
+  ✓ lib/ai/conversation/scenario-crossing.test.ts
+  ✓ lib/ai/conversation/scenario-rules.test.ts
+  ✓ lib/ai/conversation/spending-floor.test.ts
+  ✓ lib/ai/conversation/spending-change-tools.test.ts
+  ✓ lib/ai/conversation/spending-pending.test.ts
+  ✓ lib/ai/conversation/starter-topics.test.ts
+  ✓ lib/ai/conversation/scenario-composition.test.ts
+  ✓ lib/ai/conversation/surplus-contribution.test.ts
+  ✓ lib/ai/currency-presentation.test.ts
+  ✓ lib/ai/economic-concepts.test.ts
+  ✓ lib/ai/evidence-authorities.test.ts
+  ✓ lib/ai/conversation/spending-goal-seek.test.ts
+  ✓ lib/ai/fold-enrolment.test.ts
+  ✓ lib/ai/coverage-envelope.test.ts
+  ✓ lib/ai/conversation/memory-isolation.test.ts
+  ✓ lib/ai/domain-relevance.test.ts
+  ✓ lib/ai/forecast/assemble.test.ts
+  ✓ lib/ai/forecast/assemble-spending.test.ts
+  ✓ lib/ai/forecast/stream-read.test.ts
+  ✓ lib/ai/intelligence/annotations.ti2.test.ts
+  ✓ lib/ai/intelligence/assessment-contract.test.ts
+  ✓ lib/ai/intelligence/brief-scope-adequacy.test.ts
+  ✓ lib/ai/intelligence/debt-strategy-fx.test.ts
+  ✓ lib/ai/intelligence/debt-rate-reason.test.ts
+  ✓ lib/ai/intelligence/deficit-reason.test.ts
+  ✓ lib/ai/intelligence/liquidity-baseline-refusal.test.ts
+  ✓ lib/ai/intelligence/flow-measure-basis.test.ts
+  ✓ lib/ai/intelligence/monthly-income-basis.test.ts
+  ✓ lib/ai/intelligence/trajectory.test.ts
+  ✓ lib/ai/measures/measures.test.ts
+  ✓ lib/ai/intelligence/spending-trends-net.test.ts
+  ✓ lib/ai/rate-limit-retry.test.ts
+  ✓ lib/ai/signals/detectors/transactions.ti2.test.ts
+  ✓ lib/ai/invocation-failures.test.ts
+  ✓ lib/ai/temporal-scope.test.ts
+  ✓ lib/ai/snapshot-modeled-real-assets.test.ts
+  ✓ lib/ai/model-rate-coverage.test.ts
+  ✓ lib/alerts/latest-evaluation.test.ts
+  ✓ lib/ai/provider-structured.test.ts
+  ✓ lib/ai/openai-credentials.test.ts
+  ✓ lib/assets/manual-asset.test.ts
+  ✓ lib/assets/valuation-series.core.test.ts
+  ✓ lib/alerts/alerts.test.ts
+  ✓ lib/assets/valuations.test.ts
+  ✓ lib/analytics/product-events.test.ts
+  ✓ lib/auth-totp-policy.test.ts
+  ✓ lib/auth/login-outcome.test.ts
+  ✓ lib/audit.test.ts
+  ✓ lib/auth/return-to.test.ts
+  ✓ lib/auth/session-activity.test.ts
+  ✓ lib/auth/login-redirect.test.ts
+  ✓ lib/balances/account-balances.test.ts
+  ✓ lib/auth/session-cookie.test.ts
+  ✓ lib/auth/admin-session-projection.test.ts
+  ✓ lib/balances/reconciliation.test.ts
+  ✓ lib/calendar/crypto-calendar.test.ts
+  ✓ lib/balances/balance-boundary.test.ts
+  ✓ lib/balances/reconciliation-boundary.test.ts
+  ✓ lib/auth/session-token-exposure.test.ts
+  ✓ lib/calendar/us-equity-calendar.test.ts
+  ✓ lib/captcha.test.ts
+  ✓ lib/charts/chart-palette.test.ts
+  ✓ lib/auth/session-proof.test.ts
+  ✓ lib/connections/build-intelligence.test.ts
+  ✓ lib/connections/intelligence.test.ts
+  ✓ lib/connections/health.test.ts
+  ✓ lib/connections/connection-cap.test.ts
+  ✓ lib/connections/space-data-health.core.test.ts
+  ✓ lib/connections/source-health-alignment.test.ts
+  ✓ lib/connections/wallet-facet-freshness.test.ts
+  ✓ lib/connections/workspaces.test.ts
+  ✓ lib/crypto/btc-discovery-core.test.ts
+  ✓ lib/crypto/btc-address-derivation.test.ts
+  ✓ lib/crypto/coverage-and-freshness.test.ts
+  ✓ lib/connections/space-data.test.ts
+  ✓ lib/crypto/current-authority-convergence.test.ts
+  ✓ lib/crypto/btc-history.test.ts
+  ✓ lib/crypto/btc-sync.test.ts
+  ✓ lib/crypto/btc-partial-sync.test.ts
+  ✓ lib/crypto/eth-history-incremental.test.ts
+  ✓ lib/crypto/crypto-close-coverage.test.ts
+  ✓ lib/crypto/eth-history.test.ts
+  ✓ lib/crypto/eth-sync.test.ts
+  ✓ lib/crypto/crypto-repair-dogfood.test.ts
+  ✓ lib/crypto/historical-crypto-valuation.core.test.ts
+  ✓ lib/crypto/ledger-completeness.core.test.ts
+  ✓ lib/crypto/native-asset.test.ts
+  ✓ lib/crypto/quantity-carry.core.test.ts
+  ✓ lib/crypto/eth-history-sync.test.ts
+  ✓ lib/crypto/sol-sync.test.ts
+  ✓ lib/crypto/evm-native.test.ts
+  ✓ lib/crypto/wallet-initial-connection.test.ts
+  ✓ lib/crypto/sol-history.test.ts
+  ✓ lib/crypto/wallet-card-truth.test.ts
+  ✓ lib/crypto/wallet-position-capture.test.ts
+  ✓ lib/crypto/wallet-current-value.test.ts
+  ✓ lib/crypto/wallet-history-refresh.test.ts
+  ✓ lib/crypto/wallet-chain-facts-boundary.test.ts
+  ✓ lib/data/account-coverage.test.ts
+  ✓ lib/data/accounts-asof.test.ts
+  ✓ lib/data/nearest-on-or-before.test.ts
+  ✓ lib/crypto/wallet-refresh-invariants.test.ts
+  ✓ lib/crypto/wallet-refresh.test.ts
+  ✓ lib/data/snapshot-summary.core.test.ts
+  ✓ lib/data/snapshot-window.pct.test.ts
+  ✓ lib/data/temporal-observation.test.ts
+  ✓ lib/crypto/wallet-sync-dispatch.test.ts
+  ✓ lib/data/transaction-corpus-coverage.test.ts
+  ✓ lib/data/transaction-detail-ti2.test.ts
+  ✓ lib/data/transaction-query-core.test.ts
+  ✓ lib/data/transaction-query.test.ts
+  ✓ lib/data/transaction-detail.privacy.test.ts
+  ✓ lib/data/transactions-bounding.test.ts
+  ✓ lib/data/snapshot-read-boundary.test.ts
+  ✓ lib/data/transactions.population.test.ts
+  ✓ lib/data/transactions.authority.test.ts
+  ✓ lib/db-safety.test.ts
+  ✓ lib/db/conditional-write.test.ts
+  ✓ lib/db/connection-url.test.ts
+  ✓ lib/data/transactions.privacy.test.ts
+  ✓ lib/db/live-guard.test.ts
+  ✓ lib/db/tenant-context.test.ts
+  ✓ lib/db/strict-mode.test.ts
+  ✓ lib/debt-space-data.test.ts
+  ✓ lib/db/write-phase.test.ts
+  ✓ lib/debt/display-conversion.test.ts
+  ✓ lib/debt/balance-semantics.test.ts
+  ✓ lib/deletion-safety.test.ts
+  ✓ lib/debt/user-terms.test.ts
+  ✓ lib/debt/aggregates.test.ts
+  ✓ lib/email/send.test.ts
+  ✓ lib/debt/payoff.test.ts
+  ✓ lib/debt/effective-terms.test.ts
+  ✓ lib/email/templates.test.ts
+  ✓ lib/email/urls.test.ts
+  ✓ lib/entitlements/consumers.test.ts
+  ✓ lib/entitlements/resolve.test.ts
+  ✓ lib/export/holdings.test.ts
+  ✓ lib/export/csv.test.ts
+  ✓ lib/entitlements/consume.test.ts
+  ✓ lib/export/select.test.ts
+  ✓ lib/export/zip.test.ts
+  ✓ lib/forecast/income-change.test.ts
+  ✓ lib/forecast/projection.test.ts
+  ✓ lib/forecast/cadence.test.ts
+  ✓ lib/forecast/spending-change.test.ts
+  ✓ lib/forecast/future-cash-event.test.ts
+  ✓ lib/forecast/obligation.test.ts
+  ✓ lib/freshness/estimate-horizon.test.ts
+  ✓ lib/format.test.ts
+  ✓ lib/freshness/freshness-authority.test.ts
+  ✓ lib/forecast/spending-baseline.test.ts
+  ✓ lib/forecast/stream-activity.test.ts
+  ✓ lib/fx/archive-write-shape.test.ts
+  ✓ lib/fx/fetch.test.ts
+  ✓ lib/fx/providers/providers.test.ts
+  ✓ lib/fx/registry.test.ts
+  ✓ lib/fx/service.test.ts
+  ✓ lib/freshness/freshness-convergence.test.ts
+  ✓ lib/history/lens-roots.test.ts
+  ✓ lib/history/net-worth-node.test.ts
+  ✓ lib/history/account-series.test.ts
+  ✓ lib/history/holding-series.test.ts
+  ✓ lib/imports/authorize-visibility.test.ts
+  ✓ lib/imports/card-payment-import.test.ts
+  ✓ lib/imports/csv-fingerprint-outcome.test.ts
+  ✓ lib/imports/authorize.authority.test.ts
+  ✓ lib/imports/investments/import-validation.test.ts
+  ✓ lib/imports/investments/pipeline.test.ts
+  ✓ lib/imports/transaction-facts-import.test.ts
+  ✓ lib/investments/activity-enumeration.test.ts
+  ✓ lib/investments/a10-ownership-convergence.test.ts
+  ✓ lib/investments/brokerage-cash.test.ts
+  ✓ lib/investments/corporate-actions.core.test.ts
+  ✓ lib/investments/current-holdings.test.ts
+  ✓ lib/investments/crypto-instrument.test.ts
+  ✓ lib/investments/atomicity-under-phase.test.ts
+  ✓ lib/investments/derived-cash-identity.test.ts
+  ✓ lib/investments/current-positions-core.test.ts
+  ✓ lib/investments/display-conversion.test.ts
+  ✓ lib/investments/event-coverage.core.test.ts
+  ✓ lib/investments/current-positions.test.ts
+  ✓ lib/investments/historical-composition-states.test.ts
+  ✓ lib/investments/historical-holdings.core.test.ts
+  ✓ lib/investments/import-rollback-authority.test.ts
+  ✓ lib/investments/investment-accounts.test.ts
+  ✓ lib/investments/instrument-resolver.test.ts
+  ✓ lib/investments/investment-flows-core.test.ts
+  ✓ lib/investments/import-provenance-closure.test.ts
+  ✓ lib/investments/event-coverage-write.test.ts
+  ✓ lib/investments/investment-import-routes.test.ts
+  ✓ lib/investments/investment-import-rollback.test.ts
+  ✓ lib/investments/investment-event-ingest.test.ts
+  ✓ lib/investments/investments-allocation-core.test.ts
+  ✓ lib/investments/investment-import-commit.test.ts
+  ✓ lib/investments/investments-time-machine-core.test.ts
+  ✓ lib/investments/investments-time-machine-visibility.test.ts
+  ✓ lib/investments/investments-trust.test.ts
+  ✓ lib/investments/investment-import-preview.test.ts
+  ✓ lib/investments/investments-time-machine-coverage.test.ts
+  ✓ lib/env.validate.test.ts
+  ✓ lib/investments/period-attribution.core.test.ts
+  ✓ lib/investments/portfolio-series.test.ts
+  ✓ lib/investments/quantity-authority-bridge.core.test.ts
+  ✓ lib/investments/quantity-event.core.test.ts
+  ✓ lib/investments/opening-position.test.ts
+  ✓ lib/investments/quantity-reconciliation.core.test.ts
+  ✓ lib/investments/quantity-timeline.test.ts
+  ✓ lib/investments/quantity-replay.core.test.ts
+  ✓ lib/investments/position-capture.test.ts
+  ✓ lib/investments/reconstruction-cash.test.ts
+  ✓ lib/investments/plaid-investment-events.test.ts
+  ✓ lib/investments/reconstruction-core.test.ts
+  ✓ lib/investments/reconstruction-opening-anchor.test.ts
+  ✓ lib/investments/reconstruction-read.test.ts
+  ✓ lib/investments/reconstruction-sign.test.ts
+  ✓ lib/investments/reconstruction-runner.test.ts
+  ✓ lib/investments/scope-divergence.test.ts
+  ✓ lib/investments/space-data-composition.test.ts
+  ✓ lib/investments/space-data-core.test.ts
+  ✓ lib/investments/sync-current-holdings.test.ts
+  ✓ lib/investments/transaction-boundary.test.ts
+  ✓ lib/investments/valuation-batch.test.ts
+  ✓ lib/investments/valuation-core.test.ts
+  ✓ lib/investments/space-data-historical.test.ts
+  ✓ lib/investments/valuation.investment-bucket.test.ts
+  ✓ lib/jobs/cadence-policy.test.ts
+  ✓ lib/investments/valuation.reconstruction-residue.test.ts
+  ✓ lib/jobs/cadence.test.ts
+  ✓ lib/jobs/job-health.test.ts
+  ✓ lib/jobs/registry-boundary.test.ts
+  ✓ lib/jobs/notification-retry.test.ts
+  ✓ lib/liquidity/access.test.ts
+  ✓ lib/jobs/s3-workloads.test.ts
+  ✓ lib/jobs/dispatch.test.ts
+  ✓ lib/liquidity/cash-history.test.ts
+  ✓ lib/jobs/run.test.ts
+  ✓ lib/liquidity/display-conversion.test.ts
+  ✓ lib/liquidity/historical-splice.test.ts
+  ✓ lib/liquidity/expense-baseline.test.ts
+  ✓ lib/liquidity/space-data-core.test.ts
+  ✓ lib/marketing-boundary.test.ts
+  ✓ lib/marketing/acquisition.test.ts
+  ✓ lib/marketing/request-access.test.ts
+  ✓ lib/liquidity/space-data.test.ts
+  ✓ lib/merchant-ops-authority.test.ts
+  ✓ lib/marketing/public-site.test.ts
+  ✓ lib/money-presentation.test.ts
+  ✓ lib/money/convert.test.ts
+  ✓ lib/money/context.test.ts
+  ✓ lib/money/reporting-currency-failure-contract.test.ts
+  ✓ lib/money/fx-freshness.test.ts
+  ✓ lib/money/serialize.test.ts
+  ✓ lib/monitoring/sentry-options.test.ts
+  ✓ lib/notifications/cleanup.test.ts
+  ✓ lib/monitoring/job-failure-capture.test.ts
+  ✓ lib/notifications/create.test.ts
+  ✓ lib/monitoring/sentry-dev-gate.test.ts
+  ✓ lib/monitoring/deployment.test.ts
+  ✓ lib/notifications/preferences.test.ts
+  ✓ lib/notifications/registry.test.ts
+  ✓ lib/notifications/read.test.ts
+  ✓ lib/operator-action.test.ts
+  ✓ lib/perspective-engine/debt.asof.test.ts
+  ✓ lib/monitoring/sentry-capture-boundary.test.ts
+  ✓ lib/perspective-engine/debt.test.ts
+  ✓ lib/perspective-engine/liquidity.asof.test.ts
+  ✓ lib/perspective-engine/engine.test.ts
+  ✓ lib/notifications/wave3.test.ts
+  ✓ lib/perspective-engine/route.test.ts
+  ✓ lib/perspective-engine/liquidity.test.ts
+  ✓ lib/perspectives.test.ts
+  ✓ lib/perspectives/financial-window.test.ts
+  ✓ lib/perspectives/envelope.test.ts
+  ✓ lib/perspective-icons.test.ts
+  ✓ lib/perspectives/sync-incomplete-warning.test.ts
+  ✓ lib/perspectives/time-range.test.ts
+  ✓ lib/perspectives/workspace-definition.test.ts
+  ✓ lib/plaid/encryption.test.ts
+  ✓ lib/perspectives/trust-vocabulary.test.ts
+  ✓ lib/plaid/event-identity-incident.test.ts
+  ✓ lib/perspectives/overview-lenses.test.ts
+  ✓ lib/plaid/execution-convergence.test.ts
+  ✓ lib/plaid/freshness-pipeline.test.ts
+  ✓ lib/plaid/historical-stages.test.ts
+  ✓ lib/plaid/disconnect-revocation.test.ts
+  ✓ lib/plaid/cursor-safety.test.ts
+  ✓ lib/plaid/investments-consent-truth.test.ts
+  ✓ lib/plaid/provider-call.test.ts
+  ✓ lib/plaid/duplicate-gate.test.ts
+  ✓ lib/plaid/reconcile-core.test.ts
+  ✓ lib/plaid/redirect-uri.test.ts
+  ✓ lib/plaid/missing-account-liveness.test.ts
+  ✓ lib/plaid/pending-ref-fingerprint-guard.test.ts
+  ✓ lib/plaid/refresh-ledger-failure-matrix.test.ts
+  ✓ lib/plaid/plaid-log-safety.test.ts
+  ✓ lib/plaid/refresh-verdict.core.test.ts
+  ✓ lib/plaid/refresh-ledger.test.ts
+  ✓ lib/plaid/refreshCooldown.test.ts
+  ✓ lib/plaid/refresh-fanout.test.ts
+  ✓ lib/plaid/sync-lock.test.ts
+  ✓ lib/plaid/transaction-facts-wiring.test.ts
+  ✓ lib/plaid/sync-issue-isolation.test.ts
+  ✓ lib/plaid/refresh-execution.test.ts
+  ✓ lib/plaid/webhook-receiver.test.ts
+  ✓ lib/plaid/webhook-verify.test.ts
+  ✓ lib/platform-surface.test.ts
+  ✓ lib/platform-settings.test.ts
+  ✓ lib/plaid/removed-tombstone-reprojection.test.ts
+  ✓ lib/platform/activity/activity.test.ts
+  ✓ lib/platform/admission/connection-establishment.test.ts
+  ✓ lib/platform/activity/operator-feed.test.ts
+  ✓ lib/plaid/update-fact-preservation.test.ts
+  ✓ lib/platform/admission/policy-core.test.ts
+  ✓ lib/platform/admission/producer-convergence.test.ts
+  ✓ lib/plaid/webhook-verify-amplification.test.ts
+  ✓ lib/platform/ai/ai-usage.test.ts
+  ✓ lib/platform/ai/allowance-reservation.test.ts
+  ✓ lib/platform/ai/brief-ops.test.ts
+  ✓ lib/platform/ai/failures.test.ts
+  ✓ lib/platform/ai/ai-budget.test.ts
+  ✓ lib/platform/ai/cost-controls.test.ts
+  ✓ lib/platform/ai/invocations-core.test.ts
+  ✓ lib/platform/ai/invocation-economics.test.ts
+  ✓ lib/platform/admission/admission-boundary.test.ts
+  ✓ lib/platform/ai/invocations.test.ts
+  ✓ lib/platform/beta-ops-guards.test.ts
+  ✓ lib/platform/ai/spend-by-surface.test.ts
+  ✓ lib/platform/connection-ops-guards.test.ts
+  ✓ lib/platform/ai/paid-requests-admission.test.ts
+  ✓ lib/platform/capability-control.test.ts
+  ✓ lib/platform/convergence/correlation.test.ts
+  ✓ lib/platform/customer/assign.test.ts
+  ✓ lib/platform/customer/connection-owners.test.ts
+  ✓ lib/platform/convergence/convergence.test.ts
+  ✓ lib/platform/cost/cost.test.ts
+  ✓ lib/platform/customer/customer-success-routes.test.ts
+  ✓ lib/platform/db-authority.test.ts
+  ✓ lib/platform/growth/product-analytics-core.test.ts
+  ✓ lib/platform/customer/customer-core.test.ts
+  ✓ lib/platform/growth/growth.test.ts
+  ✓ lib/platform/history/history.test.ts
+  ✓ lib/platform/incidents/platform-projection.test.ts
+  ✓ lib/platform/incidents/preview-core.test.ts
+  ✓ lib/platform/incidents/invariant.test.ts
+  ✓ lib/platform/incidents/lifecycle.test.ts
+  ✓ lib/platform/observability-privacy.test.ts
+  ✓ lib/platform/operations/registry.test.ts
+  ✓ lib/platform/operator-action-adoption.test.ts
+  ✓ lib/platform/ops/overview-core.test.ts
+  ✓ lib/platform/ops/attention-core.test.ts
+  ✓ lib/platform/operations/execute.test.ts
+  ✓ lib/platform/incidents/incident-boundary.test.ts
+  ✓ lib/platform/incidents/operation-key.test.ts
+  ✓ lib/platform/plaid/item-months.test.ts
+  ✓ lib/platform/plaid/provider-cleanup.test.ts
+  ✓ lib/platform/policy.test.ts
+  ✓ lib/platform/plaid/usage.test.ts
+  ✓ lib/platform/policies/refresh-policies.test.ts
+  ✓ lib/platform/policies/job-cadence.test.ts
+  ✓ lib/platform/provider-health.test.ts
+  ✓ lib/platform/policies/mutate.test.ts
+  ✓ lib/platform/refresh-policy.core.test.ts
+  ✓ lib/platform/refresh/daily-series.test.ts
+  ✓ lib/platform/refresh/pipeline-status.test.ts
+  ✓ lib/platform/refresh/request-params.test.ts
+  ✓ lib/platform/refresh/projections.test.ts
+  ✓ lib/platform/refresh/read-boundary.test.ts
+  ✓ lib/platform/refresh/execution-query.test.ts
+  ✓ lib/platform/refresh/routes.test.ts
+  ✓ lib/platform/scheduler-capability.test.ts
+  ✓ lib/platform/refresh/constructor-uniqueness.test.ts
+  ✓ lib/platform/resource-freshness.test.ts
+  ✓ lib/platform/sync-issue-semantics.test.ts
+  ✓ lib/platform/seed.test.ts
+  ✓ lib/possessive.test.ts
+  ✓ lib/platform/workspaces.test.ts
+  ✓ lib/prices/acquisition-budget.core.test.ts
+  ✓ lib/platform/scheduler/observation.test.ts
+  ✓ lib/prices/archive.test.ts
+  ✓ lib/prices/backfill-core.test.ts
+  ✓ lib/prices/acquisition-plan.core.test.ts
+  ✓ lib/prices/capture.test.ts
+  ✓ lib/prices/coverage-binding.core.test.ts
+  ✓ lib/prices/coverage.core.test.ts
+  ✓ lib/prices/provider-capability.test.ts
+  ✓ lib/prices/ownership-window.core.test.ts
+  ✓ lib/prices/fetch.test.ts
+  ✓ lib/prices/current-quote.test.ts
+  ✓ lib/prices/provider-floor.core.test.ts
+  ✓ lib/prices/provider-unification.test.ts
+  ✓ lib/prices/providers/coingecko.test.ts
+  ✓ lib/prototype-containment.test.ts
+  ✓ lib/prices/service.test.ts
+  ✓ lib/prices/providers/tiingo.test.ts
+  ✓ lib/rate-limit.test.ts
+  ✓ lib/refresh/refresh-routes.test.ts
+  ✓ lib/refresh/refresh-all.test.ts
+  ✓ lib/refresh/wallet-lock.test.ts
+  ✓ lib/release-version.test.ts
+  ✓ lib/registration-policy.test.ts
+  ✓ lib/security-headers.test.ts
+  ✓ lib/security-history.test.ts
+  ✓ lib/security/anomalies.test.ts
+  ✓ lib/rls-server-component-authority.test.ts
+  ✓ lib/security-surface.test.ts
+  ✓ lib/session-cache.test.ts
+  ✓ lib/snapshots/aggregate-authorisation.core.test.ts
+  ✓ lib/snapshots/amendment-whole-day.regression.test.ts
+  ✓ lib/settings/workspaces.test.ts
+  ✓ lib/security/write-origin.test.ts
+  ✓ lib/snapshots/backfill-core.test.ts
+  ✓ lib/snapshots/component-authorisation.test.ts
+  ✓ lib/snapshots/historical-crypto-evidence.test.ts
+  ✓ lib/snapshots/crypto-valuation-status.test.ts
+  ✓ lib/snapshots/background-authority.test.ts
+  ✓ lib/session-degradation.test.ts
+  ✓ lib/snapshots/manual-asset-history.core.test.ts
+  ✓ lib/snapshots/price-completeness.core.test.ts
+  ✓ lib/snapshots/real-asset-amendment-offer.core.test.ts
+  ✓ lib/snapshots/real-asset-basis.test.ts
+  ✓ lib/snapshots/reconstructed-series-integrity.test.ts
+  ✓ lib/snapshots/reconstruction-basis.test.ts
+  ✓ lib/snapshots/regenerate-history.test.ts
+  ✓ lib/snapshots/regenerate-history.core.test.ts
+  ✓ lib/snapshots/historical-work-window.test.ts
+  ✓ lib/snapshots/regenerate.test.ts
+  ✓ lib/snapshots/regeneration-candidates.core.test.ts
+  ✓ lib/snapshots/representativeness.core.test.ts
+  ✓ lib/snapshots/snapshot-completeness.test.ts
+  ✓ lib/snapshots/stamp-conversion.test.ts
+  ✓ lib/snapshots/unsupported-zero.test.ts
+  ✓ lib/space-nav.test.ts
+  ✓ lib/space-templates/apply.test.ts
+  ✓ lib/snapshots/snapshot-population-disclosure.test.ts
+  ✓ lib/space-templates/purity.test.ts
+  ✓ lib/space-templates/create-route.test.ts
+  ✓ lib/space-templates/registry.test.ts
+  ✓ lib/space-templates/template-truthfulness.test.ts
+  ✓ lib/space/mount-context.test.ts
+  ✓ lib/snapshots/snapshot-amendment.test.ts
+  ✓ lib/public-site-boundary.test.ts
+  ✓ lib/space/mount-payload-boundary.test.ts
+  ✓ lib/space/space-url.test.ts
+  ✓ lib/space/space-runtime-ownership.test.ts
+  ✓ lib/spaces/authorize.test.ts
+  ✓ lib/space/workspace-resources.test.ts
+  ✓ lib/spaces/default-space.test.ts
+  ✓ lib/space/sync-incomplete-path.test.ts
+  ✓ lib/spaces/invite-role.test.ts
+  ✓ lib/spaces/personal-space-name.test.ts
+  ✓ lib/spaces/policy.test.ts
+  ✓ lib/spaces/roster-visibility.test.ts
+  ✓ lib/spaces/reporting-currency.test.ts
+  ✓ lib/sync/connection-copy.test.ts
+  ✓ lib/sync/ingestion-truth.test.ts
+  ✓ lib/sync/lifecycle.test.ts
+  ✓ lib/sync/status.test.ts
+  ✓ lib/test-support/mutant-module.test.ts
+  ✓ lib/sync/deferred-ingestion.test.ts
+  ✓ lib/transactions/calendar-tier-net.test.ts
+  ✓ lib/transactions/RelationshipResolver.test.ts
+  ✓ lib/time/clock-authority.test.ts
+  ✓ lib/transactions/cash-flow-compare.test.ts
+  ✓ lib/sync/wallet-failure-state.test.ts
+  ✓ lib/transactions/canonical-spending.test.ts
+  ✓ lib/transactions/cash-flow-context.test.ts
+  ✓ lib/transactions/cash-flow-convergence.test.ts
+  ✓ lib/transactions/cash-flow-projection.test.ts
+  ✓ lib/transactions/cash-flow-fold-authority.test.ts
+  ✓ lib/transactions/cash-flow-space-data.test.ts
+  ✓ lib/transactions/cash-flow-spending-reconciliation.test.ts
+  ✓ lib/transactions/cash-flow.test.ts
+  ✓ lib/transactions/cash-movement.test.ts
+  ✓ lib/transactions/cash-flow-window-identity.test.ts
+  ✓ lib/transactions/counterparty-visibility.test.ts
+  ✓ lib/transactions/coverage-note.test.ts
+  ✓ lib/transactions/debt-payment-attestation.test.ts
+  ✓ lib/transactions/dayfacts-completeness.test.ts
+  ✓ lib/transactions/debt-creditor-presentation.test.ts
+  ✓ lib/transactions/crypto-separation.test.ts
+  ✓ lib/transactions/category-spend-authority.test.ts
+  ✓ lib/transactions/debt-service.test.ts
+  ✓ lib/transactions/debt-payment-authority.test.ts
+  ✓ lib/transactions/descriptor-evidence.test.ts
+  ✓ lib/transactions/detail-sections.test.ts
+  ✓ lib/transactions/economic-date-write.test.ts
+  ✓ lib/transactions/event-economic-date-rule.test.ts
+  ✓ lib/transactions/event-live-row-count.test.ts
+  ✓ lib/transactions/event-projection.test.ts
+  ✓ lib/transactions/event-replay-heal.test.ts
+  ✓ lib/transactions/event-write-atomicity.test.ts
+  ✓ lib/transactions/event-identity.test.ts
+  ✓ lib/transactions/event-write-claim-ordering.test.ts
+  ✓ lib/transactions/financial-doctrine-oracle.test.ts
+  ✓ lib/transactions/fingerprint.test.ts
+  ✓ lib/transactions/flow-authority.test.ts
+  ✓ lib/transactions/flow-category-coverage.test.ts
+  ✓ lib/transactions/flow-classifier.test.ts
+  ✓ lib/transactions/flow-desync-audit.test.ts
+  ✓ lib/transactions/flow-classifier-authority.test.ts
+  ✓ lib/transactions/flow-desync-invariant.test.ts
+  ✓ lib/transactions/flow-predicates.test.ts
+  ✓ lib/transactions/flow-presentation.direction.test.ts
+  ✓ lib/transactions/income-source.test.ts
+  ✓ lib/transactions/flow-row-input.test.ts
+  ✓ lib/transactions/investment-venue.test.ts
+  ✓ lib/transactions/liability-inflow.test.ts
+  ✓ lib/transactions/flow-presentation.test.ts
+  ✓ lib/transactions/liability-payment.test.ts
+  ✓ lib/transactions/lifecycle-economic-date.test.ts
+  ✓ lib/transactions/liquidity-breakdown.test.ts
+  ✓ lib/transactions/liquidity.test.ts
+  ✓ lib/transactions/merchant-backfill.test.ts
+  ✓ lib/transactions/lifecycle-boundary.test.ts
+  ✓ lib/transactions/merchant-corrections.test.ts
+  ✓ lib/transactions/merchant-display.test.ts
+  ✓ lib/transactions/merchant-merge-review.test.ts
+  ✓ lib/transactions/merchant-merge-suggest.test.ts
+  ✓ lib/transactions/merchant-merge.test.ts
+  ✓ lib/transactions/merchant-resolver.test.ts
+  ✓ lib/transactions/merchant-rules.test.ts
+  ✓ lib/transactions/income-rollup.test.ts
+  ✓ lib/transactions/merchant-write.test.ts
+  ✓ lib/transactions/merchant-schema.test.ts
+  ✓ lib/transactions/merchant.test.ts
+  ✓ lib/transactions/needs-classification.test.ts
+  ✓ lib/transactions/plaid-category.test.ts
+  ✓ lib/transactions/net-expense-baseline.test.ts
+  ✓ lib/transactions/plaid-flow-input.test.ts
+  ✓ lib/transactions/read-boundary-authority.test.ts
+  ✓ lib/transactions/serialize.golden.test.ts
+  ✓ lib/transactions/refund-economics.test.ts
+  ✓ lib/transactions/spend-transformability.test.ts
+  ✓ lib/transactions/transaction-context.test.ts
+  ✓ lib/transactions/transaction-facts.test.ts
+  ✓ lib/transactions/transfer-authority.test.ts
+  ✓ lib/transactions/transfer-evidence-write.test.ts
+  ✓ lib/transactions/transfer-evidence.test.ts
+  ✓ lib/transactions/transfer-identification.test.ts
+  ✓ lib/transactions/transfer-chain.test.ts
+  ✓ lib/transactions/transfer-matching.test.ts
+  ✓ lib/usage/ai-tokens.test.ts
+  ✓ lib/usage/pricing.test.ts
+  ✓ lib/wealth/basis-disclosure.test.ts
+  ✓ lib/visibility-resolver-parity.test.ts
+  ✓ lib/wealth/display-conversion.test.ts
+  ✓ lib/wealth/wealth-mode.test.ts
+  ✓ scripts/ai-baseline/active-scenario.test.ts
+  ✓ lib/wealth/wealth-time-machine.test.ts
+  ✓ scripts/ai-baseline/activity-frame.test.ts
+  ✓ scripts/ci-local.test.ts
+  ✓ scripts/copy-fx-rates.test.ts
+  ✓ scripts/audit-brief-assessment-parity.test.ts
+  ✓ scripts/ai-baseline/baseline.test.ts
+  ✓ scripts/db-guard.test.ts
+
+run-tests: 739/739 passed.
+run-tests: all tests passed.
+
+══════════════════════════════════════════════════════════════════════════════
+test › npm run typecheck
+══════════════════════════════════════════════════════════════════════════════
+
+> fourth-meridian@2.6.0 typecheck
+> tsc --noEmit
+
+
+══════════════════════════════════════════════════════════════════════════════
+test › npm run lint
+══════════════════════════════════════════════════════════════════════════════
+
+> fourth-meridian@2.6.0 lint
+> eslint
+
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/components/connections/ConnectionCard.tsx
+  48:10  warning  'providerName' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/components/dashboard/TotpSection.tsx
+  156:19  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/components/space/widgets/AssetValueWidget.tsx
+  40:10  warning  'DEFAULT_DISPLAY_CURRENCY' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/components/space/widgets/ProgressWidget.tsx
+  28:10  warning  'DEFAULT_DISPLAY_CURRENCY' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/components/space/widgets/debt/DebtWorkspace.tsx
+  216:9  warning  The 'debtPoints' logical expression could make the dependencies of useCallback Hook (at line 224) change on every render. Move it inside the useCallback callback. Alternatively, wrap the initialization of 'debtPoints' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/components/space/widgets/liquidity/LiquidityWorkspace.tsx
+  300:9  warning  The 'liquidityPoints' logical expression could make the dependencies of useCallback Hook (at line 307) change on every render. Move it inside the useCallback callback. Alternatively, wrap the initialization of 'liquidityPoints' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/lib/accounts/account-spine-boundary.test.ts
+  54:10  warning  'DuplicateDetectionSource' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/lib/ai/conversation/evidence.ts
+  47:15  warning  'ReadClient' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/lib/ai/forecast/assemble.ts
+  67:26  warning  'conclusionLicence' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  67:45  warning  'Conclusion' is defined but never used. Allowed unused vars must match /^_/u         @typescript-eslint/no-unused-vars
+  68:8   warning  'ConclusionKind' is defined but never used. Allowed unused vars must match /^_/u     @typescript-eslint/no-unused-vars
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/lib/forecast/engine.ts
+  48:10  warning  'CURRENCY' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/lib/forecast/policy.ts
+   102:33  warning  'composeFutureCash' is defined but never used. Allowed unused vars must match /^_/u            @typescript-eslint/no-unused-vars
+   103:30  warning  'CashComposition' is defined but never used. Allowed unused vars must match /^_/u              @typescript-eslint/no-unused-vars
+  1190:7   warning  'label' is assigned a value but never used. Allowed unused vars must match /^_/u               @typescript-eslint/no-unused-vars
+  1192:7   warning  'describeAssumption' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/lib/platform/ai/invocation-economics.test.ts
+  33:5  warning  'seq' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/lib/platform/plaid/item-months.test.ts
+  30:7  warning  'AUG' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/private/var/folders/_f/tkzvt8wd3yj_1b06z7z1w3080000gn/T/fm-ci-eeNc05/scripts/rls-app-acceptance.ts
+  313:9  warning  'reactivate' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+✖ 19 problems (0 errors, 19 warnings)
+
+
+[ci] architecture job cannot start: Docker is not available — the architecture job needs a throwaway Postgres container and will not use DATABASE_URL instead.
+
+══════════════════════════════════════════════════════════════════════════════
+site › npm ci
+══════════════════════════════════════════════════════════════════════════════
+npm warn deprecated eslint@9.39.5: This version is no longer supported. Please see https://eslint.org/version-support for other options.
+
+added 441 packages, and audited 442 packages in 12s
+
+226 packages are looking for funding
+  run `npm fund` for details
+
+8 vulnerabilities (7 high, 1 critical)
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+npm warn install-scripts 2 packages have install scripts not yet covered by allowScripts:
+npm warn install-scripts   sharp@0.34.5 (install: node install/check.js || npm run build)
+npm warn install-scripts   unrs-resolver@1.12.2 (postinstall: node postinstall.js)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.
+
+══════════════════════════════════════════════════════════════════════════════
+site › npm run verify
+══════════════════════════════════════════════════════════════════════════════
+
+> fourth-meridian-site@0.1.0 verify
+> npm run test && npm run typecheck && npm run lint && npm run build:clean-env
+
+
+> fourth-meridian-site@0.1.0 test
+> node --test "tests/*.test.mts"
+
+✔ only allowlisted keys are forwarded, first occurrence wins, values clipped (12.447417ms)
+✔ `from` is the site path only — never a protocol-relative, query or fragment shape (1.002167ms)
+✔ control characters and whitespace never travel (0.544667ms)
+✔ withAcquisition appends to the app href, keeps existing params and fragment, and is a no-op with nothing to forward (0.603417ms)
+✔ tsconfig.json: every include/exclude/path stays inside site/; no extends, references or rootDirs (3.29825ms)
+✔ TypeScript's resolved program contains no file outside site/ except installed type packages (34.188375ms)
+✔ next.config.ts pins the Turbopack and file-tracing roots to site/ (12.063ms)
+✔ eslint and the test runner are scoped to site/ (0.981833ms)
+✔ the scan sees the site's source (not an empty tree) (5.219875ms)
+✔ every module reference resolves inside site/ or to an allowed, declared package (158.995042ms)
+✔ Node built-ins are confined to build-time modules (never shipped to a browser) (39.270125ms)
+✔ stylesheets load nothing from outside site/ (no @import, no url() leaving the tree) (4.393875ms)
+✔ legacy application paths forward with path, query and fragment (11.91ms)
+✔ everything else stays an ordinary 404 (6.941208ms)
+✔ the destination origin can never come from the request (9.576ms)
+✔ the embedded origin is a JSON string literal that cannot break out of <script> (0.367709ms)
+✔ prefixes cover every application entry the public site's own pages link to (0.222125ms)
+✔ the not-found page ships the forwarder with the build's app origin (0.484ms)
+✔ site/package.json is its own private, non-workspace project (1.302833ms)
+✔ direct dependencies are exactly the static site's runtime (1.229375ms)
+✔ no denied package is installed at any depth (1.921ms)
+✔ every installed package comes from the registry — nothing is linked from the repository (1.218125ms)
+✔ no script reaches outside site/ (0.245083ms)
+✔ development defaults are loopback, never Production (3.673542ms)
+✔ a production build without both origins refuses to build (0.680583ms)
+✔ a production build refuses http, loopback, paths, credentials and non-URLs (1.891167ms)
+✔ development allows http only on loopback (0.451125ms)
+✔ Production configuration: canonical origins, indexable (2.916542ms)
+✔ Preview configuration: own origins, never indexable (0.336875ms)
+✔ a Preview (or Vercel development) build that names a Production origin is refused (0.954084ms)
+✔ only the Production site origin on a Production build is indexable (2.174541ms)
+✔ the app and the site must be different hosts (0.42725ms)
+✔ app links are absolute, on the app origin, and only ever paths (0.483709ms)
+✔ only lib/public-config.ts reads the environment (116.149708ms)
+✔ it reads only allowlisted public names, each by literal property access (26.661584ms)
+✔ no allowlisted name is secret-shaped (0.424958ms)
+✔ site/ holds no env file except the public template, and the template lists exactly the configurable names (1.062667ms)
+✔ next.config.ts declares no `env` block (which would inline arbitrary values into the bundle) (0.974958ms)
+✔ no route handlers, no /api tree, no middleware or proxy (2.655959ms)
+✔ the only metadata routes are robots, sitemap and the Open Graph image, all force-static (22.113791ms)
+✔ page inventory equals SITE_ROUTES (the sitemap's source) (1.665042ms)
+✔ static export is configured (no server runtime) (2.274667ms)
+✔ page code has no server actions, network calls, forms, cookies or browser storage (50.410708ms)
+✔ every absolute URL in the source is declared in lib/public-config.ts (21.181334ms)
+✔ vercel.json: headers only — no crons, rewrites, redirects, functions or env (0.734209ms)
+ℹ tests 45
+ℹ suites 0
+ℹ pass 45
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1180.633416
+
+> fourth-meridian-site@0.1.0 typecheck
+> tsc --noEmit
+
+
+> fourth-meridian-site@0.1.0 lint
+> eslint
+
+
+> fourth-meridian-site@0.1.0 build:clean-env
+> node scripts/clean-env-build.mts
+
+[clean-env-build] environment passed to next build: PATH, HOME, NEXT_TELEMETRY_DISABLED, NEXT_PUBLIC_SITE_ORIGIN, NEXT_PUBLIC_APP_ORIGIN
+▲ Next.js 16.2.7 (Turbopack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 2.6s
+  Running TypeScript ...
+  Finished TypeScript in 2.0s ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/15) ...
+  Generating static pages using 7 workers (3/15)
+  Generating static pages using 7 workers (7/15)
+  Generating static pages using 7 workers (11/15)
+✓ Generating static pages using 7 workers (15/15) in 1908ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /about
+├ ○ /apple-icon.png
+├ ○ /icon.png
+├ ○ /legal/ai
+├ ○ /opengraph-image
+├ ○ /privacy
+├ ○ /request-access
+├ ○ /robots.txt
+├ ○ /security
+├ ○ /sitemap.xml
+└ ○ /terms
+
+
+○  (Static)  prerendered as static content
+
+
+[clean-env-build] routes: /  /about  /security  /request-access  /terms  /privacy  /legal/ai
+[clean-env-build] output: 92 files, 1802 KiB, static only
+[clean-env-build] packages: 155 runtime (incl. transitive), 342 dev-only
+[clean-env-build] OK — built with no application secret; output carries no authority.
+
+══════════════════════════════════════════════════════════════════════════════
+SUMMARY — HEAD 9b80c2a3e8fc · Node 24.21.0
+══════════════════════════════════════════════════════════════════════════════
+  ✓ test          npm ci                       81.7s
+  ✓ test          npx prisma generate          10.5s
+  ✓ test          npm run test:unit            1276.8s
+  ✓ test          npm run typecheck            144.2s
+  ✓ test          npm run lint                 817.9s
+  ✗ architecture  npm ci                       0.0s
+  ✗ architecture  npx prisma generate          0.0s
+  ✗ architecture  npx prisma migrate deploy    0.0s
+  ✗ architecture  npx prisma db seed           0.0s
+  ✗ architecture  npm run audit:ci             0.0s
+  ✗ architecture  RLS_TARGET_URL=$DATABASE_URL npm run rls:accept 0.0s
+  ✗ architecture  npm run rls:accept:app       0.0s
+  ✗ architecture  npm run rls:accept:ai        0.0s
+  ✗ architecture  npm run rls:accept:plaid     0.0s
+  ✗ architecture  npm run rls:accept:foreground 0.0s
+  ✓ site          npm ci                       12.4s
+  ✓ site          npm run verify               25.9s
+
+[ci] FAILED — a CI job is red on a clean copy of HEAD; GitHub will agree.

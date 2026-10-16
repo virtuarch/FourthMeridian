@@ -47,7 +47,7 @@ export function PanelHeader({ eyebrow, title, actions, hideClose = false }: Pane
             {eyebrow}
           </div>
         )}
-        <h2 id={titleId} className="truncate text-sm font-semibold text-[var(--text-primary)]">
+        <h2 id={titleId} className="break-words text-sm font-semibold text-[var(--text-primary)]">
           {title}
         </h2>
       </div>
@@ -58,7 +58,7 @@ export function PanelHeader({ eyebrow, title, actions, hideClose = false }: Pane
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="-mr-1 -mt-1 rounded-[var(--radius-sm)] p-2 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover-strong)] hover:text-[var(--text-primary)] touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
+            className="-mr-1 -mt-1 min-h-11 min-w-11 rounded-[var(--radius-sm)] p-2 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover-strong)] hover:text-[var(--text-primary)] touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
           >
             <X size={16} strokeWidth={1.75} />
           </button>
@@ -75,7 +75,7 @@ export interface PanelContentProps {
 
 /** The one scrolling region of a panel (the height cap lives on the Panel frame). */
 export function PanelContent({ children, className = "" }: PanelContentProps) {
-  return <div className={`min-h-0 flex-1 overflow-y-auto px-5 pb-5 ${className}`}>{children}</div>;
+  return <div className={`min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-5 ${className}`}>{children}</div>;
 }
 
 export interface PanelFooterProps {

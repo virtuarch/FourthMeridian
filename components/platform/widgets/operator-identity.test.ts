@@ -47,7 +47,7 @@ console.log("a consequential action answers where it was pressed");
   check("…and an in-progress line while acting", /acting === "refresh" && /.test(footer));
   check("the describer is the SHARED one from the outcome vocabulary", /from "@\/lib\/refresh\/outcomes"/.test(cs) && /export function describeRefreshOutcomes/.test(strip("lib/refresh/outcomes.ts")));
   check("the customer hook imports the same describer (no second semantics)", /from "@\/lib\/refresh\/outcomes"/.test(strip("components/plaid/useManualRefresh.ts")) && !/export function describeRefreshOutcomes/.test(strip("components/plaid/useManualRefresh.ts")));
-  check("the reason is kept between consecutive actions (not cleared on success)", !/setReasonCode\(""\); setReasonNote\(""\)/.test(cs));
+  check("the reason is kept between consecutive actions (not cleared on success)", !/setReasonCode\(""\)|setReasonNote\(""\)/.test(cs.slice(cs.indexOf("async function run("), cs.indexOf("const json ="))));
   // Preview 2026-10-07: a stale tab showed the FIRST round's cooldown outcomes while a
   // new click's request never reached a handler, and the failure text sat at the top
   // of the panel. Both are now impossible to misread.

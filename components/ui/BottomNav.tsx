@@ -89,7 +89,7 @@ export function BottomNav() {
               </span>
               <span
                 className={[
-                  "text-[9px] leading-none transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                  "text-[10px] leading-none transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
                   on ? "text-[var(--text-secondary)]" : "text-[var(--text-muted)]",
                 ].join(" ")}
               >

@@ -38,11 +38,11 @@ export type OperatorReasonInput = { code: OperatorReasonCode; note?: string };
 
 // ── Styles (tokens only) ──────────────────────────────────────────────────────
 
-export const BTN = "flex items-center gap-1 rounded-[var(--radius-sm)] border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:opacity-40";
+export const BTN = "flex min-h-11 items-center justify-center gap-1 rounded-[var(--radius-sm)] border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]";
 export const BTN_QUIET = { background: "color-mix(in srgb, var(--meridian-400) 10%, transparent)", color: "var(--meridian-400)", borderColor: "color-mix(in srgb, var(--meridian-400) 24%, transparent)" };
 export const BTN_PRIMARY = { background: "color-mix(in srgb, var(--brass-300) 14%, transparent)", color: "var(--brass-300)", borderColor: "color-mix(in srgb, var(--brass-300) 30%, transparent)" };
 export const BTN_NEUTRAL = { background: "transparent", color: "var(--text-muted)", borderColor: "var(--border-hairline)" };
-export const FIELD = "rounded-[var(--radius-sm)] border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)]";
+export const FIELD = "min-h-11 min-w-0 max-w-full rounded-[var(--radius-sm)] border bg-transparent px-2 py-1 text-base text-[var(--text-primary)] sm:text-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]";
 
 // ── Notice ────────────────────────────────────────────────────────────────────
 
@@ -73,7 +73,7 @@ export function Notice({ notice }: { notice: PolicyNotice | null }) {
  * exactly. Prop-driven.
  */
 export function CadenceForm({
-  ariaLabel, intent, control, consequences, busy, notice, canSave, canReset, onSave, onReset, onCancel,
+  ariaLabel, intent, control, consequences, busy, notice, canSave, canReset, onSave, onReset, onCancel, dirty,
   saveLabel = "Save", resetLabel = "Reset to default", confirmResetLabel = "Confirm reset", resetText = RESET_TEXT, warning = null,
 }: {
   ariaLabel: string;
@@ -84,6 +84,8 @@ export function CadenceForm({
   notice: PolicyNotice | null;
   /** The value control's own gate (changed + in bounds); the reason gate is added here. */
   canSave: boolean;
+  /** Unsaved input, including an invalid draft that cannot yet be saved. */
+  dirty?: boolean;
   /** Whether an override exists to reset. */
   canReset: boolean;
   onSave: (reason: OperatorReasonInput) => void;
@@ -137,7 +139,10 @@ export function CadenceForm({
             {busy ? <Loader2 size={11} className="animate-spin" aria-hidden /> : <RotateCcw size={11} aria-hidden />} {confirmResetLabel}
           </button>
         )}
-        <button type="button" onClick={armed && intent === "edit" ? () => setArmed(false) : onCancel} disabled={busy} className={BTN} style={BTN_NEUTRAL}>
+        <button type="button" onClick={armed && intent === "edit" ? () => setArmed(false) : () => {
+          if (((dirty ?? canSave) || code !== "" || note !== "") && !window.confirm("Discard unsaved policy changes?")) return;
+          onCancel();
+        }} disabled={busy} className={BTN} style={BTN_NEUTRAL}>
           <X size={11} aria-hidden /> {armed && intent === "edit" ? "Keep editing" : "Cancel"}
         </button>
       </div>

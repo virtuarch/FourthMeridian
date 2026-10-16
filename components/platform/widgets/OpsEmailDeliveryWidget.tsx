@@ -44,7 +44,7 @@ export function OpsEmailDeliveryWidget({ section }: { section: PlatformSection }
             <ul className="-mx-1 divide-y divide-[var(--border-hairline)]">
               {data.recentErrors.map((e) => (
                 <li key={e.id} className="flex items-start justify-between gap-2 px-1 py-1.5">
-                  <span className="min-w-0 truncate text-[11px] text-[var(--text-secondary)]">{e.error}</span>
+                  <span className="min-w-0 break-words text-[11px] text-[var(--text-secondary)]">{e.error}</span>
                   <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{timeAgo(e.at)} ago</span>
                 </li>
               ))}

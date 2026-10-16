@@ -24,7 +24,7 @@ export function GrowthPolicyGroupsWidget({ section }: { section: PlatformSection
       {(loading || error) && <WidgetMessage loading={loading} error={error} />}
       {data && (
         <div className="flex flex-col gap-4">
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid gap-4 sm:grid-cols-3">
             <WidgetStat value={data.policyGroups.reduce((n, g) => n + g.customers, 0)} label="Assigned" />
             <WidgetStat value={data.unassignedCustomers} label="On default (unassigned)" />
             <WidgetStat value={data.unknownAssignments} label="Unknown group" />
@@ -34,13 +34,13 @@ export function GrowthPolicyGroupsWidget({ section }: { section: PlatformSection
             <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Policy Groups</p>
             {data.policyGroups.map((g) => (
               <div key={g.key} className="rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-2.5">
-                <div className="flex items-baseline justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
                   <span className="text-sm font-medium text-[var(--text-primary)]">{g.label} <span className="font-mono text-[11px] text-[var(--text-muted)]">{g.key}</span></span>
                   <span className="text-[11px] tabular-nums text-[var(--text-secondary)]">{g.customers} customer{g.customers === 1 ? "" : "s"}{g.isDefault ? " · default" : ""}</span>
                 </div>
                 <p className="mt-1 text-[11px] leading-snug text-[var(--text-secondary)]">{g.description}</p>
-                <table className="mt-2 w-full text-[11px]">
-                  <thead><tr className="text-left text-[var(--text-muted)]"><th className="font-medium">Dimension</th><th className="font-medium">Plan</th><th className="font-medium">Ceiling</th></tr></thead>
+                <table className="mt-2 w-full table-fixed text-[11px] [&_td]:break-words [&_th]:break-words [&_th]:pr-2 [&_td]:pr-2">
+                  <thead><tr className="text-left text-[var(--text-muted)]"><th scope="col" className="font-medium">Dimension</th><th scope="col" className="font-medium">Plan</th><th scope="col" className="font-medium">Ceiling</th></tr></thead>
                   <tbody>
                     {data.dimensions.map((d) => (
                       <tr key={d.key} className="border-t border-[var(--border-hairline)]">
@@ -60,7 +60,7 @@ export function GrowthPolicyGroupsWidget({ section }: { section: PlatformSection
             <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Overlays (explicit, audited overrides)</p>
             {data.overlays.map((o) => (
               <div key={o.key} className="rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-2.5">
-                <div className="flex items-baseline justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
                   <span className="text-sm font-medium text-[var(--text-primary)]">{o.label} <span className="font-mono text-[11px] text-[var(--text-muted)]">{o.key}</span></span>
                   <span className="text-[11px] tabular-nums text-[var(--text-secondary)]">{o.customers} customer{o.customers === 1 ? "" : "s"}</span>
                 </div>
@@ -75,7 +75,7 @@ export function GrowthPolicyGroupsWidget({ section }: { section: PlatformSection
           <div className="flex flex-col gap-1">
             <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Cohorts (rollout populations — entitle nothing)</p>
             {data.cohorts.map((c) => (
-              <div key={c.key} className="flex items-baseline justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-2.5">
+              <div key={c.key} className="flex min-w-0 flex-wrap items-baseline justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-2.5">
                 <span className="text-sm text-[var(--text-primary)]">{c.label} <span className="font-mono text-[11px] text-[var(--text-muted)]">{c.key}</span> <span className="text-[11px] text-[var(--text-muted)]">· entry {c.entry.toLowerCase()}</span></span>
                 <span className="text-[11px] tabular-nums text-[var(--text-secondary)]">{c.customers} customer{c.customers === 1 ? "" : "s"}</span>
               </div>

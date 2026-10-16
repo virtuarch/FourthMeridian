@@ -1,24 +1,9 @@
-/**
- * components/ai/AiDisclosure.tsx  (advice-boundary slice)
- *
- * The PERSISTENT disclosure: one quiet line under the composer, in both layouts
- * and at every width, that says what every answer here is — AI-generated insight
- * from the user's own data, not professional financial advice — with an "About"
- * disclosure for the longer explanation.
- *
- * ⚠️ ALWAYS PRESENT, NEVER IN THE WAY. It sits below the input, never over the
- * conversation, and the longer text is behind a native <details> (keyboard and
- * screen-reader operable, no state, no script) so it costs one line until asked.
- * The contextual note beside a consequential answer is a different component
- * (GuidanceNote) driven by the answer's label; this line does not change with it.
- *
- * ⚠️ PRODUCT COPY, NOT COUNSEL-APPROVED LANGUAGE. It states facts about the
- * software (AI-generated, can be wrong, not a licensed professional) and makes
- * no claim about Fourth Meridian's legal classification.
- * See docs/systems/ai-financial-guidance-boundary.md.
- *
- * Presentation only.
- */
+"use client";
+
+/** Persistent AI boundary copy; details open in the shared responsive panel. */
+import { useState } from "react";
+import { Panel } from "@/components/atlas/panels/Panel";
+import { PanelHeader, PanelContent } from "@/components/atlas/panels/PanelParts";
 
 export const AI_DISCLOSURE_LINE = "AI-generated insights · Not professional financial advice";
 
@@ -29,16 +14,25 @@ export const AI_DISCLOSURE_ABOUT: readonly string[] = [
 ];
 
 export function AiDisclosure() {
+  const [open, setOpen] = useState(false);
   return (
-    <details data-ai-disclosure className="group text-center">
-      <summary className="mx-auto inline-flex cursor-pointer list-none items-center gap-1.5 rounded px-1 marker:hidden [&::-webkit-details-marker]:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]">
-        <span>{AI_DISCLOSURE_LINE}</span>
-        <span aria-hidden>·</span>
-        <span className="underline decoration-dotted underline-offset-2">About</span>
-      </summary>
-      <div className="mx-auto mt-2 max-w-xl space-y-1 text-left leading-relaxed">
-        {AI_DISCLOSURE_ABOUT.map((s) => <p key={s}>{s}</p>)}
-      </div>
-    </details>
+    <div data-ai-disclosure className="text-center">
+      <button
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen(true)}
+        className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]"
+      >
+        <span>{AI_DISCLOSURE_LINE} <span aria-hidden>· </span><span className="underline decoration-dotted underline-offset-2">About</span></span>
+      </button>
+      <Panel open={open} onClose={() => setOpen(false)} ariaLabel="About Fourth Meridian AI" size="sm">
+        <PanelHeader title="About Fourth Meridian AI" />
+        <PanelContent className="space-y-3 text-left text-sm leading-relaxed text-[var(--text-secondary)]">
+          <p className="font-medium text-[var(--text-primary)]">{AI_DISCLOSURE_LINE}</p>
+          {AI_DISCLOSURE_ABOUT.map((s) => <p key={s}>{s}</p>)}
+        </PanelContent>
+      </Panel>
+    </div>
   );
 }

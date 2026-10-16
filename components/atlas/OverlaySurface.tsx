@@ -62,7 +62,9 @@ import {
   useState,
   useId,
 } from "react";
+import { useVisualViewport } from "./useVisualViewport";
 import { createPortal } from "react-dom";
+import { SheetHandle, useSheetResize } from "./SheetHandle";
 import { X } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
@@ -117,6 +119,8 @@ export interface OverlaySurfaceProps {
    * CreateSpaceModal already does.
    */
   preventClose?: boolean;
+  /** Frontend dismissal protection; successful saves still call the caller directly. */
+  dirty?: boolean;
   /** Backdrop click closes. Default true for dialog/form, false for workspace. */
   closeOnBackdrop?: boolean;
   /** "alertdialog" for destructive confirmations; defaults to "dialog". */
@@ -156,6 +160,7 @@ export function OverlaySurface({
   footer,
   children,
   preventClose = false,
+  dirty = false,
   closeOnBackdrop,
   role = "dialog",
   hideHeader = false,
@@ -168,6 +173,11 @@ export function OverlaySurface({
   const [entered, setEntered] = useState(false);
   const panelRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
+  const sheet = useSheetResize();
+  const viewportStyle = useVisualViewport(open);
+  const requestClose = () => {
+    if (!preventClose && (!dirty || window.confirm("Discard unsaved changes?"))) onClose();
+  };
   const reducedMotion = usePrefersReducedMotion();
   const onKeyDownTrap = useFocusTrap(panelRef);
 
@@ -182,10 +192,10 @@ export function OverlaySurface({
   // Escape (guarded by preventClose), body-scroll lock (nest-safe, preserves
   // window.scrollY), focus capture/restore, and initial focus — the shared,
   // domain-free overlay behaviors (see useOverlayBehavior / useBodyScrollLock).
-  useEscapeKey(open, onClose, preventClose);
+  useEscapeKey(open, requestClose, preventClose);
   useBodyScrollLock(open);
   useReturnFocus(open);
-  useAutoFocus(open, panelRef);
+  useAutoFocus(open && mounted, panelRef);
 
   // Entrance trigger — mount hidden, animate in next frame.
   useEffect(() => {
@@ -230,12 +240,13 @@ export function OverlaySurface({
   // A real foreground tab settles in ~200ms; do not restructure this
   // primitive off of an automation-only repro.
   const panelStyle: CSSProperties = {
+    ...({ "--modal-cap": size === "full" ? "92dvh" : "88dvh" } as CSSProperties),
     opacity: entered ? 1 : 0,
     transform:
       reducedMotion || entered ? "translateY(0)" : "translateY(8px)",
-    transition: reducedMotion
+    transition: sheet.dragging ? "none" : reducedMotion
       ? "opacity var(--dur-fast) var(--ease-enter)"
-      : "opacity var(--dur-base) var(--ease-enter), transform var(--dur-base) var(--ease-enter)",
+      : "opacity var(--dur-base) var(--ease-enter), transform var(--dur-base) var(--ease-enter), height var(--dur-base) var(--ease-standard)",
   };
 
   return createPortal(
@@ -243,6 +254,7 @@ export function OverlaySurface({
       className={`fixed inset-0 flex ${overlayAlign} p-0 sm:p-4`}
       style={{
         zIndex: zIndex ?? ("var(--z-modal)" as unknown as number),
+        ...viewportStyle,
         background: "var(--scrim)",
         backdropFilter: "blur(8px)",
         WebkitBackdropFilter: "blur(8px)",
@@ -250,7 +262,7 @@ export function OverlaySurface({
         transition: "opacity var(--dur-fast) var(--ease-enter)",
       }}
       onClick={(e) => {
-        if (e.target === e.currentTarget && backdropCloses && !preventClose) onClose();
+        if (e.target === e.currentTarget && backdropCloses && !preventClose) requestClose();
       }}
     >
       <GlassPanel
@@ -265,8 +277,9 @@ export function OverlaySurface({
         radius="xl"
         glow={glow}
         onKeyDown={onKeyDownTrap}
-        className={`w-full ${WIDTH_CLASS[size]} ${mobileHeight} ${desktopHeight} flex flex-col focus:outline-none ${className}`}
-        style={panelStyle}
+        className={`atlas-sheet-frame atlas-modal-frame w-full ${WIDTH_CLASS[size]} ${mobileHeight} ${desktopHeight} flex flex-col focus:outline-none ${className}`}
+        data-sheet-dragging={sheet.dragging}
+        style={{ ...panelStyle, ...sheet.style }}
       >
         {/* SCROLL-1 fix (doctrine §8.10 / §13): carry the dvh-based height cap
             on THIS inner flex container rather than relying on `h-full`.
@@ -277,9 +290,10 @@ export function OverlaySurface({
             modals like CreateSpace clipped instead of scrolling). The
             viewport-relative caps are definite, so the body now has a real
             height to overflow. Panel classes are unchanged. */}
-        <div className={`min-h-0 flex flex-col p-5 ${mobileHeight} ${desktopHeight}`}>
+        <div data-sheet-dragging={sheet.dragging} className={`atlas-sheet-content atlas-modal-content min-h-0 flex flex-col p-5 ${mobileHeight} ${desktopHeight}`} style={sheet.style}>
+          <SheetHandle {...sheet.handle} />
           {!hideHeader && (
-            <div className="flex items-center justify-between gap-3 shrink-0">
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 shrink-0 sm:flex sm:justify-between">
               <div className="flex items-center gap-2.5 min-w-0">
                 {Icon && (
                   <div className="w-8 h-8 rounded-[var(--radius-sm)] bg-[var(--surface-muted)] border border-[var(--border-hairline)] flex items-center justify-center shrink-0">
@@ -289,26 +303,26 @@ export function OverlaySurface({
                 <div className="min-w-0">
                   <p
                     id={titleId}
-                    className="text-sm font-semibold text-[var(--text-primary)] truncate"
+                    className="text-sm font-semibold text-[var(--text-primary)] break-words"
                   >
                     {title}
                   </p>
                   {subtitle && (
-                    <p className="text-xs text-[var(--text-muted)] truncate">{subtitle}</p>
+                    <p className="text-xs text-[var(--text-muted)] break-words">{subtitle}</p>
                   )}
                 </div>
               </div>
               {/* Right cluster: optional headerRight control + close button.
                   With no headerRight the cluster wraps only the close button,
                   so output is identical to the pre-headerRight header. */}
-              <div className="flex items-center gap-2 shrink-0">
-                {headerRight}
+              <div className="contents sm:flex sm:items-center sm:gap-2 sm:shrink-0">
+                {headerRight && <div className="col-span-2 row-start-2 min-w-0 sm:w-auto">{headerRight}</div>}
                 {!hideClose && (
                   <button
                     type="button"
-                    onClick={onClose}
+                    onClick={requestClose}
                     aria-label="Close"
-                    className="w-8 h-8 flex items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
+                    className="col-start-2 row-start-1 w-11 h-11 flex items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
                   >
                     <X size={16} />
                   </button>
@@ -323,7 +337,7 @@ export function OverlaySurface({
           {toolbar && <div className="shrink-0 mt-3">{toolbar}</div>}
 
           {/* Body — the only scrolling region. */}
-          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden mt-4 -mx-1 px-1">
+          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain overflow-x-hidden mt-4 -mx-1 px-1">
             {children}
           </div>
 

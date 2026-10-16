@@ -5,7 +5,7 @@
  *
  * THE FOUR POLICY CARDS over GET/PATCH /api/platform/platform-ops/ai-cost-controls
  * (the frozen read model in lib/platform/ai/cost-controls.types.ts), rendered
- * inside the Policies SectionSurface in place of the retired read-only "Cost
+ * alongside the Policies surface in place of the retired read-only "Cost
  * safeguards" group — the thresholds live here now and nowhere else:
  *
  *   Per-user daily AI allowance    enforcement + USD amount · ceiling · the effective
@@ -16,9 +16,8 @@
  *   Pause paid AI requests         THE EMERGENCY CONTROL — its own state word, the sentence
  *                                  customers read, two-step confirmation in BOTH directions
  *
- * ONE grammar per control: the value in force with its origin chip (Default ·
- * Setting · Default in force — stored value invalid), a Default · Setting · Max
- * legend, a Provenance chip naming when and by whom the row was written.
+ * Each card leads with its effective value, status and authorized actions.
+ * Fixed ceilings are read-only; all edits retain version checks and audit reasons.
  *
  * ── THE EDITOR ────────────────────────────────────────────────────────────────
  * For an operator whose resolved access permits it (`editable` — the host
@@ -45,15 +44,15 @@
 import { useState, type ReactNode } from "react";
 import { AlertTriangle, Loader2, Pause, Pencil, Play, RotateCcw } from "lucide-react";
 import type { SharedFetchState } from "../workspace-session";
-import { GroupLabel, KeyRow, PolicyChip, Provenance, TONE_COLOR, ToneBadge } from "../platform-surface";
+import { KeyRow, PolicyChip, Provenance, TONE_COLOR, ToneBadge } from "../platform-surface";
 import { LOADING_TEXT, unavailableText } from "./platform-health-view";
 import { AI_COST_CONTROLS_URL, type AiCostControlKey, type AiCostControlsReadModel, type ControlValueView } from "@/lib/platform/ai/cost-controls.types";
 import { BTN, BTN_NEUTRAL, BTN_PRIMARY, BTN_QUIET, CadenceForm, FIELD, Notice, formatUtc, mutate, useSettle, type OperatorReasonInput, type PolicyNotice } from "./policy-editor-kit";
 import {
-  AI_COST_CONTROLS_SENTENCE, AI_COST_CONTROLS_SUBJECT, AI_COST_CONTROLS_TITLE, BOOL_WORDS, CARD_CONTROLS, CARD_DESCRIPTION, CARD_TITLE,
-  EMERGENCY_LABEL, FLEET_SCOPE_SENTENCE, KILL_SWITCH_NOTE, OVERRIDES_DOORWAY, RESTORED_TEXT, RESTORE_TEXT, SAVED_TEXT,
-  cardConsequences, confirmLabel, confirmationSentences, controlLegend, controlProvenance, draftFromModel, effectiveDefaultText, enforcedWord,
-  firingText, lastUpdatedText, modelView, originChip, overridesSentence, patchBody, pausedWord, propagationText, resolveDraft,
+  AI_COST_CONTROLS_SUBJECT, AI_COST_CONTROLS_TITLE, BOOL_WORDS, CARD_CONTROLS, CARD_TITLE,
+  EMERGENCY_LABEL, RESTORED_TEXT, RESTORE_TEXT, SAVED_TEXT,
+  cardConsequences, confirmLabel, confirmationSentences, controlLegend, controlProvenance, draftFromModel, enforcedWord,
+  firingText, lastUpdatedText, modelView, originChip, patchBody, resolveDraft,
   restoreDefaultsChanges, stateWord, usdText, valueText, validateThresholdInput, type AnyControlView, type CardKey, type ControlDraft,
 } from "./ai-cost-controls-view";
 
@@ -89,11 +88,11 @@ export function ControlFacts({ view }: { view: AnyControlView }) {
 
 // ── The editor (prop-driven) ──────────────────────────────────────────────────
 
-function ControlToggle({ view, value, busy, onChange }: { view: ControlValueView<boolean>; value: boolean; busy: boolean; onChange: (v: boolean) => void }) {
+function ControlToggle({ view, value, busy, onChange, label = view.label }: { label?: string; view: ControlValueView<boolean>; value: boolean; busy: boolean; onChange: (v: boolean) => void }) {
   const words = BOOL_WORDS[view.control] ?? ["on", "off"];
   return (
-    <div className="flex flex-col gap-1.5" role="group" aria-label={view.label}>
-      <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{view.label}</span>
+    <div className="flex flex-col gap-1.5" role="group" aria-label={label}>
+      <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{label}</span>
       <div className="flex flex-wrap gap-2">
         {([true, false] as const).map((v) => (
           <button key={String(v)} type="button" onClick={() => onChange(v)} disabled={busy} aria-pressed={value === v}
@@ -176,6 +175,7 @@ export function CardEditor({
       busy={busy}
       notice={notice}
       canSave={changes.length > 0 && Object.keys(errors).length === 0}
+      dirty={Object.entries(draft).some(([key, value]) => draftFromModel(model, card)[key as AiCostControlKey] !== value)}
       canReset={restore.length > 0}
       saveLabel={saveLabel}
       resetLabel="Restore defaults"
@@ -222,50 +222,73 @@ function useCard(card: CardKey, model: AiCostControlsReadModel, onModel: (m: AiC
   return { mode, draft, armed, notice, busy, open, onDraft, save, restore, cancel: () => { close(); setNotice(null); } };
 }
 
-function Affordances({ notice, edit, restore }: { notice: PolicyNotice | null; edit: { label: string; icon: ReactNode; onClick: () => void } | null; restore: (() => void) | null }) {
-  if (!edit && !restore) return notice ? <Notice notice={notice} /> : null;
+const DISPLAY_TITLE: Record<CardKey, string> = {
+  allowance: "Daily allowance",
+  userAlert: "Per-customer spending alert",
+  fleetAlert: "Fleet-wide spending alert",
+  killSwitch: "Emergency AI pause",
+};
+
+function CardShell({ card, state, children, control, primary, caption, signal }: { card: CardKey; state: { word: string; tone: "ok" | "warn" | "bad" | "muted" }; children: ReactNode; control: ReactNode; primary: ReactNode; caption: string; signal?: ReactNode }) {
   return (
-    <div className="flex flex-col gap-2">
-      <Notice notice={notice} />
-      <div className="flex flex-wrap items-center gap-2">
-        {edit && (
-          <button type="button" onClick={edit.onClick} className={BTN} style={BTN_QUIET}>{edit.icon} {edit.label}</button>
-        )}
-        {restore && (
-          <button type="button" onClick={restore} className={BTN} style={BTN_NEUTRAL}><RotateCcw size={11} aria-hidden /> Restore defaults</button>
-        )}
+    <section className="flex min-w-0 flex-col rounded-2xl border border-[var(--border-hairline-strong)] bg-[var(--surface-muted)] p-5 sm:p-6" aria-label={CARD_TITLE[card]}>
+      <div className="flex min-w-0 flex-col items-start gap-2">
+        <h3 className="break-words text-sm font-semibold leading-6 text-[var(--text-primary)]">{DISPLAY_TITLE[card]}</h3>
+        <div className="flex flex-wrap items-center gap-2"><ToneBadge word={state.word} tone={state.tone} />{signal}</div>
       </div>
-    </div>
+      <div className="my-4 min-w-0">
+        <p className="break-words text-3xl font-semibold leading-tight tracking-tight tabular-nums text-[var(--text-primary)]">{primary}</p>
+        <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">{caption}</p>
+      </div>
+      <div className="mb-4 flex min-w-0 flex-col gap-3">{children}</div>
+      <div className="mt-auto border-t border-[var(--border-hairline)] pt-4">{control}</div>
+    </section>
   );
 }
 
-function CardShell({ card, state, children, control }: { card: CardKey; state: { word: string; tone: "ok" | "warn" | "bad" | "muted" }; children: ReactNode; control: ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-col gap-4" role="group" aria-label={CARD_TITLE[card]}>
-      <div className="flex flex-col gap-1.5">
-        <GroupLabel hint={CARD_DESCRIPTION[card]}>{CARD_TITLE[card]}</GroupLabel>
-        <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{CARD_DESCRIPTION[card]}</p>
-        <ToneBadge word={state.word} tone={state.tone} />
-      </div>
-      {children}
-      {control}
-    </div>
-  );
+function PolicySetting({ label, value }: { label: string; value: ReactNode }) {
+  return <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs">
+    <span className="text-[var(--text-muted)]">{label}</span>
+    <span className="min-w-0 max-w-full break-words text-[var(--text-primary)]">{value}</span>
+  </div>;
+}
+
+function InvalidSettingNotice({ views }: { views: AnyControlView[] }) {
+  return views.some((view) => view.origin === "INVALID_SETTING")
+    ? <p className="text-xs leading-5" style={{ color: TONE_COLOR.warn }} role="alert">A stored setting is invalid. Its default is in effect.</p>
+    : null;
 }
 
 /** One of the three ordinary cards (allowance, per-user alert, fleet alert). The facts are the caller's; the editor is shared. */
-function PolicyCard({ card, model, editable, onModel, state, children }: {
+function PolicyCard({ card, model, editable, onModel, state, children, primary, caption, signal }: {
   card: CardKey; model: AiCostControlsReadModel; editable: boolean; onModel: (m: AiCostControlsReadModel) => void;
-  state: { word: string; tone: "ok" | "warn" | "bad" | "muted" }; children: ReactNode;
+  state: { word: string; tone: "ok" | "warn" | "bad" | "muted" }; children: ReactNode; primary: ReactNode; caption: string; signal?: ReactNode;
 }) {
   const c = useCard(card, model, onModel);
-  const offerRestore = editable && restoreDefaultsChanges(model, card).length > 0;
+  const offerRestore = restoreDefaultsChanges(model, card).length > 0;
   const control = c.mode !== "view"
     ? <CardEditor key={c.mode} card={card} model={model} draft={c.draft} armed={c.armed} intent={c.mode} busy={c.busy} notice={c.notice} onDraft={c.onDraft} onSave={c.save} onReset={c.restore} onCancel={c.cancel} />
-    : <Affordances notice={c.notice}
-        edit={editable ? { label: "Edit", icon: <Pencil size={11} aria-hidden />, onClick: () => c.open("edit") } : null}
-        restore={offerRestore ? () => c.open("reset") : null} />;
-  return <CardShell card={card} state={state} control={control}>{children}</CardShell>;
+    : <div className="flex flex-col gap-3">
+        <Notice notice={c.notice} />
+        {card !== "killSwitch" && <ControlToggle
+          label={card === "allowance" ? "Enforcement" : "Alert"}
+          view={card === "allowance" ? model.allowance.enforced : model[card].enabled}
+          value={card === "allowance" ? model.allowance.enforced.value : model[card].enabled.value}
+          busy={!editable}
+          onChange={(value) => c.open("edit", { ...draftFromModel(model, card), [card === "allowance" ? "allowance.enforced" : `${card}.enabled`]: value })}
+        />}
+        <div className="flex flex-wrap gap-2">
+          <button type="button" disabled={!editable} onClick={() => c.open("edit")} className={BTN} style={BTN_QUIET}>
+            <Pencil size={12} aria-hidden /> {card === "allowance" ? "Custom" : "Edit"}
+          </button>
+          <button type="button" disabled={!editable || !offerRestore} onClick={() => c.open("reset")} className={BTN} style={BTN_NEUTRAL}>
+            <RotateCcw size={12} aria-hidden /> Revert
+          </button>
+        </div>
+        {!editable && <p className="text-xs text-[var(--text-muted)]">Read only · Control access required</p>}
+        {editable && !offerRestore && <p className="text-xs text-[var(--text-muted)]">Default configuration in use</p>}
+      </div>;
+  return <CardShell card={card} state={state} control={control} primary={primary} caption={caption} signal={signal}>{children}</CardShell>;
 }
 
 // ── The four cards ────────────────────────────────────────────────────────────
@@ -273,27 +296,12 @@ function PolicyCard({ card, model, editable, onModel, state, children }: {
 function AllowanceCard({ model, editable, onModel }: { model: AiCostControlsReadModel; editable: boolean; onModel: (m: AiCostControlsReadModel) => void }) {
   const a = model.allowance;
   return (
-    <PolicyCard card="allowance" model={model} editable={editable} onModel={onModel} state={enforcedWord(a.enforced.value)}>
-      <ControlFacts view={a.enforced} />
-      <ControlFacts view={a.usd} />
-      <div className="flex flex-col gap-1.5">
-        <KeyRow label="Ceiling" value={usdText(a.ceilingUsd)} />
-        <KeyRow label="Effective default" value={usdText(a.effectiveDefaultUsd)} />
-        <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{effectiveDefaultText(a)}</p>
-        <KeyRow label="Per-customer overrides" value={String(a.overrides.count)} />
-        {a.overrides.customers.length > 0 && (
-          <ul className="flex flex-col gap-0.5" aria-label="Per-customer overrides">
-            {a.overrides.customers.map((o) => (
-              <li key={o.ref} className="flex flex-wrap items-baseline justify-between gap-x-3 text-[11px] text-[var(--text-secondary)]">
-                <span className="font-mono text-[10px] text-[var(--text-primary)]">{o.ref}</span>
-                <span className="tabular-nums">{usdText(o.usd)} per UTC day · set {formatUtc(o.updatedAt)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">{overridesSentence(a.overrides.count)} {OVERRIDES_DOORWAY}</p>
-        <p className="text-[11px] leading-relaxed text-[var(--text-muted)]" role="note">{a.enforcementNote}</p>
-      </div>
+    <PolicyCard card="allowance" model={model} editable={editable} onModel={onModel} state={enforcedWord(a.enforced.value)} primary={usdText(a.effectiveDefaultUsd)} caption="Effective default per customer · UTC day">
+      <PolicySetting label="Default" value={usdText(a.usd.defaultValue)} />
+      <PolicySetting label="Configured allowance" value={usdText(a.usd.value)} />
+      <PolicySetting label="Max spend" value={`${usdText(a.ceilingUsd)} / UTC day · fixed ceiling`} />
+      <InvalidSettingNotice views={[a.enforced, a.usd]} />
+      <p className="text-xs leading-5 text-[var(--text-muted)]">Per-customer overrides are managed in Customer Success.</p>
     </PolicyCard>
   );
 }
@@ -302,26 +310,10 @@ function AlertCard({ card, model, editable, onModel }: { card: "userAlert" | "fl
   const v = model[card];
   const firing = firingText(v.status, formatUtc);
   return (
-    <PolicyCard card={card} model={model} editable={editable} onModel={onModel} state={stateWord(v.enabled.value)}>
-      <ControlFacts view={v.enabled} />
-      <ControlFacts view={v.thresholdUsd} />
-      <div className="flex flex-col gap-1.5">
-        <KeyRow label="Rule" value={<span className="font-mono text-[10px]">{v.ruleId}</span>} />
-        <KeyRow label="Status" value={<ToneBadge word={firing.word} tone={firing.tone} />} />
-        {v.status.recent.length === 0 ? (
-          <p className="text-[11px] text-[var(--text-muted)]" role="status">No recent triggers in the retained evaluation runs.</p>
-        ) : (
-          <ul className="flex flex-col gap-0.5" aria-label="Recent triggers">
-            {v.status.recent.map((t, i) => (
-              <li key={`${t.dedupeKey}:${i}`} className="flex flex-wrap items-baseline justify-between gap-x-3 text-[11px] text-[var(--text-secondary)]">
-                <span className="min-w-0"><ToneBadge word={t.severity} tone={t.severity === "critical" ? "bad" : "warn"} /> {t.summary}</span>
-                <span className="shrink-0 tabular-nums text-[var(--text-muted)]">delivered {formatUtc(t.at)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {card === "fleetAlert" && <p className="text-[11px] leading-relaxed text-[var(--text-muted)]" role="note">{FLEET_SCOPE_SENTENCE}</p>}
-      </div>
+    <PolicyCard card={card} model={model} editable={editable} onModel={onModel} state={stateWord(v.enabled.value)} signal={v.status.firingNow ? <ToneBadge word={firing.word} tone={firing.tone} /> : null} primary={usdText(v.thresholdUsd.value)} caption={card === "userAlert" ? "Estimated spend per customer · trailing 24h" : "Estimated fleet spend · trailing 24h"}>
+      <PolicySetting label="Default" value={usdText(v.thresholdUsd.defaultValue)} />
+      <PolicySetting label="Last activity" value={firing.word} />
+      <InvalidSettingNotice views={[v.enabled, v.thresholdUsd]} />
     </PolicyCard>
   );
 }
@@ -335,22 +327,18 @@ function KillSwitchCard({ model, editable, onModel }: { model: AiCostControlsRea
   // The flip is drafted and ARMED at open: opening is step one, Confirm pause / Confirm resume with the reason is step two.
   const control = c.mode !== "view"
     ? <CardEditor key={c.mode} card="killSwitch" model={model} draft={c.draft} armed={c.armed} intent={c.mode} busy={c.busy} notice={c.notice} onDraft={c.onDraft} onSave={c.save} onReset={c.restore} onCancel={c.cancel} />
-    : <Affordances notice={c.notice}
-        edit={editable ? {
-          label: paused ? "Resume paid requests" : "Pause paid requests",
-          icon: paused ? <Play size={11} aria-hidden /> : <Pause size={11} aria-hidden />,
-          onClick: () => c.open("edit", { "killSwitch.paused": !paused }, true),
-        } : null}
-        restore={null} />;
+    : <div className="flex flex-col items-start gap-3">
+        <Notice notice={c.notice} />
+        <button type="button" disabled={!editable} onClick={() => c.open("edit", { "killSwitch.paused": !paused }, true)} className={BTN} style={BTN_PRIMARY}>
+          {paused ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />} {paused ? "Resume AI" : "Pause AI"}
+        </button>
+        {!editable && <p className="text-xs text-[var(--text-muted)]">Read only · Control access required</p>}
+      </div>;
   return (
-    <div className="flex flex-col gap-2 border-t pt-6" style={{ borderColor: "var(--border-hairline-strong)" }} role="region" aria-label={EMERGENCY_LABEL}>
+    <div className="flex flex-col gap-3" style={{ borderColor: "var(--border-hairline-strong)" }} role="region" aria-label={EMERGENCY_LABEL}>
       <span className="text-[10px] font-medium uppercase tracking-wide" style={{ color: "var(--brass-300)" }}>{EMERGENCY_LABEL}</span>
-      <CardShell card="killSwitch" state={pausedWord(paused)} control={control}>
-        <ControlFacts view={k.paused} />
-        <div className="flex flex-col gap-1.5">
-          <KeyRow label="Customers read while paused" value={<q>{k.customerMessage}</q>} />
-          <p className="text-[11px] leading-relaxed text-[var(--text-muted)]" role="note">{KILL_SWITCH_NOTE}</p>
-        </div>
+      <CardShell card="killSwitch" state={{ word: paused ? "PAUSED" : "ACTIVE", tone: paused ? "warn" : "ok" }} control={control} primary={paused ? "Paused" : "Active"} caption="Controls new paid AI requests across all surfaces.">
+        <InvalidSettingNotice views={[k.paused]} />
       </CardShell>
     </div>
   );
@@ -358,7 +346,7 @@ function KillSwitchCard({ model, editable, onModel }: { model: AiCostControlsRea
 
 // ── The panel ─────────────────────────────────────────────────────────────────
 
-/** Prop-driven and fetch-free: the host passes the shared read and the publish side. `editable` only decides whether affordances RENDER. */
+/** Prop-driven and fetch-free: the host passes the shared read and the publish side. `editable` disables affordances without granting authority. */
 export function AiCostControlsPanel({ state, editable = false, onModel = () => {} }: {
   state: SharedFetchState<AiCostControlsReadModel>;
   editable?: boolean;
@@ -368,8 +356,8 @@ export function AiCostControlsPanel({ state, editable = false, onModel = () => {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-1.5">
-        <GroupLabel hint={AI_COST_CONTROLS_SENTENCE}>{AI_COST_CONTROLS_TITLE}</GroupLabel>
-        <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{AI_COST_CONTROLS_SENTENCE}</p>
+        <h2 className="text-lg font-semibold text-[var(--text-primary)]">{AI_COST_CONTROLS_TITLE}</h2>
+
       </div>
       {state.loading ? (
         <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]" role="status"><Loader2 size={12} className="animate-spin" aria-hidden /> {LOADING_TEXT}</p>
@@ -377,8 +365,8 @@ export function AiCostControlsPanel({ state, editable = false, onModel = () => {
         <p className="flex items-start gap-1.5 text-xs" style={{ color: TONE_COLOR.bad }} role="alert"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden /><span>{unavailableText(AI_COST_CONTROLS_SUBJECT)}</span></p>
       ) : (
         <>
-          <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">{propagationText(data.propagation)} · checked {formatUtc(data.checkedAt)}</p>
-          <div className="grid gap-8 md:grid-cols-3">
+
+          <div className="grid items-stretch gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr))" }}>
             <AllowanceCard model={data} editable={editable} onModel={onModel} />
             <AlertCard card="userAlert" model={data} editable={editable} onModel={onModel} />
             <AlertCard card="fleetAlert" model={data} editable={editable} onModel={onModel} />

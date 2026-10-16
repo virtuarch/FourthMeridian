@@ -1,0 +1,264 @@
+
+> fourth-meridian@2.6.0 build
+> prisma generate && next build
+
+Prisma schema loaded from prisma/schema.prisma
+
+✔ Generated Prisma Client (v5.22.0) to ./node_modules/@prisma/client in 9.25s
+
+Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+
+Tip: Want to react to database changes in your app as they happen? Discover how with Pulse: https://pris.ly/tip-1-pulse
+
+▲ Next.js 16.2.7 (Turbopack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 106s
+  Running TypeScript ...
+  Finished TypeScript in 98s ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/152) ...
+  Generating static pages using 7 workers (38/152)
+  Generating static pages using 7 workers (76/152)
+  Generating static pages using 7 workers (114/152)
+[sctx 1-v2a1] ENTER getSpaceContext
+[sctx 2-mhby] ENTER getSpaceContext
+[sctx 3-c0dd] ENTER getSpaceContext
+✓ Generating static pages using 7 workers (152/152) in 1713ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /about
+├ ƒ /admin
+├ ƒ /admin/audit
+├ ƒ /admin/platform-access
+├ ƒ /admin/providers
+├ ƒ /admin/security
+├ ƒ /admin/spaces
+├ ƒ /admin/users
+├ ƒ /admin/workspaces
+├ ƒ /api/access-request
+├ ƒ /api/accounts
+├ ƒ /api/accounts/[id]
+├ ƒ /api/accounts/[id]/debt-profile
+├ ƒ /api/accounts/[id]/import
+├ ƒ /api/accounts/[id]/import/investments
+├ ƒ /api/accounts/[id]/import/investments/preview
+├ ƒ /api/accounts/[id]/import/preview
+├ ƒ /api/accounts/[id]/restore
+├ ƒ /api/accounts/[id]/sync
+├ ƒ /api/accounts/[id]/transactions
+├ ƒ /api/accounts/manual
+├ ƒ /api/accounts/manual/[id]
+├ ƒ /api/accounts/manual/[id]/permanent
+├ ƒ /api/accounts/manual/[id]/restore
+├ ƒ /api/accounts/manual/[id]/valuations
+├ ƒ /api/accounts/wallet
+├ ƒ /api/admin/audit
+├ ƒ /api/admin/plaid/diagnostics
+├ ƒ /api/admin/plaid/exchange-expanded-history-token
+├ ƒ /api/admin/plaid/expand-history-token
+├ ƒ /api/admin/plaid/retire-superseded-item
+├ ƒ /api/admin/platform-grants
+├ ƒ /api/admin/platform-grants/[grantId]
+├ ƒ /api/admin/security/admin-status
+├ ƒ /api/admin/security/settings
+├ ƒ /api/admin/security/users
+├ ƒ /api/admin/security/users/[userId]/2fa-reset
+├ ƒ /api/admin/security/users/[userId]/recovery-codes
+├ ƒ /api/admin/security/users/[userId]/sessions
+├ ƒ /api/admin/spaces
+├ ƒ /api/admin/users
+├ ƒ /api/ai/chat
+├ ƒ /api/ai/memory
+├ ƒ /api/ai/memory/[id]
+├ ƒ /api/auth/[...nextauth]
+├ ƒ /api/auth/forgot-password
+├ ƒ /api/auth/pre-login
+├ ƒ /api/auth/register
+├ ƒ /api/auth/reset-password
+├ ƒ /api/auth/verify-email
+├ ƒ /api/auth/verify-email/resend
+├ ƒ /api/brief
+├ ƒ /api/brief/generate
+├ ƒ /api/connections/[id]/disconnect
+├ ƒ /api/connections/[id]/import-accounts
+├ ƒ /api/connections/[id]/import-history
+├ ƒ /api/connections/build-intelligence
+├ ƒ /api/credit/update-fico
+├ ƒ /api/health
+├ ƒ /api/imports/[id]/rollback
+├ ƒ /api/investments/opening-position
+├ ƒ /api/jobs/dispatch
+├ ƒ /api/jobs/fetch-fx-rates
+├ ƒ /api/jobs/fetch-security-prices
+├ ƒ /api/jobs/process-deletions
+├ ƒ /api/jobs/resume-stale-imports
+├ ƒ /api/jobs/sync-banks
+├ ƒ /api/merchant-ops/decide
+├ ƒ /api/money/view-context
+├ ƒ /api/notifications
+├ ƒ /api/notifications/[id]/read
+├ ƒ /api/notifications/read-all
+├ ƒ /api/notifications/unread-count
+├ ƒ /api/plaid/exchange-token
+├ ƒ /api/plaid/investments/enable
+├ ƒ /api/plaid/link-token
+├ ƒ /api/plaid/refresh
+├ ƒ /api/plaid/resume-sync
+├ ƒ /api/plaid/sync
+├ ƒ /api/plaid/webhook
+├ ƒ /api/platform/customer-success/connection-owners
+├ ƒ /api/platform/customer-success/customers
+├ ƒ /api/platform/customer-success/customers/[userId]
+├ ƒ /api/platform/customer-success/customers/[userId]/cohort
+├ ƒ /api/platform/customer-success/customers/[userId]/policy
+├ ƒ /api/platform/customer-success/customers/[userId]/refresh
+├ ƒ /api/platform/customer-success/sync-issues
+├ ƒ /api/platform/growth-revenue/activity
+├ ƒ /api/platform/growth-revenue/beta-status
+├ ƒ /api/platform/growth-revenue/growth
+├ ƒ /api/platform/growth-revenue/invitations
+├ ƒ /api/platform/growth-revenue/policy-groups
+├ ƒ /api/platform/growth-revenue/product-analytics
+├ ƒ /api/platform/growth-revenue/product-status
+├ ƒ /api/platform/growth-revenue/registration-mode
+├ ƒ /api/platform/growth-revenue/requests
+├ ƒ /api/platform/growth-revenue/requests/[id]/approve
+├ ƒ /api/platform/growth-revenue/requests/[id]/deny
+├ ƒ /api/platform/growth-revenue/requests/[id]/resend
+├ ƒ /api/platform/growth-revenue/requests/[id]/revoke
+├ ƒ /api/platform/growth-revenue/signups
+├ ƒ /api/platform/growth-revenue/users
+├ ƒ /api/platform/growth-revenue/users/[userId]
+├ ƒ /api/platform/platform-ops/activity
+├ ƒ /api/platform/platform-ops/ai-budget
+├ ƒ /api/platform/platform-ops/ai-cost-controls
+├ ƒ /api/platform/platform-ops/ai-invocations
+├ ƒ /api/platform/platform-ops/ai-spend
+├ ƒ /api/platform/platform-ops/ai-usage-trend
+├ ƒ /api/platform/platform-ops/alerts
+├ ƒ /api/platform/platform-ops/api-usage
+├ ƒ /api/platform/platform-ops/attention
+├ ƒ /api/platform/platform-ops/brief-ops
+├ ƒ /api/platform/platform-ops/connection-diagnostics
+├ ƒ /api/platform/platform-ops/connection-health
+├ ƒ /api/platform/platform-ops/connections/[id]/request-reauth
+├ ƒ /api/platform/platform-ops/connections/[id]/resync
+├ ƒ /api/platform/platform-ops/convergence
+├ ƒ /api/platform/platform-ops/cost
+├ ƒ /api/platform/platform-ops/db-authority
+├ ƒ /api/platform/platform-ops/email-health
+├ ƒ /api/platform/platform-ops/env-status
+├ ƒ /api/platform/platform-ops/history
+├ ƒ /api/platform/platform-ops/job-cadence
+├ ƒ /api/platform/platform-ops/job-health
+├ ƒ /api/platform/platform-ops/operations
+├ ƒ /api/platform/platform-ops/overview
+├ ƒ /api/platform/platform-ops/plaid-usage
+├ ƒ /api/platform/platform-ops/policies
+├ ƒ /api/platform/platform-ops/provider-cleanup
+├ ƒ /api/platform/platform-ops/provider-health
+├ ƒ /api/platform/platform-ops/rate-limits
+├ ƒ /api/platform/platform-ops/refresh/coverage
+├ ƒ /api/platform/platform-ops/refresh/daily
+├ ƒ /api/platform/platform-ops/refresh/executions
+├ ƒ /api/platform/platform-ops/refresh/executions/[id]
+├ ƒ /api/platform/platform-ops/refresh/executions/[id]/timeline
+├ ƒ /api/platform/platform-ops/refresh/provider-operations
+├ ƒ /api/platform/platform-ops/refresh/summary
+├ ƒ /api/platform/platform-ops/resource-freshness
+├ ƒ /api/platform/platform-ops/scheduler
+├ ƒ /api/platform/security-ops/anomalies
+├ ƒ /api/platform/security-ops/audit
+├ ƒ /api/platform/security-ops/auth-posture
+├ ƒ /api/platform/security-ops/operator-actions
+├ ƒ /api/platform/security-ops/sessions
+├ ƒ /api/refresh/all
+├ ƒ /api/registration-policy
+├ ƒ /api/space/switch
+├ ƒ /api/spaces
+├ ƒ /api/spaces/[id]
+├ ƒ /api/spaces/[id]/accounts
+├ ƒ /api/spaces/[id]/accounts/detail
+├ ƒ /api/spaces/[id]/accounts/share
+├ ƒ /api/spaces/[id]/activity
+├ ƒ /api/spaces/[id]/debt/space-data
+├ ƒ /api/spaces/[id]/expense-baseline
+├ ƒ /api/spaces/[id]/history/node
+├ ƒ /api/spaces/[id]/investments
+├ ƒ /api/spaces/[id]/investments/space-data
+├ ƒ /api/spaces/[id]/invite
+├ ƒ /api/spaces/[id]/invites
+├ ƒ /api/spaces/[id]/invites/[inviteId]
+├ ƒ /api/spaces/[id]/liquidity/space-data
+├ ƒ /api/spaces/[id]/members/[userId]
+├ ƒ /api/spaces/[id]/permanent
+├ ƒ /api/spaces/[id]/perspectives
+├ ƒ /api/spaces/[id]/restore
+├ ƒ /api/spaces/[id]/sections
+├ ƒ /api/spaces/[id]/sections/[sectionId]
+├ ƒ /api/spaces/[id]/snapshots
+├ ƒ /api/spaces/[id]/transactions
+├ ƒ /api/spaces/[id]/transactions/query
+├ ƒ /api/spaces/[id]/wealth/amend
+├ ƒ /api/spaces/invites/pending
+├ ƒ /api/spaces/invites/seen
+├ ƒ /api/sync/status
+├ ƒ /api/transactions/[id]
+├ ƒ /api/transactions/[id]/correct
+├ ƒ /api/user/deactivate
+├ ƒ /api/user/delete
+├ ƒ /api/user/email/confirm
+├ ƒ /api/user/email/request
+├ ƒ /api/user/export
+├ ƒ /api/user/notification-preferences
+├ ƒ /api/user/password
+├ ƒ /api/user/profile
+├ ƒ /api/user/security-history
+├ ƒ /api/user/sessions
+├ ƒ /api/user/sessions/[sessionId]
+├ ƒ /api/user/totp/disable
+├ ƒ /api/user/totp/recovery-codes
+├ ƒ /api/user/totp/setup
+├ ƒ /api/user/totp/status
+├ ƒ /api/user/totp/verify
+├ ƒ /api/users/search
+├ ○ /confirm-email-change
+├ ƒ /dashboard
+├ ƒ /dashboard/analyze
+├ ƒ /dashboard/brief
+├ ƒ /dashboard/connections
+├ ƒ /dashboard/credit
+├ ƒ /dashboard/platform
+├ ƒ /dashboard/platform/[area]
+├ ƒ /dashboard/settings
+├ ƒ /dashboard/settings/account
+├ ƒ /dashboard/settings/archived-assets
+├ ƒ /dashboard/settings/data
+├ ƒ /dashboard/settings/notifications
+├ ƒ /dashboard/settings/preferences
+├ ƒ /dashboard/settings/security
+├ ƒ /dashboard/spaces
+├ ƒ /dashboard/workspaces
+├ ○ /forgot-password
+├ ○ /icon.png
+├ ○ /legal/ai
+├ ƒ /login
+├ ƒ /merchant-ops
+├ ○ /plaid-oauth-return
+├ ○ /privacy
+├ ○ /register
+├ ○ /request-access
+├ ○ /reset-password
+├ ○ /security
+├ ○ /terms
+└ ○ /verify-email
+
+
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand

@@ -55,17 +55,30 @@ export function usePrefersReducedMotion(): boolean {
   );
 }
 
+const escapeStack: symbol[] = [];
+
 // ── escape-to-close ────────────────────────────────────────────────────────────────
 /** Closes on Escape while `active`, unless `disabled` (e.g. an in-flight commit). */
 export function useEscapeKey(active: boolean, onClose: () => void, disabled = false): void {
+  const closeRef = useRef(onClose);
+  const disabledRef = useRef(disabled);
+  useEffect(() => { closeRef.current = onClose; disabledRef.current = disabled; });
   useEffect(() => {
     if (!active) return;
+    const token = Symbol("overlay");
+    escapeStack.push(token);
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !disabled) onClose();
+      if (e.key !== "Escape" || e.defaultPrevented || escapeStack.at(-1) !== token) return;
+      e.preventDefault();
+      if (!disabledRef.current) closeRef.current();
     };
     document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [active, onClose, disabled]);
+    return () => {
+      const index = escapeStack.indexOf(token);
+      if (index >= 0) escapeStack.splice(index, 1);
+      document.removeEventListener("keydown", handler);
+    };
+  }, [active]);
 }
 
 // ── focus capture / restore ──────────────────────────────────────────────────────

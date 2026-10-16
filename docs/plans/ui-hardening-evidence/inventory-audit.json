@@ -1,0 +1,17 @@
+{
+  "counts": {
+    "routes": 39,
+    "workspaces": 28,
+    "platformAreas": 5,
+    "platformSections": 44,
+    "templates": 12
+  },
+  "missing": {
+    "routes": [],
+    "workspaces": [],
+    "areas": [],
+    "sections": [],
+    "templates": []
+  },
+  "scope": "Source inventory completeness only; verification levels remain explicit in the coverage document."
+}

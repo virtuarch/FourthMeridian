@@ -428,3 +428,18 @@ html[data-theme="light"] .atlas-fresnel-edge::after {
   }
   .presence-dot { animation: none; }
 }
+
+/* Shared mobile sheet sizing. Desktop modals and docked panels keep their geometry. */
+@media (max-width: 639px) {
+  .atlas-sheet-frame { height: var(--sheet-height, auto); max-height: min(96dvh, var(--visible-height, 96dvh)); }
+  .atlas-sheet-content { height: var(--sheet-height, auto); max-height: min(96dvh, var(--visible-height, 96dvh)); padding-bottom: max(1.25rem, env(safe-area-inset-bottom)); }
+  .atlas-sheet-frame { transition: height var(--dur-base) var(--ease-standard); }
+  [data-sheet-dragging="true"] { transition: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .atlas-sheet-frame, .atlas-sheet-content { transition: none; }
+}
+@media (min-width: 640px) {
+  .atlas-sheet-frame, .atlas-sheet-content { max-height: min(100dvh, var(--visible-height, 100dvh)); }
+  .atlas-modal-frame, .atlas-modal-content { max-height: min(var(--modal-cap, 88dvh), calc(var(--visible-height, 100dvh) - 2rem)); }
+}
