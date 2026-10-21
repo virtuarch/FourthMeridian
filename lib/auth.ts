@@ -39,8 +39,9 @@ import { sendEmail } from "@/lib/email/send";
 import { createNotification } from "@/lib/notifications/create";
 import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
-import { resolveRevocation, invalidateSession } from "@/lib/session-cache";
-import { readSessionClaims, factsFromRow, judgeSession, SESSION_ROW_SELECT } from "@/lib/auth/session-proof";
+import { resolveRevocation, invalidateSession, setCachedRevocation } from "@/lib/session-cache";
+import { readSessionClaims, factsFromRow, judgeSession, SESSION_ROW_SELECT, SESSION_TOKEN_SHAPE } from "@/lib/auth/session-proof";
+import { clientTokenPatch } from "@/lib/auth/token-update";
 import { touchSessionActivity } from "@/lib/auth/session-activity";
 import { checkKeyLimitStrict, peekKey } from "@/lib/rate-limit";
 import { captureAuthInfraFailure, captureSessionRevocationFailure } from "@/lib/monitoring/capture";
@@ -137,6 +138,39 @@ async function coarseRoute(): Promise<string | null> {
  */
 function refusedSession<S extends { expires: string }>(session: S): S {
   return { ...session, user: undefined as never, expires: new Date(0).toISOString() };
+}
+
+/**
+ * SEC-001 — re-derive the token's `requireTotpSetup` navigation hint from the
+ * session store on a client `update`. Reads the SAME row with the SAME
+ * factsFromRow the session callback uses, so the hint can only become what the
+ * authority would serve. Fail CLOSED: a malformed token, a row that proves
+ * nothing (revoked / absent), or a store failure leaves the current hint
+ * unchanged — never "cleared because the client asked". The cache is refreshed
+ * with the live facts so the very next server render agrees (TotpSection
+ * calls router.refresh() right after the update).
+ */
+async function rederiveTotpHint(
+  sessionToken: unknown,
+  current: boolean | null | undefined,
+): Promise<boolean | null> {
+  const fallback = current ?? null;
+  if (typeof sessionToken !== "string" || !SESSION_TOKEN_SHAPE.test(sessionToken)) return fallback;
+  try {
+    const facts = await factsFromRow(
+      await db.userSession.findFirst({ where: { sessionToken }, select: SESSION_ROW_SELECT }),
+      async () => (await db.platformSetting.findUnique({
+        where:  { key: PlatformSettingKey.REQUIRE_TOTP_ALL_USERS },
+        select: { value: true },
+      }))?.value === "true",
+    );
+    if (!facts) return fallback;
+    setCachedRevocation(sessionToken, facts);
+    return facts.requireTotpSetup;
+  } catch (err) {
+    captureAuthInfraFailure("session", err);
+    return fallback;
+  }
 }
 
 export const authOptions: NextAuthOptions = {
@@ -555,13 +589,21 @@ export const authOptions: NextAuthOptions = {
         token.requireTotpSetup = u.requireTotpSetup ?? null;
       }
       // `trigger === "update"` fires when client calls useSession().update(...).
-      // ⚠️ P1b — the CLIENT chooses these values. That is why neither may ever
-      // be read as authority: `username` is presentation, and the token's
-      // `requireTotpSetup` is only proxy.ts's navigation hint (the session
-      // callback derives the real requirement from current state).
+      // ⚠️ SEC-001 — the CLIENT chooses the payload, so it is UNTRUSTED INPUT.
+      // Only `username` (presentation, grants nothing) is copied, through the
+      // pure allow-list in lib/auth/token-update.ts. `requireTotpSetup` is
+      // NEVER taken from the payload: before SEC-001 it was, and because
+      // proxy.ts and the page layouts trusted the token's copy, a POST to
+      // /api/auth/session with `{data:{requireTotpSetup:false}}` let a
+      // password-only pending SYSTEM_ADMIN render /admin (runtime-confirmed).
+      // An update is instead a REQUEST to re-derive the navigation hint from
+      // the session store — the same row + factsFromRow the session callback
+      // uses — so TotpSection's post-enrolment update still clears the hint,
+      // but only because the store now says the user is enrolled.
       if (trigger === "update") {
-        if (session?.username !== undefined)         token.username         = session.username;
-        if (session?.requireTotpSetup !== undefined) token.requireTotpSetup = session.requireTotpSetup;
+        const patch = clientTokenPatch(session);
+        if (patch.username !== undefined) token.username = patch.username;
+        token.requireTotpSetup = await rederiveTotpHint(token.sessionToken, token.requireTotpSetup);
       }
       return token;
     },

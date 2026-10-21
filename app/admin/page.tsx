@@ -9,6 +9,7 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { redirect } from "next/navigation";
+import { enforceTotpPageGate } from "@/lib/auth/totp-page-gate";
 import { db } from "@/lib/db";
 import Link from "next/link";
 import { Users, Building2, CreditCard, ScrollText, ChevronRight } from "lucide-react";
@@ -32,6 +33,10 @@ const WS_TYPE_PILL: Record<string, string> = {
 export default async function AdminOverviewPage() {
   const session = await getServerSession(authOptions);
   if (!session || session.user.role !== "SYSTEM_ADMIN") redirect("/dashboard");
+  // SEC-001 — a TOTP-pending admin must not compose the inventory below. The
+  // layout gates too, but App Router layouts and pages render concurrently, so
+  // the page re-checks before any query runs (defence in depth, same authority).
+  await enforceTotpPageGate(session);
 
   const [users, spaces, totalAccounts, totalAuditLogs] = await Promise.all([
     db.user.findMany({
