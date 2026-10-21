@@ -54,6 +54,20 @@ console.log("ci.yml runs exactly what `npm run ci` runs");
     JSON.stringify(jobs));
 }
 
+console.log("the dependency gate (SEC-002 / TEST-005) is in the test job, before anything runs on the install");
+{
+  const AUDIT = "npm audit --omit=dev --audit-level=high";
+  const i = TEST_JOB.indexOf(AUDIT as (typeof TEST_JOB)[number]);
+  check("TEST_JOB carries the production-dependency audit at HIGH", i >= 0, JSON.stringify(TEST_JOB));
+  check("the audit runs right after `npm ci` and before prisma generate / tests / typecheck / lint",
+    i === 1 && TEST_JOB[0] === "npm ci", `index ${i}`);
+  check("ci.yml test job runs that exact audit line", runSteps(jobBlock("test")).includes(AUDIT));
+  const dependabot = readFileSync(".github/dependabot.yml", "utf8");
+  check(".github/dependabot.yml proposes npm updates weekly for the app root",
+    /package-ecosystem:\s*npm/.test(dependabot) && /directory:\s*\/\s*$/m.test(dependabot) && /interval:\s*weekly/.test(dependabot));
+  check("dependabot groups minor/patch so one PR carries the week", /update-types:\s*\[\s*"minor",\s*"patch"\s*\]/.test(dependabot));
+}
+
 console.log("the site job is the public site's, and carries no authority");
 {
   const block = jobBlock("site");

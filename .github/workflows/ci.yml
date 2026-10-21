@@ -76,6 +76,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # SEC-002 / TEST-005 — the dependency gate. Production dependencies only
+      # (devDependencies never ship); fails the build on any HIGH or CRITICAL
+      # advisory. Baseline 2026-10-22: 14 advisories (2 critical in next /
+      # next-auth) were installed with no step looking.
+      - name: Dependency audit (production, high+)
+        run: npm audit --omit=dev --audit-level=high
+
       # Required: three *.test.ts import Prisma enum values, so the generated
       # client must exist before they run (and before tsc typechecks).
       - name: Generate Prisma client
