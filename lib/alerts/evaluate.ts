@@ -52,6 +52,11 @@ const CRITICAL_CONNECTION_STATES: ReadonlySet<HealthState> = new Set<HealthState
   "NEEDS_REAUTH",
 ]);
 
+/** The cadence multiple at which job health calls a silent job `dead`
+ *  (lib/jobs/health.ts DEAD_CADENCE_MULTIPLE). Mirrored as a WORD for the alert
+ *  summary only — the verdict itself is read from the authority, never recomputed. */
+const DEAD_MULTIPLE_WORD = "3";
+
 /** Failed/timed-out calls beside returned ones at which the AI rule warns. */
 export const AI_FAILURE_WARNING_COUNT = 3;
 
@@ -88,18 +93,31 @@ export function evaluateJobFailing(rule: AlertRuleDefinition, health: AlertJobHe
     }));
 }
 
-/** OPS-4 job health → silent-scheduler signals (one per `overdue` job). `never-ran`
- *  is deliberately excluded: it is an operator-decides state (a just-registered job
- *  reports it until its first slot), and alerting on it would false-alarm. */
+/** OPS-4 job health → silent-scheduler signals (one per `overdue` OR `dead` job).
+ *  `never-ran` is deliberately excluded: it is an operator-decides state (a
+ *  just-registered job reports it until its first slot), and alerting on it would
+ *  false-alarm.
+ *
+ *  OBS-002 (pre-beta audit, runtime-confirmed): this filter once matched
+ *  `overdue` ONLY, while lib/jobs/health.ts promotes `overdue` → `dead` at
+ *  DEAD_CADENCE_MULTIPLE × cadence. The same job, the same ledger, fired at 10 h
+ *  of silence and went QUIET at 60 days — the worse state dropped out of the
+ *  firing set. `dead` is the stronger escalate-now signal and is critical; its
+ *  dedupe key is the job's, so an `overdue` that ages into `dead` is one breach
+ *  with one suppression clock (re-notified every DEFAULT_RENOTIFY_HOURS), not a
+ *  new one. */
 export function evaluateSchedulerSilent(rule: AlertRuleDefinition, health: AlertJobHealth): AlertSignal[] {
   return health.jobs
-    .filter((j) => j.status === "overdue")
+    .filter((j) => j.status === "overdue" || j.status === "dead")
     .map((j) => ({
       ruleId: rule.id,
       kind: rule.kind,
       severity: "critical" as AlertSeverity,
       dedupeKey: `${rule.id}:${j.job}`,
-      summary: `Job "${j.job}" is overdue (expected every ${j.expectedEveryHours}h) — its schedule has gone silent.`,
+      summary:
+        j.status === "dead"
+          ? `Job "${j.job}" is DEAD — no run for more than ${j.expectedEveryHours}h × ${DEAD_MULTIPLE_WORD} (expected every ${j.expectedEveryHours}h); its schedule has stopped.`
+          : `Job "${j.job}" is overdue (expected every ${j.expectedEveryHours}h) — its schedule has gone silent.`,
     }));
 }
 

@@ -116,8 +116,25 @@ console.log("engine · scheduler-silent");
 {
   const jh = jobHealth([job("a", "overdue"), job("b", "never-ran"), job("c", "failing", 3), job("d", "healthy")]);
   const sigs = evaluateAlertRules(outputs({ jobHealth: jh }), ALL_ON).filter((s) => s.kind === "scheduler-silent");
-  check("fires on overdue only", sigs.length === 1 && sigs[0].dedupeKey === "scheduler-silent:a");
+  check("fires on overdue", sigs.length === 1 && sigs[0].dedupeKey === "scheduler-silent:a" && sigs[0].severity === "critical");
   check("never-ran does NOT trip scheduler-silent (operator-decides state)", !sigs.some((s) => s.dedupeKey.includes(":b")));
+  check("failing / healthy do not trip scheduler-silent", !sigs.some((s) => s.dedupeKey.includes(":c") || s.dedupeKey.includes(":d")));
+
+  // OBS-002 — the runtime fixture (runtime/07-OBSERVABILITY.md §7.1): the SAME job
+  // read `dead` at 60 days of silence and `overdue` at 10 h. Before the fix the
+  // overdue read fired and the dead read went quiet — the inversion.
+  const sixtyDaysSilent = jobHealth([{ job: "sync-crypto-continuation", status: "dead", expectedEveryHours: 6, consecutiveFailures: 0 }]);
+  const dead = evaluateAlertRules(outputs({ jobHealth: sixtyDaysSilent }), ALL_ON).filter((s) => s.kind === "scheduler-silent");
+  check("OBS-002: a DEAD job fires scheduler-silent", dead.length === 1 && dead[0].dedupeKey === "scheduler-silent:sync-crypto-continuation");
+  check("OBS-002: dead is critical", dead[0]?.severity === "critical");
+  check("OBS-002: the summary says DEAD and names the cadence, no user content", /DEAD/.test(dead[0]?.summary ?? "") && /every 6h/.test(dead[0]?.summary ?? ""));
+  const tenHoursSilent = jobHealth([{ job: "sync-crypto-continuation", status: "overdue", expectedEveryHours: 6, consecutiveFailures: 0 }]);
+  const overdue = evaluateAlertRules(outputs({ jobHealth: tenHoursSilent }), ALL_ON).filter((s) => s.kind === "scheduler-silent");
+  check("OBS-002: the overdue read still fires (unchanged)", overdue.length === 1 && overdue[0].severity === "critical" && /overdue/.test(overdue[0].summary));
+  check("OBS-002: overdue → dead is ONE breach (same dedupe key), so the ageing does not re-page inside the re-notify window",
+    overdue[0].dedupeKey === dead[0].dedupeKey && decideDeliveries(dead, new Map([[overdue[0].dedupeKey, NOW_MS - 2 * HOUR]]), NOW_MS).suppressed.length === 1);
+  const neverRanStill = evaluateAlertRules(outputs({ jobHealth: jobHealth([{ job: "sync-crypto-continuation", status: "never-ran", expectedEveryHours: 6, consecutiveFailures: 0 }]) }), ALL_ON).filter((s) => s.kind === "scheduler-silent");
+  check("OBS-002: never-ran is unchanged (no signal)", neverRanStill.length === 0);
 }
 
 // ── Engine: provider-unhealthy ───────────────────────────────────────────────────

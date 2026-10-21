@@ -22,7 +22,7 @@
  *   resource-stale       an archive's newest observation is stale/empty    (LIVE)
  *   provider-unhealthy   a syncing provider connection is not healthy       (LIVE)
  *   job-failing          a scheduled job's last runs all failed             (LIVE)
- *   scheduler-silent     a scheduled job is overdue (dispatcher/cron silent)(LIVE)
+ *   scheduler-silent     a scheduled job is overdue/dead (dispatcher/cron silent)(LIVE)
  *   ai-provider-failing  the AI provider is refusing/failing calls          (LIVE)
  *   ai-spend-fleet-high  fleet AI spend at/over the fleet threshold, or any
  *                        invocation the rate card cannot price             (LIVE)
@@ -150,7 +150,7 @@ export const ALERT_RULES: readonly AlertRuleDefinition[] = [
     kind: "scheduler-silent",
     title: "Scheduler silent",
     description:
-      "A scheduled job is overdue — its schedule has silently stopped (a dead cron/dispatcher, or a misconfigured CRON_SECRET). Reads the OPS-4 job-health authority (`overdue` state).",
+      "A scheduled job is overdue or dead — its schedule has silently stopped (a dead cron/dispatcher, or a misconfigured CRON_SECRET). Reads the OPS-4 job-health authority (`overdue` and `dead` states; `dead` = silent for three cadences, the escalate-now signal).",
     authority: "job-health",
     live: true,
     defaultEnabled: true,
