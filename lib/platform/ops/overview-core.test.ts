@@ -15,7 +15,9 @@
  *   · every domain names its authority.
  */
 
-import { buildOverview, derivePipeline, deriveSources, deriveJobs, deriveAi, deriveBrief, derivePlaid, derivePosture, deriveAlertsPosture, type OverviewInputs, type PostureInputs } from "./overview-core";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { buildOverview, derivePipeline, deriveSources, deriveJobs, deriveAi, deriveBrief, derivePlaid, derivePosture, deriveAlertsPosture, ALERT_EVALUATOR_GRACE_HOURS, ALERT_EVALUATOR_DEAD_MULTIPLE, type OverviewInputs, type PostureInputs } from "./overview-core";
 import type { PipelineStatus } from "@/lib/platform/refresh/types";
 import type { ConnectionHealthResult } from "@/lib/connections/health";
 import { defaultRefreshPolicies } from "@/lib/platform/refresh-policy.core";
@@ -153,6 +155,34 @@ console.log("UX-P1 · posture (firing NOW, never the delivery history)");
   check("warning firing → warn tone", deriveAlertsPosture({ latest: latest(true, "warning"), rulesRegistered: 2 }).tone === "warn");
   check("never evaluated → Unknown (muted), never Quiet", deriveAlertsPosture({ latest: null, rulesRegistered: 2 }).word === "Unknown" && deriveAlertsPosture({ latest: null, rulesRegistered: 2 }).tone === "muted");
   check("loader failed → Unavailable, muted, 'could not be asked'", deriveAlertsPosture(null).state === "unavailable" && deriveAlertsPosture(null).tone === "muted");
+
+  // OBS-001 — the runtime fixture (runtime/07-OBSERVABILITY.md §7.3): a quiet
+  // run evaluated 30 days ago read { word: "Quiet", tone: "ok" }. Age-gated now.
+  const H = 3_600_000;
+  const at = (hoursAgo: number) => ({ ...latest(false), evaluatedAtISO: new Date(now.getTime() - hoursAgo * H).toISOString() });
+  const stale30d = deriveAlertsPosture({ latest: at(30 * 24), rulesRegistered: 2, cadenceHours: 6 }, now);
+  check("OBS-001: a 30-day-old quiet evaluation → 'Unknown — evaluator silent', never Quiet", stale30d.word === "Unknown — evaluator silent" && stale30d.state === "unknown");
+  check("OBS-001: 30 days is past three cadences → bad tone, count says the age and the cadence", stale30d.tone === "bad" && /30 d ago/.test(stale30d.count) && /every 6 h/.test(stale30d.count), stale30d.count);
+  check("OBS-001: the basis says why", /too old to speak for now/.test(stale30d.basis));
+  const late = deriveAlertsPosture({ latest: at(9), rulesRegistered: 2, cadenceHours: 6 }, now);
+  check("OBS-001: 9 h > cadence 6 h + grace 2 h → silent, warn (one late slot, not yet dead)", late.word === "Unknown — evaluator silent" && late.tone === "warn");
+  const fresh = deriveAlertsPosture({ latest: at(7), rulesRegistered: 2, cadenceHours: 6 }, now);
+  check("OBS-001: 7 h ≤ cadence + grace → still judged on content (Quiet)", fresh.word === "Quiet" && fresh.tone === "ok");
+  const firingStale = deriveAlertsPosture({ latest: { ...latest(true), evaluatedAtISO: at(40).evaluatedAtISO }, rulesRegistered: 2, cadenceHours: 6 }, now);
+  check("OBS-001: a stale FIRING run is also unknown — its content is the past, whichever way it points", firingStale.state === "unknown");
+  const hourly = deriveAlertsPosture({ latest: at(4), rulesRegistered: 2, cadenceHours: 1 }, now);
+  check("OBS-001: the gate uses the RESOLVED cadence (1 h cadence → 4 h old is silent)", hourly.state === "unknown" && hourly.tone === "bad");
+  const defaulted = deriveAlertsPosture({ latest: at(7), rulesRegistered: 2 }, now);
+  check("OBS-001: no cadence handed in → the 6 h registry default (7 h is fresh)", defaulted.word === "Quiet");
+  check("OBS-001: no clock → ungated (pure fixtures keep the content verdict)", deriveAlertsPosture({ latest: at(30 * 24), rulesRegistered: 2, cadenceHours: 6 }).word === "Quiet");
+  check("OBS-001: an unreadable evaluation time is silent, never fresh", deriveAlertsPosture({ latest: { ...latest(false), evaluatedAtISO: "not-a-date" }, rulesRegistered: 2 }, now).state === "unknown");
+  check("OBS-001: derivePosture threads the clock", derivePosture({ alerts: { latest: at(30 * 24), rulesRegistered: 2, cadenceHours: 6 }, providers: null, freshness: null, configuration: null }, now)[0].word === "Unknown — evaluator silent");
+  {
+    const healthSrc = readFileSync(path.join(process.cwd(), "lib/jobs/health.ts"), "utf8");
+    const grace = Number(/export const GRACE_HOURS = (\d+);/.exec(healthSrc)?.[1]);
+    const dead = Number(/export const DEAD_CADENCE_MULTIPLE = (\d+);/.exec(healthSrc)?.[1]);
+    check("OBS-001: the chip's grace and dead multiple equal job health's (no second opinion)", grace === ALERT_EVALUATOR_GRACE_HOURS && dead === ALERT_EVALUATOR_DEAD_MULTIPLE, `${grace}/${dead}`);
+  }
 
   const inputs: PostureInputs = {
     alerts: { latest: latest(false), rulesRegistered: 2 },
