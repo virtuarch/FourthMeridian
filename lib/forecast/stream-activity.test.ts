@@ -196,6 +196,17 @@ eq('D5e an observed miss is SILENT even when later occurrences are unobserved',
 const behind = resolve({ cadence: abaCad, settlements: ABACUS, observedThroughISO: '2025-06-01' });
 eq('D6 a ledger reaching BEFORE the newest settlement is incoherent — UNKNOWN', behind.state, ActivityState.UNKNOWN);
 
+// ── FIN-001 — the blind spot is COUNTED, so a disclosure layer can size it ──
+//
+// `unobservedDueOccurrences` is how many due slots the feed could not see.
+// It is carried, never acted on here: the licence stays exactly as above.
+eq('D7 a feed that stopped right after the last payment reports its unobserved due slots',
+  (feedStopped.unobservedDueOccurrences ?? 0) >= 1, true);
+eq('D7b a current stream with nothing due reports zero unobserved slots', quietButCurrent.unobservedDueOccurrences, 0);
+eq('D7c observed misses with later blind slots carry BOTH counts',
+  [(missedThenBlind.missedOccurrences ?? 0) >= 1, (missedThenBlind.unobservedDueOccurrences ?? 0) >= 1], [true, true]);
+eq('D7d with no ledger reach the question cannot be asked — null, never 0', noLedger.unobservedDueOccurrences, null);
+
 // ═══════════════════════════════════════════════════════════════════════════
 // E. Silence is not termination
 // ═══════════════════════════════════════════════════════════════════════════
@@ -230,6 +241,7 @@ const oneLate = resolve({ cadence: cadOf(biweeklyEnding('2026-07-29'), 's'), set
 eq('F4 one fully-observed miss stops the projection', oneLate.mayGenerateExpectedOccurrences, false);
 eq('F5 but only reaches SILENT, never ENDED', oneLate.state, ActivityState.SILENT);
 eq('F6 and reports exactly one', oneLate.missedOccurrences, 1);
+eq('F6b and, with the feed current, no slot was unobserved (FIN-001)', oneLate.unobservedDueOccurrences, 0);
 check('F7 the one-miss threshold is measured, not assumed — zero interior misses in the corpus',
   ACTIVITY.MAX_MISSED_FOR_PROJECTION === 0
   && [VECTRUS, ABACUS, INT_MID, INT_10].every((s) => {

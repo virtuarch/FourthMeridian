@@ -26,6 +26,8 @@
  * lenient stub fails here.
  */
 
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { loadForecastIncomeStreams, type IncomeTransactionReader } from './streams';
 import { MAX_TRANSACTION_PAGE_SIZE } from '@/lib/data/transaction-query-core';
 import { CadenceKind, isCadence } from '@/lib/forecast/cadence';
@@ -212,6 +214,59 @@ async function main(): Promise<void> {
       String((pay?.cadence as { kind?: string })?.kind));
     check('S15 and the amount still pairs with the right dates',
       Math.abs((level(pay?.amount) ?? 0) - PAY_NOW) < 0.01, `got ${level(pay?.amount)}`);
+  }
+
+  // ── 5. FIN-001 — the ledger's reach is the FEED'S clock, not the newest income row ──
+  //
+  // The runtime audit's fixture: 11 flat biweekly paychecks, newest 2026-10-02,
+  // as-of 2026-10-21 — the 2026-10-16 slot is five days overdue. With the reach
+  // read off the newest INCOME row (= 2026-10-02) the overdue slot was invisible
+  // and the stream read UNKNOWN; with the account's sync clock it is an OBSERVED
+  // miss (SILENT), which the completeness layer can then disclose as recent.
+  {
+    const ASOF2 = '2026-10-21';
+    const payRows: Row[] = Array.from({ length: 11 }, (_, i) => ({
+      id: `fin001-${i}`, date: iso(at('2026-10-02') - (10 - i) * 14 * DAY), amount: 3000,
+      accountId: 'acct-pay', merchant: 'ACME PAYROLL', merchantDisplayName: 'Acme Payroll',
+      flowType: 'INCOME', pending: false,
+    }));
+    const read = (async (_client: unknown, args: { query: Record<string, unknown> }) => {
+      const q = args.query;
+      const out = payRows.filter((r) => r.date >= String(q.dateFrom) && r.date <= String(q.dateTo))
+        .sort((a, b) => b.date.localeCompare(a.date));
+      return { rows: out, nextCursor: null, hasMore: false, cursorReset: false };
+    }) as unknown as IncomeTransactionReader;
+    const withClock = (clock: string | null | undefined) => async (ids: string[]) =>
+      ids.map((id) => ({ id, type: 'checking', ...(clock === undefined ? {} : { ledgerObservedThroughISO: clock }) }));
+
+    const current = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock(ASOF2)))[0];
+    check('S16 a feed synced at as-of makes the overdue slot an OBSERVED miss: SILENT, reach = as-of',
+      current?.activity.state === ActivityState.SILENT && current.activity.missedOccurrences === 1
+        && current.activity.observedThroughISO === ASOF2, JSON.stringify(current?.activity));
+
+    const stale = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock('2026-10-10')))[0];
+    check('S17 a feed last synced 2026-10-10 cannot have seen the 10-16 slot: UNKNOWN, reach = the clock',
+      stale?.activity.state === ActivityState.UNKNOWN && stale.activity.unobservedDueOccurrences === 1
+        && stale.activity.observedThroughISO === '2026-10-10', JSON.stringify(stale?.activity));
+
+    const noClock = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock(undefined)))[0];
+    const nullClock = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock(null)))[0];
+    check('S18 with no clock on record the reach falls back to the page\'s newest row (the pre-FIN-001 floor)',
+      noClock?.activity.observedThroughISO === '2026-10-02' && nullClock?.activity.observedThroughISO === '2026-10-02'
+        && noClock.activity.state === ActivityState.UNKNOWN, JSON.stringify(noClock?.activity));
+
+    const future = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock('2026-11-15')))[0];
+    check('S19 a clock past the as-of date (a retrospective run) is clamped to as-of — slots after the standpoint are never "covered"',
+      future?.activity.observedThroughISO === ASOF2, String(future?.activity.observedThroughISO));
+
+    const older = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock('2026-09-01')))[0];
+    check('S20 a clock OLDER than the newest row never shortens the reach below the row itself',
+      older?.activity.observedThroughISO === '2026-10-02', String(older?.activity.observedThroughISO));
+
+    // The production reader selects the canonical connection's clocks — pinned at the source.
+    const src = readFileSync(join(__dirname, 'streams.ts'), 'utf8');
+    check('S21 the production reader reads the canonical connection\'s sync clocks (PLAID lastSyncedAt / WALLET transactionsSyncedAt)',
+      /isCanonical: true/.test(src) && /provider === 'PLAID' \? c\.lastSyncedAt : c\.transactionsSyncedAt/.test(src));
   }
 
 }

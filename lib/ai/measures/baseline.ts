@@ -122,6 +122,31 @@ export interface IncomeStreamEvidence {
   /** Per month at its cadence, unrounded. Null when cadence or amount is unknown. */
   monthlyEquivalent: number | null;
   stillPaying: boolean;
+  /**
+   * FIN-001 — WHY a stream is not still paying, when it is not (the forecast
+   * authority's `continuationOf`). A RECENTLY_SILENT or UNKNOWN stream is one
+   * the platform holds a schedule and a level for and whose continuation is
+   * merely unestablished (a late paycheck, a feed behind its due slot); the
+   * baseline must not fall from CADENCE to MEASURED over it in silence. Omitted
+   * ⇒ treated as LAPSED (the pre-FIN-001 reading).
+   */
+  continuation?: 'CURRENT' | 'RECENTLY_SILENT' | 'UNKNOWN' | 'LAPSED';
+}
+
+/**
+ * FIN-001 — what an income baseline leaves out when a recurring stream is
+ * recently silent or unobserved: the streams, the monthly figure they would add,
+ * and the recurring (CADENCE) figure the baseline would be if they continue.
+ */
+export interface IncomeBaselineIncompleteness {
+  status: 'INCOMPLETE';
+  streams: { label?: string; cadence: string; typicalAmount: number; monthlyEquivalent: number;
+    continuation: 'RECENTLY_SILENT' | 'UNKNOWN' }[];
+  /** Σ monthlyEquivalent over the streams above. */
+  omittedMonthly: number;
+  /** The CADENCE figure if those streams continue: the live streams' total plus `omittedMonthly`. */
+  cadenceIfContinuing: number;
+  meaning: string;
 }
 
 export interface IncomeBaseline {
@@ -131,6 +156,8 @@ export interface IncomeBaseline {
   completeMonths?: number;
   streams?: { label?: string; cadence: string; typicalAmount: number; monthlyEquivalent: number }[];
   completeness?: Completeness;
+  /** FIN-001 — present when a recurring stream with a known schedule and level is recently silent / unobserved. */
+  incomplete?: IncomeBaselineIncompleteness;
   note: string;
 }
 
@@ -193,21 +220,48 @@ export function resolveIncomeBaseline(e: {
     return { amount: round2(e.stated), basis: 'STATED',
       note: 'the monthly income stated in this conversation; not saved' };
   }
+  const sized = (s: IncomeStreamEvidence) => !!s.cadence && positive(s.typicalAmount) && positive(s.monthlyEquivalent);
   const live = (e.streams ?? [])
-    .filter((s) => s.stillPaying && s.cadence && positive(s.typicalAmount) && positive(s.monthlyEquivalent))
+    .filter((s) => s.stillPaying && sized(s))
     .map((s) => ({
       ...(s.label ? { label: s.label } : {}),
       cadence: s.cadence as string, typicalAmount: s.typicalAmount as number,
       exact: s.monthlyEquivalent as number,
     }));
+  // FIN-001 — streams with a schedule and a level whose continuation is merely
+  // unestablished. They are NOT added to the baseline (the projection does not
+  // count them either); they are DISCLOSED beside it with their arithmetic, so a
+  // late paycheck cannot turn the recurring figure into a window mean in silence.
+  const silent = (e.streams ?? [])
+    .filter((s) => !s.stillPaying && sized(s) && (s.continuation === 'RECENTLY_SILENT' || s.continuation === 'UNKNOWN'))
+    .map((s) => ({
+      ...(s.label ? { label: s.label } : {}),
+      cadence: s.cadence as string, typicalAmount: s.typicalAmount as number,
+      exact: s.monthlyEquivalent as number, continuation: s.continuation as 'RECENTLY_SILENT' | 'UNKNOWN',
+    }));
+  const liveTotal = live.reduce((n, s) => n + s.exact, 0);
+  const omittedMonthly = silent.reduce((n, s) => n + s.exact, 0);
+  const incomplete: { incomplete?: IncomeBaselineIncompleteness } = silent.length ? { incomplete: {
+    status: 'INCOMPLETE',
+    streams: silent.map(({ exact, ...s }) => ({ ...s, monthlyEquivalent: round2(exact) })),
+    omittedMonthly: round2(omittedMonthly),
+    cadenceIfContinuing: round2(liveTotal + omittedMonthly),
+    meaning: `${silent.length} recurring income stream(s) with an observed schedule and level are not counted in `
+      + '`amount`: their continuation is unestablished (RECENTLY_SILENT = a due payment the ledger covered was not '
+      + 'paid; UNKNOWN = the feed has not reached the due date). `amount` is a LOWER BOUND for them, not the expected '
+      + 'income. Present it only beside `cadenceIfContinuing`, name the stream and the reason, and do not ask the '
+      + 'user for income the platform already holds — at most ask whether it continues.',
+  } } : {};
   if (live.length) {
     // Full precision end to end, rounded ONCE at the edge (the money authority's
     // D-4 rule): summing rounded streams would drift a cent from the projection.
     return {
-      amount: round2(live.reduce((n, s) => n + s.exact, 0)), basis: 'CADENCE',
+      amount: round2(liveTotal), basis: 'CADENCE',
       streams: live.map(({ exact, ...s }) => ({ ...s, monthlyEquivalent: round2(exact) })),
+      ...incomplete,
       note: 'settled recurring deposits at their observed level and cadence (biweekly = 26 a year) — '
-        + 'the same basis the cash projection uses; nominal deposits, not gross pay',
+        + 'the same basis the cash projection uses; nominal deposits, not gross pay'
+        + (silent.length ? '; INCOMPLETE — see `incomplete` for the recurring stream(s) not counted' : ''),
     };
   }
   const m = e.measured;
@@ -216,8 +270,11 @@ export function resolveIncomeBaseline(e: {
       amount: m.perCompleteMonth, basis: 'MEASURED',
       window: { from: m.period.from, to: m.period.to, label: m.period.label },
       completeMonths: m.completeMonths, completeness: m.completeness,
+      ...incomplete,
       note: 'mean of observed deposits per whole calendar month; a month can hold two or three '
-        + 'paychecks, and interest or one-off deposits are in it',
+        + 'paychecks, and interest or one-off deposits are in it'
+        + (silent.length ? '; the recurring basis is INCOMPLETE, not absent — see `incomplete` (the measured mean '
+          + 'already contains that stream\'s past deposits, so do not add `omittedMonthly` to it)' : ''),
     };
   }
   return null;
