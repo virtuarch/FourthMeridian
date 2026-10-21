@@ -25,8 +25,14 @@ import { consumePlan, injectPending } from './pending-plan';
 import { injectContinuity } from './continuity';
 import { generateWithTools } from '@/lib/ai/provider';
 import { callWithRateLimitRetry } from '@/lib/ai/rate-limit-retry';
+import {
+  CHAT_RATE_LIMIT_ATTEMPTS, CHAT_RATE_LIMIT_WAIT_BUDGET_MS, CHAT_MIN_ATTEMPT_MS, TurnTimeoutError,
+  type TurnDeadline,
+} from '@/lib/ai/turn-deadline';
 import { findTool, type ToolContext } from './tools';
-import { runWithAiInvocationContext, type AiAttribution } from '@/lib/ai/invocation-context';
+import {
+  runWithAiInvocationContext, getAiInvocationContext, type AiAttribution,
+} from '@/lib/ai/invocation-context';
 import { checkpointProjection } from './memory-tools';
 import { CHECKPOINT_PHASE } from '@/lib/ai/tenant-phase';
 import { turnEvidence } from './memory-model';
@@ -213,8 +219,10 @@ export const MAX_TOOL_CALLS_PER_TURN = 16;
 // ⚠️ THE RATE-LIMIT RULE LIVES IN lib/ai/rate-limit-retry.ts. It was written here
 // first, privately ("quota, not behaviour": only a 429 is retried, the provider's
 // own wait is honoured, the attempts are bounded), and the Daily Brief could not
-// reach it. It is one function now; this turn calls it with no deadline — a chat
-// turn holds no lease — and writes every wait into the artifact, so a slow case is
+// reach it. It is one function now; this turn calls it under the bounds in
+// lib/ai/turn-deadline.ts (SEC-AI-003: at most CHAT_RATE_LIMIT_ATTEMPTS provider
+// requests per hop, at most CHAT_RATE_LIMIT_WAIT_BUDGET_MS asleep, never past the
+// turn's deadline) and writes every wait into the artifact, so a slow case is
 // never mistaken for a slow model.
 
 /** Models that cannot take function tools through /v1/chat/completions (measured). */
@@ -286,8 +294,17 @@ export async function executeTurn(args: {
    * the same tool context are used. It changes nothing the model sees.
    */
   userTexts?: readonly string[];
+  /**
+   * SEC-AI-003 — the turn's wall-clock budget (lib/ai/turn-deadline.ts). Every
+   * provider call carries its signal; no retry is taken past it; a hop is not
+   * started once it has fired. Absent (the harnesses) ⇒ no deadline, but the
+   * attempt and wait bounds still apply.
+   */
+  deadline?: TurnDeadline;
   /** The provider call. Tests only — the product always uses `generateWithTools`. */
   generate?: typeof generateWithTools;
+  /** The retry's clock and sleep. Tests only — the product sleeps for real. */
+  clock?: { now?: () => number; sleep?: (ms: number) => Promise<void> };
 }): Promise<TurnRecord> {
   // A tool loop makes SEVERAL invocations for ONE user turn; the ambient context
   // is what lets the ledger sum them back into that turn.
@@ -369,9 +386,11 @@ async function executeTurnInner(args: {
   scenario?:   ScenarioSlot;
   toolCtx:     ToolContext;
   userTexts?:  readonly string[];
+  deadline?:   TurnDeadline;
   generate?:   typeof generateWithTools;
+  clock?:      { now?: () => number; sleep?: (ms: number) => Promise<void> };
 }): Promise<TurnRecord> {
-  const { messages, user, index, model, toolSchemas, toolCtx } = args;
+  const { messages, user, index, model, toolSchemas, toolCtx, deadline } = args;
   // What the USER said, explicitly — and everything else in the transcript is ours.
   toolCtx.turn = turnEvidence([...(args.userTexts ?? toolCtx.turn?.userTexts ?? []), user], messages);
   // ⚠️ THE RESERVED TRAILING SLOT, REWRITTEN EACH TURN. Independent of Clip 6 —
@@ -398,12 +417,25 @@ async function executeTurnInner(args: {
 
   try {
     for (let hop = 0; hop < MAX_TOOL_ROUNDTRIPS; hop++) {
+      // SEC-AI-003 — a hop is not started once the turn's budget is spent.
+      if (deadline?.signal.aborted) {
+        throw deadline.signal.reason instanceof TurnTimeoutError
+          ? deadline.signal.reason : new TurnTimeoutError(deadline.budgetMs, `before hop ${hop + 1}`);
+      }
       rec.roundTrips++;
+      const parent = getAiInvocationContext();
       const out = await callWithRateLimitRetry(
         // ⚠️ ONE LITERAL PROVIDER SITE — scripts/rls-ai-acceptance.ts (36–38) scans for it.
-        () => (args.generate ? args.generate({ model, messages, tools: toolSchemas })
-          : generateWithTools({ model, messages, tools: toolSchemas })),
-        { onRetry: (r) => rec.retries.push(r) });
+        // The attempt number rides the ambient context so a failure row can say which attempt it was.
+        (attempt) => runWithAiInvocationContext({ ...(parent ?? { correlationId: 'conversation' }), attempt },
+          () => (args.generate ? args.generate({ model, messages, tools: toolSchemas, signal: deadline?.signal })
+            : generateWithTools({ model, messages, tools: toolSchemas, signal: deadline?.signal }))),
+        { onRetry: (r) => rec.retries.push(r),
+          // SEC-AI-003 — the bounds: count, total wait, the turn's deadline, cancellation.
+          maxRetries: CHAT_RATE_LIMIT_ATTEMPTS - 1, maxTotalWaitMs: CHAT_RATE_LIMIT_WAIT_BUDGET_MS,
+          ...(deadline ? { deadlineAt: deadline.deadlineAt, minAttemptMs: CHAT_MIN_ATTEMPT_MS, signal: deadline.signal } : {}),
+          ...(args.clock?.sleep ? { sleep: args.clock.sleep } : {}),
+          ...(args.clock?.now ? { now: args.clock.now } : {}) });
       rec.latencyMs += out.latencyMs;
       if (out.usage) {
         rec.usage = rec.usage

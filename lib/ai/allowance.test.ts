@@ -156,7 +156,8 @@ async function main() {
     check("chat: the refusal is the shared response, not a sentence of its own", /allowanceRefusal\(allowance, 'Conversations'\)/.test(chat));
     check("chat: the kill switch is judged after the hour window and BEFORE the allowance; the reservation is released in finally",
       chat.indexOf("'ai-chat-hour'") < chat.indexOf("readPaidRequestsAdmission()") && chat.indexOf("readPaidRequestsAdmission()") < chat.indexOf("dailyAiAllowanceFor(")
-      && /finally \{\s*await allowance\.release\(\);\s*\}/.test(chat) && /paidRequestsPausedResponse\(\)/.test(chat) && /isAiPausedFailure\(turn\.record\.error\)/.test(chat) && /err instanceof AiPausedError/.test(chat));
+      // SEC-AI-003 — the turn's clock is disposed in the same finally, before the release.
+      && /finally \{\s*deadline\.dispose\(\);\s*await allowance\.release\(\);\s*\}/.test(chat) && /paidRequestsPausedResponse\(\)/.test(chat) && /isAiPausedFailure\(turn\.record\.error\)/.test(chat) && /err instanceof AiPausedError/.test(chat));
     check("chat: an unpriced model thrown by the chokepoint gets its own sentence", /err instanceof UnpricedModelError/.test(chat) && /SAY\.unpriced/.test(chat));
     const brief = strip("app/api/brief/generate/route.ts");
     check("brief: allowance after the 20/min window, before the generation call",

@@ -167,5 +167,19 @@ console.log('\n7. THE CLIENT CONTRACT IS UNCHANGED');
     /\(\{ role: m\.role, content: m\.content \}\)/.test(client));
 }
 
+console.log('\n8. SEC-AI-003 — THE TURN RUNS INSIDE ONE BOUNDED CLOCK');
+{
+  const posted = src.slice(src.indexOf('export async function POST'));
+  check('the clock starts when the request arrives', /const arrivedAt = Date\.now\(\);/.test(posted) && posted.indexOf('arrivedAt') < posted.indexOf('requireUser()'));
+  check('the deadline is opened after the allowance is reserved and before the turn',
+    posted.indexOf('openTurnDeadline(') > posted.indexOf('allowanceRefusal(') && posted.indexOf('openTurnDeadline(') < posted.indexOf('runStatelessTurn('));
+  check('…from the shared budget constant, less what the gates spent', /budgetMs: CHAT_TURN_BUDGET_MS - \(Date\.now\(\) - arrivedAt\)/.test(posted));
+  check('the turn receives it', /deadline,\s*\}\);/.test(posted));
+  check('it is disposed in the finally, beside the reservation release', /finally \{[\s\S]*?deadline\.dispose\(\);[\s\S]*?allowance\.release\(\)/.test(posted));
+  check('a deadline is a 504 with its own sentence, and the sentence says nothing was changed',
+    /refuse\(SAY\.timedOut, 504\)/.test(posted) && /timedOut:[\s\S]{0,200}Nothing was\s*'?\s*\+?\s*'?\s*changed/.test(raw));
+  check('no literal duration lives in the handler', !/\d{5,}/.test(posted));
+}
+
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

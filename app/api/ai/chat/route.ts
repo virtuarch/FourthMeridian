@@ -48,6 +48,7 @@ import { entitlementsForUser, refuseIfDisabled, countLimit } from '@/lib/entitle
 import { dailyAiAllowanceFor, allowanceRefusal } from '@/lib/ai/allowance';
 import { readPaidRequestsAdmission, paidRequestsPausedResponse } from '@/lib/platform/ai/paid-requests-admission';
 import { UnpricedModelError, AiPausedError, isUnpricedModelFailure, isAiPausedFailure } from '@/lib/ai/provider';
+import { openTurnDeadline, isTurnTimeoutFailure, CHAT_TURN_BUDGET_MS } from '@/lib/ai/turn-deadline';
 import { resolveSpaceContext }       from '@/lib/space';
 import { db }                        from '@/lib/db';
 import { aiPhaseRunner }             from '@/lib/ai/tenant-phase';
@@ -63,7 +64,13 @@ import {
 
 export const preferredRegion = 'sin1';
 export const runtime         = 'nodejs';
-/** A tool loop is several model calls; the dogfood's slowest turn ran ~70s. */
+/**
+ * A tool loop is several model calls; the dogfood's slowest turn ran ~70s.
+ * SEC-AI-003 — a LITERAL (Next.js reads it statically), mirrored by
+ * `CHAT_ROUTE_MAX_DURATION_S` in lib/ai/turn-deadline.ts; a test pins the two
+ * equal. The turn runs inside this minus a safety margin, so the reservation's
+ * `finally` below runs before the platform can kill the lambda.
+ */
 export const maxDuration     = 300;
 
 /** The sealed continuity carrier. HttpOnly: the page has no business reading it. */
@@ -82,6 +89,8 @@ const SAY = {
     + 'or ask me something narrower.',
   unpriced:  'Conversations are paused: the model in use can’t be priced yet, so your '
     + 'daily AI allowance can’t be checked. Nothing was changed. Please try again later.',
+  timedOut:  'That took longer than I can spend on one question, so I stopped. Nothing was '
+    + 'changed. Try asking something narrower, or try again in a moment.',
 } as const;
 
 const refuse = (message: string, status: number) =>
@@ -95,6 +104,9 @@ const REFUSAL: Record<ChatRequestRefusal, { say: string; status: number }> = {
 };
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // SEC-AI-003 — the turn's clock starts when the request arrives, not when the
+  // model is first called; what the gates below spend comes out of the budget.
+  const arrivedAt = Date.now();
   const [user, authErr] = await requireUser();
   if (authErr) return authErr;
 
@@ -150,6 +162,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const refused = allowanceRefusal(allowance, 'Conversations');
     if (refused) return refused;
   }
+  // SEC-AI-003 — THE TURN'S DEADLINE: route `maxDuration` minus a safety margin,
+  // less what the gates above already spent. Every provider call this turn makes
+  // (the answer hops and the guidance label) carries its signal; no retry is
+  // taken past it; it is released in the `finally` with the reservation.
+  const deadline = openTurnDeadline({ budgetMs: CHAT_TURN_BUDGET_MS - (Date.now() - arrivedAt) });
   try {
     // ── The request ────────────────────────────────────────────────────────────
     let body: unknown;
@@ -259,6 +276,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // signed-in user's own memory, in their own Space. Every other caller of the
         // turn loop (the dogfood / evaluation harnesses) is read-only unless opted in.
         memoryWrites: true,
+        deadline,
       });
 
       if (!turn.answer) {
@@ -279,6 +297,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         if (isAiPausedFailure(turn.record.error)) {
           console.error('[ai/chat] turn refused (paid AI requests paused) —', turn.record.error);
           return paidRequestsPausedResponse();
+        }
+        // SEC-AI-003 — the turn ran out of its budget. The provider was abandoned
+        // (a zero-token TIMEOUT fact is on the ledger) and the reservation is
+        // released below; the user is told to narrow the question.
+        if (isTurnTimeoutFailure(turn.record.error)) {
+          console.error('[ai/chat] turn abandoned at its deadline —', turn.record.error);
+          return refuse(SAY.timedOut, 504);
         }
         // The turn record holds why (budget exhausted, finish_reason, round-trip
         // ceiling). That reason is for the server's log; the user gets a sentence.
@@ -338,6 +363,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return refuse(SAY.failed, 503);
     }
   } finally {
+    // SEC-AI-003 — the clock is released with the reservation, on every path.
+    deadline.dispose();
     await allowance.release();
   }
 }

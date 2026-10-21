@@ -29,6 +29,7 @@ import { resolveOpenAiCredentials } from '@/lib/ai/openai-credentials';
 import {
   AI_PAUSED_CODE, readPaidRequestsAdmission, type PaidRequestsAdmissionReader,
 } from '@/lib/platform/ai/paid-requests-admission';
+import { TurnTimeoutError } from '@/lib/ai/turn-deadline';
 
 // ── Client ───────────────────────────────────────────────────────────────────
 // Lazy-initialised singleton. Fails loudly if the key is absent so
@@ -47,6 +48,28 @@ let _client: OpenAI | null = null;
  */
 export const OPENAI_API_BASE_URL = 'https://api.openai.com/v1';
 
+/**
+ * SEC-AI-003 — THE CLIENT IS PINNED, NOT DEFAULTED.
+ *
+ * The SDK's own defaults are a TEN-MINUTE per-request timeout and TWO silent
+ * retries. Under a route whose `maxDuration` is 300 s a hung connection held
+ * the lambda until the platform killed it (so the reservation's `finally`
+ * never ran), and the hidden retries multiplied on the app's own: one
+ * rate-limited turn issued 18 provider requests for 6 ledger rows
+ * (runtime/05-AI-RELIABILITY.md, item 4). Billed attempts the ledger never
+ * saw are the one thing a cost control cannot tolerate.
+ *
+ *   timeout     90 s per request — generous against the observed 3–70 s hops,
+ *               and short enough that a hop can never outlive the turn budget
+ *               (lib/ai/turn-deadline.ts) by itself.
+ *   maxRetries  0 — `callWithRateLimitRetry` (lib/ai/rate-limit-retry.ts) is the
+ *               ONE retry authority, and it writes a ledger row per attempt.
+ *
+ * Both are exported so a test can pin the values AND the construction site.
+ */
+export const OPENAI_CLIENT_TIMEOUT_MS = 90_000;
+export const OPENAI_CLIENT_MAX_RETRIES = 0;
+
 function getClient(): OpenAI {
   if (_client) return _client;
 
@@ -59,8 +82,24 @@ function getClient(): OpenAI {
     // Explicit, so the SDK does not read OPENAI_ORG_ID / OPENAI_BASE_URL for itself.
     organization: null,
     baseURL: OPENAI_API_BASE_URL,
+    // SEC-AI-003 — see the constants above. Never the SDK defaults.
+    timeout: OPENAI_CLIENT_TIMEOUT_MS,
+    maxRetries: OPENAI_CLIENT_MAX_RETRIES,
   });
   return _client;
+}
+
+/**
+ * SEC-AI-003 — the caller's cancellation, read before and after a provider call.
+ * A signal that is already aborted means the call is NOT MADE (nothing billed,
+ * a zero-token TIMEOUT fact is still written); one that aborts during the call
+ * is what the SDK abandons on. The reason carried by the signal is the turn
+ * deadline's own error when the deadline set it, so the fact says
+ * `turn_deadline` rather than the SDK's abort.
+ */
+function abortedReason(signal: AbortSignal | undefined, where: string): Error | null {
+  if (!signal?.aborted) return null;
+  return signal.reason instanceof TurnTimeoutError ? signal.reason : new TurnTimeoutError(0, where);
 }
 
 // ── Model ────────────────────────────────────────────────────────────────────
@@ -427,12 +466,26 @@ export async function generateWithTools(args: {
   tools?:   unknown[];
   /** Omit to take the dialect-appropriate budget — see `completionBudgetFor`. */
   maxTokens?: number;
+  /**
+   * SEC-AI-003 — the turn's deadline (lib/ai/turn-deadline.ts). Already aborted
+   * ⇒ the call is not made; aborted during the call ⇒ the SDK abandons it.
+   * Either way a zero-token TIMEOUT fact is written and `TurnTimeoutError` thrown.
+   */
+  signal?: AbortSignal;
 }, deps?: { client?: StructuredClient; sinks?: UsageSinks }): Promise<ToolTurnResult> {
-  const { model, messages, tools } = args;
+  const { model, messages, tools, signal } = args;
   // AI COST CONTROLS — the kill switch, before anything else.
   await assertPaidRequestsAdmitted(model, deps?.sinks);
   // BETA C7 — refused before the provider is reached when the rate card cannot price it.
   assertPricedModel(model, deps?.sinks);
+  // SEC-AI-003 — a turn that is already out of time asks the provider for nothing.
+  {
+    const spent = abortedReason(signal, 'before the call');
+    if (spent) {
+      recordOpenAiFailure({ model, err: spent, latencyMs: 0, sinks: deps?.sinks });
+      throw spent;
+    }
+  }
   const client = deps?.client ?? (getClient() as unknown as StructuredClient);
   const maxTokens = args.maxTokens ?? completionBudgetFor(model);
   const modern = usesModernParams(model);
@@ -453,10 +506,12 @@ export async function generateWithTools(args: {
     usage?: OpenAiUsage;
   };
   try {
-    completion = await client.chat.completions.create(body) as typeof completion;
+    completion = await client.chat.completions.create(body, signal ? { signal } : undefined) as typeof completion;
   } catch (err) {
-    recordOpenAiFailure({ model, err, latencyMs: Date.now() - started, sinks: deps?.sinks });
-    throw err;
+    // The deadline is OURS, so the fact says `turn_deadline` rather than the SDK's abort.
+    const thrown = abortedReason(signal, 'during the call') ?? err;
+    recordOpenAiFailure({ model, err: thrown, latencyMs: Date.now() - started, sinks: deps?.sinks });
+    throw thrown;
   }
   const latencyMs = Date.now() - started;
 
@@ -520,6 +575,8 @@ export interface StructuredOptions {
   temperature?: number;
   maxTokens?:   number;
   timeoutMs?:   number;
+  /** SEC-AI-003 — the caller's deadline, combined with `timeoutMs`: whichever fires first abandons the call. */
+  signal?:      AbortSignal;
 }
 
 /** The narrow client surface a structured call uses — injectable for tests. */
@@ -569,6 +626,14 @@ export async function generateStructuredWithUsage<T>(
   await assertPaidRequestsAdmitted(model, deps?.sinks);
   // BETA C7 — refused before the provider is reached when the rate card cannot price it.
   assertPricedModel(model, deps?.sinks);
+  // SEC-AI-003 — a caller that is already out of time asks the provider for nothing.
+  {
+    const spent = abortedReason(options?.signal, 'before the structured call');
+    if (spent) {
+      recordOpenAiFailure({ model, err: spent, latencyMs: 0, sinks: deps?.sinks });
+      throw spent;
+    }
+  }
   const client = deps?.client ?? (getClient() as unknown as StructuredClient);
   const modern = usesModernParams(model);
   const timeoutMs = options?.timeoutMs ?? STRUCTURED_TIMEOUT_MS;
@@ -590,8 +655,13 @@ export async function generateStructuredWithUsage<T>(
 
   // One deadline for the whole request, retries included: the signal is what the
   // SDK abandons on, so a slow first attempt cannot buy a second full timeout.
+  // SEC-AI-003 — the caller's own deadline aborts the same controller, so the
+  // call is bounded by whichever clock runs out first.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const outer = options?.signal;
+  const onOuterAbort = () => controller.abort();
+  outer?.addEventListener('abort', onOuterAbort, { once: true });
   const started = Date.now();
   let completion: {
     choices: { message?: { content?: string | null; refusal?: string | null }; finish_reason?: string }[];
@@ -600,12 +670,15 @@ export async function generateStructuredWithUsage<T>(
   try {
     completion = await client.chat.completions.create(body, { signal: controller.signal }) as typeof completion;
   } catch (err) {
-    // The deadline is OURS, so the fact says TIMEOUT rather than the SDK's abort.
-    const thrown = controller.signal.aborted ? new StructuredOutputTimeoutError(timeoutMs) : err;
+    // The deadline is OURS, so the fact says TIMEOUT rather than the SDK's abort —
+    // the turn's deadline when the turn set it, this call's own otherwise.
+    const thrown = abortedReason(outer, 'during the structured call')
+      ?? (controller.signal.aborted ? new StructuredOutputTimeoutError(timeoutMs) : err);
     recordOpenAiFailure({ model, err: thrown, latencyMs: Date.now() - started, sinks: deps?.sinks });
     throw thrown;
   } finally {
     clearTimeout(timer);
+    outer?.removeEventListener('abort', onOuterAbort);
   }
   const latencyMs = Date.now() - started;
 

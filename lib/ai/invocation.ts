@@ -188,6 +188,9 @@ export async function recordAiInvocationFailure(
         reasoningTokens: 0,
         latencyMs: whole(input.latencyMs),
         toolCallCount: 0,
+        // SEC-AI-003 — the attempt number of this hop, so cost exposure is
+        // countable per row (a RETURNED row's finishReason is the provider's).
+        ...(typeof ctx?.attempt === 'number' && ctx.attempt > 0 ? { finishReason: `attempt:${Math.floor(ctx.attempt)}` } : {}),
         ...(input.providerRequestId ? { providerRequestId: code(input.providerRequestId) } : {}),
         environment: deploymentEnvironment(),
         ...attributionOf(ctx),

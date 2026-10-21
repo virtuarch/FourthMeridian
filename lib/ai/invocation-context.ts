@@ -68,6 +68,12 @@ export interface AiInvocationContext {
    * the sealed runtime-state cookie). Never derived from content.
    */
   conversationId?: string;
+  /**
+   * SEC-AI-003 — which app-level attempt of a hop this call is (1-based), set
+   * by the retry loop. Lands on a FAILURE row as `finishReason: "attempt:<n>"`
+   * so the ledger shows how many billed-or-refused requests one hop cost.
+   */
+  attempt?: number;
 }
 
 const storage = new AsyncLocalStorage<AiInvocationContext>();
