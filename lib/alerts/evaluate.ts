@@ -392,13 +392,57 @@ export interface AlertRuleOutcome {
   severity: AlertSeverity | null;
 }
 
+/**
+ * OBS-003 — why breaches that should have been delivered were NOT, stated
+ * loudly in the summary so a reader (the Alerts widget, the posture chip, an
+ * operator reading the ledger) never mistakes "nothing went out" for "nothing
+ * was wrong". `breaches` is how many firing signals were due for delivery.
+ *
+ *   NO_EMAIL_TRANSPORT  the chokepoint selected the in-memory CAPTURE transport
+ *                       outside development/test — there is no RESEND_API_KEY —
+ *                       so the message went to a buffer nobody reads
+ *   NO_DESTINATION      PLATFORM_ALERTS_EMAIL is unset
+ *   SEND_ERROR          the transport attempted a send and failed
+ *   LEDGER_WRITE_FAILED OBS-015 — this run's own JobRun start row failed to
+ *                       write; delivery was circuit-broken because suppression
+ *                       cannot persist (an alert storm would follow)
+ */
+export type AlertUndeliveredReason = "NO_EMAIL_TRANSPORT" | "NO_DESTINATION" | "SEND_ERROR" | "LEDGER_WRITE_FAILED";
+export interface AlertUndelivered {
+  reason: AlertUndeliveredReason;
+  breaches: number;
+}
+
 /** The full JobRun summary the evaluate-alerts job returns. Counts/kinds/IDs
- *  only — no user content or monetary values (JobRun.summary doctrine). This IS
- *  the alert history: the ledger is the store, no new table. */
+ *  only — no user content, monetary values OR addresses (JobRun.summary
+ *  doctrine; OBS-011). This IS the alert history: the ledger is the store, no
+ *  new table.
+ *
+ *  Fields added after the first ledger rows were written are OPTIONAL on the
+ *  type: a persisted summary from an older deployment lacks them, and every
+ *  reader treats absence as "not recorded", never as a value. */
 export interface AlertRunSummary {
   evaluatedAtISO: string;
-  destination: string | null;
+  /**
+   * @deprecated OBS-011 — the destination ADDRESS is no longer written (an
+   * address in JobRun.summary was visible to every ledger reader). Present only
+   * on rows persisted before the change; new rows carry `destinationConfigured`.
+   */
+  destination?: string | null;
+  /** OBS-011 — whether PLATFORM_ALERTS_EMAIL was set when this run evaluated. */
+  destinationConfigured?: boolean;
+  /**
+   *   none      nothing was due for delivery
+   *   sent      the real provider ACCEPTED the message (acceptance ≠ delivery:
+   *             no delivery event exists in this product, so no reader may
+   *             claim "delivered" — see lib/platform/email-health.ts)
+   *   captured  development/test only: the capture transport recorded it
+   *   skipped   due for delivery but nothing was sent — `undelivered` says why
+   *   error     the transport failed — `undelivered` says so
+   */
   deliveryStatus: "none" | "sent" | "captured" | "skipped" | "error";
+  /** OBS-003 — set whenever firing breaches were due and did NOT reach a real transport. Null when nothing was lost. */
+  undelivered?: AlertUndelivered | null;
   counts: { evaluated: number; live: number; enabled: number; firing: number; delivered: number; suppressed: number };
   rules: AlertRuleOutcome[];
   fired: AlertFiredRecord[];

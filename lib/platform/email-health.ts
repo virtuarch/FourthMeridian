@@ -9,24 +9,50 @@
  *
  * SCOPE NOTE (documented gap): transactional AUTH emails (verification, invite,
  * password reset) go through lib/email/send.ts directly and are NOT recorded in
- * NotificationDelivery, so they don't appear here. Their config-time health is
- * covered by the env-status widget (RESEND_API_KEY presence → "sent" vs
- * "captured"); per-message auth-email recording is deferred (would need a schema
- * change — NotificationDelivery requires a Notification FK).
+ * NotificationDelivery, so they don't appear in `counts`. Their config-time
+ * health is covered by the env-status widget (RESEND_API_KEY presence → "sent"
+ * vs "captured"); per-message auth-email recording is deferred (would need a
+ * schema change — NotificationDelivery requires a Notification FK).
+ *
+ * OBS-008 — the DIRECT sendEmail legs are now at least REPRESENTED here, as a
+ * declared coverage list (`directSend`): which template families bypass the
+ * ledger, and the transport the chokepoint would select for them right now.
+ * That is a configuration fact, not a per-message count, and it is labelled so.
  */
 
 import { db } from "@/lib/db";
 
+/**
+ * THE DELIVERY VOCABULARY (OBS-003 / UI-011). A notification email moves through
+ *
+ *   queued → attempted → accepted → (delivered) | failed
+ *
+ * and this product can observe only up to ACCEPTED: `NotificationDelivery.status
+ * = "sent"` means the provider's API accepted the message (Resend returned an
+ * id). No webhook or delivery event is ingested, so DELIVERED is never known and
+ * no surface may claim it — the honest word is "accepted by the provider".
+ * `captured` is the in-memory transport: NOT attempted against any provider.
+ */
+export type EmailDeliveryStage = "accepted" | "captured" | "failed" | "skipped";
+export const EMAIL_STAGE_WORD: Record<EmailDeliveryStage, string> = {
+  accepted: "accepted by the provider",
+  captured: "captured in memory (no provider)",
+  failed:   "failed at the provider",
+  skipped:  "skipped (no recipient)",
+};
+
 export interface EmailDeliveryHealth {
   windowDays: number;
   counts: {
-    sent:     number; // really delivered via the provider
-    captured: number; // fell back to capture (e.g. RESEND_API_KEY unset) — NOT actually sent
-    error:    number; // provider/adapter error
+    sent:     number; // ACCEPTED by the provider (handed off; delivery itself is never observed)
+    captured: number; // fell back to capture (e.g. RESEND_API_KEY unset) — NOT attempted against any provider
+    error:    number; // FAILED at the provider/adapter
     skipped:  number; // no recipient resolved (by design)
     total:    number;
   };
   recentErrors: Array<{ id: string; error: string; at: string }>;
+  /** OBS-008 — the direct-send legs the ledger does not see, as declared coverage. Optional so older fixtures/readers still type. */
+  directSend?: DirectSendCoverage;
 }
 
 export async function getEmailDeliveryHealth(windowDays = 7): Promise<EmailDeliveryHealth> {
@@ -57,5 +83,45 @@ export async function getEmailDeliveryHealth(windowDays = 7): Promise<EmailDeliv
     windowDays,
     counts: { sent, captured, error, skipped, total: sent + captured + error + skipped },
     recentErrors: errorRows.map((r) => ({ id: r.id, error: r.error ?? "(no detail)", at: r.createdAt.toISOString() })),
+    directSend: describeDirectSendCoverage(),
+  };
+}
+
+// ── OBS-008 — direct sendEmail coverage (declared, not counted) ───────────────
+
+/** Template families that call lib/email/send.ts directly and leave NO NotificationDelivery row. */
+export const DIRECT_SEND_TEMPLATES: readonly string[] = [
+  "password-reset", "email-verification", "email-change", "space-invite", "beta-invite", "beta-request",
+  "security-alert", "platform-alert",
+];
+
+export interface DirectSendCoverage {
+  /** The template families that bypass the ledger (static declaration). */
+  templates: readonly string[];
+  /**
+   * The transport lib/email/send.ts selects RIGHT NOW for those sends, from
+   * configuration alone (mirrors its selectTransport): "resend" when a key is
+   * present, "capture" otherwise. "capture" outside development means every one
+   * of those emails reaches nobody.
+   */
+  transport: "resend" | "capture";
+  /** Whether that transport is a real provider in this NODE_ENV. */
+  real: boolean;
+  note: string;
+}
+
+export function describeDirectSendCoverage(
+  env: { NODE_ENV?: string; RESEND_API_KEY?: string } = process.env,
+): DirectSendCoverage {
+  const transport: DirectSendCoverage["transport"] =
+    env.NODE_ENV !== "test" && env.RESEND_API_KEY ? "resend" : "capture";
+  const real = transport === "resend";
+  return {
+    templates: DIRECT_SEND_TEMPLATES,
+    transport,
+    real,
+    note: real
+      ? "These emails are sent directly through the chokepoint and are not counted above; the provider would accept them, but no per-message row exists."
+      : "These emails are sent directly through the chokepoint and are not counted above; with no RESEND_API_KEY they are captured in memory and reach nobody.",
   };
 }

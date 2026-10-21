@@ -387,6 +387,62 @@ async function orchestratorTests() {
     gatherAuthorities: async () => outputs({ jobHealth: jobHealth([job("a", "healthy")]), connectionHealth: connHealth({ HEALTHY: 3 }), resourceFreshness: freshness([resource("fx", "fresh")]) }),
   });
   check("a healthy platform sends zero mail", quiet.counts.firing === 0 && quiet.deliveryStatus === "none" && sent.length === 1);
+  check("nothing lost ⇒ undelivered is null", quiet.undelivered === null && s1.undelivered === null);
+
+  // ── OBS-003 — the runtime fixture (runtime/07-OBSERVABILITY.md §7.2): no
+  // RESEND_API_KEY ⇒ the chokepoint returns `captured`. Before the fix that was
+  // "delivered" (counts.delivered 1, breach in fired[]) and the breach was
+  // suppressed for 20 h while nobody was told.
+  console.log("orchestrator · OBS-003 captured outside development");
+  const silence = (e: unknown) => e;
+  const captureDeps = { ...baseDeps, sendAlertEmail: async () => ({ status: "captured", provider: "capture" }) };
+  const realConsoleError = console.error;
+  console.error = silence as typeof console.error;
+  let prod: AlertRunSummary, preview: AlertRunSummary, unset: AlertRunSummary;
+  try {
+    prod = await evaluatePlatformAlerts({ ...captureDeps, environment: "production" });
+    preview = await evaluatePlatformAlerts({ ...captureDeps, environment: "preview" });
+    unset = await evaluatePlatformAlerts({ ...captureDeps, environment: undefined });
+  } finally {
+    console.error = realConsoleError;
+  }
+  check("production + captured ⇒ deliveryStatus skipped (NOT delivered)", prod.deliveryStatus === "skipped");
+  check("production + captured ⇒ nothing recorded as fired (no 20 h suppression)", prod.fired.length === 0 && prod.counts.delivered === 0);
+  check("production + captured ⇒ a loud summary field names the cause and the count", prod.undelivered?.reason === "NO_EMAIL_TRANSPORT" && prod.undelivered.breaches === 2);
+  check("the next cycle does NOT suppress the breach (it retries)",
+    (await evaluatePlatformAlerts({ ...baseDeps, loadRecentRuns: async () => [prod] })).counts.suppressed === 0);
+  check("any non-development NODE_ENV (preview / unset) is treated the same way", preview.deliveryStatus === "skipped" && preview.undelivered?.reason === "NO_EMAIL_TRANSPORT" && unset.deliveryStatus === "skipped");
+  const dev = await evaluatePlatformAlerts({ ...captureDeps, environment: "development" });
+  check("development + captured ⇒ captured counts as delivered (the local transport)", dev.deliveryStatus === "captured" && dev.fired.length === 2 && dev.undelivered === null);
+  const test = await evaluatePlatformAlerts({ ...captureDeps, environment: "test" });
+  check("test + captured ⇒ likewise", test.deliveryStatus === "captured" && test.fired.length === 2);
+  check("no destination ⇒ undelivered NO_DESTINATION", s3.undelivered?.reason === "NO_DESTINATION" && s3.undelivered.breaches === 2);
+  check("send threw ⇒ undelivered SEND_ERROR", s4.undelivered?.reason === "SEND_ERROR");
+  const providerError = await evaluatePlatformAlerts({ ...baseDeps, sendAlertEmail: async () => ({ status: "error", provider: "resend" }) });
+  check("provider returned error ⇒ error + SEND_ERROR + nothing fired", providerError.deliveryStatus === "error" && providerError.undelivered?.reason === "SEND_ERROR" && providerError.fired.length === 0);
+  const sentOk = await evaluatePlatformAlerts({ ...baseDeps, environment: "production", sendAlertEmail: async () => ({ status: "sent", provider: "resend" }) });
+  check("production + sent (provider accepted) ⇒ delivered and recorded", sentOk.deliveryStatus === "sent" && sentOk.fired.length === 2 && sentOk.undelivered === null);
+
+  // ── OBS-011 — the destination ADDRESS never enters the ledger.
+  console.log("orchestrator · OBS-011 no address in the summary");
+  check("summary carries destinationConfigured, not the address", s1.destinationConfigured === true && !("destination" in s1) && !JSON.stringify(s1).includes("ops@fourthmeridian.com"));
+  check("no destination ⇒ destinationConfigured false", s3.destinationConfigured === false);
+
+  // ── OBS-015 — circuit breaker when this run's start row failed to write.
+  console.log("orchestrator · OBS-015 ledger start-write circuit breaker");
+  const before = sent.length;
+  console.error = silence as typeof console.error;
+  let broken: AlertRunSummary;
+  try {
+    broken = await evaluatePlatformAlerts({ ...baseDeps, ledgerStartWriteFailed: () => true });
+  } finally {
+    console.error = realConsoleError;
+  }
+  check("start-write failed ⇒ no email sent", sent.length === before);
+  check("start-write failed ⇒ skipped + LEDGER_WRITE_FAILED with the breach count", broken.deliveryStatus === "skipped" && broken.undelivered?.reason === "LEDGER_WRITE_FAILED" && broken.undelivered.breaches === 2);
+  check("start-write failed ⇒ evaluation still recorded every rule outcome (the breaker is on delivery only)", broken.counts.firing === 2 && broken.rules.length === 8);
+  const healthyLedger = await evaluatePlatformAlerts({ ...baseDeps, ledgerStartWriteFailed: () => false });
+  check("start-write ok ⇒ delivery proceeds", healthyLedger.deliveryStatus === "sent" && sent.length === before + 1);
 }
 
 // ── Doctrine source-scan: one canonical evaluation, no duplicated health compute ──
@@ -412,6 +468,15 @@ console.log("doctrine");
   check("REVOKED is no longer an acute connection state (revoked connections are retired, not unhealthy)",
     !/CRITICAL_CONNECTION_STATES[\s\S]*?"REVOKED"[\s\S]*?\]\)/.test(evaluateSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "")));
   check("destination is the OPS-1 email seam", /@\/lib\/email\/send/.test(runSrc));
+  // OBS-003 — the only place `captured` may count as delivered is behind the environment gate.
+  check("captured is gated on development/test (CAPTURE_IS_EXPECTED), never unconditionally delivered",
+    /CAPTURE_IS_EXPECTED\.has\(environment/.test(runSrc) && !/deliveryStatus === "sent" \|\| deliveryStatus === "captured"/.test(runSrc));
+  // OBS-008 — both delivery-failure paths reach the error monitor.
+  check("both delivery-failure paths capture to Sentry through the seam", (runSrc.match(/captureAlertDeliveryFailure\(/g) ?? []).length >= 2 && /@\/lib\/alerts\/delivery-capture/.test(runSrc));
+  // OBS-011 — the address is never written.
+  check("the summary writer never stores the destination address", !/^\s*destination,\s*$/m.test(runSrc) && /destinationConfigured: Boolean\(destination\)/.test(runSrc));
+  // OBS-015 — the breaker reads the ambient runJob context.
+  check("the circuit breaker reads currentJobRun().id === null", /currentJobRun\(\)/.test(runSrc) && /run\.id === null/.test(runSrc));
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────────

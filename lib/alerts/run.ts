@@ -39,8 +39,11 @@ import {
   type AlertFiredRecord,
   type AlertRuleOutcome,
   type AlertRunSummary,
+  type AlertUndelivered,
 } from "@/lib/alerts/evaluate";
+import { captureAlertDeliveryFailure } from "@/lib/alerts/delivery-capture";
 import { latestAlertEvaluation, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { currentJobRun } from "@/lib/jobs/run";
 
 /** JobRun name of the alert-evaluation job (registered in lib/jobs/registry.ts). */
 export const ALERT_JOB_NAME = "evaluate-alerts";
@@ -60,13 +63,32 @@ export interface AlertRunDeps {
   loadRecentRuns?: (limit: number) => Promise<AlertRunSummary[]>;
   /** The destination address, or null when unconfigured. */
   resolveDestination?: () => string | null;
-  /** Deliver the alert email; returns the OPS-1 EmailResult status. */
-  sendAlertEmail?: (to: string, data: AlertEmailData) => Promise<{ status: string }>;
+  /** Deliver the alert email; returns the OPS-1 EmailResult status (+ transport name). */
+  sendAlertEmail?: (to: string, data: AlertEmailData) => Promise<{ status: string; provider?: string }>;
   /** Re-notify window override (ms). */
   renotifyMs?: number;
   /** Rule set override (tests). */
   rules?: readonly AlertRuleDefinition[];
+  /**
+   * OBS-003 — the NODE_ENV this cycle runs under. Only "development" and
+   * "test" may treat a CAPTURED message as delivered; anywhere else the capture
+   * transport means there is NO mail transport, and a breach that went into an
+   * in-memory buffer must not be recorded as fired (it would be suppressed for
+   * DEFAULT_RENOTIFY_HOURS while nobody was told).
+   */
+  environment?: string | undefined;
+  /**
+   * OBS-015 — true when THIS run's JobRun start row failed to write (runJob's
+   * currentJobRun().id === null). With no row, the fired[] record this cycle
+   * returns can never be read back as suppression state, so every wake would
+   * re-deliver every breach (up to 96 mails a day). Delivery is circuit-broken
+   * and the summary says so. Defaults to reading the ambient runJob context.
+   */
+  ledgerStartWriteFailed?: () => boolean;
 }
+
+/** Environments in which the capture transport is the EXPECTED transport. */
+const CAPTURE_IS_EXPECTED: ReadonlySet<string> = new Set(["development", "test"]);
 
 // ── Real default I/O ─────────────────────────────────────────────────────────────
 
@@ -128,9 +150,15 @@ function resolveDestinationDefault(): string | null {
   return env.PLATFORM_ALERTS_EMAIL;
 }
 
-async function sendAlertEmailDefault(to: string, data: AlertEmailData): Promise<{ status: string }> {
+async function sendAlertEmailDefault(to: string, data: AlertEmailData): Promise<{ status: string; provider?: string }> {
   const res = await sendEmail("platform-alert", to, data as unknown as Record<string, unknown>);
-  return { status: res.status };
+  return { status: res.status, provider: res.provider };
+}
+
+/** OBS-015 — the ambient runJob context: a null id means the start write failed. */
+function ledgerStartWriteFailedDefault(): boolean {
+  const run = currentJobRun();
+  return run !== null && run.id === null;
 }
 
 // ── The orchestrator ─────────────────────────────────────────────────────────────
@@ -148,6 +176,8 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
   const loadRecentRuns = deps.loadRecentRuns ?? loadRecentAlertRuns;
   const resolveDestination = deps.resolveDestination ?? resolveDestinationDefault;
   const sendAlertEmail = deps.sendAlertEmail ?? sendAlertEmailDefault;
+  const environment = deps.environment ?? process.env.NODE_ENV;
+  const ledgerStartWriteFailed = deps.ledgerStartWriteFailed ?? ledgerStartWriteFailedDefault;
 
   const [authorities, settings, recentRuns] = await Promise.all([gather(), loadSettings(), loadRecentRuns(RECENT_RUNS_EXAMINED)]);
 
@@ -164,21 +194,52 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
   const destination = resolveDestination();
   let deliveryStatus: AlertRunSummary["deliveryStatus"] = "none";
   let delivered: typeof toSend = [];
+  let undelivered: AlertUndelivered | null = null;
 
   if (toSend.length > 0) {
-    if (!destination) {
+    if (ledgerStartWriteFailed()) {
+      // OBS-015 — circuit breaker. Nothing this run records can be read back,
+      // so a delivery now would be repeated at every wake. Say so, send nothing.
+      deliveryStatus = "skipped";
+      undelivered = { reason: "LEDGER_WRITE_FAILED", breaches: toSend.length };
+      console.error(`[alerts] ${toSend.length} breach(es) NOT delivered: this run's JobRun start row failed to write, so suppression cannot persist (OBS-015 circuit breaker).`);
+    } else if (!destination) {
       deliveryStatus = "skipped"; // firing, but no destination configured
+      undelivered = { reason: "NO_DESTINATION", breaches: toSend.length };
     } else {
       try {
         const res = await sendAlertEmail(destination, buildAlertEmailData(toSend, now.toISOString()));
         deliveryStatus = normalizeStatus(res.status);
-        // A successful hand-off (sent / captured) records the breaches as fired,
-        // which suppresses them next cycle. A skip/error records nothing, so the
-        // next cycle retries the delivery rather than silently dropping it.
-        if (deliveryStatus === "sent" || deliveryStatus === "captured") delivered = toSend;
+        if (deliveryStatus === "sent") {
+          // The provider ACCEPTED the message: record the breaches as fired,
+          // which suppresses them next cycle.
+          delivered = toSend;
+        } else if (deliveryStatus === "captured") {
+          if (CAPTURE_IS_EXPECTED.has(environment ?? "")) {
+            // Development/test: capture IS the transport; treat as delivered so
+            // the suppression semantics exercise locally exactly as they do live.
+            delivered = toSend;
+          } else {
+            // OBS-003 — outside development the capture transport means NO mail
+            // transport (RESEND_API_KEY absent). The message went into an
+            // in-memory buffer nobody reads. Recording it as fired would silence
+            // the breach for DEFAULT_RENOTIFY_HOURS; recording nothing lets the
+            // next cycle retry — and the summary says, loudly, what happened.
+            deliveryStatus = "skipped";
+            undelivered = { reason: "NO_EMAIL_TRANSPORT", breaches: toSend.length };
+            console.error(`[alerts] ${toSend.length} breach(es) NOT delivered: the email chokepoint selected the capture transport (no RESEND_API_KEY) in NODE_ENV=${environment ?? "(unset)"}.`);
+          }
+        } else {
+          // skipped / error from the transport: nothing recorded, next cycle retries.
+          undelivered = { reason: "SEND_ERROR", breaches: toSend.length };
+          deliveryStatus = "error";
+          captureAlertDeliveryFailure(res, toSend.length);
+        }
       } catch (e) {
         console.warn("[alerts] email delivery failed (non-fatal):", e);
         deliveryStatus = "error";
+        undelivered = { reason: "SEND_ERROR", breaches: toSend.length };
+        captureAlertDeliveryFailure(e, toSend.length);
       }
     }
   }
@@ -212,8 +273,10 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
 
   return {
     evaluatedAtISO: now.toISOString(),
-    destination,
+    // OBS-011 — presence only; the address never enters the ledger.
+    destinationConfigured: Boolean(destination),
     deliveryStatus,
+    undelivered,
     counts: {
       evaluated: rules.length,
       live: liveCount,
