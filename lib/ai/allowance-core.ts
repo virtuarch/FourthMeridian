@@ -82,7 +82,20 @@ export function sumTodaySpend(groups: readonly TodaySpendGroup[], todayISO: stri
  * simultaneous turns would all pass it (measured 8/8 at $3.80 of $5). Retryable —
  * 503 with Retry-After; nothing was spent.
  */
-export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL" | "RESERVATION_UNAVAILABLE";
+/**
+ * LEDGER_UNTRUSTED (IDEMP-009 / OBS-005) — the reservation ran under the lock but
+ * the ledger it reduces over has been FAILING ITS WRITES (lib/platform/ai/
+ * ledger-health.ts): today's spend cannot be trusted to be complete, and an
+ * unknown spend is never "under the allowance". FAIL CLOSED, retryable like
+ * RESERVATION_UNAVAILABLE (503 + Retry-After): the signal ages out and clears on
+ * recovery. Nothing was spent.
+ */
+export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL" | "RESERVATION_UNAVAILABLE" | "LEDGER_UNTRUSTED";
+
+/** The two transient refusals: retryable, 503, Retry-After. */
+export function isRetryableAllowanceReason(reason: AllowanceReason): boolean {
+  return reason === "RESERVATION_UNAVAILABLE" || reason === "LEDGER_UNTRUSTED";
+}
 
 /** Seconds a client should wait before retrying a RESERVATION_UNAVAILABLE refusal. */
 export const RESERVATION_RETRY_AFTER_SECONDS = 15;
@@ -216,7 +229,7 @@ export interface AllowanceRefusalBody {
 const cents = (n: number) => Math.round(n * 100) / 100;
 
 export function allowanceRefusalBody(v: Extract<AllowanceVerdict, { allowed: false }>, surfaceLabel: string): AllowanceRefusalBody {
-  if (v.reason === "RESERVATION_UNAVAILABLE") {
+  if (isRetryableAllowanceReason(v.reason)) {
     return {
       error: `${surfaceLabel} is briefly unavailable: your daily AI allowance couldn’t be checked just now. Nothing was changed. Please try again in a moment.`,
       code: ALLOWANCE_CODE, reason: v.reason, spentUsd: cents(v.spentUsd), allowanceUsd: v.allowanceUsd,
@@ -239,5 +252,5 @@ export function allowanceRefusalBody(v: Extract<AllowanceVerdict, { allowed: fal
  * refuses the model itself, so a customer sees ONE status for the one gap.
  */
 export function allowanceRefusalStatus(v: Extract<AllowanceVerdict, { allowed: false }>): 429 | 503 {
-  return v.reason === "UNPRICED_MODEL" || v.reason === "RESERVATION_UNAVAILABLE" ? 503 : 429;
+  return v.reason === "UNPRICED_MODEL" || isRetryableAllowanceReason(v.reason) ? 503 : 429;
 }

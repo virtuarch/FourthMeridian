@@ -20,11 +20,14 @@
  * RETURNED row after the RATE_LIMITED row(s) of the attempts before it. Every
  * write is an INSERT with a fresh id; nothing is ever updated.
  *
- * ⚠️ TELEMETRY NEVER BREAKS THE CALL. Fire-and-forget and internally
- * non-throwing, the same posture as `recordApiUsage`, `recordProviderCall` and
- * the email seam. A ledger failure must never turn a successful generation into a
- * failed one, and a failure row must never swallow or replace the error the
- * caller is about to receive.
+ * ⚠️ TELEMETRY NEVER BREAKS THE CALL — BUT IT IS NO LONGER SILENT (IDEMP-009 /
+ * OBS-005). Both writers are internally non-throwing: a ledger failure must never
+ * turn a successful generation into a failed one, and a failure row must never
+ * swallow or replace the error the caller is about to receive. What changed:
+ * the chokepoint now AWAITS them (a row is on the ledger before the response
+ * resolves), and a failed write is captured, counted and reported to the
+ * allowance reservation through lib/platform/ai/ledger-health.ts, which then
+ * fails CLOSED. The allowance never under-counts silently.
  *
  * ⚠️ ALLOWLISTED FIELDS ONLY. Counts, timings, grouping keys, the attribution
  * identifiers, an error CODE and the deployment environment. Never a prompt, a
@@ -48,6 +51,7 @@ import { systemDb } from '@/lib/db';
 import { deploymentEnvironment } from '@/lib/env';
 import { getAiInvocationContext, type AiInvocationContext } from '@/lib/ai/invocation-context';
 import { isQuotaExhaustedError, isRateLimitError } from '@/lib/ai/rate-limit-retry';
+import { noteLedgerWriteFailure, noteLedgerWriteSuccess, type LedgerHealthWriteClient } from '@/lib/platform/ai/ledger-health';
 import type { OpenAiUsage } from '@/lib/usage/ai-tokens';
 
 /** What happened to a provider call. `RETURNED` is the only billed kind. */
@@ -76,8 +80,12 @@ export interface AiInvocationFailureInput {
   providerRequestId?: string | null;
 }
 
-/** Narrow write-client seam — the ProviderCallWriteClient / JobRunWriteClient idiom. */
-export interface AiInvocationWriteClient {
+/**
+ * Narrow write-client seam — the ProviderCallWriteClient / JobRunWriteClient idiom.
+ * `rateLimit` is optional: the real fm_system client has it and the durable
+ * ledger-health signal rides it; a test's fake ledger need not.
+ */
+export interface AiInvocationWriteClient extends LedgerHealthWriteClient {
   aiInvocation: { create(args: { data: Record<string, unknown> }): Promise<unknown> };
 }
 
@@ -128,7 +136,9 @@ export function classifyAiFailure(err: unknown): { outcome: Exclude<AiInvocation
 const DEFAULT_CLIENT = (): AiInvocationWriteClient => systemDb as unknown as AiInvocationWriteClient;
 
 /**
- * Record one RETURNED invocation. Never throws, never rejects.
+ * Record one RETURNED invocation. Never throws, never rejects. Resolves `true`
+ * when the row is on the ledger, `false` when the write failed (and was
+ * captured, counted and reported — see lib/platform/ai/ledger-health.ts).
  *
  * Token counts are stored EXACTLY as the provider reported them, preserving the
  * Slice 1 subset semantics (cached ⊆ prompt, reasoning ⊆ completion). Nothing is
@@ -138,7 +148,7 @@ const DEFAULT_CLIENT = (): AiInvocationWriteClient => systemDb as unknown as AiI
 export async function recordAiInvocation(
   input: AiInvocationInput,
   client: AiInvocationWriteClient = DEFAULT_CLIENT(),
-): Promise<void> {
+): Promise<boolean> {
   try {
     const ctx = getAiInvocationContext();
     await client.aiInvocation.create({
@@ -160,19 +170,24 @@ export async function recordAiInvocation(
       },
     });
   } catch (e) {
-    console.warn('[ai/invocation] recordAiInvocation failed (non-fatal):', e);
+    // IDEMP-009 — captured, counted, reported to the reservation; never rethrown.
+    await noteLedgerWriteFailure(e, client);
+    return false;
   }
+  await noteLedgerWriteSuccess(client);
+  return true;
 }
 
 /**
  * Record one FAILED invocation — a provider call that threw. Zero tokens, an
  * error CODE, full attribution. Never throws, never rejects, and never touches
- * the error it describes: the chokepoint rethrows that unchanged.
+ * the error it describes: the chokepoint rethrows that unchanged. Resolves
+ * whether the row was written, like the success writer.
  */
 export async function recordAiInvocationFailure(
   input: AiInvocationFailureInput,
   client: AiInvocationWriteClient = DEFAULT_CLIENT(),
-): Promise<void> {
+): Promise<boolean> {
   try {
     const ctx = getAiInvocationContext();
     await client.aiInvocation.create({
@@ -197,6 +212,10 @@ export async function recordAiInvocationFailure(
       },
     });
   } catch (e) {
-    console.warn('[ai/invocation] recordAiInvocationFailure failed (non-fatal):', e);
+    // IDEMP-009 — captured, counted, reported to the reservation; never rethrown.
+    await noteLedgerWriteFailure(e, client);
+    return false;
   }
+  await noteLedgerWriteSuccess(client);
+  return true;
 }

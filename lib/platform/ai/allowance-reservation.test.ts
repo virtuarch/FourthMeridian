@@ -135,6 +135,44 @@ async function main() {
       offR.verdict.allowed && offR.verdict.reservation === "UNAVAILABLE" && !offR.verdict.enforced && offFb.inflight() === 0);
   }
 
+  console.log("\n5b. IDEMP-009 / OBS-005 — a ledger that has been failing its writes fails the reservation CLOSED");
+  {
+    const { LEDGER_FAILURE_KEY, LEDGER_FAILURE_TRIP, LEDGER_CONSECUTIVE_TRIP, noteLedgerWriteFailure, noteLedgerWriteSuccess, resetLedgerHealthForTests } =
+      await import("@/lib/platform/ai/ledger-health");
+    resetLedgerHealthForTests();
+    const bucketOf = (n: Date) => `${LEDGER_FAILURE_KEY}@${inflightBucket(n).toISOString()}`;
+
+    const durable = makeClient({ spentGroups: [{ n: 1, p: 1_000_000, o: 0 }] }); // $1.25 of $5
+    durable.buckets.set(bucketOf(NOW), LEDGER_FAILURE_TRIP);
+    const r = await reserveAiTurn("u1", 5, NOW, durable.client);
+    check(`the durable signal at its trip (${LEDGER_FAILURE_TRIP} in the window) ⇒ REFUSED LEDGER_UNTRUSTED, well under the allowance, nothing reserved`,
+      !r.verdict.allowed && r.verdict.reason === "LEDGER_UNTRUSTED" && r.verdict.reservation === "RESERVED" && close(r.verdict.spentUsd, 1.25)
+        && durable.inflight() === LEDGER_FAILURE_TRIP /* only the signal row itself */, JSON.stringify(r.verdict));
+    const body = allowanceRefusalBody(r.verdict as Extract<typeof r.verdict, { allowed: false }>, "Conversations");
+    check("…as a RETRYABLE 503 with Retry-After, the shared body", allowanceRefusalStatus(r.verdict as Extract<typeof r.verdict, { allowed: false }>) === 503
+      && body.retryable === true && body.retryAfterSeconds === RESERVATION_RETRY_AFTER_SECONDS && body.code === "AI_ALLOWANCE");
+    const under = makeClient({ spentGroups: [{ n: 1, p: 1_000_000, o: 0 }] });
+    under.buckets.set(bucketOf(NOW), LEDGER_FAILURE_TRIP - 1);
+    check("one below the trip ⇒ admitted (a blip is not an outage)", (await reserveAiTurn("u1", 5, NOW, under.client)).verdict.allowed);
+    const prev = makeClient({ spentGroups: [{ n: 1, p: 1_000_000, o: 0 }] });
+    prev.buckets.set(bucketOf(new Date(NOW.getTime() - INFLIGHT_BUCKET_MS)), LEDGER_FAILURE_TRIP);
+    check("the previous hour's failures count too; two hours on they have aged out",
+      !(await reserveAiTurn("u1", 5, NOW, prev.client)).verdict.allowed && (await reserveAiTurn("u1", 5, new Date(NOW.getTime() + 2 * INFLIGHT_BUCKET_MS), prev.client)).verdict.allowed);
+    const off = makeClient({ spentGroups: [{ n: 1, p: 1_000_000, o: 0 }], enforced: "false" });
+    off.buckets.set(bucketOf(NOW), LEDGER_FAILURE_TRIP);
+    check("enforcement explicitly OFF ⇒ admitted regardless (an operator's decision)", (await reserveAiTurn("u1", 5, NOW, off.client)).verdict.allowed);
+
+    // The per-process signal: consecutive failures seen by this instance.
+    const proc = makeClient({ spentGroups: [{ n: 1, p: 1_000_000, o: 0 }] });
+    for (let i = 0; i < LEDGER_CONSECUTIVE_TRIP; i++) await noteLedgerWriteFailure(new Error("dead"), null);
+    const pr = await reserveAiTurn("u1", 5, NOW, proc.client);
+    check(`${LEDGER_CONSECUTIVE_TRIP} consecutive failed writes in this process ⇒ REFUSED LEDGER_UNTRUSTED with no durable row at all`,
+      !pr.verdict.allowed && pr.verdict.reason === "LEDGER_UNTRUSTED" && proc.inflight() === 0);
+    await noteLedgerWriteSuccess(null);
+    check("one successful write ⇒ admitted again, and the admission reserves as usual", (await reserveAiTurn("u1", 5, NOW, proc.client)).verdict.allowed && proc.inflight() === 1);
+    resetLedgerHealthForTests();
+  }
+
   console.log("\n6. source: fm_system, the lock inside the transaction, no model call inside it");
   {
     const src = strip("lib/platform/ai/allowance-reservation.ts");

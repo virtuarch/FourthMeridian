@@ -131,9 +131,14 @@ const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
  * none — so every dollar figure derivable from the ledger overstated input cost
  * by roughly five times on measured traffic. One list, one loop, every path.
  *
- * Fire-and-forget and non-throwing, unchanged: `recordApiUsage` swallows its own
- * errors, so `void` here can neither fail a generation nor leave an unhandled
- * rejection. A metrics write must never break a chat call.
+ * The day-grain counter stays fire-and-forget: `recordApiUsage` swallows its own
+ * errors, so `void` there can neither fail a generation nor leave an unhandled
+ * rejection. The INVOCATION fact is different (IDEMP-009 / OBS-005): it is what
+ * the allowance is reduced over, so it is AWAITED — a row is on the ledger before
+ * the chokepoint returns and therefore before any HTTP response resolves — and
+ * a failed write is captured, counted and reported to the reservation
+ * (lib/platform/ai/ledger-health.ts). The writer still never throws, so a
+ * ledger failure still cannot fail a generation.
  */
 /**
  * Where the invocation fact is written. Defaults to the real ledger.
@@ -156,7 +161,7 @@ export interface UsageSinks {
   paidRequestsAdmission?: PaidRequestsAdmissionReader;
 }
 
-function recordOpenAiUsage(args: {
+async function recordOpenAiUsage(args: {
   model: string;
   usage: OpenAiUsage | null | undefined;
   latencyMs: number;
@@ -165,7 +170,7 @@ function recordOpenAiUsage(args: {
   /** The SDK's `_request_id` on the completion, when present. */
   providerRequestId?: string | null;
   sinks?: UsageSinks;
-}): void {
+}): Promise<void> {
   const { model, usage } = args;
   if (!usage) return;
 
@@ -183,7 +188,9 @@ function recordOpenAiUsage(args: {
   //     structurally cannot reach: "what did this turn cost?" is unanswerable
   //     from a daily sum. Correlation comes from ambient context, so no generator
   //     signature changes and no caller has to thread it.
-  void recordAiInvocation({
+  //     IDEMP-009 — AWAITED: the writer never throws, and the row is on the ledger
+  //     before this generation returns.
+  await recordAiInvocation({
     provider: 'OPENAI', model, usage,
     latencyMs: args.latencyMs,
     toolCallCount: args.toolCallCount ?? 0,
@@ -203,15 +210,15 @@ function recordOpenAiUsage(args: {
  * UNCHANGED — callers' behaviour (the retry predicate, the Brief's typed
  * reasons, the chat route's sentence) is byte-identical to before.
  *
- * Fire-and-forget and non-throwing, like the success writer: a telemetry
+ * Awaited and non-throwing, like the success writer (IDEMP-009): a telemetry
  * failure must never replace the error it describes.
  */
-function recordOpenAiFailure(args: { model: string; err: unknown; latencyMs: number; sinks?: UsageSinks }): void {
+async function recordOpenAiFailure(args: { model: string; err: unknown; latencyMs: number; sinks?: UsageSinks }): Promise<void> {
   try {
     const { outcome, errorCode } = classifyAiFailure(args.err);
     const rid = (args.err as { requestID?: unknown; request_id?: unknown } | null)?.requestID
       ?? (args.err as { request_id?: unknown } | null)?.request_id;
-    void recordAiInvocationFailure({
+    await recordAiInvocationFailure({
       provider: 'OPENAI', model: args.model, outcome, errorCode,
       latencyMs: args.latencyMs,
       providerRequestId: typeof rid === 'string' ? rid : null,
@@ -314,7 +321,7 @@ export async function assertPaidRequestsAdmitted(model: string, sinks?: UsageSin
   const admission = await (sinks?.paidRequestsAdmission ?? readPaidRequestsAdmission)();
   if (!admission.paused) return;
   const err = new AiPausedError(model, admission.state);
-  void recordAiInvocationFailure({
+  await recordAiInvocationFailure({
     provider: 'OPENAI', model, outcome: 'FAILED', errorCode: AI_PAUSED_CODE, latencyMs: 0,
   }, sinks?.invocationClient);
   captureAiProviderFailure({ outcome: 'FAILED', errorCode: AI_PAUSED_CODE, surface: getAiInvocationContext()?.surface ?? null, model }, err);
@@ -369,13 +376,13 @@ export async function generateChatReply(
       max_tokens:  1024,
     }) as typeof completion;
   } catch (err) {
-    recordOpenAiFailure({ model: CHAT_MODEL, err, latencyMs: Date.now() - started });
+    await recordOpenAiFailure({ model: CHAT_MODEL, err, latencyMs: Date.now() - started });
     throw err;
   }
   const latencyMs = Date.now() - started;
 
   // Wave 2 S7 + cost Slice 3 — the day aggregate and the invocation fact.
-  recordOpenAiUsage({
+  await recordOpenAiUsage({
     model: CHAT_MODEL, usage: completion.usage, latencyMs,
     // This path cannot request tools, so zero is a FACT rather than a missing value.
     toolCallCount: 0,
@@ -482,7 +489,7 @@ export async function generateWithTools(args: {
   {
     const spent = abortedReason(signal, 'before the call');
     if (spent) {
-      recordOpenAiFailure({ model, err: spent, latencyMs: 0, sinks: deps?.sinks });
+      await recordOpenAiFailure({ model, err: spent, latencyMs: 0, sinks: deps?.sinks });
       throw spent;
     }
   }
@@ -510,14 +517,14 @@ export async function generateWithTools(args: {
   } catch (err) {
     // The deadline is OURS, so the fact says `turn_deadline` rather than the SDK's abort.
     const thrown = abortedReason(signal, 'during the call') ?? err;
-    recordOpenAiFailure({ model, err: thrown, latencyMs: Date.now() - started, sinks: deps?.sinks });
+    await recordOpenAiFailure({ model, err: thrown, latencyMs: Date.now() - started, sinks: deps?.sinks });
     throw thrown;
   }
   const latencyMs = Date.now() - started;
 
   const usage = completion.usage;
   const choice = completion.choices[0];
-  recordOpenAiUsage({
+  await recordOpenAiUsage({
     model, usage, latencyMs,
     // Tool calls this invocation ASKED FOR — known exactly at this seam, and the
     // reason a single turn can produce several invocations.
@@ -630,7 +637,7 @@ export async function generateStructuredWithUsage<T>(
   {
     const spent = abortedReason(options?.signal, 'before the structured call');
     if (spent) {
-      recordOpenAiFailure({ model, err: spent, latencyMs: 0, sinks: deps?.sinks });
+      await recordOpenAiFailure({ model, err: spent, latencyMs: 0, sinks: deps?.sinks });
       throw spent;
     }
   }
@@ -674,7 +681,7 @@ export async function generateStructuredWithUsage<T>(
     // the turn's deadline when the turn set it, this call's own otherwise.
     const thrown = abortedReason(outer, 'during the structured call')
       ?? (controller.signal.aborted ? new StructuredOutputTimeoutError(timeoutMs) : err);
-    recordOpenAiFailure({ model, err: thrown, latencyMs: Date.now() - started, sinks: deps?.sinks });
+    await recordOpenAiFailure({ model, err: thrown, latencyMs: Date.now() - started, sinks: deps?.sinks });
     throw thrown;
   } finally {
     clearTimeout(timer);
@@ -684,7 +691,7 @@ export async function generateStructuredWithUsage<T>(
 
   const choice = completion.choices?.[0];
   const finishReason = choice?.finish_reason ?? null;
-  recordOpenAiUsage({
+  await recordOpenAiUsage({
     model, usage: completion.usage, latencyMs,
     toolCallCount: 0,   // structured output, not tools
     finishReason,
