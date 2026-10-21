@@ -42,6 +42,7 @@ import { UserRole } from "@prisma/client";
 import { resolveRevocation, invalidateSession, setCachedRevocation } from "@/lib/session-cache";
 import { readSessionClaims, factsFromRow, judgeSession, SESSION_ROW_SELECT, SESSION_TOKEN_SHAPE } from "@/lib/auth/session-proof";
 import { clientTokenPatch } from "@/lib/auth/token-update";
+import { getClientIp, UNKNOWN_CLIENT_IP } from "@/lib/security/client-ip";
 import { touchSessionActivity } from "@/lib/auth/session-activity";
 import { checkKeyLimitStrict, peekKey } from "@/lib/rate-limit";
 import { captureAuthInfraFailure, captureSessionRevocationFailure } from "@/lib/monitoring/capture";
@@ -199,14 +200,12 @@ export const authOptions: NextAuthOptions = {
       async authorize(credentials, req) {
         if (!credentials?.identifier || !credentials?.password) return null;
 
-        // SEC-FIX-1 — prioritise cf-connecting-ip (set by Cloudflare, not
-        // client-spoofable) so the rate-limit/audit IP matches lib/api.ts
-        // getRequestMeta(); fall back to the x-forwarded-for chain then
-        // x-real-ip for non-Cloudflare paths.
-        const ipAddress = (req?.headers?.["cf-connecting-ip"] as string | undefined)?.trim()
-          ?? (req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim()
-          ?? (req?.headers?.["x-real-ip"] as string | undefined)?.trim()
-          ?? null;
+        // ARCH-003 — THE one extractor (lib/security/client-ip.ts), so the
+        // address this login is audited under is the one the limiter keyed on
+        // and getRequestMeta() records. Null (not "unknown") when nothing
+        // trustworthy was present, preserving the audit column's semantics.
+        const extractedIp = getClientIp(req?.headers as Record<string, string | string[] | undefined> | undefined);
+        const ipAddress = extractedIp === UNKNOWN_CLIENT_IP ? null : extractedIp;
         const userAgent = (req?.headers?.["user-agent"] as string | undefined) ?? null;
 
         const identifier = credentials.identifier.toLowerCase().trim();

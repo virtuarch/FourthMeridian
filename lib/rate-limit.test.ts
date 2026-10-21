@@ -139,13 +139,22 @@ async function main(): Promise<void> {
 
   // ── 5. getClientIp ──────────────────────────────────────────────────────────
   console.log("5. getClientIp extraction");
+  // ARCH-003 — the limiter keys on lib/security/client-ip.ts: the LAST
+  // x-forwarded-for entry (the trusted proxy's), never the client-chosen first
+  // one, and platform headers outrank the chain. (This pin used to assert
+  // "first hop wins" — that was the spoofable bucket key.)
   check(
-    "x-forwarded-for first hop wins",
-    getClientIp(new Request("http://x/", { headers: { "x-forwarded-for": "5.5.5.5, 6.6.6.6" } })) === "5.5.5.5",
+    "x-forwarded-for LAST hop wins (first hop is client-chosen)",
+    getClientIp(new Request("http://x/", { headers: { "x-forwarded-for": "5.5.5.5, 6.6.6.6" } })) === "6.6.6.6",
   );
   check(
-    "x-real-ip fallback",
-    getClientIp(new Request("http://x/", { headers: { "x-real-ip": "7.7.7.7" } })) === "7.7.7.7",
+    "x-real-ip outranks the chain",
+    getClientIp(new Request("http://x/", { headers: { "x-real-ip": "7.7.7.7", "x-forwarded-for": "5.5.5.5" } })) === "7.7.7.7",
+  );
+  check(
+    "rotating the client-chosen first hop does not rotate the bucket",
+    getClientIp(new Request("http://x/", { headers: { "x-forwarded-for": "1.1.1.1, 6.6.6.6" } })) ===
+      getClientIp(new Request("http://x/", { headers: { "x-forwarded-for": "2.2.2.2, 6.6.6.6" } })),
   );
   check("no headers → 'unknown'", getClientIp(new Request("http://x/")) === "unknown");
 
