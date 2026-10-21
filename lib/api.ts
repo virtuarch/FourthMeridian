@@ -43,6 +43,7 @@ import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
 import { getClientIp as extractClientIp, FORWARDED_FOR_HEADER } from "@/lib/security/client-ip";
+import { captureApiHandlerFailure } from "@/lib/monitoring/capture";
 
 // ── Request metadata ──────────────────────────────────────────────────────────
 
@@ -112,15 +113,29 @@ type RouteHandler<T extends unknown[] = []> = (
  * @param handler  The route handler function
  * @param context  A short label for the server log (e.g. "GET /api/spaces/goals")
  */
+export interface ApiHandlerDeps {
+  /**
+   * ARCH-004 / OPS-003 — the monitoring seam a wrapped 500 is reported
+   * through. Defaults to lib/monitoring/capture.ts captureApiHandlerFailure
+   * (Sentry.captureException tagged with the static route label); tests inject
+   * a spy. Before this, the catch only console.error'd, so a Prisma outage
+   * behind any wrapped route was a generic 500 nobody was told about.
+   */
+  capture?: (context: string, error: unknown) => void;
+}
+
 export function withApiHandler<T extends unknown[]>(
   handler: RouteHandler<T>,
   context: string,
+  deps: ApiHandlerDeps = {},
 ): RouteHandler<T> {
+  const capture = deps.capture ?? captureApiHandlerFailure;
   return async (req: NextRequest, ...args: T): Promise<NextResponse> => {
     try {
       return await handler(req, ...args);
     } catch (err) {
       console.error(`[api] ${context} unhandled error:`, err);
+      try { capture(context, err); } catch { /* monitoring never turns one 500 into another */ }
       return NextResponse.json(
         { error: "Internal server error" },
         { status: 500 },
