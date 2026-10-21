@@ -24,7 +24,6 @@ const drawer = read('components/transactions/TransactionDetailDrawer.tsx');
 const hook = read('components/transactions/useTransactionDrawer.ts');
 const chrome = read('components/ui/DashboardChrome.tsx');
 const spacePanel = read('components/dashboard/widgets/SpaceTransactionsPanel.tsx');
-const debt = read('components/dashboard/DebtClient.tsx');
 
 test('drawer uses the Atlas RightPanel primitive (contextual detail, not a modal)', () => {
   assert.match(drawer, /from "@\/components\/atlas\/panels"/);
@@ -64,11 +63,10 @@ test('the drawer is mounted exactly once, in DashboardChrome, under Suspense', (
   assert.match(chrome, /<Suspense fallback=\{null\}>/);
   // No per-surface mount — the shell owns the single instance.
   assert.ok(!spacePanel.includes('<TransactionDetailDrawer'));
-  assert.ok(!debt.includes('<TransactionDetailDrawer'));
 });
 
 test('every transaction surface calls the shared opener (openTransaction(tx.id))', () => {
-  for (const [name, src] of [['Space', spacePanel], ['Debt', debt]] as const) {
+  for (const [name, src] of [['Space', spacePanel]] as const) {
     assert.match(src, /useOpenTransaction/, `${name} must import the shared opener`);
     assert.match(src, /openTransaction\(tx\.id\)/, `${name} rows must call the shared opener`);
   }
@@ -77,7 +75,7 @@ test('every transaction surface calls the shared opener (openTransaction(tx.id))
 test('surfaces do not reimplement the drawer/content or fetch logic', () => {
   // The drawer is the ONLY consumer of the detail content + the endpoint.
   assert.match(drawer, /export function TransactionDetailDrawer/);
-  for (const [name, src] of [['Space', spacePanel], ['Debt', debt]] as const) {
+  for (const [name, src] of [['Space', spacePanel]] as const) {
     assert.ok(!src.includes('TransactionDetailContent'), `${name} must not import the detail content`);
     assert.ok(!src.includes('buildTransactionDetailSections'), `${name} must not build sections`);
     assert.ok(!src.includes('/api/transactions/'), `${name} must not fetch the detail endpoint directly`);

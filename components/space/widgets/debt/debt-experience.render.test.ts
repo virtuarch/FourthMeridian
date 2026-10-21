@@ -364,11 +364,11 @@ console.log("D. REDUNDANT INTEREST / APR / MINIMUM-PAYMENT SURFACES REMOVED");
     /function handleInput[\s\S]*?setAmount\(/.test(plannerSrc) && /function handleSlider[\s\S]*?setAmount\(/.test(plannerSrc)
       && plannerSrc.includes("planPayoff({ liabilities, payment: amount, startISO })"));
 
-  const legacy = code("components/dashboard/DebtClient.tsx");
-  check("legacy credit page: no APR input", !legacy.includes("debtForm.apr") && !legacy.includes(">APR %<"));
-  check("legacy credit page: no minimum-payment input or display", !/minimumPayment/.test(legacy) && !legacy.includes("Min Payment"));
-  check("legacy credit page: its profile save cannot write an APR",
-    /JSON\.stringify\(\{ dueDay, statementCloseDay, promoAprEndDate, notes \}\)/.test(legacy));
+  // RETIRE-CREDIT (2026-10-22) — the legacy Credit page and its DebtClient are
+  // DELETED (owner decision); the Debt workspace is the one debt surface.
+  check("the legacy credit page and DebtClient are gone",
+    !existsSync(join(ROOT, "components/dashboard/DebtClient.tsx"))
+      && !existsSync(join(ROOT, "app/(shell)/dashboard/credit/page.tsx")));
 
   // No other client file writes an APR: the debt-profile route has exactly the
   // callers below (the AI knowledge-gap card answers a question the MODEL asked;
@@ -386,7 +386,6 @@ console.log("D. REDUNDANT INTEREST / APR / MINIMUM-PAYMENT SURFACES REMOVED");
     "components/space/widgets/debt/DebtAccountDetail.tsx",
     "components/space/widgets/debt-perspective-adapters.tsx",
     "components/space/widgets/debt-adapters.tsx",
-    "components/dashboard/DebtClient.tsx",
   // A WRITE is the save helper or a request body carrying `apr` — reading
   // `interestRate` into the aggregate (the planner does) is not one.
   ].filter((f) => /saveAccountApr|JSON\.stringify\(\{[^}]*\bapr\b/.test(code(f)));

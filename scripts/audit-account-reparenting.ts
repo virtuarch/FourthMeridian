@@ -762,7 +762,6 @@ const COUNTERPARTY_REFERENCES: Readonly<Record<string, CpRole>> = {
   "lib/ai/assemblers/transactions.ts":                   "READ",
   "lib/ai/brief/recent-activity.ts":                     "READ",
   "lib/ai/conversation/tools.ts":                        "READ",
-  "components/dashboard/DebtClient.tsx":                 "UI",
   "components/dashboard/widgets/SpaceTransactionsPanel.tsx": "UI",
   "components/space/widgets/TransactionSliceDrawer.tsx": "UI",
   "components/transactions/TransactionDetailDrawer.tsx": "UI",
