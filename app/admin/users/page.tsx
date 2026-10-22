@@ -46,6 +46,8 @@ const WS_ROLE_PILL: Record<string, string> = {
 export default function AdminUsersPage() {
   const [users,       setUsers]       = useState<User[]>([]);
   const [loading,     setLoading]     = useState(true);
+  // UI-022 — the API returns at most 200 rows and says so; never present a capped list as the whole.
+  const [truncated,   setTruncated]   = useState(false);
   const [search,      setSearch]      = useState("");
   const [roleFilter,  setRoleFilter]  = useState("");
   const [totpFilter,  setTotpFilter]  = useState("");
@@ -54,7 +56,7 @@ export default function AdminUsersPage() {
   useEffect(() => {
     fetch("/api/admin/users")
       .then((r) => r.json())
-      .then((d) => setUsers(d.users ?? []))
+      .then((d) => { setUsers(d.users ?? []); setTruncated(d.truncated === true); })
       .finally(() => setLoading(false));
   }, []);
 
@@ -92,6 +94,9 @@ export default function AdminUsersPage() {
           <p className="text-sm text-gray-400 mt-0.5">
             {loading ? "Loading…" : `${filtered.length} of ${users.length} user${users.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
           </p>
+          {truncated && (
+            <p className="text-xs text-amber-400" data-truncated-hint>Showing the newest 200 users. Older accounts are not listed here.</p>
+          )}
         </div>
         <button
           onClick={() => setShowFilters((v) => !v)}
