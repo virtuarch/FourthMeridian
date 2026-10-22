@@ -165,7 +165,7 @@ So the design splits in two:
 | **A3 rest** | PITR for Production (G0c); a timed restore if wanted | decide |
 | **D12 full** | Choose a database: option A (free; owner creates the project and confirms no Marketplace env injection) or B/C (paid) | choose + create |
 | **D14** | Confirm `PLAID_ENV=sandbox`, the OpenAI project for Preview, and the Resend key scope; re-enter provider keys at `Preview@v2.6` if they are to leave generic Preview | read Vercel dashboard |
-| **A5** | Preview migrations (runbook) | not approved |
+| **A5** | Preview migrations (runbook) | ✅ DONE 2026-10-22 (doc 18) |
 | **A6** | Merge PR #1; the first `v2.6` push is the GitHub-side trusted-health test | not approved |
 | **A7** | Browser pass | after Gate 0 |
 | **cleanup** | Branch `probe/vercel-probe-denial` deleted; its Vercel Preview deployment (a build of `v2.6` code) and its GitHub deployment records remain | owner may delete the deployment |

@@ -6,8 +6,12 @@ Everything here needs owner credentials, a remote setting, a live environment, c
 
 1. Review `remediation/beta-1` (local). Integration HEAD and gates: `04` §3, `MORNING-HANDOFF.md`.
 2. Push it and **read the GitHub run on the exact SHA** (three jobs; the `test` job now includes `Dependency audit (production, high+)`). Local `npm run ci` passed every job at `01098bd`; GitHub has never seen this SHA.
-3. Merge into `v2.6` by the owner's chosen route (PR recommended), let Preview deploy, then:
-   - apply the 9 new migrations on Preview with the guarded `npm run db:migrate:safe` (backup first): `20261022000000` … `20261022001000`. **DB-006** (`ALTER ROLE … SET statement_timeout`) may need manual application if the Supabase migration role lacks `ALTER ROLE`; the migration downgrades to a NOTICE in that case;
+3. ✅ **Preview migrations DONE (A5, 2026-10-22 19:29 UTC, doc 18).**
+   - The nine (`20261022000000` … `20261022001000`) were applied with `npm run db:migrate:safe` after a restore-verified dump.
+   - Preview now has 135 applied; data unchanged.
+   - DB-006 applied directly (no NOTICE).
+   - `preview-app` (`cde8fa0`) is healthy on the migrated schema.
+4. Merge PR #1 into `v2.6` (**A6, still needs owner approval**), let Preview deploy, then:
    - re-seed platform sections if any new section was added (`scripts/seed-platform-spaces.ts`);
    - write `registration_mode` explicitly if open registration is wanted on Preview (code default is now `invite_only`).
 
@@ -53,3 +57,5 @@ Review three texts drafted by the program: the AI legal page enumeration of what
 ## E. Not performed by rule
 
 Push, merge to `main`/`v2.6`, deploy, migrations on Preview/Production, environment variables, Plaid/identity configuration, Docker volume removal, beta invitations.
+
+_Exception, owner-approved:_ the Preview migrations (A5, 2026-10-22, doc 18). Production migrations remain not performed.
