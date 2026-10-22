@@ -12,6 +12,8 @@
  * Run: npx tsx scripts/post-deploy-smoke.test.ts
  */
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { bypassFor, classifyProbe, isVercelProtection, mayCarryBypass, targetFor, VERDICT } from "./post-deploy-smoke.mjs";
 
 let failures = 0, passes = 0;
@@ -94,6 +96,13 @@ console.log("each Vercel project gets its own bypass secret (the two values diff
   check("site deployment ⇒ the site secret", bypassFor("Preview – fourth-meridian-site", env) === "site-secret");
   check("never the other project's secret", bypassFor("Preview – fourth-meridian-site", { VERCEL_AUTOMATION_BYPASS_SECRET_APP: "app-secret" }) === "");
   check("absent ⇒ empty (probe stays UNVERIFIED behind protection)", bypassFor("Preview – fintracker1", {}) === "");
+}
+
+console.log("workflow gate: only Vercel's deployments are probed");
+{
+  const wf = readFileSync(path.join(process.cwd(), ".github/workflows/post-deploy-smoke.yml"), "utf8");
+  check("job if: requires creator vercel[bot] (GitHub's vercel-probe deployment is not probed)",
+    /if:\s*github\.event\.deployment_status\.state == 'success' && github\.event\.deployment\.creator\.login == 'vercel\[bot\]'/.test(wf));
 }
 
 console.log(`\n${passes} passed, ${failures} failed`);

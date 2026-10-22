@@ -19,7 +19,24 @@
 //   no deployment at all within the wait → exit 1 (nothing was verified).
 // Plain Node, no dependencies; talks to the GitHub REST API with GITHUB_TOKEN.
 
-import { bypassFor, probeDeployment, VERDICT } from "./post-deploy-smoke.mjs";
+import { bypassFor, probeDeployment, targetFor, VERDICT } from "./post-deploy-smoke.mjs";
+
+/**
+ * Targets every v2.6 / main commit MUST have a Vercel deployment for. The app
+ * (fintracker1) builds on every commit; the site may be cancelled by its
+ * Ignored Build Step, which still records a deployment, but it is not required.
+ * 2026-10-22, first real run (0773008): the site's deployment was recorded
+ * ~20 s after the push and the app's minutes later, so "something seen,
+ * nothing pending" ended the wait with only the site probed — a false green
+ * for the app. The wait now ends only once every required target is seen.
+ */
+export const REQUIRED_TARGETS = Object.freeze(["app"]);
+
+/** Pure: required targets with no Vercel deployment among `deployments`. */
+export function missingRequiredTargets(deployments, required = REQUIRED_TARGETS) {
+  const seen = new Set(deployments.filter((d) => d.creator === "vercel[bot]").map((d) => targetFor(d.environment).kind));
+  return required.filter((t) => !seen.has(t));
+}
 
 const TERMINAL_OK = new Set(["success"]);
 const TERMINAL_BAD = new Set(["failure", "error"]);
@@ -74,13 +91,15 @@ async function main() {
   console.log(`commit ${sha} on ${process.env.GITHUB_REF ?? "?"}; waiting up to ${waitMs / 1000}s for its Vercel deployments`);
 
   const deadline = Date.now() + waitMs;
-  let plan;
+  let plan, missing = [];
   for (;;) {
-    plan = planFromDeployments(await readDeployments(repo, sha, token));
+    const deployments = await readDeployments(repo, sha, token);
+    plan = planFromDeployments(deployments);
+    missing = missingRequiredTargets(deployments);
     const seen = plan.probe.length + plan.failed.length + plan.skipped.length + plan.pending.length;
-    if (seen > 0 && plan.pending.length === 0) break;
+    if (seen > 0 && plan.pending.length === 0 && missing.length === 0) break;
     if (Date.now() > deadline) break;
-    console.log(`  ${seen} deployment(s) seen, ${plan.pending.length} still pending — re-reading in 20 s`);
+    console.log(`  ${seen} deployment(s) seen, ${plan.pending.length} still pending${missing.length ? `, no ${missing.join("/")} deployment yet` : ""} — re-reading in 20 s`);
     await new Promise((r) => setTimeout(r, 20_000));
   }
 
@@ -90,6 +109,7 @@ async function main() {
     console.log(`::error::no Vercel deployment reached a terminal state for ${sha} — nothing was verified`);
     return 1;
   }
+  for (const t of missing) { bad++; lines.push(`- ${t}: no Vercel deployment recorded for this commit by the deadline — NOT verified`); }
   for (const d of plan.pending) { bad++; lines.push(`- ${d.environment}: still pending at the deadline — NOT verified`); }
   for (const d of plan.failed) { bad++; lines.push(`- ${d.environment}: deployment ${d.latestStatus.state} (${d.latestStatus.description})`); }
   for (const d of plan.skipped) lines.push(`- ${d.environment}: SKIPPED — ${d.latestStatus?.state} (${d.latestStatus?.description})`);

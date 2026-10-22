@@ -54,7 +54,11 @@ concurrency:
 jobs:
   smoke:
     name: Deployment health
-    if: github.event.deployment_status.state == 'success'
+    # Vercel's deployments only. trusted-deployment-health.yml declares
+    # `environment: vercel-probe`, so GitHub records a deployment of its own
+    # whose status URL is the Actions run page; probing that answered 404 and
+    # read as UNHEALTHY on the first v2.6 push (2026-10-22, run 39846621920).
+    if: github.event.deployment_status.state == 'success' && github.event.deployment.creator.login == 'vercel[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
