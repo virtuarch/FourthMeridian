@@ -217,8 +217,9 @@ export async function DELETE(
   // observed and none written ⇒ raises.
   const scope = { id: inviteId, spaceId };
   const eligible = await withTenantDb(auth.user.id, async (tx) => {
+    // The audit row's facts are read first — the row is gone after the delete.
     const target = await tx.spaceInvite.findFirst({ where: scope, select: { invitedUserId: true, role: true, status: true } });
-    const observed = target ? 1 : 0;
+    const observed = await tx.spaceInvite.count({ where: scope });
     const { count } = await tx.spaceInvite.deleteMany({ where: scope });
     assertEveryObservedRowWasWritten(
       { table: "SpaceInvite", operation: "delete", scope: "one invite id in this Space" },
@@ -227,7 +228,7 @@ export async function DELETE(
     );
     // A7 — the invite row is hard-deleted, so the audit row is its only trace;
     // written in the SAME transaction, so a cancel is never unrecorded.
-    if (target) {
+    if (target && count > 0) {
       await tx.auditLog.create({
         data: {
           userId:  auth.user.id,
