@@ -1,6 +1,6 @@
 {
   "note": "RLS-4 ratchet. Runtime-reachable files still reaching the database through the migration principal (@/lib/db `db`). This set may SHRINK freely as adoption proceeds; it may never GROW. Regenerate with `npx tsx scripts/audit-db-authority.ts --write-baseline`, and say in the commit why anything added is justified.",
-  "generatedAt": "2026-10-04",
+  "generatedAt": "2026-10-22",
   "count": 163,
   "files": [
     "app/(shell)/dashboard/platform/[area]/page.tsx",
@@ -201,7 +201,7 @@
     "lib/snapshots/regenerate-history.ts": 1,
     "lib/snapshots/space-accounts.ts": 1
   },
-  "implicitOwnerCallCount": 64,
+  "implicitOwnerCallCount": 58,
   "implicitOwnerCalls": [
     "app/api/accounts/wallet/route.ts -> alignWalletProviderSpine",
     "app/api/accounts/wallet/route.ts -> alignWalletProviderSpine",
@@ -210,12 +210,6 @@
     "app/api/plaid/investments/enable/route.ts -> withPlaidItemSyncLock",
     "app/api/plaid/refresh/route.ts -> setPlaidItemHealth",
     "app/api/plaid/refresh/route.ts -> withPlaidItemSyncLock",
-    "app/api/plaid/resume-sync/route.ts -> setPlaidItemHealth",
-    "app/api/plaid/resume-sync/route.ts -> syncTransactionsForItem",
-    "app/api/plaid/resume-sync/route.ts -> withPlaidItemSyncLock",
-    "app/api/plaid/sync/route.ts -> setPlaidItemHealth",
-    "app/api/plaid/sync/route.ts -> syncTransactionsForItem",
-    "app/api/plaid/sync/route.ts -> withPlaidItemSyncLock",
     "app/api/platform/platform-ops/connections/[id]/request-reauth/route.ts -> setPlaidItemHealth",
     "app/api/platform/platform-ops/connections/[id]/resync/route.ts -> setPlaidItemHealth",
     "app/api/platform/platform-ops/connections/[id]/resync/route.ts -> syncTransactionsForItem",
