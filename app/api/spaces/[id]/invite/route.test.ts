@@ -71,8 +71,8 @@ async function main() {
     t.check("a second while PENDING → 409", (await invite("admin", w.S, { username: "loner" })).status === 409);
     t.check("still exactly one invite row", fake.rows("SpaceInvite", { invitedUserId: w.ids.loner }).length === 1);
     const caps = await invite("owner", w.S, { username: "Loner" });
-    t.known("a username typed with capitals finds the (lower-cased) account", caps.status !== 404,
-      "J-D3: invite looks the username up case-sensitively; registration stores it lower-cased");
+    // J-D3 FIXED: the lookup lower-cases like registration does.
+    t.check("a username typed with capitals finds the (lower-cased) account", caps.status !== 404, caps.status);
   }
 
   t.section("4. a LEFT member and a DECLINED invite can be re-invited (upsert resets the row)");

@@ -89,7 +89,8 @@ export async function POST(
   // ⚠️ DELIBERATELY NOT withTenantDb — see the header: this is the one read in
   // the route that is about somebody other than the caller.
   const targetUser = await db.user.findUnique({
-    where:  { username: username.trim().replace(/^@/, "") },
+    // J-D3: usernames are stored lower-case at registration, so the lookup is too.
+    where:  { username: username.trim().replace(/^@/, "").toLowerCase() },
     select: { id: true, name: true, username: true, email: true },
   });
   if (!targetUser) {
