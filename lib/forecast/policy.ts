@@ -99,8 +99,8 @@
 import { money } from './_num';
 import { ComponentState } from '../ai/economic-concepts';
 import {
-  AmountBasis, EventProvenance, composeFutureCash,
-  type AmountBasisKind, type CashComposition, type EventAmount, type FlowRoleKind,
+  AmountBasis, EventProvenance,
+  type AmountBasisKind, type EventAmount, type FlowRoleKind,
   type FutureCashEvent,
 } from './future-cash-event';
 import { PeriodBasis, type PeriodBasisKind } from './spending-baseline';

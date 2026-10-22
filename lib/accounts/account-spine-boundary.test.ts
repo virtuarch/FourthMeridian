@@ -51,7 +51,6 @@
  * that the orphan gate's own connection can see.
  */
 
-import { DuplicateDetectionSource } from "@prisma/client";
 import { resolveAccountByFingerprint } from "./reconcile";
 
 let failures = 0;

@@ -27,7 +27,6 @@ const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])
 const near = (a: number | null, b: number, eps = 1e-9) => a !== null && Math.abs(a - b) < eps;
 
 const JULY = monthCycle("2026-07");
-const AUG  = monthCycle("2026-08");
 let n = 0;
 const item = (o: Partial<PlaidItemFact> = {}): PlaidItemFact => ({
   id: `i${++n}`, externalItemId: `real_${n}`, createdAt: "2026-06-01",
