@@ -45,7 +45,7 @@ Counts at baseline: P0 0 · P1 34 · P2 77 · P3 73 (static); runtime reclassifi
 | OBS-004 | P1 (during beta) | — | `lib/alerts/rules.ts` | no sync-incident rule | E | `sync-incident-critical` rule; per-Item dedupe | rule test | — | RESOLVED | E sync-incident-critical |  | — |
 | OPS-001 | P1 before ~50 Items | — | `jobs/sync-banks.ts` | no budget/continuation | C | time budget + deferral + order by `lastSuccessfulSyncAt`; stale-run finaliser (OPS-006) | unit test with fake clock | — | RESOLVED | 923aec8 |  | — |
 | OPS-013 / OPS-015 / DB-007 | P1 | UNVERIFIED | Production | cutover not executed | OWNER | runbook/checklist in `11` | — | — | OWNER | production-cutover-checklist.md, backup-restore-verification.md |  | G0 |
-| SEC-AI-011 | P1 (process) | — | STATUS.md | behind HEAD | Orchestrator | re-baseline at the end | — | all | PENDING (final step) | — |  | G13 |
+| SEC-AI-011 | P1 (process) | — | STATUS.md | behind HEAD | Orchestrator | re-baseline at the end | — | all | RESOLVED (local); GitHub CI record after owner push | STATUS.md §3 row + header (this branch) |  | G13 |
 
 ## P2 (77)
 
