@@ -28,7 +28,7 @@ const WINDOWS: readonly { value: AiWindow; label: string }[] = [
 ];
 
 const FOOTNOTE =
-  "Dollars are estimates from the code-owned rate card applied to recorded tokens (cached prompt tokens at the cached rate). The ledger records billed, returned calls only — a timeout writes no row — and carries no user or Space identity by design.";
+  "Dollars are estimates from the code-owned rate card applied to recorded tokens (cached prompt tokens at the cached rate). The figures here are RETURNED calls; the ledger also records zero-token failure rows (failed, timed out, rate-limited, quota), which the AI Overview tile and the provider-failing alert count. The ledger carries no user or Space identity by design.";
 
 const usd = (v: number | null) => (v === null ? null : `$${v.toFixed(v < 1 ? 4 : 2)}`);
 const tokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)} M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)} k` : String(n));

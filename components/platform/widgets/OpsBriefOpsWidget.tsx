@@ -29,7 +29,7 @@ const STATE_WORD: Record<BriefRowState, string> = { GENERATED: "Generated", FAIL
 const STATE_TOKEN: Record<BriefRowState, string> = { GENERATED: TONE_COLOR.ok, FAILED: TONE_COLOR.bad, IN_PROGRESS: TONE_COLOR.info, EMPTY: TONE_COLOR.muted };
 
 const FOOTNOTE =
-  "States are derived from the Brief rows (generated / failed / claimed / version). Cost is the joined invocation priced by the rate card — exact per successful generation. Reuse of a cached Brief is not counted, generation duration is not persisted, and a failed attempt's cost is unknown.";
+  "States are derived from the Brief rows (generated / failed / claimed / version). Cost is the joined invocation priced by the rate card — an estimate per successful generation, not a bill. Reuse of a cached Brief is not counted, generation duration is not persisted, and a failed attempt's cost is unknown.";
 
 const usd = (v: number | null) => (v === null ? null : `$${v.toFixed(4)}`);
 
@@ -77,7 +77,7 @@ function BriefBody({ window }: { window: AiWindow }) {
           <GroupLabel hint="Invocations joined 1:1 to a generated Brief by correlationId, priced by the rate card.">Generation economics</GroupLabel>
           <div className="flex flex-col gap-1.5">
             <KeyRow label="Generations priced" value={`${e.correlated.invocations - e.correlated.unpricedInvocations} of ${e.correlated.invocations}`} />
-            <KeyRow label="Spend (exact, successes)" value={usd(e.correlated.usd) ?? <Unavailable reason="nothing priced" />} />
+            <KeyRow label="Spend (estimate, successes)" value={usd(e.correlated.usd) ?? <Unavailable reason="nothing priced" />} />
             <KeyRow label="Mean provider latency" value={e.correlated.meanLatencyMs === null ? "—" : `${(e.correlated.meanLatencyMs / 1000).toFixed(1)} s`} />
             <KeyRow label="Surface total (all brief calls)" value={`${e.surfaceTotal.invocations} · ${usd(e.surfaceTotal.usd) ?? "unpriced"}`} />
             <KeyRow label="Generated without a join" value={<span style={e.uncorrelatedGenerations ? { color: TONE_COLOR.warn } : undefined}>{e.uncorrelatedGenerations}</span>} />
