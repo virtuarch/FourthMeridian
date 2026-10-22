@@ -1,0 +1,108 @@
+name: Post-deploy smoke
+
+# TEST-006 — the first automated check that a deployment is serving the code
+# it claims to. Vercel's Git integration creates a GitHub Deployment per
+# build and marks it with a `deployment_status`; on `success` this job curls
+# the deployment's own `/api/health` (OPS-1 S6: status, db ok, short commit)
+# and fails when the app is not up, the database ping is not ok, or the
+# commit the app reports is not the SHA that was deployed.
+#
+# It references NO secret and sends nothing but a GET: /api/health is the
+# unauthenticated uptime probe, rate-limited per IP. Preview deployments sit
+# behind Vercel SSO protection (environment-separation.md §2), so a 302 /
+# 401 there is reported as "protected — not probed" and does not fail; the
+# check is decisive on hosts the public can reach (Production).
+#
+# A red run here is an alarm, not a gate: Vercel has already aliased the
+# deployment. The owner's response is the incident runbook
+# (docs/operations/incident-response.md) and, if needed, `vercel promote` of
+# the previous deployment (production-cutover-plan.md §9).
+
+on:
+  deployment_status:
+
+permissions:
+  contents: read
+  deployments: read
+
+concurrency:
+  group: smoke-${{ github.event.deployment.id }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Health and commit identity
+    if: github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe /api/health on the deployment
+        env:
+          DEPLOYMENT_URL: ${{ github.event.deployment_status.environment_url || github.event.deployment_status.target_url }}
+          DEPLOYED_SHA: ${{ github.event.deployment.sha }}
+          ENVIRONMENT: ${{ github.event.deployment.environment }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOYMENT_URL}" ]; then
+            echo "::error::deployment_status carried no environment_url/target_url — nothing to probe"
+            exit 1
+          fi
+          URL="${DEPLOYMENT_URL%/}/api/health"
+          echo "environment: ${ENVIRONMENT}"
+          echo "deployed sha: ${DEPLOYED_SHA}"
+          echo "probe: ${URL}"
+
+          # Three attempts, 10 s apart: a just-aliased deployment can take a
+          # moment to serve its first cold request.
+          BODY=""; CODE="000"
+          for attempt in 1 2 3; do
+            CODE="$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 20 -H 'Accept: application/json' "${URL}" || echo 000)"
+            BODY="$(cat /tmp/health.json 2>/dev/null || true)"
+            echo "attempt ${attempt}: HTTP ${CODE}"
+            case "${CODE}" in
+              200) break ;;
+              301|302|307|308|401) ;;   # SSO-protected preview: decided below
+              *) sleep 10 ;;
+            esac
+          done
+
+          case "${CODE}" in
+            301|302|307|308|401)
+              echo "deployment is behind Vercel deployment protection (HTTP ${CODE}) — not probed" >> "$GITHUB_STEP_SUMMARY"
+              echo "::notice::${ENVIRONMENT}: protected deployment (HTTP ${CODE}); health not probed"
+              exit 0 ;;
+            200) ;;
+            *)
+              echo "::error::${URL} answered HTTP ${CODE}: ${BODY}"
+              exit 1 ;;
+          esac
+
+          STATUS="$(echo "${BODY}" | jq -r '.status // empty')"
+          DB="$(echo "${BODY}" | jq -r '.db // empty')"
+          COMMIT="$(echo "${BODY}" | jq -r '.commit // empty')"
+          echo "status=${STATUS} db=${DB} commit=${COMMIT}"
+
+          if [ "${STATUS}" != "ok" ]; then
+            echo "::error::health status is '${STATUS}' (db=${DB}), expected ok"
+            exit 1
+          fi
+          # The route reports the first 7 characters of VERCEL_GIT_COMMIT_SHA, or
+          # null when Vercel did not provide one. When present it must be the
+          # prefix of the deployed SHA — anything else means the alias is
+          # serving a different build than the one GitHub recorded.
+          if [ -n "${COMMIT}" ] && [ "${COMMIT}" != "null" ]; then
+            if [ "${DEPLOYED_SHA#"${COMMIT}"}" = "${DEPLOYED_SHA}" ]; then
+              echo "::error::health reports commit ${COMMIT}, which is not a prefix of the deployed SHA ${DEPLOYED_SHA}"
+              exit 1
+            fi
+            echo "commit identity matches (${COMMIT} ⊂ ${DEPLOYED_SHA})"
+          else
+            echo "::warning::health reported no commit; identity not verified for this deployment"
+          fi
+          {
+            echo "### Post-deploy smoke — ${ENVIRONMENT}"
+            echo ""
+            echo "- url: ${URL}"
+            echo "- status: ${STATUS}, db: ${DB}"
+            echo "- commit: ${COMMIT:-n/a} (deployed ${DEPLOYED_SHA})"
+          } >> "$GITHUB_STEP_SUMMARY"
