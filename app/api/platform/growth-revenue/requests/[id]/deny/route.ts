@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { BetaAccessRequestStatus } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -54,7 +55,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       userId:             auth.user.id,
       performedByAdminId: auth.user.id,
       action:             AuditAction.BETA_ACCESS_DENIED,
-      metadata:           { betaRequestId: id, email: request.email },
+      metadata:           { betaRequestId: id, emailHash: auditEmailHash(request.email) },
     },
   });
 

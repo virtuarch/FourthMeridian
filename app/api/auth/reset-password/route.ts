@@ -17,6 +17,7 @@ import { formatDateTime } from "@/lib/format";
 import { limitByIp } from "@/lib/rate-limit";
 import { createNotification } from "@/lib/notifications/create";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { getMinPasswordLength } from "@/lib/platform-settings";
 
 export async function POST(req: NextRequest) {
@@ -83,7 +84,7 @@ export async function POST(req: NextRequest) {
       data: {
         userId: user.id,
         action: AuditAction.PASSWORD_RESET_COMPLETE,
-        metadata: { email: user.email, revokedSessions, emailStatus: emailResult.status },
+        metadata: { emailHash: auditEmailHash(user.email), revokedSessions, emailStatus: emailResult.status },
       },
     });
 
