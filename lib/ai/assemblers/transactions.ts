@@ -89,6 +89,7 @@ import { isIncome, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue
 import {
   foldEconomicRow, clampEconomicSpend, economicSideOf, foldCategorySpend,
   type EconomicAccumulator, type CategoryLedgerRow, type CategorySpendLine,
+  clampEconomicIncome,
 } from '@/lib/transactions/cash-flow';
 import { categoryDefinition } from '@/lib/transactions/category-vocabulary';
 // REVIEW-3 C-2 — the canonical income taxonomy, run over the SAME evidence the
@@ -950,7 +951,9 @@ async function assembleTransactions(
     ledgerRows.push({ id: txn.id, category: txn.category, flowType: txn.flowType, amount: amt });
   }
 
-  const incomeTotal  = eco.income;
+  // FIN-003: the fold sums INCOME signed (a clawback nets); the window total is
+  // floored at 0 like refunds on spend, so a clawback-only month never reads negative.
+  const incomeTotal  = clampEconomicIncome(eco.income);
   const expenseTotal = eco.spendGross; // GROSS — a named, deliberately different measure (see payload)
   const refundTotal  = eco.refunds;
 

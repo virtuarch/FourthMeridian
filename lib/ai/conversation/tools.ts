@@ -153,7 +153,7 @@ import {
 import {
   readCheckpoint, compareToStatement, diffBasis, attributeInFlightVariance, attributionSideFromCheckpoint,
 } from './reconcile';
-import { incomeCompleteness, type IncomeCompleteness } from '@/lib/ai/forecast/income-completeness';
+import { incomeCompleteness, isOmittedLine, continuationOf, type IncomeCompleteness } from '@/lib/ai/forecast/income-completeness';
 // ── M1: measures & comparison ────────────────────────────────────────────────
 // ⚠️ THE ARITHMETIC LIVES IN `lib/ai/measures`, NOT HERE. Period resolution, the
 // measure, the comparison, the baselines and every derived figure are pure
@@ -940,6 +940,7 @@ const getIncome: ToolDefinition = {
         currency: s.amount?.assertable ? s.amount.currency : null,
         activity: s.activity.state,
         stillPaying: s.projectionEligible,
+        continuation: continuationOf(s),
         why: s.activity.reason,
         observationCount: s.observationCount,
         seriesTruncated: s.truncated,
@@ -1243,6 +1244,8 @@ const getBaselines: ToolDefinition = {
       label: s.label, cadence: s.cadence,
       typicalAmount: s.amount?.assertable ? s.amount.value : null,
       stillPaying: s.projectionEligible,
+      // FIN-001: a recently-silent / unobserved stream surfaces as `incomplete`, never a silent fall to MEASURED.
+      continuation: continuationOf(s),
     }));
     const half = resolvePeriod({ completeMonths: 6 }, ceiling);
     const income = resolveIncomeBaseline({
@@ -2086,16 +2089,20 @@ async function buildCashSpine(
  * arrived at the last observed amount. Nothing here chooses which is right.
  */
 function incompletenessBlock(income: IncomeCompleteness, closing: number) {
-  const omitted = income.streams.filter((l) => l.role === 'INCOME' && l.status === 'AMOUNT_UNESTABLISHED' && l.material);
+  // FIN-001: RECENTLY_SILENT / UNKNOWN streams are omitted exactly like AMOUNT_UNESTABLISHED ones.
+  const omitted = income.streams.filter((l) => l.role === 'INCOME' && isOmittedLine(l) && l.material);
   return {
     omittedStreams: omitted.map((l) => ({
       stream: l.stream, occurrencesInHorizon: l.occurrencesInHorizon, countedAt: 0,
       lastObserved: l.lastObserved, omittedAtLastObserved: l.omittedAtLastObserved ?? null,
+      status: l.status, silence: l.silence ?? null,
     })),
     endingCashIfOmittedArriveAtLastObserved: round2(closing + income.omittedAtLastObserved),
     meaning: '`endingCash` counts the streams above at $0: it is a LOWER BOUND for them, not the expected '
       + 'balance. Present it only together with `endingCashIfOmittedArriveAtLastObserved`, say which stream is '
-      + 'not counted and why (its amount is not established), and quote its observed deposits. Do not ask the '
+      + 'not counted and why from its `status` (AMOUNT_UNESTABLISHED: its amount is not established; '
+      + 'RECENTLY_SILENT: its latest scheduled payment has not arrived; UNKNOWN: the account\'s feed has not '
+      + 'reached its due date), and quote its observed deposits. Do not ask the '
       + 'user for income the platform already holds — at most ask which level applies.',
   };
 }
@@ -2106,7 +2113,8 @@ function projectionQualification(income: IncomeCompleteness | null): string {
   const deviates = counted.filter((l) => l.status === 'PRESENT_LATEST_DEVIATES');
   const parts: string[] = [];
   parts.push(income?.status === 'INCOMPLETE'
-    ? 'An INCOMPLETE estimate: at least one current income stream could not be priced and counts $0 in this '
+    ? 'An INCOMPLETE estimate: at least one current income stream is not counted (its amount is not '
+      + 'established, or a scheduled payment is late or not yet visible) and counts $0 in this '
       + 'figure (see `incomplete`). Do not present `endingCash` as the expected balance.'
     : 'An evidence-based estimate, not a guaranteed forecast.');
   parts.push(counted.length
@@ -2119,7 +2127,7 @@ function projectionQualification(income: IncomeCompleteness | null): string {
       + `established level ${l.level} and is NOT treated as the new level; if it is, the ${l.counted} projected `
       + `payment(s) change the figure by ${l.ifLatestIsNewLevel?.total} (\`latestPaymentDeviates\`)`);
   }
-  const minor = (income?.streams ?? []).filter((l) => l.status === 'AMOUNT_UNESTABLISHED' && !l.material);
+  const minor = (income?.streams ?? []).filter((l) => isOmittedLine(l) && !l.material);
   if (minor.length) {
     parts.push(`${minor.length} minor stream(s) with no established amount are not counted (at most `
       + `${round2(minor.reduce((n, l) => n + (l.omittedAtLastObserved ?? 0), 0))} at their last observed amounts)`);
@@ -4582,7 +4590,7 @@ const reconcileProjection: ToolDefinition = {
           incomeNow = incompletenessBlock(nowIncome, f.projection!.closing!);
         }
         // What today's income term IS, per stream — so an income line is described from these, not guessed.
-        incomeCountedNow = nowIncome?.streams.filter((l) => l.counted > 0 || l.status === 'AMOUNT_UNESTABLISHED')
+        incomeCountedNow = nowIncome?.streams.filter((l) => l.counted > 0 || isOmittedLine(l))
           .map((l) => ({ stream: l.stream, status: l.status, payments: l.counted, level: l.level,
             projectedTotal: l.projectedTotal })) ?? null;
       }
