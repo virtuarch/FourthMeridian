@@ -1,0 +1,58 @@
+name: Trusted deployment health
+
+# A4b — verifies the Vercel deployments of a commit pushed to v2.6 or main,
+# THROUGH Vercel Deployment Protection, with each project's own
+# automation-bypass secret. Logic: scripts/trusted-deployment-health.mjs
+# (planFromDeployments, unit-tested) + scripts/post-deploy-smoke.mjs (probe and
+# verdict, unit-tested).
+#
+# Secret containment — the reason this workflow exists separately from
+# post-deploy-smoke.yml:
+#   - The secrets live ONLY in the GitHub Environment `vercel-probe`, whose
+#     deployment-branch policy admits v2.6 and main and nothing else. GitHub
+#     evaluates that policy against the run's ref before the job starts.
+#   - This workflow triggers on push to v2.6/main only, so its ref is one of
+#     those branches. A copy of this file on a feature branch, a pull_request
+#     run, a workflow_dispatch from another ref, or a deployment_status run
+#     (whose ref is a commit SHA — Vercel creates deployments by SHA) is
+#     refused by the environment and never receives a secret. Verified with a
+#     canary secret before the real values were installed (doc 16 §10).
+#   - The secret is sent only as x-vercel-protection-bypass, only over https
+#     to *.vercel.app / *.fourthmeridian.com (mayCarryBypass), and only the
+#     matching project's secret (bypassFor). It is never printed.
+# Residual: anyone who can push to v2.6 or main can change this file there.
+# Branch rulesets (TEST-001, owner) close that; today the repository has one
+# collaborator (the owner).
+
+on:
+  push:
+    branches: [v2.6, main]
+
+permissions:
+  contents: read
+  deployments: read
+
+concurrency:
+  group: trusted-health-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Trusted deployment health
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: vercel-probe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/post-deploy-smoke.mjs
+            scripts/trusted-deployment-health.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Wait for this commit's Vercel deployments and probe each through protection
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERCEL_AUTOMATION_BYPASS_SECRET_APP: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET_APP }}
+          VERCEL_AUTOMATION_BYPASS_SECRET_SITE: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET_SITE }}
+        run: node scripts/trusted-deployment-health.mjs

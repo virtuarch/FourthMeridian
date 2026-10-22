@@ -76,9 +76,20 @@ console.log("CI hygiene (TEST-007 / TEST-012): least privilege, no runaway jobs,
   // The verdict moved into scripts/post-deploy-smoke.mjs (unit-tested in
   // post-deploy-smoke.test.ts): the inline version exited 0 on a Vercel 401.
   const secretsUsed = [...smoke.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-  check("post-deploy-smoke: the only secrets are the two per-project Vercel automation bypasses",
-    secretsUsed.length > 0 && secretsUsed.every((n) => n === "VERCEL_AUTOMATION_BYPASS_SECRET_APP" || n === "VERCEL_AUTOMATION_BYPASS_SECRET_SITE"),
-    JSON.stringify(secretsUsed));
+  check("post-deploy-smoke: holds NO secret (deployment_status refs are SHAs; no environment can admit them)",
+    secretsUsed.length === 0, JSON.stringify(secretsUsed));
+  const trusted = readFileSync(".github/workflows/trusted-deployment-health.yml", "utf8");
+  const onBlock = trusted.slice(trusted.indexOf("\non:"), trusted.indexOf("\npermissions:"));
+  check("trusted-deployment-health: triggers ONLY on push to v2.6/main",
+    /push:\n\s+branches: \[v2\.6, main\]/.test(onBlock)
+      && !/pull_request|workflow_dispatch|deployment_status|workflow_run|schedule/.test(onBlock), onBlock);
+  check("trusted-deployment-health: the job runs in the vercel-probe environment",
+    /\n    environment: vercel-probe\n/.test(trusted));
+  const tSecrets = [...trusted.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]).sort();
+  check("trusted-deployment-health: only the two per-project bypass secrets",
+    JSON.stringify(tSecrets) === JSON.stringify(["VERCEL_AUTOMATION_BYPASS_SECRET_APP", "VERCEL_AUTOMATION_BYPASS_SECRET_SITE"]), JSON.stringify(tSecrets));
+  check("trusted-deployment-health: read-only token, timeout set",
+    /permissions:\n  contents: read\n  deployments: read\n/.test(trusted) && /timeout-minutes:\s*\d+/.test(trusted));
   check("post-deploy-smoke: runs the tested classifier, nothing inline, with a timeout",
     /run: node scripts\/post-deploy-smoke\.mjs/.test(smoke) && !/curl /.test(smoke) && !/exit 0/.test(smoke) && /timeout-minutes/.test(smoke));
 }

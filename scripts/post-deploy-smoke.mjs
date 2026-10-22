@@ -118,29 +118,40 @@ async function probeOnce(url, bypass) {
   }
 }
 
-async function main() {
-  const base = (process.env.DEPLOYMENT_URL ?? "").replace(/\/$/, "");
-  const environment = process.env.ENVIRONMENT ?? "";
-  const deployedSha = process.env.DEPLOYED_SHA ?? "";
-  // One automation-bypass secret per Vercel project (they differ): the app's
-  // for fintracker1, the site's for fourth-meridian-site. Absent ⇒ UNVERIFIED
-  // on protected deployments, by design.
-  const bypass = bypassFor(environment, process.env);
-  if (!base) { console.log("::error::deployment_status carried no environment_url/target_url — nothing to probe"); return 1; }
+/**
+ * Probe one deployment and classify it. `bypass` is the project's secret or "".
+ * Three attempts, 10 s apart: a just-aliased deployment can take a moment to
+ * serve its first cold request. Only an UNHEALTHY answer is retried.
+ */
+export async function probeDeployment({ base, environment, deployedSha, bypass, log = console.log }) {
   const target = targetFor(environment);
-  const url = `${base}${target.path}`;
-  console.log(`environment: ${environment}\ntarget: ${target.kind}\ndeployed sha: ${deployedSha}\nprobe: ${url}\nbypass header: ${bypass ? "sent" : "not configured"}`);
-
-  // Three attempts, 10 s apart: a just-aliased deployment can take a moment to
-  // serve its first cold request. Only an UNHEALTHY answer is retried.
+  const url = `${base.replace(/\/$/, "")}${target.path}`;
+  log(`environment: ${environment}\ntarget: ${target.kind}\ndeployed sha: ${deployedSha}\nprobe: ${url}\nbypass header: ${bypass ? "sent" : "not configured"}`);
   let result;
   for (let attempt = 1; attempt <= 3; attempt++) {
     const res = await probeOnce(url, bypass);
     result = classifyProbe({ kind: target.kind, ...res, deployedSha, url });
-    console.log(`attempt ${attempt}: HTTP ${res.status} → ${result.verdict} (${result.reason})`);
+    log(`attempt ${attempt}: HTTP ${res.status} → ${result.verdict} (${result.reason})`);
     if (result.verdict !== VERDICT.UNHEALTHY) break;
     if (attempt < 3) await new Promise((r) => setTimeout(r, 10_000));
   }
+  return { ...result, url, environment };
+}
+
+async function main() {
+  const base = (process.env.DEPLOYMENT_URL ?? "").replace(/\/$/, "");
+  const environment = process.env.ENVIRONMENT ?? "";
+  const deployedSha = process.env.DEPLOYED_SHA ?? "";
+  // This entry point is the deployment_status workflow, which holds NO secret
+  // (a deployment's GitHub ref is its SHA, so no branch-restricted environment
+  // can admit it). Protected Previews are therefore UNVERIFIED here, by design;
+  // scripts/trusted-deployment-health.mjs verifies v2.6/main with the
+  // vercel-probe environment's per-project secrets. bypassFor() still honours
+  // the variables when a caller supplies them (local verification).
+  const bypass = bypassFor(environment, process.env);
+  if (!base) { console.log("::error::deployment_status carried no environment_url/target_url — nothing to probe"); return 1; }
+  const result = await probeDeployment({ base, environment, deployedSha, bypass });
+  const url = result.url;
 
   const summary = [`### Post-deploy smoke — ${environment}`, "", `- url: ${url}`, `- verdict: **${result.verdict}** — ${result.reason}`];
   if (result.status !== undefined) summary.push(`- status: ${result.status}, db: ${result.db}, commit: ${result.commit ?? "n/a"} (deployed ${deployedSha})`);
