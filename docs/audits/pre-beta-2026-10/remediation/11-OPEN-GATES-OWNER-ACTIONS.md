@@ -11,7 +11,7 @@ Everything here needs owner credentials, a remote setting, a live environment, c
    - Preview now has 135 applied; data unchanged.
    - DB-006 applied directly (no NOTICE).
    - `preview-app` (`cde8fa0`) is healthy on the migrated schema.
-4. Merge PR #1 into `v2.6` (**A6, still needs owner approval**), let Preview deploy, then:
+4. ✅ **PR #1 merged into `v2.6` (A6, 2026-10-22, `0773008`; follow-up fixes PRs #2–#4 → `7d1cee7`; doc 19).** Preview deployed and validated (A7: 49 PASS / 2 FAIL / 7 BLOCKED). Remaining from the original list:
    - re-seed platform sections if any new section was added (`scripts/seed-platform-spaces.ts`);
    - write `registration_mode` explicitly if open registration is wanted on Preview (code default is now `invite_only`).
 
@@ -32,8 +32,12 @@ Everything here needs owner credentials, a remote setting, a live environment, c
 | D11 | Docker: 22 anonymous volumes on this laptop were NOT touched; identify by Postgres catalog before any removal | CQ-016 | untouched |
 | D12 | Branch-deployment database isolation. **Interim applied 2026-10-22** (role URLs + `FM_RLS_STRICT` on generic Preview; `v2.6` and Production untouched, doc 17 §4). Full isolation needs a separate database (option A: a free project in the Vercel-Marketplace Free org, created by the owner; option B: a third project or a branch on Pro, about $10/month), plus a `v2.6`-scoped `DATABASE_URL`/`DIRECT_URL` pin first. | D12 | interim only |
 | D13 | `preview-app` login wall: **by design** (Standard Protection exempts production custom domains only) | D13 | closed, no change |
-| D14 | Preview provider credentials: confirm `PLAID_ENV=sandbox` and whether Preview's `OPENAI_API_KEY` is a non-production project. Both are Sensitive, so this is an owner check. If production, turn the AI kill switch ON for the browser pass. Removing provider keys from generic Preview first needs them re-entered at `Preview@v2.6` scope (v2.6 inherits them today). | A7 | open |
-| D15 | Preview registration: `preview-app` (`cde8fa0`) has no `registration_mode` row, so the old code default **open** applies until PR #1 lands (`invite_only` default) | SEC-008 | open on Preview |
+| D14 | **Verified 2026-10-22 (doc 19 §3): Plaid Sandbox (link-sandbox token), OpenAI `fourth-meridian-preview` pin; Resend key scope still unread.** Original: Preview provider credentials: confirm `PLAID_ENV=sandbox` and whether Preview's `OPENAI_API_KEY` is a non-production project. Both are Sensitive, so this is an owner check. If production, turn the AI kill switch ON for the browser pass. Removing provider keys from generic Preview first needs them re-entered at `Preview@v2.6` scope (v2.6 inherits them today). | A7 | open |
+| D15 | Preview registration: no `registration_mode` row; since PR #1 the code default is **`invite_only`** — verified live (A7 C1: no-invite and forged-invite registration both 403). Write an explicit row only if a different mode is wanted | SEC-008 | **closed** (invite_only by default) |
+| D16 | TOTP disable accepts the account password alone (route: "code OR password"). Require the current TOTP code (or a recovery code) to disable 2FA? | A7 B4 / BUG-4 (P2) | unchanged |
+| D17 | Production is live on `next` 16.2.7 (critical advisories 2026-10-22; exploitability unverified). Hotfix `main` now, or accept until the cutover | doc 20 §15 row 2 | **owner decision — urgent** |
+| D18 | Keep or remove the A7 test data on Preview (4 users, "A7 Shared Space", test imports/wallet, Resend-test-sink invites) | doc 19 §6 | kept |
+| D19 | A double-clicked waitlist approve sends two invites and invalidates the first link (approve = resend) | A7 I4 / BUG-5 (P3) | deferred |
 
 ## C. Counsel
 
