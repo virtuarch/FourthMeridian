@@ -109,6 +109,22 @@ function fail(lines: string[]): never {
   process.exit(1);
 }
 
+/**
+ * The throwaway Postgres image. Always ci.yml's (CI_POSTGRES.image) unless
+ * FM_CI_PG_IMAGE names another `postgres:<tag>` — a REHEARSAL knob (e.g.
+ * postgres:17.6, the Supabase server version) for proving migrations and the
+ * RLS suites on the hosted major. A run with the override is not evidence about
+ * GitHub CI, and the banner says so.
+ */
+const PG_IMAGE = (() => {
+  const o = process.env.FM_CI_PG_IMAGE?.trim();
+  if (!o) return CI_POSTGRES.image;
+  if (!/^postgres:[0-9][0-9A-Za-z.-]*$/.test(o)) fail([`FM_CI_PG_IMAGE must be postgres:<tag>, got "${o}"`]);
+  console.log(`[ci] REHEARSAL: throwaway Postgres image overridden to ${o} (ci.yml uses ${CI_POSTGRES.image}); `
+    + "this run is not GitHub-CI parity evidence.");
+  return o;
+})();
+
 /** Start the throwaway Postgres; return its URL. Throws (never falls back) on any problem. */
 function startThrowawayPostgres(): string {
   if (!sh("docker", ["info", "--format", "{{.ServerVersion}}"]).ok) {
@@ -122,9 +138,9 @@ function startThrowawayPostgres(): string {
     "-e", `POSTGRES_PASSWORD=${CI_POSTGRES.password}`,
     "-e", `POSTGRES_DB=${CI_POSTGRES.database}`,
     "-p", "127.0.0.1::5432",
-    CI_POSTGRES.image,
+    PG_IMAGE,
   ], { stdio: ["ignore", "pipe", "inherit"] });
-  if (!run.ok) throw new Error(`could not start ${CI_POSTGRES.image}: ${run.out}`);
+  if (!run.ok) throw new Error(`could not start ${PG_IMAGE}: ${run.out}`);
 
   // Ready on TCP, not just the socket: the image's init server listens on the
   // socket only, then restarts — a socket-level "ready" can precede that restart.
