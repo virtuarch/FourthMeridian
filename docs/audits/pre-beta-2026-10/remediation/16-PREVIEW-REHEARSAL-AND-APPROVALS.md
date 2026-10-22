@@ -187,6 +187,12 @@ Without the secrets, each was **UNVERIFIED**.
 
 ## 9. Next approval boundary
 
+> **Superseded by doc 17 §7 (2026-10-22, later):**
+> - A3 partly closed (PITR off).
+> - A4b done: the `vercel-probe` environment, denial proven, real secrets installed.
+> - D12 interim applied (full isolation awaits a database choice).
+> - The table below is kept for history.
+
 | # | Needed for | Scope |
 |---|---|---|
 | **A1b** | Push `9483231`, `7a81f9c` and this doc to PR #1 | Fast-forward from `0502dc7`; no force; CI re-runs. `Deployment health` stays red (UNVERIFIED) until A4b. |

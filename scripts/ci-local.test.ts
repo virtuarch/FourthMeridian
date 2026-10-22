@@ -76,7 +76,7 @@ console.log("CI hygiene (TEST-007 / TEST-012): least privilege, no runaway jobs,
   // The verdict moved into scripts/post-deploy-smoke.mjs (unit-tested in
   // post-deploy-smoke.test.ts): the inline version exited 0 on a Vercel 401.
   const secretsUsed = [...smoke.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-  check("post-deploy-smoke: holds NO secret (deployment_status refs are SHAs; no environment can admit them)",
+  check("post-deploy-smoke: holds NO secret (deployment_status runs the deployed commit's workflow file)",
     secretsUsed.length === 0, JSON.stringify(secretsUsed));
   const trusted = readFileSync(".github/workflows/trusted-deployment-health.yml", "utf8");
   const onBlock = trusted.slice(trusted.indexOf("\non:"), trusted.indexOf("\npermissions:"));

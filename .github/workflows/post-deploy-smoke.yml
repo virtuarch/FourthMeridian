@@ -27,10 +27,10 @@ name: Post-deploy smoke
 # is probed at "/" (the first version probed /api/health there, which would
 # have raised a false alarm on the first public site deploy).
 #
-# Secrets: NONE. Vercel creates each GitHub Deployment with ref = the commit
-# SHA, so a deployment_status run cannot be admitted by a branch-restricted
-# environment, and a repository secret here would be readable by any branch
-# that edits this file. Protected Previews are therefore UNVERIFIED (red) in
+# Secrets: NONE. deployment_status runs the workflow file from the deployed
+# commit, so a repository secret here would be readable by any branch that
+# edits this file; and Vercel creates each GitHub Deployment with ref = the
+# commit SHA, so its branch is GitHub's inference rather than ours to rely on. Protected Previews are therefore UNVERIFIED (red) in
 # this workflow by design; Production is public and is verified for real.
 # Trusted verification through protection: trusted-deployment-health.yml
 # (push to v2.6/main, `vercel-probe` environment).

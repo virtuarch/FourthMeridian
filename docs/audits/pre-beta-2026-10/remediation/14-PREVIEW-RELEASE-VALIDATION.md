@@ -1,5 +1,12 @@
 # 14 — Preview release validation (PR #1, pre-merge)
 
+> **Updates since this document:**
+> - Doc 16: the A2 rehearsal (passed).
+> - Doc 17: backups and PITR (PITR off), the `vercel-probe` environment with trusted health (denial proven), D12 interim (strict RLS for branch builds), and browser readiness gates.
+> - The health-check design in §1 is superseded by doc 17 §3:
+>   - `post-deploy-smoke` holds no secret;
+>   - trusted verification runs on push to `v2.6`/`main` in `vercel-probe`.
+
 **Date:** 2026-10-22.
 
 **Branch:** `remediation/beta-1`. PR #1 is open, **not merged**.

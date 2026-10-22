@@ -142,9 +142,10 @@ async function main() {
   const base = (process.env.DEPLOYMENT_URL ?? "").replace(/\/$/, "");
   const environment = process.env.ENVIRONMENT ?? "";
   const deployedSha = process.env.DEPLOYED_SHA ?? "";
-  // This entry point is the deployment_status workflow, which holds NO secret
-  // (a deployment's GitHub ref is its SHA, so no branch-restricted environment
-  // can admit it). Protected Previews are therefore UNVERIFIED here, by design;
+  // This entry point is the deployment_status workflow, which holds NO secret:
+  // it runs the workflow file from the deployed commit (any branch can edit it)
+  // and its ref is a SHA (Vercel). Protected Previews are therefore UNVERIFIED
+  // here, by design;
   // scripts/trusted-deployment-health.mjs verifies v2.6/main with the
   // vercel-probe environment's per-project secrets. bypassFor() still honours
   // the variables when a caller supplies them (local verification).

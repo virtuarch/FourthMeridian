@@ -14,9 +14,10 @@ name: Trusted deployment health
 #   - This workflow triggers on push to v2.6/main only, so its ref is one of
 #     those branches. A copy of this file on a feature branch, a pull_request
 #     run, a workflow_dispatch from another ref, or a deployment_status run
-#     (whose ref is a commit SHA — Vercel creates deployments by SHA) is
-#     refused by the environment and never receives a secret. Verified with a
-#     canary secret before the real values were installed (doc 16 §10).
+#     of a feature branch is refused by the environment and never receives a
+#     secret. Verified on GitHub with canary secrets before the real values
+#     were installed: push, workflow_dispatch and deployment_status runs from a
+#     throwaway branch were all refused, 0 steps run (doc 17 §3).
 #   - The secret is sent only as x-vercel-protection-bypass, only over https
 #     to *.vercel.app / *.fourthmeridian.com (mayCarryBypass), and only the
 #     matching project's secret (bypassFor). It is never printed.

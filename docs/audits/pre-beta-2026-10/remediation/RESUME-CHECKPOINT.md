@@ -1,12 +1,25 @@
 # RESUME-CHECKPOINT — read first after any interruption
 
-_Refreshed: 2026-10-22, program at its locally executable completion point._
+_Refreshed: 2026-10-22, Preview infrastructure hardening (doc 17)._
 
-- **Integration:** `remediation/beta-1` in `~/dev/FourthMeridian-remediation/base`; code HEAD `01098bd` (docs after). Nothing pushed.
-- **Last full gate:** `npm run ci` PASSED at `01098bd` (unit 828/828, all audits, RLS 37/98/72/20/67, allowance 15/15, site); `npm run build` passed.
-- **Last failing gate:** `bad2cde` (palette + db-safety pins) → fixed `2744c8d`/`5ea1f94`.
-- **Active task:** none. **Agents:** none running.
-- **Worktrees:** only `base`. Agent branches `remediation/{a…j}` kept (merged); worktrees removed (all were clean and merged).
-- **Uncommitted work:** none on the branch. Main checkout (`v2.6`, `cde8fa0`) untouched except untracked docs.
-- **Completed:** queues A–J (see `03`). **Pending:** owner gates and decisions only (`11`), plus deferred engineering items (`01`, `MORNING-HANDOFF.md` §13).
-- **Next safe action:** owner review → push `remediation/beta-1` → read GitHub CI → PR into `v2.6`.
+**Git**
+- **PR #1:** `remediation/beta-1` → `v2.6`, OPEN, **not merged**.
+  - GitHub head `2fe8eb7`, CI green except the secret-free `Deployment health` (UNVERIFIED by design).
+  - Local commits after it (unpushed, need A1c): see `17` §8.
+- **Worktree:** `~/dev/FourthMeridian-remediation/base` only. The main checkout (`v2.6` `cde8fa0`) is untouched apart from untracked docs.
+
+**Preview**
+- **Database:** not migrated (A5 not approved). Fingerprint unchanged (`17` §5).
+- **Live configuration changes this session (all Preview or repo-level, none in Production):**
+  - GitHub Environment `vercel-probe`, branches `v2.6` and `main`, holding 2 secrets.
+  - `fintracker1` generic-Preview env: +4 Sensitive rows (role URLs + `FM_RLS_STRICT`).
+  - One Preview redeploy of PR #1's branch build (`dpl_Ah2ZJr71…`).
+  - Throwaway branch `probe/vercel-probe-denial` pushed and then deleted.
+
+**Rehearsal artefacts**
+- In `~/fm-rehearsal-private/` (700): the Preview dump, its sha256, and the baselines. Delete after the cutover.
+- No container running.
+
+**Agents:** none.
+
+**Next safe action:** owner reads `17` §7, then decides A1c, D12 full, D14, A5, A6.

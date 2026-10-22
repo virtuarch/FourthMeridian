@@ -51,10 +51,15 @@ On 2026-10-22, PR deployment `dpl_J8du…` (`/api/health` scheduler block) repor
 
 ## 2. Backup and restore verification
 
-1. **Platform backup (owner, Supabase dashboard).**
-   - Confirm the Preview project's latest daily backup time and whether PITR is enabled.
-   - Record both in the release ticket.
-   - If PITR is on, note the timestamp immediately before step 4. It is the recovery point.
+1. **Platform backup (read from the Supabase dashboard on 2026-10-22; doc 17 §2).**
+   - Preview project `fourth-meridian-preview` (VirtuArch org, **Pro** plan, Nano compute).
+   - **Daily PHYSICAL backups, 7 kept** (15–21 Oct, newest 21 Oct 22:53 UTC, all COMPLETED), so the nearest platform recovery point can be up to about 24 h old.
+   - **PITR is DISABLED** (paid add-on), so there is no point-in-time recovery to the moment before step 4.
+   - Recovery options shown:
+     - in-place **Restore** of a daily backup, which replaces the Preview database;
+     - **Restore to new project** (beta), which leaves Preview untouched.
+   - Re-read the newest backup time on the day and record it.
+   - Because there is no PITR, step 2's logical dump is **the** pre-migration recovery point. Do not skip it.
 2. **Logical dump with privileges.**
    - `npm run db:backup` uses `--no-owner --no-privileges`. That is not enough here: migrations `…000500` (REVOKE) and `…000600` (RLS policies) change grants and policies, and a dump without privileges cannot restore them.
    - Take a second dump:

@@ -3,11 +3,13 @@
 // which is the only place the two Vercel automation-bypass secrets exist.
 //
 // Why a push and not deployment_status: Vercel creates each GitHub Deployment
-// with `ref` = the commit SHA, so a deployment_status run's ref is a SHA and no
-// branch-restricted environment can ever admit it (that would deny v2.6 too).
-// On a push, github.ref IS the branch, and the environment's deployment-branch
-// policy (v2.6, main) is what decides — a feature branch, a PR, a dispatch from
-// another ref, or a deployment_status run cannot obtain the secrets.
+// with `ref` = the commit SHA, so which branch a deployment_status run belongs
+// to is GitHub's inference, not something this repository controls. (In the
+// 2026-10-22 denial test GitHub resolved such a run to its feature branch and
+// refused it — doc 17 §3 — but the trusted path does not depend on that.) On a
+// push, github.ref IS the branch, and the environment's deployment-branch
+// policy (v2.6, main) decides: a feature branch, a PR, a dispatch from another
+// ref, or a deployment_status run of a feature branch cannot obtain the secrets.
 //
 // What it does: waits for every Vercel deployment GitHub records for this
 // commit to reach a terminal status, then probes each successful one with its
