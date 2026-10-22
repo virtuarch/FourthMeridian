@@ -25,6 +25,8 @@ import { useHistoryExploration } from "@/components/history/useHistoryExploratio
 import { WealthWorkspace } from "@/components/space/widgets/wealth/WealthWorkspace";
 import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
 import { MarketsWorkspace } from "@/components/space/widgets/markets/MarketsWorkspace";
+import { WorkspaceComingSoon } from "./WorkspaceComingSoon";
+import { getWorkspaceDefinition, type PerspectiveDef } from "@/lib/perspectives";
 import type { AssetsSlice, WealthMode } from "@/lib/wealth/wealth-mode";
 import type { MarketsMode } from "@/lib/markets/markets-mode";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
@@ -153,7 +155,7 @@ export function WorkspaceExplorationHost({
   );
 }
 
-export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => React.ReactNode> = {
+const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => React.ReactNode> = {
   // OVERVIEW-CONSOLIDATION — the Net Worth workspace hosts Total · Assets (Cash +
   // Investments embedded) · Debt. Liquidity / Investments / Debt are no longer
   // peer lenses with their own renderer entries; their workspaces render INSIDE
@@ -213,6 +215,8 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
     />
   ),
   // MARKETS (skeleton) — five views, each an honest empty state; no data needs.
+  // UI-014: the registry marks it `comingSoon` for beta, so the gate below
+  // renders WorkspaceComingSoon instead; this implementation stays wired.
   markets: (ctx) => (
     <MarketsWorkspace
       mode={ctx.marketsMode}
@@ -222,3 +226,28 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
     />
   ),
 };
+
+/**
+ * UI-014 / MARKETS-COMING-SOON (2026-10-22) — the registry's `status` is a REAL
+ * mechanism for workspace renderers. A destination whose PerspectiveDef says
+ * `comingSoon` renders the honest WorkspaceComingSoon placeholder (and
+ * publishes the empty envelope) instead of its implementation. Nothing is
+ * deleted: the implementation stays in the map above, so flipping the
+ * registry entry back to "available" restores it with no change here. Keys
+ * are unchanged, so the registry↔renderer parity test still binds the two.
+ */
+function isComingSoon(id: string): boolean {
+  const def = getWorkspaceDefinition(id);
+  return !!def && (def as Partial<PerspectiveDef>).status === "comingSoon";
+}
+
+export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => React.ReactNode> =
+  Object.fromEntries(
+    Object.entries(WORKSPACE_RENDERER_IMPLS).map(([id, render]) => [
+      id,
+      (ctx: WorkspaceRenderCtx) =>
+        isComingSoon(id)
+          ? <WorkspaceComingSoon definition={getWorkspaceDefinition(id) as PerspectiveDef} onEnvelopeChange={ctx.onEnvelopeChange} />
+          : render(ctx),
+    ]),
+  );
