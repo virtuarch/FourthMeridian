@@ -21,7 +21,7 @@
 import { readFileSync } from "node:fs";
 import { ImportBatchStatus, ImportSource } from "@prisma/client";
 import {
-  claimImportBatch, chunkRows, rollbackClaimWhere, sha256Hex, stalledImportCutoff,
+  claimImportBatch, findLiveImportBatch, chunkRows, rollbackClaimWhere, sha256Hex, stalledImportCutoff,
   IMPORT_BUDGET_MS, IMPORT_CHUNK_ROWS, IMPORT_LIVE_STATUSES, IMPORT_MAX_BYTES, IMPORT_MAX_ROWS, IMPORT_STALL_SLACK_MS,
   type ImportClaimClient,
 } from "@/lib/imports/claim";
@@ -79,8 +79,10 @@ async function main() {
     const loses = [a, b].filter((r) => !r.ok);
     check("exactly one claim wins", wins.length === 1 && loses.length === 1);
     check("exactly one batch row exists", f.rows.length === 1);
-    check("the loser reports duplicate with the winner's id and status",
-      !loses[0].ok && loses[0].reason === "duplicate" && loses[0].existing?.id === (wins[0] as { batchId: string }).batchId && loses[0].existing?.status === "PENDING");
+    // J-D6: the loser reports only "duplicate"; the winner is read in a FRESH phase.
+    const winner = await findLiveImportBatch(f.client, { financialAccountId: input().financialAccountId, fileSha256: input().fileSha256 });
+    check("the loser reports duplicate; a fresh lookup finds the winner's id and status",
+      !loses[0].ok && loses[0].reason === "duplicate" && winner?.id === (wins[0] as { batchId: string }).batchId && winner?.status === "PENDING");
   }
 
   console.log("\n2. the key is (account, bytes)");
@@ -139,7 +141,7 @@ async function main() {
     const iParse = route.indexOf("runImportPipeline(");
     const iHash = route.indexOf("sha256Hex(");
     check("route hashes, then CLAIMS, then parses (claim before parse)", iHash > 0 && iClaim > iHash && iParse > iClaim, `hash@${iHash} claim@${iClaim} parse@${iParse}`);
-    check("route answers 409 duplicate-import with the existing batch id", /status: 409/.test(route) && /"duplicate-import"/.test(route) && /claim\.existing\?\.id/.test(route));
+    check("route answers 409 duplicate-import with the existing batch id, read in a fresh phase (J-D6)", /status: 409/.test(route) && /"duplicate-import"/.test(route) && /tenant\(\(tx\) => findLiveImportBatch\(tx,/.test(route) && /importBatchId: existing\?\.id/.test(route));
     check("route refuses oversize bytes with 413 BEFORE reading them", /file\.size > IMPORT_MAX_BYTES/.test(route) && route.indexOf("IMPORT_MAX_BYTES") < route.indexOf("arrayBuffer()"));
     check("route refuses oversize row counts and marks the claimed batch FAILED", /rows\.length > IMPORT_MAX_ROWS/.test(route) && /failBatch\(reason\)/.test(route));
     check("route writes rows in chunks with a per-row fallback", /chunkRows\(rows\)/.test(route) && /importRow\(tenant, row/.test(route) && /catch \(rowErr\)/.test(route));

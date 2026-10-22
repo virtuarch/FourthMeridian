@@ -98,7 +98,7 @@ export interface ImportClaimClient {
 
 export type ImportClaimResult =
   | { ok: true; batchId: string }
-  | { ok: false; reason: "duplicate"; existing: { id: string; status: ImportBatchStatus; createdAt: Date } | null };
+  | { ok: false; reason: "duplicate" };
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "P2002";
@@ -125,14 +125,29 @@ export async function claimImportBatch(client: ImportClaimClient, input: ImportC
     return { ok: true, batchId: row.id };
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
-    const existing = await client.importBatch.findFirst({
-      where: {
-        financialAccountId: input.financialAccountId,
-        fileSha256:         input.fileSha256,
-        status:             { in: [...IMPORT_LIVE_STATUSES] },
-      },
-      select: { id: true, status: true, createdAt: true },
-    });
-    return { ok: false, reason: "duplicate", existing };
+    // J-D6 — NO further statement here. On PostgreSQL a unique violation ABORTS the
+    // surrounding transaction (25P02: every later statement fails), and the route
+    // calls this inside withTenantDb, so a lookup at this point turned the
+    // duplicate into a 500. The caller looks the winner up in a FRESH phase
+    // (findLiveImportBatch).
+    return { ok: false, reason: "duplicate" };
   }
+}
+
+/**
+ * The live batch that holds an (account, file) slot — read in its OWN phase after
+ * a lost claim (J-D6). Null when the winner has since rolled back or failed.
+ */
+export async function findLiveImportBatch(
+  client: ImportClaimClient,
+  slot: { financialAccountId: string; fileSha256: string },
+): Promise<{ id: string; status: ImportBatchStatus; createdAt: Date } | null> {
+  return client.importBatch.findFirst({
+    where: {
+      financialAccountId: slot.financialAccountId,
+      fileSha256:         slot.fileSha256,
+      status:             { in: [...IMPORT_LIVE_STATUSES] },
+    },
+    select: { id: true, status: true, createdAt: true },
+  });
 }

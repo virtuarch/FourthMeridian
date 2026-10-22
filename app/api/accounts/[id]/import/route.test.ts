@@ -62,10 +62,10 @@ async function main() {
     const fa = fake.rows("FinancialAccount", { ownerUserId: w.ids.member })[0].id as string;
     const before = fake.rows("Transaction").length;
     const r = await upload("member", w.S, fa, CSV, "renamed-but-same-bytes.csv");
-    t.known("409 { error: 'duplicate-import', importBatchId } (IDEMP-001's promised answer)",
+    // J-D6 FIXED: the winner is read in a fresh phase, so the aborted claim transaction no longer 500s.
+    t.check("409 { error: 'duplicate-import', importBatchId } (IDEMP-001's promised answer)",
       r.status === 409 && r.body.error === "duplicate-import" && r.body.importBatchId === fake.one("ImportBatch", { financialAccountId: fa })!.id,
-      `J-D6: claimImportBatch catches the P2002 and then queries INSIDE the same (now aborted, SQLSTATE 25P02) tenant transaction — got ${r.status} ${JSON.stringify(r.body)}`);
-    t.check("the duplicate is still REFUSED — never a second import (409 or the 500 of J-D6, nothing else)", r.status === 409 || r.status === 500, r.status);
+      `got ${r.status} ${JSON.stringify(r.body)}`);
     t.check("no new batch, no new transactions (the idempotency itself holds)", fake.rows("ImportBatch").length === 1 && fake.rows("Transaction").length === before);
     const other = await upload("member", w.S, fa, CSV + "2026-09-04,BOOKSHOP,-12.00\n");
     t.check("a DIFFERENT file into the same account is accepted (dedupe is per file hash)", other.status === 200 || other.status === 201, other.status);

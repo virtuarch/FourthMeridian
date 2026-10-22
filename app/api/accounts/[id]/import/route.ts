@@ -45,7 +45,7 @@ import {
 import { runImportPipeline } from "@/lib/imports/pipeline";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import {
-  claimImportBatch, chunkRows, sha256Hex, IMPORT_MAX_BYTES, IMPORT_MAX_ROWS,
+  claimImportBatch, findLiveImportBatch, chunkRows, sha256Hex, IMPORT_MAX_BYTES, IMPORT_MAX_ROWS,
 } from "@/lib/imports/claim";
 import { withTenantDb, type TenantClient } from "@/lib/db/tenant-context";
 import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
@@ -168,12 +168,16 @@ export const POST = withApiHandler(async (
     fileSha256,
   }));
   if (!claim.ok) {
+    // J-D6 — the losing claim's transaction is aborted by the unique violation,
+    // so the winner is read in a fresh phase. Best-effort: the 409 stands even
+    // if this read fails.
+    const existing = await tenant((tx) => findLiveImportBatch(tx, { financialAccountId, fileSha256 })).catch(() => null);
     return NextResponse.json(
       {
         error:         "duplicate-import",
         message:       "This file has already been imported into this account. Roll back the earlier import to import it again.",
-        importBatchId: claim.existing?.id ?? null,
-        status:        claim.existing?.status ?? null,
+        importBatchId: existing?.id ?? null,
+        status:        existing?.status ?? null,
       },
       { status: 409 },
     );
