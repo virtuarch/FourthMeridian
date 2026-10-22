@@ -586,16 +586,29 @@ export class FakePrisma {
  * Put `fake` behind the process's Prisma client(s). Returns the fake for chaining.
  * Throws if a distinct role client exists (a role URL was set) — a test must
  * never be able to reach a real database through a client this did not replace.
+ *
+ * ⚠️ HOW THE CLIENT IS FOUND. Not by importing `db` from "@/lib/db": that is the
+ * migration-principal import scripts/audit-db-authority.ts ratchets for runtime
+ * files, and this file — under lib/, not named *.test.ts — is "runtime" to that
+ * audit even though it never queries anything. Instead lib/db is loaded (via
+ * tenant-context) and the singletons are read from the globalThis registry
+ * lib/db.ts itself maintains outside production (`prisma`, `fmTenant`, `fmAuth`,
+ * `fmSystem`). A null role client there is exactly lib/db's "falls back to db"
+ * case, so asserting all three are null proves every authority is the one
+ * object replaced below.
  */
 export async function installFakePrisma(fake = new FakePrisma()): Promise<FakePrisma> {
   for (const v of ["DATABASE_URL_APP", "DATABASE_URL_AUTH", "DATABASE_URL_SYSTEM"]) {
     if (process.env[v]) throw new Error(`installFakePrisma: ${v} is set — refusing (a real role client would bypass the fake)`);
   }
-  const mod = await import("@/lib/db");
-  if (mod.tenantDb !== mod.db || mod.authDb !== mod.db || mod.systemDb !== mod.db) {
-    throw new Error("installFakePrisma: role clients are distinct from db — refusing");
+  if (process.env.NODE_ENV === "production") throw new Error("installFakePrisma: NODE_ENV=production — refusing");
+  await import("@/lib/db/tenant-context"); // loads lib/db, which registers its clients on globalThis
+  const registry = globalThis as unknown as { prisma?: unknown; fmTenant?: unknown; fmAuth?: unknown; fmSystem?: unknown };
+  if (!registry.prisma) throw new Error("installFakePrisma: lib/db did not register its client");
+  if (registry.fmTenant || registry.fmAuth || registry.fmSystem) {
+    throw new Error("installFakePrisma: role clients are distinct from the shared client — refusing");
   }
-  const target = mod.db as unknown as Record<string, unknown>;
+  const target = registry.prisma as Record<string, unknown>;
   const define = (k: string, value: unknown) => Object.defineProperty(target, k, { value, configurable: true, writable: true });
   for (const [d, m] of DELEGATE_TO_MODEL) define(d, fake.delegate(m));
   const tx = fake.txClient();
