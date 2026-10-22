@@ -29,7 +29,10 @@
  * never user content.
  */
 
-import { runJob, summarizeError, type JobTrigger } from "@/lib/jobs/run";
+import {
+  runJob, summarizeError, finalizeStaleRuns, JobAlreadyRunningError, STALE_RUNNING_AFTER_MS,
+  type JobTrigger, type JobRunFinalizeClient,
+} from "@/lib/jobs/run";
 import { SCHEDULED_JOBS, type ScheduledJob } from "@/lib/jobs/registry";
 import { systemDb } from "@/lib/db";
 import { loadJobCadencePolicies, type JobCadencePolicies } from "@/lib/jobs/cadence-policy";
@@ -58,6 +61,8 @@ export interface DispatchResult {
   skipped: DispatchSkip[];
   dispatched: DispatchOutcome[];
   failures: number;
+  /** IDEMP-003 / OPS-006 — jobs whose crashed `running` row this wake finalised (and then treated as due). */
+  finalized: string[];
 }
 
 /** The ledger facts the selection needs, per job name. */
@@ -100,6 +105,39 @@ export interface JobLedgerReadClient {
   };
 }
 
+/** The wake's ledger client: the newest-row read plus the stale-row scan and finaliser. */
+export interface JobLedgerClient extends JobLedgerReadClient, JobRunFinalizeClient {
+  jobRun: JobLedgerReadClient["jobRun"] & JobRunFinalizeClient["jobRun"] & {
+    findMany(args: {
+      where: { status: "running"; startedAt: { lt: Date } };
+      select: { jobName: true };
+    }): Promise<{ jobName: string }[]>;
+  };
+}
+
+/**
+ * IDEMP-003 / OPS-006 — at wake start, every `running` row older than the
+ * in-flight window is a crashed run: finalise it (failed/"stale") so the
+ * one-running-per-job claim is free, and return the job names so the wake
+ * treats them as due. Reads the names first because updateMany cannot return
+ * them; the update is scoped by the same predicate, so a row that completes
+ * between the two statements is simply not flipped.
+ */
+export async function finalizeStaleRunsForWake(client: JobLedgerClient, now: Date): Promise<string[]> {
+  const cutoff = new Date(now.getTime() - STALE_RUNNING_AFTER_MS);
+  let names: string[] = [];
+  try {
+    const rows = await client.jobRun.findMany({ where: { status: "running", startedAt: { lt: cutoff } }, select: { jobName: true } });
+    names = [...new Set(rows.map((r) => r.jobName))];
+  } catch (err) {
+    console.error("[dispatch] stale-run scan failed (non-fatal):", err);
+    return [];
+  }
+  if (names.length === 0) return [];
+  const flipped = await finalizeStaleRuns(client, now);
+  return flipped > 0 ? names : [];
+}
+
 /**
  * One query: the newest JobRun per registered job. A `running` newest row is
  * kept as such (the in-flight guard reads it); its summary is null, so a
@@ -136,6 +174,8 @@ export interface DispatchDeps {
   /** Injected facts/policies (tests). Production reads both. */
   facts?: JobLedgerFacts;
   policies?: JobCadencePolicies;
+  /** Injected ledger client (tests). Production uses the system principal. */
+  client?: JobLedgerClient;
 }
 
 const wakeLabel = (now: Date) =>
@@ -149,14 +189,25 @@ const wakeLabel = (now: Date) =>
 export async function dispatchDueJobs(now: Date, opts?: DispatchDeps): Promise<DispatchResult> {
   const runner: JobRunner = opts?.runner ?? runJob;
   const jobs = opts?.jobs ?? SCHEDULED_JOBS;
-  const facts = opts?.facts ?? await loadJobLedgerFacts(systemDb as unknown as JobLedgerReadClient, jobs);
+  const client = opts?.client ?? (opts?.facts ? null : (systemDb as unknown as JobLedgerClient));
+  // Crashed runs first: a stale `running` row is a dead claim, and the job it
+  // belongs to is due NOW, not a cadence later.
+  const finalized = client ? await finalizeStaleRunsForWake(client, now) : [];
+  const loaded = opts?.facts ?? await loadJobLedgerFacts(client!, jobs);
+  const facts: JobLedgerFacts = finalized.length === 0 ? loaded : new Map(
+    jobs.map((j) => j.name).flatMap((name): Array<[string, JobLedgerFact]> => {
+      const f = loaded.get(name);
+      if (finalized.includes(name)) return [[name, { ...(f ?? { lastStartedAt: null, lastStatus: null }), lastStale: true }]];
+      return f ? [[name, f]] : [];
+    }),
+  );
   const policies = opts?.policies ?? await loadJobCadencePolicies(systemDb, jobs);
   const { due, skipped } = selectDueJobs(now, jobs, facts, policies);
   const slot = wakeLabel(now);
 
   if (due.length === 0) {
     console.log(`[dispatch] ${slot}: no jobs due — no-op wake (${skipped.length} considered)`);
-    return { slot, skipped, dispatched: [], failures: 0 };
+    return { slot, skipped, dispatched: [], failures: 0, finalized };
   }
 
   const dispatched: DispatchOutcome[] = [];
@@ -167,6 +218,13 @@ export async function dispatchDueJobs(now: Date, opts?: DispatchDeps): Promise<D
       await runner(job.name, job.run, { trigger: "cron" });
       dispatched.push({ job: job.name, ok: true });
     } catch (err) {
+      if (err instanceof JobAlreadyRunningError) {
+        // IDEMP-003: another wake holds the claim — not a failure, an overlap
+        // the ledger refused. Reported as in flight, never counted as failed.
+        skipped.push({ job: job.name, reason: "IN_FLIGHT", nextDueAt: null });
+        console.log(`[dispatch] ${slot}: job "${job.name}" refused — already running elsewhere`);
+        continue;
+      }
       // Isolation: the failure is already ledgered by runJob; record and
       // continue — one job can never block a sibling.
       failures++;
@@ -175,6 +233,6 @@ export async function dispatchDueJobs(now: Date, opts?: DispatchDeps): Promise<D
     }
   }
 
-  console.log(`[dispatch] ${slot}: ${dispatched.length} job(s) run, ${failures} failed, ${skipped.length} not due`);
-  return { slot, skipped, dispatched, failures };
+  console.log(`[dispatch] ${slot}: ${dispatched.length} job(s) run, ${failures} failed, ${skipped.length} not due${finalized.length ? `, ${finalized.length} stale run(s) finalised` : ""}`);
+  return { slot, skipped, dispatched, failures, finalized };
 }

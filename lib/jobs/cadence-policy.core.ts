@@ -181,9 +181,16 @@ export interface JobLedgerFact {
   lastStatus: string | null;
   /** The newest COMPLETED run's summary (for a primary's `deferred` count). */
   lastSummary?: unknown;
+  /**
+   * IDEMP-003 / OPS-006 — set by the wake when it just finalised this job's
+   * crashed `running` row as failed/"stale". The job is then DUE regardless of
+   * cadence: a killed slot is retried at the next wake, not after a full
+   * cadence (the OPS-001 "24 hours later" shape).
+   */
+  lastStale?: boolean;
 }
 
-export type JobDueReason = "NEVER_RAN" | "CADENCE_ELAPSED" | "PRIMARY_DEFERRED";
+export type JobDueReason = "NEVER_RAN" | "CADENCE_ELAPSED" | "PRIMARY_DEFERRED" | "STALE_RUN_FINALISED";
 export type JobSkipReason = "NOT_YET_DUE" | "IN_FLIGHT" | "NO_DEFERRED_WORK" | "PRIMARY_NOT_RUN" | "CONTINUATION_TOO_SOON" | "ALREADY_CONTINUED";
 
 export type JobDueDecision =
@@ -223,6 +230,7 @@ export function decideJobDue(
   primaryFact?: JobLedgerFact | null,
 ): JobDueDecision {
   if (isInFlight(fact, now)) return { due: false, reason: "IN_FLIGHT", nextDueAt: null };
+  if (fact?.lastStale) return { due: true, reason: "STALE_RUN_FINALISED", dueSinceMs: 0 };
 
   if (job.continuationOf) {
     if (!primaryFact?.lastStartedAt) return { due: false, reason: "PRIMARY_NOT_RUN", nextDueAt: null };

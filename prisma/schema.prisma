@@ -3876,6 +3876,9 @@ model JobRun {
   @@index([jobName, startedAt]) // "did last night's X run?"
   @@index([status, startedAt]) // failure scans
   @@index([deploymentSha]) // "which runs belong to deployment X"
+  // IDEMP-003 — PARTIAL UNIQUE (installed by migration 20261022000200,
+  // invisible to Prisma): JobRun_one_running_per_job ON (jobName) WHERE
+  // status = 'running'. The start-ledger write IS the job's claim.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
