@@ -2939,6 +2939,15 @@ model ImportBatch {
   kind                  ImportBatchKind   @default(TRANSACTIONS)
   originalFilename      String?
   status                ImportBatchStatus @default(PENDING)
+  // IDEMP-001 — sha256 of the uploaded bytes. Claimed BEFORE parsing. The
+  // migration installs a PARTIAL UNIQUE index (invisible to Prisma, like the
+  // KD-5 HOME link and the PLAID identity uniques):
+  //   ImportBatch_account_file_live_key ON (financialAccountId, fileSha256)
+  //   WHERE fileSha256 IS NOT NULL AND status IN ('PENDING','PROCESSING','COMPLETED','COMPLETED_WITH_ERRORS')
+  // so the same file cannot be imported twice into one account while a live
+  // batch exists, and a ROLLED_BACK or FAILED batch frees the slot for a
+  // legitimate re-import.
+  fileSha256            String?
   rowCount              Int               @default(0)
   importedCount         Int               @default(0)
   skippedCount          Int               @default(0)

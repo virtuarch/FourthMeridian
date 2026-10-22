@@ -206,8 +206,12 @@ async function main(): Promise<void> {
     // — one file-level transaction would make a single refusal abort every row
     // after it. So "no enclosing transaction" above is still true and still
     // deliberate; what changed is who the row is written as.
-    check("…and it still writes one Transaction per row, now in a per-row TENANT phase",
-      /tenant\(\(tx\) => tx\.transaction\.create\(/.test(imp) && !/\bdb\.transaction\./.test(imp));
+    // IDEMP-001: the row write runs through a phase RUNNER — the chunk's shared
+    // tenant transaction on the fast path, `tenant` itself on the per-row
+    // fallback — so the literal is `run((tx) => …)`, and `tenant` is the only
+    // thing a runner can be built from.
+    check("…and it still writes one Transaction per row through a tenant phase runner",
+      /run\(\(tx\) => tx\.transaction\.create\(/.test(imp) && /importRow\(tenant, row/.test(imp) && !/\bdb\.transaction\./.test(imp));
     check("…with no client taken from @/lib/db at all",
       !/from\s+"@\/lib\/db"/.test(imp));
     check("…inside a per-row catch that CONTINUES, which is what makes a refusal look like a bad row",
