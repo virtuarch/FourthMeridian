@@ -53,6 +53,7 @@ export async function PATCH(
     order?:   number;
     config?:  Record<string, unknown> | null;
   };
+  if (body.label !== undefined && typeof body.label !== "string") return NextResponse.json({ error: "label must be a string" }, { status: 400 }); // J-D5
 
   const updated = await withTenantDb(userId, (tx) => tx.spaceDashboardSection.update({
     where: { id: sectionId },
