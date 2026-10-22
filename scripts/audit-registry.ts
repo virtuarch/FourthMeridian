@@ -272,6 +272,16 @@ export const AUDITS: readonly AuditEntry[] = [
           "is monotone in apply order, except the closed legacy date-only set (scripts/lib/migration-names.ts), " +
           "which must match the tree exactly",
   },
+  {
+    // DB-008 — schema drift. Replays prisma/migrations into a throwaway shadow
+    // database on the same LOCAL server (refuses anything else) and requires
+    // `prisma migrate diff` (migrations → schema.prisma) to be empty. The one
+    // historical drift (a 63-character index-name truncation) was closed by
+    // migration 20261022001000, so there is no allowlist.
+    name: "audit-schema-drift", tier: "REQUIRED", needsDb: true,
+    what: "prisma/migrations and prisma/schema.prisma describe the same database: `prisma migrate diff` from the " +
+          "migration history to the schema datamodel produces zero statements",
+  },
 
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {
