@@ -962,6 +962,7 @@ model PlaidItem {
   investmentEventCoverage InvestmentEventCoverage[]
 
   @@index([userId])
+  @@index([syncIncompleteAt]) // DB-009 — resume-stale-imports scans this every 5 minutes
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1641,6 +1642,7 @@ model SpaceGoal {
   @@index([spaceId, status])
   @@index([spaceId, category])
   @@index([spaceId, goalType])
+  @@index([deletedAt]) // DB-009 — re-added (dropped earlier, never restored); model kept pending Agent G
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3540,6 +3542,7 @@ model UserSession {
 
   @@index([userId])
   @@index([userId, revokedAt])
+  @@index([revokedAt]) // DB-009 — the retention reaper (revoked > 30 d)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3641,6 +3644,7 @@ model SyncIssue {
   @@index([plaidItemId, kind])
   @@index([incidentKey])
   @@index([resolvedAt])
+  @@index([plaidItemId, resolved]) // DB-009 — open issues per Item
 }
 
 /// OPS-2D-5A-1 — one observed manifestation of an incident episode.
