@@ -10,8 +10,9 @@ const check = (n: string, ok: boolean) => { if (!ok) f++; console.log(`  ${ok ? 
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
 
 const approve = src("app/api/platform/growth-revenue/requests/[id]/approve/route.ts");
-check("approve writes conditionally on status ≠ REDEEMED", /updateMany\(\{\s*where: \{ id, status: \{ not: BetaAccessRequestStatus\.REDEEMED \} \}/.test(approve));
-check("…and refuses (409) when the race was lost", /if \(count !== 1\)[\s\S]{0,120}status: 409/.test(approve));
+check("approve writes conditionally: only PENDING/DENIED → APPROVED (never REDEEMED, never re-approve) [IDEMP-011, I4]",
+  /updateMany\(\{\s*where: \{ id, status: \{ in: \[BetaAccessRequestStatus\.PENDING, BetaAccessRequestStatus\.DENIED\] \} \}/.test(approve));
+check("…a lost race sends nothing: APPROVED → alreadyApproved, otherwise 409", /if \(count !== 1\)[\s\S]{0,400}alreadyApproved: true[\s\S]{0,200}status: 409/.test(approve));
 check("approve no longer uses an unconditional update", !/betaAccessRequest\.update\(/.test(approve));
 
 const reset = src("app/api/auth/reset-password/route.ts");
