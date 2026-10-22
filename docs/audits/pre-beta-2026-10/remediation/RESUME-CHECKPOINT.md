@@ -1,6 +1,6 @@
 # RESUME-CHECKPOINT — read first after any interruption
 
-_Refreshed: 2026-10-22, after wave-1 integration (green) and wave-2 dispatch._
+_Refreshed: 2026-10-22, during wave 2 (H and J running; orchestrator on queue I)._
 
 ## Integration
 - Branch `remediation/beta-1`, worktree `/Users/chrstn/dev/FourthMeridian-remediation/base`. Baseline `cde8fa0` (v2.6). Nothing pushed; `main`/`v2.6` untouched.
@@ -28,7 +28,7 @@ Uncommitted work: check `git -C <path> status --short` for h and j; everything e
 | F hygiene | DONE for verified candidates (`05`) |
 | G AI modularisation | IN PROGRESS (Agent H) |
 | H consolidation | partly done (IP extractor, cron auth, interest formula); membership/audit-writer assessed (`05` §8) |
-| I P2/P3 leftovers | orchestrator, small items between agent runs |
+| I P2/P3 leftovers | IN PROGRESS — done: Ops-widget gating, UI-006 leftovers, env flag, admin hint, PRIV-002 scrub script, IDEMP-005 webhook fence (see log). Deferred with reason: OBS-012 heartbeat, SEC-012 (waits for J: lib/auth.ts), FIN-005 column, IDEMP-008 partial unique |
 | J final RC | pending H + J |
 
 ## Next safe action
