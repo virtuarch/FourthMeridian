@@ -62,6 +62,8 @@ export interface ScheduledWalletCandidate {
   lastSuccessAt: Date | null;
   /** The latest WALLET_SYNC_FAILED occurrence for this account (SyncIssue.lastOccurredAt), if any. */
   lastFailureAt?: Date | null;
+  /** IDEMP-004 — the wallet's Connection, whose syncLockedAt the sweep claims (null: no Connection, nothing to lock). */
+  connectionId?: string | null;
 }
 
 const HOUR_MS = 3_600_000;
@@ -106,6 +108,12 @@ export interface WalletRefreshDeps {
   policy(): Promise<RefreshPolicy>;
   admit(): Promise<{ decision: 'ADMIT' | 'DENY'; reason?: string | null }>;
   clock(): number;
+  /**
+   * IDEMP-004 — the per-wallet lease the manual route and Refresh All already
+   * take (lib/refresh/wallet-lock.ts). Optional so the pure tests can omit it;
+   * production always supplies it.
+   */
+  lock?: { claim(connectionId: string, at: Date): Promise<boolean>; release(connectionId: string): Promise<void> };
 }
 
 export interface ChainTally { attempted: number; succeeded: number; failed: number; durationMs: number }
@@ -135,6 +143,8 @@ export interface WalletRefreshResult {
   policy: { cadence: string; overdueAfterHours: number; version: string };
   /** The admission reason when the sweep was not admitted. */
   notAdmitted?: string;
+  /** IDEMP-004 — due wallets skipped because another path held the wallet lease. */
+  skippedLocked?: number;
 }
 
 async function defaultDeps(): Promise<WalletRefreshDeps> {
@@ -163,7 +173,7 @@ async function defaultDeps(): Promise<WalletRefreshDeps> {
           id: true, walletChain: true, lastUpdated: true,
           connections: {
             where:  { deletedAt: null, connectionId: { not: null } },
-            select: { connection: { select: { lastSyncedAt: true } } },
+            select: { connection: { select: { id: true, lastSyncedAt: true } } },
           },
         },
       });
@@ -182,6 +192,7 @@ async function defaultDeps(): Promise<WalletRefreshDeps> {
           // Never fully synced ⇒ no success clock, however recent the row's creation.
           lastSuccessAt: synced ? new Date(Math.min(synced.getTime(), r.lastUpdated.getTime())) : null,
           lastFailureAt: failedAt.get(r.id) ?? null,
+          connectionId: r.connections.map((c) => c.connection?.id).find((id): id is string => typeof id === "string") ?? null,
         };
       });
     },
@@ -191,6 +202,16 @@ async function defaultDeps(): Promise<WalletRefreshDeps> {
     policy: async () => (await loadRefreshPolicies(db)).WALLET,
     admit: () => admitOperationalWork({ work: 'REFRESH_EXECUTION' }),
     clock: () => Date.now(),
+    lock: {
+      claim: async (connectionId, at) => {
+        const { claimWalletSyncLock } = await import('@/lib/refresh/wallet-lock');
+        return claimWalletSyncLock(connectionId, db, at);
+      },
+      release: async (connectionId) => {
+        const { releaseWalletSyncLock } = await import('@/lib/refresh/wallet-lock');
+        await releaseWalletSyncLock(connectionId, db);
+      },
+    },
   };
 }
 
@@ -234,6 +255,18 @@ export async function refreshScheduledWallets(options: {
       break;
     }
     const w = due[i];
+    // IDEMP-004 — the scheduled sweep takes the SAME per-wallet lease as the
+    // manual route and Refresh All; a wallet another path is syncing right now
+    // is skipped (counted), never interleaved with.
+    let leased = false;
+    if (w.connectionId && deps.lock) {
+      leased = await deps.lock.claim(w.connectionId, new Date(deps.clock()));
+      if (!leased) {
+        result.skippedLocked = (result.skippedLocked ?? 0) + 1;
+        console.log(`[wallet-refresh] ${w.chain} wallet skipped — a sync is already in flight`);
+        continue;
+      }
+    }
     const t0 = deps.clock();
     let outcome: WalletSyncOutcome;
     try {
@@ -246,6 +279,8 @@ export async function refreshScheduledWallets(options: {
         // `outcomeRevalued`), but the field is required so the predicate can
         // never fall back to inferring it.
         valuationModel: 'READ_TIME_VALUED' };
+    } finally {
+      if (leased && w.connectionId && deps.lock) await deps.lock.release(w.connectionId);
     }
     const ms = deps.clock() - t0;
     const tally = (result.byChain[w.chain] ??= { attempted: 0, succeeded: 0, failed: 0, durationMs: 0 });

@@ -142,31 +142,36 @@ export async function POST(
     const at = new Date();
     claimed = await guards.claimWallet(connection.id, at);
     if (!claimed) return NextResponse.json({ error: "in-flight" }, { status: 409 });
-    await guards.markWalletAttempt(connection.id, at);
   }
 
-  // V26-ORCH-1 — stamped BEFORE the sync so rows it writes fall at/after it,
-  // which is what lets the planner MEASURE what changed instead of guessing.
-  const syncStartedAt = new Date();
-  // PLATFORM OPS OBSERVABILITY — the owner pressed Sync: a MANUAL execution in
-  // the refresh ledger, so the run, its duration and its verdict are inspectable.
-  //
-  // RLS-ACC-S1 — AUTHORITY, UNRESOLVED AND NAMED RATHER THAN BURIED. This and
-  // the two regenerators below still reach the database through the migration
-  // principal, each for a reason of its own and none of them this route's to
-  // settle: `syncWalletByChain` interleaves explorer and price HTTP with its
-  // writes (so no single transaction can contain it); `snapshotAccountsForOutcome`
-  // deliberately ranges over EVERY holder of a re-quoted asset, which is a
-  // deployment-wide blast radius like `lib/accounts/links-everywhere.ts`'s; and
-  // `regenerateSnapshotsForAccounts` already writes a CO-OWNER's snapshot by
-  // design, which fm_app cannot reach at all (RLS-C-S7 classified it fm_system
-  // for exactly that reason).
-  const result = await syncWalletByChain(id, account.walletChain, { trigger: "MANUAL" });
-
-  // P1 — the post-sync steps (today's snapshots, planned history) are the
-  // shared finaliser the customer's Refresh All uses, so one wallet and many
-  // finish the same way. Best-effort/non-fatal inside.
+  // IDEMP-004 — EVERYTHING after a successful claim sits inside try/finally:
+  // previously the attempt stamp and the sync itself ran outside it, so a
+  // throw there leaked the lease until its 6-minute TTL.
+  let result: Awaited<ReturnType<typeof syncWalletByChain>>;
   try {
+    if (claimed && connection) await guards.markWalletAttempt(connection.id, new Date());
+
+    // V26-ORCH-1 — stamped BEFORE the sync so rows it writes fall at/after it,
+    // which is what lets the planner MEASURE what changed instead of guessing.
+    const syncStartedAt = new Date();
+    // PLATFORM OPS OBSERVABILITY — the owner pressed Sync: a MANUAL execution in
+    // the refresh ledger, so the run, its duration and its verdict are inspectable.
+    //
+    // RLS-ACC-S1 — AUTHORITY, UNRESOLVED AND NAMED RATHER THAN BURIED. This and
+    // the two regenerators below still reach the database through the migration
+    // principal, each for a reason of its own and none of them this route's to
+    // settle: `syncWalletByChain` interleaves explorer and price HTTP with its
+    // writes (so no single transaction can contain it); `snapshotAccountsForOutcome`
+    // deliberately ranges over EVERY holder of a re-quoted asset, which is a
+    // deployment-wide blast radius like `lib/accounts/links-everywhere.ts`'s; and
+    // `regenerateSnapshotsForAccounts` already writes a CO-OWNER's snapshot by
+    // design, which fm_app cannot reach at all (RLS-C-S7 classified it fm_system
+    // for exactly that reason).
+    result = await syncWalletByChain(id, account.walletChain, { trigger: "MANUAL" });
+
+    // P1 — the post-sync steps (today's snapshots, planned history) are the
+    // shared finaliser the customer's Refresh All uses, so one wallet and many
+    // finish the same way. Best-effort/non-fatal inside.
     await finalizeWalletSync({ accountId: id, chain: account.walletChain, outcome: result, syncStartedAt, logPrefix: `[POST /api/accounts/${id}/sync]` });
   } finally {
     if (claimed && connection) await guards.releaseWallet(connection.id);
