@@ -34,12 +34,14 @@ check("absolute, second precision, says UTC", fmtUtc(ISO) === "2026-10-22 14:03:
 check("offset input is normalised to UTC", fmtUtc("2026-10-22T16:03:12+02:00") === "2026-10-22 14:03:12 UTC");
 check("null / garbage ⇒ —", fmtUtc(null) === "—" && fmtUtc("nope") === "—");
 
+// Children go positionally (react/no-children-prop); the props type requires them, hence the cast.
+type CardProps = Parameters<typeof PlatformWidgetCard>[0];
 console.log("2. PlatformWidgetCard");
 {
-  const withChecked = renderToStaticMarkup(createElement(PlatformWidgetCard, { label: "Scheduler", icon: Activity, checkedAt: ISO, children: "body" }));
+  const withChecked = renderToStaticMarkup(createElement(PlatformWidgetCard, { label: "Scheduler", icon: Activity, checkedAt: ISO } as CardProps, "body"));
   check("payload checkedAt ⇒ 'Checked <UTC>' in the header", withChecked.includes("Checked") && withChecked.includes("2026-10-22 14:03:12 UTC"));
   check("rendered as <time dateTime>", withChecked.includes(`<time dateTime="${ISO}">`));
-  const ssr = renderToStaticMarkup(createElement(PlatformWidgetCard, { label: "Scheduler", icon: Activity, children: "body" }));
+  const ssr = renderToStaticMarkup(createElement(PlatformWidgetCard, { label: "Scheduler", icon: Activity } as CardProps, "body"));
   check("no checkedAt during SSR ⇒ no stamp (no hydration mismatch)", !ssr.includes("data-utc-stamp"));
   const src = read("components/platform/widget-kit.tsx");
   check("mount instant is set client-side after mount (rAF in an effect)", /requestAnimationFrame\(\(\) => setMountedAt\(new Date\(\)\.toISOString\(\)\)\)/.test(src));
