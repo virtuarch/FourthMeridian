@@ -248,6 +248,21 @@ export const AUDITS: readonly AuditEntry[] = [
   },
 
   {
+    // TEST-002 — the route-guard CENSUS. Source-only: the corpus is app/api/.
+    // Before it, "every route is guarded" was a review claim over 187 files;
+    // now a handler that reaches its body with no recognised guard and no
+    // `// PUBLIC: <reason>` annotation fails the build, and the closed list of
+    // pre-census public routes can only shrink. Recognisers and rules live in
+    // scripts/lib/route-guards.ts; scripts/audit-route-guards.test.ts proves
+    // the census fails on an unguarded fixture route.
+    name: "audit-route-guards", tier: "REQUIRED", needsDb: false,
+    what: "every exported HTTP handler under app/api/ calls a recognised authorization guard (session, " +
+          "Space/platform, CRON bearer, Plaid webhook verifier, NextAuth) directly, via a local helper, or " +
+          "one delegated hop away — or its file carries an explicit `// PUBLIC: <reason>` annotation; the " +
+          "pre-census PUBLIC_ROUTES allowlist is exact (an entry that vanishes, gains a guard or gains its " +
+          "own annotation fails)",
+  },
+  {
     // DB-008 — migration naming. Source-only: the corpus is prisma/migrations/.
     // Prisma applies directories in lexical order; 24 legacy names carry a date
     // only, so same-day order was slug order, and nothing refused a back-dated
