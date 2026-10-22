@@ -153,6 +153,15 @@ export function makeChecker(title: string) {
       if (cond) { passes++; console.log(`  ✓ ${name}`); }
       else { failures++; console.error(`  ✗ ${name}${detail !== undefined ? ` — ${typeof detail === "string" ? detail : JSON.stringify(detail)}` : ""}`); }
     },
+    /**
+     * A DEFECT this suite found and the report records, outside the owner's
+     * paths to fix. Never fails the run; says loudly which way it went, so the
+     * day it is fixed the line can be promoted to a `check`.
+     */
+    known(name: string, holdsNow: boolean, ref: string) {
+      if (holdsNow) console.log(`  ✓ ${name} (was a known defect: ${ref} — promote this to a check)`);
+      else console.warn(`  ⚠ KNOWN DEFECT (${ref}) — ${name}`);
+    },
     done() {
       console.log(`\n${passes} passed, ${failures} failed`);
       if (failures > 0) process.exit(1);
