@@ -71,7 +71,7 @@ let encode: typeof import("next-auth/jwt").encode;
 let UserRole: typeof import("@prisma/client").UserRole;
 
 // ── The fake session store ────────────────────────────────────────────────────
-interface Row { userId: string; revokedAt: Date | null; user: { id: string; role: string; totpEnabled: boolean } | null }
+interface Row { userId: string; revokedAt: Date | null; user: { id: string; role: string; totpEnabled: boolean } | null; createdAt?: Date; lastActiveAt?: Date }
 const ROWS = new Map<string, Row>();
 let lookups = 0;
 let failStore = false;
@@ -110,7 +110,9 @@ const fakeUserSession = {
     const token = args?.where?.sessionToken;
     const row = typeof token === "string" ? (ROWS.get(token) ?? null) : null;
     if (row && "revokedAt" in (args?.where ?? {}) && args.where.revokedAt === null && row.revokedAt !== null) return null;
-    return row;
+    // SEC-010 — a real row always carries both timestamps (SESSION_ROW_SELECT);
+    // fixtures default to a session created and used just now unless they say otherwise.
+    return row ? { createdAt: new Date(), lastActiveAt: new Date(), ...row } : row;
   },
   async updateMany() { return { count: 1 }; },
 };
@@ -318,11 +320,11 @@ async function main() {
   console.log("\n13. pure judgement edges");
   const never = async (): Promise<boolean> => { throw new Error("setting must not be read"); };
   check("factsFromRow(revokedAt missing) → null (malformed is not 'not revoked')",
-    (await factsFromRow({ userId: ALICE, user: { id: ALICE, role: "USER", totpEnabled: true } }, never)) === null);
+    (await factsFromRow({ userId: ALICE, createdAt: new Date(), lastActiveAt: new Date(), user: { id: ALICE, role: "USER", totpEnabled: true } }, never)) === null);
   check("factsFromRow(user.id ≠ row.userId) → null",
-    (await factsFromRow({ userId: ALICE, revokedAt: null, user: { id: BOB, role: "USER", totpEnabled: true } }, never)) === null);
+    (await factsFromRow({ userId: ALICE, revokedAt: null, createdAt: new Date(), lastActiveAt: new Date(), user: { id: BOB, role: "USER", totpEnabled: true } }, never)) === null);
   check("factsFromRow(totpEnabled missing) → null (cannot derive the requirement)",
-    (await factsFromRow({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER" } }, never)) === null);
+    (await factsFromRow({ userId: ALICE, revokedAt: null, createdAt: new Date(), lastActiveAt: new Date(), user: { id: ALICE, role: "USER" } }, never)) === null);
   check("judgeSession(stale verified facts of ANOTHER user) → refused",
     judgeSession({ userId: ALICE, sessionToken: BOB_SESSION }, { valid: true, facts: { userId: BOB, role: "USER", requireTotpSetup: false }, disposition: "STALE_HIT" }).kind === "refused");
   check("judgeSession(valid without facts) → refused, never authenticated",
