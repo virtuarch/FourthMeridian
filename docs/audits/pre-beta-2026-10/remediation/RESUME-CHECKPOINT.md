@@ -28,8 +28,11 @@ Uncommitted work: check `git -C <path> status --short` for h and j; everything e
 | F hygiene | DONE for verified candidates (`05`) |
 | G AI modularisation | IN PROGRESS (Agent H) |
 | H consolidation | partly done (IP extractor, cron auth, interest formula); membership/audit-writer assessed (`05` §8) |
-| I P2/P3 leftovers | IN PROGRESS — done: Ops-widget gating, UI-006 leftovers, env flag, admin hint, PRIV-002 scrub script, IDEMP-005 webhook fence (see log). Deferred with reason: OBS-012 heartbeat, SEC-012 (waits for J: lib/auth.ts), FIN-005 column, IDEMP-008 partial unique |
+| I P2/P3 leftovers | IN PROGRESS — done: PRIV-006 export, ARCH-001 switch route, DB-008 drift audit (+migration 20261022001000), Ops-widget gating, UI-006 leftovers, env flag, admin hint, PRIV-002 scrub script, IDEMP-005 webhook fence (see log). Deferred with reason: OBS-012 heartbeat, SEC-012 (waits for J: lib/auth.ts), FIN-005 column, IDEMP-008 partial unique |
 | J final RC | pending H + J |
+
+## Unverified at full-gate level since `4834697`
+Orchestrator commits after `57de6aa` passed typecheck + targeted tests individually; the next full `npm run ci` must cover them (incl. the new REQUIRED `audit-schema-drift`).
 
 ## Next safe action
 1. When H or J reports: merge into base (H first — it moves tools.ts), typecheck + unit, then full `npm run ci` (only heavy process).
