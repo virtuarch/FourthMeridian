@@ -30,6 +30,7 @@ import {
 import { captureActiveScenario, scenarioMessage, SCENARIO_TOOL, CROSSING_TOOL } from './active-scenario';
 import { resolveMonthsOfExpensesFloor } from '@/lib/ai/measures/baseline';
 import { findTool } from './tools';
+import { readToolsSource } from '@/lib/test-support/tools-source';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -280,7 +281,7 @@ console.log('\n6. AN UNSUPPORTED CLAUSE IS REFUSED BY NAME, NEVER RUN WITHOUT');
   const { ledger, rejected } = runRaw([raw]);
   check('the rule is refused', rejected.length === 1);
   check('…and did NOT run as the weaker rule it would otherwise have been', ledger.movements.length === 0);
-  const tools = readFileSync('lib/ai/conversation/tools.ts', 'utf8');
+  const tools = readToolsSource(); // CQ-011: the tool layer
   check('prepareScenario refuses on the same check, before it sizes anything',
     /const unknown = unknownContributionKeys\(raw\);\s*if \(unknown\.length > 0\) \{\s*rejected\.push/.test(tools));
   // I1 — the shared schema literal moved to `scenario-inputs.ts` so the continuity
@@ -384,7 +385,7 @@ console.log('\n6b. A CLOSED ARGUMENT SET — the schema the model was shown is t
   check('…on a crossing too, read from `assumptionsInForce`', capX.action === 'REPLACE'
     && !('taxChanges' in capX.scenario.assumptions));
 
-  const tools = readFileSync('lib/ai/conversation/tools.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+  const tools = readToolsSource().replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
   check('prepareScenario refuses against the CALLING tool\'s schema, before anything is sized',
     /const rejected: RefusedInput\[\] = \[\.\.\.refuseUnknownArguments\(a, tool\.parameters\)\];/.test(tools));
   check('…and each scenario tool hands it its own definition — no tool calls it without one',
@@ -547,7 +548,7 @@ console.log('\n7e. AN OUTFLOW LABEL IS BOUNDED AND DEMOTED LIKE A CONTRIBUTION\'
   const o = kept.outflows as Record<string, unknown>[];
   check('the envelope bounds it too, and leaves a label-less outflow alone',
     (o[0].label as string).length === MAX_LABEL_CHARS && !('label' in o[1]) && o[0].amount === 1 && o[0].onDate === '2027-01-01');
-  const tools = readFileSync('lib/ai/conversation/tools.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+  const tools = readToolsSource().replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
   const prep = tools.slice(tools.indexOf('async function prepareScenario('), tools.indexOf('function surplusRule('));
   check('prepareScenario names every outflow by code and never reads its label',
     /const label\s+= outflowName\(o\);/.test(prep) && !/o\.label/.test(prep));
@@ -589,7 +590,7 @@ console.log('\n8. THE ROSTER IS CLOSED — every clause kind, on every result');
 console.log('\n9. STRUCTURE — where the label can and cannot go');
 {
   const code = (rel: string) => readFileSync(rel, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
-  const tools = code('lib/ai/conversation/tools.ts');
+  const tools = readToolsSource().replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ''); // CQ-011: the tool layer
   const prep = tools.slice(tools.indexOf('async function prepareScenario('), tools.indexOf('function surplusRule('));
   check('prepareScenario names every contribution by code', /const name = contributionName\(raw\);/.test(prep)
     && /const label = name;/.test(prep));

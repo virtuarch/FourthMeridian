@@ -9,14 +9,15 @@
  * both seams (tools.ts cannot be imported without its DB-bound graph) and proves
  * the adapter carries the continuation behaviourally.
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { incomeStreamEvidence } from '@/lib/ai/forecast/income-evidence';
+import { readToolsSource } from '@/lib/test-support/tools-source';
 
 let failures = 0;
 const check = (name: string, ok: boolean) => { if (!ok) failures++; console.log(`  ${ok ? '✓' : '✗'} ${name}`); };
 
-const tools = readFileSync(join(process.cwd(), 'lib/ai/conversation/tools.ts'), 'utf8');
+// CQ-011: the tool layer (facade + lib/ai/conversation/tools/**) — incompletenessBlock now
+// lives in tools/projection.ts, get_baselines in tools/measures.ts.
+const tools = readToolsSource();
 const block = tools.slice(tools.indexOf('function incompletenessBlock'), tools.indexOf('function projectionQualification'));
 const qual = tools.slice(tools.indexOf('function projectionQualification'), tools.indexOf('function projectionQualification') + 2500);
 

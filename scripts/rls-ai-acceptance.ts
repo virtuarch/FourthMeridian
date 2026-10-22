@@ -34,6 +34,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { toolsSourceFiles } from "@/lib/test-support/tools-source";
 
 import {
   prepareHarness, assertTenantClientBound, teardownHarness, psql, makeRecorder, APP_FIXTURES,
@@ -451,7 +452,8 @@ async function main(): Promise<void> {
   const ABSENCE_SRC = read("lib/ai/absence.ts");
   const WIDER = /adjudicate(?:Absence|MemoryAbsence)\(\s*db\b/;
   check(39, "[source] the oracle is never handed the module-level `db` on the AI path",
-    [ABSENCE_SRC, read("lib/ai/conversation/tools.ts"), read("lib/data/transaction-query.ts"),
+    // CQ-011: every file of the tool layer (facade + lib/ai/conversation/tools/**), each scanned on its own.
+    [ABSENCE_SRC, ...toolsSourceFiles().map(read), read("lib/data/transaction-query.ts"),
      read("lib/ai/coverage-envelope.ts"), read("lib/ai/conversation/memory-tools.ts")]
       .every((s) => !WIDER.test(s))
       && WIDER.test("await adjudicateAbsence(db, spaceId)"));
@@ -784,7 +786,7 @@ async function main(): Promise<void> {
     !/aiPhaseRunner\(\s*(?:parsed|body|req|asked|history)/.test(ROUTE));
   const ENGINE = read("lib/ai/conversation/engine.ts");
   check(68, "[source] no tenant transaction lexically encloses the provider call in the ENGINE either",
-    !spansModelCall(ENGINE) && !spansModelCall(read("lib/ai/conversation/tools.ts")));
+    !spansModelCall(ENGINE) && !toolsSourceFiles().some((f) => spansModelCall(read(f)))); // CQ-011: the tool layer, per file
   check(69, "[source] the global interactive-transaction timeout is NOT raised anywhere",
     ![read("lib/db.ts"), read("lib/db/tenant-context.ts")]
       .some((src) => /transactionOptions/.test(src)),

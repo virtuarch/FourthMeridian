@@ -20,6 +20,7 @@
 
 import { readFileSync } from 'node:fs';
 import { NEEDS_THRESHOLD, type TemporalOperation } from '@/lib/data/snapshot-window';
+import { readToolsSource } from '@/lib/test-support/tools-source';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -29,8 +30,9 @@ function check(name: string, cond: boolean, detail?: string) {
 const code = (rel: string) =>
   readFileSync(rel, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
 
-const tools = code('lib/ai/conversation/tools.ts');
-const raw   = readFileSync('lib/ai/conversation/tools.ts', 'utf8');
+// CQ-011: the tool layer (facade + lib/ai/conversation/tools/**).
+const raw   = readToolsSource();
+const tools = raw.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
 const win   = code('lib/data/snapshot-window.ts');
 
 console.log('1. EXACT DATES ARE CODE\'S, NOT THE MODEL\'S');
@@ -44,8 +46,12 @@ console.log('1. EXACT DATES ARE CODE\'S, NOT THE MODEL\'S');
   // section marker is not in the string being searched — indexOf would return
   // -1 and the slice would quietly run to the end of the file, testing every
   // other tool instead of this one.
-  const toolBody = tools.slice(tools.indexOf("name: 'find_in_balance_history'"),
-    tools.indexOf("name: 'explain_net_worth_composition'"));
+  // CQ-011: the end anchor was the NEXT tool in the old single file
+  // (`explain_net_worth_composition`), which now lives in tools/snapshot.ts and
+  // precedes history.ts in the scan order. The tool's own module continues with
+  // the change-block helper, so the slice ends there — this tool and nothing else.
+  const findStart = tools.indexOf("name: 'find_in_balance_history'");
+  const toolBody = tools.slice(findStart, tools.indexOf('interface ChangeableSnapshotPoint', findStart));
   check('the section really is this tool alone',
     toolBody.length > 500 && toolBody.length < 9000 && toolBody.includes('findObservation('),
     `${toolBody.length} chars`);

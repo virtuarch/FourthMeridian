@@ -41,6 +41,7 @@ import { Markdown, isSameOriginPath } from '@/components/ai/Markdown';
 import { escapeHtml } from '@/components/dashboard/AdviceBanner';
 import { TRANSCRIPT_TTL_MS } from '@/components/ai/transcript-cache';
 import type { ActiveScenario } from './active-scenario';
+import { readToolsSource } from '@/lib/test-support/tools-source';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -125,14 +126,14 @@ async function main(): Promise<void> {
     check('get_baselines takes a one-off liquidChange', 'liquidChange' in props);
     check('…and its contract says to quote afterLiquidChange, never subtract or divide in prose',
       /pass\s+'?\s*\+?\s*'?`liquidChange`/.test(t.description) || (/`liquidChange`/.test(t.description) && /never subtract from cash or divide in prose/.test(t.description)));
-    const src = read('lib/ai/conversation/tools.ts');
+    const src = readToolsSource(); // CQ-011: the tool layer
     check('…priced by the SAME derive() as today\'s runway, not a second formula',
       /const moved = change !== null && liquid !== null \? derive\(\{ expense, income, liquid: liquid \+ change,/.test(src));
   }
 
   console.log('1c. owned vs freely spendable — projected from the liquidity authority, never decided here');
   {
-    const src = read('lib/ai/conversation/tools.ts');
+    const src = readToolsSource(); // CQ-011: the tool layer
     const body = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     check('the snapshot carries the authority\'s per-account verdict (liquidityAccess) and its wording',
       /\.\.\.accessOf\(a2\)/.test(src) && /accessMeaning: LIQUIDITY_ACCESS_MEANING/.test(src)
