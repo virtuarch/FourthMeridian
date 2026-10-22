@@ -95,8 +95,9 @@ async function main() {
     t.check("already-verified token → 200 already_verified, nothing sent", av.body.status === "already_verified" && capturedEmails().length === 0);
     const audit = fake.one("AuditLog", { action: "EMAIL_VERIFICATION_RESENT" });
     t.check("a resend writes EMAIL_VERIFICATION_RESENT", !!audit);
-    t.known("…keyed by the e-mail DIGEST, not the address (PRIV-002)",
-      !!audit && !JSON.stringify(audit.metadata).includes("example.test"), "J-D1: lib/email/verification.ts writes metadata.email raw");
+    // J-D1 FIXED: the resend audit stores emailHash.
+    t.check("…keyed by the e-mail DIGEST, not the address (PRIV-002)",
+      !!audit && !JSON.stringify(audit.metadata).includes("example.test") && typeof (audit.metadata as { emailHash?: unknown }).emailHash === "string");
   }
 
   t.section("4. resend by identifier — NON-ENUMERATING");

@@ -21,6 +21,7 @@
  */
 
 import "server-only";
+import { auditEmailHash } from "@/lib/audit";
 import crypto from "crypto";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
@@ -82,7 +83,7 @@ export async function rotateAndSendVerification(
     data: {
       userId:   user.id,
       action:   AuditAction.EMAIL_VERIFICATION_RESENT,
-      metadata: { email: user.email },
+      metadata: { emailHash: auditEmailHash(user.email) }, // PRIV-002 / J-D1: digest, never the raw address
     },
   });
 
