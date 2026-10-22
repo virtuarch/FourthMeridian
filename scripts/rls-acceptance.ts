@@ -216,8 +216,8 @@ async function main(): Promise<void> {
   // unless it happened to be one of the fixture tables. The census closes that:
   // every table with ANY privilege for fm_app has rowsecurity, force, and at
   // least one policy naming fm_app (or PUBLIC), EXCEPT the closed set of
-  // global reference tables and the RateLimit ledger, which are shared by
-  // design (DB-004) and must stay exactly that set.
+  // global reference tables, which are shared by design and must stay exactly
+  // that set (RateLimit left it when DB-004 gave it an own-bucket policy).
   censusProof(base);
 
   // ── reads ──────────────────────────────────────────────────────────────────
@@ -389,15 +389,17 @@ async function main(): Promise<void> {
  * Cases 35-37 — the GRANT ↔ POLICY census (TEST-003).
  *
  * Reference data shared by every tenant on purpose: instruments, prices,
- * corporate-action terms, FX, merchants and their aliases, and the per-key
- * RateLimit ledger. These are granted to fm_app WITHOUT a policy, and that is
- * the design (DB-004) — so the list is closed and asserted exactly: a table
+ * corporate-action terms, FX, merchants and their aliases. These are granted to
+ * fm_app WITHOUT a policy, and that is the design — so the list is closed and
+ * asserted exactly: a table
  * joining it (a new grant-without-policy) and a table leaving it (reference
- * data suddenly tenant-scoped, or dropped) both fail.
+ * data suddenly tenant-scoped, or dropped) both fail. RateLimit LEFT the list on
+ * 2026-10-22 (DB-004: ENABLE + FORCE with an own-bucket fm_app policy,
+ * migration 20261022000600) — exactly the event this case exists to notice.
  */
 const REFERENCE_TABLES_WITHOUT_POLICY = [
   "CorporateActionTerms", "FxRate", "Instrument", "InstrumentAlias",
-  "Merchant", "MerchantAlias", "PriceObservation", "RateLimit",
+  "Merchant", "MerchantAlias", "PriceObservation",
 ] as const;
 
 function censusProof(ownerUrl: string): void {
