@@ -102,6 +102,8 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
   const [acting, setActing]   = useState<string | null>(null); // id or "mode" while a mutation runs
+  /** UI-009 — when the figures below were last read (every refetch moves it). */
+  const [loadedAt, setLoadedAt] = useState<string | null>(null);
 
   const [selectedRequestId, setSelectedRequestId]       = useState<string | null>(null);
   const [selectedInvitationId, setSelectedInvitationId] = useState<string | null>(null);
@@ -123,6 +125,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
       if (!rReq.ok) throw new Error(rReq.status === 403 ? "Not authorized" : `Request failed (${rReq.status})`);
       setReqs((await rReq.json()) as BetaRequestsResponse);
       if (rStatus.ok) setStatus((await rStatus.json()) as BetaStatusResponse);
+      setLoadedAt(new Date().toISOString());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -190,7 +193,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const currentMode = status?.registrationMode;
 
   return (
-    <PlatformWidgetCard label={section.label} icon={Mail}>
+    <PlatformWidgetCard label={section.label} icon={Mail} checkedAt={loadedAt}>
       {loading || error || !reqs ? (
         <WidgetMessage loading={loading} error={error} />
       ) : (

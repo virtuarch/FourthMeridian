@@ -34,7 +34,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Users, RefreshCw, Loader2, ShieldCheck, Layers } from "lucide-react";
-import { PlatformWidgetCard, WidgetMessage, WidgetStat, timeAgo, type PlatformSection } from "../widget-kit";
+import { PlatformWidgetCard, WidgetMessage, WidgetStat, fmtUtc, timeAgo, type PlatformSection } from "../widget-kit";
 import type { SpaceMountAccess } from "@/lib/space/mount-context";
 import { RightPanel, PanelHeader, PanelContent, PanelFooter } from "@/components/atlas/panels";
 import type { CustomerListResponse } from "@/app/api/platform/customer-success/customers/route";
@@ -91,6 +91,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
   const [acting, setActing] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [refreshReport, setRefreshReport] = useState<RefreshAllReport | null>(null);
+  /** UI-009 — when the list was last read (every refetch moves it). */
+  const [loadedAt, setLoadedAt] = useState<string | null>(null);
   /** ONE instant for the list's relative times, captured at mount (a clock read during render is impure). */
   const [nowMs] = useState(() => Date.now());
 
@@ -109,6 +111,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
       const r = await fetch(`/api/platform/customer-success/customers?search=${encodeURIComponent(q)}&limit=100`, { credentials: "same-origin" });
       if (!r.ok) throw new Error(r.status === 403 ? "Not authorized" : `Request failed (${r.status})`);
       setList((await r.json()) as CustomerListResponse);
+      setLoadedAt(new Date().toISOString());
     } catch (e) { setError(e instanceof Error ? e.message : "Failed to load"); }
     finally { setLoading(false); }
   }, []);
@@ -188,7 +191,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     json({ action: detail.actions.deactivate.currently === "ACTIVE" ? "deactivate" : "reactivate", reason }));
 
   return (
-    <PlatformWidgetCard label={section.label} icon={Users}>
+    <PlatformWidgetCard label={section.label} icon={Users} checkedAt={loadedAt}>
       <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void loadList(search); }}>
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by email or name" aria-label="Search customers by email or name"
           className="w-full rounded-[var(--radius-sm)] border bg-transparent px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)]"
@@ -251,6 +254,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                     <Row label="Email verified" value={detail.identity.emailVerifiedAt ? "yes" : "no"} />
                     <Row label="State" value={detail.identity.deactivatedAt ? (detail.identity.deletionScheduledAt ? `deletion scheduled ${ago(detail.identity.deletionScheduledAt).replace(" ago", "")}` : "deactivated") : "active"} />
                     <Row label="Last active" value={`${ago(detail.activity.lastActiveAt)} (${detail.activity.lastActiveSource.toLowerCase()})`} />
+                    {/* UI-009 — the instant every relative age in this panel is measured from. */}
+                    <Row label="Detail checked" value={fmtUtc(detail.checkedAt)} />
                     <Row label="Sessions" value={String(detail.activity.activeSessions)} />
                   </Section>
 
