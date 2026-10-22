@@ -300,6 +300,18 @@ export const AI_EVIDENCE_AUTHORITIES: Readonly<Record<string, EvidenceAuthority>
       + 'silently becomes a FALSE NEGATIVE for a co-member\'s account, and this entry is the '
       + 'place that says so.',
   },
+  Connection: {
+    family: PolicyFamily.NOT_SPACE_ADJUDICABLE,
+    why: 'AccountConnection.connection.{lastSyncedAt, transactionsSyncedAt} — the ledger\'s reach '
+      + '(ledgerObservedThroughISO) in lib/ai/forecast/streams.ts (FIN-001)',
+    narrowing:
+      'The policy is `"userId" = current_fm_user_id()`, NOT Space-granular. For an account a '
+      + 'co-member connected, the connection row is invisible, the clock reads null, and the '
+      + 'stream falls back to the pre-FIN-001 floor (the newest income row). That is the SAFE '
+      + 'direction: an overdue slot then reads UNKNOWN (blocking, with a bound), never a silent '
+      + 'complete $0. No balance, total or transaction is affected; only how far the feed is '
+      + 'believed to have looked.',
+  },
 };
 
 /**
@@ -357,4 +369,4 @@ export const AMBIGUOUS_RELATIONS: Readonly<Record<string, { model: string; why: 
 };
 
 /** Declared narrowings, pinned. A new one must move this number deliberately. */
-export const DECLARED_NARROWING_COUNT = 2;
+export const DECLARED_NARROWING_COUNT = 3;

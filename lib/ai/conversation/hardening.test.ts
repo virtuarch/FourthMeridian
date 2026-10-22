@@ -231,8 +231,9 @@ async function main(): Promise<void> {
     // (lib/entitlements/consume.test.ts proves the ceiling across every group ×
     // overlay). No role is exempt from either: the old SYSTEM_ADMIN exemption is gone.
     check('two rate windows, both from the effective entitlement, for EVERY role',
-      /limitByUser\(user\.id, 'ai-chat', \{ limit: countLimit\(entitlements, 'aiTurnsPerMinute'\), windowSec: 60 \}\)/.test(route)
-      && /limitByUser\(user\.id, 'ai-chat-hour', \{ limit: countLimit\(entitlements, 'aiTurnsPerHour'\), windowSec: 3600 \}\)/.test(route)
+      // SEC-AI-004: the same two windows now go through the fail-closed pacing wrapper.
+      /paceAiRequest\(user\.id, 'ai-chat', \{ limit: countLimit\(entitlements, 'aiTurnsPerMinute'\), windowSec: 60 \}/.test(route)
+      && /paceAiRequest\(user\.id, 'ai-chat-hour', \{ limit: countLimit\(entitlements, 'aiTurnsPerHour'\), windowSec: 3600 \}/.test(route)
       && !/user\.role !== 'SYSTEM_ADMIN'/.test(route));
     check('…both before the body is read', route.indexOf("'ai-chat-hour'") < route.indexOf('req.json()'));
   }

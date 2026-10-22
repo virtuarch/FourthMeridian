@@ -72,6 +72,13 @@ export const OPERATION_KEYS = {
   // console.warn (RLS-P-2b / EVENT-WRITE-1).
   "event-identity-persist": "event-identity-persist",
 
+  // ── Fingerprint adoption refused as ambiguous (FIN-009) ───────────────────
+  // A synced Plaid row's fingerprint matched MORE THAN ONE existing row, so the
+  // sync refused to bind its provider id to any of them and persisted it as a
+  // distinct row. Not cursor-blocking; it names a possible duplicate an operator
+  // may want to review. Distinct from transaction-persist on purpose.
+  "fingerprint-adoption-ambiguous": "fingerprint-adoption-ambiguous",
+
   // ── Account-FK re-parenting refused (RLS-ACC-FK) ───────────────────────────
   // Written when a provider identifier resolved an EXISTING row that belongs to
   // a DIFFERENT FinancialAccount, so updating it with this sync's fields would

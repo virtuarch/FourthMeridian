@@ -155,9 +155,15 @@ console.log("6. Privacy aggregation keeps access apart");
 console.log("7. Write path and consumers — one authority, provider evidence only");
 {
   for (const f of ["lib/plaid/refresh.ts", "lib/plaid/exchangeToken.ts", "lib/accounts/recover-plaid-account.ts"]) {
-    check(`${f} stores the provider's subtype via normalizeProviderSubtype`, /normalizeProviderSubtype\(acct\.subtype\)/.test(src(f)));
+    check(`${f} stores the provider's subtype via normalizeProviderSubtype`,
+      /normalizeProviderSubtype\(acct\.subtype\)/.test(src(f))
+      || (f === "lib/plaid/refresh.ts" && /planBalanceWrite\(acct\.balances, acct\.subtype\)/.test(src(f)) && /normalizeProviderSubtype\(subtype\)/.test(src(f))));
   }
-  check("refresh rewrites it on every refresh (rows self-correct)", /providerSubtype: normalizeProviderSubtype\(acct\.subtype\)/.test(src("lib/plaid/refresh.ts")));
+  // FIN-011 moved the write into the pure planBalanceWrite(balances, subtype); the subtype is
+  // still the provider's, rewritten on every answer (observed balance or not).
+  check("refresh rewrites it on every refresh (rows self-correct)",
+    /planBalanceWrite\(acct\.balances, acct\.subtype\)/.test(src("lib/plaid/refresh.ts"))
+    && /providerSubtype: normalizeProviderSubtype\(subtype\)/.test(src("lib/plaid/refresh.ts")));
   check("no subtype is inferred from a name anywhere in the rule", !/name/i.test(src("lib/account-classifier.ts").split("export function liquidityAccess")[1].split("\n}\n")[0]));
   check("AI accounts assembler selects and classifies with providerSubtype (runway, Brief, scenarios read its totalLiquid)",
     /providerSubtype: true/.test(src("lib/ai/assemblers/accounts.ts")) && /providerSubtype: l\.financialAccount\.providerSubtype/.test(src("lib/ai/assemblers/accounts.ts")));

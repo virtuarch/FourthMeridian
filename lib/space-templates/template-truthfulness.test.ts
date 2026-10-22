@@ -44,10 +44,18 @@ function main(): void {
   console.log("1. no category leads with (or contains) a comingSoon lens");
   for (const cat of categories) {
     const defs = getPerspectivesForCategory(cat);
-    const soon = defs.filter((d) => d.status === "comingSoon").map((d) => d.id);
+    // OWNER DECISION 3 (2026-10-22, pre-beta remediation): Markets is an upcoming
+    // capability, listed as Coming Soon. It is the ONE exemption: its renderer is
+    // gated to an honest "Coming soon." placeholder by the registry status
+    // (components/space/workspaces/workspaceRenderers.tsx), so it promises nothing.
+    const COMING_SOON_EXEMPT = new Set(["markets"]);
+    const soon = defs.filter((d) => d.status === "comingSoon" && !COMING_SOON_EXEMPT.has(d.id)).map((d) => d.id);
     check(`${cat}: no comingSoon lens in the perspective list`, soon.length === 0,
       soon.length ? `found ${soon.join(", ")}` : undefined);
   }
+  check("the Markets exemption is backed by the placeholder gate",
+    /comingSoon/.test(read("components/space/workspaces/workspaceRenderers.tsx"))
+    && /WorkspaceComingSoon/.test(read("components/space/workspaces/workspaceRenderers.tsx")));
   // Explicit regression pins for the two the audit removed.
   check("PROPERTY no longer surfaces the `property` lens",
     !getPerspectivesForCategory("PROPERTY").some((d) => d.id === "property"));
