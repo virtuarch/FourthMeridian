@@ -183,13 +183,9 @@ export async function GET(req: NextRequest) {
     const products      = [Products.Transactions];
     const country_codes = [CountryCode.Us];
 
-    // Investments consent is added ONLY in update mode (accessToken present)
-    // and ONLY when explicitly requested for this specific Item. It is never
-    // added to a fresh-link session, so `products` stays Transactions-only for
-    // every normal Add Connection — AmEx and other credit-only institutions
-    // are unaffected. Placed in `additional_consented_products` (not
-    // `products`): this collects consent without gating the institution and is
-    // not billed until investmentsHoldingsGet is called on the Item.
+    // PRIV-014 (2026-10-22): the paragraph that used to sit here said consent
+    // is requested ONLY in update mode and never on a fresh link — the code
+    // below has done the opposite since B2. The B2 note is the true one.
     // B2 — request Investments consent UP FRONT via additional_consented_products
     // (NOT `products`). This is the DTM-correct, NON-GATING mechanism: it collects
     // Investments consent where the institution offers it (Schwab/Fidelity/etc.),
