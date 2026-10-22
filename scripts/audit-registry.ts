@@ -247,6 +247,17 @@ export const AUDITS: readonly AuditEntry[] = [
           "and fails closed if it cannot read them",
   },
 
+  {
+    // DB-008 — migration naming. Source-only: the corpus is prisma/migrations/.
+    // Prisma applies directories in lexical order; 24 legacy names carry a date
+    // only, so same-day order was slug order, and nothing refused a back-dated
+    // or duplicate timestamp. The legacy set is a closed allowlist.
+    name: "audit-migration-names", tier: "REQUIRED", needsDb: false,
+    what: "every prisma/migrations directory is <YYYYMMDDHHMMSS>_<slug> with a real, unique timestamp that " +
+          "is monotone in apply order, except the closed legacy date-only set (scripts/lib/migration-names.ts), " +
+          "which must match the tree exactly",
+  },
+
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {
     name: "audit-surface-independence", tier: "INFORMATIONAL", needsDb: false,
