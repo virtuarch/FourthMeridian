@@ -405,6 +405,7 @@ model User {
   // S7a — those are S7b/S7c. See OPS2_S7_ACCOUNT_DELETION_INVESTIGATION.md.
   deletionRequestedAt     DateTime?
   deletionScheduledAt     DateTime?
+  purgeStartedAt          DateTime? // IDEMP-002 — the purge CLAIM: set by exactly one process-deletions worker; re-claimable once stale
   lastBriefViewedAt       DateTime? // set when user views the Daily Brief page
   // OPS-3 S3 — the user's IANA timezone (e.g. "America/New_York"). A general
   // preference (Settings → Preferences), not notification-specific: consumed
