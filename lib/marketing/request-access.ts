@@ -37,6 +37,9 @@ export type AccessRequestInput = {
    *  the public-site page the visitor came from, a referrer host. Omitted when
    *  there is nothing to attribute. */
   source?: AcquisitionSource | null;
+  /** PRIV-012 — the applicant ticked the privacy-notice consent box. The
+   *  server refuses a submission without `consent: true`. */
+  consent?: boolean;
 };
 
 export type AccessRequestResult =
@@ -73,6 +76,7 @@ export async function submitAccessRequest(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         email,
+        ...(input.consent === true ? { consent: true } : {}),
         ...(note ? { note } : {}),
         ...(captchaToken ? { captchaToken } : {}),
         ...(source ? { source } : {}),

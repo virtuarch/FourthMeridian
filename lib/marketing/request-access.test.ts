@@ -59,6 +59,15 @@ async function main() {
   await submitAccessRequest({ email: "p@example.com", source: {} });
   check("an empty source is omitted, not sent", calls[0]?.body === JSON.stringify({ email: "p@example.com" }), calls[0]?.body);
 
+  // PRIV-012 — consent rides in the body only when explicitly true.
+  calls.length = 0;
+  stub(() => new Response("{}", { status: 200 }));
+  await submitAccessRequest({ email: "p@example.com", consent: true });
+  check("consent: true is sent", calls[0]?.body === JSON.stringify({ email: "p@example.com", consent: true }), calls[0]?.body);
+  calls.length = 0;
+  await submitAccessRequest({ email: "p@example.com", consent: false });
+  check("consent: false is not sent (the server then refuses)", calls[0]?.body === JSON.stringify({ email: "p@example.com" }), calls[0]?.body);
+
   calls.length = 0;
   const bad = await submitAccessRequest({ email: "nope" });
   check("invalid email ⇒ error without a request", bad.status === "error" && calls.length === 0);
