@@ -54,6 +54,12 @@ export async function PATCH(
     config?:  Record<string, unknown> | null;
   };
   if (body.label !== undefined && typeof body.label !== "string") return NextResponse.json({ error: "label must be a string" }, { status: 400 }); // J-D5
+  // J-D5 (rest): wrong types for enabled/order reached Prisma as a 500; refuse them as 400.
+  if (body.enabled !== undefined && typeof body.enabled !== "boolean") return NextResponse.json({ error: "enabled must be a boolean" }, { status: 400 });
+  if (body.order !== undefined && !(typeof body.order === "number" && Number.isInteger(body.order) && body.order >= 0 && body.order <= 10_000)) {
+    return NextResponse.json({ error: "order must be a non-negative integer" }, { status: 400 });
+  }
+  if (typeof body.label === "string" && body.label.trim().length > 120) return NextResponse.json({ error: "label must be at most 120 characters" }, { status: 400 });
 
   const updated = await withTenantDb(userId, (tx) => tx.spaceDashboardSection.update({
     where: { id: sectionId },

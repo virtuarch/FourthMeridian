@@ -59,6 +59,10 @@ async function main() {
     const id = section(w.S, "net_worth");
     const r = await edit("owner", w.S, id, { label: 42 });
     t.check("a non-string label → 400 (J-D5: was an unhandled TypeError from body.label.trim())", r.status === 400, r);
+    for (const [name, body] of [["enabled: \"yes\"", { enabled: "yes" }], ["order: \"3\"", { order: "3" }], ["order: -1", { order: -1 }], ["order: 1.5", { order: 1.5 }], ["label > 120 chars", { label: "x".repeat(121) }]] as const) {
+      const bad = await edit("owner", w.S, id, body as Record<string, unknown>);
+      t.check(`${name} → 400 (J-D5 rest)`, bad.status === 400, bad);
+    }
     t.check("…and nothing was written", row(id).label === "net_worth");
   }
 
