@@ -7,7 +7,8 @@
  * Handles:
  *   - Fetching current TOTP status
  *   - Enable 2FA flow: QR code → verification → recovery codes reveal
- *   - Disable 2FA flow: confirmation modal with TOTP or password
+ *   - Disable 2FA flow: confirmation modal with a fresh TOTP code, or (lost
+ *     device) a recovery code + password — never the password alone (B4)
  *   - Recovery code count + regeneration
  *
  * Modal shells migrated onto the Atlas Glass primitive (FormModal / Dialog →
@@ -394,6 +395,7 @@ function DisableModal({ onClose, onDisabled }: { onClose: () => void; onDisabled
   const [useTotp,   setUseTotp]   = useState(true);
   const [totpCode,  setTotpCode]  = useState("");
   const [password,  setPassword]  = useState("");
+  const [recovery,  setRecovery]  = useState("");
   const [showPw,    setShowPw]    = useState(false);
   const [loading,   setLoading]   = useState(false);
   const [error,     setError]     = useState("");
@@ -402,9 +404,11 @@ function DisableModal({ onClose, onDisabled }: { onClose: () => void; onDisabled
     e.preventDefault();
     setLoading(true); setError("");
 
+    // B4 — a password alone never disables 2FA: either a fresh authenticator
+    // code, or (lost device) a recovery code together with the password.
     const body = useTotp
       ? { totpCode: totpCode.replace(/\s/g, "") }
-      : { password };
+      : { recoveryCode: recovery.trim(), password };
 
     try {
       const res  = await fetch("/api/user/totp/disable", {
@@ -419,7 +423,7 @@ function DisableModal({ onClose, onDisabled }: { onClose: () => void; onDisabled
     finally  { setLoading(false); }
   }
 
-  const canSubmit = useTotp ? totpCode.replace(/\s/g, "").length === 6 : password.length > 0;
+  const canSubmit = useTotp ? totpCode.replace(/\s/g, "").length === 6 : recovery.trim().length > 0 && password.length > 0;
 
   return (
     <Dialog
@@ -437,10 +441,10 @@ function DisableModal({ onClose, onDisabled }: { onClose: () => void; onDisabled
             Disabling 2FA removes the extra layer of protection from your account and deletes all recovery codes.
           </div>
 
-          {/* Toggle: TOTP vs password */}
+          {/* Toggle: authenticator code vs lost-device recovery (recovery code + password) */}
           <div className="flex rounded-xl overflow-hidden border border-[var(--border-hairline)]">
             <button onClick={() => setUseTotp(true)}  className={`flex-1 py-2 text-xs font-medium transition-colors ${useTotp  ? "bg-[var(--surface-inset)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}>Authenticator code</button>
-            <button onClick={() => setUseTotp(false)} className={`flex-1 py-2 text-xs font-medium transition-colors ${!useTotp ? "bg-[var(--surface-inset)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}>Account password</button>
+            <button onClick={() => setUseTotp(false)} className={`flex-1 py-2 text-xs font-medium transition-colors ${!useTotp ? "bg-[var(--surface-inset)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}>Lost device</button>
           </div>
 
           {error && (
@@ -460,13 +464,24 @@ function DisableModal({ onClose, onDisabled }: { onClose: () => void; onDisabled
                 />
               </div>
             ) : (
+              <>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1.5">Recovery code</label>
+                <input
+                  type="text" autoComplete="off" spellCheck={false}
+                  value={recovery} onChange={(e) => setRecovery(e.target.value)}
+                  autoFocus placeholder="xxxx-xxxx"
+                  className="w-full bg-[var(--surface-inset)] border border-[var(--border-hairline)] rounded-xl px-4 py-3 text-white text-sm font-mono placeholder:text-[var(--text-faint)] focus:outline-none focus:border-[var(--accent-negative)] transition-colors"
+                />
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">One of the codes you saved when you turned on 2FA. It is used up.</p>
+              </div>
               <div>
                 <label className="block text-xs text-[var(--text-muted)] mb-1.5">Current password</label>
                 <div className="relative">
                   <input
                     type={showPw ? "text" : "password"}
                     value={password} onChange={(e) => setPassword(e.target.value)}
-                    autoFocus placeholder="••••••••"
+                    placeholder="••••••••"
                     className="w-full bg-[var(--surface-inset)] border border-[var(--border-hairline)] rounded-xl px-4 py-3 pr-11 text-white text-sm placeholder:text-[var(--text-faint)] focus:outline-none focus:border-[var(--accent-negative)] transition-colors"
                   />
                   <button type="button" onClick={() => setShowPw((v) => !v)} tabIndex={-1}
@@ -475,6 +490,7 @@ function DisableModal({ onClose, onDisabled }: { onClose: () => void; onDisabled
                   </button>
                 </div>
               </div>
+              </>
             )}
 
             <div className="flex gap-2">

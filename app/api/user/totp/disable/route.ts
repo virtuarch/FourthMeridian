@@ -3,9 +3,15 @@
  *
  * Disables TOTP 2FA for the authenticated user.
  *
- * Requires one of:
- *   - { totpCode: "123456" }   — current TOTP code from authenticator app (preferred)
- *   - { password: "..." }      — current account password (fallback)
+ * Requires one of (B4, 2026-10-23 — the password-only path is gone):
+ *   - { totpCode: "123456" }                      — a FRESH code from the authenticator.
+ *     Single-use for this action: the matched 30 s step is claimed in RateLimit
+ *     (unique key + windowStart), so a captured code cannot disable twice.
+ *   - { recoveryCode: "...", password: "..." }    — lost device: BOTH the account
+ *     password and an unused recovery code, consumed atomically (verifyRecoveryCode).
+ * A password alone is refused: it is the factor a session thief is most likely to
+ * hold, and turning 2FA off must take the second factor. Operators keep the
+ * separate audited reset (POST /api/admin/security/users/[userId]/2fa-reset).
  *
  * On success:
  *   - Clears totpSecret + sets totpEnabled = false
@@ -23,7 +29,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { AuditAction } from "@/lib/audit-actions";
-import { verifyTOTP } from "@/lib/totp";
+import { matchTOTPStep } from "@/lib/totp";
+import { verifyRecoveryCode } from "@/lib/recovery-codes";
+import { Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { requireFreshUser } from "@/lib/session";
 import { createNotification } from "@/lib/notifications/create";
@@ -37,13 +45,14 @@ export async function POST(req: NextRequest) {
   const limited = await limitByUser(user.id, "totp-disable", { limit: 5, windowSec: 900 });
   if (limited) return limited;
 
-  const body         = await req.json();
-  const totpCode     = (body.totpCode as string | undefined)?.replace(/\s/g, "");
-  const password     = (body.password as string | undefined) ?? "";
+  const body         = await req.json().catch(() => ({}));
+  const totpCode     = typeof body.totpCode === "string" ? body.totpCode.replace(/\s/g, "") : "";
+  const recoveryCode = typeof body.recoveryCode === "string" ? body.recoveryCode.trim() : "";
+  const password     = typeof body.password === "string" ? body.password : "";
 
-  if (!totpCode && !password) {
+  if (!totpCode && !(recoveryCode && password)) {
     return NextResponse.json(
-      { error: "Provide your current TOTP code or account password to disable 2FA." },
+      { error: "Enter the current 6-digit code from your authenticator app. Lost your device? Use a recovery code together with your password." },
       { status: 400 },
     );
   }
@@ -64,20 +73,45 @@ export async function POST(req: NextRequest) {
   // ── Verify identity ──────────────────────────────────────────────────────────
   let verified = false;
 
-  if (totpCode && dbUser.totpSecret) {
+  if (totpCode) {
+    if (!dbUser.totpSecret) {
+      return NextResponse.json({ error: "Verification failed. Check your code." }, { status: 400 });
+    }
+    let step: number | null;
     try {
       const secret = decryptWithPurpose(dbUser.totpSecret, EncryptionPurpose.TOTP_SECRET);
-      verified = verifyTOTP(totpCode, secret, 1);
+      step = matchTOTPStep(totpCode, secret, 1);
     } catch {
       return NextResponse.json({ error: "Failed to verify code." }, { status: 500 });
     }
-  } else if (password && dbUser.passwordHash) {
-    verified = await bcrypt.compare(password, dbUser.passwordHash);
+    if (step === null) {
+      return NextResponse.json({ error: "Verification failed. Check your code." }, { status: 400 });
+    }
+    // Replay guard: claim the step. A second request presenting a code from the
+    // SAME step hits the (key, windowStart) unique index and is refused. Its own
+    // tenant phase: a unique violation aborts the transaction it happens in.
+    const claimed = await withTenantDb(user.id, (tx) => tx.rateLimit.create({
+      data: { key: `user:totp-disable-step:${user.id}`, windowStart: new Date(step * 30_000), count: 1 },
+      select: { id: true },
+    })).then(() => true, (e: unknown) => {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") return false;
+      throw e;
+    });
+    if (!claimed) {
+      return NextResponse.json({ error: "That code was already used. Wait for the next code and try again." }, { status: 400 });
+    }
+    verified = true;
+  } else {
+    // Lost device: password AND a single-use recovery code.
+    const passwordOk = !!dbUser.passwordHash && await bcrypt.compare(password, dbUser.passwordHash);
+    if (passwordOk) {
+      verified = await withTenantDb(user.id, (tx) => verifyRecoveryCode(tx, user.id, recoveryCode));
+    }
   }
 
   if (!verified) {
     return NextResponse.json(
-      { error: "Verification failed. Check your TOTP code or password." },
+      { error: "Verification failed. Check your code, or your recovery code and password." },
       { status: 400 },
     );
   }

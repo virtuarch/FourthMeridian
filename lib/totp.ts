@@ -99,13 +99,23 @@ export function generateTOTP(secret: string): string {
  * to tolerate clock drift (default 1 = ±30 seconds).
  */
 export function verifyTOTP(token: string, secret: string, window = 1): boolean {
-  if (!/^\d{6}$/.test(token)) return false;
+  return matchTOTPStep(token, secret, window) !== null;
+}
+
+/**
+ * The 30-second time step a token matches (within ±`window` steps), or null.
+ * Lets a caller make a code single-use for its own action (B4: disabling 2FA
+ * claims the step, so a captured code cannot be replayed for a second disable
+ * inside its validity window).
+ */
+export function matchTOTPStep(token: string, secret: string, window = 1): number | null {
+  if (!/^\d{6}$/.test(token)) return null;
   const secretBytes = base32Decode(secret);
   const step        = timeStep();
   for (let i = -window; i <= window; i++) {
-    if (hotp(secretBytes, step + i) === token) return true;
+    if (hotp(secretBytes, step + i) === token) return step + i;
   }
-  return false;
+  return null;
 }
 
 /**

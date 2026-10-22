@@ -125,12 +125,16 @@ async function main() {
     } finally { delete process.env.RATE_LIMIT_ENABLED; }
   }
 
-  t.section("4. disable — fresh session + (current code OR password)");
+  t.section("4. disable — fresh session + a fresh code, or (lost device) recovery code + password; never the password alone (B4)");
   {
     const w = await world();
     await generateRecoveryCodes(fake.txClient() as never, w.enrolled.id as string, false);
     const s = await signIn(fake, w.enrolled.id as string);
+    const codes = fake.rows("RecoveryCode", { userId: w.enrolled.id }).length;
     t.check("neither code nor password → 400", (await call(DISABLE, "/api/user/totp/disable", s.cookie, {})).status === 400);
+    const pwOnly = await call(DISABLE, "/api/user/totp/disable", s.cookie, { password: PW });
+    t.check("B4: the CORRECT password alone → 400, 2FA stays on", pwOnly.status === 400
+      && fake.one("User", { id: w.enrolled.id })!.totpEnabled === true, pwOnly.body);
     t.check("wrong password → 400, still enabled", (await call(DISABLE, "/api/user/totp/disable", s.cookie, { password: "nope" })).status === 400
       && fake.one("User", { id: w.enrolled.id })!.totpEnabled === true);
     t.check("wrong code → 400", (await call(DISABLE, "/api/user/totp/disable", s.cookie, { totpCode: wrong(generateTOTP(w.secret)) })).status === 400);
@@ -144,16 +148,49 @@ async function main() {
     t.check("control: a cached read still serves the just-revoked session (200)", cached.status === 200, cached.status);
     t.check("…but disable re-checks the store and refuses it (401) — requireFreshUser", fresh.status === 401, fresh.status);
 
-    const ok = await call(DISABLE, "/api/user/totp/disable", s.cookie, { totpCode: generateTOTP(w.secret) });
+    // Replay: a code whose 30 s step was already claimed for this action is refused.
+    const now = generateTOTP(w.secret);
+    fake.seed("RateLimit", { key: `user:totp-disable-step:${w.enrolled.id}`, windowStart: new Date(Math.floor(Date.now() / 30_000) * 30_000), count: 1 });
+    const replay = await call(DISABLE, "/api/user/totp/disable", s.cookie, { totpCode: now });
+    t.check("B4 replay: a code from an already-claimed step → 400, 2FA stays on", replay.status === 400
+      && /already used/i.test(String(replay.body.error)) && fake.one("User", { id: w.enrolled.id })!.totpEnabled === true, replay.body);
+    t.check("no recovery code was consumed by any refused attempt", fake.rows("RecoveryCode", { userId: w.enrolled.id }).filter((c) => !c.usedAt).length === codes);
+
+    // A code from the NEXT step (inside the ±1 window) is a different, unclaimed step.
+    const realNow = Date.now;
+    Date.now = () => realNow() + 30_000;
+    const nextCode = generateTOTP(w.secret);
+    Date.now = realNow;
+    const ok = await call(DISABLE, "/api/user/totp/disable", s.cookie, { totpCode: nextCode });
     const u = fake.one("User", { id: w.enrolled.id })!;
     t.check("the current code → 200; 2FA off and the secret erased", ok.status === 200 && u.totpEnabled === false && u.totpSecret === null, ok.body);
     t.check("every recovery code is deleted", fake.rows("RecoveryCode", { userId: w.enrolled.id }).length === 0);
     t.check("TWO_FACTOR_DISABLED audited", fake.rows("AuditLog", { action: "TWO_FACTOR_DISABLED" }).length === 1);
     t.check("disable again → 400 not enabled", (await call(DISABLE, "/api/user/totp/disable", s.cookie, { password: PW })).status === 400);
+    t.check("both claimed steps are recorded under the user-scoped key", fake.rows("RateLimit", { key: `user:totp-disable-step:${w.enrolled.id}` }).length === 2);
+
+    // Lost device: recovery code + password.
     const w2 = await world();
+    const rc = await generateRecoveryCodes(fake.txClient() as never, w2.enrolled.id as string, false);
     const s2 = await signIn(fake, w2.enrolled.id as string);
-    t.check("the account password alone also disables", (await call(DISABLE, "/api/user/totp/disable", s2.cookie, { password: PW })).status === 200
-      && fake.one("User", { id: w2.enrolled.id })!.totpEnabled === false);
+    t.check("recovery code alone (no password) → 400", (await call(DISABLE, "/api/user/totp/disable", s2.cookie, { recoveryCode: rc[0] })).status === 400);
+    t.check("recovery code + WRONG password → 400, code NOT consumed", (await call(DISABLE, "/api/user/totp/disable", s2.cookie, { recoveryCode: rc[0], password: "nope" })).status === 400
+      && fake.rows("RecoveryCode", { userId: w2.enrolled.id }).every((c) => !c.usedAt));
+    t.check("unknown recovery code + right password → 400", (await call(DISABLE, "/api/user/totp/disable", s2.cookie, { recoveryCode: "zzzz-zzzz", password: PW })).status === 400
+      && fake.one("User", { id: w2.enrolled.id })!.totpEnabled === true);
+    const rec = await call(DISABLE, "/api/user/totp/disable", s2.cookie, { recoveryCode: rc[0], password: PW });
+    t.check("recovery code + right password → 200, 2FA off, RECOVERY_CODE_USED audited", rec.status === 200
+      && fake.one("User", { id: w2.enrolled.id })!.totpEnabled === false
+      && fake.rows("AuditLog", { action: "RECOVERY_CODE_USED", userId: w2.enrolled.id }).length === 1, rec.body);
+
+    // Authorization: another user's session cannot act on this account; anonymous is 401.
+    const w3 = await world();
+    const anon = await invoke(DISABLE, request("/api/user/totp/disable", { body: { totpCode: generateTOTP(w3.secret) } }));
+    t.check("anonymous → 401", anon.status === 401, anon.status);
+    const other = await signIn(fake, w3.user.id as string);
+    const cross = await call(DISABLE, "/api/user/totp/disable", other.cookie, { totpCode: generateTOTP(w3.secret) });
+    t.check("another user's session presenting THIS account's code acts only on itself (not enabled → 400); target stays on", cross.status === 400
+      && fake.one("User", { id: w3.enrolled.id })!.totpEnabled === true, cross.body);
   }
 
   t.section("5. recovery-codes regeneration — fresh session + current code; old codes die");
