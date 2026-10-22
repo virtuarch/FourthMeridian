@@ -58,7 +58,8 @@ console.log('\n2. tool output — the builders behind get_spending / get_income 
 
 console.log('\n3. source — every emitting site goes through the one scrub, and the raw description is gone');
 {
-  const tools = strip('lib/ai/conversation/tools.ts');
+  // CQ-011: get_transactions moved to its own module; the pin follows the scrub site.
+  const tools = strip('lib/ai/conversation/tools/transactions.ts');
   check('get_transactions rows: merchant scrubbed, no `description` field', /merchant: scrubDescriptor\(r\.merchantDisplayName \?\? r\.merchant\)/.test(tools) && !/description: r\.description/.test(tools));
   check('…imported from the shared module', /from '@\/lib\/ai\/privacy\/scrub'/.test(tools));
   const asm = strip('lib/ai/assemblers/transactions.ts');
