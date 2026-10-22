@@ -8,10 +8,16 @@
  * accounts, revokes them, and opens the shared ShareExistingAccountsPanel to add
  * more — all against the canonical /api/spaces/[id]/accounts + /accounts/share
  * routes (server enforces the share/revoke gates). Behavior-preserving.
+ *
+ * UI-003 — revoking a share removes the account from the Space for every member, so
+ * the row's X only stages it; handleRevoke is reachable from the ConfirmDialog alone.
+ * UI-006 — a failed list read is an error with Retry, never "No accounts shared".
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, X, Landmark, Share2 } from "lucide-react";
+import { Loader2, X, Landmark, Share2, AlertTriangle } from "lucide-react";
+import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
+import { revokeAccountConfirm } from "./destructive-confirm";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { ShareExistingAccountsPanel } from "./ShareExistingAccountsPanel";
 import { formatBalance, type SharedAccount } from "./manage-shared";
@@ -40,12 +46,19 @@ export function FinancesPanel({
 
   const canShare = ["OWNER", "ADMIN", "MEMBER"].includes(myRole);
 
+  const [loadError,      setLoadError]      = useState(false);
+  const [revokeError,    setRevokeError]    = useState("");
+  const [pendingRevoke,  setPendingRevoke]  = useState<SharedAccount | null>(null);
+
   const loadAccounts = useCallback(() => {
     setLoading(true);
     fetch(`/api/spaces/${spaceId}/accounts`)
-      .then((r) => r.ok ? r.json() : [])
-      .then((data: SharedAccount[]) => { setAccounts(data); setLoading(false); })
-      .catch(() => setLoading(false));
+      .then((r) => {
+        if (!r.ok) throw new Error(`accounts ${r.status}`);
+        return r.json();
+      })
+      .then((data: SharedAccount[]) => { setAccounts(data); setLoadError(false); setLoading(false); })
+      .catch(() => { setLoadError(true); setLoading(false); });
   }, [spaceId]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -53,19 +66,28 @@ export function FinancesPanel({
 
   async function handleRevoke(accountId: string) {
     setRevokingId(accountId);
+    setRevokeError("");
     try {
-      await fetch(`/api/spaces/${spaceId}/accounts/share`, {
+      const res = await fetch(`/api/spaces/${spaceId}/accounts/share`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ financialAccountId: accountId }),
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setRevokeError(d.error ?? "Couldn't remove the account. Try again.");
+        return;
+      }
       loadAccounts();
       window.dispatchEvent(new CustomEvent(SPACE_ACCOUNTS_CHANGED_EVENT));
       // Notify the hosting page directly — same gap as MembersPanel had:
       // the event above only reaches SpaceDashboard's listener.
       await onRefresh();
+    } catch {
+      setRevokeError("Network error — the account was not removed.");
     } finally {
       setRevokingId(null);
+      setPendingRevoke(null);
     }
   }
 
@@ -93,6 +115,22 @@ export function FinancesPanel({
     return acc;
   }, {});
 
+  if (loadError) {
+    return (
+      <div role="alert" className="text-center py-6">
+        <AlertTriangle size={24} className="text-[var(--coral-400)] mx-auto mb-2" aria-hidden />
+        <p className="text-sm text-[var(--text-secondary)]">Couldn&apos;t load this Space&apos;s accounts.</p>
+        <button
+          type="button"
+          onClick={loadAccounts}
+          className="mt-2 text-xs font-medium text-[var(--meridian-400)] hover:underline"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {accounts.length === 0 ? (
@@ -117,10 +155,11 @@ export function FinancesPanel({
                     </div>
                     <p className="text-sm font-medium text-[var(--text-primary)] shrink-0">{formatBalance(a.balance, a.currency)}</p>
                     {canShare && (
-                      <button onClick={() => handleRevoke(a.id)} disabled={revokingId === a.id}
-                        className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] opacity-0 group-hover:opacity-100 disabled:opacity-50 transition-all"
-                        title="Remove from Space">
-                        {revokingId === a.id ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
+                      <button onClick={() => { setRevokeError(""); setPendingRevoke(a); }} disabled={revokingId === a.id}
+                        className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 disabled:opacity-50 transition-all"
+                        title="Remove from Space"
+                        aria-label={`Remove ${a.name} from Space`}>
+                        {revokingId === a.id ? <Loader2 size={12} className="animate-spin" aria-hidden /> : <X size={12} aria-hidden />}
                       </button>
                     )}
                   </div>
@@ -130,6 +169,22 @@ export function FinancesPanel({
           ))}
         </div>
       )}
+      {revokeError && <p role="alert" className="text-xs text-[var(--coral-400)]">{revokeError}</p>}
+      {/* UI-003 — the ONLY path to handleRevoke. */}
+      {pendingRevoke && (() => {
+        const copy = revokeAccountConfirm(pendingRevoke.name);
+        return (
+          <ConfirmDialog
+            onClose={() => setPendingRevoke(null)}
+            onConfirm={() => handleRevoke(pendingRevoke.id)}
+            busy={revokingId === pendingRevoke.id}
+            icon={X}
+            title={copy.title}
+            message={copy.message}
+            confirmLabel={copy.confirmLabel}
+          />
+        );
+      })()}
       {canShare && (
         <button onClick={() => setShowPanel(true)}
           className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-dashed border-[var(--border-hairline)] text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--border-hairline-strong)] transition-colors">

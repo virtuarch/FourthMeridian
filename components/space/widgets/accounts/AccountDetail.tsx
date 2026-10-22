@@ -22,6 +22,9 @@
  * is shown alongside when it differs. BALANCE_ONLY aggregate rows carry a synthetic
  * id, no identity, and no owner context — so they expose balance + type only and
  * carry NO management actions, exactly as the detail read neutralised them.
+ *
+ * UI-003 — "Remove from Space" un-shares the account for every member, so it opens a
+ * ConfirmDialog first; removeFromSpace is reachable from that dialog's onConfirm alone.
  */
 
 import { describePriceProvenance } from "@/lib/prices/current-quote.core";
@@ -31,6 +34,8 @@ import {
   CheckCircle2, AlertTriangle, Loader2, Pencil, X, ArrowUpRight, Cable,
 } from "lucide-react";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
+import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
+import { revokeAccountConfirm } from "@/components/space/manage/destructive-confirm";
 import { formatRelativeTime } from "@/lib/format";
 import { formatCurrency } from "@/lib/currency";
 import { amountOwed } from "@/lib/debt/balance-semantics";
@@ -114,6 +119,7 @@ export function AccountDetail({
   const [nameDraft, setNameDraft] = useState(row.name);
   const [busy,      setBusy]      = useState<"rename" | "remove" | null>(null);
   const [error,     setError]     = useState("");
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   const isFull   = row.visibility === "FULL";
   const foreign  = row.currency !== currency;
@@ -176,13 +182,16 @@ export function AccountDetail({
         body:    JSON.stringify({ financialAccountId: row.id }),
       });
       if (!res.ok) throw new Error("revoke failed");
+      setConfirmRemove(false);
       window.dispatchEvent(new CustomEvent(SPACE_ACCOUNTS_CHANGED_EVENT));
       onChanged();
     } catch {
+      setConfirmRemove(false);
       setError("Couldn't remove. Try again.");
       setBusy(null);
     }
   }
+  const removeCopy = revokeAccountConfirm(row.name);
 
   return (
     <div className="min-w-0">
@@ -349,13 +358,26 @@ export function AccountDetail({
           >
             <ArrowUpRight size={13} /> View transactions
           </a>
-          <ActionButton onClick={removeFromSpace} disabled={busy === "remove"} danger>
-            {busy === "remove" ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />} Remove from Space
+          <ActionButton onClick={() => { setError(""); setConfirmRemove(true); }} disabled={busy === "remove"} danger>
+            {busy === "remove" ? <Loader2 size={12} className="animate-spin" aria-hidden /> : <X size={12} aria-hidden />} Remove from Space
           </ActionButton>
         </div>
       )}
 
-      {error && <p className="mt-2 text-[11px] text-[var(--coral-400)]">{error}</p>}
+      {error && <p role="alert" className="mt-2 text-[11px] text-[var(--coral-400)]">{error}</p>}
+
+      {/* UI-003 — the ONLY path to removeFromSpace. */}
+      {confirmRemove && (
+        <ConfirmDialog
+          onClose={() => setConfirmRemove(false)}
+          onConfirm={removeFromSpace}
+          busy={busy === "remove"}
+          icon={X}
+          title={removeCopy.title}
+          message={removeCopy.message}
+          confirmLabel={removeCopy.confirmLabel}
+        />
+      )}
 
       {/* PCS-2: credentials / sync / provider auth live in the SEPARATE Connections
           surface. Accounts never manages them — it links out. */}

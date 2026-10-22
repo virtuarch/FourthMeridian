@@ -17,6 +17,10 @@
  * shortcut in SpacesClient's SpaceDetail modal has been removed so
  * there's exactly one place owners go for this. The shell keeps this tab
  * hidden entirely for PERSONAL Spaces (server routes also fail closed).
+ *
+ * UI-003 — Leave and Archive no longer fire on the first click: each button opens a
+ * ConfirmDialog that states the consequence, and handleLeave / handleArchive are
+ * reachable from that dialog's onConfirm alone. A refused Leave now says so.
  */
 
 import { useState } from "react";
@@ -25,6 +29,8 @@ import { Loader2, UserMinus, Archive, Trash2, AlertTriangle } from "lucide-react
 import { displaySpaceName } from "@/lib/format";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { GlassButton } from "@/components/atlas/GlassButton";
+import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
+import { archiveSpaceConfirm, leaveSpaceConfirm } from "./destructive-confirm";
 import type { SpaceDetail } from "./manage-shared";
 
 export function DangerZonePanel({
@@ -44,6 +50,8 @@ export function DangerZonePanel({
 }) {
   const router = useRouter();
   const [confirmTrash, setConfirmTrash] = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const [archiveBusy,  setArchiveBusy]  = useState(false);
   const [trashBusy,    setTrashBusy]    = useState(false);
   const [leaveBusy,    setLeaveBusy]    = useState(false);
@@ -59,9 +67,15 @@ export function DangerZonePanel({
         onRefresh();
         onClose();
         router.push(`/dashboard/spaces?left=${encodeURIComponent(displaySpaceName(space.name))}`);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to leave Space.");
       }
+    } catch {
+      setError("Network error — you have not left this Space.");
     } finally {
       setLeaveBusy(false);
+      setConfirmLeave(false);
     }
   }
 
@@ -82,8 +96,11 @@ export function DangerZonePanel({
         const data = await res.json().catch(() => ({}));
         setError(data.error ?? "Failed to archive Space.");
       }
+    } catch {
+      setError("Network error — the Space was not archived.");
     } finally {
       setArchiveBusy(false);
+      setConfirmArchive(false);
     }
   }
 
@@ -129,8 +146,8 @@ export function DangerZonePanel({
                 ))}
               </ul>
             </div>
-            <GlassButton onClick={handleLeave} disabled={leaveBusy} tone="danger" size="sm">
-              {leaveBusy ? <Loader2 size={14} className="animate-spin" /> : <UserMinus size={14} />}
+            <GlassButton onClick={() => { setError(null); setConfirmLeave(true); }} disabled={leaveBusy} tone="danger" size="sm">
+              {leaveBusy ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <UserMinus size={14} aria-hidden />}
               Leave Space
             </GlassButton>
           </div>
@@ -145,8 +162,8 @@ export function DangerZonePanel({
               <p className="text-xs text-[var(--text-secondary)]">
                 Hide <span className="text-[var(--text-primary)] font-medium">{displaySpaceName(space.name)}</span> from your active Space list. Members, shared accounts, and history all stay intact — unarchive it any time from the Archive &amp; Trash page.
               </p>
-              <GlassButton onClick={handleArchive} disabled={archiveBusy} tone="neutral" size="sm">
-                {archiveBusy ? <Loader2 size={14} className="animate-spin" /> : <Archive size={14} />}
+              <GlassButton onClick={() => { setError(null); setConfirmArchive(true); }} disabled={archiveBusy} tone="neutral" size="sm">
+                {archiveBusy ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <Archive size={14} aria-hidden />}
                 Archive Space
               </GlassButton>
             </div>
@@ -186,10 +203,41 @@ export function DangerZonePanel({
       )}
 
       {error && (
-        <p className="text-xs text-[var(--coral-400)] flex items-center gap-1.5 px-1">
-          <AlertTriangle size={11} /> {error}
+        <p role="alert" className="text-xs text-[var(--coral-400)] flex items-center gap-1.5 px-1">
+          <AlertTriangle size={11} aria-hidden /> {error}
         </p>
       )}
+
+      {/* UI-003 — the ONLY paths to handleLeave / handleArchive. */}
+      {confirmLeave && (() => {
+        const copy = leaveSpaceConfirm(displaySpaceName(space.name));
+        return (
+          <ConfirmDialog
+            onClose={() => setConfirmLeave(false)}
+            onConfirm={handleLeave}
+            busy={leaveBusy}
+            icon={UserMinus}
+            title={copy.title}
+            message={copy.message}
+            confirmLabel={copy.confirmLabel}
+          />
+        );
+      })()}
+      {confirmArchive && (() => {
+        const copy = archiveSpaceConfirm(displaySpaceName(space.name));
+        return (
+          <ConfirmDialog
+            onClose={() => setConfirmArchive(false)}
+            onConfirm={handleArchive}
+            busy={archiveBusy}
+            icon={Archive}
+            title={copy.title}
+            message={copy.message}
+            confirmLabel={copy.confirmLabel}
+            confirmTone="neutral"
+          />
+        );
+      })()}
     </div>
   );
 }

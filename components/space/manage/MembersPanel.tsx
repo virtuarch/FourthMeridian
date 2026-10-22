@@ -14,11 +14,15 @@
  * member:* rules in lib/spaces/policy.ts. No client permission authority exists
  * to consume yet, and the modal's residuals (self-leave, don't-touch-OWNER) are
  * route residuals policy.ts's can() deliberately excludes, so this stays local.
+ *
+ * UI-003 — removal (which also un-shares every account the member added) and role
+ * change are confirmed first: the row controls only stage a pending action, and
+ * handleRemove / handleRoleChange are reachable from the ConfirmDialog alone.
  */
 
 import { useState, useEffect, useCallback } from "react";
 import {
-  Crown, Shield, Users, Eye, Loader2, UserMinus, Mail, X,
+  Crown, Shield, Users, Eye, Loader2, UserMinus, Mail, X, ShieldAlert,
 } from "lucide-react";
 import { formatDate } from "@/lib/format";
 import {
@@ -26,6 +30,8 @@ import {
   SPACE_ACCOUNTS_CHANGED_EVENT,
 } from "@/lib/space-nav";
 import { GlassButton } from "@/components/atlas/GlassButton";
+import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
+import { changeRoleConfirm, removeMemberConfirm } from "./destructive-confirm";
 import { UserSearchInput, userDisplayName, type UserResult } from "./UserSearchInput";
 import { ROLE_LABELS, type SpaceDetail } from "./manage-shared";
 
@@ -78,6 +84,10 @@ export function MembersPanel({
   const [removingId,    setRemovingId]    = useState<string | null>(null);
   const [rescindingId,  setRescindingId]  = useState<string | null>(null);
   const [changingRoleId, setChangingRoleId] = useState<string | null>(null);
+  // UI-003 — the staged destructive action awaiting confirmation.
+  const [pendingRemove, setPendingRemove] = useState<{ userId: string; name: string } | null>(null);
+  const [pendingRole,   setPendingRole]   = useState<{ userId: string; name: string; from: string; to: string } | null>(null);
+  const [memberError,   setMemberError]   = useState("");
 
   // Personal Spaces are strictly single-user (enforced server-side in the
   // invite / accept / role-change routes). Hide the invite affordance, pending-
@@ -126,11 +136,12 @@ export function MembersPanel({
 
   async function handleRemove(userId: string) {
     setRemovingId(userId);
+    setMemberError("");
     try {
       const res = await fetch(`/api/spaces/${space.id}/members/${userId}`, { method: "DELETE" });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
-        setInviteError(d.error ?? "Failed to remove member");
+        setMemberError(d.error ?? "Failed to remove member");
         return;
       }
       // Refresh member list in-place; sidebar will pick up the change
@@ -146,8 +157,11 @@ export function MembersPanel({
       // every host page (SpaceDashboard / SpacesClient / DashboardClient)
       // already implements correctly — it just was never being called.
       await onRefresh();
+    } catch {
+      setMemberError("Network error — the member was not removed.");
     } finally {
       setRemovingId(null);
+      setPendingRemove(null);
     }
   }
 
@@ -163,6 +177,7 @@ export function MembersPanel({
 
   async function handleRoleChange(userId: string, newRole: string) {
     setChangingRoleId(userId);
+    setMemberError("");
     try {
       const res = await fetch(`/api/spaces/${space.id}/members/${userId}`, {
         method:  "PATCH",
@@ -171,7 +186,12 @@ export function MembersPanel({
       });
       if (res.ok) {
         await onRefresh();
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setMemberError(d.error ?? "Failed to change role");
       }
+    } catch {
+      setMemberError("Network error — the role was not changed.");
     } finally {
       setChangingRoleId(null);
     }
@@ -215,7 +235,12 @@ export function MembersPanel({
                   <select
                     value={m.role}
                     disabled={changingRoleId === m.user.id}
-                    onChange={(e) => handleRoleChange(m.user.id, e.target.value)}
+                    aria-label={`Role for ${memberDisplayName(m)}`}
+                    onChange={(e) => {
+                      if (e.target.value !== m.role) {
+                        setPendingRole({ userId: m.user.id, name: memberDisplayName(m), from: m.role, to: e.target.value });
+                      }
+                    }}
                     className="bg-[var(--surface-hover-strong)] border-0 rounded-lg text-xs text-[var(--text-secondary)] px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[var(--meridian-400)] disabled:opacity-50"
                   >
                     <option value="ADMIN">Admin</option>
@@ -231,21 +256,55 @@ export function MembersPanel({
 
                 {canRemove && (
                   <button
-                    onClick={() => handleRemove(m.user.id)}
+                    onClick={() => setPendingRemove({ userId: m.user.id, name: memberDisplayName(m) })}
                     disabled={removingId === m.user.id}
                     className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] disabled:opacity-50 transition-colors"
                     title="Remove member"
+                    aria-label={`Remove ${memberDisplayName(m)}`}
                   >
                     {removingId === m.user.id
-                      ? <Loader2 size={12} className="animate-spin" />
-                      : <UserMinus size={12} />}
+                      ? <Loader2 size={12} className="animate-spin" aria-hidden />
+                      : <UserMinus size={12} aria-hidden />}
                   </button>
                 )}
               </div>
             );
           })}
         </div>
+        {memberError && (
+          <p role="alert" className="mt-2 text-xs text-[var(--coral-400)]">{memberError}</p>
+        )}
       </div>
+
+      {/* UI-003 — the ONLY paths to handleRemove / handleRoleChange. */}
+      {pendingRemove && (() => {
+        const copy = removeMemberConfirm(pendingRemove.name);
+        return (
+          <ConfirmDialog
+            onClose={() => setPendingRemove(null)}
+            onConfirm={() => handleRemove(pendingRemove.userId)}
+            busy={removingId === pendingRemove.userId}
+            icon={UserMinus}
+            title={copy.title}
+            message={copy.message}
+            confirmLabel={copy.confirmLabel}
+          />
+        );
+      })()}
+      {pendingRole && (() => {
+        const copy = changeRoleConfirm(pendingRole.name, pendingRole.from, pendingRole.to);
+        return (
+          <ConfirmDialog
+            onClose={() => setPendingRole(null)}
+            onConfirm={() => { const p = pendingRole; setPendingRole(null); void handleRoleChange(p.userId, p.to); }}
+            icon={ShieldAlert}
+            title={copy.title}
+            message={copy.message}
+            confirmLabel={copy.confirmLabel}
+            confirmTone="meridian"
+          />
+        );
+      })()}
 
       {/* Invite */}
       {canInvite && (
@@ -267,6 +326,7 @@ export function MembersPanel({
                   </button>
                 </div>
                 <select
+                  aria-label="Role for the invite"
                   value={inviteRole}
                   onChange={(e) => setInviteRole(e.target.value)}
                   className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl text-xs text-[var(--text-secondary)] px-2 py-2.5 focus:outline-none"
@@ -291,8 +351,8 @@ export function MembersPanel({
                 onSelect={(u) => { setSelectedUser(u); setInviteError(""); setInviteOk(""); }}
               />
             )}
-            {inviteError && <p className="text-xs text-[var(--coral-400)]">{inviteError}</p>}
-            {inviteOk    && <p className="text-xs text-[var(--emerald-400)]">{inviteOk}</p>}
+            {inviteError && <p role="alert" className="text-xs text-[var(--coral-400)]">{inviteError}</p>}
+            {inviteOk    && <p role="status" aria-live="polite" className="text-xs text-[var(--emerald-400)]">{inviteOk}</p>}
           </div>
         </div>
       )}
