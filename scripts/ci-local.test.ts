@@ -54,6 +54,29 @@ console.log("ci.yml runs exactly what `npm run ci` runs");
     JSON.stringify(jobs));
 }
 
+console.log("CI hygiene (TEST-007 / TEST-012): least privilege, no runaway jobs, no queued duplicates");
+{
+  const config = yml.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  check("workflow-level permissions: contents: read", /^permissions:\n  contents: read\n/m.test(config));
+  check("no job widens permissions", ![...config.matchAll(/^ {4}permissions:/gm)].length);
+  check("a concurrency group keyed on the ref, cancelling superseded runs",
+    /^concurrency:\n  group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n  cancel-in-progress: true/m.test(config));
+  for (const key of ["test", "architecture", "site"]) {
+    const m = /timeout-minutes:\s*(\d+)/.exec(jobBlock(key));
+    check(`${key}: timeout-minutes set and ≤ 60`, !!m && Number(m[1]) > 0 && Number(m[1]) <= 60, m?.[0]);
+  }
+  const uses = [...config.matchAll(/uses:\s*([^\s@]+)@([^\s]+)/g)].map((m) => `${m[1]}@${m[2]}`);
+  check("every action is pinned to a major tag (v4 today), none floating on a branch",
+    uses.length > 0 && uses.every((u) => /@v\d+$/.test(u)), JSON.stringify(uses));
+  const drift = readFileSync(".github/workflows/status-drift-guard.yml", "utf8");
+  check("status-drift-guard: timeout-minutes and contents: read", /timeout-minutes:\s*\d+/.test(drift) && /permissions:\n  contents: read/.test(drift));
+  const smoke = readFileSync(".github/workflows/post-deploy-smoke.yml", "utf8");
+  check("post-deploy-smoke: triggered by deployment_status, success only",
+    /^on:\n  deployment_status:/m.test(smoke) && /github\.event\.deployment_status\.state == 'success'/.test(smoke));
+  check("post-deploy-smoke: references no secret, probes /api/health, checks status and commit",
+    !/\$\{\{\s*secrets\./.test(smoke) && /\/api\/health/.test(smoke) && /\.status/.test(smoke) && /\.commit/.test(smoke) && /timeout-minutes/.test(smoke));
+}
+
 console.log("the dependency gate (SEC-002 / TEST-005) is in the test job, before anything runs on the install");
 {
   const AUDIT = "npm audit --omit=dev --audit-level=high";

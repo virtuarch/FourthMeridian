@@ -52,6 +52,15 @@ name: CI
 # ephemeral and is destroyed with the runner. prisma/seed.ts encrypts a fake
 # Plaid access token with it and nothing else reads it.
 
+# ── hygiene (TEST-007 / TEST-012, 2026-10-22) ────────────────────────────────
+# `permissions: contents: read` — the token can read the checkout and nothing
+# else (no job writes to the repository). `concurrency` cancels a superseded
+# run of the same ref so a burst of pushes does not queue three gates. Every
+# job carries `timeout-minutes` (GitHub's default is 360): a wedged child
+# (scripts/run-tests.ts now kills one at 180 s) can no longer hold a runner
+# for six hours. Action tags stay on their current majors (v4/v4); Dependabot
+# (.github/dependabot.yml) proposes the bumps.
+
 on:
   push:
     branches: ["**"]
@@ -62,9 +71,17 @@ on:
   # commit, i.e. rewriting the branch to work around someone else's outage.
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -100,6 +117,7 @@ jobs:
   architecture:
     name: Architecture audits
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -200,6 +218,7 @@ jobs:
   site:
     name: Public site (zero-authority boundary)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
