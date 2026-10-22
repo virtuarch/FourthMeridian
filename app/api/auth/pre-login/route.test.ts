@@ -95,6 +95,14 @@ async function main() {
   {
     await world();
     env.RATE_LIMIT_ENABLED = "true";
+    // The limiter's windows are minute-ALIGNED (lib/rate-limit.ts check()), so
+    // eleven requests that straddle a minute boundary land in two buckets and
+    // all answer 200 — seen once under a loaded `npm run ci` (2026-10-22).
+    // Hold the clock mid-window for the loop so the case tests the limit, not
+    // the wall clock.
+    const realNow = Date.now;
+    const midWindow = Math.floor(realNow() / 60_000) * 60_000 + 30_000;
+    Date.now = () => midWindow;
     try {
       const s: number[] = [];
       let last: Awaited<ReturnType<typeof pre>> | null = null;
@@ -102,6 +110,7 @@ async function main() {
       t.check("10 answered, the 11th is 429", s.slice(0, 10).every((x) => x === 200) && s[10] === 429, s);
       t.check("Retry-After present", Number(last!.headers.get("retry-after")) > 0);
     } finally {
+      Date.now = realNow;
       delete env.RATE_LIMIT_ENABLED;
     }
   }
