@@ -9,7 +9,10 @@
  * rescind fn is threaded down. Mounts only when the caller may invite (decided upstream).
  */
 
-import { Loader2, X } from "lucide-react";
+import { useState } from "react";
+import { Loader2, UserX, X } from "lucide-react";
+import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
+import { rescindInviteConfirm } from "@/components/space/manage/destructive-confirm";
 import { formatDate } from "@/lib/format";
 import { Surface } from "@/components/atlas/Surface";
 import { ROLE_LABELS } from "@/components/space/manage/manage-shared";
@@ -25,6 +28,9 @@ export function PendingInvites({
   rescindingId: string | null;
   onRescind: (inviteId: string) => void;
 }) {
+  // UI-003 — the button only STAGES the rescind; ConfirmDialog's onConfirm is
+  // the one path to onRescind.
+  const [pending, setPending] = useState<QueuedInvite | null>(null);
   if (queue.length === 0) {
     return (
       <p className="px-1 text-xs text-[var(--text-muted)]">No pending invites.</p>
@@ -46,7 +52,7 @@ export function PendingInvites({
             </div>
             <button
               type="button"
-              onClick={() => onRescind(inv.id)}
+              onClick={() => setPending(inv)}
               disabled={rescindingId === inv.id}
               className="rounded-[var(--radius-sm)] p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[rgba(237,82,71,.10)] hover:text-[var(--coral-400)] disabled:opacity-50"
               title="Rescind invite"
@@ -57,6 +63,19 @@ export function PendingInvites({
           </li>
         ))}
       </ul>
+      {pending && (() => {
+        const copy = rescindInviteConfirm(userDisplayName(pending.invitedUser as UserResult));
+        return (
+          <ConfirmDialog
+            onClose={() => setPending(null)}
+            onConfirm={() => { const id = pending.id; setPending(null); onRescind(id); }}
+            icon={UserX}
+            title={copy.title}
+            message={copy.message}
+            confirmLabel={copy.confirmLabel}
+          />
+        );
+      })()}
     </Surface>
   );
 }

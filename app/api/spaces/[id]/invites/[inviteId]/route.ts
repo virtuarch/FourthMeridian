@@ -63,6 +63,7 @@ import { requireUser, requireSpaceRole }      from "@/lib/session";
 import { isInvitableSpaceRole }                   from "@/lib/spaces/invite-role";
 import { SpaceMemberRole, SpaceMemberStatus, SpaceType } from "@prisma/client";
 import { getClientIp }                            from "@/lib/api";
+import { AuditAction }                            from "@/lib/audit-actions";
 import { emitDomainEvent, dispatchDomainEvent }   from "@/lib/events/emit";
 import type { DomainEvent }                       from "@/lib/events/types";
 
@@ -216,13 +217,26 @@ export async function DELETE(
   // observed and none written ⇒ raises.
   const scope = { id: inviteId, spaceId };
   const eligible = await withTenantDb(auth.user.id, async (tx) => {
-    const observed = await tx.spaceInvite.count({ where: scope });
+    const target = await tx.spaceInvite.findFirst({ where: scope, select: { invitedUserId: true, role: true, status: true } });
+    const observed = target ? 1 : 0;
     const { count } = await tx.spaceInvite.deleteMany({ where: scope });
     assertEveryObservedRowWasWritten(
       { table: "SpaceInvite", operation: "delete", scope: "one invite id in this Space" },
       observed,
       count,
     );
+    // A7 — the invite row is hard-deleted, so the audit row is its only trace;
+    // written in the SAME transaction, so a cancel is never unrecorded.
+    if (target) {
+      await tx.auditLog.create({
+        data: {
+          userId:  auth.user.id,
+          spaceId,
+          action:  AuditAction.MEMBER_INVITE_CANCELLED,
+          metadata: { inviteId, invitedUserId: target.invitedUserId, role: target.role, status: target.status },
+        },
+      });
+    }
     return observed;
   });
   // The shape is unchanged for both outcomes (a cancel has always been

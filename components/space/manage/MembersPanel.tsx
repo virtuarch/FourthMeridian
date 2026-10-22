@@ -17,12 +17,12 @@
  *
  * UI-003 — removal (which also un-shares every account the member added) and role
  * change are confirmed first: the row controls only stage a pending action, and
- * handleRemove / handleRoleChange are reachable from the ConfirmDialog alone.
+ * handleRemove / handleRoleChange / handleRescind are reachable from the ConfirmDialog alone.
  */
 
 import { useState, useEffect, useCallback } from "react";
 import {
-  Crown, Shield, Users, Eye, Loader2, UserMinus, Mail, X, ShieldAlert,
+  Crown, Shield, Users, Eye, Loader2, UserMinus, UserX, Mail, X, ShieldAlert,
 } from "lucide-react";
 import { formatDate } from "@/lib/format";
 import {
@@ -31,7 +31,7 @@ import {
 } from "@/lib/space-nav";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
-import { changeRoleConfirm, removeMemberConfirm } from "./destructive-confirm";
+import { changeRoleConfirm, removeMemberConfirm, rescindInviteConfirm } from "./destructive-confirm";
 import { UserSearchInput, userDisplayName, type UserResult } from "./UserSearchInput";
 import { ROLE_LABELS, type SpaceDetail } from "./manage-shared";
 
@@ -87,6 +87,7 @@ export function MembersPanel({
   // UI-003 — the staged destructive action awaiting confirmation.
   const [pendingRemove, setPendingRemove] = useState<{ userId: string; name: string } | null>(null);
   const [pendingRole,   setPendingRole]   = useState<{ userId: string; name: string; from: string; to: string } | null>(null);
+  const [pendingRescind, setPendingRescind] = useState<QueuedInvite | null>(null);
   const [memberError,   setMemberError]   = useState("");
 
   // Personal Spaces are strictly single-user (enforced server-side in the
@@ -291,6 +292,19 @@ export function MembersPanel({
           />
         );
       })()}
+      {pendingRescind && (() => {
+        const copy = rescindInviteConfirm(userDisplayName(pendingRescind.invitedUser as UserResult));
+        return (
+          <ConfirmDialog
+            onClose={() => setPendingRescind(null)}
+            onConfirm={() => { const id = pendingRescind.id; setPendingRescind(null); void handleRescind(id); }}
+            icon={UserX}
+            title={copy.title}
+            message={copy.message}
+            confirmLabel={copy.confirmLabel}
+          />
+        );
+      })()}
       {pendingRole && (() => {
         const copy = changeRoleConfirm(pendingRole.name, pendingRole.from, pendingRole.to);
         return (
@@ -374,7 +388,7 @@ export function MembersPanel({
                     <p className="text-[10px] text-[var(--text-muted)]">{ROLE_LABELS[inv.role] ?? inv.role} · sent {formatDate(inv.createdAt)}</p>
                   </div>
                   <button
-                    onClick={() => handleRescind(inv.id)}
+                    onClick={() => setPendingRescind(inv)}
                     disabled={rescindingId === inv.id}
                     className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] disabled:opacity-50 transition-colors"
                     title="Rescind invite"

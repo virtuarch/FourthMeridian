@@ -123,6 +123,9 @@ export const AuditAction = {
   MEMBER_JOINED:            "MEMBER_JOINED",
   MEMBER_REMOVED:           "MEMBER_REMOVED",
   MEMBER_ROLE_CHANGED:      "MEMBER_ROLE_CHANGED",
+  // A7 (2026-10-22) — an admin rescinded a pending invite. The DELETE used to
+  // leave no trace at all: the row is hard-deleted, so this is its only record.
+  MEMBER_INVITE_CANCELLED:  "MEMBER_INVITE_CANCELLED",
   // EV-1 Slice 3 — self-leave. Codifies the string the activity Timeline
   // already treats as a first-class action ("Member left"); value is unchanged
   // from the previous inline literal.
@@ -588,6 +591,7 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
     label: "Members",
     actions: [
       AuditAction.MEMBER_INVITED,
+      AuditAction.MEMBER_INVITE_CANCELLED,
       AuditAction.MEMBER_REMOVED,
       AuditAction.MEMBER_ROLE_CHANGED,
     ],

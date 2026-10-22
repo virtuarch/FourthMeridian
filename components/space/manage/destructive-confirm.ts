@@ -86,3 +86,19 @@ export function revokeAccountConfirm(accountName: string): ConfirmCopy {
     confirmLabel: "Remove from Space",
   };
 }
+
+/**
+ * DELETE /api/spaces/[id]/invites/[inviteId] hard-deletes the pending invite: the
+ * link in the invitee's e-mail stops working at once, and inviting them again
+ * sends a new invite. A7 (2026-10-22): the rescind button used to fire on one
+ * click, with no dialog.
+ */
+export function rescindInviteConfirm(inviteeName: string): ConfirmCopy {
+  return {
+    title: `Rescind ${inviteeName}'s invite?`,
+    message:
+      `${inviteeName} can no longer join with this invite — the link they were sent stops ` +
+      `working immediately. To add them later, send a new invite.`,
+    confirmLabel: "Rescind invite",
+  };
+}
