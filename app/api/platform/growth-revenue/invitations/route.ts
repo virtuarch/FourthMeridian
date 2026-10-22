@@ -21,6 +21,7 @@ import { sendEmail } from "@/lib/email/send";
 import { buildBetaInviteUrl } from "@/lib/email/beta-invite-url";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { BetaAccessRequestStatus } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -94,7 +95,7 @@ export async function POST(req: NextRequest) {
       userId:             auth.user.id,
       performedByAdminId: auth.user.id,
       action:             AuditAction.BETA_INVITATION_CREATED,
-      metadata:           { betaRequestId: request.id, email, emailStatus: emailResult.status, expiresDays },
+      metadata:           { betaRequestId: request.id, emailHash: auditEmailHash(email), emailStatus: emailResult.status, expiresDays },
     },
   });
 

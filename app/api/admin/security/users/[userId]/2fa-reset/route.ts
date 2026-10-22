@@ -1,20 +1,48 @@
 /**
  * POST /api/admin/security/users/[userId]/2fa-reset
  *
- * Resets a user's TOTP 2FA.
+ * Resets a USER's TOTP 2FA.
  * - Clears totpSecret and sets totpEnabled = false
  * - Invalidates all unused recovery codes
- * - Writes TWO_FACTOR_RESET to AuditLog
- * - Requires confirmation token "RESET" in body
- * - If SYSTEM_ADMIN has TOTP enabled, requires their TOTP code (future enforcement)
+ * - Revokes every session of the target (a second factor that was just
+ *   removed must not keep an already-issued session alive)
+ * - Writes TWO_FACTOR_RESET to AuditLog (target referenced by email DIGEST,
+ *   never the raw address — PRIV-002)
+ * - Notifies the target by email (non-throwing)
  *
- * Body: { confirmToken: "RESET", adminTotpCode?: string }
+ * SEC-006 — the rule lives in lib/auth/admin-2fa-reset-policy.ts and is
+ * applied in full: the literal "RESET" confirmation, NO SYSTEM_ADMIN targets,
+ * and the actor's LIVE TOTP code verified against the actor's own secret
+ * (the same decrypt + verifyTOTP pair login uses). The actor's code attempts
+ * are rate-limited per actor so the endpoint cannot be used to brute-force
+ * a six-digit code.
+ *
+ * Body: { confirmToken: "RESET", adminTotpCode: string }
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { requireFreshSystemAdmin } from "@/lib/session";
+import { limitByUser } from "@/lib/rate-limit";
+import { revokeAllUserSessions } from "@/lib/sessions";
+import { sendEmail } from "@/lib/email/send";
+import { formatDateTime } from "@/lib/format";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
+import {
+  ADMIN_TWO_FACTOR_RESET_STATUS,
+  decideAdminTwoFactorReset,
+} from "@/lib/auth/admin-2fa-reset-policy";
+
+const REFUSAL_MESSAGE: Record<keyof typeof ADMIN_TWO_FACTOR_RESET_STATUS, string> = {
+  SELF:                   "Cannot reset your own 2FA via this endpoint. Use your account settings.",
+  CONFIRM_TOKEN:          "Confirmation token missing or incorrect.",
+  TARGET_IS_SYSTEM_ADMIN: "A SYSTEM_ADMIN's two-factor authentication cannot be reset from this endpoint.",
+  ACTOR_NOT_ENROLLED:     "Your account must have two-factor authentication enabled to perform this action.",
+  TOTP_CODE_MISSING:      "Your current authenticator code is required.",
+  TOTP_CODE_INVALID:      "Invalid authenticator code.",
+};
 
 export async function POST(
   req: NextRequest,
@@ -28,40 +56,44 @@ export async function POST(
   const { userId } = await params;
   const adminId    = user.id;
 
-  // ── Prevent resetting your own account via this API ─────────────────────────
-  // (Use the regular 2FA settings for self-management.)
-  if (userId === adminId) {
-    return NextResponse.json(
-      { error: "Cannot reset your own 2FA via this endpoint. Use your account settings." },
-      { status: 400 },
-    );
-  }
+  // SEC-006 — the actor's code is a six-digit secret; bound the guesses.
+  const limited = await limitByUser(adminId, "admin-2fa-reset", { limit: 5, windowSec: 900 });
+  if (limited) return limited;
 
-  const body = await req.json() as { confirmToken?: string; adminTotpCode?: string };
+  const body = (await req.json().catch(() => ({}))) as { confirmToken?: unknown; adminTotpCode?: unknown };
 
-  // ── Require the "RESET" confirmation token ───────────────────────────────────
-  if (body.confirmToken !== "RESET") {
-    return NextResponse.json({ error: "Confirmation token missing or incorrect." }, { status: 400 });
-  }
-
-  // ── Load target user ─────────────────────────────────────────────────────────
-  const target = await db.user.findUnique({
-    where:  { id: userId },
-    select: { id: true, email: true, totpEnabled: true, role: true },
-  });
+  // ── Load target and the actor's own second factor ───────────────────────────
+  const [target, actor] = await Promise.all([
+    db.user.findUnique({
+      where:  { id: userId },
+      select: { id: true, email: true, totpEnabled: true, role: true },
+    }),
+    db.user.findUnique({
+      where:  { id: adminId },
+      select: { totpEnabled: true, totpSecret: true },
+    }),
+  ]);
 
   if (!target) return NextResponse.json({ error: "User not found." }, { status: 404 });
 
-  // ── SYSTEM_ADMIN TOTP guard (future) ─────────────────────────────────────────
-  // When SYSTEM_ADMIN has TOTP enabled, require their code here.
-  // Uncomment after TOTP verification is fully implemented.
-  //
-  // const admin = await db.user.findUnique({ where: { id: adminId }, select: { totpEnabled: true, totpSecret: true } });
-  // if (admin?.totpEnabled) {
-  //   if (!body.adminTotpCode) return NextResponse.json({ error: "TOTP code required." }, { status: 403 });
-  //   const valid = verifyTotp(admin.totpSecret!, body.adminTotpCode);
-  //   if (!valid) return NextResponse.json({ error: "Invalid TOTP code." }, { status: 403 });
-  // }
+  let actorTotpSecret: string | null = null;
+  if (actor?.totpEnabled && actor.totpSecret) {
+    try { actorTotpSecret = decryptWithPurpose(actor.totpSecret, EncryptionPurpose.TOTP_SECRET); }
+    catch { actorTotpSecret = null; } // corrupted secret — fail safe (ACTOR_NOT_ENROLLED)
+  }
+
+  const decision = decideAdminTwoFactorReset({
+    actorId:          adminId,
+    targetId:         target.id,
+    targetRole:       target.role,
+    confirmToken:     body.confirmToken,
+    actorTotpEnabled: actor?.totpEnabled === true,
+    actorTotpSecret,
+    adminTotpCode:    body.adminTotpCode,
+  });
+  if (decision !== "ALLOW") {
+    return NextResponse.json({ error: REFUSAL_MESSAGE[decision] }, { status: ADMIN_TWO_FACTOR_RESET_STATUS[decision] });
+  }
 
   // ── Perform reset ─────────────────────────────────────────────────────────────
   await db.$transaction([
@@ -73,21 +105,41 @@ export async function POST(
     db.recoveryCode.deleteMany({
       where: { userId, usedAt: null },
     }),
-    // Audit log
+    // Audit log — the target is referenced by digest (PRIV-002), never by address.
     db.auditLog.create({
       data: {
         userId,
         action:             AuditAction.TWO_FACTOR_RESET,
         performedByAdminId: adminId,
         metadata: {
-          targetEmail:       target.email,
+          targetEmailHash:   auditEmailHash(target.email),
           targetRole:        target.role,
           adminId,
           previouslyEnabled: target.totpEnabled,
+          actorMfa:          "totp",
         },
       },
     }),
   ]);
 
-  return NextResponse.json({ success: true, message: "2FA has been reset for this user." });
+  // The removed factor must not keep an issued session alive.
+  const revokedSessions = await revokeAllUserSessions(userId);
+
+  // Notify the target. NON-THROWING: delivery failure never undoes the reset.
+  const emailResult = await sendEmail("security-alert", target.email, {
+    title:   "Two-factor authentication was reset on your account",
+    message: `An administrator reset two-factor authentication on your Fourth Meridian account on ${formatDateTime(new Date().toISOString())}. ` +
+             `You have been signed out everywhere and will be asked to set up two-factor authentication again at your next sign-in. ` +
+             `If you did not expect this, contact support immediately.`,
+  });
+  if (emailResult.status === "error") {
+    console.error("[admin-2fa-reset] security-alert email failed to send:", emailResult.error);
+  }
+
+  return NextResponse.json({
+    success: true,
+    message: "2FA has been reset for this user.",
+    revokedSessions,
+    emailStatus: emailResult.status,
+  });
 }

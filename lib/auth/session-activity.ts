@@ -48,10 +48,10 @@
  *     invoked in, and it would keep the write AFTER the response, which is
  *     exactly the lifetime that broke.
  *
- * Semantics: `lastActiveAt` is display and analytics only (session lists, the
- * export, weekly-active counts). Nothing reads it for expiry or revocation, so
- * minute granularity loses nothing it is used for. A revoked row is never
- * touched.
+ * Semantics: `lastActiveAt` feeds display and analytics (session lists, the
+ * export, weekly-active counts) AND, since SEC-010, the 30-day IDLE cut-off in
+ * lib/auth/session-proof.ts. Minute granularity loses nothing against a 30-day
+ * window. A revoked row is never touched.
  *
  * ── BETA A2 — THE PRESENCE ROW RIDES THE SAME STATEMENT ───────────────────────
  * `SESSION_ACTIVE_DAY` (lib/audit-actions.ts) is the one product event written

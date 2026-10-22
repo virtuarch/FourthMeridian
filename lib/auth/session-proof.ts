@@ -20,7 +20,19 @@
  * the user's CURRENT state from the store (factsFromRow), never the token's
  * claims. (P1b: `requireTotpSetup` in the token is client-updatable through
  * useSession().update and is a navigation hint for proxy.ts only.) Expiry is the JWT's own
- * `exp`, enforced by NextAuth's decode before any of this runs.
+ * `exp`, enforced by NextAuth's decode before any of this runs — AND, since
+ * SEC-010, the session ROW's own lifetime (below).
+ *
+ * SESSION LIFETIME (SEC-010). The JWT is a 30-day ROLLING cookie: each use
+ * re-issues it, so a stolen cookie used at least once a month lived forever.
+ * factsFromRow now refuses a row that is
+ *   · IDLE      — `lastActiveAt` older than SESSION_IDLE_TIMEOUT_MS (30 days), or
+ *   · TOO OLD   — `createdAt` older than SESSION_ABSOLUTE_LIFETIME_MS (90 days),
+ * whatever the token says. Both columns already exist (no schema change);
+ * `lastActiveAt` is maintained by lib/auth/session-activity.ts at minute
+ * granularity. A row missing either timestamp is malformed and refused. The
+ * clock and both limits are injectable (`SessionLifetimePolicy`) so the rule is
+ * provable with fixed clocks.
  *
  * FAILURE IS NOT TRUST. When the store cannot answer, the verdict is
  * INDETERMINATE (deny this request, keep the cookie — PROD-POOLER-AUTH-
@@ -65,28 +77,72 @@ export function readSessionClaims(token: { id?: unknown; sessionToken?: unknown 
 
 /** The select every session-proof lookup uses — one shape, both callers. */
 export const SESSION_ROW_SELECT = {
-  userId:    true,
-  revokedAt: true,
+  userId:       true,
+  revokedAt:    true,
+  createdAt:    true,
+  lastActiveAt: true,
   user:      { select: { id: true, role: true, totpEnabled: true } },
 } as const;
 
+/** SEC-010 — idle cut-off: no recorded activity for this long ⇒ the session is over. */
+export const SESSION_IDLE_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
+/** SEC-010 — absolute cut-off: a session older than this is over, however active. */
+export const SESSION_ABSOLUTE_LIFETIME_MS = 90 * 24 * 60 * 60 * 1000;
+
+export interface SessionLifetimePolicy {
+  /** The current instant; defaults to Date.now(). */
+  now?:           () => number;
+  idleTimeoutMs?: number;
+  absoluteMs?:    number;
+}
+
+export type SessionLifetimeVerdict = "LIVE" | "IDLE_EXPIRED" | "ABSOLUTE_EXPIRED" | "MALFORMED";
+
+function toMillis(v: unknown): number | null {
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.getTime() : null;
+  if (typeof v === "string" || typeof v === "number") {
+    const t = new Date(v).getTime();
+    return Number.isFinite(t) ? t : null;
+  }
+  return null;
+}
+
+/** SEC-010 — the pure lifetime rule. Absolute is judged before idle. */
+export function judgeSessionLifetime(
+  row: { createdAt?: unknown; lastActiveAt?: unknown },
+  policy: SessionLifetimePolicy = {},
+): SessionLifetimeVerdict {
+  const created    = toMillis(row.createdAt);
+  const lastActive = toMillis(row.lastActiveAt);
+  if (created === null || lastActive === null) return "MALFORMED";
+  const now = (policy.now ?? Date.now)();
+  if (now - created    > (policy.absoluteMs    ?? SESSION_ABSOLUTE_LIFETIME_MS)) return "ABSOLUTE_EXPIRED";
+  if (now - lastActive > (policy.idleTimeoutMs ?? SESSION_IDLE_TIMEOUT_MS))      return "IDLE_EXPIRED";
+  return "LIVE";
+}
+
 export interface SessionRowLike {
-  userId?:    unknown;
-  revokedAt?: unknown;
+  userId?:       unknown;
+  revokedAt?:    unknown;
+  createdAt?:    unknown;
+  lastActiveAt?: unknown;
   user?:      { id?: unknown; role?: unknown; totpEnabled?: unknown } | null;
 }
 
 /**
  * The facts a live session row proves, or null when it proves nothing:
- * absent, revoked, ownerless, inconsistent, or carrying an unknown role.
+ * absent, revoked, ownerless, inconsistent, carrying an unknown role, or past
+ * its idle / absolute lifetime (SEC-010).
  * Never throws — a malformed row is a refusal, not an exception.
  */
 export async function factsFromRow(
   row: SessionRowLike | null | undefined,
   readRequireTotpAllUsers: () => Promise<boolean>,
+  lifetime: SessionLifetimePolicy = {},
 ): Promise<SessionFacts | null> {
   if (!row || typeof row !== "object") return null;
   if (row.revokedAt !== null) return null; // undefined (field missing) is malformed, not "not revoked"
+  if (judgeSessionLifetime(row, lifetime) !== "LIVE") return null; // SEC-010
   if (typeof row.userId !== "string" || row.userId.length === 0) return null;
   const user = row.user;
   if (!user || typeof user !== "object") return null;

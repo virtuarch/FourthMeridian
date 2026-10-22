@@ -12,6 +12,8 @@
  */
 
 import Papa from "papaparse";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { detectColumns } from "@/lib/imports/csv";
 import { toAccountsCsv, toHoldingsCsv, toSnapshotsCsv, toTransactionsCsv } from "@/lib/export/csv";
 import type { ExportAccount, ExportHolding, ExportSnapshot, ExportTransaction } from "@/lib/export/types";
@@ -162,6 +164,31 @@ check("snapshots.csv has net_worth header", snapshotsCsv.split("\n")[0]?.include
   // The export must never silently correct history.
   check("no stored value was rewritten across any row",
     rows.every((r, i) => r.total_crypto === String((statusRows[i] as unknown as { totalCrypto: number }).totalCrypto)));
+}
+
+// ── SEC-004 — CSV formula injection ─────────────────────────────────────────
+// A cell that begins with =, +, - or @ is a live formula in Excel/LibreOffice.
+// Account names are user-typed and transaction descriptors are provider-supplied,
+// so every serialiser must neutralise them (papaparse escapeFormulae).
+{
+  const injected = [
+    { id: "a1", name: "=RTVINJECT()+1", type: "other", institution: "+cmd|' /C calc'!A0", balance: 1, currency: "USD", lastUpdated: "2026-01-01", spaceId: "s1", spaceName: "@SUM(1+1)" },
+  ] as unknown as ExportAccount[];
+  const csv = toAccountsCsv(injected);
+  const parsedBack = Papa.parse<Record<string, string>>(csv, { header: true, skipEmptyLines: true }).data[0];
+  check("accounts.csv: a leading = is neutralised (cell no longer begins with =)",
+    !/(^|,)=RTVINJECT/m.test(csv), csv.split("\n")[1]);
+  check("accounts.csv: + and @ leaders are neutralised too",
+    !/,\+cmd/.test(csv) && !/,@SUM/.test(csv), csv.split("\n")[1]);
+  check("the neutralised cell still round-trips to the original text through a CSV parser",
+    parsedBack?.name === "'=RTVINJECT()+1", JSON.stringify(parsedBack?.name));
+  const txn = toTransactionsCsv([{ ...txns[0], merchant: "=HYPERLINK(\"http://evil\")", description: "-2+3" }] as ExportTransaction[]);
+  check("transactions.csv: merchant and description leaders are neutralised",
+    !/,=HYPERLINK/.test(txn) && !/,-2\+3/.test(txn), txn.split("\n")[1]);
+  check("negative AMOUNTS are untouched (a number is not a formula)", /,-4\.5,/.test(toTransactionsCsv([txns[0]])));
+  const src = readFileSync(join(process.cwd(), "lib/export/csv.ts"), "utf8").replace(/^\s*\/\/.*$/gm, "");
+  check("every export set serialises through the one escaping helper (no bare Papa.unparse)",
+    (src.match(/Papa\.unparse\(/g) ?? []).length === 1 && src.includes("escapeFormulae: true") && (src.match(/return unparse\(/g) ?? []).length === 4);
 }
 
 console.log(failures === 0 ? "\nAll export/csv checks passed." : `\n${failures} failure(s).`);

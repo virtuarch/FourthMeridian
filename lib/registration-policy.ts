@@ -12,6 +12,12 @@
  *                 no invite ⇒ steer to request-access.
  *   closed      — no new users; steer to request-access (waitlist).
  *
+ * ABSENT ROW (SEC-008): the mode is resolved ONLY through getRegistrationMode(),
+ * whose fallback is DEFAULT_REGISTRATION_MODE = invite_only. A deployment whose
+ * `registration_mode` row has not been written (a fresh Production database)
+ * therefore behaves as invite_only here and in the register route — never open.
+ * lib/registration-default.test.ts pins both the fallback and this resolution.
+ *
  * `validateInvite` is the single invite-validation authority (APPROVED +
  * unexpired, hashed-token lookup) and returns the BOUND email so the form can
  * lock it — the email-binding is still enforced authoritatively at redemption in

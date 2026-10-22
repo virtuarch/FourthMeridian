@@ -30,7 +30,14 @@
  * is still the identical 200: requestCount and lastRequestedAt are COUNT/MAX
  * over these rows by an operator, never a branch here.
  *
- * Body: { email: string, note?: string, captchaToken?: string, source?: object }
+ * PRIV-012 — NOTICE + CONSENT. The form shows a privacy notice and a required
+ * consent checkbox; this route refuses (400) any submission without
+ * `consent: true`, BEFORE anything is stored or e-mailed, so no waitlist row
+ * exists for an applicant who was not shown the notice. The forensic audit row
+ * records the notice version the applicant agreed to. (Retention/purge of
+ * BetaAccessRequest is Agent C's half of PRIV-012.)
+ *
+ * Body: { email: string, consent: true, note?: string, captchaToken?: string, source?: object }
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -43,10 +50,12 @@ import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
 import { auditEmailHash } from "@/lib/audit";
 import { boundAcquisitionSource, withCountry } from "@/lib/marketing/acquisition";
+import { ACCESS_REQUEST_NOTICE_VERSION, CONSENT_REQUIRED_ERROR } from "@/components/marketing/access-request-consent";
 
 export const runtime = "nodejs";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const NOTE_MAX = 1000;
 
 export async function POST(req: NextRequest) {
@@ -56,13 +65,18 @@ export async function POST(req: NextRequest) {
 
     const meta = getRequestMeta(req);
     const body = await req.json().catch(() => ({}));
-    const { email, note, captchaToken, source } = body ?? {};
+    const { email, note, captchaToken, source, consent } = body ?? {};
 
     // Basic shape validation. An invalid email is a real 400 (it's not a
     // state-disclosure — any client can tell a malformed address from a valid
     // one on its own); everything past this point is non-enumerating.
     if (!email || typeof email !== "string" || !EMAIL_RE.test(email)) {
       return NextResponse.json({ error: "A valid email is required." }, { status: 400 });
+    }
+    // PRIV-012 — consent to the privacy notice is required, strictly `true`
+    // (not "true", not 1), and checked before anything is stored or e-mailed.
+    if (consent !== true) {
+      return NextResponse.json({ error: CONSENT_REQUIRED_ERROR }, { status: 400 });
     }
     if (note !== undefined && (typeof note !== "string" || note.length > NOTE_MAX)) {
       return NextResponse.json({ error: `Note must be ${NOTE_MAX} characters or fewer.` }, { status: 400 });
@@ -123,7 +137,8 @@ export async function POST(req: NextRequest) {
         // BETA A7 — the address is referenced by digest, never stored (lib/audit.ts
         // auditEmailHash). The BetaAccessRequest row above is the identity-resolving
         // record; the forensic row only needs to be joinable to it by hash.
-        metadata:  { emailHash: auditEmailHash(normalizedEmail) },
+        // PRIV-012 — which privacy notice the applicant consented to.
+        metadata:  { emailHash: auditEmailHash(normalizedEmail), consentNoticeVersion: ACCESS_REQUEST_NOTICE_VERSION },
       },
     });
 

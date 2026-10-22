@@ -28,16 +28,45 @@ import { db }                       from "@/lib/db";
 import { SpaceMemberStatus }    from "@prisma/client";
 import { requireUser }              from "@/lib/session";
 import { requireSpaceAction }       from "@/lib/spaces/authorize";
+import { limitByUser }              from "@/lib/rate-limit";
+
+/**
+ * SEC-005 — the directory is not a one-character oracle. A query is served
+ * only when it is an EXACT `@username` or carries at least MIN_SEARCH_CHARS
+ * characters; shorter substrings return an empty list. Pure, so the floor is
+ * provable without a request.
+ */
+export const MIN_SEARCH_CHARS = 3;
+export type SearchTerm =
+  | { kind: "exact-username"; username: string }
+  | { kind: "substring"; term: string }
+  | { kind: "too-short" };
+
+export function parseSearchTerm(raw: string): SearchTerm {
+  const q = raw.trim();
+  if (q.startsWith("@")) {
+    const username = q.slice(1).trim().toLowerCase();
+    return username.length >= 1 ? { kind: "exact-username", username } : { kind: "too-short" };
+  }
+  if (q.length < MIN_SEARCH_CHARS) return { kind: "too-short" };
+  return { kind: "substring", term: q.toLowerCase() };
+}
 
 export async function GET(req: NextRequest) {
   const [user, err] = await requireUser();
   if (err) return err;
 
+  // SEC-005 — a per-user ceiling: 26 single-letter probes used to walk the
+  // whole directory unthrottled. 60/h is far above an invite flow's typing
+  // rate and far below an enumeration's.
+  const limited = await limitByUser(user.id, "users-search", { limit: 60, windowSec: 3600 });
+  if (limited) return limited;
+
   const { searchParams } = new URL(req.url);
-  const q           = searchParams.get("q")?.trim() ?? "";
+  const parsed  = parseSearchTerm(searchParams.get("q") ?? "");
   const spaceId = searchParams.get("exclude") ?? "";
 
-  if (q.length < 1) return NextResponse.json([]);
+  if (parsed.kind === "too-short") return NextResponse.json([]);
 
   // Build list of user IDs to exclude (self + ACTIVE members only).
   // REMOVED and LEFT rows are excluded from this list so that previously-removed
@@ -55,17 +84,23 @@ export async function GET(req: NextRequest) {
     excludeIds.push(...members.map((m) => m.userId));
   }
 
-  const term = q.replace(/^@/, "").toLowerCase();
+  // SEC-005 — `@handle` is an EXACT username match (the invite flow's precise
+  // form); anything else is a ≥3-character substring over the display fields.
+  const match = parsed.kind === "exact-username"
+    ? { username: { equals: parsed.username, mode: "insensitive" as const } }
+    : {
+        OR: [
+          { username:  { contains: parsed.term, mode: "insensitive" as const } },
+          { name:      { contains: parsed.term, mode: "insensitive" as const } },
+          { firstName: { contains: parsed.term, mode: "insensitive" as const } },
+          { lastName:  { contains: parsed.term, mode: "insensitive" as const } },
+        ],
+      };
 
   const users = await db.user.findMany({
     where: {
       id: { notIn: excludeIds },
-      OR: [
-        { username:  { contains: term, mode: "insensitive" } },
-        { name:      { contains: term, mode: "insensitive" } },
-        { firstName: { contains: term, mode: "insensitive" } },
-        { lastName:  { contains: term, mode: "insensitive" } },
-      ],
+      ...match,
     },
     select: {
       id: true,

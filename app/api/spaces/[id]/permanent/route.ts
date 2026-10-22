@@ -80,7 +80,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { requireSpaceRole } from "@/lib/session";
+import { requireFreshUser, requireSpaceRole } from "@/lib/session";
 import { SpaceMemberRole } from "@prisma/client";
 import { db } from "@/lib/db";
 import { withTenantDb } from "@/lib/db/tenant-context";
@@ -92,6 +92,13 @@ export const DELETE = withApiHandler(async (
   { params }: { params: Promise<{ id: string }> }
 ) => {
   const { id } = await params;
+
+  // UI-004 — irreversible: a LIVE revocation check first, never the 30 s
+  // session cache, exactly as the smaller manual-asset permanent delete does
+  // (accounts/manual/[id]/permanent). A session revoked moments ago must not
+  // be able to destroy a Space inside the cache window.
+  const [, freshErr] = await requireFreshUser();
+  if (freshErr) return freshErr;
 
   const [auth, err] = await requireSpaceRole(id, SpaceMemberRole.OWNER);
   if (err) return err;
