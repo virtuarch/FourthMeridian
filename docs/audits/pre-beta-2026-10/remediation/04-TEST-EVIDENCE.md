@@ -25,7 +25,7 @@ Filled at integration from `agent-reports/*.md` and re-run by the orchestrator o
 | `0a94578` | FAILED | `rls:accept:foreground` 66/67, case 50 → asserted the role had NO settings; DB-006 adds a role statement_timeout → narrowed to the idle setting it guards, `a7078db` |
 | `a7078db` | FAILED | `rls:accept:allowance` 14/15, source case 8 → `deadline.dispose()` precedes the release in the same `finally` → `4834697` |
 | **`4834697`** | **PASSED — every job green** | — |
-| `bad2cde` (queue-I orchestrator work + new `audit-schema-drift`) | FAILED | unit 809/811: palette ratchet (raw colours) and db-safety (drift audit's own client) → `fa…`/`5ea1f94` |
+| `bad2cde` (queue-I orchestrator work + new `audit-schema-drift`) | FAILED | unit 809/811: palette ratchet (raw colours) and db-safety (drift audit's own client) → `2744c8d`, `5ea1f94` |
 | **`5ea1f94`** | **PASSED** | unit 811/811 |
 | **`06212e6`** (H merged, CQ-011) | **PASSED** | unit 812/812 |
 | **`01098bd`** (J merged + J-D1/2/3/5/6 fixed) | **PASSED — every job green** | unit **828/828**; RLS 37/98/72/20/67; allowance 15/15; REQUIRED audits incl. `audit-schema-drift` (0 statements) |
