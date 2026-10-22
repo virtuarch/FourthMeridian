@@ -141,7 +141,7 @@ gh api --method POST -H "Accept: application/vnd.github+json" \
 
 ### 4.3 Alternative for `main` with no bypass (not chosen)
 
-Delete `bypass_actors` from §4.1. Promotion becomes: open a PR `v2.6 → main`, wait for the three checks on the PR head, merge with **merge commit** (`required_linear_history` must then be removed; or use squash, which also rewrites). `ci.yml` runs on the resulting push to `main`; `post-deploy-smoke.yml` verifies `/api/health` reports the deployed SHA. Cost: the deployed SHA is not the Preview-verified SHA.
+Delete `bypass_actors` from §4.1. Promotion becomes: open a PR `v2.6 → main`, wait for the three checks on the PR head, merge with **merge commit** (`required_linear_history` must then be removed; or use squash, which also rewrites). `ci.yml` runs on the resulting push to `main`; `post-deploy-smoke.yml` verifies `/api/health` on the immutable per-deployment URL (the route publishes no commit since OPS-014, so identity is by that URL, not by a reported SHA). Cost: the deployed SHA is not the Preview-verified SHA.
 
 ### 4.4 Verify
 

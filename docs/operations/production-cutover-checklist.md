@@ -70,7 +70,7 @@ Candidate SHA: `________________` (filled at freeze) · Freeze declared: `______
 
 ## After promotion (not a gate, a record)
 
-- `GET https://fourthmeridian.com/api/health` → `status: ok`, `commit` = candidate prefix (G0); `post-deploy-smoke` run green.
+- `GET https://fourthmeridian.com/api/health` → `status: ok` (the route publishes no commit since OPS-014); build identity = `vercel inspect` of the Production deployment shows the candidate SHA (G0); `post-deploy-smoke` ("Deployment health") run green — a red UNVERIFIED there means Deployment Protection answered instead of the app.
 - Cutover §7 post-cutover acceptance green; first `resume-stale-imports` `JobRun` on the new code; 12:00 `sync-crypto`; next-day 06:00 `sync-banks`.
 - `git push origin <candidate>:main` (fast-forward; ruleset bypass recorded) and the resulting Production rebuild's smoke run green.
 - STATUS.md §3: the beta SHA row with CI run id, ruleset ids, restore-rehearsal row reference, monitor record (G5).

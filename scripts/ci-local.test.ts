@@ -73,8 +73,13 @@ console.log("CI hygiene (TEST-007 / TEST-012): least privilege, no runaway jobs,
   const smoke = readFileSync(".github/workflows/post-deploy-smoke.yml", "utf8");
   check("post-deploy-smoke: triggered by deployment_status, success only",
     /^on:\n  deployment_status:/m.test(smoke) && /github\.event\.deployment_status\.state == 'success'/.test(smoke));
-  check("post-deploy-smoke: references no secret, probes /api/health, checks status and commit",
-    !/\$\{\{\s*secrets\./.test(smoke) && /\/api\/health/.test(smoke) && /\.status/.test(smoke) && /\.commit/.test(smoke) && /timeout-minutes/.test(smoke));
+  // The verdict moved into scripts/post-deploy-smoke.mjs (unit-tested in
+  // post-deploy-smoke.test.ts): the inline version exited 0 on a Vercel 401.
+  const secretsUsed = [...smoke.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
+  check("post-deploy-smoke: the only secret is the Vercel automation bypass",
+    secretsUsed.every((n) => n === "VERCEL_AUTOMATION_BYPASS_SECRET"), JSON.stringify(secretsUsed));
+  check("post-deploy-smoke: runs the tested classifier, nothing inline, with a timeout",
+    /run: node scripts\/post-deploy-smoke\.mjs/.test(smoke) && !/curl /.test(smoke) && !/exit 0/.test(smoke) && /timeout-minutes/.test(smoke));
 }
 
 console.log("the dependency gate (SEC-002 / TEST-005) is in the test job, before anything runs on the install");
