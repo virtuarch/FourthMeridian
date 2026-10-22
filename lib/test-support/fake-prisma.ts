@@ -14,7 +14,8 @@
  * atomic number updates, lazy "PrismaPromise" semantics (nothing runs until
  * awaited — which is what makes the array form of `$transaction` work), and
  * `$transaction` with ROLLBACK (a snapshot is restored when the callback or any
- * array member throws).
+ * array member throws) and Postgres' ABORTED-TRANSACTION rule (after one failed
+ * statement, every later statement in that interactive transaction fails 25P02).
  *
  * WHAT IT IS NOT. Not SQL, not RLS, not isolation: `withTenantDb`'s
  * `set_config` is recorded and accepted, so these tests prove the APPLICATION
@@ -41,6 +42,7 @@ type Field = Prisma.DMMF.Field;
 type Model = Prisma.DMMF.Model;
 
 export interface FakeCall { model: string; op: string; args: unknown }
+interface TxState { aborted: boolean; abortedBy?: string }
 /** A hook may throw (fault injection) or return a value to replace the result. */
 export type FakeHook = (args: Record<string, unknown>, call: FakeCall) => unknown | Promise<unknown>;
 
@@ -116,6 +118,7 @@ export class FakePrisma {
   /** Handler for `$queryRaw` / `$queryRawUnsafe`. Unset ⇒ throws (no silent stub). */
   queryRaw: ((sql: string, values: unknown[]) => unknown) | null = null;
   private seq = 0;
+  private partialUniques: { model: string; fields: string[]; where: Row; name: string }[] = [];
 
   // ── fixtures ────────────────────────────────────────────────────────────────
   table(model: string): Row[] {
@@ -133,27 +136,58 @@ export class FakePrisma {
     this.hooks.push({ model, op, fn, once: !!opts.once });
   }
   clearHooks(): void { this.hooks = []; }
+  /**
+   * Declare a PARTIAL unique index that exists only in SQL (a migration), which
+   * `Prisma.dmmf` cannot see — e.g. `CREATE UNIQUE INDEX … WHERE status IN (…)`.
+   * The test must cite the migration it mirrors. Survives `reset()`.
+   */
+  partialUnique(model: string, fields: string[], where: Row, name: string): void {
+    this.partialUniques.push({ model, fields, where, name });
+  }
   callsTo(model: string, op?: string): FakeCall[] { return this.calls.filter((c) => c.model === model && (!op || c.op === op)); }
   reset(): void { this.tables.clear(); this.calls.length = 0; this.raw.length = 0; this.hooks = []; this.queryRaw = null; }
 
   // ── client surface ──────────────────────────────────────────────────────────
-  delegate(model: string): Record<string, (args?: Record<string, unknown>) => LazyPromise<unknown>> {
+  delegate(model: string, tx?: TxState): Record<string, (args?: Record<string, unknown>) => LazyPromise<unknown>> {
     const ops = ["findUnique", "findUniqueOrThrow", "findFirst", "findFirstOrThrow", "findMany", "create", "createMany",
       "update", "updateMany", "upsert", "delete", "deleteMany", "count", "aggregate", "groupBy"];
     const out: Record<string, (args?: Record<string, unknown>) => LazyPromise<unknown>> = {};
-    for (const op of ops) out[op] = (args = {}) => new LazyPromise(() => this.exec(model, op, args));
+    for (const op of ops) out[op] = (args = {}) => new LazyPromise(() => this.inTx(tx, () => this.exec(model, op, args)));
     return out;
   }
 
   /** The object a transaction callback receives: delegates + raw, but NO `$transaction` (as Prisma's ITX client). */
-  txClient(): Record<string, unknown> {
+  txClient(tx?: TxState): Record<string, unknown> {
     const c: Record<string, unknown> = {};
-    for (const [d, m] of DELEGATE_TO_MODEL) c[d] = this.delegate(m);
-    c.$executeRaw = (s: TemplateStringsArray | string, ...v: unknown[]) => this.execRaw(s, v);
-    c.$executeRawUnsafe = (s: string, ...v: unknown[]) => this.execRaw(s, v);
-    c.$queryRaw = (s: TemplateStringsArray | string, ...v: unknown[]) => this.doQueryRaw(s, v);
-    c.$queryRawUnsafe = (s: string, ...v: unknown[]) => this.doQueryRaw(s, v);
+    for (const [d, m] of DELEGATE_TO_MODEL) c[d] = this.delegate(m, tx);
+    c.$executeRaw = (s: TemplateStringsArray | string, ...v: unknown[]) => this.lazyInTx(tx, () => this.execRaw(s, v));
+    c.$executeRawUnsafe = (s: string, ...v: unknown[]) => this.lazyInTx(tx, () => this.execRaw(s, v));
+    c.$queryRaw = (s: TemplateStringsArray | string, ...v: unknown[]) => this.lazyInTx(tx, () => this.doQueryRaw(s, v));
+    c.$queryRawUnsafe = (s: string, ...v: unknown[]) => this.lazyInTx(tx, () => this.doQueryRaw(s, v));
     return c;
+  }
+
+  /**
+   * POSTGRES TRANSACTION-ABORT SEMANTICS. Inside an interactive transaction, once
+   * any statement fails, every later statement on that transaction fails with
+   * SQLSTATE 25P02 until it ends — catching the first error in application code
+   * does NOT make the transaction usable again (no savepoints are taken). The
+   * fake reproduces that, so code that "catches P2002 and reads on" inside a
+   * transaction fails here exactly as it would against the database.
+   */
+  private async inTx<T>(tx: TxState | undefined, run: () => Promise<T>): Promise<T> {
+    if (tx?.aborted) {
+      throw Object.assign(new Error("current transaction is aborted, commands ignored until end of transaction block"),
+        { code: "25P02", meta: { abortedBy: tx.abortedBy } });
+    }
+    try { return await run(); }
+    catch (err) {
+      if (tx) { tx.aborted = true; tx.abortedBy ??= (err as { code?: string }).code ?? String(err); }
+      throw err;
+    }
+  }
+  private lazyInTx<T>(tx: TxState | undefined, make: () => LazyPromise<T>): LazyPromise<T> {
+    return new LazyPromise(() => this.inTx(tx, async () => make()));
   }
 
   async transaction(arg: unknown): Promise<unknown> {
@@ -164,7 +198,7 @@ export class FakePrisma {
         for (const p of arg) out.push(await p);
         return out;
       }
-      return await (arg as (tx: unknown) => Promise<unknown>)(this.txClient());
+      return await (arg as (tx: unknown) => Promise<unknown>)(this.txClient({ aborted: false }));
     } catch (err) {
       this.tables.clear();
       for (const [k, v] of snapshot) this.tables.set(k, v);
@@ -275,6 +309,12 @@ export class FakePrisma {
       if (set.some((k) => row[k] === null || row[k] === undefined)) continue;
       const clash = this.table(model).find((o) => o !== row && set.every((k) => scalarEq(o[k], row[k])));
       if (clash) throw knownError("P2002", `Unique constraint failed on the fields: (${set.map((s) => `\`${s}\``).join(",")})`, { target: set });
+    }
+    for (const p of this.partialUniques) {
+      if (p.model !== model || !this.match(model, row, p.where)) continue;
+      if (p.fields.some((k) => row[k] === null || row[k] === undefined)) continue;
+      const clash = this.table(model).find((o) => o !== row && this.match(model, o, p.where) && p.fields.every((k) => scalarEq(o[k], row[k])));
+      if (clash) throw knownError("P2002", `Unique constraint failed on the index: \`${p.name}\``, { target: p.name });
     }
   }
 

@@ -62,6 +62,8 @@ export interface ReqInit {
   body?: unknown;
   /** A raw string body (sent as-is). */
   rawBody?: string;
+  /** A multipart body (the boundary header is set by the runtime). */
+  form?: FormData;
   cookie?: string | null;
   ip?: string;
   headers?: Record<string, string>;
@@ -76,9 +78,10 @@ export function request(path: string, init: ReqInit = {}): NextRequest {
     ...(init.cookie ? { cookie: init.cookie } : {}),
     ...(init.headers ?? {}),
   };
-  const method = init.method ?? (init.body !== undefined || init.rawBody !== undefined ? "POST" : "GET");
-  let body: string | undefined;
-  if (init.rawBody !== undefined) body = init.rawBody;
+  const method = init.method ?? (init.body !== undefined || init.rawBody !== undefined || init.form ? "POST" : "GET");
+  let body: string | FormData | undefined;
+  if (init.form) body = init.form;
+  else if (init.rawBody !== undefined) body = init.rawBody;
   else if (init.body !== undefined) { body = JSON.stringify(init.body); headers["content-type"] ??= "application/json"; }
   return new NextRequest(new URL(path, HOST), { method, headers, body });
 }
