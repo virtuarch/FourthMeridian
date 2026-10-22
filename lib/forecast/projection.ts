@@ -43,6 +43,7 @@ import { observedCashContribution, exactDateOf, type FutureCashEvent } from './f
 import { ConclusionStatus, type ConclusionStatusKind } from './policy';
 import { monthLabel, type ObservedSpendingRate } from './observed-spending';
 import { spendOver, type SpendingSegment } from './spending-change';
+import { MONEY_EPSILON } from '@/lib/money/round';
 
 /** One component of a projected total, named so the reply can attribute it. */
 export interface ProjectionComponent {
@@ -211,7 +212,7 @@ const departureOf = (
   if (!schedule || schedule.length === 0) return null;
   // A window no rule reaches is reported as unchanged, not as "changed by 0.00".
   const d = spend - dailyRate * days;
-  return Math.abs(d) < 0.005 ? null : d;
+  return Math.abs(d) < MONEY_EPSILON ? null : d;
 };
 
 /**

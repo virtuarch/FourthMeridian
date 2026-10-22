@@ -34,6 +34,7 @@ import { FlowRole, exactDateOf, observedCashContribution, type FutureCashEvent }
 import { ActivityState, type StreamActivity } from '@/lib/forecast/stream-activity';
 import { isCadence, occurrencesBetween, type CadenceResult } from '@/lib/forecast/cadence';
 import type { ResolvedIncomeStream } from './streams';
+import { round2 } from '@/lib/money/round';
 
 /*
  * ── FIN-001 (2026-10-22) — the sibling of the 2026-10-16 fix ────────────────
@@ -175,8 +176,6 @@ export interface IncomeCompletenessInput {
   /** The projection's opening cash — the base MATERIALITY is a share of (with counted income). */
   openingCash: number;
 }
-
-const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
  * When an omission changes what the figure IS. An omitted stream is ALWAYS listed;

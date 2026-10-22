@@ -43,9 +43,8 @@
 import { resolveExpenseBaseline, type ExpenseBaselineBasis } from '@/lib/liquidity/expense-baseline';
 import { MATERIAL_MONTHLY_REFUND_EFFECT } from '@/lib/transactions/cash-flow';
 import type { MeasureResult, Completeness } from './measure';
+import { round2, MONEY_EPSILON } from '@/lib/money/round';
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
-const MONEY_EPSILON = 0.005;
 const positive = (v: number | null | undefined): v is number =>
   typeof v === 'number' && Number.isFinite(v) && v > 0;
 

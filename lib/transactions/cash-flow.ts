@@ -22,6 +22,7 @@ import { spendCategoryKey } from "@/lib/transactions/category-vocabulary";
 import { compareToForPreset } from "@/lib/perspectives/time-range";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
+import { round2 } from "@/lib/money/round";
 import type { Transaction } from "@/types";
 
 // ─── Period model ─────────────────────────────────────────────────────────────
@@ -452,16 +453,15 @@ export function meanMonthlyEconomicSpend(
   months: readonly { month: string; expenseTotal: number; refundTotal: number }[],
 ): MonthlyEconomicSpend | null {
   if (months.length === 0) return null;
-  const r2 = (n: number) => Math.round(n * 100) / 100;
   const lines = months.map((m) => ({
     month: m.month, gross: m.expenseTotal, refunds: Number.isFinite(m.refundTotal) ? m.refundTotal : 0,
     net: clampEconomicSpend(m.expenseTotal, m.refundTotal),
   }));
   const n = lines.length;
-  const gross = r2(lines.reduce((s, l) => s + l.gross, 0) / n);
-  const net   = r2(lines.reduce((s, l) => s + l.net, 0) / n);
-  const unapplied = r2(lines.reduce((s, l) => s + Math.max(0, l.refunds - l.gross), 0) / n);
-  const refundEffect = r2(gross - net);
+  const gross = round2(lines.reduce((s, l) => s + l.gross, 0) / n);
+  const net   = round2(lines.reduce((s, l) => s + l.net, 0) / n);
+  const unapplied = round2(lines.reduce((s, l) => s + Math.max(0, l.refunds - l.gross), 0) / n);
+  const refundEffect = round2(gross - net);
   return { net, gross, refundEffect, refundsUnapplied: unapplied,
     material: refundEffect >= MATERIAL_MONTHLY_REFUND_EFFECT, months: lines };
 }
