@@ -104,6 +104,20 @@ export async function claimPlaidItemSyncLock(
   plaidItemId: string,
   client: PlaidItemSyncLockClient = db,
 ): Promise<boolean> {
+  return (await claimPlaidItemSyncLockAt(plaidItemId, client)) !== null;
+}
+
+/**
+ * IDEMP-005 — the claim, returning the FENCING TOKEN: the exact `syncLockedAt`
+ * this holder wrote, or null when the claim lost to a live holder. Passing it
+ * back to releasePlaidItemSyncLock makes the release conditional on still
+ * owning the lease, so a slow run (> LOCK_TTL_MS) whose lease was taken over
+ * can no longer clear the NEW holder's lock and let a third caller in.
+ */
+export async function claimPlaidItemSyncLockAt(
+  plaidItemId: string,
+  client: PlaidItemSyncLockClient,
+): Promise<Date | null> {
   const now = new Date();
   const staleCutoff = new Date(now.getTime() - LOCK_TTL_MS);
 
@@ -119,7 +133,7 @@ export async function claimPlaidItemSyncLock(
     { table: "PlaidItem", rowId: plaidItemId, operation: "update" },
     () => client.plaidItem.count({ where: { id: plaidItemId } }),
   );
-  if (claimed) return true;
+  if (claimed) return now;
 
   // Reached ONLY once visibility is established, so this best-effort stamp can
   // no longer hide a refusal — but it is still best-effort, and a swallowed
@@ -127,7 +141,7 @@ export async function claimPlaidItemSyncLock(
   await client.plaidItem
     .updateMany({ where: { id: plaidItemId }, data: { syncIncompleteAt: now } })
     .catch((e) => console.error(`[plaid sync-lock] failed to stamp syncIncompleteAt for item ${plaidItemId}:`, redactedErrorForLog(e)));
-  return false;
+  return null;
 }
 
 /**
@@ -141,13 +155,23 @@ export async function releasePlaidItemSyncLock(
   plaidItemId: string,
   clearIncomplete: boolean,
   client: PlaidItemSyncLockClient = db,
+  claimedAt?: Date,
 ): Promise<void> {
-  await client.plaidItem
+  // IDEMP-005 — with a fencing token the release only matches while THIS
+  // holder still owns the lease. Without one (the two legacy callers that use
+  // the primitives directly — reported), the release is unconditional as before.
+  const res = await client.plaidItem
     .updateMany({
-      where: { id: plaidItemId },
+      where: claimedAt ? { id: plaidItemId, syncLockedAt: claimedAt } : { id: plaidItemId },
       data:  clearIncomplete ? { syncLockedAt: null, syncIncompleteAt: null } : { syncLockedAt: null },
     })
-    .catch((e) => console.error(`[plaid sync-lock] failed to release lock for item ${plaidItemId}:`, redactedErrorForLog(e)));
+    .catch((e) => {
+      console.error(`[plaid sync-lock] failed to release lock for item ${plaidItemId}:`, redactedErrorForLog(e));
+      return null;
+    });
+  if (claimedAt && res && res.count === 0) {
+    console.warn(`[plaid sync-lock] lease for item ${plaidItemId} was taken over before release (run outlived ${LOCK_TTL_MS} ms) — left the new holder's lock intact.`);
+  }
 }
 
 export type SyncLockResult<T> = { ok: true; result: T } | { ok: false; reason: "in-flight" };
@@ -170,7 +194,8 @@ export async function withPlaidItemSyncLock<T>(
   fn: () => Promise<T>,
   client: PlaidItemSyncLockClient = db,
 ): Promise<SyncLockResult<T>> {
-  if (!(await claimPlaidItemSyncLock(plaidItemId, client))) {
+  const claimedAt = await claimPlaidItemSyncLockAt(plaidItemId, client);
+  if (!claimedAt) {
     return { ok: false, reason: "in-flight" };
   }
   let succeeded = false;
@@ -179,6 +204,6 @@ export async function withPlaidItemSyncLock<T>(
     succeeded = true;
     return { ok: true, result };
   } finally {
-    await releasePlaidItemSyncLock(plaidItemId, succeeded, client);
+    await releasePlaidItemSyncLock(plaidItemId, succeeded, client, claimedAt);
   }
 }
