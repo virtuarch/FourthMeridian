@@ -506,7 +506,10 @@ export function PoliciesSurface({
           </div>
         )}
       </SectionSurface>
-      {data && !state.loading && costControls && <AiCostControlsPanel state={costControls} editable={canControl} onModel={onCostControlsModel} />}
+      {/* UI-010 — the AI Cost Controls panel (incl. the kill switch) renders from
+          ITS OWN fetch state. It used to be gated on the policies read too, so
+          a 500/403/slow /policies hid the one control an incident needs. */}
+      {costControls && <AiCostControlsPanel state={costControls} editable={canControl} onModel={onCostControlsModel} />}
     </div>
   );
 }
