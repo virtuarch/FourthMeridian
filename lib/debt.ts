@@ -8,6 +8,7 @@
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
 import { isDebtPayment } from "@/lib/transactions/flow-predicates";
+import { estimatedMonthlyInterest } from "@/lib/debt/interest-cost";
 
 /**
  * Estimates a monthly minimum payment when the user has supplied an APR but
@@ -17,11 +18,17 @@ import { isDebtPayment } from "@/lib/transactions/flow-predicates";
  * and must prefer any manually-entered value over this estimate.
  *
  * Formula: max($35, 1% of balance + that month's interest accrual).
+ *
+ * CQ-008 (2026-10-22) — the month's interest is THE one monthly-interest
+ * formula, `estimatedMonthlyInterest` in lib/debt/interest-cost.ts (owed ×
+ * APR/100/12); it used to be written out again here. `amountOwed` there is the
+ * same max(balance, 0) clamp as `safeBalance`, so every figure is unchanged
+ * (lib/debt/interest-cost.test.ts pins the parity).
  */
 export function estimateMinimumPayment(balance: number, aprPercent: number): number {
   const safeBalance = Math.max(0, balance);
   const safeApr     = Math.max(0, aprPercent);
-  const monthlyInterest = safeBalance * (safeApr / 100 / 12);
+  const monthlyInterest = estimatedMonthlyInterest(safeBalance, safeApr) ?? 0;
   return Math.max(35, safeBalance * 0.01 + monthlyInterest);
 }
 
