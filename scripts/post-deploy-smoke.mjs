@@ -14,8 +14,9 @@
 //                (SSO redirect / 401 carrying Vercel's markers)        → exit 1
 //
 // UNVERIFIED fails on purpose: the run must not read as a pass. Supplying
-// VERCEL_AUTOMATION_BYPASS_SECRET (Vercel "Protection Bypass for Automation",
-// an owner action) lets the probe through the wall on Preview; Production is
+// VERCEL_AUTOMATION_BYPASS_SECRET_APP / _SITE (each Vercel project's own
+// "Protection Bypass for Automation" secret — they differ; an owner action)
+// lets the probe through the wall on Preview; Production is
 // public, so UNVERIFIED there means protection was turned on in front of users.
 // A bare 401/30x WITHOUT Vercel's markers is UNHEALTHY, not UNVERIFIED.
 //
@@ -89,6 +90,14 @@ export function classifyProbe({ kind, status, headers = {}, body = "", deployedS
   };
 }
 
+/** The bypass secret for this deployment's project, or "" when none is configured. */
+export function bypassFor(environment, env) {
+  const name = targetFor(environment).kind === "site"
+    ? "VERCEL_AUTOMATION_BYPASS_SECRET_SITE"
+    : "VERCEL_AUTOMATION_BYPASS_SECRET_APP";
+  return (env?.[name] ?? "").trim();
+}
+
 /** Only these hosts may receive the bypass secret. */
 export function mayCarryBypass(url) {
   try {
@@ -113,7 +122,10 @@ async function main() {
   const base = (process.env.DEPLOYMENT_URL ?? "").replace(/\/$/, "");
   const environment = process.env.ENVIRONMENT ?? "";
   const deployedSha = process.env.DEPLOYED_SHA ?? "";
-  const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET || "";
+  // One automation-bypass secret per Vercel project (they differ): the app's
+  // for fintracker1, the site's for fourth-meridian-site. Absent ⇒ UNVERIFIED
+  // on protected deployments, by design.
+  const bypass = bypassFor(environment, process.env);
   if (!base) { console.log("::error::deployment_status carried no environment_url/target_url — nothing to probe"); return 1; }
   const target = targetFor(environment);
   const url = `${base}${target.path}`;

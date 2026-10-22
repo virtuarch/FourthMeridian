@@ -76,8 +76,9 @@ console.log("CI hygiene (TEST-007 / TEST-012): least privilege, no runaway jobs,
   // The verdict moved into scripts/post-deploy-smoke.mjs (unit-tested in
   // post-deploy-smoke.test.ts): the inline version exited 0 on a Vercel 401.
   const secretsUsed = [...smoke.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-  check("post-deploy-smoke: the only secret is the Vercel automation bypass",
-    secretsUsed.every((n) => n === "VERCEL_AUTOMATION_BYPASS_SECRET"), JSON.stringify(secretsUsed));
+  check("post-deploy-smoke: the only secrets are the two per-project Vercel automation bypasses",
+    secretsUsed.length > 0 && secretsUsed.every((n) => n === "VERCEL_AUTOMATION_BYPASS_SECRET_APP" || n === "VERCEL_AUTOMATION_BYPASS_SECRET_SITE"),
+    JSON.stringify(secretsUsed));
   check("post-deploy-smoke: runs the tested classifier, nothing inline, with a timeout",
     /run: node scripts\/post-deploy-smoke\.mjs/.test(smoke) && !/curl /.test(smoke) && !/exit 0/.test(smoke) && /timeout-minutes/.test(smoke));
 }

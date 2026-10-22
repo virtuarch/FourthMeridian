@@ -12,7 +12,7 @@
  * Run: npx tsx scripts/post-deploy-smoke.test.ts
  */
 
-import { classifyProbe, isVercelProtection, mayCarryBypass, targetFor, VERDICT } from "./post-deploy-smoke.mjs";
+import { bypassFor, classifyProbe, isVercelProtection, mayCarryBypass, targetFor, VERDICT } from "./post-deploy-smoke.mjs";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -85,6 +85,15 @@ console.log("the bypass secret is only ever sent to our own hosts over https");
   check("not http", !mayCarryBypass("http://x.vercel.app/"));
   check("not a look-alike", !mayCarryBypass("https://fourthmeridian.com.evil.test/") && !mayCarryBypass("https://evilvercel.app/"));
   check("not garbage", !mayCarryBypass("not a url"));
+}
+
+console.log("each Vercel project gets its own bypass secret (the two values differ)");
+{
+  const env = { VERCEL_AUTOMATION_BYPASS_SECRET_APP: "app-secret", VERCEL_AUTOMATION_BYPASS_SECRET_SITE: "site-secret" };
+  check("app deployment ⇒ the app secret", bypassFor("Preview – fintracker1", env) === "app-secret");
+  check("site deployment ⇒ the site secret", bypassFor("Preview – fourth-meridian-site", env) === "site-secret");
+  check("never the other project's secret", bypassFor("Preview – fourth-meridian-site", { VERCEL_AUTOMATION_BYPASS_SECRET_APP: "app-secret" }) === "");
+  check("absent ⇒ empty (probe stays UNVERIFIED behind protection)", bypassFor("Preview – fintracker1", {}) === "");
 }
 
 console.log(`\n${passes} passed, ${failures} failed`);

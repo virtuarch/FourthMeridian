@@ -27,8 +27,9 @@ name: Post-deploy smoke
 # is probed at "/" (the first version probed /api/health there, which would
 # have raised a false alarm on the first public site deploy).
 #
-# Secrets: only VERCEL_AUTOMATION_BYPASS_SECRET (Vercel "Protection Bypass
-# for Automation"; OWNER action to create — absent today), sent solely as the
+# Secrets: only VERCEL_AUTOMATION_BYPASS_SECRET_APP and _SITE (each Vercel
+# project's own "Protection Bypass for Automation" value — the two projects'
+# values differ; OWNER action to add — absent today), sent solely as the
 # x-vercel-protection-bypass header and only to *.vercel.app /
 # *.fourthmeridian.com over https (mayCarryBypass). Nothing else is sent; the
 # request is a GET.
@@ -66,5 +67,6 @@ jobs:
           DEPLOYMENT_URL: ${{ github.event.deployment_status.environment_url || github.event.deployment_status.target_url }}
           DEPLOYED_SHA: ${{ github.event.deployment.sha }}
           ENVIRONMENT: ${{ github.event.deployment.environment }}
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          VERCEL_AUTOMATION_BYPASS_SECRET_APP: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET_APP }}
+          VERCEL_AUTOMATION_BYPASS_SECRET_SITE: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET_SITE }}
         run: node scripts/post-deploy-smoke.mjs
