@@ -291,7 +291,15 @@ export interface CashFlowTotals {
 /** Mutable accumulator for the economic axis (tier-independent). DayFacts is a
  *  structural superset, so it can be passed directly where this is expected. */
 export interface EconomicAccumulator {
-  income:     number;   // Σ|amount| INCOME
+  /**
+   * Σ SIGNED INCOME amounts (FIN-003). A deposit adds; a negative INCOME row — a
+   * payroll clawback, a reversed deposit — SUBTRACTS. This was Σ|amount|, so a
+   * −$500 clawback ADDED $500 and income was overstated by twice the reversal
+   * (runtime audit 2026-10-21: +5,000 then −500 folded to 5,500). The raw sum
+   * may go negative over a window of only reversals; `clampEconomicIncome` is
+   * the floor at the read edge, exactly as `clampEconomicSpend` floors spend.
+   */
+  income:     number;
   spendGross: number;   // Σ|amount| cost-flow CHARGES (SPENDING+FEE+INTEREST, amount < 0), pre-refund
   refunds:    number;   // Σ|amount| CREDITS against spending: REFUND rows + cost-flow reversals (FM-AUDIT-006)
 }
@@ -315,7 +323,7 @@ export interface EconomicAccumulator {
  *
  *     cost/refund row, amount < 0  → SPEND   (a charge)
  *     cost/refund row, amount > 0  → CREDIT  (a refund or a reversal)
- *     income row                   → INCOME  (sign handling unchanged — FM-AUDIT-015)
+ *     income row                   → INCOME  (SIGNED in the fold since FIN-003 — a reversal subtracts)
  *
  * The fold, the DayFacts tier split and the category ledger all route through
  * this one decision, so they partition identically by construction.
@@ -368,10 +376,24 @@ export function foldEconomicRow(acc: EconomicAccumulator, row: EconomicFoldRow):
     case "CREDIT": acc.refunds    += magnitude; return;
     case "INCOME":
       if (row.incomeClass === "NOT_INCOME") return;   // named, excluded, never silent
-      acc.income += magnitude;
+      // FIN-003 — SIGNED, not magnitude: a reversal reduces income.
+      acc.income += row.amount;
       return;
     default: return;
   }
+}
+
+/**
+ * FIN-003 — economic income over a window: the signed INCOME sum floored at 0.
+ * The same policy `clampEconomicSpend` applies to refunds: a reversal nets
+ * against the deposits in the SAME window and never drives the window below
+ * zero. A window holding only a clawback (the deposit fell in an earlier
+ * window) reads $0 income, not negative income — the excess is not carried.
+ * Applied at the read edge (window totals, perspective totals); the
+ * accumulator itself stays signed so per-day facts remain honest.
+ */
+export function clampEconomicIncome(income: number): number {
+  return Math.max(0, Number.isFinite(income) ? income : 0);
 }
 
 /** Economic spend: gross cost flows minus refunds, floored at 0. The single
@@ -465,7 +487,8 @@ export function economicTotals(transactions: Transaction[], ctx?: ConversionCont
     foldEconomicRow(acc, { flowType: t.flowType ?? null, amount: a, incomeClass: t.incomeClass ?? null });
   }
   const spend = clampEconomicSpend(acc.spendGross, acc.refunds);
-  return { income: acc.income, spend, refunds: acc.refunds, net: acc.income - spend, unconverted,
+  const income = clampEconomicIncome(acc.income);   // FIN-003 — signed sum, floored at the edge
+  return { income, spend, refunds: acc.refunds, net: income - spend, unconverted,
     spendGross: acc.spendGross, refundsUnapplied: Math.max(0, acc.refunds - acc.spendGross) };
 }
 
