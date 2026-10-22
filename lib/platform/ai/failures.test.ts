@@ -6,7 +6,9 @@
  *
  *   npx tsx lib/platform/ai/failures.test.ts
  */
-import { buildAiFailureHealth } from "./failures";
+import { readFileSync } from "node:fs";
+import { buildAiFailureHealth, aiFailureWhere } from "./failures";
+import { AI_PAUSED_CODE } from "./paid-requests-admission";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -43,6 +45,18 @@ console.log("unknown outcome words are ignored, never counted as returned");
   const h = buildAiFailureHealth([{ outcome: "WEIRD", count: 9, lastAt: t("2026-10-07T11:00:00Z") }], 6, NOW);
   check("returned stays 0", h.returned === 0);
   check("…but it still counts as a failure timestamp (something non-RETURNED happened)", h.lastFailureAt === "2026-10-07T11:00:00.000Z");
+}
+
+console.log("OBS-006 — what the fold reads: this environment, customer surfaces, never a kill-switch refusal");
+{
+  const since = new Date("2026-10-06T12:00:00.000Z");
+  const w = aiFailureWhere(since, "production");
+  check("window + this deployment's rows only", w.occurredAt.gte === since && w.environment === "production");
+  check("customer surfaces only (chat, brief) — harness traffic is out", w.surface.in.join(",") === "chat,brief");
+  check("AI_PAUSED rows excluded; RETURNED rows (null errorCode) kept", JSON.stringify(w.OR) === JSON.stringify([{ errorCode: null }, { errorCode: { not: AI_PAUSED_CODE } }]));
+  check("…and a preview deployment reads preview rows, not production's", aiFailureWhere(since, "preview").environment === "preview");
+  const src = readFileSync("lib/platform/ai/failures.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("the real reader queries through that predicate with the live environment", /where: aiFailureWhere\(since, deploymentEnvironment\(\)\)/.test(src));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
