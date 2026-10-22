@@ -46,10 +46,13 @@ console.log('\n2. AUTHENTICATION AND RATE LIMIT COME FIRST');
   check('requireUser is the first thing the handler does',
     posted.indexOf('requireUser()') < posted.indexOf('req.json()'));
   check('…and its error is returned, not inspected', /if \(authErr\) return authErr/.test(posted));
+  // SEC-AI-004 — the pacing windows go through the fail-closed wrapper, never the fail-open limiter.
   check('the rate limit is applied before any model work',
-    posted.indexOf('limitByUser') < posted.indexOf('runStatelessTurn'));
+    posted.indexOf('paceAiRequest(') > 0 && posted.indexOf('paceAiRequest(') < posted.indexOf('runStatelessTurn'));
   check('…and before the body is even read',
-    posted.indexOf('limitByUser') < posted.indexOf('req.json()'));
+    posted.indexOf('paceAiRequest(') < posted.indexOf('req.json()'));
+  check('…both windows, and the fail-open limiter is not used here',
+    (posted.match(/paceAiRequest\(user\.id, 'ai-chat(?:-hour)?'/g) ?? []).length === 2 && !/limitByUser/.test(src));
 }
 
 console.log('\n3. THE SPACE IS RE-RESOLVED, NEVER ACCEPTED');
@@ -165,6 +168,20 @@ console.log('\n7. THE CLIENT CONTRACT IS UNCHANGED');
     /data\.error \?\?/.test(client));
   check('the client sends only role and content',
     /\(\{ role: m\.role, content: m\.content \}\)/.test(client));
+}
+
+console.log('\n8. SEC-AI-003 — THE TURN RUNS INSIDE ONE BOUNDED CLOCK');
+{
+  const posted = src.slice(src.indexOf('export async function POST'));
+  check('the clock starts when the request arrives', /const arrivedAt = Date\.now\(\);/.test(posted) && posted.indexOf('arrivedAt') < posted.indexOf('requireUser()'));
+  check('the deadline is opened after the allowance is reserved and before the turn',
+    posted.indexOf('openTurnDeadline(') > posted.indexOf('allowanceRefusal(') && posted.indexOf('openTurnDeadline(') < posted.indexOf('runStatelessTurn('));
+  check('…from the shared budget constant, less what the gates spent', /budgetMs: CHAT_TURN_BUDGET_MS - \(Date\.now\(\) - arrivedAt\)/.test(posted));
+  check('the turn receives it', /deadline,\s*\}\);/.test(posted));
+  check('it is disposed in the finally, beside the reservation release', /finally \{[\s\S]*?deadline\.dispose\(\);[\s\S]*?allowance\.release\(\)/.test(posted));
+  check('a deadline is a 504 with its own sentence, and the sentence says nothing was changed',
+    /refuse\(SAY\.timedOut, 504\)/.test(posted) && /timedOut:[\s\S]{0,200}Nothing was\s*'?\s*\+?\s*'?\s*changed/.test(raw));
+  check('no literal duration lives in the handler', !/\d{5,}/.test(posted));
 }
 
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);

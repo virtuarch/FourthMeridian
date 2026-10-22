@@ -6,6 +6,7 @@
  *   npx tsx lib/ai/brief/recent-activity.test.ts
  */
 
+import { readFileSync } from 'node:fs';
 import type { Transaction } from '@/types';
 
 /** RLS-C-S3 — a stated placeholder: this suite is DB-free and no fake reads it. */
@@ -76,6 +77,10 @@ async function main() {
       ['date', 'amount', 'flow', 'merchant', 'category', 'pending', 'betweenOwnAccounts', 'account'].includes(k))));
     check('safeMerchant strips digit runs and symbols', safeMerchant('AMZN Mktp US*2K4 #1234567') === 'AMZN Mktp US 2K4');
     check('safeMerchant drops an all-digit name', safeMerchant('123456789') === undefined);
+    // SEC-AI-005 — the Brief's rule IS the shared rule now; the Conversations tools apply the same function.
+    check('safeMerchant is the shared scrub (lib/ai/privacy/scrub.ts), byte-identical on the Brief path',
+      safeMerchant('CHECK #1052') === 'CHECK' && safeMerchant('VISA 4111111111111111 STORE') === 'VISA STORE'
+        && /return scrubDescriptor\(value\);/.test(readFileSync('lib/ai/brief/recent-activity.ts', 'utf8')));
   }
 
   console.log('\n4. the read respects the ceiling');

@@ -76,6 +76,9 @@ import type {
   DrilldownTransaction,
 } from '@/lib/ai/types';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
+// SEC-AI-005 — every merchant/descriptor string this assembler emits is scrubbed
+// (digit runs of 4+, reference symbols) by the one rule the Brief already applied.
+import { scrubDescriptor, scrubDescriptorText } from '@/lib/ai/privacy/scrub';
 import { isIncome, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue } from '@/lib/transactions/flow-predicates';
 // REVIEW-3 C-1 — THE economic fold. The window and monthly money folds below are
 // consumers of the SAME primitives the Cash Flow workspace folds with
@@ -1284,7 +1287,7 @@ async function assembleTransactions(
     // income €5,000" would sit beside a converted incomeTotal in USD.
     largestIncome: largestIncomeRow
       ? {
-          merchant: largestIncomeRow.merchant,
+          merchant: scrubDescriptorText(largestIncomeRow.merchant),
           amount:   Math.round(largestIncomeAmt * 100) / 100,
           date:     econOf(largestIncomeRow).toISOString().split('T')[0],
         }
@@ -1292,7 +1295,7 @@ async function assembleTransactions(
 
     largestExpense: largestExpenseRow
       ? {
-          merchant: largestExpenseRow.merchant,
+          merchant: scrubDescriptorText(largestExpenseRow.merchant),
           amount:   Math.round(largestExpenseAmt * 100) / 100,
           date:     econOf(largestExpenseRow).toISOString().split('T')[0],
         }
@@ -1741,7 +1744,7 @@ export function buildMerchantRollup(
         }
       }
       return {
-        canonicalName: agg.canonicalName,
+        canonicalName: scrubDescriptorText(agg.canonicalName),
         canonicalKey,
         occurrences:   agg.occurrences,
         total:         Math.round(agg.total * 100) / 100,
@@ -1823,7 +1826,7 @@ export function buildIncomeSourceRollup(
 
   const ranked = Array.from(incomeMap.entries())
     .map(([canonicalKey, agg]): IncomeSource => ({
-      canonicalName: agg.canonicalName,
+      canonicalName: scrubDescriptorText(agg.canonicalName),
       canonicalKey,
       occurrences:   agg.occurrences,
       total:         Math.round(agg.total * 100) / 100,
@@ -1871,7 +1874,8 @@ export function buildRecurringCandidates(
     const sum = group.amounts.reduce((s, a) => s + a, 0);
     const avg = sum / group.amounts.length;
     out.push({
-      merchant,
+      // The grouping key is the raw lowercased descriptor; what LEAVES is scrubbed.
+      merchant:      scrubDescriptorText(merchant),
       occurrences:   group.count,
       typicalAmount: Math.round(avg * 100) / 100,
       category:      group.category,
@@ -2129,10 +2133,13 @@ async function assembleDrilldown(
       // Posting date rides as PROVENANCE, explicitly labelled, never as the date.
       postedDate: r.date.toISOString().split('T')[0],
       // MI M6 read cutover — resolved Merchant display name, else the normalizer.
-      merchant: r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName,
-      // Forensic preservation — the original provider descriptor is never lost.
-      ...(r.merchant !== (r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName) ? { rawMerchant: r.merchant } : {}),
-      ...(r.description ? { description: r.description } : {}),
+      // SEC-AI-005 — scrubbed on the way out, like every descriptor here.
+      merchant: scrubDescriptorText(r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName),
+      // The original provider descriptor, when it differs — SCRUBBED (SEC-AI-005):
+      // cheque, reference and partial card numbers never leave the server. The raw
+      // `description` is no longer sent at all; no tool declares a need for it.
+      ...(r.merchant !== (r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName) && scrubDescriptor(r.merchant)
+        ? { rawMerchant: scrubDescriptor(r.merchant) } : {}),
       amount:   Math.round(amount * 100) / 100, // P2-7C — reporting currency, at row date
       category: r.category,
       ...(accountName ? { accountName } : {}),

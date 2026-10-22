@@ -45,6 +45,7 @@ import { readCanonicalSpending, type CanonicalSpendingBaseline } from '@/lib/tra
 import { transactionAccountPopulation } from '@/lib/data/transaction-population';
 import { MAX_TRANSACTION_PAGE_SIZE, type TransactionQuery } from '@/lib/data/transaction-query-core';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
+import { scrubDescriptor } from '@/lib/ai/privacy/scrub';
 import type { Transaction } from '@/types';
 import { getRecentSnapshots } from '@/lib/data/snapshots';
 import { projectSnapshotSection } from '@/lib/ai/assemblers/snapshot';
@@ -827,8 +828,12 @@ const getTransactions: ToolDefinition = {
       coverage,
       flow: flowKey,
       rows: rows.map((r) => ({
-        date: r.date, merchant: r.merchantDisplayName ?? r.merchant,
-        description: r.description, amount: r.amount,
+        // SEC-AI-005 — the merchant is SCRUBBED (lib/ai/privacy/scrub.ts: the Brief's
+        // rule — digit runs of 4+, reference symbols) and the raw `description` is
+        // NOT sent: a provider descriptor carries cheque, reference and partial card
+        // numbers, and the `text` filter already searched it server-side.
+        date: r.date, merchant: scrubDescriptor(r.merchantDisplayName ?? r.merchant),
+        amount: r.amount,
         category: r.category, pending: r.pending,
         // ⚠️ WHICH SIDE OF THE MOVEMENT THIS ROW IS. A card payment posts TWICE —
         // once on the checking account it left and once on the card it landed on —

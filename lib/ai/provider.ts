@@ -29,6 +29,7 @@ import { resolveOpenAiCredentials } from '@/lib/ai/openai-credentials';
 import {
   AI_PAUSED_CODE, readPaidRequestsAdmission, type PaidRequestsAdmissionReader,
 } from '@/lib/platform/ai/paid-requests-admission';
+import { TurnTimeoutError } from '@/lib/ai/turn-deadline';
 
 // ── Client ───────────────────────────────────────────────────────────────────
 // Lazy-initialised singleton. Fails loudly if the key is absent so
@@ -47,6 +48,28 @@ let _client: OpenAI | null = null;
  */
 export const OPENAI_API_BASE_URL = 'https://api.openai.com/v1';
 
+/**
+ * SEC-AI-003 — THE CLIENT IS PINNED, NOT DEFAULTED.
+ *
+ * The SDK's own defaults are a TEN-MINUTE per-request timeout and TWO silent
+ * retries. Under a route whose `maxDuration` is 300 s a hung connection held
+ * the lambda until the platform killed it (so the reservation's `finally`
+ * never ran), and the hidden retries multiplied on the app's own: one
+ * rate-limited turn issued 18 provider requests for 6 ledger rows
+ * (runtime/05-AI-RELIABILITY.md, item 4). Billed attempts the ledger never
+ * saw are the one thing a cost control cannot tolerate.
+ *
+ *   timeout     90 s per request — generous against the observed 3–70 s hops,
+ *               and short enough that a hop can never outlive the turn budget
+ *               (lib/ai/turn-deadline.ts) by itself.
+ *   maxRetries  0 — `callWithRateLimitRetry` (lib/ai/rate-limit-retry.ts) is the
+ *               ONE retry authority, and it writes a ledger row per attempt.
+ *
+ * Both are exported so a test can pin the values AND the construction site.
+ */
+export const OPENAI_CLIENT_TIMEOUT_MS = 90_000;
+export const OPENAI_CLIENT_MAX_RETRIES = 0;
+
 function getClient(): OpenAI {
   if (_client) return _client;
 
@@ -59,8 +82,24 @@ function getClient(): OpenAI {
     // Explicit, so the SDK does not read OPENAI_ORG_ID / OPENAI_BASE_URL for itself.
     organization: null,
     baseURL: OPENAI_API_BASE_URL,
+    // SEC-AI-003 — see the constants above. Never the SDK defaults.
+    timeout: OPENAI_CLIENT_TIMEOUT_MS,
+    maxRetries: OPENAI_CLIENT_MAX_RETRIES,
   });
   return _client;
+}
+
+/**
+ * SEC-AI-003 — the caller's cancellation, read before and after a provider call.
+ * A signal that is already aborted means the call is NOT MADE (nothing billed,
+ * a zero-token TIMEOUT fact is still written); one that aborts during the call
+ * is what the SDK abandons on. The reason carried by the signal is the turn
+ * deadline's own error when the deadline set it, so the fact says
+ * `turn_deadline` rather than the SDK's abort.
+ */
+function abortedReason(signal: AbortSignal | undefined, where: string): Error | null {
+  if (!signal?.aborted) return null;
+  return signal.reason instanceof TurnTimeoutError ? signal.reason : new TurnTimeoutError(0, where);
 }
 
 // ── Model ────────────────────────────────────────────────────────────────────
@@ -92,9 +131,14 @@ const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
  * none — so every dollar figure derivable from the ledger overstated input cost
  * by roughly five times on measured traffic. One list, one loop, every path.
  *
- * Fire-and-forget and non-throwing, unchanged: `recordApiUsage` swallows its own
- * errors, so `void` here can neither fail a generation nor leave an unhandled
- * rejection. A metrics write must never break a chat call.
+ * The day-grain counter stays fire-and-forget: `recordApiUsage` swallows its own
+ * errors, so `void` there can neither fail a generation nor leave an unhandled
+ * rejection. The INVOCATION fact is different (IDEMP-009 / OBS-005): it is what
+ * the allowance is reduced over, so it is AWAITED — a row is on the ledger before
+ * the chokepoint returns and therefore before any HTTP response resolves — and
+ * a failed write is captured, counted and reported to the reservation
+ * (lib/platform/ai/ledger-health.ts). The writer still never throws, so a
+ * ledger failure still cannot fail a generation.
  */
 /**
  * Where the invocation fact is written. Defaults to the real ledger.
@@ -117,7 +161,7 @@ export interface UsageSinks {
   paidRequestsAdmission?: PaidRequestsAdmissionReader;
 }
 
-function recordOpenAiUsage(args: {
+async function recordOpenAiUsage(args: {
   model: string;
   usage: OpenAiUsage | null | undefined;
   latencyMs: number;
@@ -126,7 +170,7 @@ function recordOpenAiUsage(args: {
   /** The SDK's `_request_id` on the completion, when present. */
   providerRequestId?: string | null;
   sinks?: UsageSinks;
-}): void {
+}): Promise<void> {
   const { model, usage } = args;
   if (!usage) return;
 
@@ -144,7 +188,9 @@ function recordOpenAiUsage(args: {
   //     structurally cannot reach: "what did this turn cost?" is unanswerable
   //     from a daily sum. Correlation comes from ambient context, so no generator
   //     signature changes and no caller has to thread it.
-  void recordAiInvocation({
+  //     IDEMP-009 — AWAITED: the writer never throws, and the row is on the ledger
+  //     before this generation returns.
+  await recordAiInvocation({
     provider: 'OPENAI', model, usage,
     latencyMs: args.latencyMs,
     toolCallCount: args.toolCallCount ?? 0,
@@ -164,15 +210,15 @@ function recordOpenAiUsage(args: {
  * UNCHANGED — callers' behaviour (the retry predicate, the Brief's typed
  * reasons, the chat route's sentence) is byte-identical to before.
  *
- * Fire-and-forget and non-throwing, like the success writer: a telemetry
+ * Awaited and non-throwing, like the success writer (IDEMP-009): a telemetry
  * failure must never replace the error it describes.
  */
-function recordOpenAiFailure(args: { model: string; err: unknown; latencyMs: number; sinks?: UsageSinks }): void {
+async function recordOpenAiFailure(args: { model: string; err: unknown; latencyMs: number; sinks?: UsageSinks }): Promise<void> {
   try {
     const { outcome, errorCode } = classifyAiFailure(args.err);
     const rid = (args.err as { requestID?: unknown; request_id?: unknown } | null)?.requestID
       ?? (args.err as { request_id?: unknown } | null)?.request_id;
-    void recordAiInvocationFailure({
+    await recordAiInvocationFailure({
       provider: 'OPENAI', model: args.model, outcome, errorCode,
       latencyMs: args.latencyMs,
       providerRequestId: typeof rid === 'string' ? rid : null,
@@ -275,7 +321,7 @@ export async function assertPaidRequestsAdmitted(model: string, sinks?: UsageSin
   const admission = await (sinks?.paidRequestsAdmission ?? readPaidRequestsAdmission)();
   if (!admission.paused) return;
   const err = new AiPausedError(model, admission.state);
-  void recordAiInvocationFailure({
+  await recordAiInvocationFailure({
     provider: 'OPENAI', model, outcome: 'FAILED', errorCode: AI_PAUSED_CODE, latencyMs: 0,
   }, sinks?.invocationClient);
   captureAiProviderFailure({ outcome: 'FAILED', errorCode: AI_PAUSED_CODE, surface: getAiInvocationContext()?.surface ?? null, model }, err);
@@ -330,13 +376,13 @@ export async function generateChatReply(
       max_tokens:  1024,
     }) as typeof completion;
   } catch (err) {
-    recordOpenAiFailure({ model: CHAT_MODEL, err, latencyMs: Date.now() - started });
+    await recordOpenAiFailure({ model: CHAT_MODEL, err, latencyMs: Date.now() - started });
     throw err;
   }
   const latencyMs = Date.now() - started;
 
   // Wave 2 S7 + cost Slice 3 — the day aggregate and the invocation fact.
-  recordOpenAiUsage({
+  await recordOpenAiUsage({
     model: CHAT_MODEL, usage: completion.usage, latencyMs,
     // This path cannot request tools, so zero is a FACT rather than a missing value.
     toolCallCount: 0,
@@ -427,12 +473,26 @@ export async function generateWithTools(args: {
   tools?:   unknown[];
   /** Omit to take the dialect-appropriate budget — see `completionBudgetFor`. */
   maxTokens?: number;
+  /**
+   * SEC-AI-003 — the turn's deadline (lib/ai/turn-deadline.ts). Already aborted
+   * ⇒ the call is not made; aborted during the call ⇒ the SDK abandons it.
+   * Either way a zero-token TIMEOUT fact is written and `TurnTimeoutError` thrown.
+   */
+  signal?: AbortSignal;
 }, deps?: { client?: StructuredClient; sinks?: UsageSinks }): Promise<ToolTurnResult> {
-  const { model, messages, tools } = args;
+  const { model, messages, tools, signal } = args;
   // AI COST CONTROLS — the kill switch, before anything else.
   await assertPaidRequestsAdmitted(model, deps?.sinks);
   // BETA C7 — refused before the provider is reached when the rate card cannot price it.
   assertPricedModel(model, deps?.sinks);
+  // SEC-AI-003 — a turn that is already out of time asks the provider for nothing.
+  {
+    const spent = abortedReason(signal, 'before the call');
+    if (spent) {
+      await recordOpenAiFailure({ model, err: spent, latencyMs: 0, sinks: deps?.sinks });
+      throw spent;
+    }
+  }
   const client = deps?.client ?? (getClient() as unknown as StructuredClient);
   const maxTokens = args.maxTokens ?? completionBudgetFor(model);
   const modern = usesModernParams(model);
@@ -453,16 +513,18 @@ export async function generateWithTools(args: {
     usage?: OpenAiUsage;
   };
   try {
-    completion = await client.chat.completions.create(body) as typeof completion;
+    completion = await client.chat.completions.create(body, signal ? { signal } : undefined) as typeof completion;
   } catch (err) {
-    recordOpenAiFailure({ model, err, latencyMs: Date.now() - started, sinks: deps?.sinks });
-    throw err;
+    // The deadline is OURS, so the fact says `turn_deadline` rather than the SDK's abort.
+    const thrown = abortedReason(signal, 'during the call') ?? err;
+    await recordOpenAiFailure({ model, err: thrown, latencyMs: Date.now() - started, sinks: deps?.sinks });
+    throw thrown;
   }
   const latencyMs = Date.now() - started;
 
   const usage = completion.usage;
   const choice = completion.choices[0];
-  recordOpenAiUsage({
+  await recordOpenAiUsage({
     model, usage, latencyMs,
     // Tool calls this invocation ASKED FOR — known exactly at this seam, and the
     // reason a single turn can produce several invocations.
@@ -520,6 +582,8 @@ export interface StructuredOptions {
   temperature?: number;
   maxTokens?:   number;
   timeoutMs?:   number;
+  /** SEC-AI-003 — the caller's deadline, combined with `timeoutMs`: whichever fires first abandons the call. */
+  signal?:      AbortSignal;
 }
 
 /** The narrow client surface a structured call uses — injectable for tests. */
@@ -569,6 +633,14 @@ export async function generateStructuredWithUsage<T>(
   await assertPaidRequestsAdmitted(model, deps?.sinks);
   // BETA C7 — refused before the provider is reached when the rate card cannot price it.
   assertPricedModel(model, deps?.sinks);
+  // SEC-AI-003 — a caller that is already out of time asks the provider for nothing.
+  {
+    const spent = abortedReason(options?.signal, 'before the structured call');
+    if (spent) {
+      await recordOpenAiFailure({ model, err: spent, latencyMs: 0, sinks: deps?.sinks });
+      throw spent;
+    }
+  }
   const client = deps?.client ?? (getClient() as unknown as StructuredClient);
   const modern = usesModernParams(model);
   const timeoutMs = options?.timeoutMs ?? STRUCTURED_TIMEOUT_MS;
@@ -590,8 +662,13 @@ export async function generateStructuredWithUsage<T>(
 
   // One deadline for the whole request, retries included: the signal is what the
   // SDK abandons on, so a slow first attempt cannot buy a second full timeout.
+  // SEC-AI-003 — the caller's own deadline aborts the same controller, so the
+  // call is bounded by whichever clock runs out first.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const outer = options?.signal;
+  const onOuterAbort = () => controller.abort();
+  outer?.addEventListener('abort', onOuterAbort, { once: true });
   const started = Date.now();
   let completion: {
     choices: { message?: { content?: string | null; refusal?: string | null }; finish_reason?: string }[];
@@ -600,18 +677,21 @@ export async function generateStructuredWithUsage<T>(
   try {
     completion = await client.chat.completions.create(body, { signal: controller.signal }) as typeof completion;
   } catch (err) {
-    // The deadline is OURS, so the fact says TIMEOUT rather than the SDK's abort.
-    const thrown = controller.signal.aborted ? new StructuredOutputTimeoutError(timeoutMs) : err;
-    recordOpenAiFailure({ model, err: thrown, latencyMs: Date.now() - started, sinks: deps?.sinks });
+    // The deadline is OURS, so the fact says TIMEOUT rather than the SDK's abort —
+    // the turn's deadline when the turn set it, this call's own otherwise.
+    const thrown = abortedReason(outer, 'during the structured call')
+      ?? (controller.signal.aborted ? new StructuredOutputTimeoutError(timeoutMs) : err);
+    await recordOpenAiFailure({ model, err: thrown, latencyMs: Date.now() - started, sinks: deps?.sinks });
     throw thrown;
   } finally {
     clearTimeout(timer);
+    outer?.removeEventListener('abort', onOuterAbort);
   }
   const latencyMs = Date.now() - started;
 
   const choice = completion.choices?.[0];
   const finishReason = choice?.finish_reason ?? null;
-  recordOpenAiUsage({
+  await recordOpenAiUsage({
     model, usage: completion.usage, latencyMs,
     toolCallCount: 0,   // structured output, not tools
     finishReason,

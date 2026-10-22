@@ -48,6 +48,17 @@ export interface RateLimitRetryOptions {
   deadlineAt?: number;
   /** The shortest attempt worth waiting for. Only read with `deadlineAt`. */
   minAttemptMs?: number;
+  /**
+   * SEC-AI-003 — the most this call may spend SLEEPING in total, across every
+   * retry. A wait that would push the total past it is not taken: the error is
+   * rethrown and the caller fails now. Omitted ⇒ unbounded (the deadline alone).
+   */
+  maxTotalWaitMs?: number;
+  /**
+   * SEC-AI-003 — a cancelled caller. Once aborted no further attempt is made:
+   * the error in hand is rethrown immediately, and a wait in progress ends.
+   */
+  signal?: AbortSignal;
   onRetry?: (r: RateLimitRetryRecord) => void;
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
@@ -109,16 +120,34 @@ export async function callWithRateLimitRetry<T>(
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RATE_LIMIT_RETRIES;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const signal = options.signal;
+  let waitedTotalMs = 0;
   for (let attempt = 1; ; attempt++) {
     try {
       return await call(attempt);
     } catch (err) {
       if (!isRateLimitError(err) || attempt > maxRetries) throw err;
+      // SEC-AI-003 — a cancelled caller is never retried on its behalf.
+      if (signal?.aborted) throw err;
       const waitedMs = rateLimitWaitMs(err, attempt);
       if (options.deadlineAt !== undefined
         && now() + waitedMs + (options.minAttemptMs ?? 0) > options.deadlineAt) throw err;
+      if (options.maxTotalWaitMs !== undefined && waitedTotalMs + waitedMs > options.maxTotalWaitMs) throw err;
       options.onRetry?.({ attempt, waitedMs, reason: messageOf(err).slice(0, 160) });
-      await sleep(waitedMs);
+      waitedTotalMs += waitedMs;
+      await sleepUnlessAborted(sleep, waitedMs, signal);
+      if (signal?.aborted) throw err;
     }
   }
+}
+
+/** The wait, cut short by the caller's cancellation. The sleep itself is the injected one. */
+function sleepUnlessAborted(sleep: (ms: number) => Promise<void>, ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return sleep(ms);
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const onAbort = () => resolve();
+    signal.addEventListener('abort', onAbort, { once: true });
+    void sleep(ms).then(() => { signal.removeEventListener('abort', onAbort); resolve(); });
+  });
 }

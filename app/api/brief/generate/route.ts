@@ -13,7 +13,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { requireUser } from '@/lib/session';
-import { limitByUser } from '@/lib/rate-limit';
+import { paceAiRequest } from '@/lib/ai/pacing';
 import { entitlementsForUser, refuseIfDisabled } from '@/lib/entitlements/consume';
 import { dailyAiAllowanceFor, allowanceRefusal } from '@/lib/ai/allowance';
 import { readPaidRequestsAdmission, paidRequestsPausedResponse } from '@/lib/platform/ai/paid-requests-admission';
@@ -46,8 +46,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const entitlements = await entitlementsForUser(user.id);
   const disabled = refuseIfDisabled(entitlements, 'dailyBrief', 'The Daily Brief');
   if (disabled) return disabled;
+  // SEC-AI-004 — fails closed on a limiter store error (lib/ai/pacing.ts), like the allowance.
   {
-    const limited = await limitByUser(user.id, 'ai-brief-generate', { limit: 20, windowSec: 60 });
+    const limited = await paceAiRequest(user.id, 'ai-brief-generate', { limit: 20, windowSec: 60 }, 'The Daily Brief');
     if (limited) return limited;
   }
   // AI COST CONTROLS — the kill switch, before the allowance (after

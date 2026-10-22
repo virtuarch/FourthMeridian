@@ -82,7 +82,20 @@ export function sumTodaySpend(groups: readonly TodaySpendGroup[], todayISO: stri
  * simultaneous turns would all pass it (measured 8/8 at $3.80 of $5). Retryable —
  * 503 with Retry-After; nothing was spent.
  */
-export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL" | "RESERVATION_UNAVAILABLE";
+/**
+ * LEDGER_UNTRUSTED (IDEMP-009 / OBS-005) — the reservation ran under the lock but
+ * the ledger it reduces over has been FAILING ITS WRITES (lib/platform/ai/
+ * ledger-health.ts): today's spend cannot be trusted to be complete, and an
+ * unknown spend is never "under the allowance". FAIL CLOSED, retryable like
+ * RESERVATION_UNAVAILABLE (503 + Retry-After): the signal ages out and clears on
+ * recovery. Nothing was spent.
+ */
+export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL" | "RESERVATION_UNAVAILABLE" | "LEDGER_UNTRUSTED";
+
+/** The two transient refusals: retryable, 503, Retry-After. */
+export function isRetryableAllowanceReason(reason: AllowanceReason): boolean {
+  return reason === "RESERVATION_UNAVAILABLE" || reason === "LEDGER_UNTRUSTED";
+}
 
 /** Seconds a client should wait before retrying a RESERVATION_UNAVAILABLE refusal. */
 export const RESERVATION_RETRY_AFTER_SECONDS = 15;
@@ -129,8 +142,12 @@ export function dailyAllowanceVerdict(input: { spentUsd: number; allowanceUsd: n
  *   · the conversation engine runs on `CHAT_MODEL = 'gpt-5.1'`
  *     (lib/ai/conversation/engine.ts) — RESERVE_MODEL mirrors it; the engine
  *     is not imported here because this module must stay pure and light;
- *   · a turn is at most MAX_TOOL_ROUNDTRIPS = 6 model calls
- *     (lib/ai/conversation/turn.ts) — RESERVE_INVOCATIONS_PER_TURN;
+ *   · a turn is at most MAX_TOOL_ROUNDTRIPS = 6 answer calls
+ *     (lib/ai/conversation/turn.ts) — RESERVE_ANSWER_HOPS — PLUS the guidance
+ *     classifier, a second paid call on the same model after every answered
+ *     turn (lib/ai/conversation/engine.ts) — RESERVE_GUIDANCE_CALLS. Before
+ *     SEC-AI-008 the reserve covered the hops only, so the label was a 7th
+ *     unreserved call per turn; RESERVE_INVOCATIONS_PER_TURN is their sum;
  *   · each call carries ~30,000 prompt tokens (the T0 orientation measured
  *     ≈32k tokens after the evidence clip, with tool results growing later
  *     hops while prompt caching shrinks them) and ~1,500 completion tokens
@@ -138,16 +155,26 @@ export function dailyAllowanceVerdict(input: { spentUsd: number; allowanceUsd: n
  *     dialect ≈1,500);
  *   · priced at the rate card's rate for RESERVE_MODEL (the latest rate):
  *     gpt-5.1 input $1.25 / M, output $10 / M ⇒ 30,000 × 1.25 / 1e6 +
- *     1,500 × 10 / 1e6 = $0.0525 per call ⇒ $0.315 per turn.
+ *     1,500 × 10 / 1e6 = $0.0525 per call ⇒ 7 × $0.0525 = $0.3675 per turn.
  * The constant is COMPUTED from the rate card at module load so a rate change
  * moves it; RESERVE_USD_FALLBACK is used only if the card had no rate for the
  * model (never 0 — a zero reserve would silently disable the concurrency bound).
+ *
+ * ⚠️ NOT SIZED FROM THE TRANSCRIPT (SEC-AI-002, documented rather than done):
+ * the routes reserve BEFORE reading the request body (pinned: the allowance is
+ * judged before `req.json()` so a refused turn costs no parse and no model
+ * work), so the transcript's size is unknown when the reserve is taken. The
+ * per-call shape above is the worst case the body limits allow (≤ 160 KB ≈
+ * 40k tokens, cached after the first hop); the overshoot bound stated in the
+ * reservation module's header is unchanged.
  */
 export const RESERVE_MODEL = "gpt-5.1";
-export const RESERVE_INVOCATIONS_PER_TURN = 6;
+export const RESERVE_ANSWER_HOPS = 6;
+export const RESERVE_GUIDANCE_CALLS = 1;
+export const RESERVE_INVOCATIONS_PER_TURN = RESERVE_ANSWER_HOPS + RESERVE_GUIDANCE_CALLS;
 export const RESERVE_PROMPT_TOKENS_PER_INVOCATION = 30_000;
 export const RESERVE_COMPLETION_TOKENS_PER_INVOCATION = 1_500;
-export const RESERVE_USD_FALLBACK = 0.315;
+export const RESERVE_USD_FALLBACK = 0.3675;
 
 /** PURE — the per-turn reserve for a model from a rate card (null when the card cannot price it). */
 export function reserveUsdFor(model: string, rates: readonly AiRate[] = AI_RATES): number | null {
@@ -216,7 +243,7 @@ export interface AllowanceRefusalBody {
 const cents = (n: number) => Math.round(n * 100) / 100;
 
 export function allowanceRefusalBody(v: Extract<AllowanceVerdict, { allowed: false }>, surfaceLabel: string): AllowanceRefusalBody {
-  if (v.reason === "RESERVATION_UNAVAILABLE") {
+  if (isRetryableAllowanceReason(v.reason)) {
     return {
       error: `${surfaceLabel} is briefly unavailable: your daily AI allowance couldn’t be checked just now. Nothing was changed. Please try again in a moment.`,
       code: ALLOWANCE_CODE, reason: v.reason, spentUsd: cents(v.spentUsd), allowanceUsd: v.allowanceUsd,
@@ -239,5 +266,5 @@ export function allowanceRefusalBody(v: Extract<AllowanceVerdict, { allowed: fal
  * refuses the model itself, so a customer sees ONE status for the one gap.
  */
 export function allowanceRefusalStatus(v: Extract<AllowanceVerdict, { allowed: false }>): 429 | 503 {
-  return v.reason === "UNPRICED_MODEL" || v.reason === "RESERVATION_UNAVAILABLE" ? 503 : 429;
+  return v.reason === "UNPRICED_MODEL" || isRetryableAllowanceReason(v.reason) ? 503 : 429;
 }
