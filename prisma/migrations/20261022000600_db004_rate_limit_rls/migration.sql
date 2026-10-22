@@ -14,9 +14,13 @@
 --   fm_auth   all buckets (pre-identity login/registration limits key on IP or
 --             identifier; there is no user to scope by)
 --   fm_system all buckets (allowance reservation, sweeps, operator views)
--- ENABLE, not FORCE: the table owner (`db`, the current rate-limit client)
--- keeps bypassing RLS exactly as before, so no limiter behaviour changes.
+-- ENABLE + FORCE, like every other RLS table (rls:accept #17 requires it).
+-- The rate limiter in lib/rate-limit.ts runs on `db`, the migration principal,
+-- which already reaches the 62 FORCEd tables only because it bypasses RLS
+-- (superuser locally, BYPASSRLS on the hosted principal — DB-003), so FORCE
+-- does not change the limiter's behaviour.
 ALTER TABLE public."RateLimit" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public."RateLimit" FORCE ROW LEVEL SECURITY;
 
 DO $$
 BEGIN

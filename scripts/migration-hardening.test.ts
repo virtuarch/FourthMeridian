@@ -30,7 +30,7 @@ check("SEC-014: SELECT is not revoked", !/REVOKE[^;]*SELECT[^;]*PlatformGrant/.t
 check("SEC-014: the three fm_app write policies are dropped", ["fm_app_ins", "fm_app_upd", "fm_app_del"].every((p) => sec014.includes(`DROP POLICY IF EXISTS ${p} ON public."PlatformGrant"`)));
 
 const db004 = m("20261022000600_db004_rate_limit_rls");
-check("DB-004: RLS ENABLED on RateLimit but NOT forced (owner `db` limiter unchanged)", /ENABLE ROW LEVEL SECURITY/.test(db004) && !/FORCE ROW LEVEL SECURITY/.test(db004));
+check("DB-004: RLS ENABLED and FORCED on RateLimit (rls:accept #17: every enabled table is forced)", /ENABLE ROW LEVEL SECURITY/.test(db004) && /FORCE ROW LEVEL SECURITY/.test(db004));
 check("DB-004: fm_app scoped to its own user: buckets, both USING and WITH CHECK", (db004.match(/right\("key", length\(current_fm_user_id\(\)\) \+ 1\) = ':' \|\| current_fm_user_id\(\)/g) ?? []).length === 2 && /current_fm_user_id\(\) IS NOT NULL/.test(db004));
 check("DB-004: fm_auth and fm_system keep all buckets", /fm_auth_all ON public\."RateLimit"[^']*USING \(true\)/.test(db004) && /fm_system_all ON public\."RateLimit"[^']*USING \(true\)/.test(db004));
 
