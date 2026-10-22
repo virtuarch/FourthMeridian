@@ -25,7 +25,7 @@
  */
 
 import { runDeferredHistorySync } from "@/lib/plaid/backgroundHistorySync";
-import { claimPlaidItemSyncLock, releasePlaidItemSyncLock, LOCK_TTL_MS } from "@/lib/plaid/sync-lock";
+import { claimPlaidItemSyncLockAt, releasePlaidItemSyncLock, LOCK_TTL_MS } from "@/lib/plaid/sync-lock";
 // DF-2C — the deferred pipeline now writes the canonical RefreshExecution ledger,
 // the SAME authority manual/cron use. runFullRefresh owns the lifecycle; this
 // module keeps its claim/release lock scope and never-throws contract, and
@@ -113,7 +113,11 @@ export async function syncPlaidItemFromWebhook(
     { itemId: plaidItemId, trigger, profile },
     {
       refresh: async ({ recorder, runId }) => {
-        if (!(await claimPlaidItemSyncLock(plaidItemId))) {
+        // IDEMP-005 — the claim returns the fencing token; the release below only
+        // clears the lease while this run still owns it (a run that outlived
+        // LOCK_TTL_MS must not clear the next holder's lock).
+        const claimedAt = await claimPlaidItemSyncLockAt(plaidItemId);
+        if (!claimedAt) {
           console.log(`[plaid webhook] item ${plaidItemId} already syncing — skipped (marked incomplete for resume)`);
           recorder.skip("TRANSACTIONS", "PROVIDER", "IN_FLIGHT");
           return "skipped-locked";
@@ -133,7 +137,7 @@ export async function syncPlaidItemFromWebhook(
           // history (the marker's own clearer, syncTransactionsForItem, already ran
           // before the stamp). On failure, leave syncIncompleteAt as runDeferredHistorySync
           // set it — the history genuinely did not complete.
-          await releasePlaidItemSyncLock(plaidItemId, ok);
+          await releasePlaidItemSyncLock(plaidItemId, ok, undefined, claimedAt);
         }
       },
     },

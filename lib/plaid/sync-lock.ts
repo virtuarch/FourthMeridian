@@ -102,7 +102,7 @@ export interface PlaidItemSyncLockClient {
  */
 export async function claimPlaidItemSyncLock(
   plaidItemId: string,
-  client: PlaidItemSyncLockClient = db,
+  client?: PlaidItemSyncLockClient,
 ): Promise<boolean> {
   return (await claimPlaidItemSyncLockAt(plaidItemId, client)) !== null;
 }
@@ -116,7 +116,7 @@ export async function claimPlaidItemSyncLock(
  */
 export async function claimPlaidItemSyncLockAt(
   plaidItemId: string,
-  client: PlaidItemSyncLockClient,
+  client: PlaidItemSyncLockClient = db,
 ): Promise<Date | null> {
   const now = new Date();
   const staleCutoff = new Date(now.getTime() - LOCK_TTL_MS);

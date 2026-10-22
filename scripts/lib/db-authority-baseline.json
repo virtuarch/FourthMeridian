@@ -255,7 +255,7 @@
     "lib/plaid/refresh.ts -> syncTransactionsForItem",
     "lib/plaid/refresh.ts -> syncTransactionsForItem",
     "lib/plaid/sync-investments.ts -> capturePositionObservations",
-    "lib/plaid/webhook-sync.ts -> claimPlaidItemSyncLock",
+    "lib/plaid/webhook-sync.ts -> claimPlaidItemSyncLockAt",
     "lib/plaid/webhook-sync.ts -> releasePlaidItemSyncLock",
     "lib/platform/connection-diagnostics.ts -> loadWalletHistoryMetadata",
     "lib/prices/backfill.ts -> recordCorporateActionTerms",
