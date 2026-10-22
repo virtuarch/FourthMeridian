@@ -242,10 +242,8 @@ export async function handlePlaidWebhook(
   const transition = item ? webhookHealthTransition(webhookType, webhookCode, errorCode) : null;
   if (transition && item && item.status !== "REVOKED") {
     try {
-      const applyHealth = deps.applyHealth ?? (async (id: string, t: WebhookHealthTransition) => {
-        const { setPlaidItemHealth } = await import("@/lib/connections/health-transitions");
-        await setPlaidItemHealth(id, { status: t.status, errorCode: t.errorCode });
-      });
+      const applyHealth = deps.applyHealth ?? (async (id: string, t: WebhookHealthTransition) =>
+        (await import("@/lib/plaid/webhook-health")).applyWebhookHealthTransition(id, t));
       await applyHealth(item.id, transition);
       decision = { handling: "HEALTH_TRANSITION", schedule: false, handled: true };
       log.log(`[plaid webhook] item ${item.id} → ${transition.status} (${transition.errorCode})`);
