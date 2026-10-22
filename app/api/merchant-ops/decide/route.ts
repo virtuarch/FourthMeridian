@@ -67,8 +67,13 @@ export async function POST(req: NextRequest) {
     );
     return NextResponse.json(result);
   } catch (e) {
-    const message = e instanceof Error ? e.message : "merge review decision failed";
-    if (e instanceof MergeReviewIneligibleError) return NextResponse.json({ error: message }, { status: 422 });
-    return NextResponse.json({ error: message }, { status: 409 });
+    // SEC-013: only the domain refusal's own sentence reaches the client. Any other
+    // error (a Prisma conflict names tables and columns) gets a fixed message.
+    if (e instanceof MergeReviewIneligibleError) return NextResponse.json({ error: e.message }, { status: 422 });
+    console.error("[merchant-ops/decide] merge review decision failed", e);
+    return NextResponse.json(
+      { error: "The decision could not be applied because the candidate changed. Refresh and try again." },
+      { status: 409 },
+    );
   }
 }
