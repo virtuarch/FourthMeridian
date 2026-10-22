@@ -16,6 +16,9 @@ import { maybeInstrumentProviderCall } from "@/lib/plaid/provider-call";
 // in the codebase can see — or log — it.
 import { sanitizeProviderErrorInPlace } from "@/lib/plaid/errors";
 
+/** OPS-004 — axios transport timeout for every Plaid call (ms). */
+export const PLAID_TRANSPORT_TIMEOUT_MS = 30_000;
+
 // ── Validate required env vars at module load time ───────────────────────────
 const VALID_ENVS = ["sandbox", "development", "production"] as const;
 type PlaidEnv = typeof VALID_ENVS[number];
@@ -60,6 +63,11 @@ function realPlaidClient(): PlaidApi {
         "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID!,
         "PLAID-SECRET":    process.env.PLAID_SECRET!,
       },
+      // OPS-004 — axios defaults to NO timeout: a hung Plaid call held a
+      // per-Item sync, its tenant transaction and the dispatch slot until the
+      // lambda's maxDuration killed it. 30 s is generous for every Plaid
+      // endpoint this product calls (/transactions/sync pages in ~1-3 s).
+      timeout: PLAID_TRANSPORT_TIMEOUT_MS,
     },
   });
   _realClient = new PlaidApi(config);

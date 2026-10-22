@@ -31,6 +31,7 @@
  */
 
 import { PriceBasis } from "@prisma/client";
+import { PRICE_PROVIDER_TIMEOUT_MS } from "../config";
 import type { PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderCorporateAction, ProviderRoutingKey } from "../types";
 import { splitFactorToRatio } from "@/lib/investments/corporate-actions.core";
 import { ProviderFetchError } from "../provider-errors";
@@ -65,7 +66,7 @@ export interface TiingoHttpResponse {
 /** Injectable fetch (default: global fetch). Tests pass a fake to avoid real network. */
 export type TiingoFetch = (
   url:  string,
-  init: { headers: Record<string, string> },
+  init: { headers: Record<string, string>; signal?: AbortSignal },
 ) => Promise<TiingoHttpResponse>;
 
 export interface TiingoProviderOptions {
@@ -153,6 +154,8 @@ export function createTiingoPriceProvider(
             "Content-Type": "application/json",
             Authorization:  `Token ${apiKey}`,
           },
+          // OPS-004 — a hung vendor must not hold the job to maxDuration.
+          signal: AbortSignal.timeout(PRICE_PROVIDER_TIMEOUT_MS),
         });
       } catch (e) {
         // Network-level failure — a normal adapter failure.

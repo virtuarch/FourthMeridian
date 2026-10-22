@@ -114,6 +114,18 @@ export const SCHEDULER_NOTES: readonly string[] = [
   "Next due comes from the last run of each job and its execution cadence (a platform policy). Whether the dispatcher is actually woken then depends on deployment configuration this platform does not own.",
 ];
 
+/**
+ * OBS-012 — the one wake-adjacent signal the ledger DOES hold. The backstop
+ * import cron has its own deployment schedule and leaves a row on every fire,
+ * so a recent row from it proves the cron provider is invoking this
+ * deployment at all. It does NOT prove the dispatcher route is woken or
+ * authorised — a per-wake heartbeat written by the dispatcher is the only
+ * thing that could, and the ledger has none. Appended only when an external
+ * cron was observed. Prose only.
+ */
+export const CRON_PROVIDER_NOTE =
+  "An external cron leaving rows shows the cron provider is reaching this deployment. It does not show that the dispatcher itself was woken: no wake is recorded, so a silent dispatcher and a wake with nothing due still look the same here.";
+
 /** Appended only when an unregistered job was actually observed. Still prose. */
 export const EXTERNAL_CRON_NOTE =
   "One or more jobs run on their own schedule outside the registry. They leave execution rows but have no health report and no alert coverage.";
@@ -189,7 +201,7 @@ export function buildSchedulerObservation(args: {
       jobsInNextSlot: [...jobsInNextSlot].sort(),
       registeredJobs: jobs.length,
     },
-    notes: externalCrons.length > 0 ? [...SCHEDULER_NOTES, EXTERNAL_CRON_NOTE] : SCHEDULER_NOTES,
+    notes: externalCrons.length > 0 ? [...SCHEDULER_NOTES, EXTERNAL_CRON_NOTE, CRON_PROVIDER_NOTE] : SCHEDULER_NOTES,
     window,
   };
 }

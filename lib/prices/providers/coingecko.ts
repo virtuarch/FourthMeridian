@@ -27,7 +27,7 @@ import type {
   PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderRoutingKey,
 } from "../types";
 import { ProviderFetchError } from "../provider-errors";
-import { minusDaysISO, toISODateUTC } from "../config";
+import { PRICE_PROVIDER_TIMEOUT_MS, minusDaysISO, toISODateUTC } from "../config";
 
 const COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3";
 
@@ -204,7 +204,7 @@ export interface CoinGeckoHttpResponse {
   status: number;
   json(): Promise<unknown>;
 }
-export type CoinGeckoFetch = (url: string, init: { headers: Record<string, string> }) => Promise<CoinGeckoHttpResponse>;
+export type CoinGeckoFetch = (url: string, init: { headers: Record<string, string>; signal?: AbortSignal }) => Promise<CoinGeckoHttpResponse>;
 
 export interface CoinGeckoOptions {
   apiKey?:    string;         // default: process.env.COINGECKO_API_KEY
@@ -250,7 +250,7 @@ export async function fetchCoinDailyClosesUsd(
 
   let res: CoinGeckoHttpResponse;
   try {
-    res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey } });
+    res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey }, signal: AbortSignal.timeout(PRICE_PROVIDER_TIMEOUT_MS) });
   } catch (e) {
     // V26-PRICE-4 — this used to return [], which made a rate-limited backfill
     // look exactly like a complete one. Failures are now typed and classified.
@@ -422,7 +422,7 @@ export async function fetchCoinGeckoCurrentQuotes(
 
   let res: CoinGeckoHttpResponse;
   try {
-    res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey } });
+    res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey }, signal: AbortSignal.timeout(PRICE_PROVIDER_TIMEOUT_MS) });
   } catch (e) {
     throw new ProviderFetchError("PROVIDER_ERROR", `coingecko: network error for current quotes — ${e instanceof Error ? e.message : String(e)}`);
   }

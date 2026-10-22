@@ -38,7 +38,7 @@ import { useState, type ReactNode } from "react";
 import { ShieldCheck } from "lucide-react";
 import { useWidgetFetch, type PlatformSection } from "../widget-kit";
 import { GroupLabel, KeyRow, NO_AUTHORITY, Provenance, SectionSurface, Unavailable, VRule } from "../platform-surface";
-import type { AnomaliesResponse } from "@/app/api/platform/security-ops/anomalies/route";
+import type { AnomaliesResponse, AnomalyTrip } from "@/app/api/platform/security-ops/anomalies/route";
 import type { PlatformAuthPosture } from "@/app/api/platform/security-ops/auth-posture/route";
 import type { PlatformAuditResponse } from "@/app/api/platform/security-ops/audit/route";
 import type { OperatorActionsResponse } from "@/app/api/platform/security-ops/operator-actions/route";
@@ -55,12 +55,33 @@ import {
   pulseReading,
   tripsReading,
   type Fetched,
+  type Reading,
 } from "./security-posture-view";
 import { ReadingStat, SourceGate } from "./SecurityPostureParts";
 import { AnomalyTripsGroup } from "./SecAnomaliesWidget";
 import { EndUserAuthGroup } from "./SecAuditFeedWidget";
 import { OperatorActionsGroup } from "./SecOperatorActionsWidget";
 import { SessionsGroup } from "./SecSessionsWidget";
+
+// ── OBS-009 · platform access refusals ───────────────────────────────────────
+//
+// `requirePlatformAccess` refusals are recorded as SECURITY_ANOMALY_DETECTED
+// trips of type "platform_access_denied" (lib/platform/ops/access-denied.ts:
+// one per user × area per hour). They ride the anomalies route the surface
+// already reads, so the reading below is a COUNT OVER THE ROUTE'S NEWEST PAGE —
+// a floor, labelled as one — never a new query and never a verdict.
+
+export const ACCESS_DENIED_TRIP_TYPE = "platform_access_denied";
+
+export function accessDenialsReading(trips: readonly AnomalyTrip[]): Reading {
+  const denials = trips.filter((t) => t.type === ACCESS_DENIED_TRIP_TYPE);
+  return {
+    label: "Platform access refused · newest page",
+    value: String(denials.length),
+    qualifier: denials.length === 0 ? "no refusal in the route's newest trips" : "one trip per user × area per hour · a floor, not a total",
+    derivation: "COUNT(trips of type platform_access_denied) in the anomalies route's newest page — a 403 from requirePlatformAccess, recorded rate-limited and off the request path",
+  };
+}
 
 // ── Layout pieces ─────────────────────────────────────────────────────────────
 
@@ -104,6 +125,7 @@ export function SecurityPostureSurface({ sources, nowMs }: { sources: SecurityPo
               <>
                 <ReadingStat r={pulseReading(a.summary)} />
                 <ReadingStat r={tripsReading(a.summary)} />
+                <ReadingStat r={accessDenialsReading(a.trips)} />
               </>
             )}
           </SourceGate>

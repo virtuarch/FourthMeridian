@@ -40,7 +40,7 @@ export function OpsApiUsageWidget({ section }: { section: PlatformSection }) {
                 <li key={p.provider} className="flex items-center justify-between gap-2 text-xs">
                   <span className="font-medium text-[var(--text-primary)]">{p.provider}</span>
                   <span className="text-[var(--text-secondary)] tabular-nums">
-                    {fmt(p.callsToday)} today · {fmt(p.calls7d)} · 7d {fmt(p.calls30d)} · 30d calls
+                    {fmt(p.callsToday)} today · {fmt(p.calls7d)} 7d · {fmt(p.calls30d)} 30d calls
                   </span>
                 </li>
               ))}

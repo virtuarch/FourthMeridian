@@ -48,7 +48,9 @@ export function OpsCostWidget({ section }: { section: PlatformSection }) {
             <KeyRow
               label={m.label}
               value={fmt(m.value, m.unit) === null
-                ? <Unavailable reason={m.tier === "unknown" ? "not observed" : m.tier} />
+                // UI-011 — an unknown tier is not an unobserved one: the authority
+                // states WHERE the number lives (its provenance), so say that.
+                ? <Unavailable reason={m.tier === "unknown" ? m.provenance : m.tier} />
                 : <span className="tabular-nums">{fmt(m.value, m.unit)} <span className="text-[10px] text-[var(--text-faint)]">· {m.tier}</span></span>}
             />
           </div>
