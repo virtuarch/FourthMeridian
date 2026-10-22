@@ -728,7 +728,15 @@ console.log('13f. clip 5 — temporal identity');
 console.log('13g. corpus span — the result declares the boundary of its own authority');
 {
   const src = code(readToolsSource(ROOT));
-  const gt = src.slice(src.indexOf("name: 'get_transactions'"), src.indexOf("// ── 4. Income"));
+  // CQ-011: the old end anchor was a COMMENT (`// ── 4. Income`), which `code()`
+  // strips — so this slice always ran from get_transactions to the end of the
+  // file. Once the read-window helper became a module of its own that reading
+  // counted its declaration as a call. The slice now ends at the next tool in the
+  // original order (get_income), or at the end of the layer when that tool sits
+  // earlier in the scan order.
+  const gtStart = src.indexOf("name: 'get_transactions'");
+  const gtEnd = src.indexOf("name: 'get_income'", gtStart);
+  const gt = src.slice(gtStart, gtEnd < 0 ? undefined : gtEnd);
 
   // WHAT WAS SEARCHED vs WHAT THERE WAS TO SEARCH. The 2×2 (bb2f6ec) measured
   // 28/28 windowed searches, every window genuinely empty, and 11/18 negatives

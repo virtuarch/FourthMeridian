@@ -32,11 +32,9 @@
  * reset removed.
  */
 
-import { getAssembler } from '@/lib/ai/assembler-registry';
 import {
-  FinanceDomains,
-  type AccountsSectionData, type TransactionsSummaryData, type AccountSummaryItem, type MonthlyBreakdownEntry,
-  type HoldingsSummaryData, type SpaceContext_AI,
+  FinanceDomains, type AccountsSectionData, type TransactionsSummaryData, type AccountSummaryItem,
+  type MonthlyBreakdownEntry, type HoldingsSummaryData,
 } from '@/lib/ai/types';
 import { composeInvestments } from '@/lib/ai/economic-concepts';
 import {
@@ -44,10 +42,9 @@ import {
 } from '@/lib/data/transaction-query';
 import { readCanonicalSpending, type CanonicalSpendingBaseline } from '@/lib/transactions/canonical-spending';
 import { transactionAccountPopulation } from '@/lib/data/transaction-population';
-import { MAX_TRANSACTION_PAGE_SIZE, type TransactionQuery } from '@/lib/data/transaction-query-core';
+import type { TransactionQuery } from '@/lib/data/transaction-query-core';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { scrubDescriptor } from '@/lib/ai/privacy/scrub';
-import type { Transaction } from '@/types';
 import { getRecentSnapshots } from '@/lib/data/snapshots';
 import { projectSnapshotSection } from '@/lib/ai/assemblers/snapshot';
 import type { Snapshot } from '@/types';
@@ -61,52 +58,31 @@ import { resolveExplorationNode } from '@/lib/history/exploration';
 import {
   observedChange, findObservation, NEEDS_THRESHOLD, type TemporalOperation,
 } from '@/lib/data/snapshot-window';
+import { loadForecastIncomeStreams } from '@/lib/ai/forecast/streams';
 import {
-  loadForecastIncomeStreams, type IncomeTransactionReader, type AccountTypeReader, type ResolvedIncomeStream,
-} from '@/lib/ai/forecast/streams';
-import {
-  assembleForecast, projectInterval, monthlyRateAt,
-  type ModelledInterestExclusion, type SpendingChangeOutcome, type SpendingChangeRule,
+  projectInterval, monthlyRateAt, type ModelledInterestExclusion, type SpendingChangeOutcome,
+  type SpendingChangeRule,
 } from '@/lib/ai/forecast/assemble';
 import { SCENARIO_INPUTS, NOT_AN_ASSUMPTION, scenarioAssumptionKeys } from './scenario-inputs';
-import {
-  mergeIntoArgs, stagePlan, argumentFiguresStated, type Attribution, type PlanSlot,
-} from './pending-plan';
-import {
-  type IncomeChangeOpKind, type IncomeChangeResult, type IncomeChangeRule,
-  type RatePeriodKind,
+import { mergeIntoArgs, stagePlan, type Attribution } from './pending-plan';
+import type {
+  IncomeChangeOpKind, IncomeChangeResult, IncomeChangeRule, RatePeriodKind,
 } from '@/lib/forecast/income-change';
 import { resolvePayDates, PayDateAsk } from '@/lib/ai/forecast/pay-dates';
-// ⚠️ NOTHING HERE IMPORTS lib/forecast/** DIRECTLY, AND A GUARD ENFORCES IT.
-// FORECAST-6/8/9 each carry a "consumed only through the sanctioned adapter"
-// test, and this harness is production code to those tests. `assembleForecast`
-// re-exports the vocabulary its own callers need, which is the seam working as
-// designed — the first draft reached past it for `explainForecast` and three
-// suites failed, correctly.
-import {
-  AssumptionOrigin, PeriodBasis, StatementMode,
-  type AssembledForecast, type ForecastHorizon, type UserStatement,
-} from './forecast-vocabulary';
 import { applyInvestmentScenario, type ScenarioComponent } from './scenario';
 import {
   findScenarioCrossing, elapsedBetween, metricAt, type CrossingDirection, type LedgerMetric,
 } from './scenario-crossing';
 import {
-  monthEndsBetween,
-  runScenarioLedger, expandContributions, solveForTarget,
-  returnHorizon, returnRepresentation, annualizedFromPeriodPct, periodFromAnnualizedPct, monthEndOccurrences,
-  ORIGIN, type Origin,
-  type SolveBound,
-  type ContributionSpec, type LedgerCheckpoint, type LedgerResult,
-  type PlannedMovement, type ReturnPeriod, type SpinePoint,
-  type LiabilityLine, type AllocationTarget,
+  monthEndsBetween, runScenarioLedger, expandContributions, solveForTarget, returnHorizon,
+  returnRepresentation, annualizedFromPeriodPct, periodFromAnnualizedPct, monthEndOccurrences, ORIGIN,
+  type Origin, type SolveBound, type ContributionSpec, type LedgerCheckpoint, type LedgerResult,
+  type PlannedMovement, type ReturnPeriod, type SpinePoint, type LiabilityLine, type AllocationTarget,
 } from './scenario-ledger';
 import {
   clausesInForce, contributionName, outflowName, unknownContributionKeys, isAllocationTargetWord,
-  refuseUnknownArguments, refuseUnknownItemKeys, notAppliedEcho, boundedLabel,
-  type RefusedInput,
+  refuseUnknownArguments, refuseUnknownItemKeys, notAppliedEcho, boundedLabel, type RefusedInput,
 } from './scenario-rules';
-import type { SpaceContext } from '@/lib/space';
 // ⚠️ THE ONE WRITE PATH, IMPORTED RATHER THAN INLINED. Keeping the memory tools
 // in their own module is what lets THIS file keep an exact "no Prisma client,
 // no write op" scan while `memory-tools.ts` gets its own, equally exact, "may
@@ -115,6 +91,67 @@ import type { SpaceContext } from '@/lib/space';
 import { MEMORY_TOOLS } from './memory-tools';
 import { describeFourthMeridian } from './product';
 import { liquidityAccess, LIQUIDITY_ACCESS_MEANING, type LiquidityAccess } from '@/lib/account-classifier';
+// ⚠️ READING memory, never writing it. `recallMemories` is the store's read half;
+// the write half lives in the turn loop (slice 7) and in `remember`. This file
+// still holds no Prisma client, which a test asserts.
+import { recallMemories, MemoryKind } from './memory-store';
+/**
+ * RLS-AI-S0 — THE ABSENCE CONTRACT. Value imports, and deliberately: the oracle is
+ * a CAPABILITY derived from `ctx.readClient`, not a client, so this file still
+ * holds no Prisma client and the source scans that assert it still pass.
+ */
+import {
+  adjudicateAbsence, adjudicateMemoryAbsence, indeterminateSentence as indeterminateFor, EvidenceState,
+  type AbsenceVerdict,
+} from '@/lib/ai/absence';
+import {
+  readCheckpoint, compareToStatement, diffBasis, attributeInFlightVariance, attributionSideFromCheckpoint,
+} from './reconcile';
+import {
+  incomeCompleteness, isOmittedLine, continuationOf, type IncomeCompleteness,
+} from '@/lib/ai/forecast/income-completeness';
+// ── M1: measures & comparison ────────────────────────────────────────────────
+// ⚠️ THE ARITHMETIC LIVES IN `lib/ai/measures`, NOT HERE. Period resolution, the
+// measure, the comparison, the baselines and every derived figure are pure
+// functions over the monthly rows the ONE economic fold already produced. The two
+// heads below resolve arguments, perform the reads, and hand the rows over.
+import {
+  parsePeriodSpec, parseCompareToSpec, resolvePeriod, resolveCompareTo, completeMonthsPeriod,
+  type ResolvedPeriod,
+} from '@/lib/ai/measures/period';
+import {
+  measure, compare, FLOW_MEASURES, type FlowMeasure, type MonthRow, type DataCoverage, type Tier,
+} from '@/lib/ai/measures/measure';
+import {
+  resolveExpenseBaselineFromEvidence, resolveIncomeBaseline, derive, economicSpendingOf,
+  resolveMonthsOfExpensesFloor, type FloorDerivation,
+} from '@/lib/ai/measures/baseline';
+import { incomeStreamEvidence } from '@/lib/ai/forecast/income-evidence';
+import { computeDebtAggregate } from '@/lib/debt/aggregates';
+import {
+  planCheckpoints, compactMovements, compactExcludedEvents, describePlan, yearEndsBetween, CADENCES,
+  type Cadence, type CheckpointPlan,
+} from './scenario-checkpoints';
+import { positionChange, openingPosition, checkpointPosition } from './scenario-change';
+import type { ToolContext, ToolDefinition } from './tools/types';
+import { obj, str, num } from './tools/shared/schema';
+import {
+  round2, isoDay, addYearsISO, SNAPSHOT_READ_ROWS, MAX_DAILY_POINTS, clampToCeiling, daysAgoISO,
+} from './tools/shared/values';
+import { readWindowToExhaustion } from './tools/shared/read-window';
+import { absentIn, assemble } from './tools/shared/reads';
+import { historicalSnapshot } from './tools/shared/historical-snapshot';
+import { buildCashSpine } from './tools/shared/cash-spine';
+import { originOf } from './tools/shared/origin';
+
+/**
+ * CQ-011 — every name this module exported before the split, re-exported from the
+ * module that now holds it. Callers keep importing `@/lib/ai/conversation/tools`.
+ */
+export type { CashSpineReads, ToolContext, ToolDefinition } from './tools/types';
+export { clampToCeiling } from './tools/shared/values';
+export type { TransactionPager } from './tools/shared/read-window';
+export { readWindowToExhaustion } from './tools/shared/read-window';
 
 /**
  * The liquidity authority's per-account verdict, projected beside each account so
@@ -129,247 +166,6 @@ function accessOf(a: { type: string; providerSubtype?: string | null }): { acces
   const v = liquidityAccess(a);
   return v ? { access: v } : {};
 }
-import type { TurnEvidence } from './memory-model';
-// ⚠️ READING memory, never writing it. `recallMemories` is the store's read half;
-// the write half lives in the turn loop (slice 7) and in `remember`. This file
-// still holds no Prisma client, which a test asserts.
-import { recallMemories, MemoryKind, type MemoryClient } from './memory-store';
-/**
- * RLS-C-S3 — a TYPE-ONLY import. This file still holds no Prisma client (the
- * source scan in lib/ai/measures/measures.test.ts and its siblings depend on that),
- * and `import type` erases at compile, so the authority arrives on `ToolContext`
- * and nowhere else.
- */
-import type { ReadClient } from '@/lib/db/tenant-context';
-import type { AiPhaseRunner } from '@/lib/ai/tenant-phase';
-/**
- * RLS-AI-S0 — THE ABSENCE CONTRACT. Value imports, and deliberately: the oracle is
- * a CAPABILITY derived from `ctx.readClient`, not a client, so this file still
- * holds no Prisma client and the source scans that assert it still pass.
- */
-import {
-  absent, adjudicateAbsence, adjudicateMemoryAbsence, indeterminateSentence as indeterminateFor,
-  EvidenceState, type AbsenceVerdict,
-} from '@/lib/ai/absence';
-import {
-  readCheckpoint, compareToStatement, diffBasis, attributeInFlightVariance, attributionSideFromCheckpoint,
-} from './reconcile';
-import { incomeCompleteness, isOmittedLine, continuationOf, type IncomeCompleteness } from '@/lib/ai/forecast/income-completeness';
-// ── M1: measures & comparison ────────────────────────────────────────────────
-// ⚠️ THE ARITHMETIC LIVES IN `lib/ai/measures`, NOT HERE. Period resolution, the
-// measure, the comparison, the baselines and every derived figure are pure
-// functions over the monthly rows the ONE economic fold already produced. The two
-// heads below resolve arguments, perform the reads, and hand the rows over.
-import {
-  parsePeriodSpec, parseCompareToSpec, resolvePeriod, resolveCompareTo, completeMonthsPeriod,
-  type ResolvedPeriod,
-} from '@/lib/ai/measures/period';
-import {
-  measure, compare, FLOW_MEASURES,
-  type FlowMeasure, type MonthRow, type DataCoverage, type Tier,
-} from '@/lib/ai/measures/measure';
-import {
-  resolveExpenseBaselineFromEvidence, resolveIncomeBaseline, derive, economicSpendingOf,
-  resolveMonthsOfExpensesFloor, type FloorDerivation,
-} from '@/lib/ai/measures/baseline';
-import { incomeStreamEvidence } from '@/lib/ai/forecast/income-evidence';
-import { computeDebtAggregate } from '@/lib/debt/aggregates';
-
-// ── The tool contract ────────────────────────────────────────────────────────
-
-/**
- * FM-AUDIT-010 — the authority reads the cash spine makes, as one seam.
- *
- * ⚠️ PRODUCTION LEAVES THIS UNSET, and the database authorities are used. It
- * exists so a CI test can drive the REAL scenario path — argument merging, the
- * derived floor, liability lines, income rules, the spine, the ledger, the solve —
- * on fixture DATA: the seam is the data boundary, and nothing downstream of it is
- * stubbed. The income page is still resolved by the real stream resolver; the
- * transactions summary is still whatever the real monthly fold produced.
- */
-export interface CashSpineReads {
-  incomeTransactions: IncomeTransactionReader;
-  incomeAccountTypes: AccountTypeReader;
-  accounts: () => Promise<AccountsSectionData | null>;
-  transactionsSummary: () => Promise<TransactionsSummaryData | null>;
-}
-
-export interface ToolContext {
-  spaceCtx: SpaceContext;
-  spaceId:  string;
-  /**
-   * RLS slice A — THE DATABASE AUTHORITY MEMORY RUNS UNDER, and the only client
-   * anything in the tool layer is given.
-   *
-   * ⚠️ REQUIRED, AND DELIBERATELY NOT DEFAULTED. This file holds no Prisma client
-   * (a source scan asserts it), so a context that omitted this would have nothing
-   * to fall back to — which is the point: every caller that opens a transcript
-   * states the authority its memory reads and writes execute under, and
-   * TypeScript names the ones that forget. It is narrowed to `spaceMemory`, so it
-   * cannot be used to reach a financial table from here even by accident.
-   */
-  memoryClient: MemoryClient;
-  /**
-   * RLS-C-S3 — THE DATABASE AUTHORITY EVERY FINANCIAL READ IN THIS FILE RUNS
-   * UNDER, stated by whoever opened the transcript.
-   *
-   * ⚠️ REQUIRED, AND DELIBERATELY NOT DEFAULTED, for the same reason
-   * `memoryClient` is: this file holds no Prisma client of its own (a source scan
-   * asserts it), so a context that omitted this would have nothing to fall back
-   * on — and TypeScript names the callers that forget.
-   *
-   * ⚠️ IT IS THE MIGRATION PRINCIPAL TODAY, ON PURPOSE AND NOT BY OVERSIGHT. The
-   * twenty tools below read ten tables, every one of which is granted to `fm_app`,
-   * so an RLS refusal on this surface cannot fail loudly: it arrives as an EMPTY
-   * SET, and this surface turns empty sets into declarative English for a model
-   * ("no dated transactions are available for this Space"). Flipping the authority
-   * before an absence contract exists would convert a refusal into a confident
-   * false statement to the user. Separately, a chat turn makes up to six model
-   * calls, so a tenant transaction cannot span one. The MECHANISM is in place; the
-   * authority moves in a later slice. See docs/plans/RLS-SILENT-REFUSAL-CAS.md.
-   *
-   * Narrower than `memoryClient` in intent and wider in type: `ReadClient` has no
-   * `$transaction`, so no tool can open a transaction of its own.
-   */
-  readClient: ReadClient;
-  /**
-   * RLS-AI-S2 — THE PHASE RUNNER, when the surface that opened this transcript has
-   * an authenticated session to bind.
-   *
-   * ⚠️ OPTIONAL, AND THE OPTIONALITY IS THE MIGRATION PATH, NOT AN ESCAPE. Absent
-   * means every read runs on `readClient` exactly as it did before this field
-   * existed — which is what the dogfood harnesses and batch runners need, since
-   * they read a CLONE as the migration principal and have no session at all. When
-   * present, the DISPATCHER (`turn.ts`) opens one short tenant transaction per tool
-   * call and hands the tool a context whose `readClient` and `memoryClient` are
-   * that transaction. No tool body knows about it; that is the point.
-   *
-   * ⚠️ IT CARRIES AN IDENTITY AND A MODEL CANNOT REACH IT. There is no tool
-   * argument, no JSON-schema field and no transcript channel through which this
-   * could be set: it is constructed where the session is, from `requireUser()`.
-   */
-  phase?: AiPhaseRunner;
-  /** Test seam only — see CashSpineReads. Unset in production. */
-  cashSpineReads?: CashSpineReads;
-  /**
-   * FM-AUDIT-019 — durable memory writes (`remember`, the projection checkpoint)
-   * happen ONLY when this is exactly `true`: the product chat route, or a harness
-   * explicitly opted in against a clone (memory-write-policy.ts). Absent = no writes.
-   */
-  memoryWrites?: boolean;
-  /** The clock for the whole run, so two tools can never disagree about today. */
-  asOfISO:  string;
-  /**
-   * Who said what in this turn — set by the turn loop, read ONLY by `remember`'s
-   * provenance gate. Optional and harness-safe: a context built without it still
-   * runs every tool, and a memory write carrying money then fails closed. It is
-   * never sent to the model and no financial tool reads it.
-   */
-  turn?:    TurnEvidence;
-  /**
-   * The conditions staged in this conversation and not yet run — written only by
-   * `stage_assumptions`, read only by the scenario tools, which merge it into the
-   * arguments they execute. Absent in a context built without it (every harness
-   * that predates it): nothing is merged, and behaviour is exactly as before.
-   */
-  plan?:    PlanSlot;
-}
-
-export interface ToolDefinition {
-  name:        string;
-  description: string;
-  /** JSON Schema for the arguments. Kept small — a model reads these every turn. */
-  parameters:  Record<string, unknown>;
-  run:         (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>;
-}
-
-const obj = (props: Record<string, unknown>, required: string[] = []) =>
-  ({ type: 'object', properties: props, required, additionalProperties: false });
-const str = (description: string) => ({ type: 'string', description });
-const num = (description: string) => ({ type: 'number', description });
-
-const round2 = (n: number) => Math.round(n * 100) / 100;
-/** A Date back to the calendar day it represents. UTC, like every date in this layer. */
-const isoDay = (d: Date) => d.toISOString().slice(0, 10);
-/** The same calendar day, N years on. Clamps 29 February the way a calendar does. */
-const addYearsISO = (iso: string, years: number): string => {
-  const d = new Date(`${iso}T00:00:00.000Z`);
-  const target = new Date(Date.UTC(d.getUTCFullYear() + years, d.getUTCMonth(), d.getUTCDate()));
-  return target.getUTCMonth() === d.getUTCMonth() ? target.toISOString().slice(0, 10)
-    : new Date(Date.UTC(d.getUTCFullYear() + years, d.getUTCMonth() + 1, 0))
-      .toISOString().slice(0, 10);
-};
-/** The bound `lib/history/exploration` uses. Enough for all-time on this corpus. */
-const SNAPSHOT_READ_ROWS = 1100;
-/** Ceiling on a DAILY series, so one call cannot return a year of rows by accident. */
-const MAX_DAILY_POINTS = 200;
-/**
- * Read a bounded window to EXHAUSTION through the canonical keyset cursor.
- *
- * ⚠️ RANKING NEEDS THE WHOLE POPULATION, NOT A PAGE. `sort: 'largest'` used to rank
- * the newest 100 matching rows and present the winner as "your biggest" — on a
- * 173-row month that silently answered from 58% of the data. Raising 100 to some
- * other number would only move the cliff to 201 or 501; the fix is to page until
- * the seam says `hasMore: false`, which is the mechanism the read authority
- * already provides.
- *
- * ⚠️ THE CEILING IS THE REPOSITORY'S OWN, AND IT FAILS LOUDLY. `TRANSACTION_FETCH_LIMIT`
- * is the same 5,000-row guard the transactions assembler applies to the same
- * population, so a ranking and the summary beside it can never disagree about what
- * "all of them" covered. Hitting it returns `complete: false`, which the caller
- * turns into a stated caveat — it is never absorbed.
- *
- * Terminates on three conditions: the seam reports no more, the ceiling is reached,
- * or a page fails to advance the cursor (a defensive stop, never expected).
- */
-/**
- * The read, injectable.
- *
- * ⚠️ INJECTED ONLY SO TERMINATION CAN BE TESTED WITHOUT A DATABASE — the same
- * idiom `lib/ai/forecast/streams.ts` uses for its own bounded read. The three
- * ways this loop can end (exhausted, ceiling, non-advancing cursor) are exactly
- * the parts worth a test, and two of them cannot be reached with real data.
- */
-export type TransactionPager = typeof queryTransactions;
-
-export async function readWindowToExhaustion(
-  /** RLS-C-S3 — the authority every page of the walk runs on. Required, leading. */
-  client: ReadClient,
-  spaceId: string, query: Omit<TransactionQuery, 'cursor' | 'limit'>,
-  read: TransactionPager = queryTransactions,
-): Promise<{ rows: Transaction[]; complete: boolean; pages: number }> {
-  const rows: Transaction[] = [];
-  let cursor: TransactionQuery['cursor'];
-  let pages = 0;
-
-  for (;;) {
-    const page = await read(client, {
-      spaceId, query: { ...query, limit: MAX_TRANSACTION_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
-    });
-    pages++;
-    rows.push(...page.rows);
-    if (!page.hasMore || !page.nextCursor) return { rows, complete: true, pages };
-    if (page.rows.length === 0) return { rows, complete: true, pages };
-    if (rows.length >= TRANSACTION_FETCH_LIMIT) return { rows, complete: false, pages };
-    const advanced = !cursor
-      || cursor.lastId !== page.nextCursor.lastId
-      || cursor.lastDate !== page.nextCursor.lastDate;
-    if (!advanced) return { rows, complete: false, pages };
-    cursor = page.nextCursor;
-  }
-}
-/**
- * An information ceiling, applied.
- *
- * ⚠️ A CEILING IS NOT A DEFAULT — it OVERRIDES a later explicit bound. "Act as if
- * you know nothing after Jan 1" must hold even when the same call also asks for a
- * window ending in September, because a model that resolves the window first and
- * the cutoff second leaks the future without ever noticing.
- */
-export const clampToCeiling = (date: string, ceiling: string) => (date > ceiling ? ceiling : date);
-
-const daysAgoISO = (asOf: string, n: number) =>
-  new Date(Date.parse(`${asOf}T00:00:00.000Z`) - n * 86_400_000).toISOString().slice(0, 10);
 
 /**
  * ⚠️ RE-EXPORTED, NOT REIMPLEMENTED. The month-end grid moved into
@@ -377,122 +173,9 @@ const daysAgoISO = (asOf: string, n: number) =>
  * caller here is unmoved and there is still exactly one implementation.
  */
 export { monthEndsBetween };
-import {
-  planCheckpoints, compactMovements, compactExcludedEvents, describePlan, yearEndsBetween,
-  CADENCES, type Cadence, type CheckpointPlan,
-} from './scenario-checkpoints';
 export { yearEndsBetween };
-import { positionChange, openingPosition, checkpointPosition } from './scenario-change';
-
-/**
- * RLS-AI-S0 — AN EMPTY AUTHORITATIVE READ, ADJUDICATED.
- *
- * ⚠️ EVERY DECLARATIVE ABSENCE IN THIS FILE GOES THROUGH HERE, which is the point:
- * one helper means the next tool somebody writes cannot assert an absence without
- * also establishing it. `proven` is the sentence for a Space that genuinely holds
- * nothing; `subject` is a NOUN PHRASE from which the indeterminate sentence is
- * derived — a caller cannot write prose into the indeterminate branch.
- *
- * ⚠️ IT COSTS NOTHING ON THE SUCCESS PATH. It is called only where a read already
- * came back empty, and `adjudicateAbsence` issues at most ONE indexed probe per
- * client per Space (see lib/ai/absence.ts), so a six-hop turn that happens to find
- * three empty domains pays one query, not three.
- */
-const absentIn = (
-  ctx: ToolContext, proven: string, subject: string, extra: Record<string, unknown> = {},
-) => absent(ctx.readClient, ctx.spaceId, { proven, subject }, extra);
-
-async function assemble<T>(
-  domain: string, ctx: ToolContext, options: Record<string, unknown> = {},
-): Promise<T | null> {
-  const a = getAssembler(domain);
-  if (!a) return null;
-  // ⚠️ RLS-AI-S6 — THE TOOL'S OWN READ AUTHORITY, PASSED DOWN. Inside a phase this
-  // is the tenant transaction the dispatcher opened; outside one it is whatever the
-  // surface stated. Either way the assembler no longer picks: before this slice a
-  // tool running as the tenant still assembled its domain as the migration
-  // principal, which is a split authority inside a SINGLE tool call.
-  const section = await a(ctx.readClient, ctx.spaceCtx, { scopeHint: 'full', ...options } as never);
-  return (section?.data as T) ?? null;
-}
 
 // ── 1. Snapshot ──────────────────────────────────────────────────────────────
-
-/**
- * The historical position on a date, composed from authorities that already exist.
- *
- * ⚠️ THREE AUTHORITIES, ZERO ARITHMETIC HERE. `projectSnapshotSection` supplies the
- * totals AND the crypto-coverage refusal; the exploration tree supplies the
- * account-level breakdown of each bucket. Nothing in this function adds two money
- * numbers together — `liquid`, `checking` and `savings` each come from a
- * different authority that already computed them, which is exactly why they can
- * be reported side by side without one being mistaken for another.
- */
-async function historicalSnapshot(ctx: ToolContext, asOf: string) {
-  const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
-  const section = projectSnapshotSection(rows as Snapshot[], 'full');
-  if (!section) {
-    return absentIn(ctx, 'no usable snapshot history for this Space', 'any usable snapshot history');
-  }
-
-  // The latest observation ON OR BEFORE the requested date. A date with no
-  // observation reports the one it actually used rather than interpolating.
-  const point = [...section.history].reverse().find((p) => p.date <= asOf);
-  if (!point) {
-    return { unavailable: `no snapshot on or before ${asOf}`,
-      historyAvailableFrom: section.oldestDate, historyAvailableTo: section.newestDate };
-  }
-
-  const BUCKETS = ['cash', 'savings', 'investments', 'crypto', 'debt'] as const;
-  const nodes = await Promise.all(BUCKETS.map((lens) => resolveExplorationNode(ctx.readClient, {
-    spaceId: ctx.spaceId, lens, nodeType: 'lens', nodeId: null,
-    dateISO: point.date, fromISO: point.date, toISO: point.date,
-  })));
-
-  return {
-    asOf, basis: 'HISTORICAL_SNAPSHOT',
-    observedOn: point.date,
-    ...(point.date !== asOf
-      ? { note: `No observation on ${asOf}; using the latest on or before it.` } : {}),
-    netWorth: point.netWorth, totalAssets: point.totalAssets,
-    /** Checking + savings — the spendable total. */
-    liquid: point.liquid,
-    /** Checking only. The `cash` lens covers exactly this. */
-    checking: point.cashOnHand,
-    investments: point.investments, digitalAssets: point.digitalAssets,
-    debt: point.liabilities,
-    coverage: {
-      netWorthAssertable: point.netWorth !== null,
-      ...(point.digitalAssetsUnavailableReason
-        ? { unassertableBecause: point.digitalAssetsUnavailableReason,
-            note: 'netWorth, totalAssets and digitalAssets are null because a component '
-              + 'could not be valued on that date. They are NOT zero and NOT measured.' }
-        : {}),
-      // RWA-2B — a fact in the data: on this date the real-asset part of
-      // netWorth / totalAssets is a straight-line model between two of the
-      // user's dated estimates for a manual asset, not an observed value.
-      ...(point.realAssetsModeled
-        ? { realAssetsModeled: true,
-            realAssetsNote: 'The real-asset component of netWorth and totalAssets on this date is MODELED '
-              + '(a straight line between two of the user\'s dated estimates for a manual asset), '
-              + 'not observed. Describe it as modeled or estimated, never as observed.' }
-        : {}),
-      historyAvailableFrom: section.oldestDate, historyAvailableTo: section.newestDate,
-    },
-    buckets: BUCKETS.map((lens, i) => {
-      const n = nodes[i].node;
-      return {
-        bucket: lens, value: n?.displayedValue ?? null,
-        assertable: n?.assertable ?? false,
-        ...(n?.unavailableReason ? { unavailableReason: n.unavailableReason } : {}),
-        // A bucket whose components do not sum to its value says so, rather than
-        // presenting a partial breakdown as complete.
-        explainedByAccounts: n?.explainedValue ?? null,
-        accounts: (n?.components ?? []).map((c) => ({ name: c.label, value: c.displayedValue })),
-      };
-    }),
-  };
-}
 
 const getFinancialSnapshot: ToolDefinition = {
   name: 'get_financial_snapshot',
@@ -1883,202 +1566,6 @@ const explainNetWorthComposition: ToolDefinition = {
   },
 };
 
-/**
- * THE CASH SPINE — everything `project_cash` needs to answer, factored out so a
- * second tool cannot grow a second copy of it.
- *
- * ⚠️ ONE SPINE, TWO TOOLS, ONE SET OF NUMBERS. `scenario_projection` layers
- * stated contributions and returns over exactly these checkpoints. If it loaded
- * its own streams, its own accounts or its own spending window, the two tools
- * would eventually disagree about the same month — and the user would be told
- * both figures in the same conversation. The invariant that the last checkpoint
- * equals a standalone run holds because there is only ever one `runTo`.
- *
- * ⚠️ A RETROSPECTIVE RUN MUST START FROM THE BALANCE THAT WAS TRUE THEN, and
- * must not see a transaction dated after the cutoff. Opening cash comes from the
- * snapshot authority for that date, income cadence from the streams authority AT
- * that date (which reconstructs the then-current employer), and the spending
- * window is bounded by it. Anything else quietly projects the past using the
- * future.
- */
-interface CashSpine {
-  asOf:          string;
-  retrospective: boolean;
-  openingBasis:  string;
-  /** The accounts payload the projection opened from. Null for a refused build. */
-  accounts:      AccountsSectionData | null;
-  /**
-   * One forecast to `end`. `extraSpendingChanges` are appended to the spine's own
-   * spending rules for this run only — how a solver varies spending (S1-7): as a
-   * RULE the scenario's other rules compose with, never a replacement level that
-   * would silently drop them.
-   */
-  runTo:         (end: string,
-                  extraSpendingChanges?: readonly SpendingChangeRule[]) => AssembledForecast;
-  /** The canonical spending baseline the observed rate averages — its months, count and basis. */
-  spendingBaseline: CanonicalSpendingBaseline;
-  /** The income streams every run folds — so a result can say, per stream, what reached its income term. */
-  streams:       readonly ResolvedIncomeStream[];
-}
-
-async function buildCashSpine(
-  ctx: ToolContext,
-  opts: {
-    asOf: string; assumedMonthlySpending?: number;
-    /**
-     * I1 — dated income rules, baked into the closure so EVERY spine point sees
-     * them.
-     *
-     * ⚠️ THIS IS WHY I1 REACHES THE FLOOR, THE DEBT WATERFALL AND THE CROSSINGS
-     * WITHOUT TOUCHING ANY OF THEM. `spineFor` calls `runTo` once per date; a
-     * rule inside the closure changes the cash at every one of those dates, and
-     * the ledger reads nothing but that cash. A rule applied anywhere else would
-     * have had to be applied to each consumer separately, and the first one
-     * forgotten would answer a different question in the same conversation.
-     */
-    incomeChanges?: readonly IncomeChangeRule[];
-    /**
-     * S1-N1 — which liabilities' interest the caller's ledger accrues, decided from
-     * the SAME accounts payload this spine opens from. Only the scenario ledger
-     * passes it; `project_cash` has no liability model and keeps every cost flow.
-     */
-    interestModelledOn?: (accounts: AccountsSectionData) => string[];
-    /**
-     * S1 — dated spending rules, categories already resolved, baked into the closure
-     * for the same reason I1's are: every spine point — each checkpoint, share date,
-     * crossing step and solve evaluation — spends at the rate they leave, so the
-     * floor, the waterfall and the crossings inherit them without knowing they exist.
-     */
-    spendingChanges?: readonly SpendingChangeRule[];
-  },
-): Promise<CashSpine | { unavailable: string; asOf: string }> {
-  const asOf = opts.asOf;
-  const retrospective = asOf < ctx.asOfISO;
-
-  const reads = ctx.cashSpineReads;
-  const [streams, accounts, canonical] = await Promise.all([
-    loadForecastIncomeStreams(ctx.readClient, ctx.spaceId, asOf, reads?.incomeTransactions, reads?.incomeAccountTypes),
-    reads ? reads.accounts() : assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
-    // ⚠️ THE ONE LINE THAT MADE THIS TOOL WORK. PROJECTION-1 derives its spending
-    // rate from `reliableMonths(transactionsDomain)`; with only the accounts
-    // domain in scope it sees zero months, cannot assert a rate, and returns
-    // `closing: null` — always, for every horizon. Measured before the fix:
-    // null / null. After: $38,243.50 to end-2026 and $128,827.54 to end-2027.
-    // Both models papered over the null by doing the arithmetic in prose, and
-    // one of them was $745.86 out.
-    //
-    // ⚠️ AND THE MONTHS ARE THE CANONICAL ONES, NOT THE WINDOW'S. This read the
-    // 90-day assessment window, whose reliable months were TWO on 356 days of
-    // 2026 — so `WINDOW_MONTHS = 3` was a cap that could not bind, and every
-    // scenario spent at Aug+Sep while the get_baselines 3-month measurement said
-    // Jul–Sep. The spine now reads exactly the trailing three complete months
-    // before `asOf` (lib/transactions/canonical-spending), a month with nothing
-    // recorded counting as zero; retrospective or not, the as-of date decides.
-    readCanonicalSpending({
-      asOf,
-      readWindow: async (w) => reads ? reads.transactionsSummary()
-        : assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx, { transactionWindow: w }),
-      // The seam's fixture summary IS the history it was given.
-      readHistory: async (at) => {
-        if (reads) {
-          const t = await reads.transactionsSummary();
-          return { from: t?.startDate ?? null, to: t?.endDate ?? null };
-        }
-        const span = await transactionCorpusSpan(ctx.readClient, { spaceId: ctx.spaceId, asOf: at });
-        return { from: span.from, to: span.to };
-      },
-    }),
-  ]);
-  // The forecast reads only the months; it is handed exactly the canonical ones.
-  const transactions = { monthlyBreakdown: canonical.months } as unknown as TransactionsSummaryData;
-
-  // ⚠️ A SOLVER VARIES SPENDING BY RULE, NOT BY STATEMENT (S1-7). `scenario_goal_seek`
-  // re-runs the projection at dozens of spending cuts; the expensive part is the three
-  // reads above, and `assembleForecast` itself is pure, so each run appends its rule
-  // to the closure's own (`runTo`'s second argument) rather than replacing the level.
-  // ⚠️ ONE DERIVATION OF THE WORDING, AND IT IS THE AMOUNT. See the note below.
-  const spendingStatement = (monthly: number): UserStatement[] => ([{
-    mode: StatementMode.ASSERTS_FACT,
-    statedAs: `assumed monthly spending ${monthly}`,
-    asOfISO: ctx.asOfISO,
-    subject: { kind: 'SPENDING_LEVEL', amount: monthly,
-      currency: 'USD', periodBasis: PeriodBasis.MONTHLY },
-  }]);
-  // ⚠️ THE WORDING IS DERIVED FROM THE NUMBER, NEVER SUPPLIED. This took a caller's
-  // `statedAs` verbatim, and `assembleForecast` quotes it into `appliedFacts` as the
-  // words for the SPENDING LEVEL it applied — so any sentence could ride into the
-  // applied channel attached to a figure it did not describe. Measured (1d67786):
-  // the model passed "user has a $15k net bonus on 2026-12-07 added on top of current
-  // pattern", the projection moved $10.43, and the result reported
-  // `spending baseline 4346.48 USD: "…$15k net bonus…"` — a $15,000 assumption
-  // presented as applied when it was discarded, and carried on into the durable
-  // checkpoint's `basis.userAssumptions`.
-  //
-  // Generating the sentence from the amount makes the fact self-describing: what it
-  // says and what it applied are the same value, by construction. There is no longer
-  // a channel through which uninterpreted prose can become an applied fact.
-  const statements: UserStatement[] = typeof opts.assumedMonthlySpending === 'number'
-    ? spendingStatement(opts.assumedMonthlySpending)
-    : [];
-
-  // For a retrospective run the accounts payload is rebuilt from the snapshot
-  // authority for that date — the CURRENT accounts domain would supply today's
-  // opening cash to a projection that starts nine months ago.
-  let openingAccounts: AccountsSectionData | null = accounts;
-  let openingBasis = 'CURRENT_ACCOUNTS';
-  if (retrospective) {
-    const snap = await historicalSnapshot(ctx, asOf) as Record<string, unknown>;
-    // ⚠️ THE STATE TRAVELS WITH THE SENTENCE. Forwarding only `unavailable` would
-    // strip the adjudication off exactly the refusal a projection is built on.
-    if (snap.unavailable) {
-      return { unavailable: snap.unavailable as string, asOf,
-        ...(snap.evidenceState ? { evidenceState: snap.evidenceState as AbsenceVerdict } : {}) };
-    }
-    openingAccounts = {
-      totalLiquid: snap.liquid as number,
-      totalLiabilities: snap.debt as number,
-      netWorth: (snap.netWorth as number | null) ?? 0,
-      totalAssets: (snap.totalAssets as number | null) ?? 0,
-      totalInvestments: (snap.investments as number | null) ?? 0,
-      totalDigitalAssets: (snap.digitalAssets as number | null) ?? 0,
-      counts: accounts?.counts ?? { liquid: 0, investments: 0, digitalAssets: 0,
-        realAssets: 0, liabilities: 0 },
-      redactedCount: 0, totalsUnconverted: false,
-    } as unknown as AccountsSectionData;
-    openingBasis = 'HISTORICAL_SNAPSHOT';
-  }
-
-  const interestModelledOn = opts.interestModelledOn && accounts && !retrospective
-    ? opts.interestModelledOn(accounts) : [];
-
-  const forecastCtx = {
-    space: { name: '', reportingCurrency: 'USD' },
-    domains: {
-      [FinanceDomains.ACCOUNTS]: { data: openingAccounts },
-      [FinanceDomains.TRANSACTIONS_SUMMARY]: { data: transactions },
-    },
-  } as unknown as SpaceContext_AI;
-
-  return {
-    asOf, retrospective, openingBasis, accounts: openingAccounts,
-    spendingBaseline: canonical.baseline,
-    streams,
-    runTo: (end: string, extraSpendingChanges?: readonly SpendingChangeRule[]) => {
-      const rules = [...(opts.spendingChanges ?? []), ...(extraSpendingChanges ?? [])];
-      return assembleForecast({
-        ctx: forecastCtx, streams, asOfISO: asOf,
-        statements,
-        ...(opts.incomeChanges && opts.incomeChanges.length > 0
-          ? { incomeChanges: opts.incomeChanges } : {}),
-        ...(interestModelledOn.length > 0 ? { interestModelledOn } : {}),
-        ...(rules.length > 0 ? { spendingChanges: rules } : {}),
-        horizon: { fromISO: asOf, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
-          statedAs: `through ${end}` } as unknown as ForecastHorizon,
-      });
-    },
-  };
-}
-
 // ── 8. Cash projection ───────────────────────────────────────────────────────
 
 // ── AI RELIABILITY (2026-10-16) — the income term, stated honestly ───────────
@@ -2147,7 +1634,6 @@ const BASIS_FIELD_MEANING = {
   incomeProjected: 'projected income counted to the horizon, in dollars',
   outflowsProjected: 'dated obligations inside the horizon, in dollars',
 } as const;
-
 
 /**
  * An interval of the projection, as the model reads it.
@@ -2598,11 +2084,6 @@ interface ScenarioOverrides {
 
 /** A spending level that came from the arguments (said by the user or supplied by the model), not observed. */
 const suppliedSpending = (source: string) => source === 'USER_STATED' || source === 'MODEL_SUPPLIED';
-
-/** USER_STATED when the user's own words license every figure in `a[key]`; MODEL_SUPPLIED otherwise. */
-function originOf(a: Record<string, unknown>, key: string, ctx: ToolContext): Origin {
-  return argumentFiguresStated(key, a[key], ctx.turn) ? ORIGIN.USER_STATED : ORIGIN.MODEL_SUPPLIED;
-}
 
 /** The origin of every figure-bearing argument the call (and any staged clause merged into it) gave. */
 const ORIGIN_KEYS = ['assumedMonthlySpending', 'annualReturnPct', 'returns', 'contributions', 'outflows',
