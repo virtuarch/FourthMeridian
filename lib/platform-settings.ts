@@ -114,11 +114,22 @@ export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof Plat
 
 /**
  * The three registration modes (registration_mode setting):
- *   open        — anyone may register (current behavior; the ship default).
+ *   open        — anyone may register (an explicit operator act; see
+ *                 DEFAULT_REGISTRATION_MODE — the absent-row default is invite_only).
  *   invite_only — registration requires a valid beta-access invite token (S3).
  *   closed      — registration is disabled entirely (403 before any validation).
  */
 export const REGISTRATION_MODES = ["open", "invite_only", "closed"] as const;
+
+/**
+ * SEC-008 — the mode an ABSENT or UNRECOGNISED `registration_mode` row means.
+ * `invite_only`, never `open`: a deployment whose row has not been written yet
+ * (a fresh Production database) or has been corrupted must fail CLOSED to
+ * public sign-up. Opening registration is an explicit operator act that writes
+ * the row. lib/registration-policy.ts and the register route both resolve the
+ * mode through getRegistrationMode(), so this one constant is the whole default.
+ */
+export const DEFAULT_REGISTRATION_MODE = "invite_only" as const satisfies RegistrationMode;
 export type RegistrationMode = typeof REGISTRATION_MODES[number];
 
 /**
@@ -137,8 +148,11 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   require_totp_all_users:    "false",
   recovery_codes_enabled:    "true",
   min_password_length:       "8",
-  // Ships `open` so nothing changes until an admin flips it (S3 ship checklist).
-  registration_mode:         "open",
+  // SEC-008 — ships `invite_only`. A fresh database (Production after cutover,
+  // before the setting row is written) must NOT accept public sign-up with a
+  // no-op CAPTCHA; an operator opens registration deliberately by writing the
+  // row (scripts/set-platform-setting.ts --key registration_mode --value open).
+  registration_mode:         DEFAULT_REGISTRATION_MODE,
   // Ships `beta` — honest current maturity; changed only when the operator flips it.
   product_status:            "beta",
   // OPS-2D-3 — both ship OFF. Nothing about existing behaviour changes until an
@@ -412,16 +426,19 @@ export async function getMinPasswordLength(): Promise<number> {
 }
 
 /**
- * The current platform registration mode (Wave 1 S2). Falls back to `open` for
- * an unset row or any unrecognized value, so a malformed row can never silently
- * lock users out of registration — the same defensive-floor posture as
- * getMinPasswordLength above.
+ * The current platform registration mode (Wave 1 S2). SEC-008 — falls back to
+ * DEFAULT_REGISTRATION_MODE (`invite_only`) for an unset row or any
+ * unrecognised value. This used to fall back to `open` "so a malformed row can
+ * never lock users out" — which meant a fresh database accepted public sign-up
+ * with a no-op CAPTCHA (runtime-confirmed: 201 with no invite). A security
+ * control fails CLOSED: a missing or corrupt row steers visitors to
+ * request-access, and an operator writes the row to open registration.
  */
 export async function getRegistrationMode(): Promise<RegistrationMode> {
   const raw = await getSetting(PlatformSettingKey.REGISTRATION_MODE);
   return (REGISTRATION_MODES as readonly string[]).includes(raw)
     ? (raw as RegistrationMode)
-    : "open";
+    : DEFAULT_REGISTRATION_MODE;
 }
 
 /** The current product maturity (PO-3C). Falls back to `beta` for an unset or
