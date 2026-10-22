@@ -30,6 +30,36 @@
  * `resolveExplorationNode`. A model should not have to learn Fourth Meridian's
  * internal names to ask a question, and exposing them would leak the thing the
  * reset removed.
+ *
+ * ── CQ-011: THIS FILE IS THE REGISTRY; THE ADAPTERS LIVE IN `tools/` ─────────
+ * Every rule above holds for every module under `./tools/` (each was moved here
+ * verbatim). This file owns only the public surface: `TOOLS` (its ORDER is the
+ * schema list the model reads — pinned byte-for-byte by
+ * `tools-characterization.test.ts` against `__snapshots__/tool-schemas.json`),
+ * `openAiToolSchemas`, `findTool`, and the re-exports callers already used.
+ * Callers import `@/lib/ai/conversation/tools` and nothing deeper.
+ *
+ *   tools/types.ts            the contract (ToolContext, ToolDefinition, CashSpineReads)
+ *   tools/shared/*            schema builders, values, read window, context reads,
+ *                             historical snapshot, argument origin, the cash spine
+ *   tools/snapshot.ts         get_financial_snapshot, explain_net_worth_composition
+ *   tools/spending.ts         get_spending
+ *   tools/measures.ts         measure_flows, get_baselines
+ *   tools/transactions.ts     get_transactions
+ *   tools/income.ts           get_income, get_pay_dates
+ *   tools/investments.ts      get_investments, investment_scenario
+ *   tools/history.ts          get_net_worth_history, find_in_balance_history
+ *   tools/projection.ts       project_cash, reconcile_projection
+ *   tools/scenario/*          setup + presentation, scenario_projection,
+ *                             scenario_crossing, scenario_goal_seek, stage_assumptions
+ *   ./memory-tools.ts         recall, remember (the one write path)
+ *   ./product.ts              describe_fourth_meridian
+ *
+ * ⚠️ NO MODULE UNDER `tools/` IMPORTS THIS FILE, and domain modules import only
+ * `tools/types`, `tools/shared/*` and existing authorities (the scenario tools
+ * also share `tools/scenario/setup` and `present`). The source scans that used
+ * to read this file read the whole layer through `lib/test-support/tools-source.ts`,
+ * which refuses a module it does not list.
  */
 
 import { monthEndsBetween } from './scenario-ledger';
