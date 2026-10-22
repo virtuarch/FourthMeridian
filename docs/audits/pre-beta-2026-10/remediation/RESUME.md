@@ -14,7 +14,7 @@ Canonical state lives on the local branch `remediation/beta-1` (worktree `/Users
 |---|---|
 | f-release-eng, a-security, b-financial, e-observability, d-ai-reliability | yes |
 | c-idempotency | pending (agent working) |
-| g-hygiene | pending (agent working) |
+| g-hygiene | yes (`d736943`) |
 
 ## Next steps (queue)
 1. Merge C (schema owner) and G when their agents report; run `rls:accept:allowance` (D touched the reservation) and the full `npm run ci` on the merged HEAD — one heavy process at a time.
