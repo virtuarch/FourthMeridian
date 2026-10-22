@@ -78,6 +78,53 @@ export function scrubEvent(event: ErrorEvent, _hint?: EventHint): ErrorEvent | n
 }
 
 /**
+ * PRIV-015 — breadcrumbs are the trail the SDK attaches to every event, and
+ * scrubEvent never touched them: a `console` breadcrumb carries the full
+ * console.log/console.error arguments (route handlers log identifiers, Plaid
+ * error payloads, user ids), and an `http`/`fetch`/`navigation` breadcrumb
+ * carries the full URL including its query string (`?asof=…&account=…`,
+ * `?q=<username>`, tokens in reset links). Runs on every breadcrumb before it is
+ * recorded. Pure; returns the scrubbed breadcrumb, or null to drop it.
+ *
+ *   - `console` breadcrumbs are DROPPED outright (the exception itself is
+ *     captured separately; the log line adds only payload).
+ *   - any breadcrumb's `data.url` / `data.to` / `data.from` loses its query
+ *     string and fragment; `message` loses any `?query` it embeds.
+ *   - `data.body`, `data.request`/`response` payloads and `data.arguments` are
+ *     removed.
+ */
+export interface BreadcrumbLike {
+  category?: string;
+  message?: string;
+  data?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+
+const URL_KEYS = ["url", "to", "from"] as const;
+const PAYLOAD_KEYS = ["body", "arguments", "request", "response", "input", "query_string", "params"] as const;
+
+function stripQuery(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const cut = value.search(/[?#]/);
+  return cut === -1 ? value : value.slice(0, cut);
+}
+
+export function scrubBreadcrumb<B extends BreadcrumbLike>(breadcrumb: B, _hint?: unknown): B | null {
+  if (!breadcrumb || typeof breadcrumb !== "object") return null;
+  if (breadcrumb.category === "console") return null;
+  if (breadcrumb.data && typeof breadcrumb.data === "object") {
+    const data = { ...breadcrumb.data };
+    for (const k of URL_KEYS) if (k in data) data[k] = stripQuery(data[k]);
+    for (const k of PAYLOAD_KEYS) delete data[k];
+    breadcrumb = { ...breadcrumb, data };
+  }
+  if (typeof breadcrumb.message === "string" && /[?#]/.test(breadcrumb.message)) {
+    breadcrumb = { ...breadcrumb, message: breadcrumb.message.replace(/[?#][^\s"']*/g, "") };
+  }
+  return breadcrumb;
+}
+
+/**
  * The shared init options every runtime passes to `Sentry.init`. A plain object
  * (not a typed Sentry Options import) so it is trivially usable by the node, edge,
  * and browser SDKs alike.
@@ -91,5 +138,6 @@ export function sharedSentryOptions() {
     tracesSampleRate: 0,          // error monitoring only — NOT tracing/APM
     sendDefaultPii:   false,      // no cookies/headers/ip by default
     beforeSend:       scrubEvent, // strip any residual financial data / PII
+    beforeBreadcrumb: scrubBreadcrumb, // PRIV-015 — no console lines, no query strings
   };
 }
