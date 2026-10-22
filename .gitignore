@@ -100,6 +100,11 @@ fintracker_backup.sql
 # DB backups (Recovery/Hardening slice) — never commit dumps
 backups/
 
+# Pre-v2.6 source bundle kept locally for reference (TEST-013 / SEC-016). It was
+# ignored only through .git/info/exclude on one machine; tsconfig and eslint
+# exclude it too, so a local typecheck/lint means what CI's means.
+_v26pre_bundle/
+
 # Experiment artifacts (model-first conversation baseline). These contain REAL
 # balances, merchant names and transaction detail from a live Space, plus full
 # model transcripts. Research output for local human review — never committed.
