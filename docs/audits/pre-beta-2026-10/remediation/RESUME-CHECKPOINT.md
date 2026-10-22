@@ -1,40 +1,26 @@
 # RESUME-CHECKPOINT — read first after any interruption
 
-_Refreshed: 2026-10-23, after A1d, A6, A7 and the Production-readiness assessment (docs 19, 20)._
+_Refreshed: 2026-10-23, after D17 closure and the final-readiness work (docs 21–23)._
 
-**Git**
-- **`v2.6` = `7d1cee7`.** History:
-  - PR #1 merged as `0773008` (A6, 2026-10-22 20:10 UTC, head `a72a83d`);
-  - PR #2 `d191968` (deployment-health fixes);
-  - PR #3 `1a38f6b` (Space creation under strict RLS, P1);
-  - PR #4 `7d1cee7` (invite rescind confirmed and audited);
-  - this docs PR follows.
-- **`main` = `87e4df7`**, untouched. A merge into `main` is not authorised.
-- CI is green on every merged head. `Deployment health` (secret-free) stays UNVERIFIED (red) by design. The trusted push-time check probes the app HEALTHY.
-- Branches `remediation/{beta-1,trusted-health-fixes,space-create-rls,rescind-invite-confirm}` are merged and can be deleted.
+**Production**
+- `main` = `9ea5881` (D17 security hotfix, PR #6), `dpl_HRdMnpT3J9fSVXh3vpaP5RDjhRL2`.
+- **D17 CLOSED**: 30-minute monitor 12/12; 0 × 5xx; owner login + TOTP PASS.
+- Rollback target for any later promotion: this deployment.
+- 88 migrations; 47 pending (exact; doc 23 §4); preflight clean (doc 22).
+- No `fm_*` roles. PITR off; 8 daily physical backups.
 
-**Preview**
-- **Database:** 135 migrations (A5). Data changed only by A7 test activity (doc 19 §6).
-- **App:** `preview-app` serves `v2.6` `7d1cee7`. `/api/health` is ok with the `scheduler` block; the scheduler is overdue because crons are Production-only.
-- **D14:** Plaid = Sandbox; OpenAI = `fourth-meridian-preview`. Resend: real key, scope unread.
-- **Kill switch** OFF (restored).
-- **Test accounts** `a7-20261022-{t1,t2,t3,adm}@example.test`:
-  - adm is deactivated;
-  - t2 is pending deletion;
-  - credentials are in `~/fm-rehearsal-private/a7/` (600), never in the repository.
+**Candidate**
+- `v2.6` = `c1d4597` (+ this docs PR): PR #8 (B4) and PR #9 (I4) merged and verified live on Preview.
+- **A7: 55 PASS · 0 FAIL · 3 BLOCKED** (E1/E2/E4 Plaid Link, owner).
+- **Draft PR #10** `release/v2.6-promotion` → `main`: tree identical to `v2.6`, D17 reconciled. **Do not merge without cutover approval: merging deploys Production.**
 
-**Production:** untouched. No connection, deployment or env change.
+**Owner blockers** (doc 23 §7):
+1. Production clone access: DB password in a 600 file, **or** approve a paid restore-to-new-project.
+2. Plaid Sandbox E1/E2/E4, about 5 minutes.
+3. Cutover inputs: role passwords, 4 env rows, rulesets, OpenAI spend limit.
 
-**Private artefacts** (`~/fm-rehearsal-private/`, 700):
-- the A2 and A5 dumps and evidence;
-- the A7 harness, results and secrets.
+**Preview test data:** `a7-20261022-*` accounts (adm deactivated; t2 pending deletion), `a7_20261022_inv`, "A7 Shared Space", A7 imports, payroll fixture, wallet, Resend-test-sink requests. Kept for the owner's E-row pass; remove after.
 
-Delete after the cutover. The Preview credentials copy used by A7 is deleted at session end.
+**Private artefacts** (`~/fm-rehearsal-private/`, 700): A2/A5 dumps, A7 harness and secrets, D17 monitor logs.
 
-**Agents:** none running.
-
-**Next safe action:** the owner reads doc 20 §17 (Production **NO-GO**, 10 BLOCKERs) and doc 19 §4 (A7 49/2/7). In order:
-1. Decide the live Production framework risk (row 2: hotfix `main` or cut over).
-2. Run the ≈ 20-minute owner pass on the 7 BLOCKED A7 rows.
-3. Decide D16 (TOTP disable policy).
-4. Then start the Production cutover gates (backup/PITR, clone rehearsal, env, rulesets).
+**Next:** on owner access (§7.1), run the clone rehearsal (WS3/WS4), then cutover per doc 23 §6.
