@@ -113,7 +113,7 @@ async function main(): Promise<void> {
 
   // ── 5. the floor logic is not duplicated ─────────────────────────────────
   console.log('5. one floor resolver');
-  const src = (await import('node:fs')).readFileSync('lib/ai/conversation/tools.ts', 'utf8');
+  const src = (await import('@/lib/test-support/tools-source')).readToolsSource(); // CQ-011: the tool layer
   check('both rebinds resolve through ONE helper that calls the canonical resolver',
     (src.match(/resolveMonthsOfExpensesFloor\(/g) ?? []).length === 2
       && /function resolveFloorAt\(/.test(src) && (src.match(/resolveFloorAt\(n, /g) ?? []).length === 2);

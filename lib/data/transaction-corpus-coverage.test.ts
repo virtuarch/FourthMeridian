@@ -22,6 +22,7 @@
 import { readFileSync } from "node:fs";
 
 import { transactionCoverage, type TransactionCorpusBounds } from "@/lib/data/transaction-query-core";
+import { readToolsSource } from "@/lib/test-support/tools-source";
 
 let failures = 0;
 function check(name: string, cond: boolean) {
@@ -76,7 +77,7 @@ console.log("\n4. `rankingIsComplete` DOES NOT IMPLY CORPUS COMPLETENESS");
   // DESCRIBES the separation ("`windowCoversAvailableRecord: false` AND an
   // incomplete page") tripped the very assertion that forbids deriving one from
   // the other. The claim is about code, so scan code.
-  const src = readFileSync("lib/ai/conversation/tools.ts", "utf8")
+  const src = readToolsSource() // CQ-011: the tool layer (facade + tools/**)
     .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
   check("a complete ranking coexists with incomplete coverage", c.windowCoversAvailableRecord === false);
   check("`rankingIsComplete` is still `complete` — the searched-population fact, unchanged",

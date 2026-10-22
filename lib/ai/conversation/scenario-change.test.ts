@@ -22,6 +22,7 @@ import { runScenarioLedger, expandContributions,
   type LedgerOpening, type SpinePoint } from './scenario-ledger';
 import { MAX_SCENARIO_CHECKPOINTS } from './scenario-checkpoints';
 import { MONEY_EPSILON } from '@/lib/data/snapshot-window';
+import { readToolsSource } from '@/lib/test-support/tools-source';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -153,7 +154,7 @@ console.log('6. what is not a change');
 
 console.log('7. it is wired where a question lands, and beside — never inside — what the envelope reads');
 {
-  const tools = readFileSync(join(__dirname, 'tools.ts'), 'utf8');
+  const tools = readToolsSource(); // CQ-011: the tool layer
   const present = tools.slice(tools.indexOf('function presentScenario('), tools.indexOf('const SCENARIO_QUALIFICATION'));
   check('every scenario result states the HORIZON\'s change once, through the one helper',
     /changeSinceOpening: changeSinceOpeningAt\(setup, ledger, ledger\.checkpoints\[ledger\.checkpoints\.length - 1\]\)/.test(present));

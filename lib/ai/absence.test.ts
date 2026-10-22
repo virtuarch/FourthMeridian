@@ -24,6 +24,7 @@ import {
   EvidenceState, forgetObservability,
 } from './absence';
 import type { ReadClient } from '@/lib/db/tenant-context';
+import { readToolsSource } from '@/lib/test-support/tools-source';
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -231,7 +232,7 @@ async function main(): Promise<void> {
   {
     const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
     const ABSENCE = read('lib/ai/absence.ts');
-    const TOOLS   = read('lib/ai/conversation/tools.ts');
+    const TOOLS   = readToolsSource(); // CQ-011: the tool layer (facade + tools/**)
     const TXQUERY = read('lib/data/transaction-query.ts');
     const ENVELOPE = read('lib/ai/coverage-envelope.ts');
     const MEMTOOLS = read('lib/ai/conversation/memory-tools.ts');

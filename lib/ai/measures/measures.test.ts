@@ -41,6 +41,7 @@ import {
   resolveMonthsOfExpensesFloor, type IncomeStreamEvidence,
 } from './baseline';
 import { incomeStreamEvidence, OBSERVED_SPENDING_WINDOW_MONTHS } from '@/lib/ai/forecast/income-evidence';
+import { readToolsSource } from '@/lib/test-support/tools-source';
 
 let failures = 0;
 let passed = 0;
@@ -395,7 +396,7 @@ console.log('\nJ/K. the threshold becomes the EXISTING liquid floor — no ledge
     settle.length > 1000 && !/MonthsOfExpenses|monthsOfExpenses/.test(settle));
   check('…and expansion passes the binding through untouched (the one non-type reference)',
     ledger.includes('...(bound !== undefined ? { floorMonthsOfExpenses: bound } : {})'));
-  const tools = readFileSync('lib/ai/conversation/tools.ts', 'utf8');
+  const tools = readToolsSource(); // CQ-011: the tool layer
   check('the scenario preparer resolves the floor through the measures authority and passes `target` through untouched',
     /resolveMonthsOfExpensesFloor\(/.test(tools) && /c = \{ \.\.\.rest, liquidFloor: floor\.liquidFloor/.test(tools));
 }
@@ -536,12 +537,13 @@ console.log('\nS. source scans');
       && (baseline.match(/resolveExpenseBaseline\(\{/g) ?? []).length === 2);
   check('…and no precedence is decided here: `declared` is only ever typed and handed to it',
     !/\bdeclared\b/.test(baseline.replace(/declared\?: number \| null/g, '').replace(/declared: e\.declared/g, '')));
-  const tools = noStrings(code('lib/ai/conversation/tools.ts'));
+  const toolsRaw = readToolsSource(); // CQ-011: the tool layer (facade + tools/**)
+  const tools = noStrings(toolsRaw.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ''));
   check('the tool file holds no second baseline resolver and no precedence of its own',
     !/resolveExpenseBaseline\(/.test(tools) && /resolveExpenseBaselineFromEvidence\(/.test(tools) && !/\bDECLARED\b|\bMEASURED\b/.test(tools));
   check('the two heads are on the surface; no per-question tool was added',
-    /name: ''/.test(tools) && ['measure_flows', 'get_baselines'].every((n) => readFileSync('lib/ai/conversation/tools.ts', 'utf8').includes(`name: '${n}'`))
-      && !/get_monthly_spending|compare_spending|get_savings_rate|get_runway|get_surplus|compare_income|compare_categories/.test(readFileSync('lib/ai/conversation/tools.ts', 'utf8')));
+    /name: ''/.test(tools) && ['measure_flows', 'get_baselines'].every((n) => toolsRaw.includes(`name: '${n}'`))
+      && !/get_monthly_spending|compare_spending|get_savings_rate|get_runway|get_surplus|compare_income|compare_categories/.test(toolsRaw));
   const engine = noStrings(code('lib/ai/intelligence/annotations/engine.ts'));
   check('the assessment no longer divides the income window by its days', !/incomeTotal\s*\/\s*windowDays/.test(engine) && /computeAverageMonthlyIncome\(/.test(engine));
   const brief = noStrings(code('lib/ai/brief/package.ts'));

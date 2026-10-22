@@ -19,13 +19,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectSnapshotSection } from "@/lib/ai/assemblers/snapshot";
 import type { Snapshot } from "@/types";
+import { readToolsSource } from "@/lib/test-support/tools-source";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
   if (cond) console.log(`  ✓ ${name}`);
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
-const code = (...p: string[]) => readFileSync(join(process.cwd(), ...p), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+const code = (...p: string[]) => strip(readFileSync(join(process.cwd(), ...p), "utf8"));
 
 function snap(date: string, over: Partial<Snapshot> = {}): Snapshot {
   return {
@@ -51,7 +53,7 @@ console.log("1. the projection carries the flag, present only when true");
 
 console.log("2. the tools state the fact where it applies — and only there");
 {
-  const TOOLS = code("lib", "ai", "conversation", "tools.ts");
+  const TOOLS = strip(readToolsSource()); // CQ-011: the tool layer (facade + lib/ai/conversation/tools/**)
   check("get_net_worth_history: each point carries realAssetsModeled only when set",
     /\.\.\.\(p\.realAssetsModeled \? \{ realAssetsModeled: true \} : \{\}\)/.test(TOOLS));
   check("…and coverage counts them with a note that names the unaffected metrics",

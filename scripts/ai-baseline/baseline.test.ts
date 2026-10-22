@@ -31,6 +31,8 @@ import {
   TOOLS, openAiToolSchemas, findTool, readWindowToExhaustion, clampToCeiling,
   monthEndsBetween, yearEndsBetween,
 } from '@/lib/ai/conversation/tools';
+// CQ-011 — the source scans below read the WHOLE tool layer (facade + tools/**), not one file.
+import { readToolsSource } from '@/lib/test-support/tools-source';
 import {
   runScenarioLedger, growthFactor, validateReturns, expandContributions, solveForTarget,
   PROVENANCE, MAX_EXPANDED_CONTRIBUTIONS,
@@ -213,7 +215,7 @@ console.log('4. tool surface');
   check('exactly one tool name is a write verb', writeNamed.length === 1, writeNamed.join(','));
   check('…and it is `remember`', writeNamed[0] === WRITE_TOOL_NAME && WRITE_TOOL_NAME === 'remember');
 
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   for (const op of ['db.', '.create(', '.update(', '.delete(', '.upsert(', 'deleteMany', 'updateMany']) {
     check(`tools.ts contains no \`${op}\``, !src.includes(op));
   }
@@ -245,8 +247,10 @@ console.log('4. tool surface');
   check('…and it opens a transaction on a CAPABILITY, never on an identity',
     /'\$transaction' in client/.test(storeSrc) && !/client === db/.test(storeSrc));
   check('no other harness file holds a Prisma client',
-    ['tools.ts', 'scenario-ledger.ts', 'scenario.ts', 'compaction.ts', 'memory-tools.ts']
-      .every((f) => !/from '@\/lib\/db'/.test(code(read(`lib/ai/conversation/${f}`)))));
+    // CQ-011: `tools.ts` is now the facade plus lib/ai/conversation/tools/** — all of it is read.
+    [readToolsSource(ROOT), ...['scenario-ledger.ts', 'scenario.ts', 'compaction.ts', 'memory-tools.ts']
+      .map((f) => read(`lib/ai/conversation/${f}`))]
+      .every((src) => !/from '@\/lib\/db'/.test(code(src))));
   check('the ledger and the compactor remain pure',
     !/^import /m.test(read('lib/ai/conversation/scenario-ledger.ts'))
       && !/from '@\//m.test(code(read('lib/ai/conversation/compaction.ts'))));
@@ -615,7 +619,7 @@ console.log('13a. clip 1 — the harness stops losing answers');
 
 console.log('13b. clip 2 — history granularity and coverage');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
 
   // The tool read raw Snapshot fields, so 407 unassertable points were reported as
   // facts and the model told the user he had negative net worth in early 2025.
@@ -637,7 +641,7 @@ console.log('13b. clip 2 — history granularity and coverage');
 
 console.log('13c. clip 3 — project_cash');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
 
   // The synthetic context carried only ACCOUNTS, so PROJECTION-1 saw zero reliable
   // months and returned closing: null for every horizon.
@@ -667,7 +671,7 @@ console.log('13c. clip 3 — project_cash');
   check('…and the adapter does no money arithmetic beyond a reported delta',
     (src.match(/closing - prevClosing/g) ?? []).length === 1);
   check('the checkpoint contract is stated where someone would break it',
-    /balance carried forward from the previous one/.test(read('lib/ai/conversation/tools.ts')));
+    /balance carried forward from the previous one/.test(readToolsSource(ROOT)));
   check('a basis block discloses the drivers',
     /basis: \{/.test(src) && /incomeEventsCounted/.test(src) && /monthsAveraged/.test(src));
   check('the estimate carries its own qualification', /EVIDENCE_BASED_ESTIMATE/.test(src)
@@ -689,18 +693,18 @@ console.log('13d. clip 3 — month-end arithmetic (pure)');
   check('…and the horizon is always the last entry',
     /out\[out\.length - 1\] !== toISO && toISO > fromISO/.test(src));
   check('…and tools.ts holds no second copy',
-    !/function monthEndsBetween/.test(code(read('lib/ai/conversation/tools.ts'))));
+    !/function monthEndsBetween/.test(code(readToolsSource(ROOT))));
 }
 
 console.log('13e. clip 4 — semantic flow on transactions');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   // "biggest purchase last month" surfaced a payroll deposit.
   check('a flow vocabulary exists and maps to canonical FlowType',
     /FLOW_SETS/.test(src) && /FlowType\.SPENDING/.test(src) && /FlowType\.INCOME/.test(src));
   check('…and it reaches the read authority', /flowTypes \}/.test(src));
   check('…chosen by the model, never by keyword matching here',
-    /THE MODEL PICKS/.test(read('lib/ai/conversation/tools.ts')));
+    /THE MODEL PICKS/.test(readToolsSource(ROOT)));
   check('spending means outflows, not income', !/spending:\s*\[FlowType\.INCOME/.test(src));
   check('a bounded ranking discloses its bound',
     /rankedOver/.test(src) && /rankingIsComplete/.test(src) && /rankingCaveat/.test(src));
@@ -708,7 +712,7 @@ console.log('13e. clip 4 — semantic flow on transactions');
 
 console.log('13f. clip 5 — temporal identity');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   // Since the information ceiling landed, the instant a result describes is the
   // CEILING, not unconditionally today — which is the point of the parameter.
   check('get_transactions names its instant', /asOf: ceiling,\n\s*window: \{ from/.test(src));
@@ -723,7 +727,7 @@ console.log('13f. clip 5 — temporal identity');
 
 console.log('13g. corpus span — the result declares the boundary of its own authority');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   const gt = src.slice(src.indexOf("name: 'get_transactions'"), src.indexOf("// ── 4. Income"));
 
   // WHAT WAS SEARCHED vs WHAT THERE WAS TO SEARCH. The 2×2 (bb2f6ec) measured
@@ -757,7 +761,7 @@ console.log('13g. corpus span — the result declares the boundary of its own au
     && !/\.\.\.filters,\s*(dateFrom|dateTo)/.test(gt));
   check('…and the completion is bounded by a stated ceiling, not unbounded',
     /matchedInWindow <= COMPLETABLE_SEARCH_ROWS/.test(gt)
-    && /const COMPLETABLE_SEARCH_ROWS = \d+;/.test(code(read('lib/ai/conversation/tools.ts'))));
+    && /const COMPLETABLE_SEARCH_ROWS = \d+;/.test(code(readToolsSource(ROOT))));
   check('the corpus read returns no rows to merge into the answer',
     !/corpus[\s\S]{0,80}rows/.test(gt));
   check('rows are still the rows the ranking produced',
@@ -779,7 +783,7 @@ console.log('13g. corpus span — the result declares the boundary of its own au
 
 console.log('13h. applied facts — nothing reaches the applied channel that did not move the number');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
 
   // THE HOLE (1d67786 §7): `statedAs` was handed to the SPENDING_LEVEL statement
   // verbatim, and `assembleForecast` quotes a statement's wording into
@@ -880,7 +884,7 @@ console.log('13i. tool contracts — the capability boundary is in the descripti
 
 console.log('13j. page coverage — a page is not the population');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   const q = code(read('lib/data/transaction-query.ts'));
   const gt = src.slice(src.indexOf("name: 'get_transactions'"), src.indexOf('// ── 4. Income'));
 
@@ -920,7 +924,7 @@ console.log('13j. page coverage — a page is not the population');
 
 console.log('13k. composition is not change — the tool names match the capabilities');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   const win = code(read('lib/data/snapshot-window.ts'));
   const names = (openAiToolSchemas() as { function: { name: string; description: string } }[])
     .map((t) => t.function);
@@ -943,16 +947,23 @@ console.log('13k. composition is not change — the tool names match the capabil
   check('the delta comes from an authority, not from arithmetic here',
     /observedChange\(at\(first, m\), at\(last, m\)\)/.test(src)
     && /export function observedChange/.test(win));
+  // CQ-011: changeBlock now ends its module (tools/history.ts) and EXPLAINABLE_LENSES
+  // lives in tools/snapshot.ts, which precedes it in the scan order — the old end
+  // anchor would slice NOTHING and these checks would pass over an empty string.
+  // The block is bounded by its own closing brace instead, and proven non-empty.
+  const changeBlockStart = src.indexOf('function changeBlock');
+  const changeBlockSrc = src.slice(changeBlockStart, src.indexOf('\n}\n', changeBlockStart) + 2);
+  check('the change block is found (the slice below is not empty)',
+    changeBlockStart >= 0 && changeBlockSrc.length > 400 && /observedChange\(/.test(changeBlockSrc), `${changeBlockSrc.length} chars`);
   check('…and the adapter performs no subtraction of its own',
-    !/\b(last|to)\.\w+\s*-\s*(first|from)\.\w+/.test(
-      src.slice(src.indexOf('function changeBlock'), src.indexOf('const EXPLAINABLE_LENSES'))));
+    !/\b(last|to)\.\w+\s*-\s*(first|from)\.\w+/.test(changeBlockSrc));
   check('one observation is refused rather than reported as zero',
     /if \(fromDate === toDate\) return null;/.test(win));
   check('the authority reports the observations it actually compared',
     /fromDate, toDate,\s*\n\s*fromValue: from\.value, toValue: to\.value,/.test(win));
 
   // No level may be emitted under a movement name.
-  const block = src.slice(src.indexOf('function changeBlock'), src.indexOf('const EXPLAINABLE_LENSES'));
+  const block = changeBlockSrc;
   check('a metric null at either end is OMITTED, never zeroed',
     /if \(c\) out\[m\] = /.test(block) && !/\?\? 0/.test(block));
   check('debt is not re-signed into a net-worth effect',
@@ -1040,7 +1051,7 @@ console.log('14. complete-window ranking');
   check('a non-advancing cursor halts instead of looping',
     halted.complete === false && halted.pages <= 3);
 
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   // The two reads now run beside a population count in one `Promise.all`, so the
   // `await` moved off the ternary. The claim is unchanged: ranking exhausts, a
   // plain page reads ONE page.
@@ -1229,7 +1240,7 @@ console.log('15. context compaction');
 // user pushed back.
 console.log('16. as-of coherence');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   const schemaOf = (n: string) => findTool(n)!.parameters as
     { properties: Record<string, unknown> };
 
@@ -1285,7 +1296,7 @@ console.log('16. as-of coherence');
   check('…and says what it is, so it is never read as a current expectation',
     /retrospective: true/.test(src) && /do not\n?\s*\/\/?\s*present it as a current expectation|not\s+'\s*\+\s*'present it as a current expectation|present it as a current expectation/.test(src));
   check('a past date never returns the CURRENT investment composition',
-    /composeInvestments reads today's account totals|reads today's account totals/.test(read('lib/ai/conversation/tools.ts')));
+    /composeInvestments reads today's account totals|reads today's account totals/.test(readToolsSource(ROOT)));
 }
 
 // ══ 17. The scenario ledger (slice 4) ════════════════════════════════════════
@@ -1464,7 +1475,7 @@ console.log('17a. ledger arithmetic primitives');
 // tools go through it, not because two code paths were checked against each other.
 console.log('17b. one spine');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   check('scenario_projection exists and is read-only like the rest',
     !!findTool('scenario_projection'));
   check('there is exactly ONE place a forecast is assembled',
@@ -1513,7 +1524,7 @@ console.log('17b. one spine');
   check('the investment pot comes from the canonical composer, not a sum here',
     /composeInvestments\(accounts\)/.test(src) && /composition\.combined === null/.test(src));
   check('a withheld investment total refuses rather than treating null as zero',
-    /arithmetic on an unknown/.test(read('lib/ai/conversation/tools.ts')));
+    /arithmetic on an unknown/.test(readToolsSource(ROOT)));
   check('the ledger opening is reconciled against the accounts authority, out loud',
     /reconciliation: \{/.test(src) && /accountsNetWorth: setup\.accounts\.netWorth/.test(src));
 }
@@ -1601,7 +1612,7 @@ console.log('17c. proportional contributions');
   check('a share on a date the projection was never run for is refused, not guessed',
     noPoint.movements.length === 0 && noPoint.rejected.length === 1);
 
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   check('the tool evaluates the spine on every share date, not only at checkpoints',
     /shareDates/.test(src) && /isCheckpoint: checkpointDates\.has\(date\)/.test(src));
   const schema = findTool('scenario_projection')!.parameters as
@@ -1674,7 +1685,7 @@ console.log('18. goal seek');
 // ══ 18a. The goal-seek tool ══════════════════════════════════════════════════
 console.log('18a. goal seek tool');
 {
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
   const tool = findTool('scenario_goal_seek');
   check('scenario_goal_seek exists', !!tool);
   const schema = tool!.parameters as { properties: Record<string, unknown>; required: string[] };
@@ -1690,11 +1701,12 @@ console.log('18a. goal seek tool');
     (src.match(/\.\.\.SCENARIO_INPUTS/g) ?? []).length === 3);
   check('there is still exactly ONE place a forecast is assembled',
     (src.match(/assembleForecast\(\{/g) ?? []).length === 1);
+  // CQ-011: the shared scenario helpers are exported from tools/scenario/*.ts, hence `(?:export )?`.
   check('…and one place a scenario is set up, so a solve, a table and a search cannot diverge',
     (src.match(/prepareScenario\(a, ctx,/g) ?? []).length === 3
-      && (src.match(/^async function prepareScenario/m) ?? []).length === 1);
+      && (src.match(/^(?:export )?async function prepareScenario/m) ?? []).length === 1);
   check('…and one place a scenario is presented',
-    (src.match(/^function presentScenario/m) ?? []).length === 1
+    (src.match(/^(?:export )?function presentScenario/m) ?? []).length === 1
       && (src.match(/presentScenario\(setup,/g) ?? []).length === 2);
   // The crossing returns no table, so it presents nothing — but it must still echo
   // the SAME assumptions block, or a later turn inherits a different sentence.
@@ -1714,9 +1726,9 @@ console.log('18a. goal seek tool');
     /MAX_SOLVED_RETURN_PCT = 500/.test(src) && /searchRange: \{ from: lo, to: isReturn \? round2\(annualOf\(hi\)\) : hi/.test(src)
       && /periodTo: round2\(periodOf\(hi\)\)/.test(src));
   check('the spending-cut bound is what the user actually spends',
-    /nobody can cut more than they spend/.test(read('lib/ai/conversation/tools.ts')));
+    /nobody can cut more than they spend/.test(readToolsSource(ROOT)));
   check('a Space with no established spending level cannot be asked for a cut',
-    /nothing to solve a cut against/.test(read('lib/ai/conversation/tools.ts')));
+    /nothing to solve a cut against/.test(readToolsSource(ROOT)));
 
   // ⚠️ RELOCATING MONEY IS NOT CREATING IT, AND THE SCHEMA SAYS SO. A monthly
   // contribution at 0% leaves net worth exactly where it was.
@@ -1726,7 +1738,7 @@ console.log('18a. goal seek tool');
   check('…and which lever actually creates net worth',
     /actually creates net worth/.test(solveForDesc));
   check('the tool tells the model to judge achievability rather than the code doing it',
-    /judgement about the world/.test(read('lib/ai/conversation/tools.ts')));
+    /judgement about the world/.test(readToolsSource(ROOT)));
 
   // ⚠️ FOUND BY RUNNING IT. Asked "how could I reach $1M?", gpt-4.1 called the
   // goal seek with a bare target — no return, no contributions — got an honest
@@ -1736,24 +1748,24 @@ console.log('18a. goal seek tool');
   check('the assumptions actually in force are echoed on EVERY path, refusal included',
     // A return solve echoes the stated rate as REPLACED, not in force (truthfulness slice).
     /assumptionsInForce: scenarioAssumptions\(setup, baseLedger, isReturn \? \[\] : setup\.returns\)/.test(src)
-      && /^function scenarioAssumptions/m.test(src));
+      && /^(?:export )?function scenarioAssumptions/m.test(src));
   // 3 tools + the goal seek's one refusal-echo helper (S1-7), all the same function.
   check('…and it is the same function the projection and the crossing report from',
     (src.match(/scenarioAssumptions\(setup,/g) ?? []).length === 4);
   check('…so an absent return says it was absent, rather than saying nothing',
     /do not describe this result as carrying a return/
-      .test(read('lib/ai/conversation/tools.ts')));
+      .test(readToolsSource(ROOT)));
   check('…and an absent contribution likewise',
-    /No contributions were in force/.test(read('lib/ai/conversation/tools.ts')));
+    /No contributions were in force/.test(readToolsSource(ROOT)));
   check('a refusal tells the model to describe it from that echo and not from memory',
-    /it was NOT applied/.test(read('lib/ai/conversation/tools.ts')));
+    /it was NOT applied/.test(readToolsSource(ROOT)));
 
   // The spine is memoised per spending level; a return solve must not pay for it.
   check('varying a return or a contribution re-uses one set of projection runs',
     /const spineCache = new Map/.test(src)
       && /\$\{extraKey\(extra\)\}\|/.test(src));
   check('a horizon in the past is refused before anything is projected',
-    /is not in the future; a scenario needs a/.test(read('lib/ai/conversation/tools.ts')));
+    /is not in the future; a scenario needs a/.test(readToolsSource(ROOT)));
 }
 
 // ══ 19. Memory (slice 6) ═════════════════════════════════════════════════════
@@ -1918,7 +1930,7 @@ console.log('19b. memory vocabulary parity');
   check('the pure model holds no database and no clock',
     !/@\/lib\/db|@prisma\/client|Date\.now|new Date\(\)/.test(code(read('lib/ai/conversation/memory-model.ts'))));
   check('no tool reads memory into a calculation: `recallMemories(` has one call site in tools.ts',
-    (code(read('lib/ai/conversation/tools.ts')).match(/recallMemories\(/g) ?? []).length === 1);
+    (code(readToolsSource(ROOT)).match(/recallMemories\(/g) ?? []).length === 1);
   check('the active scenario never reads the store', !/memory-store|memory-model/.test(code(read('lib/ai/conversation/active-scenario.ts'))));
 }
 
@@ -2113,7 +2125,7 @@ console.log('20a. checkpoint-on-projection');
 {
   const mt  = code(read('lib/ai/conversation/memory-tools.ts'));
   const run = code(read('lib/ai/conversation/turn.ts'));
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  const src = code(readToolsSource(ROOT));
 
   // ⚠️ THE WRITE LIVES IN THE TURN LOOP, NOT IN THE TOOL. Making `project_cash`
   // write would have made the "tools.ts holds no Prisma client" assertion a lie
@@ -2203,8 +2215,8 @@ console.log('20a. checkpoint-on-projection');
     statedAs: 'x', statedAt: '2026-09-12', payload: { metric: 'liquid', horizon: '2026-12-31', value: 34629.98,
       basis: { spendingSource: 'OBSERVED' } } })));
   check('the tool no longer promises that every projection is recorded',
-    /an evidence-based projection first/.test(read('lib/ai/conversation/tools.ts'))
-      && !/it will be recorded automatically/.test(read('lib/ai/conversation/tools.ts')));
+    /an evidence-based projection first/.test(readToolsSource(ROOT))
+      && !/it will be recorded automatically/.test(readToolsSource(ROOT)));
   check('`recordProjection` owns its own unique-constraint race, rather than leaving it to the caller\'s catch',
     /P2002[\s\S]{0,200}another turn recorded a projection for this horizon/.test(code(read('lib/ai/conversation/memory-store.ts'))));
 
@@ -2226,13 +2238,13 @@ console.log('20a. checkpoint-on-projection');
   // beside today's balance and subtracting produces a number about two different
   // instants that means nothing at all.
   check('an open horizon is compared against the same projection re-run today',
-    /the same projection re-run today, to the same horizon/.test(read('lib/ai/conversation/tools.ts')));
+    /the same projection re-run today, to the same horizon/.test(readToolsSource(ROOT)));
   check('…and the result says so, so it is not described as a current balance',
-    /must not be described as one/.test(read('lib/ai/conversation/tools.ts')));
+    /must not be described as one/.test(readToolsSource(ROOT)));
   check('nothing recorded is reported as nothing recorded, never as nothing said',
-    /there is nothing to/.test(read('lib/ai/conversation/tools.ts')));
+    /there is nothing to/.test(readToolsSource(ROOT)));
   check('an unknown metric is refused rather than mapped to something plausible',
-    /no authority in this harness answers the metric/.test(read('lib/ai/conversation/tools.ts')));
+    /no authority in this harness answers the metric/.test(readToolsSource(ROOT)));
   check('the reconciliation is bounded', /MAX_RECONCILED = 6/.test(src));
   check('tools.ts still holds no Prisma client after gaining a memory read',
     !/from '@\/lib\/db'/.test(src) && !src.includes('db.'));

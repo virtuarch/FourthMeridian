@@ -33,6 +33,7 @@ import path from 'node:path';
 import {
   SCENARIO_INPUTS, NOT_AN_ASSUMPTION, scenarioAssumptionKeys,
 } from './scenario-inputs';
+import { readToolsSource } from '@/lib/test-support/tools-source';
 
 const ROOT = process.cwd();
 const src = (rel: string) => readFileSync(path.join(ROOT, rel), 'utf8');
@@ -45,7 +46,7 @@ function check(name: string, cond: boolean, detail = ''): void {
 
 console.log('scenario-contract — declared ⇒ classified ⇒ consumed');
 
-const TOOLS = src('lib/ai/conversation/tools.ts');
+const TOOLS = readToolsSource(); // CQ-011: the tool layer (facade + lib/ai/conversation/tools/**)
 const ACTIVE = src('lib/ai/conversation/active-scenario.ts');
 
 /**
@@ -55,7 +56,8 @@ const ACTIVE = src('lib/ai/conversation/active-scenario.ts');
  */
 const PREPARE = (() => {
   const from = TOOLS.indexOf('async function prepareScenario(');
-  const to = TOOLS.indexOf('\nconst scenarioProjection: ToolDefinition', from);
+  // CQ-011: the tool definitions are exported from their modules now (`export const`).
+  const to = TOOLS.indexOf('const scenarioProjection: ToolDefinition', from);
   if (from < 0 || to < 0) throw new Error('prepareScenario not found — this guard is broken, not passing');
   return TOOLS.slice(from, to);
 })();
@@ -150,8 +152,8 @@ function unclassifiedKeys(schema: Record<string, unknown>, except: readonly stri
 
 // ── 3. The schema is ONE literal ─────────────────────────────────────────────
 {
-  check('tools.ts imports the schema and does not restate it',
-    /import \{ SCENARIO_INPUTS[^}]*\} from '\.\/scenario-inputs'/.test(TOOLS)
+  check('the tool layer imports the schema and does not restate it',
+    /import \{ SCENARIO_INPUTS[^}]*\} from '(?:\.\/|(?:\.\.\/)+)scenario-inputs'/.test(TOOLS)
     && !TOOLS.includes('const SCENARIO_INPUTS = {'));
   check('all three scenario tools spread the same literal',
     (TOOLS.match(/\.\.\.SCENARIO_INPUTS/g) ?? []).length === 3,

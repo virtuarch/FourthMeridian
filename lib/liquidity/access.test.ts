@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { classifyAccounts, liquidityAccess, normalizeProviderSubtype, LIQUIDITY_ACCESS_MEANING } from "@/lib/account-classifier";
 import { computeLiquidity, type LiquidityAccountRow } from "@/lib/perspective-engine/lenses/liquidity.core";
 import { normalizeSharedAccounts, type ShareRow } from "@/lib/account-privacy";
+import { readToolsSource } from "@/lib/test-support/tools-source";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -179,7 +180,7 @@ console.log("7. Write path and consumers — one authority, provider evidence on
     /liquidityAccess\(a\) === "cash"/.test(src("components/space/widgets/liquidity-adapters.tsx")));
   check("the lens tiers come from liquidityAccess (no private type sets)", !/MARKETABLE_TYPES|CASH_TYPES/.test(src("lib/perspective-engine/lenses/liquidity.core.ts")));
   check("scenario opening cash conserves value: other assets = totalAssets − totalLiquid − investments",
-    /\(accounts\.totalAssets \?\? 0\) - \(accounts\.totalLiquid \?\? 0\) - composition\.combined/.test(src("lib/ai/conversation/tools.ts")));
+    /\(accounts\.totalAssets \?\? 0\) - \(accounts\.totalLiquid \?\? 0\) - composition\.combined/.test(readToolsSource())); // CQ-011: the tool layer
   check("net-worth Cash composition is the cash BALANCE (restricted included)", /c\.totalLiquid \+ c\.totalRestrictedCash/.test(src("components/space/widgets/wealth-adapters.tsx")));
 }
 

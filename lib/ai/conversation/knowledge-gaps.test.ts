@@ -19,6 +19,7 @@ import {
 } from './knowledge-gaps';
 import type { KnowledgeGap } from '@/lib/ai/types';
 import type { AiKnowledgeGap, AiChatResponse } from '@/types';
+import { readToolsSource } from '@/lib/test-support/tools-source';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -45,7 +46,7 @@ console.log('1. THE SOURCE — the runtime already produces these');
   // ⚠️ NAMED, NOT INFERRED. The tool carries the assembler's own list under this
   // key; if either end is renamed, the contract silently empties, so both ends
   // are asserted here rather than trusted.
-  const tools = code('lib/ai/conversation/tools.ts');
+  const tools = readToolsSource().replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ''); // CQ-011: the tool layer
   const assembler = code('lib/ai/assemblers/accounts.ts');
   check('the accounts assembler computes knowledge gaps',
     /const knowledgeGaps: KnowledgeGap\[\] = \[\]/.test(assembler));
