@@ -119,7 +119,7 @@ function read(rel: string): string { return readFileSync(join(process.cwd(), rel
   check("breadcrumb: an embedded ?query in message is removed", msg.message === "GET /api/users/search 200");
   const plain = { category: "ui.click", message: "button clicked", data: { id: "x" } };
   check("breadcrumb: a non-sensitive breadcrumb passes through unchanged", JSON.stringify(scrubBreadcrumb(plain)) === JSON.stringify(plain));
-  check("breadcrumb: a non-object is dropped, never thrown on", scrubBreadcrumb(null as unknown as { category?: string }) === null);
+  check("breadcrumb: a non-object is dropped, never thrown on", scrubBreadcrumb(null as unknown as Parameters<typeof scrubBreadcrumb>[0]) === null);
   for (const leak of ["asof=2026", "acc_123", "q=alice", "token=abc", "999", "access-sandbox-x"]) {
     const all = JSON.stringify([http, nav, msg]);
     check(`breadcrumb: "${leak}" absent after scrubbing`, !all.includes(leak));

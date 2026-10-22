@@ -28,7 +28,7 @@
  * bodies and DB rows — neither is ever attached.
  */
 
-import type { ErrorEvent, EventHint } from "@sentry/nextjs";
+import type { Breadcrumb, BreadcrumbHint, ErrorEvent, EventHint } from "@sentry/nextjs";
 import { currentDeploymentSha } from "@/lib/monitoring/deployment";
 
 /** The publishable DSN. Empty string ⇒ monitoring disabled (dev/test/preview). */
@@ -93,13 +93,6 @@ export function scrubEvent(event: ErrorEvent, _hint?: EventHint): ErrorEvent | n
  *   - `data.body`, `data.request`/`response` payloads and `data.arguments` are
  *     removed.
  */
-export interface BreadcrumbLike {
-  category?: string;
-  message?: string;
-  data?: Record<string, unknown>;
-  [k: string]: unknown;
-}
-
 const URL_KEYS = ["url", "to", "from"] as const;
 const PAYLOAD_KEYS = ["body", "arguments", "request", "response", "input", "query_string", "params"] as const;
 
@@ -109,7 +102,7 @@ function stripQuery(value: unknown): unknown {
   return cut === -1 ? value : value.slice(0, cut);
 }
 
-export function scrubBreadcrumb<B extends BreadcrumbLike>(breadcrumb: B, _hint?: unknown): B | null {
+export function scrubBreadcrumb(breadcrumb: Breadcrumb, _hint?: BreadcrumbHint): Breadcrumb | null {
   if (!breadcrumb || typeof breadcrumb !== "object") return null;
   if (breadcrumb.category === "console") return null;
   if (breadcrumb.data && typeof breadcrumb.data === "object") {

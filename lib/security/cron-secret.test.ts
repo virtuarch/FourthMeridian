@@ -32,7 +32,6 @@ check("no header → MISSING", verifyCronAuthorization(null, S) === "MISSING" &&
 check("non-Bearer scheme → MISSING", verifyCronAuthorization(`Basic ${S}`, S) === "MISSING");
 check("secret unset → SECRET_UNSET regardless of the header (fail closed)",
   verifyCronAuthorization(`Bearer ${S}`, undefined) === "SECRET_UNSET" && verifyCronAuthorization(`Bearer `, "") === "SECRET_UNSET");
-check("only AUTHORIZED is a success word", (["SECRET_UNSET", "MISSING", "MISMATCH"] as const).every((v) => v !== "AUTHORIZED"));
 
 if (failures > 0) { console.error(`\ncron-secret: ${failures} check(s) failed.`); process.exit(1); }
 console.log("\ncron-secret: all checks passed.");
