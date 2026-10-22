@@ -122,7 +122,7 @@ async function main(): Promise<void> {
         deletedAt: true,
         flowType: true, flowDirection: true,
         flowAuthority: true, classifierVersion: true,
-        pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true, merchantEntityId: true,
+        pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true, merchantEntityId: true, categorySource: true,
         // description/merchant deliberately not selected — the classifier is
         // descriptor-blind (CCPAY-2C-5) and this audit prints no PII.
         financialAccount: { select: { type: true, debtSubtype: true } },

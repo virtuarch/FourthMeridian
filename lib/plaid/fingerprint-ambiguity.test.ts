@@ -38,7 +38,7 @@ interface Row {
 function makeDb(opts: { accounts: Record<string, string>; seed: Row[] }) {
   const txns: Row[] = [...opts.seed];
   const issues: Record<string, unknown>[] = [];
-  const item = { id: "item_1", cursor: "C1", encryptedToken: FAKE_TOKEN, institutionName: "Chase" };
+  const item: { id: string; cursor: string | null; encryptedToken: string; institutionName: string } = { id: "item_1", cursor: "C1", encryptedToken: FAKE_TOKEN, institutionName: "Chase" };
   let seq = 100, oseq = 0, eseq = 0;
   const obs: Record<string, unknown>[] = [];
   const events: Record<string, unknown>[] = [];
