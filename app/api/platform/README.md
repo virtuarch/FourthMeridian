@@ -1,18 +1,27 @@
-# `app/api/platform/[area]/…` — platform data routes (PO1.1+)
+# `app/api/platform/[area]/…` — platform data routes
 
-PO1.0 establishes this directory **convention only** — there are no routes here
-yet. Platform data read routes land in later slices, one area at a time:
+The data routes behind the four operator Platform Spaces. Each `[area]`
+directory maps to one `PlatformArea` (`lib/platform/policy.ts`), and the
+widgets that read it are composed in `lib/platform/workspaces.ts`.
 
-- **PO1.1** Security Operations — `app/api/platform/security-ops/*` reads wrapping
-  the same queries as `admin/audit` / `admin/security/*`.
-- **PO1.2** Platform Operations — job health over `checkScheduledJobHealth()`,
-  rate-limit status over `RateLimit`, env report over a `validateEnv()` refactor.
-- **PO1.3** Growth & Revenue — signups/activation from `User`/`UserSession`.
-- **PO1.4** Customer Success — sync-issue triage over `SyncIssue`.
+Shape as of 2026-10-22 (66 route files; `find app/api/platform -name route.ts`):
 
-**Every route added here MUST** be gated with
-`requirePlatformAccess(area, "READ")` (or `requireFreshPlatformAccess` for any
-future WRITE mutation) from `lib/platform/authorize.ts`, and MUST NOT route
-through customer assemblers / `buildContext` / spaceId-scoped adapters
-(07-07 risk #3 — stop condition §9.7). These files are source-scanned by
-`lib/platform-surface.test.ts` for customer-axis tokens.
+| Area | Directory | Routes | Owns |
+|---|---|---|---|
+| Platform Operations | `platform-ops/` | 38 | jobs, refresh ledger, providers, policies, alerts, AI economics, connections |
+| Growth & Revenue | `growth-revenue/` | 16 | beta access requests + invitations, registration mode, product status, sign-ups, product analytics, policy-group catalogue, users |
+| Customer Success | `customer-success/` | 7 | customer roll-up, per-customer policy / cohort / refresh, sync-issue triage |
+| Security Operations | `security-ops/` | 5 | operator audit feed, sessions, security posture |
+
+(Merchant Operations lives beside this tree at `app/api/merchant-ops/`.)
+
+**Every route here MUST** be gated with `requirePlatformAccess(area, "READ")`
+(or `requireFreshPlatformAccess(area, "WRITE" | "CONTROL")` for a mutation)
+from `lib/platform/authorize.ts`, and MUST NOT route through customer
+assemblers / spaceId-scoped adapters (07-07 risk #3 — stop condition §9.7).
+These files are source-scanned by `lib/platform-surface.test.ts` for
+customer-axis tokens, and mutations are expected to record through the
+operator-action envelope (`recordOperatorAction`, `lib/audit.ts`).
+
+History: PO1.0 (2026-07) established the directory as a convention with no
+routes; PO1.1–PO1.4 and the OPS/GROWTH/CS slices since filled it in.

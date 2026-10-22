@@ -312,8 +312,13 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
   // wealth; Markets will ANALYSE securities. A destination only for now — no
   // data needs, no engine lens (no lensId), no envelope, no time axis — so its
   // workspace self-renders empty states and the host activates no fetch for it.
+  // UI-014 / MARKETS-COMING-SOON (2026-10-22): `comingSoon` for beta. The
+  // renderer map (components/space/workspaces/workspaceRenderers.tsx) reads this
+  // status and shows the honest placeholder; MarketsWorkspace, its five views,
+  // lib/markets/markets-mode and the ?view= routing all stay wired — flip this
+  // one word back to "available" to restore the skeleton.
   markets: {
-    id: "markets", kind: "perspective", label: "Markets", icon: "ChartCandlestick", status: "available", group: "Financial",
+    id: "markets", kind: "perspective", label: "Markets", icon: "ChartCandlestick", status: "comingSoon", group: "Financial",
     description: "How your investments, and the securities you follow, are behaving.",
     dataNeeds: [],
     temporalCapability: { asOf: "none", compareTo: "none", period: "none" },

@@ -56,8 +56,11 @@ console.log("2. Registry ↔ renderer parity");
 {
   const rendererIds = Object.keys(WORKSPACE_RENDERERS).sort();
   check("renderer map is exactly {cashFlow, markets, wealth}", rendererIds.join() === "cashFlow,markets,wealth");
-  check("every renderer id is a registered, available perspective",
-    rendererIds.every((id) => PERSPECTIVE_LIBRARY[id]?.kind === "perspective" && PERSPECTIVE_LIBRARY[id].status === "available"));
+  // UI-014 — a renderer id may also be `comingSoon`: the renderer map then
+  // gates it onto the WorkspaceComingSoon placeholder (workspaces.test.ts §6).
+  check("every renderer id is a registered perspective (available, or comingSoon and gated)",
+    rendererIds.every((id) => PERSPECTIVE_LIBRARY[id]?.kind === "perspective"
+      && (PERSPECTIVE_LIBRARY[id].status === "available" || PERSPECTIVE_LIBRARY[id].status === "comingSoon")));
   check("every lens-rail destination has a renderer (Net Worth → wealth, Cash Flow → cashFlow)",
     !!WORKSPACE_RENDERERS.wealth && CORE_LENS_IDS.every((id) => !!WORKSPACE_RENDERERS[id]));
   check("the retired peer lenses keep their registry entries (engine lenses / verdicts still read them)",

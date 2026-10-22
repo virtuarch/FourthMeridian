@@ -403,7 +403,6 @@ async function main(): Promise<void> {
     "app/api/spaces/[id]/wealth/amend/route.ts",
     "app/(shell)/dashboard/connections/page.tsx",
     "app/api/sync/status/route.ts",
-    "app/api/plaid/sync/route.ts",
     "app/api/plaid/refresh/route.ts",
     "app/api/plaid/resume-sync/route.ts",
     "app/api/plaid/link-token/route.ts",

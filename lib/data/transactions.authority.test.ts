@@ -368,17 +368,9 @@ function scanCallSites(): void {
     viewCtx.indexOf("resolveEffectiveSpaceConversionSerialized(") >
       viewCtx.lastIndexOf("withTenantDb("));
 
-  const credit = code("app/(shell)/dashboard/credit/page.tsx");
-  check("the Credit page reads debt activity inside the tenant boundary",
-    /getDebtTransactions\(tx,/.test(credit));
-  // RLS-T1a — and the payment read JOINED it, so all four of this page's reads
-  // are one short tenant phase. The old form (`getDebtPaymentRows({ spaceId:`)
-  // must be gone, not merely unused: an ambient call left beside a converted one
-  // is the split-authority shape, and it reads as finished.
-  check("...and the payment read is INSIDE it too",
-    /getDebtPaymentRows\(tx,/.test(credit));
-  check("...with no ambient call left beside it",
-    !/getDebtPaymentRows\(\{/.test(credit));
+  // RETIRE-CREDIT (2026-10-22) — the Credit page (the one caller of
+  // getDebtTransactions / getDebtPaymentRows) is deleted; its tenant-boundary
+  // pins went with it.
 
   const correct = code("app/api/transactions/[id]/correct/route.ts");
   // RLS-PREP-C — this used to pin `getTransactionDetail(db, id,` three times:

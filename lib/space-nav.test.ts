@@ -48,7 +48,6 @@ console.log('exactly one destination active per route (nested routes keep their 
     ['/dashboard/connections/abc', 'connections'],
     ['/dashboard/settings', null],
     ['/dashboard/settings/account', null],
-    ['/dashboard/credit', null],
     ['/dashboard/platform/ops', null],
   ];
   for (const [path, expected] of cases) {

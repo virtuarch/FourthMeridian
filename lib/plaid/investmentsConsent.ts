@@ -6,11 +6,16 @@
  * and link-time import (lib/plaid/exchangeToken.ts) already fetch, so this
  * costs zero extra API calls.
  *
- * Why: link tokens are created with products=[transactions] only (AmEx
- * compat — see app/api/plaid/link-token/route.ts), so under Data
- * Transparency Messaging no Item has Investments consent at link time and
- * investmentsHoldingsGet fails with ADDITIONAL_CONSENT_REQUIRED. That is
- * expected, not an error. The derived state is persisted to
+ * Why: link tokens keep `products=[transactions]` (AmEx and other
+ * credit-only institutions reject a token that GATES on investments) and
+ * offer Investments through `additional_consented_products` instead — on
+ * every fresh link, and in update mode when `?consent=investments` is asked
+ * for (app/api/plaid/link-token/route.ts). That consent is NON-GATING: an
+ * institution that does not offer Investments simply grants none, so under
+ * Data Transparency Messaging an Item can still lack Investments consent
+ * after linking, and investmentsHoldingsGet then fails with
+ * ADDITIONAL_CONSENT_REQUIRED. That is expected, not an error. The derived
+ * state is persisted to
  * PlaidItem.investmentsConsent and gates the holdings step. Full flow:
  * docs/investigations/PLAID_INVESTMENTS_CONSENT_INVESTIGATION.md.
  */
