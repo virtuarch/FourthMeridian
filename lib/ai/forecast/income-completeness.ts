@@ -31,7 +31,78 @@
  */
 
 import { FlowRole, exactDateOf, observedCashContribution, type FutureCashEvent } from '@/lib/forecast/future-cash-event';
+import { ActivityState, type StreamActivity } from '@/lib/forecast/stream-activity';
+import { isCadence, occurrencesBetween, type CadenceResult } from '@/lib/forecast/cadence';
 import type { ResolvedIncomeStream } from './streams';
+import { round2 } from '@/lib/money/round';
+
+/*
+ * ── FIN-001 (2026-10-22) — the sibling of the 2026-10-16 fix ────────────────
+ *
+ * The 2026-10-16 fix made a CURRENT stream whose AMOUNT could not be priced
+ * block the projection with a bound. Its sibling was untouched: a stream whose
+ * CONTINUATION could not be licensed — one paycheck more than three days late,
+ * or a feed that had not reached the due slot — was mapped to LAPSED, LAPSED
+ * was non-blocking, and `project_cash` returned EVIDENCE_BASED_ESTIMATE with
+ * every remaining paycheck silently at $0. Measured (runtime audit): 11 flat
+ * biweekly paychecks of $3,000, newest slot five days overdue ⇒ $15,000 dropped
+ * under a complete label. The same customer-visible collapse, from an ordinary
+ * calendar event.
+ *
+ * The rule now: a stream whose schedule is intact and whose silence is RECENT
+ * (at most RECENT_SILENCE.MAX_UNSATISFIED_OCCURRENCES due slots unpaid since the
+ * last one it satisfied) is RECENTLY_SILENT; a stream whose due slots the feed
+ * could not see is UNKNOWN. Both are BLOCKING when material, and both carry the
+ * same bound AMOUNT_UNESTABLISHED carries: the remaining expected occurrences in
+ * the horizon at the last observed amount. The projection still counts them at
+ * $0 — the licence is FORECAST-2's and this module does not touch it — but the
+ * figure is now labelled INCOMPLETE with the arithmetic beside it. LAPSED is
+ * reserved for a stream the evidence says has stopped (more unpaid slots than
+ * recent silence allows), one the user said ended, or one with no schedule: it
+ * is disclosed and never blocks, as before.
+ */
+
+/**
+ * FIN-001 — how many due slots a stream may leave unpaid and still be read as
+ * RECENTLY silent rather than discontinued. The first unsatisfied slot is the
+ * ordinary late paycheck (holiday shift, employer delay, provider lag past the
+ * 3-day settlement tolerance); the second covers a biweekly stream a month
+ * late or a monthly one skipped once. From the third the stream is behaving
+ * like the measured discontinued case (Abacus: 15 unpaid slots), and the honest
+ * reading is LAPSED — disclosed, not counted, not blocking.
+ */
+export const RECENT_SILENCE = { MAX_UNSATISFIED_OCCURRENCES: 2 } as const;
+
+/** Whether a stream's continuation is established, and if not, why — for disclosure. */
+export type StreamContinuation =
+  /** Licensed to continue (FORECAST-2 CURRENT). */
+  | 'CURRENT'
+  /** Schedule intact; the ledger covered ≤ RECENT_SILENCE due slots and none were paid. */
+  | 'RECENTLY_SILENT'
+  /** Schedule intact; due slots exist that the feed has not reached — nobody looked. */
+  | 'UNKNOWN'
+  /** Discontinued (more unpaid slots than recent silence allows), ended by the user, or no schedule. */
+  | 'LAPSED';
+
+/**
+ * FIN-001 — classify a stream's continuation for DISCLOSURE. This reads
+ * FORECAST-2's verdict; it never re-derives the licence (`projectionEligible`
+ * stays the contract for generating cash).
+ */
+export function continuationOf(s: { activity: StreamActivity; cadence: CadenceResult; projectionEligible: boolean }): StreamContinuation {
+  if (s.projectionEligible) return 'CURRENT';
+  const a = s.activity;
+  if (a.state === ActivityState.ENDED || !isCadence(s.cadence) || a.lastObservedSettlementISO === null) return 'LAPSED';
+  const missed = a.missedOccurrences ?? 0;
+  const unobserved = a.unobservedDueOccurrences ?? 0;
+  if (a.state === ActivityState.SILENT) {
+    return missed + unobserved <= RECENT_SILENCE.MAX_UNSATISFIED_OCCURRENCES ? 'RECENTLY_SILENT' : 'LAPSED';
+  }
+  // UNKNOWN with a schedule and settlements: the feed stopped short of a due
+  // slot (or its reach is unknown). Silence was never observable, so it is
+  // never discontinuation — however many slots the feed is behind.
+  return 'UNKNOWN';
+}
 
 export type RecurringIncomeStatus =
   /** Every occurrence in the horizon was priced at the stream's established level. */
@@ -42,8 +113,17 @@ export type RecurringIncomeStatus =
   | 'AMOUNT_UNESTABLISHED'
   /** Priced, but its occurrences were not counted as spendable cash (e.g. settled outside a depository account) — by policy, not a gap. */
   | 'EXCLUDED'
-  /** Not licensed to continue (silent / ended) — correctly not projected. */
+  /** FIN-001 — schedule intact, silent for at most RECENT_SILENCE due slots; not licensed, so counted $0. BLOCKING when material. */
+  | 'RECENTLY_SILENT'
+  /** FIN-001 — schedule intact, but the feed has not reached a due slot; not licensed, so counted $0. BLOCKING when material. */
+  | 'UNKNOWN'
+  /** Discontinued (many unpaid slots), ended by the user, or no schedule — disclosed, never counted, never blocking. */
   | 'LAPSED';
+
+/** The statuses that carry an `omittedAtLastObserved` bound and make a projection INCOMPLETE when material. */
+export const OMITTED_STATUSES: ReadonlySet<RecurringIncomeStatus> = new Set(['AMOUNT_UNESTABLISHED', 'RECENTLY_SILENT', 'UNKNOWN']);
+/** A line that counted $0 for a stream the platform holds evidence for — the lines `project_cash` must present beside the figure. */
+export const isOmittedLine = (l: StreamIncomeLine): boolean => OMITTED_STATUSES.has(l.status);
 
 export interface StreamIncomeLine {
   stream: string;
@@ -59,10 +139,18 @@ export interface StreamIncomeLine {
   level: number | null;
   lastObserved: { date: string; amount: number } | null;
   latestDeviation?: { date: string; amount: number; pctFromLevel: number };
-  /** AMOUNT_UNESTABLISHED only: what the omitted occurrences would add at the last observed amount. */
+  /** OMITTED_STATUSES only: what the omitted occurrences would add at the last observed amount. */
   omittedAtLastObserved?: number;
-  /** AMOUNT_UNESTABLISHED only: whether that omission reaches MATERIALITY (unsizable ⇒ material). */
+  /** OMITTED_STATUSES only: whether that omission reaches MATERIALITY (unsizable ⇒ material). */
   material?: boolean;
+  /**
+   * FIN-001 — RECENTLY_SILENT / UNKNOWN / LAPSED: the silence, in the engine's
+   * own numbers, so prose never has to count. `unsatisfiedOccurrences` is the
+   * number of due slots since the last satisfied one that no settlement paid
+   * (observed misses + slots the feed could not see); `ledgerObservedThrough`
+   * is how far the feed looked.
+   */
+  silence?: { lastSatisfiedOccurrence: string | null; unsatisfiedOccurrences: number; ledgerObservedThrough: string | null };
   /** PRESENT_LATEST_DEVIATES only: what the counted payments would add if the newest amount were the level. */
   ifLatestIsNewLevel?: { perPayment: number; total: number };
 }
@@ -88,8 +176,6 @@ export interface IncomeCompletenessInput {
   /** The projection's opening cash — the base MATERIALITY is a share of (with counted income). */
   openingCash: number;
 }
-
-const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
  * When an omission changes what the figure IS. An omitted stream is ALWAYS listed;
@@ -130,9 +216,21 @@ export function incomeCompleteness(input: IncomeCompletenessInput): IncomeComple
     const lastObserved = last ? { date: last.dateISO, amount: last.value } : null;
     const level = s.amount?.assertable ? s.amount.value : null;
     const deviation = s.amount?.assertable ? s.amount.latestDeviation : undefined;
-    const omitted = own.length - counted.length;
+    const continuation = continuationOf(s);
 
-    const status: RecurringIncomeStatus = !s.projectionEligible ? 'LAPSED'
+    // FIN-001 — an unlicensed stream generated NO events, so `own` is empty for
+    // it. Its occurrences in the horizon are the schedule's: every slot of its
+    // intact cadence inside [from, to] after the last one a settlement paid —
+    // the same filter the licensed generator applies, minus the licence. That
+    // count sizes the OMISSION; it is never expected cash.
+    const unlicensedSlots = continuation !== 'CURRENT' && isCadence(s.cadence)
+      ? occurrencesBetween(s.cadence, fromISO, toISO)
+        .filter((d) => s.activity.lastSatisfiedOccurrenceISO === null || d > s.activity.lastSatisfiedOccurrenceISO!)
+      : [];
+    const occurrencesInHorizon = continuation === 'CURRENT' ? own.length : unlicensedSlots.length;
+    const omitted = continuation === 'CURRENT' ? own.length - counted.length : unlicensedSlots.length;
+
+    const status: RecurringIncomeStatus = continuation !== 'CURRENT' ? continuation
       : omitted > 0 ? (level === null ? 'AMOUNT_UNESTABLISHED' : 'EXCLUDED')
       : deviation ? 'PRESENT_LATEST_DEVIATES' : 'PRESENT';
 
@@ -140,7 +238,7 @@ export function incomeCompleteness(input: IncomeCompletenessInput): IncomeComple
       stream: s.label,
       role: s.role === FlowRole.INTEREST ? 'INTEREST' : 'INCOME',
       status,
-      occurrencesInHorizon: own.length,
+      occurrencesInHorizon,
       counted: counted.length,
       projectedTotal: round2(projectedTotal),
       level,
@@ -148,18 +246,23 @@ export function incomeCompleteness(input: IncomeCompletenessInput): IncomeComple
       ...(deviation ? { latestDeviation: { date: deviation.dateISO, amount: deviation.value, pctFromLevel: deviation.pctFromLevel },
         ifLatestIsNewLevel: { perPayment: round2(deviation.value - (level ?? 0)),
           total: round2((deviation.value - (level ?? 0)) * counted.length) } } : {}),
-      ...(status === 'AMOUNT_UNESTABLISHED' && lastObserved
+      ...(OMITTED_STATUSES.has(status) && lastObserved
         ? { omittedAtLastObserved: round2(omitted * lastObserved.amount) } : {}),
+      ...(continuation !== 'CURRENT' ? { silence: {
+        lastSatisfiedOccurrence: s.activity.lastSatisfiedOccurrenceISO,
+        unsatisfiedOccurrences: (s.activity.missedOccurrences ?? 0) + (s.activity.unobservedDueOccurrences ?? 0),
+        ledgerObservedThrough: s.activity.observedThroughISO,
+      } } : {}),
     });
   }
 
   const base = Math.abs(input.openingCash) + lines.reduce((n, l) => n + l.projectedTotal, 0);
   const threshold = Math.max(MATERIALITY.FLOOR_USD, MATERIALITY.SHARE * base);
   for (const l of lines) {
-    if (l.status !== 'AMOUNT_UNESTABLISHED') continue;
+    if (!OMITTED_STATUSES.has(l.status)) continue;
     l.material = l.omittedAtLastObserved === undefined || l.omittedAtLastObserved >= threshold;
   }
-  const blocking = lines.filter((l) => l.role === 'INCOME' && l.status === 'AMOUNT_UNESTABLISHED' && l.material);
+  const blocking = lines.filter((l) => l.role === 'INCOME' && OMITTED_STATUSES.has(l.status) && l.material);
   return {
     status: blocking.length ? 'INCOMPLETE' : 'COMPLETE',
     streams: lines,

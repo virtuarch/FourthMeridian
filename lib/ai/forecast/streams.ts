@@ -120,15 +120,59 @@ const shift = (iso: string, n: number) =>
  * an observed-settled projection, and a composition test that could not supply
  * it would silently exercise the fail-closed branch instead of the real one.
  */
-export type AccountTypeReader = (accountIds: string[]) => Promise<{ id: string; type: string }[]>;
+/**
+ * FIN-001 — one account's facts, as the loader needs them.
+ *
+ * `ledgerObservedThroughISO` is the account's TRANSACTION-FEED clock: the UTC
+ * date of the last SUCCESSFUL transaction sync on its canonical connection
+ * (`Connection.lastSyncedAt` for PLAID, where the item sync IS the transaction
+ * sync; `Connection.transactionsSyncedAt` for a WALLET — the same two facts
+ * `lib/connections/space-data.ts` reports as "Transactions: Updated"). Optional,
+ * so every existing fake still satisfies the contract; absent or null means
+ * "no clock on record" and the loader falls back to the page's newest row.
+ */
+export interface AccountFacts {
+  id: string;
+  type: string;
+  ledgerObservedThroughISO?: string | null;
+}
+export type AccountTypeReader = (accountIds: string[]) => Promise<AccountFacts[]>;
+
+const isoDateOf = (d: Date | null | undefined): string | null =>
+  d instanceof Date && Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : null;
+
 /**
  * RLS-C-S3 — the production account-type reader is now a FACTORY over the client
  * this loader was handed, not a closure over an imported global. The seam is
  * unchanged for a test; what changed is that its production default can no longer
  * reach a different authority than the page read beside it.
+ *
+ * FIN-001 — it also carries the feed clock (see `AccountFacts`), read off the
+ * canonical AccountConnection's Connection in the same query, so the clock and
+ * the type cannot come from two authorities either.
  */
-const accountTypesVia = (client: ReadClient): AccountTypeReader => (accountIds) =>
-  client.financialAccount.findMany({ where: { id: { in: accountIds } }, select: { id: true, type: true } });
+const accountTypesVia = (client: ReadClient): AccountTypeReader => async (accountIds) => {
+  const rows = await client.financialAccount.findMany({
+    where: { id: { in: accountIds } },
+    select: {
+      id: true, type: true,
+      connections: {
+        where: { isCanonical: true },
+        select: { connection: { select: { provider: true, lastSyncedAt: true, transactionsSyncedAt: true } } },
+      },
+    },
+  });
+  return rows.map((r) => {
+    let through: string | null = null;
+    for (const ac of r.connections) {
+      const c = ac.connection;
+      if (!c) continue;
+      const clock = isoDateOf(c.provider === 'PLAID' ? c.lastSyncedAt : c.transactionsSyncedAt);
+      if (clock && (through === null || clock > through)) through = clock;
+    }
+    return { id: r.id, type: r.type, ledgerObservedThroughISO: through };
+  });
+};
 
 /**
  * RLS-C-S3 — `client` is REQUIRED and leading. Both production defaults below are
@@ -195,20 +239,47 @@ export async function loadForecastIncomeStreams(
   // settlements ARRIVED somewhere spendable.
   const accountIds = [...new Set(page.rows.map((r) => r.accountId))];
   const depository = new Set<string>();
+  // FIN-001 — and, from the same read, each account's transaction-feed clock.
+  const feedClock = new Map<string, string>();
   try {
     const accts = await accountTypes(accountIds);
-    for (const a of accts) if (DEPOSITORY_TYPES.has(a.type)) depository.add(a.id);
+    for (const a of accts) {
+      if (DEPOSITORY_TYPES.has(a.type)) depository.add(a.id);
+      if (a.ledgerObservedThroughISO) feedClock.set(a.id, a.ledgerObservedThroughISO);
+    }
   } catch (err) {
     // ⚠️ FAILS CLOSED: no depository set means no observed-settled licence, which
     // returns the projection to the pre-PROJECTION-1 refusal rather than
-    // guessing that a credit arrived somewhere spendable.
+    // guessing that a credit arrived somewhere spendable. No clock means the
+    // reach falls back to the page's newest row, exactly as before FIN-001.
     console.error('[ai/forecast] account-type read failed (non-fatal):', err);
   }
 
   // How far the ledger reaches, for FORECAST-2: beyond it, silence proves nothing.
-  const observedThroughISO = page.rows.length > 0
+  //
+  // ⚠️ FIN-001 — THE NEWEST INCOME ROW IS NOT HOW FAR THE FEED LOOKED. This was
+  // the newest row of the page, and the page is INCOME/INTEREST only — so for a
+  // payroll that simply had not paid yet, the "reach" was the last paycheck
+  // itself, the overdue slot read as "nobody looked" (UNKNOWN), and a feed that
+  // had looked every day since said nothing. Measured (runtime audit, 11 flat
+  // biweekly paychecks, newest slot five days overdue at as-of): UNKNOWN, not
+  // projectable, $15,000 of remaining paychecks dropped under a complete label.
+  //
+  // The feed's own clock is the fact: a successful transaction sync on the
+  // account's connection on date D means absence of a settlement before D was
+  // OBSERVED, not unobserved. So the reach is, per account, the LATER of its
+  // feed clock and the page's newest row (the pre-FIN-001 floor, still the only
+  // evidence when no clock is on record — a fake reader, a manual account), and
+  // never later than `asOfISO`: a retrospective run must not read the slots
+  // after its own standpoint as covered.
+  const pageNewestISO = page.rows.length > 0
     ? page.rows.map((r) => r.date).sort().at(-1) ?? null
     : null;
+  const observedThroughFor = (accountId: string): string | null => {
+    const clock = feedClock.get(accountId) ?? null;
+    const reach = clock && pageNewestISO ? (clock > pageNewestISO ? clock : pageNewestISO) : (clock ?? pageNewestISO);
+    return reach === null ? null : (reach > asOfISO ? asOfISO : reach);
+  };
 
   const out: ResolvedIncomeStream[] = [];
   for (const [sourceKey, g] of groups) {
@@ -217,7 +288,7 @@ export async function loadForecastIncomeStreams(
 
     const cadence = deriveCadence(dates, sourceKey);
     const activity = resolveStreamActivity({
-      cadence, settlements: dates, observedThroughISO, asOfISO });
+      cadence, settlements: dates, observedThroughISO: observedThroughFor(g.accountId), asOfISO });
     // ⚠️ A LEVEL NEEDS A SCHEDULE TO BE A LEVEL OF. FORECAST-5 takes an
     // established cadence because its regime detection walks the schedule; an
     // unknown cadence yields no amount, and that is a refusal rather than a gap

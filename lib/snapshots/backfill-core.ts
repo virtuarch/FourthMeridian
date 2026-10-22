@@ -222,6 +222,51 @@ export interface ClassifyTotals {
   totalSavings:       number;
   totalLiabilities:   number;
   totalRealAssets:    number;
+  /**
+   * FIN-005 — the classifier's unrestricted/restricted split of the SAME cash
+   * (`classifyAccounts.totalLiquid` / `totalRestrictedCash`). Optional, because
+   * the stored snapshot carries no such column; read by `computeLiquidSplit`.
+   */
+  totalLiquid?:         number;
+  totalRestrictedCash?: number;
+}
+
+/**
+ * FIN-005 — the liquid position on the HERO's basis, beside the snapshot row.
+ *
+ * The stored `netLiquid` is `cash + savings − debt` over ALL checking and
+ * savings, restricted cash INCLUDED (an HSA checking account, retirement cash).
+ * That formula is pinned as a stored-row invariant by
+ * lib/snapshots/series-integrity.core.ts, lib/snapshots/aggregate-authorisation.core.ts
+ * and the REQUIRED `check-snapshot-integrity` audit, so it cannot change
+ * without a schema-level split. `classifyAccounts.totalLiquid` — the Hero's
+ * "Available now" figure, the AI's `totalLiquid`, the runway denominator —
+ * EXCLUDES restricted cash. Runtime audit 2026-10-21: checking 10,000 + HSA
+ * checking 5,000 (restricted) + savings 2,000 ⇒ Hero 12,000 vs snapshot
+ * netLiquid/history 17,000.
+ *
+ * This function is the honest bridge: the unrestricted figure when the totals
+ * carry the split, and `null` — never a silent all-cash substitute — when they
+ * do not (a hand-built `ClassifyTotals`, a stored row read back). Persisting the
+ * split (`SpaceSnapshot.restrictedCash`) is a schema change owned elsewhere;
+ * until then the Liquidity history (lib/liquidity/cash-history.ts) plots the
+ * all-cash tier and says so.
+ */
+export interface LiquidSplit {
+  /** Unrestricted checking + savings — `classifyAccounts.totalLiquid`. */
+  liquid:         number;
+  /** Restricted checking + savings — `classifyAccounts.totalRestrictedCash`. */
+  restrictedCash: number;
+  /** `liquid − debt`: `netLiquid` on the Hero's basis. */
+  netLiquidUnrestricted: number;
+}
+export function computeLiquidSplit(c: ClassifyTotals): LiquidSplit | null {
+  if (typeof c.totalLiquid !== "number" || typeof c.totalRestrictedCash !== "number") return null;
+  return {
+    liquid:         c.totalLiquid,
+    restrictedCash: c.totalRestrictedCash,
+    netLiquidUnrestricted: c.totalLiquid - c.totalLiabilities,
+  };
 }
 
 export interface SnapshotFields {
@@ -308,9 +353,20 @@ export function computeAccountFloors(
 }
 
 /**
- * Exact same arithmetic as regenerateSpaceSnapshot (lib/snapshots/regenerate.ts)
- * so a backfilled row is internally consistent with the live "today" row.
- * realAssets is included in totalAssets/netWorth, excluded from netLiquid.
+ * THE snapshot arithmetic (regenerateSpaceSnapshot, backfill and the history
+ * writers all import this), so every row is the same computation:
+ *
+ *   total       = stocks + crypto
+ *   totalAssets = stocks + crypto + cash + savings + realAssets
+ *   netWorth    = totalAssets − debt
+ *               = stocks + crypto + cash + savings + realAssets − debt
+ *                 (FIN-015 — real assets ARE in net worth; the schema comment on
+ *                 `SpaceSnapshot.netWorth` omits them and no `realAssets` column
+ *                 is stored, so the component is a read-time residual)
+ *   netLiquid   = cash + savings − debt   — ALL checking + savings, restricted
+ *                 cash included (FIN-005; see `computeLiquidSplit`); real
+ *                 assets, investments and crypto excluded
+ *   cashOnHand  = max(cash, 0)
  */
 export function computeSnapshotFields(c: ClassifyTotals): SnapshotFields {
   const stocks     = c.totalInvestments;

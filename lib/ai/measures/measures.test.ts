@@ -203,6 +203,23 @@ console.log('\nC. monthly income — cadence vs measured');
   check('a stream that stopped paying is not a cadence basis — falls to MEASURED with its window',
     gone?.basis === 'MEASURED' && gone.window?.label === 'last 6 complete months');
   check('a stated income outranks both', resolveIncomeBaseline({ stated: 7000, streams: P.steady.streams, measured: inc })?.basis === 'STATED');
+  // FIN-001 — a recurring stream whose continuation is merely unestablished must
+  // not turn the recurring figure into a window mean in silence.
+  const silentBi: IncomeStreamEvidence = { ...stream('BIWEEKLY', 3000, false), continuation: 'RECENTLY_SILENT' };
+  const only = resolveIncomeBaseline({ streams: [silentBi], measured: inc });
+  check('FIN-001: the only stream recently silent ⇒ MEASURED, but `incomplete` names it with its cadence figure (6,500) and the note says INCOMPLETE',
+    only?.basis === 'MEASURED' && only.incomplete?.status === 'INCOMPLETE' && only.incomplete.streams.length === 1
+      && only.incomplete.streams[0].continuation === 'RECENTLY_SILENT' && only.incomplete.omittedMonthly === 6500
+      && only.incomplete.cadenceIfContinuing === 6500 && /INCOMPLETE/.test(only.note), JSON.stringify(only));
+  const beside = resolveIncomeBaseline({ streams: [stream('MONTHLY', 1000), { ...stream('BIWEEKLY', 3000, false), continuation: 'UNKNOWN' }], measured: inc });
+  check('FIN-001: beside a live stream the basis stays CADENCE at the live total (1,000) and `cadenceIfContinuing` adds the unobserved stream (7,500)',
+    beside?.basis === 'CADENCE' && beside.amount === 1000 && beside.incomplete?.cadenceIfContinuing === 7500
+      && beside.incomplete.streams[0].continuation === 'UNKNOWN', JSON.stringify(beside));
+  const lapsed = resolveIncomeBaseline({ streams: [{ ...stream('BIWEEKLY', 3000, false), continuation: 'LAPSED' }], measured: inc });
+  check('FIN-001: a LAPSED stream (or one with no continuation) falls to MEASURED with no incompleteness, as before',
+    lapsed?.basis === 'MEASURED' && lapsed.incomplete === undefined && gone?.incomplete === undefined);
+  check('FIN-001: a recently silent stream never raises the savings rate — derived figures still see no recurring basis',
+    'unavailable' in derive({ expense: resolveExpenseBaselineFromEvidence({ measured: run(P.steady.rows, 'spending', { completeMonths: 6 }) }), income: only, liquid: 0 }).savingsRate);
   const ret = run(P.retiree.rows, 'income', { completeMonths: 6 });
   check('retiree: transfers-in are NOT income; only the 120 interest is measured', ret.perCompleteMonth === 120, String(ret.perCompleteMonth));
   const irr = run(P.irregular.rows, 'income', { completeMonths: 6 });
