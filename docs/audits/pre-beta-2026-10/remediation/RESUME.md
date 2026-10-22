@@ -13,7 +13,7 @@ Canonical state lives on the local branch `remediation/beta-1` (worktree `/Users
 | Branch | Merged |
 |---|---|
 | f-release-eng, a-security, b-financial, e-observability, d-ai-reliability | yes |
-| c-idempotency | pending (agent working) |
+| c-idempotency | yes (`46a31cd`) |
 | g-hygiene | yes (`d736943`) |
 
 ## Next steps (queue)
