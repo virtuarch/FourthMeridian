@@ -129,6 +129,13 @@ const STAGE_DOMAIN: Record<string, SyncIssueDomain> = {
   // carries NEITHER. No member action helps when two accounts claim one provider
   // identity, and the member must not be told to reconnect their bank over it.
   "reparenting-refused":          "transactions",
+  // FIN-009 — same subsystem and the same posture as `reparenting-refused`: a
+  // synced row's fingerprint matched more than one stored row, so the sync bound
+  // its provider id to none of them and stored it as a distinct row. The envelope
+  // carries no plaidTransactionId and no `transaction-persist` stage, so it is
+  // never customer-actionable; it is critical because a possible duplicate in
+  // bank-transaction data needs an operator's eyes.
+  "fingerprint-adoption-ambiguous": "transactions",
   // lib/investments/*
   "opening-position-repair":      "investments",
   "investment-import-repair":     "investments",
@@ -475,6 +482,7 @@ const OPERATION_PHRASE: Record<OperationKey, string> = {
   "transaction-persist":          "Storing bank transactions",
   "event-identity-persist":       "Linking a transaction to its logical event",
   "reparenting-refused":          "Confirming which account a transaction belongs to",
+  "fingerprint-adoption-ambiguous": "Matching a synced transaction to an existing one",
 
   // Investments — six operations that otherwise share one label.
   "investment-events-fetch":      "Retrieving investment activity",
