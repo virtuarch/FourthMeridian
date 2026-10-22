@@ -61,6 +61,7 @@
 
 import { NextRequest, NextResponse }  from "next/server";
 import { requireUser }                from "@/lib/session";
+import { limitByUser }                from "@/lib/rate-limit";
 import { requireSpaceAction }         from "@/lib/spaces/authorize";
 import { getSpaceContext }            from "@/lib/space";
 import { getTransactionDetail }       from "@/lib/data/transactions";
@@ -87,6 +88,10 @@ export async function POST(
 
   const [user, err] = await requireUser();
   if (err) return err;
+
+  // UI-005 — each correction mints a durable rule; bound the rate per user.
+  const limited = await limitByUser(user.id, "transaction-correct", { limit: 60, windowSec: 3600 });
+  if (limited) return limited;
 
   const { spaceId } = await getSpaceContext();
 
