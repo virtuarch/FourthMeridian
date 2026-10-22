@@ -216,7 +216,8 @@ export type OperationalLedger =
   | "RefreshEndpointAccountCoverage"
   | "ProviderCall"
   | "SyncIssue"
-  | "SyncIssueOccurrence";
+  | "SyncIssueOccurrence"
+  | "AiInvocation";
 
 /**
  * WHICH write failed.

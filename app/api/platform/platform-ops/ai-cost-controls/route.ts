@@ -59,7 +59,7 @@ function respond(result: AiCostControlsMutationResult) {
 export async function PATCH(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
   if (err) return err;
-  const limited = await limitByUser(auth.user.id, "platform-policy", { limit: 30, windowSec: 60 });
+  const limited = await limitByUser(auth.user.id, "platform-policy-ai-cost-controls", { limit: 30, windowSec: 60 });
   if (limited) return limited;
 
   const body = await req.json().catch(() => null) as { changes?: unknown; reason?: unknown } | null;

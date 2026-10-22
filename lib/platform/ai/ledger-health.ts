@@ -57,7 +57,7 @@ export const LEDGER_CONSECUTIVE_TRIP = 2;
  * the row is; the phase "providerCall" carries the right effect sentence ("this
  * provider attempt is unrecorded, so … counts … are understated").
  */
-const AI_LEDGER = "AiInvocation" as OperationalLedger;
+const AI_LEDGER: OperationalLedger = "AiInvocation";
 
 export interface LedgerHealthWriteClient {
   rateLimit?: {
