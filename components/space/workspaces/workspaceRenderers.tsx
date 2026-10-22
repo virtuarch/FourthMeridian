@@ -35,6 +35,7 @@ import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { ConversionContext } from "@/lib/money/types";
 import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
 import type { SpaceAccount } from "@/lib/space/dashboard-types";
+import type { SpaceReadErrors, SpaceReadKey } from "@/lib/space/use-space-data";
 import type { Snapshot, Transaction } from "@/types";
 
 /**
@@ -67,6 +68,9 @@ export interface WorkspaceRenderCtx {
    *  the transaction-derived workspaces surface an honest "history incomplete" note
    *  when the TX-2 read was capped; null/complete ⇒ no indicator. */
   transactionsMeta:        TransactionsCoverage | null;
+  /** UI-006 — the shared reads that FAILED (never coerced to empty) + their retry. */
+  readErrors?:             SpaceReadErrors;
+  onRetryRead?:            (key: SpaceReadKey) => void;
   widgetCtx?:              ConversionContext;
   txCtx?:                  ConversionContext;
 
@@ -199,6 +203,8 @@ const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => Reac
       onSwitchLens={ctx.onSwitchLens}
       onEnvelopeChange={ctx.onEnvelopeChange}
       backfillInProgress={ctx.snapshotsBackfilling}
+      snapshotsError={ctx.readErrors?.snapshots?.message ?? null}
+      onRetrySnapshots={ctx.onRetryRead ? () => ctx.onRetryRead?.("snapshots") : undefined}
     />
   ),
   cashFlow: (ctx) => (
@@ -212,6 +218,8 @@ const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => Reac
       compareTo={ctx.historicalCompareTo}
       onSelectPeriod={ctx.onSelectCashFlowPeriod}
       onEnvelopeChange={ctx.onEnvelopeChange}
+      transactionsError={ctx.readErrors?.transactions?.message ?? null}
+      onRetryTransactions={ctx.onRetryRead ? () => ctx.onRetryRead?.("transactions") : undefined}
     />
   ),
   // MARKETS (skeleton) — five views, each an honest empty state; no data needs.

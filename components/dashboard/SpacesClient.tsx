@@ -46,7 +46,7 @@ import {
   Plus, Globe, Lock, Users, Crown, Mail, Loader2, Check, X,
   Pencil, ChevronRight, ChevronDown, Home, Briefcase, Car, Plane, TrendingUp,
   Wrench, CreditCard, Target, LayoutDashboard, MoreHorizontal,
-  Sunset, Building2, Shield, ArrowUpRight,
+  Sunset, Building2, Shield, ArrowUpRight, AlertTriangle,
 } from "lucide-react";
 import { Surface, Figure } from "@/components/atlas/Surface";
 import { OverlaySurface } from "@/components/atlas/OverlaySurface";
@@ -768,9 +768,12 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
 function InviteRow({ invite, onAction }: { invite: Invite; onAction: () => void }) {
   const [busy, setBusy] = useState<"accept" | "decline" | null>(null);
   const [done, setDone] = useState(false);
+  // UI-006 — a refused accept/decline used to leave the row unchanged in silence.
+  const [error, setError] = useState<string | null>(null);
 
   async function act(action: "accept" | "decline") {
     setBusy(action);
+    setError(null);
     try {
       const res = await fetch(`/api/spaces/${invite.space.id}/invites/${invite.id}`, {
         method: "PATCH",
@@ -778,6 +781,12 @@ function InviteRow({ invite, onAction }: { invite: Invite; onAction: () => void 
         body: JSON.stringify({ action }),
       });
       if (res.ok) { setDone(true); onAction(); }
+      else {
+        const d = await res.json().catch(() => ({}));
+        setError(d.error ?? `Couldn't ${action} this invite. Try again.`);
+      }
+    } catch {
+      setError(`Couldn't reach Fourth Meridian — the invite was not ${action === "accept" ? "accepted" : "declined"}.`);
     } finally {
       setBusy(null);
     }
@@ -792,14 +801,16 @@ function InviteRow({ invite, onAction }: { invite: Invite; onAction: () => void 
         <p className="text-xs text-[var(--text-muted)] truncate">
           Invited by {invite.invitedBy.name ?? `@${invite.invitedBy.username}`} · {ROLE_LABELS[invite.role] ?? invite.role}
         </p>
+        {error && <p role="alert" className="mt-0.5 text-xs text-[var(--coral-400)]">{error}</p>}
       </div>
       <button
         onClick={() => act("decline")}
         disabled={!!busy}
         className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] disabled:opacity-50 transition-colors shrink-0"
         title="Decline"
+        aria-label={`Decline invite to ${displaySpaceName(invite.space.name)}`}
       >
-        {busy === "decline" ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
+        {busy === "decline" ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <X size={14} aria-hidden />}
       </button>
       <GlassButton
         onClick={() => act("accept")}
@@ -921,6 +932,8 @@ export function SpacesClient({
 
   const [activeId, setActiveId]               = useState<string | null>(initialActiveId);
   const [switchingId, setSwitchingId]          = useState<string | null>(null);
+  // UI-006 — a refused Space switch used to do nothing visible.
+  const [switchError, setSwitchError]          = useState<string | null>(null);
   const [managingSpace, setManagingSpace]      = useState<SpaceItem | null>(null);
   const [showAllSpaces, setShowAllSpaces]      = useState(false);
   const [viewingPublicSpace, setViewingPublicSpace] = useState<SpaceItem | null>(null);
@@ -968,6 +981,7 @@ export function SpacesClient({
 
   const handleSwitch = useCallback(async (spaceId: string) => {
     setSwitchingId(spaceId);
+    setSwitchError(null);
     try {
       const res = await fetch("/api/space/switch", {
         method:  "POST",
@@ -985,7 +999,12 @@ export function SpacesClient({
         // active-Space cookie (parity with Sidebar.handleSwitch).
         router.refresh();
         router.push("/dashboard");
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setSwitchError(d.error ?? "Couldn't open that Space. Try again.");
       }
+    } catch {
+      setSwitchError("Couldn't reach Fourth Meridian — the Space was not opened.");
     } finally {
       setSwitchingId(null);
     }
@@ -1039,6 +1058,12 @@ export function SpacesClient({
         <SpacesHeader onCreateSpace={() => window.dispatchEvent(new CustomEvent(OPEN_CREATE_SPACE_EVENT))} />
 
         {pendingInvites.length > 0 && <InviteBanner invites={pendingInvites} onAction={refresh} />}
+
+        {switchError && (
+          <p role="alert" className="mb-3 flex items-center gap-1.5 text-xs text-[var(--coral-400)]">
+            <AlertTriangle size={12} aria-hidden /> {switchError}
+          </p>
+        )}
 
         {/* A LIST, not a grid — rooms you already own, on one reading axis
             (prototype Launcher.tsx). Each row is a solid Atlas Surface; the

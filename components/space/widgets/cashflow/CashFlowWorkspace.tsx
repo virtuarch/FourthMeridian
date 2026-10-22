@@ -51,6 +51,7 @@ import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/
 import { Surface, Block } from "@/components/atlas/Surface";
 import { TransactionCoverageNote } from "@/components/space/trust/TransactionCoverageNote";
 import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
+import { SpaceReadFailure } from "@/components/space/SpaceReadFailure";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { CashFlowSummaryWidget } from "@/components/space/widgets/CashFlowSummaryWidget";
 import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";
@@ -97,6 +98,8 @@ export function CashFlowWorkspace({
   compareTo,
   onSelectPeriod,
   onEnvelopeChange,
+  transactionsError = null,
+  onRetryTransactions,
 }: {
   transactions?:   Transaction[] | null;
   /** TX-2A — coverage state for an honest "history incomplete" caveat when the
@@ -115,6 +118,11 @@ export function CashFlowWorkspace({
    *  own transactions + period) and emits the resulting trust envelope; the host
    *  merely relays it to the shell chip (mirrors Wealth/Investments/Liquidity). */
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
+  /** UI-006 — the shared transaction read FAILED (the sentence to show), or null.
+   *  With nothing loaded it replaces the workspace (never an endless "Loading" or
+   *  "No money moved"); over stale rows it is a one-line notice. */
+  transactionsError?: string | null;
+  onRetryTransactions?: () => void;
 }) {
   // Workspace-local semantic slice — the perspective toggle + measure filter,
   // relocated here from the host. The Hero / History widgets host the selector
@@ -321,8 +329,20 @@ export function CashFlowWorkspace({
     );
   }
 
+  // UI-006 — the read failed and nothing is loaded: say so instead of loading forever.
+  if (transactionsError && transactions == null) {
+    return (
+      <div className="min-w-0">
+        <SpaceReadFailure what="cash flow activity" message={transactionsError} onRetry={onRetryTransactions} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8 sm:space-y-10 min-w-0">
+      {transactionsError && (
+        <SpaceReadFailure variant="inline" what="cash flow activity" message={transactionsError} onRetry={onRetryTransactions} />
+      )}
       {/* ① Summary — the editorial lede (Net + delta + perspective toggle)
            over the headless breakdown body (Cash In/Out tiles + movement context). */}
       <section id="cashflow-summary" className="scroll-mt-20">
