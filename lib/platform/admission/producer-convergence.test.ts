@@ -62,8 +62,6 @@ const PRODUCERS = [
     channel: "http", migrated: true, fanout: false, slice: "OPS-2D-3" },
   { file: "app/api/plaid/refresh/route.ts",
     channel: "http", migrated: true, fanout: true,  slice: "OPS-2D-4" },
-  { file: "app/api/plaid/sync/route.ts",
-    channel: "http", migrated: true, fanout: true,  slice: "OPS-2D-4" },
   { file: "app/api/plaid/resume-sync/route.ts",
     channel: "http", migrated: true, fanout: false, slice: "OPS-2D-4" },
   { file: "app/api/plaid/investments/enable/route.ts",
@@ -116,7 +114,8 @@ function main() {
         // the shared wrapper may receive an already-taken verdict instead
         (p.channel === "shared" && /admission\s*\?\?\s*\(await admitOperationalWork/.test(src)));
     }
-    check(`the census holds exactly 8 producers (got ${PRODUCERS.length})`, PRODUCERS.length === 8);
+    // ARCH-007 (2026-10-22): 8 → 7 — POST /api/plaid/sync was deleted (no consumer).
+    check(`the census holds exactly 7 producers (got ${PRODUCERS.length})`, (PRODUCERS.length as number) === 7);
     check("all 8 are migrated", PRODUCERS.every((p) => p.migrated));
   }
 
@@ -230,7 +229,6 @@ function main() {
     // turn the execution ledger into a request log.
     for (const f of [
       "app/api/plaid/refresh/route.ts",
-      "app/api/plaid/sync/route.ts",
       "app/api/plaid/resume-sync/route.ts",
       "app/api/plaid/investments/enable/route.ts",
     ]) {

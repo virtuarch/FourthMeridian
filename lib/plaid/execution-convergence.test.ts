@@ -38,7 +38,6 @@ const CONVERGED = [
   { file: "app/api/plaid/refresh/route.ts", trigger: "MANUAL", profile: "FULL_REFRESH", pre: true },
   { file: "jobs/sync-banks.ts", trigger: "CRON", profile: "FULL_REFRESH", pre: true },
   { file: "app/api/plaid/investments/enable/route.ts", trigger: "MANUAL", profile: "FULL_REFRESH", pre: false },
-  { file: "app/api/plaid/sync/route.ts", trigger: "MANUAL", profile: "TRANSACTIONS_ONLY", pre: false },
   { file: "app/api/platform/platform-ops/connections/[id]/resync/route.ts", trigger: "OPERATOR", profile: "TRANSACTIONS_ONLY", pre: false },
 ] as const;
 
@@ -99,7 +98,6 @@ function main() {
     // runFullRefresh runner. The check is positional: the authority call must
     // appear before the engine call in the file.
     const ROUTES_USING_ENGINE = [
-      "app/api/plaid/sync/route.ts",
       "app/api/platform/platform-ops/connections/[id]/resync/route.ts",
       "app/api/plaid/investments/enable/route.ts",
     ];
@@ -122,9 +120,8 @@ function main() {
     check("operator resync keeps its audit write", /CONNECTION_RESYNC_TRIGGERED/.test(resync));
     check("operator resync keeps health classification on failure", /classifyPlaidErrorForHealth/.test(resync));
 
-    const sync = strip("app/api/plaid/sync/route.ts");
-    check("/sync keeps its per-item cooldown partition", /checkManualRefreshCooldown/.test(sync) && /markManyManualRefreshed/.test(sync));
-    check("/sync keeps per-item isolation (one failure never blocks siblings)", /catch\s*\(e\)/.test(sync) && /continue;/.test(sync));
+    // ARCH-007 (2026-10-22) — POST /api/plaid/sync (the never-wired manual
+    // "Sync Now" endpoint) is DELETED; its pins went with it.
 
     const resume = strip("app/api/plaid/resume-sync/route.ts");
     check("resume-sync keeps its AGE gate, not a cooldown", /RESUME_MIN_AGE_MS/.test(resume) && !/checkManualRefreshCooldown/.test(resume));
@@ -143,7 +140,6 @@ function main() {
     // The three transactions-only paths must record a TRANSACTIONS stage and
     // must NOT claim balances/holdings/snapshot they never ran.
     for (const f of [
-      "app/api/plaid/sync/route.ts",
       "app/api/platform/platform-ops/connections/[id]/resync/route.ts",
     ]) {
       const src = strip(f);

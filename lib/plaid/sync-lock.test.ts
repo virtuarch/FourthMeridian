@@ -246,7 +246,6 @@ async function main(): Promise<void> {
     // resume-sync is not listed here: it delegates to syncPlaidItemFromWebhook,
     // which claims this same lock (asserted for webhook-sync below).
     const lockedCallers = [
-      "app/api/plaid/sync/route.ts",
       "app/api/plaid/refresh/route.ts",
       "app/api/plaid/investments/enable/route.ts",
       "jobs/sync-banks.ts",

@@ -458,7 +458,6 @@ async function run(): Promise<void> {
     "jobs/sync-banks.ts",
     "lib/plaid/refresh.ts",
     "app/api/plaid/refresh/route.ts",
-    "app/api/plaid/sync/route.ts",
     "lib/plaid/backgroundHistorySync.ts",
   ];
   for (const f of FAILURE_SITES) {

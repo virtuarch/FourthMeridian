@@ -69,7 +69,6 @@ const surfaces: [string, string][] = [
   ["app/api/plaid/link-token/route.ts",         'limitByUser(user.id, "plaid-link-token"'],
   ["app/api/plaid/exchange-token/route.ts",     'limitByUser(userId, "plaid-exchange-token"'],
   ["app/api/plaid/refresh/route.ts",            'limitByUser(user.id, "plaid-refresh"'],
-  ["app/api/plaid/sync/route.ts",               'limitByUser(user.id, "plaid-sync"'],
   ["app/api/auth/pre-login/route.ts",           'checkIpLimitStrict(req, "pre-login"'], // PS-4A fail-closed
   ["app/api/health/route.ts",                   'limitByIp(req, "health"'],
 ];

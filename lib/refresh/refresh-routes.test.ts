@@ -43,7 +43,7 @@ console.log("lib/refresh — no ambient authority, no second execution path");
 
 console.log("Plaid routes use the entitled cooldown");
 {
-  for (const f of ["app/api/plaid/refresh/route.ts", "app/api/plaid/sync/route.ts"]) {
+  for (const f of ["app/api/plaid/refresh/route.ts"]) {
     const s = strip(f);
     check(`${f}: loads entitlements through a tenant phase`, /loadEffectiveEntitlements\(tx,\s*user\.id\)/.test(s));
     check(`${f}: every cooldown check passes the entitled window`, !/checkManualRefreshCooldown\([^,)]*\)/.test(s) && /checkManualRefreshCooldown\([^)]*cooldownMs\)/.test(s));
