@@ -15,6 +15,16 @@
  */
 
 import Papa from "papaparse";
+
+// SEC-004 — THE one serialiser call. `escapeFormulae: true` prefixes a cell that
+// begins with `=`, `+`, `-` or `@` with a quote so a spreadsheet opens it as
+// text, never as a formula (CWE-1236). Cells carry Plaid descriptors and
+// user-typed account names — runtime-confirmed: a manual account named
+// `=RTVINJECT()+1` was written verbatim into accounts.csv. Every export set
+// below must serialise through this helper; lib/export/csv.test.ts pins it.
+function unparse(rows: Record<string, unknown>[]): string {
+  return Papa.unparse(rows, { escapeFormulae: true });
+}
 import { describeRowNature } from "@/lib/transactions/flow-presentation";
 import type {
   ExportAccount,
@@ -25,7 +35,7 @@ import type {
 
 /** transactions.csv — importer-compatible columns first, context columns after. */
 export function toTransactionsCsv(rows: ExportTransaction[]): string {
-  return Papa.unparse(
+  return unparse(
     rows.map((r) => ({
       // L8-B — `date` is the ECONOMIC date (when it happened); `posting_date` is
       // provenance. Both labelled explicitly so a downloaded file is never
@@ -82,7 +92,7 @@ export function toTransactionsCsv(rows: ExportTransaction[]): string {
 
 /** accounts.csv */
 export function toAccountsCsv(rows: ExportAccount[]): string {
-  return Papa.unparse(
+  return unparse(
     rows.map((r) => ({
       id:              r.id,
       name:            r.name,
@@ -109,7 +119,7 @@ export function toAccountsCsv(rows: ExportAccount[]): string {
  */
 export function toHoldingsCsv(rows: ExportHolding[]): string {
   const blank = (n: number | null): number | string => (n == null ? "" : n);
-  return Papa.unparse(
+  return unparse(
     rows.map((r) => ({
       account_id:         r.accountId,
       symbol:             r.symbol ?? "",
@@ -130,7 +140,7 @@ export function toHoldingsCsv(rows: ExportHolding[]): string {
 
 /** snapshots.csv */
 export function toSnapshotsCsv(rows: ExportSnapshot[]): string {
-  return Papa.unparse(
+  return unparse(
     rows.map((r) => ({
       space_id:          r.spaceId,
       space_name:        r.spaceName,
