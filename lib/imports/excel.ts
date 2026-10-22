@@ -47,6 +47,7 @@
  */
 
 import ExcelJS from "exceljs";
+import { readZipBounds, IMPORT_MAX_XLSX_INFLATED_BYTES } from "@/lib/imports/zip-bounds";
 import {
   resolveColumns,
   mapCategory,
@@ -308,6 +309,16 @@ export async function parseExcelFile(
   explicitMapping?: Record<string, string | null | undefined>,
   savedProfiles?: SavedMappingProfileLite[]
 ): Promise<ParsedExcel | { error: string; rawHeaders?: string[] }> {
+  // IDEMP-001 d / SEC-007 — bound the INFLATED size before ExcelJS inflates
+  // anything. The upload byte cap bounds the compressed size only.
+  const bounds = readZipBounds(buffer);
+  if (!bounds.ok) {
+    return {
+      error: bounds.reason === "too-large" || bounds.reason === "too-many-parts"
+        ? `Workbook is too large to import (inflated size over ${Math.floor(IMPORT_MAX_XLSX_INFLATED_BYTES / (1024 * 1024))} MB or too many parts).`
+        : "Could not parse file as an Excel (.xlsx) workbook.",
+    };
+  }
   const workbook = new ExcelJS.Workbook();
   try {
     // Cast needed: exceljs's own dependency fast-csv pins @types/node@^14 as a

@@ -76,6 +76,7 @@ import { assertEveryObservedRowWasWritten }        from "@/lib/db/conditional-wr
 import { requireSpaceRole }                   from "@/lib/session";
 import { withApiHandler, getClientIp }            from "@/lib/api";
 import { emitDomainEvent, dispatchDomainEvent }   from "@/lib/events/emit";
+import { decideMemberRemoval }                    from "./leave-guard";
 import type { DomainEvent }                       from "@/lib/events/types";
 
 /**
@@ -212,6 +213,23 @@ export const DELETE = withApiHandler(async (
   // Must be self or an admin/owner
   if (!isSelf && !isPriv) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  // IDEMP-010 — an OWNER leaving must not strand the Space. A PERSONAL Space
+  // is the user's own and cannot be left at all (POST /api/accounts/manual
+  // 500'd on an ownerless one); a SHARED Space keeps at least one ACTIVE
+  // OWNER — transfer ownership first.
+  if (targetMembership.role === SpaceMemberRole.OWNER) {
+    const guard = await withTenantDb(user.id, async (tx) => ({
+      space: await tx.space.findUnique({ where: { id: spaceId }, select: { type: true } }),
+      otherOwners: await tx.spaceMember.count({
+        where: { spaceId, role: SpaceMemberRole.OWNER, status: SpaceMemberStatus.ACTIVE, userId: { not: targetUserId } },
+      }),
+    }));
+    const verdict = decideMemberRemoval({
+      targetRole: targetMembership.role, spaceType: guard.space?.type ?? null, otherActiveOwners: guard.otherOwners,
+    });
+    if (!verdict.ok) return NextResponse.json({ error: verdict.error }, { status: verdict.status });
   }
 
   const now       = new Date();

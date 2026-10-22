@@ -181,9 +181,16 @@ export interface JobLedgerFact {
   lastStatus: string | null;
   /** The newest COMPLETED run's summary (for a primary's `deferred` count). */
   lastSummary?: unknown;
+  /**
+   * IDEMP-003 / OPS-006 — set by the wake when it just finalised this job's
+   * crashed `running` row as failed/"stale". The job is then DUE regardless of
+   * cadence: a killed slot is retried at the next wake, not after a full
+   * cadence (the OPS-001 "24 hours later" shape).
+   */
+  lastStale?: boolean;
 }
 
-export type JobDueReason = "NEVER_RAN" | "CADENCE_ELAPSED" | "PRIMARY_DEFERRED";
+export type JobDueReason = "NEVER_RAN" | "CADENCE_ELAPSED" | "PRIMARY_DEFERRED" | "STALE_RUN_FINALISED" | "SELF_CONTINUATION";
 export type JobSkipReason = "NOT_YET_DUE" | "IN_FLIGHT" | "NO_DEFERRED_WORK" | "PRIMARY_NOT_RUN" | "CONTINUATION_TOO_SOON" | "ALREADY_CONTINUED";
 
 export type JobDueDecision =
@@ -216,13 +223,14 @@ export function primaryReportedDeferred(summary: unknown): boolean {
  * CONTINUATION_DELAY_MS ago, and the continuation has not run since.
  */
 export function decideJobDue(
-  job: Pick<ScheduledJobFacts, "name" | "continuationOf">,
+  job: Pick<ScheduledJobFacts, "name" | "continuationOf" | "selfContinues">,
   policy: Pick<JobCadencePolicy, "hours">,
   fact: JobLedgerFact | null | undefined,
   now: Date,
   primaryFact?: JobLedgerFact | null,
 ): JobDueDecision {
   if (isInFlight(fact, now)) return { due: false, reason: "IN_FLIGHT", nextDueAt: null };
+  if (fact?.lastStale) return { due: true, reason: "STALE_RUN_FINALISED", dueSinceMs: 0 };
 
   if (job.continuationOf) {
     if (!primaryFact?.lastStartedAt) return { due: false, reason: "PRIMARY_NOT_RUN", nextDueAt: null };
@@ -236,6 +244,10 @@ export function decideJobDue(
   }
 
   if (!fact?.lastStartedAt) return { due: true, reason: "NEVER_RAN", dueSinceMs: 0 };
+  if (job.selfContinues && fact.lastStatus === "succeeded" && primaryReportedDeferred(fact.lastSummary)) {
+    const earliest = fact.lastStartedAt.getTime() + CONTINUATION_DELAY_MS;
+    if (now.getTime() >= earliest) return { due: true, reason: "SELF_CONTINUATION", dueSinceMs: now.getTime() - earliest };
+  }
   const at = nextDueAt(fact, policy)!;
   if (now.getTime() >= at.getTime()) return { due: true, reason: "CADENCE_ELAPSED", dueSinceMs: now.getTime() - at.getTime() };
   return { due: false, reason: "NOT_YET_DUE", nextDueAt: at };

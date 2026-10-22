@@ -58,6 +58,7 @@ import { dualWriteProviderAccountIdentity, ProviderIdentityConflictError } from 
 import { deploymentEnvironment } from "@/lib/env";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { recordExchangeAccountCollision } from "@/lib/plaid/exchange-collision";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -377,124 +378,56 @@ export async function performPlaidTokenExchange(
   const importedIds: string[] = [];
 
   for (const acct of plaidAccounts) {
-    const type             = mapAccountType(acct.type, acct.subtype);
-    // 2026-10-07 — the subtype mapAccountType reduces away, kept as evidence.
-    const providerSubtype  = normalizeProviderSubtype(acct.subtype);
-    const balance          = acct.balances.current ?? 0;
-    const availableBalance = acct.balances.available ?? undefined;
-    const creditLimit      = acct.balances.limit ?? undefined;
+    // IDEMP-008 — PER-ACCOUNT ISOLATION FOR A UNIQUENESS COLLISION. A
+    // plaidAccountId (or other unique) P2002 here used to escape the loop and
+    // fail the whole exchange AFTER the Item row was written ACTIVE — a
+    // half-imported Item with no recorded issue. Now the one account is
+    // skipped, excluded from `importedIds` (never scheduled for a sync), and a
+    // SyncIssue is recorded for the operator. Every OTHER error still escapes,
+    // as before (authority refusals are loud on purpose — see below).
+    try {
+      const type             = mapAccountType(acct.type, acct.subtype);
+      // 2026-10-07 — the subtype mapAccountType reduces away, kept as evidence.
+      const providerSubtype  = normalizeProviderSubtype(acct.subtype);
+      const balance          = acct.balances.current ?? 0;
+      const availableBalance = acct.balances.available ?? undefined;
+      const creditLimit      = acct.balances.limit ?? undefined;
 
-    // ── Resolve FinancialAccount ──────────────────────────────────────────────
-    // 1. PROV-2 — identity→legacy resolve via the canonical resolver (returns
-    //    soft-deleted rows too, so the restore branch below can revive them).
-    // 2. Fingerprint match against archived accounts.
-    // 3. Create new row if neither lookup finds anything.
-    // ── RLS-ACC-S5 — A TENANT PHASE, AND A DELIBERATELY SHORT ONE ──────────
-    // The resolver's client is now required and leading. This path is HTTP on
-    // both of its two callers (requireUser for the customer flow,
-    // requireSystemAdmin for Expand History), and `userId` is the INSTITUTION
-    // OWNER in both — the admin route resolves `oldItem.userId` and passes it
-    // precisely so every downstream write lands in the target user's tenancy,
-    // not the operator's. So this is the target user's own identity and the
-    // tenant role is the right authority for the lookup.
-    //
-    // ⚠️ THE PHASE WRAPS THE LOOKUP AND NOTHING ELSE, ON PURPOSE. This loop
-    // interleaves Plaid HTTP calls with database work, and `withTenantDb` is a
-    // SECURITY BOUNDARY, not a request-lifetime container — widening it to cover
-    // the `financialAccount.update` below would hold a pooled connection across
-    // a provider round trip. The existing boundaries are respected rather than
-    // stretched to make threading easier.
-    //
-    // ⚠️ AND IT NARROWS WHAT CAN BE FOUND. Under fm_app the
-    // `ProviderAccountIdentity` lookup sees only the caller's own subtree, so a
-    // plaidAccountId held by ANOTHER owner's account resolves to null here where
-    // the migration principal found it. That is the correct answer: Plaid has
-    // just authenticated THIS user for THIS item, and an account another tenant
-    // owns is not a row this exchange may update. The caller's own soft-deleted
-    // account is still found — that is RLS-D1's owner arm, and before it this
-    // conversion would have broken restore-on-reconnect.
-    let fa = await withTenantDb(userId, (tx) => resolvePlaidAccountByExternalId(tx, acct.account_id));
-
-    if (fa) {
-      fa = await db.financialAccount.update({
-        where: { id: fa.id },
-        data: {
-          balance,
-          availableBalance,
-          ...(creditLimit !== undefined && { creditLimit }),
-          providerSubtype,
-          lastUpdated: new Date(),
-          syncStatus:  "synced",
-          deletedAt:   null,
-        },
-      });
-    } else {
-      const fingerprint = {
-        ownerUserId:   userId,
-        institutionId: institution_id,
-        institution:   institution_name,
-        mask:          acct.mask ?? null,
-        officialName:  acct.official_name ?? null,
-        plaidName:     acct.name,
-        name:          acct.name,
-        type,
-      };
-      // ── RLS-ACC-S7 — `db`, EXPLICITLY, AND NOW LEADING ───────────────────
-      // The two near-verbatim RLS-ACC-S5 paragraphs that stood here both
-      // claimed the fold aborts on 42501 for an archived loser because
-      // `DuplicateAccountCandidate`'s fm_app policy was visibility-only. That
-      // was measured and true when written, and 20261003000100 closed it — so
-      // both comments were stale, and duplicated. Replaced by one accurate note
-      // rather than left to mislead the next reader.
+      // ── Resolve FinancialAccount ──────────────────────────────────────────────
+      // 1. PROV-2 — identity→legacy resolve via the canonical resolver (returns
+      //    soft-deleted rows too, so the restore branch below can revive them).
+      // 2. Fingerprint match against archived accounts.
+      // 3. Create new row if neither lookup finds anything.
+      // ── RLS-ACC-S5 — A TENANT PHASE, AND A DELIBERATELY SHORT ONE ──────────
+      // The resolver's client is now required and leading. This path is HTTP on
+      // both of its two callers (requireUser for the customer flow,
+      // requireSystemAdmin for Expand History), and `userId` is the INSTITUTION
+      // OWNER in both — the admin route resolves `oldItem.userId` and passes it
+      // precisely so every downstream write lands in the target user's tenancy,
+      // not the operator's. So this is the target user's own identity and the
+      // tenant role is the right authority for the lookup.
       //
-      // `db` is still what this site passes, and that is a deliberate
-      // NON-widening: this module already holds `db` for its own
-      // `financialAccount.create`/`update`, so naming it costs no ratchet, and
-      // the authority here is exactly what it was before this slice. Converting
-      // this site to a `withTenantDb` phase is now UNBLOCKED (the parameter is
-      // a `WriteClient` and the policies admit the fold) but it is a separate
-      // change with its own blast radius, not a side effect of moving a
-      // transaction boundary.
+      // ⚠️ THE PHASE WRAPS THE LOOKUP AND NOTHING ELSE, ON PURPOSE. This loop
+      // interleaves Plaid HTTP calls with database work, and `withTenantDb` is a
+      // SECURITY BOUNDARY, not a request-lifetime container — widening it to cover
+      // the `financialAccount.update` below would hold a pooled connection across
+      // a provider round trip. The existing boundaries are respected rather than
+      // stretched to make threading easier.
       //
-      // What DID change: the resolution is now ONE transaction, and the Plaid
-      // `itemRemove` it used to make between its own transactions comes back as
-      // `pendingProviderRevocations` for dispatch after the commit, below.
-      const resolution = await resolveAccountByFingerprint(db, fingerprint, undefined, spaceId);
+      // ⚠️ AND IT NARROWS WHAT CAN BE FOUND. Under fm_app the
+      // `ProviderAccountIdentity` lookup sees only the caller's own subtree, so a
+      // plaidAccountId held by ANOTHER owner's account resolves to null here where
+      // the migration principal found it. That is the correct answer: Plaid has
+      // just authenticated THIS user for THIS item, and an account another tenant
+      // owns is not a row this exchange may update. The caller's own soft-deleted
+      // account is still found — that is RLS-D1's owner arm, and before it this
+      // conversion would have broken restore-on-reconnect.
+      let fa = await withTenantDb(userId, (tx) => resolvePlaidAccountByExternalId(tx, acct.account_id));
 
-      console.log("[plaid] fingerprint lookup", {
-        institutionId:      institution_id,
-        mask:               acct.mask ?? null,
-        type,
-        officialName:       acct.official_name ?? null,
-        plaidName:          acct.name,
-        activeCandidates:   resolution?.activeCandidateCount ?? 0,
-        archivedCandidates: resolution?.archivedCandidateCount ?? 0,
-        canonicalAccountId: resolution?.canonical.id ?? null,
-        outcome:            resolution ? "reused" : "created",
-      });
-
-      // ⚠️ AFTER THE RESOLUTION'S TRANSACTION, NEVER INSIDE IT. The fold
-      // soft-deleted each folded loser's AccountConnection rows; whether Plaid's
-      // `itemRemove` should follow is decided by `disconnectPlaidItemIfOrphaned`
-      // COUNTING live connections on `systemDb` — a different client with a
-      // different pool. Inside the transaction that count still sees them and
-      // the gate silently declines, which is exactly the orphaned-PlaidItem
-      // defect it exists to prevent. Best-effort: a cleanup failure must not
-      // fail an import whose DB work has committed, and f339e57 records an
-      // unconfirmed removal durably so it stays discoverable.
-      for (const plaidItemDbId of resolution?.pendingProviderRevocations ?? []) {
-        try {
-          await disconnectPlaidItemIfOrphaned(plaidItemDbId);
-        } catch (e) {
-          console.error(`[plaid] provider cleanup failed for item ${plaidItemDbId} (non-fatal):`, redactedErrorForLog(e));
-        }
-      }
-
-      if (resolution) {
+      if (fa) {
         fa = await db.financialAccount.update({
-          where: { id: resolution.canonical.id },
+          where: { id: fa.id },
           data: {
-            plaidAccountId:  acct.account_id,
             balance,
             availableBalance,
             ...(creditLimit !== undefined && { creditLimit }),
@@ -505,111 +438,196 @@ export async function performPlaidTokenExchange(
           },
         });
       } else {
-        fa = await db.financialAccount.create({
-          data: {
-            ownerType:       AccountOwnerType.USER,
-            ownerUserId:     userId,
-            createdByUserId: userId,
-            plaidAccountId:  acct.account_id,
-            name:            acct.name,
-            plaidName:       acct.name,
-            officialName:    acct.official_name ?? undefined,
-            type,
-            providerSubtype,
-            institution:     institution_name,
-            institutionId:   institution_id,
-            mask:            acct.mask ?? undefined,
-            balance,
-            availableBalance,
-            creditLimit,
-            currency:        acct.balances.iso_currency_code ?? "USD",
-            syncStatus:      "synced",
-          },
+        const fingerprint = {
+          ownerUserId:   userId,
+          institutionId: institution_id,
+          institution:   institution_name,
+          mask:          acct.mask ?? null,
+          officialName:  acct.official_name ?? null,
+          plaidName:     acct.name,
+          name:          acct.name,
+          type,
+        };
+        // ── RLS-ACC-S7 — `db`, EXPLICITLY, AND NOW LEADING ───────────────────
+        // The two near-verbatim RLS-ACC-S5 paragraphs that stood here both
+        // claimed the fold aborts on 42501 for an archived loser because
+        // `DuplicateAccountCandidate`'s fm_app policy was visibility-only. That
+        // was measured and true when written, and 20261003000100 closed it — so
+        // both comments were stale, and duplicated. Replaced by one accurate note
+        // rather than left to mislead the next reader.
+        //
+        // `db` is still what this site passes, and that is a deliberate
+        // NON-widening: this module already holds `db` for its own
+        // `financialAccount.create`/`update`, so naming it costs no ratchet, and
+        // the authority here is exactly what it was before this slice. Converting
+        // this site to a `withTenantDb` phase is now UNBLOCKED (the parameter is
+        // a `WriteClient` and the policies admit the fold) but it is a separate
+        // change with its own blast radius, not a side effect of moving a
+        // transaction boundary.
+        //
+        // What DID change: the resolution is now ONE transaction, and the Plaid
+        // `itemRemove` it used to make between its own transactions comes back as
+        // `pendingProviderRevocations` for dispatch after the commit, below.
+        const resolution = await resolveAccountByFingerprint(db, fingerprint, undefined, spaceId);
+
+        console.log("[plaid] fingerprint lookup", {
+          institutionId:      institution_id,
+          mask:               acct.mask ?? null,
+          type,
+          officialName:       acct.official_name ?? null,
+          plaidName:          acct.name,
+          activeCandidates:   resolution?.activeCandidateCount ?? 0,
+          archivedCandidates: resolution?.archivedCandidateCount ?? 0,
+          canonicalAccountId: resolution?.canonical.id ?? null,
+          outcome:            resolution ? "reused" : "created",
         });
+
+        // ⚠️ AFTER THE RESOLUTION'S TRANSACTION, NEVER INSIDE IT. The fold
+        // soft-deleted each folded loser's AccountConnection rows; whether Plaid's
+        // `itemRemove` should follow is decided by `disconnectPlaidItemIfOrphaned`
+        // COUNTING live connections on `systemDb` — a different client with a
+        // different pool. Inside the transaction that count still sees them and
+        // the gate silently declines, which is exactly the orphaned-PlaidItem
+        // defect it exists to prevent. Best-effort: a cleanup failure must not
+        // fail an import whose DB work has committed, and f339e57 records an
+        // unconfirmed removal durably so it stays discoverable.
+        for (const plaidItemDbId of resolution?.pendingProviderRevocations ?? []) {
+          try {
+            await disconnectPlaidItemIfOrphaned(plaidItemDbId);
+          } catch (e) {
+            console.error(`[plaid] provider cleanup failed for item ${plaidItemDbId} (non-fatal):`, redactedErrorForLog(e));
+          }
+        }
+
+        if (resolution) {
+          fa = await db.financialAccount.update({
+            where: { id: resolution.canonical.id },
+            data: {
+              plaidAccountId:  acct.account_id,
+              balance,
+              availableBalance,
+              ...(creditLimit !== undefined && { creditLimit }),
+              providerSubtype,
+              lastUpdated: new Date(),
+              syncStatus:  "synced",
+              deletedAt:   null,
+            },
+          });
+        } else {
+          fa = await db.financialAccount.create({
+            data: {
+              ownerType:       AccountOwnerType.USER,
+              ownerUserId:     userId,
+              createdByUserId: userId,
+              plaidAccountId:  acct.account_id,
+              name:            acct.name,
+              plaidName:       acct.name,
+              officialName:    acct.official_name ?? undefined,
+              type,
+              providerSubtype,
+              institution:     institution_name,
+              institutionId:   institution_id,
+              mask:            acct.mask ?? undefined,
+              balance,
+              availableBalance,
+              creditLimit,
+              currency:        acct.balances.iso_currency_code ?? "USD",
+              syncStatus:      "synced",
+            },
+          });
+        }
       }
-    }
 
-    // PROV-4 — AccountConnection + SpaceAccountLink, committed atomically per
-    // account, through the canonical spine writer shared with the Wallet route.
-    // The FinancialAccount resolve/create/update above stays OUTSIDE this
-    // transaction (resolveAccountByFingerprint self-manages its own; each fa
-    // write is a single atomic statement), and the ProviderAccountIdentity mirror
-    // (above) is idempotent/non-fatal and also stays outside — the boundary is
-    // unchanged from the hand-written version this replaces.
-    await persistAccountSpine({
-      financialAccountId: fa.id,
-      spaceId,
-      addedByUserId:      userId,
-      creatorUserId:      fa.createdByUserId ?? fa.ownerUserId,
-      connection: {
-        connectedByUserId: userId,
-        plaidItemDbId:     plaidItem.id,
-        connectionId,
-        syncStatus:        "synced",
-      },
-    });
+      // PROV-4 — AccountConnection + SpaceAccountLink, committed atomically per
+      // account, through the canonical spine writer shared with the Wallet route.
+      // The FinancialAccount resolve/create/update above stays OUTSIDE this
+      // transaction (resolveAccountByFingerprint self-manages its own; each fa
+      // write is a single atomic statement), and the ProviderAccountIdentity mirror
+      // (above) is idempotent/non-fatal and also stays outside — the boundary is
+      // unchanged from the hand-written version this replaces.
+      await persistAccountSpine({
+        financialAccountId: fa.id,
+        spaceId,
+        addedByUserId:      userId,
+        creatorUserId:      fa.createdByUserId ?? fa.ownerUserId,
+        connection: {
+          connectedByUserId: userId,
+          plaidItemDbId:     plaidItem.id,
+          connectionId,
+          syncStatus:        "synced",
+        },
+      });
 
-    // ── D2 Step 2A — the identity mirror, AFTER the link that authorizes it ──
-    //
-    // ⚠️ THIS CALL USED TO RUN BEFORE persistAccountSpine, AND THE ORDER IS NOW
-    // LOAD-BEARING. `ProviderAccountIdentity.fm_app_sel/upd` is
-    // `fm_account_visible("financialAccountId")`, which is true only while an
-    // ACTIVE SpaceAccountLink exists in a visible Space — and persistAccountSpine
-    // is what creates that link. Measured on a real fm_app role: the identity
-    // insert before the link is refused with Postgres 42501, and
-    // FinancialAccount → SpaceAccountLink → AccountConnection →
-    // ProviderAccountIdentity all succeed.
-    //
-    // It mattered the moment RLS-ACC-S4 made that refusal LOUD. Until then the
-    // 42501 fell into a catch that could not recognise it — a 42501 arrives as
-    // PrismaClientUnknownRequestError with `code` UNDEFINED, so `e.code ===
-    // "P2002"` never matched — and the function returned as though it had
-    // written the row. Now it throws, this loop has no surrounding try/catch,
-    // and on the role flip the throw would have escaped exchangeToken and failed
-    // the whole Plaid import. Same statements, same idempotence, correct order.
-    //
-    // This is the fourth instance of the ordering phenomenon b42e8e0 first
-    // recorded for disconnect/restore: it is what happens every time a subtree
-    // write is authored before the link that authorizes it.
-    // ── PROVIDER-IDENTITY — THE DEGRADATION IS PER ACCOUNT, AND IT IS CHOSEN ──
-    //
-    // The helper no longer swallows a uniqueness collision. Before, a contested
-    // identity produced one `console.warn` here and the loop carried straight
-    // on: the account was counted as imported, pushed into `importedIds`, and
-    // handed to the snapshot regeneration and the first transaction sync — with
-    // an identity row that was absent or pointing at someone else. The sync's
-    // `(provider, externalAccountId)` resolve then names a row WITHOUT naming an
-    // account, which is the mechanism that puts a provider's transactions on
-    // another ledger.
-    //
-    // ⚠️ THIS LOOP HAS NO SURROUNDING try/catch, SO AN UNABSORBED THROW FAILS
-    // THE WHOLE PLAID IMPORT — every other account in the batch included. For a
-    // conflict that is the wrong blast radius: the contest is about ONE
-    // provider account and the other accounts are fine. So the conflict is
-    // absorbed HERE, deliberately, and the account is EXCLUDED from
-    // `importedIds`/`imported` rather than silently included. Excluding it is
-    // the substantive half: an account whose provider identity is contested is
-    // precisely the one that must not be scheduled for a transaction sync.
-    //
-    // ⚠️ AND THE ABSORPTION IS NARROW. An authority refusal still escapes — it
-    // is a write-ORDER defect and RLS-ACC-S4 made it loud on purpose — and so
-    // does every unknown failure. Only the typed conflict degrades.
-    try {
-      await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
-    } catch (identityError) {
-      if (!(identityError instanceof ProviderIdentityConflictError)) throw identityError;
+      // ── D2 Step 2A — the identity mirror, AFTER the link that authorizes it ──
+      //
+      // ⚠️ THIS CALL USED TO RUN BEFORE persistAccountSpine, AND THE ORDER IS NOW
+      // LOAD-BEARING. `ProviderAccountIdentity.fm_app_sel/upd` is
+      // `fm_account_visible("financialAccountId")`, which is true only while an
+      // ACTIVE SpaceAccountLink exists in a visible Space — and persistAccountSpine
+      // is what creates that link. Measured on a real fm_app role: the identity
+      // insert before the link is refused with Postgres 42501, and
+      // FinancialAccount → SpaceAccountLink → AccountConnection →
+      // ProviderAccountIdentity all succeed.
+      //
+      // It mattered the moment RLS-ACC-S4 made that refusal LOUD. Until then the
+      // 42501 fell into a catch that could not recognise it — a 42501 arrives as
+      // PrismaClientUnknownRequestError with `code` UNDEFINED, so `e.code ===
+      // "P2002"` never matched — and the function returned as though it had
+      // written the row. Now it throws, this loop has no surrounding try/catch,
+      // and on the role flip the throw would have escaped exchangeToken and failed
+      // the whole Plaid import. Same statements, same idempotence, correct order.
+      //
+      // This is the fourth instance of the ordering phenomenon b42e8e0 first
+      // recorded for disconnect/restore: it is what happens every time a subtree
+      // write is authored before the link that authorizes it.
+      // ── PROVIDER-IDENTITY — THE DEGRADATION IS PER ACCOUNT, AND IT IS CHOSEN ──
+      //
+      // The helper no longer swallows a uniqueness collision. Before, a contested
+      // identity produced one `console.warn` here and the loop carried straight
+      // on: the account was counted as imported, pushed into `importedIds`, and
+      // handed to the snapshot regeneration and the first transaction sync — with
+      // an identity row that was absent or pointing at someone else. The sync's
+      // `(provider, externalAccountId)` resolve then names a row WITHOUT naming an
+      // account, which is the mechanism that puts a provider's transactions on
+      // another ledger.
+      //
+      // ⚠️ THIS LOOP HAS NO SURROUNDING try/catch, SO AN UNABSORBED THROW FAILS
+      // THE WHOLE PLAID IMPORT — every other account in the batch included. For a
+      // conflict that is the wrong blast radius: the contest is about ONE
+      // provider account and the other accounts are fine. So the conflict is
+      // absorbed HERE, deliberately, and the account is EXCLUDED from
+      // `importedIds`/`imported` rather than silently included. Excluding it is
+      // the substantive half: an account whose provider identity is contested is
+      // precisely the one that must not be scheduled for a transaction sync.
+      //
+      // ⚠️ AND THE ABSORPTION IS NARROW. An authority refusal still escapes — it
+      // is a write-ORDER defect and RLS-ACC-S4 made it loud on purpose — and so
+      // does every unknown failure. Only the typed conflict degrades.
+      try {
+        await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
+      } catch (identityError) {
+        if (!(identityError instanceof ProviderIdentityConflictError)) throw identityError;
+        console.error(
+          `[plaid][PROVIDER-IDENTITY] SKIPPING account ${fa.id} — its Plaid provider identity is contested ` +
+          `(${identityError.verdict}, ${identityError.conflictingAccountCount} other holder(s)). The account row and its ` +
+          `spine stand, but it is NOT counted as imported and NOT scheduled for a transaction sync: resolving a ` +
+          `transaction through a contested identity is how a row lands on another account's ledger.`,
+          redactedErrorForLog(identityError),
+        );
+        continue;
+      }
+
+      importedIds.push(fa.id);
+      imported++;
+    } catch (accountErr) {
+      if ((accountErr as { code?: unknown })?.code !== "P2002") throw accountErr;
       console.error(
-        `[plaid][PROVIDER-IDENTITY] SKIPPING account ${fa.id} — its Plaid provider identity is contested ` +
-        `(${identityError.verdict}, ${identityError.conflictingAccountCount} other holder(s)). The account row and its ` +
-        `spine stand, but it is NOT counted as imported and NOT scheduled for a transaction sync: resolving a ` +
-        `transaction through a contested identity is how a row lands on another account's ledger.`,
-        redactedErrorForLog(identityError),
+        `[plaid][IDEMP-008] SKIPPING Plaid account ${acct.account_id} on item ${plaidItem.id} — a uniqueness ` +
+        `collision while persisting it; the other accounts continue.`, redactedErrorForLog(accountErr),
       );
+      await recordExchangeAccountCollision(plaidItem.id, acct.account_id);
       continue;
     }
-
-    importedIds.push(fa.id);
-    imported++;
   }
 
   // 8. Investment holdings — consent-gated. PROV-3: the whole ingest (consent

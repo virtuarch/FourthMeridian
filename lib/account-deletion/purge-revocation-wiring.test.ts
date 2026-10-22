@@ -52,8 +52,8 @@ console.log("3. Hold preserves the ability to retry");
   check("a hold branch exists", holdIdx > 0);
   const holdBranch = code.slice(holdIdx, holdIdx + 700);
   check("hold RETURNS before the destructive purge", /return \{[\s\S]*?skipped:\s*"pending-provider-revocation"/.test(holdBranch));
-  // The User delete is what cascades the encrypted token away.
-  check("user.delete comes AFTER the hold return", code.indexOf("db.user.delete") > holdIdx);
+  // The User delete (inside the IDEMP-002 transaction) is what cascades the encrypted token away.
+  check("user.delete comes AFTER the hold return", code.indexOf("tx.user.delete") > holdIdx);
   check("deletionScheduledAt is never cleared on hold", !/deletionScheduledAt:\s*null/.test(holdBranch));
 }
 
@@ -68,7 +68,7 @@ console.log("4. Terminal completion records what actually happened");
     /AuditAction\.ACCOUNT_DELETED\b/.test(code) && /AuditAction\.ACCOUNT_DELETED_UNREVOKED/.test(code));
   const termIdx = code.indexOf("ACCOUNT_DELETED_UNREVOKED");
   check("the terminal record is written BEFORE the user delete (so it survives)",
-    termIdx > 0 && termIdx < code.indexOf("db.user.delete"));
+    termIdx > 0 && termIdx < code.indexOf("tx.user.delete"));
   check("emits a CRITICAL operator log line", /\[CRITICAL\]/.test(src));
   check("evidence carries the item id + institution for manual revocation",
     /plaidItemId:\s*f\.itemId/.test(code) && /institution:\s*f\.institution/.test(code));
@@ -82,7 +82,7 @@ console.log("5. No secret can reach audit or logs");
     /itemRemove\(\{ access_token: accessToken \}\)/.test(code));
   // Indentation-agnostic: take a generous window after each audit write rather
   // than relying on a closing-brace column that differs by nesting depth.
-  const auditBlocks = [...code.matchAll(/db\.auditLog\.create\(/g)]
+  const auditBlocks = [...code.matchAll(/(?:db|client|tx)\.auditLog\.create\(/g)]
     .map((m) => code.slice(m.index ?? 0, (m.index ?? 0) + 900));
   check("found the audit writes to inspect", auditBlocks.length >= 2, `${auditBlocks.length}`);
   for (const [i, b] of auditBlocks.entries()) {

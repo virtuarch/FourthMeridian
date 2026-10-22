@@ -405,6 +405,7 @@ model User {
   // S7a — those are S7b/S7c. See OPS2_S7_ACCOUNT_DELETION_INVESTIGATION.md.
   deletionRequestedAt     DateTime?
   deletionScheduledAt     DateTime?
+  purgeStartedAt          DateTime? // IDEMP-002 — the purge CLAIM: set by exactly one process-deletions worker; re-claimable once stale
   lastBriefViewedAt       DateTime? // set when user views the Daily Brief page
   // OPS-3 S3 — the user's IANA timezone (e.g. "America/New_York"). A general
   // preference (Settings → Preferences), not notification-specific: consumed
@@ -871,6 +872,10 @@ model PlaidItem {
   // (drives lib/sync/status.ts and the client auto-resume). Replaces the old
   // cursor===null heuristic, which broke once the cursor is persisted per page.
   syncIncompleteAt      DateTime?
+  // IDEMP-007 — resume-stale-imports backoff: failed resume attempts since the
+  // Item last completed, and the earliest instant the next one may run.
+  syncResumeAttempts    Int                      @default(0)
+  syncResumeNextAt      DateTime?
   // Live progress counter for the first-run import, so the UI can show
   // "1,284 imported" instead of an unmoving spinner during a multi-minute pull.
   // Written once per COMPLETED page (never per row), alongside the cursor, so it
@@ -957,6 +962,7 @@ model PlaidItem {
   investmentEventCoverage InvestmentEventCoverage[]
 
   @@index([userId])
+  @@index([syncIncompleteAt]) // DB-009 — resume-stale-imports scans this every 5 minutes
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1636,6 +1642,7 @@ model SpaceGoal {
   @@index([spaceId, status])
   @@index([spaceId, category])
   @@index([spaceId, goalType])
+  @@index([deletedAt]) // DB-009 — re-added (dropped earlier, never restored); model kept pending Agent G
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2938,6 +2945,15 @@ model ImportBatch {
   kind                  ImportBatchKind   @default(TRANSACTIONS)
   originalFilename      String?
   status                ImportBatchStatus @default(PENDING)
+  // IDEMP-001 — sha256 of the uploaded bytes. Claimed BEFORE parsing. The
+  // migration installs a PARTIAL UNIQUE index (invisible to Prisma, like the
+  // KD-5 HOME link and the PLAID identity uniques):
+  //   ImportBatch_account_file_live_key ON (financialAccountId, fileSha256)
+  //   WHERE fileSha256 IS NOT NULL AND status IN ('PENDING','PROCESSING','COMPLETED','COMPLETED_WITH_ERRORS')
+  // so the same file cannot be imported twice into one account while a live
+  // batch exists, and a ROLLED_BACK or FAILED batch frees the slot for a
+  // legitimate re-import.
+  fileSha256            String?
   rowCount              Int               @default(0)
   importedCount         Int               @default(0)
   skippedCount          Int               @default(0)
@@ -3526,6 +3542,7 @@ model UserSession {
 
   @@index([userId])
   @@index([userId, revokedAt])
+  @@index([revokedAt]) // DB-009 — the retention reaper (revoked > 30 d)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3627,6 +3644,7 @@ model SyncIssue {
   @@index([plaidItemId, kind])
   @@index([incidentKey])
   @@index([resolvedAt])
+  @@index([plaidItemId, resolved]) // DB-009 — open issues per Item
 }
 
 /// OPS-2D-5A-1 — one observed manifestation of an incident episode.
@@ -3866,6 +3884,9 @@ model JobRun {
   @@index([jobName, startedAt]) // "did last night's X run?"
   @@index([status, startedAt]) // failure scans
   @@index([deploymentSha]) // "which runs belong to deployment X"
+  // IDEMP-003 — PARTIAL UNIQUE (installed by migration 20261022000200,
+  // invisible to Prisma): JobRun_one_running_per_job ON (jobName) WHERE
+  // status = 'running'. The start-ledger write IS the job's claim.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
