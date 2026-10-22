@@ -1,0 +1,1893 @@
+{
+  "names": [
+    "get_financial_snapshot",
+    "get_spending",
+    "measure_flows",
+    "get_baselines",
+    "get_transactions",
+    "get_income",
+    "get_investments",
+    "get_net_worth_history",
+    "find_in_balance_history",
+    "explain_net_worth_composition",
+    "project_cash",
+    "get_pay_dates",
+    "investment_scenario",
+    "scenario_projection",
+    "scenario_crossing",
+    "scenario_goal_seek",
+    "reconcile_projection",
+    "stage_assumptions",
+    "recall",
+    "remember",
+    "describe_fourth_meridian"
+  ],
+  "schemas": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_financial_snapshot",
+        "description": "The position on a date. Omit `asOf` for today (adds per-account freshness, APRs and available balances); pass `asOf` for a past date (adds the account-level breakdown of each bucket and the coverage of that date). Today, `liquid` is unrestricted cash (checking + savings, excluding restricted accounts such as an HSA); on a past date it is the recorded checking + savings balance; historical snapshots do not separate restricted accounts such as an HSA, so it is not comparable to today's unrestricted `liquid` when such accounts exist. `checking` is checking alone. Start here for anything broad, and for any \"how was I doing on X\". Investment values carry no cost basis or account tax treatment: a sale's tax effect is unknown here, so name it when selling is on the table.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "asOf": {
+              "type": "string",
+              "description": "YYYY-MM-DD. Omit for today. A past date returns the position AS IT WAS then."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_spending",
+        "description": "WHAT the money went on over a window up to ~26 months: category and merchant rollups, month-by-month, largest expense, recurring merchants, with transfers and card payments kept separate from spending. This is the evidence behind a window. For HOW MUCH per month, MORE OR LESS than another period, runway, surplus or \"N months of expenses\", use measure_flows / get_baselines — they compute the figure and the comparison; never divide this tool's totals yourself. What a spending CUT or change would do (\"cut Dining 20%\", \"spend less on Other\") is not measured here: it is scenario_projection's `spendingChanges` (or stage_assumptions) — never apply a percentage to these totals in prose. Default window is the last 90 days.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "string",
+              "description": "YYYY-MM-DD inclusive. Omit for the 90 days before `to`."
+            },
+            "to": {
+              "type": "string",
+              "description": "YYYY-MM-DD inclusive. Omit for today."
+            },
+            "asOf": {
+              "type": "string",
+              "description": "Information ceiling: pretend today is this date. Nothing after it is read."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "measure_flows",
+        "description": "HOW MUCH over a period, and MORE OR LESS than another period — computed, not narrated. Spending, income, economic net, card/debt payments, transfers or refunds for any month, quarter, year, the last N complete months, a to-date or rolling window; with `compareTo` it returns both sides AND the difference, percentage and direction. Use it for \"how much did I spend / earn in X\", \"am I spending more than I used to\", \"was August higher than July\", \"compare the last three complete months with the three before\", \"did I spend more on travel\", \"is my income up this quarter\". Every figure names its window, which months are whole, and whether the record covers it; `perCompleteMonth` is the monthly figure. Spending `total` is what was CHARGED; when refunds arrived in the window `netOfRefunds` is what it actually cost (and `changeNetOfRefunds` the comparison on that basis) — say that figure, never subtract a refund yourself. NEVER divide a window total by its days or months yourself, never compute a difference or percentage between two figures yourself, and never compare figures from two different windows by hand — ask for the comparison here. \"PREVIOUS\" of a period to date is the same elapsed days of the period before.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "measure": {
+              "type": "string",
+              "enum": [
+                "spending",
+                "income",
+                "economicNet",
+                "cardAndDebtPayments",
+                "transfersBetweenOwnAccounts",
+                "refunds"
+              ],
+              "description": "WHAT is measured, by the one economic fold. `spending` never contains card payments or transfers; `economicNet` = income − spending over the window (what actually happened — for the steady monthly surplus use get_baselines); debt payments are NOT subtracted from it."
+            },
+            "period": {
+              "type": "object",
+              "properties": {
+                "preset": {
+                  "type": "string"
+                },
+                "month": {
+                  "type": "string"
+                },
+                "quarter": {
+                  "type": "string"
+                },
+                "year": {
+                  "type": "number"
+                },
+                "completeMonths": {
+                  "type": "number"
+                },
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "additionalProperties": false,
+              "description": "WHICH DAYS. Exactly one of: `preset` (MTD | QTD | YTD | PAST_WEEK | PAST_MONTH | PAST_QUARTER | PAST_6_MONTHS | PAST_YEAR — rolling ones are calendar months back, not 30 days), `month` \"YYYY-MM\", `quarter` \"YYYY-Q3\", `year`, `completeMonths` N (the last N WHOLE calendar months, never the current one — the one for \"normally\", \"on average\", \"per month\"), or `from` + `to` (YYYY-MM-DD, inclusive). A period that runs past today is cut at today and says so."
+            },
+            "compareTo": {
+              "description": "Optional. \"PREVIOUS\" (the equivalent earlier period: last month for a month, the same elapsed days of last month for a month to date, the N months before for completeMonths, the same number of days before for a rolling window), \"SAME_PERIOD_LAST_YEAR\", or an explicit period (inside `compareTo`, `completeMonths` N means the N whole months BEFORE `period` begins). The result carries both sides, the difference, the percentage and the direction.",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "PREVIOUS",
+                    "SAME_PERIOD_LAST_YEAR"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "preset": {
+                      "type": "string"
+                    },
+                    "month": {
+                      "type": "string"
+                    },
+                    "quarter": {
+                      "type": "string"
+                    },
+                    "year": {
+                      "type": "number"
+                    },
+                    "completeMonths": {
+                      "type": "number"
+                    },
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "category": {
+              "type": "string",
+              "description": "Optional spending category — one of Dining, Shopping, Utilities, Travel, Subscriptions, Fee, Interest, Other — to measure one line of spending instead of all of it; the result also carries all spending over the same window and this line's share of it (`ofAllSpending`) and `categoryMeaning` (what the line contains — SAY it when it matters: Dining includes groceries, Utilities includes rent, Other is the residual of medical, transportation, entertainment and other unsplit spending). Groceries, Medical, Entertainment, Transport, PersonalCare, Services, Education are NOT tracked by bank sync and are refused rather than measured. Only with `measure: \"spending\"`."
+            },
+            "asOf": {
+              "type": "string",
+              "description": "Information ceiling: pretend today is this date. Nothing after it is read."
+            }
+          },
+          "required": [
+            "measure",
+            "period"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_baselines",
+        "description": "THE MONTHLY RATES TO REASON FORWARD FROM, AND EVERYTHING COMPUTED FROM THEM: monthly surplus, savings rate, runway in months of current cash, and \"N months of expenses\" in dollars with how far current cash is from it. Call it AGAIN whenever the user changes the monthly figure or the number of months — every derived figure changes with it, and none is to be recomputed in prose: never multiply a baseline by months, subtract cash from a threshold, or subtract spending from income yourself. The expense baseline is STATED in this conversation > DECLARED in the product > MEASURED over named complete months; income is STATED > CADENCE of settled paychecks > MEASURED. Use it for \"how much do I normally spend\", \"what is my monthly surplus\", \"what is my savings rate\", \"how many months of expenses do I have\", \"how much cash should I keep\". `measuredSpending.byWindow` shows how the measured figure differs by window — choose the window that fits the question (pass `spendingWindow`) and SAY which one. `thresholds` always carries 3, 6 and 12 months; pass `monthsOfExpenses` for any other multiple. Every derived figure ships with its numerator, denominator and basis — quote them. Never divide an orientation or window total to get a monthly figure. For WHEN cash reaches a threshold, give its amount to scenario_crossing — do not divide a shortfall by the surplus. For runway or reserves AFTER a one-off cash movement (paying a card, a purchase, a windfall), pass `liquidChange` and quote `afterLiquidChange` — never subtract from cash or divide in prose. It does not say what the user SHOULD spend or keep. The thresholds are reference points to set side by side, not a standard: say which the evidence favours and why, and leave the choice of reserve to the user.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "statedMonthlySpending": {
+              "type": "number",
+              "description": "The monthly spending the user STATED in this conversation, if any (\"use $5k\"). Wins over the product setting and the measured figure, and is echoed as STATED."
+            },
+            "statedMonthlyIncome": {
+              "type": "number",
+              "description": "The monthly income the user STATED in this conversation, if any."
+            },
+            "spendingWindow": {
+              "type": "object",
+              "properties": {
+                "preset": {
+                  "type": "string"
+                },
+                "month": {
+                  "type": "string"
+                },
+                "quarter": {
+                  "type": "string"
+                },
+                "year": {
+                  "type": "number"
+                },
+                "completeMonths": {
+                  "type": "number"
+                },
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "additionalProperties": false,
+              "description": "Optional: which PAST months the MEASURED spending baseline is AVERAGED over, e.g. {\"completeMonths\": 6} — the same shape as measure_flows `period`. Default is the complete months the cash projection averages. This is NOT how many months of expenses to keep — \"six months of expenses\" is `monthsOfExpenses: [6]`."
+            },
+            "monthsOfExpenses": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "description": "How many months of expenses to price, e.g. [9] for \"keep nine months of expenses\" — a MULTIPLIER of the baseline, not an averaging window. 3, 6 and 12 are always returned. Each comes back in dollars with the rule, the baseline it multiplied, and the gap to current cash."
+            },
+            "liquidChange": {
+              "type": "number",
+              "description": "A one-off change to liquid cash in dollars, to price runway and reserves after it: paying $5,000 to a card is -5000. Nothing else moves."
+            },
+            "asOf": {
+              "type": "string",
+              "description": "Information ceiling: pretend today is this date. Nothing after it is read."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_transactions",
+        "description": "Individual transactions, filtered and ranked. Set `flow` to say what KIND of movement you mean — \"spending\" for purchases, \"income\" for deposits, \"transfers\" for movements between the user's own accounts, \"card_payments\" for paying a card off. Use flow:\"spending\" with sort:\"largest\" for \"my biggest purchase\".",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "string",
+              "description": "YYYY-MM-DD inclusive."
+            },
+            "to": {
+              "type": "string",
+              "description": "YYYY-MM-DD inclusive."
+            },
+            "asOf": {
+              "type": "string",
+              "description": "Information ceiling: nothing dated after this is returned."
+            },
+            "flow": {
+              "type": "string",
+              "enum": [
+                "spending",
+                "income",
+                "transfers",
+                "card_payments",
+                "refunds",
+                "all"
+              ],
+              "description": "Default \"all\". Choose the one the question means."
+            },
+            "category": {
+              "type": "string",
+              "description": "One presentation category, e.g. Dining, Shopping, Travel, Other."
+            },
+            "text": {
+              "type": "string",
+              "description": "Case-insensitive substring over merchant and description."
+            },
+            "sort": {
+              "type": "string",
+              "enum": [
+                "newest",
+                "oldest",
+                "largest"
+              ],
+              "description": "Default newest. \"largest\" ranks by amount WITHIN the chosen flow."
+            },
+            "limit": {
+              "type": "number",
+              "description": "1–50. Default 15."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_income",
+        "description": "Income by month AND the derived payroll cadence per source (biweekly, semimonthly, monthly), with each source's typical amount and whether it is still active. Use this before concluding income rose or fell — a month can hold two or three biweekly paychecks.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "string",
+              "description": "YYYY-MM-DD. Omit for the 12 months before `to`."
+            },
+            "to": {
+              "type": "string",
+              "description": "YYYY-MM-DD. Omit for today."
+            },
+            "asOf": {
+              "type": "string",
+              "description": "Information ceiling: pretend today is this date. Nothing after it is read."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_investments",
+        "description": "What the user is invested in. Returns the canonical composition (traditional investments vs digital assets, disjoint) AND the position-level detail, which is a SUBSET limited to positions that could be priced. Every concentration figure states the population it is a share of. Pass `asOf` for a past date. No cost basis or account tax treatment is known: a sale's tax effect is never in this data.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "asOf": {
+              "type": "string",
+              "description": "YYYY-MM-DD. Omit for today. A past date returns the composition as it was."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_net_worth_history",
+        "description": "Net worth and its components over time, and what they CHANGED by across the requested range — `change` gives the measured movement of net worth, liquid, investments, digital assets and debt between the first and last observation. Use it for \"what changed\", \"why did my net worth move\", \"how does this compare with a month ago\". `liquid` is the recorded checking + savings balance; historical snapshots do not separate restricted accounts such as an HSA, so it is not comparable to today's unrestricted `liquid` when such accounts exist; `checking` is the checking bucket alone — there is deliberately no field called \"cash\". Ask for `granularity: \"monthly\"` to get one point per calendar month. A point whose net worth could not be established is returned as null WITH a reason; read `coverage` before describing older history as fact. For an EXACT date — the first or last time something crossed a number, a highest or a lowest — use `find_in_balance_history` instead: a long series here is downsampled and the day you need may not be in it.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "string",
+              "description": "YYYY-MM-DD. Omit for the last 90 days."
+            },
+            "to": {
+              "type": "string",
+              "description": "YYYY-MM-DD. Omit for today."
+            },
+            "granularity": {
+              "type": "string",
+              "enum": [
+                "monthly",
+                "daily"
+              ],
+              "description": "monthly = the last observation in each calendar month. Default monthly for ranges over 92 days, daily otherwise."
+            },
+            "maxPoints": {
+              "type": "number",
+              "description": "Daily granularity only: downsample evenly to at most this many points."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "find_in_balance_history",
+        "description": "The EXACT date and amount for a question about one balance over time — the first or last time it crossed a number, and its highest or lowest point. Use it for \"when did I first hit zero\", \"when did my debt first fall below 1,000\", \"when was the last time X was zero\", \"what was my highest debt\", \"my lowest cash balance\", \"when did I cross above/below\". ALWAYS use this rather than reading dates off a series yourself: it checks every observation in the range, while a long history series is downsampled and may not even contain the day you need. Returns the matching observation, the observation before it, and the coverage it searched.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "metric": {
+              "type": "string",
+              "enum": [
+                "netWorth",
+                "liquid",
+                "checking",
+                "investments",
+                "digitalAssets",
+                "debt"
+              ],
+              "description": "Which balance. `liquid` is the recorded checking + savings balance; historical snapshots do not separate restricted accounts such as an HSA, so it is not comparable to today's unrestricted `liquid` when such accounts exist; `checking` is the checking bucket alone; `debt` is what is owed, as a positive amount."
+            },
+            "operation": {
+              "type": "string",
+              "enum": [
+                "minimum",
+                "maximum",
+                "first_below",
+                "first_above",
+                "last_below",
+                "last_above"
+              ],
+              "description": "minimum and maximum need no threshold. first_below, first_above, last_below and last_above each need one, and INCLUDE the threshold itself: \"the first time debt was zero\" is first_below with threshold 0; \"when did it first go over 10,000\" is first_above with threshold 10000."
+            },
+            "threshold": {
+              "type": "number",
+              "description": "The amount to compare against. Required for first_below, first_above, last_below and last_above."
+            },
+            "from": {
+              "type": "string",
+              "description": "YYYY-MM-DD. Omit for the whole available history."
+            },
+            "to": {
+              "type": "string",
+              "description": "YYYY-MM-DD. Omit for today."
+            }
+          },
+          "required": [
+            "metric",
+            "operation"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "explain_net_worth_composition",
+        "description": "Break ONE total into the components it is MADE OF on a single date, and drill into them. This is a composition at a point in time, not a movement: for what CHANGED between two dates use get_net_worth_history, and for a whole position on one date use get_financial_snapshot(asOf). Each result names the population the lens covers and its sibling lenses — `cash` is checking only, `savings` is separate. Call again with a component id to drill deeper.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "date": {
+              "type": "string",
+              "description": "YYYY-MM-DD to explain. Required."
+            },
+            "lens": {
+              "type": "string",
+              "enum": [
+                "net-worth",
+                "assets",
+                "liquid-net-worth",
+                "investments",
+                "crypto",
+                "cash",
+                "savings",
+                "debt"
+              ],
+              "description": "Which total to break down. Default net-worth."
+            },
+            "componentId": {
+              "type": "string",
+              "description": "A component id from a previous call, to drill one level deeper."
+            }
+          },
+          "required": [
+            "date"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "project_cash",
+        "description": "Deterministic cash projection to a future date, with checkpoints along the way. The headline answer is `projection` — an evidence-based estimate built from observed payroll cadence and observed spending continuing as they are. `assumedMonthlySpending` is the only assumption it can apply; a dated one-off amount arriving or leaving is not part of this projection, and neither is a CHANGE TO FUTURE INCOME from a date — a raise, a new salary, an income starting or ending all belong to scenario_projection. `establishment` says how firmly each input is pinned down; it is provenance, not a competing answer. With `from` it also states what is projected to come in and go out INSIDE a future window. `basis.recurringIncome` says, per income stream, what was counted; when `kind` is INCOMPLETE_ESTIMATE a current stream counted $0 — present `endingCash` only beside `incomplete.endingCashIfOmittedArriveAtLastObserved`, and never ask the user for income it lists.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string",
+              "description": "YYYY-MM-DD horizon end. Required."
+            },
+            "from": {
+              "type": "string",
+              "description": "YYYY-MM-DD, after today. Set it only when the question is about a future WINDOW rather than from now — \"how much will I spend during 2027\", \"what comes in next quarter\". The result adds `interval`: projected income, spending and obligations inside from..to (both dates inclusive) and the cash change across it. Never subtract two projections yourself. Omit for an ordinary projection."
+            },
+            "assumedMonthlySpending": {
+              "type": "number",
+              "description": "If the user stated a monthly spending level, pass it here. It is the only user assumption this tool can apply. A one-off amount on a date — a bonus, an inheritance, a purchase, a sale — is not part of this projection."
+            },
+            "checkpoints": {
+              "type": "string",
+              "enum": [
+                "monthly",
+                "quarterly",
+                "yearly",
+                "none"
+              ],
+              "description": "How often to report a balance between now and the horizon: monthly = every month-end, quarterly = every quarter-end, yearly = every 31 December; the horizon is always the last row. Omit for the default: none under ~45 days, then monthly within 18 months, quarterly to about 20 years, yearly beyond. A cadence that would exceed the row ceiling is returned one step coarser and the result says so under `horizon.requested` / `horizon.omitted`."
+            },
+            "asOf": {
+              "type": "string",
+              "description": "Project FROM this date using only evidence available then. Omit for today. Use for \"what would you have predicted back in January?\"."
+            },
+            "ignoreStaged": {
+              "type": "boolean",
+              "description": "Only when the user has stated a plan in this conversation AND asks for the current trend WITHOUT it."
+            }
+          },
+          "required": [
+            "to"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_pay_dates",
+        "description": "Upcoming expected pay dates per income source, generated from observed cadence. Only sources still licensed to continue produce dates.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "through": {
+              "type": "string",
+              "description": "YYYY-MM-DD. Omit to get the next few occurrences."
+            },
+            "nextOnly": {
+              "type": "boolean",
+              "description": "True for just the next one."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "investment_scenario",
+        "description": "Apply a percentage the USER stated to a named investment component and report the arithmetic effect on net worth AS OF TODAY. This is arithmetic over a hypothesis, not a prediction — never call it to guess what a market will do, and never add its result to a future projection without saying they are different dates.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "moves": {
+              "type": "array",
+              "description": "One entry per component to move.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "component": {
+                    "type": "string",
+                    "enum": [
+                      "DIGITAL_ASSETS",
+                      "TRADITIONAL_INVESTMENTS"
+                    ],
+                    "description": "Which canonical component the stated move applies to."
+                  },
+                  "changePercent": {
+                    "type": "number",
+                    "description": "The user's stated move, in percent. -30 for \"down 30%\"."
+                  }
+                },
+                "required": [
+                  "component",
+                  "changePercent"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "moves"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "scenario_projection",
+        "description": "Deterministic projection when something specific happens that the observed pattern does not contain: a CHANGE TO FUTURE INCOME from a date — a raise, a new salary, an income starting or ending (`incomeChanges`); a CHANGE TO FUTURE SPENDING — cutting a spending line or all spending by a percent or an amount, from now or from a date (\"cut Dining 20%\", \"cut Other 20%\", `spendingChanges`), passing the user's own word for the line; a dated one-off amount arriving or leaving — a bonus, an inheritance, a car, a tax bill, proceeds from a sale — money moved into investments, and an annual return. Cash comes from the same deterministic projection as project_cash; this adds only what the user said, and reports cash, investments, debt and net worth at every checkpoint. Do NOT do this arithmetic yourself. Call it AGAIN whenever the user changes ANY assumption or the horizon — a rate, a contribution, a floor, a raise, a date. Every figure in the result changes with it, and none of them is to be recomputed in prose: never scale a previous result, add to it, subtract two of them, or read a new date off an old table. The default return is 0% — the no-growth baseline, which is not a prediction that markets return nothing. A rate the user did not state may be run as an explicitly labelled illustration; it may never be called expected, likely, or a forecast.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string",
+              "description": "YYYY-MM-DD horizon end. Required."
+            },
+            "granularity": {
+              "type": "string",
+              "enum": [
+                "monthly",
+                "quarterly",
+                "yearly"
+              ],
+              "description": "How often the table has a row: monthly = every month-end, quarterly = every quarter-end, yearly = every 31 December; the horizon is always the last row. Use the cadence the user asked for (\"quarterly table\" = quarterly). Omit for the default: monthly within 18 months, quarterly to about 20 years, yearly beyond. A cadence that would exceed the row ceiling is returned one step coarser and the result says so under `horizon.requested` / `horizon.omitted`."
+            },
+            "annualReturnPct": {
+              "type": "number",
+              "description": "One flat annual return for the whole horizon, e.g. 8. Default 0 — the no-growth baseline. Use the rate the user stated; when they invited one without naming it (\"say, some return\"), run an illustration and say in the answer which rate it was. Ignored when `returns` is given."
+            },
+            "returns": {
+              "type": "array",
+              "description": "Per-period returns, when the user gave different rates for different years. Periods must not overlap.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, inclusive"
+                  },
+                  "annualPct": {
+                    "type": "number",
+                    "description": "e.g. 50 for \"50% in 2028\""
+                  }
+                },
+                "required": [
+                  "from",
+                  "to",
+                  "annualPct"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "contributions": {
+              "type": "array",
+              "description": "Money moved from cash into investments OR toward a liability (`target`). HOW MUCH — exactly one of four: `amount` in dollars, `fractionOfLiquid` for a share of the cash BALANCE, `surplusFraction` for a share of what each month ADDS, or `liquidFloor` + `fractionOfExcess` for a share of the cash held ABOVE A FLOOR (the floor in dollars, or as `liquidFloorMonthsOfExpenses` for \"keep six months of expenses\"). WHEN: `amount` and `fractionOfLiquid` need either `onDate` for a one-off or `from` + `cadence` for a schedule; `surplusFraction` and the floor pair are monthly by nature and need neither.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "number",
+                    "description": "A dollar amount. Positive moves cash into investments; negative takes it back out. Do NOT put a fraction here."
+                  },
+                  "fractionOfLiquid": {
+                    "type": "number",
+                    "description": "A share of the projected cash BALANCE on each date: 0.5 for \"half my liquidity\", 1 for \"everything I have\". The dollar amount differs at every date and only the projection knows it."
+                  },
+                  "surplusFraction": {
+                    "type": "number",
+                    "description": "A share of what each month ADDS: 0.75 for \"invest three quarters of the cash I am putting aside\", 1 for \"invest everything I save\". This is the one for \"invest some of the growing cash\" — it never touches the balance the user already has, and a month that projects no gain contributes nothing. It runs at every month-end: give `from`/`to` only to start or stop it early, and never a `cadence` or an `onDate`. The engine has no default share: when the user named one (\"75%\", \"half\") use it; when they said only \"some\" or \"most\", choose a share, run it, and say in the answer which share it was. It keeps NO cash floor: it moves its share every month whatever the balance is. When the user also wants cash kept (a buffer, $X liquid, N months of expenses), what is left to move is the cash ABOVE that floor — use `liquidFloor` or `liquidFloorMonthsOfExpenses` + `fractionOfExcess` with the same `target`, not this."
+                  },
+                  "liquidFloor": {
+                    "type": "number",
+                    "description": "The cash balance to KEEP, in DOLLARS THE USER STATED: 50000 for \"keep $50k liquid\". When the user said it in months of expenses, use `liquidFloorMonthsOfExpenses` instead and do not convert it to dollars yourself. Goes with `fractionOfExcess`. This is the one for \"once I have X in cash, invest what is above it\", \"keep a buffer of X and invest the rest\", \"everything above X\": at each month-end the share of cash above the floor moves into investments and cash is left AT the floor; while cash is at or below the floor nothing moves. It starts on its own the first month-end the balance is above the floor — do not derive a start date and pass `from`; do not use `surplusFraction` for this."
+                  },
+                  "liquidFloorMonthsOfExpenses": {
+                    "type": "number",
+                    "description": "The floor as MONTHS OF EXPENSES instead of dollars: 6 for \"keep six months of expenses in cash\". Resolved in code by the same monthly spending this scenario runs at (`assumedMonthlySpending` when the user stated one, else the observed level) and echoed under `floorRule.derivedFrom` with the dollars it became. Use INSTEAD of `liquidFloor`, never both, and never multiply spending by months yourself. Goes with `fractionOfExcess` exactly as `liquidFloor` does."
+                  },
+                  "fractionOfExcess": {
+                    "type": "number",
+                    "description": "The share of cash ABOVE `liquidFloor` to move each month-end: 1 for \"everything above it\", 0.5 for \"half of what is above it\". Goes with `liquidFloor` or `liquidFloorMonthsOfExpenses`."
+                  },
+                  "target": {
+                    "description": "WHERE the money goes. `investments` (the default), `highest_apr` (the liability with the highest known rate first — the avalanche; when it is cleared the same month's remainder continues to the next), or a liability account id from get_financial_snapshot. An ORDERED LIST waterfalls: [\"highest_apr\",\"investments\"] pays debt while any remains and invests the rest — \"pay the cards first, then invest\" in one scenario. A payment never exceeds the balance; what is left over stays in cash unless a later target takes it. This allocates cash the user already has — it is NOT a way to borrow.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  "onDate": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD for a single contribution."
+                  },
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD first occurrence of a repeating contribution."
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD last occurrence. Omit to continue to the horizon."
+                  },
+                  "cadence": {
+                    "type": "string",
+                    "enum": [
+                      "monthly",
+                      "yearly"
+                    ]
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "Optional short NAME for a fixed `amount` (\"Roth IRA\"). Never applied, and never a rule: the result names every rule from its fields, so a condition written only here does not run."
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            "outflows": {
+              "type": "array",
+              "description": "One-off cash leaving entirely — a car, a trip, a tax bill. Use a NEGATIVE amount for a one-off inflow such as a bonus.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "onDate": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  },
+                  "amount": {
+                    "type": "number",
+                    "description": "Positive = cash out."
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "What it is."
+                  }
+                },
+                "required": [
+                  "onDate",
+                  "amount"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "assumedMonthlySpending": {
+              "type": "number",
+              "description": "If the user stated a monthly spending level, pass it here — it changes the cash spine exactly as it does in project_cash."
+            },
+            "incomeChanges": {
+              "type": "array",
+              "description": "A dated change to FUTURE income — a raise, a new salary, an income starting, an income ending. Use this whenever the user says income changes from a date: \"starting January my income goes up 10%\", \"my salary goes to $180k in March\", \"my contract ends in June\", \"I start consulting in February at $3,000 a month\". The change is executed by the projection, which reports which pay dates it actually altered — do NOT compute a new income figure yourself, do NOT convert a yearly salary into a monthly one, and do NOT apply a percentage in prose. A one-off amount arriving on a date (a bonus, a settlement) is NOT this: use `outflows` with a negative amount. A change to SPENDING is not this: it is `spendingChanges`.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "SCALE",
+                      "SET_RATE",
+                      "STOP",
+                      "START"
+                    ],
+                    "description": "SCALE for a percentage change (\"up 10%\"). SET_RATE when the user states what the income BECOMES (\"goes to $180k\", \"I make $15k a month\"). STOP when an income ends. START for an income that does not exist yet."
+                  },
+                  "source": {
+                    "type": "string",
+                    "description": "WHICH income: copy a `sourceKey` EXACTLY as get_pay_dates or get_income returns it (it looks like `NAME@accountid`) — never an account id, a label, or a name you composed. Omit it only when the user meant income as a whole (\"my income goes up 10%\"); an omitted source scales EVERY stream, and for SET_RATE or STOP it is refused when there is more than one income, because \"I make $15k a month\" could mean one of them or all of them. Never guess which transactions are the salary."
+                  },
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, INCLUSIVE — the first pay date the change applies to. \"Starting January\" is January 1 of the next January. For STOP this is the first date NOT paid, so \"stops after June\" is July 1."
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, inclusive. Omit to continue to the horizon."
+                  },
+                  "multiplier": {
+                    "type": "number",
+                    "description": "SCALE only. 1.1 for \"up 10%\", 0.8 for \"a 20% pay cut\". Not a percentage. A SCALE needs nothing else: no `amount`, no `per`, no `cadence`."
+                  },
+                  "amount": {
+                    "type": "number",
+                    "description": "SET_RATE and START only. What the income BECOMES, as the user stated it — do not annualise or monthly-ise it yourself; say which period it is in `per`."
+                  },
+                  "per": {
+                    "type": "string",
+                    "enum": [
+                      "YEAR",
+                      "MONTH",
+                      "OCCURRENCE"
+                    ],
+                    "description": "What `amount` is per. A salary of $180k = YEAR. Earning $15k a month = MONTH. Being paid $3,000 a paycheck = OCCURRENCE. The projection converts it against that stream's own pay schedule — a yearly figure on a fortnightly job is divided by 26, not by 12."
+                  },
+                  "basis": {
+                    "type": "string",
+                    "enum": [
+                      "NET",
+                      "GROSS"
+                    ],
+                    "description": "NET is take-home; GROSS is before deductions. REQUIRED on SET_RATE and START, and never guessed: a gross figure is real money but is NOT cash the user can spend, so it does not raise the projected balance — if the user did not say, ask. Optional on SCALE, where it says what the raised income is; omit it and the income keeps whatever it already was, which is usually right."
+                  },
+                  "cadence": {
+                    "type": "string",
+                    "enum": [
+                      "WEEKLY",
+                      "BIWEEKLY",
+                      "MONTHLY"
+                    ],
+                    "description": "START only — how often the new income arrives. An existing income keeps its own observed schedule and must not be given one here."
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "START only. A short NAME for the new income (\"consulting\"). Never a rule."
+                  }
+                },
+                "required": [
+                  "op",
+                  "from"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "spendingChanges": {
+              "type": "array",
+              "description": "A dated change to FUTURE spending — all of it, or one spending line. Use this whenever the user says their spending changes from a date: \"starting January cut Dining 20%\", \"spend $500 less on Shopping from March\", \"Travel at $300 a month from June\", \"cut all my spending 10%\", \"for three months\". The projection changes its spending RATE from those dates and reports what each rule did — do NOT compute a new spending figure yourself and do NOT apply a percentage in prose. Lines a change can apply to: Dining (as a whole), Shopping (as a whole), Utilities (as a whole), Travel, Subscriptions (as a whole), Fee, Other (the catch-all). A new recurring bill that does not exist yet is not this. Interest cannot be cut here — it follows the debt (`liabilityAssumptions`, `contributions` with a debt `target`).",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "description": "WHAT spending, in the user's OWN word, exactly as they said it (\"Dining\", \"restaurants\", \"groceries\", \"rent\"). Never substitute a broader line yourself: \"restaurants\" is NOT \"Dining\" (Dining also holds groceries), \"rent\" is NOT \"Utilities\". The result applies it to a line, or refuses it and names the line that holds it — offer that line to the user and apply it only if they agree. Omit category only when the user meant ALL their spending."
+                  },
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "SCALE",
+                      "DELTA",
+                      "SET_RATE"
+                    ],
+                    "description": "SCALE for a percentage change (\"cut 20%\" = multiplier 0.8). DELTA for an amount more or less each month (\"spend $500 less\" = monthly -500). SET_RATE when the user says what it BECOMES (\"make it $300 a month\"); to stop spending on something, SET_RATE 0."
+                  },
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, INCLUSIVE — the first day the change applies. \"Starting January\" is January 1 of the next January."
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, INCLUSIVE — the last day it applies (\"for three months\", \"until June\" = May 31). Omit to continue to the horizon. After this day the rule no longer applies and spending returns to what the other rules make it."
+                  },
+                  "multiplier": {
+                    "type": "number",
+                    "description": "SCALE only. 0.8 for \"cut 20%\", 1.1 for \"10% more\". Not a percentage."
+                  },
+                  "monthly": {
+                    "type": "number",
+                    "description": "DELTA and SET_RATE only, per month. DELTA is signed: -500 for \"spend $500 less\". SET_RATE is the new monthly level, 0 or more."
+                  }
+                },
+                "required": [
+                  "op",
+                  "from"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "liabilityAssumptions": {
+              "type": "array",
+              "description": "Terms the user STATED for an existing liability, for this scenario only: \"assume the card is at 18%\", \"my minimum is $300\". Overrides that liability's known term; never changes the account. Use it when a liability shows apr or minimumPayment null and the user supplies one — never invent a rate yourself.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "liabilityId": {
+                    "type": "string",
+                    "description": "The liability account id from get_financial_snapshot."
+                  },
+                  "apr": {
+                    "type": "number",
+                    "description": "Percent per year, 0–100. 0 is a real rate (no interest)."
+                  },
+                  "minimumPayment": {
+                    "type": "number",
+                    "description": "Per-cycle minimum in dollars, 0 or more."
+                  }
+                },
+                "required": [
+                  "liabilityId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "to"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "scenario_crossing",
+        "description": "WHEN a scenario first reaches a number: the first future month-end where net worth, cash, investments or debt crosses a threshold, under the same assumptions scenario_projection takes. Use it for \"when do I hit a million\", \"when will I be debt free\", \"how long until I have X\" — anything asking WHEN rather than HOW MUCH. It returns the crossing month, the month before it, and what the position looks like there. Do NOT read a date off a projection table yourself, and do NOT guess a deadline to hand scenario_goal_seek: that tool answers \"what would it take by DATE\", this one answers \"when\". Call it AGAIN whenever the user changes ANY assumption or the horizon — a rate, a contribution, a floor, a raise, a date. Every figure in the result changes with it, and none of them is to be recomputed in prose: never scale a previous result, add to it, subtract two of them, or read a new date off an old table.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "metric": {
+              "type": "string",
+              "enum": [
+                "netWorth",
+                "liquid",
+                "investments",
+                "debt",
+                "otherAssets"
+              ],
+              "description": "Which line crosses. `liquid` is unrestricted cash (checking + savings, excluding restricted accounts such as an HSA); `debt` is what is owed, as a positive amount."
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "at_or_above",
+                "at_or_below"
+              ],
+              "description": "at_or_above for reaching a target; at_or_below for falling to one. \"When is my debt gone\" is metric `debt`, at_or_below, threshold 0."
+            },
+            "threshold": {
+              "type": "number",
+              "description": "The number to reach, in dollars. Required."
+            },
+            "searchThrough": {
+              "type": "string",
+              "description": "YYYY-MM-DD to stop looking. Omit to search 30 years ahead. Use it when the user named a window — \"do I get there by 2035?\" — and the search will not look past it."
+            },
+            "granularity": {
+              "type": "string",
+              "enum": [
+                "monthly",
+                "quarterly",
+                "yearly"
+              ],
+              "description": "How often the table has a row: monthly = every month-end, quarterly = every quarter-end, yearly = every 31 December; the horizon is always the last row. Use the cadence the user asked for (\"quarterly table\" = quarterly). Omit for the default: monthly within 18 months, quarterly to about 20 years, yearly beyond. A cadence that would exceed the row ceiling is returned one step coarser and the result says so under `horizon.requested` / `horizon.omitted`."
+            },
+            "annualReturnPct": {
+              "type": "number",
+              "description": "One flat annual return for the whole horizon, e.g. 8. Default 0 — the no-growth baseline. Use the rate the user stated; when they invited one without naming it (\"say, some return\"), run an illustration and say in the answer which rate it was. Ignored when `returns` is given."
+            },
+            "returns": {
+              "type": "array",
+              "description": "Per-period returns, when the user gave different rates for different years. Periods must not overlap.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, inclusive"
+                  },
+                  "annualPct": {
+                    "type": "number",
+                    "description": "e.g. 50 for \"50% in 2028\""
+                  }
+                },
+                "required": [
+                  "from",
+                  "to",
+                  "annualPct"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "contributions": {
+              "type": "array",
+              "description": "Money moved from cash into investments OR toward a liability (`target`). HOW MUCH — exactly one of four: `amount` in dollars, `fractionOfLiquid` for a share of the cash BALANCE, `surplusFraction` for a share of what each month ADDS, or `liquidFloor` + `fractionOfExcess` for a share of the cash held ABOVE A FLOOR (the floor in dollars, or as `liquidFloorMonthsOfExpenses` for \"keep six months of expenses\"). WHEN: `amount` and `fractionOfLiquid` need either `onDate` for a one-off or `from` + `cadence` for a schedule; `surplusFraction` and the floor pair are monthly by nature and need neither.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "number",
+                    "description": "A dollar amount. Positive moves cash into investments; negative takes it back out. Do NOT put a fraction here."
+                  },
+                  "fractionOfLiquid": {
+                    "type": "number",
+                    "description": "A share of the projected cash BALANCE on each date: 0.5 for \"half my liquidity\", 1 for \"everything I have\". The dollar amount differs at every date and only the projection knows it."
+                  },
+                  "surplusFraction": {
+                    "type": "number",
+                    "description": "A share of what each month ADDS: 0.75 for \"invest three quarters of the cash I am putting aside\", 1 for \"invest everything I save\". This is the one for \"invest some of the growing cash\" — it never touches the balance the user already has, and a month that projects no gain contributes nothing. It runs at every month-end: give `from`/`to` only to start or stop it early, and never a `cadence` or an `onDate`. The engine has no default share: when the user named one (\"75%\", \"half\") use it; when they said only \"some\" or \"most\", choose a share, run it, and say in the answer which share it was. It keeps NO cash floor: it moves its share every month whatever the balance is. When the user also wants cash kept (a buffer, $X liquid, N months of expenses), what is left to move is the cash ABOVE that floor — use `liquidFloor` or `liquidFloorMonthsOfExpenses` + `fractionOfExcess` with the same `target`, not this."
+                  },
+                  "liquidFloor": {
+                    "type": "number",
+                    "description": "The cash balance to KEEP, in DOLLARS THE USER STATED: 50000 for \"keep $50k liquid\". When the user said it in months of expenses, use `liquidFloorMonthsOfExpenses` instead and do not convert it to dollars yourself. Goes with `fractionOfExcess`. This is the one for \"once I have X in cash, invest what is above it\", \"keep a buffer of X and invest the rest\", \"everything above X\": at each month-end the share of cash above the floor moves into investments and cash is left AT the floor; while cash is at or below the floor nothing moves. It starts on its own the first month-end the balance is above the floor — do not derive a start date and pass `from`; do not use `surplusFraction` for this."
+                  },
+                  "liquidFloorMonthsOfExpenses": {
+                    "type": "number",
+                    "description": "The floor as MONTHS OF EXPENSES instead of dollars: 6 for \"keep six months of expenses in cash\". Resolved in code by the same monthly spending this scenario runs at (`assumedMonthlySpending` when the user stated one, else the observed level) and echoed under `floorRule.derivedFrom` with the dollars it became. Use INSTEAD of `liquidFloor`, never both, and never multiply spending by months yourself. Goes with `fractionOfExcess` exactly as `liquidFloor` does."
+                  },
+                  "fractionOfExcess": {
+                    "type": "number",
+                    "description": "The share of cash ABOVE `liquidFloor` to move each month-end: 1 for \"everything above it\", 0.5 for \"half of what is above it\". Goes with `liquidFloor` or `liquidFloorMonthsOfExpenses`."
+                  },
+                  "target": {
+                    "description": "WHERE the money goes. `investments` (the default), `highest_apr` (the liability with the highest known rate first — the avalanche; when it is cleared the same month's remainder continues to the next), or a liability account id from get_financial_snapshot. An ORDERED LIST waterfalls: [\"highest_apr\",\"investments\"] pays debt while any remains and invests the rest — \"pay the cards first, then invest\" in one scenario. A payment never exceeds the balance; what is left over stays in cash unless a later target takes it. This allocates cash the user already has — it is NOT a way to borrow.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  "onDate": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD for a single contribution."
+                  },
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD first occurrence of a repeating contribution."
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD last occurrence. Omit to continue to the horizon."
+                  },
+                  "cadence": {
+                    "type": "string",
+                    "enum": [
+                      "monthly",
+                      "yearly"
+                    ]
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "Optional short NAME for a fixed `amount` (\"Roth IRA\"). Never applied, and never a rule: the result names every rule from its fields, so a condition written only here does not run."
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            "outflows": {
+              "type": "array",
+              "description": "One-off cash leaving entirely — a car, a trip, a tax bill. Use a NEGATIVE amount for a one-off inflow such as a bonus.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "onDate": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  },
+                  "amount": {
+                    "type": "number",
+                    "description": "Positive = cash out."
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "What it is."
+                  }
+                },
+                "required": [
+                  "onDate",
+                  "amount"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "assumedMonthlySpending": {
+              "type": "number",
+              "description": "If the user stated a monthly spending level, pass it here — it changes the cash spine exactly as it does in project_cash."
+            },
+            "incomeChanges": {
+              "type": "array",
+              "description": "A dated change to FUTURE income — a raise, a new salary, an income starting, an income ending. Use this whenever the user says income changes from a date: \"starting January my income goes up 10%\", \"my salary goes to $180k in March\", \"my contract ends in June\", \"I start consulting in February at $3,000 a month\". The change is executed by the projection, which reports which pay dates it actually altered — do NOT compute a new income figure yourself, do NOT convert a yearly salary into a monthly one, and do NOT apply a percentage in prose. A one-off amount arriving on a date (a bonus, a settlement) is NOT this: use `outflows` with a negative amount. A change to SPENDING is not this: it is `spendingChanges`.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "SCALE",
+                      "SET_RATE",
+                      "STOP",
+                      "START"
+                    ],
+                    "description": "SCALE for a percentage change (\"up 10%\"). SET_RATE when the user states what the income BECOMES (\"goes to $180k\", \"I make $15k a month\"). STOP when an income ends. START for an income that does not exist yet."
+                  },
+                  "source": {
+                    "type": "string",
+                    "description": "WHICH income: copy a `sourceKey` EXACTLY as get_pay_dates or get_income returns it (it looks like `NAME@accountid`) — never an account id, a label, or a name you composed. Omit it only when the user meant income as a whole (\"my income goes up 10%\"); an omitted source scales EVERY stream, and for SET_RATE or STOP it is refused when there is more than one income, because \"I make $15k a month\" could mean one of them or all of them. Never guess which transactions are the salary."
+                  },
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, INCLUSIVE — the first pay date the change applies to. \"Starting January\" is January 1 of the next January. For STOP this is the first date NOT paid, so \"stops after June\" is July 1."
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, inclusive. Omit to continue to the horizon."
+                  },
+                  "multiplier": {
+                    "type": "number",
+                    "description": "SCALE only. 1.1 for \"up 10%\", 0.8 for \"a 20% pay cut\". Not a percentage. A SCALE needs nothing else: no `amount`, no `per`, no `cadence`."
+                  },
+                  "amount": {
+                    "type": "number",
+                    "description": "SET_RATE and START only. What the income BECOMES, as the user stated it — do not annualise or monthly-ise it yourself; say which period it is in `per`."
+                  },
+                  "per": {
+                    "type": "string",
+                    "enum": [
+                      "YEAR",
+                      "MONTH",
+                      "OCCURRENCE"
+                    ],
+                    "description": "What `amount` is per. A salary of $180k = YEAR. Earning $15k a month = MONTH. Being paid $3,000 a paycheck = OCCURRENCE. The projection converts it against that stream's own pay schedule — a yearly figure on a fortnightly job is divided by 26, not by 12."
+                  },
+                  "basis": {
+                    "type": "string",
+                    "enum": [
+                      "NET",
+                      "GROSS"
+                    ],
+                    "description": "NET is take-home; GROSS is before deductions. REQUIRED on SET_RATE and START, and never guessed: a gross figure is real money but is NOT cash the user can spend, so it does not raise the projected balance — if the user did not say, ask. Optional on SCALE, where it says what the raised income is; omit it and the income keeps whatever it already was, which is usually right."
+                  },
+                  "cadence": {
+                    "type": "string",
+                    "enum": [
+                      "WEEKLY",
+                      "BIWEEKLY",
+                      "MONTHLY"
+                    ],
+                    "description": "START only — how often the new income arrives. An existing income keeps its own observed schedule and must not be given one here."
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "START only. A short NAME for the new income (\"consulting\"). Never a rule."
+                  }
+                },
+                "required": [
+                  "op",
+                  "from"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "spendingChanges": {
+              "type": "array",
+              "description": "A dated change to FUTURE spending — all of it, or one spending line. Use this whenever the user says their spending changes from a date: \"starting January cut Dining 20%\", \"spend $500 less on Shopping from March\", \"Travel at $300 a month from June\", \"cut all my spending 10%\", \"for three months\". The projection changes its spending RATE from those dates and reports what each rule did — do NOT compute a new spending figure yourself and do NOT apply a percentage in prose. Lines a change can apply to: Dining (as a whole), Shopping (as a whole), Utilities (as a whole), Travel, Subscriptions (as a whole), Fee, Other (the catch-all). A new recurring bill that does not exist yet is not this. Interest cannot be cut here — it follows the debt (`liabilityAssumptions`, `contributions` with a debt `target`).",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "description": "WHAT spending, in the user's OWN word, exactly as they said it (\"Dining\", \"restaurants\", \"groceries\", \"rent\"). Never substitute a broader line yourself: \"restaurants\" is NOT \"Dining\" (Dining also holds groceries), \"rent\" is NOT \"Utilities\". The result applies it to a line, or refuses it and names the line that holds it — offer that line to the user and apply it only if they agree. Omit category only when the user meant ALL their spending."
+                  },
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "SCALE",
+                      "DELTA",
+                      "SET_RATE"
+                    ],
+                    "description": "SCALE for a percentage change (\"cut 20%\" = multiplier 0.8). DELTA for an amount more or less each month (\"spend $500 less\" = monthly -500). SET_RATE when the user says what it BECOMES (\"make it $300 a month\"); to stop spending on something, SET_RATE 0."
+                  },
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, INCLUSIVE — the first day the change applies. \"Starting January\" is January 1 of the next January."
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, INCLUSIVE — the last day it applies (\"for three months\", \"until June\" = May 31). Omit to continue to the horizon. After this day the rule no longer applies and spending returns to what the other rules make it."
+                  },
+                  "multiplier": {
+                    "type": "number",
+                    "description": "SCALE only. 0.8 for \"cut 20%\", 1.1 for \"10% more\". Not a percentage."
+                  },
+                  "monthly": {
+                    "type": "number",
+                    "description": "DELTA and SET_RATE only, per month. DELTA is signed: -500 for \"spend $500 less\". SET_RATE is the new monthly level, 0 or more."
+                  }
+                },
+                "required": [
+                  "op",
+                  "from"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "liabilityAssumptions": {
+              "type": "array",
+              "description": "Terms the user STATED for an existing liability, for this scenario only: \"assume the card is at 18%\", \"my minimum is $300\". Overrides that liability's known term; never changes the account. Use it when a liability shows apr or minimumPayment null and the user supplies one — never invent a rate yourself.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "liabilityId": {
+                    "type": "string",
+                    "description": "The liability account id from get_financial_snapshot."
+                  },
+                  "apr": {
+                    "type": "number",
+                    "description": "Percent per year, 0–100. 0 is a real rate (no interest)."
+                  },
+                  "minimumPayment": {
+                    "type": "number",
+                    "description": "Per-cycle minimum in dollars, 0 or more."
+                  }
+                },
+                "required": [
+                  "liabilityId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "metric",
+            "direction",
+            "threshold"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "scenario_goal_seek",
+        "description": "Solve for the one number that reaches a target: the annual return needed, the monthly contribution needed, or the monthly spending cut needed. Use it for \"how could I reach a million by 2030?\" — do NOT estimate a required return or a required saving rate yourself. It returns the value AND the full scenario at that value, with `outcome`: SOLVED, ALREADY_MET, INFEASIBLE (no value of the lever can reach it), OUT_OF_RANGE (the search stopped first — never call that impossible) or EVALUATION_FAILED (the projection could not run — reachability is unknown, never impossible). Takes the same scenario inputs as scenario_projection, which are held fixed while the one unknown is solved. A solved return comes as `returnAtSolution` over `horizon`: lead with `periodPct` (growth over the actual period) for a by-date question shorter than a year, with `annualizedPct` for a longer one or when the user asks for an annual/annualized rate — and give the other as context. Never convert between them yourself.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "number",
+              "description": "The number to reach, in dollars. Required."
+            },
+            "by": {
+              "type": "string",
+              "description": "YYYY-MM-DD by which to reach it. Required."
+            },
+            "solveFor": {
+              "type": "string",
+              "enum": [
+                "annualReturnPct",
+                "monthlyContribution",
+                "monthlySpendingCut",
+                "spendingChange"
+              ],
+              "description": "annualReturnPct = what return would be needed. monthlyContribution = how much cash to move into investments each month (this RELOCATES money — at a 0% return it does not change net worth at all). monthlySpendingCut = how much less to spend each month overall, with that amount invested; this is the lever that actually creates net worth. spendingChange = how much to cut ONE spending line (\"how much would I need to cut Dining to…\") — give `spendingChangeToSolve`."
+            },
+            "spendingChangeToSolve": {
+              "type": "object",
+              "properties": {
+                "category": {
+                  "type": "string",
+                  "description": "The spending line, in the user's own word (as in `spendingChanges[].category`)."
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "percent",
+                    "monthly"
+                  ],
+                  "description": "percent = the share of the line to cut (0–100); monthly = how much less a month (up to the whole line)."
+                },
+                "from": {
+                  "type": "string",
+                  "description": "YYYY-MM-DD the cut starts. Omit for the first projected day."
+                }
+              },
+              "required": [
+                "category",
+                "unit"
+              ],
+              "additionalProperties": false
+            },
+            "measure": {
+              "type": "string",
+              "enum": [
+                "netWorth",
+                "liquid",
+                "investments",
+                "debt"
+              ],
+              "description": "What the target is a target FOR. Default netWorth. `debt` solves DOWNWARD: the smallest value that brings debt at `by` to at or below the target (\"what extra monthly payment gets me debt free by December\" = monthlyContribution, measure debt, target 0, contributionTarget highest_apr)."
+            },
+            "contributionTarget": {
+              "description": "For solveFor monthlyContribution: where the solved monthly amount goes — `investments` (default), `highest_apr`, a liability id, or an ordered list, exactly as `contributions[].target`.",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "granularity": {
+              "type": "string",
+              "enum": [
+                "monthly",
+                "quarterly",
+                "yearly"
+              ],
+              "description": "How often the table has a row: monthly = every month-end, quarterly = every quarter-end, yearly = every 31 December; the horizon is always the last row. Use the cadence the user asked for (\"quarterly table\" = quarterly). Omit for the default: monthly within 18 months, quarterly to about 20 years, yearly beyond. A cadence that would exceed the row ceiling is returned one step coarser and the result says so under `horizon.requested` / `horizon.omitted`."
+            },
+            "annualReturnPct": {
+              "type": "number",
+              "description": "One flat annual return for the whole horizon, e.g. 8. Default 0 — the no-growth baseline. Use the rate the user stated; when they invited one without naming it (\"say, some return\"), run an illustration and say in the answer which rate it was. Ignored when `returns` is given."
+            },
+            "returns": {
+              "type": "array",
+              "description": "Per-period returns, when the user gave different rates for different years. Periods must not overlap.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, inclusive"
+                  },
+                  "annualPct": {
+                    "type": "number",
+                    "description": "e.g. 50 for \"50% in 2028\""
+                  }
+                },
+                "required": [
+                  "from",
+                  "to",
+                  "annualPct"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "contributions": {
+              "type": "array",
+              "description": "Money moved from cash into investments OR toward a liability (`target`). HOW MUCH — exactly one of four: `amount` in dollars, `fractionOfLiquid` for a share of the cash BALANCE, `surplusFraction` for a share of what each month ADDS, or `liquidFloor` + `fractionOfExcess` for a share of the cash held ABOVE A FLOOR (the floor in dollars, or as `liquidFloorMonthsOfExpenses` for \"keep six months of expenses\"). WHEN: `amount` and `fractionOfLiquid` need either `onDate` for a one-off or `from` + `cadence` for a schedule; `surplusFraction` and the floor pair are monthly by nature and need neither.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "number",
+                    "description": "A dollar amount. Positive moves cash into investments; negative takes it back out. Do NOT put a fraction here."
+                  },
+                  "fractionOfLiquid": {
+                    "type": "number",
+                    "description": "A share of the projected cash BALANCE on each date: 0.5 for \"half my liquidity\", 1 for \"everything I have\". The dollar amount differs at every date and only the projection knows it."
+                  },
+                  "surplusFraction": {
+                    "type": "number",
+                    "description": "A share of what each month ADDS: 0.75 for \"invest three quarters of the cash I am putting aside\", 1 for \"invest everything I save\". This is the one for \"invest some of the growing cash\" — it never touches the balance the user already has, and a month that projects no gain contributes nothing. It runs at every month-end: give `from`/`to` only to start or stop it early, and never a `cadence` or an `onDate`. The engine has no default share: when the user named one (\"75%\", \"half\") use it; when they said only \"some\" or \"most\", choose a share, run it, and say in the answer which share it was. It keeps NO cash floor: it moves its share every month whatever the balance is. When the user also wants cash kept (a buffer, $X liquid, N months of expenses), what is left to move is the cash ABOVE that floor — use `liquidFloor` or `liquidFloorMonthsOfExpenses` + `fractionOfExcess` with the same `target`, not this."
+                  },
+                  "liquidFloor": {
+                    "type": "number",
+                    "description": "The cash balance to KEEP, in DOLLARS THE USER STATED: 50000 for \"keep $50k liquid\". When the user said it in months of expenses, use `liquidFloorMonthsOfExpenses` instead and do not convert it to dollars yourself. Goes with `fractionOfExcess`. This is the one for \"once I have X in cash, invest what is above it\", \"keep a buffer of X and invest the rest\", \"everything above X\": at each month-end the share of cash above the floor moves into investments and cash is left AT the floor; while cash is at or below the floor nothing moves. It starts on its own the first month-end the balance is above the floor — do not derive a start date and pass `from`; do not use `surplusFraction` for this."
+                  },
+                  "liquidFloorMonthsOfExpenses": {
+                    "type": "number",
+                    "description": "The floor as MONTHS OF EXPENSES instead of dollars: 6 for \"keep six months of expenses in cash\". Resolved in code by the same monthly spending this scenario runs at (`assumedMonthlySpending` when the user stated one, else the observed level) and echoed under `floorRule.derivedFrom` with the dollars it became. Use INSTEAD of `liquidFloor`, never both, and never multiply spending by months yourself. Goes with `fractionOfExcess` exactly as `liquidFloor` does."
+                  },
+                  "fractionOfExcess": {
+                    "type": "number",
+                    "description": "The share of cash ABOVE `liquidFloor` to move each month-end: 1 for \"everything above it\", 0.5 for \"half of what is above it\". Goes with `liquidFloor` or `liquidFloorMonthsOfExpenses`."
+                  },
+                  "target": {
+                    "description": "WHERE the money goes. `investments` (the default), `highest_apr` (the liability with the highest known rate first — the avalanche; when it is cleared the same month's remainder continues to the next), or a liability account id from get_financial_snapshot. An ORDERED LIST waterfalls: [\"highest_apr\",\"investments\"] pays debt while any remains and invests the rest — \"pay the cards first, then invest\" in one scenario. A payment never exceeds the balance; what is left over stays in cash unless a later target takes it. This allocates cash the user already has — it is NOT a way to borrow.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  "onDate": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD for a single contribution."
+                  },
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD first occurrence of a repeating contribution."
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD last occurrence. Omit to continue to the horizon."
+                  },
+                  "cadence": {
+                    "type": "string",
+                    "enum": [
+                      "monthly",
+                      "yearly"
+                    ]
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "Optional short NAME for a fixed `amount` (\"Roth IRA\"). Never applied, and never a rule: the result names every rule from its fields, so a condition written only here does not run."
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            "outflows": {
+              "type": "array",
+              "description": "One-off cash leaving entirely — a car, a trip, a tax bill. Use a NEGATIVE amount for a one-off inflow such as a bonus.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "onDate": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  },
+                  "amount": {
+                    "type": "number",
+                    "description": "Positive = cash out."
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "What it is."
+                  }
+                },
+                "required": [
+                  "onDate",
+                  "amount"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "assumedMonthlySpending": {
+              "type": "number",
+              "description": "If the user stated a monthly spending level, pass it here — it changes the cash spine exactly as it does in project_cash."
+            },
+            "incomeChanges": {
+              "type": "array",
+              "description": "A dated change to FUTURE income — a raise, a new salary, an income starting, an income ending. Use this whenever the user says income changes from a date: \"starting January my income goes up 10%\", \"my salary goes to $180k in March\", \"my contract ends in June\", \"I start consulting in February at $3,000 a month\". The change is executed by the projection, which reports which pay dates it actually altered — do NOT compute a new income figure yourself, do NOT convert a yearly salary into a monthly one, and do NOT apply a percentage in prose. A one-off amount arriving on a date (a bonus, a settlement) is NOT this: use `outflows` with a negative amount. A change to SPENDING is not this: it is `spendingChanges`.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "SCALE",
+                      "SET_RATE",
+                      "STOP",
+                      "START"
+                    ],
+                    "description": "SCALE for a percentage change (\"up 10%\"). SET_RATE when the user states what the income BECOMES (\"goes to $180k\", \"I make $15k a month\"). STOP when an income ends. START for an income that does not exist yet."
+                  },
+                  "source": {
+                    "type": "string",
+                    "description": "WHICH income: copy a `sourceKey` EXACTLY as get_pay_dates or get_income returns it (it looks like `NAME@accountid`) — never an account id, a label, or a name you composed. Omit it only when the user meant income as a whole (\"my income goes up 10%\"); an omitted source scales EVERY stream, and for SET_RATE or STOP it is refused when there is more than one income, because \"I make $15k a month\" could mean one of them or all of them. Never guess which transactions are the salary."
+                  },
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, INCLUSIVE — the first pay date the change applies to. \"Starting January\" is January 1 of the next January. For STOP this is the first date NOT paid, so \"stops after June\" is July 1."
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, inclusive. Omit to continue to the horizon."
+                  },
+                  "multiplier": {
+                    "type": "number",
+                    "description": "SCALE only. 1.1 for \"up 10%\", 0.8 for \"a 20% pay cut\". Not a percentage. A SCALE needs nothing else: no `amount`, no `per`, no `cadence`."
+                  },
+                  "amount": {
+                    "type": "number",
+                    "description": "SET_RATE and START only. What the income BECOMES, as the user stated it — do not annualise or monthly-ise it yourself; say which period it is in `per`."
+                  },
+                  "per": {
+                    "type": "string",
+                    "enum": [
+                      "YEAR",
+                      "MONTH",
+                      "OCCURRENCE"
+                    ],
+                    "description": "What `amount` is per. A salary of $180k = YEAR. Earning $15k a month = MONTH. Being paid $3,000 a paycheck = OCCURRENCE. The projection converts it against that stream's own pay schedule — a yearly figure on a fortnightly job is divided by 26, not by 12."
+                  },
+                  "basis": {
+                    "type": "string",
+                    "enum": [
+                      "NET",
+                      "GROSS"
+                    ],
+                    "description": "NET is take-home; GROSS is before deductions. REQUIRED on SET_RATE and START, and never guessed: a gross figure is real money but is NOT cash the user can spend, so it does not raise the projected balance — if the user did not say, ask. Optional on SCALE, where it says what the raised income is; omit it and the income keeps whatever it already was, which is usually right."
+                  },
+                  "cadence": {
+                    "type": "string",
+                    "enum": [
+                      "WEEKLY",
+                      "BIWEEKLY",
+                      "MONTHLY"
+                    ],
+                    "description": "START only — how often the new income arrives. An existing income keeps its own observed schedule and must not be given one here."
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "START only. A short NAME for the new income (\"consulting\"). Never a rule."
+                  }
+                },
+                "required": [
+                  "op",
+                  "from"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "spendingChanges": {
+              "type": "array",
+              "description": "A dated change to FUTURE spending — all of it, or one spending line. Use this whenever the user says their spending changes from a date: \"starting January cut Dining 20%\", \"spend $500 less on Shopping from March\", \"Travel at $300 a month from June\", \"cut all my spending 10%\", \"for three months\". The projection changes its spending RATE from those dates and reports what each rule did — do NOT compute a new spending figure yourself and do NOT apply a percentage in prose. Lines a change can apply to: Dining (as a whole), Shopping (as a whole), Utilities (as a whole), Travel, Subscriptions (as a whole), Fee, Other (the catch-all). A new recurring bill that does not exist yet is not this. Interest cannot be cut here — it follows the debt (`liabilityAssumptions`, `contributions` with a debt `target`).",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "description": "WHAT spending, in the user's OWN word, exactly as they said it (\"Dining\", \"restaurants\", \"groceries\", \"rent\"). Never substitute a broader line yourself: \"restaurants\" is NOT \"Dining\" (Dining also holds groceries), \"rent\" is NOT \"Utilities\". The result applies it to a line, or refuses it and names the line that holds it — offer that line to the user and apply it only if they agree. Omit category only when the user meant ALL their spending."
+                  },
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "SCALE",
+                      "DELTA",
+                      "SET_RATE"
+                    ],
+                    "description": "SCALE for a percentage change (\"cut 20%\" = multiplier 0.8). DELTA for an amount more or less each month (\"spend $500 less\" = monthly -500). SET_RATE when the user says what it BECOMES (\"make it $300 a month\"); to stop spending on something, SET_RATE 0."
+                  },
+                  "from": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, INCLUSIVE — the first day the change applies. \"Starting January\" is January 1 of the next January."
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD, INCLUSIVE — the last day it applies (\"for three months\", \"until June\" = May 31). Omit to continue to the horizon. After this day the rule no longer applies and spending returns to what the other rules make it."
+                  },
+                  "multiplier": {
+                    "type": "number",
+                    "description": "SCALE only. 0.8 for \"cut 20%\", 1.1 for \"10% more\". Not a percentage."
+                  },
+                  "monthly": {
+                    "type": "number",
+                    "description": "DELTA and SET_RATE only, per month. DELTA is signed: -500 for \"spend $500 less\". SET_RATE is the new monthly level, 0 or more."
+                  }
+                },
+                "required": [
+                  "op",
+                  "from"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "liabilityAssumptions": {
+              "type": "array",
+              "description": "Terms the user STATED for an existing liability, for this scenario only: \"assume the card is at 18%\", \"my minimum is $300\". Overrides that liability's known term; never changes the account. Use it when a liability shows apr or minimumPayment null and the user supplies one — never invent a rate yourself.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "liabilityId": {
+                    "type": "string",
+                    "description": "The liability account id from get_financial_snapshot."
+                  },
+                  "apr": {
+                    "type": "number",
+                    "description": "Percent per year, 0–100. 0 is a real rate (no interest)."
+                  },
+                  "minimumPayment": {
+                    "type": "number",
+                    "description": "Per-cycle minimum in dollars, 0 or more."
+                  }
+                },
+                "required": [
+                  "liabilityId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "target",
+            "by",
+            "solveFor"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "reconcile_projection",
+        "description": "Compare what we PREVIOUSLY told this user with what actually happened, or with what we would say today. Use it for \"were you right?\", \"how did that projection turn out?\", \"am I ahead of where you said I would be?\". A past horizon is compared against the measured position on that date; a future one against the projection re-run today, which is the only like-for-like comparison. It also names which part of the basis changed. Explain a variance ONLY with its `attribution` lines (they sum to it); a cause that is not a line there is unsupported. `dailyRate` is SPENDING, never a drift.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "subject": {
+              "type": "string",
+              "description": "One checkpoint subject, e.g. \"liquid-2026-12-31\". Omit for all of them."
+            },
+            "includeSuperseded": {
+              "type": "boolean",
+              "description": "True to reconcile earlier statements too, not just the latest per horizon."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "stage_assumptions",
+        "description": "Hold a condition the user just stated for a projection that has NOT been run yet — a raise or income change from a date, a cut or change to a spending line or to all spending (\"cut Dining 20%\"), a cash floor, which debt to pay first, where the rest goes, a one-off amount, a return, a spending level — so the next scenario_projection, scenario_crossing or scenario_goal_seek in this conversation applies it. Use it whenever a condition is stated without asking for a figure yet (\"keep nine months of expenses in cash\", \"starting January my income goes up 10%\", \"pay the highest APR first\", \"for this scenario, …\"), and to restate one (\"actually make it 15%\" replaces the staged raise). Each field takes exactly the shape the scenario tools take. Staged conditions are NOT remembered beyond this conversation, NOT current facts, and NOT results: nothing is calculated until a scenario runs. A standing preference the user wants kept for future conversations is a different thing, and is not this.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "annualReturnPct": {
+              "type": "number",
+              "description": "Exactly the shape of scenario_projection's `annualReturnPct`."
+            },
+            "returns": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Exactly the shape of scenario_projection's `returns`."
+            },
+            "contributions": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Exactly the shape of scenario_projection's `contributions`."
+            },
+            "outflows": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Exactly the shape of scenario_projection's `outflows`."
+            },
+            "assumedMonthlySpending": {
+              "type": "number",
+              "description": "Exactly the shape of scenario_projection's `assumedMonthlySpending`."
+            },
+            "incomeChanges": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Exactly the shape of scenario_projection's `incomeChanges`."
+            },
+            "spendingChanges": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Exactly the shape of scenario_projection's `spendingChanges`."
+            },
+            "liabilityAssumptions": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Exactly the shape of scenario_projection's `liabilityAssumptions`."
+            },
+            "retract": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Ids of staged conditions the user has withdrawn (e.g. \"p2\")."
+            },
+            "replace": {
+              "type": "boolean",
+              "description": "Only when the user WITHDREW or CORRECTED part of a staged rule (\"don't pay debt first after all\", \"actually from February\"). Saying where money goes NEXT is not a withdrawal: \"invest everything above the floor\" after \"pay the highest APR first\" is `target: [\"highest_apr\",\"investments\"]`, without `replace`."
+            },
+            "inAddition": {
+              "type": "boolean",
+              "description": "Only when the user stated a SECOND rule about the same thing from another date and BOTH apply (\"then cut it another 10% starting July\", \"and another raise next year\"). Not for a correction — that is `replace`."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "recall",
+        "description": "What THIS user previously asked us to remember — goals, planned purchases, standing rules and planning figures, as they stated them — and the projections we made and when. Call it when the question refers to something from an earlier session (\"what strategy did I want?\", \"how are we doing?\", \"what did we say?\"). Nothing it returns is in effect or a current figure: current money is always re-read from the financial tools.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "class": {
+              "type": "string",
+              "enum": [
+                "GOAL",
+                "PLANNED_EXPENSE",
+                "RULE",
+                "BASELINE",
+                "PROJECTION"
+              ],
+              "description": "GOAL, PLANNED_EXPENSE, RULE (a standing allocation policy), BASELINE (a planning figure they gave — not measured), or PROJECTION (a statement we made, with its horizon). Omit for all."
+            },
+            "subject": {
+              "type": "string",
+              "description": "Narrow to one subject, e.g. \"cash-strategy\". Omit for all."
+            },
+            "includeHistory": {
+              "type": "boolean",
+              "description": "True to see earlier versions of a subject, and what was retired."
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remember",
+        "description": "Record ONE thing this user asked you to remember, so a later session can pick it up — or change or withdraw one. Use it when they say to remember a goal (\"I want $1M by 2030\"), a planned expense (\"a car around 20k in 2027\"), a standing rule (\"I always want six months of expenses in cash\"), or a planning figure (\"use $5k monthly spending for planning\"). A condition for a projection being put together in THIS conversation — \"for this scenario…\", \"assume…\", \"what if…\", or a raise, floor or debt order stated while building one — is not a memory: stage it with stage_assumptions instead. Give exactly one of `goal`, `plannedExpense`, `rule`, `baseline`. Store what they SAID: a multiple stays a multiple (six months is `liquidFloorMonthsOfExpenses: 6`, never the dollars it works out to), and a money value must be a figure they stated — never a balance, a projection or anything you read from another tool. Leave out every field they did not say, and never complete a rule for them: \"keep six months of expenses in cash\" is `{liquidFloorMonthsOfExpenses: 6}` and nothing else — where the rest goes is theirs to state. When they change part of something remembered, use `op: \"amend\"` with `set`; when they withdraw it, `op: \"retire\"`. Remembering never runs or applies anything.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "record",
+                "amend",
+                "retire"
+              ],
+              "description": "record (default) = a new item, or a whole re-statement. amend = change some fields of the item already under `subject`, keeping the rest. retire = they no longer want it used."
+            },
+            "subject": {
+              "type": "string",
+              "description": "A short stable key: \"cash-strategy\", \"planning-spending\", \"net-worth-target\", \"car\". Re-use the subject shown in memory to change or retire that item."
+            },
+            "statedAs": {
+              "type": "string",
+              "description": "The user's own words for this, or a faithful one-sentence paraphrase. Required."
+            },
+            "goal": {
+              "type": "object",
+              "properties": {
+                "targetMetric": {
+                  "type": "string",
+                  "enum": [
+                    "netWorth",
+                    "liquid",
+                    "investments",
+                    "debt"
+                  ],
+                  "description": "What should reach the level."
+                },
+                "targetAmount": {
+                  "type": "number",
+                  "description": "The level, in dollars, as they stated it. 0 only with `debt` (debt-free)."
+                },
+                "byDate": {
+                  "type": "string",
+                  "description": "YYYY-MM-DD, only if they gave a date."
+                }
+              },
+              "additionalProperties": false,
+              "description": "A level they want a measure to reach."
+            },
+            "plannedExpense": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "description": "What it is for, as a short name: \"car\"."
+                },
+                "amount": {
+                  "type": "number",
+                  "description": "Roughly how much, in dollars, as they stated it."
+                },
+                "earliest": {
+                  "type": "string",
+                  "description": "YYYY-MM-DD, only if they said not before a date."
+                }
+              },
+              "additionalProperties": false,
+              "description": "A one-off outlay they intend."
+            },
+            "rule": {
+              "type": "object",
+              "properties": {
+                "liquidFloorMonthsOfExpenses": {
+                  "type": "number",
+                  "description": "Cash to keep, as a number of MONTHS of expenses (\"six months\" = 6). Resolved against the spending level in force whenever it is run — never stored as dollars."
+                },
+                "liquidFloor": {
+                  "type": "number",
+                  "description": "Cash to keep, in DOLLARS — only when the user stated a dollar level (\"keep $50k\")."
+                },
+                "fractionOfExcess": {
+                  "type": "number",
+                  "description": "ONLY if they said what happens to cash above the floor: the share (0–1] moved each month-end (\"the rest\" = 1). Otherwise omit it."
+                },
+                "surplusFraction": {
+                  "type": "number",
+                  "description": "Share (0–1] of what each MONTH adds. Keeps no cash floor. Not with a floor."
+                },
+                "target": {
+                  "description": "ONLY if they said where it goes: \"investments\", \"highest_apr\", or an ordered list — [\"highest_apr\",\"investments\"] pays debt first, then invests.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "investments",
+                        "highest_apr"
+                      ]
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "investments",
+                          "highest_apr"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "from": {
+                  "type": "string",
+                  "description": "YYYY-MM-DD the rule starts, if they said."
+                },
+                "to": {
+                  "type": "string",
+                  "description": "YYYY-MM-DD the rule ends, if they said."
+                }
+              },
+              "additionalProperties": false,
+              "description": "A standing allocation policy, in the SAME fields, with the same meanings, as a scenario `contributions` item."
+            },
+            "baseline": {
+              "type": "object",
+              "properties": {
+                "monthlySpending": {
+                  "type": "number",
+                  "description": "A monthly spending level they asked to PLAN with, in dollars, as they stated it."
+                },
+                "annualReturnPct": {
+                  "type": "number",
+                  "description": "An annual return they asked to plan with, in percent."
+                }
+              },
+              "additionalProperties": false,
+              "description": "A planning figure they gave. Exactly one. It is remembered as theirs — not measured, and not applied to anything."
+            },
+            "set": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "amend: the fields to change and their new values, e.g. {\"liquidFloorMonthsOfExpenses\": 9}."
+            },
+            "unset": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "amend: field names to remove."
+            },
+            "replace": {
+              "type": "boolean",
+              "description": "record over an existing item: true ONLY when the user replaced the whole thing, accepting that fields they did not repeat are dropped."
+            }
+          },
+          "required": [
+            "subject",
+            "statedAs"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "describe_fourth_meridian",
+        "description": "Facts about Fourth Meridian itself: what it is, what this conversation can and cannot do, what it can see, what it remembers and for how long, and what disconnecting an account does. Use it for any question about the product or about you, instead of describing yourself from assumption. It describes only what exists today.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}
