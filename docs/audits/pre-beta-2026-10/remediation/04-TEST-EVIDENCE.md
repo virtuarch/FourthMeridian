@@ -25,6 +25,12 @@ Filled at integration from `agent-reports/*.md` and re-run by the orchestrator o
 | `0a94578` | FAILED | `rls:accept:foreground` 66/67, case 50 → asserted the role had NO settings; DB-006 adds a role statement_timeout → narrowed to the idle setting it guards, `a7078db` |
 | `a7078db` | FAILED | `rls:accept:allowance` 14/15, source case 8 → `deadline.dispose()` precedes the release in the same `finally` → `4834697` |
 | **`4834697`** | **PASSED — every job green** | — |
+| `bad2cde` (queue-I orchestrator work + new `audit-schema-drift`) | FAILED | unit 809/811: palette ratchet (raw colours) and db-safety (drift audit's own client) → `fa…`/`5ea1f94` |
+| **`5ea1f94`** | **PASSED** | unit 811/811 |
+| **`06212e6`** (H merged, CQ-011) | **PASSED** | unit 812/812 |
+| **`01098bd`** (J merged + J-D1/2/3/5/6 fixed) | **PASSED — every job green** | unit **828/828**; RLS 37/98/72/20/67; allowance 15/15; REQUIRED audits incl. `audit-schema-drift` (0 statements) |
+
+App production build: `npm run build` (prisma generate + `next build`, Next 16.3.8 Turbopack) on `01098bd` — **compiled successfully, 0 warnings**; 185 API routes; `/dashboard/credit` and `/api/plaid/sync` absent (log `…-remediation/build.log`).
 
 Green run at `4834697` (log `/Users/chrstn/dev/FourthMeridian-remediation/integration1e-ci.log`):
 
@@ -40,7 +46,7 @@ Green run at `4834697` (log `/Users/chrstn/dev/FourthMeridian-remediation/integr
 | architecture | `rls:accept:allowance` | ✓ 15/15 (reserve now $0.3675, admits 4 of 8) |
 | site | `npm run verify` | ✓ |
 
-Not covered by this gate: an app `next build` (CI has none; run separately, §4), PostgreSQL 17.6 / Supabase (the gate is PG16 — **not** evidence of PG17.6 equivalence), any browser behaviour.
+Not covered by this gate: an app `next build` (CI has none; run separately — passed at `01098bd`, see below), PostgreSQL 17.6 / Supabase (the gate is PG16 — **not** evidence of PG17.6 equivalence), any browser behaviour.
 
 ## 4. Runtime-confirmed findings → regression tests (queue C)
 

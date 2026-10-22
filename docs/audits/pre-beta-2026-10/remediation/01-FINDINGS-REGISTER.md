@@ -38,9 +38,9 @@ Counts at baseline: P0 0 · P1 34 · P2 77 · P3 73 (static); runtime reclassifi
 | UI-003 | P1 | — | member/role/archive/revoke widgets | no confirmation | I (wave 2) | `ConfirmDialog` on the four actions | render tests | — | RESOLVED (browser unverified) | 27062e5 |  | G10 |
 | UI-006 | P1 | — | `use-space-data.ts`, workspaces | failed reads ⇒ empty states | I (wave 2) | surface failure + retry; no `[]` coercion | unit tests | — | RESOLVED (browser unverified) | ad77696, e7f1144 |  | G10 |
 | UI-002 | P1 (during beta) | — | CS/Growth widgets | fabricated audit reason | I (wave 2) | reason required | render test | — | RESOLVED | d73009e, 948c14e |  | — |
-| TEST-004 | P1 | CONFIRMED | auth routes | no handler tests | J (wave 2) | handler-seam tests for register/verify/login/reset/TOTP/sessions | the tests | A | IN PROGRESS (Agent J) | — |  | G12 |
+| TEST-004 | P1 | CONFIRMED | auth routes | no handler tests | J (wave 2) | handler-seam tests for register/verify/login/reset/TOTP/sessions | the tests | A | RESOLVED | J: 16 commits; real-handler tests for 13 auth routes + NextAuth (454 checks total) |  | G12 |
 | TEST-003 | P1→P2 (hole REFUTED) | REFUTED (exposure) | `rls-acceptance.ts` | no grant⊆policy census | F | census case in `rls-acceptance.ts` | suite case | — | RESOLVED | 424ce9d; census 37/37 |  | G12 |
-| TEST-002 | P1 (minimum) | CONFIRMED | routes | 187 routes / 6 tests | F (census) + J | CI census that every `route.ts` carries a recognised guard; seam tests for Space mutations | census test | — | RESOLVED (census) / IN PROGRESS (seams, J) | f98d9d0 audit-route-guards |  | G12 |
+| TEST-002 | P1 (minimum) | CONFIRMED | routes | 187 routes / 6 tests | F (census) + J | CI census that every `route.ts` carries a recognised guard; seam tests for Space mutations | census test | — | RESOLVED | f98d9d0 census + J real-handler tests (25/185 route files) |  | G12 |
 | TEST-006 | P1 (during beta) | — | deploy | no migrate/drift/smoke | F (docs + workflow stub) | post-deploy smoke workflow (deployment_status) + drift check doc | contract test | — | RESOLVED (workflow); OWNER wiring | 3213ee9 | wiring on Vercel = OWNER | — |
 | OBS-004 | P1 (during beta) | — | `lib/alerts/rules.ts` | no sync-incident rule | E | `sync-incident-critical` rule; per-Item dedupe | rule test | — | RESOLVED | E sync-incident-critical |  | — |
 | OPS-001 | P1 before ~50 Items | — | `jobs/sync-banks.ts` | no budget/continuation | C | time budget + deferral + order by `lastSuccessfulSyncAt`; stale-run finaliser (OPS-006) | unit test with fake clock | — | RESOLVED | 923aec8 |  | — |
@@ -92,7 +92,7 @@ Counts at baseline: P0 0 · P1 34 · P2 77 · P3 73 (static); runtime reclassifi
 | ARCH-007 / CQ-009 | P2 | — | refresh doors; unconsumed routes | G | delete `/api/plaid/sync` and unconsumed GETs after consumer verification | RESOLVED | 1d4bf78 |  |
 | CQ-001 | P2 | — | unused deps | F (after G verifies) | uninstall | RESOLVED | CQ-001 commit (F) |  |
 | CQ-006 | P2 | — | audit idioms | G | lint rule + migrate obvious callers | DEFERRED (82 sites; rule drafted in G §9) | — |  |
-| CQ-011 | P2 | — | `tools.ts` 4,768 lines | H (wave 2) | modularise | IN PROGRESS (Agent H) | — |  |
+| CQ-011 | P2 | — | `tools.ts` 4,768 lines | H (wave 2) | modularise | RESOLVED | 06212e6 (H): 4,782 → 128-line registry, 21 modules, schema snapshot byte-identical |  |
 | CQ-017 | P2 | — | engine parity | — | DEFERRED | DEFERRED | | |
 | TEST-007 | P2 | — | runner timeouts | F | `timeout-minutes` + per-file timeout | RESOLVED | b63d580 |  |
 | TEST-008 | P2 | — | rollback path | F (docs) | expand/contract rule doc | RESOLVED (docs) | 4ad6967 |  |
@@ -126,4 +126,10 @@ Grouped; each gets a disposition in `05-CODE-CLEANUP.md` or the subject report. 
 | NEW-002 | P2 | `components/security/ActiveSessions.tsx` | a failed session revoke was silent and a failed list read showed "No active sessions" — a user ending a stolen session would believe it ended (found while closing UI-006) | orchestrator | RESOLVED `e7f1144` |
 | NEW-003 | P3 | `lib/plaid/webhook-sync.ts` | the webhook pipeline still released the Plaid lock unfenced after C fenced the other path (IDEMP-005 remaining caller) | orchestrator | RESOLVED `6cd5cc2` |
 | NEW-004 | P3 | two cron-auth helpers | A and C each wrote a timing-safe CRON_SECRET check; consolidated onto A's fixed-width-digest verifier | orchestrator | RESOLVED `10010fd` |
+| NEW-006 (J-D6) | P2 | import duplicate claim | a duplicate upload returned 500 instead of 409: the lookup ran inside the PostgreSQL transaction the unique violation had aborted | J (found) / orchestrator | RESOLVED `5e40479` |
+| NEW-007 (J-D2) | P2 | `lib/recovery-codes.ts` | one recovery code satisfied two concurrent sign-ins (unconditional consume) | J / orchestrator | RESOLVED `c885008` |
+| NEW-008 (J-D1) | P2 | `lib/email/verification.ts` | raw e-mail in the verification-resend audit row (PRIV-002 leftover in a lib helper) | J / orchestrator | RESOLVED `5ec936c` |
+| NEW-009 (J-D3) | P3 | invite route | invite by username was case-sensitive though usernames are stored lower-case | J / orchestrator | RESOLVED `49fb8c8` |
+| NEW-010 (J-D4) | P3 | invite e-mail | every invitation sends two e-mails (route's branded mail + the notification EMAIL channel) | J | DEFERRED — owner design choice: honour notification preferences (drop the route send) or keep the branded mail (suppress the channel); pinned as a known-defect line |
+| NEW-011 (J-D5) | P3 | section PATCH | wrong-typed label/enabled/order reached Prisma as 500 | J / orchestrator | RESOLVED `313dae7`, `01098bd` |
 | NEW-005 | info | merge seams | five cross-workstream pins failed only on the integrated tree (incident-stage registry, evidence registry, RLS census allowlist, foreground case 50, allowance case 8); each was the gate working, fixed to the new truth without weakening the invariant | orchestrator | RESOLVED (see `04` §3) |
