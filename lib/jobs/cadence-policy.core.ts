@@ -190,7 +190,7 @@ export interface JobLedgerFact {
   lastStale?: boolean;
 }
 
-export type JobDueReason = "NEVER_RAN" | "CADENCE_ELAPSED" | "PRIMARY_DEFERRED" | "STALE_RUN_FINALISED";
+export type JobDueReason = "NEVER_RAN" | "CADENCE_ELAPSED" | "PRIMARY_DEFERRED" | "STALE_RUN_FINALISED" | "SELF_CONTINUATION";
 export type JobSkipReason = "NOT_YET_DUE" | "IN_FLIGHT" | "NO_DEFERRED_WORK" | "PRIMARY_NOT_RUN" | "CONTINUATION_TOO_SOON" | "ALREADY_CONTINUED";
 
 export type JobDueDecision =
@@ -223,7 +223,7 @@ export function primaryReportedDeferred(summary: unknown): boolean {
  * CONTINUATION_DELAY_MS ago, and the continuation has not run since.
  */
 export function decideJobDue(
-  job: Pick<ScheduledJobFacts, "name" | "continuationOf">,
+  job: Pick<ScheduledJobFacts, "name" | "continuationOf" | "selfContinues">,
   policy: Pick<JobCadencePolicy, "hours">,
   fact: JobLedgerFact | null | undefined,
   now: Date,
@@ -244,6 +244,10 @@ export function decideJobDue(
   }
 
   if (!fact?.lastStartedAt) return { due: true, reason: "NEVER_RAN", dueSinceMs: 0 };
+  if (job.selfContinues && fact.lastStatus === "succeeded" && primaryReportedDeferred(fact.lastSummary)) {
+    const earliest = fact.lastStartedAt.getTime() + CONTINUATION_DELAY_MS;
+    if (now.getTime() >= earliest) return { due: true, reason: "SELF_CONTINUATION", dueSinceMs: now.getTime() - earliest };
+  }
   const at = nextDueAt(fact, policy)!;
   if (now.getTime() >= at.getTime()) return { due: true, reason: "CADENCE_ELAPSED", dueSinceMs: now.getTime() - at.getTime() };
   return { due: false, reason: "NOT_YET_DUE", nextDueAt: at };
