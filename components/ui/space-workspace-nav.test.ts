@@ -513,8 +513,9 @@ console.log("J. Net Worth is a parent: Total · Assets · Debt nested while open
     /modeSelectorVisibility === "belowLg" \? "lg:hidden" : ""/.test(ww) && /data-wealth-mode-row/.test(ww));
   check("…default stays visible everywhere, and it is still the SAME Chips over `mode` / onModeChange (mobile keeps all three)",
     /modeSelectorVisibility = "always"/.test(ww) && /options=\{WEALTH_MODES\.map/.test(ww) && /value=\{mode\}/.test(ww) && /onChange=\{\(m\) => onModeChange\?\.\(m\)\}/.test(ww));
-  check("…rendered in every mode path (Debt, loading, no-history, main) — hidden, never removed",
-    (code(ww).match(/\{modeSelector\}/g) ?? []).length === 4);
+  // UI-006 added a fifth path: the snapshot read FAILED with no history loaded.
+  check("…rendered in every mode path (Debt, loading, read-failure, no-history, main) — hidden, never removed",
+    (code(ww).match(/\{modeSelector\}/g) ?? []).length === 5);
   check("the customer host opts in once, through the render context",
     (host.match(/wealthModeSelectorVisibility: "belowLg"/g) ?? []).length === 1 &&
       /modeSelectorVisibility=\{ctx\.wealthModeSelectorVisibility\}/.test(read("components", "space", "workspaces", "workspaceRenderers.tsx")));

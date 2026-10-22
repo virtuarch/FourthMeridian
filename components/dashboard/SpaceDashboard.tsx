@@ -28,6 +28,7 @@ import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiv
 import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
 import { useSpaceData } from "@/lib/space/use-space-data";
+import { SpaceReadFailure } from "@/components/space/SpaceReadFailure";
 import {
   useSpaceNavigation, NET_WORTH_LENS_ID, MARKETS_LENS_ID, CORE_LENS_IDS,
   lensHref, openWorkspaceId, openChildId, workspaceChildren,
@@ -281,6 +282,8 @@ export function SpaceDashboard({
     effectiveCurrency,
     reloadSections,
     reloadAccounts,
+    readErrors,
+    retryRead,
   } = useSpaceData({ spaceId, displayCurrency, wantSnapshots, wantTransactions, initial: initialWorkspace });
 
   // V25-CLOSE-3A — the reporting-currency failure contract, resolved once at the
@@ -660,6 +663,20 @@ export function SpaceDashboard({
   // picked in a follow-up effect (once `loading` flips false), so guarding on
   // `activeTab` too keeps the spinner up for that extra tick instead of flashing
   // an untabbed frame — preserving the former "spinner until ready" behavior.
+  // UI-006 — the FIRST structural read failed (nothing hydrated, nothing loaded):
+  // say so with Retry. Without this the Space rendered as if it had no accounts.
+  if (!loading && readErrors.structure && sections.length === 0 && accounts.length === 0) {
+    return (
+      <div className="py-12">
+        <SpaceReadFailure
+          what="this Space"
+          message={readErrors.structure.message}
+          onRetry={() => retryRead("structure")}
+        />
+      </div>
+    );
+  }
+
   if (loading || !activeTab) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -708,6 +725,8 @@ export function SpaceDashboard({
     snapshotsBackfilling,
     transactions: spaceTransactions,
     transactionsMeta,
+    readErrors,
+    onRetryRead: retryRead,
     widgetCtx,
     txCtx: txConversionCtx,
     asOf,
@@ -878,6 +897,18 @@ export function SpaceDashboard({
             every workspace switch. Reduced-motion users get no animation (the
             @media rule below). */}
         <div key={`${activeTab}:${activePerspectiveId ?? "networth"}`} className="fm-view-enter">
+
+        {/* UI-006 — a later sections/accounts refresh failed; what is shown is stale. */}
+        {readErrors.structure && (
+          <div className="mb-4">
+            <SpaceReadFailure
+              variant="inline"
+              what="this Space's accounts"
+              message={readErrors.structure.message}
+              onRetry={() => retryRead("structure")}
+            />
+          </div>
+        )}
 
         {/* Settings is no longer an in-space tab (UX-CUST-1A correction):
             section show/hide and layout controls moved to ManageSpaceModal →
