@@ -21,7 +21,8 @@
  */
 
 import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity, type AlertSignal } from "@/lib/alerts/rules";
-import type { AuthorityOutputs, AlertJobHealth } from "@/lib/alerts/authorities";
+import type { AuthorityOutputs, AlertJobHealth, SyncIncidentHealth } from "@/lib/alerts/authorities";
+import { incidentLabel, type SyncIssueDomain } from "@/lib/platform/sync-issue-semantics";
 import type { ConnectionHealthResult, HealthState } from "@/lib/connections/health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
@@ -121,30 +122,94 @@ export function evaluateSchedulerSilent(rule: AlertRuleDefinition, health: Alert
     }));
 }
 
-/** Connection health → one aggregate provider-unhealthy signal (never per-connection
- *  — a solo operator opens the Connection Health widget for the detail). Carries
- *  counts + states only; no institution labels reach the alert payload. */
+/** Opaque reference for an id in an alert payload: the last six characters, never the whole id. */
+const opaque = (id: string): string => `…${id.slice(-6)}`;
+
+/**
+ * Connection health → provider-unhealthy signals, ONE PER UNHEALTHY CONNECTION
+ * (OBS-004). Until the pre-beta audit this was one aggregate breach keyed on
+ * the rule id, so a second connection failing inside the 20 h re-notify window
+ * was silent. Each connection now has its own suppression clock, keyed on its
+ * opaque id. The payload still carries no institution label — source kind,
+ * health state and error code only; the operator opens the Connection Health
+ * widget for the name.
+ *
+ * The authority's `unhealthy` list is capped (`cap`, worst first). When the
+ * list is a FLOOR (fewer rows than `total − HEALTHY`), or when a caller handed
+ * counts without rows, the remainder is ONE aggregate breach keyed `:unlisted`
+ * so nothing is silently dropped.
+ */
 export function evaluateProviderUnhealthy(rule: AlertRuleDefinition, conn: ConnectionHealthResult): AlertSignal[] {
   const unhealthyCount = conn.total - conn.counts.HEALTHY;
   if (unhealthyCount <= 0) return [];
 
-  const acute = (Object.keys(conn.counts) as HealthState[]).some(
-    (s) => CRITICAL_CONNECTION_STATES.has(s) && conn.counts[s] > 0,
-  );
-  const breakdown = (Object.keys(conn.counts) as HealthState[])
-    .filter((s) => s !== "HEALTHY" && conn.counts[s] > 0)
-    .map((s) => `${conn.counts[s]} ${s}`)
-    .join(", ");
-
-  return [
-    {
+  const out: AlertSignal[] = [];
+  const rows = Array.isArray(conn.unhealthy) ? conn.unhealthy.filter((r) => r.healthState !== "HEALTHY") : [];
+  for (const row of rows) {
+    const acute = CRITICAL_CONNECTION_STATES.has(row.healthState);
+    out.push({
       ruleId: rule.id,
       kind: rule.kind,
       severity: acute ? "critical" : "warning",
-      dedupeKey: rule.id,
-      summary: `${unhealthyCount} of ${conn.total} provider connection(s) unhealthy: ${breakdown}.`,
-    },
-  ];
+      dedupeKey: `${rule.id}:${row.id}`,
+      summary: `Connection ${opaque(row.id)} (${row.source}, ${row.kind}) is ${row.healthState}${row.errorCode ? ` (${row.errorCode})` : ""}${row.since ? ` since ${row.since}` : ""}.`,
+    });
+  }
+
+  const unlisted = unhealthyCount - rows.length;
+  if (unlisted > 0) {
+    // The counts know more than the capped list shows (or no list was handed
+    // in): one aggregate breach for the remainder, so the fleet picture is
+    // never understated.
+    const states = (Object.keys(conn.counts) as HealthState[]).filter((s) => s !== "HEALTHY" && conn.counts[s] > 0);
+    const acute = states.some((s) => CRITICAL_CONNECTION_STATES.has(s));
+    const breakdown = states.map((s) => `${conn.counts[s]} ${s}`).join(", ");
+    out.push({
+      ruleId: rule.id,
+      kind: rule.kind,
+      severity: acute ? "critical" : "warning",
+      dedupeKey: rows.length === 0 ? rule.id : `${rule.id}:unlisted`,
+      summary: rows.length === 0
+        ? `${unhealthyCount} of ${conn.total} provider connection(s) unhealthy: ${breakdown}.`
+        : `${unlisted} further provider connection(s) unhealthy beyond the ${rows.length} listed (cap ${conn.cap}); fleet: ${breakdown}.`,
+    });
+  }
+  return out;
+}
+
+/**
+ * OBS-004 — active sync incidents → one critical signal PER PLAID ITEM (or per
+ * episode when the episode names no Item). The semantic authority decided
+ * "active" and "critical" upstream; this reads those verdicts and groups them
+ * so one Item with several critical episodes is one breach, and two Items are
+ * two. The dedupe key carries the opaque Item id, so a second customer's
+ * incident inside the re-notify window pages on its own clock. No `detail`,
+ * no institution, no customer reaches the payload.
+ */
+export function evaluateSyncIncidentCritical(rule: AlertRuleDefinition, health: SyncIncidentHealth): AlertSignal[] {
+  const critical = health.active.filter((i) => i.severity === "critical");
+  if (critical.length === 0) return [];
+  const byItem = new Map<string, typeof critical>();
+  for (const i of critical) {
+    const key = i.plaidItemId ? `item:${i.plaidItemId}` : `episode:${i.id}`;
+    const bucket = byItem.get(key);
+    if (bucket) bucket.push(i); else byItem.set(key, [i]);
+  }
+  const out: AlertSignal[] = [];
+  for (const [key, episodes] of byItem) {
+    const first = episodes[0];
+    const newest = episodes.map((e) => e.lastOccurredAt).filter((t): t is string => !!t).sort().at(-1) ?? null;
+    const occurrences = episodes.reduce((n, e) => n + e.occurrenceCount, 0);
+    const subject = first.plaidItemId ? `Plaid Item ${opaque(first.plaidItemId)}` : `episode ${opaque(first.id)} (${first.domain})`;
+    out.push({
+      ruleId: rule.id,
+      kind: rule.kind,
+      severity: "critical",
+      dedupeKey: `${rule.id}:${key}`,
+      summary: `Critical sync incident on ${subject}: ${incidentLabel(first.kind, first.domain as SyncIssueDomain)} — ${episodes.length} active episode(s), ${occurrences} occurrence(s)${newest ? `, last seen ${newest}` : ""}.${health.scanTruncated ? " (The incident scan hit its ceiling; this may be a floor.)" : ""}`,
+    });
+  }
+  return out;
 }
 
 /** OPS-5 resource freshness → stale/empty signals (one per non-fresh, non-idle
@@ -309,6 +374,9 @@ export function evaluateAlertRules(
         break;
       case "ai-spend-user":
         if (authorities.aiSpend) signals.push(...evaluateAiSpendUserHigh(rule, authorities.aiSpend));
+        break;
+      case "sync-incident":
+        if (authorities.syncIncidents) signals.push(...evaluateSyncIncidentCritical(rule, authorities.syncIncidents));
         break;
       case "quota-low":
         // Dormant — no authority to read. `live: false` already excluded it above;

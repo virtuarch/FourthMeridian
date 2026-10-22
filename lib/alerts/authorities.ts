@@ -7,7 +7,7 @@
  * (evaluate.ts) classifies signals over authority output without ever touching a
  * product table or re-deriving a health state.
  *
- * The impure gather (lib/alerts/run.ts) is the ONE place that calls the four
+ * The impure gather (lib/alerts/run.ts) is the ONE place that calls the
  * authority functions; this module is the shared contract between gather and
  * engine.
  */
@@ -30,7 +30,35 @@ export type AlertAuthority =
   | "resource-freshness"
   | "ai-failures"
   | "ai-spend"
+  | "sync-incidents"
   | "provider-quota";
+
+/**
+ * OBS-004 — the MINIMAL slice of the sync-incident read model the engine
+ * reads: ACTIVE episodes (lib/platform/incidents/projections.ts, state
+ * "active" by the semantic authority) with their derived severity. Folded by
+ * lib/alerts/sync-incidents.ts from IncidentView; the engine never touches a
+ * SyncIssue row. Carries opaque ids only — never `detail`, never a label that
+ * names an institution.
+ */
+export interface AlertSyncIncident {
+  /** SyncIssue.id (opaque). */
+  id: string;
+  /** PlaidItem.id when the episode names one (opaque); null for wallet / import episodes. */
+  plaidItemId: string | null;
+  kind: string;
+  domain: string;
+  severity: "critical" | "error" | "warning" | "info";
+  lastOccurredAt: string | null;
+  occurrenceCount: number;
+}
+export interface SyncIncidentHealth {
+  checkedAt: string;
+  /** Active episodes, every severity; the rule filters to critical. */
+  active: readonly AlertSyncIncident[];
+  /** True when the underlying scan hit its ceiling — `active` is then a floor. */
+  scanTruncated: boolean;
+}
 
 /**
  * The MINIMAL slice of a job-health report the alert engine reads. Deliberately
@@ -65,4 +93,6 @@ export interface AuthorityOutputs {
   aiFailures: AiFailureHealth | null;
   /** BETA C7 — estimated AI spend (fleet + max per customer) and the unpriced count over 24 h (null = did not gather). */
   aiSpend: AiSpendHealth | null;
+  /** OBS-004 — active sync incidents (null = did not gather). */
+  syncIncidents: SyncIncidentHealth | null;
 }

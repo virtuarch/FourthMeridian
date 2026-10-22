@@ -9,18 +9,21 @@
  *     One canonical alert evaluation · no duplicated health computation ·
  *     consume existing health authorities.
  *
- * Every live rule reads one of four authorities that already ship:
+ * Every live rule reads one of the authorities that already ship:
  *   - OPS-4 Jobs         checkScheduledJobHealth()  (lib/jobs/health.ts)
  *   - OPS-5 Freshness    checkResourceFreshness()   (lib/platform/resource-freshness.ts)
  *   - Connection health  getConnectionHealth()      (lib/connections/health.ts)
  *   - AI failures        getAiFailureHealth()       (lib/platform/ai/failures.ts)
+ *   - AI spend           getAiSpendHealth()         (lib/platform/ai/spend-health.ts)
+ *   - Sync incidents     getActiveIncidentPage()    (lib/platform/incidents/projections.ts)
  * and the destination is OPS-1's sendEmail() (lib/email/send.ts). The engine
  * (lib/alerts/evaluate.ts) NEVER queries a product table or re-derives a health
  * state — it only classifies signals over authority OUTPUT.
  *
- * ── The eight rules (intentionally small; NOT a generic engine) ──────────────
+ * ── The nine rules (intentionally small; NOT a generic engine) ───────────────
  *   resource-stale       an archive's newest observation is stale/empty    (LIVE)
- *   provider-unhealthy   a syncing provider connection is not healthy       (LIVE)
+ *   provider-unhealthy   a syncing provider connection is not healthy —
+ *                        ONE breach PER CONNECTION since OBS-004            (LIVE)
  *   job-failing          a scheduled job's last runs all failed             (LIVE)
  *   scheduler-silent     a scheduled job is overdue/dead (dispatcher/cron silent)(LIVE)
  *   ai-provider-failing  the AI provider is refusing/failing calls          (LIVE)
@@ -28,7 +31,21 @@
  *                        invocation the rate card cannot price             (LIVE)
  *   ai-spend-user-high   ONE customer's AI spend at/over the per-customer
  *                        threshold                                         (LIVE)
+ *   sync-incident-critical  an ACTIVE critical sync incident — canonical
+ *                        financial data unpersisted behind a held cursor —
+ *                        one breach per Item (OBS-004, 2026-10-22)          (LIVE)
  *   quota-low            a provider's remaining API quota is low         (DORMANT)
+ *
+ * sync-incident-critical (OBS-004, pre-beta audit) exists because no rule read
+ * SyncIssue episodes or RefreshExecution: a TRANSACTION_PERSISTENCE_FAILED
+ * (critical, cursor held, a customer's bank transactions unstored) never
+ * paged anyone. It reads the incident projection's ACTIVE set (the semantic
+ * authority decides "active" and "critical"; this rule decides nothing) and
+ * dedupes PER ITEM, so a second customer's incident inside the 20 h window is
+ * its own breach. The same audit row moved provider-unhealthy from one
+ * aggregate breach keyed on the rule id — which silenced a second failing
+ * connection for 20 h — to one breach per connection, keyed on the opaque
+ * connection id.
  *
  * ai-provider-failing (OPERATIONALIZATION P0, 2026-10-07) exists because the
  * Oct 4 Daily Brief outage — the OpenAI account out of credits — was found by a
@@ -77,6 +94,7 @@ export type AlertRuleKind =
   | "ai-failing"
   | "ai-spend-fleet"
   | "ai-spend-user"
+  | "sync-incident"
   | "quota-low";
 
 /** Two levels only — a solo operator's pager does not need more (alert fatigue
@@ -182,6 +200,16 @@ export const ALERT_RULES: readonly AlertRuleDefinition[] = [
     description:
       "ONE customer caused estimated AI spend over the trailing 24 h at or above the per-customer threshold ai_spend_alert_user_usd_24h. Warning at or above the threshold; critical at or above twice it. The summary names the customer by an opaque reference only and says how many others are at or above it. Reads the same AiInvocation spend fold as the fleet rule; every figure is an estimate, not a bill.",
     authority: "ai-spend",
+    live: true,
+    defaultEnabled: true,
+  },
+  {
+    id: "sync-incident-critical",
+    kind: "sync-incident",
+    title: "Critical sync incident",
+    description:
+      "An ACTIVE sync incident of critical severity — canonical financial data was not persisted and the provider cursor is held (TRANSACTION_PERSISTENCE_FAILED and its legacy shapes). One breach per Plaid Item (an opaque reference; never an institution or a customer), so a second Item's incident is never silenced by the first. Reads the incident projection (lib/platform/incidents/projections.ts) whose state and severity come from the sync-issue semantic authority; never re-derives either.",
+    authority: "sync-incidents",
     live: true,
     defaultEnabled: true,
   },

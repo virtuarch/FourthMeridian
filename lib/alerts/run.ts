@@ -2,7 +2,7 @@
  * lib/alerts/run.ts  (OPS-5 S5)
  *
  * The impure orchestrator — the ONE place that touches I/O for alerting:
- *   1. GATHER the five existing authorities, each best-effort (a gather failure
+ *   1. GATHER the six existing authorities, each best-effort (a gather failure
  *      → null, never a fabricated or suppressed breach).
  *   2. Resolve enabled state from PlatformSetting overrides.
  *   3. Read recent evaluate-alerts JobRun summaries → the suppression state (the
@@ -27,6 +27,8 @@ import { getConnectionHealth } from "@/lib/connections/health";
 import { checkResourceFreshness } from "@/lib/platform/resource-freshness";
 import { getAiFailureHealth } from "@/lib/platform/ai/failures";
 import { getAiSpendHealth } from "@/lib/platform/ai/spend-health";
+import { getActiveIncidentPage } from "@/lib/platform/incidents/projections";
+import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
 import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity } from "@/lib/alerts/rules";
 import type { AuthorityOutputs } from "@/lib/alerts/authorities";
 import {
@@ -88,12 +90,14 @@ export interface AlertRunDeps {
 }
 
 /** Environments in which the capture transport is the EXPECTED transport. */
-const CAPTURE_IS_EXPECTED: ReadonlySet<string> = new Set(["development", "test"]);
+function captureIsExpected(environment: string | undefined): boolean {
+  return environment === "development" || environment === "test";
+}
 
 // ── Real default I/O ─────────────────────────────────────────────────────────────
 
 async function gatherAuthoritiesDefault(): Promise<AuthorityOutputs> {
-  const [jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend] = await Promise.all([
+  const [jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents] = await Promise.all([
     checkScheduledJobHealth().catch((e) => (warn("job-health", e), null)),
     getConnectionHealth().catch((e) => (warn("connection-health", e), null)),
     checkResourceFreshness().catch((e) => (warn("resource-freshness", e), null)),
@@ -103,9 +107,17 @@ async function gatherAuthoritiesDefault(): Promise<AuthorityOutputs> {
     // count over the last 24h, with the two operator thresholds read through
     // the platform-settings descriptors.
     getAiSpendHealth(24).catch((e) => (warn("ai-spend", e), null)),
+    // OBS-004 — the ACTIVE sync incidents (state + severity decided by the
+    // semantic authority inside the projection), folded to the engine's slice.
+    getActiveIncidentPage(SYNC_INCIDENT_SCAN)
+      .then((page) => foldSyncIncidents(page.incidents, page.scanTruncated, new Date()))
+      .catch((e) => (warn("sync-incidents", e), null)),
   ]);
-  return { jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend };
+  return { jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents };
 }
+
+/** Unresolved SyncIssue rows scanned per cycle (the projection's default page). */
+const SYNC_INCIDENT_SCAN = 200;
 
 function warn(what: string, e: unknown): void {
   console.warn(`[alerts] authority "${what}" failed to gather (non-fatal):`, e);
@@ -215,7 +227,7 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
           // which suppresses them next cycle.
           delivered = toSend;
         } else if (deliveryStatus === "captured") {
-          if (CAPTURE_IS_EXPECTED.has(environment ?? "")) {
+          if (captureIsExpected(environment)) {
             // Development/test: capture IS the transport; treat as delivered so
             // the suppression semantics exercise locally exactly as they do live.
             delivered = toSend;
