@@ -142,8 +142,12 @@ export function dailyAllowanceVerdict(input: { spentUsd: number; allowanceUsd: n
  *   · the conversation engine runs on `CHAT_MODEL = 'gpt-5.1'`
  *     (lib/ai/conversation/engine.ts) — RESERVE_MODEL mirrors it; the engine
  *     is not imported here because this module must stay pure and light;
- *   · a turn is at most MAX_TOOL_ROUNDTRIPS = 6 model calls
- *     (lib/ai/conversation/turn.ts) — RESERVE_INVOCATIONS_PER_TURN;
+ *   · a turn is at most MAX_TOOL_ROUNDTRIPS = 6 answer calls
+ *     (lib/ai/conversation/turn.ts) — RESERVE_ANSWER_HOPS — PLUS the guidance
+ *     classifier, a second paid call on the same model after every answered
+ *     turn (lib/ai/conversation/engine.ts) — RESERVE_GUIDANCE_CALLS. Before
+ *     SEC-AI-008 the reserve covered the hops only, so the label was a 7th
+ *     unreserved call per turn; RESERVE_INVOCATIONS_PER_TURN is their sum;
  *   · each call carries ~30,000 prompt tokens (the T0 orientation measured
  *     ≈32k tokens after the evidence clip, with tool results growing later
  *     hops while prompt caching shrinks them) and ~1,500 completion tokens
@@ -151,16 +155,26 @@ export function dailyAllowanceVerdict(input: { spentUsd: number; allowanceUsd: n
  *     dialect ≈1,500);
  *   · priced at the rate card's rate for RESERVE_MODEL (the latest rate):
  *     gpt-5.1 input $1.25 / M, output $10 / M ⇒ 30,000 × 1.25 / 1e6 +
- *     1,500 × 10 / 1e6 = $0.0525 per call ⇒ $0.315 per turn.
+ *     1,500 × 10 / 1e6 = $0.0525 per call ⇒ 7 × $0.0525 = $0.3675 per turn.
  * The constant is COMPUTED from the rate card at module load so a rate change
  * moves it; RESERVE_USD_FALLBACK is used only if the card had no rate for the
  * model (never 0 — a zero reserve would silently disable the concurrency bound).
+ *
+ * ⚠️ NOT SIZED FROM THE TRANSCRIPT (SEC-AI-002, documented rather than done):
+ * the routes reserve BEFORE reading the request body (pinned: the allowance is
+ * judged before `req.json()` so a refused turn costs no parse and no model
+ * work), so the transcript's size is unknown when the reserve is taken. The
+ * per-call shape above is the worst case the body limits allow (≤ 160 KB ≈
+ * 40k tokens, cached after the first hop); the overshoot bound stated in the
+ * reservation module's header is unchanged.
  */
 export const RESERVE_MODEL = "gpt-5.1";
-export const RESERVE_INVOCATIONS_PER_TURN = 6;
+export const RESERVE_ANSWER_HOPS = 6;
+export const RESERVE_GUIDANCE_CALLS = 1;
+export const RESERVE_INVOCATIONS_PER_TURN = RESERVE_ANSWER_HOPS + RESERVE_GUIDANCE_CALLS;
 export const RESERVE_PROMPT_TOKENS_PER_INVOCATION = 30_000;
 export const RESERVE_COMPLETION_TOKENS_PER_INVOCATION = 1_500;
-export const RESERVE_USD_FALLBACK = 0.315;
+export const RESERVE_USD_FALLBACK = 0.3675;
 
 /** PURE — the per-turn reserve for a model from a rate card (null when the card cannot price it). */
 export function reserveUsdFor(model: string, rates: readonly AiRate[] = AI_RATES): number | null {
