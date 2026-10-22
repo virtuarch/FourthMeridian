@@ -440,7 +440,14 @@ export class FakePrisma {
   private matchScalar(v: unknown, cond: unknown): boolean {
     if (cond === null) return v === null || v === undefined;
     if (!isPlainObject(cond)) return scalarEq(v ?? null, cond);
-    const c = cond as Record<string, unknown>;
+    let c = cond as Record<string, unknown>;
+    if (Array.isArray(c.path)) {
+      // A Json path filter: `{ path: ["identifier"], equals: "x" }`.
+      const { path, ...rest } = c;
+      v = (path as string[]).reduce<unknown>((o, k) => (o !== null && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), v);
+      if (v === undefined) return false;
+      c = rest;
+    }
     const ci = c.mode === "insensitive";
     const s = (x: unknown) => (ci ? String(x).toLowerCase() : String(x));
     for (const [op, arg] of Object.entries(c)) {
@@ -458,6 +465,9 @@ export class FakePrisma {
         case "startsWith": if (typeof v !== "string" || !s(v).startsWith(s(arg))) return false; break;
         case "endsWith": if (typeof v !== "string" || !s(v).endsWith(s(arg))) return false; break;
         case "has": if (!Array.isArray(v) || !v.some((x) => scalarEq(x, arg))) return false; break;
+        case "string_contains": if (typeof v !== "string" || !v.includes(String(arg))) return false; break;
+        case "string_starts_with": if (typeof v !== "string" || !v.startsWith(String(arg))) return false; break;
+        case "array_contains": if (!Array.isArray(v) || !(Array.isArray(arg) ? arg : [arg]).every((a) => v.some((x: unknown) => scalarEq(x, a)))) return false; break;
         default: throw new Error(`FakePrisma: unsupported scalar filter "${op}"`);
       }
     }
