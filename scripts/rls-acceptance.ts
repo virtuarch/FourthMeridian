@@ -208,6 +208,18 @@ async function main(): Promise<void> {
                               and not c.relforcerowsecurity;`).out;
   check(17, "every RLS-enabled table also has FORCE", noRls === "0", `${noRls} enabled-but-not-forced`);
 
+  // ── TEST-003: the GRANT ↔ POLICY census ───────────────────────────────────
+  // Case 17 above proves enabled ⇒ forced. It says nothing about a table that
+  // is GRANTED to fm_app and never had RLS enabled at all — the natural
+  // copy-paste of an earlier migration's GRANT block — which is readable
+  // cross-tenant by every fm_app connection and which no case here would touch
+  // unless it happened to be one of the fixture tables. The census closes that:
+  // every table with ANY privilege for fm_app has rowsecurity, force, and at
+  // least one policy naming fm_app (or PUBLIC), EXCEPT the closed set of
+  // global reference tables and the RateLimit ledger, which are shared by
+  // design (DB-004) and must stay exactly that set.
+  censusProof(base);
+
   // ── reads ──────────────────────────────────────────────────────────────────
   const r1 = asApp(appUrl, "alice", `select count(*) from "Transaction" where "financialAccountId"='acct_alice';`);
   check(1, "Alice reads her own transaction — allowed", r1.ok && r1.out.includes("2"), r1.out || r1.err);
@@ -371,6 +383,70 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log("\nTenant isolation is enforced by PostgreSQL, not by application predicates.\n");
+}
+
+/**
+ * Cases 35-37 — the GRANT ↔ POLICY census (TEST-003).
+ *
+ * Reference data shared by every tenant on purpose: instruments, prices,
+ * corporate-action terms, FX, merchants and their aliases, and the per-key
+ * RateLimit ledger. These are granted to fm_app WITHOUT a policy, and that is
+ * the design (DB-004) — so the list is closed and asserted exactly: a table
+ * joining it (a new grant-without-policy) and a table leaving it (reference
+ * data suddenly tenant-scoped, or dropped) both fail.
+ */
+const REFERENCE_TABLES_WITHOUT_POLICY = [
+  "CorporateActionTerms", "FxRate", "Instrument", "InstrumentAlias",
+  "Merchant", "MerchantAlias", "PriceObservation", "RateLimit",
+] as const;
+
+function censusProof(ownerUrl: string): void {
+  // Every public table with ANY privilege granted to fm_app, with its RLS state
+  // and its fm_app-applicable policy count. has_table_privilege covers direct
+  // and role-inherited grants; policies apply to fm_app when roles is {public}
+  // (the default, oid 0) or names fm_app.
+  const census = psql(ownerUrl, `
+    select c.relname,
+           c.relrowsecurity::text,
+           c.relforcerowsecurity::text,
+           (select count(*) from pg_policy p
+             where p.polrelid = c.oid
+               and (p.polroles = '{0}'::oid[] or 'fm_app'::regrole::oid = any(p.polroles)))::text
+      from pg_class c join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public' and c.relkind = 'r'
+       and c.relname <> '_prisma_migrations'
+       and (has_table_privilege('fm_app', c.oid, 'SELECT')
+         or has_table_privilege('fm_app', c.oid, 'INSERT')
+         or has_table_privilege('fm_app', c.oid, 'UPDATE')
+         or has_table_privilege('fm_app', c.oid, 'DELETE'))
+     order by c.relname;`);
+  if (!census.ok) {
+    check(35, "GRANT census could be read", false, census.err.split("\n")[0]);
+    return;
+  }
+  const rows = census.out.split("\n").filter(Boolean).map((l) => {
+    const [name, rls, force, policies] = l.split("|");
+    return { name, rls: rls === "true", force: force === "true", policies: Number(policies) };
+  });
+  const allow = new Set<string>(REFERENCE_TABLES_WITHOUT_POLICY);
+
+  const unprotected = rows.filter((r) => !allow.has(r.name) && !(r.rls && r.force && r.policies >= 1));
+  check(35, `every table granted to fm_app has RLS enabled + forced + ≥1 fm_app policy (${rows.length} granted, ${rows.length - allow.size} tenant-scoped)`,
+        unprotected.length === 0,
+        unprotected.map((r) => `${r.name}(rls=${r.rls},force=${r.force},policies=${r.policies})`).join(", "));
+
+  const granted = new Set(rows.map((r) => r.name));
+  const missingFromDb = [...allow].filter((t) => !granted.has(t));
+  const nowPolicied = rows.filter((r) => allow.has(r.name) && r.policies >= 1);
+  check(36, `the no-policy allowlist is exact: ${allow.size} reference tables, each granted and unpolicied`,
+        missingFromDb.length === 0 && nowPolicied.length === 0,
+        [...missingFromDb.map((t) => `${t} not granted to fm_app`), ...nowPolicied.map((r) => `${r.name} now has ${r.policies} policy(ies) — remove it from the allowlist`)].join(", "));
+
+  // The converse, stated on its own so the report names the hole directly:
+  // a table outside the allowlist with a grant and NO policy at all.
+  const grantNoPolicy = rows.filter((r) => !allow.has(r.name) && r.policies === 0);
+  check(37, "no table outside the reference allowlist grants fm_app without a policy",
+        grantNoPolicy.length === 0, grantNoPolicy.map((r) => r.name).join(", "));
 }
 
 /**
