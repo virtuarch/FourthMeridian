@@ -13,6 +13,9 @@ import { db } from "@/lib/db";
 import { Prisma } from "@prisma/client";
 import { requireSystemAdmin } from "@/lib/session";
 
+/** UI-022 — the most rows one admin list response returns. */
+const ADMIN_LIST_MAX = 200;
+
 export async function GET(req: NextRequest) {
   const [, err] = await requireSystemAdmin();
   if (err) return err;
@@ -37,9 +40,12 @@ export async function GET(req: NextRequest) {
     ];
   }
 
-  const users = await db.user.findMany({
+  // UI-022 — bounded. One extra row is fetched to report `truncated` without a
+  // second count query; the client narrows with ?search= (already supported).
+  const fetched = await db.user.findMany({
     where,
     orderBy: { createdAt: "desc" },
+    take:    ADMIN_LIST_MAX + 1,
     select: {
       id:               true,
       email:            true,
@@ -78,6 +84,8 @@ export async function GET(req: NextRequest) {
       _count: { select: { recoveryCodes: true, sessions: true } },
     },
   });
+  const truncated = fetched.length > ADMIN_LIST_MAX;
+  const users = truncated ? fetched.slice(0, ADMIN_LIST_MAX) : fetched;
 
   // Count unused recovery codes per user
   const userIds = users.map((u) => u.id);
@@ -90,6 +98,7 @@ export async function GET(req: NextRequest) {
   for (const r of unusedCounts) unusedMap[r.userId] = r._count.id;
 
   return NextResponse.json({
+    truncated,
     users: users.map((u) => ({
       ...u,
       // Reshape canonical `accountLinks` back onto the stable `_count.accounts`

@@ -14,6 +14,9 @@ import { db } from "@/lib/db";
 import { Prisma } from "@prisma/client";
 import { requireSystemAdmin } from "@/lib/session";
 
+/** UI-022 — the most rows one admin list response returns. */
+const ADMIN_LIST_MAX = 200;
+
 export async function GET(req: NextRequest) {
   const [, err] = await requireSystemAdmin();
   if (err) return err;
@@ -31,9 +34,12 @@ export async function GET(req: NextRequest) {
   if (type)     where.type     = type as "PERSONAL" | "SHARED";
   if (isPublic !== undefined) where.isPublic = isPublic === "true";
 
-  const spacesRaw = await db.space.findMany({
+  // UI-022 — bounded. One extra row is fetched to report `truncated` without a
+  // second count query; the client narrows with ?search= (already supported).
+  const fetched = await db.space.findMany({
     where,
     orderBy: { createdAt: "desc" },
+    take:    ADMIN_LIST_MAX + 1,
     select: {
       id:          true,
       name:        true,
@@ -65,6 +71,8 @@ export async function GET(req: NextRequest) {
       },
     },
   });
+  const truncated = fetched.length > ADMIN_LIST_MAX;
+  const spacesRaw = truncated ? fetched.slice(0, ADMIN_LIST_MAX) : fetched;
 
   // Reshape the canonical `accountLinks` back onto the stable admin response
   // contract (`accounts: [{ type }]`, `_count: { accounts, members }`) so the
@@ -75,5 +83,5 @@ export async function GET(req: NextRequest) {
     _count:   { accounts: _count.accountLinks, members: _count.members },
   }));
 
-  return NextResponse.json({ spaces });
+  return NextResponse.json({ spaces, truncated });
 }

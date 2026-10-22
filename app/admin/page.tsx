@@ -30,6 +30,13 @@ const WS_TYPE_PILL: Record<string, string> = {
   BUSINESS: "bg-amber-500/10 text-amber-400 border-amber-500/20",
 };
 
+/**
+ * UI-022 — the overview is a quick look, not a directory: the newest
+ * ADMIN_OVERVIEW_TAKE users and Spaces (full lists live behind "View all").
+ * The stat cards count with count(), so they stay exact however many rows exist.
+ */
+const ADMIN_OVERVIEW_TAKE = 25;
+
 export default async function AdminOverviewPage() {
   const session = await getServerSession(authOptions);
   if (!session || session.user.role !== "SYSTEM_ADMIN") redirect("/dashboard");
@@ -38,9 +45,10 @@ export default async function AdminOverviewPage() {
   // the page re-checks before any query runs (defence in depth, same authority).
   await enforceTotpPageGate(session);
 
-  const [users, spaces, totalAccounts, totalAuditLogs] = await Promise.all([
+  const [users, spaces, totalUsers, totalSpaces, totalAccounts, totalAuditLogs] = await Promise.all([
     db.user.findMany({
       orderBy: { createdAt: "desc" },
+      take:    ADMIN_OVERVIEW_TAKE,
       select: {
         id: true, email: true, username: true, name: true, role: true, createdAt: true,
         spaces: {
@@ -50,6 +58,7 @@ export default async function AdminOverviewPage() {
     }),
     db.space.findMany({
       orderBy: { createdAt: "desc" },
+      take:    ADMIN_OVERVIEW_TAKE,
       select: {
         id: true, name: true, type: true, createdAt: true,
         members: {
@@ -66,14 +75,16 @@ export default async function AdminOverviewPage() {
         },
       },
     }),
+    db.user.count(),
+    db.space.count(),
     // Canonical system-wide account total: non-deleted FinancialAccounts.
     db.financialAccount.count({ where: { deletedAt: null } }),
     db.auditLog.count(),
   ]);
 
   const STAT_CARDS = [
-    { label: "Users",      value: users.length,      icon: Users,      color: "text-blue-400",    bg: "bg-blue-500/10"    },
-    { label: "Spaces",     value: spaces.length,  icon: Building2,  color: "text-violet-400",  bg: "bg-violet-500/10"  },
+    { label: "Users",      value: totalUsers,        icon: Users,      color: "text-blue-400",    bg: "bg-blue-500/10"    },
+    { label: "Spaces",     value: totalSpaces,    icon: Building2,  color: "text-violet-400",  bg: "bg-violet-500/10"  },
     { label: "Accounts",   value: totalAccounts,      icon: CreditCard, color: "text-emerald-400", bg: "bg-emerald-500/10" },
     { label: "Audit Logs", value: totalAuditLogs,     icon: ScrollText, color: "text-amber-400",   bg: "bg-amber-500/10"   },
   ];
