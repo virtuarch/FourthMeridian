@@ -33,7 +33,7 @@
 
 import { NextRequest, NextResponse }                    from "next/server";
 import { withTenantDb }                                 from "@/lib/db/tenant-context";
-import { ShareStatus, VisibilityLevel }                 from "@prisma/client";
+import { Prisma, ShareStatus, VisibilityLevel }         from "@prisma/client";
 import { requireSpaceAction } from "@/lib/spaces/authorize";
 import { can } from "@/lib/spaces/policy";
 import { withApiHandler, getClientIp } from "@/lib/api";
@@ -123,26 +123,36 @@ export const POST = withApiHandler(async (
   // together. Snapshot regen below stays OUTSIDE.
   // D3 Stage B3 — SpaceAccountLink is the sole write target.
   // Upsert the link — if one exists (even REVOKED), re-activate it.
-  await withTenantDb(userId, async (tx) => {
-    await dualWriteSpaceAccountLink(tx, {
-      spaceId,
-      financialAccountId,
-      create: {
-        addedByUserId:   userId,
-        visibilityLevel: visibilityLevel as VisibilityLevel,
-        status:          ShareStatus.ACTIVE,
-      },
-      update: {
-        addedByUserId:   userId,
-        visibilityLevel: visibilityLevel as VisibilityLevel,
-        status:          ShareStatus.ACTIVE,
-        revokedAt:       null,
-        revokedByUserId: null,
-      },
-    });
+  // IDEMP-013: two concurrent first shares both compute HOME; the partial unique
+  // SpaceAccountLink_one_home_per_account refuses the second. A lost race, not a
+  // server fault: answer 409 and let the client retry (it then computes SHARED).
+  try {
+    await withTenantDb(userId, async (tx) => {
+      await dualWriteSpaceAccountLink(tx, {
+        spaceId,
+        financialAccountId,
+        create: {
+          addedByUserId:   userId,
+          visibilityLevel: visibilityLevel as VisibilityLevel,
+          status:          ShareStatus.ACTIVE,
+        },
+        update: {
+          addedByUserId:   userId,
+          visibilityLevel: visibilityLevel as VisibilityLevel,
+          status:          ShareStatus.ACTIVE,
+          revokedAt:       null,
+          revokedByUserId: null,
+        },
+      });
 
-    await emitDomainEvent(tx, event);
-  });
+      await emitDomainEvent(tx, event);
+    });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return NextResponse.json({ error: "This account was shared at the same moment. Refresh and try again." }, { status: 409 });
+    }
+    throw err;
+  }
 
   // Post-commit: regenerate SpaceSnapshot now that this space has a new active
   // share (see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).

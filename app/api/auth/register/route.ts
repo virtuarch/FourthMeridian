@@ -379,6 +379,12 @@ export async function POST(req: NextRequest) {
         { status: 409 },
       );
     }
+    // IDEMP-011: the email/username checks above are reads; a concurrent
+    // registration of the same identity loses at the unique index. Same answer
+    // the read path gives (409), not a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return NextResponse.json({ error: "An account with that email or username already exists." }, { status: 409 });
+    }
     console.error("[register] error:", err);
     return NextResponse.json({ error: "Registration failed. Please try again." }, { status: 500 });
   }
