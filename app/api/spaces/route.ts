@@ -19,7 +19,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
-import { Prisma } from "@prisma/client";
 // SpaceCategory imported from space-presets so this file compiles
 // before `prisma generate` has been re-run with the new schema values.
 // The string values are identical to what Prisma generates.
@@ -34,6 +33,7 @@ import type { SpaceTemplate } from "@/lib/space-templates/types";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { reportingCurrencyForNewSpace } from "@/lib/spaces/reporting-currency";
+import { createSharedSpace } from "@/lib/spaces/create-shared-space";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
@@ -207,58 +207,30 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   //                           Space visible to everything after it.
   //     3. sections, AiAgent  now `spaceId IN fm_visible_space_ids()` holds.
   //
+  // ⚠️ A7 (2026-10-22, Preview strict RLS): step 1 must NOT use RETURNING.
+  // PostgreSQL applies the SELECT policy to rows an INSERT returns, and Prisma's
+  // `create` always issues INSERT … RETURNING — so `space.create` (even with the
+  // nested `members` create) failed with 42501 "new row violates row-level
+  // security policy for table Space": the row is not yet visible, because the
+  // membership that makes it visible is written by a LATER statement. Every
+  // POST /api/spaces under FM_RLS_STRICT returned 500. The Space is therefore
+  // inserted with `createMany` (no RETURNING) under a pre-generated id, then the
+  // OWNER membership, then read back — at which point the SELECT policy holds.
+  //
   // `dashboardSections` therefore moved OUT of the nested create: as a sibling
   // nested write its position relative to `members` was Prisma's choice, not
   // ours, and if it had gone first every new Space would have been born with no
   // sections and no error. The response shape is unchanged — the rows are read
   // back under the same orderBy the include used.
-  const space = await withTenantDb(user.id, async (tx) => {
-    const created = await tx.space.create({
-      data: {
-        name:        name.trim(),
-        description: description?.trim() || null,
-        type:        "SHARED",
-        category:    resolvedCategory,
-        isPublic:    !!isPublic,
-        reportingCurrency, // MC1 P3 — copy-once from creator (see above)
-        members: {
-          create: { userId: user.id, role: "OWNER" },
-        },
-      },
-      include: {
-        members: {
-          include: { user: { select: { id: true, name: true, username: true } } },
-        },
-      },
-    });
-
-    await tx.spaceDashboardSection.createMany({
-      data: sectionPresets.map((s) => ({
-        spaceId: created.id,
-        key:     s.key,
-        label:   s.label,
-        tab:     s.tab,
-        enabled: s.enabled,
-        order:   s.order,
-        config:  s.config == null ? Prisma.DbNull : s.config as Prisma.InputJsonValue,
-      })),
-    });
-
-    const dashboardSections = await tx.spaceDashboardSection.findMany({
-      where:   { spaceId: created.id },
-      orderBy: [{ tab: "asc" }, { order: "asc" }],
-    });
-
-    await tx.aiAgent.create({
-      data: {
-        spaceId:    created.id,
-        name:       `${created.name} Agent`,
-        agentScope: [],   // empty → full template manifest is used
-      },
-    });
-
-    return { ...created, dashboardSections };
-  });
+  const space = await withTenantDb(user.id, (tx) => createSharedSpace(tx, {
+    creatorUserId: user.id,
+    name:          name.trim(),
+    description:   description?.trim() || null,
+    category:      resolvedCategory,
+    isPublic:      !!isPublic,
+    reportingCurrency, // MC1 P3 — copy-once from creator (see above)
+    sections:      sectionPresets,
+  }));
 
   await withTenantDb(user.id, (tx) => tx.auditLog.create({
     data: {
