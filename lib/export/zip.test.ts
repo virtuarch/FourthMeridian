@@ -41,7 +41,7 @@ function fixture(over: Partial<ExportData> & { files: string[] }): ExportData {
     transactions: [], holdings: [], snapshots: [],
     // W2 — the goals section was deleted from ExportData (Goals retired).
     creditHistory: [], auditHistory: [],
-    imports: { batches: [], mappingProfiles: [] }, aiAdvice: [],
+    imports: { batches: [], mappingProfiles: [] }, aiAdvice: [], aiMemory: [], dailyBriefs: [],
     ...rest,
   } as ExportData;
 }

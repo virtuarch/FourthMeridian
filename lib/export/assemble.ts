@@ -81,6 +81,7 @@
  */
 
 import "server-only";
+import { Prisma } from "@prisma/client";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
 import { getCurrentPositions } from "@/lib/investments/current-positions";
@@ -248,7 +249,7 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   const [
     sessions, recoveryCodes, creditScores, auditRows,
     accountConnections, plaidItems, connections,
-    importBatches, mappingProfiles, aiAdvice, dashboardSections,
+    importBatches, mappingProfiles, aiAdvice, dashboardSections, aiMemory, dailyBriefs,
   ] = await withTenantDb(userId, (tx) => Promise.all([
     tx.userSession.findMany({
       where:  { userId },
@@ -314,6 +315,19 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
           select: { key: true, label: true, tab: true, enabled: true, order: true, config: true },
         })
       : [],
+    // PRIV-006 — subject access covers what the AI remembers about the user and
+    // the Briefs written for them: every Space, but only rows THIS user owns.
+    tx.spaceMemory.findMany({
+      where:  { ownerUserId: userId },
+      orderBy: { statedAt: "desc" },
+      select: { spaceId: true, kind: true, subject: true, payload: true, statedAs: true, statedAt: true,
+                appliesFrom: true, appliesTo: true, status: true, createdAt: true },
+    }),
+    tx.dailyBrief.findMany({
+      where:  { ownerUserId: userId, content: { not: Prisma.AnyNull } },
+      orderBy: { briefDay: "desc" },
+      select: { spaceId: true, briefDay: true, content: true, generatedAt: true },
+    }),
   ] as const));
 
   const auditHistory = auditRows.map((r) => {
@@ -401,6 +415,14 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     aiAdvice: aiAdvice.map((a) => ({
       summary: a.summary, adviceText: a.adviceText, riskLevel: a.riskLevel, generatedAt: iso(a.generatedAt),
     })),
+    aiMemory: aiMemory.map((m) => ({
+      spaceId: m.spaceId, kind: m.kind, subject: m.subject, value: m.payload, statedAs: m.statedAs,
+      statedAt: iso(m.statedAt), appliesFrom: iso(m.appliesFrom), appliesTo: iso(m.appliesTo),
+      status: m.status, createdAt: iso(m.createdAt),
+    })),
+    dailyBriefs: dailyBriefs.map((b) => ({
+      spaceId: b.spaceId, briefDay: iso(b.briefDay), content: b.content, generatedAt: iso(b.generatedAt),
+    })),
   };
 
   const counts: Record<string, number> = {
@@ -413,6 +435,8 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     auditHistory: data.auditHistory.length,
     importBatches: data.imports.batches.length,
     aiAdvice: data.aiAdvice.length,
+    aiMemory: data.aiMemory.length,
+    dailyBriefs: data.dailyBriefs.length,
     sessions: data.security.sessions.length,
   };
 
