@@ -216,38 +216,22 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
       continue;
     }
 
-    const availableBalance = acct.balances.available ?? undefined;
-    const creditLimit       = acct.balances.limit ?? undefined;
-    // D4 Balance Freshness Provenance — Plaid's institution-side balance time
-    // (AccountBalance.last_updated_datetime). Distinct from lastUpdated below,
-    // which is Fourth Meridian's write time. Always overwritten (incl. null) so
-    // the stored value reflects exactly what Plaid returned on this call.
-    const balanceLastUpdatedAt = acct.balances.last_updated_datetime
-      ? new Date(acct.balances.last_updated_datetime)
-      : null;
-
+    // FIN-011 — the write is PLANNED by a pure rule so a null `current` keeps
+    // the prior balance AND the prior freshness clocks: a balance nobody observed
+    // must not be stamped as observed now.
+    const plan = planBalanceWrite(acct.balances, acct.subtype);
     await db.financialAccount.update({
       where: { id: fa.id },
-      data: {
-        // Fall back to the existing balance rather than 0 on a transient null.
-        balance: acct.balances.current ?? fa.balance,
-        availableBalance,
-        ...(creditLimit !== undefined && { creditLimit }),
-        balanceLastUpdatedAt,
-        // 2026-10-07 — the provider's account subtype, rewritten from THIS
-        // accountsGet answer on every refresh (so rows linked before the column
-        // existed self-correct on their next refresh). Evidence for
-        // liquidityAccess (lib/account-classifier.ts); never inferred.
-        providerSubtype: normalizeProviderSubtype(acct.subtype),
-        lastUpdated: new Date(), // ← balance-verified stamp
-        syncStatus:  "synced",
-      },
+      // The balance-verified stamp moves ONLY with an observed balance.
+      data: { ...plan.data, ...(plan.observed && { lastUpdated: new Date() }) },
     });
     accountsUpdated++;
     updatedAccountIds.push(fa.id);
     // DF-2E — balance written (institution-verified) → this execution advanced
     // the account's balance freshness, even if the value itself was unchanged.
-    accountCoverage.push({ financialAccountId: fa.id, status: "COVERED", freshnessAdvanced: true });
+    // FIN-011 — unless no balance was observed: then the account was evaluated
+    // but its freshness did NOT advance, and the coverage fact says so.
+    accountCoverage.push({ financialAccountId: fa.id, status: "COVERED", freshnessAdvanced: plan.observed });
 
     const rk = reconcileKind(fa);
     if (rk) {
@@ -262,6 +246,75 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
   }
 
   return { item, accessToken, plaidAccounts, itemData: accountsRes.data.item, accountsUpdated, updatedAccountIds, reconcileTargets, accountCoverage };
+}
+
+// ── FIN-011 — the balance write, as a pure rule ───────────────────────────────
+
+/** The subset of Plaid's `AccountBalance` this rule reads. */
+export interface ObservedBalances {
+  current:                number | null | undefined;
+  available?:             number | null;
+  limit?:                 number | null;
+  last_updated_datetime?: string | null;
+}
+
+export interface BalanceWritePlan {
+  /** True when Plaid returned a `current` balance — the only case the freshness clocks move. */
+  observed: boolean;
+  data: {
+    balance?:              number;
+    availableBalance?:     number;
+    creditLimit?:          number;
+    balanceLastUpdatedAt?: Date | null;
+    providerSubtype:       string | null;
+    syncStatus:            "synced";
+  };
+}
+
+/**
+ * What ONE accounts/get answer may write onto a FinancialAccount.
+ *
+ * ⚠️ A NULL `current` IS NOT AN OBSERVATION. Plaid returns `current: null` on a
+ * transient institution failure; the old write kept the prior balance (right)
+ * but still overwrote `balanceLastUpdatedAt` and stamped `lastUpdated = now`
+ * (wrong) — every freshness surface then called a number nobody had seen
+ * "verified just now" (FIN-011, FM-AUDIT-023). The rule:
+ *
+ *   current observed   → balance, provider attestation (incl. null, verbatim),
+ *                        and the balance-verified stamp are written;
+ *   current null       → balance untouched, BOTH clocks untouched; only the
+ *                        side facts the answer did carry (available, limit,
+ *                        subtype) and the connection's sync status are written.
+ *
+ * `providerSubtype` is rewritten on every answer (2026-10-07): it is evidence
+ * for liquidityAccess (lib/account-classifier.ts) and self-corrects rows linked
+ * before the column existed. Pure: the balance-verified stamp (`lastUpdated`,
+ * Fourth Meridian's write clock) is added by the caller iff `observed`.
+ */
+export function planBalanceWrite(
+  balances: ObservedBalances,
+  subtype: string | null | undefined,
+): BalanceWritePlan {
+  const observed = typeof balances.current === "number" && Number.isFinite(balances.current);
+  const availableBalance = balances.available ?? undefined;
+  const creditLimit       = balances.limit ?? undefined;
+  const base = {
+    ...(availableBalance !== undefined && { availableBalance }),
+    ...(creditLimit !== undefined && { creditLimit }),
+    providerSubtype: normalizeProviderSubtype(subtype),
+    syncStatus: "synced" as const,
+  };
+  if (!observed) return { observed: false, data: base };
+  // D4 Balance Freshness Provenance — Plaid's institution-side balance time
+  // (AccountBalance.last_updated_datetime). Distinct from lastUpdated below,
+  // which is Fourth Meridian's write time. Overwritten (incl. null) whenever a
+  // balance was observed, so the stored value reflects exactly what Plaid
+  // returned beside that balance.
+  const balanceLastUpdatedAt = balances.last_updated_datetime ? new Date(balances.last_updated_datetime) : null;
+  return {
+    observed: true,
+    data: { ...base, balance: balances.current as number, balanceLastUpdatedAt },
+  };
 }
 
 /**

@@ -17,10 +17,11 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dispatchDueJobs, selectDueJobs, type JobLedgerFacts } from "@/lib/jobs/dispatch";
+import { JobAlreadyRunningError } from "@/lib/jobs/run";
 import { SCHEDULED_JOBS, type ScheduledJob } from "@/lib/jobs/registry";
 import { defaultJobCadencePolicies } from "@/lib/jobs/cadence-policy";
 import {
-  CONTINUATION_DELAY_MS, DUE_TOLERANCE_MS, IN_FLIGHT_WINDOW_MS, WAKE_EVERY_MINUTES, resolveJobCadences,
+  CONTINUATION_DELAY_MS, DUE_TOLERANCE_MS, IN_FLIGHT_WINDOW_MS, WAKE_EVERY_MINUTES, resolveJobCadences, decideJobDue,
   type JobCadencePolicy,
 } from "@/lib/jobs/cadence-policy.core";
 import { defaultRefreshPolicies } from "@/lib/platform/refresh-policy.core";
@@ -206,6 +207,55 @@ async function main(): Promise<void> {
     const dispatchSrc = readFileSync("lib/jobs/dispatch.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     check("the dispatcher no longer matches slots (no getUTCHours-based selection)", !/firesAtHour|slotMinute|minuteUTC ===/.test(dispatchSrc));
     check("the dispatcher reads the ledger through the system role, not the migration principal", /systemDb/.test(dispatchSrc) && !/import \{ db \}/.test(dispatchSrc));
+  }
+
+  // ── IDEMP-003 / OPS-006: stale-run finaliser at wake start ────────────────
+  console.log("\nstale-run finaliser (IDEMP-003 / OPS-006)");
+  {
+    const jobs = fakeJobs(); const pol = policiesFor(jobs);
+    const stale = new Date(NOW.getTime() - IN_FLIGHT_WINDOW_MS - 60_000);
+    const rows = [
+      { jobName: "a", startedAt: stale, status: "running", summary: null },
+      { jobName: "b", startedAt: new Date(NOW.getTime() - 2 * 60_000), status: "running", summary: null },
+      { jobName: "c", startedAt: hoursAgo(1), status: "succeeded", summary: null },
+    ];
+    const flips: unknown[] = [];
+    const client = {
+      jobRun: {
+        findMany: async (args: { where: Record<string, unknown>; select: Record<string, unknown> }) => {
+          if ("status" in args.where) {
+            const lt = (args.where.startedAt as { lt: Date }).lt;
+            return rows.filter((r) => r.status === "running" && r.startedAt.getTime() < lt.getTime()).map((r) => ({ jobName: r.jobName }));
+          }
+          return rows.map((r) => ({ jobName: r.jobName, startedAt: r.startedAt, status: r.status, summary: r.summary }));
+        },
+        updateMany: async (args: { where: { startedAt: { lt: Date } }; data: { status: string } }) => {
+          flips.push(args); let n = 0;
+          for (const r of rows) if (r.status === "running" && r.startedAt.getTime() < args.where.startedAt.lt.getTime()) { r.status = args.data.status; n++; }
+          return { count: n };
+        },
+      },
+    };
+    const ran: string[] = [];
+    const result = await muteConsole(() => dispatchDueJobs(NOW, {
+      jobs, policies: pol, client: client as never,
+      runner: async (name, fn) => { ran.push(name); return fn(); },
+    }));
+    check("the stale running row (a) is finalised as failed before selection", rows[0].status === "failed" && flips.length === 1);
+    check("the finalised job is reported", result.finalized.join() === "a");
+    check("…and treated as DUE at this wake, not a cadence later", ran.includes("a"));
+    check("a FRESH running row (b, 2 min) is left alone and skipped IN_FLIGHT", rows[1].status === "running" && result.skipped.find((x) => x.job === "b")?.reason === "IN_FLIGHT" && !ran.includes("b"));
+    check("a job that ran recently (c, 1 h ago, daily) is still not due", result.skipped.find((x) => x.job === "c")?.reason === "NOT_YET_DUE");
+    check("the pure decision names the reason", decideJobDue({ name: "a" }, { hours: 24 }, { lastStartedAt: stale, lastStatus: "failed", lastStale: true }, NOW).reason === "STALE_RUN_FINALISED");
+    // A refusal from the runner (another wake holds the claim) is an in-flight
+    // skip, never a failure.
+    const refusedRun = await muteConsole(() => dispatchDueJobs(NOW, {
+      jobs, policies: pol, facts: facts({}),
+      runner: async (name, fn) => { if (name === "b") throw new JobAlreadyRunningError("b"); return fn(); },
+    }));
+    check("a JobAlreadyRunningError from the runner is reported IN_FLIGHT, not failed",
+      refusedRun.failures === 0 && refusedRun.skipped.find((x) => x.job === "b")?.reason === "IN_FLIGHT" && refusedRun.dispatched.map((d) => d.job).join() === "a,c");
+    check("no finaliser runs when facts are injected without a client", refusedRun.finalized.length === 0);
   }
 
   if (failures > 0) { console.error(`\ndispatcher tests: ${failures} FAILED`); process.exit(1); }

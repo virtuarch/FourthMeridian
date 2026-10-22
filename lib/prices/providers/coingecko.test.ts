@@ -5,6 +5,7 @@
  */
 
 import { fetchCoinDailyClosesUsd, effectiveRequestFromISO, type CoinGeckoFetch, type CoinGeckoHttpResponse } from "./coingecko";
+import { PRICE_PROVIDER_TIMEOUT_MS } from "../config";
 import {
   createCoinGeckoPriceProvider,
   resolveCoinGeckoFloorISO,
@@ -22,10 +23,12 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 function ms(dateISO: string, hour = 0): number { return Date.parse(`${dateISO}T${String(hour).padStart(2, "0")}:00:00Z`); }
+const signals: unknown[] = [];
 function fake(body: unknown, opts: { ok?: boolean; status?: number } = {}): { fn: CoinGeckoFetch; calls: string[] } {
   const calls: string[] = [];
-  const fn: CoinGeckoFetch = async (url) => {
+  const fn: CoinGeckoFetch = async (url, init) => {
     calls.push(url);
+    signals.push(init.signal);
     const res: CoinGeckoHttpResponse = { ok: opts.ok ?? true, status: opts.status ?? 200, json: async () => body };
     return res;
   };
@@ -62,6 +65,9 @@ const KEY = "demo-key";
     check("last point of the day is the close", out[0].price === 60500 && out[1].price === 61200);
     check("out-of-window point dropped", !out.some((r) => r.dateISO === "2026-06-04"));
     check("demo key header, bitcoin coin id, usd", calls[0].includes("/coins/bitcoin/market_chart/range") && calls[0].includes("vs_currency=usd"));
+    // OPS-004 — every call carries a transport timeout signal.
+    check("OPS-004: the request carries an AbortSignal (transport timeout)", signals.length > 0 && signals.every((s) => s instanceof AbortSignal));
+    check("OPS-004: the timeout constant is 10 s", PRICE_PROVIDER_TIMEOUT_MS === 10_000);
   }
 
   console.log("3. Failures → [] (never throws)");

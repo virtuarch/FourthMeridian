@@ -294,7 +294,6 @@ console.log("9. Authority drift guard — debt semantics stay in one place");
     "components/space/widgets/accounts/AccountsLedger.tsx",
     // W2 — SectionRegistry/SectionCard deleted with the render stack (Goals retired).
     "components/space/sections/DebtPayoffSection.tsx",
-    "components/dashboard/DebtClient.tsx",
     "lib/data/accounts.ts",
   ];
 

@@ -127,6 +127,16 @@ export interface StreamActivity {
   /** Scheduled occurrences the ledger covered and no settlement satisfied. */
   missedOccurrences: number | null;
   /**
+   * FIN-001 — scheduled occurrences that have come due by `asOfISO` but that
+   * the ledger could not see, because its reach stops short of them. Counted
+   * from the slot after `lastSatisfiedOccurrenceISO`. These are NOT misses
+   * (nobody looked); they are carried so a disclosure layer can size what a
+   * feed that stopped talking is hiding — a projection that silently counts
+   * such a stream at $0 under a "complete" label was the measured defect.
+   * Null when the question could not be asked (no cadence, no reach).
+   */
+  unobservedDueOccurrences: number | null;
+  /**
    * The schedule slot the newest settlement satisfied — NOT the settlement.
    * A payment on the 24th satisfies the 25th; it does not move the schedule.
    */
@@ -234,7 +244,7 @@ const unknown = (
   state: ActivityState.UNKNOWN,
   mayGenerateExpectedOccurrences: false,
   provenance: CadenceProvenance.DERIVED,
-  reason, missedOccurrences: null,
+  reason, missedOccurrences: null, unobservedDueOccurrences: null,
   lastSatisfiedOccurrenceISO: null, lastObservedSettlementISO: null,
   observedThroughISO: null, sourceKey, ...partial,
 });
@@ -303,6 +313,8 @@ export function resolveStreamActivity(evidence: ActivityEvidence): StreamActivit
       reason: `the user stated on ${assertion.assertedOnISO} that this income continues`
         + (covered ? `, which outranks ${covered} unpaid scheduled occurrence(s) in the ledger` : ''),
       missedOccurrences: covered,
+      // The licence is asserted, so what the feed could not see decides nothing.
+      unobservedDueOccurrences: null,
       lastSatisfiedOccurrenceISO: satisfied, lastObservedSettlementISO: lastSettlement,
       observedThroughISO, sourceKey,
     };
@@ -342,6 +354,7 @@ export function resolveStreamActivity(evidence: ActivityEvidence): StreamActivit
   const base = {
     provenance: CadenceProvenance.DERIVED,
     missedOccurrences: missed.length,
+    unobservedDueOccurrences: unobservedDue.length,
     lastSatisfiedOccurrenceISO: satisfied,
     lastObservedSettlementISO: lastSettlement,
     observedThroughISO, sourceKey,

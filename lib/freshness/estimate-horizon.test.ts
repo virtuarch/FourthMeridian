@@ -18,6 +18,7 @@ import {
 } from "./observation";
 import { resolveSpaceFreshness } from "./space-freshness";
 import { deriveSourceHealth } from "@/lib/connections/space-data-health.core";
+import { readToolsSource } from "@/lib/test-support/tools-source";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -26,8 +27,8 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 const now = new Date("2026-10-15T12:00:00Z");
 const ago = (d: number) => new Date(now.getTime() - d * 86_400_000);
-const code = (...p: string[]) =>
-  readFileSync(join(process.cwd(), ...p), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+const code = (...p: string[]) => strip(readFileSync(join(process.cwd(), ...p), "utf8"));
 
 console.log("the horizon");
 check("estimate horizon is longer than the feed horizon", ESTIMATE_STALE_AFTER_DAYS > STALE_AFTER_DAYS);
@@ -86,7 +87,7 @@ check("AI: manual rows carry valuationSource USER_ESTIMATE",
   AI.includes("fa.syncStatus === 'manual' ? { valuationSource: 'USER_ESTIMATE' as const } : {}"));
 check("AI: the stale-manual count uses the estimate horizon (no 30-day literal)",
   AI.includes("daysSince >= ESTIMATE_STALE_AFTER_DAYS") && !/daysSince > 30\b/.test(AI));
-const TOOLS = code("lib", "ai", "conversation", "tools.ts");
+const TOOLS = strip(readToolsSource()); // CQ-011: the tool layer
 check("AI: get_financial_snapshot passes valuationSource through to the model",
   TOOLS.includes("...(a2.valuationSource ? { valuationSource: a2.valuationSource } : {})"));
 const BRIEF = code("lib", "ai", "brief", "package.ts");

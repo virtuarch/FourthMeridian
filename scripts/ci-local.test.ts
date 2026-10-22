@@ -54,6 +54,60 @@ console.log("ci.yml runs exactly what `npm run ci` runs");
     JSON.stringify(jobs));
 }
 
+console.log("CI hygiene (TEST-007 / TEST-012): least privilege, no runaway jobs, no queued duplicates");
+{
+  const config = yml.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  check("workflow-level permissions: contents: read", /^permissions:\n  contents: read\n/m.test(config));
+  check("no job widens permissions", ![...config.matchAll(/^ {4}permissions:/gm)].length);
+  check("a concurrency group keyed on the ref, cancelling superseded runs",
+    /^concurrency:\n  group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n  cancel-in-progress: true/m.test(config));
+  for (const key of ["test", "architecture", "site"]) {
+    const m = /timeout-minutes:\s*(\d+)/.exec(jobBlock(key));
+    check(`${key}: timeout-minutes set and ≤ 60`, !!m && Number(m[1]) > 0 && Number(m[1]) <= 60, m?.[0]);
+  }
+  const uses = [...config.matchAll(/uses:\s*([^\s@]+)@([^\s]+)/g)].map((m) => `${m[1]}@${m[2]}`);
+  check("every action is pinned to a major tag (v4 today), none floating on a branch",
+    uses.length > 0 && uses.every((u) => /@v\d+$/.test(u)), JSON.stringify(uses));
+  const drift = readFileSync(".github/workflows/status-drift-guard.yml", "utf8");
+  check("status-drift-guard: timeout-minutes and contents: read", /timeout-minutes:\s*\d+/.test(drift) && /permissions:\n  contents: read/.test(drift));
+  const smoke = readFileSync(".github/workflows/post-deploy-smoke.yml", "utf8");
+  check("post-deploy-smoke: triggered by deployment_status, success only",
+    /^on:\n  deployment_status:/m.test(smoke) && /github\.event\.deployment_status\.state == 'success'/.test(smoke));
+  // The verdict moved into scripts/post-deploy-smoke.mjs (unit-tested in
+  // post-deploy-smoke.test.ts): the inline version exited 0 on a Vercel 401.
+  const secretsUsed = [...smoke.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
+  check("post-deploy-smoke: holds NO secret (deployment_status runs the deployed commit's workflow file)",
+    secretsUsed.length === 0, JSON.stringify(secretsUsed));
+  const trusted = readFileSync(".github/workflows/trusted-deployment-health.yml", "utf8");
+  const onBlock = trusted.slice(trusted.indexOf("\non:"), trusted.indexOf("\npermissions:"));
+  check("trusted-deployment-health: triggers ONLY on push to v2.6/main",
+    /push:\n\s+branches: \[v2\.6, main\]/.test(onBlock)
+      && !/pull_request|workflow_dispatch|deployment_status|workflow_run|schedule/.test(onBlock), onBlock);
+  check("trusted-deployment-health: the job runs in the vercel-probe environment",
+    /\n    environment: vercel-probe\n/.test(trusted));
+  const tSecrets = [...trusted.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]).sort();
+  check("trusted-deployment-health: only the two per-project bypass secrets",
+    JSON.stringify(tSecrets) === JSON.stringify(["VERCEL_AUTOMATION_BYPASS_SECRET_APP", "VERCEL_AUTOMATION_BYPASS_SECRET_SITE"]), JSON.stringify(tSecrets));
+  check("trusted-deployment-health: read-only token, timeout set",
+    /permissions:\n  contents: read\n  deployments: read\n/.test(trusted) && /timeout-minutes:\s*\d+/.test(trusted));
+  check("post-deploy-smoke: runs the tested classifier, nothing inline, with a timeout",
+    /run: node scripts\/post-deploy-smoke\.mjs/.test(smoke) && !/curl /.test(smoke) && !/exit 0/.test(smoke) && /timeout-minutes/.test(smoke));
+}
+
+console.log("the dependency gate (SEC-002 / TEST-005) is in the test job, before anything runs on the install");
+{
+  const AUDIT = "npm audit --omit=dev --audit-level=high";
+  const i = TEST_JOB.indexOf(AUDIT as (typeof TEST_JOB)[number]);
+  check("TEST_JOB carries the production-dependency audit at HIGH", i >= 0, JSON.stringify(TEST_JOB));
+  check("the audit runs right after `npm ci` and before prisma generate / tests / typecheck / lint",
+    i === 1 && TEST_JOB[0] === "npm ci", `index ${i}`);
+  check("ci.yml test job runs that exact audit line", runSteps(jobBlock("test")).includes(AUDIT));
+  const dependabot = readFileSync(".github/dependabot.yml", "utf8");
+  check(".github/dependabot.yml proposes npm updates weekly for the app root",
+    /package-ecosystem:\s*npm/.test(dependabot) && /directory:\s*\/\s*$/m.test(dependabot) && /interval:\s*weekly/.test(dependabot));
+  check("dependabot groups minor/patch so one PR carries the week", /update-types:\s*\[\s*"minor",\s*"patch"\s*\]/.test(dependabot));
+}
+
 console.log("the site job is the public site's, and carries no authority");
 {
   const block = jobBlock("site");

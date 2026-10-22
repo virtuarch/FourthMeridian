@@ -20,6 +20,14 @@ import { PriceBasis } from "@prisma/client";
 export const PRICE_MAX_STALE_DAYS = 7;
 
 /**
+ * OPS-004 — transport timeout for every price-provider HTTP call (CoinGecko,
+ * Tiingo). Before this there was NO AbortSignal: a hung vendor held the
+ * fetch-security-prices job to the route's maxDuration and the whole dispatch
+ * slot with it. 10 s matches the wallet-chain providers (blockstream, Alchemy).
+ */
+export const PRICE_PROVIDER_TIMEOUT_MS = 10_000;
+
+/**
  * The canonical bases, each a DISTINCT price series for one instrument. A read
  * for one basis never falls through to another (basis isolation, service.ts):
  *   RAW_CLOSE      — unadjusted market close; THE canonical valuation series

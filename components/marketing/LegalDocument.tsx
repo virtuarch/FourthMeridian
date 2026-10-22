@@ -97,7 +97,10 @@ export function LegalDocument({
           Last updated {updated}
         </p>
         <div className="mt-8">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+          {/* skipHtml — raw HTML in legal Markdown is never rendered (react-markdown would
+              otherwise print it as escaped text). It lets a document carry editorial
+              comments such as legal-ai.md's PRIV-010 "pending counsel review" note. */}
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents} skipHtml>
             {markdown}
           </ReactMarkdown>
         </div>

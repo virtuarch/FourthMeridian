@@ -26,6 +26,7 @@ import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
 import { env }                                    from "@/lib/env";
 import { requireSpaceRole }                   from "@/lib/session";
+import { limitByUser }                        from "@/lib/rate-limit";
 import { parseInviteRoleInput }                   from "@/lib/spaces/invite-role";
 import { SpaceMemberRole, SpaceMemberStatus, SpaceType } from "@prisma/client";
 import { getClientIp }                            from "@/lib/api";
@@ -46,6 +47,11 @@ export async function POST(
   const [auth, err] = await requireSpaceRole(spaceId, SpaceMemberRole.ADMIN);
   if (err) return err;
   const { user } = auth;
+
+  // UI-005 — every POST can send an e-mail (sendEmail below); bound it per
+  // inviter so the endpoint is not an invite-spam relay.
+  const limited = await limitByUser(user.id, "space-invite", { limit: 20, windowSec: 3600 });
+  if (limited) return limited;
 
   // Personal Spaces are strictly single-user — their sole member is the OWNER.
   // Every "which personal space is mine?" lookup in the app resolves by
@@ -83,7 +89,8 @@ export async function POST(
   // ⚠️ DELIBERATELY NOT withTenantDb — see the header: this is the one read in
   // the route that is about somebody other than the caller.
   const targetUser = await db.user.findUnique({
-    where:  { username: username.trim().replace(/^@/, "") },
+    // J-D3: usernames are stored lower-case at registration, so the lookup is too.
+    where:  { username: username.trim().replace(/^@/, "").toLowerCase() },
     select: { id: true, name: true, username: true, email: true },
   });
   if (!targetUser) {

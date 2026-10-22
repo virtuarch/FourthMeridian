@@ -44,7 +44,6 @@ import type { SpaceContext } from '@/lib/space';
 import { recallMemories, MemoryKind, type MemoryClient } from './memory-store';
 import { composeMemoryLine, MEMORY_LINE_RULES } from './memory-model';
 import { transactionCorpusSpan } from '@/lib/data/transaction-query';
-import type { ReadClient } from '@/lib/db/tenant-context';
 import type { PhasedRead, MemoryPhasedRead } from '@/lib/ai/tenant-phase';
 import { todayUTCISO } from '@/lib/time/clock';
 import {

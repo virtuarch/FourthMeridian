@@ -121,6 +121,8 @@ const _e = {
   CRON_SECRET:          process.env.CRON_SECRET,
   RATE_LIMIT_ENABLED:   process.env.RATE_LIMIT_ENABLED,
   RATE_LIMIT_SHADOW:    process.env.RATE_LIMIT_SHADOW,
+  // ARCH-003 — trust cf-connecting-ip only when Cloudflare fronts every request (lib/security/client-ip.ts).
+  CLIENT_IP_TRUST_CLOUDFLARE: process.env.CLIENT_IP_TRUST_CLOUDFLARE,
 
   DISABLE_SYSTEM_ADMIN: process.env.DISABLE_SYSTEM_ADMIN,
   NODE_ENV:             process.env.NODE_ENV,

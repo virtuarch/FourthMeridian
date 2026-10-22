@@ -243,7 +243,8 @@ check("hook accepts an `initial` payload", hook.includes("initial?"));
 check("hook seeds sections/accounts/memberCount from initial",
   hook.includes("initial?.sections ?? []") && hook.includes("initial?.accounts ?? []") && hook.includes("initial?.memberCount ?? null"));
 check("hook starts NOT loading when hydrated", hook.includes("useState(!hydrated)"));
-check("initial sections+accounts effect is skipped when hydrated", /if \(hydrated\) return;[\s\S]{0,200}sections`\)/.test(hook));
+// UI-006 — the skip covers the FIRST read only; an explicit retryRead("structure") re-runs it.
+check("initial sections+accounts effect is skipped when hydrated", /if \(hydrated && structureRetry === 0\) return;[\s\S]{0,500}sections`\)/.test(hook));
 check("member-count effect is skipped when hydrated", /if \(hydrated\) return;[\s\S]{0,120}fetch\(`\/api\/spaces\/\$\{spaceId\}`\)/.test(hook));
 // refresh/reload paths preserved (Workspace switching + manual sync still fetch)
 check("reloadSections still fetches (ManageSpaceModal refresh preserved)", hook.includes("reloadSections") && hook.includes("/sections`)"));

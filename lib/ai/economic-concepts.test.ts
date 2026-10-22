@@ -266,13 +266,8 @@ const DIG  = 'DIGITAL_ASSETS';
     'the crypto facts are already in the accounts domain and the CF-5 envelope');
   check('NONE does not', !breadthNeedsPositionDetail(ConceptBreadth.NONE));
 
-  // One vocabulary, not two: CF-6 must consume this resolver rather than
-  // carrying its own copy that can drift.
-  const dr = readFileSync(join(process.cwd(), 'lib/ai/domain-relevance.ts'), 'utf8');
-  check('CF-6 consumes the concept breadth resolver',
-    /breadthNeedsPositionDetail\(resolveConceptBreadth\(question\)\)/.test(dr));
-  check('…and keeps no investment vocabulary of its own',
-    !/INVESTMENT_VOCABULARY|BROAD_FINANCIAL_VOCABULARY/.test(dr));
+  // (CQ-002, 2026-10-22: the CF-6 consumer `lib/ai/domain-relevance.ts` had no
+  // production importer and was deleted; its two source checks went with it.)
 }
 
 // ══ NEGATIVE — THE MODEL CONTRACT IS STATED, NOT IMPLIED ═════════════════════

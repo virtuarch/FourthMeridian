@@ -25,6 +25,7 @@ import { sendEmail } from "@/lib/email/send";
 import { buildBetaInviteUrl } from "@/lib/email/beta-invite-url";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { BetaAccessRequestStatus } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -55,8 +56,11 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
   const now = new Date();
   const expiry = new Date(now.getTime() + INVITE_TTL_MS);
 
-  await db.betaAccessRequest.update({
-    where: { id },
+  // IDEMP-011: the redeemed check above is a read; a redemption landing between
+  // it and this write must not be resurrected. The status predicate makes the
+  // write conditional and the count tells us which side of the race we are on.
+  const { count } = await db.betaAccessRequest.updateMany({
+    where: { id, status: { not: BetaAccessRequestStatus.REDEEMED } },
     data: {
       status:          BetaAccessRequestStatus.APPROVED,
       inviteTokenHash: hashResetToken(rawToken),
@@ -66,6 +70,9 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       decidedById:     auth.user.id,
     },
   });
+  if (count !== 1) {
+    return NextResponse.json({ error: "This request has already been redeemed." }, { status: 409 });
+  }
 
   // Absolute link from the trusted env base (never a request Host header).
   const inviteUrl = buildBetaInviteUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
@@ -82,7 +89,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       userId:             auth.user.id,
       performedByAdminId: auth.user.id,
       action:             AuditAction.BETA_ACCESS_APPROVED,
-      metadata:           { betaRequestId: id, email: request.email, emailStatus: emailResult.status },
+      metadata:           { betaRequestId: id, emailHash: auditEmailHash(request.email), emailStatus: emailResult.status },
     },
   });
 

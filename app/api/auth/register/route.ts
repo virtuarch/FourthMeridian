@@ -84,9 +84,11 @@ export async function POST(req: NextRequest) {
 
     // ── Registration gate (Wave 1 S2) ─────────────────────────────────────────
     // Read the platform-wide mode BEFORE any field validation so `closed` short-
-    // circuits without leaking which fields would have failed. `open` is the
-    // ship default (behavior unchanged); `invite_only` requires a valid beta
-    // invite (validated below, after the email is normalized).
+    // circuits without leaking which fields would have failed. SEC-008 — an
+    // absent/unrecognised row resolves to `invite_only` (DEFAULT_REGISTRATION_MODE
+    // in lib/platform-settings.ts), so a fresh database never accepts an
+    // uninvited sign-up; `open` is an explicit operator act. `invite_only`
+    // requires a valid beta invite (validated below, after the email is normalized).
     const registrationMode = await getRegistrationMode();
     if (registrationMode === "closed") {
       return NextResponse.json(
@@ -376,6 +378,12 @@ export async function POST(req: NextRequest) {
         { error: "This invite could not be redeemed. It may already have been used — please request access again." },
         { status: 409 },
       );
+    }
+    // IDEMP-011: the email/username checks above are reads; a concurrent
+    // registration of the same identity loses at the unique index. Same answer
+    // the read path gives (409), not a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return NextResponse.json({ error: "An account with that email or username already exists." }, { status: 409 });
     }
     console.error("[register] error:", err);
     return NextResponse.json({ error: "Registration failed. Please try again." }, { status: 500 });

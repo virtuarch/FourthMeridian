@@ -11,6 +11,10 @@
 /** ci.yml `test` job, step for step. */
 export const TEST_JOB = [
   "npm ci",
+  // SEC-002 / TEST-005 — production-dependency advisories at HIGH or above fail
+  // the build. Runs before anything else so a vulnerable install is refused
+  // before it is typechecked, tested or built.
+  "npm audit --omit=dev --audit-level=high",
   "npx prisma generate",
   "npm run test:unit",
   "npm run typecheck",

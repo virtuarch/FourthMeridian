@@ -330,8 +330,13 @@ export interface PostureChip {
 }
 
 export interface PostureInputs {
-  /** Null when the loader threw. `latest: null` inside means never evaluated. */
-  alerts: { latest: AlertLatestEvaluation | null; rulesRegistered: number } | null;
+  /**
+   * Null when the loader threw. `latest: null` inside means never evaluated.
+   * `cadenceHours` (OBS-001) is the evaluate-alerts job's RESOLVED execution
+   * cadence (the dispatcher's own number, read from job health); absent ⇒ the
+   * registry default. The age gate needs it to say how late "late" is.
+   */
+  alerts: { latest: AlertLatestEvaluation | null; rulesRegistered: number; cadenceHours?: number | null } | null;
   providers: ProviderHealthResult | null;
   freshness: ResourceFreshnessResult | null;
   configuration: EnvReport | null;
@@ -344,16 +349,60 @@ const TRUST_TONE: Record<ProviderTrust, PostureTone> = { OPERATIONAL: "ok", DEGR
 const unavailable = (key: PostureKey, label: string, workspace: string, basis: string): PostureChip =>
   ({ key, label, word: "Unavailable", tone: "muted", count: "could not be asked", state: "unavailable", workspace, basis });
 
+/** The evaluate-alerts registry default (lib/jobs/registry.core.ts: slots every 6 h) when no resolved cadence is handed in. */
+export const ALERT_EVALUATOR_DEFAULT_CADENCE_HOURS = 6;
+/** Slot jitter / dispatch latency allowance — the same figure lib/jobs/health.ts GRACE_HOURS uses (pinned by test). */
+export const ALERT_EVALUATOR_GRACE_HOURS = 2;
+/** Silence past this multiple of the cadence is "dead" in job health; the chip goes bad, not merely warn. */
+export const ALERT_EVALUATOR_DEAD_MULTIPLE = 3;
+
+/**
+ * OBS-001 — is the latest evaluation too old to speak for NOW? The evaluator
+ * runs on a cadence; an evaluation older than cadence + grace means the
+ * evaluator itself has gone silent (dead cron, rotated CRON_SECRET, 401 loop),
+ * and whatever it last said — Quiet included — is stale. Returns the age in
+ * hours when silent, null when current. Pure; the clock is injected.
+ */
+export function alertEvaluatorSilence(evaluatedAtISO: string, cadenceHours: number | null | undefined, now: Date): { ageHours: number; dead: boolean } | null {
+  const t = Date.parse(evaluatedAtISO);
+  if (!Number.isFinite(t)) return { ageHours: Infinity, dead: true };
+  const cadence = cadenceHours && cadenceHours > 0 ? cadenceHours : ALERT_EVALUATOR_DEFAULT_CADENCE_HOURS;
+  const ageHours = (now.getTime() - t) / 3_600_000;
+  if (ageHours <= cadence + ALERT_EVALUATOR_GRACE_HOURS) return null;
+  return { ageHours, dead: ageHours > cadence * ALERT_EVALUATOR_DEAD_MULTIPLE };
+}
+
+const hoursWord = (h: number): string => (!Number.isFinite(h) ? "unreadable time" : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} d`);
+
 /**
  * ALERTS — firing NOW is the latest evaluation's verdict (lib/alerts/latest-evaluation.ts).
  * Delivery history never reaches this chip: a critical delivered two days ago is
  * the past, and the board must not keep it lit.
+ *
+ * OBS-001 (pre-beta audit, runtime-confirmed): the chip read the stored run's
+ * CONTENT and never its AGE, so a 30-day-dead evaluator still said "Quiet". With
+ * `now` supplied the chip is age-gated: an evaluation older than the evaluator's
+ * cadence + grace reads "Unknown — evaluator silent" (warn; bad past three
+ * cadences), and never Quiet. Callers without a clock (pure fixtures) get the
+ * ungated verdict, which is why `now` is optional and the overview passes it.
  */
-export function deriveAlertsPosture(a: PostureInputs["alerts"]): PostureChip {
+export function deriveAlertsPosture(a: PostureInputs["alerts"], now?: Date): PostureChip {
   const basis = "latest evaluate-alerts run (per-rule outcomes)";
   if (!a) return unavailable("alerts", "Alerts", "platform-policies", basis);
   if (a.rulesRegistered === 0) return { key: "alerts", label: "Alerts", word: "Unknown", tone: "muted", count: "no rules registered", state: "unknown", workspace: "platform-policies", basis };
   if (!a.latest) return { key: "alerts", label: "Alerts", word: "Unknown", tone: "muted", count: "never evaluated", state: "unknown", workspace: "platform-policies", basis };
+  if (now) {
+    const silent = alertEvaluatorSilence(a.latest.evaluatedAtISO, a.cadenceHours, now);
+    if (silent) {
+      const cadence = a.cadenceHours && a.cadenceHours > 0 ? a.cadenceHours : ALERT_EVALUATOR_DEFAULT_CADENCE_HOURS;
+      return {
+        key: "alerts", label: "Alerts", word: "Unknown — evaluator silent", tone: silent.dead ? "bad" : "warn",
+        count: `last evaluated ${hoursWord(silent.ageHours)} ago · expected every ${cadence} h`,
+        state: "unknown", workspace: "platform-policies",
+        basis: `${basis} — too old to speak for now; the evaluator itself is overdue`,
+      };
+    }
+  }
   const firing = a.latest.rules.filter((r) => r.firing);
   const critical = firing.some((r) => r.severity === "critical");
   const evaluated = a.latest.rules.filter((r) => r.enabled).length;
@@ -400,9 +449,9 @@ export function deriveConfigurationPosture(e: PostureInputs["configuration"]): P
   return { key: "configuration", label: "Configuration", word: "Set", tone: "ok", count: `${e.counts.pass} of ${total} set · ${e.deploymentEnv}`, state: "observed", workspace: "platform-policies", basis };
 }
 
-export function derivePosture(inputs: PostureInputs): readonly PostureChip[] {
+export function derivePosture(inputs: PostureInputs, now?: Date): readonly PostureChip[] {
   return [
-    deriveAlertsPosture(inputs.alerts),
+    deriveAlertsPosture(inputs.alerts, now),
     deriveProvidersPosture(inputs.providers),
     deriveFreshnessPosture(inputs.freshness),
     deriveConfigurationPosture(inputs.configuration),

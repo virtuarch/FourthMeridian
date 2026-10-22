@@ -75,6 +75,11 @@ const pkg = JSON.parse(src("package.json")) as { scripts: Record<string, string>
     // whose name is not a recognised clone, and refuses again unless the
     // connection authenticates as fm_app and is not a superuser.
     "scripts/rls-acceptance.ts",
+    // DB-008 — the schema-drift audit creates and drops a throwaway SHADOW
+    // database, which lib/db cannot do. Allowed for the same reason as the
+    // suite above: scripts/lib/schema-drift.ts refuses any server that is not
+    // localhost (and any pooler URL) before a client is constructed.
+    "scripts/audit-schema-drift.ts",
   ];
   // ⚠️ TEST FILES EXCLUDED, because a test that ASSERTS about `new PrismaClient`
   // contains the string without constructing one — this file and

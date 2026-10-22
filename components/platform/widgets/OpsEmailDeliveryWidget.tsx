@@ -3,11 +3,18 @@
 /**
  * components/platform/widgets/OpsEmailDeliveryWidget.tsx  (PO-5A)
  *
- * Beta email-delivery visibility: sent / captured / error counts over the last
- * 7 days from the NotificationDelivery ledger, plus recent errors. "Captured"
- * is called out because in production it means emails fell back to capture
- * (RESEND_API_KEY unset/failing) and did NOT actually send — the exact silent
- * failure this widget exists to make visible. Metadata only.
+ * Beta email-delivery visibility: accepted / captured / error counts over the
+ * last 7 days from the NotificationDelivery ledger, plus recent errors.
+ * "Captured" is called out because in production it means emails fell back to
+ * capture (RESEND_API_KEY unset/failing) and were NOT attempted against any
+ * provider — the exact silent failure this widget exists to make visible.
+ * Metadata only.
+ *
+ * UI-011 / OBS-003 — WORDS. The ledger's `sent` means the provider ACCEPTED the
+ * message (queued → attempted → accepted); no delivery event is ingested, so
+ * this surface never says "delivered". OBS-008 — the direct-send template
+ * families (auth, invites, security, platform alerts) that bypass the ledger
+ * are named with the transport the chokepoint would pick for them now.
  */
 
 import { Mail } from "lucide-react";
@@ -24,7 +31,7 @@ export function OpsEmailDeliveryWidget({ section }: { section: PlatformSection }
       ) : (
         <>
           <div className="grid grid-cols-3 gap-3">
-            <WidgetStat value={data.counts.sent} label="Sent" />
+            <WidgetStat value={data.counts.sent} label="Accepted by provider" />
             <WidgetStat value={data.counts.captured} label="Captured" />
             <WidgetStat value={data.counts.error} label="Errors" />
           </div>
@@ -36,8 +43,16 @@ export function OpsEmailDeliveryWidget({ section }: { section: PlatformSection }
                style={{ color: "var(--accent-warning,#f59e0b)", borderColor: "rgba(245,158,11,.28)", background: "rgba(245,158,11,.08)" }}>
               {data.counts.captured} email(s) were CAPTURED, not sent — in production this means email delivery is not configured (RESEND_API_KEY). Check the Environment widget.
             </p>
+          ) : data.counts.error > 0 ? (
+            <p className="text-xs text-[var(--text-secondary)]">{data.counts.error} email(s) failed at the provider in the last {data.windowDays} days; {data.counts.sent} accepted.</p>
           ) : (
-            <p className="text-xs text-[var(--text-secondary)]">All emails delivered in the last {data.windowDays} days.</p>
+            <p className="text-xs text-[var(--text-secondary)]">All {data.counts.sent} ledgered emails were accepted by the provider in the last {data.windowDays} days. Acceptance is not delivery: no delivery event is observed.</p>
+          )}
+
+          {data.directSend && (
+            <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-testid="direct-send-coverage">
+              Not counted above: {data.directSend.templates.join(", ")} — sent directly through the chokepoint; current transport <span className="text-[var(--text-secondary)]">{data.directSend.transport}</span>{data.directSend.real ? "" : " (captured in memory, reaches nobody)"}.
+            </p>
           )}
 
           {data.recentErrors.length > 0 && (

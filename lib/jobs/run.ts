@@ -53,6 +53,23 @@
  * DELIBERATELY NOT HERE (rulings R3–R8): CRON_SECRET auth (stays in the
  * routes — R3), dispatcher/registry (S2), retries/backoff, dead-job
  * detection, alerting, metrics/telemetry (PO1), retention sweeps (S3).
+ *
+ * ── THE START WRITE IS NOW THE CLAIM (IDEMP-003 / OPS-005 / OPS-006, 2026-10-22)
+ * The runtime audit fired two concurrent wakes and every due job ran twice:
+ * the in-flight guard was a READ, and the per-job fallback routes never read
+ * it at all. Migration 20261022000200 installs a partial unique index
+ * JobRun_one_running_per_job ON (jobName) WHERE status = 'running', so the
+ * start row that this wrapper already writes is the lock:
+ *   · a second writer gets P2002 ⇒ JobAlreadyRunningError, body NEVER runs;
+ *   · any OTHER start-write failure now ABORTS the run (JobLedgerUnavailableError)
+ *     instead of running an unledgered, unguarded body — the opposite of the
+ *     original "ledger never breaks the job" stance, deliberately: with the
+ *     ledger as the lock, a body without a row is a body without a guard;
+ *   · a `running` row older than the in-flight window is a crashed run and
+ *     would block its job forever, so finalizeStaleRuns flips it to
+ *     failed/"stale" — runJob does this for its own name before claiming, the
+ *     wake does it for every job before selecting.
+ * The completion write is unchanged (best-effort, single).
  */
 
 import "server-only";
@@ -61,6 +78,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { db } from "@/lib/db";
 import { captureLedgerWriteFailure, captureJobFailure } from "@/lib/monitoring/capture";
 import { currentDeploymentSha } from "@/lib/monitoring/deployment";
+import { IN_FLIGHT_WINDOW_MS } from "@/lib/jobs/cadence-policy.core";
 
 /** How a run was initiated. "cron" for the Vercel-cron routes. */
 export type JobTrigger = "cron" | "manual" | "script";
@@ -97,14 +115,76 @@ export interface JobRunCompletionData {
   errorSummary?: string;
 }
 
-export interface JobRunWriteClient {
+/** The stale-run finaliser's single statement. `jobName` scopes it to one job. */
+export interface JobRunStaleFinalizeArgs {
+  where: { status: "running"; startedAt: { lt: Date }; jobName?: string };
+  data: { status: "failed"; completedAt: Date; errorSummary: string };
+}
+
+export interface JobRunFinalizeClient {
   jobRun: {
+    updateMany(args: JobRunStaleFinalizeArgs): Promise<{ count: number }>;
+  };
+}
+
+export interface JobRunWriteClient extends JobRunFinalizeClient {
+  jobRun: JobRunFinalizeClient["jobRun"] & {
     create(args: { data: JobRunStartData; select: { id: true } }): Promise<{ id: string }>;
     update(args: { where: { id: string }; data: JobRunCompletionData }): Promise<unknown>;
   };
 }
 
 const jobRunDb = db as unknown as JobRunWriteClient;
+
+/** A `running` row older than this is a crashed run, not a lock (= the wake's in-flight window). */
+export const STALE_RUNNING_AFTER_MS = IN_FLIGHT_WINDOW_MS;
+/** The errorSummary the finaliser writes — a vocabulary word the health reader can match. */
+export const STALE_RUN_ERROR_SUMMARY = "stale";
+
+/** Thrown when another worker holds this job's `running` row. The body did not run. */
+export class JobAlreadyRunningError extends Error {
+  constructor(public readonly jobName: string) {
+    super(`job "${jobName}" is already running (another worker holds the start row)`);
+    this.name = "JobAlreadyRunningError";
+  }
+}
+
+/** Thrown when the start row could not be written for any other reason. The body did not run. */
+export class JobLedgerUnavailableError extends Error {
+  constructor(public readonly jobName: string, cause: unknown) {
+    super(`job "${jobName}" refused: the start-ledger write failed (${cause instanceof Error ? cause.message : String(cause)})`);
+    this.name = "JobLedgerUnavailableError";
+  }
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "P2002";
+}
+
+/**
+ * Flip crashed `running` rows (older than STALE_RUNNING_AFTER_MS) to
+ * failed/"stale" so the unique claim is free again. Scoped to one job when
+ * `jobName` is given. Best-effort: a failure is logged and reported, never
+ * thrown — the claim itself will still refuse if a row genuinely blocks.
+ */
+export async function finalizeStaleRuns(
+  client: JobRunFinalizeClient,
+  now: Date,
+  jobName?: string,
+): Promise<number> {
+  try {
+    const res = await client.jobRun.updateMany({
+      where: { status: "running", startedAt: { lt: new Date(now.getTime() - STALE_RUNNING_AFTER_MS) }, ...(jobName ? { jobName } : {}) },
+      data: { status: "failed", completedAt: now, errorSummary: STALE_RUN_ERROR_SUMMARY },
+    });
+    if (res.count > 0) console.warn(`[job-run] finalised ${res.count} stale running row(s)${jobName ? ` for ${jobName}` : ""} as failed/stale`);
+    return res.count;
+  } catch (err) {
+    console.error(`[job-run] stale-run finaliser failed (non-fatal):`, err);
+    captureLedgerWriteFailure("JobRun", "completion", err, jobName ?? "*");
+    return 0;
+  }
+}
 
 // ── Ambient run identity (PLATFORM OPS OBSERVABILITY) ────────────────────────
 //
@@ -116,8 +196,9 @@ const jobRunDb = db as unknown as JobRunWriteClient;
 // uncorrelated to the JobRun that fired it. AsyncLocalStorage is the same
 // mechanism the Plaid provider-call attribution already uses.
 //
-// `id` is null when the start write failed (the run left no ledger row); a
-// consumer must treat that as "no parent", never invent one.
+// `id` was null when the start write failed; since IDEMP-003 a failed start
+// write aborts the run, so inside a body it is always set. The type keeps the
+// null arm for consumers written against the old contract.
 
 export interface CurrentJobRun {
   /** JobRun.id, or null when the start write never landed. */
@@ -181,8 +262,12 @@ export async function runJob<T>(
   const startedAt = new Date();
   const t0 = Date.now();
 
-  // Start row — best-effort; a ledger failure must never break the job.
-  let runId: string | null = null;
+  // A crashed predecessor must not hold the claim forever.
+  await finalizeStaleRuns(client, startedAt, jobName);
+
+  // Start row — THE CLAIM. P2002 means another worker holds it; anything else
+  // means the ledger is unavailable. Either way the body does not run.
+  let runId: string;
   try {
     const row = await client.jobRun.create({
       // deploymentSha is stamped once, here, from the one canonical resolver.
@@ -192,17 +277,17 @@ export async function runJob<T>(
     });
     runId = row.id;
   } catch (err) {
-    console.error(`[job-run] ${jobName} (${executionId}): start write failed (non-fatal):`, err);
-    // Swallowed as always — but no longer silent. A start-write failure means
-    // this run leaves NO trace in the ledger at all (the completion write is
-    // skipped below), which is precisely the shape that reads as "the job never
-    // ran" on every health surface while the job in fact runs fine.
+    if (isUniqueViolation(err)) {
+      console.log(`[job-run] ${jobName} (${executionId}): refused — already running elsewhere`);
+      throw new JobAlreadyRunningError(jobName);
+    }
+    console.error(`[job-run] ${jobName} (${executionId}): start write failed — run aborted:`, err);
     captureLedgerWriteFailure("JobRun", "start", err, jobName);
+    throw new JobLedgerUnavailableError(jobName, err);
   }
 
-  // The single completion write — skipped if the start write never landed.
+  // The single completion write.
   async function complete(data: JobRunCompletionData): Promise<void> {
-    if (runId === null) return;
     try {
       await client.jobRun.update({ where: { id: runId }, data });
     } catch (err) {

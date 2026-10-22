@@ -16,7 +16,7 @@
  *   - DataCard (Atlas Glass) fallback otherwise — same card family.
  *
  * Connections is a provider-management surface, NOT the Accounts page:
- *   - Provider is part of identity ("Synced via Plaid"), via providerName().
+ *   - Provider is part of identity ("Synced via Plaid").
  *   - Account NAMES only — never dollar balances (those live on
  *     Accounts/Spaces/Dashboard).
  *
@@ -45,7 +45,7 @@ import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
 // It lives in lib/sync so it can be tested; see connection-copy.ts.
 import { providerLine } from "@/lib/sync/connection-copy";
 import { ImportHistoryButton } from "@/components/connections/import/ImportHistoryButton";
-import { providerName, type SyncConnection } from "@/lib/sync/status";
+import { type SyncConnection } from "@/lib/sync/status";
 import { deriveConnectionLifecycle } from "@/lib/sync/lifecycle";
 import {
   formatAvailableHistory,

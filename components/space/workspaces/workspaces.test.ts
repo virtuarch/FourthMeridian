@@ -13,6 +13,10 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
+import { createElement, type ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
+import { WORKSPACE_RENDERERS, type WorkspaceRenderCtx } from "@/components/space/workspaces/workspaceRenderers";
 
 const ROOT = process.cwd();
 const read = (...seg: string[]) => readFileSync(path.join(ROOT, ...seg), "utf8");
@@ -258,6 +262,34 @@ console.log("7. Navigation ownership left the host (SD-8b) — useSpaceNavigatio
   check("cashFlowPeriod stays host-side (shell-time derived; nav hook declares no such state)",
     DASHCODE.includes("shell.derived.cashFlowPeriod") &&
     !USE_SPACE_NAV.includes("const cashFlowPeriod") && !USE_SPACE_NAV.includes("setCashFlowExplicitPeriod"));
+}
+
+console.log("6. UI-014 — Markets is a comingSoon destination, gated by the renderer map (MARKETS-COMING-SOON)");
+{
+  const RENDERERS = WS("workspaceRenderers.tsx");
+  // The registry is the mechanism: Markets says comingSoon, and nothing of the
+  // Markets architecture is deleted (the skeleton, its views, the ?view= routing).
+  check("registry: markets.status === \"comingSoon\"", PERSPECTIVE_LIBRARY.markets?.status === "comingSoon");
+  check("the Markets skeleton and its view vocabulary stay on disk",
+    !gone("components", "space", "widgets", "markets", "MarketsWorkspace.tsx") && !gone("lib", "markets", "markets-mode.ts"));
+  check("the renderer map still wires MarketsWorkspace (flip the registry word to restore it)",
+    RENDERERS.includes("<MarketsWorkspace") && /markets:\s*\(ctx\)\s*=>/.test(RENDERERS));
+  // The gate is generic — read from the registry at render time, not a Markets branch.
+  check("the exported map gates EVERY entry on the registry status (no per-workspace branch)",
+    /function isComingSoon\(id: string\)/.test(RENDERERS) && /getWorkspaceDefinition\(id\)/.test(RENDERERS)
+      && /Object\.entries\(WORKSPACE_RENDERER_IMPLS\)\.map/.test(RENDERERS) && !/id === "markets"/.test(RENDERERS));
+  check("renderer keys are unchanged (parity with the registry holds)", Object.keys(WORKSPACE_RENDERERS).sort().join() === "cashFlow,markets,wealth");
+  // Rendered: the placeholder, not the five-view chip row.
+  const envelopes: unknown[] = [];
+  const ctx = { onEnvelopeChange: (e: unknown) => envelopes.push(e), marketsMode: "portfolio", onMarketsModeChange: () => {} } as unknown as WorkspaceRenderCtx;
+  const html = renderToStaticMarkup(createElement(() => WORKSPACE_RENDERERS.markets(ctx) as ReactElement));
+  check("Markets renders the WorkspaceComingSoon placeholder", html.includes('data-workspace-coming-soon="markets"') && /Coming soon/.test(html));
+  check("…titled with the registry label and carrying its description",
+    html.includes(">Markets<") && html.includes(PERSPECTIVE_LIBRARY.markets.description));
+  check("…and NOT the five-view selector", !/Portfolio|Watchlist|aria-label="Markets view"/.test(html));
+  const wealthHtml = (() => { try { return String(renderToStaticMarkup(createElement(() => WORKSPACE_RENDERERS.cashFlow({ ...ctx, transactions: null, accounts: [], period: "month" } as unknown as WorkspaceRenderCtx) as ReactElement))); } catch { return ""; } })();
+  check("an available workspace is not gated (Cash Flow renders its own component, never the placeholder)",
+    !wealthHtml.includes("data-workspace-coming-soon"));
 }
 
 if (failures > 0) { console.error(`\n${failures} workspaces check(s) failed`); process.exit(1); }

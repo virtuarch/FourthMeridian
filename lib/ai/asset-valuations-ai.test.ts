@@ -16,6 +16,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MODELED_HISTORY_MEANING } from "@/lib/assets/valuation-series.core";
+import { readToolsSource } from "@/lib/test-support/tools-source";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -23,7 +24,8 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 const read = (...p: string[]) => readFileSync(join(process.cwd(), ...p), "utf8");
-const code = (...p: string[]) => read(...p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+const code = (...p: string[]) => strip(read(...p));
 
 console.log("the type");
 const TYPES = code("lib", "ai", "types.ts");
@@ -49,12 +51,12 @@ check("no modeled POINTS reach the model (descriptor only)", !/series:|buildValu
 check("the model is shown at most 12 anchors", ASM.includes("const MAX_VALUATIONS_SHOWN = 12;"));
 
 console.log("the tool");
-const TOOLS = code("lib", "ai", "conversation", "tools.ts");
+const TOOLS = strip(readToolsSource()); // CQ-011: the tool layer (facade + lib/ai/conversation/tools/**)
 for (const f of ["valuations", "modeledHistory", "valueChangeSinceFirstRecorded"]) {
   check(`get_financial_snapshot passes ${f} through`, TOOLS.includes(`...(a2.${f} ? { ${f}: a2.${f} } : {}),`));
 }
 check("find_in_balance_history still claims observed snapshots only (snapshot rows are unchanged by RWA-2A)",
-  read("lib", "ai", "conversation", "tools.ts").includes("Observed daily snapshots only"));
+  readToolsSource().includes("Observed daily snapshots only"));
 
 console.log("the wording the model reads");
 check("modeled meaning: not observed market prices", /not observed market prices/.test(MODELED_HISTORY_MEANING));

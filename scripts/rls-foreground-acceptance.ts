@@ -403,7 +403,6 @@ async function main(): Promise<void> {
     "app/api/spaces/[id]/wealth/amend/route.ts",
     "app/(shell)/dashboard/connections/page.tsx",
     "app/api/sync/status/route.ts",
-    "app/api/plaid/sync/route.ts",
     "app/api/plaid/refresh/route.ts",
     "app/api/plaid/resume-sync/route.ts",
     "app/api/plaid/link-token/route.ts",
@@ -687,8 +686,10 @@ async function main(): Promise<void> {
   // Stage 13b: a tenant phase orphaned by a failing sibling, in a suspended
   // instance, sat idle in transaction for 150 s+ until a manual terminate.
   // Prisma's own 5 s timeout cannot fire in a suspended process; the server's can.
-  // The harness roles carry NO role-level timeout, so what is proven here is the
-  // transaction-local one withTenantDb sets itself.
+  // The harness roles carry NO role-level IDLE timeout, so what is proven here is
+  // the transaction-local one withTenantDb sets itself. (Since DB-006,
+  // 2026-10-22, fm_app carries a role-level statement_timeout — a different
+  // setting; the assertion below excludes only that one, by name.)
   {
     const { TENANT_IDLE_IN_TRANSACTION_TIMEOUT } = await import("@/lib/db/tenant-context");
     const inside = await as("alice", async (tx) => tx.$queryRaw<Array<{ uid: string; idle: string; who: string }>>`
@@ -699,7 +700,7 @@ async function main(): Promise<void> {
       SELECT nullif(current_setting('app.user_id', true), '') AS uid, current_setting('idle_in_transaction_session_timeout') AS idle`));
     check(50, "[idle] inside every tenant transaction the identity AND a 15 s idle-in-transaction timeout are in force as fm_app, and neither survives onto the pooled connection afterwards",
       inside[0]?.uid === "alice" && inside[0]?.idle === TENANT_IDLE_IN_TRANSACTION_TIMEOUT && inside[0]?.who === "fm_app"
-      && roleDefault === "none" && afterwards.every((r) => r[0]?.uid === null && r[0]?.idle === "0"),
+      && !/idle_in_transaction_session_timeout/.test(roleDefault) && afterwards.every((r) => r[0]?.uid === null && r[0]?.idle === "0"),
       `inside=${JSON.stringify(inside[0])} roleSetting=${roleDefault} afterwards=${JSON.stringify(afterwards.map((r) => r[0]))}`);
 
     // Prisma's interactive-transaction timeout is lifted to 40 s so that ONLY the

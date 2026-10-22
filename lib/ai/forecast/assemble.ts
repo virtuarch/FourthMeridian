@@ -64,8 +64,8 @@ import type { TransactionsSummaryData } from '@/lib/ai/types';
 import { assertedAmountBasis } from '@/lib/forecast/periodic-amount';
 import { assertedSpendingBaseline, PeriodBasis } from '@/lib/forecast/spending-baseline';
 import {
-  composeOperatingState, conclusionLicence, Conclusion,
-  type ConclusionKind, type CurrentOperatingState, type IncomeStreamInput,
+  composeOperatingState,
+  type CurrentOperatingState, type IncomeStreamInput,
 } from '@/lib/forecast/operating-state';
 import {
   AssumptionDimension, AssumptionOrigin, AssumptionStance, ConclusionStatus, StatementMode,

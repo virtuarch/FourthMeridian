@@ -25,7 +25,7 @@ export function LegalDocument({ title, updated, markdown }: { title: string; upd
         <h1 className={ui.legalTitle}>{title}</h1>
         <p className={ui.legalUpdated}>Last updated {updated}</p>
         <div className={ui.legalBody}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{markdown}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents} skipHtml>{markdown}</ReactMarkdown>
         </div>
       </div>
     </Container>

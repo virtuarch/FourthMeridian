@@ -44,6 +44,7 @@ import { requireUser, requireFreshUser, forbidden } from "@/lib/session";
 import type { SessionUser }         from "@/lib/session";
 import { hasPlatformAccess }        from "./policy";
 import type { PlatformGrantCtx }    from "./policy";
+import { recordPlatformAccessDenied } from "@/lib/platform/ops/access-denied";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -101,6 +102,14 @@ async function resolvePlatformAccess(
   const grants: PlatformGrantCtx[] = row ? [row] : [];
 
   if (!decidePlatformAccess(user.role, area, needed, grants)) {
+    // OBS-009 — the refusal is RECORDED (rate-limited, bounded, fire-and-forget;
+    // lib/platform/ops/access-denied.ts) so a mis-grant or an area enumeration
+    // is visible on the Security Ops Detections surface. Decided first, then
+    // recorded; never awaited, never able to change the answer.
+    recordPlatformAccessDenied(
+      { userId: user.id, area, needed, grant: !row ? "none" : row.status !== "ACTIVE" ? "revoked" : "insufficient" },
+      { client: db },
+    );
     return [null, forbidden()]; // 403 — no / insufficient / revoked grant
   }
 

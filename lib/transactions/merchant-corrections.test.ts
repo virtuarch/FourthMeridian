@@ -24,6 +24,7 @@ import {
   type CorrectionAcct,
 } from "./merchant-corrections";
 import { classifyFlow } from "./flow-classifier";
+import { foldEconomicRow, type EconomicAccumulator } from "./cash-flow";
 
 let passed = 0;
 const failures: string[] = [];
@@ -231,6 +232,73 @@ async function main() {
   const wantUnowned = classifyFlow({ category: "Income", amount: 500, accountType: "checking", debtSubtype: null });
   eq("recompute: unowned row is adopted", unowned.flowType, wantUnowned.flowType);
   eq("recompute: adopted row is stamped CLASSIFIER", unowned.flowAuthority, "CLASSIFIER");
+}
+
+// ── 9. FIN-002 — a PFC-bearing row: the USER's category decides the flow ──────
+//
+// The runtime audit's fixture (2026-10-21): a Plaid row carrying
+// pfcPrimary=INCOME, classifier-owned, that the user re-categorises. Before this
+// slice every recompute returned INCOME whatever the user chose, because the
+// classifier took the provider taxonomy first — the correction landed on the
+// row and nowhere on money.
+{
+  const pfcRow = row({ amount: 500, category: "Income" as TransactionCategory,
+    pfcPrimary: "INCOME", pfcDetailed: "INCOME_WAGES", pfcConfidenceLevel: "VERY_HIGH" });
+  check("FIN-002 baseline: the PFC row classifies INCOME from the provider taxonomy",
+    recomputeFlowFields(pfcRow, ACCT, "Income" as TransactionCategory, "USER_OVERRIDE").flowType === "INCOME");
+
+  const toTransfer = recomputeFlowFields(pfcRow, ACCT, "Transfer" as TransactionCategory, "USER_OVERRIDE");
+  eq("FIN-002: INCOME → Transfer ⇒ TRANSFER (override)", toTransfer.flowType, "TRANSFER");
+  const toDining = recomputeFlowFields(pfcRow, ACCT, "Dining" as TransactionCategory, "USER_RULE");
+  eq("FIN-002: INCOME → Dining ⇒ the spending side (a +500 credit in a spend category is REFUND)", toDining.flowType, "REFUND");
+  const dinedCharge = recomputeFlowFields(row({ amount: -500, pfcPrimary: "INCOME", pfcDetailed: "INCOME_WAGES" }), ACCT, "Dining" as TransactionCategory, "USER_RULE");
+  eq("FIN-002: a −500 PFC=INCOME row → Dining ⇒ SPENDING", dinedCharge.flowType, "SPENDING");
+  const toPayment = recomputeFlowFields(pfcRow, ACCT, "Payment" as TransactionCategory, "USER_RULE");
+  eq("FIN-002: INCOME → Payment ⇒ DEBT_PAYMENT (rule)", toPayment.flowType, "DEBT_PAYMENT");
+
+  check("FIN-002: the provider facts are persisted UNCHANGED on every corrected write (immutable)",
+    [toTransfer, toDining, toPayment].every((f) => f.pfcPrimary === "INCOME" && f.pfcDetailed === "INCOME_WAGES"
+      && f.pfcConfidenceLevel === "VERY_HIGH"), JSON.stringify(toTransfer));
+  check("FIN-002: the corrected row is still CLASSIFIER-owned at the current version (no new authority)",
+    toTransfer.flowAuthority === "CLASSIFIER" && typeof toTransfer.classifierVersion === "number");
+
+  // PFC-null control: unchanged behaviour (the category already decided).
+  const control = row({ amount: 500, pfcPrimary: null, pfcDetailed: null });
+  eq("FIN-002 control: PFC-null → Transfer ⇒ TRANSFER as before",
+    recomputeFlowFields(control, ACCT, "Transfer" as TransactionCategory).flowType, "TRANSFER");
+
+  // Ownership gate still wins over the user's category.
+  const owned = row({ amount: 500, pfcPrimary: "INCOME", flowAuthority: "TRANSFER_AUTHORITY" });
+  eq("FIN-002: a TRANSFER_AUTHORITY-owned PFC row still refuses (writes nothing)",
+    Object.keys(recomputeFlowFields(owned, ACCT, "Dining" as TransactionCategory, "USER_OVERRIDE")).length, 0);
+
+  // Without a USER source the provider taxonomy decides, as before: the
+  // suppression is a statement about the user having spoken, not about PFC.
+  check("FIN-002: classifyFlow with the PFC present and NOT suppressed still answers from the PFC",
+    classifyFlow({ category: "Transfer", amount: 500, accountType: "checking", debtSubtype: null, pfcPrimary: "INCOME" }).flowType === "INCOME"
+    && classifyFlow({ category: "Transfer", amount: 500, accountType: "checking", debtSubtype: null, pfcPrimary: "INCOME", providerTaxonomySuppressed: true }).flowType === "TRANSFER");
+
+  // The economic fold MOVES: the same row before and after the correction.
+  const fold = (flowType: string | null | undefined, amount: number): EconomicAccumulator => {
+    const acc: EconomicAccumulator = { income: 0, spendGross: 0, refunds: 0 };
+    foldEconomicRow(acc, { flowType, amount });
+    return acc;
+  };
+  const before = fold("INCOME", 500);
+  const after = fold(toTransfer.flowType, 500);
+  check("FIN-002 fold: before the correction the row is $500 of income; after INCOME→Transfer it is neither income nor spending",
+    before.income === 500 && after.income === 0 && after.spendGross === 0 && after.refunds === 0, JSON.stringify({ before, after }));
+  const afterDining = fold(dinedCharge.flowType, -500);
+  check("FIN-002 fold: after INCOME→Dining a −500 row is $500 of gross spending", afterDining.spendGross === 500 && afterDining.income === 0);
+
+  // End to end through the DB executor: the stored row carries the user's flow.
+  const f = makeFake();
+  f.txns.set("t9", { id: "t9" });
+  await applyTransactionOverride(f.client, { ...pfcRow, id: "t9" }, ACCT, "Transfer" as TransactionCategory);
+  const stored = f.txns.get("t9")!;
+  check("FIN-002 end to end: applyTransactionOverride stores category Transfer, categorySource USER_OVERRIDE, flowType TRANSFER, PFC intact",
+    stored.category === "Transfer" && stored.categorySource === "USER_OVERRIDE" && stored.flowType === "TRANSFER" && stored.pfcPrimary === "INCOME",
+    JSON.stringify(stored));
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

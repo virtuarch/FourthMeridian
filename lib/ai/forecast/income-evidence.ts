@@ -34,6 +34,8 @@ export interface IncomeStreamMonthlyEvidence {
   monthlyEquivalent: number | null;
   /** The stream may still generate expected occurrences. */
   stillPaying: boolean;
+  /** FIN-001: the forecast authority's continuation verdict, when the caller knows it. */
+  continuation?: 'CURRENT' | 'RECENTLY_SILENT' | 'UNKNOWN' | 'LAPSED';
 }
 
 /** One stream as monthly evidence. The minimal shape, so a fixture can build one. */
@@ -42,6 +44,7 @@ export function incomeStreamEvidence(s: {
   cadence: CadenceResult | CadenceKindName | null;
   typicalAmount: number | null;
   stillPaying: boolean;
+  continuation?: 'CURRENT' | 'RECENTLY_SILENT' | 'UNKNOWN' | 'LAPSED';
 }): IncomeStreamMonthlyEvidence {
   const kind: CadenceKindName | null = s.cadence === null ? null
     : typeof s.cadence === 'string' ? s.cadence
@@ -52,5 +55,6 @@ export function incomeStreamEvidence(s: {
     cadence: kind, typicalAmount: amount,
     monthlyEquivalent: kind !== null && amount !== null ? monthlyEquivalent(amount, kind) : null,
     stillPaying: s.stillPaying,
+    ...(s.continuation ? { continuation: s.continuation } : {}),
   };
 }

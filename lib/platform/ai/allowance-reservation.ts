@@ -46,6 +46,15 @@
  * the reservation is a cost control, not an abuse limiter, and runs wherever
  * fm_system can open a transaction (local dev included).
  *
+ * ── When the ledger itself cannot be trusted: FAIL CLOSED (IDEMP-009 / OBS-005) ─
+ * The spend this decision reduces over is only as complete as the writes that
+ * produced it. lib/platform/ai/ledger-health.ts counts failed AiInvocation
+ * writes (a durable hour-bucket row under the same RateLimit idiom, read HERE
+ * inside the transaction, plus this process's consecutive count); at its trip
+ * the turn is REFUSED with the retryable LEDGER_UNTRUSTED, nothing is reserved,
+ * and the refusal clears when writes succeed again or the window ages out.
+ * Enforcement explicitly OFF admits as before (an operator's decision).
+ *
  * fm_system: AiInvocation and PlatformSetting are operator tables; RateLimit
  * carries no tenant data. Only the AUTHENTICATED user's id is ever the predicate.
  */
@@ -58,6 +67,7 @@ import {
   RESERVE_USD, reservedAllowanceVerdict, sumTodaySpend, type AllowanceVerdict,
 } from "@/lib/ai/allowance-core";
 import { readCustomerSpendGroupsToday, type CustomerSpendReadClient } from "@/lib/platform/ai/customer-spend-today";
+import { consecutiveLedgerWriteFailures, ledgerUntrusted, readLedgerWriteFailures } from "@/lib/platform/ai/ledger-health";
 
 export const INFLIGHT_KEY_PREFIX = "user:ai-inflight:";
 export const INFLIGHT_BUCKET_MS = 60 * 60 * 1000;
@@ -148,13 +158,24 @@ export async function reserveAiTurn(
   try {
     const verdict = await client.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${allowanceLockKey(userId)}))`;
-      const [enforced, groups, buckets] = await Promise.all([
+      const [enforced, groups, buckets, ledgerFailures] = await Promise.all([
         readEnforced(tx),
         readCustomerSpendGroupsToday(userId, now, tx),
         tx.rateLimit.findMany({ where: { key, windowStart: { in: [bucket, previous] } }, select: { count: true } }),
+        readLedgerWriteFailures(tx, now),
       ]);
       const spend = sumTodaySpend(groups, today);
       const inFlight = buckets.reduce((n, b) => n + Math.max(0, b.count), 0);
+      // IDEMP-009 / OBS-005 — a ledger that has been failing its writes cannot vouch
+      // for `spent`; with enforcement on the turn is refused, and nothing is reserved.
+      const consecutive = consecutiveLedgerWriteFailures();
+      if (enforced && ledgerUntrusted(ledgerFailures, consecutive)) {
+        console.error(`[ai/allowance] AiInvocation writes failing (window=${ledgerFailures}, consecutive=${consecutive}); REFUSING (fail closed) user=${userId}`);
+        return {
+          allowed: false, reason: "LEDGER_UNTRUSTED", unpricedInvocations: spend.unpricedInvocations,
+          spentUsd: spend.spentUsd, allowanceUsd: Math.max(0, allowanceUsd), enforced, reservation: "RESERVED", inFlight,
+        } satisfies AllowanceVerdict;
+      }
       const v = reservedAllowanceVerdict({
         spentUsd: spend.spentUsd, allowanceUsd, unpricedInvocations: spend.unpricedInvocations,
         inFlight, reserveUsd, enforced, reservation: "RESERVED",

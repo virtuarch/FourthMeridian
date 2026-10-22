@@ -26,8 +26,14 @@ import {
   runJob,
   summarizeError,
   toJsonSummary,
+  finalizeStaleRuns,
+  JobAlreadyRunningError,
+  JobLedgerUnavailableError,
+  STALE_RUNNING_AFTER_MS,
+  STALE_RUN_ERROR_SUMMARY,
   type JobRunCompletionData,
   type JobRunStartData,
+  type JobRunStaleFinalizeArgs,
   type JobRunWriteClient,
 } from "@/lib/jobs/run";
 
@@ -57,26 +63,46 @@ process.on("unhandledRejection", (err) => {
 interface FakeOptions {
   failCreate?: boolean;
   failUpdate?: boolean;
+  /** Pre-existing `running` rows — the fake enforces JobRun_one_running_per_job (IDEMP-003). */
+  running?: Array<{ jobName: string; startedAt: Date }>;
 }
 
 function makeFake(opts: FakeOptions = {}) {
   const creates: JobRunStartData[] = [];
   const updates: Array<{ id: string; data: JobRunCompletionData }> = [];
+  const finalized: JobRunStaleFinalizeArgs[] = [];
+  const running = new Map<string, { id: string; startedAt: Date }>();
+  (opts.running ?? []).forEach((r, i) => running.set(r.jobName, { id: `stale-${i + 1}`, startedAt: r.startedAt }));
+  const yieldTick = () => new Promise<void>((r) => setImmediate(r));
   const client: JobRunWriteClient = {
     jobRun: {
       async create({ data }) {
+        await yieldTick(); // the round trip — two claims can interleave here
         if (opts.failCreate) throw new Error("ledger down");
+        if (running.has(data.jobName)) throw Object.assign(new Error("Unique constraint failed on the fields: (`jobName`)"), { code: "P2002" });
         creates.push(data);
-        return { id: `row-${creates.length}` };
+        const id = `row-${creates.length}`;
+        running.set(data.jobName, { id, startedAt: data.startedAt });
+        return { id };
       },
       async update({ where, data }) {
         if (opts.failUpdate) throw new Error("ledger down");
         updates.push({ id: where.id, data });
+        for (const [name, r] of running) if (r.id === where.id) running.delete(name);
         return {};
+      },
+      async updateMany(args) {
+        finalized.push(args);
+        let count = 0;
+        for (const [name, r] of running) {
+          if (args.where.jobName && args.where.jobName !== name) continue;
+          if (r.startedAt.getTime() < args.where.startedAt.lt.getTime()) { running.delete(name); count++; }
+        }
+        return { count };
       },
     },
   };
-  return { client, creates, updates };
+  return { client, creates, updates, finalized, running };
 }
 
 // Silence the wrapper's expected non-fatal console.error noise in the two
@@ -110,11 +136,15 @@ async function main(): Promise<void> {
     check("context: the body sees its own JobRun id, name and trigger",
       seen.run !== null && seen.run.id === "row-1" && seen.run.jobName === "ctx-job" && seen.run.trigger === "cron");
     check("context: nothing outside a runJob body", currentJobRun() === null);
-    const failingClient = { jobRun: { create: async () => { throw new Error("db down"); }, update: async () => ({}) } };
-    const seenNoRow: { run: ReturnType<typeof currentJobRun> } = { run: null };
-    await runJob("ctx-job-2", async () => { seenNoRow.run = currentJobRun(); }, { trigger: "cron", client: failingClient });
-    check("context: a failed start write yields id null, never an invented id",
-      seenNoRow.run !== null && seenNoRow.run.id === null);
+    // IDEMP-003: a failed start write no longer runs the body at all, so there
+    // is no context without a row — the old "id null" arm is unreachable.
+    const failingClient = { jobRun: { create: async () => { throw new Error("db down"); }, update: async () => ({}), updateMany: async () => ({ count: 0 }) } };
+    const seenNoRow: { run: ReturnType<typeof currentJobRun>; ran: boolean } = { run: null, ran: false };
+    let refused: unknown = null;
+    try { await runJob("ctx-job-2", async () => { seenNoRow.ran = true; seenNoRow.run = currentJobRun(); }, { trigger: "cron", client: failingClient }); }
+    catch (e) { refused = e; }
+    check("context: a failed start write refuses the run — the body never sees an invented id",
+      refused instanceof JobLedgerUnavailableError && !seenNoRow.ran);
     check(
       "success: start row shape (name/trigger/status/executionId)",
       creates[0].jobName === "test-job" &&
@@ -165,14 +195,50 @@ async function main(): Promise<void> {
     check("default trigger is \"cron\"", creates[0].trigger === "cron");
   }
 
-  // ── 4. Ledger never breaks the job ─────────────────────────────────────────
+  // ── 4. The start write IS the claim (IDEMP-003) ────────────────────────────
   {
     const { client, updates } = makeFake({ failCreate: true });
-    const result = await muteConsoleError(() =>
-      runJob("test-job", async () => "ran anyway", { client }),
-    );
-    check("start-write failure: job still runs and returns", result === "ran anyway");
-    check("start-write failure: completion write skipped (no row to complete)", updates.length === 0);
+    let ran = false; let thrown: unknown = null;
+    try { await muteConsoleError(() => runJob("test-job", async () => { ran = true; return "ran anyway"; }, { client })); }
+    catch (e) { thrown = e; }
+    check("start-write failure: the run is ABORTED (no ledger row ⇒ no guard ⇒ no body)", thrown instanceof JobLedgerUnavailableError && !ran);
+    check("start-write failure: no completion write", updates.length === 0);
+  }
+  {
+    // Two concurrent runJob of the same name: exactly one body runs, the other
+    // is refused with JobAlreadyRunningError and leaves no row (the runtime
+    // audit's 11/11 doubled jobs).
+    const { client, creates } = makeFake();
+    let bodies = 0;
+    const settle = await Promise.allSettled([
+      runJob("same-job", async () => { bodies++; await new Promise((r) => setTimeout(r, 5)); return 1; }, { client }),
+      runJob("same-job", async () => { bodies++; await new Promise((r) => setTimeout(r, 5)); return 2; }, { client }),
+    ]);
+    const ok = settle.filter((r) => r.status === "fulfilled").length;
+    const refused = settle.filter((r) => r.status === "rejected" && (r as PromiseRejectedResult).reason instanceof JobAlreadyRunningError).length;
+    check("concurrent same-name runs: one runs, one is refused as already running", ok === 1 && refused === 1 && bodies === 1, `ok=${ok} refused=${refused} bodies=${bodies}`);
+    check("the refused run wrote no start row", creates.length === 1);
+    const again = await runJob("same-job", async () => 3, { client });
+    check("after completion the claim is free again", again === 3 && creates.length === 2);
+  }
+  {
+    // A crashed predecessor (running row older than the in-flight window) is
+    // finalised as failed/"stale" before the claim, so the job is not blocked
+    // forever; a FRESH running row still blocks.
+    const now = new Date();
+    const { client, finalized } = makeFake({ running: [{ jobName: "crashed", startedAt: new Date(now.getTime() - STALE_RUNNING_AFTER_MS - 1_000) }] });
+    const r = await muteConsoleError(() => runJob("crashed", async () => "recovered", { client }));
+    check("a stale running row is finalised and the job runs", r === "recovered");
+    check("the finaliser wrote failed/stale scoped to the job",
+      finalized.some((f) => f.where.jobName === "crashed" && f.data.status === "failed" && f.data.errorSummary === STALE_RUN_ERROR_SUMMARY));
+    const fresh = makeFake({ running: [{ jobName: "live", startedAt: new Date(now.getTime() - 60_000) }] });
+    let blocked: unknown = null;
+    try { await runJob("live", async () => "should not run", { client: fresh.client }); } catch (e) { blocked = e; }
+    check("a fresh running row (younger than the window) still refuses", blocked instanceof JobAlreadyRunningError);
+    const n = await finalizeStaleRuns(fresh.client, now);
+    check("finalizeStaleRuns leaves fresh rows alone", n === 0);
+    const broken = { jobRun: { updateMany: async () => { throw new Error("ledger down"); } } };
+    check("finalizeStaleRuns is non-throwing", (await muteConsoleError(() => finalizeStaleRuns(broken, now))) === 0);
   }
   {
     const { client, creates } = makeFake({ failUpdate: true });
@@ -286,11 +352,11 @@ async function main(): Promise<void> {
       "RefreshExecution completion-write failure is captured too",
       /captureLedgerWriteFailure\(\s*"RefreshExecution"\s*,\s*"completion"/.test(refreshSrc),
     );
-    // A start-write failure still suppresses the completion write — capture is
-    // additive and must not have disturbed the append-only rule.
+    // IDEMP-003: a start-write failure now ABORTS the run before the body, so
+    // there is never a completion to skip — append-only holds by construction.
     check(
-      "append-only preserved: completion still skipped when start never landed",
-      /if\s*\(runId === null\)\s*return;/.test(src),
+      "append-only preserved: a failed start write throws before any body or completion",
+      /throw new JobLedgerUnavailableError\(jobName, err\)/.test(src) && /throw new JobAlreadyRunningError\(jobName\)/.test(src),
     );
   }
 

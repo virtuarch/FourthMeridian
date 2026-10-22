@@ -17,6 +17,11 @@
  *
  * Manages its own fetch/action state (it mutates + refetches), reusing the shared
  * card shell + editorial idiom so it sits flush with the other platform widgets.
+ *
+ * UI-001 — every write control (status / mode toggles, Invite user, Approve /
+ * Deny, Resend / Revoke) renders only for a GROWTH_REVENUE WRITE holder
+ * (`access.canWrite`). A READ holder sees the same figures, the current status
+ * and mode as text, and one explanatory line — never a button that 403s.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -28,6 +33,7 @@ import {
   timeAgo,
   type PlatformSection,
 } from "../widget-kit";
+import type { SpaceMountAccess } from "@/lib/space/mount-context";
 import { RightPanel, PanelHeader, PanelContent, PanelFooter } from "@/components/atlas/panels";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import type {
@@ -84,12 +90,20 @@ const MODE_META: Record<Mode, { label: string; detail: string; tone: string }> =
   closed:      { label: "Closed",      detail: "Signup is disabled entirely.",                               tone: "var(--text-muted)" },
 };
 
-export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection }) {
+/** UI-001 — the one line a READ holder sees where the write controls would be. */
+export const GROWTH_READ_ONLY_LINE =
+  "Read-only — changing the status or signup mode, inviting, approving, denying, resending and revoking need WRITE access to Growth & Revenue.";
+
+export function GrowthBetaRequestsWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
+  // UI-001 — descriptive only (the server gate decides); absent ⇒ READ (fail-safe).
+  const canWrite = access?.canWrite === true;
   const [reqs, setReqs]     = useState<BetaRequestsResponse | null>(null);
   const [status, setStatus] = useState<BetaStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
   const [acting, setActing]   = useState<string | null>(null); // id or "mode" while a mutation runs
+  /** UI-009 — when the figures below were last read (every refetch moves it). */
+  const [loadedAt, setLoadedAt] = useState<string | null>(null);
 
   const [selectedRequestId, setSelectedRequestId]       = useState<string | null>(null);
   const [selectedInvitationId, setSelectedInvitationId] = useState<string | null>(null);
@@ -111,6 +125,7 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
       if (!rReq.ok) throw new Error(rReq.status === 403 ? "Not authorized" : `Request failed (${rReq.status})`);
       setReqs((await rReq.json()) as BetaRequestsResponse);
       if (rStatus.ok) setStatus((await rStatus.json()) as BetaStatusResponse);
+      setLoadedAt(new Date().toISOString());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -178,7 +193,7 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
   const currentMode = status?.registrationMode;
 
   return (
-    <PlatformWidgetCard label={section.label} icon={Mail}>
+    <PlatformWidgetCard label={section.label} icon={Mail} checkedAt={loadedAt}>
       {loading || error || !reqs ? (
         <WidgetMessage loading={loading} error={error} />
       ) : (
@@ -190,6 +205,11 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                 <Rocket size={13} className="text-[var(--text-muted)]" aria-hidden />
                 <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Platform status</span>
               </span>
+              {!canWrite ? (
+                <span className="text-sm font-medium text-[var(--text-primary)]">
+                  {PRODUCT_STATUSES.find((s) => s.value === status.productStatus)?.label ?? status.productStatus}
+                </span>
+              ) : (
               <div className="inline-flex rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-0.5" role="group" aria-label="Product status">
                 {PRODUCT_STATUSES.map((s) => {
                   const active = s.value === status.productStatus;
@@ -204,6 +224,7 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                   );
                 })}
               </div>
+              )}
             </div>
           )}
 
@@ -215,6 +236,7 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                 <span className="text-sm font-medium text-[var(--text-primary)]">Beta access · {MODE_META[currentMode].label}</span>
               </span>
               <span className="text-[11px] text-[var(--text-muted)]">{MODE_META[currentMode].detail}</span>
+              {canWrite && (
               <div className="mt-1 inline-flex rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-0.5" role="group" aria-label="Signup mode">
                 {MODES.map((m) => {
                   const active = m.value === currentMode;
@@ -235,7 +257,13 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                   );
                 })}
               </div>
+              )}
             </div>
+          )}
+
+          {/* UI-001 — a READ holder is told why there are no controls. */}
+          {!canWrite && (
+            <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{GROWTH_READ_ONLY_LINE}</p>
           )}
 
           {/* ── Funnel figures ────────────────────────────────────────────── */}
@@ -255,25 +283,27 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
           )}
 
           {/* ── Direct operator invite ───────────────────────────────────── */}
+          {canWrite && (
           <div className="flex flex-col gap-2 border-t border-[var(--border-hairline)] pt-3">
             {!inviteOpen ? (
               <button type="button" onClick={() => setInviteOpen(true)} disabled={acting !== null}
                 className="inline-flex w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                 style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
-                <UserPlus size={13} /> Invite user
+                <UserPlus size={13} aria-hidden /> Invite user
               </button>
             ) : (
               <div className="flex flex-col gap-2 rounded-[var(--radius-sm)] border p-2.5" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-inset)" }}>
                 <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Invite a user directly</p>
                 <input
-                  type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)}
+                  type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} aria-label="Invitee email"
                   placeholder="email@example.com" autoComplete="off"
                   className="rounded-[var(--radius-sm)] border bg-transparent px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)]"
                   style={{ borderColor: "var(--border-hairline)" }}
                 />
                 <div className="flex items-center gap-2">
-                  <label className="text-[11px] text-[var(--text-secondary)]">Expires in</label>
+                  <label htmlFor="growth-invite-days" className="text-[11px] text-[var(--text-secondary)]">Expires in</label>
                   <input
+                    id="growth-invite-days"
                     type="number" min={1} max={30} value={inviteDays} onChange={(e) => setInviteDays(e.target.value)}
                     className="w-16 rounded-[var(--radius-sm)] border bg-transparent px-2 py-1 text-xs tabular-nums text-[var(--text-primary)]"
                     style={{ borderColor: "var(--border-hairline)" }}
@@ -289,7 +319,7 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                   <button type="button" onClick={sendInvite} disabled={acting !== null || !inviteEmail.trim()}
                     className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                     style={{ background: "rgba(52,211,153,.12)", color: "var(--success-400, #34d399)", borderColor: "rgba(52,211,153,.3)" }}>
-                    {acting === "invite" ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />} Send invite
+                    {acting === "invite" ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Send size={13} aria-hidden />} Send invite
                   </button>
                 </div>
                 <p className="text-[10px] leading-snug text-[var(--text-muted)]">
@@ -298,6 +328,7 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
               </div>
             )}
           </div>
+          )}
 
           {/* ── Pending queue → Approve / Deny ────────────────────────────── */}
           <div className="flex flex-col gap-1">
@@ -389,20 +420,23 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                       Approve mints a single-use, email-bound invite (14-day expiry) and emails it. Redemption requires
                       registration mode = invite-only.
                     </p>
+                    {!canWrite && <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{GROWTH_READ_ONLY_LINE}</p>}
                   </div>
                 </PanelContent>
+                {canWrite && (
                 <PanelFooter>
                   <button onClick={() => decide(selectedRequest.id, "deny")} disabled={acting !== null}
                     className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                     style={{ background: "rgba(248,113,113,.1)", color: "var(--danger-400, #f87171)", borderColor: "rgba(248,113,113,.28)" }}>
-                    <X size={13} /> Deny
+                    <X size={13} aria-hidden /> Deny
                   </button>
                   <button onClick={() => decide(selectedRequest.id, "approve")} disabled={acting !== null}
                     className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                     style={{ background: "rgba(52,211,153,.12)", color: "var(--success-400, #34d399)", borderColor: "rgba(52,211,153,.3)" }}>
-                    {acting === selectedRequest.id ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} Approve &amp; invite
+                    {acting === selectedRequest.id ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Check size={13} aria-hidden />} Approve &amp; invite
                   </button>
                 </PanelFooter>
+                )}
               </>
             )}
           </RightPanel>
@@ -428,26 +462,29 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
                       Resend rotates the single-use token and re-emails it (email-binding + expiry preserved). Revoke kills
                       the invitation only — it never removes users or existing access.
                     </p>
+                    {!canWrite && <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{GROWTH_READ_ONLY_LINE}</p>}
                   </div>
                 </PanelContent>
+                {canWrite && (
                 <PanelFooter>
                   <button onClick={() => setRevokeId(selectedInvitation.id)} disabled={acting !== null}
                     className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                     style={{ background: "rgba(248,113,113,.1)", color: "var(--danger-400, #f87171)", borderColor: "rgba(248,113,113,.28)" }}>
-                    <Ban size={13} /> Revoke
+                    <Ban size={13} aria-hidden /> Revoke
                   </button>
                   <button onClick={() => resend(selectedInvitation.id)} disabled={acting !== null}
                     className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                     style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
-                    {acting === selectedInvitation.id ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />} Resend
+                    {acting === selectedInvitation.id ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Send size={13} aria-hidden />} Resend
                   </button>
                 </PanelFooter>
+                )}
               </>
             )}
           </RightPanel>
 
           {/* ── Confirmations ────────────────────────────────────────────── */}
-          {pendingMode && (
+          {canWrite && pendingMode && (
             <ConfirmDialog
               icon={ShieldAlert}
               title={`Change signup mode to ${MODE_META[pendingMode].label}?`}
@@ -459,7 +496,7 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
               onClose={() => setPendingMode(null)}
             />
           )}
-          {pendingStatus && (
+          {canWrite && pendingStatus && (
             <ConfirmDialog
               icon={Rocket}
               title={`Set product status to ${PRODUCT_STATUSES.find((s) => s.value === pendingStatus)?.label}?`}
@@ -471,7 +508,7 @@ export function GrowthBetaRequestsWidget({ section }: { section: PlatformSection
               onClose={() => setPendingStatus(null)}
             />
           )}
-          {revokeId && (
+          {canWrite && revokeId && (
             <ConfirmDialog
               icon={Ban}
               title="Revoke this invitation?"

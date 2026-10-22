@@ -216,7 +216,8 @@ export type OperationalLedger =
   | "RefreshEndpointAccountCoverage"
   | "ProviderCall"
   | "SyncIssue"
-  | "SyncIssueOccurrence";
+  | "SyncIssueOccurrence"
+  | "AiInvocation";
 
 /**
  * WHICH write failed.
@@ -404,6 +405,33 @@ export function captureJobFailure(jobName: string, error: unknown, executionId?:
     Sentry.captureException(error, buildJobFailureCapture({ jobName, executionId }));
   } catch {
     // Monitoring must never take down the job it is observing.
+  }
+}
+
+// ── ARCH-004 / OPS-003 — withApiHandler 500s ─────────────────────────────────
+// lib/api.ts withApiHandler caught every unexpected route error and only
+// console.error'd it: a Prisma outage or a thrown invariant behind any wrapped
+// route produced a generic 500 nobody was told about. The route label is the
+// static string each route passes ("GET /api/spaces") — never the URL, the
+// query, a body or an id — so the tag identifies the surface and nothing else.
+
+/** Build the Sentry payload for an unhandled error in a wrapped API route. Pure. */
+export function buildApiHandlerFailureCapture(args: {
+  /** The static route label the handler was wrapped with, e.g. "GET /api/spaces". */
+  context: string;
+}): { tags: Record<string, string>; level: "error" } {
+  return {
+    tags:  { area: "api-handler", route: args.context },
+    level: "error",
+  };
+}
+
+/** Capture an unhandled API route error. Never throws. */
+export function captureApiHandlerFailure(context: string, error: unknown): void {
+  try {
+    Sentry.captureException(error, buildApiHandlerFailureCapture({ context }));
+  } catch {
+    // Monitoring must never turn one 500 into another.
   }
 }
 

@@ -99,7 +99,7 @@ import { recordSyncIssue, resolveCursorBlockingIssues } from "@/lib/plaid/syncIs
 import { activeLedger } from "@/lib/plaid/refresh-ledger";
 import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
-import { findByFingerprint } from "@/lib/transactions/fingerprint";
+import { resolveFingerprint } from "@/lib/transactions/fingerprint";
 import { assertAccountFkUnchanged } from "@/lib/accounts/account-reparenting";
 // Pure Plaid → TransactionCategory mapping, extracted to a Prisma-free module so
 // it is unit-testable in isolation (lib/transactions/plaid-category.test.ts).
@@ -319,6 +319,8 @@ export async function syncTransactionsForItem(
   let created               = 0;
   let updatedByPlaidId      = 0;
   let updatedByFingerprint  = 0;
+  /** FIN-009 — fingerprint adoptions refused because more than one row matched. */
+  let fingerprintAmbiguous  = 0;
   let skippedMissingAccount = 0;
   let refusedReparenting    = 0;
 
@@ -739,7 +741,8 @@ export async function syncTransactionsForItem(
           // through the authoritative pipeline so category and flowType stay in sync.
           if (mi.category) {
             const { input, captured } = buildPlaidFlowInput(txn, { category: mi.category, amount, accountType: meta.type, debtSubtype: meta.debtSubtype });
-            const overrideFlow = buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
+            // FIN-002: a USER rule's category outranks the provider taxonomy.
+            const overrideFlow = buildFlowWriteFields(classifyFlow({ ...input, providerTaxonomySuppressed: true }), input, captured, FLOW_CLASSIFIER_VERSION);
             return { ...columns, category: mi.category, ...ownFlow(overrideFlow), categorySource: "USER_RULE", ...(mi.categoryRuleId ? { categoryRuleId: mi.categoryRuleId } : {}) };
           }
           // NORMAL — default category + flow, stamp confirmed provenance.
@@ -943,7 +946,52 @@ export async function syncTransactionsForItem(
         // verbatim `txn.name`), NOT the enriched `merchant` which drifts across
         // re-pulls and created the 6-Amazon-rows duplicates. `description` is
         // always present for Plaid; `?? merchant` keeps the contract uniform.
-        const fingerprintMatch = await findByFingerprint(financialAccountId, date, amount, description ?? merchant, txn.pending, database);
+        //
+        // FIN-009 — AMBIGUITY IS A REFUSAL, NOT A COIN TOSS. `findByFingerprint`
+        // used to return `matches[0]` when several rows carried the fingerprint,
+        // and the adoption below then wrote THIS provider id onto whichever twin
+        // sorted first. Lost, that binds the id to the wrong row and leaves the
+        // real twin to arrive as a duplicate later. The sync now resolves the
+        // fingerprint honestly: on AMBIGUOUS it adopts nothing, records a
+        // non-cursor-blocking SyncIssue naming the candidates, and persists the
+        // incoming row as its own (the same destination the pending-ref refusal
+        // below takes). The CSV import keeps the legacy helper and SKIPs on its
+        // own ambiguity re-check.
+        const fingerprint = await resolveFingerprint(financialAccountId, date, amount, description ?? merchant, txn.pending, database);
+        const fingerprintMatch = fingerprint.kind === "MATCH" ? fingerprint.row : null;
+        if (fingerprint.kind === "AMBIGUOUS") {
+          fingerprintAmbiguous++;
+          console.warn(
+            `[plaid sync] fingerprint adoption REFUSED for ${txn.transaction_id} — ${fingerprint.matches.length} existing rows ` +
+            `carry the same account/date/amount/descriptor/pending fingerprint (${fingerprint.matches.map((m) => m.id).join(", ")}); ` +
+            `a fingerprint cannot say which one this is. Persisting as a distinct row.`,
+          );
+          await recordSyncIssue({
+            kind: "UPSERT_ERROR",
+            plaidItemId: plaidItemDbId,
+            financialAccountId,
+            // `plaidTransactionId` deliberately omitted (see the event-identity
+            // incident above): no financial record is missing and no member
+            // action helps. The provider id travels in `detail`.
+            detail: {
+              stage: "fingerprint-adoption-ambiguous",
+              runId,
+              cursorBlocking: false,
+              providerTransactionId: txn.transaction_id,
+              candidateTransactionIds: fingerprint.matches.map((m) => m.id),
+              candidateCount: fingerprint.matches.length,
+              date: date.toISOString().slice(0, 10),
+              amount,
+              pending: txn.pending,
+            },
+          }, incidents, {
+            onWriteFailure: (ledgerTable, phase) =>
+              console.error(
+                `[plaid sync] the ambiguous-fingerprint incident could NOT be recorded (${ledgerTable}/${phase}) ` +
+                `for transaction ${txn.transaction_id}.`,
+              ),
+          });
+        }
 
         // v2.6-EVENT-2 — STRONGER PROVIDER IDENTITY EVIDENCE OUTRANKS A FINGERPRINT.
         //
@@ -1257,7 +1305,7 @@ export async function syncTransactionsForItem(
   await retireItemSyncFailure(plaidItemDbId, { itemClient: database });
 
   console.log(
-    `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, skippedMissingAccount ${skippedMissingAccount}, refusedReparenting ${refusedReparenting}, removed ${removed}`
+    `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, fingerprintAmbiguous ${fingerprintAmbiguous}, skippedMissingAccount ${skippedMissingAccount}, refusedReparenting ${refusedReparenting}, removed ${removed}`
   );
 
   // FlowType P2 shadow — one aggregate, non-PII summary line per run when enabled.

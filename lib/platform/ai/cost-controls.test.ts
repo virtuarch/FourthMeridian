@@ -256,7 +256,7 @@ async function main() {
     const route = strip("app/api/platform/platform-ops/ai-cost-controls/route.ts");
     check("GET requires PLATFORM_OPS READ and returns the error first", /requirePlatformAccess\("PLATFORM_OPS", "READ"\)/.test(route) && /if \(err\) return err/.test(route));
     check("PATCH requires FRESH PLATFORM_OPS CONTROL (READ / WRITE holders get 403)", /requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/.test(route) && !/"WRITE"/.test(route));
-    check("PATCH is paced on the policies bucket", /limitByUser\(auth\.user\.id, "platform-policy"/.test(route));
+    check("PATCH is paced on its own bucket (UI-021: cadence edits cannot lock the kill switch)", /limitByUser\(auth\.user\.id, "platform-policy-ai-cost-controls"/.test(route));
     check("PATCH parses a structured reason and refuses 400 without one", /parseOperatorReason\(body\.reason\)/.test(route) && /status: 400/.test(route));
     check("the route delegates every rule to the one service and never touches PlatformSetting or AuditLog", /applyAiCostControlChanges\(/.test(route) && !/platformSetting|auditLog|@\/lib\/db/.test(route));
     check("refusals map CONFLICT → 409, NOT_FOUND → 404, else 400, with the model", /"CONFLICT" \? 409/.test(route) && /"NOT_FOUND" \? 404/.test(route) && /model: result\.model/.test(route));

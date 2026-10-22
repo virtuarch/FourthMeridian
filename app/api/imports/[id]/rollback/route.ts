@@ -117,17 +117,18 @@ import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 import { getSpaceContext } from "@/lib/space";
 import { ImportBatchStatus, ImportBatchKind } from "@prisma/client";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { rollbackClaimWhere } from "@/lib/imports/claim";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { rollbackInvestmentBatchRows, type InvestmentRollbackResult } from "@/lib/investments/investment-import-rollback";
 import { repairReconstructionForAccount } from "@/lib/investments/reconstruction-runner";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 
-const ROLLBACK_ELIGIBLE_STATUSES: ImportBatchStatus[] = [
-  ImportBatchStatus.COMPLETED,
-  ImportBatchStatus.COMPLETED_WITH_ERRORS,
-  ImportBatchStatus.FAILED,
-];
+// IDEMP-001 c / OPS-007 — eligibility now lives in lib/imports/claim.ts
+// (rollbackClaimWhere): the three terminal statuses as before, PLUS a
+// PENDING/PROCESSING batch whose last write is older than the import's time
+// budget — a dead lambda's batch, whose committed rows the user could not undo
+// (the runtime audit's 409). The claim is still ONE conditional update.
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -178,7 +179,7 @@ export const POST = withApiHandler(async (
   // ── Phase 2 — claim + soft-delete + audit, all-or-nothing ─────────────────
   const result = await withTenantDb(user.id, async (tx) => {
     const claim = await tx.importBatch.updateMany({
-      where: { id: batch.id, status: { in: ROLLBACK_ELIGIBLE_STATUSES } },
+      where: rollbackClaimWhere(batch.id, new Date()),
       data:  { status: ImportBatchStatus.ROLLED_BACK },
     });
 
@@ -293,7 +294,7 @@ export const POST = withApiHandler(async (
   if (result.kind === "ineligible") {
     return NextResponse.json(
       {
-        error: `Import batch is ${result.batch.status} and cannot be rolled back. Only COMPLETED, COMPLETED_WITH_ERRORS, or FAILED batches are eligible.`,
+        error: `Import batch is ${result.batch.status} and cannot be rolled back. Only COMPLETED, COMPLETED_WITH_ERRORS, or FAILED batches are eligible — or a PROCESSING batch that stalled past the import's time budget.`,
       },
       { status: 409 }
     );

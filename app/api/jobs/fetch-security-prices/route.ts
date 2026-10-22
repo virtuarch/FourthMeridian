@@ -20,18 +20,17 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
+import { isAuthorizedCronRequest } from "@/lib/jobs/cron-auth";
 import { runJob } from "@/lib/jobs/run";
 import { fetchSecurityPrices } from "@/jobs/fetch-security-prices";
 
 // One provider call per missing instrument plus small DB writes — 60s headroom,
 // matching the fetch-fx-rates precedent.
-export const maxDuration = 60;
+export const maxDuration = 300; // IDEMP-003 — aligned with the dispatcher (a 60 s fallback killed the same body the 300 s wake runs)
 
 export const GET = withApiHandler(async (req: NextRequest) => {
-  const authHeader = req.headers.get("authorization");
-  const cronSecret = process.env.CRON_SECRET;
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+  // SEC-009 — timing-safe CRON_SECRET comparison (lib/jobs/cron-auth.ts).
+  if (!isAuthorizedCronRequest(req.headers.get("authorization"), process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

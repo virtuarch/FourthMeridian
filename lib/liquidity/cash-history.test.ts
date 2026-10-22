@@ -38,6 +38,11 @@ console.log("1. cashNow projection = totalCash + totalSavings (the 'Available no
   const slice = clipCashHistory([snap("2025-01-01", 100, 25)], "2025-06-01", null, "USD");
   check("cashNow = checking + savings", slice?.points[0].cashNow === 125);
   check("isEstimated defaults false", slice?.points[0].isEstimated === false);
+  // FIN-005 — the series is the ALL-CASH tier (restricted included) and says so.
+  check("FIN-005: the slice states its basis — ALL_CASH, not totalLiquid", slice?.basis === "ALL_CASH");
+  const audit = clipCashHistory([snap("2026-10-21", 15_000, 2_000)], "2026-10-21", null, "USD");
+  check("FIN-005 fixture: checking 10,000 + HSA 5,000 (stored together as totalCash 15,000) + savings 2,000 plots 17,000 — the Hero shows 12,000; the basis label is what keeps them from being read as one figure",
+    audit?.points[0].cashNow === 17_000 && audit.basis === "ALL_CASH");
 }
 
 console.log("2. Window clipping — [compareTo, asOf], ascending, fxMiss dropped");

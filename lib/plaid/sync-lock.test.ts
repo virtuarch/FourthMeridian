@@ -246,7 +246,6 @@ async function main(): Promise<void> {
     // resume-sync is not listed here: it delegates to syncPlaidItemFromWebhook,
     // which claims this same lock (asserted for webhook-sync below).
     const lockedCallers = [
-      "app/api/plaid/sync/route.ts",
       "app/api/plaid/refresh/route.ts",
       "app/api/plaid/investments/enable/route.ts",
       "jobs/sync-banks.ts",
@@ -268,7 +267,8 @@ async function main(): Promise<void> {
     const webhookSrc = stripComments(readFileSync("lib/plaid/webhook-sync.ts", "utf8"));
     check(
       "webhook-sync.ts uses the shared claim/release primitives from sync-lock.ts",
-      webhookSrc.includes("claimPlaidItemSyncLock(") && webhookSrc.includes("releasePlaidItemSyncLock("),
+      // IDEMP-005: the fenced claim (claimPlaidItemSyncLockAt) is the same shared primitive.
+      webhookSrc.includes("claimPlaidItemSyncLockAt(") && webhookSrc.includes("releasePlaidItemSyncLock("),
     );
 
     // Guard against reintroducing the e70e9f8 bug: runDeferredHistorySync must

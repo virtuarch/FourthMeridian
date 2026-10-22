@@ -333,7 +333,10 @@ console.log("source · the reader composes EXISTING authorities and owns no data
   const alertsRoute = strip("app/api/platform/platform-ops/alerts/route.ts");
   const latest = strip("lib/alerts/latest-evaluation.ts");
   check("alerts route exposes `latest` through the projection, not the raw summary", alertsRoute.includes("latest: latestAlertEvaluation(recentRuns)"));
-  check("the projection never copies `destination`", !/destination/.test(latest.replace(/strips `destination`/g, "")));
+  // OBS-011: the projection may READ a legacy row's `destination` to fold it into
+  // a boolean (`destinationConfigured`), but the address itself never crosses.
+  check("the projection never copies `destination` (presence only)",
+    !/\bdestination\b/.test(latest.replace(/strips `destination`/g, "").replace(/newest\.destination\b/g, "").replace(/destinationConfigured/g, "")));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

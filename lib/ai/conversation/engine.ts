@@ -41,6 +41,7 @@ import { collectKnowledgeGaps } from './knowledge-gaps';
 import { buildProvenance, injectProvenance, type AnswerProvenance } from './provenance';
 import { classifyGuidance, CLASSIFIER_TIMEOUT_MS, type GuidanceModelCall } from './guidance';
 import { generateStructuredWithUsage } from '@/lib/ai/provider';
+import { GUIDANCE_MIN_REMAINING_MS, type TurnDeadline } from '@/lib/ai/turn-deadline';
 import { runWithAiInvocationContext, type AiAttribution } from '@/lib/ai/invocation-context';
 import { todayUTCISO } from '@/lib/time/clock';
 import type { SpaceContext } from '@/lib/space';
@@ -312,6 +313,11 @@ export async function runStatelessTurn(args: {
   instruction?: string;
   /** What the PREVIOUS answer rested on, if the seal carried it (or that it could not). */
   provenance?: AnswerProvenance | 'NOT_CARRIED' | null;
+  /**
+   * SEC-AI-003 — the turn's wall-clock budget, opened by the route. Threaded to
+   * every provider call this turn makes: the answer hops AND the guidance label.
+   */
+  deadline?: TurnDeadline;
 }): Promise<StatelessTurn> {
   const asOfISO = args.asOfISO ?? todayUTCISO();
   const model = args.model ?? CHAT_MODEL;
@@ -344,19 +350,23 @@ export async function runStatelessTurn(args: {
     // The user's own prior turns, for the memory gate — never the transcript's
     // `role: 'user'` messages, which include the orientation.
     userTexts: args.history.filter((m) => m.role === 'user').map((m) => m.content),
+    deadline: args.deadline,
   });
 
   // ⚠️ AFTER THE TURN, ON THE SAME LEDGER KEY. The label reads the finished
   // exchange — the question, the answer, and the turns before it — and its cost
   // is billed to this turn so "what did this turn cost?" stays one number.
-  const guidance = record.assistant?.trim() && args.classify !== false
+  // SEC-AI-003 — and INSIDE the same budget: with too little of it left the label
+  // is skipped (the surface inherits rather than drops), never attempted past it.
+  const labelFits = !args.deadline || args.deadline.remainingMs() >= GUIDANCE_MIN_REMAINING_MS;
+  const guidance = record.assistant?.trim() && args.classify !== false && labelFits
     ? await runWithAiInvocationContext(
       { correlationId: args.correlationId ?? 'conversation', turnIndex: args.history.length,
         surface: args.surface ?? 'harness', subSurface: `${args.surface ?? 'harness'}:guidance`,
         ...(args.attribution ?? {}) },
       () => classifyGuidance(
         { prior: args.history, asked: args.user, answer: record.assistant as string },
-        args.classify || defaultGuidanceCall(model)))
+        args.classify || defaultGuidanceCall(model, args.deadline)))
     : null;
 
   const provenance = record.assistant?.trim() ? buildProvenance({
@@ -374,9 +384,15 @@ export async function runStatelessTurn(args: {
     knowledgeGaps: collectKnowledgeGaps(record.toolCalls) };
 }
 
-/** The production labeller: one strict structured call, short deadline, small budget. */
-function defaultGuidanceCall(model: string): GuidanceModelCall {
+/**
+ * The production labeller: one strict structured call, short deadline, small budget.
+ * SEC-AI-003 — its own deadline is clipped to what is left of the turn's, and the
+ * turn's signal aborts it, so the second call can never outlive the first's budget.
+ */
+function defaultGuidanceCall(model: string, deadline?: TurnDeadline): GuidanceModelCall {
   return async (system, messages, schema) => (await generateStructuredWithUsage<unknown>(
     system, messages, { name: schema.name, schema: schema.schema as unknown as Record<string, unknown> },
-    { model, timeoutMs: CLASSIFIER_TIMEOUT_MS, maxTokens: 2_000 })).value;
+    { model, maxTokens: 2_000,
+      timeoutMs: deadline ? Math.max(1, Math.min(CLASSIFIER_TIMEOUT_MS, deadline.remainingMs())) : CLASSIFIER_TIMEOUT_MS,
+      ...(deadline ? { signal: deadline.signal } : {}) })).value;
 }

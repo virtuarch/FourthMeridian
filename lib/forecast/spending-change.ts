@@ -37,6 +37,7 @@
  */
 
 import { addDays, daysBetween } from './_time';
+import { MONEY_EPSILON } from '@/lib/money/round';
 
 /** Days in an average month — the same constant the observed rate accrues by. */
 export const DAYS_PER_MONTH = 365 / 12;
@@ -413,7 +414,7 @@ export function applySpendingChanges(args: {
       monthlyBefore, monthlyAfter,
       clampedAtZero: clampedBy.has(r.id),
       spendingRemoved: removed,
-      affectedProjection: Math.abs(removed) >= 0.005,
+      affectedProjection: Math.abs(removed) >= MONEY_EPSILON,
       ...(overlaps.length ? { overlapsRules: overlaps } : {}),
       ran: governed !== null,
       ...(governed ? {} : { reason: notRunReason(r, asOfISO, horizonISO) }),

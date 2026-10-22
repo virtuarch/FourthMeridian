@@ -85,6 +85,13 @@ export interface ScheduledJobFacts {
    */
   continuationOf?: string;
   /**
+   * OPS-001 — the job continues ITSELF: when its newest run succeeded and
+   * reported `deferred > 0`, it is due again CONTINUATION_DELAY_MS later
+   * instead of a full cadence later. (A separate `continuationOf` job is the
+   * other shape — sync-crypto's — and would add a registry entry.)
+   */
+  selfContinues?: boolean;
+  /**
    * P1 — the OPERATOR-EDITABLE cadence bounds for a job whose cadence is its
    * own PlatformSetting (`job_cadence_hours_<name>`). Code-owned floor and
    * ceiling: the floor is the provider/economic safety bound (an archive that
@@ -110,7 +117,7 @@ function declareJobs<const N extends string>(
 /** The facts, in registry (= per-slot execution) order. */
 export const SCHEDULED_JOB_FACTS = declareJobs([
   // Pre-S2 slot: vercel.json "0 6 * * *"
-  { name: "sync-banks", hourUTC: 6, minuteUTC: 0, refreshes: "BANK" },
+  { name: "sync-banks", hourUTC: 6, minuteUTC: 0, refreshes: "BANK", selfContinues: true },
   // Pre-S2 slot: vercel.json "30 6 * * *"
   { name: "fetch-fx-rates", hourUTC: 6, minuteUTC: 30, cadence: { minHours: 6, maxHours: 168 } },
   // A8-3A — daily historical security-price fetch, grouped with fetch-fx-rates

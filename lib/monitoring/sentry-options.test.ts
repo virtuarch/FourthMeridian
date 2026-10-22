@@ -14,7 +14,7 @@
 
 import { readFileSync } from "fs";
 import { join } from "path";
-import { scrubEvent, sharedSentryOptions, SENTRY_ENABLED } from "./sentry-options";
+import { scrubBreadcrumb, scrubEvent, sharedSentryOptions, SENTRY_ENABLED } from "./sentry-options";
 import type { ErrorEvent } from "@sentry/nextjs";
 
 let failures = 0;
@@ -101,6 +101,29 @@ function read(rel: string): string { return readFileSync(join(process.cwd(), rel
   check("shared options do not import server-only", !opts.includes('"server-only"'));
   check("shared options read only NEXT_PUBLIC_ / VERCEL_ env (client-inlinable)",
     !/process\.env\.(?!NEXT_PUBLIC_|VERCEL_|NODE_ENV)/.test(opts));
+}
+
+// ── 6. PRIV-015 — breadcrumbs: no console lines, no query strings ─────────────
+{
+  const o = sharedSentryOptions();
+  check("options: beforeBreadcrumb is the shared breadcrumb scrubber", o.beforeBreadcrumb === scrubBreadcrumb);
+
+  check("breadcrumb: console breadcrumbs are dropped (they carry the full console arguments)",
+    scrubBreadcrumb({ category: "console", message: "[plaid] error { access_token: 'access-sandbox-x' }", level: "error" }) === null);
+  const http = scrubBreadcrumb({ category: "fetch", data: { url: "https://app/api/spaces?asof=2026-01-01&account=acc_123#frag", method: "GET", status_code: 200, body: { amount: 999 } } })!;
+  check("breadcrumb: query string and fragment stripped from data.url", http.data?.url === "https://app/api/spaces");
+  check("breadcrumb: method/status kept (non-sensitive), body removed", http.data?.method === "GET" && http.data?.status_code === 200 && !("body" in (http.data ?? {})));
+  const nav = scrubBreadcrumb({ category: "navigation", data: { from: "/dashboard?q=alice", to: "/dashboard/settings/security?setup2fa=true&token=abc" } })!;
+  check("breadcrumb: navigation from/to lose their query strings", nav.data?.from === "/dashboard" && nav.data?.to === "/dashboard/settings/security");
+  const msg = scrubBreadcrumb({ category: "ui.click", message: "GET /api/users/search?q=alice 200" })!;
+  check("breadcrumb: an embedded ?query in message is removed", msg.message === "GET /api/users/search 200");
+  const plain = { category: "ui.click", message: "button clicked", data: { id: "x" } };
+  check("breadcrumb: a non-sensitive breadcrumb passes through unchanged", JSON.stringify(scrubBreadcrumb(plain)) === JSON.stringify(plain));
+  check("breadcrumb: a non-object is dropped, never thrown on", scrubBreadcrumb(null as unknown as Parameters<typeof scrubBreadcrumb>[0]) === null);
+  for (const leak of ["asof=2026", "acc_123", "q=alice", "token=abc", "999", "access-sandbox-x"]) {
+    const all = JSON.stringify([http, nav, msg]);
+    check(`breadcrumb: "${leak}" absent after scrubbing`, !all.includes(leak));
+  }
 }
 
 console.log(`\nsentry-options: ${passes} passed, ${failures} failed`);

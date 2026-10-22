@@ -54,23 +54,24 @@ export function OpsPlaidUsageWidget({ section }: { section: PlatformSection }) {
     );
   }
   const p = data.population;
-  const current = data.cycles[0];
+  // UI-018 — an empty/absent cycle list must not crash the render.
+  const current = data.cycles?.[0];
 
   return (
     <SectionSurface icon={Landmark} title={section.label} footnote={FOOTNOTE}>
       <div className="mb-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
         <BigStat label="Billable Items" value={p.billable} qualifier={`${p.total} total · ${p.seeded} seeded excluded · ${p.sandbox} sandbox excluded`} />
         <BigStat label="Active" value={p.byStatus.ACTIVE ?? 0} qualifier={Object.entries(p.byStatus).filter(([k]) => k !== "ACTIVE").map(([k, v]) => `${v} ${k.toLowerCase().replace(/_/g, " ")}`).join(" · ") || "no other status"} />
-        <BigStat label="Item-months this cycle" value={`${current.during.itemMonths.transactions} + ${current.during.itemMonths.investments}`} qualifier="transactions + investments" />
+        <BigStat label="Item-months this cycle" value={current ? `${current.during.itemMonths.transactions} + ${current.during.itemMonths.investments}` : <Unavailable reason="no billing cycle reported" />} qualifier="transactions + investments" />
         <BigStat
           label="Estimated cost this cycle"
-          value={data.priceAuthority.configured ? (usd(current.during.usd) ?? <Unavailable reason="unpriced" />) : <Unavailable reason="cost authority not configured" />}
+          value={!current ? <Unavailable reason="no billing cycle reported" /> : data.priceAuthority.configured ? (usd(current.during.usd) ?? <Unavailable reason="unpriced" />) : <Unavailable reason="cost authority not configured" />}
           qualifier={data.priceAuthority.configured ? `${data.priceAuthority.tier.toLowerCase()} · invoice-derived rate` : "usage only"}
         />
       </div>
 
       <div className="grid gap-8 md:grid-cols-2 xl:grid-cols-3">
-        {data.cycles.map((c) => <Cycle key={c.cycle.start} c={c} />)}
+        {(data.cycles ?? []).map((c) => <Cycle key={c.cycle.start} c={c} />)}
         <div className="flex min-w-0 flex-col gap-2">
           <GroupLabel hint={data.priceAuthority.note}>Price authority</GroupLabel>
           {data.priceAuthority.configured ? (

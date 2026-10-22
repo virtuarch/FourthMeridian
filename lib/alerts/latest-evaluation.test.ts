@@ -10,7 +10,7 @@
  */
 
 import type { AlertRunSummary } from "@/lib/alerts/evaluate";
-import { firingNow, latestAlertEvaluation } from "./latest-evaluation";
+import { firingNow, latestAlertEvaluation, undeliveredSentence } from "./latest-evaluation";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -59,6 +59,23 @@ console.log("latest evaluation");
   // An unexpected key on a persisted outcome does not ride along.
   const polluted = latestAlertEvaluation([run({ evaluatedAtISO: "2026-10-14T07:00:00.000Z", rules: [{ ...quietNow.rules[0], ...({ email: "a@b.c" } as object) }] })]);
   check("outcomes are rebuilt field by field", !JSON.stringify(polluted).includes("a@b.c"));
+
+  // OBS-003 — the undelivered outcome crosses into the projection, rebuilt.
+  const lost = latestAlertEvaluation([run({ evaluatedAtISO: "2026-10-14T08:00:00.000Z", deliveryStatus: "skipped", undelivered: { reason: "NO_EMAIL_TRANSPORT", breaches: 3 } })]);
+  check("undelivered is projected with reason and count", lost?.undelivered?.reason === "NO_EMAIL_TRANSPORT" && lost.undelivered.breaches === 3);
+  check("the sentence names the cause and the count, no address", /3 breaches NOT delivered/.test(undeliveredSentence(lost!.undelivered!)) && /RESEND_API_KEY/.test(undeliveredSentence(lost!.undelivered!)) && !/@/.test(undeliveredSentence(lost!.undelivered!)));
+  check("every reason has a sentence", (["NO_DESTINATION", "SEND_ERROR", "LEDGER_WRITE_FAILED"] as const).every((reason) => /NOT delivered/.test(undeliveredSentence({ reason, breaches: 1 }))));
+  const legacyRow = latestAlertEvaluation([quietNow]);
+  check("a legacy row without the field projects undelivered null", legacyRow?.undelivered === null);
+  const bogus = latestAlertEvaluation([run({ evaluatedAtISO: "2026-10-14T08:00:00.000Z", undelivered: { reason: "SOMETHING_ELSE" as never, breaches: 1 } })]);
+  check("an unknown reason on a persisted row is dropped, not passed through", bogus?.undelivered === null);
+
+  // OBS-011 — destination presence, never the address; a legacy row's address becomes a boolean.
+  check("legacy row with an address ⇒ destinationConfigured true, address absent", legacyRow?.destinationConfigured === true && !JSON.stringify(legacyRow).includes("ops@example.test"));
+  const modern = latestAlertEvaluation([{ ...quietNow, destination: undefined, destinationConfigured: false }]);
+  check("modern row ⇒ its boolean is projected as-is", modern?.destinationConfigured === false);
+  const neither = latestAlertEvaluation([{ ...quietNow, destination: undefined }]);
+  check("a row with neither field ⇒ null (not recorded), never a claim", neither?.destinationConfigured === null);
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

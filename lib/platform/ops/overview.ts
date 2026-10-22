@@ -16,7 +16,8 @@
  * row (overview-core.ts derivePosture), so the status board is ONE request:
  *
  *   alerts             loadLatestAlertEvaluation  (latest evaluate-alerts run — firing NOW,
- *                                                  never the delivery history)
+ *                                                  never the delivery history; OBS-001:
+ *                                                  age-gated against the evaluator's cadence)
  *   providers          getProviderHealth          (handed the SAME freshness and connection
  *                                                  reads above, so nothing is read twice)
  *   freshness          checkResourceFreshness     (stored data, never a job's exit status)
@@ -49,7 +50,7 @@ import { getPlaidUsage } from "@/lib/platform/plaid/usage";
 import { getProviderHealth } from "@/lib/platform/provider-health";
 import { checkResourceFreshness } from "@/lib/platform/resource-freshness";
 import { getEnvReport } from "@/lib/env";
-import { loadLatestAlertEvaluation } from "@/lib/alerts/run";
+import { ALERT_JOB_NAME, loadLatestAlertEvaluation } from "@/lib/alerts/run";
 import { ALERT_RULES } from "@/lib/alerts/rules";
 import {
   buildOverview,
@@ -113,6 +114,12 @@ export async function getOperationsOverview(now: Date = new Date()): Promise<Ope
     }),
     attempt("alerts", async () => ({ latest: await loadLatestAlertEvaluation(), rulesRegistered: ALERT_RULES.length })),
   ]);
+  // OBS-001 — the evaluator's RESOLVED cadence, from the job-health read already
+  // made above (the dispatcher's own number), so the age gate on the Alerts chip
+  // judges against what the platform actually executes by.
+  const alertsWithCadence = alerts
+    ? { ...alerts, cadenceHours: jobHealth.jobs.find((j) => j.job === ALERT_JOB_NAME)?.expectedEveryHours ?? null }
+    : null;
   const configuration = attemptSync("env-report", getEnvReport);
 
   const jobs: JobHealthCounts = { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0 };
@@ -170,7 +177,7 @@ export async function getOperationsOverview(now: Date = new Date()): Promise<Ope
     windows: { pipeline: `${yesterday} .. ${today} (UTC)`, ai: "24h", brief: "24h" },
     latestFailures: pipeline.latestFailures.map((f) => projectExecutionRow(f, "operator")),
     nextSlotAt: nextSlot ? nextSlot.toISOString() : null,
-    posture: derivePosture({ alerts, providers, freshness, configuration }),
+    posture: derivePosture({ alerts: alertsWithCadence, providers, freshness, configuration }, now),
   };
 }
 

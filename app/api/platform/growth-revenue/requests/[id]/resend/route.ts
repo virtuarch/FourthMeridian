@@ -22,6 +22,7 @@ import { sendEmail } from "@/lib/email/send";
 import { buildBetaInviteUrl } from "@/lib/email/beta-invite-url";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { BetaAccessRequestStatus } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -71,7 +72,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       userId:             auth.user.id,
       performedByAdminId: auth.user.id,
       action:             AuditAction.BETA_INVITATION_RESENT,
-      metadata:           { betaRequestId: id, email: request.email, emailStatus: emailResult.status },
+      metadata:           { betaRequestId: id, emailHash: auditEmailHash(request.email), emailStatus: emailResult.status },
     },
   });
 

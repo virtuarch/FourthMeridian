@@ -55,7 +55,8 @@ console.log("PROPAGATION — the sentinel is not discarded on the path");
   check("use-space-data reads truncated off the payload", hook.includes("data?.truncated"));
   check("use-space-data exposes transactionsMeta", hook.includes("transactionsMeta"));
   check("use-space-data no longer silently drops the flag (sets meta in the tx fetch)",
-    /setTransactionsMeta\(\{\s*truncated:/.test(hook));
+    // UI-006 — the meta is built by the pure nextTransactionsState reducer and applied here.
+    /meta:\s*\{\s*truncated:\s*!!outcome\.data\?\.truncated/.test(hook) && hook.includes("setTransactionsMeta(next.meta)"));
 
   const host = code("components/dashboard/SpaceDashboard.tsx");
   check("host threads transactionsMeta into renderCtx", host.includes("transactionsMeta"));

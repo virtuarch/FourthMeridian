@@ -19,6 +19,13 @@
  * two plain booleans (`wantSnapshots` / `wantTransactions`) so this hook never
  * sees the active tab or perspective. Perspective-engine results (lensResults)
  * are a PERSPECTIVE loader and remain host-owned — not part of this extraction.
+ *
+ * UI-006 — a FAILED read is never an empty one. Every structural read (sections +
+ * accounts, snapshots, transactions) goes through `settleSpaceRead`, which returns
+ * an explicit outcome; the `next*State` reducers below keep the previous value and
+ * record a `SpaceReadError` on failure instead of coercing a 401/403/500 or a
+ * network error to `[]` (which used to render "No wealth history yet" during an
+ * outage). Consumers read `readErrors` and offer `retryRead(key)`.
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react";
@@ -32,6 +39,106 @@ import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types
 import type { ConversionContext } from "@/lib/money/types";
 import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
 import type { Snapshot, Transaction } from "@/types";
+
+// ── UI-006 — explicit read outcomes (pure; exported for the test) ─────────────
+
+/** The three shared reads whose failure a workspace must be able to say out loud. */
+export type SpaceReadKey = "structure" | "snapshots" | "transactions";
+
+export interface SpaceReadError {
+  /** HTTP status, or null when the request never completed (network / parse). */
+  status:  number | null;
+  /** A customer-facing sentence — never a raw loader message. */
+  message: string;
+}
+
+export type SpaceReadErrors = Partial<Record<SpaceReadKey, SpaceReadError>>;
+
+export type SpaceReadOutcome<T> =
+  | { ok: true;  data: T }
+  | { ok: false; error: SpaceReadError };
+
+/** Status → the sentence a workspace shows. Pure. */
+export function spaceReadError(status: number | null): SpaceReadError {
+  const message =
+    status === null ? "Couldn't reach Fourth Meridian. Check your connection and try again."
+    : status === 401 ? "Your session has expired. Sign in again to load this Space."
+    : status === 403 ? "You don't have access to this Space's data right now."
+    : status === 404 ? "This Space's data couldn't be found."
+    : status === 429 ? "Too many requests. Wait a moment and try again."
+    : `Couldn't load this Space's data (error ${status}). This is on our side, not a sign your data is gone.`;
+  return { status, message };
+}
+
+/**
+ * Settle one fetch into an explicit outcome. A non-2xx response, a network
+ * failure, and an unparseable body are all FAILURES — none of them is data.
+ */
+export async function settleSpaceRead<T>(request: Promise<Response>): Promise<SpaceReadOutcome<T>> {
+  let res: Response;
+  try {
+    res = await request;
+  } catch {
+    return { ok: false, error: spaceReadError(null) };
+  }
+  if (!res.ok) return { ok: false, error: spaceReadError(res.status) };
+  try {
+    return { ok: true, data: (await res.json()) as T };
+  } catch {
+    return { ok: false, error: spaceReadError(res.status) };
+  }
+}
+
+/** Snapshot read → next state. A failure KEEPS what was there (null stays null). */
+export function nextSnapshotState(
+  prev: Snapshot[] | null,
+  outcome: SpaceReadOutcome<{ snapshots?: Snapshot[]; backfillInProgress?: boolean } | null>,
+): { snapshots: Snapshot[] | null; backfilling: boolean; error: SpaceReadError | null } {
+  if (!outcome.ok) return { snapshots: prev, backfilling: false, error: outcome.error };
+  return {
+    snapshots:   outcome.data?.snapshots ?? [],
+    backfilling: !!outcome.data?.backfillInProgress,
+    error:       null,
+  };
+}
+
+/** The /transactions payload fields this hook reads. */
+export type SpaceTransactionsPayload = {
+  transactions?: Transaction[];
+  moneyCtx?: SerializedConversionContext;
+  truncated?: boolean;
+  limit?: number;
+} | null;
+
+/** Transaction read → next state. A failure KEEPS what was there (null stays null). */
+export function nextTransactionsState(
+  prev: Transaction[] | null,
+  outcome: SpaceReadOutcome<SpaceTransactionsPayload>,
+): {
+  transactions: Transaction[] | null;
+  meta: TransactionsCoverage | null;
+  moneyCtx: SerializedConversionContext | undefined;
+  error: SpaceReadError | null;
+} {
+  if (!outcome.ok) return { transactions: prev, meta: null, moneyCtx: undefined, error: outcome.error };
+  return {
+    transactions: outcome.data?.transactions ?? [],
+    meta:         { truncated: !!outcome.data?.truncated, limit: outcome.data?.limit },
+    moneyCtx:     outcome.data?.moneyCtx ?? undefined,
+    error:        null,
+  };
+}
+
+/** Sections + accounts (one combined read) → next state. Either failing fails both. */
+export function nextStructureState(
+  prev: { sections: DashboardSection[]; accounts: SpaceAccount[] },
+  sections: SpaceReadOutcome<DashboardSection[]>,
+  accounts: SpaceReadOutcome<SpaceAccount[]>,
+): { sections: DashboardSection[]; accounts: SpaceAccount[]; error: SpaceReadError | null } {
+  if (!sections.ok) return { ...prev, error: sections.error };
+  if (!accounts.ok) return { ...prev, error: accounts.error };
+  return { sections: sections.data, accounts: accounts.data, error: null };
+}
 
 export interface UseSpaceDataArgs {
   spaceId: string;
@@ -100,6 +207,14 @@ export interface SpaceData {
   /** Re-fetch sections / accounts (ManageSpaceModal's onRefresh). */
   reloadSections: () => Promise<void>;
   reloadAccounts: () => Promise<void>;
+  /**
+   * UI-006 — the reads that FAILED, by key. Absent key ⇒ that read is fine (or
+   * has not run). A failed read keeps its previous value (snapshots/transactions
+   * stay null on a first-load failure) — never an empty list.
+   */
+  readErrors: SpaceReadErrors;
+  /** UI-006 — re-run one failed read. */
+  retryRead:  (key: SpaceReadKey) => void;
 }
 
 export function useSpaceData({
@@ -136,6 +251,19 @@ export function useSpaceData({
   // client effects). Both are explicit re-fetch nonces.
   const [currencyNonce, setCurrencyNonce] = useState(0);
   const [refreshNonce,  setRefreshNonce]  = useState(0);
+  // UI-006 — failed reads + their retry nonces.
+  const [readErrors, setReadErrors] = useState<SpaceReadErrors>({});
+  const [snapshotRetry, setSnapshotRetry] = useState(0);
+  const [txRetry,       setTxRetry]       = useState(0);
+  const [structureRetry, setStructureRetry] = useState(0);
+  const setReadError = useCallback((key: SpaceReadKey, error: SpaceReadError | null) => {
+    setReadErrors((prev) => {
+      if (!error && !prev[key]) return prev;
+      const next = { ...prev };
+      if (error) next[key] = error; else delete next[key];
+      return next;
+    });
+  }, []);
 
   // ── View/widget conversion context — follows the display currency ───────────
   useEffect(() => {
@@ -165,14 +293,17 @@ export function useSpaceData({
   );
 
   // ── Reload helpers (ManageSpaceModal refresh + the event listeners below) ────
+  // UI-006 — a failed reload keeps the current list and records the failure.
   const reloadSections = useCallback(async () => {
-    const res = await fetch(`/api/spaces/${spaceId}/sections`);
-    if (res.ok) setSections(await res.json());
-  }, [spaceId]);
+    const out = await settleSpaceRead<DashboardSection[]>(fetch(`/api/spaces/${spaceId}/sections`));
+    if (out.ok) { setSections(out.data); setReadError("structure", null); }
+    else setReadError("structure", out.error);
+  }, [spaceId, setReadError]);
   const reloadAccounts = useCallback(async () => {
-    const res = await fetch(`/api/spaces/${spaceId}/accounts`);
-    if (res.ok) setAccounts(await res.json());
-  }, [spaceId]);
+    const out = await settleSpaceRead<SpaceAccount[]>(fetch(`/api/spaces/${spaceId}/accounts`));
+    if (out.ok) { setAccounts(out.data); setReadError("structure", null); }
+    else setReadError("structure", out.error);
+  }, [spaceId, setReadError]);
 
   // ── Refresh orchestration — the event listeners + nonces ────────────────────
   useEffect(() => {
@@ -225,16 +356,20 @@ export function useSpaceData({
   useEffect(() => {
     if (!wantSnapshots) return;
     let active = true;
-    fetch(`/api/spaces/${spaceId}/snapshots`)
-      .then((r) => (r.ok ? r.json() : { snapshots: [] }))
-      .then((data) => {
-        if (!active) return;
-        setSnapshots(data?.snapshots ?? []);
-        setBackfilling(!!data?.backfillInProgress); // Part-6
-      })
-      .catch(() => { if (active) { setSnapshots([]); setBackfilling(false); } });
+    // UI-006 — a failed read is recorded, never coerced to `{ snapshots: [] }`.
+    settleSpaceRead<{ snapshots?: Snapshot[]; backfillInProgress?: boolean } | null>(
+      fetch(`/api/spaces/${spaceId}/snapshots`),
+    ).then((outcome) => {
+      if (!active) return;
+      // On failure `next.snapshots` is the prev we pass (null) and is NOT applied:
+      // the current value stays, the failure is recorded.
+      const next = nextSnapshotState(null, outcome);
+      setReadError("snapshots", next.error);
+      setBackfilling(next.backfilling); // Part-6
+      if (!next.error) setSnapshots(next.snapshots);
+    });
     return () => { active = false; };
-  }, [spaceId, wantSnapshots, currencyNonce, refreshNonce]);
+  }, [spaceId, wantSnapshots, currencyNonce, refreshNonce, snapshotRetry, setReadError]);
 
   // Part-6 — while a backfill runs, re-fetch snapshots on an interval so the
   // Wealth loading state clears automatically once it finishes. Bumping
@@ -251,39 +386,57 @@ export function useSpaceData({
     if (!wantTransactions) return;
     if (transactions !== null) return; // runs once until cleared by a refresh nonce
     let active = true;
-    fetch(`/api/spaces/${spaceId}/transactions`)
-      .then((r) => (r.ok ? r.json() : { transactions: [] }))
-      .then((data) => {
-        if (!active) return;
-        setTransactions(data?.transactions ?? []);
-        setMoneyCtx(data?.moneyCtx ?? undefined); // MC1 P4 Slice 6 (F-6)
-        // TX-2A — carry the coverage sentinel so workspaces can be honest when the
-        // read was capped (TX-2). Absent/false ⇒ complete ⇒ no indicator.
-        setTransactionsMeta({ truncated: !!data?.truncated, limit: data?.limit });
-      })
-      .catch(() => { if (active) { setTransactions([]); setTransactionsMeta(null); } });
+    // UI-006 — a failed read is recorded and `transactions` STAYS null (the guard
+    // above then lets `retryRead("transactions")` re-run it); never `[]`.
+    settleSpaceRead<SpaceTransactionsPayload>(
+      fetch(`/api/spaces/${spaceId}/transactions`),
+    ).then((outcome) => {
+      if (!active) return;
+      const next = nextTransactionsState(null, outcome);
+      setReadError("transactions", next.error);
+      if (next.error) return;
+      setTransactions(next.transactions);
+      setMoneyCtx(next.moneyCtx); // MC1 P4 Slice 6 (F-6)
+      // TX-2A — carry the coverage sentinel so workspaces can be honest when the
+      // read was capped (TX-2). Absent/false ⇒ complete ⇒ no indicator.
+      setTransactionsMeta(next.meta);
+    });
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, wantTransactions, transactions === null, currencyNonce, refreshNonce]);
+  }, [spaceId, wantTransactions, transactions === null, currencyNonce, refreshNonce, txRetry]);
 
   // ── Initial sections + accounts (one combined fetch; flips `loading` false) ──
   // PS-6B — skipped when hydrated: the server composition already provided both
   // (and `loading` started false). Refresh still works — reloadSections /
   // reloadAccounts and the event listeners above re-fetch on demand, unchanged.
   useEffect(() => {
-    if (hydrated) return;
+    // A hydrated mount skips the FIRST read only; a retry always runs.
+    if (hydrated && structureRetry === 0) return;
     let active = true;
+    // UI-006 — either read failing is a recorded failure (the lists stay as they
+    // were), never `[]` presented as "this Space has no accounts".
     Promise.all([
-      fetch(`/api/spaces/${spaceId}/sections`).then((r) => (r.ok ? r.json() : [])),
-      fetch(`/api/spaces/${spaceId}/accounts`).then((r)  => (r.ok ? r.json() : [])),
-    ]).then(([secs, accs]: [DashboardSection[], SpaceAccount[]]) => {
+      settleSpaceRead<DashboardSection[]>(fetch(`/api/spaces/${spaceId}/sections`)),
+      settleSpaceRead<SpaceAccount[]>(fetch(`/api/spaces/${spaceId}/accounts`)),
+    ]).then(([secs, accs]) => {
       if (!active) return;
-      setSections(secs);
-      setAccounts(accs);
+      const next = nextStructureState({ sections: [], accounts: [] }, secs, accs); // prev unused: not applied on failure
+      setReadError("structure", next.error);
+      if (!next.error) {
+        setSections(next.sections);
+        setAccounts(next.accounts);
+      }
       setLoading(false);
     });
     return () => { active = false; };
-  }, [spaceId, hydrated]);
+  }, [spaceId, hydrated, structureRetry, setReadError]);
+
+  // UI-006 — re-run one failed read.
+  const retryRead = useCallback((key: SpaceReadKey) => {
+    if (key === "structure") setStructureRetry((n) => n + 1);
+    else if (key === "snapshots") setSnapshotRetry((n) => n + 1);
+    else setTxRetry((n) => n + 1);
+  }, []);
 
   return {
     sections,
@@ -301,5 +454,7 @@ export function useSpaceData({
     effectiveCurrency,
     reloadSections,
     reloadAccounts,
+    readErrors,
+    retryRead,
   };
 }

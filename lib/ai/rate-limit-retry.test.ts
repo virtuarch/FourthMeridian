@@ -121,6 +121,37 @@ async function main() {
       await callWithRateLimitRetry(noDeadline.call, noDeadline.options) === 'ok' && noDeadline.sleeps[0] === 71_500);
   }
 
+  console.log('\n4b. SEC-AI-003 — a total wait budget, and a cancelled caller');
+  {
+    // Two suggested 50 s waits: the first fits a 60 s budget, the second would not.
+    const budget = harness(99, new Error('429 rate limit — try again in 50s'));
+    let threw: unknown;
+    await callWithRateLimitRetry(budget.call, { ...budget.options, maxTotalWaitMs: 60_000 }).catch((e) => { threw = e; });
+    check('a wait that would push the TOTAL past the budget is not taken: fail now, the rate-limit error in hand',
+      /429/.test(String((threw as Error)?.message)) && budget.calls.length === 2 && budget.sleeps.length === 1 && budget.sleeps[0] === 51_500,
+      `${budget.calls.length} calls, waits ${budget.sleeps.join(',')}`);
+
+    const ctl = new AbortController();
+    const cancelled = harness(99);
+    ctl.abort();
+    let threw2: unknown;
+    await callWithRateLimitRetry(cancelled.call, { ...cancelled.options, signal: ctl.signal }).catch((e) => { threw2 = e; });
+    check('an already-cancelled caller is never retried: one call, no wait', threw2 === RATE_LIMITED && cancelled.calls.length === 1 && cancelled.sleeps.length === 0);
+
+    // Cancelled DURING the wait: the sleep ends early and nothing is called again.
+    const ctl2 = new AbortController();
+    const mid = harness(99);
+    let resolveSleep: (() => void) | null = null;
+    const hanging = { ...mid.options, signal: ctl2.signal, sleep: (ms: number) => new Promise<void>((r) => { mid.sleeps.push(ms); resolveSleep = r; }) };
+    const p = callWithRateLimitRetry(mid.call, hanging).catch((e) => e);
+    await new Promise((r) => setImmediate(r));
+    ctl2.abort();
+    const threw3 = await p;
+    check('cancelled during a wait: the wait ends, no further call, the error in hand is thrown',
+      threw3 === RATE_LIMITED && mid.calls.length === 1 && mid.sleeps.length === 1);
+    if (resolveSleep) (resolveSleep as () => void)();
+  }
+
   console.log('\n5. one rule, not two — the chat turn CALLS this function and keeps no copy');
   {
     const turn = readFileSync('lib/ai/conversation/turn.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');

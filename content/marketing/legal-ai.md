@@ -24,7 +24,20 @@ AI output can be incomplete or wrong. It may misinterpret data, omit context, or
 
 ## What is shared with the model provider
 
-Fourth Meridian uses OpenAI's API to generate Briefs and Conversation answers. To do that, relevant portions of your financial context are sent to OpenAI for processing: summarised balances, holdings, transactions (merchant, amount, date and category), income and history for the Space, your questions, and what you have asked Fourth Meridian to remember in that Space. Your password, your bank or brokerage credentials, and the access tokens Fourth Meridian holds for your linked accounts are never sent.
+<!-- PRIV-010 — pending counsel review. This paragraph enumerates what the code actually sends
+     (lib/ai/conversation/tools.ts transaction rows; lib/ai/assemblers/accounts.ts account roster;
+     lib/ai/brief/recent-activity.ts). Keep it in step with those modules; the previous wording
+     ("merchant, amount, date and category") understated the field list. -->
+Fourth Meridian uses OpenAI's API to generate Briefs and Conversation answers. To do that, the following is sent to OpenAI for processing, for the Space the Brief or conversation is about:
+
+- **Your questions**, and the earlier messages in the same conversation.
+- **The Space's name**, and the first names of its members where an account is shown to you under a member's name (for example "Alex's checking").
+- **Accounts**: for accounts shared with you in full, the account's display name, its institution and the last digits of its number (the "mask"); for accounts shared with you at balance-only level, a generic name. Account types, balances and, for debts, any interest rate or minimum payment you entered.
+- **Transactions**: for each transaction the answer draws on, its date, the merchant name and the transaction description as your bank reported them (with long runs of digits removed), the amount, the category, whether it is pending, the name of the account it posted to and, for a transfer between your own accounts, the other account.
+- **Holdings and history**: positions, prices and values, and the daily balance and net-worth history Fourth Meridian has computed.
+- **Memory**: what you have asked Fourth Meridian to remember in that Space, and the projections it has previously given you.
+
+Your password, your bank or brokerage credentials, and the access tokens Fourth Meridian holds for your linked accounts are never sent, and neither is your e-mail address.
 
 Fourth Meridian does not train any model on your data and does not opt in to any provider programme that would use it for training. OpenAI's handling of data submitted through its API — including how long it retains API inputs and outputs — is governed by OpenAI's own terms and policies, which Fourth Meridian does not control; see our [Privacy Policy](/privacy) for how your data is handled overall.
 

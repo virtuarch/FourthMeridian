@@ -132,7 +132,10 @@ async function main() {
     const src = readFileSync('lib/ai/provider.ts', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     const creates = (src.match(/completions\.create\(/g) ?? []).length;
     const failurePaths = (src.match(/recordOpenAiFailure\(\{/g) ?? []).length;
-    check(`every create() (${creates}) is paired with a recordOpenAiFailure call (${failurePaths})`, creates >= 3 && failurePaths === creates, `${creates} vs ${failurePaths}`);
+    // SEC-AI-003 — a call refused BEFORE create() because the caller's deadline is already spent is a failure fact too.
+    const spentRefusals = (src.match(/const spent = abortedReason\(/g) ?? []).length;
+    check(`every create() (${creates}) is paired with a recordOpenAiFailure call, plus one per spent-deadline refusal (${spentRefusals}) = ${failurePaths}`,
+      creates >= 3 && spentRefusals === 2 && failurePaths === creates + spentRefusals, `${creates} + ${spentRefusals} vs ${failurePaths}`);
     check('the chokepoint rethrows on every failure path', (src.match(/recordOpenAiFailure\(\{[^\n]*\n\s*throw /g) ?? []).length === failurePaths);
     check('the failure writer lives in lib/ai/invocation.ts (the systemDb-allowlisted file)', /export async function recordAiInvocationFailure/.test(readFileSync('lib/ai/invocation.ts', 'utf8')));
     check('no other runtime module writes aiInvocation rows',

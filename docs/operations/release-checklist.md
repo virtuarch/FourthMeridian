@@ -124,6 +124,7 @@ Verify:
 Priority: High · Status: ⚠️ Needs work · Owner: OPS-owner
 Verify:
 - `npx prisma migrate status` shows no drift; schema.prisma matches the latest migration.
+- **Read-only drift check against the target, before promotion (OWNER step, TEST-006).** A deploy ships code, never schema (`build` = `prisma generate && next build`), so the owner runs `npm run db:drift` (`scripts/check-schema-drift.ts`: one `SELECT` on `_prisma_migrations`, writes nothing, exit 1 on any pending / unfinished / unknown migration) with the environment file pointed at the **target** database — Preview before a Preview check, Production before `vercel promote` / the `main` push — and records the output line in the release ticket. Red here means the schema is behind the candidate: apply with `npm run db:migrate:safe` (guard → backup → `migrate deploy`) first, never promote over it. After promotion the `post-deploy-smoke` workflow ("Deployment health") probes `/api/health` on the per-deployment URL for status (identity by that immutable URL; the route publishes no commit since OPS-014) and fails as UNVERIFIED when Vercel Deployment Protection answers instead of the app; it does not check schema, which is why this step is manual and precedes it.
 
 ### □ No orphaned relations
 Priority: High · Status: ⚠️ Needs work · Owner: OPS-owner

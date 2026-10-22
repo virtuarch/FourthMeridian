@@ -310,7 +310,9 @@ async function main(): Promise<void> {
   psql(h.ownerUrl, `insert into "SpaceMember" (id,"spaceId","userId",role,status)
                     values ('m_removed','space_b','alice','VIEWER','REMOVED')
                     on conflict do nothing;`);
-  const reactivate = psql(h.appUrl,
+  // The attempt's own result is not the evidence (RLS may refuse it or
+  // silently match zero rows); the row's status afterwards is.
+  psql(h.appUrl,
     `begin; set local app.user_id='alice';
      update "SpaceMember" set status='ACTIVE' where id='m_removed';
      commit;`, false);

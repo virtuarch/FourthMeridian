@@ -52,6 +52,9 @@ import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
  * lib/plaid/disconnect-revocation.test.ts. Same seam, same reason, as
  * `syncTransactionsForItem`'s `{ db, plaid }`.
  */
+/** PRIV-004 — the encryptedToken value of an Item whose upstream removal was confirmed. */
+export const REVOKED_TOKEN_SENTINEL = "";
+
 export type DisconnectDeps = {
   db?: typeof systemDb;
   plaid?: Pick<typeof plaidClient, "itemRemove">;
@@ -122,6 +125,21 @@ export async function disconnectPlaidItemIfOrphaned(
   // fixed once. The thing that was missing was never the status; it was any
   // record of whether cleanup is still owed.
   await setHealth(plaidItemDbId, { status: PlaidItemStatus.REVOKED });
+
+  // PRIV-004 — once Plaid has CONFIRMED the Item is gone (removed, or already
+  // absent), the access token is dead ciphertext with no remaining use, so it
+  // is scrubbed. The column is NOT NULL and read by many modules, so the
+  // scrub writes the empty-string sentinel rather than widening the type;
+  // decryptWithPurpose("") throws, which every reader already treats as an
+  // unusable token. An UNCONFIRMED removal keeps the token: the operator
+  // cleanup and plaid-removal-retry need it to try again.
+  if (confirmed) {
+    try {
+      await database.plaidItem.update({ where: { id: plaidItemDbId }, data: { encryptedToken: REVOKED_TOKEN_SENTINEL } });
+    } catch (scrubErr) {
+      console.error(`[disconnectPlaidItemIfOrphaned] token scrub failed for item ${plaidItemDbId} (non-fatal):`, redactedErrorForLog(scrubErr));
+    }
+  }
 
   // ── THE PROVIDER-CLEANUP LIFECYCLE, DURABLY ──────────────────────────────
   // Read newest-first, an item owes cleanup when its latest marker is

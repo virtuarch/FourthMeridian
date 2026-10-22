@@ -4,6 +4,7 @@ import { getSpaceContext } from "@/lib/space";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { redirectToLogin } from "@/lib/auth/login-redirect";
+import { enforceTotpPageGate } from "@/lib/auth/totp-page-gate";
 import { resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { yesterdayUTCISO } from "@/lib/fx/config";
@@ -31,6 +32,12 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return redirectToLogin();
 
+  // SEC-001 — the DB-derived forced-enrolment gate (require_totp_all_users ON
+  // + un-enrolled USER). proxy.ts only sees the JWT's navigation hint; this is
+  // the page-side counterpart of the lib/session.ts API gate. A pending user
+  // renders nothing under /dashboard except /dashboard/settings/security.
+  await enforceTotpPageGate(session);
+
   // UX-P2 (decision N2) — does the viewer hold ANY active platform grant? One
   // indexed tenant count (lib/platform/directory.server.ts), fail-closed: any
   // failure reads as "no grant" and the header's Platform door stays hidden.
@@ -46,7 +53,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   // REVIEW-3 B-5 (E5, matrix row 34) — the EFFECTIVE display currency, through
   // the one decision point (lib/money/server-context.ts, V25-CLOSE-3A), not the
   // raw Space.reportingCurrency. The raw value here meant every page under this
-  // layout that does not re-wrap (/dashboard/credit, /analyze, /connections,
+  // layout that does not re-wrap (/analyze, /connections,
   // settings) labelled amounts in a currency the archive may not be able to
   // satisfy, while /dashboard itself re-wrapped with the reverted one — two
   // labels for one Space in one shell. The probe asks the same floor question

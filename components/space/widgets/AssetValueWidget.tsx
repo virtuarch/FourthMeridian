@@ -37,7 +37,7 @@
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { TrendingDown, TrendingUp, Minus } from "lucide-react";
 import { formatDate, formatPercent } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY, formatCurrency } from "@/lib/currency";
+import { formatCurrency } from "@/lib/currency";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ export interface AssetValueConfig {
   purchaseDate?:    string;
   /** Where the current estimate came from (e.g. "Manual", "Zillow") */
   estimatedSource?: string;
-  /** Display currency — falls back to DEFAULT_DISPLAY_CURRENCY */
+  /** Display currency — falls back to the display-currency authority (useDisplayCurrency) */
   currency?:        string;
   /** Optional free-text note shown below the main figures */
   note?:            string;

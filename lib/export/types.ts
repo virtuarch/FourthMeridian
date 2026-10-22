@@ -104,4 +104,8 @@ export interface ExportData {
     mappingProfiles: Record<string, unknown>[];
   };
   aiAdvice: Record<string, unknown>[];
+  /** PRIV-006 — the user's own AI memory rows (every status, so retired/superseded history is included). */
+  aiMemory: Record<string, unknown>[];
+  /** PRIV-006 — the user's own Daily Briefs (generated content only). */
+  dailyBriefs: Record<string, unknown>[];
 }

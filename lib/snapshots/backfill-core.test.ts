@@ -19,6 +19,7 @@ import {
   isoDate,
   addDaysUTC,
   fromISO,
+  computeLiquidSplit,
 } from "./backfill-core";
 import { classifyAccounts, isDigitalAssetAccountType, DIGITAL_ASSET_ACCOUNT_TYPES } from "../account-classifier";
 
@@ -75,6 +76,34 @@ console.log("computeSnapshotFields — parity with regenerate.ts formula");
   check("cashOnHand floors at 0 for negative cash", computeSnapshotFields({
     totalInvestments: 0, totalDigitalAssets: 0, totalChecking: -40, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0,
   }).cashOnHand === 0);
+}
+
+console.log("FIN-005 — restricted cash: the stored netLiquid includes it, the Hero's totalLiquid excludes it, and the split says so");
+{
+  // The runtime audit's fixture (2026-10-21): checking 10,000 + HSA checking
+  // 5,000 (restricted) + savings 2,000, no debt.
+  const c = classifyAccounts([
+    { type: "checking", balance: 10_000 },
+    { type: "checking", balance: 5_000, providerSubtype: "hsa" },
+    { type: "savings",  balance: 2_000 },
+  ]);
+  const f = computeSnapshotFields(c);
+  const split = computeLiquidSplit(c);
+  check("Hero basis: classifyAccounts.totalLiquid = 12,000 (restricted excluded)", c.totalLiquid === 12_000);
+  check("stored basis: netLiquid = ALL cash + savings − debt = 17,000 (the pinned stored-row invariant, unchanged)", f.netLiquid === 17_000);
+  check("netWorth = 17,000 on both bases — restricted cash is still an asset", f.netWorth === 17_000 && f.totalAssets === 17_000);
+  check("computeLiquidSplit: liquid 12,000 = totalLiquid, restrictedCash 5,000, netLiquidUnrestricted 12,000",
+    split !== null && split.liquid === 12_000 && split.restrictedCash === 5_000 && split.netLiquidUnrestricted === 12_000);
+  check("the two bases differ by exactly the restricted HSA", split !== null && f.netLiquid - split.netLiquidUnrestricted === 5_000);
+  check("with no restricted cash the bases agree", (() => {
+    const c2 = classifyAccounts([{ type: "checking", balance: 10_000 }, { type: "savings", balance: 2_000 }, { type: "debt", balance: 1_000 }]);
+    const s2 = computeLiquidSplit(c2);
+    return s2 !== null && s2.restrictedCash === 0 && s2.netLiquidUnrestricted === computeSnapshotFields(c2).netLiquid && s2.netLiquidUnrestricted === 11_000;
+  })());
+  check("a totals object with no split (hand-built / read back from a stored row) yields null — never an all-cash substitute",
+    computeLiquidSplit({ totalInvestments: 0, totalDigitalAssets: 0, totalChecking: 15_000, totalSavings: 2_000, totalLiabilities: 0, totalRealAssets: 0 }) === null);
+  check("computeSnapshotFields adds no new persisted key (backfill.ts spreads it into the row)",
+    Object.keys(f).sort().join(",") === "cash,cashOnHand,crypto,debt,netLiquid,netWorth,savings,stocks,total,totalAssets");
 }
 
 console.log("date helpers");

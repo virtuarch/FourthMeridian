@@ -132,11 +132,15 @@ export async function verifyRecoveryCode(
   for (const row of unusedCodes) {
     const match = await bcrypt.compare(plaintextCode, row.codeHash);
     if (match) {
-      await inOneTransaction(client, async (tx) => {
-        await tx.recoveryCode.update({ where: { id: row.id }, data: { usedAt: new Date() } });
+      // J-D2 — single use under concurrency. Two sign-ins presenting the same code
+      // both read it unused above; only the one whose conditional write still
+      // finds `usedAt: null` consumes it. The other gets false and no audit row.
+      return inOneTransaction(client, async (tx) => {
+        const consumed = await tx.recoveryCode.updateMany({ where: { id: row.id, usedAt: null }, data: { usedAt: new Date() } });
+        if (consumed.count !== 1) return false;
         await auditInsert(tx, { userId, action: AuditAction.RECOVERY_CODE_USED }).write;
+        return true;
       });
-      return true;
     }
   }
 

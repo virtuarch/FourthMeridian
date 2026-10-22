@@ -28,7 +28,9 @@ import {
   type AlertRunSummary,
 } from "@/lib/alerts/evaluate";
 import { evaluatePlatformAlerts } from "@/lib/alerts/run";
-import type { ConnectionHealthResult, HealthState } from "@/lib/connections/health";
+import type { ConnectionHealthResult, ConnectionHealthRow, HealthState } from "@/lib/connections/health";
+import type { AlertSyncIncident, SyncIncidentHealth } from "@/lib/alerts/authorities";
+import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
 import type { ResourceFreshnessResult, ResourceFreshnessReport, FreshnessHealthState } from "@/lib/platform/resource-freshness";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
@@ -82,17 +84,18 @@ function freshness(resources: ResourceFreshnessReport[]): ResourceFreshnessResul
   return { checkedAt: NOW, allFresh: resources.every((r) => r.healthState === "fresh" || r.healthState === "idle"), resources };
 }
 function outputs(o: Partial<AuthorityOutputs>): AuthorityOutputs {
-  return { jobHealth: null, connectionHealth: null, resourceFreshness: null, aiFailures: null, aiSpend: null, ...o };
+  return { jobHealth: null, connectionHealth: null, resourceFreshness: null, aiFailures: null, aiSpend: null, syncIncidents: null, ...o };
 }
 const ALL_ON = () => true;
 
 // ── Registry shape ───────────────────────────────────────────────────────────────
 
 console.log("registry");
-check("eight rules (five initial + ai-provider-failing + the two ai-spend rules the AI COST CONTROLS split produced)", ALERT_RULES.length === 8);
-check("seven live rules", ALERT_RULES.filter((r) => r.live).length === 7);
+check("nine rules (five initial + ai-provider-failing + the two ai-spend rules + sync-incident-critical from OBS-004)", ALERT_RULES.length === 9);
+check("eight live rules", ALERT_RULES.filter((r) => r.live).length === 8);
 check("quota-low is the sole dormant rule", ALERT_RULES.filter((r) => !r.live).map((r) => r.id).join() === "quota-low");
-check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 8);
+check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 9);
+check("sync-incident-critical reads the sync-incidents authority, live, on by default", ALERT_RULES.find((r) => r.id === "sync-incident-critical")?.authority === "sync-incidents" && ALERT_RULES.find((r) => r.id === "sync-incident-critical")!.live && ALERT_RULES.find((r) => r.id === "sync-incident-critical")!.defaultEnabled);
 check("ai-provider-failing reads the ai-failures authority", ALERT_RULES.find((r) => r.id === "ai-provider-failing")?.authority === "ai-failures");
 check("ai-spend-fleet-high reads the ai-spend authority and says critical = twice the threshold", ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")?.authority === "ai-spend" && /critical at or above twice/.test(ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")!.description));
 check("ai-spend-user-high reads the same authority, is live and on by default", ALERT_RULES.find((r) => r.id === "ai-spend-user-high")?.authority === "ai-spend" && ALERT_RULES.find((r) => r.id === "ai-spend-user-high")!.live && ALERT_RULES.find((r) => r.id === "ai-spend-user-high")!.defaultEnabled);
@@ -116,8 +119,25 @@ console.log("engine · scheduler-silent");
 {
   const jh = jobHealth([job("a", "overdue"), job("b", "never-ran"), job("c", "failing", 3), job("d", "healthy")]);
   const sigs = evaluateAlertRules(outputs({ jobHealth: jh }), ALL_ON).filter((s) => s.kind === "scheduler-silent");
-  check("fires on overdue only", sigs.length === 1 && sigs[0].dedupeKey === "scheduler-silent:a");
+  check("fires on overdue", sigs.length === 1 && sigs[0].dedupeKey === "scheduler-silent:a" && sigs[0].severity === "critical");
   check("never-ran does NOT trip scheduler-silent (operator-decides state)", !sigs.some((s) => s.dedupeKey.includes(":b")));
+  check("failing / healthy do not trip scheduler-silent", !sigs.some((s) => s.dedupeKey.includes(":c") || s.dedupeKey.includes(":d")));
+
+  // OBS-002 — the runtime fixture (runtime/07-OBSERVABILITY.md §7.1): the SAME job
+  // read `dead` at 60 days of silence and `overdue` at 10 h. Before the fix the
+  // overdue read fired and the dead read went quiet — the inversion.
+  const sixtyDaysSilent = jobHealth([{ job: "sync-crypto-continuation", status: "dead", expectedEveryHours: 6, consecutiveFailures: 0 }]);
+  const dead = evaluateAlertRules(outputs({ jobHealth: sixtyDaysSilent }), ALL_ON).filter((s) => s.kind === "scheduler-silent");
+  check("OBS-002: a DEAD job fires scheduler-silent", dead.length === 1 && dead[0].dedupeKey === "scheduler-silent:sync-crypto-continuation");
+  check("OBS-002: dead is critical", dead[0]?.severity === "critical");
+  check("OBS-002: the summary says DEAD and names the cadence, no user content", /DEAD/.test(dead[0]?.summary ?? "") && /every 6h/.test(dead[0]?.summary ?? ""));
+  const tenHoursSilent = jobHealth([{ job: "sync-crypto-continuation", status: "overdue", expectedEveryHours: 6, consecutiveFailures: 0 }]);
+  const overdue = evaluateAlertRules(outputs({ jobHealth: tenHoursSilent }), ALL_ON).filter((s) => s.kind === "scheduler-silent");
+  check("OBS-002: the overdue read still fires (unchanged)", overdue.length === 1 && overdue[0].severity === "critical" && /overdue/.test(overdue[0].summary));
+  check("OBS-002: overdue → dead is ONE breach (same dedupe key), so the ageing does not re-page inside the re-notify window",
+    overdue[0].dedupeKey === dead[0].dedupeKey && decideDeliveries(dead, new Map([[overdue[0].dedupeKey, NOW_MS - 2 * HOUR]]), NOW_MS).suppressed.length === 1);
+  const neverRanStill = evaluateAlertRules(outputs({ jobHealth: jobHealth([{ job: "sync-crypto-continuation", status: "never-ran", expectedEveryHours: 6, consecutiveFailures: 0 }]) }), ALL_ON).filter((s) => s.kind === "scheduler-silent");
+  check("OBS-002: never-ran is unchanged (no signal)", neverRanStill.length === 0);
 }
 
 // ── Engine: provider-unhealthy ───────────────────────────────────────────────────
@@ -144,6 +164,63 @@ console.log("engine · provider-unhealthy");
   check("retired (revoked / owner-inactive) connections produce no signal", retiredOnly.length === 0);
   const revokedLeak = evaluateAlertRules(outputs({ connectionHealth: connHealth({ HEALTHY: 2, REVOKED: 1 }) }), ALL_ON).filter((s) => s.kind === "provider-unhealthy");
   check("a REVOKED row that reaches the engine is NOT acute (warning, not critical)", revokedLeak.length === 1 && revokedLeak[0].severity === "warning");
+
+  // OBS-004 — ONE BREACH PER CONNECTION. Before: one aggregate keyed on the
+  // rule id, so a second failing connection inside the 20 h window was silent.
+  console.log("engine · provider-unhealthy · per connection (OBS-004)");
+  const row = (id: string, healthState: HealthState, over: Partial<ConnectionHealthRow> = {}): ConnectionHealthRow => ({
+    source: "PLAID", id, label: "Chase Bank", status: "ERROR", errorCode: healthState === "ERROR" ? "ITEM_LOGIN_REQUIRED" : null, healthState,
+    lastSyncedAt: null, since: "2026-07-15T08:00:00.000Z", kind: "BANK", institution: "Chase", network: null, overdueAfterHours: 30, neverSynced: false, availableActions: [], ...over,
+  });
+  const withRows = (counts: Partial<Record<HealthState, number>>, rows: ConnectionHealthRow[], cap = 20): ConnectionHealthResult => ({ ...connHealth(counts), unhealthy: rows, cap });
+  const two = evaluateAlertRules(outputs({ connectionHealth: withRows({ HEALTHY: 3, ERROR: 1, STALE: 1 }, [row("item_aaaaaa111111", "ERROR"), row("wallet_bbbbbb222222", "STALE", { source: "WALLET", kind: "WALLET" })]) }), ALL_ON).filter((s) => s.kind === "provider-unhealthy");
+  check("two unhealthy connections ⇒ two signals", two.length === 2);
+  check("each keyed on its own connection id", two.map((s) => s.dedupeKey).sort().join(",") === "provider-unhealthy:item_aaaaaa111111,provider-unhealthy:wallet_bbbbbb222222");
+  check("ERROR row critical, STALE row warning", two.find((s) => s.dedupeKey.endsWith("aaaaaa111111"))!.severity === "critical" && two.find((s) => s.dedupeKey.endsWith("bbbbbb222222"))!.severity === "warning");
+  check("summary names source/kind/state/code and an OPAQUE ref — never the institution", two.every((s) => !/Chase/.test(s.summary)) && /…111111 \(PLAID, BANK\) is ERROR \(ITEM_LOGIN_REQUIRED\)/.test(two[0].summary));
+  const firstDelivered = new Map([["provider-unhealthy:item_aaaaaa111111", NOW_MS - 2 * HOUR]]);
+  const second = decideDeliveries(two, firstDelivered, NOW_MS);
+  check("a SECOND connection failing inside the first's 20 h window is delivered on its own clock", second.toSend.length === 1 && second.toSend[0].dedupeKey.endsWith("bbbbbb222222") && second.suppressed.length === 1);
+  const floor = evaluateAlertRules(outputs({ connectionHealth: withRows({ HEALTHY: 1, ERROR: 3 }, [row("item_aaaaaa111111", "ERROR")], 1) }), ALL_ON).filter((s) => s.kind === "provider-unhealthy");
+  check("a capped list adds ONE aggregate remainder breach (:unlisted) so the fleet is never understated", floor.length === 2 && floor.some((s) => s.dedupeKey === "provider-unhealthy:unlisted" && /2 further/.test(s.summary)));
+  check("counts without rows (legacy / pure callers) keep the aggregate signal on the rule id", warn[0].dedupeKey === "provider-unhealthy");
+}
+
+// ── Engine: sync-incident-critical (OBS-004) ────────────────────────────────────
+
+console.log("engine · sync-incident-critical (OBS-004)");
+{
+  const inc = (id: string, over: Partial<AlertSyncIncident> = {}): AlertSyncIncident => ({
+    id, plaidItemId: "item_zzzzzz999999", kind: "TRANSACTION_PERSISTENCE_FAILED", domain: "transactions", severity: "critical",
+    lastOccurredAt: "2026-07-16T07:00:00.000Z", occurrenceCount: 2, ...over,
+  });
+  const health = (active: AlertSyncIncident[], scanTruncated = false): SyncIncidentHealth => ({ checkedAt: NOW.toISOString(), active, scanTruncated });
+  const sig = (h: SyncIncidentHealth) => evaluateAlertRules(outputs({ syncIncidents: h }), ALL_ON).filter((s) => s.kind === "sync-incident");
+
+  check("no active incidents ⇒ no signal", sig(health([])).length === 0);
+  check("active non-critical (error / warning / info) ⇒ no signal", sig(health([inc("a", { severity: "error", kind: "WALLET_SYNC_FAILED", domain: "wallet" }), inc("b", { severity: "warning" })])).length === 0);
+  const one = sig(health([inc("a")]));
+  check("one active critical ⇒ one critical signal keyed on the ITEM", one.length === 1 && one[0].severity === "critical" && one[0].dedupeKey === "sync-incident-critical:item:item_zzzzzz999999");
+  check("summary: the operator label, opaque Item ref, episode + occurrence counts; no customer, no detail", /Transaction persistence failed/.test(one[0].summary) && /…999999/.test(one[0].summary) && /1 active episode/.test(one[0].summary) && /2 occurrence/.test(one[0].summary) && !/item_zzzzzz999999/.test(one[0].summary));
+  const sameItem = sig(health([inc("a"), inc("b", { occurrenceCount: 5, lastOccurredAt: "2026-07-16T07:30:00.000Z" })]));
+  check("two critical episodes on ONE Item ⇒ one breach (2 episodes, 7 occurrences, newest time)", sameItem.length === 1 && /2 active episode/.test(sameItem[0].summary) && /7 occurrence/.test(sameItem[0].summary) && /07:30/.test(sameItem[0].summary));
+  const twoItems = sig(health([inc("a"), inc("c", { plaidItemId: "item_yyyyyy888888" })]));
+  check("two Items ⇒ two breaches with distinct keys", twoItems.length === 2 && new Set(twoItems.map((s) => s.dedupeKey)).size === 2);
+  check("a second Item's incident inside the first's re-notify window is delivered (dedupe per Item)",
+    decideDeliveries(twoItems, new Map([["sync-incident-critical:item:item_zzzzzz999999", NOW_MS - HOUR]]), NOW_MS).toSend.length === 1);
+  const noItem = sig(health([inc("d", { plaidItemId: null, kind: "REPLAY_FAILED" })]));
+  check("an episode naming no Item is keyed on the episode", noItem.length === 1 && noItem[0].dedupeKey === "sync-incident-critical:episode:d");
+  check("a truncated scan is said in the summary", /may be a floor/.test(sig(health([inc("a")], true))[0].summary));
+  check("legacy UPSERT_ERROR on the transactions domain reads by the same operator label", /Transaction persistence failed/.test(sig(health([inc("e", { kind: "UPSERT_ERROR" })]))[0].summary));
+
+  // The fold from the projection: state-filtered, opaque, nothing from detail.
+  const folded = foldSyncIncidents([
+    { id: "x1", kind: "TRANSACTION_PERSISTENCE_FAILED", plaidItemId: "item_1", state: "active", classification: { domain: "transactions", severity: "critical", nature: "condition", customerActionable: true, cursorBlocking: true }, lastOccurredAt: "2026-07-16T07:00:00.000Z", occurrenceCount: 1 },
+    { id: "x2", kind: "TRANSACTION_PERSISTENCE_FAILED", plaidItemId: "item_1", state: "recovered", classification: { domain: "transactions", severity: "critical", nature: "condition", customerActionable: true, cursorBlocking: true }, lastOccurredAt: null, occurrenceCount: 1 },
+    { id: "x3", kind: "BALANCE_TX_MISMATCH", plaidItemId: null, state: "evidence", classification: { domain: "reconciliation", severity: "warning", nature: "event", customerActionable: false, cursorBlocking: false }, lastOccurredAt: null, occurrenceCount: 0 },
+  ], true, NOW);
+  check("fold keeps ACTIVE only, carries scanTruncated", folded.active.length === 1 && folded.active[0].id === "x1" && folded.scanTruncated);
+  check("fold carries no classification object, no detail, no label", !("classification" in folded.active[0]) && !("detail" in folded.active[0]) && !("label" in folded.active[0]));
 }
 
 // ── Engine: ai-failing ───────────────────────────────────────────────────────────
@@ -300,7 +377,7 @@ console.log("history derivation");
   check("prior-fired keeps the newest delivery per key", prior.get("job-failing:a") === Date.parse("2026-07-15T07:30:00Z"));
 
   const views = deriveAlertRuleViews(ALERT_RULES, ALL_ON, [s2, s1]);
-  check("a view per rule", views.length === 8);
+  check("a view per rule", views.length === 9);
   check("last-triggered is the newest across runs", views.find((v) => v.id === "job-failing")!.lastTriggeredAtISO === "2026-07-15T07:30:00Z");
   check("never-fired rule has null last-triggered", views.find((v) => v.id === "scheduler-silent")!.lastTriggeredAtISO === null);
   check("dormant rule reported not-live", views.find((v) => v.id === "quota-low")!.live === false);
@@ -348,7 +425,7 @@ async function orchestratorTests() {
   check("delivered both", s1.counts.delivered === 2 && s1.deliveryStatus === "sent");
   check("one email to the destination", sent.length === 1 && sent[0].to === "ops@fourthmeridian.com" && sent[0].count === 2);
   check("summary records fired for suppression/history", s1.fired.length === 2);
-  check("per-rule outcomes list all eight rules", s1.rules.length === 8);
+  check("per-rule outcomes list all nine rules", s1.rules.length === 9);
   check("dormant rule not firing in outcomes", s1.rules.find((r) => r.id === "quota-low")!.firing === false);
 
   // Second cycle sees the first as recent history ⇒ suppresses (no second email).
@@ -370,6 +447,62 @@ async function orchestratorTests() {
     gatherAuthorities: async () => outputs({ jobHealth: jobHealth([job("a", "healthy")]), connectionHealth: connHealth({ HEALTHY: 3 }), resourceFreshness: freshness([resource("fx", "fresh")]) }),
   });
   check("a healthy platform sends zero mail", quiet.counts.firing === 0 && quiet.deliveryStatus === "none" && sent.length === 1);
+  check("nothing lost ⇒ undelivered is null", quiet.undelivered === null && s1.undelivered === null);
+
+  // ── OBS-003 — the runtime fixture (runtime/07-OBSERVABILITY.md §7.2): no
+  // RESEND_API_KEY ⇒ the chokepoint returns `captured`. Before the fix that was
+  // "delivered" (counts.delivered 1, breach in fired[]) and the breach was
+  // suppressed for 20 h while nobody was told.
+  console.log("orchestrator · OBS-003 captured outside development");
+  const silence = (e: unknown) => e;
+  const captureDeps = { ...baseDeps, sendAlertEmail: async () => ({ status: "captured", provider: "capture" }) };
+  const realConsoleError = console.error;
+  console.error = silence as typeof console.error;
+  let prod: AlertRunSummary, preview: AlertRunSummary, unset: AlertRunSummary;
+  try {
+    prod = await evaluatePlatformAlerts({ ...captureDeps, environment: "production" });
+    preview = await evaluatePlatformAlerts({ ...captureDeps, environment: "preview" });
+    unset = await evaluatePlatformAlerts({ ...captureDeps, environment: undefined });
+  } finally {
+    console.error = realConsoleError;
+  }
+  check("production + captured ⇒ deliveryStatus skipped (NOT delivered)", prod.deliveryStatus === "skipped");
+  check("production + captured ⇒ nothing recorded as fired (no 20 h suppression)", prod.fired.length === 0 && prod.counts.delivered === 0);
+  check("production + captured ⇒ a loud summary field names the cause and the count", prod.undelivered?.reason === "NO_EMAIL_TRANSPORT" && prod.undelivered.breaches === 2);
+  check("the next cycle does NOT suppress the breach (it retries)",
+    (await evaluatePlatformAlerts({ ...baseDeps, loadRecentRuns: async () => [prod] })).counts.suppressed === 0);
+  check("any non-development NODE_ENV (preview / unset) is treated the same way", preview.deliveryStatus === "skipped" && preview.undelivered?.reason === "NO_EMAIL_TRANSPORT" && unset.deliveryStatus === "skipped");
+  const dev = await evaluatePlatformAlerts({ ...captureDeps, environment: "development" });
+  check("development + captured ⇒ captured counts as delivered (the local transport)", dev.deliveryStatus === "captured" && dev.fired.length === 2 && dev.undelivered === null);
+  const test = await evaluatePlatformAlerts({ ...captureDeps, environment: "test" });
+  check("test + captured ⇒ likewise", test.deliveryStatus === "captured" && test.fired.length === 2);
+  check("no destination ⇒ undelivered NO_DESTINATION", s3.undelivered?.reason === "NO_DESTINATION" && s3.undelivered.breaches === 2);
+  check("send threw ⇒ undelivered SEND_ERROR", s4.undelivered?.reason === "SEND_ERROR");
+  const providerError = await evaluatePlatformAlerts({ ...baseDeps, sendAlertEmail: async () => ({ status: "error", provider: "resend" }) });
+  check("provider returned error ⇒ error + SEND_ERROR + nothing fired", providerError.deliveryStatus === "error" && providerError.undelivered?.reason === "SEND_ERROR" && providerError.fired.length === 0);
+  const sentOk = await evaluatePlatformAlerts({ ...baseDeps, environment: "production", sendAlertEmail: async () => ({ status: "sent", provider: "resend" }) });
+  check("production + sent (provider accepted) ⇒ delivered and recorded", sentOk.deliveryStatus === "sent" && sentOk.fired.length === 2 && sentOk.undelivered === null);
+
+  // ── OBS-011 — the destination ADDRESS never enters the ledger.
+  console.log("orchestrator · OBS-011 no address in the summary");
+  check("summary carries destinationConfigured, not the address", s1.destinationConfigured === true && !("destination" in s1) && !JSON.stringify(s1).includes("ops@fourthmeridian.com"));
+  check("no destination ⇒ destinationConfigured false", s3.destinationConfigured === false);
+
+  // ── OBS-015 — circuit breaker when this run's start row failed to write.
+  console.log("orchestrator · OBS-015 ledger start-write circuit breaker");
+  const before = sent.length;
+  console.error = silence as typeof console.error;
+  let broken: AlertRunSummary;
+  try {
+    broken = await evaluatePlatformAlerts({ ...baseDeps, ledgerStartWriteFailed: () => true });
+  } finally {
+    console.error = realConsoleError;
+  }
+  check("start-write failed ⇒ no email sent", sent.length === before);
+  check("start-write failed ⇒ skipped + LEDGER_WRITE_FAILED with the breach count", broken.deliveryStatus === "skipped" && broken.undelivered?.reason === "LEDGER_WRITE_FAILED" && broken.undelivered.breaches === 2);
+  check("start-write failed ⇒ evaluation still recorded every rule outcome (the breaker is on delivery only)", broken.counts.firing === 2 && broken.rules.length === 9);
+  const healthyLedger = await evaluatePlatformAlerts({ ...baseDeps, ledgerStartWriteFailed: () => false });
+  check("start-write ok ⇒ delivery proceeds", healthyLedger.deliveryStatus === "sent" && sent.length === before + 1);
 }
 
 // ── Doctrine source-scan: one canonical evaluation, no duplicated health compute ──
@@ -388,6 +521,7 @@ console.log("doctrine");
   check("orchestrator consumes the OPS-5 resource-freshness authority", /checkResourceFreshness/.test(runSrc));
   check("orchestrator consumes the AI failure authority (OPERATIONALIZATION P0)", /getAiFailureHealth\(/.test(runSrc));
   check("orchestrator consumes the AI spend authority (BETA C7)", /getAiSpendHealth\(24\)/.test(runSrc));
+  check("orchestrator consumes the incident projection (OBS-004) — never a SyncIssue row", /getActiveIncidentPage\(/.test(runSrc) && !/db\.syncIssue/.test(runSrc) && !/syncIssue/.test(evaluateSrc));
   check("the engine judges against the thresholds the authority carried, never a literal of its own",
     /spend\.thresholds\.fleetUsd/.test(evaluateSrc) && /spend\.thresholds\.userUsd/.test(evaluateSrc) && !/ai_spend_alert/.test(evaluateSrc));
   check("the thresholds are resolved through the platform-settings descriptors (validated, default on missing or invalid)",
@@ -395,6 +529,15 @@ console.log("doctrine");
   check("REVOKED is no longer an acute connection state (revoked connections are retired, not unhealthy)",
     !/CRITICAL_CONNECTION_STATES[\s\S]*?"REVOKED"[\s\S]*?\]\)/.test(evaluateSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "")));
   check("destination is the OPS-1 email seam", /@\/lib\/email\/send/.test(runSrc));
+  // OBS-003 — the only place `captured` may count as delivered is behind the environment gate.
+  check("captured is gated on development/test (CAPTURE_IS_EXPECTED), never unconditionally delivered",
+    /captureIsExpected\(environment\)/.test(runSrc) && !/deliveryStatus === "sent" \|\| deliveryStatus === "captured"/.test(runSrc));
+  // OBS-008 — both delivery-failure paths reach the error monitor.
+  check("both delivery-failure paths capture to Sentry through the seam", (runSrc.match(/captureAlertDeliveryFailure\(/g) ?? []).length >= 2 && /@\/lib\/alerts\/delivery-capture/.test(runSrc));
+  // OBS-011 — the address is never written.
+  check("the summary writer never stores the destination address", !/^\s*destination,\s*$/m.test(runSrc) && /destinationConfigured: Boolean\(destination\)/.test(runSrc));
+  // OBS-015 — the breaker reads the ambient runJob context.
+  check("the circuit breaker reads currentJobRun().id === null", /currentJobRun\(\)/.test(runSrc) && /run\.id === null/.test(runSrc));
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────────

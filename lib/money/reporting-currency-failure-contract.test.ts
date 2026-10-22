@@ -113,12 +113,7 @@ for (const f of PERSPECTIVES) {
     /resolveEffectiveSpaceConversion\b/.test(layout) && /resolved\.effective/.test(layout),
     "the shell provider must come from the one decision point (V25-CLOSE-3A)",
   );
-  const credit = stripComments(read("app/(shell)/dashboard/credit/page.tsx"));
-  check(
-    "the credit page builds its client context through the effective resolver",
-    /resolveEffectiveSpaceConversionSerialized\b/.test(credit) && !/[^E]serializeSpaceConversionContext\b/.test(credit),
-    "credit must not serialize the requested-currency context while the shell labels the effective one",
-  );
+  // RETIRE-CREDIT (2026-10-22) — the credit page is deleted; its resolver pin went with it.
 }
 
 // ── UI — the banner renders iff reverted, at the composition root ────────────

@@ -37,6 +37,7 @@
 import type { Transaction } from '@/types';
 import type { ReadClient } from '@/lib/db/tenant-context';
 import { accountTier } from '@/lib/account-classifier';
+import { scrubDescriptor } from '@/lib/ai/privacy/scrub';
 import type { BriefAccountClass, BriefActivityRow, BriefRecentActivity } from './types';
 
 /** Account id → `FinancialAccount.type`, for accounts the viewer may see; undefined when unknown. */
@@ -50,7 +51,6 @@ export function accountClassOf(type: string | undefined): BriefAccountClass | un
 
 export const RECENT_ACTIVITY_DAYS = 7;
 export const RECENT_ACTIVITY_ROWS = 5;
-const MERCHANT_MAX_CHARS = 40;
 
 const DAY_MS = 86_400_000;
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -68,12 +68,12 @@ export function recentActivityWindow(asOf: string): { from: string; to: string }
  *
  * Runs of four or more digits are removed: a display name is normally clean, but
  * the raw descriptor it falls back to can carry card, account or reference numbers.
+ *
+ * SEC-AI-005 — the rule now lives in lib/ai/privacy/scrub.ts so the Conversations
+ * tools apply exactly it; this name stays for the Brief's callers and tests.
  */
 export function safeMerchant(value: string | null | undefined): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const cleaned = value.replace(/\d{4,}/g, '').replace(/[#*]+/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!cleaned) return undefined;
-  return cleaned.length > MERCHANT_MAX_CHARS ? `${cleaned.slice(0, MERCHANT_MAX_CHARS - 1)}…` : cleaned;
+  return scrubDescriptor(value);
 }
 
 /** The day a row belongs to — the economic date when the read resolved one. */

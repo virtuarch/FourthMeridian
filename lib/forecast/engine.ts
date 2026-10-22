@@ -45,7 +45,7 @@
  */
 
 import { addDays, daysBetween } from './_time';
-import { CURRENCY, money } from './_num';
+import { money } from './_num';
 import { ComponentState } from '../ai/economic-concepts';
 import {
   AmountBasis, netCashContribution,

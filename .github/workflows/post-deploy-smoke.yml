@@ -1,0 +1,71 @@
+name: Post-deploy smoke
+
+# TEST-006 — the first automated check that a deployment is serving the code
+# it claims to. Vercel's Git integration creates a GitHub Deployment per
+# build and marks it with a `deployment_status`; on `success` this job runs
+# scripts/post-deploy-smoke.mjs against the deployment's own URL.
+#
+# The verdict lives in that script (pure `classifyProbe`, unit-tested in
+# scripts/post-deploy-smoke.test.ts):
+#   HEALTHY     app: /api/health status ok (and, on an older build that still
+#               publishes `commit`, it is a prefix of the deployed SHA);
+#               site: "/" answers 200 text/html                 → green
+#   UNHEALTHY   anything else that answered                     → red
+#   UNVERIFIED  Vercel Deployment Protection answered instead of the app
+#               (SSO redirect / 401 with Vercel's markers)      → red
+# UNVERIFIED is red ON PURPOSE. The first version exited 0 on any 401/30x, so
+# PR #1 showed "Health and commit identity: pass" after three 401s — a pass
+# for a check that never reached the application.
+#
+# Identity: since OPS-014 (bf2da56) /api/health publishes no commit. The probe
+# targets deployment_status.environment_url, Vercel's per-deployment
+# *.vercel.app URL, which serves exactly the build GitHub recorded — identity
+# by construction. The job was renamed from "Health and commit identity" to
+# "Deployment health" so its name no longer claims a comparison it cannot make.
+#
+# The public site (fourth-meridian-site) has no /api/health by design, so it
+# is probed at "/" (the first version probed /api/health there, which would
+# have raised a false alarm on the first public site deploy).
+#
+# Secrets: NONE. deployment_status runs the workflow file from the deployed
+# commit, so a repository secret here would be readable by any branch that
+# edits this file; and Vercel creates each GitHub Deployment with ref = the
+# commit SHA, so its branch is GitHub's inference rather than ours to rely on. Protected Previews are therefore UNVERIFIED (red) in
+# this workflow by design; Production is public and is verified for real.
+# Trusted verification through protection: trusted-deployment-health.yml
+# (push to v2.6/main, `vercel-probe` environment).
+
+# A red run here is an alarm, not a gate: Vercel has already aliased the
+# deployment. The owner's response is the incident runbook
+# (docs/operations/incident-response.md) and, if needed, `vercel promote` of
+# the previous deployment (production-cutover-plan.md §9).
+
+on:
+  deployment_status:
+
+permissions:
+  contents: read
+  deployments: read
+
+concurrency:
+  group: smoke-${{ github.event.deployment.id }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Deployment health
+    if: github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/post-deploy-smoke.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Probe the deployment and classify the answer
+        env:
+          DEPLOYMENT_URL: ${{ github.event.deployment_status.environment_url || github.event.deployment_status.target_url }}
+          DEPLOYED_SHA: ${{ github.event.deployment.sha }}
+          ENVIRONMENT: ${{ github.event.deployment.environment }}
+        run: node scripts/post-deploy-smoke.mjs

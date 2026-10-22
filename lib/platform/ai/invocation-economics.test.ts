@@ -30,9 +30,7 @@ const RATES: AiRate[] = [
   { provider: "OPENAI", model: "m", effectiveFrom: "2026-06-01", source: "fixture",
     usdPerMillion: { input: 10, cachedInput: 1, output: 100 } },
 ];
-let seq = 0;
 function inv(over: Partial<InvocationFact> = {}): InvocationFact {
-  seq++;
   return {
     provider: "OPENAI", model: "m", occurredAt: "2026-06-15",
     promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 0, reasoningTokens: 0,

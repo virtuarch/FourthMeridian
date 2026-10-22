@@ -64,9 +64,12 @@ async function main() {
 
   console.log("\n1b. AI COST CONTROLS — the in-flight reservation (pure)");
   {
-    check("RESERVE_USD is derived from the rate card for the engine's model and the turn's invocation cap",
-      RESERVE_MODEL === CHAT_MODEL && RESERVE_INVOCATIONS_PER_TURN === 6 && reserveUsdFor(CHAT_MODEL) !== null && RESERVE_USD === reserveUsdFor(CHAT_MODEL)
-      && close(RESERVE_USD, 6 * (30_000 * 1.25 / 1e6 + 1_500 * 10 / 1e6)), String(RESERVE_USD));
+    // SEC-AI-008 — the reserve covers the answer hops AND the guidance label: 6 + 1 = 7 calls per turn.
+    check("RESERVE_USD is derived from the rate card for the engine's model and the turn's invocation cap (6 hops + 1 guidance call)",
+      RESERVE_MODEL === CHAT_MODEL && RESERVE_INVOCATIONS_PER_TURN === 7 && reserveUsdFor(CHAT_MODEL) !== null && RESERVE_USD === reserveUsdFor(CHAT_MODEL)
+      && close(RESERVE_USD, 7 * (30_000 * 1.25 / 1e6 + 1_500 * 10 / 1e6)), String(RESERVE_USD));
+    check("…the hop count is the turn loop's own ceiling, and the engine really makes the second call",
+      /const MAX_TOOL_ROUNDTRIPS = 6;/.test(strip("lib/ai/conversation/turn.ts")) && /classifyGuidance\(/.test(strip("lib/ai/conversation/engine.ts")));
     check("…and never 0 even for an unpriced model (the fallback)", (reserveUsdFor("gpt-99-nope") ?? RESERVE_USD_FALLBACK) > 0);
     const base = { spentUsd: 4.5, allowanceUsd: 5, unpricedInvocations: 0, reserveUsd: 0.315, enforced: true, reservation: "RESERVED" as const };
     check("no turns in flight ⇒ allowed with the remainder", reservedAllowanceVerdict({ ...base, inFlight: 0 }).allowed);
@@ -156,7 +159,8 @@ async function main() {
     check("chat: the refusal is the shared response, not a sentence of its own", /allowanceRefusal\(allowance, 'Conversations'\)/.test(chat));
     check("chat: the kill switch is judged after the hour window and BEFORE the allowance; the reservation is released in finally",
       chat.indexOf("'ai-chat-hour'") < chat.indexOf("readPaidRequestsAdmission()") && chat.indexOf("readPaidRequestsAdmission()") < chat.indexOf("dailyAiAllowanceFor(")
-      && /finally \{\s*await allowance\.release\(\);\s*\}/.test(chat) && /paidRequestsPausedResponse\(\)/.test(chat) && /isAiPausedFailure\(turn\.record\.error\)/.test(chat) && /err instanceof AiPausedError/.test(chat));
+      // SEC-AI-003 — the turn's clock is disposed in the same finally, before the release.
+      && /finally \{\s*deadline\.dispose\(\);\s*await allowance\.release\(\);\s*\}/.test(chat) && /paidRequestsPausedResponse\(\)/.test(chat) && /isAiPausedFailure\(turn\.record\.error\)/.test(chat) && /err instanceof AiPausedError/.test(chat));
     check("chat: an unpriced model thrown by the chokepoint gets its own sentence", /err instanceof UnpricedModelError/.test(chat) && /SAY\.unpriced/.test(chat));
     const brief = strip("app/api/brief/generate/route.ts");
     check("brief: allowance after the 20/min window, before the generation call",

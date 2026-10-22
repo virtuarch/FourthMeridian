@@ -61,6 +61,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
+import { SpaceReadFailure } from "@/components/space/SpaceReadFailure";
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import type { SpaceAccount } from "@/lib/space/dashboard-types";
@@ -149,6 +150,8 @@ export function WealthWorkspace({
   onEnvelopeChange,
   backfillInProgress,
   spaceType,
+  snapshotsError = null,
+  onRetrySnapshots,
 }: {
   spaceId:          string;
   /**
@@ -194,6 +197,13 @@ export function WealthWorkspace({
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
   /** Part-6 — a snapshot backfill is actively running for this Space. */
   backfillInProgress?: boolean;
+  /**
+   * UI-006 — the shared snapshot read FAILED (the sentence to show), or null.
+   * A failure is never "No wealth history yet": with no history loaded it
+   * replaces the empty state; over stale history it is a one-line notice.
+   */
+  snapshotsError?: string | null;
+  onRetrySnapshots?: () => void;
 }) {
   // ── v2.6 — shared historical exploration ───────────────────────────────────
   const exploration = useHistoryExploration();
@@ -322,11 +332,24 @@ export function WealthWorkspace({
     </div>
   );
 
+  // UI-006 — the snapshot read failed but earlier history is on screen.
+  const staleSnapshotsNotice = snapshotsError && snapshots != null ? (
+    <SpaceReadFailure variant="inline" what="wealth history" message={snapshotsError} onRetry={onRetrySnapshots} />
+  ) : null;
+
   // ── Debt — the complete Debt workspace as a mode ────────────────────────────
   if (mode === "debt") {
     return (
       <div className="space-y-6 min-w-0">
         {modeSelector}
+        {snapshotsError && (
+          <SpaceReadFailure
+            variant={snapshots != null ? "inline" : "card"}
+            what="wealth history"
+            message={snapshotsError}
+            onRetry={onRetrySnapshots}
+          />
+        )}
         <DebtWorkspace
           spaceId={spaceId}
           asOf={asOf}
@@ -428,6 +451,17 @@ export function WealthWorkspace({
     );
   }
 
+  // UI-006 — nothing loaded AND the read failed: say so, never "No wealth history yet".
+  if (snapshotsError && !result.hasHistory) {
+    return (
+      <div className="space-y-6 min-w-0">
+        {modeSelector}
+        <SpaceReadFailure what="wealth history" message={snapshotsError} onRetry={onRetrySnapshots} />
+        {assetsSectionsBody}
+      </div>
+    );
+  }
+
   if (!result.hasHistory) {
     return (
       <div className="space-y-6 min-w-0">
@@ -449,6 +483,7 @@ export function WealthWorkspace({
     <>
       <div className="space-y-8 sm:space-y-10 min-w-0">
         {modeSelector}
+        {staleSnapshotsNotice}
 
         {/* ① Hero — the headline scalar of the page's subject. */}
         <div id="wealth-summary" className="scroll-mt-20">

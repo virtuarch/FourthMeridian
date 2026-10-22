@@ -224,7 +224,7 @@ async function main(): Promise<void> {
   {
     const chat = strip("app/api/ai/chat/route.ts");
     const brief = strip("app/api/brief/generate/route.ts");
-    const chatOrder = chat.indexOf("dailyAiAllowanceFor(") > 0 && chat.indexOf("dailyAiAllowanceFor(") < chat.indexOf("runStatelessTurn(") && /finally\s*\{\s*await allowance\.release\(\)/.test(chat);
+    const chatOrder = chat.indexOf("dailyAiAllowanceFor(") > 0 && chat.indexOf("dailyAiAllowanceFor(") < chat.indexOf("runStatelessTurn(") && /finally\s*\{[^}]*?await allowance\.release\(\)/.test(chat) /* SEC-AI-003: the turn deadline is disposed in the same finally */;
     const briefUses = /dailyAiAllowanceFor\(/.test(brief) && /allowanceRefusal\(/.test(brief);
     const mod = strip("lib/platform/ai/allowance-reservation.ts");
     check(8, "[source] chat reserves BEFORE the turn and releases in `finally`; the Brief route runs the same allowance; the reservation module issues no $queryRaw",

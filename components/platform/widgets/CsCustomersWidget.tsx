@@ -22,11 +22,20 @@
  * source are read from `policy.aiDailyAllowance` + `policy.aiDailyUsdAllowanceOverride`
  * and degrade to an honest sentence when it does not. Integer ≥ 1 is checked
  * here; the ceiling is the server's refusal and its sentence is shown.
+ *
+ * UI-001 — the editors (policy, allowance override, cohort) and Refresh all are
+ * rendered only for a CUSTOMER_SUCCESS WRITE holder (`access.canWrite`); a READ
+ * holder sees one explanatory line instead of buttons that 403. Deactivate /
+ * reactivate stays visible: it is a GROWTH_REVENUE route with its own gate.
+ * UI-002 — no fabricated audit reason: deactivate / reactivate posts the reason
+ * the operator CHOSE and is disabled until one is chosen (the route refuses a
+ * missing reason with a 400; the client no longer substitutes SUPPORT_REQUEST).
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Users, RefreshCw, Loader2, ShieldCheck, Layers } from "lucide-react";
-import { PlatformWidgetCard, WidgetMessage, WidgetStat, timeAgo, type PlatformSection } from "../widget-kit";
+import { PlatformWidgetCard, WidgetMessage, WidgetStat, fmtUtc, timeAgo, type PlatformSection } from "../widget-kit";
+import type { SpaceMountAccess } from "@/lib/space/mount-context";
 import { RightPanel, PanelHeader, PanelContent, PanelFooter } from "@/components/atlas/panels";
 import type { CustomerListResponse } from "@/app/api/platform/customer-success/customers/route";
 import type { CustomerDetailResponse } from "@/app/api/platform/customer-success/customers/[userId]/route";
@@ -65,7 +74,13 @@ const SOURCE_TONE: Record<string, string> = {
 function fmtValue(v: boolean | number): string { return typeof v === "boolean" ? (v ? "on" : "off") : String(v); }
 function ago(iso: string | null): string { return iso ? `${timeAgo(iso)} ago` : "—"; }
 
-export function CsCustomersWidget({ section }: { section: PlatformSection }) {
+/** UI-001 — the one line a READ holder sees where the editors would be. */
+export const CS_READ_ONLY_LINE =
+  "Changing policy, the AI allowance or cohorts, and Refresh all, need WRITE access to Customer Success.";
+
+export function CsCustomersWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
+  // UI-001 — descriptive only (the server gate decides); absent ⇒ READ (fail-safe).
+  const canWrite = access?.canWrite === true;
   const [list, setList] = useState<CustomerListResponse | null>(null);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -76,6 +91,8 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
   const [acting, setActing] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [refreshReport, setRefreshReport] = useState<RefreshAllReport | null>(null);
+  /** UI-009 — when the list was last read (every refetch moves it). */
+  const [loadedAt, setLoadedAt] = useState<string | null>(null);
   /** ONE instant for the list's relative times, captured at mount (a clock read during render is impure). */
   const [nowMs] = useState(() => Date.now());
 
@@ -94,6 +111,7 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
       const r = await fetch(`/api/platform/customer-success/customers?search=${encodeURIComponent(q)}&limit=100`, { credentials: "same-origin" });
       if (!r.ok) throw new Error(r.status === 403 ? "Not authorized" : `Request failed (${r.status})`);
       setList((await r.json()) as CustomerListResponse);
+      setLoadedAt(new Date().toISOString());
     } catch (e) { setError(e instanceof Error ? e.message : "Failed to load"); }
     finally { setLoading(false); }
   }, []);
@@ -168,13 +186,14 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
     void run("refresh", `/api/platform/customer-success/customers/${detail.identity.id}/refresh`, { method: "POST" },
       (body) => setRefreshReport(body as RefreshAllReport));
   };
-  const toggleActive = () => detail?.actions.deactivate && run("active", detail.actions.deactivate.url,
-    json({ action: detail.actions.deactivate.currently === "ACTIVE" ? "deactivate" : "reactivate", reason: reason ?? { code: "SUPPORT_REQUEST" } }));
+  // UI-002 — the operator's chosen reason or nothing: no fallback code is invented.
+  const toggleActive = () => detail?.actions.deactivate && reason && run("active", detail.actions.deactivate.url,
+    json({ action: detail.actions.deactivate.currently === "ACTIVE" ? "deactivate" : "reactivate", reason }));
 
   return (
-    <PlatformWidgetCard label={section.label} icon={Users}>
+    <PlatformWidgetCard label={section.label} icon={Users} checkedAt={loadedAt}>
       <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void loadList(search); }}>
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by email or name"
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by email or name" aria-label="Search customers by email or name"
           className="w-full rounded-[var(--radius-sm)] border bg-transparent px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)]"
           style={{ borderColor: "var(--border-hairline)" }} />
         <button type="submit" className="rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold" style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>Search</button>
@@ -235,6 +254,8 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                     <Row label="Email verified" value={detail.identity.emailVerifiedAt ? "yes" : "no"} />
                     <Row label="State" value={detail.identity.deactivatedAt ? (detail.identity.deletionScheduledAt ? `deletion scheduled ${ago(detail.identity.deletionScheduledAt).replace(" ago", "")}` : "deactivated") : "active"} />
                     <Row label="Last active" value={`${ago(detail.activity.lastActiveAt)} (${detail.activity.lastActiveSource.toLowerCase()})`} />
+                    {/* UI-009 — the instant every relative age in this panel is measured from. */}
+                    <Row label="Detail checked" value={fmtUtc(detail.checkedAt)} />
                     <Row label="Sessions" value={String(detail.activity.activeSessions)} />
                   </Section>
 
@@ -254,6 +275,9 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                         </li>
                       ))}
                     </ul>
+                    {/* UI-001 — editors only for a CUSTOMER_SUCCESS WRITE holder. */}
+                    {!canWrite && <p className="mt-2 text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{CS_READ_ONLY_LINE}</p>}
+                    {canWrite && (<>
                     <div className="mt-2 flex flex-col gap-2 rounded-[var(--radius-sm)] border p-2.5" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-inset)" }}>
                       <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Change policy</p>
                       <label className="flex items-center justify-between gap-2"><span className="text-[var(--text-secondary)]">Group</span>
@@ -269,7 +293,7 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                       <button type="button" onClick={assignPolicy} disabled={acting !== null || !reason}
                         className="inline-flex w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                         style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
-                        {acting === "policy" ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />} Apply policy
+                        {acting === "policy" ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <ShieldCheck size={13} aria-hidden />} Apply policy
                       </button>
                     </div>
                     {/* AI COST CONTROLS — the per-customer allowance override, its own call, the same reason fields. */}
@@ -287,7 +311,7 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                         <button type="button" onClick={setAllowanceOverride} disabled={acting !== null || !reason || allowanceCheck.value === null}
                           className="inline-flex w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                           style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
-                          {acting === "allowance" ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />} Set override
+                          {acting === "allowance" ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <ShieldCheck size={13} aria-hidden />} Set override
                         </button>
                         {allowance?.override != null && (
                           <button type="button" onClick={removeAllowanceOverride} disabled={acting !== null || !reason}
@@ -308,9 +332,10 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                       <button type="button" onClick={addCohort} disabled={acting !== null || !reason || !cohort}
                         className="inline-flex w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                         style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
-                        {acting === "cohort" ? <Loader2 size={13} className="animate-spin" /> : <Layers size={13} />} Add cohort
+                        {acting === "cohort" ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Layers size={13} aria-hidden />} Add cohort
                       </button>
                     </div>
+                    </>)}
                   </Section>
 
                   <Section title="Beta lifecycle">
@@ -363,6 +388,16 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                     ))}
                   </Section>
 
+                  {/* UI-002 — deactivate / reactivate carries the reason the operator chose. */}
+                  {detail.actions.deactivate && (
+                    <Section title="Account access">
+                      <p className="text-[11px] leading-snug text-[var(--text-muted)]">
+                        {detail.actions.deactivate.currently === "ACTIVE" ? "Deactivate" : "Reactivate"} is recorded in the audit log with the reason you choose here. It runs through Growth &amp; Revenue&rsquo;s own WRITE gate.
+                      </p>
+                      <ReasonFields code={reasonCode} note={reasonNote} setCode={setReasonCode} setNote={setReasonNote} />
+                    </Section>
+                  )}
+
                   {refreshReport && (
                     <Section title="Refresh all — outcomes">
                       <Row label="Considered" value={`${refreshReport.summary.considered} · started ${refreshReport.summary.started} · skipped ${refreshReport.summary.skipped} · refused ${refreshReport.summary.refused} · failed ${refreshReport.summary.failed}`} />
@@ -386,16 +421,16 @@ export function CsCustomersWidget({ section }: { section: PlatformSection }) {
                   Refresh all: {describeRefreshOutcomes(refreshReport.outcomes)}
                 </p>
               )}
-              {!reason && detail && <p className="w-full text-[10px] text-[var(--text-muted)]">Policy and cohort changes need a reason code (above).</p>}
-              {detail?.actions.refreshAll && (
+              {!reason && detail && <p className="w-full text-[10px] text-[var(--text-muted)]">Policy, cohort and account-access changes need a reason code (above).</p>}
+              {detail?.actions.refreshAll && canWrite && (
                 <button type="button" onClick={refreshAll} disabled={acting !== null}
                   className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                   style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
-                  {acting === "refresh" ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Refresh all
+                  {acting === "refresh" ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <RefreshCw size={13} aria-hidden />} Refresh all
                 </button>
               )}
               {detail?.actions.deactivate && (
-                <button type="button" onClick={toggleActive} disabled={acting !== null}
+                <button type="button" onClick={toggleActive} disabled={acting !== null || !reason}
                   className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                   style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>
                   {detail.actions.deactivate.currently === "ACTIVE" ? "Deactivate" : "Reactivate"}
@@ -423,11 +458,11 @@ function ReasonFields({ code, note, setCode, setNote }: { code: string; note: st
   return (
     <>
       <label className="flex items-center justify-between gap-2"><span className="text-[var(--text-secondary)]">Reason</span>
-        <select value={code} onChange={(e) => setCode(e.target.value)} className="rounded border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)]" style={{ borderColor: "var(--border-hairline)" }}>
+        <select value={code} aria-required="true" onChange={(e) => setCode(e.target.value)} className="rounded border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)]" style={{ borderColor: "var(--border-hairline)" }}>
           <option value="">choose a reason</option>
           {OPERATOR_REASON_CODES.map((c) => <option key={c} value={c}>{REASON_LABEL[c] ?? c}</option>)}
         </select></label>
-      <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={280} placeholder="Note (optional, no personal data)"
+      <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={280} placeholder="Note (optional, no personal data)" aria-label="Reason note (optional, no personal data)"
         className="rounded border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)]" style={{ borderColor: "var(--border-hairline)" }} />
     </>
   );

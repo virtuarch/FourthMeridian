@@ -88,6 +88,7 @@ import { classifyLiquidity, type LiquidityContext, type LiquidityTx } from "@/li
 import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
 import { isCostFlow, isRefund } from "@/lib/transactions/flow-predicates";
 import { clampEconomicSpend } from "@/lib/transactions/cash-flow";
+import { round2 } from "@/lib/money/round";
 
 /** What the cash sent toward liabilities in a window actually did. All ≥ 0. */
 export interface DebtService {
@@ -111,7 +112,6 @@ export interface DebtService {
   netNewBorrowing: number;
 }
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
  * Decompose a window's debt service from ANY row set (both legs, the whole

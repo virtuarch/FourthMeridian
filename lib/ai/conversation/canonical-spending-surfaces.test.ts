@@ -55,6 +55,7 @@ class FrozenDate extends RealDate {
 import { readFileSync } from 'node:fs';
 import type { ToolContext } from './tools';
 import type { TransactionsSummaryData } from '@/lib/ai/types';
+import { readToolsSource } from '@/lib/test-support/tools-source';
 
 let failures = 0, passed = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -283,7 +284,7 @@ async function main(): Promise<void> {
   const load = readFileSync('lib/ai/brief/load.ts', 'utf8');
   check('the Brief asks for it on BOTH reads (current and retrospective), as of the Brief\'s day',
     (load.match(/canonicalSpendingAsOf: asOf/g) ?? []).length === 2);
-  const tools = readFileSync('lib/ai/conversation/tools.ts', 'utf8');
+  const tools = readToolsSource(); // CQ-011: the tool layer
   check('the spine and get_baselines read the canonical months; no 90-day default read remains on either',
     (tools.match(/readCanonicalSpending\(\{/g) ?? []).length === 2
       && !/startDate: daysAgoISO\(asOf, 179\)/.test(tools) && !/from: daysAgoISO\(ceiling, 89\)/.test(tools));

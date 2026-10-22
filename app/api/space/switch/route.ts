@@ -28,9 +28,8 @@
 
 import { NextRequest, NextResponse }  from "next/server";
 import { withTenantDb }                from "@/lib/db/tenant-context";
-import { SpaceMemberStatus }      from "@prisma/client";
 import { ACTIVE_SPACE_COOKIE }    from "@/lib/space";
-import { requireUser } from "@/lib/session";
+import { requireUser, requireSpaceRole } from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
 
 export const preferredRegion = "sin1";
@@ -49,14 +48,12 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
   const userId = user.id;
 
-  // Verify membership — never disclose whether a space exists to non-members
-  const membership = await withTenantDb(userId, (tx) => tx.spaceMember.findUnique({
-    where: { spaceId_userId: { spaceId, userId } },
-  }));
-
-  if (!membership || membership.status !== SpaceMemberStatus.ACTIVE) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  // Verify membership — never disclose whether a space exists to non-members.
+  // ARCH-001 / CQ-007: the shared Space-role guard (ACTIVE membership, role ≥
+  // VIEWER, 403 otherwise, read as fm_app) replaces the inline copy of the same check.
+  const [auth, denied] = await requireSpaceRole(spaceId);
+  if (denied) return denied;
+  const membership = auth.membership;
 
   // The membership is ACTIVE, so the Space is visible to fm_app — see the header
   // for why this is a second read rather than an include. Its audit row shares

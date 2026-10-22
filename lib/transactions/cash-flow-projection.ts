@@ -36,7 +36,7 @@ import {
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import {
   granularityFor, bucketKey, bucketLabel,
-  foldEconomicRow, clampEconomicSpend, economicSideOf,
+  foldEconomicRow, clampEconomicSpend, clampEconomicIncome, economicSideOf,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
 import { convertMoney } from "@/lib/money/convert";
@@ -285,7 +285,10 @@ export function economicSpendByTier(f: DayFacts): EconomicSpendByTier {
 export function perspectiveTotals(f: DayFacts, perspective: CashFlowPerspective): PerspectiveTotals {
   if (perspective === "economic") {
     const out = economicSpend(f);
-    return { in: f.income, out, net: f.income - out };
+    // FIN-003 — `f.income` is the signed INCOME sum; the perspective reads it
+    // through the same floor `economicTotals` applies.
+    const income = clampEconomicIncome(f.income);
+    return { in: income, out, net: income - out };
   }
   return { in: f.cashIn, out: f.cashOut, net: f.cashIn - f.cashOut };
 }

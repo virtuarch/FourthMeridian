@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { classifyAccounts, liquidityAccess, normalizeProviderSubtype, LIQUIDITY_ACCESS_MEANING } from "@/lib/account-classifier";
 import { computeLiquidity, type LiquidityAccountRow } from "@/lib/perspective-engine/lenses/liquidity.core";
 import { normalizeSharedAccounts, type ShareRow } from "@/lib/account-privacy";
+import { readToolsSource } from "@/lib/test-support/tools-source";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -155,9 +156,15 @@ console.log("6. Privacy aggregation keeps access apart");
 console.log("7. Write path and consumers — one authority, provider evidence only");
 {
   for (const f of ["lib/plaid/refresh.ts", "lib/plaid/exchangeToken.ts", "lib/accounts/recover-plaid-account.ts"]) {
-    check(`${f} stores the provider's subtype via normalizeProviderSubtype`, /normalizeProviderSubtype\(acct\.subtype\)/.test(src(f)));
+    check(`${f} stores the provider's subtype via normalizeProviderSubtype`,
+      /normalizeProviderSubtype\(acct\.subtype\)/.test(src(f))
+      || (f === "lib/plaid/refresh.ts" && /planBalanceWrite\(acct\.balances, acct\.subtype\)/.test(src(f)) && /normalizeProviderSubtype\(subtype\)/.test(src(f))));
   }
-  check("refresh rewrites it on every refresh (rows self-correct)", /providerSubtype: normalizeProviderSubtype\(acct\.subtype\)/.test(src("lib/plaid/refresh.ts")));
+  // FIN-011 moved the write into the pure planBalanceWrite(balances, subtype); the subtype is
+  // still the provider's, rewritten on every answer (observed balance or not).
+  check("refresh rewrites it on every refresh (rows self-correct)",
+    /planBalanceWrite\(acct\.balances, acct\.subtype\)/.test(src("lib/plaid/refresh.ts"))
+    && /providerSubtype: normalizeProviderSubtype\(subtype\)/.test(src("lib/plaid/refresh.ts")));
   check("no subtype is inferred from a name anywhere in the rule", !/name/i.test(src("lib/account-classifier.ts").split("export function liquidityAccess")[1].split("\n}\n")[0]));
   check("AI accounts assembler selects and classifies with providerSubtype (runway, Brief, scenarios read its totalLiquid)",
     /providerSubtype: true/.test(src("lib/ai/assemblers/accounts.ts")) && /providerSubtype: l\.financialAccount\.providerSubtype/.test(src("lib/ai/assemblers/accounts.ts")));
@@ -173,7 +180,7 @@ console.log("7. Write path and consumers — one authority, provider evidence on
     /liquidityAccess\(a\) === "cash"/.test(src("components/space/widgets/liquidity-adapters.tsx")));
   check("the lens tiers come from liquidityAccess (no private type sets)", !/MARKETABLE_TYPES|CASH_TYPES/.test(src("lib/perspective-engine/lenses/liquidity.core.ts")));
   check("scenario opening cash conserves value: other assets = totalAssets − totalLiquid − investments",
-    /\(accounts\.totalAssets \?\? 0\) - \(accounts\.totalLiquid \?\? 0\) - composition\.combined/.test(src("lib/ai/conversation/tools.ts")));
+    /\(accounts\.totalAssets \?\? 0\) - \(accounts\.totalLiquid \?\? 0\) - composition\.combined/.test(readToolsSource())); // CQ-011: the tool layer
   check("net-worth Cash composition is the cash BALANCE (restricted included)", /c\.totalLiquid \+ c\.totalRestrictedCash/.test(src("components/space/widgets/wealth-adapters.tsx")));
 }
 

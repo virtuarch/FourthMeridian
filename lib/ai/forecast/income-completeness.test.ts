@@ -14,7 +14,8 @@ import { deriveCurrentPeriodicAmount, periodicCashEvents } from '@/lib/forecast/
 import { FlowRole, type FlowRoleKind, type FutureCashEvent } from '@/lib/forecast/future-cash-event';
 import { projectCash } from '@/lib/forecast/projection';
 import { addDays } from '@/lib/forecast/_time';
-import { incomeCompleteness, MATERIALITY, type IncomeCompleteness } from './income-completeness';
+import { incomeCompleteness, continuationOf, isOmittedLine, MATERIALITY, OMITTED_STATUSES, RECENT_SILENCE,
+  type IncomeCompleteness } from './income-completeness';
 import type { ResolvedIncomeStream } from './streams';
 
 let failures = 0, passes = 0;
@@ -110,6 +111,146 @@ const FLAT = [5267.10, 5267.13, 5286.64, 5286.65, 5286.63, 5286.40, 5306.12, 528
   const { c } = run([stream('payroll', [...FLAT, 5286.64], '2026-10-09'), stream('int', [0.01, 0.09, 0.03, 0.10], '2026-10-01', FlowRole.INTEREST)], 10);
   check('6 an unpriced INTEREST stream is reported but never makes the projection incomplete',
     c.status === 'COMPLETE' && c.streams.some((l) => l.role === 'INTEREST'));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FIN-001 (2026-10-22) — the SIBLING: continuation unestablished, not amount.
+//
+// The runtime audit's fixture, verbatim: a biweekly payroll, 11 flat on-time
+// paychecks of $3,000, newest slot 2026-10-02; the 2026-10-16 slot has come due
+// (5 days before as-of 2026-10-21) and is unpaid. Before this slice the stream
+// read UNKNOWN/SILENT ⇒ LAPSED ⇒ COMPLETE ⇒ `project_cash` said
+// EVIDENCE_BASED_ESTIMATE with $15,000 of remaining paychecks silently at $0.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const ASOF = '2026-10-21', END = '2026-12-31';
+  /** A biweekly stream, amounts oldest → newest, judged at ASOF with the feed reaching `through`. */
+  const fixture = (dates: string[], amounts: number[], through: string | null, role: FlowRoleKind = FlowRole.INCOME): ResolvedIncomeStream => {
+    const key = 'Acme Payroll';
+    const cadence = deriveCadence(dates, key);
+    const activity = resolveStreamActivity({ cadence, settlements: dates, observedThroughISO: through, asOfISO: ASOF });
+    const amount = isCadence(cadence)
+      ? deriveCurrentPeriodicAmount(dates.map((d, i) => ({ dateISO: d, value: amounts[i], currency: 'USD' })), cadence) : null;
+    return { sourceKey: key, label: key, role, cadence, activity, amount,
+      projectionEligible: activity.mayGenerateExpectedOccurrences, settledDepository: true,
+      observationCount: dates.length, truncated: false };
+  };
+  const biweekly = (lastISO: string, n: number) => Array.from({ length: n }, (_, i) => addDays(lastISO, -14 * (n - 1 - i)));
+  const runAt = (streams: ResolvedIncomeStream[], openingCash = 20_000) => {
+    const events: FutureCashEvent[] = streams.flatMap((s) => s.amount
+      ? periodicCashEvents(s.activity, s.cadence as never, s.amount, ASOF, END, s.role, true) : []);
+    const p = projectCash({ openingCash, events, fromISO: ASOF, toISO: END, currency: 'USD',
+      spending: { kind: 'USER_ASSUMED', dailyRate: 150, monthlyAmount: null, statedAs: 'test' } });
+    const c = incomeCompleteness({ streams, events, excludedIds: new Set(p.excluded.map((x) => x.id)),
+      fromISO: ASOF, toISO: END, openingCash });
+    return { c, closing: p.closing!, inflow: p.totals!.inflow };
+  };
+  const FLAT3K = Array(11).fill(3000) as number[];
+
+  // F1. The audit fixture: one slot overdue, feed current ⇒ RECENTLY_SILENT, INCOMPLETE, bound $15,000.
+  {
+    const s = fixture(biweekly('2026-10-02', 11), FLAT3K, ASOF);
+    const { c, inflow } = runAt([s]);
+    const pay = c.streams[0];
+    check('F1a activity SILENT with one covered miss (the engine\'s licence is unchanged)',
+      s.activity.state === 'SILENT' && s.activity.missedOccurrences === 1 && s.projectionEligible === false, JSON.stringify(s.activity));
+    check('F1b continuation = RECENTLY_SILENT', continuationOf(s) === 'RECENTLY_SILENT');
+    check('F1c status RECENTLY_SILENT, projection INCOMPLETE — never EVIDENCE_BASED under a complete label',
+      pay.status === 'RECENTLY_SILENT' && c.status === 'INCOMPLETE' && pay.material === true, JSON.stringify(pay));
+    check('F1d the fold still counted $0 for it (the licence decides cash; this slice decides the label)',
+      inflow === 0 && pay.counted === 0 && c.projectedIncomeTotal === 0);
+    check('F1e the bound is the five remaining slots (10-30, 11-13, 11-27, 12-11, 12-25) × $3,000 = $15,000',
+      pay.occurrencesInHorizon === 5 && pay.omittedAtLastObserved === 15000 && c.omittedAtLastObserved === 15000,
+      JSON.stringify({ n: pay.occurrencesInHorizon, bound: pay.omittedAtLastObserved }));
+    check('F1f the silence is stated in the engine\'s numbers: last satisfied 2026-10-02, 1 unsatisfied slot, feed through as-of',
+      pay.silence?.lastSatisfiedOccurrence === '2026-10-02' && pay.silence.unsatisfiedOccurrences === 1
+        && pay.silence.ledgerObservedThrough === ASOF, JSON.stringify(pay.silence));
+    check('F1g the line is an OMITTED line for the tool layer', isOmittedLine(pay) && OMITTED_STATUSES.has('RECENTLY_SILENT'));
+  }
+
+  // F2. Skipped one cycle, then resumed ⇒ CURRENT again, level unchanged, COMPLETE.
+  {
+    const dates = [...biweekly('2026-09-04', 10), '2026-10-02', '2026-10-16'];
+    const s = fixture(dates, Array(12).fill(3000) as number[], ASOF);
+    const { c } = runAt([s]);
+    check('F2 a stream that skipped 2026-09-18 and resumed is CURRENT, PRESENT, level $3,000, COMPLETE',
+      s.activity.state === 'CURRENT' && c.streams[0].status === 'PRESENT' && c.streams[0].level === 3000 && c.status === 'COMPLETE',
+      JSON.stringify({ state: s.activity.state, line: c.streams[0] }));
+  }
+
+  // F3. A changed amount (new regime) is the regime walk's business and is unaffected.
+  {
+    const s = fixture(biweekly('2026-10-16', 11), [...Array(8).fill(3000), 3300, 3300, 3300] as number[], ASOF);
+    const { c, inflow } = runAt([s]);
+    check('F3 three paychecks at a new level ⇒ PRESENT at $3,300, five projected = $16,500, COMPLETE',
+      c.streams[0].status === 'PRESENT' && c.streams[0].level === 3300 && inflow === 16500 && c.status === 'COMPLETE',
+      JSON.stringify({ line: c.streams[0], inflow }));
+  }
+
+  // F4. Discontinued: five unpaid slots ⇒ LAPSED, disclosed, non-blocking.
+  {
+    const s = fixture(biweekly('2026-08-07', 11), FLAT3K, ASOF);
+    const { c } = runAt([s]);
+    const pay = c.streams[0];
+    check('F4a five covered misses ⇒ LAPSED and the projection stays COMPLETE',
+      s.activity.missedOccurrences === 5 && continuationOf(s) === 'LAPSED' && pay.status === 'LAPSED' && c.status === 'COMPLETE',
+      JSON.stringify(pay));
+    check('F4b disclosed with its silence, but carries NO bound and is not an omitted line',
+      pay.silence?.unsatisfiedOccurrences === 5 && pay.omittedAtLastObserved === undefined && !isOmittedLine(pay));
+  }
+
+  // F5. The boundary: two unpaid slots are still recent; three are discontinued.
+  {
+    const two = fixture(biweekly('2026-09-18', 11), FLAT3K, ASOF);
+    const three = fixture(biweekly('2026-09-04', 11), FLAT3K, ASOF);
+    check('F5a RECENT_SILENCE allows two unsatisfied slots', RECENT_SILENCE.MAX_UNSATISFIED_OCCURRENCES === 2);
+    check('F5b two unpaid slots ⇒ RECENTLY_SILENT, INCOMPLETE, bound = remaining five × $3,000',
+      continuationOf(two) === 'RECENTLY_SILENT' && runAt([two]).c.status === 'INCOMPLETE'
+        && runAt([two]).c.omittedAtLastObserved === 15000);
+    check('F5c three unpaid slots ⇒ LAPSED, COMPLETE', continuationOf(three) === 'LAPSED' && runAt([three]).c.status === 'COMPLETE');
+  }
+
+  // F6. Feed stale: the sync clock stops before the due slot ⇒ UNKNOWN, blocking, with the bound.
+  {
+    const s = fixture(biweekly('2026-10-02', 11), FLAT3K, '2026-10-10');
+    const { c } = runAt([s]);
+    const pay = c.streams[0];
+    check('F6a activity UNKNOWN: zero observed misses, one due slot the feed could not see',
+      s.activity.state === 'UNKNOWN' && s.activity.missedOccurrences === 0 && s.activity.unobservedDueOccurrences === 1,
+      JSON.stringify(s.activity));
+    check('F6b status UNKNOWN, projection INCOMPLETE, bound $15,000 — a stale feed is not a complete estimate',
+      continuationOf(s) === 'UNKNOWN' && pay.status === 'UNKNOWN' && c.status === 'INCOMPLETE'
+        && pay.omittedAtLastObserved === 15000 && pay.silence?.ledgerObservedThrough === '2026-10-10', JSON.stringify(pay));
+    const far = fixture(biweekly('2026-07-10', 11), FLAT3K, '2026-07-12');
+    check('F6c however far behind the feed is, nobody looked: UNKNOWN, never LAPSED', continuationOf(far) === 'UNKNOWN');
+  }
+
+  // F7. On-time control: the newest slot paid, feed current ⇒ PRESENT and $15,000 projected (unchanged).
+  {
+    const s = fixture(biweekly('2026-10-16', 11), FLAT3K, ASOF);
+    const { c, inflow } = runAt([s]);
+    check('F7 on time ⇒ CURRENT, PRESENT, five paychecks counted = $15,000, COMPLETE',
+      s.activity.state === 'CURRENT' && c.streams[0].status === 'PRESENT' && inflow === 15000
+        && c.streams[0].counted === 5 && c.status === 'COMPLETE', JSON.stringify({ line: c.streams[0], inflow }));
+  }
+
+  // F8. Materiality still governs: a recently silent $20 stream beside a live payroll does not block.
+  {
+    const pay = fixture(biweekly('2026-10-16', 11), FLAT3K, ASOF);
+    const tiny = { ...fixture(biweekly('2026-10-02', 11), Array(11).fill(20) as number[], ASOF), sourceKey: 'tiny', label: 'tiny' };
+    const { c } = runAt([pay, tiny]);
+    const t = c.streams.find((l) => l.stream === 'tiny')!;
+    check('F8 an immaterial recently-silent stream is listed (material false) and the projection stays COMPLETE',
+      t.status === 'RECENTLY_SILENT' && t.material === false && t.omittedAtLastObserved === 100 && c.status === 'COMPLETE', JSON.stringify(t));
+  }
+
+  // F9. INTEREST never decides completeness, recently silent or not.
+  {
+    const int = fixture(biweekly('2026-10-02', 11), Array(11).fill(500) as number[], ASOF, FlowRole.INTEREST);
+    const { c } = runAt([int], 10);
+    check('F9 a recently silent INTEREST stream is disclosed but never blocks',
+      c.streams[0].status === 'RECENTLY_SILENT' && c.status === 'COMPLETE');
+  }
 }
 
 console.log(`\n${passes} passed, ${failures} failed`);
