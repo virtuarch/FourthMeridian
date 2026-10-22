@@ -13,7 +13,7 @@
  * a duplicate; the raw-descriptor key matches, so replay is idempotent.
  */
 
-import { findByFingerprint, normalizeMerchantKey } from "@/lib/transactions/fingerprint";
+import { findByFingerprint, resolveFingerprint, normalizeMerchantKey } from "@/lib/transactions/fingerprint";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -90,6 +90,25 @@ async function main() {
     const rows: Row[] = [{ id: "csv", financialAccountId: "acctA", date: D19, amount: -62.11, pending: false, merchant: "MANUAL PAYEE", description: null, plaidTransactionId: null, deletedAt: null }];
     const m = await findByFingerprint("acctA", D19, -62.11, "MANUAL PAYEE", false, fakeClient(rows));
     check("csv: description null → coalesce to merchant (prior behavior preserved)", m?.id === "csv");
+  }
+
+  // ── FIN-009 — ambiguity is answered, not coin-tossed ───────────────────────
+  {
+    const twins: Row[] = [
+      { id: "twin-a", financialAccountId: "acctA", date: D19, amount: -12.05, pending: false, merchant: "Talabat", description: "TAP TALABAT food", plaidTransactionId: null, deletedAt: null },
+      { id: "twin-b", financialAccountId: "acctA", date: D19, amount: -12.05, pending: false, merchant: "Talabat", description: "TAP TALABAT food", plaidTransactionId: null, deletedAt: null },
+      { id: "other",  financialAccountId: "acctA", date: D19, amount: -12.05, pending: false, merchant: "Uber", description: "UBER TRIP", plaidTransactionId: null, deletedAt: null },
+    ];
+    const amb = await resolveFingerprint("acctA", D19, -12.05, "TAP TALABAT food", false, fakeClient(twins));
+    check("FIN-009: two rows with the same fingerprint ⇒ AMBIGUOUS, naming both twins and not the unrelated row",
+      amb.kind === "AMBIGUOUS" && amb.matches.map((m) => m.id).sort().join(",") === "twin-a,twin-b", JSON.stringify(amb));
+    const one = await resolveFingerprint("acctA", D19, -12.05, "UBER TRIP", false, fakeClient(twins));
+    check("FIN-009: exactly one row ⇒ MATCH", one.kind === "MATCH" && one.row.id === "other");
+    const none = await resolveFingerprint("acctA", D19, -99, "UBER TRIP", false, fakeClient(twins));
+    check("FIN-009: no row ⇒ NONE", none.kind === "NONE");
+    const legacy = await findByFingerprint("acctA", D19, -12.05, "TAP TALABAT food", false, fakeClient(twins));
+    check("FIN-009: the legacy helper keeps its first-of-several contract for the CSV import (which SKIPs on its own re-check)",
+      legacy?.id === "twin-a");
   }
 
   console.log(failures === 0 ? "\nAll fingerprint guards passed." : `\n${failures} guard(s) failed.`);
