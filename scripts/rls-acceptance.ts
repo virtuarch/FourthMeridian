@@ -288,7 +288,9 @@ async function main(): Promise<void> {
 
   // ── global reference data ──────────────────────────────────────────────────
   const r12 = asApp(appUrl, "alice", `select count(*) from "FxRate";`);
-  check(12, "Global reference data stays readable (FxRate)", r12.ok && r12.out.includes("1"), r12.out || r12.err);
+  // A count, not a fixture: `out.includes("1")` passed on CI's one seeded row
+  // and failed on a restored Preview copy (8785 rows — readable, no digit 1).
+  check(12, "Global reference data stays readable (FxRate)", r12.ok && Number(r12.out.trim()) >= 1, r12.out || r12.err);
 
   // ── revoked operational tables ─────────────────────────────────────────────
   const r13 = asApp(appUrl, "alice", `select count(*) from "AiInvocation";`);
