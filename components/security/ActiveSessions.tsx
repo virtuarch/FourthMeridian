@@ -25,13 +25,19 @@ import { FormModal } from "@/components/atlas/FormModal";
 const CARD_OTHERS_LIMIT = 2;
 type SessionFilter = "all" | "current" | "other";
 
-async function fetchSessions(): Promise<SessionRow[]> {
+/**
+ * UI-006 — a failed read is an ERROR, never an empty list: "No active sessions"
+ * on a security page after a 500 would tell the user nothing is signed in.
+ */
+async function fetchSessions(): Promise<{ sessions: SessionRow[]; error: string | null }> {
   try {
     const res  = await fetch("/api/user/sessions");
-    const data = await res.json().catch(() => ({ sessions: [] }));
-    return Array.isArray(data.sessions) ? data.sessions : [];
+    if (!res.ok) return { sessions: [], error: `Your sessions could not be loaded (${res.status}).` };
+    const data = await res.json().catch(() => null) as { sessions?: unknown } | null;
+    if (!data || !Array.isArray(data.sessions)) return { sessions: [], error: "Your sessions could not be loaded." };
+    return { sessions: data.sessions as SessionRow[], error: null };
   } catch {
-    return [];
+    return { sessions: [], error: "Could not reach Fourth Meridian to load your sessions." };
   }
 }
 
@@ -120,28 +126,52 @@ export function ActiveSessions() {
   const [revokingAll, setRevokingAll] = useState(false);
   const [query,       setQuery]       = useState("");
   const [filter,      setFilter]      = useState<SessionFilter>("all");
+  const [error,       setError]       = useState<string | null>(null);
+
+  async function reload(): Promise<string | null> {
+    const r = await fetchSessions();
+    setSessions(r.sessions);
+    return r.error;
+  }
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const s = await fetchSessions();
-      if (!cancelled) { setSessions(s); setLoading(false); }
+      const r = await fetchSessions();
+      if (!cancelled) { setSessions(r.sessions); setError(r.error); setLoading(false); }
     })();
     return () => { cancelled = true; };
   }, []);
 
+  /** UI-006 — a revoke that did not happen must never look like it did. */
+  async function revoke(url: string, what: string): Promise<void> {
+    let failed: string | null = null;
+    try {
+      const res = await fetch(url, { method: "DELETE" });
+      if (!res.ok) failed = `${what} could not be ended (${res.status}). It may still be signed in — try again.`;
+    } catch {
+      failed = `${what} could not be ended: Fourth Meridian was unreachable. It may still be signed in — try again.`;
+    }
+    const readError = await reload();
+    setError(failed ?? readError);
+  }
+
   async function handleEnd(id: string) {
     setRevokingId(id);
-    await fetch(`/api/user/sessions/${id}`, { method: "DELETE" });
-    setSessions(await fetchSessions());
+    await revoke(`/api/user/sessions/${id}`, "That session");
     setRevokingId(null);
   }
 
   async function handleEndAllOthers() {
     setRevokingAll(true);
-    await fetch("/api/user/sessions", { method: "DELETE" });
-    setSessions(await fetchSessions());
+    await revoke("/api/user/sessions", "Your other sessions");
     setRevokingAll(false);
+  }
+
+  async function retryLoad() {
+    setLoading(true);
+    setError(await reload());
+    setLoading(false);
   }
 
   const active  = useMemo(() => sessions.filter((s) => !s.revokedAt), [sessions]);
@@ -168,12 +198,20 @@ export function ActiveSessions() {
     );
   }
 
+  const errorBanner = error ? (
+    <div role="alert" aria-live="assertive" data-sessions-error className="mb-2 flex items-center justify-between gap-2 rounded-md border border-red-500/30 px-2 py-1.5 text-[11px] text-red-400">
+      <span>{error}</span>
+      <button type="button" onClick={retryLoad} className="shrink-0 underline">Retry</button>
+    </div>
+  ) : null;
+
   if (active.length === 0) {
-    return <p className="text-xs text-gray-600 py-4 text-center">No active sessions.</p>;
+    return error ? errorBanner : <p className="text-xs text-gray-600 py-4 text-center">No active sessions.</p>;
   }
 
   return (
     <>
+      {errorBanner}
       {/* Compact summary */}
       <div className="space-y-2">
         {current && <SessionRowItem s={current} isCurrent />}
