@@ -189,8 +189,9 @@ async function main() {
       signIn({ identifier: "mfa", password: PW, recoveryCode: codes[1] }),
     ]);
     const wins = [x, y].filter((a) => a.status === 200).length;
-    t.known("two CONCURRENT sign-ins with one recovery code → exactly one succeeds (single use under concurrency)",
-      wins === 1, `J-D2: lib/recovery-codes.ts verifyRecoveryCode marks used with an unconditional update — ${wins} of 2 succeeded`);
+    // J-D2 FIXED: verifyRecoveryCode consumes conditionally (updateMany where usedAt null).
+    t.check("two CONCURRENT sign-ins with one recovery code → exactly one succeeds (single use under concurrency)",
+      wins === 1, `${wins} of 2 succeeded`);
   }
 
   t.section("6. forced TOTP enrolment — a SYSTEM_ADMIN without 2FA gets a PENDING session");
