@@ -95,7 +95,7 @@ export default function AdminUsersPage() {
             {loading ? "Loading…" : `${filtered.length} of ${users.length} user${users.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
           </p>
           {truncated && (
-            <p className="text-xs text-amber-400" data-truncated-hint>Showing the newest 200 users. Older accounts are not listed here.</p>
+            <p className="text-xs text-[var(--brass-300,#d9b25a)]" data-truncated-hint>Showing the newest 200 users. Older accounts are not listed here.</p>
           )}
         </div>
         <button

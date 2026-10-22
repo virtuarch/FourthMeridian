@@ -199,7 +199,7 @@ export function ActiveSessions() {
   }
 
   const errorBanner = error ? (
-    <div role="alert" aria-live="assertive" data-sessions-error className="mb-2 flex items-center justify-between gap-2 rounded-md border border-red-500/30 px-2 py-1.5 text-[11px] text-red-400">
+    <div role="alert" aria-live="assertive" data-sessions-error className="mb-2 flex items-center justify-between gap-2 rounded-md border border-[rgba(248,113,113,.3)] px-2 py-1.5 text-[11px] text-[var(--danger-400,#f87171)]">
       <span>{error}</span>
       <button type="button" onClick={retryLoad} className="shrink-0 underline">Retry</button>
     </div>

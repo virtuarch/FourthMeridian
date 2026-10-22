@@ -87,7 +87,7 @@ export default function AdminSpacesPage() {
             {loading ? "Loading…" : `${filtered.length} of ${spaces.length} Space${spaces.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
           </p>
           {truncated && (
-            <p className="text-xs text-amber-400" data-truncated-hint>Showing the newest 200 Spaces. Older Spaces are not listed here.</p>
+            <p className="text-xs text-[var(--brass-300,#d9b25a)]" data-truncated-hint>Showing the newest 200 Spaces. Older Spaces are not listed here.</p>
           )}
         </div>
         <button
