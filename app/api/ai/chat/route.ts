@@ -43,7 +43,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID }                from 'crypto';
 import { requireUser }               from '@/lib/session';
-import { limitByUser }               from '@/lib/rate-limit';
+import { paceAiRequest }             from '@/lib/ai/pacing';
 import { entitlementsForUser, refuseIfDisabled, countLimit } from '@/lib/entitlements/consume';
 import { dailyAiAllowanceFor, allowanceRefusal } from '@/lib/ai/allowance';
 import { readPaidRequestsAdmission, paidRequestsPausedResponse } from '@/lib/platform/ai/paid-requests-admission';
@@ -126,15 +126,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // route (the proxy keeps SYSTEM_ADMIN off /dashboard) and is gone. Whether the
   // surface is available at all is the `conversations` dimension — a refusal
   // here costs no model call.
+  //
+  // SEC-AI-004 — BOTH WINDOWS FAIL CLOSED (lib/ai/pacing.ts): a limiter store the
+  // route cannot consult refuses with a retryable 503, as the allowance below
+  // does, rather than silently waving a paid call through.
   const entitlements = await entitlementsForUser(user.id);
   const disabled = refuseIfDisabled(entitlements, 'conversations', 'Conversations');
   if (disabled) return disabled;
   {
-    const limited = await limitByUser(user.id, 'ai-chat', { limit: countLimit(entitlements, 'aiTurnsPerMinute'), windowSec: 60 });
+    const limited = await paceAiRequest(user.id, 'ai-chat', { limit: countLimit(entitlements, 'aiTurnsPerMinute'), windowSec: 60 }, 'Conversations');
     if (limited) return limited;
   }
   {
-    const limited = await limitByUser(user.id, 'ai-chat-hour', { limit: countLimit(entitlements, 'aiTurnsPerHour'), windowSec: 3600 });
+    const limited = await paceAiRequest(user.id, 'ai-chat-hour', { limit: countLimit(entitlements, 'aiTurnsPerHour'), windowSec: 3600 }, 'Conversations');
     if (limited) return limited;
   }
   // AI COST CONTROLS — THE KILL SWITCH, BEFORE THE ALLOWANCE. One PlatformSetting

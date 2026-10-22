@@ -46,10 +46,13 @@ console.log('\n2. AUTHENTICATION AND RATE LIMIT COME FIRST');
   check('requireUser is the first thing the handler does',
     posted.indexOf('requireUser()') < posted.indexOf('req.json()'));
   check('…and its error is returned, not inspected', /if \(authErr\) return authErr/.test(posted));
+  // SEC-AI-004 — the pacing windows go through the fail-closed wrapper, never the fail-open limiter.
   check('the rate limit is applied before any model work',
-    posted.indexOf('limitByUser') < posted.indexOf('runStatelessTurn'));
+    posted.indexOf('paceAiRequest(') > 0 && posted.indexOf('paceAiRequest(') < posted.indexOf('runStatelessTurn'));
   check('…and before the body is even read',
-    posted.indexOf('limitByUser') < posted.indexOf('req.json()'));
+    posted.indexOf('paceAiRequest(') < posted.indexOf('req.json()'));
+  check('…both windows, and the fail-open limiter is not used here',
+    (posted.match(/paceAiRequest\(user\.id, 'ai-chat(?:-hour)?'/g) ?? []).length === 2 && !/limitByUser/.test(src));
 }
 
 console.log('\n3. THE SPACE IS RE-RESOLVED, NEVER ACCEPTED');

@@ -66,7 +66,8 @@ console.log("\n2. POST is the only way generation starts");
   const handler = POST_ROUTE.slice(POST_ROUTE.indexOf("export async function POST"));
   check("requireUser first, the body read after", handler.indexOf("requireUser()") < handler.indexOf("req.json()"));
   check("rate-limited before any lifecycle work",
-    handler.indexOf("limitByUser") > -1 && handler.indexOf("limitByUser") < handler.indexOf("generateBriefResponse"));
+    // SEC-AI-004 — through the fail-closed wrapper (lib/ai/pacing.ts), never the fail-open limiter.
+    handler.indexOf("paceAiRequest(") > -1 && handler.indexOf("paceAiRequest(") < handler.indexOf("generateBriefResponse") && !/limitByUser/.test(handler));
   check("it runs the lifecycle through generateBriefResponse", /generateBriefResponse\(user\.id, spaceId\)/.test(POST_ROUTE)
     && /ensureDailyBrief\(/.test(body(VIEW, "generateBriefResponse")));
   check("it outlives the generation lease", Number(/maxDuration = (\d+)/.exec(POST_ROUTE)?.[1] ?? 0) >= 90);
