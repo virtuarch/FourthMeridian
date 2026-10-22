@@ -26,7 +26,7 @@ Every database fact below was read with `BEGIN TRANSACTION READ ONLY`, except th
   - **UNHEALTHY:** anything else that answered, including a bare `401/30x` **without** Vercel's markers, `5xx`, `404`, HTML on the health route, or no response.
   - **UNVERIFIED:** Vercel Deployment Protection answered. That is a redirect to `https://vercel.com/sso-api`, or a `401/403` carrying `_vercel_sso_nonce` / "Vercel Authentication". The job **fails** on this verdict, so it can never read as a pass.
 - **Identity.** It rests on the immutable per-deployment `*.vercel.app` URL (`deployment_status.environment_url`). On an alias host the reason says "build identity NOT verified". The job is renamed `Deployment health`.
-- **Optional secret.** `VERCEL_AUTOMATION_BYPASS_SECRET` is a GitHub secret. Adding it is an owner action and it is absent today. It is sent only as `x-vercel-protection-bypass`, and only to `https` `*.vercel.app` / `*.fourthmeridian.com` (`mayCarryBypass`).
+- **Optional secret.** Per-project GitHub secrets `VERCEL_AUTOMATION_BYPASS_SECRET_APP` / `_SITE` (`7a81f9c`; scoping in doc 16 §5). Adding them is an owner action and they are absent today. It is sent only as `x-vercel-protection-bypass`, and only to `https` `*.vercel.app` / `*.fourthmeridian.com` (`mayCarryBypass`).
 - **Tests.** `scripts/post-deploy-smoke.test.ts` has 28 checks on response shapes captured from the real deployments. Reintroducing the old `401 ⇒ pass` mapping fails 5 of them (mutation run). The `ci-local.test.ts` pins are updated. Three operations docs that promised a `commit` from `/api/health` are corrected.
 
 **Corrected evidence.** The new script was run locally against the real deployments, GET only:
@@ -35,7 +35,7 @@ Every database fact below was read with `BEGIN TRANSACTION READ ONLY`, except th
 |---|---|---|
 | PR deployment `fintracker1-alrkntl0t…vercel.app` (`1e697a6`) | **UNVERIFIED**, exit 1: "Vercel Deployment Protection answered (HTTP 401); the application was not reached" | **HEALTHY**, exit 0: `status ok`; no commit published, so identity rests on the immutable per-deployment URL |
 | `preview-app.fourthmeridian.com` (`cde8fa0`) | UNVERIFIED (302 → `vercel.com/sso-api`) | **HEALTHY**: `status ok, commit cde8fa0 ⊂ cde8fa0e…` |
-| Production site `fourthmeridian.com/` | **HEALTHY**: 200 `text/html` | n/a |
+| `fourthmeridian.com/`: **correction (doc 16 §6):** this domain is attached to `fintracker1` (the app's July Production build), not to the site project, so this was the old app's root page, not the site | 200 `text/html` | n/a |
 
 The new workflow first runs on the deployments of the pushed fix commit. Without the GitHub secret it will report **UNVERIFIED (red)** for Preview, which is the correct signal. Adding the secret is approval A4 (§9).
 
@@ -48,10 +48,10 @@ The new workflow first runs on the deployments of the pushed fix commit. Without
 | Env scope | generic **Preview** | generic Preview **+** branch-scoped `Preview@v2.6` | site project's own (zero-authority: no secrets, no DB) |
 | Database principal | `DATABASE_URL` only, the migration principal (`postgres`, BYPASSRLS) | `DATABASE_URL` (migrations, limiter, admin) **plus** `DATABASE_URL_APP` / `_AUTH` / `_SYSTEM` (`fm_app` / `fm_auth` / `fm_system`) and `FM_RLS_STRICT` | none |
 | Tenant isolation exercised | **No:** no role URLs, no strict flag, so the code falls back to the single principal | **Yes:** the RLS cutover (2026-10-06), strict | n/a |
-| Deployment Protection | Vercel Authentication (`ssoProtection: all_except_custom_domains`) | Observed **protected too**: 302 → `vercel.com/sso-api` on 2026-10-22, despite the project setting exempting custom domains. Owner to confirm the domain-level setting. | same setting; `fourthmeridian.com` (Production custom domain) is public (200) |
+| Deployment Protection | Vercel Authentication, Standard Protection (`ssoProtection: all_except_custom_domains`) | **Protected, as designed:** Standard Protection exempts only *production* custom domains, and `preview-app` is bound to `gitBranch: v2.6`, which makes it a Preview domain (doc 16 §6) | same setting; `preview.fourthmeridian.com` is likewise a Preview domain |
 | Automation bypass | one `automation-bypass` secret exists on each project; not stored in GitHub | same | same |
 | Crons | Production only (`vercel.json`; Preview never runs crons) | same | n/a |
-| Production | `main` @ `87e4df7` (`dpl_JcZ5…`, 2026-07-27), **untouched** | — | Production site `f339e57` (2026-10-04), untouched |
+| Production | `main` @ `87e4df7` (`dpl_JcZ5…`, 2026-07-27), serving `fourthmeridian.com` (apex is attached to **this** project), **untouched** | — | site project Production `f339e57` (2026-10-04) has **no** production custom domain (only `fourth-meridian-site.vercel.app`); untouched |
 
 ### Environment-variable differences
 
