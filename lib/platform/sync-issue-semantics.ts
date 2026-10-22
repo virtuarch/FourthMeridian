@@ -136,6 +136,10 @@ const STAGE_DOMAIN: Record<string, SyncIssueDomain> = {
   // never customer-actionable; it is critical because a possible duplicate in
   // bank-transaction data needs an operator's eyes.
   "fingerprint-adoption-ambiguous": "transactions",
+  // IDEMP-008 — the Plaid exchange persisted an Item but one of its accounts
+  // collided on a unique provider identity. Account linking, not transaction
+  // persistence; same non-actionable posture as reparenting-refused.
+  "exchange-account-persist":     "transactions",
   // lib/investments/*
   "opening-position-repair":      "investments",
   "investment-import-repair":     "investments",
@@ -483,6 +487,7 @@ const OPERATION_PHRASE: Record<OperationKey, string> = {
   "event-identity-persist":       "Linking a transaction to its logical event",
   "reparenting-refused":          "Confirming which account a transaction belongs to",
   "fingerprint-adoption-ambiguous": "Matching a synced transaction to an existing one",
+  "exchange-account-persist":     "Linking a newly connected bank account",
 
   // Investments — six operations that otherwise share one label.
   "investment-events-fetch":      "Retrieving investment activity",

@@ -64,6 +64,9 @@ export const GUARD_RECOGNISERS: ReadonlyArray<{ name: string; test: (strippedSou
     // CRON_SECRET; both halves must be present in the same block.
     test: (s) => /process\.env\.CRON_SECRET\b/.test(s) && /Bearer/.test(s),
   },
+  // SEC-009: the job routes delegate the bearer comparison to the timing-safe
+  // helper (lib/jobs/cron-auth.ts → lib/security/cron-secret.ts).
+  { name: "cron-bearer-helper", test: (s) => /\bisAuthorizedCronRequest\s*\(/.test(s) && /process\.env\.CRON_SECRET\b/.test(s) },
   { name: "plaid-webhook-verifier", test: (s) => /\b(verifyPlaidWebhook|handlePlaidWebhook)\s*\(/.test(s) },
   { name: "nextauth-handler", test: (s) => /\bNextAuth\s*\(/.test(s) },
 ];

@@ -79,6 +79,12 @@ export const OPERATION_KEYS = {
   // may want to review. Distinct from transaction-persist on purpose.
   "fingerprint-adoption-ambiguous": "fingerprint-adoption-ambiguous",
 
+  // ── Plaid exchange account collision (IDEMP-008) ─────────────────────────
+  // One Plaid account hit a uniqueness collision while the exchange persisted
+  // it; the other accounts of the Item still imported. Recorded by
+  // lib/plaid/exchange-collision.ts, never by exchangeToken.ts itself.
+  "exchange-account-persist": "exchange-account-persist",
+
   // ── Account-FK re-parenting refused (RLS-ACC-FK) ───────────────────────────
   // Written when a provider identifier resolved an EXISTING row that belongs to
   // a DIFFERENT FinancialAccount, so updating it with this sync's fields would

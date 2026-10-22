@@ -20,7 +20,7 @@ delete process.env.RATE_LIMIT_SHADOW;
 import { readFileSync } from "node:fs";
 import type { NextRequest } from "next/server";
 import { GET, handleHealth } from "./route";
-import { OVERDUE_GRACE_HOURS, buildSchedulerSignals, type SchedulerSignals } from "./scheduler-signals-core";
+import { OVERDUE_GRACE_HOURS, buildSchedulerSignals, type SchedulerSignals } from "@/lib/jobs/scheduler-signals-core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -152,7 +152,7 @@ async function main(): Promise<void> {
   {
     const route = readFileSync("app/api/health/route.ts", "utf8");
     check("no commit sha read on the public route (OPS-014 / OBS-010)", !/VERCEL_GIT_COMMIT_SHA|commit/.test(route.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")));
-    check("the route imports registry FACTS only, never the executable registry or job bodies", !/jobs\/registry"|jobs\/health|from "@\/jobs\//.test(route) && !/jobs\/registry"/.test(readFileSync("app/api/health/scheduler-signals.ts", "utf8")));
+    check("the route imports registry FACTS only, never the executable registry or job bodies", !/jobs\/registry"|jobs\/health|from "@\/jobs\//.test(route) && !/jobs\/registry"/.test(readFileSync("lib/jobs/scheduler-signals.ts", "utf8")));
     check("the limiter precedes the DB probe (fail-open can never turn a dead DB into a 200)", route.indexOf("limitByIp(") < route.indexOf("await ping()"));
   }
 

@@ -1,5 +1,5 @@
 /**
- * app/api/health/scheduler-signals-core.ts  (OBS-001 / OPS-002)
+ * lib/jobs/scheduler-signals-core.ts  (OBS-001 / OPS-002)
  *
  * PURE derivation of the non-sensitive `scheduler` block on GET /api/health —
  * the facts an EXTERNAL monitor needs to alert on a silent scheduler without

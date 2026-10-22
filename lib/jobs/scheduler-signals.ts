@@ -1,5 +1,5 @@
 /**
- * app/api/health/scheduler-signals.ts  (OBS-001 / OPS-002)
+ * lib/jobs/scheduler-signals.ts  (OBS-001 / OPS-002)
  *
  * The reader behind the public health route's `scheduler` block. Three small
  * indexed reads, all over the JobRun ledger and PlatformSetting:
@@ -15,7 +15,9 @@
  */
 
 import "server-only";
-import { db } from "@/lib/db";
+// fm_system, not the migration principal: JobRun is revoked from fm_app and every
+// other JobRun reader lives here in lib/jobs/ on systemDb (audit-db-authority).
+import { systemDb } from "@/lib/db";
 import { SCHEDULED_JOB_FACTS } from "@/lib/jobs/registry.core";
 import { loadJobCadencePolicies } from "@/lib/jobs/cadence-policy";
 import { buildSchedulerSignals, type SchedulerSignals } from "./scheduler-signals-core";
@@ -29,18 +31,18 @@ export async function readSchedulerSignals(now: Date = new Date()): Promise<Sche
   const registered = SCHEDULED_JOB_FACTS.map((j) => j.name);
   const names = [...registered, BACKSTOP_CRON_JOB];
   const [newestPerJob, alertNewest, policies] = await Promise.all([
-    db.jobRun.findMany({
+    systemDb.jobRun.findMany({
       where: { jobName: { in: names } },
       orderBy: { startedAt: "desc" },
       distinct: ["jobName"],
       select: { jobName: true, startedAt: true },
     }),
-    db.jobRun.findFirst({
+    systemDb.jobRun.findFirst({
       where: { jobName: ALERT_EVALUATOR_JOB, status: "succeeded" },
       orderBy: { startedAt: "desc" },
       select: { startedAt: true },
     }),
-    loadJobCadencePolicies(db),
+    loadJobCadencePolicies(systemDb),
   ]);
   const cadenceHours = new Map<string, number>();
   for (const [name, p] of policies) cadenceHours.set(name, p.hours);

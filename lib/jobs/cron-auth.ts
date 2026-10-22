@@ -9,13 +9,12 @@
  * length buffers (a length mismatch is refused without comparing contents).
  */
 
-import { timingSafeEqual } from "node:crypto";
+import { verifyCronAuthorization } from "@/lib/security/cron-secret";
 
+// SEC-009 consolidation (integration, 2026-10-22): ONE comparison. This wrapper
+// keeps the boolean call shape the six job routes use; the decision is
+// lib/security/cron-secret.ts's (fixed-width digests, so neither the length nor
+// a prefix of CRON_SECRET leaks through timing; unset secret refuses).
 export function isAuthorizedCronRequest(authorizationHeader: string | null, secret: string | undefined): boolean {
-  if (!secret) return false;
-  if (typeof authorizationHeader !== "string") return false;
-  const expected = Buffer.from(`Bearer ${secret}`, "utf8");
-  const actual = Buffer.from(authorizationHeader, "utf8");
-  if (actual.length !== expected.length) return false;
-  return timingSafeEqual(actual, expected);
+  return verifyCronAuthorization(authorizationHeader, secret) === "AUTHORIZED";
 }

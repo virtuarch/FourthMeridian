@@ -16,10 +16,13 @@ check("wrong secret refused", !isAuthorizedCronRequest("Bearer s3creT", "s3cret"
 check("length mismatch refused (no throw)", !isAuthorizedCronRequest("Bearer s3cret-and-more", "s3cret"));
 check("missing header refused", !isAuthorizedCronRequest(null, "s3cret"));
 check("unset secret refuses everything, even 'Bearer '", !isAuthorizedCronRequest("Bearer ", undefined) && !isAuthorizedCronRequest("Bearer ", ""));
-check("scheme is part of the match", !isAuthorizedCronRequest("s3cret", "s3cret") && !isAuthorizedCronRequest("bearer s3cret", "s3cret"));
+// The scheme is required; its case is not (RFC 7235 §2.1 — auth schemes are case-insensitive).
+check("scheme is part of the match", !isAuthorizedCronRequest("s3cret", "s3cret") && !isAuthorizedCronRequest("Basic s3cret", "s3cret") && isAuthorizedCronRequest("bearer s3cret", "s3cret"));
 check("multi-byte secrets compare by bytes", isAuthorizedCronRequest("Bearer pässwörd", "pässwörd") && !isAuthorizedCronRequest("Bearer passwörd", "pässwörd"));
 const helper = readFileSync("lib/jobs/cron-auth.ts", "utf8");
-check("helper uses crypto.timingSafeEqual", /timingSafeEqual\(actual, expected\)/.test(helper));
+// SEC-009 consolidation: one comparison, the shared fixed-width-digest verifier.
+check("helper delegates to the shared timing-safe verifier", /verifyCronAuthorization\(authorizationHeader, secret\) === "AUTHORIZED"/.test(helper)
+  && /timingSafeEqual\(a, b\)/.test(readFileSync("lib/security/cron-secret.ts", "utf8")));
 
 const routes = readdirSync("app/api/jobs").map((d) => `app/api/jobs/${d}/route.ts`);
 check("six job routes found", routes.length === 6, routes.join());

@@ -118,24 +118,6 @@ export interface ResumeStaleImportsDeps {
   now?: () => Date;
 }
 
-/** IDEMP-007 — after a "ran": still incomplete ⇒ attempts+1 and the next slot pushed out. */
-async function recordResumeAttempt(itemId: string, now: Date): Promise<void> {
-  const row = await db.plaidItem.findUnique({ where: { id: itemId }, select: { syncIncompleteAt: true, syncResumeAttempts: true } });
-  if (!row || row.syncIncompleteAt === null) return; // completed — resetCompleted clears the counter
-  const attempts = row.syncResumeAttempts + 1;
-  await db.plaidItem.update({
-    where: { id: itemId },
-    data:  { syncResumeAttempts: attempts, syncResumeNextAt: new Date(now.getTime() + resumeBackoffMs(attempts)) },
-  });
-}
-
-async function resetCompletedResumes(): Promise<void> {
-  await db.plaidItem.updateMany({
-    where: { syncIncompleteAt: null, OR: [{ syncResumeAttempts: { gt: 0 } }, { syncResumeNextAt: { not: null } }] },
-    data:  { syncResumeAttempts: 0, syncResumeNextAt: null },
-  });
-}
-
 export interface ResumeStaleImportsResult {
   candidates: number;
   attempted:  number;
@@ -188,6 +170,10 @@ export async function resumeStaleImports(
   const now = (deps.now ?? (() => new Date()))();
   const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
   // IDEMP-007 — Items that completed since their last failed resume start over.
+  // Deliberately BEFORE admission: it touches only rows with syncIncompleteAt
+  // null (never a candidate) and makes no provider call, so a paused platform
+  // still converges its backoff bookkeeping; a stale counter would otherwise
+  // delay that Item's first resume after its next stall.
   await (deps.resetCompleted ?? resetCompletedResumes)().catch((e) =>
     console.warn("[resume-stale-imports] backoff reset failed (non-fatal):", e instanceof Error ? e.message : String(e)));
   const { candidates, items } = await (deps.loadCandidates ?? loadStaleCandidates)(cutoff, MAX_ITEMS_PER_RUN);
@@ -249,4 +235,26 @@ export async function resumeStaleImports(
   }
 
   return { candidates, attempted: items.length, ran, skipped, deferred };
+}
+
+// ── IDEMP-007 backoff bookkeeping (declared after the job body so the source
+// order matches the runtime order the admission ratchet pins: these run only
+// after admission) ──────────────────────────────────────────────────────────
+
+/** IDEMP-007 — after a "ran": still incomplete ⇒ attempts+1 and the next slot pushed out. */
+async function recordResumeAttempt(itemId: string, now: Date): Promise<void> {
+  const row = await db.plaidItem.findUnique({ where: { id: itemId }, select: { syncIncompleteAt: true, syncResumeAttempts: true } });
+  if (!row || row.syncIncompleteAt === null) return; // completed — resetCompleted clears the counter
+  const attempts = row.syncResumeAttempts + 1;
+  await db.plaidItem.update({
+    where: { id: itemId },
+    data:  { syncResumeAttempts: attempts, syncResumeNextAt: new Date(now.getTime() + resumeBackoffMs(attempts)) },
+  });
+}
+
+async function resetCompletedResumes(): Promise<void> {
+  await db.plaidItem.updateMany({
+    where: { syncIncompleteAt: null, OR: [{ syncResumeAttempts: { gt: 0 } }, { syncResumeNextAt: { not: null } }] },
+    data:  { syncResumeAttempts: 0, syncResumeNextAt: null },
+  });
 }

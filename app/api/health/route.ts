@@ -36,8 +36,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { limitByIp } from "@/lib/rate-limit";
-import { readSchedulerSignals } from "./scheduler-signals";
-import type { SchedulerSignals } from "./scheduler-signals-core";
+import { readSchedulerSignals } from "@/lib/jobs/scheduler-signals";
+import type { SchedulerSignals } from "@/lib/jobs/scheduler-signals-core";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

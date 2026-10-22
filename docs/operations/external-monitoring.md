@@ -1,6 +1,6 @@
 # External monitoring of `/api/health` (OBS-001 / OPS-002)
 
-**Audience:** the owner / operator. **Status:** the route ships the signals; **registering the monitor is an OWNER action** (nothing in this repository can do it). **Last verified:** 2026-10-22 against `app/api/health/route.ts` and `app/api/health/scheduler-signals-core.ts` (remediation branch `remediation/e-observability`).
+**Audience:** the owner / operator. **Status:** the route ships the signals; **registering the monitor is an OWNER action** (nothing in this repository can do it). **Last verified:** 2026-10-22 against `app/api/health/route.ts` and `lib/jobs/scheduler-signals-core.ts` (remediation branch `remediation/e-observability`).
 
 ## 1. Why an external monitor is not optional
 
