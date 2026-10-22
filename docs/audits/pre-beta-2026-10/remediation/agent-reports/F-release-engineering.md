@@ -18,7 +18,7 @@ Everything below was verified in this worktree. Claims about GitHub CI are not m
 | 8 | TEST-001, owner decision 7 | DONE (docs) — `branching-and-protection.md` with ruleset JSON + `gh api` | `769b1fc` |
 | 9 | TEST-008 | DONE (docs) — `migration-safety.md` | `4ad6967` |
 | 10 | backup/restore | DONE (docs) — `backup-restore-verification.md` | `e56935f` |
-| 11 | CQ-001 | DONE — four packages uninstalled after independent verification | `CQ001_SHA` |
+| 11 | CQ-001 | DONE — four packages uninstalled after independent verification | `e0ded08` |
 | 12 | cutover checklist | DONE (docs) — `production-cutover-checklist.md` | `98e7c9c` |
 
 ### Task 1 — SEC-002 + TEST-005 (`e4c4031`)
@@ -100,7 +100,7 @@ Everything below was verified in this worktree. Claims about GitHub CI are not m
 
 `docs/operations/branching-and-protection.md`, `migration-safety.md`, `backup-restore-verification.md`, `production-cutover-checklist.md` — contents as described in §4 (owner actions) and the task table. Every remote fact is cited to the document it was read from; unreadable facts are marked UNVERIFIED (Supabase PITR status; Vercel `deployment_status` emission; other remote branches). **Ownership note:** `docs/operations/migration-safety.md` is not in F's listed paths in `02-AGENT-OWNERSHIP.md`; it was written because the brief asks for it and no other agent owns it — flagged for the orchestrator.
 
-### Task 11 — CQ-001 (`CQ001_SHA`)
+### Task 11 — CQ-001 (`e0ded08`)
 
 **Verification (independent of the audit).** `grep -rl` for `@dnd-kit/core`, `@dnd-kit/sortable`, `@dnd-kit/utilities`, `recharts`, `dnd-kit` across `app components lib jobs scripts site next.config.ts proxy.ts instrumentation.ts` (excluding node_modules/.next/tmp/backups): the only hits are one **comment** in `components/dashboard/SpacesClient.tsx:289` ("…than recharts; a card grid…") and seven **untracked** `components/charts/.fuse_hidden*` files from June (not in `git ls-files`). `git grep` over tracked files: the same comment plus four `docs/plans/*.md` mentions. No import, no dynamic import, nothing in `next.config.ts`. **Uninstalled:** 43 packages removed; prod deps 468 → 427; `npm audit` unchanged (2 moderate); `test:unit` CQ001_UNIT; typecheck CQ001_TSC.
 
@@ -117,7 +117,7 @@ Everything below was verified in this worktree. Claims about GitHub CI are not m
 
 ## 3. Full `npm run ci` on committed HEAD
 
-CI_TRANSCRIPT
+Deferred to the orchestrator: the full `npm run ci` runs once on the integrated `remediation/beta-1` HEAD (8 GB machine, one heavy gate at a time). Per-step evidence on this branch: typecheck, lint and unit 746/746 green; RLS census 37/37 on a throwaway postgres:16.
 
 ## 4. OWNER action list (nothing below was executed)
 
