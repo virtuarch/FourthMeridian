@@ -21,6 +21,7 @@ import {
   type PlatformSection,
 } from "../widget-kit";
 import type { PlatformUsersResponse } from "@/app/api/platform/growth-revenue/users/route";
+import type { SpaceMountAccess } from "@/lib/space/mount-context";
 
 /**
  * P1 — deactivate / reactivate are CONSEQUENTIAL operator actions and the route
@@ -36,7 +37,11 @@ const REASON_LABEL: Record<ReasonCode, string> = {
   POLICY_ROLLOUT: "Policy rollout", INCIDENT: "Incident", ABUSE: "Abuse", OTHER: "Other",
 };
 
-export function OpsUsersWidget({ section }: { section: PlatformSection }) {
+/** UI-001 — what a READ holder sees instead of Deactivate / Reactivate buttons that would 403. */
+export const OPS_USERS_READ_ONLY_LINE = "Read-only — deactivating or reactivating an account needs WRITE access to Growth & Revenue.";
+
+export function OpsUsersWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
+  const canWrite = access?.canWrite === true;
   const [search, setSearch] = useState("");
   const [data, setData] = useState<PlatformUsersResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -44,7 +49,8 @@ export function OpsUsersWidget({ section }: { section: PlatformSection }) {
   const [acting, setActing] = useState<string | null>(null);
   // The pending consequential action awaiting a reason: which user, which verb.
   const [pending, setPending] = useState<{ id: string; action: "deactivate" | "reactivate" } | null>(null);
-  const [reasonCode, setReasonCode] = useState<ReasonCode>("SUPPORT_REQUEST");
+  // UI-002: no pre-selected reason — the operator must choose one; the audit records only what was chosen.
+  const [reasonCode, setReasonCode] = useState<ReasonCode | "">("");
   const [reasonNote, setReasonNote] = useState("");
 
   const load = useCallback(async (q: string) => {
@@ -116,20 +122,21 @@ export function OpsUsersWidget({ section }: { section: PlatformSection }) {
                 {pending.action === "deactivate" ? "Deactivate account" : "Reactivate account"} — a reason is recorded with the action
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                <select value={reasonCode} onChange={(e) => setReasonCode(e.target.value as ReasonCode)} aria-label="Reason"
+                <select value={reasonCode} onChange={(e) => setReasonCode(e.target.value as ReasonCode | "")} aria-label="Reason"
                   className="rounded-[var(--radius-sm)] border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)]" style={{ borderColor: "var(--border-hairline)" }}>
+                  <option value="" disabled>Choose a reason…</option>
                   {REASON_CODES.map((c) => <option key={c} value={c}>{REASON_LABEL[c]}</option>)}
                 </select>
                 <input value={reasonNote} onChange={(e) => setReasonNote(e.target.value)} maxLength={280} placeholder="Note (optional, no personal data)" aria-label="Reason note"
                   className="min-w-[12rem] flex-1 rounded-[var(--radius-sm)] border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)]" style={{ borderColor: "var(--border-hairline)" }} />
               </div>
               <div className="flex items-center gap-2">
-                <button type="button" onClick={() => { setPending(null); setReasonNote(""); }} disabled={acting !== null}
+                <button type="button" onClick={() => { setPending(null); setReasonNote(""); setReasonCode(""); }} disabled={acting !== null}
                   className="rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40" style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>
                   Cancel
                 </button>
-                <button type="button" disabled={acting !== null}
-                  onClick={() => act(pending.id, pending.action, reasonNote.trim() ? { code: reasonCode, note: reasonNote.trim() } : { code: reasonCode })}
+                <button type="button" disabled={acting !== null || reasonCode === ""}
+                  onClick={() => { if (reasonCode === "") return; act(pending.id, pending.action, reasonNote.trim() ? { code: reasonCode, note: reasonNote.trim() } : { code: reasonCode }); }}
                   className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                   style={pending.action === "deactivate"
                     ? { background: "rgba(248,113,113,.1)", color: "var(--danger-400, #f87171)", borderColor: "rgba(248,113,113,.28)" }
@@ -143,6 +150,7 @@ export function OpsUsersWidget({ section }: { section: PlatformSection }) {
           {data.users.length === 0 ? (
             <p className="text-xs text-[var(--text-secondary)] mt-1">No users match.</p>
           ) : (
+            <>
             <ul className="flex flex-col gap-1.5 mt-1">
               {data.users.map((u) => (
                 <li key={u.id} className="flex items-center gap-2 rounded-[var(--radius-sm)] border px-2.5 py-2" style={{ borderColor: "var(--border-hairline)", background: "var(--glass-ultrathin)" }}>
@@ -157,6 +165,8 @@ export function OpsUsersWidget({ section }: { section: PlatformSection }) {
                   </div>
                   {u.role === "SYSTEM_ADMIN" ? (
                     <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide">admin</span>
+                  ) : !canWrite ? (
+                    <span className="text-[10px] text-[var(--text-muted)]" data-read-only-line>Read-only</span>
                   ) : u.deactivatedAt ? (
                     <button onClick={() => setPending({ id: u.id, action: "reactivate" })} disabled={acting !== null} title="Reactivate account"
                       className="flex items-center gap-1 rounded-[var(--radius-sm)] border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:opacity-40"
@@ -173,6 +183,8 @@ export function OpsUsersWidget({ section }: { section: PlatformSection }) {
                 </li>
               ))}
             </ul>
+            {!canWrite && <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{OPS_USERS_READ_ONLY_LINE}</p>}
+            </>
           )}
         </>
       )}

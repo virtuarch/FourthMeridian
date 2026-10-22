@@ -34,6 +34,7 @@ import { useState } from "react";
 import { ShieldAlert, RotateCw, Check } from "lucide-react";
 import { PlatformWidgetCard, WidgetMessage, useWidgetFetch, timeAgo, type PlatformSection } from "@/components/platform/widget-kit";
 import type { PlatformProviderCleanupResponse, ProviderCleanupRetryResponse } from "@/app/api/platform/platform-ops/provider-cleanup/route";
+import type { SpaceMountAccess } from "@/lib/space/mount-context";
 
 function age(hours: number | null): string {
   if (hours === null) return "—";
@@ -42,7 +43,11 @@ function age(hours: number | null): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
-export function OpsProviderCleanupWidget({ section }: { section: PlatformSection }) {
+/** UI-001 — what a READ holder sees instead of a Retry button that would 403. */
+export const OPS_CLEANUP_READ_ONLY_LINE = "Read-only — retrying a provider cleanup needs WRITE access to Platform Operations.";
+
+export function OpsProviderCleanupWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
+  const canWrite = access?.canWrite === true;
   const { data: initial, loading, error } = useWidgetFetch<PlatformProviderCleanupResponse>(
     "/api/platform/platform-ops/provider-cleanup",
   );
@@ -139,7 +144,8 @@ export function OpsProviderCleanupWidget({ section }: { section: PlatformSection
                   </div>
                   <div className="flex items-center justify-between gap-2 pt-0.5">
                     <span className="font-mono text-[10px] text-[var(--text-muted)]">{o.plaidItemId}</span>
-                    {!o.itemGone && (
+                    {!o.itemGone && !canWrite && <span className="text-[10px] text-[var(--text-muted)]" data-read-only-line>{OPS_CLEANUP_READ_ONLY_LINE}</span>}
+                    {!o.itemGone && canWrite && (
                       <button
                         type="button"
                         onClick={() => retry(o.plaidItemId)}

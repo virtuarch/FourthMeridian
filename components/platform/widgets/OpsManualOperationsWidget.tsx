@@ -31,6 +31,7 @@ import type {
   OperationActionResponse,
 } from "@/app/api/platform/platform-ops/operations/route";
 import type { OperationCommand } from "@/lib/platform/operations/registry";
+import type { SpaceMountAccess } from "@/lib/space/mount-context";
 
 type Feedback = { commandId: string; text: string; tone: "ok" | "warn" | "err" };
 
@@ -46,7 +47,12 @@ const TONE_COLOR: Record<"ok" | "warn" | "err", string> = {
   err: "var(--danger-400, #f87171)",
 };
 
-export function OpsManualOperationsWidget({ section }: { section: PlatformSection }) {
+/** UI-001 — what a READ holder sees instead of Run / Dry-run buttons that would 403. */
+export const OPS_OPERATIONS_READ_ONLY_LINE = "Read-only — running or dry-running operations needs WRITE access to Platform Operations.";
+
+export function OpsManualOperationsWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
+  // Fail-safe: an absent access prop renders read-only; the server gate is the authority.
+  const canWrite = access?.canWrite === true;
   const [data, setData] = useState<OperationsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -141,7 +147,8 @@ export function OpsManualOperationsWidget({ section }: { section: PlatformSectio
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-medium text-[var(--text-primary)]">{g.label}</p>
                   <div className="flex items-center gap-1.5">
-                    {g.commands.map((c) => {
+                    {!canWrite && <span className="text-[10px] text-[var(--text-muted)]" data-read-only-line>{OPS_OPERATIONS_READ_ONLY_LINE}</span>}
+                    {canWrite && g.commands.map((c) => {
                       const busy = acting === c.id;
                       const isRun = c.mutates;
                       return (
