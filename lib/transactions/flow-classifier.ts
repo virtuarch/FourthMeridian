@@ -182,6 +182,14 @@ export interface FlowClassificationInput {
   pfcPrimary?:  string | null;
   /** Plaid personal_finance_category.detailed — ONLY if already in memory. */
   pfcDetailed?: string | null;
+  /**
+   * FIN-002 — the provider taxonomy is PRESENT on the input (so the write
+   * builder still persists it verbatim) but must NOT decide the flow, because a
+   * USER re-categorised this row (categorySource USER_RULE / USER_OVERRIDE).
+   * Set only by `buildFlowInputFromRow` from the stored `categorySource`; the
+   * classifier never infers it. See `classifyFlow` step 1.
+   */
+  providerTaxonomySuppressed?: boolean;
 }
 
 export interface FlowClassification {
@@ -440,7 +448,18 @@ export function classifyFlow(input: FlowClassificationInput): FlowClassification
   const { category, amount } = input;
 
   // 1. Provider taxonomy first — only when the caller already has it in memory.
-  if (input.pfcPrimary || input.pfcDetailed) {
+  //
+  // FIN-002 — AND NOT WHEN THE USER HAS SPOKEN. A category correction is the one
+  // customer-facing lever over a row's economics, and it re-derives the flow
+  // through this function. With the PFC still first, every PFC-bearing Plaid row
+  // (the overwhelming majority) kept the PROVIDER's verdict after the user moved
+  // it — INCOME → Transfer re-derived INCOME, and every income total, baseline,
+  // stream and projection kept the old economics while the row showed the new
+  // category (runtime audit 2026-10-21, FIN-002). The user's category is now the
+  // economic signal for a USER_RULE / USER_OVERRIDE row; the PFC stays on the row
+  // as an immutable provider fact (the write builder copies it from the input
+  // untouched) and resumes deciding the moment the user's source is cleared.
+  if (!input.providerTaxonomySuppressed && (input.pfcPrimary || input.pfcDetailed)) {
     const fromPfc = classifyFromPfc(input);
     if (fromPfc) return fromPfc;
   }

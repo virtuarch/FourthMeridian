@@ -30,6 +30,13 @@
  * Whenever a category changes (category rule / override), flow is re-derived
  * from the new category through the authoritative pipeline (buildFlowInputFromRow
  * → classifyFlow → buildFlowWriteFields), so category and flowType never desync.
+ *
+ * FIN-002 (2026-10-22) — and the USER'S category is the signal in that
+ * re-derivation. The new `categorySource` travels into `buildFlowInputFromRow`,
+ * which marks the provider taxonomy SUPPRESSED for a USER source; the PFC
+ * columns are persisted unchanged (immutable provider facts), they simply no
+ * longer outrank the user. The ownership gate above it is untouched: a row the
+ * transfer authority or the crypto ledger owns still writes nothing.
  */
 
 import type { CategorySource, MerchantAliasSource, Prisma, TransactionCategory } from "@prisma/client";
@@ -125,6 +132,14 @@ export function recomputeFlowFields(
   row: CorrectionRow,
   acct: CorrectionAcct,
   category: TransactionCategory,
+  /**
+   * FIN-002 — the category source the caller is ABOUT TO STAMP (USER_RULE for a
+   * rule, USER_OVERRIDE for a one-row override). It is what tells the
+   * classifier that the provider taxonomy no longer decides this row — before
+   * this, a PFC-bearing row re-derived the provider's own flowType whatever
+   * category the user chose, and the correction never reached money.
+   */
+  categorySource: CategorySource = "USER_OVERRIDE",
 ): Partial<FlowWriteFields> {
   if (!mayWriteFlow(row.flowAuthority, "CLASSIFIER").allowed) return {};
   // CCPAY-2C-5 — no merchant/description: the classifier is descriptor-blind by
@@ -138,6 +153,7 @@ export function recomputeFlowFields(
       pfcDetailed: row.pfcDetailed,
       pfcConfidenceLevel: row.pfcConfidenceLevel,
       merchantEntityId: row.merchantEntityId,
+      categorySource,
     },
     acct,
   );
@@ -233,7 +249,7 @@ export async function applyCategoryRuleCorrection(
         select: { id: true },
       });
 
-  const flow = recomputeFlowFields(row, acct, category);
+  const flow = recomputeFlowFields(row, acct, category, "USER_RULE");
   await client.transaction.update({
     where: { id: row.id },
     data: { category, categorySource: "USER_RULE", categoryRuleId: rule.id, ...flow },
@@ -251,7 +267,7 @@ export async function applyTransactionOverride(
   acct: CorrectionAcct,
   category: TransactionCategory,
 ): Promise<void> {
-  const flow = recomputeFlowFields(row, acct, category);
+  const flow = recomputeFlowFields(row, acct, category, "USER_OVERRIDE");
   await client.transaction.update({
     where: { id: row.id },
     data: { category, categorySource: "USER_OVERRIDE", categoryRuleId: null, ...flow },
