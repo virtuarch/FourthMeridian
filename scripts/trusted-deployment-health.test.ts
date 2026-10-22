@@ -9,7 +9,7 @@
  * Hermetic. Run: npx tsx scripts/trusted-deployment-health.test.ts
  */
 
-import { planFromDeployments } from "./trusted-deployment-health.mjs";
+import { missingRequiredTargets, planFromDeployments } from "./trusted-deployment-health.mjs";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -34,6 +34,15 @@ console.log("classification of a commit's deployments");
   check("in_progress / queued ⇒ pending", planFromDeployments([dep("a", "in_progress"), dep("b", "queued")]).pending.length === 2);
   check("inactive (superseded) ⇒ skipped", planFromDeployments([dep("a", "inactive")]).skipped.length === 1);
   check("deployments not created by Vercel are ignored", Object.values(planFromDeployments([dep("x", "success", "", "someone")])).every((l) => l.length === 0));
+}
+
+console.log("required targets (the 0773008 false green)");
+{
+  const siteOnly = [dep("Preview – fourth-meridian-site", "success")];
+  check("site seen, app not yet ⇒ app missing (keep waiting / fail at deadline)", missingRequiredTargets(siteOnly).join() === "app");
+  check("app seen ⇒ nothing missing", missingRequiredTargets([...siteOnly, dep("Preview – fintracker1", null)]).length === 0);
+  check("a non-Vercel deployment of the app's name does not count", missingRequiredTargets([dep("Preview – fintracker1", "success", "", "github-actions[bot]")]).join() === "app");
+  check("GitHub's own vercel-probe environment deployment is not a Vercel deployment", planFromDeployments([dep("vercel-probe", "success", "", "github-actions[bot]")]).probe.length === 0);
 }
 
 console.log(`\n${passes} passed, ${failures} failed`);
