@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   EXTERNAL_CRON_NOTE,
+  CRON_PROVIDER_NOTE,
   SCHEDULER_NOTES,
   buildSchedulerObservation,
 } from "@/lib/platform/scheduler/observation-core";
@@ -120,13 +121,14 @@ function main() {
     check("it is NOT listed as overdue (no health authority covers it)", o.observed.overdue.length === 0);
     check("a registered job never appears as an external cron", !o.observed.externalCrons.some((c) => c.job === "sync-banks"));
     check("the gap note is appended only when one was observed", o.notes.includes(EXTERNAL_CRON_NOTE));
+    check("OBS-012: the cron-provider note is appended with it, and says a wake is still unobserved", o.notes.includes(CRON_PROVIDER_NOTE) && /no wake is recorded/.test(CRON_PROVIDER_NOTE) && !/\d/.test(CRON_PROVIDER_NOTE));
 
     const none = buildSchedulerObservation({
       jobs: [job("sync-banks", 6)], health: [],
       runs: [{ jobName: "sync-banks", startedAt: D("2026-07-25T06:00:00.000Z") }],
       nextSlotAt: null, jobsInNextSlot: [], window: WINDOW,
     });
-    check("...and omitted when none was", !none.notes.includes(EXTERNAL_CRON_NOTE));
+    check("...and omitted when none was", !none.notes.includes(EXTERNAL_CRON_NOTE) && !none.notes.includes(CRON_PROVIDER_NOTE));
   }
 
   // ── expected is configuration, deterministic ──────────────────────────────────
