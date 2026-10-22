@@ -173,6 +173,8 @@ async function main(): Promise<void> {
           pfcDetailed:        r.pfcDetailed,
           pfcConfidenceLevel: r.pfcConfidenceLevel,
           merchantEntityId:   r.merchantEntityId,
+          // FIN-002: a USER_* category suppresses the provider taxonomy.
+          categorySource:     r.categorySource,
         },
         {
           accountType: (r.financialAccount?.type as string | null) ?? null,

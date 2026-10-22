@@ -741,7 +741,8 @@ export async function syncTransactionsForItem(
           // through the authoritative pipeline so category and flowType stay in sync.
           if (mi.category) {
             const { input, captured } = buildPlaidFlowInput(txn, { category: mi.category, amount, accountType: meta.type, debtSubtype: meta.debtSubtype });
-            const overrideFlow = buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
+            // FIN-002: a USER rule's category outranks the provider taxonomy.
+            const overrideFlow = buildFlowWriteFields(classifyFlow({ ...input, providerTaxonomySuppressed: true }), input, captured, FLOW_CLASSIFIER_VERSION);
             return { ...columns, category: mi.category, ...ownFlow(overrideFlow), categorySource: "USER_RULE", ...(mi.categoryRuleId ? { categoryRuleId: mi.categoryRuleId } : {}) };
           }
           // NORMAL — default category + flow, stamp confirmed provenance.
