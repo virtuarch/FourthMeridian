@@ -59,4 +59,4 @@ Owned paths: `app/(shell)/dashboard/credit/**`, `app/api/credit/**`, `components
 
 ## Collision log
 
-Recorded by the orchestrator at integration time in `03-IMPLEMENTATION-LOG.md`.
+No textual merge conflict occurred in any of the 10 merges. Cross-workstream SEMANTIC collisions were all caught by the integrated gate and fixed by the orchestrator (`04` §3, register NEW-001…005): incident-stage registry (B, C), AI evidence registry (B), RLS census vs RateLimit policy (F vs C), foreground case 50 vs role statement timeout (C), allowance pin vs turn deadline (D), cron-auth duplication (A vs C), health reader authority (E), palette/db-safety pins (orchestrator). Ownership exceptions taken by agents (flagged in their reports): A edited `site/` legal copy and `lib/marketing/request-access.ts`; G edited a few unowned test pins; I made a one-line guard in an Ops widget.

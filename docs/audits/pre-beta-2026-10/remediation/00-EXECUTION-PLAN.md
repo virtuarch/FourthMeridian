@@ -22,8 +22,8 @@ Resolve the confirmed findings of the static audit (`../01`–`13`, `SCORECARD.m
 
 | Phase | Content | Status |
 |---|---|---|
-| 0 Discovery & control | state verified; audits read; register, ownership matrix, worktrees, baseline gate | this document, `01`, `02` |
-| 1 Critical functional remediation | SEC-001/006, FIN-001/002, IDEMP-001/002, SEC-AI-003, SEC-008/ARCH-003, OBS-001/002/003, IDEMP-009 | wave 1 |
+| 0 Discovery & control | state verified; audits read; register, ownership matrix, worktrees, baseline gate | DONE |
+| 1 Critical functional remediation | SEC-001/006, FIN-001/002, IDEMP-001/002, SEC-AI-003, SEC-008/ARCH-003, OBS-001/002/003, IDEMP-009 | DONE |
 | 2 Remaining P1 + release gates | privacy, dependency gate, RLS census gate, auth handler tests, STATUS re-baseline | wave 1 (F, A) + wave 2 |
 | 3 Product retirement & cleanup | Credit, Growth product, Markets coming-soon, orphans, deps, duplicate authorities | wave 1 (G) + F (deps) |
 | 4 AI modularisation | after D (AI reliability) and B (financial) are integrated | wave 2 (H) |
@@ -52,3 +52,7 @@ Resolve the confirmed findings of the static audit (`../01`–`13`, `SCORECARD.m
 ## 6. Baseline gate
 
 `npm run ci` on `cde8fa0` in `base` — result recorded in `04-TEST-EVIDENCE.md` §1.
+
+## 7. Outcome (2026-10-22)
+
+All phases executed locally. Wave 1 (A–G) and wave 2 (H, I, J) merged into `remediation/beta-1`; final code HEAD `01098bd` passes the full local CI contract and the app production build. Concurrency was reduced mid-program to two agents / one heavy process on owner instruction (8 GB machine). Results: `10`, `12`, `MORNING-HANDOFF.md`; owner gates: `11`.
