@@ -18,7 +18,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  archiveSpaceConfirm, changeRoleConfirm, leaveSpaceConfirm, removeMemberConfirm, revokeAccountConfirm,
+  archiveSpaceConfirm, changeRoleConfirm, leaveSpaceConfirm, removeMemberConfirm, rescindInviteConfirm, revokeAccountConfirm,
 } from "./destructive-confirm";
 import { MemberDetail } from "@/components/space/widgets/members/MemberDetail";
 import type { Member } from "./manage-shared";
@@ -64,7 +64,29 @@ console.log("1. The copy states the consequence");
   check("revoke: says the account is NOT deleted", /not deleted/i.test(v.message));
 }
 
+{
+  const ri = rescindInviteConfirm("Ana");
+  check("rescind: names the invitee", ri.title.includes("Ana"));
+  check("rescind: says the sent link stops working immediately", /link/i.test(ri.message) && /immediately/i.test(ri.message));
+  check("rescind: says re-adding needs a new invite", /new invite/i.test(ri.message));
+  check("rescind: confirm label is the action", ri.confirmLabel === "Rescind invite");
+}
+
 console.log("2. Each mutation is reachable only through ConfirmDialog onConfirm");
+{
+  // A7 (2026-10-22) — the pending-invite rescind fired on one click in both
+  // surfaces; the button now only stages it.
+  const pi = code("components/space/widgets/members/PendingInvites.tsx");
+  check("PendingInvites: onRescind( called once, inside ConfirmDialog onConfirm",
+    count(pi, /\bonRescind\(/g) === 1 && /onConfirm=\{\(\) => \{ const id = pending\.id; setPending\(null\); onRescind\(id\); \}\}/.test(pi));
+  check("PendingInvites: the X button only stages the rescind", pi.includes("onClick={() => setPending(inv)}"));
+  const mp2 = code("components/space/manage/MembersPanel.tsx");
+  check("MembersPanel: handleRescind( only in the declaration + onConfirm",
+    count(mp2, /handleRescind\(/g) === 2 && mp2.includes("void handleRescind(id)") && mp2.includes("onClick={() => setPendingRescind(inv)}"));
+  const rt = code("app/api/spaces/[id]/invites/[inviteId]/route.ts");
+  check("rescind route writes MEMBER_INVITE_CANCELLED in the same transaction as the delete",
+    /deleteMany\(\{ where: scope \}\)[\s\S]*?auditLog\.create\([\s\S]*?MEMBER_INVITE_CANCELLED/.test(rt));
+}
 {
   // MemberDetail — onRemove / onChangeRole are called only in the confirm handlers,
   // which are referenced only from <ConfirmDialog onConfirm=…>.
