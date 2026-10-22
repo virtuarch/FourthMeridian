@@ -936,6 +936,52 @@ async function main(): Promise<void> {
       offenders.length === 0, offenders.join(", "));
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // C11. SPACE CREATION  (POST /api/spaces) — A7, 2026-10-22
+  // ════════════════════════════════════════════════════════════════════════
+  // On Preview every POST /api/spaces returned 500 (42501 "new row violates
+  // row-level security policy for table Space"): Prisma's `space.create` is
+  // INSERT … RETURNING, and RETURNING is judged by the SELECT policy, which the
+  // new Space cannot pass until its OWNER membership exists. No case covered it.
+  {
+    const { createSharedSpace } = await import("@/lib/spaces/create-shared-space");
+    const { getTemplateForCategory } = await import("@/lib/space-templates/registry");
+    const { planTemplateApplication } = await import("@/lib/space-templates/apply");
+    const tpl = getTemplateForCategory("FAMILY");
+    if (!tpl) throw new Error("no FAMILY template");
+    const planned = planTemplateApplication(tpl, new Set<string>()).sectionsToCreate;
+
+    const legacy = await attempt(() => as("alice", (tx) => tx.space.create({
+      data: { name: "rls-legacy-shape", type: "SHARED", members: { create: { userId: "alice", role: "OWNER" } } },
+    })));
+    const legacyRows = truth(`select count(*) from "Space" where name='rls-legacy-shape'`);
+    check(68, "[spaces] NEGATIVE CONTROL — the old route shape (space.create, INSERT … RETURNING) is refused under fm_app and leaves no row",
+      !legacy.ok && /row-level security/i.test(legacy.error) && legacyRows === "0",
+      `${legacy.ok ? "SUCCEEDED" : legacy.error.slice(0, 80)} rows=${legacyRows}`);
+
+    const made = await attempt(() => as("alice", (tx) => createSharedSpace(tx, {
+      creatorUserId: "alice", name: "RLS Family", description: null, category: "FAMILY",
+      isPublic: false, reportingCurrency: "USD", sections: planned,
+    })));
+    const sid = made.ok ? made.value.id : "none";
+    const state = truth(`select (select count(*) from "SpaceMember" where "spaceId"='${sid}' and "userId"='alice' and role='OWNER')::text
+      ||'|'||(select count(*) from "SpaceDashboardSection" where "spaceId"='${sid}')::text
+      ||'|'||(select count(*) from "AiAgent" where "spaceId"='${sid}')::text`);
+    check(69, "[spaces] createSharedSpace as Alice (fm_app) creates the Space, her OWNER membership, every planned section and one AiAgent",
+      made.ok && made.value.members.length === 1 && made.value.dashboardSections.length === planned.length
+      && state === `1|${planned.length}|1`,
+      `${made.ok ? "" : made.error.slice(0, 160)} state=${state} planned=${planned.length}`);
+
+    const bobSees = await as("bob", (tx) => tx.space.findUnique({ where: { id: sid }, select: { id: true } }));
+    const bobJoin = await attempt(() => as("bob", (tx) => tx.spaceMember.create({ data: { spaceId: sid, userId: "bob", role: "OWNER" } })));
+    check(70, "[spaces] Bob can neither see Alice's new Space nor enrol himself in it",
+      bobSees === null && !bobJoin.ok, `sees=${bobSees ? "YES" : "no"} join=${bobJoin.ok ? "SUCCEEDED" : "refused"}`);
+
+    check(71, "[source] POST /api/spaces creates through createSharedSpace and never calls space.create",
+      /createSharedSpace\(/.test(code("app/api/spaces/route.ts")) && !/\.space\s*\.\s*create\s*\(/.test(code("app/api/spaces/route.ts"))
+      && !/\.space\s*\.\s*create\s*\(/.test(code("lib/spaces/create-shared-space.ts")));
+  }
+
   for (const c of [dbMod.tenantDb, dbMod.authDb, dbMod.systemDb, dbMod.db]) {
     await (c as { $disconnect: () => Promise<void> }).$disconnect();
   }
