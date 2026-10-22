@@ -41,3 +41,24 @@ Green run at `4834697` (log `/Users/chrstn/dev/FourthMeridian-remediation/integr
 | site | `npm run verify` | ✓ |
 
 Not covered by this gate: an app `next build` (CI has none; run separately, §4), PostgreSQL 17.6 / Supabase (the gate is PG16 — **not** evidence of PG17.6 equivalence), any browser behaviour.
+
+## 4. Runtime-confirmed findings → regression tests (queue C)
+
+Each runtime reproduction from `../runtime/` is now encoded as a test in the suite that passed at `4834697` (and 803/803 at `57de6aa`).
+
+| Runtime finding (original evidence) | Regression test(s) | What the test reproduces |
+|---|---|---|
+| SEC-001 (`POST /api/auth/session {requireTotpSetup:false}` → `/admin` 200) | `lib/auth/token-update.test.ts`, `lib/auth/page-gate.test.ts` | the exact csrf + session-update attack against the real NextAuth handler; session stays pending; pending admin redirected from `/admin` and `/admin/providers` |
+| FIN-001 (11 paychecks, slot 5 days overdue → $15,000 → $0 under a complete label) | `lib/ai/forecast/income-completeness.test.ts` F1–F9, `stream-read.test.ts` S16–S21, `lib/ai/conversation/fin001-wiring.test.ts` | the audit fixture ⇒ RECENTLY_SILENT, INCOMPLETE, bound $15,000; late / skipped / changed / resumed / stale-feed / discontinued variants |
+| FIN-002 (correction on a PFC row never moves `flowType`) | `lib/transactions/merchant-corrections.test.ts` §9, `flow-row-input.test.ts` | PFC=INCOME → Transfer/Dining/Payment change flow and totals; transfer-owned row still refuses |
+| IDEMP-001 (two concurrent identical CSVs → 12 rows) | `lib/imports/claim.test.ts`, `zip-bounds.test.ts` (+ real-PG proof in C's report) | concurrent claim: one batch, loser learns winner (409); re-import after rollback allowed; caps |
+| IDEMP-002 (two concurrent purges → 4 ACCOUNT_DELETED rows) | `lib/account-deletion/purge.test.ts`, `purge-census.test.ts` | two concurrent workers ⇒ exactly one destructive tail and one audit row; cancel race; table census |
+| SEC-AI-003 (one 429'd turn → 18 provider calls) | `lib/ai/rate-limit-retry.test.ts`, `provider-deadline.test.ts`, `conversation/turn-deadline.test.ts`, `invocation-failures.test.ts` | client `maxRetries: 0` + timeout pinned; bounded attempts; deadline aborts with a TIMEOUT row |
+| OBS-001 (30-day-stale evaluation reads "Quiet / ok") | `lib/platform/ops/overview-core.test.ts`, `app/api/health/route.test.ts` | stale evaluation ⇒ "Unknown — evaluator silent"; health exposes the scheduler block |
+| OBS-002 (`dead` job silent, `overdue` fires) | `lib/alerts/alerts.test.ts` | the same job at 60 days (dead) and 10 h (overdue) both fire |
+| OBS-003 (`captured` counted delivered, suppressed 20 h) | `lib/alerts/alerts.test.ts` §OBS-003, `delivery-capture.test.ts` | no RESEND key outside development ⇒ not delivered, not suppressed |
+| SEC-008 (register with no invite → 201) | `lib/registration-default.test.ts` | absent/typo/blank setting ⇒ invite_only ⇒ 403 before any write |
+| ARCH-003 (rotating XFF rotates the limiter bucket) | `lib/security/client-ip.test.ts`, `lib/rate-limit.test.ts` | spoofed first hop ignored; platform header wins; census of IP-header readers |
+| FIN-003 / FIN-005 / IDEMP-003 / IDEMP-009 / SEC-004 / SEC-005 (P2s) | `cash-flow.test.ts`; `cash-history.test.ts`, `backfill-core.test.ts`; `lib/jobs/run.test.ts`; `invocation-await.test.ts`; `lib/export/csv.test.ts`; `users/search/search-term.test.ts` | the runtime fixtures (+5000/−500 ⇒ 4500; HSA 5,000 split; two concurrent runJob ⇒ one body; failing ledger surfaces; `=RTVINJECT()` neutralised; single-character search refused) |
+
+Preserved controls re-proven on the integrated branch: allowance reservation and fail-closed (`rls:accept:allowance` 15/15), kill switch (`cost-controls.test.ts`, allowance case 6), cross-user AI isolation (`rls:accept:ai` 72/72), tenant isolation (`rls:accept` 37/37, `:app` 98/98, `:foreground` 67/67), net-worth and flow invariants (REQUIRED audits).
