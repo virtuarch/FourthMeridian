@@ -41,6 +41,34 @@
  */
 
 import type { PlaidWebhookEventInput } from "@/lib/plaid/webhook-event";
+import { webhookBodySha256 } from "@/lib/plaid/webhook-dedupe";
+
+/**
+ * FIN-007 — ITEM webhooks that mean the Item can no longer sync. Mapped to the
+ * EXISTING health transitions (lib/connections/health-transitions.ts, which
+ * refuses to resurrect a REVOKED Item) so the cron and the resume backstop —
+ * both `status: ACTIVE` only — stop selecting a dead Item.
+ *   ITEM/ERROR with ITEM_LOGIN_REQUIRED | INVALID_ACCESS_TOKEN → NEEDS_REAUTH
+ *   ITEM/LOGIN_REPAIRED is NOT mapped back (reactivation is the reconnect flow's)
+ *   ITEM/USER_PERMISSION_REVOKED | ITEM/USER_ACCOUNT_REVOKED   → REVOKED
+ * Deliberately NOT mapped:
+ *   ITEM/ERROR with any other code — errors.ts doctrine: a non-reauth code may be
+ *     transient, and ERROR locks the Item out of every sync path;
+ *   ITEM/PENDING_EXPIRATION / PENDING_DISCONNECT — the Item still syncs until the
+ *     date; marking it now would stop up to 7 days of good data. Recorded only.
+ */
+export const WEBHOOK_REAUTH_ERROR_CODES: ReadonlySet<string> = new Set(["ITEM_LOGIN_REQUIRED", "INVALID_ACCESS_TOKEN"]);
+export const WEBHOOK_REVOKED_CODES: ReadonlySet<string> = new Set(["USER_PERMISSION_REVOKED", "USER_ACCOUNT_REVOKED"]);
+
+export type WebhookHealthTransition = { status: "NEEDS_REAUTH" | "REVOKED"; errorCode: string };
+
+/** FIN-007 — the health transition a verified ITEM webhook implies, if any. Pure. */
+export function webhookHealthTransition(webhookType: string | null, webhookCode: string | null, errorCode: string | null): WebhookHealthTransition | null {
+  if (webhookType !== "ITEM" || !webhookCode) return null;
+  if (webhookCode === "ERROR" && errorCode && WEBHOOK_REAUTH_ERROR_CODES.has(errorCode)) return { status: "NEEDS_REAUTH", errorCode };
+  if (WEBHOOK_REVOKED_CODES.has(webhookCode)) return { status: "REVOKED", errorCode: webhookCode };
+  return null;
+}
 
 /** TRANSACTIONS codes that mean "there is transaction data to pull". */
 export const SYNC_TRIGGER_CODES: ReadonlySet<string> = new Set([
@@ -56,7 +84,9 @@ export type WebhookHandling =
   | "ACKNOWLEDGED"            // verified, not a trigger we act on (ITEM/ERROR, PENDING_EXPIRATION, …)
   | "UNKNOWN_ITEM"            // a trigger for an item_id with no PlaidItem here
   | "REFUSED_ITEM_STATUS"     // a trigger for an Item that is not ACTIVE (REVOKED / NEEDS_REAUTH / ERROR)
-  | "REFUSED_OWNER_INACTIVE"; // a trigger for an Item whose owner is deactivated / pending deletion
+  | "REFUSED_OWNER_INACTIVE"  // a trigger for an Item whose owner is deactivated / pending deletion
+  | "DUPLICATE_SUPPRESSED"    // IDEMP-006 — the same verified body within the dedupe window: no second pipeline
+  | "HEALTH_TRANSITION";      // FIN-007 — an ITEM webhook moved the Item to NEEDS_REAUTH / REVOKED
 
 /** What the receiver knows about the Item named by a webhook. */
 export interface WebhookItemRef {
@@ -142,6 +172,14 @@ export interface WebhookReceiverDeps {
   scheduleSync: (plaidItemId: string) => void;
   /** V26-ENV-1 deployment environment stamp. */
   environment: () => string;
+  /**
+   * IDEMP-006 — has this exact verified body been delivered within the dedupe
+   * window? Optional: defaults to lib/plaid/webhook-dedupe.ts (system principal,
+   * fail-open), loaded lazily so this module imports no database client.
+   */
+  isDuplicate?: (bodySha256: string) => Promise<boolean>;
+  /** FIN-007 — apply a health transition. Optional: defaults to setPlaidItemHealth. */
+  applyHealth?: (plaidItemId: string, t: WebhookHealthTransition) => Promise<void>;
   log?: Pick<Console, "log" | "warn">;
 }
 
@@ -186,7 +224,35 @@ export async function handlePlaidWebhook(
   const item = externalItemId ? await deps.lookupItem(externalItemId) : null;
 
   // 4. Decide.
-  const decision = decidePlaidWebhook(webhookType, webhookCode, item);
+  let decision = decidePlaidWebhook(webhookType, webhookCode, item);
+
+  // 4b. IDEMP-006 — a sync trigger whose exact body was already delivered
+  //     inside the window does not start a second pipeline.
+  if (decision.schedule) {
+    const isDuplicate = deps.isDuplicate
+      ?? (async (sha: string) => (await import("@/lib/plaid/webhook-dedupe")).isDuplicateWebhookDelivery(sha));
+    if (await isDuplicate(webhookBodySha256(rawBody))) {
+      log.log(`[plaid webhook] duplicate delivery for item ${item?.id} within the dedupe window — no second pipeline`);
+      decision = { handling: "DUPLICATE_SUPPRESSED", schedule: false, handled: false };
+    }
+  }
+
+  // 4c. FIN-007 — an ITEM webhook that means "this Item cannot sync" moves it
+  //     through the canonical health chokepoint. Best-effort; never a non-200.
+  const transition = item ? webhookHealthTransition(webhookType, webhookCode, errorCode) : null;
+  if (transition && item && item.status !== "REVOKED") {
+    try {
+      const applyHealth = deps.applyHealth ?? (async (id: string, t: WebhookHealthTransition) => {
+        const { setPlaidItemHealth } = await import("@/lib/connections/health-transitions");
+        await setPlaidItemHealth(id, { status: t.status, errorCode: t.errorCode });
+      });
+      await applyHealth(item.id, transition);
+      decision = { handling: "HEALTH_TRANSITION", schedule: false, handled: true };
+      log.log(`[plaid webhook] item ${item.id} → ${transition.status} (${transition.errorCode})`);
+    } catch (e) {
+      log.warn(`[plaid webhook] health transition for item ${item.id} failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
   if (decision.handling === "UNKNOWN_ITEM") {
     log.warn(`[plaid webhook] no PlaidItem for item_id ${externalItemId} — ack, nothing to do`);
   } else if (decision.handling === "REFUSED_ITEM_STATUS" || decision.handling === "REFUSED_OWNER_INACTIVE") {
