@@ -10,8 +10,10 @@
  * swappable (OpenAI → Anthropic → local) without touching any route
  * handler or business logic.
  *
- * Model: gpt-4o-mini — inexpensive, low-latency, sufficient for
- * grounded context-bound chat. Swap CHAT_MODEL when ready to upgrade.
+ * Model: `AI_CHAT_MODEL` per environment (the deployed environments set it;
+ * gpt-5.1 at the 2026-10-21 audit). The code fallback when it is unset is
+ * gpt-4o-mini — see CHAT_MODEL below. (ARCH-012: this header used to name the
+ * fallback as if it were the deployed model.)
  */
 
 import 'server-only';

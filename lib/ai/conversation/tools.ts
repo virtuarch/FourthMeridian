@@ -1,8 +1,9 @@
 /**
  * lib/ai/conversation/tools.ts
  *
- * THE TOOL SURFACE — thirteen adapters over authorities that already exist, plus
- * the two memory tools that live in `memory-tools.ts`.
+ * THE TOOL SURFACE — the adapters in `TOOLS` at the bottom of this file (the
+ * registry is the count; ARCH-012: prose counts drifted 13/16/18/20), over
+ * authorities that already exist, plus the memory tools from `memory-tools.ts`.
  *
  * ⚠️ ADAPTERS, NOT AUTHORITIES. Not one line here computes a financial figure.
  * Every tool resolves parameters, calls a canonical function, and reshapes the
