@@ -34,9 +34,9 @@
 | C3 verify link | Seeded a verification token on a test account | **PASS**: `verified` → reuse `already_verified` (by design) → unknown 400 |
 | C2 invite redemption | Rotated the approved invite's token (equivalent to `/resend`) → real register | **PASS**: wrong e-mail 403; register 201 (pre-verified, can sign in); request `REDEEMED`; hash cleared; a token on a redeemed invite → `canRegister:false` |
 | F1 late paycheck | Synthetic fixture on test account t1: 11 biweekly $3,000 payroll rows, newest 2026-10-04, so the 10-18 slot is 5 days overdue (the FIN-001 audit fixture). One AI turn | **PASS**: the projection is labelled a lower bound; payroll "not fully included"; omitted bound ≈ **$15,000** (= the audit fixture). The original failure (payroll silently dropped to $0) was reproduced on pre-fix code in the runtime audit (`runtime/`, FIN-001) |
-| E1/E2/E4 Plaid Sandbox connect / refresh / disconnect | Needs typing Sandbox credentials into Plaid Link (third-party host). Not done by this session | **BLOCKED (owner, ~5 min, §7)** |
+| E1/E2/E4 Plaid Sandbox connect / refresh / disconnect | Owner on Preview (2026-10-23) | **PASS (owner-verified)** |
 
-**A7 final: 55 PASS · 0 FAIL · 3 BLOCKED** (E1, E2, E4). Previously 49 / 2 / 7.
+**A7 final: 58 PASS · 0 FAIL · 0 BLOCKED** (E1, E2, E4 owner-verified 2026-10-23). Previously 49 / 2 / 7.
 
 ## 3. Workstream 3: Production backup posture (read-only discovery)
 
@@ -50,7 +50,7 @@
 | Restore options | In-place restore; **Restore to new project** (Preview itself was created this way from Production on 22 Jun) | dashboard |
 | WAL archiving | on; 41,148 archived, **0 failed**; last a few seconds before the read | `pg_stat_archiver` |
 
-**BLOCKED (access):** a logical dump and a restore test need either the Production database password (owner) or a paid Restore-to-new-project. See §7. RPO today is up to about 24 h (daily physical backups, no PITR).
+**DONE (doc 24):** fresh read-only backup (86 s, SHA-256 `56f027df…`), restored to isolated PG 17.6 in 1.1 s. All 56 tables / 58,374 rows and the 480-entry catalog match live Production. RPO without PITR: the pre-cutover dump.
 
 ## 4. Workstream 4: migration delta and preflight
 
@@ -75,7 +75,12 @@
 - All 47 applied successfully on shared Preview: 38 at the 2026-10-06 cutover, 9 in A5.
 - **Preview was created from a Production backup on 2026-06-22**, so the migrations have run on Production-derived data (four months stale).
 
-**BLOCKED:** the timed rehearsal, failure/recovery drill and integrity diff on a **current** Production clone need §3's access.
+**DONE (doc 24):**
+- 47 applied in 0.36 s (4.5–6 s via `db:migrate:safe`); longest lock 69 ms.
+- Old app and v2.6 strict both verified on the migrated clone.
+- Failure drill passed.
+- **Two data-convergence defects found and fixed (PR #12)**: the event-identity backfill dropped `authorizedAt` (2,783 mis-pinned events); the flow-authority backfill had been deleted but never run on Production.
+- After the rehearsed data sequence: `audit:ci` 27/28 (schema-drift clean as superuser), `rls:accept` 37/37.
 
 ## 5. Workstream 5: Production environment (metadata only, no values)
 
@@ -124,7 +129,13 @@
 | C5 | Add Production env: the three role URLs + `FM_RLS_STRICT=true` (Sensitive) | Rows present (names) | Remove the rows. The old code ignores them |
 | C6 | Mark **PR #10** ready → merge (= Production deploy) | Build READY; alias moves | — |
 | C7 | Post-deploy, 15 minutes | `/api/health` ok with the `scheduler` block; db-authority strict, 3 roles; owner login + TOTP; Spaces, Cash Flow, Debt render; Brief; env-status shows the OpenAI pin `production`; malformed Bearer 307 | **App regression → Vercel Instant Rollback to `dpl_HRdMnpT3…` (`9ea5881`)**. Old code works on the migrated schema. **No data loss** |
-| C8 | Data steps: `backfill-economic-date`; `seed-platform-spaces` | Script output | Re-runnable |
+| C3b | **Data convergence, immediately after C3, before C4** (rehearsed order, ≈ 35 s locally; doc 24 §5), each dry-run then `--apply`, against Production via `DIRECT_URL`:
+1. `repair-liability-income-credits --include-deleted`;
+2. `backfill-flow-authority`;
+3. `backfill-economic-date`;
+4. `backfill-event-identity`;
+5. `repair-event-pin-drift`. | Re-runs report 0 remaining; projection drift 0; `npm run audit:ci` data invariants pass | Each step is idempotent and re-runnable. The old app is unaffected (it does not read these columns) |
+| C8 | `seed-platform-spaces`; re-run `backfill-economic-date` (idempotent) | Script output | Re-runnable |
 | C9 | Monitor 60 minutes: one `JobRun` per 15 minutes; Plaid refresh of one Item; logs and Sentry | — | As C7 |
 
 **Rollback and data-loss statement:**
@@ -137,26 +148,23 @@
 
 ## 7. Owner actions (genuine blockers only)
 
-1. **Production clone access (WS3/WS4).** Choose one:
-   - **(a)** Put the Production `postgres` connection string (session pooler, port 5432) into a new 600 file outside the repository. I then take a read-only privileged dump and rehearse locally. No cost; Production is read only.
-   - **(b)** Approve Supabase **Restore to new project** from the 22 Oct backup. That's a temporary paid project at Micro compute, billed hourly, deleted after the rehearsal. A few hours ≈ cents of compute, but it is a paid action.
-2. **E1/E2/E4 Plaid Sandbox (~5 min):**
-   1. On `https://preview-app.fourthmeridian.com`, signed in as yourself: Connections → Connect → choose any Sandbox bank → credentials `user_good` / `pass_good` → confirm the accounts appear.
-   2. On that new Item, use Refresh and confirm no error toast.
-   3. Disconnect it and confirm the confirmation dialog appears and the Item shows as revoked.
-   4. Do **not** touch the two legacy ACTIVE Items.
-3. **Cutover inputs (when you schedule it):**
-   - three role passwords;
-   - four Production env rows;
+1. ~~Production clone access~~: **done** (pgpass provided; deleted after use).
+2. ~~Plaid Sandbox E1/E2/E4~~: **done** (owner-verified).
+3. **Review and approve PR #12** (data-convergence fixes, required for the cutover). It merges into `v2.6` through normal CI. Then PR #10 is refreshed from `v2.6`.
+4. **Cutover inputs (when you schedule it):**
+   - three role passwords (`fm_app` / `fm_auth` / `fm_system`);
+   - four Production env rows (`DATABASE_URL_APP` / `_AUTH` / `_SYSTEM`, `FM_RLS_STRICT=true`);
    - the rulesets decision (D2);
    - OpenAI Production spend limit (G5a);
-   - optionally PITR.
+   - optionally PITR for the cutover week;
+   - acknowledgement that the cutover **reclassifies 50 historical credits** (refund economics; 10 live rows, Σ live $2,451.33 per doc 24) and stamps ownership on all rows.
+5. **Cutover approval** (merging PR #10 deploys Production).
 
 ## 8. GO / NO-GO
 
-- **Candidate code: GO.** CI green, B4/I4 fixed, A7 55/0/3, audit clean, build OK, tree reconciled with `main`.
-- **Production cutover: NO-GO until** the current-clone rehearsal (§7.1), the E1/E2/E4 pass (§7.2) and the cutover inputs (§7.3) are done. Everything else is prepared, and the expected cutover risk is low:
-  - 51 MB of data;
-  - a clean preflight;
-  - expand-only migrations;
-  - an instant, lossless app rollback.
+- **Candidate code: GO** once PR #12 is merged and PR #10 is refreshed:
+  - CI green; B4/I4 fixed; A7 58/0/0; audit clean; build OK;
+  - the Production clone rehearsal passes end to end (doc 24).
+- **Production cutover: CONDITIONAL GO.** Ready to schedule as soon as §7.3–§7.5 are done.
+  - Evidence: a verified backup and a 1-second restore; 47 migrations in under a second; the full data convergence in about 35 s; every data invariant passing on Production's own rows; both app versions working on the migrated schema; and a rehearsed failure recovery.
+  - Remaining risk: network latency to Supabase (allow 2–3× the local timings), and no PITR, so the RPO is the C1 dump.

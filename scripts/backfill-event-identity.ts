@@ -29,7 +29,8 @@
 import { db } from "@/lib/db";
 import { createHash } from "node:crypto";
 import type { ProviderType } from "@prisma/client";
-import { providerOfRow, projectEvent, type ObservationFacts } from "@/lib/transactions/event-identity";
+import { providerOfRow, projectEvent } from "@/lib/transactions/event-identity";
+import { factsOf } from "@/lib/transactions/backfill-event-facts";
 import { observationKey, isEventEligibleProvider } from "@/lib/transactions/event-identity";
 
 const BATCH = 200;
@@ -151,16 +152,7 @@ async function main() {
   let withdrawn = 0, pendingEvents = 0, postedEvents = 0;
   const proposals: { key: string; rows: Row[]; projection: ReturnType<typeof projectEvent> }[] = [];
   for (const [key, g] of groups) {
-    const facts: ObservationFacts[] = g.map((r) => ({
-      observedAt: r.createdAt,
-      lifecycle: (r.pending ? "PENDING" : "POSTED") as "PENDING" | "POSTED",
-      amount: r.amount,
-      postingDate: r.date,
-      economicDate: r.economicDate as Date,
-      authorizedAt: r.authorizedAt,
-      liveTransactionId: r.deletedAt ? null : r.id,
-    }));
-    const p = projectEvent(facts);
+    const p = projectEvent(g.map(factsOf));
     if (p.lifecycle === "WITHDRAWN") withdrawn++;
     else if (p.lifecycle === "PENDING") pendingEvents++;
     else postedEvents++;
@@ -251,13 +243,7 @@ async function main() {
     const chunk = entries.slice(i, i + BATCH);
     await db.$transaction(async (tx) => {
       for (const [, g] of chunk) {
-        const facts: ObservationFacts[] = g.map((r) => ({
-          observedAt: r.createdAt,
-          lifecycle: (r.pending ? "PENDING" : "POSTED") as "PENDING" | "POSTED",
-          amount: r.amount, postingDate: r.date, economicDate: r.economicDate as Date,
-          liveTransactionId: r.deletedAt ? null : r.id,
-        }));
-        const p = projectEvent(facts);
+        const p = projectEvent(g.map(factsOf));
         const ev = await tx.transactionEvent.create({
           data: {
             financialAccountId: g[0].financialAccountId!,

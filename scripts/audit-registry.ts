@@ -413,6 +413,12 @@ export const AUDITS: readonly AuditEntry[] = [
           "the event system is undeployed to production — REQUIRED at event-migration deploy time",
   },
   {
+    name: "backfill-flow-authority", tier: "OPERATIONAL", needsDb: true,
+    what: "one-time v2.6-OWN-1 ownership stamp for Transaction.flowAuthority (restored 2026-10-23: " +
+          "deleted as completed, but never run on Production) — REQUIRED at the Production cutover, " +
+          "after repair-liability-income-credits --include-deleted --apply",
+  },
+  {
     name: "backfill-ai-agents", tier: "OPERATIONAL", needsDb: true,
     what: "creates an AiAgent row for any Space missing one; idempotent bootstrap " +
           "(npm run backfill:ai-agents)",
