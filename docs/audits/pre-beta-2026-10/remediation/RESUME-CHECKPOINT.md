@@ -1,26 +1,27 @@
 # RESUME-CHECKPOINT — read first after any interruption
 
-_Refreshed: 2026-10-23, after final configuration and release preparation (doc 25)._
+_Refreshed: 2026-10-23 07:55 UTC, mid-cutover (doc 26)._
 
-**Production**
-- `main` = `9ea5881`. **Unchanged:** no migrations, role changes, env changes, financial edits or deploys.
-- PITR is off; the recommendation is to keep it off (doc 25 §4).
+**Production: v2.6 is DEPLOYED but CLOSED (recoverable maintenance).**
+- `main` = `87e5ac8` (PR #10 merged). Deployment `dpl_6NL1QND6ccmcNvDvtM7x5Mue2Kso` is serving `fourthmeridian.com`.
+- The firewall denies all traffic. Crons are disabled. `maintenance_mode=true`.
+- DB: 135 migrations, data converged. Role passwords and the 4 strict env vars are set.
+- C0–C6 and automated C7 **PASS** (doc 26 §2).
 
-**Candidate**
-- `v2.6` = `ae9b380` (PR #12 merged).
-- Draft **PR #10** (`release/v2.6-promotion`, head `29b7af9`): tree identical to `v2.6`, CI green (`Deployment health` UNVERIFIED by design), MERGEABLE.
+**Waiting on the owner:**
+1. C7 login/TOTP smoke test, using `maint.sh owner-on` (doc 26 §5).
+2. Then C8 reopen + 30-minute monitoring, then C9.
+3. Then OpenAI key alignment and app allowance settings (doc 26 §4).
 
-**Configured**
-- **Branch protection is live and enforcement-proven:** rulesets `25690160` (v2.6) and `25690163` (main). PR required, checks required, no force push or delete, admin bypass by PR only.
-- Direct pushes to `main` and `v2.6` are now rejected, so docs land through PRs.
+**Rollback:**
+- App: `vercel promote dpl_HRdMnpT3J9fSVXh3vpaP5RDjhRL2` (`9ea5881`).
+- Data, only for data damage: C1 dump `7c9a01b3…` (03:46 UTC).
 
-**Staged, not applied:** the cutover kit in `~/fm-rehearsal-private/prod-cutover/` (700/600):
-- `roles.secret.json` (owner recovery copy);
-- `c2-preflight.sql`;
-- the C3b candidate check + expected 50 rows;
-- the C4 SCRAM SQL + verifier;
-- the guarded C5 Vercel env script.
+**Release 2 (domain split): BLOCKED.**
+- It needs Release 1 PASS, plus an owner-created NameBright record for `app.fourthmeridian.com`.
+- No domain or DNS changes have been made (doc 26 §6).
 
-**Cutover:** **GO, conditional on the owner decisions in doc 25 §8** (window, PITR no/yes, OpenAI O1–O3, OpenAI key alignment, GO for C0–C9). Runbook: doc 25 §7.
-
-**Private evidence:** `~/fm-rehearsal-private/prod/` (dump `56f027df…`, repair evidence). Delete 7 days after the cutover.
+**Private kit:** `~/fm-rehearsal-private/` (700/600).
+- `release.log` is the step log.
+- `prod/pgpass` is kept until C9, then delete it with `rm -P`.
+- Delete the dumps 7 days after the cutover.
