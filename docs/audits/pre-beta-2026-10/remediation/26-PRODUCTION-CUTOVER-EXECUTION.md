@@ -1,6 +1,12 @@
 # 26 — Production cutover execution (Release 1) and domain-split status (Release 2)
 
-**Date:** 2026-10-23, 03:37 → 14:55 UTC.
+**Date:** 2026-10-23, 03:37 → 15:10 UTC.
+
+> **RELEASE 1: PASS (15:10 UTC).**
+> - The platform seed was applied and verified (§9).
+> - The AI spending controls are verified on Production (§4 / §11).
+>
+> Release 2 may resume once its §10 prerequisites are met.
 
 > **Update 14:55 UTC — supersedes the status lines below and §1.**
 >
@@ -264,3 +270,34 @@ Run everything from the operator Mac. The kit is in `~/fm-rehearsal-private/prod
 4. **Production env:** `NEXTAUTH_URL` / `NEXT_PUBLIC_APP_URL` → `https://app.fourthmeridian.com`, `NEXT_PUBLIC_SITE_URL` → `https://fourthmeridian.com`.
 
 **Rollback of the domain move:** re-add `fourthmeridian.com` to fintracker1. No DNS change is needed (same team).
+
+## 11. Fix applied and Release 1 closed (C9)
+
+**Platform seed on Production (owner-approved, 15:00 UTC).**
+- **Created:** `MERCHANT_OPS` → Merchant Operations (exactly 1 row).
+- **Sections:** PLATFORM_OPS 21 → 29 (`ops_policies` enabled), GROWTH_REVENUE 5 → 7, CUSTOMER_SUCCESS 1 → 2, MERCHANT_OPS 1.
+- **Unchanged (hashes compared before and after):** PlatformGrant (5), SpaceMember (2), users (2), every non-platform section.
+- A re-run wrote nothing. Health stayed ok with 0 5xx.
+
+**AI spending controls,** set by the owner's normal account in Platform Ops → Policies (CONTROL grant):
+
+| Control | Stored | Audit | Effective (app read model) |
+|---|---|---|---|
+| `ai_daily_allowance_usd` | `1` at 15:06:38 | `PLATFORM_POLICY_CHANGED` SUCCESS, DEFAULT → SETTING | $1/day, enforced |
+| `ai_spend_alert_fleet_usd_24h` | `2` at 15:07:00 | `PLATFORM_POLICY_CHANGED` SUCCESS, DEFAULT → SETTING | $2 / 24 h, enabled |
+
+- Both audit rows record actor `performedByAdminId` = the owner's normal account, `via PLATFORM_GRANT / PLATFORM_OPS`, with an IP.
+- The kill switch is off.
+- The project hard limit stays at $25/month.
+
+**Final state:**
+- **Production:** `main` `87e5ac8`, `dpl_6NL1QND6ccmcNvDvtM7x5Mue2Kso`, public, crons on, `maintenance_mode` unset.
+- **Rollback deployment** `dpl_HRdMnpT3…` (`9ea5881`) is retained.
+- **C1 dump** is kept privately for 7 days.
+- **Owner database credential** (`pgpass`) has been destroyed with `rm -P`.
+
+**Open remediation items:**
+1. The maintenance-mode paid-AI gap (§8).
+2. Runbook: seed after migrate, plus a registry-equality check (§9).
+3. Admin CONTROL wording and the missing-Space flag (§9).
+4. Release 2 prerequisites (§10).
