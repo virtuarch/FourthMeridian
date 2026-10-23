@@ -133,7 +133,7 @@ The interim from doc 17 §4 stands: branch builds run under strict RLS role URLs
 | UX-KBD | Dialog keyboard / focus | `aria-modal`, focus moves in, Escape closes, focus returns to the (keyboard-operable) chart | PASS |
 | UI-003 | Destructive actions confirmed | Member remove / role: confirmed. **Rescind invite was one click, hard delete, no audit** (BUG-3). **Retest on `7d1cee7`:** modal "Rescind <invitee>'s invite?" with the consequence; Escape cancels, invite kept, focus returns to the trigger | PASS after fix (N3) |
 
-**Counts (final, after fixes and retests):** **49 PASS · 2 FAIL · 7 BLOCKED**.
+**Counts (final, after fixes and retests):** **49 PASS · 2 FAIL · 7 BLOCKED** at 2026-10-22. **Updated 2026-10-23 (doc 23): 58 PASS · 0 FAIL · 0 BLOCKED**. B4 fixed in PR #8 and I4 in PR #9, both verified live; A4, C2-redeem, C3 and F1 executed; E1/E2/E4 owner-verified.
 - FAIL: B4 (P2, owner decision), I4 (P3).
 - BLOCKED: A4, C2-redeem, C3, E1, E2, E4, F1.
 
