@@ -292,9 +292,10 @@ export function assertPricedModel(model: string, sinks?: UsageSinks): void {
 /**
  * AI COST CONTROLS — THE PLATFORM HAS PAUSED PAID AI REQUESTS, SO THE CALL WAS NOT MADE.
  *
- * Judged BEFORE `assertPricedModel` on every entry point, from the one
- * PlatformSetting row `ai_paid_requests_paused` (absent ⇒ off; unreadable ⇒
- * paused, fail closed). The routes judge it earlier still — before the
+ * Judged BEFORE `assertPricedModel` on every entry point, from the two
+ * PlatformSetting rows `ai_paid_requests_paused` (the AI kill switch) and
+ * `maintenance_mode` — EITHER on refuses (absent ⇒ off; unreadable ⇒ paused,
+ * fail closed; lib/platform/ai/paid-requests-admission.ts). The routes judge it earlier still — before the
  * allowance — so a route refusal writes no row; THIS path is what refuses
  * harness and script traffic, and a pause that lands mid-turn. One zero-token
  * FAILED / AI_PAUSED fact is written so the ledger and the alert engine see it.
@@ -303,8 +304,9 @@ export function assertPricedModel(model: string, sinks?: UsageSinks): void {
 const AI_PAUSED_MARKER = `[ai/provider] ${AI_PAUSED_CODE}:`;
 
 export class AiPausedError extends Error {
-  constructor(readonly model: string, readonly state: string) {
-    super(`${AI_PAUSED_MARKER} paid AI requests are paused by the platform (${state}); the call to "${model}" was refused before the provider was reached.`);
+  /** `cause` is a reason CODE (KILL_SWITCH / MAINTENANCE / BOTH / UNREADABLE / UNAVAILABLE), never content. */
+  constructor(readonly model: string, readonly state: string, readonly denialCause: string | null = null) {
+    super(`${AI_PAUSED_MARKER} paid AI requests are paused by the platform (${denialCause ?? state}); the call to "${model}" was refused before the provider was reached.`);
     this.name = 'AiPausedError';
   }
 }
@@ -322,7 +324,7 @@ export function isAiPausedFailure(message: string | null | undefined): boolean {
 export async function assertPaidRequestsAdmitted(model: string, sinks?: UsageSinks): Promise<void> {
   const admission = await (sinks?.paidRequestsAdmission ?? readPaidRequestsAdmission)();
   if (!admission.paused) return;
-  const err = new AiPausedError(model, admission.state);
+  const err = new AiPausedError(model, admission.state, admission.cause ?? null);
   await recordAiInvocationFailure({
     provider: 'OPENAI', model, outcome: 'FAILED', errorCode: AI_PAUSED_CODE, latencyMs: 0,
   }, sinks?.invocationClient);

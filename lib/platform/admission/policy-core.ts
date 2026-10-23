@@ -43,18 +43,21 @@ const ON_REASON: Record<keyof ControlPlaneFacts, AdmissionReason> = {
  * which declarations bear on it.
  *
  *   maintenance_mode  the platform is not operating. Everything stops, including
- *                     establishing new provider relationships.
+ *                     establishing new provider relationships and beginning a
+ *                     paid model call (PAID_AI_REQUEST).
  *   ingestion_paused  stop calling providers for DATA. It says nothing about
  *                     whether someone may connect an account — a customer
  *                     finishing a Link flow during a provider incident should
  *                     end up connected and pending, not rejected. Their
- *                     connection is real; the data is what is on hold.
+ *                     connection is real; the data is what is on hold. It
+ *                     says nothing about AI either: no provider DATA is fetched
+ *                     by a model call (the AI kill switch is its own row).
  *
  * Typed `Record<keyof ControlPlaneFacts, …>`, so a new fact cannot be added
  * without declaring its scope.
  */
 const APPLIES_TO: Record<keyof ControlPlaneFacts, readonly OperationalWork[]> = {
-  maintenanceMode: ["REFRESH_EXECUTION", "CONNECTION_ESTABLISHMENT"],
+  maintenanceMode: ["REFRESH_EXECUTION", "CONNECTION_ESTABLISHMENT", "PAID_AI_REQUEST"],
   ingestionPaused: ["REFRESH_EXECUTION"],
 };
 

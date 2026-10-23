@@ -334,6 +334,27 @@ async function main() {
     check('cost is priced from the gpt-5.1 rate (2,000 in / 300 out = $0.0055)',
       r.ok && Math.abs((r.meta.costUsd ?? 0) - 0.0055) < 1e-9, String(r.ok && r.meta.costUsd));
     check('package size is reported', r.meta.packageBytes > 1000 && r.meta.packageApproxTokens > 250);
+    // P1 (2026-10-23) — the Daily Brief made a paid call while maintenance_mode=true.
+    // Through the REAL combined reader: maintenance on ⇒ the provider is never asked,
+    // one zero-token FAILED / AI_PAUSED fact, no retry, no Brief, no cost.
+    {
+      const { readPaidRequestsAdmission } = await import('@/lib/platform/ai/paid-requests-admission');
+      const maintOn = { platformSetting: { findMany: async () => [{ key: 'maintenance_mode', value: 'true' }] } };
+      let calls = 0; const mRows: Record<string, unknown>[] = []; const sleeps: number[] = [];
+      const counting: StructuredClient = { chat: { completions: { create: async () => { calls++; throw new Error('provider must not be called'); } } } };
+      const m = await generateBriefFromPackage(pkg, { model: 'gpt-5.1', now, deps: { client: counting, sleep: async (ms) => { sleeps.push(ms); }, sinks: {
+        invocationClient: { aiInvocation: { create: async ({ data }) => { mRows.push(data); } } },
+        paidRequestsAdmission: () => readPaidRequestsAdmission(maintOn),
+      } } });
+      await new Promise((res) => setImmediate(res));
+      check('maintenance on: the Brief never reaches the provider', calls === 0);
+      check('maintenance on: no Brief, a PROVIDER_ERROR carrying the paused marker (not a fabricated narrative)',
+        !m.ok && m.reason === 'PROVIDER_ERROR' && /AI_PAUSED/.test(m.detail.join(' ')) && /MAINTENANCE/.test(m.detail.join(' ')));
+      check('maintenance on: exactly one zero-token FAILED / AI_PAUSED row, surface=brief, no retry',
+        mRows.length === 1 && mRows[0].outcome === 'FAILED' && mRows[0].errorCode === 'AI_PAUSED' && mRows[0].promptTokens === 0
+          && mRows[0].surface === 'brief' && sleeps.length === 0, JSON.stringify(mRows[0]));
+      check('maintenance on: nothing is priced', !m.ok && (m.meta.costUsd ?? 0) === 0);
+    }
     const withReason = await generateBriefFromPackage(pkg, { model: 'gpt-5.1', now, reason: 'change', deps: { structured: (async () => ({
       value: narration(), model: 'gpt-5.1', latencyMs: 1, finishReason: 'stop', usage: null })) as unknown as StructuredCall } });
     check('a generation reason is carried in the correlation id, and only there',
