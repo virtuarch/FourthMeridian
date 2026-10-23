@@ -202,6 +202,11 @@ Run everything from the operator Mac. The kit is in `~/fm-rehearsal-private/prod
   - admission makes `maintenance_mode` also deny paid AI.
 
   Either way, add a test that pins whichever is chosen.
+- **Remediation (2026-10-23, branch `fix/maintenance-mode-paid-ai`; merged and deployed only with owner approval):**
+  - The admission policy gains a `PAID_AI_REQUEST` work class that `maintenance_mode` applies to.
+  - `readPaidRequestsAdmission` (consulted by both AI routes and the provider chokepoint) now asks `admitOperationalWork` for it, in the same query as the kill switch.
+  - Either flag denies; an unreadable value on either side fails closed.
+  - Tests pin this for every provider entry point, the Daily Brief, the retry wrapper and the routes.
 
 ## 9. Incident: platform Control and Merchant Ops had no effect (root cause found; fix tested, not applied)
 

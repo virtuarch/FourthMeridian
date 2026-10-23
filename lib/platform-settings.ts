@@ -300,7 +300,7 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
   },
   maintenance_mode: admissionFact(
     "maintenance_mode", "Maintenance mode",
-    "While on, no refresh execution and no new connection may begin. An unreadable value also denies work.",
+    "While on, no refresh execution, no new connection and no paid AI request may begin. An unreadable value also denies work.",
   ),
   ingestion_paused: admissionFact(
     "ingestion_paused", "Ingestion paused",

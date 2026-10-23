@@ -71,7 +71,14 @@ export type OperationalWork =
   /** Provider ingestion: balances, holdings, transactions, history. */
   | "REFRESH_EXECUTION"
   /** Establishing the provider relationship itself, before any ingestion. */
-  | "CONNECTION_ESTABLISHMENT";
+  | "CONNECTION_ESTABLISHMENT"
+  /**
+   * Beginning a PAID model call (any surface: Conversations, the Daily Brief,
+   * harness and scripts). Consumed once, at lib/platform/ai/paid-requests-admission.ts,
+   * which every paid path already consults. Added 2026-10-23 after a Brief made
+   * a paid call while maintenance_mode was on.
+   */
+  | "PAID_AI_REQUEST";
 
 export interface AdmissionRequest {
   work: OperationalWork;

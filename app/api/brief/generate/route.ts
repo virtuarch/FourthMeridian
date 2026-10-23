@@ -51,12 +51,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const limited = await paceAiRequest(user.id, 'ai-brief-generate', { limit: 20, windowSec: 60 }, 'The Daily Brief');
     if (limited) return limited;
   }
-  // AI COST CONTROLS — the kill switch, before the allowance (after
+  // AI COST CONTROLS — the kill switch OR maintenance_mode (either refuses), before the allowance (after
   // authentication, entitlement and pacing). 503 `{ error, code: "AI_PAUSED" }`.
   // No claim is taken and no row is written; the stored Brief stays readable.
   {
     const admission = await readPaidRequestsAdmission();
-    if (admission.paused) return paidRequestsPausedResponse();
+    if (admission.paused) {
+      // Reason code only — never the prompt, the user, or any figure.
+      console.warn('[brief] refused before the provider: paid AI paused (' + (admission.cause ?? admission.state) + ')');
+      return paidRequestsPausedResponse();
+    }
   }
   // BETA C7 — the daily allowance, after the pacing window and before any claim
   // or model call. The same verdict and the same refusal body as Conversations
