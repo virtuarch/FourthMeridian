@@ -51,7 +51,7 @@ Step log (private): `~/fm-rehearsal-private/prod-cutover/release.log`.
 
 **The problem:**
 - Plaid stores the webhook URL per Item, fixed at link time.
-- Production's 3 ACTIVE Items were linked under the apex, so after the move they would POST to the static site (404).
+- Production's ACTIVE Items were linked under the apex, so after the move they would POST to the static site (404). There were 3 at preparation and 4 at execution, after a reconnect at 14:32 (§7.2).
 - Polling crons would still sync them, but transaction freshness would rely on cron cadence alone.
 
 **Supported method:** Plaid `POST /item/webhook/update { access_token, webhook }`. Plaid then sends `ITEM / WEBHOOK_UPDATE_ACKNOWLEDGED` to the new URL.
@@ -181,8 +181,8 @@ Step log (private): `~/fm-rehearsal-private/prod-cutover/release.log`.
   - Plaid read-back passed;
   - `ITEM/WEBHOOK_UPDATE_ACKNOWLEDGED` recorded (17:32:52, 17:35:30, 17:35:51, 17:36:15).
 - **Host evidence:**
-  - the request log shows the acknowledgement POSTs for Chase, Amex and Schwab on host `app.`;
-  - Robinhood's request line is absent from Vercel's log stream for either host, but its verified acknowledgement row and the read-back confirm it;
+  - the request log shows all 4 acknowledgement POSTs (200) on host `app.`;
+  - Robinhood's (17:36:15) appeared on host `app.` once Vercel finished ingesting it (it was absent at first);
   - there were no apex webhook POSTs.
 
 ### 7.3 C5 apex move

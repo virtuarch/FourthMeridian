@@ -21,7 +21,7 @@
 > - the platform seed is applied (§9);
 > - the AI spending controls are verified on Production (§4).
 >
-> **Release 2:** PAUSED by the owner pending §9. Its prerequisites are in §10.
+> **Release 2:** PAUSED by the owner pending §9. Its prerequisites are in §10. **Later completed: Release 2 PASS at 18:25 UTC (doc 27).**
 
 **Release 1 status (as of 07:52, historical):** BLOCKED at the owner login/TOTP gate. Every automated gate (C0–C6 and automated C7) passed. At that point Production was live on v2.6 behind a deny-all firewall, so no user could reach it.
 
@@ -265,7 +265,7 @@ Run everything from the operator Mac. The kit is in `~/fm-rehearsal-private/prod
 
 **Prerequisites before the apex moves** (`docs/operations/domain-split-preview.md` §6.2):
 1. **Plaid allowlist (owner):** add `https://app.fourthmeridian.com/plaid-oauth-return` **before** `NEXT_PUBLIC_APP_URL` changes. Link-token `redirect_uri` and new-Item webhooks derive from it.
-2. **Plaid webhooks:** **3 ACTIVE Production Items** carry `https://fourthmeridian.com/api/plaid/webhook`, which returns 404 once the apex is the static site. No `/item/webhook/update` tooling exists. A decision is needed: build the tool, or accept polling-only sync (cron cadence) for those Items.
+2. **Plaid webhooks:** **3 ACTIVE Production Items** (4 by execution; doc 27 §7.2) carry `https://fourthmeridian.com/api/plaid/webhook`, which returns 404 once the apex is the static site. No `/item/webhook/update` tooling exists. A decision is needed: build the tool, or accept polling-only sync (cron cadence) for those Items.
 3. **`NEXTAUTH_SECRET`:** Production record `140sAi8S` is shared with generic Preview, unchanged since 2026-06. It must be rotated immediately after the apex move (§6.2 step 10). Its value is unknown and it is shared with Preview, so rotating it earlier is advisable as well.
 4. **Production env:** `NEXTAUTH_URL` / `NEXT_PUBLIC_APP_URL` → `https://app.fourthmeridian.com`, `NEXT_PUBLIC_SITE_URL` → `https://fourthmeridian.com`.
 

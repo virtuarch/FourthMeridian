@@ -3,11 +3,13 @@
 _Refreshed: 2026-10-23 18:30 UTC (docs 26, 27)._
 
 **Release 1: PASS.**
-- **Production is public on v2.6:** `main` `87e5ac8`, `dpl_6NL1QND6ccmcNvDvtM7x5Mue2Kso`. Crons are on and `maintenance_mode` is unset.
+- **v2.6 is live in Production.** Crons are on and `maintenance_mode` is unset. (The Release 1 deployment was `87e5ac8` / `dpl_6NL1QND6…`; current Production is under Release 2 below.)
 - **Checks passed:** 135 migrations, data converged, strict RLS roles, monitoring and integrity.
 - **Platform seed applied:** 5 platform Spaces.
 - **AI controls in force:** $1/day allowance, $2 fleet alert, $25 project hard limit.
-- **Rollback deployment:** `dpl_HRdMnpT3J9fSVXh3vpaP5RDjhRL2`.
+- **Rollback targets:**
+  - pre-v2.6 code: `dpl_HRdMnpT3J9fSVXh3vpaP5RDjhRL2` (`9ea5881`), only for a v2.6 code regression;
+  - apex-era v2.6 build: `dpl_6NL1QND6ccmcNvDvtM7x5Mue2Kso` (the domain-split rollback, doc 27 §5).
 
 **Open remediation items (doc 26 §11):**
 1. `maintenance_mode` does NOT block paid AI; only the kill switch does.
