@@ -46,6 +46,7 @@ export const PLATFORM_OPS_FEED_RULES: Readonly<Record<string, FeedActionRule>> =
   [AuditAction.PLATFORM_POLICY_RESET]:        { label: "Reset a platform policy",    kinds: ["PLATFORM_SETTING"], legacyOk: true, workspace: "platform-policies" },
   [AuditAction.CONNECTION_RESYNC_TRIGGERED]:  { label: "Resynced a connection",     kinds: ["PLAID_ITEM", "CONNECTION"], legacyOk: true, workspace: "platform-providers" },
   [AuditAction.CONNECTION_REAUTH_REQUESTED]:  { label: "Requested reauthorization", kinds: ["PLAID_ITEM", "CONNECTION"], legacyOk: true, workspace: "platform-providers" },
+  [AuditAction.PLAID_ITEM_WEBHOOK_UPDATED]:   { label: "Repointed a connection webhook", kinds: ["PLAID_ITEM"], legacyOk: false, workspace: "platform-providers" },
   [AuditAction.PLAID_ITEM_REVOCATION_RETRY_REQUESTED]: { label: "Retried provider cleanup", kinds: ["PLAID_ITEM"], legacyOk: true, workspace: "platform-providers" },
   // Refresh All targets a USER in the envelope (the customer whose authorities
   // were refreshed). Admitted because the action is a platform operation; the

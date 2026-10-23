@@ -224,6 +224,9 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.PLATFORM_POLICY_RESET,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
+  // Release 2 — repointing a customer Item's webhook changes where the provider
+  // delivers; it is consequential infrastructure work and carries a reason.
+  AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
   // Break-glass /admin actions (grants, 2FA reset) stay on their existing audit
   // shape in P1; adding a reason there is P2 (the surface is SYSTEM_ADMIN-only).
 ]);
