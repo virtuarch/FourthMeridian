@@ -181,9 +181,18 @@ function main() {
     // rank, the same validated + audited pattern, plus a required reason).
     // AI COST CONTROLS — the third CONTROL consumer: the seven AI cost controls,
     // the same validated + audited + concurrency-checked pattern, reason required.
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts"].sort();
-    check(`the policies, job-cadence and ai-cost-controls routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // RELEASE 2 — the fourth CONTROL consumer: repointing ONE Plaid Item's
+    // webhook (server-derived target, reason required, audited, fresh on POST).
+    const WEBHOOK_ROUTE = "app/api/platform/platform-ops/connections/[id]/webhook/route.ts";
+    // Its roster (database only, no provider call) sits at the same rank.
+    const WEBHOOK_ROSTER_ROUTE = "app/api/platform/platform-ops/plaid-webhooks/route.ts";
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE].sort();
+    check(`the policies, job-cadence, ai-cost-controls and Plaid-webhook routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
+    const webhook = code(WEBHOOK_ROUTE);
+    check("the webhook repoint MUTATES only under FRESH CONTROL",
+      /export async function POST[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/.test(webhook));
+    check("the webhook repoint requires a structured reason", /parseOperatorReason\(/.test(webhook));
     const control = code(CONTROL_ROUTE);
     check("its mutations require FRESH CONTROL (live revocation check), never cached",
       (control.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 2 && !/requirePlatformAccess\([^)]*"CONTROL"/.test(control));
