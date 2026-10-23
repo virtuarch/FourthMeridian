@@ -66,6 +66,7 @@ import type { RefreshPolicyView } from "@/lib/platform/policies/refresh-policies
 import type { RefreshCadence } from "@/lib/platform/refresh-policy.core";
 import type { AiCostControlsReadModel } from "@/lib/platform/ai/cost-controls.types";
 import { AiCostControlsPanel } from "./AiCostControlsPanel";
+import { PlaidWebhookPanel } from "./PlaidWebhookPanel";
 import {
   BTN, BTN_NEUTRAL, BTN_PRIMARY, BTN_QUIET, CadenceForm, FIELD, Notice, formatUtc, mutate, useSettle,
   type OperatorReasonInput, type PolicyNotice,
@@ -510,6 +511,7 @@ export function PoliciesSurface({
           ITS OWN fetch state. It used to be gated on the policies read too, so
           a 500/403/slow /policies hid the one control an incident needs. */}
       {costControls && <AiCostControlsPanel state={costControls} editable={canControl} onModel={onCostControlsModel} />}
+      {canControl && <PlaidWebhookPanel />}
     </div>
   );
 }

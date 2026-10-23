@@ -257,6 +257,10 @@ export const AuditAction = {
   // institution, outcome) — never financial content.
   CONNECTION_RESYNC_TRIGGERED: "CONNECTION_RESYNC_TRIGGERED",
   CONNECTION_REAUTH_REQUESTED: "CONNECTION_REAUTH_REQUESTED",
+  // Release 2 (domain split) — an operator repointed ONE Plaid Item's webhook to
+  // this deployment's own /api/plaid/webhook (Plaid /item/webhook/update, then
+  // read back). Carries the before/after webhook ORIGIN+PATH only — never a token.
+  PLAID_ITEM_WEBHOOK_UPDATED:  "PLAID_ITEM_WEBHOOK_UPDATED",
 
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link
@@ -464,6 +468,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,
+  AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
   // P1 — customer policy / cohort, execution cadence, operator refresh-all.
