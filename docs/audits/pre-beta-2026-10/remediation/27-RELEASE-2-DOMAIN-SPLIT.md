@@ -6,7 +6,11 @@
 - `fourthmeridian.com` → the public site (Vercel project `fourth-meridian-site`).
 - `app.fourthmeridian.com` → the SaaS app (`fintracker1`).
 
-**Status:** **preparation complete; apex cutover NOT performed; awaiting owner approval** (§6). Production stayed public throughout. The apex still serves the app (v2.6 `87e5ac8`).
+**Status: RELEASE 2 PASS (18:25 UTC).** C0–C7 were executed with owner approval (§7).
+- `fourthmeridian.com` → marketing site `dpl_5JHyp77…`.
+- `app.fourthmeridian.com` → app `dpl_u6xgziFf…` (`383311d`).
+
+Production stayed public throughout.
 
 Step log (private): `~/fm-rehearsal-private/prod-cutover/release.log`.
 
@@ -146,3 +150,77 @@ Step log (private): `~/fm-rehearsal-private/prod-cutover/release.log`.
 | C7 | 30-minute monitoring | Health, JobRuns, webhooks on `app.`, 0 5xx, integrity invariants |
 
 **Owner actions in the plan:** approve; C3 smoke; C4 repoint (CONTROL in Platform Ops); C6 fresh login. No NameBright change is needed. `www.` stays on the NameBright wildcard, by instruction.
+
+## 7. Execution record (owner-approved)
+
+| Step | Result | Evidence |
+|---|---|---|
+| C0 | PASS | PR #25 → v2.6 `71f3a81`; promotion PR #26 → main `383311d` (required checks green; Deployment health UNVERIFIED by design). Deploy `dpl_7WK1gF4qtRb8LcqSiMzcyAnYNfhw` READY, health ok, crons attached |
+| C1 | PASS | `NEXTAUTH_URL` / `NEXT_PUBLIC_APP_URL` → `https://app.fourthmeridian.com`; `NEXT_PUBLIC_SITE_URL` = `https://fourthmeridian.com` added. Redeploy `dpl_21jdKdkiJNBdc6yMmhL4yquZA24t`. `/api/auth/providers` returns `app.` callbacks on both hosts |
+| C2 | PASS | On `app.`: `/` → 307 `/dashboard`; `/about`, `/terms?v=1`, `/legal/ai` → 308 to the apex (same path + query); `/dashboard` → `app./login`; foreign-Origin and apex-Origin writes → 403 |
+| C3 | PASS | Owner smoke, verified in logs + DB (§7.1) |
+| C4 | PASS | All 4 ACTIVE Items repointed (§7.2) |
+| C5 | PASS | Apex moved from fintracker1 to fourth-meridian-site in about 19 s (the CLI's DELETE needed an explicit confirm flag; the first attempt changed nothing). Details in §7.3 |
+| C6 | PASS | §7.4 |
+| C7 | PASS | §7.5 |
+
+### 7.1 C3 owner smoke
+
+- `LOGIN_FAILED totp_invalid` at 17:08:55 (callback 401 on `app.`).
+- `LOGIN {mfa: totp, SUCCESS}` at 17:09:07; that session was revoked at 17:13:27 (`LOGOUT`).
+- The busiest Space's APIs returned 200.
+- Link token 200, with no new PlaidItem.
+- `PASSWORD_RESET_REQUESTED` at 17:13:44. The owner saw the reset link on `app.`.
+- An apex-host sign-in at 17:06:31 was later invalidated by C6.
+
+### 7.2 C4 webhook repoints
+
+- **Items:** Chase, American Express, Charles Schwab, Robinhood. There were 4, not 3: the earlier NEEDS_REAUTH Item was reconnected at 14:32.
+- **Per Item:**
+  - `PLAID_ITEM_WEBHOOK_UPDATED` SUCCESS, before `https://fourthmeridian.com/api/plaid/webhook` → after `https://app.fourthmeridian.com/api/plaid/webhook`, actor the owner via a Platform Ops grant;
+  - Plaid read-back passed;
+  - `ITEM/WEBHOOK_UPDATE_ACKNOWLEDGED` recorded (17:32:52, 17:35:30, 17:35:51, 17:36:15).
+- **Host evidence:**
+  - the request log shows the acknowledgement POSTs for Chase, Amex and Schwab on host `app.`;
+  - Robinhood's request line is absent from Vercel's log stream for either host, but its verified acknowledgement row and the read-back confirm it;
+  - there were no apex webhook POSTs.
+
+### 7.3 C5 apex move
+
+- **Apex now:** the marketing site (title, canonical, enforced CSP, HSTS; certificate CN `fourthmeridian.com` to 2026-12-13). App paths and `/api/*` → static 404.
+- **`app.`:** unaffected (health 200, `/api/spaces` 401).
+- **Mail DNS:** MX and SPF unchanged.
+
+### 7.4 C6 secret rotation
+
+- **Separation:** `NEXTAUTH_SECRET` record `140sAi8S` retargeted to `[preview]` only. New Production-only record `fgePb6o2`, generated locally and sent on stdin, never printed.
+- **Redeploy:** `dpl_u6xgziFfHzbUZRwcrKzuKgwgTbXP`.
+- **Invalidation:** 4 pre-rotation live sessions became invalid; 0 of them were used after 17:44.
+- **Fresh owner sign-in:** `LOGIN {mfa: totp, SUCCESS}` at 17:43:55. The old session was refused, per the owner.
+
+### 7.5 C7 monitoring (17:53–18:23)
+
+**Monitoring:**
+- `app.` health ok / db ok, 0 overdue jobs.
+- Apex 200.
+- 7 JobRuns, all succeeded.
+- 0 5xx responses.
+
+**Integrity:**
+- 5,162 transactions: 0 NULL `flowAuthority` / `economicDate`. The 25 created since reopening are all owned and dated.
+- 0 income credits on liability accounts.
+- Event identity is missing only on the 28 crypto rows (by design). Events 4,652, observations 5,134.
+- 12/12 accounts; Items ACTIVE 4, REVOKED 3.
+- 0 failed jobs since reopening.
+
+**Webhook delivery on `app.`:**
+- The 4 signature-verified Plaid deliveries (`WEBHOOK_UPDATE_ACKNOWLEDGED`) are live Plaid traffic received and verified by the app's receiver on the new endpoint.
+- No organic transaction webhook arrived in the window; those depend on bank activity. The first one should be confirmed when it lands.
+- The marketing project received 0 `/api/plaid` requests.
+
+**Final rollback:** see §5. `dpl_6NL1QND6…` remains available, and `app.` stays attached in every rollback path.
+
+**Follow-ups:**
+1. Confirm the first organic `TRANSACTIONS/*` webhook on host `app.`.
+2. Optionally revoke the 4 orphaned pre-rotation `UserSession` rows (cryptographically dead).
+3. The doc 26 §11 remediation items still stand.
