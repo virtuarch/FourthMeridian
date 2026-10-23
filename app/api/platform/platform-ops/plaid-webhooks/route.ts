@@ -6,12 +6,13 @@
  * label and status only. DATABASE ONLY: no provider call, no token read. The
  * per-Item dry run and apply live at connections/[id]/webhook.
  *
+ * AUTHORITY: systemDb (fm_system) — the roster spans every customer.
  * AUTHORIZATION: CONTROL on PLATFORM_OPS — the same rank as the action it feeds.
  */
 
 import { NextResponse } from "next/server";
 import { PlaidItemStatus } from "@prisma/client";
-import { db } from "@/lib/db";
+import { systemDb } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { expectedWebhookUrl } from "@/lib/plaid/webhook-migration.core";
 import { env } from "@/lib/env";
@@ -27,7 +28,7 @@ export async function GET() {
   const [, err] = await requirePlatformAccess("PLATFORM_OPS", "CONTROL");
   if (err) return err;
 
-  const items = await db.plaidItem.findMany({
+  const items = await systemDb.plaidItem.findMany({
     where:   { status: { in: [PlaidItemStatus.ACTIVE, PlaidItemStatus.NEEDS_REAUTH] } },
     select:  { id: true, institutionName: true, status: true },
     orderBy: { createdAt: "asc" },

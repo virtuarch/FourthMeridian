@@ -16,7 +16,6 @@
 import "server-only";
 
 import type { PlaidApi } from "plaid";
-import { db } from "@/lib/db";
 import { systemDb } from "@/lib/db";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
@@ -48,7 +47,7 @@ export interface WebhookMigrationDeps {
 
 export function defaultWebhookMigrationDeps(): WebhookMigrationDeps {
   return {
-    loadItem: (id) => db.plaidItem.findUnique({
+    loadItem: (id) => systemDb.plaidItem.findUnique({
       where:  { id },
       select: { id: true, status: true, institutionName: true, encryptedToken: true },
     }),

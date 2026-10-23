@@ -16,6 +16,7 @@
  *   - already-current ⇒ no provider write (idempotent);
  *   - REVOKED ⇒ refused before any provider call.
  *
+ * AUTHORITY: systemDb (fm_system) — an operator acts across tenants; never `db`.
  * AUTHORIZATION: CONTROL on PLATFORM_OPS for both verbs — this reads and then
  * changes where a customer's provider delivers, which is infrastructure policy,
  * not routine operational work. POST uses the fresh (revocation-checked) path.
@@ -26,7 +27,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { systemDb } from "@/lib/db";
 import { requirePlatformAccess, requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
 import { OperatorActionValidationError, parseOperatorReason, recordOperatorAction } from "@/lib/audit";
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   if (!r.ok && r.code === "NOT_FOUND") return NextResponse.json({ error: "Connection not found." }, { status: 404, headers: NO_STORE });
 
   const audit = (result: "SUCCESS" | "FAILURE" | "REFUSED", outcome: string, change: { before: string | null; after: string | null } | null, extra: Record<string, unknown> = {}) =>
-    recordOperatorAction(db, {
+    recordOperatorAction(systemDb, {
       actor:     operatorActorFrom(auth, "PLATFORM_OPS"),
       action:    AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
       target:    { kind: "PLAID_ITEM", id },
