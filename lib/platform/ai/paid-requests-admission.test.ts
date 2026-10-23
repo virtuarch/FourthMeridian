@@ -38,7 +38,16 @@ const ROOT = process.cwd();
 const strip = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 const settle = () => new Promise((r) => setImmediate(r));
 
-const reader = (value: string | null | undefined, fail = false) => ({ platformSetting: { findUnique: async () => { if (fail) throw new Error("boom"); return value == null ? null : { value }; } } });
+// The store as the reader sees it: ONE findMany over both gate rows. `kill` is
+// ai_paid_requests_paused, `maint` is maintenance_mode; null/undefined = no row.
+const store = (kill: string | null | undefined, maint: string | null | undefined = null, fail = false) => ({ platformSetting: { findMany: async () => {
+  if (fail) throw new Error("boom");
+  const rows: { key: string; value: string }[] = [];
+  if (kill != null) rows.push({ key: "ai_paid_requests_paused", value: kill });
+  if (maint != null) rows.push({ key: "maintenance_mode", value: maint });
+  return rows;
+} } });
+const reader = (value: string | null | undefined, fail = false) => store(value, null, fail);
 function ledger() {
   const rows: Record<string, unknown>[] = [];
   return { rows, invocationClient: { aiInvocation: { create: async ({ data }: { data: Record<string, unknown> }) => { rows.push(data); } } } };
@@ -118,6 +127,85 @@ async function main() {
     check("brief: auth → entitlement → pacing → kill switch → allowance → pricing pre-flight", brief.indexOf("'ai-brief-generate'") < brief.indexOf("readPaidRequestsAdmission()") && brief.indexOf("readPaidRequestsAdmission()") < brief.indexOf("dailyAiAllowanceFor(") && brief.indexOf("dailyAiAllowanceFor(") < brief.indexOf("assertPricedModel("));
     const spendLimit = Object.assign(new Error("429 project spend limit"), { status: 429, code: "project_spend_limit_exceeded" });
     check("a project spend-limit 429 classifies as QUOTA (no retry), a zero-token row the spend fold never counts (RETURNED only)", classifyAiFailure(spendLimit).outcome === "QUOTA" && /outcome: "RETURNED"/.test(strip("lib/platform/ai/customer-spend-today.ts")) && /"outcome" = 'RETURNED'/.test(strip("lib/platform/ai/spend-health.ts")));
+  }
+
+  console.log("\n4. maintenance_mode refuses paid AI exactly like the kill switch (P1, 2026-10-23 cutover finding)");
+  {
+    const r = async (kill: string | null, maint: string | null, fail = false) => readPaidRequestsAdmission(store(kill, maint, fail));
+    const m = await r(null, "true");
+    check("maintenance on, kill switch absent ⇒ paused, cause MAINTENANCE", m.paused && m.cause === "MAINTENANCE" && m.controlPlane === "DENY");
+    const k = await r("true", "false");
+    check("kill switch on, maintenance off ⇒ paused, cause KILL_SWITCH", k.paused && k.cause === "KILL_SWITCH");
+    const b = await r("true", "true");
+    check("both on ⇒ paused, cause BOTH", b.paused && b.cause === "BOTH");
+    const off = await r("false", "false"), none = await r(null, null);
+    check("both off ⇒ admitted (cause null)", !off.paused && off.cause === null && !none.paused && none.cause === null);
+    const badM = await r(null, "yes");
+    check("maintenance holds an unreadable value ⇒ paused, cause UNREADABLE (fail closed)", badM.paused && badM.cause === "UNREADABLE" && badM.controlPlane === "DENY");
+    const down = await r(null, null, true);
+    check("store unreadable ⇒ paused, cause UNAVAILABLE, never throws", down.paused && down.cause === "UNAVAILABLE");
+    {
+      let queries = 0; const counting = { platformSetting: { findMany: async (a: { where: { key: { in: string[] } } }) => { queries++; return a.where.key.in.includes("ai_paid_requests_paused") ? [{ key: "maintenance_mode", value: "true" }] : []; } } };
+      await readPaidRequestsAdmission(counting);
+      check("ONE query reads the kill switch AND the control plane (one instant)", queries === 1);
+      const g = strip("lib/platform/ai/paid-requests-admission.ts");
+      check("maintenance is judged by the admission module (PAID_AI_REQUEST), never re-parsed here", /admitOperationalWork\(\{ work: "PAID_AI_REQUEST" \}/.test(g) && !/maintenance_mode|MAINTENANCE_MODE/.test(g));
+    }
+
+    const gate = (kill: string | null, maint: string | null, fail = false) => () => r(kill, maint, fail);
+    const cases: [string, string | null, string | null, boolean][] = [
+      ["maintenance on / kill off", "false", "true", false],
+      ["maintenance off / kill on", "true", "false", false],
+      ["both on", "true", "true", false],
+      ["policy store unreadable", null, null, true],
+    ];
+    for (const [name, kill, maint, fail] of cases) {
+      for (const entry of ["structured", "tools"] as const) {
+        const L = ledger(); const C = countingClient(); let caught: unknown = null;
+        try {
+          if (entry === "structured") await generateStructuredWithUsage("s", [], SCHEMA, { model: "gpt-5.1" }, { client: C.client, sinks: { invocationClient: L.invocationClient, paidRequestsAdmission: gate(kill, maint, fail) } });
+          else await generateWithTools({ model: "gpt-5.1", messages: [] }, { client: C.client, sinks: { invocationClient: L.invocationClient, paidRequestsAdmission: gate(kill, maint, fail) } });
+        } catch (e) { caught = e; }
+        await settle();
+        check(`${entry} · ${name}: provider never called, AiPausedError`, C.calls === 0 && caught instanceof AiPausedError);
+        check(`${entry} · ${name}: one zero-token FAILED / AI_PAUSED fact, no spend`, L.rows.length === 1 && L.rows[0].outcome === "FAILED" && L.rows[0].errorCode === AI_PAUSED_CODE && L.rows[0].promptTokens === 0 && L.rows[0].completionTokens === 0, JSON.stringify(L.rows[0]));
+      }
+    }
+    {
+      const L = ledger(); const C = countingClient();
+      const out = await generateWithTools({ model: "gpt-5.1", messages: [] }, { client: C.client, sinks: { invocationClient: L.invocationClient, paidRequestsAdmission: gate("false", "false") } });
+      await settle();
+      check("both off: normal call, one RETURNED row, usage carried", C.calls === 1 && out.usage?.promptTokens === 10 && L.rows.length === 1 && L.rows[0].outcome === "RETURNED");
+    }
+    {
+      const L = ledger(); let caught: unknown = null;
+      try { await assertPaidRequestsAdmitted("gpt-5.1", { paidRequestsAdmission: gate(null, "true"), invocationClient: L.invocationClient }); } catch (e) { caught = e; }
+      check("the typed error carries the reason code, and the message names it (no content)", caught instanceof AiPausedError && caught.denialCause === "MAINTENANCE" && /MAINTENANCE/.test((caught as Error).message) && isAiPausedFailure((caught as Error).message));
+    }
+    {
+      // RETRIES: the turn loop and the Brief wrap the provider in callWithRateLimitRetry,
+      // which retries ONLY a rate limit. A maintenance refusal is not one.
+      const { callWithRateLimitRetry, isRateLimitError } = await import("@/lib/ai/rate-limit-retry");
+      const L = ledger(); const C = countingClient(); let attempts = 0; let caught: unknown = null;
+      try {
+        await callWithRateLimitRetry(() => { attempts++; return generateWithTools({ model: "gpt-5.1", messages: [] }, { client: C.client, sinks: { invocationClient: L.invocationClient, paidRequestsAdmission: gate(null, "true") } }); },
+          { maxRetries: 5, sleep: async () => {} });
+      } catch (e) { caught = e; }
+      check("a maintenance refusal is never retried: one attempt, provider never called", attempts === 1 && C.calls === 0 && caught instanceof AiPausedError);
+      check("…because it is not a rate limit", !isRateLimitError(new AiPausedError("gpt-5.1", "OFF", "MAINTENANCE")));
+    }
+    {
+      const chat = strip("app/api/ai/chat/route.ts"), brief = strip("app/api/brief/generate/route.ts");
+      check("both routes refuse a paused gate BEFORE the allowance and log only the reason code", [chat, brief].every((x) => /if \(admission\.paused\) \{[\s\S]{0,200}admission\.cause \?\? admission\.state[\s\S]{0,80}return paidRequestsPausedResponse\(\)/.test(x)));
+    }
+    {
+      // INVENTORY: the provider is the ONLY importer of the SDK, and every entry point gates first.
+      const { readdirSync, statSync } = await import("node:fs");
+      const walk = (d: string, out: string[] = []): string[] => { for (const e of readdirSync(path.join(ROOT, d))) { const rel = `${d}/${e}`; if (/node_modules|\.next/.test(rel)) continue; const st = statSync(path.join(ROOT, rel)); if (st.isDirectory()) walk(rel, out); else if (/\.(ts|tsx|mjs|js)$/.test(e) && !/\.test\./.test(e)) out.push(rel); } return out; };
+      const files = ["lib", "app", "jobs", "scripts", "components"].flatMap((d) => walk(d));
+      const sdk = files.filter((f) => /from ['"]openai['"]|require\(['"]openai['"]\)|api\.openai\.com|new OpenAI\(/.test(readFileSync(path.join(ROOT, f), "utf8")));
+      check("lib/ai/provider.ts is the only file that reaches the OpenAI SDK or API", sdk.length === 1 && sdk[0] === "lib/ai/provider.ts", sdk.join(", "));
+    }
   }
 
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

@@ -96,6 +96,10 @@ const PRODUCERS = [
   // the manual wallet sync route gained the gate it lacked (it had none).
   { file: "lib/refresh/refresh-all.ts",                 migrated: true, note: "customer / operator Refresh All (every authority)" },
   { file: "app/api/accounts/[id]/sync/route.ts",         migrated: true, note: "owner manual wallet sync (gained the gate in P1)" },
+  // P1 (2026-10-23) — NOT refresh work: the PAID_AI_REQUEST work class. The one
+  // reader every paid model path consults (both AI routes + the provider
+  // chokepoint), so maintenance stops paid AI through the canonical evaluator.
+  { file: "lib/platform/ai/paid-requests-admission.ts",  migrated: true, note: "paid AI gate (PAID_AI_REQUEST) — maintenance stops paid model calls" },
 ] as const;
 
 function main() {
@@ -229,7 +233,8 @@ function main() {
     check("every censused producer is migrated (OPS-2D-4)",
       PRODUCERS.filter((p) => p.migrated).length === PRODUCERS.length);
     // ARCH-007 (2026-10-22): 12 → 11 — POST /api/plaid/sync was deleted (no consumer).
-    check("the census still holds all eleven known producers", (PRODUCERS.length as number) === 11);
+    // P1 (2026-10-23): 11 → 12 — the paid AI gate (PAID_AI_REQUEST).
+    check("the census holds all twelve known consumers", (PRODUCERS.length as number) === 12);
 
     // No producer OUTSIDE the census may consume admission.
     const consumers = [...walk("app"), ...walk("jobs"), ...walk("lib")]

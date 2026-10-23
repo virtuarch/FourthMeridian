@@ -141,15 +141,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const limited = await paceAiRequest(user.id, 'ai-chat-hour', { limit: countLimit(entitlements, 'aiTurnsPerHour'), windowSec: 3600 }, 'Conversations');
     if (limited) return limited;
   }
-  // AI COST CONTROLS — THE KILL SWITCH, BEFORE THE ALLOWANCE. One PlatformSetting
-  // row (`ai_paid_requests_paused`; absent ⇒ off, unreadable ⇒ paused) judged
+  // AI COST CONTROLS — THE KILL SWITCH OR MAINTENANCE, BEFORE THE ALLOWANCE. Two
+  // PlatformSetting rows (`ai_paid_requests_paused`, `maintenance_mode`; either on
+  // refuses; absent ⇒ off, unreadable ⇒ paused) judged
   // after authentication, entitlement and pacing so a paused platform costs no
   // lock and no ledger read. 503 `{ error, code: "AI_PAUSED" }`, no-store. No
   // override lifts it; the provider chokepoint judges it again for harness
   // traffic and for a pause that lands mid-turn.
   {
     const admission = await readPaidRequestsAdmission();
-    if (admission.paused) return paidRequestsPausedResponse();
+    if (admission.paused) {
+      // Reason code only — never the prompt, the user, or any figure.
+      console.warn('[ai/chat] refused before the provider: paid AI paused (' + (admission.cause ?? admission.state) + ')');
+      return paidRequestsPausedResponse();
+    }
   }
   // BETA C7 — THE DAILY ALLOWANCE, AFTER THE PACING WINDOWS AND BEFORE ANY MODEL
   // WORK. `aiDailyUsdAllowance` is the customer's estimated-dollar bound per UTC
