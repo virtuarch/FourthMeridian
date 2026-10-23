@@ -38,10 +38,11 @@
 
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
-import { db } from "@/lib/db";
+import { db, systemDb } from "@/lib/db";
 // PROV-2 — shared owners: Plaid type→AccountType mapping and the identity→legacy
 // account resolver (was a private mapAccountType copy + two inline lookups here).
 import { mapAccountType } from "@/lib/plaid/account-type";
+import { normalizeProviderSubtype } from "@/lib/account-classifier";
 // PROV-3 — the shared investments-ingest orchestration (was inline here).
 import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
 import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
@@ -55,11 +56,11 @@ import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { classifyPlaidErrorForHealth, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
-import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
+import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-lock";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 // DF-2A — the observational stage recorder for the per-item refresh execution
 // ledger. Optional; when absent, refreshPlaidItem behaves byte-identically.
-import type { RefreshStageRecorder, AccountCoverageFact } from "@/lib/plaid/refresh-execution-types";
+import type { RefreshStageRecorder, AccountCoverageFact, RefreshTrigger } from "@/lib/plaid/refresh-execution-types";
 
 // ── M2 — balance↔transaction reconciliation helpers ──────────────────────────
 
@@ -140,6 +141,8 @@ export interface RefreshItemResult {
   skipped?:               "cooldown" | "in-flight";
   /** D2 Step 7B — only set when skipped === "cooldown". */
   retryAfterSeconds?:     number;
+  /** P1 — the RefreshExecution this item ran under (runManualItemRefresh). */
+  executionId?:           string;
 }
 
 interface ReconcileTarget { id: string; type: string; kind: "cash" | "card"; balanceBefore: number; balanceAfter: number }
@@ -196,7 +199,15 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
   for (const acct of plaidAccounts) {
     // PROV-2 — canonical identity→legacy resolve. Refresh SKIPS soft-deleted
     // matches: never restore or create during a refresh (relink owns that).
-    const fa = await resolvePlaidAccountByExternalId(acct.account_id);
+    // RLS-ACC-S5 — the resolver's client is now required and LEADING, so this
+    // site's authority is visible rather than inherited. `systemDb` (fm_system),
+    // not `db`: this is the BACKGROUND refresh pipeline. It runs on a cron/webhook
+    // with no user identity to bind, so there is no tenant phase it could belong
+    // to, and fm_system is NOBYPASSRLS and reaches every tenant through explicit
+    // role-scoped policies — strictly narrower than the migration principal this
+    // replaces. The rest of this module still holds `db`; converting it is a
+    // later slice, and this one line is what that slice has to change here.
+    const fa = await resolvePlaidAccountByExternalId(systemDb, acct.account_id);
     if (!fa) continue; // unresolved provider account — no FinancialAccount identity to attribute
     if (fa.deletedAt) {
       // DF-2E — a soft-deleted account under an active item: intentionally not
@@ -205,33 +216,22 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
       continue;
     }
 
-    const availableBalance = acct.balances.available ?? undefined;
-    const creditLimit       = acct.balances.limit ?? undefined;
-    // D4 Balance Freshness Provenance — Plaid's institution-side balance time
-    // (AccountBalance.last_updated_datetime). Distinct from lastUpdated below,
-    // which is Fourth Meridian's write time. Always overwritten (incl. null) so
-    // the stored value reflects exactly what Plaid returned on this call.
-    const balanceLastUpdatedAt = acct.balances.last_updated_datetime
-      ? new Date(acct.balances.last_updated_datetime)
-      : null;
-
+    // FIN-011 — the write is PLANNED by a pure rule so a null `current` keeps
+    // the prior balance AND the prior freshness clocks: a balance nobody observed
+    // must not be stamped as observed now.
+    const plan = planBalanceWrite(acct.balances, acct.subtype);
     await db.financialAccount.update({
       where: { id: fa.id },
-      data: {
-        // Fall back to the existing balance rather than 0 on a transient null.
-        balance: acct.balances.current ?? fa.balance,
-        availableBalance,
-        ...(creditLimit !== undefined && { creditLimit }),
-        balanceLastUpdatedAt,
-        lastUpdated: new Date(), // ← balance-verified stamp
-        syncStatus:  "synced",
-      },
+      // The balance-verified stamp moves ONLY with an observed balance.
+      data: { ...plan.data, ...(plan.observed && { lastUpdated: new Date() }) },
     });
     accountsUpdated++;
     updatedAccountIds.push(fa.id);
     // DF-2E — balance written (institution-verified) → this execution advanced
     // the account's balance freshness, even if the value itself was unchanged.
-    accountCoverage.push({ financialAccountId: fa.id, status: "COVERED", freshnessAdvanced: true });
+    // FIN-011 — unless no balance was observed: then the account was evaluated
+    // but its freshness did NOT advance, and the coverage fact says so.
+    accountCoverage.push({ financialAccountId: fa.id, status: "COVERED", freshnessAdvanced: plan.observed });
 
     const rk = reconcileKind(fa);
     if (rk) {
@@ -246,6 +246,75 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
   }
 
   return { item, accessToken, plaidAccounts, itemData: accountsRes.data.item, accountsUpdated, updatedAccountIds, reconcileTargets, accountCoverage };
+}
+
+// ── FIN-011 — the balance write, as a pure rule ───────────────────────────────
+
+/** The subset of Plaid's `AccountBalance` this rule reads. */
+export interface ObservedBalances {
+  current:                number | null | undefined;
+  available?:             number | null;
+  limit?:                 number | null;
+  last_updated_datetime?: string | null;
+}
+
+export interface BalanceWritePlan {
+  /** True when Plaid returned a `current` balance — the only case the freshness clocks move. */
+  observed: boolean;
+  data: {
+    balance?:              number;
+    availableBalance?:     number;
+    creditLimit?:          number;
+    balanceLastUpdatedAt?: Date | null;
+    providerSubtype:       string | null;
+    syncStatus:            "synced";
+  };
+}
+
+/**
+ * What ONE accounts/get answer may write onto a FinancialAccount.
+ *
+ * ⚠️ A NULL `current` IS NOT AN OBSERVATION. Plaid returns `current: null` on a
+ * transient institution failure; the old write kept the prior balance (right)
+ * but still overwrote `balanceLastUpdatedAt` and stamped `lastUpdated = now`
+ * (wrong) — every freshness surface then called a number nobody had seen
+ * "verified just now" (FIN-011, FM-AUDIT-023). The rule:
+ *
+ *   current observed   → balance, provider attestation (incl. null, verbatim),
+ *                        and the balance-verified stamp are written;
+ *   current null       → balance untouched, BOTH clocks untouched; only the
+ *                        side facts the answer did carry (available, limit,
+ *                        subtype) and the connection's sync status are written.
+ *
+ * `providerSubtype` is rewritten on every answer (2026-10-07): it is evidence
+ * for liquidityAccess (lib/account-classifier.ts) and self-corrects rows linked
+ * before the column existed. Pure: the balance-verified stamp (`lastUpdated`,
+ * Fourth Meridian's write clock) is added by the caller iff `observed`.
+ */
+export function planBalanceWrite(
+  balances: ObservedBalances,
+  subtype: string | null | undefined,
+): BalanceWritePlan {
+  const observed = typeof balances.current === "number" && Number.isFinite(balances.current);
+  const availableBalance = balances.available ?? undefined;
+  const creditLimit       = balances.limit ?? undefined;
+  const base = {
+    ...(availableBalance !== undefined && { availableBalance }),
+    ...(creditLimit !== undefined && { creditLimit }),
+    providerSubtype: normalizeProviderSubtype(subtype),
+    syncStatus: "synced" as const,
+  };
+  if (!observed) return { observed: false, data: base };
+  // D4 Balance Freshness Provenance — Plaid's institution-side balance time
+  // (AccountBalance.last_updated_datetime). Distinct from lastUpdated below,
+  // which is Fourth Meridian's write time. Overwritten (incl. null) whenever a
+  // balance was observed, so the stored value reflects exactly what Plaid
+  // returned beside that balance.
+  const balanceLastUpdatedAt = balances.last_updated_datetime ? new Date(balances.last_updated_datetime) : null;
+  return {
+    observed: true,
+    data: { ...base, balance: balances.current as number, balanceLastUpdatedAt },
+  };
 }
 
 /**
@@ -327,7 +396,7 @@ export async function refreshPlaidItem(
   //     SpaceSnapshot regeneration — is SKIPPED, on purpose.
   //   • `syncIncompleteAt` stays set, so the item reads as "importing", the
   //     client auto-resume and the daily cron keep retrying it, and Platform Ops
-  //     reports it as stalled (lib/platform/stall-projection.ts).
+  //     reports it as a stalled incident (lib/platform/incidents/ lifecycle projection).
   //   • The caller records the failure (runDeferredHistorySync stamps health,
   //     refreshAllActiveItemsForUser records ok:false). Re-catching it here would
   //     only duplicate that contract — or worse, downgrade it to success.
@@ -387,20 +456,34 @@ export async function refreshPlaidItem(
           console.warn(
             `[reconcile] BALANCE_TX_MISMATCH account ${t.id} (${t.type}) — balanceDelta=${v.balanceDelta.toFixed(2)} expected=${v.expected.toFixed(2)} mismatch=${v.mismatch.toFixed(2)} > threshold=${v.threshold.toFixed(2)}`
           );
-          await recordSyncIssue({
-            kind:               "BALANCE_TX_MISMATCH",
+          const mismatch = {
+            kind:               "BALANCE_TX_MISMATCH" as const,
             plaidItemId:        plaidItemDbId,
             financialAccountId: t.id,
             // `basis` records WHICH rule produced this row, so a future reader
             // can tell a post-Phase-2 finding from the pending-inclusive legacy
             // events already in the table.
             detail:             { accountType: t.type, kind: t.kind, basis: "posted", balanceDelta: v.balanceDelta, txnSumDelta: v.txnSumDelta, expected: v.expected, mismatch: v.mismatch, threshold: v.threshold },
-          }, db);
+          };
+          // RLS-P-1 — inside a refresh this goes through the ledger door, which
+          // stamps THIS execution's correlator so the finding is attributable.
+          // Outside one (there is no door when the start write failed) the
+          // uncorrelated facade still records it: a mismatch is a fact about an
+          // account, not about an execution, and widening a ledger blackout to
+          // swallow it would make the blackout worse than it is.
+          if (recorder?.ledger) await recorder.ledger.recordIncident(mismatch);
+          // RLS-P-3a — NO CLIENT. SyncIssue is revoked from fm_app and this call
+          // site passed the migration principal explicitly; omitting the argument
+          // takes the facade's fm_system default. Nothing else about the call
+          // changes, and `db` is still this module's client for the FINANCIAL
+          // reads and writes around it — which is the distinction the slice is
+          // making, not an oversight.
+          else await recordSyncIssue(mismatch);
         }
       }
     }
   } catch (reconErr) {
-    console.error(`[reconcile] balance↔transaction reconciliation failed for item ${plaidItemDbId} (non-fatal):`, reconErr);
+    console.error(`[reconcile] balance↔transaction reconciliation failed for item ${plaidItemDbId} (non-fatal):`, redactedErrorForLog(reconErr));
   }
   // DF-2A — reconciliation is a best-effort DERIVED stage: it ran (a mismatch is
   // recorded data, not a stage failure; an internal error is swallowed above).
@@ -439,7 +522,7 @@ export async function refreshPlaidItem(
   // this does not touch the snapshot fan-out, the return value, or error
   // semantics.
   try {
-    await emitDomainEvent({
+    await emitDomainEvent(db, {
       type:        "ConnectionSynced",
       actorUserId: item.userId,
       payload: {
@@ -450,7 +533,7 @@ export async function refreshPlaidItem(
       },
     });
   } catch (auditErr) {
-    console.warn(`[refreshPlaidItem] ConnectionSynced audit failed for item ${plaidItemDbId} (non-fatal):`, auditErr);
+    console.warn(`[refreshPlaidItem] ConnectionSynced audit failed for item ${plaidItemDbId} (non-fatal):`, redactedErrorForLog(auditErr));
   }
 
   return {
@@ -465,6 +548,103 @@ export async function refreshPlaidItem(
     spacesSnapshotted,
     updatedAccountIds,
   };
+}
+
+// ── V26 OPS-REFRESH-1A — the all-items fan-out's per-item execution envelope ──
+
+/**
+ * The canonical execution authority, referenced as a TYPE only.
+ *
+ * WHY NOT A PLAIN IMPORT. `lib/plaid/refresh-execution.ts` imports
+ * `refreshPlaidItem` from THIS module, so a static value import here would close
+ * a runtime cycle — the exact hazard `refresh-execution-types.ts` was created to
+ * avoid (see its header). A `typeof import(...)` type is erased at compile time
+ * and creates no runtime edge, while still giving the injection seam the REAL
+ * signature rather than a hand-copied approximation that could silently drift.
+ */
+type RunFullRefreshFn = typeof import("@/lib/plaid/refresh-execution").runFullRefresh;
+
+/** Injection seam for runManualItemRefresh (house DI-default idiom). Production passes nothing. */
+export interface ManualItemRefreshDeps {
+  runFullRefresh?: RunFullRefreshFn;
+  refreshItem?:    typeof refreshPlaidItem;
+  withLock?:       typeof withPlaidItemSyncLock;
+  /**
+   * P1 — the initiating business event. MANUAL (the customer's own Refresh All
+   * / Refresh) by default; OPERATOR when Customer Success refreshes on a
+   * customer's behalf. Same envelope, same lock, same ledger — only the trigger
+   * the RefreshExecution records differs.
+   */
+  trigger?:        RefreshTrigger;
+}
+
+/**
+ * V26 OPS-REFRESH-1A — ONE item of the all-items manual fan-out, run inside the
+ * canonical RefreshExecution envelope.
+ *
+ * THE DEFECT THIS CLOSES. `POST /api/plaid/refresh` forks on `body.plaidItemId`.
+ * The single-item branch has run under `runFullRefresh` since DF-2A; the
+ * all-items branch — the one behind the global topbar Refresh button and the
+ * sidebar "Refresh Data" row, i.e. the product's PRIMARY refresh gesture —
+ * called `refreshPlaidItem` directly with no recorder and no runId. It therefore
+ * made four Plaid endpoints' worth of provider calls and wrote transactions,
+ * position observations, investment events, reconstruction output and a space
+ * snapshot while leaving ZERO execution evidence, in direct contradiction of
+ * REFRESH_EXECUTION_DOCTRINE §C ("every canonical refresh attempt produces
+ * exactly one"). See docs/plans/V26-INVESTIGATION-MANUAL-REFRESH-TRACEABILITY.md.
+ *
+ * THE LOCK SITS INSIDE THE ENVELOPE — deliberately, and unlike the single-item
+ * branch, which claims the lock OUTSIDE `runFullRefresh` and therefore records
+ * nothing at all when a sync is already in flight. Inside is what doctrine §G
+ * actually describes ("Lock contention → the runner records TRANSACTIONS
+ * SKIPPED(IN_FLIGHT); nothing else attempted → SKIPPED") and what every other
+ * converged path does (cron, webhook, /sync, resume-sync, operator resync). It
+ * is the only placement under which lock contention is observable. Aligning the
+ * single-item branch is a named follow-up (OPS-REFRESH-1D), not this slice.
+ *
+ * `deferSnapshot: true` is preserved: refreshPlaidItem records SNAPSHOT as
+ * SKIPPED(BUDGET), which is truthful — this fan-out regenerates each affected
+ * Space ONCE after every item finishes (regenerateCompletedSpaces). That
+ * post-loop write is fan-out-grained and remains UNATTRIBUTED; a skipped stage
+ * discloses the deferral, it does not attribute the write. That gap is DRIFT-5.
+ *
+ * Behaviour is otherwise unchanged: the lock is the same shared guard, the
+ * result is the same `SyncLockResult`, and a thrown provider error is rethrown
+ * by `runFullRefresh` as the ORIGINAL object so the caller's health
+ * classification is byte-identical. Ledger writes are best-effort/non-throwing
+ * inside the authority — telemetry never breaks a refresh.
+ */
+export async function runManualItemRefresh(
+  plaidItemDbId: string,
+  deps: ManualItemRefreshDeps = {},
+): Promise<SyncLockResult<RefreshItemResult>> {
+  // Resolved lazily so the cycle described on RunFullRefreshFn stays type-only.
+  // Node caches the module, so this is a map lookup after the first item.
+  const runFullRefresh = deps.runFullRefresh
+    ?? (await import("@/lib/plaid/refresh-execution")).runFullRefresh;
+  const refreshItem = deps.refreshItem ?? refreshPlaidItem;
+  const withLock    = deps.withLock    ?? withPlaidItemSyncLock;
+
+  return runFullRefresh<SyncLockResult<RefreshItemResult>>(
+    { itemId: plaidItemDbId, trigger: deps.trigger ?? "MANUAL", profile: "FULL_REFRESH" },
+    {
+      refresh: async ({ recorder, runId }) => {
+        const lockResult = await withLock(plaidItemDbId, () =>
+          refreshItem(plaidItemDbId, { deferSnapshot: true, recorder, runId }),
+        );
+        // P1 — surface the execution id so a Refresh All outcome can point at
+        // the ledger row this item ran under.
+        if (lockResult.ok) lockResult.result.executionId = runId;
+        if (!lockResult.ok) {
+          // Nothing was attempted — deriveOverallStatus turns a stage set of
+          // pure SKIPPEDs into SKIPPED, so the execution reads as contention
+          // rather than as a failure or a success.
+          recorder.skip("TRANSACTIONS", "PROVIDER", "IN_FLIGHT");
+        }
+        return lockResult;
+      },
+    },
+  );
 }
 
 /**
@@ -527,6 +707,32 @@ export interface RefreshSummary {
 }
 
 /**
+ * V26 OPS-REFRESH-1A — injection seam for refreshAllActiveItemsForUser.
+ *
+ * Small function deps rather than a Prisma-shaped client fake: every default is
+ * an existing function in this module, so the fan-out's ORCHESTRATION (which
+ * items are eligible, that each eligible item goes through the execution
+ * envelope exactly once, that the post-loop snapshot regeneration happens once
+ * with the right inputs) becomes executable in a test with no database, no
+ * Plaid, and no fabricated query semantics. Production passes nothing.
+ *
+ * `runItem` is deliberately the whole per-item unit: the fan-out test asserts it
+ * is invoked once per eligible item, and lib/plaid/refresh-fanout.test.ts
+ * separately exercises the REAL runManualItemRefresh to assert the envelope
+ * itself. Neither test alone is sufficient; together they hold the intent.
+ */
+export interface RefreshAllDeps {
+  listActiveItems?:        (userId: string, excludeItemIds: string[]) => Promise<Array<{ id: string; institutionName: string }>>;
+  hasActiveLinkedAccount?: (plaidItemDbId: string) => Promise<boolean>;
+  selfHealOrphaned?:       (plaidItemDbId: string) => Promise<void>;
+  runItem?:                (plaidItemDbId: string) => Promise<SyncLockResult<RefreshItemResult>>;
+  onItemFailure?:          (plaidItemDbId: string, err: unknown) => Promise<void>;
+  regenerateCompleted?:    (succeededAccountIds: string[], failedItemIds: string[]) => Promise<string[]>;
+  /** P1 — forwarded to runManualItemRefresh (MANUAL by default, OPERATOR on a customer's behalf). */
+  trigger?:                RefreshTrigger;
+}
+
+/**
  * Lifecycle fix — docs/bugfixes/BUGFIX_PLAID_REFRESH_ORPHANED_PLAID_ITEMS.md,
  * Step C.
  *
@@ -569,6 +775,39 @@ async function selfHealOrphanedPlaidItem(plaidItemDbId: string): Promise<void> {
   await disconnectPlaidItemIfOrphaned(plaidItemDbId);
 }
 
+/** The fan-out's candidate query. Extracted verbatim for the injection seam below. */
+async function listActiveItemsForUser(
+  userId: string,
+  excludeItemIds: string[],
+): Promise<Array<{ id: string; institutionName: string }>> {
+  return db.plaidItem.findMany({
+    where: {
+      userId,
+      status: PlaidItemStatus.ACTIVE,
+      ...(excludeItemIds.length && { id: { notIn: excludeItemIds } }),
+    },
+    select: { id: true, institutionName: true },
+  });
+}
+
+/**
+ * One item's failure handling — log, classify, and (only on a genuine health
+ * problem) flip the item's health through the CH-2 chokepoint and ping the
+ * owner. Extracted verbatim from the fan-out loop for the injection seam;
+ * behaviour is unchanged.
+ */
+async function reportItemRefreshFailure(plaidItemDbId: string, err: unknown): Promise<void> {
+  console.error(`[refreshAllActiveItemsForUser] refresh failed for PlaidItem ${plaidItemDbId}:`, redactedErrorForLog(err));
+  const health = classifyPlaidErrorForHealth(err);
+  if (health) {
+    // CH-2 — writes the live columns (unchanged) + a durable transition row
+    // only when the effective state actually changed.
+    await setPlaidItemHealth(plaidItemDbId, { status: health.status, errorCode: health.errorCode });
+    // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
+    await notifyItemSyncFailed(plaidItemDbId);
+  }
+}
+
 /**
  * Refreshes every active PlaidItem owned by the given user. One item's
  * failure (e.g. ITEM_LOGIN_REQUIRED) does not block the others — mirrors the
@@ -586,19 +825,27 @@ async function selfHealOrphanedPlaidItem(plaidItemDbId: string): Promise<void> {
  * entirely, so they're never passed to Plaid. Cooldown itself is decided and
  * marked by the caller (lib/plaid/refreshCooldown.ts) — this function only
  * honors the exclusion list; it has no cooldown logic of its own.
+ *
+ * V26 OPS-REFRESH-1A — each item now runs through `runManualItemRefresh`, i.e.
+ * inside the canonical RefreshExecution envelope. One MANUAL/FULL_REFRESH
+ * execution per item that reaches the lock attempt. NOT one per `items.length`:
+ * an orphaned item is self-healed and skipped BEFORE the envelope (nothing was
+ * attempted, no provider call was made), and cooldown-excluded items never
+ * reach this function at all. Both absences are correct under doctrine §C.
  */
 export async function refreshAllActiveItemsForUser(
   userId: string,
-  options?: { excludeItemIds?: string[] }
+  options?: { excludeItemIds?: string[] },
+  deps: RefreshAllDeps = {},
 ): Promise<RefreshSummary> {
-  const items = await db.plaidItem.findMany({
-    where: {
-      userId,
-      status: PlaidItemStatus.ACTIVE,
-      ...(options?.excludeItemIds?.length && { id: { notIn: options.excludeItemIds } }),
-    },
-    select: { id: true, institutionName: true },
-  });
+  const listItems           = deps.listActiveItems        ?? listActiveItemsForUser;
+  const hasLinkedAccount    = deps.hasActiveLinkedAccount ?? hasActiveLinkedAccount;
+  const selfHealOrphaned    = deps.selfHealOrphaned       ?? selfHealOrphanedPlaidItem;
+  const runItem             = deps.runItem                ?? ((id: string) => runManualItemRefresh(id, { trigger: deps.trigger }));
+  const onItemFailure       = deps.onItemFailure          ?? reportItemRefreshFailure;
+  const regenerateCompleted = deps.regenerateCompleted    ?? regenerateCompletedSpaces;
+
+  const items = await listItems(userId, options?.excludeItemIds ?? []);
 
   const results: RefreshItemResult[] = [];
   let totalAccountsUpdated      = 0;
@@ -615,11 +862,11 @@ export async function refreshAllActiveItemsForUser(
   const failedItemIds: string[] = [];
 
   for (const item of items) {
-    if (!(await hasActiveLinkedAccount(item.id))) {
+    if (!(await hasLinkedAccount(item.id))) {
       // No active linked account left for this item — not a failure, just
       // done. Self-heal so it drops out of this query on every later call,
       // and skip straight to the next item without calling Plaid.
-      await selfHealOrphanedPlaidItem(item.id);
+      await selfHealOrphaned(item.id);
       continue;
     }
 
@@ -629,8 +876,13 @@ export async function refreshAllActiveItemsForUser(
     // item's cursor. A skip here isn't a failure — it's deferred to whichever
     // run is already in flight, so it's excluded from both succeededAccountIds
     // and failedItemIds (nothing to snapshot, nothing to mark unhealthy).
+    //
+    // V26 OPS-REFRESH-1A — the lock now lives INSIDE runManualItemRefresh's
+    // execution envelope (see that function), so contention is recorded as a
+    // SKIPPED execution instead of vanishing. The result this loop consumes,
+    // and everything it does with it, is unchanged.
     try {
-      const lockResult = await withPlaidItemSyncLock(item.id, () => refreshPlaidItem(item.id, { deferSnapshot: true }));
+      const lockResult = await runItem(item.id);
       if (!lockResult.ok) {
         results.push({
           plaidItemId:          item.id,
@@ -655,16 +907,10 @@ export async function refreshAllActiveItemsForUser(
       totalTransactionsRemoved  += r.transactionsRemoved;
       succeededAccountIds.push(...(r.updatedAccountIds ?? []));
     } catch (e) {
-      console.error(`[refreshAllActiveItemsForUser] refresh failed for PlaidItem ${item.id}:`, redactedErrorForLog(e));
+      // runFullRefresh rethrows the ORIGINAL error object, so classification
+      // here sees exactly what refreshPlaidItem threw — unchanged by the ledger.
       failedItemIds.push(item.id);
-      const health = classifyPlaidErrorForHealth(e);
-      if (health) {
-        // CH-2 — writes the live columns (unchanged) + a durable transition row
-        // only when the effective state actually changed.
-        await setPlaidItemHealth(item.id, { status: health.status, errorCode: health.errorCode });
-        // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
-        await notifyItemSyncFailed(item.id);
-      }
+      await onItemFailure(item.id, e);
       results.push({
         plaidItemId:          item.id,
         institution:          item.institutionName,
@@ -683,11 +929,18 @@ export async function refreshAllActiveItemsForUser(
   // Regenerate once per affected Space after ALL institutions are done,
   // excluding any Space touched by a failed item (best-effort; never fails the
   // refresh). This replaces the per-item regeneration removed above.
+  //
+  // V26 OPS-REFRESH-1A — DRIFT-5, stated rather than papered over: this write is
+  // fan-out-grained (it reads the UNION of every item's accounts) and therefore
+  // belongs to no per-item execution. It remains UNATTRIBUTED. Each item's
+  // execution truthfully records SNAPSHOT as SKIPPED(BUDGET), which discloses
+  // the deferral without claiming to attribute the write. Giving this write an
+  // owner is OPS-REFRESH-1C.
   let snapshottedSpaceIds: string[] = [];
   try {
-    snapshottedSpaceIds = await regenerateCompletedSpaces(succeededAccountIds, failedItemIds);
+    snapshottedSpaceIds = await regenerateCompleted(succeededAccountIds, failedItemIds);
   } catch (snapErr) {
-    console.error("[refreshAllActiveItemsForUser] post-loop snapshot regeneration failed (non-fatal):", snapErr);
+    console.error("[refreshAllActiveItemsForUser] post-loop snapshot regeneration failed (non-fatal):", redactedErrorForLog(snapErr));
   }
 
   return {

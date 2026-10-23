@@ -36,11 +36,22 @@ function main(): void {
   // HIST-1C — the window is valued in ONE batched A8 read (getInvestmentValueForWindow),
   // still the single canonical valuation authority (lib/investments/valuation.ts), not a
   // per-day loop and not a duplicated price/FX/quantity calculation here.
-  check("consumes the canonical batched A8 valuation (getInvestmentValueForWindow)",
-    /getInvestmentValueForWindow\s*\(/.test(code));
-  check("does NOT call the per-day A8 entry point (batched, not N×date)",
-    !/getInvestmentValueAsOf\s*\(/.test(code));
-  check("uses the A8 valuedSubtotal as the investment component", /valuedSubtotal/.test(code));
+  // V26-S2-OWNERSHIP — the binding no longer calls the valuation engine
+  // DIRECTLY. It asks `historicalHoldingsForWindow`, the ONE composition of the
+  // canonical valuation engine with per-(account, instrument) ownership, which is
+  // also the query a drill-down asks. The intent pinned here is unchanged and
+  // stronger: exactly one authority produces the day's composition, and this
+  // binding is not it. Pinning the old call name would now assert the opposite.
+  check("consumes the canonical historical-holdings query (one composition path)",
+    /historicalHoldingsForWindow\s*\(/.test(code));
+  check("does NOT call the valuation engine directly (composition lives in one place)",
+    !/getInvestmentValueForWindow\s*\(/.test(code) && !/getInvestmentValueAsOf\s*\(/.test(code));
+  check("does NOT compose ownership itself (no second eligibility filter here)",
+    !/applyOwnershipEligibility/.test(code) && !/loadOwnershipWindows/.test(code) &&
+    !/resolveOwnershipWindowsForInstruments/.test(code));
+  check("uses the holdings-set subtotal as the investment component", /valuedSubtotal/.test(code));
+  check("the denominator is the HELD count, never everything considered",
+    /totalComponentCount\s*=\s*holdings\.heldCount/.test(code));
   check("does NOT open a second historical price lookup (no lib/prices import)",
     !/from\s+["']@\/lib\/prices/.test(code));
   check("does NOT re-multiply quantity × price (no second valuation)",
@@ -61,8 +72,22 @@ function main(): void {
     /wealthRegenerationEnabled\s*\(/.test(code) && /applyWrites/.test(code));
   check("upserts only through SpaceSnapshot (one canonical cache, zero new schema)",
     /spaceSnapshot\.upsert/.test(code));
-  check("no other SpaceSnapshot/DB write verbs (create/createMany/update/delete) outside the upsert",
-    !/spaceSnapshot\.(createMany|delete|deleteMany)\b/.test(code) && !/\.update\s*\(\s*\{[\s\S]*?spaceSnapshot/.test(code));
+  // Writes go through exactly TWO named, audited paths and nothing else:
+  //   spaceSnapshot.upsert      — a day whose every component was recomputed
+  //   spaceSnapshot.update      — a PARTIAL day: only the authorised fields
+  //   spaceSnapshot.updateMany  — the crypto-status metadata stamp (one column)
+  // Destructive verbs remain forbidden outright: historical regeneration revises
+  // rows, it never removes them.
+  check("no destructive SpaceSnapshot verbs (create/createMany/delete/deleteMany)",
+    !/spaceSnapshot\.(createMany|delete|deleteMany)\b/.test(code));
+  check("exactly one full-row write path (upsert) and one partial path (update)",
+    (code.match(/spaceSnapshot\.upsert/g) ?? []).length === 1 &&
+    (code.match(/spaceSnapshot\.update\s*\(/g) ?? []).length === 1);
+  // THE load-bearing property of the partial path: it names only the fields the
+  // core authorised. Spreading the full `fields` object would silently rewrite a
+  // preserved component with its own value and defeat per-component authority.
+  check("the partial path patches fieldPatch, never a reconstructed full row",
+    /\.\.\.p\.fieldPatch/.test(code) && !/spaceSnapshot\.update\s*\(\s*\{[\s\S]{0,400}?\.\.\.\w+\.fields\b/.test(code));
 
   // ── 4. Does not modify the sibling generators ─────────────────────────────
   console.log("4. Sibling generators untouched (read-only import discipline)");
@@ -99,12 +124,108 @@ function main(): void {
   check("crypto is still valued SEPARATELY into the digital-asset component",
     /digitalAssetValue/.test(code) && /totalDigitalAssets/.test(code));
 
-  // HIST-2C — the BTC/USD series is read ONCE for the window (readBtcUsdWindow),
-  // not one readBtcUsdAsOf point read per day (the last N×date read hot path).
-  check("crypto reads BTC via the batched window (readBtcUsdWindow), built once",
-    /readBtcUsdWindow\s*\(/.test(code));
-  check("crypto does NOT read BTC per day (no readBtcUsdAsOf in the day loop)",
-    !/readBtcUsdAsOf\s*\(/.test(code));
+  // HIST-2C — the crypto close series is read ONCE for the window, not one point
+  // read per day (the last N×date read hot path).
+  //
+  // W-M0 — that one read is now keyed by ASSET SYMBOL and covers every asset the
+  // Space holds (readCryptoUsdWindows), replacing the BTC-only readBtcUsdWindow.
+  // The batching invariant is unchanged; the asset dimension is new.
+  check("crypto reads closes via the batched per-asset window, built once",
+    /readCryptoUsdWindows\s*\(/.test(code));
+  check("crypto does NOT read a price per day (no point read in the day loop)",
+    !/readBtcUsdAsOf\s*\(/.test(code) && !/readLatestOnOrBefore\s*\(/.test(code));
+
+  // ── W-M0 — no asset is assumed. The literal that made every wallet Bitcoin ──
+  check("the wallet's asset is resolved from its chain, never assumed",
+    /nativeAssetForChain\s*\(/.test(code));
+  check("no literal BTC symbol is handed to the day valuation",
+    !/symbol:\s*["']BTC["']/.test(code));
+  check("the movement ledger is scoped to each account's OWN native asset",
+    /currency:\s*\{\s*in:\s*heldCryptoSymbols\s*\}/.test(code)
+      && /cryptoSymbolByAccount\.get\(r\.financialAccountId\)/.test(code));
+  check("no literal BTC currency predicate survives",
+    !/currency:\s*["']BTC["']/.test(code));
+  check("ledger reconciliation uses the asset's own base unit",
+    /epsilon:\s*ledgerEpsilonFor\(/.test(code));
+
+  // ── W-M2c — THE SPINE BRIDGE: AN EARNED HISTORY MUST REACH THE CONSUMER ────
+  //
+  // Crypto was composed ONLY from `FinancialAccount.nativeBalance`, so a chain
+  // that writes no balance column was invisible here however much history it
+  // had. Measured on the real Solana wallet: a zero-residual reconstruction —
+  // 100.7766 SOL on 26 Feb, 0.7516 on the 27th — sat on the position spine
+  // while every snapshot in the window recorded Bitcoin alone.
+  check("a crypto quantity may come from the DATED POSITION SPINE, not only a scalar column",
+    /spineCryptoAccounts/.test(code) && /positionObservation\.findMany/.test(code));
+  check("…resolved through THE canonical as-of resolver, not a second rule",
+    /resolvePositionAsOf\(/.test(code));
+  check("…and the quantity is resolved PER DAY, never carried from today",
+    /nativeBalance: cryptoQuantityOn\(a\.id, dISO\)/.test(code));
+  check("each account is sourced by exactly ONE authority (no double count)",
+    /feedsLegacyWealthHistory\(a\.walletChain\)/.test(code)
+      && /!feedsLegacyWealthHistory\(a\.walletChain\)/.test(code));
+  check("a spine account with no dated evidence yields NULL, never zero",
+    /resolvePositionAsOf\(rows, dISO\)\.quantity/.test(code));
+  check("materiality now recognises spine-held accounts too",
+    /spineRowsByAccount\.get\(a\.id\).*some\(\(r\) => Math\.abs\(r\.quantity\) > 0\)/.test(code));
+  check("the bridge records its own deletion condition",
+    /DELETION CONDITION/.test(readFileSync(join(process.cwd(), "lib/snapshots/regenerate-history.ts"), "utf8")));
+  // The direction that must never return.
+  check("no crypto quantity is painted backward from a current balance",
+    !/nativeBalance: a\.nativeBalance,?\s*$/m.test(code));
+  // W-M1a — the price map is keyed by CANONICAL IDENTITY, not by ticker. Keying
+  // it by symbol would let two same-ticker assets overwrite one another in the
+  // map, mispricing one of them silently.
+  check("the day valuation receives a price PER ASSET IDENTITY, not one price",
+    /unitPriceByAssetKey/.test(code) && !/unitPrice:\s*btc/i.test(code));
+  check("the price window is resolved from canonical assets, not tickers",
+    /readCryptoUsdWindows\(heldCryptoAssets/.test(code) && /assetKey/.test(code));
+  check("the deleted BTC-only valuation read is not resurrected",
+    !/readBtcUsdWindow/.test(code));
+
+  // ── W-M1b — AN EMPTY WALLET MUST NOT BLACK OUT A FULL ONE ─────────────────
+  //
+  // Every DECLARED asset must be priced or the day refuses (all-or-nothing).
+  // Declaring every crypto account's asset therefore meant that adding an empty
+  // Ethereum wallet — which the wallet route already lets a user create, with
+  // nativeBalance 0 — would put ETH in the declared set, ETH has no archived
+  // closes, and the Space's entire Bitcoin history would refuse. A wallet
+  // holding nothing would have silently blacked out the wallet that holds
+  // something. The declaration is now the assets with a MATERIAL balance.
+  check("the declared asset set is narrowed to MATERIAL holdings",
+    /materialCryptoAccounts/.test(code)
+      && /Math\.abs\(a\.nativeBalance \?\? 0\) > 0/.test(code));
+  check("…with a fallback to every asset when NOTHING is held (drained wallets still refuse)",
+    /materialCryptoAccounts\.length > 0 \? assetsOf\(materialCryptoAccounts\) : assetsOf\(cryptoAccounts\)/.test(code));
+
+  // ── RWA-2B — MANUAL REAL ASSETS ARE VALUED FROM THEIR LEDGER ───────────────
+  //
+  // A manual asset (type "other", syncStatus "manual") used to sit at its
+  // current balance on any reconstructed day it reached, and reached none (no
+  // transactions ⇒ floor = today). Its past is the user's own dated estimates,
+  // resolved by THE valuation policy — the same resolver the per-asset chart and
+  // the AI read — so the Net Worth history cannot describe the asset's past
+  // differently from its own chart.
+  console.log("8. RWA-2B — manual real assets from the valuation ledger");
+  check("the ledger is read through the RWA-2A reader (one authority, bulk)",
+    /loadHistoriesFor\s*\(/.test(code) && /from\s+["']@\/lib\/assets\/valuations["']/.test(code));
+  check("the per-day value and floor come from the pure core, never a rule written here",
+    /manualAssetValueOn\s*\(/.test(code) && /manualAssetHistoryFloor\s*\(/.test(code)
+      && /from\s+["']@\/lib\/snapshots\/manual-asset-history\.core["']/.test(code));
+  check("manual assets are identified by syncStatus 'manual' on type 'other' (the detail route's own rule)",
+    /syncStatus:\s*true/.test(code) && /a\.type === "other" && a\.syncStatus === "manual"/.test(code));
+  check("the ledger floor is seeded as the account's earliest-transaction equivalent (computeAccountFloors stays the floor authority)",
+    /earliestTxByAccount\.set\(a\.id, fromISO\(manualAssetHistoryFloor\(/.test(code));
+  check("…and never overrides a real transaction floor",
+    /if \(!earliestTxByAccount\.has\(a\.id\)\)/.test(code));
+  check("a legacy asset is recognised so its floor stays today (no change without a user action)",
+    /isLegacyManualAsset\(\{ resolved: h\.resolved, hasProfile: h\.profile !== null \}\)/.test(code));
+  check("an unvalued day EXCLUDES the asset (no zero, no carried balance)",
+    /const v = manualAssetValueOn\(ledger, dISO\);\s*if \(!v\) return \[\];/.test(code));
+  check("the day's real-asset basis reaches the core as a tier (a modeled day can never be written observed)",
+    /realAssetTier: realAssetTierFor\(dayRealAssetBases\)/.test(code));
+  check("the manual-asset branch sits BEFORE the flat fallback in the day map",
+    code.indexOf("manualHistoryByAccount.get(a.id)") < code.indexOf("return [{ type: a.type, balance: a.balance, currency: a.currency }]"));
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);

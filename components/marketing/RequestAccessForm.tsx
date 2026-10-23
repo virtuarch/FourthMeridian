@@ -8,17 +8,27 @@
  * marketing component stays server-only (see lib/marketing-boundary.test.ts).
  *
  * It posts to POST /api/access-request through lib/marketing/request-access.ts,
- * which is the entire dynamic seam of the landing page (investigation §3). That
- * endpoint is built by Wave 1② and may not have landed yet: on a 404 the
- * wrapper returns { status: "queued", degraded: true } and this form shows the
- * same success shell it would on a real submit — the form is never a dead end
- * during rollout.
+ * which is the entire dynamic seam of the landing page (investigation §3). Only
+ * a 2xx is shown as success; every other outcome (404 included) is an error the
+ * visitor can retry.
  *
  * CAPTCHA (Wave 2⑥): when NEXT_PUBLIC_TURNSTILE_SITE_KEY is configured, the
  * Turnstile widget renders and its token is sent to /api/access-request (the
  * server verifies it, env-gated). Unconfigured → the form works exactly as
  * before. The widget lives in the marketing tree (marketing-local copy) so this
  * form never imports the app's component library — the split seam.
+ *
+ * ACQUISITION (OPERATIONALIZATION P0): on submit the form attaches the bounded
+ * acquisition context of THIS page — utm_* / ref / source from the URL, the
+ * public-site page forwarded as `from`, or a referrer's host — built by the
+ * pure lib/marketing/acquisition.ts and bounded again server-side. Nothing is
+ * stored in the browser; it is read from window.location at submit time only.
+ *
+ * PRIV-012 — NOTICE + CONSENT: a privacy notice (with a Privacy Policy link) and
+ * a REQUIRED consent checkbox precede the submit button. The form refuses to
+ * submit unticked, and sends `consent: true`, which /api/access-request
+ * requires. The text lives in components/marketing/access-request-consent.ts,
+ * shared with the server's audit record of the notice version.
  */
 
 import { useState } from "react";
@@ -28,7 +38,13 @@ import {
   type AccessRequestResult,
 } from "@/lib/marketing/request-access";
 import { TurnstileWidget } from "@/components/marketing/TurnstileWidget";
+import { acquisitionFromLocation } from "@/lib/marketing/acquisition";
 import { REQUEST_ACCESS } from "@/content/marketing/copy";
+import {
+  ACCESS_REQUEST_CONSENT_LABEL,
+  ACCESS_REQUEST_NOTICE,
+  CONSENT_REQUIRED_ERROR,
+} from "@/components/marketing/access-request-consent";
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
@@ -37,6 +53,7 @@ type Status = "idle" | "submitting" | "success" | "error" | "rate_limited";
 export function RequestAccessForm() {
   const [email, setEmail] = useState("");
   const [note, setNote] = useState("");
+  const [consent, setConsent] = useState(false);
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
   // CAPTCHA (Wave 2⑥) — only meaningful when a site key is configured.
@@ -51,6 +68,11 @@ export function RequestAccessForm() {
       setMessage("Please enter a valid email address.");
       return;
     }
+    if (!consent) {
+      setStatus("error");
+      setMessage(CONSENT_REQUIRED_ERROR);
+      return;
+    }
     if (TURNSTILE_SITE_KEY && !captchaToken) {
       setStatus("error");
       setMessage("Please complete the verification below.");
@@ -60,10 +82,13 @@ export function RequestAccessForm() {
     setStatus("submitting");
     setMessage("");
 
-    const result: AccessRequestResult = await submitAccessRequest({ email, note, captchaToken });
+    const source = typeof window === "undefined"
+      ? null
+      : acquisitionFromLocation(window.location.search, document.referrer, window.location.origin);
+    const result: AccessRequestResult = await submitAccessRequest({ email, note, captchaToken, source, consent });
 
     if (result.status === "queued") {
-      // Success — whether the endpoint accepted it or isn't live yet (degraded).
+      // Success — the endpoint accepted it (2xx).
       setStatus("success");
       return;
     }
@@ -153,6 +178,31 @@ export function RequestAccessForm() {
             color: "var(--text-primary)",
           }}
         />
+      </div>
+
+      <div
+        data-privacy-notice
+        className="space-y-3 rounded-xl border px-4 py-3 text-sm leading-relaxed"
+        style={{ borderColor: "var(--border-hairline-strong)", color: "var(--text-secondary)" }}
+      >
+        <p>
+          {ACCESS_REQUEST_NOTICE}{" "}
+          <a href="/privacy" className="underline underline-offset-2" style={{ color: "var(--meridian-400)" }}>
+            Privacy Policy
+          </a>
+        </p>
+        <label htmlFor="access-consent" className="flex items-start gap-2.5">
+          <input
+            id="access-consent"
+            name="consent"
+            type="checkbox"
+            required
+            checked={consent}
+            onChange={(e) => setConsent(e.target.checked)}
+            className="mt-1 shrink-0"
+          />
+          <span>{ACCESS_REQUEST_CONSENT_LABEL}</span>
+        </label>
       </div>
 
       {TURNSTILE_SITE_KEY && (

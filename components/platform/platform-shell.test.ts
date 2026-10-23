@@ -281,6 +281,11 @@ console.log("\nD. ORIGIN — the list has one source, and Space mode gates it");
   check("isPlatformSpaceRoute: a platform Space route", isPlatformSpaceRoute("/dashboard/platform/PLATFORM_OPS"));
   check("isPlatformSpaceRoute: a customer Space route is NOT", !isPlatformSpaceRoute("/dashboard"));
   check("isPlatformSpaceRoute: the launcher is NOT", !isPlatformSpaceRoute("/dashboard/spaces"));
+  // UX-P2 — the Platform Spaces DIRECTORY is a page, not a Space: off the Space
+  // axis (no Space chrome, no Sections, no in-Space Platform gate), while the
+  // header's context switch still reads it as the platform CONTEXT.
+  check("isPlatformSpaceRoute: the /dashboard/platform directory index is NOT (off the Space axis)",
+    !isPlatformSpaceRoute("/dashboard/platform"));
   check("isPlatformSpaceRoute: null/undefined pathname is NOT", !isPlatformSpaceRoute(null) && !isPlatformSpaceRoute(undefined));
 }
 

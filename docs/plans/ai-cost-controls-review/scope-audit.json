@@ -1,0 +1,20 @@
+{
+  "base": "118a71101e896e942d89f64c628800c2cdff284e",
+  "files": [
+    "components/platform/widgets/AiCostControlsPanel.tsx",
+    "components/platform/widgets/OpsPoliciesWidget.tsx",
+    "components/platform/widgets/policies.test.ts"
+  ],
+  "comparison": [
+    {
+      "file": "components/platform/widgets/AiCostControlsPanel.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    },
+    {
+      "file": "components/platform/widgets/OpsPoliciesWidget.tsx",
+      "networkPayloadsAndAsyncHandlersUnchanged": true
+    }
+  ],
+  "prohibitedPathsChanged": [],
+  "integrationStatus": "c234f30 integration deferred by owner disk-recovery coordination instruction"
+}

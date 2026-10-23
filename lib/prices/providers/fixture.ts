@@ -14,7 +14,7 @@
  * instrumentId, so tests need not thread symbols.
  */
 
-import type { PriceBasis, PriceFetchRequest, PriceProviderAdapter, PriceResult } from "../types";
+import type { PriceBasis, PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderRoutingKey } from "../types";
 
 /** One seeded close: instrument + basis + date + price (+ optional currency, default USD). */
 export interface FixturePrice {
@@ -28,6 +28,13 @@ export interface FixturePrice {
 export interface FixtureProviderOptions {
   source?:          string;
   historicalDepth?: string;
+  /**
+   * V26-PRICE-PROVIDER-UNIFICATION — declared capability. Defaults to "serves
+   * anything", which is right for a single-adapter fixture registry; tests that
+   * model two real vendors pass disjoint predicates so routing has exactly one
+   * capable answer.
+   */
+  supports?: (key: ProviderRoutingKey) => boolean;
   /** Bases this fixture claims to serve; defaults to the seeded bases. */
   bases?:           readonly PriceBasis[];
 }
@@ -52,6 +59,9 @@ export function createFixturePriceProvider(
   return {
     source,
     historicalDepth: depth,
+    supportsInstrument(key: ProviderRoutingKey): boolean {
+      return opts.supports ? opts.supports(key) : true;
+    },
     supportedBases() {
       return seededBases;
     },

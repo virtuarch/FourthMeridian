@@ -20,12 +20,12 @@ import {
   runFullRefresh,
   deriveOverallStatus,
   StageRecorder,
-  type RefreshExecutionWriteClient,
   type RefreshExecutionStartData,
   type RefreshExecutionCompletionData,
   type RefreshEndpointResultData,
   type RefreshEndpointAccountCoverageData,
 } from "@/lib/plaid/refresh-execution";
+import { ledgerRecorderFor, type LedgerWriteClient } from "@/lib/plaid/refresh-ledger";
 import type { RefreshItemResult } from "@/lib/plaid/refresh";
 import type { RefreshStageRecord, RefreshStageRecorder, RefreshEndpoint } from "@/lib/plaid/refresh-execution-types";
 // DF-2B — the real cron per-item runner, exercised through the SAME authority.
@@ -63,8 +63,12 @@ function makeFake(opts: FakeOpts = {}) {
   const updates: Array<{ id: string; data: RefreshExecutionCompletionData }> = [];
   const endpointRows: RefreshEndpointResultData[] = [];
   const coverageRows: RefreshEndpointAccountCoverageData[] = [];
+  const stageRows: unknown[] = [];
+  const providerCalls: unknown[] = [];
   let seq = 0;
-  const client: RefreshExecutionWriteClient = {
+  // RLS-P-1 — the in-memory client is now bound through the REAL door, so these
+  // guards exercise `ledgerRecorderFor` rather than a hand-rolled write path.
+  const writeClient: LedgerWriteClient = {
     refreshExecution: {
       async create({ data }) {
         if (opts.failCreate) throw new Error("ledger down");
@@ -83,6 +87,20 @@ function makeFake(opts: FakeOpts = {}) {
         endpointRows.push(...data);
         return {};
       },
+      async create({ data }) {
+        if (opts.failCreateMany) throw new Error("ledger down");
+        stageRows.push(data);
+        return {};
+      },
+      // RLS-P-2 — the attempt-numbering probe shares the WRITE client now, so
+      // the fake must answer it (and from the rows the inserts land in, never
+      // from somewhere else: a probe on a different authority is the defect).
+      async findFirst({ where }) {
+        const prior = (stageRows as Array<Record<string, unknown>>).filter(
+          (r) => r.refreshExecutionId === where.refreshExecutionId && r.endpoint === where.endpoint,
+        );
+        return prior.length === 0 ? null : { attempt: Math.max(...prior.map((r) => Number(r.attempt ?? 0))) };
+      },
     },
     refreshEndpointAccountCoverage: {
       async createMany({ data }) {
@@ -91,8 +109,12 @@ function makeFake(opts: FakeOpts = {}) {
         return {};
       },
     },
+    providerCall: {
+      async create({ data }) { providerCalls.push(data); return {}; },
+    },
   };
-  return { client, creates, updates, endpointRows, coverageRows };
+  const client = ledgerRecorderFor(writeClient);
+  return { client, writeClient, creates, updates, endpointRows, coverageRows, stageRows, providerCalls };
 }
 
 const okResult: RefreshItemResult = {
@@ -243,6 +265,8 @@ async function main() {
   const TX: SyncTransactionsResult = {
     added: 2, modified: 1, removed: 0, cursor: "c",
     created: 3, updatedByPlaidId: 0, updatedByFingerprint: 0, skippedMissingAccount: 0,
+    // RLS-ACC-FK — a sync that refused to re-parent a row reports it here.
+    refusedReparenting: 0,
   };
   function cronDeps(over: Partial<CronItemDeps> = {}, capture?: { runId?: string }): CronItemDeps {
     return {
@@ -420,7 +444,7 @@ async function main() {
       client,
       refresh: async ({ recorder }) => {
         const ctx = getProviderCallContext();
-        seen.execId = ctx?.refreshExecutionId;
+        seen.execId = ctx?.ledger.executionId;
         recorder.begin("BALANCES", "PROVIDER");
         seen.epDuring = ctx?.currentEndpoint;            // recorder.begin → context updated
         recorder.succeed("BALANCES", { recordsChanged: 1, coveredAccountIds: ["a1"] });

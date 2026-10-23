@@ -38,18 +38,19 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
+import { isAuthorizedCronRequest } from "@/lib/jobs/cron-auth";
 import { dispatchDueJobs } from "@/lib/jobs/dispatch";
 
-// One slot's job(s) per invocation — the same 60s Hobby-max headroom the
-// per-job routes used; per-slot fan-out means runtimes do not sum across
-// slots (S2 risk note: re-verify if a slot ever hosts multiple jobs).
-export const maxDuration = 60;
+// One slot's job(s) per invocation. 60 s was the Hobby-tier maximum; the project
+// is on the paid tier (CH-3), and the 06:00 slot now hosts sync-banks AND the
+// every-wallet sweep, whose own budget (WALLET_SWEEP_BUDGET_MS, 90 s) stops starting
+// wallets early enough that the slowest measured wallet (ETH, ~157 s) still
+// finishes inside this limit.
+export const maxDuration = 300;
 
 export const GET = withApiHandler(async (req: NextRequest) => {
-  const authHeader = req.headers.get("authorization");
-  const cronSecret = process.env.CRON_SECRET;
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+  // SEC-009 — timing-safe CRON_SECRET comparison (lib/jobs/cron-auth.ts).
+  if (!isAuthorizedCronRequest(req.headers.get("authorization"), process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

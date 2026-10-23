@@ -51,8 +51,11 @@
  * `estimated` taint on the result — data-only until Phase 4).
  */
 
-import { formatCurrency } from "@/lib/format";
+import type { FreshnessBasis } from "@/lib/freshness/observation";
+import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — a VERDICT is a sentence (see display-money.ts)
 import { amountOwed } from "@/lib/debt/balance-semantics";
+import { liquidityAccess } from "@/lib/account-classifier";
+import { totalReachableCash, type ReachableInput } from "@/lib/balances/reachable";
 import { convertMoney } from "@/lib/money/convert";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
@@ -67,7 +70,7 @@ import type {
 // ── Version & static copy ─────────────────────────────────────────────────────
 
 /** Bump whenever this lens's math or verdict semantics change. */
-export const LIQUIDITY_LENS_VERSION = 1;
+export const LIQUIDITY_LENS_VERSION = 2; // 2 — 2026-10-07: liquidity access (restricted / unverified)
 
 /**
  * Static empty copy — must read identically whether accounts are absent or
@@ -90,6 +93,12 @@ export interface LiquidityAccountRow {
   id:      string;
   /** AccountType string: checking | savings | investment | crypto | debt | other */
   type:    string;
+  /**
+   * 2026-10-07 — FinancialAccount.providerSubtype (provider evidence). A
+   * CATEGORY ("hsa", "401k"), not an identity, so the privacy contract above
+   * holds. Read only through liquidityAccess.
+   */
+  providerSubtype?: string | null;
   balance: number;
   /**
    * MC1 Phase 3 Slice 5 — native currency of `balance`/`creditLimit` (Phase 0
@@ -100,17 +109,31 @@ export interface LiquidityAccountRow {
   currency?: string | null;
   /** Present only on FULL rows (withheld otherwise by the data layer). */
   creditLimit?: number;
-  /** ISO timestamp of last balance write (Account.lastUpdated). */
+  /** ISO timestamp of last balance write (Account.lastUpdated) — OUR clock. */
   lastUpdated: string;
+  /** v2.6-L2 — the INSTITUTION's own balance clock, or null when it reports none.
+   *  Null is honest; `lastUpdated` is never substituted. Feeds dataAsOfBasis. */
+  balanceLastUpdatedAt?: string | null;
+  /**
+   * v2.6-L3 — REACHABLE cash for this account in its native currency, resolved by
+   * lib/balances (provider available cash where attested, else the prediction
+   * from provider-observed pending). Null when it could not be established;
+   * ABSENT on the historical as-of path, where a current-state claim would be a
+   * category error. Cash accounts only.
+   */
+  reachableCash?: number | null;
+  /** v2.6-L3 — the positive unexplained hold on this account, or null. */
+  unexplainedHold?: number | null;
   /** SpaceAccountLink.visibilityLevel string (existing model, no parallel vocabulary). */
   visibilityLevel: string;
 }
 
 // ── Core computation ──────────────────────────────────────────────────────────
 
-const CASH_TYPES       = new Set(["checking", "savings"]);
-const MARKETABLE_TYPES = new Set(["investment", "crypto"]);
-const ILLIQUID_TYPES   = new Set(["other"]);
+// 2026-10-07 — the tier of a row is liquidityAccess (lib/account-classifier.ts),
+// the ONE rule, never a type set of this lens's own: an HSA is `checking` and a
+// 401(k) is `investment`, and neither is cash or sellable-within-days.
+const isCashRow = (r: LiquidityAccountRow) => liquidityAccess(r) === "cash";
 
 export function computeLiquidity(
   scope:   PerspectiveScope,
@@ -159,6 +182,7 @@ export function computeLiquidity(
         accountIds: [],
         tierCounts: { full: 0, balanceOnly: 0, summaryOnly: 0 },
         dataAsOf: null,
+        dataAsOfBasis: "UNOBSERVED",
         redactions: [],
       },
       empty: { ...LIQUIDITY_EMPTY },
@@ -181,12 +205,34 @@ export function computeLiquidity(
   }
 
   // ── Sums ──────────────────────────────────────────────────────────────────
-  let cashNow = 0, marketable = 0, illiquid = 0, credit = 0;
+  let marketable = 0, illiquid = 0, credit = 0, restricted = 0, unverified = 0;
   let creditKnown = false;
+  // v2.6-L3 / REVIEW-3 — the reachable-cash RULE (what an unknown does, what is
+  // counted, what a positive hold contributes) lives in lib/balances/reachable —
+  // the SAME pure authority the Space widgets total through (liquidity-adapters
+  // reachableNow). This loop only maps each row into the display currency and
+  // resolves the three-state claim, which is the part that is this lens's
+  // context: `undefined` means the historical as-of path made no current-state
+  // claim (the reconstructed ledger figure is the only honest answer), `null`
+  // means the live path claimed and could not establish one (excluded and
+  // counted by the authority, never summed as a ledger balance).
+  const cashInputs: ReachableInput[] = [];
   for (const r of contributing) {
-    if (CASH_TYPES.has(r.type))            cashNow    += inTarget(r.balance, r.currency);
-    else if (MARKETABLE_TYPES.has(r.type)) marketable += inTarget(r.balance, r.currency);
-    else if (ILLIQUID_TYPES.has(r.type))   illiquid   += inTarget(r.balance, r.currency);
+    const access = liquidityAccess(r);
+    if (access === "cash") {
+      cashInputs.push({
+        accountId: r.id,
+        reachable:
+          r.reachableCash === undefined ? inTarget(r.balance, r.currency)
+          : r.reachableCash === null    ? null
+          :                               inTarget(r.reachableCash, r.currency),
+        unexplained: r.unexplainedHold == null ? null : inTarget(r.unexplainedHold, r.currency),
+      });
+    }
+    else if (access === "marketable") marketable += inTarget(r.balance, r.currency);
+    else if (access === "restricted") restricted += inTarget(r.balance, r.currency);
+    else if (access === "unverified") unverified += inTarget(r.balance, r.currency);
+    else if (access === "illiquid")   illiquid   += inTarget(r.balance, r.currency);
     else if (r.type === "debt" && r.visibilityLevel === "FULL" && typeof r.creditLimit === "number") {
       // creditLimit and balance share the row's native currency, so the
       // clamped headroom converts as one native amount (convert-then-clamp
@@ -202,6 +248,12 @@ export function computeLiquidity(
     }
   }
 
+  // One rule, one owner: totals via the reachable authority.
+  const reach = totalReachableCash(cashInputs);
+  const cashNow              = reach.total;
+  const cashUnreachableCount = reach.unknownCount;
+  const unexplainedHolds     = reach.unexplainedTotal;
+
   // ── Provenance ────────────────────────────────────────────────────────────
   // accountIds: contributing rows only (summary-only rows never appear),
   // sorted so equal inputs serialize identically. dataAsOf: OLDEST input
@@ -210,6 +262,16 @@ export function computeLiquidity(
   const dataAsOf = contributing.length
     ? contributing.map((r) => r.lastUpdated).sort()[0]
     : null;
+  // v2.6-L2 — which clock `dataAsOf` came from. PROVIDER_ATTESTED only when every
+  // contributor carries an institution timestamp: an aggregate is never more
+  // certain than its weakest member, and today no institution in the corpus
+  // reports one, so this is INGESTION and the UI must word it "checked".
+  const dataAsOfBasis: FreshnessBasis =
+    contributing.length === 0
+      ? "UNOBSERVED"
+      : contributing.every((r) => r.balanceLastUpdatedAt != null)
+        ? "PROVIDER_ATTESTED"
+        : "INGESTION";
 
   const redactions: string[] = [];
   if (summaryOnly > 0) {
@@ -224,6 +286,8 @@ export function computeLiquidity(
   }
 
   // ── Metrics ───────────────────────────────────────────────────────────────
+  // v2.6-L3 — the headline is REACHABLE cash. Its label was already
+  // "Available as cash now"; the number now agrees with the words.
   const headline: LensMetric = {
     id: "cashNow",
     label: "Available as cash now",
@@ -235,6 +299,13 @@ export function computeLiquidity(
     headline,
     { id: "marketable", label: "Raisable by selling investments", value: marketable, format: "currency" },
     { id: "illiquid",   label: "Held in other assets (not readily sellable)", value: illiquid, format: "currency" },
+    // 2026-10-07 — emitted only when present, so a Space without them is unchanged.
+    ...(restricted !== 0
+      ? [{ id: "restricted", label: "In retirement, HSA or other restricted accounts", value: restricted, format: "currency" } as LensMetric]
+      : []),
+    ...(unverified !== 0
+      ? [{ id: "unverified", label: "Investments with unverified access", value: unverified, format: "currency" } as LensMetric]
+      : []),
   ];
   if (creditKnown) {
     metrics.push({
@@ -247,13 +318,38 @@ export function computeLiquidity(
   }
 
   // ── Assumptions ───────────────────────────────────────────────────────────
+  // v2.6-L3 — this used to assert "pending activity and holds are not reflected",
+  // which was an honest statement of the OLD behaviour. They are reflected now,
+  // so the assumption states what the figure actually is, and where a reachable
+  // figure was unavailable that is disclosed rather than assumed away.
+  const usesReachable = contributing.some((r) => isCashRow(r) && r.reachableCash !== undefined);
   const assumptions: LensAssumption[] = [
-    {
-      id: "balances-as-reported",
-      text: "Balances are used as last reported by each account; pending activity and holds are not reflected.",
-      source: "default",
-    },
+    usesReachable
+      ? {
+          id: "cash-is-reachable",
+          text: "Cash is counted as the amount each institution reports is reachable now, adjusted for the pending activity it has reported.",
+          source: "provider" as const,
+        }
+      : {
+          id: "balances-as-reported",
+          text: "Balances are used as last reported by each account; pending activity and holds are not reflected.",
+          source: "default" as const,
+        },
   ];
+  if (unexplainedHolds > 0) {
+    assumptions.push({
+      id: "unexplained-hold",
+      text: "Part of the cash balance is unavailable and is not yet explained by any reported transaction; it is excluded from the reachable total.",
+      source: "provider",
+    });
+  }
+  if (cashUnreachableCount > 0) {
+    assumptions.push({
+      id: "cash-reachable-unknown",
+      text: `${cashUnreachableCount} cash account${cashUnreachableCount === 1 ? "" : "s"} did not report a reachable amount and ${cashUnreachableCount === 1 ? "is" : "are"} excluded from the total.`,
+      source: "provider",
+    });
+  }
   if (marketable !== 0) {
     assumptions.push(
       {
@@ -261,12 +357,21 @@ export function computeLiquidity(
         text: "Investment and crypto balances are counted at current value, before any taxes, penalties, fees, or market movement a sale would involve.",
         source: "default",
       },
-      {
-        id: "retirement-not-distinguished",
-        text: "Retirement-restricted accounts cannot be distinguished from other investment accounts and are included in the sellable total.",
-        source: "default",
-      },
     );
+  }
+  if (restricted !== 0) {
+    assumptions.push({
+      id: "restricted-not-accessible",
+      text: "Retirement, HSA and other restricted accounts are part of your wealth but are not counted as cash or as raisable within days: using that money may depend on eligibility, taxes or penalties that are not known here.",
+      source: "provider",
+    });
+  }
+  if (unverified !== 0) {
+    assumptions.push({
+      id: "investment-access-unverified",
+      text: "Some investment accounts have not reported what kind of account they are, so their access is unverified; they are valued in your wealth but not counted as raisable within days.",
+      source: "default",
+    });
   }
   if (creditKnown) {
     assumptions.push({
@@ -280,8 +385,8 @@ export function computeLiquidity(
   // MC1 QA Q1 — verdict amounts are converted into ctx.target when a context
   // is supplied; the embedded labels must match (label follows value). No
   // context ⇒ lib/format's USD default, exactly as before.
-  const fmtCash = formatCurrency(cashNow, ctx?.target);
-  const fmtMkt  = formatCurrency(marketable, ctx?.target);
+  const fmtCash = formatCurrencyWhole(cashNow, ctx?.target);
+  const fmtMkt  = formatCurrencyWhole(marketable, ctx?.target);
   let verdict: string;
   if (cashNow > 0 && marketable > 0) {
     verdict = `About ${fmtCash} is available as cash now, and roughly ${fmtMkt} more could be raised by selling investments.`;
@@ -308,6 +413,7 @@ export function computeLiquidity(
       accountIds,
       tierCounts: { full, balanceOnly, summaryOnly },
       dataAsOf,
+    dataAsOfBasis,
       redactions,
     },
   };

@@ -17,6 +17,7 @@ import { formatDateTime } from "@/lib/format";
 import { limitByIp } from "@/lib/rate-limit";
 import { createNotification } from "@/lib/notifications/create";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { getMinPasswordLength } from "@/lib/platform-settings";
 
 export async function POST(req: NextRequest) {
@@ -54,14 +55,23 @@ export async function POST(req: NextRequest) {
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    await db.user.update({
-      where: { id: user.id },
+    // IDEMP-011: consume the token conditionally. Two concurrent submissions of
+    // one link both pass the read above; only the one whose write still finds
+    // the token consumes it, the other gets the same "invalid or expired" answer.
+    const consumed = await db.user.updateMany({
+      where: { id: user.id, passwordResetToken: hashResetToken(token) },
       data:  {
         passwordHash,
         passwordResetToken:  null,  // invalidate — single use
         passwordResetExpiry: null,
       },
     });
+    if (consumed.count !== 1) {
+      return NextResponse.json(
+        { error: "This reset link is invalid or has expired. Please request a new one." },
+        { status: 400 }
+      );
+    }
 
     // Harden (OPS-2 S2b): a reset is a logged-out flow with no current session
     // to preserve, and implies possible compromise — revoke ALL of the user's
@@ -83,7 +93,7 @@ export async function POST(req: NextRequest) {
       data: {
         userId: user.id,
         action: AuditAction.PASSWORD_RESET_COMPLETE,
-        metadata: { email: user.email, revokedSessions, emailStatus: emailResult.status },
+        metadata: { emailHash: auditEmailHash(user.email), revokedSessions, emailStatus: emailResult.status },
       },
     });
 

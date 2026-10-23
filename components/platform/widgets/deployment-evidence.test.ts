@@ -101,6 +101,8 @@ function main() {
         startedAt: new Date("2026-07-10T06:00:00.000Z"), completedAt: new Date("2026-07-10T06:00:05.000Z"),
         durationMs: 5000, overallStatus: "SUCCEEDED", parentJobRunId: null, errorSummary: null,
         deploymentSha: "abc123def",
+        sourceKind: "PLAID_ITEM", sourceRef: null, network: null, admissionReason: null,
+        failureStage: null, failureCategory: null, outcome: null,
       },
       "operator",
     );
@@ -116,6 +118,8 @@ function main() {
         startedAt: new Date("2026-07-10T06:00:00.000Z"), completedAt: null, durationMs: null,
         overallStatus: "RUNNING", parentJobRunId: null, errorSummary: "secret internal detail",
         deploymentSha: "abc123def",
+        sourceKind: "PLAID_ITEM", sourceRef: null, network: null, admissionReason: null,
+        failureStage: null, failureCategory: null, outcome: null,
       },
       "support",
     );
@@ -126,6 +130,8 @@ function main() {
         id: "e2", runId: "r2", plaidItemId: "i1", trigger: "MANUAL", profile: "FULL_REFRESH",
         startedAt: new Date(), completedAt: null, durationMs: null, overallStatus: "RUNNING",
         parentJobRunId: null, errorSummary: null, deploymentSha: null,
+        sourceKind: "PLAID_ITEM", sourceRef: null, network: null, admissionReason: null,
+        failureStage: null, failureCategory: null, outcome: null,
       },
       "operator",
     ).deploymentSha === null);

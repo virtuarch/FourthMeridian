@@ -16,156 +16,150 @@
  *
  * This file only owns ORDER + COPY. Icon components stay in the consuming
  * dashboard files (same pattern as the existing TAB_ICONS record in
- * SpaceDashboard.tsx) so this stays a plain, framework-agnostic module
- * — consistent with how lib/widget-registry.ts stores icon names as
- * strings rather than importing lucide-react directly.
+ * SpaceDashboard.tsx) so this stays a plain, framework-agnostic module —
+ * icon identities are stored as name strings rather than importing
+ * lucide-react directly.
  */
 
+// REVIEW-3 (slice F) — dead nav ids deleted:
+//   - "PERSPECTIVES": no longer a rail destination since M2 (perspectives are
+//     selected through Overview via ?perspective=); the legacy ?tab=perspectives
+//     deep link canonicalizes to Overview in the host URL layer (a string
+//     alias, not a SpaceTabId), so the id + label carried no consumer.
+//   - "FINANCES" / "DOCUMENTS": permanent placeholders — no rail control since
+//     the v2.5 honesty slice, no body branch, no API. The PLACEHOLDER_SPACE_TABS
+//     / SHARED_ONLY_PLACEHOLDER_TABS gating machinery (isRailTabVisible's host
+//     parameter was inert — the shared-only list was permanently empty) went
+//     with them: every tab in SPACE_TAB_ORDER is rail-real now.
+//   - "SETTINGS": not an in-space tab since UX-CUST-1A (Manage modal owns
+//     settings); the host filtered it out of the rail unconditionally.
+// The Prisma SpaceDashboardTab enum (lib/space-presets mirror) keeps every
+// member — DB enum members are never dropped in this program.
 export type SpaceTabId =
   | "OVERVIEW"
-  | "PERSPECTIVES"
   | "ACTIVITY"
-  | "FINANCES"
   | "ACCOUNTS"
   | "TRANSACTIONS"
-  | "MEMBERS"
-  | "DOCUMENTS"
-  | "SETTINGS";
+  | "MEMBERS";
 
-// M2 canonical IA: "PERSPECTIVES" is NO LONGER a rail destination. Perspectives
-// are specialized Workspaces selected through the Overview experience
-// (?perspective=<id>), so the rail never shows a Perspectives button. The id is
-// kept in SpaceTabId + SPACE_TAB_LABELS for back-compat (legacy
-// ?tab=perspectives links canonicalize to Overview in the host URL layer), but
-// it is deliberately absent from SPACE_TAB_ORDER so railVisibleTabs() can never
-// re-surface it. Fixed ORDER remains law for every tab that DOES appear.
 export const SPACE_TAB_ORDER: SpaceTabId[] = [
   "OVERVIEW",
   "ACTIVITY",
-  "FINANCES",
   "ACCOUNTS",
   "TRANSACTIONS",
   "MEMBERS",
-  "DOCUMENTS",
-  "SETTINGS",
 ];
 
 // Unified Space Widget Layout — "ACTIVITY" is a first-class rail tab whose id
-// matches the SpaceDashboardTab.ACTIVITY section enum, so the recent_activity
-// section renders inline through the normal section system (like OVERVIEW /
-// ACCOUNTS). It replaces the former rail-only "TIMELINE" concept (which was a
-// modal launched from an Overview doorway).
+// matches the SpaceDashboardTab.ACTIVITY section enum. It replaces the former
+// rail-only "TIMELINE" concept (which was a modal launched from an Overview
+// doorway).
 export const SPACE_TAB_LABELS: Record<SpaceTabId, string> = {
   OVERVIEW:     "Overview",
-  PERSPECTIVES: "Perspectives",
   ACTIVITY:     "Activity",
-  FINANCES:     "Finances",
   ACCOUNTS:     "Accounts",
   TRANSACTIONS: "Transactions",
   MEMBERS:      "Members",
-  DOCUMENTS:    "Documents",
-  SETTINGS:     "Settings",
 };
 
 /**
- * Tabs that don't yet have a real, working feature behind them anywhere in
- * the product (no API, no UI, in the shared-space dashboard implementation as
- * of this pass).
- *
- * v2.5 honesty slice: these tabs no longer get a rail control at all —
- * "rail earns tabs by having real content" (see
- * docs/investigations/SPACE_DASHBOARD_FUTURE_INVESTIGATION.md §2.9). The
- * tab *ids* stay valid (types, deep-link handling, and internal gating
- * still reference them); only their rail presence is gated, via
- * isRailTabVisible/railVisibleTabs below. Fixed ORDER remains law for
- * every tab that does appear.
- *
- * Note: TRANSACTIONS is real for the personal host (SpaceDashboard renders
- * SpaceTransactionsPanel on the personal shell) — the per-host gating below
- * is kept ready for any future tab that ships personal-first.
- *
- * FUTURE ENHANCEMENT: once Finances and Documents features exist, and
- * Transactions is wired for shared Spaces, remove entries here so the tabs
- * re-earn their rail slots.
+ * The rail: SPACE_TAB_ORDER, order preserved. Every id is rail-real (the
+ * placeholder gating retired with its permanently-empty lists in REVIEW-3).
+ * Hosts may apply further presentation filters on top but must never re-add
+ * a tab outside this list, and must never reorder.
  */
-export const PLACEHOLDER_SPACE_TABS: SpaceTabId[] = ["FINANCES", "DOCUMENTS"];
-
-/** Which host is asking — the personal shell or a shared Space. Both render
- *  through SpaceDashboard.tsx; the host only tunes rail/gating. */
-export type SpaceDashboardHost = "personal" | "shared";
-
-/** Tabs that are placeholders only on shared/non-personal Spaces.
- *  TRANSACTIONS re-earned its slot in the Space Template Redesign:
- *  SpaceDashboard now renders a real, KD-15-filtered SpaceTransactionsPanel
- *  (GET /api/spaces/[id]/transactions) as the doorway for every shared
- *  Space. Currently empty — kept so the gate (and its test) stand ready
- *  for any future tab that ships personal-first again. */
-export const SHARED_ONLY_PLACEHOLDER_TABS: SpaceTabId[] = [];
-
-/**
- * Presentation-level gate: should this tab get a visible rail control on
- * the given host? False for tabs whose only content would be a
- * SpaceComingSoonPanel. This does NOT invalidate the tab id itself —
- * routes, types, and internal activeTab values are untouched.
- */
-export function isRailTabVisible(id: SpaceTabId, host: SpaceDashboardHost): boolean {
-  if (PLACEHOLDER_SPACE_TABS.includes(id)) return false;
-  if (host === "shared" && SHARED_ONLY_PLACEHOLDER_TABS.includes(id)) return false;
-  return true;
+export function railVisibleTabs(): SpaceTabId[] {
+  return [...SPACE_TAB_ORDER];
 }
 
 /**
- * The rail for a host: SPACE_TAB_ORDER minus placeholder tabs, order
- * preserved. Hosts may apply further presentation filters on top (e.g.
- * SETTINGS only for managers) but must never re-add a tab this function
- * excludes, and must never reorder.
- */
-export function railVisibleTabs(host: SpaceDashboardHost): SpaceTabId[] {
-  return SPACE_TAB_ORDER.filter((id) => isRailTabVisible(id, host));
-}
-
-/**
- * The five top-level application destinations — the ONE navigation model, shared
- * by the desktop ContextualNavbar (global mode) and the mobile BottomNav, so the
- * two are responsive presentations of one model rather than separate systems.
- * This is the prototype's global nav (DS-6): Spaces · Brief · AI · Connections ·
- * Settings, in that fixed order.
+ * The five top-level application destinations — the ONE primary navigation,
+ * rendered by the desktop rail (ContextualNavbar, global mode) and the mobile bar
+ * (BottomNav). Two responsive presentations of one model: same labels, same order,
+ * same routes, same active rule. Brief · My Space · AI · Spaces · Connections.
  *
- * Data only (id/label/href/live) — icon components stay in the consuming
- * components (same convention as SPACE_TAB_LABELS above and lib/widget-registry),
- * so this stays a framework-agnostic module. Every destination is a real,
- * shipping production route, so all five are `live` (the prototype's "Settings ·
- * soon" stub does not apply here).
+ * Settings is NOT primary navigation. It is account/application configuration
+ * and lives in the account menu (UserMenu → /dashboard/settings) on every
+ * viewport; the settings routes are untouched.
+ *
+ * ⚠️ "MY SPACE" IS /dashboard — the dashboard of the ACTIVE Space, resolved per
+ * request by getSpaceContext (active-Space cookie → preferred Space → personal).
+ * It is not "the personal Space", and opening it switches nothing: switching
+ * happens under Spaces (/dashboard/spaces). So the two are distinct destinations
+ * with distinct active states: /dashboard is My Space, never Spaces.
+ *
+ * Data only (id/label/href) — icon components stay in the consuming components
+ * (same convention as SPACE_TAB_LABELS above), so this stays a framework-agnostic
+ * module.
  */
-export type GlobalDestId = "spaces" | "brief" | "ai" | "connections" | "settings";
+export type PrimaryDestId = "brief" | "myspace" | "ai" | "spaces" | "connections";
 
-export interface GlobalDest {
-  id:    GlobalDestId;
+export interface PrimaryDest {
+  id:    PrimaryDestId;
   label: string;
   href:  string;
-  live:  boolean;
 }
 
-export const GLOBAL_NAV: GlobalDest[] = [
-  { id: "spaces",      label: "Spaces",      href: "/dashboard/spaces",      live: true },
-  { id: "brief",       label: "Brief",       href: "/dashboard/brief",       live: true },
-  { id: "ai",          label: "AI",          href: "/dashboard/analyze",     live: true },
-  { id: "connections", label: "Connections", href: "/dashboard/connections", live: true },
-  { id: "settings",    label: "Settings",    href: "/dashboard/settings",    live: true },
+export const MY_SPACE_HREF = "/dashboard";
+
+export const PRIMARY_NAV: PrimaryDest[] = [
+  { id: "brief",       label: "Brief",       href: "/dashboard/brief"       },
+  { id: "myspace",     label: "My Space",    href: MY_SPACE_HREF            },
+  { id: "ai",          label: "AI",          href: "/dashboard/analyze"     },
+  { id: "spaces",      label: "Spaces",      href: "/dashboard/spaces"      },
+  { id: "connections", label: "Connections", href: "/dashboard/connections" },
 ];
 
+/** The canonical route of a primary destination — the ONE place a destination's
+ *  href is spelled, so no consumer restates it (the sidebar's "Personal Spaces"
+ *  exit row links here rather than to a literal). */
+export function primaryHref(id: PrimaryDestId): string {
+  const dest = PRIMARY_NAV.find((d) => d.id === id);
+  if (!dest) throw new Error(`PRIMARY_NAV has no "${id}" destination`);
+  return dest.href;
+}
+
 /**
- * Is a global destination active for the given pathname? "Spaces" owns both the
- * Spaces launcher AND an individual Space dashboard (/dashboard) — you reach a
- * Space by picking one under Spaces, so /dashboard reads as part of that section
- * (this mirrors the retired BottomNav's rule). The others match by prefix.
+ * UX-P2 — the two navigation CONTEXTS of the dashboard shell, derived from the
+ * route and nothing else.
+ *
+ *   personal — the launcher, My Space, Brief, AI, Connections, settings: the
+ *              SpaceMember axis. The five primary destinations lead.
+ *   platform — the Platform Spaces directory (`/dashboard/platform`) and every
+ *              Platform Space beneath it (`/dashboard/platform/<AREA>`): the
+ *              PlatformGrant axis. The granted areas lead; the primary
+ *              destinations are retained but demoted.
+ *
+ * A ROUTE fact, never an access fact: it says which axis the viewer is standing
+ * on, not whether they may see anything. Visibility stays with the server
+ * (`[area]/page.tsx` redirects an ungranted area; the header control and the
+ * sidebar's Platform list are fed by server-computed grants). PRIMARY_NAV is
+ * untouched by this: the context changes ORDER and adds an exit row, never a
+ * sixth destination.
  */
-export function isGlobalDestActive(id: GlobalDestId, pathname: string): boolean {
-  if (id === "spaces") {
-    return pathname.startsWith("/dashboard/spaces") || pathname === "/dashboard";
-  }
-  const dest = GLOBAL_NAV.find((d) => d.id === id);
-  return dest ? pathname.startsWith(dest.href) : false;
+export type NavContext = "personal" | "platform";
+
+/** The Platform Spaces directory — a page, not a Space (it is OFF the Space
+ *  axis: `isPlatformSpaceRoute` is false here, so no Space chrome mounts). */
+export const PLATFORM_DIRECTORY_HREF = "/dashboard/platform";
+
+export function navContext(pathname: string | null | undefined): NavContext {
+  if (typeof pathname !== "string") return "personal";
+  return pathname === PLATFORM_DIRECTORY_HREF || pathname.startsWith(`${PLATFORM_DIRECTORY_HREF}/`)
+    ? "platform"
+    : "personal";
+}
+
+/**
+ * Is a primary destination active for the given pathname? At most one is, for
+ * any pathname. My Space is an exact match on /dashboard (every other dashboard
+ * route is some other section's); the rest match by route prefix, so a nested
+ * route (/dashboard/spaces/invites, /dashboard/connections/…) keeps its section
+ * lit. Settings routes light nothing — Settings is not on either presentation.
+ */
+export function isPrimaryDestActive(id: PrimaryDestId, pathname: string): boolean {
+  if (id === "myspace") return pathname === MY_SPACE_HREF;
+  return pathname.startsWith(primaryHref(id));
 }
 
 /**
@@ -183,7 +177,8 @@ export function isGlobalDestActive(id: GlobalDestId, pathname: string): boolean 
 export const SPACE_LIST_CHANGED_EVENT     = "space-list-changed";
 export const SPACE_INVITES_CHANGED_EVENT  = "space-invites-changed";
 export const SPACE_ACCOUNTS_CHANGED_EVENT = "space-accounts-changed";
-export const SPACE_GOALS_CHANGED_EVENT    = "space-goals-changed";
+// (W2) SPACE_GOALS_CHANGED_EVENT deleted — its only dispatchers/listeners
+// (GoalsCard / AddGoalModal) retired with the Goals surface.
 export const OPEN_CREATE_SPACE_EVENT      = "open-create-space";
 // MC1 QA Q6 — a Space's reporting currency changed. router.refresh() re-runs
 // the server tree (layout DisplayCurrencyProvider + card props), but a client

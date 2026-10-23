@@ -1,134 +1,108 @@
 /**
  * lib/brief-types.ts
  *
- * Types for the Daily Brief feature.
- * All shapes are serialisable — no Date instances.
+ * THE DAILY BRIEF AS THE BROWSER SEES IT — the client-safe response contract.
+ * All shapes are serialisable (no Date instances) and importable from client code.
+ *
+ * ⚠️ WHAT NEVER CROSSES. The artifact's cache machinery (source watermark,
+ * material digest, claim timestamps, failure reasons), generation internals
+ * (model, prompt version, correlation id), observation evidence paths, the
+ * evidence package, and memory payloads all stay on the server. What arrives is
+ * the narration, when it was written, what its balances were last checked at, and
+ * what the page should do next, plus — separately — when each source behind the
+ * Space last delivered data. lib/ai/brief/view-model.ts builds this field by
+ * field and a test walks the result for anything else.
+ *
+ * (REVIEW-3 history: the earlier rule-based Brief's sections, tracked-account
+ * roster and visit states lived here. The AI-generated Brief replaced that engine;
+ * see lib/ai/brief/.)
  */
 
 // ── Tone ──────────────────────────────────────────────────────────────────────
+// Shared presentation vocabulary (components/atlas/tones.ts, perspective-engine).
 
 export type BriefTone = "neutral" | "positive" | "warning" | "danger" | "info";
 
-// ── Visit state ───────────────────────────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────────────────────────
 
 /**
- * How long since the user last viewed the brief.
- * Used to tune greeting copy and section priority.
- *
- * immediate  — < 1 hour
- * short      — 1–6 hours
- * day        — 6–24 hours
- * away       — > 24 hours (or first visit after having data)
- * new_user   — no accounts/assets yet
+ * FRESH           today's Brief, current                                show it
+ * CHECK_REQUIRED  today's Brief, sources moved                          show it, ask the server to check
+ * STALE           no Brief for today, a safe earlier one exists         show it (dated), generate
+ * ABSENT          nothing safe to show                                  skeleton, generate
+ * IN_PROGRESS     another request holds the generation                  show what exists, poll
+ * FAILED          generation failed recently; retry after retryAfterMs  show what exists, or an error
+ * NO_DATA         the Space has no connected accounts                   onboarding
  */
-export type VisitState =
-  | "immediate"
-  | "short"
-  | "day"
-  | "away"
-  | "new_user";
+export type BriefState =
+  | "FRESH"
+  | "CHECK_REQUIRED"
+  | "STALE"
+  | "ABSENT"
+  | "IN_PROGRESS"
+  | "FAILED"
+  | "NO_DATA";
 
-// ── Brief item ────────────────────────────────────────────────────────────────
+export interface BriefObservationView {
+  kind:       string;
+  title:      string;
+  body:       string;
+  importance: "NOTABLE" | "CONTEXT";
+}
+
+export interface BriefArtifactView {
+  /** The UTC calendar day the Brief was written for (beta: UTC days). */
+  briefDay:     string;
+  /** True when this is an earlier day's Brief standing in while today's is prepared. */
+  fromPriorDay: boolean;
+  /** When the narration was generated. ISO-8601. */
+  generatedAt:  string;
+  /** The oldest balance observation the Brief was written over, when known. ISO-8601. */
+  balancesAsOf: string | null;
+  /** Those balances have aged into STALE or worse by now. */
+  balancesMayBeStale: boolean;
+  headline:     string;
+  quiet:        boolean;
+  observations: BriefObservationView[];
+}
 
 /**
- * Trust provenance for a Brief item — how well we know the claim.
- * Presentational slot (v2.6): the editorial Brief renders a trust dot ONLY when
- * an item carries a `basis`. The current /api/brief builder does NOT emit this
- * yet, so no dot is shown — the field is a seam, not fabricated data. Wiring
- * per-item provenance requires the Brief pipeline to emit a completeness
- * envelope per insight (see components/space/trust/TrustIndicator + the
- * PerspectiveEnvelope model).
+ * Deterministic figures for the metric row — from the Space's snapshot series
+ * (the Spaces launcher's authority), never parsed out of the narration.
  */
-export type BriefBasis = "observed" | "reconstructed" | "mixed";
-
-export interface BriefItem {
-  id:      string;
-  label:   string;
-  value?:  string;
-  detail?: string;
-  tone?:   BriefTone;
-  href?:   string;
-  /** Reserved presentational slot — see BriefBasis. Not emitted by /api/brief. */
-  basis?:  BriefBasis;
+export interface BriefMetricsView {
+  currency:  string;
+  netWorth:  number;
+  /** The snapshot day the figure is for. */
+  asOf:      string;
+  estimated: boolean;
+  /** The product's one-month window; null when history does not reach it. */
+  monthChange: { abs: number; pct: number | null; fromDate: string } | null;
 }
-
-// ── Tracked account (Since Last Visit modal — "Accounts Tracked" tab) ──────────
 
 /**
- * A distinct, privacy-safe account shown in the Daily Brief "Accounts Tracked"
- * roster. Deduplicated by `id` across eligible Spaces (shown once). Contains no
- * balance. institution/mask are present only for FULL visibility; restricted
- * visibility entries carry a generic name and omit institution/mask.
+ * WHEN THE MONEY WAS LAST OBSERVED — the second clock, per source, for the viewer.
+ * Derived by lib/connections/space-data-health.core.ts; no ids, error codes or
+ * provider internals. A group's date is its OLDEST source, never its newest.
  */
-export interface TrackedAccount {
-  id:           string;
-  name:         string;
-  type:         string;
-  subtype?:     string | null;
-  institution?: string;
-  mask?:        string | null;
-  visibility:   "FULL" | "BALANCE_ONLY" | "SUMMARY_ONLY";
-}
+export type {
+  DataSourceKind, DataSourceState, DataSourceView, DataGroupView, SpaceDataHealth as BriefDataHealthView,
+} from "@/lib/connections/space-data-health.core";
 
-// ── Brief section ─────────────────────────────────────────────────────────────
-
-export interface BriefSection {
-  id:          string;
-  type:
-    | "since_last_visit"
-    | "insight"
-    | "attention"
-    | "opportunity"
-    | "onboarding"
-    | "map";
-  priority:     number;
-  title:        string;
-  body?:        string;
-  items?:       BriefItem[];
-  actionLabel?: string;
-  actionHref?:  string;
-  tone?:        BriefTone;
-  /**
-   * Distinct account roster for the "Accounts Tracked" tab of the Since Last
-   * Visit modal. Only set on the `since_last_visit` section. Deduplicated by id
-   * across eligible Spaces; contains no balances.
-   */
-  trackedAccounts?: TrackedAccount[];
-}
-
-// ── Financial map ─────────────────────────────────────────────────────────────
-
-export interface FinancialMapMarker {
-  id:            string;
-  label:         string;
-  type:
-    | "bank"
-    | "investment"
-    | "crypto"
-    | "property"
-    | "vehicle"
-    | "business"
-    | "asset"
-    | "other";
-  lat?:          number;
-  lng?:          number;
-  region?:       string;
-  value?:        number;
-  privacyLevel?: "hidden" | "summary" | "full";
-}
-
-export interface FinancialMapData {
-  markers:      FinancialMapMarker[];
-  hasLocations: boolean;
-}
-
-// ── Brief payload ─────────────────────────────────────────────────────────────
-
-export interface BriefPayload {
-  visitState:  VisitState;
-  contextLine: string;
-  hasData:     boolean;
-  sections:    BriefSection[];
-  map?:        FinancialMapData;
-  generatedAt: string;
+export interface BriefResponse {
+  /** Echoed so a response for a Space the page has left can be ignored. */
+  spaceId: string;
+  state:   BriefState;
+  /** The Brief to show — today's, or a safe dated fallback — or null. */
+  brief:   BriefArtifactView | null;
+  /** The page should ask the server to generate (or check) now. */
+  needsGeneration: boolean;
+  /** FAILED only: how long before generation may be attempted again. */
+  retryAfterMs?: number;
+  /** Present on page and GET responses; absent from generation responses. */
+  metrics?: BriefMetricsView | null;
+  /** Present on page and GET responses: when each source last delivered. Null when it could not be read. */
+  dataHealth?: import("@/lib/connections/space-data-health.core").SpaceDataHealth | null;
+  /** When the server evaluated this state. ISO-8601. */
+  checkedAt: string;
 }

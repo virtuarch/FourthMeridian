@@ -33,6 +33,9 @@ import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { formatBalance } from "@/lib/currency";
 import type { SyncConnectionState } from "@/lib/sync/status";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
+import { resolveAccountFreshness } from "@/lib/freshness/observation";
+import { resolveAccountBalances, reconcileAccount } from "@/lib/balances/account-balances";
+import { NO_PENDING } from "@/lib/balances/pending-evidence";
 
 // ── Pure, testable presentation logic ─────────────────────────────────────────
 
@@ -72,6 +75,8 @@ export function healthChip(state: SyncConnectionState | null): HealthChip | null
     case "importing":    return { label: "Importing…",         tone: "muted"    };
     // OPS-2D-4A — nothing is running; an ellipsis would imply motion.
     case "sync_deferred": return { label: "Sync pending",        tone: "muted"    };
+    // Unfinished import with nothing running — not "Importing…" (no motion to imply).
+    case "import_paused": return { label: "Import paused",       tone: "warning"  };
     default:             return null; // null state (manual / wallet-only / revoked): no chip
   }
 }
@@ -104,23 +109,80 @@ interface FallbackAccount {
   institution: string;
   balance:     number;
   currency:    string;
+  /** v2.6-L1 — carried so the fallback can state the same freshness the fetched
+   *  read would, instead of silently dropping it. */
+  lastUpdated?:          string;
+  balanceLastUpdatedAt?: string | null;
+  /** RWA-1 — SpaceAccount.userEstimate: a manual asset's value, judged on the estimate horizon. */
+  userEstimate?:         true;
+  /** REVIEW-3 B-1 — present only on aggregated BALANCE_ONLY rows (SpaceAccount.aggregate). */
+  aggregate?: {
+    memberAccountIds: string[];
+    memberCount:      number;
+    owedTotal:        number;
+    creditTotal:      number;
+  };
 }
 
 /** Maps the host's already-loaded accounts to detail rows for instant parity. */
-function fallbackRows(accounts: FallbackAccount[]): AccountDetailRow[] {
+/** One freshness answer per fallback row, shared by the row and its balance
+ *  claim so the two can never disagree. */
+function fallbackFreshness(a: FallbackAccount, now: Date) {
+  return resolveAccountFreshness({
+    accountId:         a.id,
+    ingestedAt:        a.lastUpdated ?? null,
+    providerBalanceAt: a.balanceLastUpdatedAt ?? null,
+    balance:           a.balance,
+    userEstimate:      a.userEstimate === true, // RWA-1 — estimate horizon
+  }, now);
+}
+
+/** One balance answer per fallback row, shared by the row and its reconciliation. */
+function fallbackBalances(a: FallbackAccount, now: Date) {
+  return resolveAccountBalances({
+    accountId:        a.id,
+    accountType:      a.type,
+    currency:         a.currency,
+    balance:          a.balance,
+    availableBalance: null,
+    freshness:        fallbackFreshness(a, now),
+  });
+}
+
+function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[] {
   return accounts.map((a) => ({
     id:                 a.id,
     spaceAccountLinkId: null,
-    visibility:         "FULL" as const,
+    // REVIEW-3 B-1 — an aggregated privacy-reduced row (synthetic id, carries
+    // `aggregate`) must never be relabelled FULL: the fetched read calls it
+    // BALANCE_ONLY, and the fallback must make the same visibility claim.
+    visibility:         a.aggregate ? ("BALANCE_ONLY" as const) : ("FULL" as const),
+    ...(a.aggregate ? { memberCount: a.aggregate.memberCount } : {}),
+    ...(a.aggregate && a.aggregate.creditTotal > 0 ? { creditTotal: a.aggregate.creditTotal } : {}),
     name:               a.name,
-    institution:        a.institution,
+    institution:        a.institution ?? "",
     type:               a.type,
     mask:               null,
     balance:            a.balance,
     currency:           a.currency,
     isManual:           false,
+    isUserEstimate:     false,
+    canManage:          false,
     connectionState:    null,
     importBatchCount:   0,
+    // v2.6-L1 — freshness from the host's own account row. `ledgerQueried` is
+    // omitted on purpose: the fallback carries no transaction evidence, so
+    // coverage stays UNKNOWN rather than claiming NONE_ON_FILE.
+    freshness:          fallbackFreshness(a, now),
+    // v2.6-L2 — the fallback carries no `availableBalance` (the host's shared
+    // SpaceAccount does not include it), so the authority is handed nothing and
+    // answers PROVIDER_DID_NOT_REPORT. The fetched read supplies the real claim
+    // a moment later; an honest "not reported" is the right interim answer.
+    balances:           fallbackBalances(a, now),
+    // v2.6-L3 — the fallback carries no pending evidence either, so reconciliation
+    // is UNAVAILABLE. The fetched read supplies the real claim a moment later;
+    // an honest "cannot be established yet" is the right interim answer.
+    reconciliation:     reconcileAccount(fallbackBalances(a, now), NO_PENDING, null),
   }));
 }
 
@@ -318,7 +380,12 @@ export function AccountsPerspective({
   const load = useCallback(() => {
     fetch(`/api/spaces/${spaceId}/accounts/detail`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("failed"))))
-      .then((data) => { setRows(Array.isArray(data) ? data : []); setError(false); })
+      .then((data) => {
+        // REVIEW-3 B-1 — { rows, redactedCount }; the bare-array shape is
+        // accepted for one deploy generation of drift.
+        setRows(Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : []);
+        setError(false);
+      })
       .catch(() => setError(true));
   }, [spaceId]);
 
@@ -326,7 +393,7 @@ export function AccountsPerspective({
 
   // Until the enriched detail arrives (or if it fails), render the host's list so
   // accounts are never absent — strictly no worse than today's AccountsCard.
-  const display = rows ?? fallbackRows(accounts);
+  const display = rows ?? fallbackRows(accounts, new Date());
 
   if (display.length === 0) {
     return (

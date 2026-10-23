@@ -29,6 +29,7 @@
 
 import { PrismaClient } from "@prisma/client";
 import { detectCiphertextVersion } from "@/lib/plaid/encryption";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 const db = new PrismaClient({ log: ["error", "warn"] });
 
@@ -190,7 +191,7 @@ main()
     process.exit(0);
   })
   .catch(async (err) => {
-    console.error("Diagnostic failed to complete:", err);
+    console.error("Diagnostic failed to complete:", redactedErrorForLog(err));
     await db.$disconnect();
     process.exit(1);
   });

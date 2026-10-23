@@ -31,6 +31,7 @@ import {
   Search, X, AlertTriangle, CheckCircle2, Copy, Eye, EyeOff,
   ChevronDown, ChevronUp, Monitor,
 } from "lucide-react";
+import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { TotpSection } from "@/components/dashboard/TotpSection";
 import { formatDateTime } from "@/lib/format";
 import { SessionsList, type SessionRow } from "@/components/security/SessionsList";
@@ -134,20 +135,27 @@ function ResetTwoFaModal({ user, onClose, onSuccess }: { user: SecurityUser; onC
     finally  { setLoading(false); }
   }
 
+  const requestClose = () => {
+    if (loading) return;
+    if ((confirm !== "" || totpCode !== "") && !window.confirm("Discard this unfinished 2FA reset?")) return;
+    onClose();
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-      <div className="w-full max-w-md bg-gray-900 border border-red-900/40 rounded-2xl shadow-2xl">
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-800">
-          <div className="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center">
-            <AlertTriangle size={16} className="text-red-400" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-white">Reset 2FA</h3>
-            <p className="text-xs text-gray-400">{user.email}</p>
-          </div>
-          <button onClick={onClose} className="ml-auto text-gray-600 hover:text-gray-400"><X size={16} /></button>
+    <OverlaySurface open onClose={requestClose}
+      title="Reset 2FA" subtitle={user.email} icon={AlertTriangle} role="alertdialog"
+      intent="form" size="sm" preventClose={loading}
+      footer={
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <button onClick={requestClose} disabled={loading} className="min-h-11 px-4 py-2 rounded-xl text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">Cancel</button>
+          <button onClick={handleReset} disabled={loading || confirm !== "RESET"}
+            className="min-h-11 px-4 py-2 rounded-xl text-sm font-medium bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+            {loading ? "Resetting…" : "Reset 2FA"}
+          </button>
         </div>
-        <div className="px-5 py-4 space-y-4">
+      }
+    >
+        <div className="space-y-4">
           <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/20 space-y-1.5">
             <p className="text-xs font-semibold text-red-400">This action will:</p>
             <ul className="text-xs text-gray-400 space-y-1 ml-2">
@@ -158,27 +166,19 @@ function ResetTwoFaModal({ user, onClose, onSuccess }: { user: SecurityUser; onC
             </ul>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">Type <span className="font-mono font-bold text-white">RESET</span> to confirm</label>
-            <input value={confirm} onChange={(e) => setConfirm(e.target.value.toUpperCase())} placeholder="RESET"
-              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm font-mono text-white placeholder-gray-600 focus:outline-none focus:border-red-500/50" />
+            <label htmlFor="admin-reset-confirm" className="block text-xs text-gray-500 mb-1.5">Type <span className="font-mono font-bold text-white">RESET</span> to confirm</label>
+            <input id="admin-reset-confirm" value={confirm} onChange={(e) => setConfirm(e.target.value.toUpperCase())} placeholder="RESET"
+              className="w-full bg-gray-800 border border-gray-700 rounded-xl min-h-11 px-3 py-2 text-base sm:text-sm font-mono text-white placeholder-gray-600 focus:outline-none focus:border-red-500/50" />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">Your TOTP code <span className="text-gray-600">(required if your 2FA is enabled)</span></label>
-            <input value={totpCode} onChange={(e) => setTotpCode(e.target.value)} placeholder="000000" maxLength={6} inputMode="numeric"
-              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm font-mono text-white placeholder-gray-600 focus:outline-none focus:border-gray-600" />
-            <p className="text-xs text-gray-600 mt-1">Leave blank if your 2FA is not yet enabled.</p>
+            <label htmlFor="admin-reset-totp" className="block text-xs text-gray-500 mb-1.5">Your TOTP code <span className="text-gray-600">(required if your 2FA is enabled)</span></label>
+            <input id="admin-reset-totp" aria-describedby="admin-reset-totp-help" value={totpCode} onChange={(e) => setTotpCode(e.target.value)} placeholder="000000" maxLength={6} inputMode="numeric"
+              className="w-full bg-gray-800 border border-gray-700 rounded-xl min-h-11 px-3 py-2 text-base sm:text-sm font-mono text-white placeholder-gray-600 focus:outline-none focus:border-gray-600" />
+            <p id="admin-reset-totp-help" className="text-xs text-gray-600 mt-1">Leave blank if your 2FA is not yet enabled.</p>
           </div>
-          {error && <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
+          {error && <p role="alert" className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
         </div>
-        <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-800">
-          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">Cancel</button>
-          <button onClick={handleReset} disabled={loading || confirm !== "RESET"}
-            className="px-4 py-2 rounded-xl text-sm font-medium bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-            {loading ? "Resetting…" : "Reset 2FA"}
-          </button>
-        </div>
-      </div>
-    </div>
+    </OverlaySurface>
   );
 }
 
@@ -213,24 +213,41 @@ function RecoveryCodesModal({ userId, onClose }: { userId: string; onClose: () =
     setCopied(true); setTimeout(() => setCopied(false), 2000);
   }
 
+  const requestClose = () => {
+    if (loading) return;
+    if (step === "codes" && !window.confirm("Have you stored the new recovery codes securely? They will not be shown again.")) return;
+    if (step === "confirm" && confirm !== "" && !window.confirm("Discard this unfinished recovery-code request?")) return;
+    onClose();
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-      <div className="w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl shadow-2xl">
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-800">
-          <Key size={16} className="text-amber-400" />
-          <h3 className="text-sm font-semibold text-white">{step === "confirm" ? "Regenerate Recovery Codes" : "New Recovery Codes"}</h3>
-          <button onClick={onClose} className="ml-auto text-gray-600 hover:text-gray-400"><X size={16} /></button>
+    <OverlaySurface open onClose={requestClose}
+      title={step === "confirm" ? "Regenerate Recovery Codes" : "New Recovery Codes"} icon={Key}
+      intent="form" size="sm" preventClose={loading}
+      footer={
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <button onClick={requestClose} disabled={loading} className="min-h-11 px-4 py-2 rounded-xl text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">
+            {step === "codes" ? "Done" : "Cancel"}
+          </button>
+          {step === "confirm" && (
+            <button onClick={generate} disabled={loading || confirm !== "REGENERATE"}
+              className="min-h-11 px-4 py-2 rounded-xl text-sm font-medium bg-amber-500/10 border border-amber-500/30 text-amber-400 hover:bg-amber-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              {loading ? "Generating…" : "Generate codes"}
+            </button>
+          )}
         </div>
-        <div className="px-5 py-4 space-y-4">
+      }
+    >
+        <div className="space-y-4">
           {step === "confirm" ? (
             <>
               <p className="text-xs text-gray-400">This will invalidate all existing unused codes and generate 10 new ones. Shown <span className="text-white font-medium">once only</span>.</p>
               <div>
-                <label className="block text-xs text-gray-500 mb-1.5">Type <span className="font-mono font-bold text-white">REGENERATE</span> to confirm</label>
-                <input value={confirm} onChange={(e) => setConfirm(e.target.value.toUpperCase())} placeholder="REGENERATE"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm font-mono text-white placeholder-gray-600 focus:outline-none focus:border-gray-600" />
+                <label htmlFor="admin-recovery-confirm" className="block text-xs text-gray-500 mb-1.5">Type <span className="font-mono font-bold text-white">REGENERATE</span> to confirm</label>
+                <input id="admin-recovery-confirm" value={confirm} onChange={(e) => setConfirm(e.target.value.toUpperCase())} placeholder="REGENERATE"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-xl min-h-11 px-3 py-2 text-base sm:text-sm font-mono text-white placeholder-gray-600 focus:outline-none focus:border-gray-600" />
               </div>
-              {error && <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
+              {error && <p role="alert" className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
             </>
           ) : (
             <>
@@ -240,10 +257,10 @@ function RecoveryCodesModal({ userId, onClose }: { userId: string; onClose: () =
               </div>
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <button onClick={() => setVisible((v) => !v)} className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors">
+                  <button onClick={() => setVisible((v) => !v)} aria-pressed={visible} className="flex min-h-11 items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors">
                     {visible ? <EyeOff size={12} /> : <Eye size={12} />} {visible ? "Hide codes" : "Show codes"}
                   </button>
-                  <button onClick={copyAll} className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors">
+                  <button onClick={copyAll} className="flex min-h-11 items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors">
                     {copied ? <CheckCircle2 size={12} className="text-emerald-400" /> : <Copy size={12} />} {copied ? "Copied!" : "Copy all"}
                   </button>
                 </div>
@@ -258,19 +275,7 @@ function RecoveryCodesModal({ userId, onClose }: { userId: string; onClose: () =
             </>
           )}
         </div>
-        <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-800">
-          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">
-            {step === "codes" ? "Done" : "Cancel"}
-          </button>
-          {step === "confirm" && (
-            <button onClick={generate} disabled={loading || confirm !== "REGENERATE"}
-              className="px-4 py-2 rounded-xl text-sm font-medium bg-amber-500/10 border border-amber-500/30 text-amber-400 hover:bg-amber-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-              {loading ? "Generating…" : "Generate codes"}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
+    </OverlaySurface>
   );
 }
 
@@ -304,19 +309,13 @@ function UserSessionsModal({ user, onClose }: { user: SecurityUser; onClose: () 
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-      <div className="w-full max-w-lg bg-gray-900 border border-gray-800 rounded-2xl shadow-2xl max-h-[80vh] flex flex-col">
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-800 shrink-0">
-          <Monitor size={16} className="text-blue-400" />
-          <div>
-            <h3 className="text-sm font-semibold text-white">Active Sessions</h3>
-            <p className="text-xs text-gray-400">{user.email}</p>
-          </div>
-          <button onClick={onClose} className="ml-auto text-gray-600 hover:text-gray-400"><X size={16} /></button>
-        </div>
-        <div className="px-5 py-4 overflow-y-auto">
+    <OverlaySurface open onClose={onClose}
+      title="Active Sessions" subtitle={user.email} icon={Monitor}
+      intent="form" size="md"
+    >
+        <div className="min-w-0">
           {loading ? (
-            <p className="text-xs text-gray-600 text-center py-6">Loading…</p>
+            <p role="status" className="text-xs text-gray-600 text-center py-6">Loading…</p>
           ) : (
             <SessionsList
               sessions={sessions}
@@ -326,8 +325,7 @@ function UserSessionsModal({ user, onClose }: { user: SecurityUser; onClose: () 
             />
           )}
         </div>
-      </div>
-    </div>
+    </OverlaySurface>
   );
 }
 

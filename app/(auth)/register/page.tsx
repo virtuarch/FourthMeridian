@@ -8,6 +8,7 @@ import { Field, Input, Select, PasswordField } from "@/components/atlas/fields";
 import { InlineBanner } from "@/components/atlas/InlineBanner";
 import { TurnstileWidget } from "@/components/ui/TurnstileWidget";
 import type { RegistrationPolicyResponse } from "@/app/api/registration-policy/route";
+import { todayUTCISO } from "@/lib/time/clock"; // B-6 — THE clock seam
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
@@ -294,7 +295,7 @@ function RegisterForm() {
                 type="date"
                 value={form.dateOfBirth}
                 onChange={(e) => set("dateOfBirth", e.target.value)}
-                max={new Date().toISOString().split("T")[0]}
+                max={todayUTCISO()}
               />
             </Field>
 

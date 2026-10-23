@@ -26,8 +26,10 @@ import { db } from "@/lib/db";
 import { PriceBasis } from "@prisma/client";
 import { priceArchive } from "@/lib/prices/archive";
 import { fetchInstrumentWindow } from "@/lib/prices/fetch";
+import { recordCorporateActionTerms } from "@/lib/investments/corporate-actions";
 import { defaultPriceRegistry } from "@/lib/prices/registry";
 import { selectInstrumentsMissingDate } from "@/lib/prices/backfill-core";
+import { resolvePriceability } from "@/lib/prices/coverage-binding.core";
 import { yesterdayUTCISO } from "@/lib/prices/config";
 
 export interface FetchSecurityPricesResult {
@@ -58,11 +60,38 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
   // Held instruments: a live (non-superseded, non-deleted) position with qty > 0.
   const held = await db.positionObservation.findMany({
     where:    { supersededById: null, deletedAt: null, quantity: { gt: 0 } },
-    select:   { instrumentId: true, instrument: { select: { tickerSymbol: true } } },
+    select:   {
+      instrumentId: true,
+      instrument: { select: { tickerSymbol: true, assetClass: true, marketIdentifierCode: true, currency: true } },
+    },
     distinct: ["instrumentId"],
   });
-  const instrumentIds = [...new Set(held.map((h) => h.instrumentId))].sort();
-  const symbolById = new Map(held.map((h) => [h.instrumentId, h.instrument.tickerSymbol]));
+
+  // V26-PRICE-3 — drop instruments no provider can price BEFORE selecting the
+  // missing list. Previously a CASH instrument, an option, or one with a null
+  // ticker was selected every single day, fetched, answered with nothing, and
+  // therefore still "missing" tomorrow — an unbounded retry loop that produced
+  // no row and no diagnostic, forever. Priceability comes from the ONE resolver
+  // the coverage binding uses, so the cron and coverage cannot disagree.
+  const unpriceable: string[] = [];
+  const priceable = held.filter((h) => {
+    const p = resolvePriceability({
+      instrumentId:         h.instrumentId,
+      assetClass:           String(h.instrument.assetClass),
+      tickerSymbol:         h.instrument.tickerSymbol,
+      marketIdentifierCode: h.instrument.marketIdentifierCode,
+      currency:             h.instrument.currency,
+    });
+    if (!p.priceable) unpriceable.push(`${h.instrumentId}(${p.reason})`);
+    return p.priceable;
+  });
+  if (unpriceable.length > 0) {
+    console.log(`[prices-cron] ${dateISO}: skipping ${unpriceable.length} unpriceable instrument(s): ${unpriceable.sort().join(", ")}`);
+  }
+
+  const instrumentIds = [...new Set(priceable.map((h) => h.instrumentId))].sort();
+  const symbolById = new Map(priceable.map((h) => [h.instrumentId, h.instrument.tickerSymbol]));
+  const classById  = new Map(priceable.map((h) => [h.instrumentId, String(h.instrument.assetClass)]));
 
   // Batch coverage read for the target date, then select the missing.
   const covered = new Map<string, Set<string>>();
@@ -74,12 +103,14 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
   }
   const missing = selectInstrumentsMissingDate(instrumentIds, covered, dateISO);
 
-  let fetched = 0, inserted = 0, failed = 0;
+  let fetched = 0, inserted = 0, failed = 0, actions = 0;
+  let cryptoClosesLanded = false;
   for (const instrumentId of missing) {
     try {
       const res = await fetchInstrumentWindow(
         {
           instrumentId,
+          assetClass:     classById.get(instrumentId) ?? "UNKNOWN",
           providerSymbol: symbolById.get(instrumentId) ?? "",
           basis: PriceBasis.RAW_CLOSE,
           fromISO: dateISO,
@@ -91,6 +122,17 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
         fetched++;
         const w = await priceArchive.writeBatch(res.source, res.rows);
         inserted += w.inserted;
+        if (w.inserted > 0 && classById.get(instrumentId) === "CRYPTO") cryptoClosesLanded = true;
+        // V26-S1-CA — a split that happens TODAY is stated on today's row, in
+        // this very response. Capturing it here is what keeps the terms
+        // authority current without a second job or a second vendor call.
+        if (res.corporateActions.length > 0) {
+          try {
+            actions += await recordCorporateActionTerms(res.source, res.corporateActions);
+          } catch (e) {
+            console.warn(`[prices-cron] ${dateISO}: corporate-action capture failed for ${instrumentId} (non-fatal): ${e instanceof Error ? e.message : e}`);
+          }
+        }
       }
     } catch (err) {
       failed++;
@@ -98,6 +140,24 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
     }
   }
 
-  console.log(`[prices-cron] ${dateISO}: ${instrumentIds.length} held, ${missing.length} missing, ${fetched} fetched, ${inserted} row(s) stored, ${failed} failed`);
+  // 2026-09-21 — A NEWER CLOSE CHANGES TODAY'S FALLBACK VALUE. A wallet with no
+  // current quote today is valued at the latest close, and this job is what
+  // lands yesterday's; today's snapshot was written by an earlier sync against
+  // the close before it (a 00:00/06:00 sweep runs ahead of this 06:30 job). So
+  // every wallet's TODAY snapshot is regenerated here — otherwise the headline
+  // keeps a close two days old while the account read has moved to yesterday's.
+  if (cryptoClosesLanded) {
+    try {
+      const { SYNCABLE_CHAINS } = await import("@/lib/crypto/wallet-sync-dispatch");
+      const { activeWalletAccountIdsForChains } = await import("@/lib/crypto/wallet-snapshot-scope");
+      const { regenerateSnapshotsForAccounts } = await import("@/lib/snapshots/regenerate");
+      const wallets = await activeWalletAccountIdsForChains(SYNCABLE_CHAINS);
+      if (wallets.length > 0) await regenerateSnapshotsForAccounts(wallets);
+    } catch (e) {
+      console.warn(`[prices-cron] ${dateISO}: wallet snapshot refresh after new crypto closes failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  console.log(`[prices-cron] ${dateISO}: ${instrumentIds.length} held, ${missing.length} missing, ${fetched} fetched, ${inserted} row(s) stored, ${actions} corporate action(s), ${failed} failed`);
   return { dateISO, status: "ok", instrumentsConsidered: instrumentIds.length, instrumentsMissing: missing.length, fetched, inserted, failed };
 }

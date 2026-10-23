@@ -211,10 +211,18 @@ test("enrolment — every Space-scoped detail reader is a known authority", () =
     // was reviewed in V25-CLOSE-2 and carries the constraints its query shape
     // requires; listed so a NEW one cannot appear unnoticed.
     "lib/data/transactions.ts",
+    // v2.6-OWN-2 — `bankingTransactionWhere` MOVED here, byte-identical (proved
+    // by diff against its prior definition), so that read-only audits could
+    // import the canonical population without dragging in `server-only`. Same
+    // spaceId + status ACTIVE + shared predicate + soft-delete filter as before;
+    // lib/data/transactions.ts re-exports it, so no consumer moved. The reason it
+    // had to move: audit-ui-truth-convergence had hand-written a WIDER
+    // approximation that omitted this very predicate, so the probe was auditing a
+    // population no surface reads.
+    "lib/data/banking-population.ts",
     "lib/data/accounts.ts",
     "lib/transactions/detail-query.ts",
     "lib/transactions/transfer-resolution.ts",
-    "lib/investments/legacy-crypto-holdings.ts",
     "lib/investments/space-data.ts",
     "lib/ai/assemblers/transactions.ts",
   ]);
@@ -240,9 +248,12 @@ test("enrolment — every Space-scoped detail reader is a known authority", () =
   // Anti-vacuity: if the scan or matcher breaks, `unknown` is trivially empty
   // and this test would "pass" while checking nothing.
   assert.ok(
-    found.length >= 10,
-    `Expected the known detail-visibility readers (11 at V25-CLOSE-2), found ` +
-      `${found.length}. The scan is broken — fix it rather than lowering this floor.`,
+    found.length >= 9,
+    `Expected the known detail-visibility readers (11 at V25-CLOSE-2; 9 after ` +
+      `W5 deleted lib/investments/legacy-crypto-holdings.ts and REVIEW-3 the ` +
+      `general reader), found ${found.length}. The scan is broken — fix it ` +
+      `rather than lowering this floor; lower the floor ONLY for a documented ` +
+      `reader deletion, alongside the known-set edit above.`,
   );
 });
 

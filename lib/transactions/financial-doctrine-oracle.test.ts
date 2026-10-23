@@ -82,7 +82,7 @@ import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evid
 import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
 import { deriveTransferDisposition, type TransferDisposition, type TransferEvidence } from "@/lib/transactions/transfer-evidence";
 import { shouldSurfaceAsNeedsClassification } from "@/lib/transactions/needs-classification";
-import { totalDebtPaid, type DebtPaymentTxnLike } from "@/lib/debt";
+import { rollupDebtPaymentsByAccount, type DebtPaymentTxnLike } from "@/lib/debt";
 import { grantsTransactionDetail } from "@/lib/ai/visibility";
 import { identityContext, convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
@@ -128,6 +128,11 @@ interface Fixture {
   disposition?: TransferDisposition | null; // read-time transfer disposition on the row
   rail?:    string | null;   // transferRail ("PAYMENT_APP") when attested
   classificationReason?: string | null;     // FlowClassificationReason
+  // v2.6-TRUTH-5/7 — the canonical income attribution the read boundary emits for
+  // every positive INCOME row (measured: 136/136 live rows carry one). The
+  // liquidity axis reads it rather than assuming every income is a paycheck.
+  incomeClass?:   string | null;
+  incomeSubtype?: string | null;
   merchantId?: string | null;                // resolved Merchant identity present?
   currency?: string;                         // native currency (default USD)
   flowDirection?: FlowDirection;
@@ -174,6 +179,8 @@ function toTx(f: Fixture): LiquidityTx {
     flowDirection: f.flowDirection,
     currency: f.currency ?? "USD",
     transferDisposition: f.disposition ?? null,
+    incomeClass:   f.incomeClass ?? null,
+    incomeSubtype: f.incomeSubtype ?? null,
   } as unknown as LiquidityTx;
 }
 
@@ -188,7 +195,10 @@ function fullEvidence(e: { railType?: "PAYMENT_APP"; movementForm?: "CASH"; venu
 
 function econBucket(flowType: FlowTypeT): EconBucket {
   const acc: EconomicAccumulator = { income: 0, spendGross: 0, refunds: 0 };
-  foldEconomicRow(acc, flowType, 1);
+  // A representative row of the flow: a cost flow is a charge (money out), every
+  // other flow money in — the fold reads the SIGNED amount (FM-AUDIT-006).
+  const amount = flowType === "SPENDING" || flowType === "FEE" || flowType === "INTEREST" ? -1 : 1;
+  foldEconomicRow(acc, { flowType, amount });
   if (acc.income) return "income";
   if (acc.spendGross) return "spend";
   if (acc.refunds) return "refund";
@@ -216,6 +226,7 @@ const MATRIX: Fixture[] = [
   // 1 — income (paycheck) into a liquid account
   { id: "F1", title: "income → checking", own: "chk", amount: 3800, flowType: "INCOME",
     classificationReason: "PLAID_PFC_PRIMARY", merchantId: "emp",
+    incomeClass: "EARNED_INCOME", incomeSubtype: "SALARY",
     pop: true, econ: "income", effect: "CASH_IN", reason: "EARNED_INCOME", needs: null,
     facts: { cashIn: 3800, income: 3800, cashOut: 0 }, byReason: { EARNED_INCOME: 3800 } },
 
@@ -241,7 +252,12 @@ const MATRIX: Fixture[] = [
     note: "cost flow enters ECONOMIC spend (creditCardSpending) but NOT liquidity Cash Out — the spendable drain happens later at debt payment (A2)." },
 
   // 6 — debt payment, source leg (cash leaving the liquid tier)
+  // v2.6-DEBT-1 — `cp: "card"` is REQUIRED evidence now, not decoration. A debt
+  // payment is admitted only on a positively attested destination; a bare
+  // DEBT_PAYMENT flowType is a provider category, and the fixture's own title
+  // says "debt payment", so it must carry the destination that makes it one.
   { id: "F6", title: "debt payment (source leg, from checking)", own: "chk", amount: -300, flowType: "DEBT_PAYMENT",
+    cp: "card", counterpartyIsOwned: true,
     pop: true, econ: "none", effect: "CASH_OUT", reason: "DEBT_PAYMENT", debtMember: true,
     facts: { cashOut: 300, income: 0, spendGross: 0 }, byReason: { DEBT_PAYMENT: 300 } },
 
@@ -276,10 +292,13 @@ const MATRIX: Fixture[] = [
     note: "asset liquidation is Cash In but NOT earned income — proceeds of a sale, never a paycheck." },
 
   // 11 — dividend received to checking (Dividend category → flowType INCOME)
+  // ⚠️ This asserted EARNED_INCOME. A dividend is not a paycheck — the conflation
+  //    v2.6-TRUTH-5 removed from the data survived here in the oracle until now.
   { id: "F11", title: "dividend received → checking", own: "chk", amount: 50, flowType: "INCOME",
     classificationReason: "CATEGORY_INVESTMENT_VALUE", merchantId: "payer",
-    pop: true, econ: "income", effect: "CASH_IN", reason: "EARNED_INCOME", needs: null,
-    facts: { cashIn: 50, income: 50 }, byReason: { EARNED_INCOME: 50 } },
+    incomeClass: "DIVIDEND_INCOME", incomeSubtype: "SECURITY_DIVIDEND",
+    pop: true, econ: "income", effect: "CASH_IN", reason: "DIVIDEND_INCOME", needs: null,
+    facts: { cashIn: 50, income: 50 }, byReason: { DIVIDEND_INCOME: 50 } },
 
   // 12 — investment BUY (security activity on an asset account)
   { id: "F12", title: "investment buy (on brokerage)", own: "brk", amount: -1000, flowType: "INVESTMENT",
@@ -519,8 +538,36 @@ const assemblerSrc = readFileSync(ASSEMBLER, "utf8");
 check("CONVERGED: assembler declares NO separate BANKING_FLOWS population allow-list",
   !/const\s+BANKING_FLOWS\s*:/.test(assemblerSrc),
   "P2-7B retired the allow-list; reintroducing it is a population-divergence regression");
-check("CONVERGED: assembler consumes the canonical banking population (not INVESTMENT)",
-  /flowType:\s*\{\s*not:\s*FlowType\.INVESTMENT\s*\}/.test(assemblerSrc));
+// v2.6-POP-1 — this used to assert the assembler contained the LITERAL
+// `flowType: { not: FlowType.INVESTMENT }`, i.e. its own copy of the fragment.
+// That was convergence by coincidence: two files agreeing because someone typed
+// the same thing twice. When the canonical fragment was corrected (`not` drops
+// NULLs, so it needed an explicit `flowType: null` arm), the duplicate would have
+// silently kept the old, defective meaning under the same name.
+//
+// The assembler now IMPORTS the canonical fragment, so it cannot diverge at all.
+// Assert that stronger property: no local redeclaration, and a real import.
+check("CONVERGED: assembler declares no local BANKING_POPULATION copy",
+  !/const\s+BANKING_POPULATION\s*[:=]/.test(assemblerSrc),
+  "a second definition of the population under the same name is worse than none — " +
+  "import it from lib/data/banking-population.ts");
+// v2.6-PARITY-1 — STRENGTHENED, for the second time and for the same reason.
+//
+// This asserted that the assembler imports `BANKING_POPULATION`. It did, and it
+// was still reading a population no other surface read: that fragment is only
+// the FLOW half. Around it the assembler hand-spelled the KD-15 visibility gate
+// and applied no event projection, so "imports the canonical fragment" was true
+// and "reads the canonical population" was false.
+//
+// `bankingTransactionWhere` is the whole boundary — gate, population, projection
+// — and importing the half is now itself the regression. Asserting the STRONGER
+// property, exactly as v2.6-POP-1 did when the literal was replaced by an import.
+check("CONVERGED: assembler consumes the whole read boundary (bankingTransactionWhere)",
+  /import\s*\{[^}]*\bbankingTransactionWhere\b[^}]*\}\s*from\s*["'][^"']*banking-population["']/.test(assemblerSrc),
+  "the AI must read bankingTransactionWhere(spaceId), not the bare population fragment");
+check("CONVERGED: assembler does not consume the population fragment WITHOUT the gate",
+  !/\bBANKING_POPULATION\b/.test(assemblerSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "")),
+  "BANKING_POPULATION alone omits the KD-15 gate and the event projection");
 check("CONVERGED: money folds gate on isNonEconomicResidue (UNKNOWN/ADJUSTMENT/null admitted but not counted as money)",
   /isNonEconomicResidue/.test(assemblerSrc));
 check("CONVERGED: assembler surfaces the non-economic residue disclosure (never silently dropped)",
@@ -545,7 +592,7 @@ check("CONVERGED: assembler surfaces the non-economic residue disclosure (never 
 //
 // One DebtPayment FACT FAMILY, three OBSERVATION VIEWS (dictionary §B):
 //   A  classifyLiquidity → DayFacts.byReason.DEBT_PAYMENT  (source-side liquid cash-out)
-//   B  lib/debt.ts totalDebtPaid                            (received-by-liability, destination-side)
+//   B  lib/debt.ts rollupDebtPaymentsByAccount             (received-by-liability, destination-side)
 //   C  AI assembler debtPaymentTotal                        (DEBT_PAYMENT flowType, negative-only)
 // When evidence is symmetric (a fully connected two-leg payment) they RECONCILE.
 // When evidence is asymmetric they legitimately DIVERGE — the oracle documents the
@@ -555,7 +602,14 @@ console.log("── Part 3 — debt-payment reconciliation ──");
 
 // View adapters (each reads its real authority; C is the assembler's inline rule).
 const viewA = (rows: LiquidityTx[]): number => aggregateDayFacts(rows, ctx).byReason.DEBT_PAYMENT ?? 0;
-const viewB = (debtAccountRows: DebtPaymentTxnLike[]): number => totalDebtPaid(debtAccountRows);
+// v2.6-TRUTH-7 — B was `lib/debt.ts totalDebtPaid`, which abs-summed whatever it
+// was handed and so meant different things to different callers. The
+// received-by-liability SEMANTICS it stood for are unchanged and still needed
+// here, and `rollupDebtPaymentsByAccount` is where they now live — it is the one
+// view that names WHICH liability received the money. The headline total is
+// view A, via lib/transactions/debt-payment-authority.ts.
+const viewB = (debtAccountRows: DebtPaymentTxnLike[]): number =>
+  rollupDebtPaymentsByAccount(debtAccountRows).reduce((sum, e) => sum + e.total, 0);
 const viewC = (rows: LiquidityTx[]): number =>
   rows.filter((r) => isDebtPayment(r.flowType) && r.amount < 0).reduce((s, r) => s + Math.abs(r.amount), 0);
 
@@ -563,7 +617,10 @@ const viewC = (rows: LiquidityTx[]): number =>
 //   source leg  DEBT_PAYMENT −300 on checking (liquid)
 //   dest   leg  DEBT_PAYMENT +300 on the card (liability)
 {
+  // v2.6-DEBT-1 — the source leg names its destination; that is what makes it a
+  // "fully connected" payment and what admits it to the measure.
   const sourceLeg = toTx({ id: "src", title: "", own: "chk", amount: -300, flowType: "DEBT_PAYMENT",
+    cp: "card", counterpartyIsOwned: true,
     pop: true, econ: "none", effect: "CASH_OUT", reason: "DEBT_PAYMENT" });
   const destLeg = toTx({ id: "dst", title: "", own: "card", amount: 300, flowType: "DEBT_PAYMENT",
     pop: true, econ: "none", effect: "NEUTRAL", reason: "DEBT_PAYMENT" });
@@ -689,7 +746,7 @@ console.log("── Part 4 — payment-app / liability doctrine ──");
 console.log("── Part 5 — multi-currency doctrine ──");
 
 const usdRows: LiquidityTx[] = [
-  toTx({ id: "u1", title: "", own: "chk", amount: 1000, flowType: "INCOME", pop: true, econ: "income", effect: "CASH_IN", reason: "EARNED_INCOME" }),
+  toTx({ id: "u1", title: "", own: "chk", amount: 1000, flowType: "INCOME", incomeClass: "EARNED_INCOME", pop: true, econ: "income", effect: "CASH_IN", reason: "EARNED_INCOME" }),
   toTx({ id: "u2", title: "", own: "chk", amount: -200, flowType: "SPENDING", pop: true, econ: "spend", effect: "CASH_OUT", reason: "REAL_COST" }),
 ];
 

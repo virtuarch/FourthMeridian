@@ -8,6 +8,7 @@
  */
 
 import { parseOxrHistorical } from "./openExchangeRates";
+import { readFileSync } from "node:fs";
 import { FRANKFURTER_QUOTES, parseFrankfurterDay } from "./frankfurter";
 import { SUPPORTED_QUOTES } from "../config";
 
@@ -20,6 +21,15 @@ function check(name: string, cond: boolean, detail = ""): void {
 }
 
 const D = "2026-07-02";
+
+// ── OPS-004 — transport timeouts verified (15 s, AbortSignal on both adapters) ─
+{
+  for (const f of ["lib/fx/providers/frankfurter.ts", "lib/fx/providers/openExchangeRates.ts"]) {
+    const src = readFileSync(f, "utf8");
+    check(`${f}: TIMEOUT_MS = 15_000`, /const TIMEOUT_MS = 15_000;/.test(src));
+    check(`${f}: fetch carries AbortSignal.timeout(TIMEOUT_MS)`, /fetch\(url, \{ signal: AbortSignal\.timeout\(TIMEOUT_MS\) \}\)/.test(src));
+  }
+}
 
 // ── Open Exchange Rates ───────────────────────────────────────────────────────
 

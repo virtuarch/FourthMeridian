@@ -23,12 +23,14 @@
 import {
   filterByPeriod,
   outflowByCategory,
-  incomeBySource,
   periodLabel,
   periodRange,
   isExplicitPeriod,
+  economicTotals,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
+import { isIncome } from "@/lib/transactions/flow-predicates";
+import { rollupIncomeFromTransactions } from "@/lib/transactions/income-rollup";
 import {
   aggregateDayFacts,
   type CashFlowPerspective,
@@ -37,8 +39,8 @@ import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
 import { groupCashFlowContext } from "@/lib/transactions/cash-flow-context";
 import { compareCashFlow, type CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatProseMoney } from "@/components/space/widgets/display-money";
+import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 
@@ -130,7 +132,11 @@ export function buildCashFlowInsights(args: {
       : null;
   const liqCtx = tierResolver(accounts);
   const facts = aggregateDayFacts(rows, liqCtx, moneyCtx);
-  const fmt = (v: number) => formatCurrency(v, moneyCtx?.target ?? DEFAULT_DISPLAY_CURRENCY);
+  // REVIEW-3 B-5 — no context ⇒ the sentence states the magnitude with no
+  // currency claim (display-money.ts); a native amount is never relabelled USD.
+  // MONEY-PRECISION-2 — an INSIGHT is a sentence, so its figures are whole
+  // dollars; the tiles and ledgers these sentences sit beside keep their cents.
+  const fmt = (v: number) => formatProseMoney(v, moneyCtx);
 
   const insights: CashFlowInsight[] = [];
   const hasActivity = rows.length > 0;
@@ -187,8 +193,20 @@ export function buildCashFlowInsights(args: {
     const cashIn = groupLiquidityByReason(facts).cashIn;
     if (cashIn.length > 0) topSource = { label: cashIn[0].label, value: cashIn[0].amount };
   } else {
-    const src = incomeBySource(rows, moneyCtx);
-    if (src.length > 0) topSource = { label: src[0].label, value: src[0].value };
+    // v2.6-TRUTH-6 — the CANONICAL lines, not the payer grouping. The insight
+    // previously read incomeBySource, which admitted NOT_INCOME rows, so it
+    // could name an issuer credit as a source of income and could quote a total
+    // the headline did not contain.
+    const income = rollupIncomeFromTransactions(rows, { scope: "BANK_TRANSACTIONS", ctx: moneyCtx });
+    const top = [...income.lines].sort((a, b) => b.amount - a.amount)[0];
+    if (top) topSource = { label: top.label, value: top.amount };
+    else if (rows.some((r) => isIncome(r.flowType ?? null))) {
+      // The window has income but no row carried an attribution — a read that
+      // did not select the evidence. Say the honest generic thing rather than
+      // dropping the bullet or reaching for a second authority.
+      const total = economicTotals(rows, moneyCtx).income;
+      if (total > 0) topSource = { label: "Income", value: total };
+    }
   }
   if (topSource && topSource.value > 0) {
     const noun = perspective === "liquidity" ? "cash in" : "income";
@@ -207,9 +225,12 @@ export function buildCashFlowInsights(args: {
   //     to the timing-only sentence rather than announcing "$0 of payments".
   if (facts.creditCardSpending > 0) {
     const debtPaid = facts.byReason.DEBT_PAYMENT ?? 0;
+    // CF-RECON-1 — `creditCardSpending` is GROSS (charges before refunds), so the
+    // sentence says "charged", not "of spending": beside a NET Spending figure,
+    // "$9.8k of spending" and "Spending $9.0k" read as one concept disagreeing.
     const text = debtPaid > 0
-      ? `${fmt(facts.creditCardSpending)} of spending went on credit this period, and ${fmt(debtPaid)} of cash went to debt payments. Payments can cover balances from earlier periods, so the two won't necessarily match.`
-      : `${fmt(facts.creditCardSpending)} of spending was charged to credit this period — it counts as spending now; the cash leaves when you pay the balance.`;
+      ? `${fmt(facts.creditCardSpending)} was charged to credit this period, and ${fmt(debtPaid)} of cash went to debt payments. Payments can cover balances from earlier periods, so the two won't necessarily match.`
+      : `${fmt(facts.creditCardSpending)} was charged to credit this period — it counts as spending now; the cash leaves when you pay the balance.`;
     insights.push({ id: "credit", text, tone: "neutral" });
   }
 

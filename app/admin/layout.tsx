@@ -13,13 +13,19 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { env } from "@/lib/env";
 import { redirect } from "next/navigation";
+import { redirectToLogin } from "@/lib/auth/login-redirect";
+import { enforceTotpPageGate } from "@/lib/auth/totp-page-gate";
 import { Shield } from "lucide-react";
 import { AdminNav } from "@/components/admin/AdminNav";
 import { AdminUserMenu } from "@/components/admin/AdminUserMenu";
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const session = await getServerSession(authOptions);
-  if (!session || session.user.role !== "SYSTEM_ADMIN") redirect("/dashboard");
+  // No session here means the JWT is still validly signed (the proxy let it
+  // through) but the session itself was revoked: sign in again, keeping the
+  // deep link. Sending it to /dashboard instead ended on that shell's error page.
+  if (!session?.user?.id) return redirectToLogin();
+  if (session.user.role !== "SYSTEM_ADMIN") redirect("/dashboard");
 
   // V25-FINAL-2 — DISABLE_SYSTEM_ADMIN kill switch, at the ONE page-shell boundary
   // for all /admin/* routes. Reads the same canonical env getter the API authority
@@ -28,6 +34,13 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   // every data call 403s. Role in the JWT is unchanged; only effective access is
   // withdrawn at runtime.
   if (env.isSystemAdminDisabled) redirect("/dashboard");
+
+  // SEC-001 — the DB-derived enrolment gate, the page half of what
+  // lib/session.ts enforces on every /api/admin/* call. proxy.ts only sees the
+  // JWT's navigation hint; this reads `session.requireTotpSetup`, which the
+  // session callback derives from the store. A pending admin renders NOTHING
+  // under /admin except /admin/security (the enrolment surface).
+  await enforceTotpPageGate(session);
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">

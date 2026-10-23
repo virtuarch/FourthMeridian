@@ -11,24 +11,36 @@
  * visibility, only ownership semantics differ, and only after the D3 Step 3
  * HOME Semantics Correction (docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md) is
  * the link set here guaranteed to agree with WorkspaceAccountShare's.
- * getHoldings() reads Holding rows anchored to FinancialAccount (visibility via
- * SpaceAccountLink, the same join getAccounts() uses), exposing the anchor as a
- * single `accountId` field so existing UI call sites need no changes.
+ *
+ * REVIEW-3 → W5: getHoldings() — the general legacy `Holding` read model — was
+ * DELETED, and W5 deleted the last remaining production Holding reader (the
+ * crypto-only bridge). Current positions — crypto wallets included — come from
+ * the canonical PositionObservation seam
+ * (lib/investments/current-positions.ts getCurrentPositions). Do not
+ * reintroduce ANY Holding reader here — lib/export/holdings.test.ts and
+ * scripts/audit-crypto-holding-tombstone.ts guard against it.
  */
 
-import { db } from "@/lib/db";
-import { getSpaceContext } from "@/lib/space";
-import { Account, Holding } from "@/types";
+import type { ReadClient } from "@/lib/db/tenant-context";
+import {
+  accountDisplayName, compareAccountsByDisplayName,
+} from "@/lib/accounts/display-identity";
+import { Account } from "@/types";
 import { ShareStatus, PlaidItemStatus, type VisibilityLevel } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
-// KD-19 — visibility-tier enforcement on the UI account/holdings read paths.
-// grantsAccountDetail + TRANSACTION_DETAIL_VISIBILITY share the FULL gate the
-// AI assemblers use, so no read surface can disagree; sanitizeForBalanceOnly
-// is the same single-account redactor the shared-Space accounts route uses.
-import { grantsAccountDetail, TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
-import { sanitizeForBalanceOnly } from "@/lib/account-privacy";
+// KD-19 — visibility-tier enforcement on the UI account read paths.
+// grantsAccountDetail shares the FULL gate the AI assemblers use, so no read
+// surface can disagree; sanitizeForBalanceOnly is the same single-account
+// redactor the shared-Space accounts route uses.
+import { grantsAccountDetail } from "@/lib/ai/visibility";
+import {
+  sanitizeForBalanceOnly, genericAccountName, grantsBalanceDisclosure,
+} from "@/lib/account-privacy";
+import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
+import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
+import { loadWalletCurrentValues, hasKnownValue, type WalletCurrentValue } from "@/lib/crypto/wallet-current-value";
 
 /**
  * One visible account plus the SpaceAccountLink.visibilityLevel that
@@ -50,38 +62,102 @@ export interface AccountWithVisibility {
 }
 
 /**
+ * v2.6-L3 — reachable cash + unexplained hold per CASH account, through the
+ * canonical lib/balances authority. READ-ONLY, and scoped to ids this module has
+ * already resolved, so it widens no visibility surface.
+ *
+ * Non-cash accounts are absent from the map: only a cash account has a reachable
+ * quantity, and an absent entry is how a consumer knows to keep using the ledger
+ * figure rather than treating a missing value as zero.
+ */
+async function loadCurrentCashState(
+  client: ReadClient,
+  accountIds: string[],
+): Promise<Map<string, NonNullable<Account["currentState"]>>> {
+  const out = new Map<string, NonNullable<Account["currentState"]>>();
+  if (accountIds.length === 0) return out;
+  const rows = await client.financialAccount.findMany({
+    where: { id: { in: accountIds }, deletedAt: null },
+    select: {
+      id: true, type: true, currency: true, balance: true,
+      availableBalance: true, creditLimit: true, debtSubtype: true,
+      walletAddress: true, lastUpdated: true, balanceLastUpdatedAt: true,
+    },
+  });
+  // RLS-C-S2 — `loadPendingEvidence` has required its client since slice B. It
+  // now receives the one this read leaf was HANDED, not the ambient global it
+  // used to hold: a single authority runs the whole cash-state claim.
+  const pending = await loadPendingEvidence(client, rows.map((r) => r.id));
+  const now = new Date();
+  for (const r of rows) {
+    const rec = reconcileAccount(
+      resolveRowBalances(r, now),
+      pending.get(r.id) ?? NO_PENDING,
+      r.creditLimit,
+    );
+    if (rec.basis !== "DEPOSITORY") continue;
+    out.set(r.id, {
+      reachable:    rec.reachable?.amount ?? null,
+      unexplained:  rec.unexplained,
+      state:        rec.state,
+      pendingCount: rec.pending.count,
+    });
+  }
+  return out;
+}
+
+/**
  * All accounts visible to the current space, via SpaceAccountLink, each
  * paired with the visibility tier that produced it (AccountWithVisibility
  * above). Most callers want getAccounts() below instead.
  *
- * Pass `ctx` when the caller has already resolved space context for this
- * request (e.g. the dashboard page resolves it once and fans it out to all
- * its data helpers) to avoid a redundant getSpaceContext() call. Falls
- * back to resolving it internally (now cached per-request via React's
- * cache()) when called standalone, so existing callers keep working.
+ * ── RLS-C-S1 — THE SCOPE IS AN ARGUMENT, NEVER RE-DERIVED HERE ──────────────
  *
- * `ctx.userId` is an optional internal/test seam: `getSpaceContext()` reads
- * next-auth `headers()` and therefore cannot run outside a Next request scope
- * (e.g. a standalone tsx privacy-proof script). A caller that already knows the
- * viewing user — and only such a caller — may pass `userId` to skip that
- * resolution. Production callers pass at most `{ spaceId }`, so they resolve
- * `userId` from the request scope exactly as before; production behavior is
- * unchanged.
+ * `scope` is REQUIRED, and this function no longer resolves ambient space context.
+ * It used to: when a caller omitted either key, the leaf read next-auth
+ * `headers()` and invented its own identity. That is fatal to RLS adoption — a
+ * helper that re-derives identity inside a transaction which already has a
+ * tenant bound can never be threaded with a scoped client, because the two
+ * identities can disagree and only one of them is the authority.
+ *
+ * TENANT IDENTITY (which database client may see which rows) is supplied at the
+ * request boundary and travels with the client. What arrives HERE is ordinary
+ * PRODUCT context:
+ *   - `spaceId` — which Space's links to read.
+ *   - `userId`  — the VIEWING member, a product input only: it decides whose
+ *                 broken Plaid connection gets a reconnect badge (D2-7E below).
+ *                 It is never a visibility widener and never an authority.
+ *
+ * Every caller already has both from server-side state (the resolved context at
+ * the page/route, `PerspectiveScope` in the engine, an explicit seed identity in
+ * the proof scripts), so requiring them costs nothing and removes the only way
+ * this read could ever disagree with its caller.
+ *
+ * ── RLS-C-S2 — THE AUTHORITY IS AN ARGUMENT TOO, AND IT COMES FIRST ─────────
+ * S1 made the IDENTITY explicit. The AUTHORITY — which database role executes
+ * these statements, and therefore which RLS policies apply — was still ambient:
+ * this module imported the migration principal, the one client exempt from every
+ * policy, and used it unconditionally. A reviewer could not tell a tenant-scoped
+ * read from a platform-wide one by looking at the call site, because they were
+ * spelled identically.
+ *
+ * `client` is now required and leading. It is typed `Prisma.TransactionClient`,
+ * which has no `$transaction` member, so this leaf CANNOT open a transaction of
+ * its own — the phase boundary always belongs to the caller that opened it, and
+ * `withTenantDb`'s transaction-local identity can never be undercut from here.
+ * `PrismaClient` is structurally assignable, so a job holding `systemDb` (or a
+ * not-yet-converted caller holding `db`) can still pass it — visibly.
  */
 export async function getAccountsWithVisibility(
-  ctx?: { spaceId: string; userId?: string },
+  client: ReadClient,
+  scope: { spaceId: string; userId: string },
 ): Promise<AccountWithVisibility[]> {
-  // Resolve spaceId + the current userId (used only for the reconnect badge
-  // below). Call getSpaceContext() only when the caller hasn't supplied both —
-  // it is cache()-memoized per request, so this is at most one call. When both
-  // are provided (internal/test), no request scope is touched.
-  const needsResolve = !ctx?.spaceId || !ctx?.userId;
-  const resolved = needsResolve ? await getSpaceContext() : null;
-  const spaceId = ctx?.spaceId ?? resolved!.spaceId;
-  // D2-7E — current user, for the reconnect-badge ownership check below.
-  const userId = ctx?.userId ?? resolved!.userId;
+  // RLS-C-S1 — both supplied by the caller. No ambient resolution, no request
+  // scope touched. `userId` is the viewing member, used ONLY for the
+  // reconnect-badge ownership check below (D2-7E).
+  const { spaceId, userId } = scope;
 
-  const links = await db.spaceAccountLink.findMany({
+  const links = await client.spaceAccountLink.findMany({
     where: {
       spaceId,
       status:           ShareStatus.ACTIVE,
@@ -113,9 +189,80 @@ export async function getAccountsWithVisibility(
     ],
   });
 
+  // v2.6-L3 — the CURRENT-state claim, resolved HERE because this module is the
+  // KD-19 visibility authority: it is the right place to decide what each tier
+  // may see, and it keeps the perspective-engine binding free of a direct DB
+  // read (the engine import-graph rule). Cash accounts only.
+  const currentStateByAccount = await loadCurrentCashState(
+    client,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    links.map((l: any) => l.financialAccount.id),
+  );
+
+  // W-M3a — THE fix for a wallet rendering $0.00 while holding a verified
+  // position. Chains since W-M1c write no `balance`/`nativeBalance` column, and
+  // those columns are NOT NULL DEFAULT 0, so "withheld" arrived here as the
+  // number zero and every account surface printed it as money. The current value
+  // for those wallets comes from the position spine instead, through the
+  // canonical valuation path.
+  //
+  // Resolved HERE, next to the cash-state claim, for the same reason: this
+  // module is the KD-19 visibility authority, so it is the right place to decide
+  // what each tier may see. A wallet's VALUE is a balance, so it is disclosed at
+  // exactly the tiers a balance is — including BALANCE_ONLY, which is why
+  // `getCurrentPositions` (FULL-detail only) is deliberately not the seam used.
+  //
+  // W6d — WHICH wallets are in this map is a registry fact, never a list here.
+  // Bitcoin joined it when the dispatch registry stopped naming its balance
+  // column as its net-worth participation; this call did not change, because it
+  // has always passed EVERY linked account's chain and let the authority decide.
+  const walletValueByAccount = await loadWalletCurrentValues(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    links.map((l: any) => ({
+      id: l.financialAccount.id,
+      walletChain: l.financialAccount.walletChain,
+      // W6b — the successful-read clock, so a stale wallet is not published as live.
+      lastUpdated: l.financialAccount.lastUpdated,
+    })),
+    { client, contextSpaceId: spaceId },
+  );
+
+  /**
+   * The balance a surface should show.
+   *
+   * A wallet with a real number displaces the column — VALUED or STALE alike.
+   * W6b: falling back for staleness would swap a dated last-known figure for an
+   * unwritten column that always reads zero, which is strictly worse. Staleness
+   * travels on `cryptoPosition.freshness` instead. NO_PRICE and NO_OBSERVATION
+   * still fall through: there is no number to show.
+   *
+   * ── W6d — THE FALLBACK IS A LAST RESORT, AND IT IS DISCLOSED ───────────────
+   * With Bitcoin in the map, the column this falls back to is no longer always
+   * an unwritten zero: a BTC wallet that has never been through `syncBtcWallet`
+   * (the seeded demo wallets) carries a real-looking USD figure with no dated
+   * provenance behind it. The fallback is KEPT rather than zeroed — showing
+   * $0.00 for a wallet we simply have not observed is the exact "unknown
+   * rendered as money" defect this module exists to prevent, and it would be a
+   * worse lie than an unprovenanced number.
+   *
+   * What makes it defensible is that it is no longer HIDDEN: `cryptoPosition`
+   * travels on the same row with `state: "NO_OBSERVATION"` and both
+   * `quantity` and `value` null, so a surface that shows money can tell that
+   * this figure is not spine-backed. A consumer that ignores the tri-state and
+   * prints `balance` is making a claim the row explicitly disclaims.
+   *
+   * DELETION CONDITION: when every linked wallet has at least one OBSERVED
+   * PositionObservation, this branch is unreachable for wallets and the column
+   * argument can be dropped for them entirely.
+   */
+  const displayBalance = (columnBalance: number, v: WalletCurrentValue | undefined): number =>
+    hasKnownValue(v) ? v!.value! : columnBalance;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return links.map((link: any) => {
     const r = link.financialAccount;
+    // Present ONLY for a wallet whose chain writes no balance column.
+    const walletValue = walletValueByAccount.get(r.id);
 
     // KD-19 — only FULL links may expose account metadata (institution, real
     // name, credit limit, debt fields). BALANCE_ONLY exposes the balance total
@@ -128,12 +275,44 @@ export async function getAccountsWithVisibility(
         link.addedByUser?.firstName?.trim() ||
         link.addedByUser?.name?.trim().split(" ")[0] ||
         null;
+
+      // REVIEW-3 B-1 — tiers granting NO balance disclosure (SUMMARY_ONLY /
+      // PRIVATE / legacy SHARED / unknown) FAIL CLOSED here, matching the
+      // perspective lenses and the aggregating normalizer: the row survives so
+      // tier counts and redaction disclosures stay honest, but its balance is
+      // a structural 0 flagged `balanceRedacted` — never summed, never a claim
+      // the account is settled. currentState and the provider attestation are
+      // withheld with it: both describe a balance this tier does not disclose.
+      if (!grantsBalanceDisclosure(link.visibilityLevel)) {
+        return {
+          visibilityLevel: link.visibilityLevel as VisibilityLevel,
+          account: {
+            id:          r.id,
+            name:        genericAccountName({
+              type:          r.type,
+              debtSubtype:   r.debtSubtype ?? null,
+              ownerFirstName,
+            }),
+            type:        r.type as Account["type"],
+            institution: "",              // redacted — institution is identifying
+            balance:     0,
+            balanceRedacted: true,
+            currency:    r.currency,
+            lastUpdated: r.lastUpdated.toISOString(),
+            balanceLastUpdatedAt: null,
+          } as Account,
+        };
+      }
+
       const safe = sanitizeForBalanceOnly(
         {
           id:          r.id,
           type:        r.type,
           debtSubtype: r.debtSubtype ?? null,
-          balance:     r.balance,
+          // W-M3a — a wallet's spine value is its balance, and BALANCE_ONLY
+          // discloses balances. Passing the column here instead would have shown
+          // this tier $0.00 for a wallet the FULL tier values correctly.
+          balance:     displayBalance(r.balance, walletValue),
           currency:    r.currency,
           lastUpdated: r.lastUpdated,
         },
@@ -149,6 +328,21 @@ export async function getAccountsWithVisibility(
           balance:     safe.balance,
           currency:    safe.currency,
           lastUpdated: safe.lastUpdated,
+          // v2.6-L1 — a timestamp about a balance this tier already discloses, so
+          // it reveals nothing further. Null stays null.
+          balanceLastUpdatedAt: r.balanceLastUpdatedAt
+            ? r.balanceLastUpdatedAt.toISOString()
+            : null,
+          // 2026-10-07 — what this balance can be used for (HSA, retirement,
+          // unverified). A liquidity total over this tier needs it, and it
+          // describes the balance the tier already discloses.
+          providerSubtype: r.providerSubtype ?? null,
+          // v2.6-L3 — same reasoning: a quantity about the balance this tier
+          // already discloses. Withholding it would make a liquidity total mix
+          // reachable figures with ledger balances, which is worse.
+          ...(currentStateByAccount.has(r.id)
+            ? { currentState: currentStateByAccount.get(r.id) }
+            : {}),
           // All other fields intentionally omitted (undefined) under the
           // BALANCE_ONLY / SUMMARY_ONLY tier: no institution, no debt metadata,
           // no Plaid/connection state, no wallet fields.
@@ -191,19 +385,26 @@ export async function getAccountsWithVisibility(
       visibilityLevel: link.visibilityLevel as VisibilityLevel,
       account: {
       id:            r.id,
-      // Resolution order: user override > Plaid's official name > Plaid's raw
-      // name > whatever was already in `name` (covers manual/legacy accounts).
-      name:          r.displayName ?? r.officialName ?? r.plaidName ?? r.name,
+      // v2.6-TRUTH-10 — the ONE identity authority. This inlined the resolution
+      // order, as three other modules also did and a fifth did differently.
+      name:          accountDisplayName(r),
       type:          r.type as Account["type"],
       institution:   r.institution,
-      balance:       r.balance,
+      balance:       displayBalance(r.balance, walletValue),
       currency:      r.currency,
       lastUpdated:   r.lastUpdated.toISOString(),
+      balanceLastUpdatedAt: r.balanceLastUpdatedAt
+        ? r.balanceLastUpdatedAt.toISOString()
+        : null,
+      ...(currentStateByAccount.has(r.id)
+        ? { currentState: currentStateByAccount.get(r.id) }
+        : {}),
       plaidName:     r.plaidName    ?? undefined,
       officialName:  r.officialName ?? undefined,
       displayName:   r.displayName  ?? undefined,
       creditLimit:    r.creditLimit ?? undefined,
       debtSubtype:    r.debtSubtype ?? undefined,
+      providerSubtype: r.providerSubtype ?? null,
       interestRate:   effectiveApr,
       minimumPayment,
       minimumPaymentIsEstimated: minimumPaymentIsEstimated || undefined,
@@ -217,7 +418,26 @@ export async function getAccountsWithVisibility(
       } : undefined,
       walletAddress:  r.walletAddress  ?? undefined,
       walletChain:   r.walletChain   as Account["walletChain"] ?? undefined,
-      nativeBalance: r.nativeBalance ?? undefined,
+      // W-M3a — the OBSERVED quantity from the spine when there is one. The
+      // column is never written for these chains, so `?? undefined` on it alone
+      // produced 0, not absence.
+      nativeBalance: walletValue?.quantity ?? r.nativeBalance ?? undefined,
+      // The tri-state behind the number: VALUED / NO_PRICE / NO_OBSERVATION.
+      // A consumer that shows money MUST branch on this — `balance` falls back
+      // to the (zero) column for the two states that have no value, and only
+      // this field distinguishes "holds nothing" from "we do not know".
+      ...(walletValue ? { cryptoPosition: {
+        state:      walletValue.state,
+        freshness:  walletValue.freshness,
+        observedAt: walletValue.observedAt ? walletValue.observedAt.toISOString() : null,
+        quantity:  walletValue.quantity,
+        value:     walletValue.value,
+        symbol:    walletValue.symbol,
+        assetKey:  walletValue.assetKey,
+        priceDate: walletValue.priceDate,
+        asOf:      walletValue.asOf,
+        price:     walletValue.price,
+      } } : {}),
       syncStatus:    r.syncStatus    as Account["syncStatus"]  ?? undefined,
       needsReauth:   !!reauthConnection,
       plaidItemId:   reauthConnection?.plaidItemDbId ?? undefined,
@@ -232,63 +452,53 @@ export async function getAccountsWithVisibility(
  * the server-side visibility tier, so this function's output is unchanged
  * by the AccountWithVisibility addition.
  */
-export async function getAccounts(ctx?: { spaceId: string; userId?: string }): Promise<Account[]> {
-  return (await getAccountsWithVisibility(ctx)).map((r) => r.account);
+export async function getAccounts(
+  client: ReadClient,
+  scope: { spaceId: string; userId: string },
+): Promise<Account[]> {
+  return sortAccountsForDisplay((await getAccountsWithVisibility(client, scope)).map((r) => r.account));
 }
 
 /**
- * All holdings across all investment accounts.
+ * v2.6-TRUTH-10b — order a resolved account list the way a user reads it.
  *
- * Holdings are anchored to a FinancialAccount (financialAccountId); visibility
- * goes through an active SpaceAccountLink, mirroring getAccounts() above.
+ * The query's `orderBy` sorts on the STORED name and cannot do better: the
+ * display identity is resolved across four columns. This re-sorts the resolved
+ * list, type first (unchanged) and then by the name actually rendered.
+ *
+ * ⚠️ Applied to the PRESENTATION list only. `lib/snapshots/space-accounts.ts`
+ * keeps the stored-name order deliberately — its comment records that summation
+ * order fixes the exact float result, which is a financial artifact, not a label.
  */
-export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]> {
-  const { spaceId } = ctx ?? (await getSpaceContext());
-
-  const rows = (await db.holding.findMany({
-    where: {
-      financialAccountId: { not: null },
-      financialAccount: {
-        deletedAt: null,
-        // KD-19 — individual positions are per-item DETAIL and require a
-        // FULL link. BALANCE_ONLY / SUMMARY_ONLY accounts contribute their
-        // balance (via getAccounts) but never expose symbols/quantities.
-        // Same FULL-only gate the transaction read paths use, so positions
-        // and rows can never disagree.
-        spaceAccountLinks: {
-          some: {
-            spaceId,
-            status:          ShareStatus.ACTIVE,
-            visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
-          },
-        },
-      },
-    },
-  })).sort((a, b) => b.value - a.value);
-
-  return rows.map((r) => ({
-    id:        r.id,
-    // Holdings match to accounts by this single id (the FinancialAccount FK).
-    accountId: r.financialAccountId as string,
-    symbol:    r.symbol,
-    name:      r.name,
-    quantity:  r.quantity,
-    price:     r.price,
-    value:     r.value,
-    change24h: r.change24h,
-    isCash:    r.isCash,
-    currency:  r.currency ?? null, // MC1 P4 Slice 5 — conversion input
-  }));
+export function sortAccountsForDisplay<T extends { id: string; type: string; name: string }>(accounts: T[]): T[] {
+  return [...accounts].sort((a, b) =>
+    a.type.localeCompare(b.type) || compareAccountsByDisplayName(
+      { id: a.id, name: a.name }, { id: b.id, name: b.name }));
 }
 
-/**
- * Latest credit score for the current user.
- * CreditScore is user-owned (not space-owned) since it is personal identity data.
- */
-export async function getFicoData(ctx?: { userId: string }): Promise<{ score: number | null; updatedAt: string | null }> {
-  const { userId } = ctx ?? (await getSpaceContext());
+// REVIEW-3 — getHoldings() (the general legacy Holding reader) was deleted
+// here. See the module header; the canonical seam is getCurrentPositions.
 
-  const row = await db.creditScore.findFirst({
+/**
+ * Latest credit score for the named user.
+ * CreditScore is user-owned (not space-owned) since it is personal identity data.
+ *
+ * RLS-C-S1 — `scope.userId` is REQUIRED. The ambient space-context fallback
+ * is gone: a leaf read must not decide whose credit score it is looking at.
+ *
+ * RLS-C-S2 — `client` is REQUIRED and leading. Under fm_app the CreditScore
+ * policy is `"userId" = current_fm_user_id()`, so on a tenant client the row
+ * predicate here is enforced TWICE — once by this query and once by the
+ * database. That redundancy is the point: if the application predicate is ever
+ * dropped in an edit, the policy still refuses the other tenant's score.
+ */
+export async function getFicoData(
+  client: ReadClient,
+  scope: { userId: string },
+): Promise<{ score: number | null; updatedAt: string | null }> {
+  const { userId } = scope;
+
+  const row = await client.creditScore.findFirst({
     where:   { userId },
     orderBy: { recordedAt: "desc" },
     select:  { score: true, recordedAt: true },
@@ -300,7 +510,8 @@ export async function getFicoData(ctx?: { userId: string }): Promise<{ score: nu
   };
 }
 
-/** @deprecated use getFicoData instead */
-export async function getFicoScore(): Promise<number | null> {
-  return (await getFicoData()).score;
-}
+// RLS-C-S1 — `getFicoScore()` was DELETED here. It was `@deprecated` with zero
+// callers repo-wide, and it was the last zero-argument read in this module: its
+// only way to name a user was the ambient space-context fallback. Deleting
+// it is strictly better than threading a `userId` through a function nobody calls.
+// The canonical read is `getFicoData({ userId })` above.

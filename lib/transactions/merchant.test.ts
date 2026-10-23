@@ -6,7 +6,7 @@
  *
  * The project has no test runner (no jest/vitest). This is a standalone,
  * dependency-free script runnable with the already-installed `tsx`, mirroring
- * lib/ai/output-validator.test.ts and lib/ai/assemblers/transactions.kd17.test.ts:
+ * lib/ai/assemblers/transactions.kd17.test.ts:
  *
  *     npx tsx lib/transactions/merchant.test.ts
  *

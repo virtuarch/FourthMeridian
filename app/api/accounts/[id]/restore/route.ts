@@ -39,12 +39,33 @@
  * plaidAccountId, so that path and this route both lead to the same restored
  * state — this route just covers the case where only the account-level
  * removal happened and the user wants it back without relinking.
+ *
+ * ── RLS-C-S7 — RESTORE IS DISCONNECT RUN BACKWARDS, INCLUDING THE AUTHORITY ───
+ * `db.spaceAccountLink.updateMany({ financialAccountId, status: REVOKED })`
+ * reactivated EVERY revoked link in EVERY Space, which is the shipped meaning:
+ * the account comes back wherever it used to be, including a co-owner's Space.
+ * Under `fm_app` that would reactivate only the links the restoring user can see,
+ * leaving a co-owner holding a REVOKED link to a live, syncing account — their net
+ * worth would silently never hear about it again, and `updateMany` would report a
+ * smaller count rather than an error. Identical blast radius to the disconnect, so
+ * identical authority: ONE narrow capability on `fm_system`
+ * (lib/accounts/links-everywhere.ts), reached only with an id a tenant phase has
+ * proved, with the shortfall asserted. See docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md.
+ *
+ * ⚠️ AND THE PHASES RUN IN THE OPPOSITE ORDER TO THE DISCONNECT'S.
+ * `AccountConnection.fm_app_upd` is `fm_account_visible("financialAccountId")`,
+ * true only while an ACTIVE link exists in a visible Space. So the links must be
+ * reactivated FIRST or the connection un-delete matches nothing — silently. The
+ * disconnect needs exactly the reverse (connections first, links last). Getting
+ * either one backwards writes zero rows and raises nothing.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
-import { ShareStatus, DuplicateDetectionSource } from "@prisma/client";
+import { withTenantDb } from "@/lib/db/tenant-context";
+import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
+import { DuplicateDetectionSource } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import {
@@ -53,6 +74,7 @@ import {
   resolveAccountByFingerprint,
   mergeArchivedDuplicateIntoCanonical,
 } from "@/lib/accounts/reconcile";
+import { reactivateAccountLinksEverywhere } from "@/lib/accounts/links-everywhere";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 
 export const POST = withApiHandler(async (
@@ -66,14 +88,19 @@ export const POST = withApiHandler(async (
   if (err) return err;
 
   try {
-    const fa = await db.financialAccount.findUnique({
+    // THE PROOF, on the tenant role. It is the gate in front of the
+    // deployment-wide reactivation below, so it has to be a read the policy
+    // constrains. A soft-deleted account has no ACTIVE link, so only
+    // `FinancialAccount.fm_app_sel`'s `ownerUserId = me` arm can see it here —
+    // which is exactly the authorization this route requires anyway.
+    const fa = await withTenantDb(user.id, (tx) => tx.financialAccount.findUnique({
       where:  { id },
       select: {
         id: true, name: true, type: true, ownerUserId: true, deletedAt: true,
         plaidAccountId: true, walletAddress: true,
         institutionId: true, institution: true, mask: true, officialName: true, plaidName: true,
       },
-    });
+    }));
 
     if (!fa) {
       return NextResponse.json({ error: "Account not found" }, { status: 404 });
@@ -90,8 +117,17 @@ export const POST = withApiHandler(async (
     // If an active account already exists for the same provider identity,
     // this restore would create a visible duplicate. Silently fold this
     // account's history into the active one instead — no conflict shown.
+    // RLS-ACC-S5 — the lookup's client is now required and leading, and this
+    // one is a TENANT phase: ownership of `fa` was just proved on the tenant
+    // role above, so the active duplicate this is looking for is the caller's
+    // own account. Under fm_app a provider identity held by ANOTHER owner is no
+    // longer found — which turns a fold that could only ever end in
+    // ReparentingRefusedError/CROSS_OWNER (a 500 on a legitimate restore) into
+    // an ordinary restore. Short phase, no provider call inside it.
     const identity = providerIdentityOf(fa);
-    let canonical: { id: string } | null = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
+    let canonical: { id: string } | null = identity
+      ? await withTenantDb(user.id, (tx) => findActiveAccountByIdentity(tx, identity, fa.id))
+      : null;
     // Tracks which match found `canonical`, so the merge below is tagged with
     // the right DuplicateDetectionSource. Default reflects the identity-match
     // branch above; overwritten if the fingerprint fallback is the one that
@@ -107,19 +143,52 @@ export const POST = withApiHandler(async (
     // siblings, if any, get consolidated the next time the account is
     // reconnected via Plaid — see app/api/plaid/exchange-token/route.ts.)
     if (!canonical) {
-      const resolution = await resolveAccountByFingerprint(
-        {
-          ownerUserId:   fa.ownerUserId,
-          institutionId: fa.institutionId,
-          institution:   fa.institution,
-          mask:          fa.mask,
-          officialName:  fa.officialName,
-          plaidName:     fa.plaidName,
-          name:          fa.name,
-          type:          fa.type,
-        },
-        fa.id
-      );
+      // ── RLS-ACC-S7 — THE LAST DEFAULT IN THE CODEBASE IS GONE ────────────
+      // S6 recorded this site as the only one relying on reconcile.ts's module
+      // default, and named the blocker precisely: a TRANSACTION BOUNDARY, not
+      // an authority. `resolveAccountByFingerprint` had to be a ROOT client
+      // because it called Plaid's `itemRemove` BETWEEN its own transactions,
+      // and a tenant authority is only ever a transaction client.
+      //
+      // That is now fixed at the source rather than worked around here: the
+      // close-out's DB half runs inside the fold and its provider half comes
+      // back as `pendingProviderRevocations`, dispatched below AFTER the phase
+      // commits. So the whole resolution runs on THIS ROUTE'S OWN TENANT ROLE,
+      // in one transaction, and the route still does not import `db`.
+      const resolution = await withTenantDb(user.id, (tx) =>
+        resolveAccountByFingerprint(
+          tx,
+          {
+            ownerUserId:   fa.ownerUserId,
+            institutionId: fa.institutionId,
+            institution:   fa.institution,
+            mask:          fa.mask,
+            officialName:  fa.officialName,
+            plaidName:     fa.plaidName,
+            name:          fa.name,
+            type:          fa.type,
+          },
+          fa.id,
+        ));
+
+      // ⚠️ AFTER THE PHASE, NEVER INSIDE IT. `disconnectPlaidItemIfOrphaned`
+      // decides whether to call Plaid by counting live connections on
+      // `systemDb` — a different client with a different pool — so the
+      // soft-delete the fold just made has to be COMMITTED before the gate can
+      // see it. Inside the phase the gate would read a non-zero count and
+      // silently decline, which is the defect
+      // docs/bugfixes/BUGFIX_PLAID_REFRESH_ORPHANED_PLAID_ITEMS.md exists for.
+      // Best-effort: a provider cleanup failure must not fail a restore that
+      // has already committed, and f339e57 makes the unconfirmed outcome
+      // durable so it stays discoverable.
+      for (const plaidItemDbId of resolution?.pendingProviderRevocations ?? []) {
+        try {
+          await disconnectPlaidItemIfOrphaned(plaidItemDbId);
+        } catch (e) {
+          console.error(`[restore] provider cleanup failed for item ${plaidItemDbId} (non-fatal):`, e);
+        }
+      }
+
       if (resolution?.matchedActive) {
         canonical = resolution.canonical;
         mergeSource = DuplicateDetectionSource.FINGERPRINT_MATCH;
@@ -127,42 +196,83 @@ export const POST = withApiHandler(async (
     }
 
     if (canonical) {
-      await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id, mergeSource);
+      // ── RLS-ACC-S6 — THE FOLD NOW RUNS ON THIS ROUTE'S OWN TENANT ROLE ─────
+      // The merge's `client` is required and this is the authority it gets: one
+      // `withTenantDb` phase, so every statement in the fold — the re-parenting
+      // guard's two account reads, the Transaction and DebtProfile moves, the
+      // SpaceAccountLink repoint and the `DuplicateAccountCandidate` audit row —
+      // is subject to the policies, and all of them commit or roll back
+      // together (the merge takes its inline branch under a phase client, by the
+      // `"$transaction" in client` capability test).
+      //
+      // ⚠️ WHAT MADE THIS POSSIBLE WAS NOT A WIDER AUTHORITY. Until
+      // 20261003000100 the fold's last statement was refused with 42501 for an
+      // ARCHIVED loser — the shape every restore has — because
+      // `DuplicateAccountCandidate`'s policy was visibility-only on both of its
+      // FK columns, and archiving an account revokes every link that confers
+      // visibility. That migration gives each half the `OR I own the account`
+      // arm RLS-D1 gave the rest of the account subtree. `fa.ownerUserId` was
+      // already proved equal to the caller above, on the tenant role, so the
+      // arm that admits this fold is the caller's own ownership of the archived
+      // row — not a privilege, and not visibility it does not have.
+      // ⚠️ `canonical` is a `let`, and TypeScript's narrowing of one does not
+      // survive into a closure. Captured, so the phase cannot be handed a null.
+      const winnerId = canonical.id;
+      await withTenantDb(user.id, (tx) =>
+        mergeArchivedDuplicateIntoCanonical(fa.id, winnerId, mergeSource, null, tx));
 
-      await db.auditLog.create({
+      await withTenantDb(user.id, (tx) => tx.auditLog.create({
         data: {
           userId:    user.id,
           action:    AuditAction.ACCOUNT_RESTORE,
           metadata:  { accountId: fa.id, name: fa.name, accountType: fa.type, reconciledIntoAccountId: canonical.id },
           ipAddress: getClientIp(req),
         },
-      });
+      }));
 
       return NextResponse.json({ ok: true, accountId: canonical.id });
     }
 
-    // ── Restore atomically ──────────────────────────────────────────────────
-    // KD-4 Phase 3 — the three restore writes commit together. Previously a
-    // Promise.all (concurrent, NOT atomic): a failed SAL reactivate could leave
-    // the account un-deleted but its links still REVOKED — a ghost active
-    // account visible in no space.
-    await db.$transaction([
-      // 1. Restore FinancialAccount
-      db.financialAccount.update({
+    // ── Restore, in the order the policies force ────────────────────────────
+    // KD-4 Phase 3 kept these three writes in ONE transaction, and the split
+    // below costs that: a failure between the two phases leaves ACTIVE links
+    // pointing at a still-archived account. It is LOUD (it propagates and the
+    // route 500s) and the whole restore is IDEMPOTENT, so a retry converges. The
+    // alternative was to move the account and connection writes to `fm_system`
+    // too, which would make the capability the entire operation.
+    //
+    // 1. D3 Stage B4 — reactivate the revoked links, in EVERY Space. FIRST,
+    //    because it is what makes the connections visible in step 2. Deployment-
+    //    wide, with the shortfall asserted — see the header.
+    const reactivation = await reactivateAccountLinksEverywhere([id]);
+    assertEveryObservedRowWasWritten(
+      { table: "SpaceAccountLink", operation: "update", scope: "1 authorized account id" },
+      reactivation.observedLinkCount,
+      reactivation.changedLinkCount,
+    );
+
+    await withTenantDb(user.id, async (tx) => {
+      // 2. Restore FinancialAccount
+      await tx.financialAccount.update({
         where: { id },
         data:  { deletedAt: null },
-      }),
-      // 2. Restore AccountConnection rows
-      db.accountConnection.updateMany({
+      });
+      // 3. Restore AccountConnection rows. Observed first, in this same phase,
+      //    so a policy refusal cannot pass as "there were none to restore".
+      const archived = await tx.accountConnection.findMany({
+        where:  { financialAccountId: id, deletedAt: { not: null } },
+        select: { id: true },
+      });
+      const restored = await tx.accountConnection.updateMany({
         where: { financialAccountId: id, deletedAt: { not: null } },
         data:  { deletedAt: null },
-      }),
-      // 3. D3 Stage B4 — Reactivate SpaceAccountLink rows that were revoked
-      db.spaceAccountLink.updateMany({
-        where: { financialAccountId: id, status: ShareStatus.REVOKED },
-        data:  { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
-      }),
-    ]);
+      });
+      assertEveryObservedRowWasWritten(
+        { table: "AccountConnection", operation: "update", scope: "1 authorized account id" },
+        archived.length,
+        restored.count,
+      );
+    });
 
     // ── Regenerate SpaceSnapshot for every space this account is now active
     //    in again. Shares were just reactivated above, so the existing
@@ -176,14 +286,14 @@ export const POST = withApiHandler(async (
     }
 
     // ── Audit log ────────────────────────────────────────────────────────────
-    await db.auditLog.create({
+    await withTenantDb(user.id, (tx) => tx.auditLog.create({
       data: {
         userId:    user.id,
         action:    AuditAction.ACCOUNT_RESTORE,
         metadata:  { accountId: id, name: fa.name, accountType: fa.type },
         ipAddress: getClientIp(req),
       },
-    });
+    }));
 
     return NextResponse.json({ ok: true, accountId: id });
   } catch (err) {

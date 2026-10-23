@@ -1,0 +1,312 @@
+/**
+ * lib/ai/brief/load.ts
+ *
+ * THE READS BEHIND ONE DAILY BRIEF PACKAGE — for one resolved Space and its owner.
+ *
+ * ⚠️ AUTHORITIES CALLED DIRECTLY, NOT THROUGH THE CONTEXT BUILDER. `buildContext`
+ * requires an AiAgent row and writes an AuditLog row per call; the chat runtime's
+ * `assembleFullContext` already established that assembling the domains directly
+ * is the sanctioned way to read them without either. The same assemblers run here,
+ * with the same options the chat tools pass, and nothing is re-decided.
+ *
+ * ⚠️ THE CEILING IS APPLIED TO EVERY READ THAT HAS A DATE. The snapshot series is
+ * cut at `asOf` before it is projected, so no change window can see a later day;
+ * the transaction window ends at `asOf`; recent activity ends at `asOf`; memory is
+ * judged in force as of `asOf`. The accounts and holdings assemblers have no
+ * ceiling — they are today — so a retrospective package does not use their
+ * balances (package.ts).
+ *
+ * ⚠️ A FAILED READ DEGRADES THE PACKAGE, IT DOES NOT FAIL THE BRIEF. Each domain
+ * is attempted independently, as `assembleFullContext` does; what failed is
+ * returned in `degraded` so a caller can see what the Brief was written without.
+ * Memory in particular is a nicety: the AI page treats its failure as "no
+ * starters", and so does this.
+ */
+
+import { FinanceDomains } from '@/lib/ai/types';
+import type {
+  AccountsSectionData, AssemblerOptions, ContextDomainSection, HoldingsSummaryData,
+  SnapshotSectionData, SpaceContext_AI, TransactionsSummaryData,
+} from '@/lib/ai/types';
+import type { FinancialAssessment } from '@/lib/ai/intelligence';
+import type { MemoryScope, RecalledMemory } from '@/lib/ai/conversation/memory-store';
+import type { SpaceContext } from '@/lib/space';
+import type { SpaceDataHealth } from '@/lib/connections/space-data-health.core';
+import type { Snapshot } from '@/types';
+import { todayUTCISO } from '@/lib/time/clock';
+import { projectBriefPackage } from './package';
+import { loadRecentActivity, type AccountTypeLookup } from './recent-activity';
+import type { BriefRuntime } from './store';
+import type { BriefPackage, BriefRecentActivity } from './types';
+
+/** The bound `lib/history/exploration` and the chat history tools use. */
+const SNAPSHOT_READ_ROWS = 1100;
+/** W4's assessment window, which the default transactions read already uses. */
+const RETROSPECTIVE_WINDOW_DAYS = 90;
+
+export interface BriefLoadDeps {
+  assemble(domain: string, spaceCtx: SpaceContext, options: AssemblerOptions): Promise<ContextDomainSection | null>;
+  readSnapshots(spaceId: string): Promise<Snapshot[]>;
+  projectSnapshots(rows: Snapshot[]): SnapshotSectionData | null;
+  recall(scope: MemoryScope): Promise<RecalledMemory[]>;
+  /** `accountTypeOf` resolves the CLASS of account a row posted on; ids never leave the loader. */
+  recentActivity(spaceId: string, asOf: string, accountTypeOf?: AccountTypeLookup): Promise<BriefRecentActivity>;
+  assess(ctx: SpaceContext_AI): FinancialAssessment;
+  /**
+   * Optional: per-source freshness (what the page shows). Given the banking
+   * accounts, each source also reports whether it feeds the banking population,
+   * so a cash-flow claim can be scoped to the sources that actually post rows.
+   */
+  dataHealth?(spaceId: string, viewerUserId: string, now: Date,
+    bankingAccountIds?: ReadonlySet<string>): Promise<SpaceDataHealth>;
+  /**
+   * Optional: the accounts that put rows into the banking population at the
+   * ceiling (lib/data/transaction-population — M1's population authority).
+   */
+  bankingPopulation?(spaceId: string, asOf: string): Promise<string[]>;
+}
+
+/**
+ * The real reads, with the two that take a client taking it from the RUNTIME
+ * (RLS slice A).
+ *
+ * ⚠️ THE DYNAMIC IMPORT OF THE GLOBAL CLIENT THAT USED TO BE HERE IS GONE. It was
+ * a leaf reaching past every call site above it for the migration principal. The memory
+ * recall now runs as the Brief's owner, one short transaction; the per-source
+ * health read runs deployment-wide, for the reason recorded on
+ * the tenant phase runner (RLS-12 granted fm_app SELECT on PlatformSetting).
+ *
+ * RLS-C-S3 — THE SNAPSHOT READ, THE POPULATION READ AND THE RECENT-ACTIVITY PAGER
+ * NOW TAKE A CLIENT, and each becomes its OWN `asOwnerReading` phase (a separate
+ * runner from `asOwner`, because `BriefDbClient` is a deliberate `Pick` and a
+ * canonical read leaf needs a full read client — see store.ts). The warning above still stands and is why
+ * they are two phases and not one: a single transaction wrapped around the whole
+ * package would span the model call `ensureDailyBrief` makes. Each of these is one
+ * bounded read — a row window and an indexed groupBy — so a phase per read costs a
+ * transaction and buys the Brief the same authority its memory recall and its
+ * per-source health read already run under.
+ *
+ * ⚠️ AND THE BRIEF IS THE RIGHT PLACE FOR THAT, because a Brief is already
+ * per-(Space, OWNER): `recall` and `dataHealth` are viewer-scoped reads, so a
+ * viewer-scoped banking population is the consistent choice, not a new one. Every
+ * account `bankingTransactionWhere(spaceId)` admits is ACTIVE-linked into a Space
+ * the owner is an ACTIVE member of, so `fm_account_visible` admits it too and the
+ * population is unchanged — by construction, not by luck.
+ *
+ * The assemblers still reach the database through their own modules and are not
+ * converted here.
+ */
+async function defaultDeps(rt: BriefRuntime): Promise<BriefLoadDeps> {
+  await import('@/lib/ai/assemblers'); // registers every assembler
+  const { getAssembler } = await import('@/lib/ai/assembler-registry');
+  const { getRecentSnapshots } = await import('@/lib/data/snapshots');
+  const { projectSnapshotSection } = await import('@/lib/ai/assemblers/snapshot');
+  const { recallMemories } = await import('@/lib/ai/conversation/memory-store');
+  const { computeAssessment } = await import('@/lib/ai/intelligence');
+  const { loadSpaceDataHealth } = await import('@/lib/connections/space-data-health');
+  const { transactionAccountPopulation } = await import('@/lib/data/transaction-population');
+  return {
+    /**
+     * RLS-AI-S6 — THE ASSEMBLERS NOW RUN AS THE BRIEF'S OWNER, LIKE EVERY OTHER
+     * READ IN THIS FILE.
+     *
+     * The header above used to end "The assemblers still reach the database
+     * through their own modules and are not converted here", and the reason was
+     * that `AssemblerFn` took no client. It takes one now, and this dep already
+     * had the right runner sitting beside it: `rt.asOwnerReading` is exactly a
+     * per-phase `ReadClient`, which is what the snapshot, population and
+     * recent-activity reads one line below already use.
+     *
+     * ⚠️ THE POPULATION IS UNCHANGED BY CONSTRUCTION, and that argument is this
+     * module's own: every account `bankingTransactionWhere(spaceId)` admits is
+     * ACTIVE-linked into a Space the owner is an ACTIVE member of, so
+     * `fm_account_visible` admits it too.
+     *
+     * ⚠️ ONE FIELD DOES NARROW, AND IT IS NAMED RATHER THAN DISCOVERED LATER.
+     * The accounts assembler selects `SpaceAccountLink.addedByUser.{firstName,name}`,
+     * and `User`'s policy is `"id" = current_fm_user_id()` — NOT Space-granular. In
+     * a shared Space a co-member's display name becomes null and the assembler's
+     * existing third fallback renders instead. Recorded in
+     * lib/ai/evidence-authorities.ts as the one classified narrowing on this graph.
+     */
+    assemble: async (domain, spaceCtx, options) => rt.asOwnerReading(async (c) => {
+      const assembler = getAssembler(domain);
+      return assembler ? (await assembler(c, spaceCtx, options as never)) ?? null : null;
+    }),
+    readSnapshots: (spaceId) =>
+      rt.asOwnerReading((c) => getRecentSnapshots(c, { rows: SNAPSHOT_READ_ROWS }, { spaceId })),
+    projectSnapshots: (rows) => projectSnapshotSection(rows, 'full'),
+    recall: (scope) => rt.asOwner((c) => recallMemories(c, scope, { limit: 50 })),
+    recentActivity: (spaceId, asOf, accountTypeOf) =>
+      rt.asOwnerReading((c) => loadRecentActivity(c, spaceId, asOf, undefined, accountTypeOf)),
+    assess: computeAssessment,
+    dataHealth: (spaceId, viewerUserId, now, bankingAccountIds) =>
+      rt.asOwner((c) => loadSpaceDataHealth(c, { spaceId, viewerUserId, now, bankingAccountIds })),
+    bankingPopulation: async (spaceId, asOf) =>
+      (await rt.asOwnerReading((c) => transactionAccountPopulation(c, { spaceId, asOf })))
+        .filter((p) => p.rows > 0).map((p) => p.accountId),
+  };
+}
+
+export interface LoadedBriefPackage {
+  package: BriefPackage;
+  /** The reads that failed, by name. Empty on a complete package. */
+  degraded: string[];
+  /** The newest snapshot observation the package could see (≤ asOf), or null. Provenance only. */
+  historyThrough: string | null;
+  /** Milliseconds per read, for the report. */
+  timings: Record<string, number>;
+}
+
+/**
+ * Account id → type, over the rows the accounts assembler disclosed to this
+ * viewer (an aggregated privacy row answers for each of its members). Used only
+ * to resolve a CLASS; the ids stay inside the loader.
+ */
+function accountTypeLookup(accounts: AccountsSectionData | undefined): AccountTypeLookup {
+  const types = new Map<string, string>();
+  for (const a of accounts?.accounts ?? []) {
+    types.set(a.id, a.type);
+    for (const member of a.aggregate?.memberAccountIds ?? []) types.set(member, a.type);
+  }
+  return (accountId) => types.get(accountId);
+}
+
+const shiftDays = (iso: string, days: number) =>
+  new Date(Date.parse(`${iso}T00:00:00.000Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+export async function loadBriefPackage(args: {
+  spaceCtx: SpaceContext;
+  asOf?: string;
+  now?: Date;
+  /**
+   * Which database authority the reads that take a client run under. Required
+   * whenever the defaults are needed; a test that supplies every core dep needs
+   * none, and omitting it with incomplete deps THROWS rather than quietly picking
+   * one (RLS slice A).
+   */
+  runtime?: BriefRuntime;
+  deps?: Partial<BriefLoadDeps>;
+}): Promise<LoadedBriefPackage> {
+  const now = args.now ?? new Date();
+  const today = todayUTCISO(now);
+  // A ceiling in the future is today: nothing after today exists to be read.
+  const asOf = args.asOf && args.asOf < today ? args.asOf : today;
+  const retrospective = asOf < today;
+  const { spaceCtx } = args;
+  const { spaceId } = spaceCtx;
+
+  const needsDefaults = !args.deps || ['assemble', 'readSnapshots', 'projectSnapshots', 'recall',
+    'recentActivity', 'assess'].some((k) => !(k in (args.deps as object)));
+  if (needsDefaults && !args.runtime) {
+    throw new Error('loadBriefPackage needs either a complete set of deps or a runtime that says '
+      + 'which database authority its reads run under (see BriefRuntime).');
+  }
+  const deps: BriefLoadDeps = {
+    ...(needsDefaults ? await defaultDeps(args.runtime as BriefRuntime) : {}), ...args.deps } as BriefLoadDeps;
+
+  const degraded: string[] = [];
+  const timings: Record<string, number> = {};
+  const attempt = async <T>(name: string, fn: () => Promise<T>, fallback: T): Promise<T> => {
+    const t0 = Date.now();
+    try {
+      return await fn();
+    } catch (err) {
+      degraded.push(name);
+      console.error(`[brief] ${name} failed:`, err);
+      return fallback;
+    } finally {
+      timings[name] = Date.now() - t0;
+    }
+  };
+
+  // ⚠️ THE BASELINE'S MONTHS ARE THE BRIEF'S DAY'S, NOT THE WINDOW'S. Every
+  // monthly figure in `behavior` averages the canonical months as of `asOf`
+  // (lib/transactions/canonical-spending), read beside the activity window.
+  const transactionOptions: AssemblerOptions = retrospective
+    ? { scopeHint: 'brief', canonicalSpendingAsOf: asOf, transactionWindow: {
+        startDate: shiftDays(asOf, -RETROSPECTIVE_WINDOW_DAYS), endDate: asOf,
+        label: `daily brief as of ${asOf}` } }
+    : { scopeHint: 'brief', canonicalSpendingAsOf: asOf };
+
+  // ⚠️ RECENT ACTIVITY WAITS FOR THE ACCOUNTS — and only for them. A row's account
+  // CLASS comes from the accounts payload the viewer is already entitled to, so the
+  // activity read is chained off that one read and still runs beside the rest.
+  const accountsRead = attempt('accounts', () => deps.assemble(FinanceDomains.ACCOUNTS, spaceCtx,
+    { scopeHint: 'full', positionClass: 'ALL' }), null);
+  const recentActivityRead = accountsRead.then((section) => attempt('recentActivity', () =>
+    deps.recentActivity(spaceId, asOf, accountTypeLookup(section?.data as AccountsSectionData | undefined)), null));
+
+  const [accounts, transactions, holdings, rows, memories, recentActivity, bankingAccountIds] = await Promise.all([
+    accountsRead,
+    attempt('transactions', () => deps.assemble(FinanceDomains.TRANSACTIONS_SUMMARY, spaceCtx,
+      transactionOptions), null),
+    retrospective ? Promise.resolve(null)
+      : attempt('holdings', () => deps.assemble(FinanceDomains.HOLDINGS_SUMMARY, spaceCtx,
+          { scopeHint: 'full', positionClass: 'ALL' }), null),
+    attempt('snapshots', () => deps.readSnapshots(spaceId), [] as Snapshot[]),
+    // ⚠️ THE OWNER IS THE RESOLVED CONTEXT'S USER — never a parameter a caller
+    // could point at another member. `recallMemories` takes both halves of the
+    // scope as one argument, so no other member's rows can be returned.
+    attempt('memory', () => deps.recall({ spaceId, ownerUserId: spaceCtx.userId }), [] as RecalledMemory[]),
+    recentActivityRead,
+    // Which accounts post banking rows — so source health can be scoped to the
+    // cash-flow claim. Not read for a retrospective package (no source health).
+    !retrospective && deps.bankingPopulation
+      ? attempt<string[] | null>('bankingPopulation', () => deps.bankingPopulation!(spaceId, asOf), null)
+      : Promise.resolve(null),
+  ]);
+  // Freshness is a claim about today: never read for a retrospective package.
+  const dataHealth = !retrospective && deps.dataHealth
+    ? await attempt('dataHealth', () => deps.dataHealth!(spaceId, spaceCtx.userId, now,
+        bankingAccountIds ? new Set(bankingAccountIds) : undefined), null)
+    : null;
+
+  const t0 = Date.now();
+  const snapshot = rows.length > 0
+    ? deps.projectSnapshots(rows.filter((r) => r.date.slice(0, 10) <= asOf))
+    : null;
+  timings.projectSnapshots = Date.now() - t0;
+
+  const domains: Record<string, ContextDomainSection> = {};
+  if (accounts) domains[FinanceDomains.ACCOUNTS] = accounts;
+  if (transactions) domains[FinanceDomains.TRANSACTIONS_SUMMARY] = transactions;
+  if (holdings) domains[FinanceDomains.HOLDINGS_SUMMARY] = holdings;
+  if (snapshot) domains[FinanceDomains.SNAPSHOT_HISTORY] = {
+    domain: FinanceDomains.SNAPSHOT_HISTORY, assembledAt: now.toISOString(), data: snapshot };
+
+  const ctx: SpaceContext_AI = {
+    requestedAt: now.toISOString(),
+    spaceId, userId: spaceCtx.userId, role: spaceCtx.role,
+    agentId: 'daily-brief', resolvedDomains: Object.keys(domains),
+    space: {
+      id: spaceCtx.space.id, name: spaceCtx.space.name, type: spaceCtx.space.type,
+      category: spaceCtx.space.category, reportingCurrency: spaceCtx.space.reportingCurrency,
+    },
+    domains, signals: [], auditLogId: 'daily-brief',
+  };
+
+  let assessment: FinancialAssessment | null = null;
+  if (accounts || transactions) {
+    const ta = Date.now();
+    try { assessment = deps.assess(ctx); }
+    catch (err) { degraded.push('assessment'); console.error('[brief] assessment failed:', err); }
+    timings.assessment = Date.now() - ta;
+  }
+
+  const pkg = projectBriefPackage({
+    asOf, today, now,
+    currency: spaceCtx.space.reportingCurrency ?? 'USD',
+    accounts:     (accounts?.data as AccountsSectionData | undefined) ?? null,
+    transactions: (transactions?.data as TransactionsSummaryData | undefined) ?? null,
+    snapshot,
+    holdings:     (holdings?.data as HoldingsSummaryData | undefined) ?? null,
+    assessment,
+    memories,
+    recentActivity,
+    dataHealth,
+    bankingPopulationKnown: bankingAccountIds !== null,
+  });
+
+  return { package: pkg, degraded, timings, historyThrough: snapshot?.newestDate ?? null };
+}

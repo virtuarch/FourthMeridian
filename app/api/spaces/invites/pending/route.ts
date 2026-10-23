@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
@@ -17,9 +17,14 @@ export async function GET() {
   if (authErr) return NextResponse.json({ count: 0 });
 
   const t1 = Date.now();
-  const count = await db.spaceInvite.count({
+  // RLS slice B — the invitee is NOT a member of the inviting Space, so this is
+  // served by the `invitedUserId = current_fm_user_id()` arm of
+  // `SpaceInvite.fm_app_sel` (§13 of the RLS migration, which exists precisely
+  // so an invitation is visible to the one person who must act on it). The
+  // application predicate is unchanged; the policy now says the same thing.
+  const count = await withTenantDb(user.id, (tx) => tx.spaceInvite.count({
     where: { invitedUserId: user.id, status: "PENDING", seenAt: null },
-  });
+  }));
   console.log(`[api/spaces/invites/pending] count query: ${Date.now() - t1}ms, total: ${Date.now() - t0}ms`);
 
   return NextResponse.json({ count });

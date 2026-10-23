@@ -1,33 +1,104 @@
 name: CI
 
-# Unit-test + typecheck + lint gate for Fourth Meridian.
+# Unit-test + typecheck + lint gate, plus the ARCHITECTURE AUDIT gate.
 #
-# Runs ONLY the safe local test suite (scripts/run-tests.ts → every *.test.ts
-# under lib/ and app/). These need no database, no network, and no secrets, so
-# this workflow requires no service containers and no repository secrets.
+# ── one contract, three places (2026-09-21) ─────────────────────────────────
+# `npm run ci` (scripts/ci-local.ts) runs these two jobs locally, step for step,
+# on a clean depth-1 copy of HEAD against a throwaway Postgres. The step lists
+# live in scripts/lib/ci-contract.ts and scripts/ci-local.test.ts FAILS if the
+# `run:` lines below drift from them — change both together.
+# Node comes from .nvmrc here, locally, and (as engines.node) in production:
+# CI was on 22 while production ran 24 and developers 26, and two defects
+# behaved differently on each. No step may need git history (no fetch-depth):
+# a check that does must fetch what it needs itself, as
+# scripts/audit-forecast-slice-provenance.ts does.
+#
+# ── job: test ────────────────────────────────────────────────────────────────
+# The safe local test suite (scripts/run-tests.ts → every *.test.ts under lib/,
+# app/, components/, jobs/, scripts/). These need no database, no network and no
+# secrets, so this job requires no service container and no repository secrets.
 #
 # DO NOT add the DB/Plaid dev harnesses here
 # (scripts/test-visibility-two-user-space.ts, scripts/reset-chase-history-test.ts):
-# they need a live Postgres / Plaid and are intentionally out of scope for CI.
+# they need a live Postgres / Plaid and are intentionally out of scope.
+#
+# ── job: architecture (v2.6-OWN-2) ───────────────────────────────────────────
+# The repository accumulated 25 audit scripts and CI executed ZERO of them. Every
+# architectural proof in docs/plans/ was a snapshot of a moment nothing preserved:
+# a regression could merge while every invariant silently failed — and one
+# (audit:flow-desync) WAS failing, unnoticed, with a remediation that would have
+# reverted approved data repairs.
+#
+# This job runs the REQUIRED tier of scripts/audit-registry.ts against a fresh,
+# migrated, seeded Postgres. Those audits assert INVARIANTS — properties that
+# hold on any corpus — so a green run here means the same thing it means locally.
+# INFORMATIONAL audits (corpus reports, investigations) are deliberately NOT run:
+# they can legitimately have findings, and a gate that cries wolf teaches people
+# to ignore red, which is the failure this job exists to end.
+#
+# The runner also reconciles the registry against the filesystem in BOTH
+# directions, so a new scripts/audit-*.ts that nobody classified fails the build.
+# An audit outside the registry is an audit outside the gate.
+#
+# ── job: site (domain-split Stage B) ─────────────────────────────────────────
+# fourthmeridian.com is a separate, zero-authority Next project in site/ (own
+# package.json, lockfile, tsconfig, eslint). This job installs it on its own and
+# runs `npm run verify` there: the structural boundary tests, typecheck, lint and
+# a static production build in a constructed environment. It references no
+# repository secret, no database and nothing above site/ — if the site ever
+# needed one to build, that would be the defect.
+#
+# ENCRYPTION_KEY below is a throwaway constant, not a secret: the database is
+# ephemeral and is destroyed with the runner. prisma/seed.ts encrypts a fake
+# Plaid access token with it and nothing else reads it.
+
+# ── hygiene (TEST-007 / TEST-012, 2026-10-22) ────────────────────────────────
+# `permissions: contents: read` — the token can read the checkout and nothing
+# else (no job writes to the repository). `concurrency` cancels a superseded
+# run of the same ref so a burst of pushes does not queue three gates. Every
+# job carries `timeout-minutes` (GitHub's default is 360): a wedged child
+# (scripts/run-tests.ts now kills one at 180 s) can no longer hold a runner
+# for six hours. Action tags stay on their current majors (v4/v4); Dependabot
+# (.github/dependabot.yml) proposes the bumps.
 
 on:
   push:
     branches: ["**"]
   pull_request:
+  # Manual re-run. GitHub dropped the push event for 4e55f3b entirely — the
+  # commit landed on the branch, Vercel's check ran, and no CI run was ever
+  # created. Without this, the only way to re-trigger the gate is an empty
+  # commit, i.e. rewriting the branch to work around someone else's outage.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      # SEC-002 / TEST-005 — the dependency gate. Production dependencies only
+      # (devDependencies never ship); fails the build on any HIGH or CRITICAL
+      # advisory. Baseline 2026-10-22: 14 advisories (2 critical in next /
+      # next-auth) were installed with no step looking.
+      - name: Dependency audit (production, high+)
+        run: npm audit --omit=dev --audit-level=high
 
       # Required: three *.test.ts import Prisma enum values, so the generated
       # client must exist before they run (and before tsc typechecks).
@@ -38,7 +109,131 @@ jobs:
         run: npm run test:unit
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Lint
         run: npm run lint
+
+  architecture:
+    name: Architecture audits
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fintracker
+          POSTGRES_PASSWORD: fintracker
+          POSTGRES_DB: fintracker_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://fintracker:fintracker@localhost:5432/fintracker_ci?schema=public
+      DIRECT_URL:   postgresql://fintracker:fintracker@localhost:5432/fintracker_ci?schema=public
+      # Throwaway — see the header. Never a real key, never reused.
+      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000001"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      # `migrate deploy`, never `migrate dev`: CI applies the committed migration
+      # history exactly as production will, and fails on a migration that does not
+      # apply cleanly from empty.
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Seed
+        run: npx prisma db seed
+
+      # The gate. Fails the build on any REQUIRED invariant breach; prints the
+      # specific statement that no longer holds.
+      - name: Architecture audits (REQUIRED tier)
+        run: npm run audit:ci
+
+      # RLS-3 — tenant isolation, proven as the RUNTIME role rather than as the
+      # superuser every other step runs as. Asserts that fm_app has no
+      # BYPASSRLS, owns no protected table, that every RLS-enabled table is
+      # forced, and that a query which omits its tenant predicate entirely
+      # still cannot read another tenant's financial data.
+      - name: RLS tenant-isolation acceptance
+        run: RLS_TARGET_URL=$DATABASE_URL npm run rls:accept
+
+      # RLS-8 — proves the APPLICATION goes through that boundary, not merely
+      # that the boundary exists. Runs real lib/db + lib/db/tenant-context
+      # wiring against its own throwaway database, and REFUSES to start unless
+      # its tenant connection is genuinely fm_app and unprivileged.
+      - name: RLS application adversarial suite
+        run: npm run rls:accept:app
+
+      # RLS-AI — the AI surface. Neither suite above can reach it: every table
+      # the model's tools read is GRANTED to fm_app, so no AI read can fail
+      # loudly, and the only failure mode is a silent empty set that this
+      # surface turns into a sentence. Proves the absence contract on a real
+      # fm_app principal, and that a tool argument cannot select an identity.
+      - name: RLS AI-surface adversarial suite
+        run: npm run rls:accept:ai
+
+      # RLS-P — the provider surface. The operational ledger is revoked from
+      # fm_app outright, so a tenant-isolation suite cannot see a refusal there.
+      # Proves the ledger is written by fm_system and by nothing else — by
+      # revoke/re-grant, because a Postgres row records no writer identity and
+      # "a row appeared" is satisfied by any principal.
+      - name: RLS provider-ledger adversarial suite
+        run: npm run rls:accept:plaid
+
+      # RLS-PREP-C — the converted FOREGROUND financial paths, attacked as a
+      # second tenant on a real fm_app role: cross-user reads and writes through
+      # the same functions and statements the routes now execute, that a refused
+      # write RAISES rather than reporting a zero, and the deployed-authority
+      # report against three real roles and against an owner impostor.
+      - name: RLS foreground-path adversarial suite
+        run: npm run rls:accept:foreground
+
+      # AI RELIABILITY — the AI allowance reservation on a real fm_system
+      # principal. The unit suite's fake transaction could not see that Prisma
+      # refuses to deserialize pg_advisory_xact_lock's `void` (P2010), so every
+      # real turn fell back to the plain check and concurrent turns all passed.
+      # Proves the lock, its per-customer scope, concurrent admission, the
+      # override, the toggles, and the fallback against a throwaway database.
+      - name: AI allowance reservation suite
+        run: npm run rls:accept:allowance
+
+  site:
+    name: Public site (zero-authority boundary)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: site/.nvmrc
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install dependencies (site only)
+        working-directory: site
+        run: npm ci
+
+      # Structural tests (imports, packages, env, surface, discovery), typecheck,
+      # lint, then `next build` with only PATH/HOME and two public origins.
+      - name: Verify the public site boundary
+        working-directory: site
+        run: npm run verify

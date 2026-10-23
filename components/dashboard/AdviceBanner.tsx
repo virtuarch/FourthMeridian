@@ -1,9 +1,10 @@
 "use client";
 import { useState } from "react";
+import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { AiAdvice } from "@/types";
 import { formatDate, formatDateTime } from "@/lib/format";
 import {
-  AlertTriangle, CheckCircle, ChevronRight, X, Brain,
+  AlertTriangle, CheckCircle, ChevronRight, Brain,
 } from "lucide-react";
 
 interface Props {
@@ -53,32 +54,21 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
   const dateStr = formatDate(advice.generatedAt);
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex flex-col bg-black/95 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <OverlaySurface
+      open
+      onClose={onClose}
+      title="Fourth Meridian Intelligence"
+      icon={Brain}
+      intent="workspace"
+      size="lg"
+      zIndex={100}
+      closeOnBackdrop
     >
-      <div className="flex flex-col h-full max-w-lg mx-auto w-full sm:max-w-none">
-
-        {/* ── Header ── */}
-        <div className="flex items-center justify-between px-4 pt-5 pb-3 border-b border-[var(--border-hairline)] shrink-0">
-          <div className="flex items-center gap-2">
-            <Brain size={16} className="text-[var(--text-secondary)]" />
-            <span className="text-sm font-bold tracking-wide text-white">Fourth Meridian Intelligence</span>
-          </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-xl bg-[var(--surface-inset)] hover:bg-[var(--surface-hover)] text-[var(--text-secondary)] hover:text-white transition-colors touch-manipulation"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* ── Scrollable body ── */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="break-words">
 
           {/* Masthead strip */}
           <div className={`h-0.5 w-full ${risk.bar}`} />
-          <div className="flex items-center justify-between px-4 py-2.5 bg-[var(--surface-muted)] border-b border-[var(--border-hairline)]">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-[var(--surface-muted)] border-b border-[var(--border-hairline)]">
             <span className="text-[11px] text-[var(--text-muted)]">{dateStr}</span>
             <div className="flex items-center gap-2">
               <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${risk.badge}`}>
@@ -99,7 +89,7 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
               <div className={`mt-0.5 shrink-0 ${advice.actionReady ? "text-[var(--accent-positive)]" : "text-[var(--accent-warning)]"}`}>
                 {advice.actionReady ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
               </div>
-              <p className="text-[15px] font-semibold text-white leading-snug">{advice.summary}</p>
+              <p className="text-[15px] font-semibold text-[var(--text-primary)] leading-snug">{advice.summary}</p>
             </div>
           </div>
 
@@ -146,14 +136,14 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
                 if (!line.trim()) return <div key={i} className="h-2" />;
                 if (line.match(/^\*\*[A-Z]/)) {
                   return (
-                    <p key={i} className="text-xs font-bold text-white mt-3 mb-1"
-                       dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.*?)\*\*/g, "$1") }}
+                    <p key={i} className="text-xs font-bold text-[var(--text-primary)] mt-3 mb-1"
+                       dangerouslySetInnerHTML={{ __html: escapeHtml(line).replace(/\*\*(.*?)\*\*/g, "$1") }}
                     />
                   );
                 }
                 return (
                   <p key={i} className="text-xs text-[var(--text-secondary)] leading-relaxed"
-                     dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.*?)\*\*/g, "<strong class='text-[var(--text-primary)]'>$1</strong>") }}
+                     dangerouslySetInnerHTML={{ __html: escapeHtml(line).replace(/\*\*(.*?)\*\*/g, "<strong class='text-[var(--text-primary)]'>$1</strong>") }}
                   />
                 );
               })}
@@ -163,8 +153,7 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
           {/* Bottom padding for safe area */}
           <div className="h-6" />
         </div>
-      </div>
-    </div>
+    </OverlaySurface>
   );
 }
 
@@ -200,4 +189,13 @@ export function AdviceBanner({ advice }: Props) {
       {open && <AnalysisModal advice={advice} onClose={() => setOpen(false)} />}
     </>
   );
+}
+
+/**
+ * ⚠️ HARDENING — `adviceText` reaches innerHTML. It is seed-only today (no runtime
+ * writer), but it is AI-advice text rendered on the Conversations page, and the
+ * only markup this banner means to produce is its own <strong>. Escape first.
+ */
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }

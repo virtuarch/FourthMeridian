@@ -6,10 +6,16 @@
  * CreditScore is user-scoped (not space-scoped) because it is personal
  * identity data. Each call appends a new time-series row — scores are never
  * mutated in place.
+ *
+ * RLS-PREP-C — the insert runs on the tenant role. `CreditScore` is a
+ * user-scoped table (`"userId" = current_fm_user_id()`), so the policy's WITH
+ * CHECK is the same statement as the application rule: a row may only be
+ * written for the caller. An INSERT the policy refuses RAISES — it cannot
+ * return a false success — and the catch below turns it into the 500 it is.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceContext } from "@/lib/space";
 import { requireUser } from "@/lib/session";
 
@@ -29,9 +35,9 @@ export async function PATCH(req: NextRequest) {
 
     const { userId } = await getSpaceContext();
 
-    const record = await db.creditScore.create({
+    const record = await withTenantDb(userId, (tx) => tx.creditScore.create({
       data: { userId, score, source },
-    });
+    }));
 
     return NextResponse.json({ success: true, score: record.score, recordedAt: record.recordedAt });
   } catch (err) {

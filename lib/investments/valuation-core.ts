@@ -233,6 +233,161 @@ export function valueInstrumentAsOf(
 
 // ── Portfolio ─────────────────────────────────────────────────────────────────
 
+/**
+ * V26-QUANTITY-1A — the resolved holding for one (account, instrument) on one
+ * date, after the constant-quantity fallback has had its say. Generic over the
+ * row shape so this stays DB-free and the caller can recover the row the
+ * quantity came from.
+ */
+export interface HeldQuantity<TRow> {
+  /** null ⇒ not held / unknown · 0 ⇒ OBSERVED closure · otherwise the held units. */
+  quantity:     number | null;
+  date:         string | null;
+  tier:         CompletenessTier;
+  /** True only when the quantity was carried from an earlier observation. */
+  heldConstant: boolean;
+  /** The row the quantity was carried from; null unless heldConstant. */
+  sourceRow:    TRow | null;
+}
+
+/**
+ * THE SINGLE AUTHORITY for unknown-vs-known-zero fallback behaviour.
+ *
+ * ── The bug this exists to prevent ───────────────────────────────────────────
+ * The constant-quantity fallback used to fire on `quantity == null || quantity
+ * === 0`, which conflates two facts that are not alike:
+ *
+ *   null ⇒ NO observation covers this date. We do not know. Carrying the
+ *          earliest observed quantity backward is a labelled estimate, and the
+ *          price applied to it is real — the disclosed-estimate contract A10 and
+ *          A9 both rely on.
+ *   0    ⇒ An observation PROVES the position was closed. Substituting the
+ *          earliest positive quantity does not estimate anything; it resurrects
+ *          a holding the user sold.
+ *
+ * Because the historical regeneration binding always passes holdConstant, every
+ * closed position was being valued forever after its sale. Measured locally:
+ * TSLA, sold 2026-07-27 with an explicit zero observation, was valued at
+ * quantity 1 on 2026-07-29; thirteen (account, instrument) pairs were affected.
+ *
+ * ── Contract ─────────────────────────────────────────────────────────────────
+ *   quantity not null, not 0  → pass through unchanged (INCLUDING negatives —
+ *                               short/fractional-negative positions are real and
+ *                               are valued today; this must not change)
+ *   quantity === 0            → preserved as 0. Never searches for an earlier
+ *                               positive row. The caller's existing exclusion
+ *                               remains the final authority on aggregation.
+ *   null + holdConstant       → carry the EARLIEST observation, and only when it
+ *                               is positive; tier degrades to "estimated"
+ *   null + !holdConstant      → unresolved
+ *
+ * Explicit zero is returned as 0 rather than normalised to null on purpose:
+ * collapsing it would destroy the very distinction this function was extracted
+ * to make, and downstream diagnostics can then tell "sold" from "unknown".
+ *
+ * Pure, deterministic, DB-free, no clock. `rows` is scanned by minimum date, so
+ * input order cannot affect the result.
+ */
+export function resolveHeldQuantity<TRow extends { date: string; quantity: number }>(
+  resolved:     { quantity: number | null; date: string | null; tier: CompletenessTier },
+  rows:         readonly TRow[],
+  holdConstant: boolean,
+): HeldQuantity<TRow> {
+  const unchanged: HeldQuantity<TRow> = {
+    quantity: resolved.quantity, date: resolved.date, tier: resolved.tier,
+    heldConstant: false, sourceRow: null,
+  };
+
+  // An OBSERVED closure, or a real (possibly negative) holding — both are
+  // answers, not gaps. Neither may be replaced.
+  if (resolved.quantity !== null) return unchanged;
+
+  if (!holdConstant || rows.length === 0) return unchanged;
+
+  const earliest = rows.reduce((min, r) => (r.date < min.date ? r : min), rows[0]);
+  // Only a positive opening can be carried backward; a zero or negative opening
+  // is not a holding to project.
+  if (earliest.quantity <= 0) return unchanged;
+
+  return {
+    quantity:     earliest.quantity,
+    date:         earliest.date,
+    tier:         "estimated",
+    heldConstant: true,
+    sourceRow:    earliest,
+  };
+}
+
+/**
+ * V26-INVESTMENTS-HISTORY — RECONSTRUCTION RESIDUE IS NOT A SHORT POSITION.
+ *
+ * ── The bug this exists to prevent ───────────────────────────────────────────
+ * Backward reconstruction replays events from a present-day anchor to answer
+ * "what was held on date D". When the provider's event history does not reach
+ * far enough back to explain the shares currently held, the replay runs out of
+ * buys to un-apply and lands BELOW ZERO. The reconstruction records exactly that
+ * — `reconciliation: PARTIAL | FAILED` with an `unexplainedOpeningQuantity` —
+ * and then valuation read the quantity and ignored the verdict.
+ *
+ * Measured locally on one Schwab account: six positions whose openings the
+ * replay could not explain AT ALL (`unexplainedOpeningQuantity == openingQuantity`)
+ * were valued as shorts — INTC −5, TQQQ −20, NVDA −2.003, NKE −4, JPM −1,
+ * TXN −1 — turning ~$3.4k of unknown history into ~−$3.4k of asserted portfolio
+ * value. `resolveHeldQuantity` deliberately passes negatives through because
+ * SHORT POSITIONS ARE REAL; the mistake was never that rule, it was that nobody
+ * asked where the negative came from.
+ *
+ * ── The distinction ──────────────────────────────────────────────────────────
+ * A negative quantity is a real holding when someone OBSERVED it — a provider,
+ * a statement import, or the user asserting it. A negative quantity that only a
+ * DERIVED backward replay produced, from a reconstruction that could not close
+ * its own books, is arithmetic residue: the replay saying "I ran out of history",
+ * not the market saying "you are short".
+ *
+ *   OBSERVED / IMPORTED / USER_ASSERTED negative → a real position. Value it.
+ *   DERIVED negative, reconciliation COMPLETE    → a genuinely reconstructed
+ *                                                  short (books closed). Value it.
+ *   DERIVED negative, PARTIAL / FAILED / missing → residue. REFUSE.
+ *
+ * Refusing means UNVALUED-with-a-reason (the `excluded` path in valuation.ts),
+ * never clamped to zero and never dropped: zero is a claim, and an absent
+ * component cannot degrade the portfolio's completeness tier. A missing
+ * reconstruction summary is treated as not-COMPLETE for the same reason the rest
+ * of this file treats a missing price as unvalued — silence is not evidence.
+ *
+ * Pure and structural (plain strings, no Prisma import), so it fixture-tests
+ * without a generated client, like everything else in this module.
+ */
+export function isReconstructionResidue(args: {
+  /** The quantity valuation is about to use. */
+  quantity: number | null;
+  /** `PositionOrigin` of the row that supplied it; null when unknown. */
+  origin: string | null;
+  /** `ReconstructionStatus` for this (account, instrument); null when absent. */
+  reconciliation: string | null;
+}): boolean {
+  const { quantity, origin, reconciliation } = args;
+  // Only negatives are in question. null / 0 / positive are decided elsewhere
+  // (resolveHeldQuantity's known-zero contract and the caller's own skip).
+  if (quantity == null || quantity >= 0) return false;
+  // Someone saw this position. Not our business.
+  if (origin !== "DERIVED") return false;
+  // The replay closed its books — a derived short that reconciles is a real one.
+  return reconciliation !== "COMPLETE";
+}
+
+/**
+ * The refusal reason for a residue quantity. Deterministic and name-free; states
+ * the evidence status so the omission is inspectable rather than inferable.
+ */
+export function reconstructionResidueReason(
+  quantity: number | null,
+  reconciliation: string | null,
+): string {
+  const status = reconciliation ?? "MISSING";
+  return `Quantity unsupported: a derived quantity of ${quantity} remains from a backward reconstruction that did not close (reconciliation ${status}). An unexplained opening is not a short position, so this holding is left unvalued rather than counted.`;
+}
+
 export interface UnvaluedPosition {
   instrumentId: string;
   accountId:    string;

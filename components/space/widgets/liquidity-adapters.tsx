@@ -28,13 +28,15 @@
 
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
-import { classifyAccounts } from "@/lib/account-classifier";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency } from "@/lib/format";
+import { classifyAccounts, liquidityAccess } from "@/lib/account-classifier";
+import { HORIZON_COLOR, HORIZON_LABEL, HORIZON_META } from "@/components/space/widgets/liquidity/horizons";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
+import { formatCurrency } from "@/lib/currency";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import { Droplets } from "lucide-react";
+import { totalReachableCash, reachableDisclosure, type ReachableTotal } from "@/lib/balances/reachable";
 
 // ─── Shared account shape ─────────────────────────────────────────────────────
 export interface LiquidityAdapterAccount {
@@ -44,6 +46,21 @@ export interface LiquidityAdapterAccount {
   institution: string;
   balance:     number;
   currency:    string;
+  /** 2026-10-07 — provider subtype evidence; read only through liquidityAccess. */
+  providerSubtype?: string | null;
+  /**
+   * v2.6-L3 — the server-resolved current-state claim (SpaceAccount.currentState).
+   * Present on cash accounts only. These widgets all CLAIM reachability, so they
+   * consume `reachable`, never `balance`: on CHASE COLLEGE the ledger balance is
+   * $5,106.77 and the reachable figure is $1,106.77, and the widget said the
+   * first while the word "reachable" was on the screen.
+   */
+  currentState?: {
+    reachable:   number | null;
+    unexplained: number | null;
+    state:       string;
+    pendingCount: number;
+  };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -57,9 +74,9 @@ function inDisp(amount: number, currency: string | null | undefined, ctx?: Conve
 }
 
 function fmtMoney(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ no currency claim, never a USD relabel of
+  // native amounts (display-money.ts).
+  return formatAggregateMoney(v, ctx);
 }
 
 function valueFormatterProps(ctx?: ConversionContext) {
@@ -79,6 +96,84 @@ function emptySummary(): React.ReactElement {
   );
 }
 
+// ─── Reachable cash (v2.6-L3) ──────────────────────────────────────────────────
+
+/**
+ * Reachable cash across the CASH accounts, in the display currency.
+ *
+ * The rule (which accounts count, what an unknown does) lives in
+ * lib/balances/reachable; this only converts and delegates. No pending filtering
+ * and no reconciliation arithmetic happens in React.
+ */
+/**
+ * Exported so the Liquidity workspace headline and the Sources ledger consume the
+ * SAME rule as the section widgets. Three surfaces, one definition of reachable.
+ */
+export function reachableNow(
+  accounts: LiquidityAdapterAccount[],
+  ctx?: ConversionContext,
+): ReachableTotal {
+  // 2026-10-07 — CASH means unrestricted cash (liquidityAccess): an HSA is a
+  // checking account whose money is not ordinary spendable cash.
+  const cash = accounts.filter((a) => liquidityAccess(a) === "cash");
+  return totalReachableCash(
+    cash.map((a) => ({
+      accountId: a.id,
+      // Three states, and the middle one is the whole point:
+      //   currentState ABSENT  → no reachable claim was made for this row (a
+      //                          payload predating v2.6-L3, or a historical
+      //                          reconstruction). The ledger figure is the only
+      //                          answer available and is used, exactly as before.
+      //   reachable NULL       → a claim WAS made and reachable is UNKNOWN. The
+      //                          account is excluded and counted, never summed as
+      //                          its ledger balance under the word "reachable".
+      //   reachable a number   → use it.
+      reachable: a.currentState === undefined
+        ? inDisp(a.balance, a.currency, ctx)
+        : a.currentState.reachable === null
+          ? null
+          : inDisp(a.currentState.reachable, a.currency, ctx),
+      unexplained: a.currentState?.unexplained == null
+        ? null
+        : inDisp(a.currentState.unexplained, a.currency, ctx),
+    })),
+  );
+}
+
+/**
+ * One account's reachable figure in the display currency, under the same
+ * three-state rule as the total: ABSENT claim → the ledger balance, NULL → not
+ * reachable (excluded), a number → itself.
+ */
+export function reachableForAccount(
+  a: LiquidityAdapterAccount,
+  ctx?: ConversionContext,
+): number | null {
+  const isCash = a.type === "checking" || a.type === "savings";
+  if (!isCash || a.currentState === undefined) return inDisp(a.balance, a.currency, ctx);
+  if (a.currentState.reachable === null) return null;
+  return inDisp(a.currentState.reachable, a.currency, ctx);
+}
+
+/**
+ * 2026-10-07 — the non-cash asset value by LIQUIDITY ACCESS, in the display
+ * currency. `marketable` is the only one that is reachable "within days";
+ * restricted and unverified money is owned and valued, never reachable here.
+ */
+export function accessTotals(
+  accounts: LiquidityAdapterAccount[],
+  ctx?: ConversionContext,
+): { marketable: number; restricted: number; unverified: number; illiquid: number } {
+  const out = { marketable: 0, restricted: 0, unverified: 0, illiquid: 0 };
+  for (const a of accounts) {
+    const access = liquidityAccess(a);
+    if (access === "marketable" || access === "restricted" || access === "unverified" || access === "illiquid") {
+      out[access] += inDisp(a.balance, a.currency, ctx);
+    }
+  }
+  return out;
+}
+
 // ─── 1. Liquidity Ladder (hero) ───────────────────────────────────────────────
 
 /** Assets grouped by access horizon: now (cash), days (brokerage/crypto
@@ -88,11 +183,18 @@ export function renderLiquidityLadder(
   accounts: LiquidityAdapterAccount[],
   ctx?:     ConversionContext,
 ): React.ReactElement {
-  const c = classifyAccounts(accounts, ctx);
+  // v2.6-L3 — the "now" tier is REACHABLE cash, not the ledger sum. The label
+  // already said "Available now"; the number now agrees with it.
+  const reach = reachableNow(accounts, ctx);
+  // 2026-10-07 — "days" is KNOWN brokerage + crypto only. Retirement/HSA money
+  // and investments of unknown kind are owned and shown, in their own tiers.
+  const t = accessTotals(accounts, ctx);
   const items: BreakdownItem[] = [
-    { id: "now",      label: "Available now",     value: c.totalLiquid,                            color: "#22c55e", meta: "Checking · savings" },
-    { id: "days",     label: "Available in days", value: c.totalInvestments + c.totalDigitalAssets, color: "#3b82f6", meta: "Brokerage · crypto (settlement)" },
-    { id: "illiquid", label: "Illiquid",          value: c.totalRealAssets,                        color: "#6b7280", meta: "Property · other long-term" },
+    { id: "now",        label: HORIZON_LABEL.now,        value: reach.total,  color: HORIZON_COLOR.now,        meta: HORIZON_META.now },
+    { id: "days",       label: HORIZON_LABEL.days,       value: t.marketable, color: HORIZON_COLOR.days,       meta: HORIZON_META.days },
+    { id: "restricted", label: HORIZON_LABEL.restricted, value: t.restricted, color: HORIZON_COLOR.restricted, meta: HORIZON_META.restricted },
+    { id: "unverified", label: HORIZON_LABEL.unverified, value: t.unverified, color: HORIZON_COLOR.unverified, meta: HORIZON_META.unverified },
+    { id: "illiquid",   label: HORIZON_LABEL.illiquid,   value: t.illiquid,   color: HORIZON_COLOR.illiquid,   meta: HORIZON_META.illiquid },
   ].filter((i) => i.value > 0);
 
   return (
@@ -117,14 +219,20 @@ export function renderAccessibleCash(
   ctx?:     ConversionContext,
 ): React.ReactElement {
   const c = classifyAccounts(accounts, ctx);
-  const now         = c.totalLiquid;
-  const soon        = c.totalInvestments + c.totalDigitalAssets;
+  // v2.6-L3 — "reachable right now" now MEANS reachable: the provider's available
+  // cash where attested, else the prediction from provider-observed pending.
+  const reach       = reachableNow(accounts, ctx);
+  const now         = reach.total;
+  const soon        = accessTotals(accounts, ctx).marketable; // 2026-10-07 — known brokerage + crypto only
   const totalAssets = c.totalAssets;
 
   if (totalAssets <= 0) return emptySummary();
 
   const nowPct = (now / totalAssets) * 100;
   const color: SummaryColor = nowPct >= 15 ? "green" : nowPct >= 5 ? "orange" : "red";
+  // An unexplained hold is a FIRST-CLASS output — surfaced beside the figure it
+  // reduces, never smoothed into it.
+  const disclosure = reachableDisclosure(reach, (n) => fmtMoney(n, ctx));
 
   return (
     <SummaryWidget
@@ -137,6 +245,7 @@ export function renderAccessibleCash(
       stats={[
         { label: "Reachable within days",           value: fmtMoney(soon, ctx) },
         { label: "Share of assets reachable now",   value: `${nowPct.toFixed(0)}%`, accent: nowPct < 10 ? "orange" : "default" },
+        ...(disclosure ? [{ label: "Not yet explained", value: disclosure, accent: "orange" as const }] : []),
       ]}
     />
   );
@@ -152,7 +261,8 @@ export function renderEmergencyFundReadiness(
   ctx?:     ConversionContext,
 ): React.ReactElement {
   const c = classifyAccounts(accounts, ctx);
-  const reachable = c.totalLiquid;
+  // v2.6-L3 — an emergency buffer you cannot reach is not a buffer.
+  const reachable = reachableNow(accounts, ctx).total;
 
   if (c.totalAssets <= 0) return emptySummary();
 
@@ -182,11 +292,17 @@ export function renderLiquidityConcentration(
   ctx?:     ConversionContext,
 ): React.ReactElement {
   const c = classifyAccounts(accounts, ctx);
+  // v2.6-L3 — concentration OF REACHABLE MONEY. An account whose reachable figure
+  // could not be established is EXCLUDED (value 0 ⇒ filtered below) rather than
+  // ranked by a ledger balance the surrounding copy calls "reachable".
+  const byId = new Map(accounts.map((a) => [a.id, a.currentState]));
   const items: BreakdownItem[] = c.liquid
     .map((a) => ({
       id:    a.id,
       label: a.name,
-      value: inDisp(a.balance, a.currency, ctx),
+      value: byId.get(a.id)?.reachable == null
+        ? 0
+        : inDisp(byId.get(a.id)!.reachable!, a.currency, ctx),
       meta:  a.institution || undefined,
     }))
     .filter((i) => i.value > 0)

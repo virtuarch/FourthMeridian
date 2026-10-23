@@ -12,13 +12,17 @@
  *   ① Summary        DebtHero        — total owed + balance-history window delta + trust
  *   ② Balance history DebtBalanceChart — liability balance over time (Net Worth chart idiom)
  *   ③ Liabilities    LiabilitiesLedger — grouped weight-bar ledger → Left/Right panels
- *   ④ Cost & risk    utilization + interest cost
- *   ⑤ Payoff strategy the interactive planner + preset scenarios
- *   ⑥ Credit health  FICO + deterministic signals + the missing-info editor
+ *   ④ Cost & risk    utilization + INTEREST COST — the one place an APR is viewed and edited
+ *   ⑤ Payoff strategy the interactive planner — the user picks the monthly budget
+ *   ⑥ Credit health  the user's score + limits, editable in place; derived signals read-only
+ *
+ * ONE APR PATH: Interest cost writes DebtProfile.apr; the host re-reads `accounts`;
+ * interest cost, payoff, the ledger and the signals all recompute from that same
+ * re-read `interestRate`. No widget here holds a rate of its own.
  *
  * DUAL-AUTHORITY (load-bearing, unchanged — plan §1.4): every VISIBLE FIGURE is
  * PRESENTATION-DERIVED from the visibility-filtered `accounts` array (computeDebtKpis /
- * computePayoffAggregate / the ledger / signals) — NEVER the lens. The lens drives only
+ * the interest-cost + payoff authorities / the ledger / signals) — NEVER the lens. The lens drives only
  * the prose verdict in the hero; the two can legitimately disagree.
  *
  * TEMPORAL HONESTY (Debt is temporalCapability: PARTIAL): the lede's window delta, the
@@ -29,9 +33,10 @@
  * Owns NO time state — asOf / compareTo / today are shell props threaded into the hook.
  */
 
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { Check, AlertTriangle, Loader2 } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";
@@ -41,30 +46,42 @@ import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/
 import { convertDebtHistory } from "@/lib/debt/display-conversion";
 import { Surface, Block } from "@/components/atlas/Surface";
 import {
-  renderDebtCost,
   CreditUtilizationWidget,
-  renderCreditScore,
-  renderDebtCompleteInfo,
   type DebtPerspectiveAccount,
 } from "@/components/space/widgets/debt-perspective-adapters";
 import { renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
-import { computeDebtKpis, computePayoffAggregate } from "./debt-kpis";
+import { computeDebtKpis } from "./debt-kpis";
 import { buildDebtSignals } from "./debt-signals";
 import { useDebtSpaceData } from "./useDebtSpaceData";
 import { DebtHero, type DebtWindowChange } from "./DebtHero";
 import { DebtBalanceHistory } from "./DebtBalanceHistory";
+import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { LiabilitiesLedger } from "./LiabilitiesLedger";
-import { PayoffScenarioStrip } from "./PayoffScenarioStrip";
+import { InterestCostWidget } from "./InterestCostWidget";
+import { CreditScoreInput, CreditLimitInputs } from "./CreditHealthInputs";
 
-/** The Debt workspace's section anchors — what the sidebar shows as "what's inside". */
-const DEBT_SECTIONS: SpaceChromeSection[] = [
-  { label: "Summary",         anchor: "debt-summary" },
-  { label: "Balance history", anchor: "debt-history" },
-  { label: "Liabilities",     anchor: "debt-liabilities" },
-  { label: "Cost & risk",     anchor: "debt-costrisk" },
-  { label: "Payoff",          anchor: "debt-payoff" },
-  { label: "Credit health",   anchor: "debt-credit" },
-];
+/**
+ * The Debt workspace's section anchors — what the sidebar shows as "what's inside".
+ * OVERVIEW-CONSOLIDATION — the list is BUILT per render from what actually mounts:
+ * Liabilities renders only when a liability account exists, and Cost & risk /
+ * Payoff only when a balance is owed. A published anchor with no element scrolled
+ * nowhere in silence; now a row exists iff its section does.
+ */
+/** DOM id of the Interest cost widget — where the planner's "Add APR" lands. */
+export const INTEREST_COST_ANCHOR = "debt-interest-cost";
+
+export function debtSections(args: { hasLiabilities: boolean; hasDebt: boolean }): SpaceChromeSection[] {
+  return [
+    { label: "Summary",         anchor: "debt-summary" },
+    { label: "Balance history", anchor: "debt-history" },
+    ...(args.hasLiabilities ? [{ label: "Liabilities", anchor: "debt-liabilities" }] : []),
+    ...(args.hasDebt ? [
+      { label: "Cost & risk", anchor: "debt-costrisk" },
+      { label: "Payoff",      anchor: "debt-payoff" },
+    ] : []),
+    { label: "Credit health",   anchor: "debt-credit" },
+  ];
+}
 
 export function DebtWorkspace({
   spaceId,
@@ -127,10 +144,11 @@ export function DebtWorkspace({
 
   // FIGURES OF RECORD — present-day, from the accounts array (never the lens).
   const kpis = computeDebtKpis(accounts, ctx);
-  const payoffAgg = computePayoffAggregate(accounts, ctx);
   const signals = buildDebtSignals({ accounts, ctx, lensResult: lens });
 
-  const displayCurrency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const displayCurrency = useAggregateCurrency(ctx);
   const historical = asOf < today;
   const hasDebt = kpis.totalDebt > 0;
   // V25-SIDE-1 — the STRUCTURAL count, so this hint matches the number of rows
@@ -170,12 +188,41 @@ export function DebtWorkspace({
   const verdictAsOf = verdict && lens?.provenance.dataAsOf ? formatDate(lens.provenance.dataAsOf) : null;
   const redactions = verdict ? (lens?.provenance.redactions?.length ?? 0) : 0;
 
-  // Publish section anchors to the sidebar (cleared on unmount).
+  // Publish section anchors to the sidebar (cleared on unmount) — only the
+  // sections that render (see debtSections).
   const publishSections = useSpaceSectionsPublisher();
+  const hasLiabilities = liabilityCount > 0;
   useEffect(() => {
-    publishSections(DEBT_SECTIONS);
+    publishSections(debtSections({ hasLiabilities, hasDebt }));
     return () => publishSections([]);
-  }, [publishSections]);
+  }, [publishSections, hasLiabilities, hasDebt]);
+
+  const exploration = useHistoryExploration();
+
+  // A recorded credit score lives on the SERVER-rendered host page (user-scoped
+  // CreditScore); re-running it is how the new row reaches `ficoScore`.
+  const router = useRouter();
+  const handleScoreSaved = useCallback(() => router.refresh(), [router]);
+
+  // The planner's "Add APR" goes to the ONE APR surface — it scrolls to the
+  // Interest cost widget (the sidebar's own scrollIntoView idiom). No APR input
+  // is opened or created anywhere else.
+  const handleAddApr = useCallback(() => {
+    document.getElementById(INTEREST_COST_ANCHOR)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+
+  // v2.6 — the DEBT root. Clicking a Debt point asks about Debt, not about Net
+  // Worth: the breadcrumb starts here and the accounts are its direct children.
+  const debtPoints = history?.points ?? [];
+  const handleSelectPoint = useCallback(
+    (dateISO: string) => {
+      // The INHERITED window is the plotted range itself.
+      const first = debtPoints[0]?.date ?? dateISO;
+      const last = debtPoints[debtPoints.length - 1]?.date ?? dateISO;
+      exploration.openPoint("debt", dateISO, first, last);
+    },
+    [debtPoints, exploration],
+  );
 
   return (
     <div className="space-y-8 sm:space-y-10 min-w-0">
@@ -205,7 +252,13 @@ export function DebtWorkspace({
       {/* ② Balance history — total debt over time, the SHARED Net Worth chart (bare,
            like Investments: the chart owns its own title + legend). */}
       <div id="debt-history" className="scroll-mt-20">
-        <DebtBalanceHistory history={history} currency={displayCurrency} asOf={asOf} compareTo={compareTo} />
+        <DebtBalanceHistory
+          history={history}
+          currency={displayCurrency}
+          asOf={asOf}
+          compareTo={compareTo}
+          onSelectPoint={handleSelectPoint}
+        />
         {error && (
           <button
             type="button"
@@ -242,35 +295,44 @@ export function DebtWorkspace({
 
       {hasDebt && (
         <>
-          {/* ④ Cost & risk — utilization + estimated interest (present-day). */}
+          {/* ④ Cost & risk — utilization + interest cost. Interest cost is THE APR
+              surface: view every debt's rate, edit it, and everything below re-reads it. */}
           <Block id="debt-costrisk" label="Cost & risk">
             <div className="grid gap-4 lg:grid-cols-2 items-start min-w-0">
               <Surface className="p-4 min-w-0">
                 <SubHeading>Credit utilization</SubHeading>
                 <CreditUtilizationWidget accounts={accounts} ctx={ctx} />
               </Surface>
-              <Surface className="p-4 min-w-0">
-                <SubHeading>Interest cost</SubHeading>
-                {renderDebtCost(accounts, ctx)}
-              </Surface>
+              {/* The anchor the planner's "Add APR" scrolls to (Surface takes no id). */}
+              <div id={INTEREST_COST_ANCHOR} className="min-w-0 scroll-mt-20">
+                <Surface className="p-4 min-w-0">
+                  <SubHeading>Interest cost</SubHeading>
+                  <InterestCostWidget accounts={accounts} ctx={ctx} />
+                </Surface>
+              </div>
             </div>
           </Block>
 
-          {/* ⑤ Payoff strategy — the interactive planner + preset scenarios. */}
+          {/* ⑤ Payoff strategy — the interactive planner. The user chooses the
+              monthly budget; the engine explains the result. No preset amounts. */}
           <Block id="debt-payoff" label="Payoff strategy">
             <Surface className="p-4 min-w-0">
-              {renderDebtPayoffCalculator(accounts, false, undefined, ctx)}
-              <PayoffScenarioStrip input={payoffAgg} ctx={ctx} />
+              {renderDebtPayoffCalculator(accounts, false, undefined, ctx, today, handleAddApr)}
             </Surface>
           </Block>
         </>
       )}
 
-      {/* ⑥ Credit health — the REAL manual FICO + deterministic signals + gap editor. */}
+      {/* ⑥ Credit health — the user's own inputs (score, limits) editable in place;
+          the signals are DERIVED and read-only. */}
       <Block id="debt-credit" label="Credit health">
         <div className="grid gap-4 lg:grid-cols-2 items-start min-w-0">
           <Surface className="p-4 min-w-0">
-            {renderCreditScore(data.fico.score, data.fico.updatedAt ?? undefined)}
+            <CreditScoreInput
+              score={ficoScore === undefined ? undefined : data.fico.score}
+              updatedAt={data.fico.updatedAt}
+              onSaved={handleScoreSaved}
+            />
             {signals.length > 0 && (
               <ul className="mt-3 space-y-1.5 border-t border-[var(--border-hairline)] pt-3">
                 {signals.map((s) => (
@@ -285,8 +347,8 @@ export function DebtWorkspace({
             )}
           </Surface>
           <Surface className="p-4 min-w-0">
-            <SubHeading>Complete debt details</SubHeading>
-            {renderDebtCompleteInfo(accounts)}
+            <SubHeading>Credit limits</SubHeading>
+            <CreditLimitInputs accounts={accounts} />
           </Surface>
         </div>
       </Block>

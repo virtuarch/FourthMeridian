@@ -37,6 +37,13 @@ function ev(type: InvestmentEventType, amount: number | null, opts: Partial<Flow
     amount,
     fxEstimated: opts.fxEstimated ?? false,
     hasQuantity: opts.hasQuantity ?? false,
+    // V26 activity convergence — identity travels with every event so a count
+    // can enumerate itself. Defaults keep existing cases unchanged.
+    accountId:    opts.accountId ?? "acc-1",
+    instrumentId: opts.instrumentId ?? null,
+    symbol:       opts.symbol ?? null,
+    name:         opts.name ?? null,
+    quantity:     opts.quantity ?? null,
   };
 }
 

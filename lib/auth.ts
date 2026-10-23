@@ -22,11 +22,16 @@ import { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
-import { db } from "@/lib/db";
+// RLS-6 — the PRE-IDENTITY authority. Everything this module reads it reads in
+// order to establish who the caller is, so there is no app.user_id for a policy
+// to key on yet. fm_auth is granted exactly this surface (User, UserSession,
+// RecoveryCode, AuditLog INSERT, PlatformSetting SELECT) and no financial table
+// at all — see prisma/migrations/*_rls_auth_surface.
+import { authDb as db } from "@/lib/db";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
-import { buildAuditData } from "@/lib/audit";
+import { auditInsert, buildAuditData } from "@/lib/audit";
 import { requiresTotpEnrollment } from "@/lib/auth-totp-policy";
 import { PlatformSettingKey } from "@/lib/platform-settings";
 import { verifyTOTP } from "@/lib/totp";
@@ -34,7 +39,11 @@ import { sendEmail } from "@/lib/email/send";
 import { createNotification } from "@/lib/notifications/create";
 import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
-import { resolveRevocation, invalidateSession } from "@/lib/session-cache";
+import { resolveRevocation, invalidateSession, setCachedRevocation } from "@/lib/session-cache";
+import { readSessionClaims, factsFromRow, judgeSession, SESSION_ROW_SELECT, SESSION_TOKEN_SHAPE } from "@/lib/auth/session-proof";
+import { clientTokenPatch } from "@/lib/auth/token-update";
+import { getClientIp, UNKNOWN_CLIENT_IP } from "@/lib/security/client-ip";
+import { touchSessionActivity } from "@/lib/auth/session-activity";
 import { checkKeyLimitStrict, peekKey } from "@/lib/rate-limit";
 import { captureAuthInfraFailure, captureSessionRevocationFailure } from "@/lib/monitoring/capture";
 import { SESSION_INDETERMINATE_FLAG } from "@/lib/auth/session-outcome";
@@ -42,6 +51,7 @@ import { AUTH_UNAVAILABLE_TOKEN } from "@/lib/auth/login-outcome";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { LOGIN_ID_WINDOW_SEC, LOGIN_ID_LIMIT, LOGIN_CAPTCHA_THRESHOLD } from "@/lib/login-limits";
 import { reportLoginFailureAnomalies } from "@/lib/security/anomaly-alerts";
+import { authCookiesSecure, authCookieOverrides } from "@/lib/auth/session-cookie";
 
 // ── Login-failure recording + inline anomaly detection (Wave 3 ⑧) ─────────────
 // Reasons that could contribute to a security anomaly (credential guessing /
@@ -82,15 +92,14 @@ async function recordLoginFailure(args: {
   // errors: a genuine invalid_password stays invalid even if the DB is
   // struggling. (The write is still attempted; only its failure is contained.)
   try {
-    await db.auditLog.create({
-      data: {
-        ...(userId ? { userId } : {}),
-        action:    AuditAction.LOGIN_FAILED,
-        ipAddress,
-        userAgent,
-        metadata:  { identifier, reason, ...(role ? { role } : {}) },
-      },
-    });
+    // fm_auth may INSERT AuditLog but not read it back — never create() (lib/audit.ts auditInsert).
+    await auditInsert(db, {
+      ...(userId ? { userId } : {}),
+      action:    AuditAction.LOGIN_FAILED,
+      ipAddress,
+      userAgent,
+      metadata:  { identifier, reason, ...(role ? { role } : {}) },
+    }).write;
     if (ANOMALY_SUSPICIOUS_REASONS.has(reason)) {
       await reportLoginFailureAnomalies({ identifier, ip: ipAddress, reason, userId, userEmail });
     }
@@ -124,6 +133,47 @@ async function coarseRoute(): Promise<string | null> {
   }
 }
 
+/**
+ * A refused session: no user, already expired. The shape the revoked branch has
+ * always returned — middleware redirects to /login, every guard reads anonymous.
+ */
+function refusedSession<S extends { expires: string }>(session: S): S {
+  return { ...session, user: undefined as never, expires: new Date(0).toISOString() };
+}
+
+/**
+ * SEC-001 — re-derive the token's `requireTotpSetup` navigation hint from the
+ * session store on a client `update`. Reads the SAME row with the SAME
+ * factsFromRow the session callback uses, so the hint can only become what the
+ * authority would serve. Fail CLOSED: a malformed token, a row that proves
+ * nothing (revoked / absent), or a store failure leaves the current hint
+ * unchanged — never "cleared because the client asked". The cache is refreshed
+ * with the live facts so the very next server render agrees (TotpSection
+ * calls router.refresh() right after the update).
+ */
+async function rederiveTotpHint(
+  sessionToken: unknown,
+  current: boolean | null | undefined,
+): Promise<boolean | null> {
+  const fallback = current ?? null;
+  if (typeof sessionToken !== "string" || !SESSION_TOKEN_SHAPE.test(sessionToken)) return fallback;
+  try {
+    const facts = await factsFromRow(
+      await db.userSession.findFirst({ where: { sessionToken }, select: SESSION_ROW_SELECT }),
+      async () => (await db.platformSetting.findUnique({
+        where:  { key: PlatformSettingKey.REQUIRE_TOTP_ALL_USERS },
+        select: { value: true },
+      }))?.value === "true",
+    );
+    if (!facts) return fallback;
+    setCachedRevocation(sessionToken, facts);
+    return facts.requireTotpSetup;
+  } catch (err) {
+    captureAuthInfraFailure("session", err);
+    return fallback;
+  }
+}
+
 export const authOptions: NextAuthOptions = {
   providers: [
     CredentialsProvider({
@@ -150,14 +200,12 @@ export const authOptions: NextAuthOptions = {
       async authorize(credentials, req) {
         if (!credentials?.identifier || !credentials?.password) return null;
 
-        // SEC-FIX-1 — prioritise cf-connecting-ip (set by Cloudflare, not
-        // client-spoofable) so the rate-limit/audit IP matches lib/api.ts
-        // getRequestMeta(); fall back to the x-forwarded-for chain then
-        // x-real-ip for non-Cloudflare paths.
-        const ipAddress = (req?.headers?.["cf-connecting-ip"] as string | undefined)?.trim()
-          ?? (req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim()
-          ?? (req?.headers?.["x-real-ip"] as string | undefined)?.trim()
-          ?? null;
+        // ARCH-003 — THE one extractor (lib/security/client-ip.ts), so the
+        // address this login is audited under is the one the limiter keyed on
+        // and getRequestMeta() records. Null (not "unknown") when nothing
+        // trustworthy was present, preserving the audit column's semantics.
+        const extractedIp = getClientIp(req?.headers as Record<string, string | string[] | undefined> | undefined);
+        const ipAddress = extractedIp === UNKNOWN_CLIENT_IP ? null : extractedIp;
         const userAgent = (req?.headers?.["user-agent"] as string | undefined) ?? null;
 
         const identifier = credentials.identifier.toLowerCase().trim();
@@ -397,7 +445,8 @@ export const authOptions: NextAuthOptions = {
             mfaMethod = "totp";
           } else if (recoveryCode) {
             // Verify and consume a recovery code
-            const used = await verifyRecoveryCode(user.id, recoveryCode);
+            // PRE-IDENTITY: this IS the authentication. fm_auth, by necessity.
+            const used = await verifyRecoveryCode(db, user.id, recoveryCode);
             if (!used) {
               await recordLoginFailure({
                 reason: "recovery_code_invalid", identifier, ipAddress, userAgent,
@@ -416,20 +465,19 @@ export const authOptions: NextAuthOptions = {
         // notify. Email is NON-THROWING: a delivery failure never blocks the
         // reactivation or the login.
         if (user.deactivatedAt && wantsReactivation) {
-          const [, reactivationAudit] = await db.$transaction([
+          const reactivationAudit = auditInsert(db, {
+            userId:   user.id,
+            action:   AuditAction.ACCOUNT_REACTIVATED,
+            ipAddress,
+            userAgent,
+            metadata: { deactivatedAt: user.deactivatedAt.toISOString() },
+          });
+          await db.$transaction([
             db.user.update({
               where: { id: user.id },
               data:  { deactivatedAt: null },
             }),
-            db.auditLog.create({
-              data: {
-                userId:   user.id,
-                action:   AuditAction.ACCOUNT_REACTIVATED,
-                ipAddress,
-                userAgent,
-                metadata: { deactivatedAt: user.deactivatedAt.toISOString() },
-              },
-            }),
+            reactivationAudit.write,
           ]);
 
           const emailResult = await sendEmail("security-alert", user.email, {
@@ -454,20 +502,19 @@ export const authOptions: NextAuthOptions = {
         // deactivatedAt lockout they were set alongside, audit, and notify.
         // Mirrors the reactivation leg above; email is NON-THROWING.
         if (user.deletionScheduledAt && wantsCancelDeletion) {
-          const [, cancellationAudit] = await db.$transaction([
+          const cancellationAudit = auditInsert(db, {
+            userId:   user.id,
+            action:   AuditAction.ACCOUNT_DELETION_CANCELLED,
+            ipAddress,
+            userAgent,
+            metadata: { deletionScheduledAt: user.deletionScheduledAt.toISOString() },
+          });
+          await db.$transaction([
             db.user.update({
               where: { id: user.id },
               data:  { deletionRequestedAt: null, deletionScheduledAt: null, deactivatedAt: null },
             }),
-            db.auditLog.create({
-              data: {
-                userId:   user.id,
-                action:   AuditAction.ACCOUNT_DELETION_CANCELLED,
-                ipAddress,
-                userAgent,
-                metadata: { deletionScheduledAt: user.deletionScheduledAt.toISOString() },
-              },
-            }),
+            cancellationAudit.write,
           ]);
 
           const emailResult = await sendEmail("security-alert", user.email, {
@@ -498,23 +545,22 @@ export const authOptions: NextAuthOptions = {
               userAgent,
             },
           }),
-          db.auditLog.create({
-            // PO-1 — normalise onto the operator/security audit shape
-            // (lib/audit.ts). Keeps action = LOGIN and metadata.role for the
-            // existing security-history/activity consumers, and ADDS actorType +
-            // result + the second-factor method so an admin login records "TOTP
-            // verified" honestly. Written in the same $transaction as the
-            // session row, so the session and its audit fact commit atomically.
-            data: buildAuditData({
-              actorId:   user.id,
-              actorType: user.role === UserRole.SYSTEM_ADMIN ? "SYSTEM_ADMIN" : "USER",
-              action:    AuditAction.LOGIN,
-              result:    "SUCCESS",
-              ipAddress,
-              userAgent,
-              metadata:  { role: user.role, mfa: mfaMethod },
-            }),
-          }),
+          // PO-1 — normalise onto the operator/security audit shape
+          // (lib/audit.ts). Keeps action = LOGIN and metadata.role for the
+          // existing security-history/activity consumers, and ADDS actorType +
+          // result + the second-factor method so an admin login records "TOTP
+          // verified" honestly. Written in the same $transaction as the
+          // session row, so the session and its audit fact commit atomically.
+          // auditInsert, never create(): fm_auth cannot read the row back.
+          auditInsert(db, buildAuditData({
+            actorId:   user.id,
+            actorType: user.role === UserRole.SYSTEM_ADMIN ? "SYSTEM_ADMIN" : "USER",
+            action:    AuditAction.LOGIN,
+            result:    "SUCCESS",
+            ipAddress,
+            userAgent,
+            metadata:  { role: user.role, mfa: mfaMethod },
+          })).write,
         ]);
 
         return {
@@ -541,18 +587,39 @@ export const authOptions: NextAuthOptions = {
         token.sessionToken     = u.sessionToken     ?? null;
         token.requireTotpSetup = u.requireTotpSetup ?? null;
       }
-      // `trigger === "update"` fires when client calls useSession().update(...)
+      // `trigger === "update"` fires when client calls useSession().update(...).
+      // ⚠️ SEC-001 — the CLIENT chooses the payload, so it is UNTRUSTED INPUT.
+      // Only `username` (presentation, grants nothing) is copied, through the
+      // pure allow-list in lib/auth/token-update.ts. `requireTotpSetup` is
+      // NEVER taken from the payload: before SEC-001 it was, and because
+      // proxy.ts and the page layouts trusted the token's copy, a POST to
+      // /api/auth/session with `{data:{requireTotpSetup:false}}` let a
+      // password-only pending SYSTEM_ADMIN render /admin (runtime-confirmed).
+      // An update is instead a REQUEST to re-derive the navigation hint from
+      // the session store — the same row + factsFromRow the session callback
+      // uses — so TotpSection's post-enrolment update still clears the hint,
+      // but only because the store now says the user is enrolled.
       if (trigger === "update") {
-        if (session?.username !== undefined)         token.username         = session.username;
-        if (session?.requireTotpSetup !== undefined) token.requireTotpSetup = session.requireTotpSetup;
+        const patch = clientTokenPatch(session);
+        if (patch.username !== undefined) token.username = patch.username;
+        token.requireTotpSetup = await rederiveTotpHint(token.sessionToken, token.requireTotpSetup);
       }
       return token;
     },
 
     async session({ session, token }) {
-      const sessionToken = token.sessionToken as string | null | undefined;
+      // ── P1: a signed token is not a session (lib/auth/session-proof.ts) ────
+      // The token must carry a well-formed id AND sessionToken; the session
+      // store must prove that sessionToken is live AND owned by that id; and
+      // the role acted on is the owner's CURRENT role from the store. Before
+      // P1 this callback skipped the lookup entirely when sessionToken was
+      // absent and took id + role from the token — so a token signed with
+      // NEXTAUTH_SECRET (shared with Preview) could be any user, any role.
+      const claims = readSessionClaims(token);
+      if (!claims) return refusedSession(session);
+      const { sessionToken } = claims;
 
-      // ── Revocation check (cached, short TTL) ────────────────────────────────
+      // ── Revocation + ownership check (cached, short TTL) ────────────────────
       // JWT tokens are stateless — revoking a UserSession row doesn't invalidate
       // the cookie automatically, so we still must check the DB to reject
       // revoked sessions. But this callback runs on EVERY
@@ -562,87 +629,102 @@ export const authOptions: NextAuthOptions = {
       // the multi-second /dashboard/spaces latency (a trivial count()
       // query elsewhere still took 5+ seconds once wrapped in this check).
       //
-      // Fix: cache the verified result per sessionToken for
-      // SESSION_CACHE_TTL_MS (lib/session-cache.ts, currently 30s). Ordinary
-      // page loads/navigation read the cache and skip the DB entirely on a
-      // hit. Sensitive actions (password change, disabling 2FA, regenerating
-      // recovery codes, revoking sessions, admin security actions) must NOT
-      // rely on this — they call requireFreshUser()/requireFreshSystemAdmin()
-      // (lib/session.ts) instead, which always bypasses this cache and hits
-      // the DB live. Revocation is NOT removed — only the polling frequency
-      // for low-stakes requests is throttled.
-      if (sessionToken) {
-        const tRevoke = Date.now();
+      // Fix: cache the verified FACTS (owner + current role) per sessionToken
+      // for SESSION_CACHE_TTL_MS (lib/session-cache.ts, currently 30s). The
+      // cache never decides ownership — judgeSession() compares the cached
+      // owner with THIS token's id on every request. Sensitive actions
+      // (password change, disabling 2FA, regenerating recovery codes, revoking
+      // sessions, admin security actions) must NOT rely on this — they call
+      // requireFreshUser()/requireFreshSystemAdmin() (lib/session.ts) instead,
+      // which always bypass this cache and hit the DB live.
+      const tRevoke = Date.now();
 
-        // PROD-POOLER-AUTH-INCIDENT-1 — resolveRevocation() owns three things
-        // this callback used to get wrong:
-        //   1. It COALESCES concurrent misses into one query. Under Fluid Compute
-        //      many requests share this process and its single pooled connection
-        //      (connection_limit=1), so N simultaneous cache misses used to mean
-        //      N queued queries and a 10s P2024 for the losers.
-        //   2. It NEVER THROWS. A throw here reaches NextAuth's catch, which
-        //      deletes the session cookie — a transient DB blip became a logout.
-        //   3. It degrades through a BOUNDED stale window before giving up.
-        const outcome = await resolveRevocation(sessionToken, async () => {
-          const dbSession = await db.userSession.findFirst({
-            where:  { sessionToken, revokedAt: null },
-            select: { id: true },
-          });
-          return !!dbSession;
-        });
+      // PROD-POOLER-AUTH-INCIDENT-1 — resolveRevocation() owns three things
+      // this callback used to get wrong:
+      //   1. It COALESCES concurrent misses into one query. Under Fluid Compute
+      //      many requests share this process and its single pooled connection
+      //      (connection_limit=1), so N simultaneous cache misses used to mean
+      //      N queued queries and a 10s P2024 for the losers.
+      //   2. It NEVER THROWS. A throw here reaches NextAuth's catch, which
+      //      deletes the session cookie — a transient DB blip became a logout.
+      //   3. It degrades through a BOUNDED stale window before giving up.
+      const outcome = await resolveRevocation(sessionToken, async () =>
+        factsFromRow(
+          await db.userSession.findFirst({
+            where:  { sessionToken },
+            select: SESSION_ROW_SELECT,
+          }),
+          // P1b — only consulted for an un-enrolled USER, as authorize() does.
+          async () => (await db.platformSetting.findUnique({
+            where:  { key: PlatformSettingKey.REQUIRE_TOTP_ALL_USERS },
+            select: { value: true },
+          }))?.value === "true",
+        ),
+      );
+      const verdict = judgeSession(claims, outcome);
 
-        if (process.env.NODE_ENV !== "production") {
-          console.log(`[auth] session callback revocation check: ${outcome.disposition}, ${Date.now() - tRevoke}ms, valid=${outcome.valid}`);
-        }
-
-        // Bump lastActiveAt (fire-and-forget — don't block the response). Only on
-        // a genuine live check, as before: a COALESCED caller is riding someone
-        // else's query and must not add a second write, and a STALE_HIT means the
-        // database is already refusing connections — piling on a write there
-        // would add pressure to the exact resource that is failing.
-        if (outcome.disposition === "LIVE" && outcome.valid) {
-          db.userSession.updateMany({
-            where: { sessionToken },
-            data:  { lastActiveAt: new Date() },
-          }).catch(() => {});
-        }
-
-        // ── INDETERMINATE — infrastructure could not answer ───────────────────
-        // Deny THIS request, preserve the credential. Returning a value (rather
-        // than throwing) is what keeps the cookie: NextAuth re-issues it on the
-        // normal path. The user sees a retryable error, not a logout.
-        if (outcome.valid === null) {
-          captureSessionRevocationFailure({
-            error:       outcome.error,
-            disposition: "INDETERMINATE",
-            route:       await coarseRoute(),
-          });
-          return { ...session, user: undefined as never, [SESSION_INDETERMINATE_FLAG]: true };
-        }
-
-        // A bounded-stale answer was used — the window absorbed the pressure.
-        // Still reported: this is the leading indicator of the condition that
-        // produces the INDETERMINATE case above.
-        if (outcome.disposition === "STALE_HIT") {
-          captureSessionRevocationFailure({
-            error:       outcome.error,
-            disposition: "STALE_HIT",
-            route:       await coarseRoute(),
-          });
-        }
-
-        if (!outcome.valid) {
-          // Authoritatively revoked (fresh or bounded-stale). Return a bare
-          // expired session — middleware will redirect to /login.
-          return { ...session, user: undefined as never, expires: new Date(0).toISOString() };
-        }
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[auth] session callback proof: ${outcome.disposition}, ${Date.now() - tRevoke}ms, verdict=${verdict.kind}`);
       }
 
-      session.user.id        = token.id               as string;
-      session.user.role      = token.role             as UserRole;
+      // ── INDETERMINATE — infrastructure could not answer ───────────────────
+      // Deny THIS request, preserve the credential. Returning a value (rather
+      // than throwing) is what keeps the cookie: NextAuth re-issues it on the
+      // normal path. The user sees a retryable error, not a logout. Never
+      // "could not verify, so trust the token".
+      if (verdict.kind === "indeterminate") {
+        captureSessionRevocationFailure({
+          error:       outcome.error,
+          disposition: "INDETERMINATE",
+          route:       await coarseRoute(),
+        });
+        return { ...session, user: undefined as never, [SESSION_INDETERMINATE_FLAG]: true };
+      }
+
+      // A bounded-stale answer was used — the window absorbed the pressure.
+      // Still reported: this is the leading indicator of the condition that
+      // produces the INDETERMINATE case above.
+      if (outcome.disposition === "STALE_HIT") {
+        captureSessionRevocationFailure({
+          error:       outcome.error,
+          disposition: "STALE_HIT",
+          route:       await coarseRoute(),
+        });
+      }
+
+      // Revoked, absent, owned by someone else, or a user that no longer
+      // exists: a bare expired session — middleware will redirect to /login.
+      if (verdict.kind === "refused") return refusedSession(session);
+
+      // Record activity. Only on a genuine live check, as before: a COALESCED
+      // caller is riding someone else's query and must not add a second write,
+      // and a STALE_HIT means the database is already refusing connections —
+      // piling on a write there would add pressure to the exact resource that
+      // is failing. AWAITED, and one non-blocking statement: it was once a
+      // fire-and-forget updateMany (BEGIN/UPDATE/COMMIT) that a suspended
+      // instance left open, holding this row lock until every signed-in
+      // request 503'd. See lib/auth/session-activity.ts. Bookkeeping only —
+      // the verdict above is already final, so a failure here is ignored.
+      // BETA A2 — the same statement writes the SESSION_ACTIVE_DAY presence
+      // row on the day's first touch (fm_auth INSERT, no read-back); nothing
+      // else about this call changed.
+      if (outcome.disposition === "LIVE") {
+        await touchSessionActivity(db, sessionToken, verdict.userId).then(undefined, () => 0);
+      }
+
+      session.user.id        = verdict.userId;
+      // The CURRENT role from the session store — never the token's claim.
+      session.user.role      = verdict.role           as UserRole;
+      // Presentation only (display, invite-email inviter name) — grants nothing.
       session.user.username  = token.username         as string | null | undefined;
-      session.sessionToken   = sessionToken           ?? null;
-      session.requireTotpSetup = (token.requireTotpSetup as boolean | null | undefined) ?? null;
+      // P1b — the enrolment requirement from CURRENT state. The token's copy is
+      // client-updatable (jwt callback, trigger "update") and is only a
+      // navigation hint for proxy.ts.
+      session.requireTotpSetup = verdict.requireTotpSetup;
+      // P1b — deliberately NO sessionToken on the session. This object is what
+      // GET /api/auth/session serialises to the browser (useSession()), and the
+      // sessionToken is authentication material under P1. Server code that
+      // needs it reads it from the cookie (lib/session.ts sessionTokenFromCookie).
       return session;
     },
   },
@@ -666,9 +748,7 @@ export const authOptions: NextAuthOptions = {
               data:  { revokedAt: new Date() },
             }).catch(() => {})
           : Promise.resolve(),
-        db.auditLog.create({
-          data: { userId, action: "LOGOUT" },
-        }).catch(() => {}),
+        auditInsert(db, { userId, action: "LOGOUT" }).write.catch(() => {}),
       ]);
     },
   },
@@ -682,6 +762,13 @@ export const authOptions: NextAuthOptions = {
     strategy: "jwt",
     maxAge:   30 * 24 * 60 * 60, // 30 days
   },
+
+  // Host-only `__Host-` session + callback-url cookies (lib/auth/session-cookie.ts):
+  // no sibling host under the registrable domain can plant or receive them.
+  // `useSecureCookies` is pinned to the SAME decision proxy.ts's getToken uses,
+  // so the two readers can never look for different cookie names.
+  useSecureCookies: authCookiesSecure(),
+  cookies: authCookieOverrides(authCookiesSecure()),
 
   secret: process.env.NEXTAUTH_SECRET,
 };

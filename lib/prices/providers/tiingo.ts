@@ -31,14 +31,29 @@
  */
 
 import { PriceBasis } from "@prisma/client";
-import type { PriceFetchRequest, PriceProviderAdapter, PriceResult } from "../types";
+import { PRICE_PROVIDER_TIMEOUT_MS } from "../config";
+import type { PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderCorporateAction, ProviderRoutingKey } from "../types";
+import { splitFactorToRatio } from "@/lib/investments/corporate-actions.core";
+import { ProviderFetchError } from "../provider-errors";
 
 const TIINGO_BASE_URL = "https://api.tiingo.com";
 
-/** The subset of Tiingo's daily-prices row this adapter reads. */
+/**
+ * The subset of Tiingo's daily-prices row this adapter reads.
+ *
+ * V26-S1-CA — `splitFactor` was ALWAYS in this payload and was always discarded.
+ * The response also carries open/high/low/volume and the adj* family; those stay
+ * unread on purpose (ADJUSTED_CLOSE is a separate basis this adapter
+ * deliberately does not serve, and adjusted prices must never enter valuation).
+ * `splitFactor` is different in kind: it is not a price, it is the TERM of a
+ * corporate action, and it is the one fact a backward quantity replay cannot
+ * reconstruct for itself. See lib/investments/corporate-actions.core.ts.
+ */
 interface TiingoDailyRow {
   date:  string; // ISO datetime, e.g. "2026-07-10T00:00:00.000Z"
   close: number; // unadjusted close (quote currency; USD for US equities)
+  /** 1.0 on an ordinary day; the shares-out-per-share-in factor on an effective date. */
+  splitFactor?: number;
 }
 
 /** Minimal HTTP-response shape the adapter needs — lets tests inject a fake without a full Response. */
@@ -51,7 +66,7 @@ export interface TiingoHttpResponse {
 /** Injectable fetch (default: global fetch). Tests pass a fake to avoid real network. */
 export type TiingoFetch = (
   url:  string,
-  init: { headers: Record<string, string> },
+  init: { headers: Record<string, string>; signal?: AbortSignal },
 ) => Promise<TiingoHttpResponse>;
 
 export interface TiingoProviderOptions {
@@ -80,19 +95,52 @@ export function createTiingoPriceProvider(
   return {
     source,
     historicalDepth,
+    // V26-CAP-1 — a FIXED floor: an absolute date that does not move with the
+    // calendar, so the date itself IS the declaration.
+    capability: {
+      kind:                 "FIXED" as const,
+      historyDays:          null,
+      earliestSupportedISO: historicalDepth,
+      source:               opts.historicalDepth ? "CONFIG" as const : "DEFAULT" as const,
+    },
     supportedBases() {
       // Tiingo `close` is unadjusted → RAW_CLOSE only. (adjClose would be a
       // separate ADJUSTED_CLOSE mapping; deliberately not served here.)
       return [PriceBasis.RAW_CLOSE];
     },
+    // V26-PRICE-PROVIDER-UNIFICATION — declared capability. Listed equities and
+    // ETFs with a symbol, and nothing else: options, cash and crypto are not
+    // Tiingo's to serve, so routing never sends them here and never wastes a
+    // call discovering that.
+    supportsInstrument(key: ProviderRoutingKey): boolean {
+      return (key.assetClass === "EQUITY" || key.assetClass === "ETF")
+        && key.basis === PriceBasis.RAW_CLOSE
+        && key.providerSymbol.trim() !== "";
+    },
     async fetchDailyCloses(req: PriceFetchRequest): Promise<PriceResult[]> {
+      return (await fetchWindow(req)).prices;
+    },
+    // V26-S1-CA — the SAME request, reporting everything the payload stated.
+    // Optional on the adapter contract (the `readRange?` / `readCoveredDates?`
+    // precedent on PriceArchiveReader): a vendor with no corporate-action data
+    // simply omits it, callers fall back to fetchDailyCloses, and no existing
+    // adapter or fixture changes. Crucially it is not a SECOND network call —
+    // the actions were in the response we were already paying for.
+    async fetchDailyClosesWithActions(req: PriceFetchRequest) {
+      return fetchWindow(req);
+    },
+  };
+
+  /** One vendor request → the prices AND the corporate actions it stated. */
+  async function fetchWindow(req: PriceFetchRequest): Promise<{ prices: PriceResult[]; corporateActions: ProviderCorporateAction[] }> {
+    {
       // The orchestrator already gates on supportedBases(); guard defensively.
-      if (req.basis !== PriceBasis.RAW_CLOSE) return [];
+      if (req.basis !== PriceBasis.RAW_CLOSE) return { prices: [], corporateActions: [] };
 
       const symbol = req.providerSymbol?.trim();
       // No ticker (e.g. a cash / no-symbol instrument) → nothing to ask Tiingo.
       // "No data", not a failure — return [] so the orchestrator moves on.
-      if (!symbol) return [];
+      if (!symbol) return { prices: [], corporateActions: [] };
 
       const url =
         `${baseUrl}/tiingo/daily/${encodeURIComponent(symbol)}/prices` +
@@ -106,32 +154,56 @@ export function createTiingoPriceProvider(
             "Content-Type": "application/json",
             Authorization:  `Token ${apiKey}`,
           },
+          // OPS-004 — a hung vendor must not hold the job to maxDuration.
+          signal: AbortSignal.timeout(PRICE_PROVIDER_TIMEOUT_MS),
         });
       } catch (e) {
         // Network-level failure — a normal adapter failure.
         console.warn(`[prices][tiingo] network error for ${symbol} [${req.fromISO}..${req.toISO}]`);
-        throw new Error(`tiingo: network error fetching ${symbol} — ${e instanceof Error ? e.message : String(e)}`);
+        throw new ProviderFetchError("PROVIDER_ERROR",
+          `tiingo: network error fetching ${symbol} — ${e instanceof Error ? e.message : String(e)}`);
       }
 
       if (!res.ok) {
         // 429 rate-limit or any non-2xx — a normal adapter failure. Logged +
         // thrown; fetchInstrumentWindow catches it and continues the run.
+        // V26-PRICE-4 — throttling is classified, not lumped into "failed": a
+        // 429 means the evidence exists and is still coming, so the run is
+        // resumable; any other non-2xx is a provider fault.
         const detail = res.status === 429 ? "rate-limited (429)" : `HTTP ${res.status}`;
         console.warn(`[prices][tiingo] ${detail} for ${symbol} [${req.fromISO}..${req.toISO}]`);
-        throw new Error(`tiingo: ${detail} for ${symbol}`);
+        throw new ProviderFetchError(res.status === 429 ? "THROTTLED" : "PROVIDER_ERROR",
+          `tiingo: ${detail} for ${symbol}`);
       }
 
       const body = await res.json();
       if (!Array.isArray(body)) {
-        throw new Error(`tiingo: unexpected response shape for ${symbol} (expected a JSON array)`);
+        throw new ProviderFetchError("INVALID_DATA", `tiingo: unexpected response shape for ${symbol} (expected a JSON array)`);
       }
 
       const out: PriceResult[] = [];
+      const actions: ProviderCorporateAction[] = [];
       for (const row of body as TiingoDailyRow[]) {
         if (!row || typeof row.date !== "string") continue;
         const dateISO = row.date.slice(0, 10);
         // Defensive window clamp — never trust the vendor to honor start/end.
         if (dateISO < req.fromISO || dateISO > req.toISO) continue;
+
+        // A corporate action is read INDEPENDENTLY of the price. A row whose
+        // close is malformed is dropped below, but its stated splitFactor is
+        // still the vendor stating a term — and losing it would leave a quantity
+        // replay permanently blocked because of an unrelated bad price field.
+        const ratio = splitFactorToRatio(row.splitFactor);
+        if (ratio !== null) {
+          actions.push({
+            instrumentId:  req.instrumentId,
+            effectiveDate: dateISO,
+            kind:          "SPLIT",
+            ratio,
+            evidence:      { splitFactor: row.splitFactor, close: row.close },
+          });
+        }
+
         const price = row.close;
         // Drop (don't throw on) a malformed / non-positive close so one bad day
         // never discards the whole window in validateBatch.
@@ -145,7 +217,7 @@ export function createTiingoPriceProvider(
           currency:     "USD",
         });
       }
-      return out;
-    },
-  };
+      return { prices: out, corporateActions: actions };
+    }
+  }
 }

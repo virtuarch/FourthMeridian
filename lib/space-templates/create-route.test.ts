@@ -9,9 +9,14 @@
  * behavior-change guarantee for the legacy category path), and hidden
  * templates are rejected material for the templateId path.
  *
- * Source-scan checks (precedent: purity.test.ts / personal-materialization
- * .test.ts): POST /api/spaces materializes via the SP-1 planner only, accepts
- * templateId, enforces the live-template rule, and hardcodes no section keys.
+ * Source-scan checks (precedent: purity.test.ts): POST /api/spaces
+ * materializes via the SP-1 planner only, accepts templateId, enforces the
+ * live-template rule, and hardcodes no section keys.
+ *
+ * Also carries the SP-2A-3 personal-materialization guards (merged from
+ * lib/space-templates/personal-materialization.test.ts): the hidden `personal`
+ * template's plan semantics, the register-route scan, the backfill-script
+ * contract, and the schema-free guarantee.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -34,8 +39,17 @@ function check(name: string, ok: boolean, detail?: string): void {
 // Legacy-path parity: for every SpaceCategory, the route's new source
 // (category → template → planner) equals its old source
 // (getPresetsForCategory). This is the SP-2.1 zero-behavior-change guarantee.
+// W2 — GOAL / RETIREMENT are RETIRED outright (templates DELETED, like W1's
+// household): the legacy path must resolve NOTHING for them. Both are already
+// unwritable (absent from SUPPORTED_SPACE_CATEGORIES), so no create path can
+// reach the undefined resolution.
+const W2_RETIRED_CATEGORIES = new Set<string>(["GOAL", "RETIREMENT"]);
 for (const cat of Object.values(SpaceCategory)) {
   const t = getTemplateForCategory(cat);
+  if (W2_RETIRED_CATEGORIES.has(cat)) {
+    check(`legacy path resolves NO template for retired ${cat} (W2)`, t === undefined);
+    continue;
+  }
   check(`legacy path resolves a template for ${cat}`, t !== undefined);
   if (t) {
     check(
@@ -53,9 +67,13 @@ for (const t of SPACE_TEMPLATES) {
 }
 check(
   "hidden templates are distinguishable for rejection",
-  getTemplate("personal")?.status !== "live" && getTemplate("goal")?.status !== "live"
+  getTemplate("personal")?.status !== "live" && getTemplate("debt-payoff")?.status !== "live"
 );
 check("unknown template id resolves to undefined", getTemplate("no-such-template") === undefined);
+// W2 — the retired goal/retirement templates resolve to NOTHING (deleted, not
+// hidden): the templateId path rejects them exactly like any unknown id.
+check(`retired template id "goal" resolves to undefined (W2)`, getTemplate("goal") === undefined);
+check(`retired template id "retirement" resolves to undefined (W2)`, getTemplate("retirement") === undefined);
 
 // ── Source scans ──────────────────────────────────────────────────────────────
 
@@ -186,6 +204,121 @@ check(
   "seed materializes via planTemplateApplication",
   seedSrc.includes("planTemplateApplication(")
 );
+
+// ── merged from lib/space-templates/personal-materialization.test.ts
+//    (SP-2A-3 guards) ──────────────────────────────────────────────────────────
+// The legacy-path parity loop above already asserts that PERSONAL resolves and
+// that its plan equals getPresetsForCategory(PERSONAL); only the checks below
+// were distinct to the SP-2A-3 suite.
+
+// The personal template is hidden (never in the picker).
+const personal = getTemplateForCategory(SpaceCategory.PERSONAL);
+check("personal template is hidden", personal?.status === "hidden");
+
+if (personal) {
+  // W2 — the birth plan is EMPTY, and that is the asserted truth (the former
+  // "non-empty plan" pin inverted honestly): the last seeded section — the
+  // universal goals_progress — retired with the Goals surface, and an empty
+  // section plan is legal end-to-end (planner plans nothing, POST creates no
+  // rows, the dashboard renders every rail tab regardless). Do not re-add a
+  // seeded section to make this non-empty.
+  const birthPlan = planTemplateApplication(personal, new Set<string>()).sectionsToCreate;
+  check("planned Personal sections are EMPTY (W2 — no seeded sections)", birthPlan.length === 0);
+
+  // Backfill semantics still hold over the empty plan: existing rows are never
+  // touched, replanning stays a stable no-op, and pre-existing keys (existing
+  // Spaces keep their goals_progress CONFIG rows) plan nothing new.
+  const existingRows = new Set(["goals_progress"]);
+  check(
+    "backfill planner plans nothing against an existing Space's rows",
+    planTemplateApplication(personal, existingRows).sectionsToCreate.length === 0
+  );
+  check(
+    "backfill planner is idempotent (empty plan → empty plan)",
+    planTemplateApplication(personal, new Set<string>()).sectionsToCreate.length === 0
+  );
+  check(
+    "backfill planner is deterministic",
+    JSON.stringify(planTemplateApplication(personal, existingRows)) ===
+      JSON.stringify(planTemplateApplication(personal, existingRows))
+  );
+}
+
+const registerSrc = readFileSync(
+  path.join(ROOT, "app", "api", "auth", "register", "route.ts"),
+  "utf8"
+);
+const backfillSrc = readFileSync(
+  path.join(ROOT, "scripts", "backfill-personal-sections.ts"),
+  "utf8"
+);
+const schemaSrc = readFileSync(path.join(ROOT, "prisma", "schema.prisma"), "utf8");
+
+// Register route uses the SP-1 registry + planner.
+check(
+  "register route imports the SP-1 registry",
+  registerSrc.includes('from "@/lib/space-templates/registry"')
+);
+check(
+  "register route imports the SP-1 planner",
+  registerSrc.includes('from "@/lib/space-templates/apply"')
+);
+check(
+  "register route calls planTemplateApplication",
+  registerSrc.includes("planTemplateApplication(")
+);
+check(
+  "register route materializes dashboardSections",
+  registerSrc.includes("dashboardSections")
+);
+
+// Register route hardcodes no section keys — every key the personal template
+// (or the universal set) carries must be absent as a literal.
+if (personal) {
+  const templateKeys = planTemplateApplication(personal, new Set<string>())
+    .sectionsToCreate.map((s) => s.key);
+  for (const key of templateKeys) {
+    check(
+      `register route does not hardcode section key "${key}"`,
+      !registerSrc.includes(`"${key}"`)
+    );
+  }
+}
+
+// Backfill script contract.
+check(
+  "backfill script uses planTemplateApplication",
+  backfillSrc.includes("planTemplateApplication(")
+);
+check(
+  "backfill script resolves the template from the SP-1 registry",
+  backfillSrc.includes("getTemplateForCategory(")
+);
+check(
+  "backfill script is dry-run by default (--apply gate present)",
+  backfillSrc.includes('"--apply"')
+);
+check(
+  "backfill script writes via createMany only",
+  backfillSrc.includes("spaceDashboardSection.createMany")
+);
+check(
+  "backfill script never updates section rows",
+  !/spaceDashboardSection\s*\.\s*update/i.test(backfillSrc) &&
+    !backfillSrc.includes(".updateMany(")
+);
+check(
+  "backfill script never deletes section rows",
+  !/\.delete(Many)?\s*\(/.test(backfillSrc)
+);
+check(
+  "backfill script never upserts section rows",
+  !backfillSrc.includes(".upsert(")
+);
+
+// SP-2A-3 is schema-free: no SpaceTemplate model, no template provenance column.
+check("prisma schema has no SpaceTemplate model", !/model\s+SpaceTemplate\b/.test(schemaSrc));
+check("prisma schema has no templateId column on Space", !/\btemplateId\b/.test(schemaSrc));
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed.`);

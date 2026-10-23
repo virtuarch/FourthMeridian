@@ -113,7 +113,7 @@ export default function PlaidOAuthReturn() {
       }
 
       // Return to dashboard — replace so back button doesn't re-trigger OAuth
-      router.replace("/");
+      router.replace("/dashboard");
     } catch (err) {
       setStatus("error");
       setErrorMessage(err instanceof Error ? err.message : "Failed to import accounts.");
@@ -144,7 +144,7 @@ export default function PlaidOAuthReturn() {
       router.replace("/dashboard/connections");
     } else {
       // User cancelled — send them home
-      router.replace("/");
+      router.replace("/dashboard");
     }
   };
 
@@ -196,7 +196,7 @@ export default function PlaidOAuthReturn() {
           <div className="space-y-4">
             <p className="text-red-400 text-sm">{errorMessage}</p>
             <button
-              onClick={() => router.replace("/")}
+              onClick={() => router.replace("/dashboard")}
               className="text-blue-400 text-sm underline hover:text-blue-300"
             >
               Return to dashboard

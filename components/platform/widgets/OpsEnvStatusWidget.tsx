@@ -17,6 +17,8 @@ import {
   type PlatformSection,
 } from "../widget-kit";
 import type { PlatformEnvStatusResponse } from "@/app/api/platform/platform-ops/env-status/route";
+import { TONE_COLOR } from "../platform-surface";
+import { openAiFactLines } from "./env-status-view";
 
 const STATUS_TONE: Record<string, string> = {
   fail: "var(--danger-400, #f87171)",
@@ -42,7 +44,7 @@ export function OpsEnvStatusWidget({ section }: { section: PlatformSection }) {
           </div>
           {attention.length === 0 ? (
             <p className="text-xs text-[var(--text-secondary)] mt-1">
-              All checked variables set ({data.nodeEnv}).
+              All checked variables set ({data.deploymentEnv}).
             </p>
           ) : (
             <ul className="flex flex-col gap-1 mt-1">
@@ -56,6 +58,20 @@ export function OpsEnvStatusWidget({ section }: { section: PlatformSection }) {
               ))}
             </ul>
           )}
+          {/* OPENAI ENVIRONMENT SEPARATION — the value-free OpenAI project pin:
+              key SHAPE, the proj_… id in full (a non-secret identifier) and the
+              expected-environment guard. Never the key. */}
+          <div className="mt-2 border-t border-[var(--border-subtle,rgba(255,255,255,0.08))] pt-2">
+            <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">OpenAI project pin</p>
+            <ul className="flex flex-col gap-1">
+              {openAiFactLines(data.openAi).map((line) => (
+                <li key={line.label} className="flex items-baseline justify-between gap-2 text-xs">
+                  <span className="shrink-0 text-[var(--text-secondary)]">{line.label}</span>
+                  <span className="min-w-0 text-right font-mono break-all" style={{ color: TONE_COLOR[line.tone] }}>{line.value}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </>
       )}
     </PlatformWidgetCard>

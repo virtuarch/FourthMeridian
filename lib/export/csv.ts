@@ -15,6 +15,17 @@
  */
 
 import Papa from "papaparse";
+
+// SEC-004 — THE one serialiser call. `escapeFormulae: true` prefixes a cell that
+// begins with `=`, `+`, `-` or `@` with a quote so a spreadsheet opens it as
+// text, never as a formula (CWE-1236). Cells carry Plaid descriptors and
+// user-typed account names — runtime-confirmed: a manual account named
+// `=RTVINJECT()+1` was written verbatim into accounts.csv. Every export set
+// below must serialise through this helper; lib/export/csv.test.ts pins it.
+function unparse(rows: Record<string, unknown>[]): string {
+  return Papa.unparse(rows, { escapeFormulae: true });
+}
+import { describeRowNature } from "@/lib/transactions/flow-presentation";
 import type {
   ExportAccount,
   ExportHolding,
@@ -24,9 +35,13 @@ import type {
 
 /** transactions.csv — importer-compatible columns first, context columns after. */
 export function toTransactionsCsv(rows: ExportTransaction[]): string {
-  return Papa.unparse(
+  return unparse(
     rows.map((r) => ({
-      date:        r.date,
+      // L8-B — `date` is the ECONOMIC date (when it happened); `posting_date` is
+      // provenance. Both labelled explicitly so a downloaded file is never
+      // ambiguous about which chronology it carries.
+      date:            r.date,
+      posting_date:    r.postingDate ?? r.date,
       merchant:    r.merchant,
       description: r.description ?? "",
       amount:      r.amount,
@@ -34,13 +49,50 @@ export function toTransactionsCsv(rows: ExportTransaction[]): string {
       currency:    r.currency ?? "",
       account_id:  r.accountId,
       space_id:    r.spaceId,
+      // ── v2.6-TRUTH-5 — ADDITIVE income columns ───────────────────────────
+      // Appended AFTER every pre-existing column, and no existing column is
+      // renamed, reordered or removed, so a consumer reading by header name or
+      // by leading position is unaffected. Empty for outflows and for rows the
+      // read supplied no attribution for — never a fabricated class.
+      income_class:            r.incomeClass ?? "",
+      income_subtype:          r.incomeSubtype ?? "",
+      source_account_id:       r.incomeSourceAccountId ?? "",
+      source_instrument_id:    r.incomeInstrumentId ?? "",
+      included_in_broad_income:
+        r.incomeClass == null ? "" : String(r.incomeClass !== "NOT_INCOME"),
+      exclusion_reason:
+        r.incomeClass === "NOT_INCOME" ? (r.incomeSubtype ?? "NOT_INCOME") : "",
+      // ── v2.6-TRUTH-7 — ADDITIVE canonical-meaning columns ────────────────
+      // Appended after everything above, same additive contract.
+      //
+      // `category` remains for importer round-trip (it is the column
+      // detectColumns() looks for), but no exported MEANING depends on it any
+      // more: `flow_type` is the canonical economic kind, `row_nature` is what
+      // the app itself calls the row, and `income_subtype` above refines
+      // inflows. A downstream consumer no longer has to guess whether the
+      // "Payment" category string meant a debt payment or a merchant named
+      // Payment.
+      flow_type:   r.flowType ?? "",
+      row_nature:  describeRowNature({
+        flowType:      r.flowType ?? null,
+        incomeSubtype: r.incomeSubtype ?? null,
+    transferMaturity: r.transferMaturity ?? null,
+        amount:        r.amount,
+        hasOwnedCounterparty: r.counterpartyAccountId != null,
+      }).nature,
+      // The owned account on the other side of a transfer, where the transfer
+      // authority established one. Empty when it did not — never a guess, and
+      // never a descriptor-derived name.
+      transfer_counterparty_account_id: r.counterpartyAccountId ?? "",
+      // The transfer authority's verdict about the DESTINATION, where it ran.
+      transfer_maturity: r.transferMaturity ?? "",
     })),
   );
 }
 
 /** accounts.csv */
 export function toAccountsCsv(rows: ExportAccount[]): string {
-  return Papa.unparse(
+  return unparse(
     rows.map((r) => ({
       id:              r.id,
       name:            r.name,
@@ -67,7 +119,7 @@ export function toAccountsCsv(rows: ExportAccount[]): string {
  */
 export function toHoldingsCsv(rows: ExportHolding[]): string {
   const blank = (n: number | null): number | string => (n == null ? "" : n);
-  return Papa.unparse(
+  return unparse(
     rows.map((r) => ({
       account_id:         r.accountId,
       symbol:             r.symbol ?? "",
@@ -88,11 +140,12 @@ export function toHoldingsCsv(rows: ExportHolding[]): string {
 
 /** snapshots.csv */
 export function toSnapshotsCsv(rows: ExportSnapshot[]): string {
-  return Papa.unparse(
+  return unparse(
     rows.map((r) => ({
       space_id:          r.spaceId,
       space_name:        r.spaceName,
       date:              r.date,
+      posting_date:      (r as { postingDate?: string }).postingDate ?? r.date,
       net_worth:         r.netWorth,
       total_assets:      r.totalAssets,
       total_debt:        r.totalDebt,
@@ -102,6 +155,39 @@ export function toSnapshotsCsv(rows: ExportSnapshot[]): string {
       total_crypto:      r.totalCrypto,
       cash_on_hand:      r.cashOnHand,
       is_estimated:      r.isEstimated ?? false,
+      // ── V26-CRYPTO-STATUS-1 — assertability, beside the raw values ─────────
+      //
+      // Auditability first: `total_crypto`, `total_assets` and `net_worth` above
+      // keep the EXACT number stored on the row, even when it may not be
+      // asserted. Blanking or zeroing them would destroy the audit trail and
+      // silently rewrite history; relabelling them would present a stale figure
+      // as a corrected one. Instead these four columns say what the number is
+      // worth, so a downstream system can tell apart:
+      //   · the raw stored value              → total_crypto / total_assets / net_worth
+      //   · whether it may be asserted        → crypto_assertable
+      //   · whether the totals built on it    → asset_side_contaminated
+      //     are affected
+      //   · why not                           → crypto_unavailable_reason
+      //
+      // All four are READ from the canonical state resolved at the snapshot
+      // boundary. This module derives nothing: no floor, no provider, no date
+      // rule, no materiality threshold.
+      //
+      // Empty means the producing caller did not resolve a state (no such path
+      // exists in the app today); it is deliberately distinct from `false`.
+      crypto_valuation_state:    r.cryptoValuationState ?? "",
+      crypto_assertable:         r.cryptoAssertable ?? "",
+      asset_side_contaminated:   r.assetSideContaminated ?? "",
+      crypto_unavailable_reason: r.cryptoUnavailableReason ?? "",
+      // v2.6-A/B — AGGREGATE authorisation, beside the component's. The raw
+      // stored totals above are preserved unchanged for audit; these say which
+      // of them may be asserted and why. Empty when the producing caller
+      // resolved no authorisation (a pre-Slice-A DTO) — deliberately distinct
+      // from a recorded `false`.
+      net_worth_state:      r.aggregateAuthorisation?.netWorth.state ?? "",
+      net_worth_assertable: r.aggregateAuthorisation?.netWorth.assertable ?? "",
+      total_assets_state:   r.aggregateAuthorisation?.totalAssets.state ?? "",
+      net_liquid_state:     r.aggregateAuthorisation?.netLiquid.state ?? "",
     })),
   );
 }

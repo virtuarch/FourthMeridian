@@ -17,13 +17,15 @@
  *      shared SpaceAccount type.
  *   7. Detail route reuses the SAME spaceAccountLinks ACTIVE join + the Activity
  *      Tab's ImportBatch join shape, and deriveConnectionState() verbatim.
- *   8. Host wiring: accounts_overview mounts AccountsPerspective; business_accounts
- *      stays on the untouched AccountsCard.
+ *   8. Wiring: W2 — the SectionRegistry render stack is DELETED (the
+ *      accounts_overview section mount went with it); AccountsPerspective
+ *      survives as the vocabulary module behind the editorial Accounts
+ *      surfaces (AccountsLedger / AccountDetail consume its exports).
  *
  *   npx tsx components/space/widgets/accounts/AccountsPerspective.test.ts
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = process.cwd();
@@ -66,7 +68,13 @@ console.log("3. Manual accounts render no health chip (no fabricated 'healthy')"
   check("chip only rendered when non-null", SRC.includes("{chip && <Chip chip={chip} />}"));
   // isManual in the route is derived from a real absence of provider, never faked.
   check("route: isManual = !hasProvider", ROUTE.includes("isManual:           !hasProvider"));
-  check("route: connectionState null when no plaid item", ROUTE.includes("? deriveConnectionState(plaidConn.plaidItem)\n      : null"));
+  // RLS-T2 — the route no longer reaches the item through a relation include
+  // (`PlaidItem` is USER-keyed, so as the tenant a co-member's item comes back
+  // null and the chip would silently vanish), so the `plaidConn.plaidItem` text
+  // this pinned is gone. The PROPERTY is unchanged and still pinned: null item ⇒
+  // null state, never a fabricated "healthy".
+  check("route: connectionState null when no plaid item",
+    ROUTE.includes("const connectionState = plaidItem ? deriveConnectionState(plaidItem) : null;"));
 }
 
 console.log("4. Health-chip states map correctly");
@@ -110,7 +118,12 @@ console.log("6. Doctrine — separate surfaces, shared type untouched");
 
 console.log("7. Detail route reuses established joins + pure state derivation");
 {
-  check("ACTIVE SpaceAccountLink visibility join", ROUTE.includes("status:           ShareStatus.ACTIVE") && ROUTE.includes("db.spaceAccountLink.findMany"));
+  // RLS-T2 — the join is unchanged; the AUTHORITY it runs on is not. This used to
+  // pin `db.spaceAccountLink.findMany`, i.e. the migration principal, which is the
+  // thing the RLS programme removes. Pinning the tenant client instead keeps the
+  // original "same join as the shared route" claim AND stops it reverting.
+  check("ACTIVE SpaceAccountLink visibility join, on the caller's client",
+    ROUTE.includes("status:           ShareStatus.ACTIVE") && ROUTE.includes("client.spaceAccountLink.findMany"));
   check("financialAccount.deletedAt: null (same as shared route)", ROUTE.includes("financialAccount: { deletedAt: null }"));
   check("ImportBatch scoped by spaceAccountLinks.some ACTIVE", ROUTE.includes("spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } }"));
   check("only COMPLETED batches counted", ROUTE.includes("status:           ImportBatchStatus.COMPLETED"));
@@ -121,18 +134,22 @@ console.log("7. Detail route reuses established joins + pure state derivation");
   check("membership-gated VIEWER+", ROUTE.includes("requireSpaceRole(spaceId, SpaceMemberRole.VIEWER)"));
 }
 
-console.log("8. Section-registry wiring — one renderer swap, business_accounts untouched");
+console.log("8. Wiring — W2: the section-registry mount is gone; the editorial surfaces consume the module");
 {
-  // SD-7 moved the SectionRegistry (and its renderers) out of SpaceDashboard; SEC-2
-  // then split it into components/space/sections/SectionRegistry.tsx — the wiring
-  // assertions (incl. the AccountsCard renderer) follow it there.
-  const SECTIONS = readFileSync(path.join(ROOT, "components/space/sections/SectionRegistry.tsx"), "utf8");
-  check("accounts_overview mounts AccountsPerspective",
-    SECTIONS.includes('"accounts_overview":      (p) => <AccountsPerspective spaceId={p.spaceId} accounts={p.accounts} />'));
-  check("business_accounts still on AccountsCard",
-    SECTIONS.includes('"business_accounts":      (p) => <AccountsCard accounts={p.accounts} />'));
-  check("AccountsCard still defined (serves business_accounts)", SECTIONS.includes("function AccountsCard("));
-  check("AccountsPerspective imported", SECTIONS.includes('from "@/components/space/widgets/accounts/AccountsPerspective"'));
+  // W2 — the SectionRegistry/SectionCard render stack is DELETED with the
+  // Goals/Retirement retirement (its only remaining product mounts), taking the
+  // accounts_overview SECTION mount with it. AccountsPerspective itself stays:
+  // the editorial Accounts surfaces consume its exported vocabulary.
+  check("SectionRegistry.tsx stays deleted (W2 — render stack retired)",
+    !existsSync(path.join(ROOT, "components/space/sections/SectionRegistry.tsx")));
+  check("AccountsPerspective still exports its component",
+    SRC.includes("export function AccountsPerspective"));
+  const LEDGER = readFileSync(path.join(ROOT, "components/space/widgets/accounts/AccountsLedger.tsx"), "utf8");
+  const DETAIL = readFileSync(path.join(ROOT, "components/space/widgets/accounts/AccountDetail.tsx"), "utf8");
+  check("AccountsLedger consumes the AccountsPerspective vocabulary",
+    LEDGER.includes('from "./AccountsPerspective"'));
+  check("AccountDetail consumes the AccountsPerspective vocabulary",
+    DETAIL.includes('from "./AccountsPerspective"'));
 }
 
 if (failures > 0) {

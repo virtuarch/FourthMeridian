@@ -16,6 +16,17 @@
  *      fxMiss exclusion + disclosure, estimated propagation, trend math over
  *      the converted series only, brief-scope shape, null on no usable rows.
  *
+ * Also hosts the v2.6-WINDOW-1 pins merged from snapshot-window.test.ts: the
+ * snapshot section states a window the product DEFINES. `snapshotCount` is a
+ * ROW COUNT (`getRecentSnapshots` uses `take`), yet surfaces rendered it as a
+ * number of DAYS while the trend spanned oldest→newest of whatever rows were
+ * fetched — a real number over an ACCIDENTAL window. Those pins prove
+ * `projectSnapshotSection` EMITS a true calendar span and a canonical
+ * (subMonths) change, refuses short histories, and never resurfaces the
+ * deleted accidental-trend fields. The cadence (weekly) fixture is the one
+ * that matters: on a daily contiguous series row count and day span nearly
+ * coincide, which is exactly why the defect survived.
+ *
  * Standalone tsx:  npx tsx lib/ai/assemblers/snapshot.authority.test.ts
  */
 
@@ -43,17 +54,50 @@ check(
   "assembler imports the canonical read (getRecentSnapshots from @/lib/data/snapshots)",
   /import\s*\{[^}]*getRecentSnapshots[^}]*\}\s*from\s*['"]@\/lib\/data\/snapshots['"]/.test(src),
 );
+/**
+ * RLS-C-S3 — THIS PIN GOT NARROWER, NOT WEAKER.
+ *
+ * It used to be "no `@/lib/db` import at all", which was a proxy for the real
+ * invariant: truth is not rebuilt here. `getRecentSnapshots` now requires its
+ * database client as a leading argument, so the assembler has to STATE an
+ * authority — and the honest one on the AI path is the migration principal, for
+ * the reasons recorded in the assembler's own header.
+ *
+ * So the proxy is replaced by the property itself: the client may be imported
+ * ONCE and may appear in exactly ONE place — as the authority handed to the
+ * canonical read. It cannot be used to query anything. A regression to a private
+ * `db.spaceSnapshot.findMany` still trips both of these.
+ */
 check(
-  "assembler holds NO direct db import (truth is not rebuilt here)",
-  !/from\s*['"]@\/lib\/db['"]/.test(src),
+  "assembler imports the global client AT MOST ONCE",
+  (src.match(/from\s*['"]@\/lib\/db['"]/g) ?? []).length <= 1,
+);
+check(
+  "…and NEVER dereferences it — no query is issued through it here",
+  !/\bdb\s*\./.test(src),
+  src.match(/\bdb\s*\.[^\n]*/g)?.join(" | "),
+);
+// ⚠️ RLS-AI-S6 — THE AUTHORITY IS NO LONGER A MODULE-LEVEL `db` AT ALL. It is a
+// REQUIRED LEADING PARAMETER of the assembler, so the thing to pin is that the
+// canonical read is handed THAT and nothing else.
+check(
+  "…the canonical read is handed the assembler's OWN client parameter",
+  (src.match(/getRecentSnapshots\(\s*client\s*,/g) ?? []).length === 1,
 );
 check(
   "assembler holds NO direct spaceSnapshot query",
   !/spaceSnapshot/.test(src),
 );
 check(
-  "assembler calls getRecentSnapshots scoped to the validated Space",
-  /getRecentSnapshots\(\s*SNAPSHOT_HISTORY_LIMIT\s*,\s*\{\s*spaceId\s*\}\s*\)/.test(src),
+  // v2.6-WINDOW-2 — the bound became a named object (`{ rows: N }`) so a
+  // positional number can no longer hide which unit it is. Same call, same
+  // Space scoping, same limit; the pin follows the new shape and additionally
+  // requires the bound be spelled `rows`, since that is the whole point.
+  // RLS-C-S3 — one leading argument is now the stated database AUTHORITY.
+  // RLS-AI-S6 — and that authority is the assembler's PARAMETER, so this module
+  // imports no client and the Space scoping and ROW bound are otherwise unchanged.
+  "assembler calls getRecentSnapshots on its OWN client, scoped to the validated Space, bounded by ROWS",
+  /getRecentSnapshots\(\s*client\s*,\s*\{\s*rows:\s*SNAPSHOT_HISTORY_LIMIT\s*\}\s*,\s*\{\s*spaceId\s*\}\s*\)/.test(src),
 );
 
 // ─── B. Behavioral pins on the pure projection ───────────────────────────────
@@ -76,8 +120,10 @@ function snap(over: Partial<Snapshot> & { date: string }): Snapshot {
     "full",
   );
   check("clean history: section assembled", out !== null);
-  check("clean history: trend = latest − oldest", out?.netWorthTrend === 100);
-  check("clean history: pct rounded to 2dp", out?.netWorthTrendPct === 10);
+  check("clean history: no accidental-window trend fields (REVIEW-3)",
+    out !== null && !("netWorthTrend" in out) && !("netWorthTrendPct" in out));
+  check("clean history: fold endpoints usable (1000 → 1100)",
+    out?.history[0]?.netWorth === 1000 && out?.history[1]?.netWorth === 1100);
   check("clean history: liquid = cash + savings", out?.latest?.liquid === 550);
   check("clean history: no estimated flag", out !== null && !("estimated" in out));
   check("clean history: no exclusion disclosure", out !== null && !("excludedFxMissPoints" in out));
@@ -96,7 +142,8 @@ function snap(over: Partial<Snapshot> & { date: string }): Snapshot {
     "full",
   );
   check("fxMiss: excluded from count", out?.snapshotCount === 2);
-  check("fxMiss: excluded from trend (1200−1000, not native-magnitude)", out?.netWorthTrend === 200);
+  check("fxMiss: excluded from the series endpoints (1000…1200, never native-magnitude)",
+    out?.history[0]?.netWorth === 1000 && out?.history[out.history.length - 1]?.netWorth === 1200);
   check("fxMiss: excluded from history", out?.history.length === 2);
   check("fxMiss: exclusion disclosed", out?.excludedFxMissPoints === 1);
   check("fxMiss: latest is the last USABLE point", out?.latest?.date === "2026-07-03");
@@ -134,7 +181,8 @@ function snap(over: Partial<Snapshot> & { date: string }): Snapshot {
   );
   check("brief: history omitted", out?.history.length === 0);
   check("brief: latest retained", out?.latest?.netWorth === 1100);
-  check("brief: trend retained", out?.netWorthTrend === 100);
+  check("brief: canonical latest retained without trend fields",
+    out !== null && !("netWorthTrend" in out));
 }
 
 // B6. Zero-baseline: pct is null when oldest netWorth is 0 (no fabricated %).
@@ -146,8 +194,141 @@ function snap(over: Partial<Snapshot> & { date: string }): Snapshot {
     ],
     "full",
   );
-  check("zero baseline: absolute trend kept", out?.netWorthTrend === 500);
-  check("zero baseline: pct null", out?.netWorthTrendPct === null);
+  // B6. Zero-baseline handling now lives in canonicalWindowChange (pct null on
+  // zero opening value) — pinned in lib/data/snapshot-window.test.ts. Here we
+  // pin only that the deleted accidental fields did not resurface.
+  check("zero baseline: no accidental trend fields", out !== null && !("netWorthTrend" in out));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── merged from lib/ai/assemblers/snapshot-window.test.ts (v2.6-WINDOW-1) ────
+// The snapshot section states a window the product DEFINES. Measured on the
+// live corpus before the fix:
+//
+//   Daily Brief    "up 14.9% over the last 90 days"   baseline 2026-05-10
+//   Space  1M      "26.8% vs Jul 7, 2026"             baseline 2026-07-07
+//   Space  90d     "47.4% vs May 7, 2026"             baseline 2026-05-07
+//
+// The Brief's baseline was the 90th ROW — 89 days back — while the Space's was
+// `subMonths(asOf, 3)`, 92 days back. Both screens said "90 days" and differed
+// by a factor of three. `scripts/audit-snapshot-window-claims.ts` measures the
+// corpus but cannot load the assembler (`server-only`); this half is a property
+// of a pure function, so it belongs on fixtures where it runs in CI with no
+// database and cannot pass vacuously on a thin seed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** N points, `stepDays` apart, ending on `endIso` (netWorth ramps from→to). */
+function series(endIso: string, count: number, stepDays: number, from: number, to: number): Snapshot[] {
+  const end = new Date(`${endIso}T00:00:00Z`).getTime();
+  const out: Snapshot[] = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(end - i * stepDays * 86_400_000).toISOString().slice(0, 10);
+    const t = count === 1 ? 1 : (count - 1 - i) / (count - 1);
+    const v = from + (to - from) * t;
+    out.push(snap({ date: d, netWorth: v, totalAssets: v }));
+  }
+  return out;
+}
+
+// W1. spanDays is the calendar distance, NOT the row count.
+{
+  // 13 WEEKLY points: 13 rows, 84 days. A surface printing the count would say
+  // "13 days" about three months of history — or, in the shape that shipped,
+  // "90 days" about 89.
+  const weekly = projectSnapshotSection(series("2026-08-07", 13, 7, 20_000, 28_000), "full");
+  check("WINDOW-1: weekly section assembled", weekly !== null);
+  check("WINDOW-1: 13 rows counted", weekly?.snapshotCount === 13);
+  check("WINDOW-1: spanDays is the calendar distance between the endpoints, not the number of rows",
+    weekly?.spanDays === 84, `got ${weekly?.spanDays}`);
+  check("WINDOW-1: a weekly series is exactly the case where count and span diverge — if these are " +
+    "equal, spanDays is being derived from the count again",
+    weekly !== null && weekly.spanDays !== weekly.snapshotCount);
+}
+
+// W2. The canonical change opens a CALENDAR month back, not a row offset.
+{
+  // Daily series across a month boundary. The canonical window must open on
+  // 2026-07-07 (subMonths), whatever row that happens to be.
+  const daily = projectSnapshotSection(series("2026-08-07", 90, 1, 10_000, 28_000), "full");
+  check("WINDOW-1: daily section assembled", daily !== null);
+  check("WINDOW-1: a 90-day daily series reaches back one month", daily?.canonicalChange != null);
+  check("WINDOW-1: canonical window opens on the subMonths date", daily?.canonicalChange?.fromDate === "2026-07-07");
+  check("WINDOW-1: canonical window closes on asOf", daily?.canonicalChange?.toDate === "2026-08-07");
+  check("WINDOW-1: canonical window preset is PAST_MONTH", daily?.canonicalChange?.preset === "PAST_MONTH");
+  // The change is measured between those two points — not oldest→newest.
+  {
+    // The accidental oldest→newest figure (computed inline here — the payload
+    // field was deleted at REVIEW-3 integration) must differ from the canonical
+    // window change, or the window would be decorative.
+    const accidental = daily === null ? NaN :
+      (daily.history[daily.history.length - 1].netWorth ?? 0) - (daily.history[0].netWorth ?? 0);
+    check("WINDOW-1: canonicalChange must not equal the oldest→newest trend: that is the accidental " +
+      "window it exists to replace",
+      daily?.canonicalChange?.abs !== accidental);
+  }
+  check("WINDOW-1: abs is exactly toValue − fromValue",
+    daily?.canonicalChange != null &&
+    daily.canonicalChange.toValue - daily.canonicalChange.fromValue === daily.canonicalChange.abs);
+}
+
+// W3. A history shorter than the window is REFUSED, not approximated.
+{
+  // Ten days of history cannot support a one-month claim. The authority must
+  // return null rather than comparing against the earliest point it holds —
+  // which is precisely how an accidental window gets presented as a real one.
+  const short = projectSnapshotSection(series("2026-08-07", 10, 1, 27_000, 28_000), "full");
+  check("WINDOW-1: short section assembled", short !== null);
+  check("WINDOW-1: history that does not reach the window must refuse, never fall back to oldest→newest",
+    short?.canonicalChange === null);
+  // The accidental-trend fields were deleted at REVIEW-3 integration — the
+  // refusal above is the ONLY change answer the payload may carry.
+  check("WINDOW-1: no accidental-trend fields on a refused window",
+    short !== null && !("netWorthTrend" in short) && !("netWorthTrendPct" in short));
+  check("WINDOW-1: short spanDays is 9", short?.spanDays === 9);
+}
+
+// W4. An unassertable endpoint does not silently become a window.
+{
+  // A single point cannot produce a change of any kind.
+  const one = projectSnapshotSection([snap({ date: "2026-08-07", netWorth: 28_000, totalAssets: 28_000 })], "full");
+  check("WINDOW-1: single-point section assembled", one !== null);
+  check("WINDOW-1: single point spans 0 days", one?.spanDays === 0);
+  check("WINDOW-1: single point carries no trend field", one !== null && !("netWorthTrend" in one));
+  check("WINDOW-1: single point yields no canonical change", one?.canonicalChange === null);
+}
+
+// W3. liabilitiesChange — the SAME canonical window authority, over liabilities.
+{
+  // Debt declining 30k → 24k over 90 daily points; net worth held via snap()'s
+  // debt field. The canonical liabilities window must open a calendar month
+  // back and report the decline; single-point history must REFUSE (null).
+  const end = new Date("2026-08-07T00:00:00Z").getTime();
+  const rows: Snapshot[] = [];
+  for (let i = 89; i >= 0; i--) {
+    const d = new Date(end - i * 86_400_000).toISOString().slice(0, 10);
+    const t = (89 - i) / 89;
+    rows.push(snap({ date: d, netWorth: 10_000, totalAssets: 40_000, totalDebt: 30_000 - 6_000 * t }));
+  }
+  const withDebt = projectSnapshotSection(rows, "full");
+  check("W3: liabilitiesChange present", withDebt?.liabilitiesChange != null);
+  check("W3: liabilities window opens on the subMonths date (calendar, not row offset)",
+    withDebt?.liabilitiesChange?.fromDate === "2026-07-07");
+  check("W3: liabilities window preset matches canonicalChange's",
+    withDebt?.liabilitiesChange?.preset === withDebt?.canonicalChange?.preset);
+  check("W3: declining debt reports a negative abs",
+    (withDebt?.liabilitiesChange?.abs ?? 0) < 0, `got ${withDebt?.liabilitiesChange?.abs}`);
+
+  // Brief scope truncates history but must carry the IDENTICAL figure — the
+  // change derives from the full series before truncation.
+  const brief = projectSnapshotSection(rows, "brief");
+  check("W3: brief scope carries the identical liabilitiesChange",
+    JSON.stringify(brief?.liabilitiesChange) === JSON.stringify(withDebt?.liabilitiesChange));
+  check("W3: brief history is still truncated (payload economy where it changes no grade)",
+    brief?.history.length === 0);
+
+  const one = projectSnapshotSection([snap({ date: "2026-08-07", totalDebt: 30_000 })], "full");
+  check("W3: single point yields no liabilities change (refusal, not fallback)",
+    one?.liabilitiesChange === null);
 }
 
 if (failures > 0) {
@@ -155,3 +336,4 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log("\nAll snapshot-authority checks passed.");
+process.exit(0);

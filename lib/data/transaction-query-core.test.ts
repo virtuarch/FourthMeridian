@@ -92,10 +92,18 @@ console.log("M1 DOCTRINE — amount sorting is not in the contract");
     SORTS.every((s) => !JSON.stringify(orderByForSort(s)).includes("amount")));
 }
 
-console.log("ORDERING — strict total order (date + id tie-break)");
+console.log("ORDERING — strict total order (economicDate + id tie-break)");
 {
-  check("newest", eq(orderByForSort("newest"), [{ date: "desc" }, { id: "desc" }]));
-  check("oldest", eq(orderByForSort("oldest"), [{ date: "asc" }, { id: "asc" }]));
+  // L8-B — the chronology is ECONOMIC. NULLS LAST in both directions so an
+  // unbackfilled row can never lead the newest-first list (Postgres defaults to
+  // NULLS FIRST on DESC, which would put a data defect at the very top).
+  check("newest", eq(orderByForSort("newest"),
+    [{ economicDate: { sort: "desc", nulls: "last" } }, { id: "desc" }]));
+  check("oldest", eq(orderByForSort("oldest"),
+    [{ economicDate: { sort: "asc", nulls: "last" } }, { id: "asc" }]));
+  check("ordering never falls back to the POSTING column",
+    !JSON.stringify(orderByForSort("newest")).includes('"date"') &&
+    !JSON.stringify(orderByForSort("oldest")).includes('"date"'));
   check("every sort ends with an id tie-break", SORTS.every((s) => {
     const ob = orderByForSort(s);
     return "id" in ob[ob.length - 1];
@@ -106,12 +114,18 @@ console.log("KEYSET WHERE — first page null; correct comparators per sort");
 {
   check("no cursor → null (first page)", keysetWhere("newest", undefined) === null);
   const D = toDbDate("2026-06-01");
-  check("newest → (date lt) OR (date eq, id lt)",
+  check("newest → (economicDate lt) OR (eq, id lt)",
     eq(keysetWhere("newest", { sort: "newest", lastDate: "2026-06-01", lastId: "x" }),
-       { OR: [{ date: { lt: D } }, { date: D, id: { lt: "x" } }] }));
-  check("oldest → (date gt) OR (date eq, id gt)",
+       { OR: [{ economicDate: { lt: D } }, { economicDate: D, id: { lt: "x" } }] }));
+  check("oldest → (economicDate gt) OR (eq, id gt)",
     eq(keysetWhere("oldest", { sort: "oldest", lastDate: "2026-06-01", lastId: "x" }),
-       { OR: [{ date: { gt: D } }, { date: D, id: { gt: "x" } }] }));
+       { OR: [{ economicDate: { gt: D } }, { economicDate: D, id: { gt: "x" } }] }));
+  // The pair that must never diverge: a cursor on one column against an ordering
+  // on another duplicates and skips rows at every page boundary, silently.
+  check("the keyset uses the SAME column the ordering does",
+    JSON.stringify(keysetWhere("newest", { sort: "newest", lastDate: "2026-06-01", lastId: "x" }))
+      .includes("economicDate") &&
+    JSON.stringify(orderByForSort("newest")).includes("economicDate"));
 }
 
 // ── M2 — CURSOR SAFETY ──────────────────────────────────────────────────────
@@ -121,7 +135,7 @@ console.log("M2 CURSOR SAFETY — a cursor never crosses sorts");
   const oldestCursor: TransactionCursor = { sort: "oldest", lastDate: "2026-06-01", lastId: "x" };
 
   check("cursor carries the sort it was minted under",
-    cursorFromRow({ id: "r1", date: toDbDate("2026-06-01") }, "oldest").sort === "oldest");
+    cursorFromRow({ id: "r1", economicDate: toDbDate("2026-06-01") }, "oldest").sort === "oldest");
 
   check("compatible cursor accepted", isCursorCompatible("newest", newestCursor) === true);
   check("mismatched cursor rejected", isCursorCompatible("newest", oldestCursor) === false);
@@ -259,9 +273,13 @@ console.log("FILTER WHERE — every field maps to the right fragment (population
     (buildFilterWhere(q).AND ?? []) as Record<string, unknown>[];
 
   check("empty query → empty where (no stray AND)", eq(buildFilterWhere({ sort: "newest" }), {}));
-  check("dateFrom/dateTo → date gte/lte",
+  check("dateFrom/dateTo → economicDate gte/lte",
     eq(frag({ sort: "newest", dateFrom: "2026-01-01", dateTo: "2026-02-01" })[0],
-       { date: { gte: toDbDate("2026-01-01"), lte: toDbDate("2026-02-01") } }));
+       { economicDate: { gte: toDbDate("2026-01-01"), lte: toDbDate("2026-02-01") } }));
+  // transaction-count.ts shares this function verbatim, so the count and the
+  // list filter the same population by construction.
+  check("the date filter never falls back to the POSTING column",
+    !JSON.stringify(frag({ sort: "newest", dateFrom: "2026-01-01" })[0]).includes('"date"'));
   check("accountIds → financialAccountId in",
     eq(frag({ sort: "newest", accountIds: ["a", "b"] })[0], { financialAccountId: { in: ["a", "b"] } }));
   check("empty accountIds → no fragment", frag({ sort: "newest", accountIds: [] }).length === 0);
@@ -318,13 +336,13 @@ console.log("OR-COLLISION — two OR-shaped filters cannot overwrite each other"
 // Synthetic dataset with MANY same-day rows (ties on date, distinct ids) so every
 // tie-break path is exercised.
 const rows: KeyedRow[] = [
-  { id: "b", date: toDbDate("2026-06-03") },
-  { id: "a", date: toDbDate("2026-06-03") }, // same day as b
-  { id: "c", date: toDbDate("2026-06-03") }, // three-way same-day tie
-  { id: "d", date: toDbDate("2026-06-02") },
-  { id: "e", date: toDbDate("2026-06-02") },
-  { id: "f", date: toDbDate("2026-06-01") },
-  { id: "g", date: toDbDate("2026-05-31") },
+  { id: "b", economicDate: toDbDate("2026-06-03") },
+  { id: "a", economicDate: toDbDate("2026-06-03") }, // same day as b
+  { id: "c", economicDate: toDbDate("2026-06-03") }, // three-way same-day tie
+  { id: "d", economicDate: toDbDate("2026-06-02") },
+  { id: "e", economicDate: toDbDate("2026-06-02") },
+  { id: "f", economicDate: toDbDate("2026-06-01") },
+  { id: "g", economicDate: toDbDate("2026-05-31") },
 ];
 
 function fullSorted(sort: TransactionSort): KeyedRow[] {

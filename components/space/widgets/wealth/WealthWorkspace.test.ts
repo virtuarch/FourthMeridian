@@ -107,8 +107,10 @@ console.log("7. No second snapshot authority — snapshots are a SHARED inbound 
   check("snapshots + snapshotCurrency are inbound props", CODE.includes("snapshots") && CODE.includes("snapshotCurrency"));
   // SD-7b — the single snapshot fetch authority moved from the host to useSpaceData;
   // the host still shares the ONE snapshot series to Wealth/Debt/Overview as a prop.
-  check("snapshots have ONE fetch authority (useSpaceData) and are shared as a prop (Overview/Debt/Wealth)",
-    read("lib/space/use-space-data.ts").includes("/snapshots") && HOSTC.includes("snapshots={snapshots}"));
+  // W2 — the JSX-prop share sites went with the section render stack; the ONE
+  // surviving share is the workspace render context (renderCtx.snapshots).
+  check("snapshots have ONE fetch authority (useSpaceData) and are shared via renderCtx (Debt/Wealth)",
+    read("lib/space/use-space-data.ts").includes("/snapshots") && /snapshots,\n/.test(HOSTC) && HOSTC.includes("snapshotsBackfilling"));
 }
 
 if (failures > 0) { console.error(`\n${failures} WealthWorkspace check(s) failed`); process.exit(1); }

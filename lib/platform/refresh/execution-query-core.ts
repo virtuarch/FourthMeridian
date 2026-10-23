@@ -122,7 +122,13 @@ export function decodeCursor(raw: string | undefined | null): ExecutionCursor | 
 export interface ExecutionRowDTO {
   id: string;
   runId: string;
-  plaidItemId: string;
+  /** The Plaid item, or null for a non-Plaid source. */
+  plaidItemId: string | null;
+  /** PLATFORM OPS OBSERVABILITY — generic source identity. `sourceRef` is the
+   *  source's own id for non-Plaid kinds (a wallet's FinancialAccount.id). */
+  sourceKind: string;
+  sourceRef: string | null;
+  network: string | null;
   trigger: string;
   profile: string;
   startedAt: string;
@@ -136,6 +142,12 @@ export interface ExecutionRowDTO {
   deploymentSha: string | null;
   /** Truncated free text. `null` for `support` — see the header's redaction rule. */
   errorSummary: string | null;
+  /** OPS-2D-3 — typed admission reason on a denied execution; null when admitted. */
+  admissionReason: string | null;
+  /** PLATFORM OPS OBSERVABILITY — the derived verdict (null = not failed / not provable). */
+  failureStage: string | null;
+  failureCategory: string | null;
+  outcome: string | null;
 }
 
 export interface EndpointRowDTO {
@@ -197,9 +209,9 @@ export interface ExecutionDetailDTO {
 
 /** The exact DTO key sets — pinned by a test so a field can never leak in silently. */
 export const EXECUTION_ROW_KEYS: readonly string[] = [
-  "id", "runId", "plaidItemId", "trigger", "profile", "startedAt", "completedAt",
-  "durationMs", "overallStatus", "parentJobRunId", "hasError", "errorSummary",
-  "deploymentSha",
+  "id", "runId", "plaidItemId", "sourceKind", "sourceRef", "network", "trigger", "profile",
+  "startedAt", "completedAt", "durationMs", "overallStatus", "parentJobRunId", "hasError",
+  "errorSummary", "deploymentSha", "admissionReason", "failureStage", "failureCategory", "outcome",
 ];
 export const ENDPOINT_ROW_KEYS: readonly string[] = [
   "endpoint", "stageKind", "status", "skipReason", "startedAt", "completedAt",
@@ -223,10 +235,13 @@ function redactText(audience: SeamAudience, text: string | null): string | null 
 
 export function projectExecutionRow(
   row: {
-    id: string; runId: string; plaidItemId: string; trigger: string; profile: string;
+    id: string; runId: string; plaidItemId: string | null; trigger: string; profile: string;
     startedAt: Date; completedAt: Date | null; durationMs: number | null;
     overallStatus: string; parentJobRunId: string | null; errorSummary: string | null;
     deploymentSha: string | null;
+    sourceKind: string; sourceRef: string | null; network: string | null;
+    admissionReason: string | null; failureStage: string | null; failureCategory: string | null;
+    outcome: string | null;
   },
   audience: SeamAudience,
 ): ExecutionRowDTO {
@@ -234,6 +249,9 @@ export function projectExecutionRow(
     id: row.id,
     runId: row.runId,
     plaidItemId: row.plaidItemId,
+    sourceKind: row.sourceKind,
+    sourceRef: row.sourceRef,
+    network: row.network,
     trigger: row.trigger,
     profile: row.profile,
     startedAt: row.startedAt.toISOString(),
@@ -246,6 +264,10 @@ export function projectExecutionRow(
     // Evidence carried on the execution. Both audiences see it: a commit sha is
     // not customer data and is already public as the Sentry release.
     deploymentSha: row.deploymentSha,
+    admissionReason: row.admissionReason,
+    failureStage: row.failureStage,
+    failureCategory: row.failureCategory,
+    outcome: row.outcome,
   };
 }
 

@@ -11,6 +11,7 @@
  */
 
 import {
+  DEFAULT_TIME_PRESET,
   resolvePerspectiveTimeRange,
   inferPerspectiveTimePreset,
   defaultPerspectiveTimeState,
@@ -40,12 +41,19 @@ const TODAY = "2026-07-12"; // a Sunday
 const resolve = (preset: Parameters<typeof resolvePerspectiveTimeRange>[0]["preset"], asOf = TODAY, coverageFrom: string | null = null) =>
   resolvePerspectiveTimeRange({ preset, asOf, coverageFrom });
 
+// A rolling month is stable on the day MTD is at its worst: the 1st.
 console.log("Default shell state");
 {
   const d = defaultPerspectiveTimeState(TODAY);
-  check("1. default preset is MTD", d.preset === "MTD");
+  // CHANGED: the default is a ROLLING MONTH, not month-to-date. MTD is unstable
+  // by construction — on the 1st it spans a single day, so the chart opens
+  // nearly empty and lurches at every month boundary. A rolling month always
+  // spans the same amount of time. MTD remains fully selectable.
+  check("1. default preset is a rolling month, not MTD", d.preset === "PAST_MONTH");
+  check("1b. and the default is named, not inlined", DEFAULT_TIME_PRESET === "PAST_MONTH");
   check("2. default As Of is the injected today", d.asOf === TODAY);
-  check("3. default Compare To is the first of that month", d.compareTo === "2026-07-01");
+  check("3. default Compare To is one CALENDAR month back (not 30 days)",
+    d.compareTo === "2026-06-12");
 }
 
 console.log("To-date presets set the correct period start");

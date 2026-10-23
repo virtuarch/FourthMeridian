@@ -38,9 +38,7 @@ const CONVERGED = [
   { file: "app/api/plaid/refresh/route.ts", trigger: "MANUAL", profile: "FULL_REFRESH", pre: true },
   { file: "jobs/sync-banks.ts", trigger: "CRON", profile: "FULL_REFRESH", pre: true },
   { file: "app/api/plaid/investments/enable/route.ts", trigger: "MANUAL", profile: "FULL_REFRESH", pre: false },
-  { file: "app/api/plaid/sync/route.ts", trigger: "MANUAL", profile: "TRANSACTIONS_ONLY", pre: false },
   { file: "app/api/platform/platform-ops/connections/[id]/resync/route.ts", trigger: "OPERATOR", profile: "TRANSACTIONS_ONLY", pre: false },
-  { file: "app/api/plaid/resume-sync/route.ts", trigger: "RESUME", profile: "IMPORT_RECOVERY", pre: false },
 ] as const;
 
 /** Paths that reach the authority through the shared webhook wrapper. */
@@ -48,11 +46,39 @@ const VIA_WRAPPER = [
   { file: "app/api/plaid/webhook/route.ts", trigger: "WEBHOOK" },
   { file: "app/api/plaid/exchange-token/route.ts", trigger: "RECONNECT" },
   { file: "jobs/resume-stale-imports.ts", trigger: "RESUME" },
+  // 2026-10-06 — the browser-driven resume now runs the SAME full pipeline as the
+  // cron resume. Its private copy (transactions + a bare wealth regeneration)
+  // never wrote the reconstruction anchor, so a rescued import read "Building
+  // your timeline — this finishes in the background" forever.
+  { file: "app/api/plaid/resume-sync/route.ts", trigger: "RESUME" },
 ] as const;
 
 function main() {
   console.log("convergence · every refresh-equivalent path reaches the authority");
   {
+    // V26 OPS-REFRESH-1A — THIS CENSUS ONCE PASSED OVER A REAL GAP.
+    //
+    // `app/api/plaid/refresh/route.ts` forks on `body.plaidItemId`. The
+    // single-item branch has used runFullRefresh since DF-2A, so the token check
+    // below was satisfied — while the all-items branch (the topbar Refresh
+    // button, the product's primary refresh gesture) called refreshPlaidItem
+    // through refreshAllActiveItemsForUser, in a DIFFERENT FILE this list never
+    // read, with no recorder, no runId and no execution row at all.
+    //
+    // The lesson is not "add another file to the list". A `runFullRefresh`
+    // appearing in a file proves a call site exists; it cannot prove that EVERY
+    // branch reaches it. The intent — "every per-item refresh performed by the
+    // fan-out executes through the envelope" — is asserted BEHAVIOURALLY in
+    // lib/plaid/refresh-fanout.test.ts, which runs the real service over
+    // injected collaborators and fails if the envelope is missing OR bypassed.
+    // The pointer below keeps that guard discoverable from here; it does not
+    // pretend to be the guard itself.
+    check(
+      "the all-items fan-out's convergence is asserted behaviourally (see refresh-fanout.test.ts)",
+      /runManualItemRefresh/.test(strip("lib/plaid/refresh.ts"))
+        && /refreshAllActiveItemsForUser/.test(strip("lib/plaid/refresh-fanout.test.ts")),
+    );
+
     for (const p of CONVERGED) {
       const src = strip(p.file);
       check(`${p.file}: uses runFullRefresh`, /runFullRefresh[<(]/.test(src));
@@ -72,8 +98,6 @@ function main() {
     // runFullRefresh runner. The check is positional: the authority call must
     // appear before the engine call in the file.
     const ROUTES_USING_ENGINE = [
-      "app/api/plaid/sync/route.ts",
-      "app/api/plaid/resume-sync/route.ts",
       "app/api/platform/platform-ops/connections/[id]/resync/route.ts",
       "app/api/plaid/investments/enable/route.ts",
     ];
@@ -96,13 +120,14 @@ function main() {
     check("operator resync keeps its audit write", /CONNECTION_RESYNC_TRIGGERED/.test(resync));
     check("operator resync keeps health classification on failure", /classifyPlaidErrorForHealth/.test(resync));
 
-    const sync = strip("app/api/plaid/sync/route.ts");
-    check("/sync keeps its per-item cooldown partition", /checkManualRefreshCooldown/.test(sync) && /markManyManualRefreshed/.test(sync));
-    check("/sync keeps per-item isolation (one failure never blocks siblings)", /catch\s*\(e\)/.test(sync) && /continue;/.test(sync));
+    // ARCH-007 (2026-10-22) — POST /api/plaid/sync (the never-wired manual
+    // "Sync Now" endpoint) is DELETED; its pins went with it.
 
     const resume = strip("app/api/plaid/resume-sync/route.ts");
     check("resume-sync keeps its AGE gate, not a cooldown", /RESUME_MIN_AGE_MS/.test(resume) && !/checkManualRefreshCooldown/.test(resume));
-    check("resume-sync keeps its best-effort wealth regeneration", /regenerateWealthHistoryForItem/.test(resume));
+    check("resume-sync runs the shared full pipeline as RESUME / IMPORT_RECOVERY, and no private partial copy of it",
+      /syncPlaidItemFromWebhook\(item\.id,\s*"RESUME",\s*"IMPORT_RECOVERY"/.test(resume)
+      && !/regenerateWealthHistoryForItem|syncTransactionsForItem|withPlaidItemSyncLock/.test(resume));
 
     const enable = strip("app/api/plaid/investments/enable/route.ts");
     check("investments/enable still runs the FULL pipeline body", /refreshPlaidItem\(/.test(enable));
@@ -115,8 +140,6 @@ function main() {
     // The three transactions-only paths must record a TRANSACTIONS stage and
     // must NOT claim balances/holdings/snapshot they never ran.
     for (const f of [
-      "app/api/plaid/sync/route.ts",
-      "app/api/plaid/resume-sync/route.ts",
       "app/api/platform/platform-ops/connections/[id]/resync/route.ts",
     ]) {
       const src = strip(f);

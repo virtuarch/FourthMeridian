@@ -19,7 +19,7 @@ import { formatDateTime } from "@/lib/format";
 export type SessionRow = {
   id:           string;
   userId:       string;
-  sessionToken: string;
+  // P1b — no sessionToken: it is authentication material and no API returns it.
   ipAddress:    string | null;
   userAgent:    string | null;
   lastActiveAt: string;

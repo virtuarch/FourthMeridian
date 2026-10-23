@@ -21,7 +21,8 @@
  * `sysadmin@example.com` with a hardcoded password.
  *
  * ── MFA is automatic, and cannot be bypassed here ───────────────────────────
- * This sets `role` and nothing else. It deliberately does not touch
+ * This sets `role`, revokes the user's live sessions (P1b — so no session
+ * outlives the role it was issued under), and nothing else. It deliberately does not touch
  * `totpEnabled` / `totpSecret`, because `requiresTotpEnrollment()` (PO-1) returns
  * true for a SYSTEM_ADMIN with `totpEnabled: false` — so at the next login the
  * account is forced into TOTP enrolment and can reach nothing but the 2FA setup
@@ -110,26 +111,42 @@ async function main(): Promise<void> {
     return;
   }
 
-  await db.user.update({ where: { id: user.id }, data: { role: UserRole.SYSTEM_ADMIN } });
+  // P1b — a role change REVOKES the user's live sessions, in the same
+  // transaction. The session callback already serves the CURRENT role, but the
+  // token still carries the old one and proxy.ts routes on it; a session that
+  // outlived its role would bounce between /dashboard and /admin. Revoking makes
+  // the next request a fresh login whose token, hint and authority all agree —
+  // and it is the same step the login path's TOTP enrolment needs anyway.
+  const revokedSessions = await db.$transaction(async (tx) => {
+    await tx.user.update({ where: { id: user.id }, data: { role: UserRole.SYSTEM_ADMIN } });
+    const { count } = await tx.userSession.updateMany({
+      where: { userId: user.id, revokedAt: null },
+      data:  { revokedAt: new Date() },
+    });
 
-  // Audited: attributed, non-secret, and durable. `performedByAdminId` is left
-  // null on purpose — this was an out-of-band operator act, not an in-app one,
-  // and recording a fake actor would be worse than recording none.
-  await db.auditLog.create({
-    data: {
-      userId: user.id,
-      action: AuditAction.MEMBER_ROLE_CHANGED,
-      metadata: {
-        scope: "PLATFORM",
-        from: user.role,
-        to: UserRole.SYSTEM_ADMIN,
-        via: "scripts/admin-promote.ts",
-        note: "Out-of-band SYSTEM_ADMIN bootstrap. MFA enrolment is still enforced at login.",
+    // Audited: attributed, non-secret, and durable. `performedByAdminId` is left
+    // null on purpose — this was an out-of-band operator act, not an in-app one,
+    // and recording a fake actor would be worse than recording none.
+    await tx.auditLog.create({
+      data: {
+        userId: user.id,
+        action: AuditAction.MEMBER_ROLE_CHANGED,
+        metadata: {
+          scope: "PLATFORM",
+          from: user.role,
+          to: UserRole.SYSTEM_ADMIN,
+          via: "scripts/admin-promote.ts",
+          revokedSessions: count,
+          note: "Out-of-band SYSTEM_ADMIN bootstrap. Existing sessions revoked; MFA enrolment is still enforced at login.",
+        },
       },
-    },
+    });
+    return count;
   });
+  // Other warm instances may serve a cached verdict for up to the session-cache
+  // TTL (lib/session-cache.ts); this process holds no cache worth clearing.
 
-  console.log(`\n  ✓ ${target} is now SYSTEM_ADMIN (audited).`);
+  console.log(`\n  ✓ ${target} is now SYSTEM_ADMIN (audited); ${revokedSessions} live session(s) revoked.`);
   console.log("\n  Next:");
   console.log("    1. Log out and back in — you will be forced into TOTP enrolment.");
   console.log("    2. Complete 2FA setup; admin routes stay closed until you do.");

@@ -66,9 +66,19 @@ console.log("2. All-unrated ⇒ zero interest, ratedCount 0 (strip shows the das
   check("estMonthlyInterest = 0", k.estMonthlyInterest === 0, `${k.estMonthlyInterest}`);
   check("ratedCount = 0", k.ratedCount === 0);
   check("unratedCount = 1", k.unratedCount === 1);
-  // APR of exactly 0 is treated as unrated (renderDebtCost uses > 0).
+  // v2.6-DEBT-1 — this asserted "APR 0 counts as unrated", with the reason given
+  // as "renderDebtCost uses > 0". That pinned an IMPLEMENTATION detail, not a
+  // product rule, and the two questions it conflated have different answers:
+  //
+  //   "does this debt accrue interest?"  → no. estMonthlyInterest stays 0.
+  //   "do we know its rate?"             → YES. The user entered 0%.
+  //
+  // `ratedCount`/`unratedCount` answer the second — they drive debt-signals'
+  // "N missing an APR" gap row, so counting a 0% promotional balance as unrated
+  // told the user their data was incomplete when it was complete.
   const z = computeDebtKpis([debt({ balance: 800, interestRate: 0 })]);
-  check("APR 0 counts as unrated", z.ratedCount === 0 && z.unratedCount === 1, `${z.ratedCount}/${z.unratedCount}`);
+  check("APR 0 is a KNOWN rate, not a gap", z.ratedCount === 1 && z.unratedCount === 0, `${z.ratedCount}/${z.unratedCount}`);
+  check("APR 0 still accrues nothing", z.estMonthlyInterest === 0, `${z.estMonthlyInterest}`);
 }
 
 console.log("3. No credit limits ⇒ utilization is null (never a fake 0%)");

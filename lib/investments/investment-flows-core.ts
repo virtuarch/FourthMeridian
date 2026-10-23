@@ -105,6 +105,23 @@ export interface FlowEvent {
   amount:      number | null;   // reporting-currency, FM-signed; null = no cash leg
   fxEstimated: boolean;         // conversion rate walked back / missing
   hasQuantity: boolean;         // carries security units (in-kind detection)
+
+  // ── IDENTITY (V26 activity convergence) ──────────────────────────────────
+  //
+  // These were dropped at the projection step, which is why a card could say
+  // "9 sells" and never name one, and why a dividend total could not say which
+  // security paid it. The evidence was always in `InvestmentEvent`; it was
+  // summarised away one layer too early.
+  //
+  // `symbol` is DISPLAY identity resolved from the instrument, and it is null
+  // when the provider gave none — an unattributed dividend stays explicitly
+  // unattributed rather than borrowing a ticker.
+  accountId:    string;
+  instrumentId: string | null;
+  symbol:       string | null;
+  name:         string | null;
+  /** Security units moved. Null when the event has no unit leg. */
+  quantity:     number | null;
 }
 
 /** Per-category subtotal within the period. Serialisable. */
@@ -152,6 +169,18 @@ export interface PeriodFlows {
   /** True when any summed amount used an estimated FX rate. */
   fxEstimated: boolean;
 
+  /**
+   * THE ROWS BEHIND THE COUNTS.
+   *
+   * A summary that cannot enumerate itself is an assertion, not evidence. Every
+   * count and subtotal above is derived from exactly this list, so a card
+   * showing "9 sells" can list those nine and their totals must agree by
+   * construction rather than by a second query.
+   *
+   * Ordered by (date, type, symbol) so a list is deterministic.
+   */
+  events: FlowEvent[];
+
   /** Trust tier for the flow picture as a whole. */
   completeness: CompletenessTier;
   /** Deterministic, name-free explanation. */
@@ -176,6 +205,12 @@ export function summarizePeriodFlows(
   to: string,
   reportingCurrency: string,
 ): PeriodFlows {
+  // STOCK-CLAIM ATTRIBUTION WINDOW: half-open (from, to].
+  //
+  // These flows explain the change between two BALANCES, and the opening
+  // balance already contains the opening day. Counting that day again would
+  // double-count it. Cash Flow's own question uses the CLOSED calendar window
+  // instead — see lib/perspectives/financial-window.ts, where both are named.
   const inWindow = events.filter((e) => e.date > from && e.date <= to);
 
   const catAmount = new Map<FlowCategory, number>();
@@ -242,6 +277,12 @@ export function summarizePeriodFlows(
     netExternalFlows,
     byCategory,
     inKindTransferCount, unclassifiedCount, externalAmountMissingCount, fxEstimated,
+    // The rows every count above is derived from, deterministically ordered, so
+    // a card showing "9 sells" can list those nine and cannot disagree with them.
+    events: [...inWindow].sort((a, b) =>
+      a.date.localeCompare(b.date)
+      || a.type.localeCompare(b.type)
+      || (a.symbol ?? "").localeCompare(b.symbol ?? "")),
     completeness: tier,
     reason,
   };

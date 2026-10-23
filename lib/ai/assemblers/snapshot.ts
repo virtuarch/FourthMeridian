@@ -29,7 +29,10 @@
  *   - When scopeHint='brief': latest + trend only, no history array
  *
  * ── Permissions ──────────────────────────────────────────────────────────────
- * buildContext() validates Space membership before invoking any assembler.
+ * ⚠️ MEMBERSHIP IS THE CALLER'S, AND THE CALLER IS NO LONGER buildContext()
+ * (deleted, RLS-AI-S1). The live callers are `lib/ai/conversation/evidence.ts`
+ * and the tool layer, both reached from routes that re-resolve the Space and 403
+ * on a mismatch; the Brief reaches the authorities directly.
  * All reads are scoped by spaceCtx.spaceId — no cross-Space data possible.
  * SpaceSnapshot rows belong directly to the Space (spaceId FK) so no
  * additional permission layer is required.
@@ -41,6 +44,27 @@
  */
 
 import { getRecentSnapshots } from '@/lib/data/snapshots';
+/**
+ * RLS-AI-S6 — THE ASSEMBLER'S READ AUTHORITY IS NOW A PARAMETER, SO THIS FILE
+ * HOLDS NO CLIENT AT ALL.
+ *
+ * RLS-C-S3 recorded, honestly, why this module imported `db`: `getRecentSnapshots`
+ * had just started requiring a client, the other two heavyweight assemblers already
+ * held one, and threading a client down `AssemblerOptions` was rejected because
+ * "the Brief loader calls three assemblers and holds no long-lived client to pass".
+ *
+ * ⚠️ THAT LAST PREMISE WAS FALSE BY THE TIME IT WAS WRITTEN, and checking it is
+ * what unblocked this slice. `lib/ai/brief/load.ts` already wraps every canonical
+ * read in `rt.asOwnerReading((c) => …)` — a per-phase tenant runner that hands out
+ * exactly a `ReadClient`. The Brief had a client to pass all along; what it did not
+ * have was a parameter to pass it to. The client therefore arrives as the FIRST
+ * ARGUMENT OF `AssemblerFn` (never on `AssemblerOptions`, where an optional field
+ * would be this import with extra steps) and every caller states it.
+ */
+import type { ReadClient } from '@/lib/db/tenant-context';
+// v2.6-WINDOW-1 — imported from the PURE module, not through the server-only
+// read, so the projection below stays reachable from a probe.
+import { canonicalWindowChange, seriesSpanDays } from '@/lib/data/snapshot-window';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
@@ -58,11 +82,24 @@ import type { Snapshot } from '@/types';
 // ---------------------------------------------------------------------------
 
 /**
- * Maximum number of snapshot rows returned in the `history` array.
- * Daily snapshots → ~90 days of history. Sufficient for trend analysis and
- * compact enough not to bloat the context payload.
+ * Maximum number of snapshot ROWS returned in the `history` array.
+ *
+ * ⚠️ v2.6-WINDOW-1 — a ROW CAP, not a date range. `getRecentSnapshots` uses its
+ * `days` parameter as `take: -days`, so this is "the last 90 rows", and the
+ * comment that used to read "→ ~90 days of history" was an ASSUMPTION about
+ * snapshot cadence, not a fact about the read. On a daily contiguous corpus 90
+ * rows span 89 days; on any other cadence they span whatever they span. Nothing
+ * downstream may call this number a duration — `spanDays` is the measured one.
  */
-const SNAPSHOT_HISTORY_LIMIT = 90;
+export const SNAPSHOT_HISTORY_LIMIT = 90;
+
+/**
+ * The window every context consumer states when it reports a net-worth change.
+ *
+ * PAST_MONTH, matching the Space launcher (`getSpaceNetWorthSummaries`) and the
+ * inside-Space selector's default. One preset, three surfaces, one number.
+ */
+const CANONICAL_CHANGE_PRESET = "PAST_MONTH" as const;
 
 // ---------------------------------------------------------------------------
 // Pure projection (exported for tests)
@@ -87,44 +124,112 @@ export function projectSnapshotSection(
   // null so the domain is noted as empty rather than surfacing zeros.
   if (usable.length === 0) return null;
 
-  const points: SnapshotDataPoint[] = usable.map((r) => ({
-    date:          r.date,
-    netWorth:      r.netWorth,
-    totalAssets:   r.totalAssets,
-    liabilities:   r.totalDebt,                    // rename for semantic clarity
-    liquid:        r.totalCash + r.totalSavings,
-    investments:   r.totalInvestments,             // rename for semantic clarity
-    digitalAssets: r.totalCrypto,                  // rename for semantic clarity
-    cashOnHand:    r.cashOnHand,
-    netLiquid:     r.netLiquid ?? 0,
-  }));
+  // V26-CRYPTO-STATUS-1 — a point whose crypto may not be asserted is INCLUDED
+  // with explicit nulls and a reason, never dropped and never zeroed. Dropping
+  // would leave a silent hole the model reads as "no data"; zeroing would state
+  // an absence no evidence supports. Nulls plus a reason say the one true thing:
+  // this figure is unknown, and here is why.
+  //
+  // `netWorth` and `totalAssets` are nulled alongside it because both are
+  // arithmetically composed WITH the crypto component — on the affected rows it
+  // is 41.7%–99.9% of totalAssets. `liabilities`, `liquid`, `investments`,
+  // `cashOnHand` and `netLiquid` never involved crypto and stay factual.
+  const points: SnapshotDataPoint[] = usable.map((r) => {
+    // v2.6-A/B — the AGGREGATE's verdict decides, not one component's boolean.
+    // A model must never receive an unassertable Net Worth as a fact, and after
+    // Slice A the aggregate itself says whether it may be asserted. The boolean
+    // remains the fallback for a DTO built before Slice A.
+    const netWorthRefused = r.aggregateAuthorisation
+      ? r.aggregateAuthorisation.netWorth.assertable === false
+      : r.assetSideContaminated === true;
+    const contaminated = netWorthRefused;
+    return {
+      date:          r.date,
+      netWorth:      contaminated ? null : r.netWorth,
+      totalAssets:   contaminated ? null : r.totalAssets,
+      liabilities:   r.totalDebt,                    // rename for semantic clarity
+      liquid:        r.totalCash + r.totalSavings,
+      investments:   r.totalInvestments,             // rename for semantic clarity
+      digitalAssets: contaminated ? null : r.totalCrypto,  // rename for semantic clarity
+      cashOnHand:    r.cashOnHand,
+      netLiquid:     r.netLiquid ?? 0,
+      ...(contaminated
+        ? { digitalAssetsUnavailableReason: r.cryptoUnavailableReason ?? "HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE" }
+        : {}),
+      // RWA-2B — carried, never decided here: the read boundary says whether
+      // this reconstructed day's real-asset component is a modeled value.
+      ...(r.realAssetsModeled === true ? { realAssetsModeled: true as const } : {}),
+    };
+  });
 
   const oldest = points[0];
   const latest = points[points.length - 1];
 
-  let netWorthTrend:    number | null = null;
-  let netWorthTrendPct: number | null = null;
-
-  if (points.length >= 2) {
-    netWorthTrend = latest.netWorth - oldest.netWorth;
-    if (oldest.netWorth !== 0) {
-      netWorthTrendPct = Math.round((netWorthTrend / Math.abs(oldest.netWorth)) * 10000) / 100;
-    }
-  }
+  // V26-CRYPTO-STATUS-1 — an unassertable digital-asset point NULLS the row's
+  // netWorth, which removes it from the canonical-change series below: a trend
+  // is never computed from a number the payload itself declares unknown. The
+  // count is disclosed. (The accidental-window `netWorthTrend` pair this block
+  // once computed was deleted at REVIEW-3 integration — `canonicalChange` is
+  // the only change figure the payload carries.)
+  const unassertablePoints = points.filter((p) => p.netWorth === null).length;
 
   const estimated = usable.some((r) => r.isEstimated === true);
 
+  // v2.6-WINDOW-1 — the TRUE calendar distance the points cover, and the change
+  // over a window the product DEFINES.
+  //
+  // `snapshotCount` is a ROW COUNT (`getRecentSnapshots` uses its `days`
+  // parameter as `take: -days`). Four surfaces rendered it as a number of days,
+  // which is only true when snapshots are daily AND contiguous — a property
+  // nothing enforces. `spanDays` is derived from the dates the section already
+  // carries, so the count is never again pressed into service as a duration.
+  //
+  // `canonicalChange` replaced the deleted `netWorthTrend` pair (oldest→newest of
+  // whatever rows were fetched: a real number over an ACCIDENTAL window. The
+  // Daily Brief published it as "over the last 90 days" and landed on a baseline
+  // three days from the canonical one, across a $4,985 debt paydown — 14.9%
+  // where the Space said 47.4% for the same words. This is the same figure the
+  // Space launcher and the inside-Space selector show, from the same authority
+  // (`compareToForPreset`), so a consumer can state a window instead of inventing
+  // one. It is null when history does not reach back that far — a refusal, not a
+  // fallback to the earliest available point.
+  const series = points
+    .filter((p): p is typeof p & { netWorth: number } => p.netWorth !== null)
+    .map((p) => ({ date: new Date(p.date), value: p.netWorth }));
+  const spanDays = seriesSpanDays(points.map((p) => ({ date: new Date(p.date), value: 0 })));
+  const canonicalChange = canonicalWindowChange(series, CANONICAL_CHANGE_PRESET);
+
+  // W3 — the LIABILITIES change, from the SAME window authority over the SAME
+  // preset. This is the canonical figure the debt trend (engine.ts IMPROVING)
+  // now reads, replacing the accidental fetched-row window (history[0] vs
+  // history[last] over ≥7 rows). `liabilities` is never nulled by the
+  // crypto-unassertable rule (it is the `debt` column, composed without
+  // crypto), so every point enters the series. Computed BEFORE the brief-scope
+  // history truncation below, so both scope hints carry the identical figure.
+  const liabilitiesSeries = points.map((p) => ({ date: new Date(p.date), value: p.liabilities }));
+  const liabilitiesChange = canonicalWindowChange(liabilitiesSeries, CANONICAL_CHANGE_PRESET);
+
   return {
+    // REVIEW-3 C-6 — the effective currency of these figures, from the newest
+    // usable row's stamp (the canonical read boundary resolves it). Consumers
+    // that render money format with THIS, never a hard-coded symbol. Absent on
+    // fixtures whose rows carry no stamp.
+    ...(usable[usable.length - 1].currency
+      ? { currency: usable[usable.length - 1].currency }
+      : {}),
     snapshotCount:    usable.length,
+    spanDays,
+    canonicalChange,
+    liabilitiesChange,
     oldestDate:       oldest.date,
     newestDate:       latest.date,
-    netWorthTrend,
-    netWorthTrendPct,
     latest,
     history: scopeHint === 'brief' ? [] : points,
     // Disclosure — additive; absent on clean homogeneous histories.
     ...(estimated ? { estimated: true } : {}),
     ...(excluded > 0 ? { excludedFxMissPoints: excluded } : {}),
+    // Disclosure — how many points carry an unassertable digital-asset figure.
+    ...(unassertablePoints > 0 ? { unassertableCryptoPoints: unassertablePoints } : {}),
   };
 }
 
@@ -133,6 +238,8 @@ export function projectSnapshotSection(
 // ---------------------------------------------------------------------------
 
 async function assembleSnapshot(
+  /** RLS-AI-S6 — the authority this read runs under. See AssemblerFn. */
+  client:   ReadClient,
   spaceCtx: SpaceContext,
   options:  AssemblerOptions,
 ): Promise<ContextDomainSection | null> {
@@ -141,7 +248,7 @@ async function assembleSnapshot(
   const assembledAt = new Date().toISOString();
 
   // Canonical, stamp-aware, bounded read (newest-last, ascending by date).
-  const rows = await getRecentSnapshots(SNAPSHOT_HISTORY_LIMIT, { spaceId });
+  const rows = await getRecentSnapshots(client, { rows: SNAPSHOT_HISTORY_LIMIT }, { spaceId });
 
   const data = projectSnapshotSection(rows, scopeHint === 'brief' ? 'brief' : 'full');
   if (data === null) return null;

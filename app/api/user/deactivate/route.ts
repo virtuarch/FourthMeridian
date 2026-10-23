@@ -21,7 +21,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireFreshUser } from "@/lib/session";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
@@ -54,10 +54,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Current password is required." }, { status: 400 });
     }
 
-    const dbUser = await db.user.findUnique({
+    // RLS slice A — one short tenant transaction per step. bcrypt and `sendEmail`
+    // sit between them, and neither may be held inside a tenant transaction.
+    const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
       where:  { id: user.id },
       select: { passwordHash: true, email: true, deactivatedAt: true },
-    });
+    }));
     if (!dbUser?.passwordHash) {
       return NextResponse.json({ error: "Account has no password set." }, { status: 400 });
     }
@@ -76,10 +78,10 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Deactivate ─────────────────────────────────────────────────────────────
-    await db.user.update({
+    await withTenantDb(user.id, (tx) => tx.user.update({
       where: { id: user.id },
       data:  { deactivatedAt: new Date() },
-    });
+    }));
 
     // Revoke EVERY session, including the current one — the caller is signed
     // out everywhere the moment this returns.
@@ -98,13 +100,13 @@ export async function POST(req: NextRequest) {
       console.error("[user/deactivate] security-alert email failed to send:", emailResult.error);
     }
 
-    const auditRow = await db.auditLog.create({
+    const auditRow = await withTenantDb(user.id, (tx) => tx.auditLog.create({
       data: {
         userId:   user.id,
         action:   AuditAction.ACCOUNT_DEACTIVATED,
         metadata: { revokedSessions, emailStatus: emailResult.status },
       },
-    });
+    }));
 
     // OPS-3 S5 Wave 1 — bell mirror, seen on reactivation. Non-throwing.
     await createNotification({

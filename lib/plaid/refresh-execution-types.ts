@@ -11,7 +11,13 @@
  * are TypeScript string-union types over plain String columns — TS keeps
  * exhaustiveness in the derivation switch, while the DB needs no migration to
  * gain a new trigger/profile/stage/skip-reason later (DF-2B..2F).
+ *
+ * The one import below is TYPE-ONLY and therefore erased: the recorder seam
+ * carries the ledger door (RLS-P-1) but this module still pulls in no runtime
+ * dependency, so the no-cycle property above is unchanged.
  */
+
+import type { LedgerHandle } from "@/lib/plaid/refresh-ledger";
 
 /**
  * How a per-item refresh was initiated. Only currently-meaningful triggers.
@@ -56,7 +62,59 @@ export type RefreshProfile =
   | "FULL_REFRESH"      // balances → holdings → transactions → reconciliation → snapshot
   | "RECONNECT"         // the deferred post-connect / webhook historical pipeline
   | "TRANSACTIONS_ONLY" // the cursor-based transaction sync alone — no balances, no holdings
-  | "IMPORT_RECOVERY";  // continuation of an INCOMPLETE first-run import from its cursor
+  | "IMPORT_RECOVERY"   // continuation of an INCOMPLETE first-run import from its cursor
+  // PLATFORM OPS OBSERVABILITY — a self-custody wallet refresh through its chain
+  // adapter (balance read → position capture → history refresh). One profile for
+  // every chain: the chain is the execution's `network`, not its workflow.
+  | "WALLET_SYNC";
+
+/**
+ * PLATFORM OPS OBSERVABILITY — WHAT an execution refreshed. The ledger was
+ * born with `plaidItemId` alone; a wallet has no Plaid item, so it could not be
+ * represented and every crypto refresh ran off-ledger. A source is now named
+ * generically: a KIND, the source's own id, and (for a chain read) the network.
+ * Never an address, never a credential — the id is a soft reference an operator
+ * surface can label, nothing more.
+ */
+export type ExecutionSource =
+  | { kind: "PLAID_ITEM"; ref: string }
+  | { kind: "WALLET"; ref: string; network: string };
+
+/** The closed vocabulary of execution source kinds (mirrors ExecutionSource). */
+export type ExecutionSourceKind = ExecutionSource["kind"];
+
+/**
+ * PLATFORM OPS OBSERVABILITY — a CODE-OWNED classification of why an
+ * execution failed, derived once at the completion write from the producer's
+ * error code and message (lib/plaid/refresh-verdict.core.ts). Deliberately
+ * coarse and provider-neutral: an operator needs "the provider timed out" or
+ * "this deployment is misconfigured", not the provider's own taxonomy, which
+ * stays on ProviderCall / SyncIssue where it belongs.
+ */
+export type RefreshFailureCategory =
+  | "PROVIDER_TIMEOUT"      // the upstream did not answer in time (abort / timeout)
+  | "PROVIDER_RATE_LIMITED" // the upstream refused for rate/quota reasons
+  | "PROVIDER_AUTH"         // the upstream needs re-authentication / consent
+  | "PROVIDER_ERROR"        // the upstream answered with an error or could not be read
+  | "CONFIGURATION"         // this deployment lacks a provider endpoint / credential
+  | "INPUT"                 // the stored source is malformed (e.g. an invalid address)
+  | "UNSUPPORTED"           // no adapter serves this source
+  | "INTERNAL"              // we read the provider but could not record the result
+  | "UNKNOWN";              // failed, and nothing above could be established
+
+/**
+ * PLATFORM OPS OBSERVABILITY — what happened to CANONICAL STATE, when provable.
+ * Absent (null) means "not provable from what the stages reported" and must be
+ * rendered as unknown — never as unchanged.
+ */
+export type RefreshOutcome = "UPDATED" | "NO_CHANGE";
+
+/** The derived verdict stamped on an execution at completion. All optional. */
+export interface ExecutionVerdict {
+  failureStage?: string;
+  failureCategory?: RefreshFailureCategory;
+  outcome?: RefreshOutcome;
+}
 
 /** Execution-level status, DERIVED from child stage results — never a stored success boolean. */
 export type RefreshOverallStatus = "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "SKIPPED";
@@ -77,7 +135,31 @@ export type RefreshEndpoint =
   // price backfill + MAX-window wealth history + historical snapshots) recorded
   // as ONE DERIVED stage. It is the reconnect/webhook-defining work; manual/cron
   // never run it (empty ≠ uncovered).
-  | "HISTORY_BACKFILL";
+  | "HISTORY_BACKFILL"
+  // PLATFORM OPS OBSERVABILITY — the chain adapter's run (balance read + position
+  // capture) recorded as ONE PROVIDER stage. The adapter's finer stage names
+  // ("balance", "price", "capture", …) are its own vocabulary and land on the
+  // execution's `failureStage`; the history refresh that follows a successful
+  // read is the existing DERIVED HISTORY_BACKFILL stage.
+  | "WALLET_SYNC"
+  // BTC — the canonical archived close applied to the quantity WALLET_SYNC just
+  // observed. DERIVED (an archive read, not a provider call): a failure makes the
+  // run PARTIAL — quantity fresh, value not — and never FAILED on its own.
+  | "VALUATION"
+  // The chain's native-asset CURRENT quote (lib/prices/current-quotes), fetched
+  // after a successful wallet read. PROVIDER: a failure makes the run PARTIAL
+  // and the value falls back to the last close, labelled as such.
+  | "CURRENT_QUOTE"
+  // CRYPTO-LATCH-1 — RAW_CLOSE archive maintenance performed as a PREREQUISITE
+  // of valuation, recorded only on the runs where the archive was actually
+  // short. PROVIDER (it acquires real vendor rows); a failure makes the run
+  // PARTIAL and is never FAILED on its own, exactly like VALUATION.
+  //
+  // It exists as its own stage because the incident of 2026-10-01 was invisible:
+  // the archive had been unable to value Bitcoin for four days and the only
+  // trace was a 36 ms VALUATION failure that said "no close" without saying
+  // that nothing had tried to get one.
+  | "PRICE_ARCHIVE";
 
 export type RefreshStageKind = "PROVIDER" | "DERIVED";
 
@@ -161,6 +243,21 @@ export interface RefreshStageRecord {
  * changes control flow — it only observes, exactly like runJob().
  */
 export interface RefreshStageRecorder {
+  /**
+   * V26-STAGE-1 / RLS-P-1 — the open execution's LEDGER DOOR, when one exists.
+   *
+   * Exposed so the historical layer can persist its own stages INCREMENTALLY
+   * (see historical-stage-recorder.ts) instead of relying on this recorder's
+   * end-of-run flush. Those two durability models are deliberately different: a
+   * short provider fan-out can afford to report at the end, a resumable
+   * multi-stage pipeline cannot.
+   *
+   * ⚠️ THE HANDLE, NOT THE ID. This was `refreshExecutionId?: string`, and the
+   * historical pipeline took it as a plain parameter — one argument away from
+   * writing stages against somebody else's execution. A handle minted its own id
+   * and accepts none, so there is nothing to point.
+   */
+  readonly ledger?: LedgerHandle;
   /** Mark a stage started. */
   begin(endpoint: RefreshEndpoint, stageKind: RefreshStageKind): void;
   /** Finalize the open stage as SUCCEEDED with the facts it produced. */
@@ -181,4 +278,17 @@ export interface RefreshStageRecorder {
    * open. Distinct from fail(endpoint): the caller need not know which stage.
    */
   failOpen(err: unknown): void;
+  /**
+   * Record a stage that ran INSIDE another call and was timed by its owner (a
+   * chain adapter's best-effort transaction import runs inside WALLET_SYNC).
+   * The owner's clock is used verbatim — never a zero-length window invented
+   * here. Does not touch whatever stage is open.
+   */
+  recordMeasured(
+    endpoint: RefreshEndpoint,
+    stageKind: RefreshStageKind,
+    measured:
+      | { ok: true;  startedAt: Date; durationMs: number; facts?: RefreshStageFacts }
+      | { ok: false; startedAt: Date; durationMs: number; err: unknown },
+  ): void;
 }

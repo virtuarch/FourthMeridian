@@ -29,6 +29,7 @@
  * cash — exactly the panel's existing semantics.
  */
 
+import type { InvestmentAccountsSlice } from "./investment-accounts";
 import { computeAllocation, type AllocationResult } from "./investments-allocation-core";
 import type { CurrentPositions, CurrentPositionRow } from "./current-positions-core";
 import type { InvestmentsPortfolio, InvestmentsTimeMachineResult } from "./investments-time-machine-core";
@@ -102,6 +103,12 @@ export interface InvestmentsSpaceData {
    * (like `trust`), so it is attached from the raw contract, not the converted one.
    */
   scopeDivergence?: ScopeDivergenceDisclosure;
+  /**
+   * The investment ACCOUNTS behind the canonical investment aggregate
+   * (lib/investments/investment-accounts.ts) — every counted account, at its
+   * balance, with holdings as optional enrichment. Present for a Space read.
+   */
+  accounts?: InvestmentAccountsSlice;
 }
 
 /**

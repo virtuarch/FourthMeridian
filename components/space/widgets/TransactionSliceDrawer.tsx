@@ -35,11 +35,15 @@
  */
 
 import { useState } from "react";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
+import {
+  describeRowNature, DIRECTION_SIGN, ROW_NATURE_ORDER, ROW_NATURE_GROUP_LABEL, type RowNature,
+} from "@/lib/transactions/flow-presentation";
 import { economicTotals } from "@/lib/transactions/cash-flow";
 import { TransactionDate } from "@/components/ui/TransactionDate";
 import { Waves, Layers, ListFilter } from "lucide-react";
@@ -63,55 +67,83 @@ export interface TransactionSlice {
    *  with the row/segment that opened it. Shown only when income and spend are 0. */
   total?:        number;
   totalLabel?:   string;
+  /** CF-TIER-NET — what the net cost figure is called for THIS slice. Default
+   *  "Spending". A slice of GROSS charges (cost rows only, by design — e.g. the
+   *  "Charged on credit" context row) passes "Charged", so the drawer never labels
+   *  a gross amount as spending. */
+  spendLabel?:   string;
 }
 
-/** Friendly, canonical FlowType group labels (the persisted `flowType` fact). */
-const FLOW_GROUP_LABEL: Record<string, string> = {
-  SPENDING: "Spending", INCOME: "Income", REFUND: "Refunds", DEBT_PAYMENT: "Debt payments",
-  TRANSFER: "Transfers", INVESTMENT: "Investment activity", FEE: "Fees", INTEREST: "Interest",
-  ADJUSTMENT: "Adjustments", UNKNOWN: "Unclassified",
-};
-const FLOW_GROUP_ORDER = ["SPENDING", "FEE", "INTEREST", "REFUND", "INCOME", "DEBT_PAYMENT", "TRANSFER", "INVESTMENT", "ADJUSTMENT", "UNKNOWN"];
 
 function money(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(v));
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts). Itemized
+  // rows (rowMoney below) keep their own native row currency, per doctrine.
+  return ctx ? formatCurrency(v, ctx.target) : formatAggregateMoney(Math.abs(v), null, 2);
 }
 
-function rowMoney(t: Transaction): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: t.currency ?? DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(t.amount));
+// REVIEW-3 C-5 — a row with NO recorded denomination renders in the DISPLAY
+// currency (the null-residue doctrine: never a hard-coded label). Rows with a
+// recorded currency keep their native label — itemized rows are never relabelled.
+function rowMoney(t: Transaction, displayCurrency: string): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: t.currency ?? displayCurrency, maximumFractionDigits: 2 }).format(Math.abs(t.amount));
 }
 
 function TxRow({ t }: { t: Transaction }) {
-  const credit = t.amount > 0;
+  const displayCurrency = useDisplayCurrency();
+  // v2.6-TRUTH-8 — the chip is the canonical row NATURE, matching the group
+  // heading above it. It rendered `t.category`, the raw provider string, so a row
+  // the Debt Payments card counted showed "Transfer" — the drawer contradicting
+  // the card it was opened from. Tone follows the same authority, so a refund or
+  // an issuer credit no longer reads as a gain here either.
+  const nature = natureOf(t);
+  const credit = nature.tone === "positive";
   return (
     <div className="flex items-center gap-3 px-4 py-3">
       <TransactionDate date={t.date} />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold truncate text-[var(--text-primary)]">{t.merchantDisplayName ?? t.merchant}</p>
         <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-xs px-1.5 py-0.5 rounded-full bg-[var(--surface-inset)] text-[var(--text-secondary)]">{t.category}</span>
+          <span className="text-xs px-1.5 py-0.5 rounded-full bg-[var(--surface-inset)] text-[var(--text-secondary)]">{nature.label}</span>
           {t.pending && <span className="text-xs text-[var(--text-faint)]">Pending</span>}
         </div>
       </div>
       <p className="text-sm font-bold tabular-nums shrink-0" style={{ color: credit ? "var(--accent-positive)" : "var(--text-primary)" }}>
-        {credit ? "+" : "−"}{rowMoney(t)}
+        {/* v2.6-DIR-1 — sign from the canonical direction, colour from the tone. */}
+        {DIRECTION_SIGN[nature.direction]}{rowMoney(t, displayCurrency)}
       </p>
     </div>
   );
 }
 
-/** Group rows by canonical FlowType, in a stable, human order. */
+/**
+ * Group rows by canonical row NATURE, in a stable, human order.
+ *
+ * v2.6-TRUTH-7 — this grouped on `flowType` through a local label map, so a
+ * refund, an issuer credit, interest earned and a salary deposit all landed
+ * under one "Income" heading. The nature authority splits them, and the heading
+ * words come from the same module the row chips use, so a group title and the
+ * rows inside it can never disagree.
+ */
 function groupByFlow(rows: Transaction[]): { key: string; label: string; rows: Transaction[] }[] {
-  const byFlow = new Map<string, Transaction[]>();
+  const byNature = new Map<RowNature, Transaction[]>();
   for (const t of rows) {
-    const k = t.flowType ?? "UNKNOWN";
-    (byFlow.get(k) ?? byFlow.set(k, []).get(k)!).push(t);
+    const k = natureOf(t).nature;
+    (byNature.get(k) ?? byNature.set(k, []).get(k)!).push(t);
   }
-  return FLOW_GROUP_ORDER
-    .filter((k) => byFlow.has(k))
-    .map((k) => ({ key: k, label: FLOW_GROUP_LABEL[k] ?? k, rows: byFlow.get(k)! }));
+  return ROW_NATURE_ORDER
+    .filter((k) => byNature.has(k))
+    .map((k) => ({ key: k, label: ROW_NATURE_GROUP_LABEL[k], rows: byNature.get(k)! }));
+}
+
+/** The one place this file asks what a row is. */
+function natureOf(t: Transaction) {
+  return describeRowNature({
+    flowType:      t.flowType ?? null,
+    incomeSubtype: t.incomeSubtype ?? null,
+    transferMaturity: t.transferMaturity ?? null,
+    amount:        t.amount,
+    hasOwnedCounterparty: t.counterpartyAccountId != null,
+  });
 }
 
 /**
@@ -181,7 +213,11 @@ export function TransactionSliceDrawer({
   const viewingAll = showAll && canShowAll;
   const displayRows = shown ? (viewingAll ? shown.allRows! : shown.rows) : [];
 
-  const { income, spend, net } = economicTotals(displayRows, ctx);
+  // The drawer's figures are the canonical fold over its OWN rows — so a slice
+  // whose rows include refunds (a Spending or spending-tier cell) nets them here
+  // exactly as the cell did, and says so: charged, refunded, and any refund
+  // beyond the charges that the floor at zero absorbed.
+  const { income, spend, net, refunds, spendGross, refundsUnapplied } = economicTotals(displayRows, ctx);
 
   return (
     <RightPanel open={slice != null} onClose={onClose} ariaLabel="Transaction slice">
@@ -204,9 +240,9 @@ export function TransactionSliceDrawer({
             Income <span className="font-semibold text-[var(--accent-positive)]">+{money(income, ctx)}</span>
           </span>
         )}
-        {spend > 0 && (
+        {(spend > 0 || refunds > 0) && (
           <span className="text-[var(--text-secondary)]">
-            Spending <span className="font-semibold text-[var(--accent-negative)]">−{money(spend, ctx)}</span>
+            {shown.spendLabel ?? "Spending"} <span className="font-semibold text-[var(--accent-negative)]">−{money(spend, ctx)}</span>
           </span>
         )}
         {(income > 0 || spend > 0) && (
@@ -219,6 +255,15 @@ export function TransactionSliceDrawer({
         <span className="text-[var(--text-faint)] ml-auto">
           {displayRows.length} {displayRows.length === 1 ? "transaction" : "transactions"}
         </span>
+        {/* The reconciliation, only when a refund is in the slice: what was charged,
+            what came back, and — if refunds exceeded the charges here — how much of
+            them the floor at zero absorbed. No arithmetic in this component. */}
+        {refunds > 0 && (
+          <span data-drawer-refunds className="basis-full text-[11px] text-[var(--text-muted)] tabular-nums">
+            {money(spendGross, ctx)} charged · −{money(refunds, ctx)} refunded
+            {refundsUnapplied > 0 ? ` · ${money(refundsUnapplied, ctx)} of refunds beyond the charges shown` : ""}
+          </span>
+        )}
       </div>
 
       {/* CF-2B — Show all activity / back to the selected measure. Clearly states

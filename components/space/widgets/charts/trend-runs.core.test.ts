@@ -1,0 +1,241 @@
+/**
+ * components/space/widgets/charts/trend-runs.core.test.ts
+ *
+ * V26-INVESTMENTS-HISTORY — chart honesty at evidence boundaries.
+ *
+ * The regression pinned here is the Investments chart's June/July seam. Everything
+ * before the first connect is RECONSTRUCTED; from the connect date on it is
+ * OBSERVED. The step between the last reconstructed value and the first observed
+ * one is a change of measurement, not a change in the portfolio — and the chart
+ * used to draw it as market movement.
+ *
+ * Invariants:
+ *   - a run NEVER spans a basis change (no stroke between two differently
+ *     measured values);
+ *   - every adjacent basis change is reported as a seam so the break can be DRAWN;
+ *   - a boundary that is also a date hole yields the hole only — the two marks
+ *     never stack;
+ *   - no point is dropped, reordered, resampled or interpolated by any of it.
+ *
+ * Standalone tsx script:  npx tsx components/space/widgets/charts/trend-runs.core.test.ts
+ */
+
+import {
+  basisOf, medianSpacingDays, toRuns, toDateGaps, toBasisSeams, DAY_MS,
+  type TrendGeomPoint,
+} from "./trend-runs.core";
+
+let failures = 0;
+function check(name: string, cond: boolean, detail?: string): void {
+  if (cond) console.log(`  ✓ ${name}`);
+  else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
+}
+
+const t = (iso: string) => Date.parse(`${iso}T00:00:00.000Z`);
+function pt(date: string, value: number, estimated: boolean): TrendGeomPoint {
+  return { date, t: t(date), value, estimated };
+}
+
+/**
+ * The real shape of the incident window: a reconstructed run that sags to ~1.6k,
+ * then the connect date where observation begins at ~5.1k, then the observed/
+ * estimated flapping that follows when the provider syncs on some days only.
+ */
+const INCIDENT: TrendGeomPoint[] = [
+  pt("2026-07-16", 1586.68, true),
+  pt("2026-07-17", 1565.62, true),
+  pt("2026-07-18", 1565.62, true),
+  pt("2026-07-19", 5069.02, false), // ← connect: reconstructed → observed
+  pt("2026-07-20", 5082.62, false),
+  pt("2026-07-21", 5262.50, false),
+  pt("2026-07-22", 5265.16, false),
+  pt("2026-07-23", 5265.16, true),  // ← observed → reconstructed (no sync)
+  pt("2026-07-24", 5265.16, true),
+  pt("2026-07-25", 5265.16, true),
+  pt("2026-07-26", 5265.16, true),
+  pt("2026-07-27", 4966.20, false), // ← reconstructed → observed
+  pt("2026-07-28", 4966.20, true),  // ← observed → reconstructed
+  pt("2026-07-29", 4966.20, true),
+  pt("2026-07-30", 4966.20, true),
+  pt("2026-07-31", 4843.24, false), // ← reconstructed → observed
+  pt("2026-08-01", 4843.39, false),
+];
+const GAP_DAYS = Math.max(medianSpacingDays(INCIDENT.map((p) => p.t)) * 3,
+                          medianSpacingDays(INCIDENT.map((p) => p.t)) + 2);
+
+function main(): void {
+  // ── 1. Basis identity ─────────────────────────────────────────────────────
+  console.log("1. Basis identity");
+  check("estimated ⇒ reconstructed", basisOf({ estimated: true }) === "reconstructed");
+  check("not estimated ⇒ observed", basisOf({ estimated: false }) === "observed");
+
+  // ── 2. No run may span a basis change ─────────────────────────────────────
+  console.log("2. A run never bridges two differently-measured values");
+  {
+    const runs = toRuns(INCIDENT, GAP_DAYS);
+    check("every run is internally single-basis",
+      runs.every((r) => r.points.every((p) => basisOf(p) === r.basis)));
+    check("no run contains both the last reconstructed and the first observed point",
+      !runs.some((r) => r.points.some((p) => p.date === "2026-07-18") &&
+                        r.points.some((p) => p.date === "2026-07-19")));
+    check("the connect step is NOT inside any single run (no false bridge)",
+      runs.every((r) => {
+        const ds = r.points.map((p) => p.date);
+        return !(ds.includes("2026-07-18") && ds.includes("2026-07-19"));
+      }));
+  }
+
+  // ── 3. Every basis change is reported so it can be drawn ──────────────────
+  console.log("3. Every adjacent basis change surfaces as a seam");
+  {
+    const seams = toBasisSeams(INCIDENT, GAP_DAYS);
+    const at = seams.map((s) => s.toDate);
+    check("the connect date is a seam", at.includes("2026-07-19"));
+    check("finds all five basis flips in the window", seams.length === 5, `found ${seams.length}: ${at.join(", ")}`);
+    check("seams are exactly the flips", JSON.stringify(at) ===
+      JSON.stringify(["2026-07-19", "2026-07-23", "2026-07-27", "2026-07-28", "2026-07-31"]));
+    check("the connect seam runs reconstructed → observed",
+      seams[0].fromBasis === "reconstructed" && seams[0].toBasis === "observed");
+    check("each seam names both sides", seams.every((s) => s.fromDate < s.toDate));
+    check("each seam separates ADJACENT points only",
+      seams.every((s) => s.toIndex === s.fromIndex + 1));
+    check("run count is seams + gaps + 1 — one break per reported boundary",
+      toRuns(INCIDENT, GAP_DAYS).length === seams.length + toDateGaps(INCIDENT, GAP_DAYS).length + 1);
+  }
+
+  // ── 4. A seam is not a gap ────────────────────────────────────────────────
+  console.log("4. A basis seam and a date hole are different claims");
+  {
+    check("the incident window has no date holes", toDateGaps(INCIDENT, GAP_DAYS).length === 0);
+
+    // The gap scale is derived from the MEDIAN spacing, so a hole only exists
+    // relative to a series that is otherwise regular — hence the daily run before
+    // each jump. (A bare two-point fixture cannot express a hole at all: its one
+    // spacing IS the median.)
+    const gapScale = (ps: TrendGeomPoint[]) =>
+      Math.max(medianSpacingDays(ps.map((p) => p.t)) * 3, medianSpacingDays(ps.map((p) => p.t)) + 2);
+
+    // Same basis on both sides, but two months apart ⇒ a hole, never a seam.
+    const holed = [
+      pt("2026-01-01", 100, true), pt("2026-01-02", 110, true), pt("2026-01-03", 120, true),
+      pt("2026-03-01", 400, true),
+    ];
+    check("a same-basis hole is a gap", toDateGaps(holed, gapScale(holed)).length === 1);
+    check("a same-basis hole is NOT a seam", toBasisSeams(holed, gapScale(holed)).length === 0);
+
+    // A hole AND a basis change on the same boundary ⇒ the hole only.
+    const both = [
+      pt("2026-01-01", 100, true), pt("2026-01-02", 110, true), pt("2026-01-03", 120, true),
+      pt("2026-03-01", 400, false),
+    ];
+    check("a boundary that is both reports the hole", toDateGaps(both, gapScale(both)).length === 1);
+    check("a boundary that is both does NOT also report a seam — marks never stack",
+      toBasisSeams(both, gapScale(both)).length === 0);
+    check("the run is still broken there", toRuns(both, gapScale(both)).length === 2);
+  }
+
+  // ── 5. Nothing is invented, dropped, moved or smoothed ────────────────────
+  console.log("5. Values and provenance survive untouched");
+  {
+    const runs = toRuns(INCIDENT, GAP_DAYS);
+    const flat = runs.flatMap((r) => r.points);
+    check("every input point appears exactly once", flat.length === INCIDENT.length);
+    check("in the original order", flat.every((p, i) => p.date === INCIDENT[i].date));
+    check("with its original value — no interpolation or smoothing",
+      flat.every((p, i) => p.value === INCIDENT[i].value));
+    check("with its original provenance bit",
+      flat.every((p, i) => p.estimated === INCIDENT[i].estimated));
+    check("no synthetic point was inserted at any seam",
+      !flat.some((p) => !INCIDENT.some((q) => q.date === p.date)));
+    check("the input array is not mutated",
+      INCIDENT[3].date === "2026-07-19" && INCIDENT[3].value === 5069.02 && INCIDENT[3].estimated === false);
+  }
+
+  // ── 6. Degenerate inputs ──────────────────────────────────────────────────
+  console.log("6. Degenerate inputs stay safe");
+  check("empty series → no runs", toRuns([], 3).length === 0);
+  check("empty series → no seams", toBasisSeams([], 3).length === 0);
+  check("empty series → no gaps", toDateGaps([], 3).length === 0);
+  {
+    const one = [pt("2026-07-19", 5069.02, false)];
+    check("single point → one run, no seam", toRuns(one, 3).length === 1 && toBasisSeams(one, 3).length === 0);
+  }
+  {
+    const allObs = [pt("2026-07-19", 1, false), pt("2026-07-20", 2, false), pt("2026-07-21", 3, false)];
+    check("an all-observed series has no seams — the mark never appears without cause",
+      toBasisSeams(allObs, 3).length === 0 && toRuns(allObs, 3).length === 1);
+  }
+  {
+    const allRec = [pt("2026-07-19", 1, true), pt("2026-07-20", 2, true), pt("2026-07-21", 3, true)];
+    check("an all-reconstructed series has no seams either",
+      toBasisSeams(allRec, 3).length === 0 && toRuns(allRec, 3).length === 1);
+  }
+  // RWA-2A — a manual asset's estimates: recorded anchors are SHARED boundaries.
+  {
+    const e = (date: string, value: number, basis: "recorded" | "modeled" | "carried"): TrendGeomPoint =>
+      ({ ...pt(date, value, false), basis });
+    const series = [
+      e("2026-01-01", 100, "recorded"), e("2026-01-02", 110, "modeled"), e("2026-01-03", 120, "modeled"),
+      e("2026-01-04", 130, "recorded"), e("2026-01-05", 130, "carried"), e("2026-01-06", 130, "carried"),
+    ];
+    const runs = toRuns(series, 3);
+    const shape = runs.map((r) => `${r.basis}:${r.points.map((q) => q.date.slice(8)).join("-")}`).join(" | ");
+    check("estimate runs: modeled and carried segments both include their recorded endpoints (continuous line)",
+      shape === "recorded:01 | modeled:01-02-03-04 | carried:04-05-06", shape);
+    check("no seam inside a manual asset's estimates (the recorded dot is the mark)", toBasisSeams(series, 3).length === 0);
+    const adjacent = [e("2026-01-01", 1, "recorded"), e("2026-01-02", 2, "recorded")];
+    check("two adjacent recorded values still draw one line", toRuns(adjacent, 3).length === 1 && toRuns(adjacent, 3)[0].points.length === 2);
+    const mixed = [pt("2026-01-01", 1, false), e("2026-01-02", 2, "recorded")];
+    check("observed → estimate is still a real seam (unchanged rule)", toBasisSeams(mixed, 3).length === 1);
+  }
+  check("median spacing of a single time is 1", medianSpacingDays([t("2026-07-19")]) === 1);
+  check("median spacing of daily points is 1", medianSpacingDays(INCIDENT.map((p) => p.t)) === 1);
+  check("DAY_MS is a day", DAY_MS === 24 * 60 * 60 * 1000);
+
+  // RWA-2B — the Net Worth series may now mix RECONSTRUCTED days with MODELED
+  // ones (a manual asset's straight line between two estimates), beside the
+  // OBSERVED days the live writer froze. A modeled stretch is its own run with
+  // its own legend entry, bounded by seams on both sides, and never bridged
+  // into a reconstructed or observed neighbour — the step at its edge is a
+  // change of basis, not a market move. No point is dropped.
+  console.log("7. RWA-2B — modeled real-asset days inside a reconstructed/observed Net Worth series");
+  {
+    const mixed: TrendGeomPoint[] = [
+      { ...pt("2026-09-01", 100_000, true) },
+      { ...pt("2026-09-02", 100_100, true) },
+      { ...pt("2026-09-03", 101_000, true),  basis: "modeled" },
+      { ...pt("2026-09-04", 101_500, true),  basis: "modeled" },
+      { ...pt("2026-09-05", 102_000, true),  basis: "modeled" },
+      { ...pt("2026-09-06", 102_100, true) },
+      { ...pt("2026-09-07", 104_000, false) },
+      { ...pt("2026-09-08", 104_050, false) },
+    ];
+    const runs = toRuns(mixed, 3);
+    check("four runs: reconstructed · modeled · reconstructed · observed",
+      runs.map((r) => r.basis).join(",") === "reconstructed,modeled,reconstructed,observed", runs.map((r) => r.basis).join(","));
+    check("the modeled run holds exactly the three modeled days and shares no boundary point",
+      runs[1].points.map((p) => p.date).join() === "2026-09-03,2026-09-04,2026-09-05"
+        && runs[0].points.length === 2 && runs[2].points.length === 1 && runs[3].points.length === 2);
+    check("no point dropped or reordered",
+      runs.flatMap((r) => r.points.map((p) => p.date)).join() === mixed.map((p) => p.date).join());
+    const seams = toBasisSeams(mixed, 3);
+    check("seams at BOTH edges of the modeled stretch and at the observed edge (3)",
+      seams.length === 3
+        && seams[0].fromBasis === "reconstructed" && seams[0].toBasis === "modeled" && seams[0].toDate === "2026-09-03"
+        && seams[1].fromBasis === "modeled" && seams[1].toBasis === "reconstructed" && seams[1].toDate === "2026-09-06"
+        && seams[2].fromBasis === "reconstructed" && seams[2].toBasis === "observed");
+    check("no seam inside the modeled stretch (one line, one legend entry)",
+      !seams.some((s) => s.fromBasis === "modeled" && s.toBasis === "modeled"));
+    check("a modeled point is never classified observed", mixed.filter((p) => p.basis === "modeled").every((p) => basisOf(p) !== "observed"));
+    check("no date gaps were invented", toDateGaps(mixed, 3).length === 0);
+  }
+
+  if (failures > 0) {
+    console.error(`\n${failures} check(s) FAILED`);
+    process.exit(1);
+  }
+  console.log("\nAll trend-run boundary guards passed.");
+  process.exit(0);
+}
+
+main();

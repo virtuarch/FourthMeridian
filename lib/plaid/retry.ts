@@ -23,7 +23,7 @@
  * ProviderCatalog/config layer exists yet.
  */
 
-import { isRetryablePlaidError } from "@/lib/plaid/errors";
+import { isRetryablePlaidError, redactedErrorForLog } from "@/lib/plaid/errors";
 
 /** Total attempts (1 original + retries). Kept low — see D2_STEP7D_RETRY_BACKOFF_CHECKLIST.md §4. */
 const MAX_PLAID_RETRY_ATTEMPTS = 2;
@@ -58,7 +58,7 @@ export async function withPlaidRetry<T>(fn: () => Promise<T>, label: string): Pr
       }
       console.warn(
         `[plaid][retry] ${label} failed on attempt ${attempt}/${MAX_PLAID_RETRY_ATTEMPTS} — retrying in ${PLAID_RETRY_DELAY_MS}ms`,
-        err
+        redactedErrorForLog(err)
       );
       await sleep(PLAID_RETRY_DELAY_MS);
     }

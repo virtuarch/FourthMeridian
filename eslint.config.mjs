@@ -25,6 +25,17 @@ const eslintConfig = defineConfig([
     // must mean the same thing CI's lint means.
     "prototype/**",
     "app/prototype/**",
+    // The public website (domain-split Stage B) is its own project with its own
+    // eslint.config.mjs; it is linted there (`cd site && npm run lint`, CI job
+    // `site`), never by the application's config.
+    "site/**",
+    // Gitignored local scratch trees (TEST-013): experiment transcripts,
+    // database dumps, a pre-v2.6 bundle. 578 lint problems lived there and
+    // none of them were in the committed tree — the same trust gap as
+    // prototype/ above, in a different costume.
+    "tmp/**",
+    "backups/**",
+    "_v26pre_bundle/**",
   ]),
   // Project-wide rule overrides
   {

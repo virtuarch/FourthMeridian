@@ -31,8 +31,15 @@ console.log("BOUNDARY — the default is a finite cap; unlimited is not reachabl
 {
   check("DEFAULT_TX_LIMIT is a finite positive number (5000)", Number.isFinite(DEFAULT_TX_LIMIT) && DEFAULT_TX_LIMIT === 5000);
   const src = code("lib/data/transactions.ts");
-  check("getTransactions defaults limit to DEFAULT_TX_LIMIT", /limit\s*=\s*ctx\?\.limit\s*\?\?\s*DEFAULT_TX_LIMIT/.test(src));
-  check("getDebtTransactions defaults limit to DEFAULT_TX_LIMIT", (src.match(/limit\s*=\s*ctx\?\.limit\s*\?\?\s*DEFAULT_TX_LIMIT/g) ?? []).length >= 2);
+  // RLS-C-S1 — the PROPERTY under test is "an unstated limit falls back to
+  // DEFAULT_TX_LIMIT", not the name of the parameter it is read off. The scope
+  // argument was renamed `ctx?` → `scope` and made REQUIRED when the ambient
+  // space-context fallback was removed from these loaders, so the optional
+  // chain on the object itself is gone; `limit` is still optional ON it, which is
+  // the only thing this assertion ever cared about.
+  const DEFAULTS_LIMIT = /limit\s*=\s*\w+\??\.limit\s*\?\?\s*DEFAULT_TX_LIMIT/g;
+  check("getTransactions defaults limit to DEFAULT_TX_LIMIT", new RegExp(DEFAULTS_LIMIT.source).test(src));
+  check("getDebtTransactions defaults limit to DEFAULT_TX_LIMIT", (src.match(DEFAULTS_LIMIT) ?? []).length >= 2);
   check("both banking loaders fetch a bounded page (take: limit + 1)", (src.match(/take:\s*limit\s*\+\s*1/g) ?? []).length >= 2);
 }
 
@@ -87,7 +94,15 @@ console.log("CONSUMER tripwires — shared consumers stay bounded");
   check("view-context no longer loads rows (uses groupBy, not getTransactions)",
     !view.includes("getTransactions(") && view.includes("groupBy"));
   const exp = code("lib/export/assemble.ts");
-  check("export passes an explicit query cap (EXPORT_TRANSACTION_CAP)", /getTransactions\(\{\s*spaceId,\s*limit:\s*EXPORT_TRANSACTION_CAP\s*\}\)/.test(exp));
+  // RLS-T1 — `getTransactions` took a required, LEADING authority, so the call
+  // now reads `getTransactions(tx, { spaceId, limit: … })`. The needle admits the
+  // client argument explicitly rather than being loosened to `[\s\S]*`: the
+  // PROPERTY under test is "the export states its own cap at the query", and a
+  // needle wide enough to match anything would keep passing after the cap was
+  // deleted. (This repository has shipped exactly that bug — see the escaped-`$`
+  // scan that reported clean over zero sites.)
+  check("export passes an explicit query cap (EXPORT_TRANSACTION_CAP)",
+    /getTransactions\(\w+,\s*\{\s*spaceId,\s*limit:\s*EXPORT_TRANSACTION_CAP\s*\}\)/.test(exp));
 }
 
 if (failures > 0) { console.error(`\ntransactions-bounding: ${failures} failure(s).`); process.exit(1); }

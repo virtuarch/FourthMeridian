@@ -35,16 +35,28 @@
  */
 
 import "server-only";
-import { deriveIngestionDeferral, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
+import { todayUTCISO } from "@/lib/time/clock";
+import { deriveIngestionActivity, deriveIngestionDeferral, type IngestionActivity, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
 
-import { db } from "@/lib/db";
+// ⚠️ RLS-P-3a — fm_system, NOT the migration principal. Every `db.` in this file
+// read one of the four DF-2 refresh tables and NOTHING else, all four of which
+// fm_app is revoked from outright (…_rls_roles_and_policies §4). On the
+// migration principal these reads were exempt from every policy by accident of
+// which client the module happened to import; on fm_system they are exempt by a
+// role-scoped policy that is visible in pg_policies and reviewable in source
+// control. The REACH is identical — fm_system's policy on this family is
+// USING(true) — so no projection changes, and that is the point: this is the
+// authority becoming explicit, not widening.
+import { systemDb } from "@/lib/db";
 import {
   buildCoverageSummary,
   buildExecutionTimeline,
-  buildFailureSummary,
   buildProviderOperationSummary,
+  buildRefreshDailySeries,
   buildRefreshSummary,
   countOpenExecutions,
+  buildPipelineStatus,
+  utcDaysBetween,
 } from "@/lib/platform/refresh/projections-core";
 import type {
   CoverageFact,
@@ -52,16 +64,19 @@ import type {
   EndpointFact,
   ExecutionFact,
   ExecutionTimeline,
-  FailureSummary,
   ProjectionEnvelope,
   ProviderCallFact,
   ProviderOperationSummary,
+  RefreshDailySeries,
   RefreshSummary,
+  PipelineStatus,
 } from "@/lib/platform/refresh/types";
 
 const DEFAULT_WINDOW_DAYS = 14;
 /** Bounds one projection read. Operational windows are small; this is a tripwire. */
-const MAX_FACT_ROWS = 20_000;
+export const MAX_FACT_ROWS = 20_000;
+/** UX-P1 · D8 — the day series never projects more than this many UTC days. */
+export const DAILY_SERIES_MAX_WINDOW_DAYS = 30;
 
 // ── Arguments + injected reads ──────────────────────────────────────────────────
 
@@ -86,6 +101,12 @@ export interface RefreshProjectionReaders {
   coverage(executionIds: readonly string[]): Promise<CoverageFact[]>;
   /** One execution by id, or null. Used by the timeline projection. */
   execution(id: string): Promise<ExecutionFact | null>;
+  /**
+   * PLATFORM OPS OBSERVABILITY — the newest SUCCEEDED execution of one source
+   * kind, ANY window (one indexed row). The pipeline status reads it beside the
+   * window so a quiet day still shows when each kind last worked.
+   */
+  lastSucceededByKind(kind: string): Promise<ExecutionFact | null>;
 }
 
 export interface RefreshProjectionDeps {
@@ -94,9 +115,8 @@ export interface RefreshProjectionDeps {
 
 // ── Window + envelope ───────────────────────────────────────────────────────────
 
-function todayISO(now: Date): string {
-  return now.toISOString().slice(0, 10);
-}
+// REVIEW-3 B-6 — the day formatter is THE clock seam's (lib/time/clock.ts).
+const todayISO = (now: Date): string => todayUTCISO(now);
 function minusDaysISO(dateISO: string, days: number): string {
   return new Date(Date.parse(`${dateISO}T00:00:00.000Z`) - days * 86_400_000)
     .toISOString()
@@ -150,7 +170,7 @@ function realReaders(now: Date): RefreshProjectionReaders {
   return {
     now,
     async executions(from, to, plaidItemIds) {
-      return db.refreshExecution.findMany({
+      return systemDb.refreshExecution.findMany({
         where: {
           startedAt: { gte: from, lte: to },
           ...(plaidItemIds ? { plaidItemId: { in: [...plaidItemIds] } } : {}),
@@ -168,6 +188,13 @@ function realReaders(now: Date): RefreshProjectionReaders {
           parentJobRunId: true,
           errorSummary: true,
           deploymentSha: true,
+          admissionReason: true,
+          sourceKind: true,
+          sourceRef: true,
+          network: true,
+          failureStage: true,
+          failureCategory: true,
+          outcome: true,
         },
         orderBy: [{ startedAt: "desc" }, { id: "desc" }],
         take: MAX_FACT_ROWS,
@@ -175,7 +202,7 @@ function realReaders(now: Date): RefreshProjectionReaders {
     },
     async endpoints(executionIds) {
       if (executionIds.length === 0) return [];
-      return db.refreshEndpointResult.findMany({
+      return systemDb.refreshEndpointResult.findMany({
         where: { refreshExecutionId: { in: [...executionIds] } },
         select: {
           refreshExecutionId: true,
@@ -198,7 +225,7 @@ function realReaders(now: Date): RefreshProjectionReaders {
     },
     async providerCalls(executionIds) {
       if (executionIds.length === 0) return [];
-      return db.providerCall.findMany({
+      return systemDb.providerCall.findMany({
         where: { refreshExecutionId: { in: [...executionIds] } },
         select: {
           refreshExecutionId: true,
@@ -221,7 +248,7 @@ function realReaders(now: Date): RefreshProjectionReaders {
     },
     async coverage(executionIds) {
       if (executionIds.length === 0) return [];
-      return db.refreshEndpointAccountCoverage.findMany({
+      return systemDb.refreshEndpointAccountCoverage.findMany({
         where: { refreshExecutionId: { in: [...executionIds] } },
         select: {
           refreshExecutionId: true,
@@ -236,8 +263,15 @@ function realReaders(now: Date): RefreshProjectionReaders {
         take: MAX_FACT_ROWS,
       });
     },
+    async lastSucceededByKind(kind) {
+      return systemDb.refreshExecution.findFirst({
+        where: { sourceKind: kind, overallStatus: "SUCCEEDED" },
+        orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+        select: EXECUTION_FACT_SELECT,
+      });
+    },
     async execution(id) {
-      return db.refreshExecution.findUnique({
+      return systemDb.refreshExecution.findUnique({
         where: { id },
         select: {
           id: true,
@@ -252,6 +286,13 @@ function realReaders(now: Date): RefreshProjectionReaders {
           parentJobRunId: true,
           errorSummary: true,
           deploymentSha: true,
+          admissionReason: true,
+          sourceKind: true,
+          sourceRef: true,
+          network: true,
+          failureStage: true,
+          failureCategory: true,
+          outcome: true,
         },
       });
     },
@@ -261,6 +302,15 @@ function realReaders(now: Date): RefreshProjectionReaders {
 function resolveReaders(deps?: RefreshProjectionDeps): RefreshProjectionReaders {
   return deps?.readers ?? realReaders(new Date());
 }
+
+/** The execution select shared by the two single-row readers below. */
+const EXECUTION_FACT_SELECT = {
+  id: true, runId: true, plaidItemId: true, trigger: true, profile: true,
+  startedAt: true, completedAt: true, durationMs: true, overallStatus: true,
+  parentJobRunId: true, errorSummary: true, deploymentSha: true, admissionReason: true,
+  sourceKind: true, sourceRef: true, network: true, failureStage: true,
+  failureCategory: true, outcome: true,
+} as const;
 
 /** True when the caller explicitly scoped to nothing — fail closed, never widen. */
 function scopedToNothing(args: RefreshProjectionArgs): boolean {
@@ -372,22 +422,6 @@ export async function getCoverageSummary(
   return { ...buildCoverageSummary(coverage), ...envelopeFor(loaded) };
 }
 
-/**
- * Failure Summary — non-clean executions, failed stages, and failed/rate-limited
- * provider attempts grouped by Plaid's OWN error vocabulary. Invents no failure
- * taxonomy and never groups free-text error text.
- */
-export async function getFailureSummary(
-  args: RefreshProjectionArgs = {},
-  deps?: RefreshProjectionDeps,
-): Promise<FailureSummary> {
-  const loaded = await loadExecutionWindow(args, deps);
-  const [endpoints, calls] = await Promise.all([endpointsOf(loaded), providerCallsOf(loaded)]);
-  return {
-    ...buildFailureSummary(loaded.executions, endpoints, calls),
-    ...envelopeFor(loaded),
-  };
-}
 
 /**
  * Execution Timeline — ONE execution's ordered story (stages, provider calls,
@@ -395,6 +429,94 @@ export async function getFailureSummary(
  *
  * Returns null when the execution does not exist — never a fabricated shell.
  */
+/**
+ * PLATFORM OPS OBSERVABILITY — Pipeline Status: what the data pipeline did in
+ * the window, by source kind and network, plus the last successful execution
+ * per kind. Read by the operations overview. Same window loader, same
+ * envelope, same determinism rule as every other projection.
+ */
+export const PIPELINE_SOURCE_KINDS: readonly string[] = ["PLAID_ITEM", "WALLET"];
+
+export async function getPipelineStatus(
+  args: RefreshProjectionArgs = {},
+  deps?: RefreshProjectionDeps,
+): Promise<PipelineStatus> {
+  const loaded = await loadExecutionWindow(args, deps);
+  const lastByKind: Record<string, ExecutionFact | null> = {};
+  await Promise.all(PIPELINE_SOURCE_KINDS.map(async (kind) => {
+    lastByKind[kind] = await loaded.readers.lastSucceededByKind(kind);
+  }));
+  return { ...envelopeFor(loaded), ...buildPipelineStatus(loaded.executions, lastByKind) };
+}
+
+/**
+ * UX-P1 · D8 — Refresh Daily Series: executions per UTC day of `startedAt`,
+ * by status and source kind, with the admission-denied count, over a window of
+ * at most DAILY_SERIES_MAX_WINDOW_DAYS (default: the shared projection window).
+ *
+ * Same window loader, same fail-closed scope, same envelope rule as every
+ * other projection — plus the ONE rule the others leave implicit: the reader
+ * loads at most MAX_FACT_ROWS rows, newest first. When that cap is reached the
+ * series is a FLOOR (older days are missing, the oldest loaded day is partial),
+ * so the envelope reports `deterministic: false` with the cap as its reason.
+ *
+ * A window wider than the ceiling is clamped at its OLD end (the newest days
+ * are the operational ones) and the clamp is stated in `notes` rather than
+ * silently applied or refused.
+ */
+export async function getRefreshDailySeries(
+  args: RefreshProjectionArgs = {},
+  deps?: RefreshProjectionDeps,
+): Promise<RefreshDailySeries> {
+  const readers = resolveReaders(deps);
+  const requested = resolveWindow(args, readers.now);
+  const notes: string[] = [];
+
+  let from = requested.from;
+  if (from > requested.to) {
+    from = requested.to;
+    notes.push(`window start ${requested.from} is after its end ${requested.to}; projected the single day ${requested.to}`);
+  }
+  if (utcDaysBetween(from, requested.to).length > DAILY_SERIES_MAX_WINDOW_DAYS) {
+    from = minusDaysISO(requested.to, DAILY_SERIES_MAX_WINDOW_DAYS - 1);
+    notes.push(`window clamped to ${DAILY_SERIES_MAX_WINDOW_DAYS} days (requested from ${requested.from})`);
+  }
+
+  const loaded = await loadExecutionWindow({ ...args, from, to: requested.to }, deps);
+  const capHit = loaded.executions.length >= MAX_FACT_ROWS;
+  const today = todayISO(loaded.readers.now);
+  const core = buildRefreshDailySeries(loaded.executions, loaded.window, { todayISO: today, capHit });
+
+  const base = envelopeFor(loaded);
+  const env: ProjectionEnvelope = capHit
+    ? {
+        ...base,
+        deterministic: false,
+        indeterminacyReason:
+          `fact cap of ${MAX_FACT_ROWS} rows reached — older days are missing and every count is a floor` +
+          (base.indeterminacyReason ? `; ${base.indeterminacyReason}` : ""),
+      }
+    : base;
+
+  notes.push(
+    "Buckets are UTC days of each execution's startedAt.",
+    "A settled day with no rows is a true zero: the ledger is the authority and holds no execution for that day.",
+    "Executions refused by the admission authority are ledgered as SKIPPED with a typed reason and counted in admissionDenied.",
+    "Customer-facing cooldown refusals (HTTP 429) write no execution row and cannot appear in this series.",
+  );
+
+  return {
+    envelope: env,
+    days: core.days,
+    windowDays: core.days.length,
+    maxWindowDays: DAILY_SERIES_MAX_WINDOW_DAYS,
+    executions: core.executions,
+    floor: core.floor,
+    notes,
+    tier: core.tier,
+  };
+}
+
 export async function getExecutionTimeline(
   executionId: string,
   deps?: RefreshProjectionDeps,
@@ -441,29 +563,43 @@ export async function getExecutionTimeline(
 export async function getIngestionDeferrals(
   items: { id: string; syncLockedAt: Date | null }[],
 ): Promise<Map<string, IngestionDeferral>> {
-  const out = new Map<string, IngestionDeferral>();
-  const ids = items.map((i) => i.id);
-  if (ids.length === 0) return out;
+  return (await getIngestionEvidence(items, new Date())).deferrals;
+}
 
-  const rows = await db.refreshExecution.findMany({
+/**
+ * The same ONE newest-first read, answering both questions the Connections
+ * surface asks of the ledger: is this item held by policy (deferrals — only
+ * deferred items get an entry), and is anything actually running for it
+ * (activity — every item gets an entry). Both rules stay pure in
+ * lib/sync/deferred-ingestion.ts.
+ */
+export async function getIngestionEvidence(
+  items: { id: string; syncLockedAt: Date | null }[],
+  now: Date,
+): Promise<{ deferrals: Map<string, IngestionDeferral>; activity: Map<string, IngestionActivity> }> {
+  const deferrals = new Map<string, IngestionDeferral>();
+  const activity  = new Map<string, IngestionActivity>();
+  const ids = items.map((i) => i.id);
+  if (ids.length === 0) return { deferrals, activity };
+
+  const rows = await systemDb.refreshExecution.findMany({
     where:   { plaidItemId: { in: ids } },
     orderBy: { startedAt: "desc" },
-    select:  { plaidItemId: true, overallStatus: true, admissionReason: true },
+    select:  { plaidItemId: true, overallStatus: true, admissionReason: true, startedAt: true },
   });
 
-  const latest = new Map<string, { overallStatus: string; admissionReason: string | null }>();
+  const latest = new Map<string, { overallStatus: string; admissionReason: string | null; startedAt: Date }>();
   for (const r of rows) {
-    if (!latest.has(r.plaidItemId)) {
-      latest.set(r.plaidItemId, { overallStatus: r.overallStatus, admissionReason: r.admissionReason });
+    if (r.plaidItemId !== null && !latest.has(r.plaidItemId)) {
+      latest.set(r.plaidItemId, { overallStatus: r.overallStatus, admissionReason: r.admissionReason, startedAt: r.startedAt });
     }
   }
 
   for (const item of items) {
-    const d = deriveIngestionDeferral({
-      syncLockedAt:    item.syncLockedAt,
-      latestExecution: latest.get(item.id) ?? null,
-    });
-    if (d !== null) out.set(item.id, d);
+    const latestExecution = latest.get(item.id) ?? null;
+    const d = deriveIngestionDeferral({ syncLockedAt: item.syncLockedAt, latestExecution });
+    if (d !== null) deferrals.set(item.id, d);
+    activity.set(item.id, deriveIngestionActivity({ syncLockedAt: item.syncLockedAt, latestExecution }, now));
   }
-  return out;
+  return { deferrals, activity };
 }

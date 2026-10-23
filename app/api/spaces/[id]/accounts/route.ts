@@ -24,6 +24,7 @@
 import { NextRequest, NextResponse }  from "next/server";
 import { SpaceMemberRole }        from "@prisma/client";
 import { requireSpaceRole }       from "@/lib/session";
+import { withTenantDb }           from "@/lib/db/tenant-context";
 import { loadSpaceAccounts }      from "@/lib/space/mount-composition";
 
 export async function GET(
@@ -34,12 +35,20 @@ export async function GET(
 
   // requireSpaceRole enforces ACTIVE status — REMOVED/LEFT members cannot
   // read space accounts.
-  const [, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
+  const [auth, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
   if (err) return err;
 
   // PS-6B — ONE loader definition (links + earliest-tx floor + visibility
   // normalization), shared with the /dashboard mount composition
   // (lib/space/mount-composition.ts). Authorization above is unchanged.
-  const normalized = await loadSpaceAccounts(spaceId);
+  //
+  // RLS slice B — ONE transaction for the whole composition. It is one coherent
+  // read (links, their earliest-transaction floor, wallet current values and
+  // pending evidence are a single answer about one Space's accounts) and it
+  // makes no network or model call, so there is nothing a transaction must not
+  // be held across.
+  const normalized = await withTenantDb(
+    auth.user.id, (tx) => loadSpaceAccounts(tx, spaceId),
+  );
   return NextResponse.json(normalized);
 }

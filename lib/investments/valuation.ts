@@ -22,12 +22,27 @@
  * (the A7 evidence contract for imported valuation is deferred to A7-7).
  */
 
-import { PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
+import {
+  buildQuantityAuthorityContext, consultQuantityAuthority,
+} from "@/lib/investments/quantity-authority";
+import type { ComparisonRow } from "@/lib/investments/quantity-authority-bridge.core";
+import type { CompletenessTier } from "@/lib/perspective-engine/types";
+import { PositionOrigin, type Prisma, type PrismaClient, type ReconstructionStatus } from "@prisma/client";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { PriceBasis } from "@prisma/client";
-import { db } from "@/lib/db";
 import { identityContext } from "@/lib/money/convert";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { buildSpaceConversionContextById } from "@/lib/money/server-context";
+/**
+ * RLS-AI-S7 — `buildSpaceConversionContext`, NOT the `…ById` sibling.
+ *
+ * ⚠️ `…ById` DOES ITS OWN `db.space.findUnique` AND TAKES NO AUTHORITY, so a
+ * valuation running inside a tenant phase would have read the Space row as the
+ * migration principal while every other read in that phase ran as the caller.
+ * The row is read here on the phase's client instead; the FX build itself needs
+ * no client, because `FxRate` is global reference data with no row-level
+ * security (see lib/ai/evidence-authorities.ts).
+ */
+import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconstruction-read";
 import { DIGITAL_ASSET_ACCOUNT_TYPES } from "@/lib/account-classifier";
 import { priceArchive } from "@/lib/prices/archive";
@@ -42,6 +57,9 @@ import {
 import {
   valueInstrumentAsOf,
   valuePortfolioAsOf,
+  resolveHeldQuantity,
+  isReconstructionResidue,
+  reconstructionResidueReason,
   type InstrumentValuation,
   type InstrumentValuationInput,
   type InvestmentValuationView,
@@ -95,7 +113,23 @@ export interface ReconstructionConflictRow {
   financialAccountId: string;
   instrumentId:       string;
   conflicted:         boolean;
+  /**
+   * V26-INVESTMENTS-HISTORY — the reconstruction's OWN verdict on whether it
+   * closed its books for this pair. Optional so existing fixture callers still
+   * type-check; absent is read as "not COMPLETE", which is the conservative
+   * direction (see isReconstructionResidue — silence is not evidence).
+   */
+  reconciliation?:    ReconstructionStatus | null;
 }
+
+/**
+ * The PositionReconstruction fields the valuation pipeline reads. Shared by all
+ * three read sites (historical window, single date, current positions) so the
+ * residue guard can never see a different verdict depending on the entry point.
+ */
+export const RECONSTRUCTION_VALUATION_SELECT = {
+  financialAccountId: true, instrumentId: true, conflicted: true, reconciliation: true,
+} as const;
 
 export interface GetInvestmentValueArgs {
   /** Value the whole Space's investment holdings. */
@@ -103,7 +137,6 @@ export interface GetInvestmentValueArgs {
   /** Or a single account (its Space supplies the reporting currency + FX). */
   financialAccountId?: string;
   asOf: string; // YYYY-MM-DD
-  client?: Client;
   /**
    * A9 constant-quantity fallback. When a holding has NO position observation on
    * or before `asOf` (e.g. a just-connected investment account whose provider
@@ -142,8 +175,20 @@ export interface GetInvestmentValueArgs {
  * Returns the shaped portfolio view — a valued subtotal plus an explicit
  * unvalued remainder; never a partial total presented as the whole.
  */
-export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Promise<InvestmentValuationView> {
-  const client = args.client ?? db;
+export async function getInvestmentValueAsOf(
+/**
+ * ⚠️ RLS-AI-S7 — THE AUTHORITY IS A REQUIRED, LEADING PARAMETER AND HAS NO DEFAULT.
+ *
+ * It used to be `options?.client ?? db`. That default was the quietest escape in
+ * the whole AI read graph: `lib/ai/assemblers/holdings.ts` imports no `@/lib/db`
+ * at all, so every scan for a held client said it was clean — while both of its
+ * seams silently fell back to the migration principal, the role that owns every
+ * table, carries BYPASSRLS and is exempt from every policy. An optional authority
+ * is an ambient one; a DEFAULTED one is an ambient one that looks converted.
+ */
+  client: ReadClient,
+  args:   GetInvestmentValueArgs,
+): Promise<InvestmentValuationView> {
   const { asOf } = args;
   const holdConstant = args.holdConstantBeforeEarliest === true;
   const asOfDate = new Date(`${asOf}T00:00:00.000Z`);
@@ -182,7 +227,7 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
     }),
     client.positionReconstruction.findMany({
       where: { financialAccountId: { in: accountIds } },
-      select: { financialAccountId: true, instrumentId: true, conflicted: true },
+      select: RECONSTRUCTION_VALUATION_SELECT,
     }),
   ]);
 
@@ -194,9 +239,10 @@ export interface GetInvestmentValueWindowArgs {
   financialAccountId?: string;
   /** The exact set of dates to value (YYYY-MM-DD). Deduped + sorted internally. */
   dates: readonly string[];
-  client?: Client;
   holdConstantBeforeEarliest?: boolean;
   visibilityScope?: InvestmentVisibilityScope;
+  /** V26-QUANTITY-1G — receives the quantity-authority decision ledger. */
+  authorityLedgerOut?: ComparisonRow[];
   excludeDigitalAssetAccounts?: boolean;
 }
 
@@ -217,9 +263,17 @@ export interface GetInvestmentValueWindowArgs {
  * subset, so the shared window cannot leak a later row into an earlier day.
  */
 export async function getInvestmentValueForWindow(
+  /**
+   * RLS-AI-S7 — required, leading, no default, for the same reason as the
+   * single-date entry point above. This one is NOT on the AI evidence graph (its
+   * callers are the snapshot regenerator and the historical-holdings window), and
+   * it is converted anyway: leaving one `?? db` in the file would have left the
+   * module importing the migration principal, and "the escape is only on the
+   * function nobody in this slice calls" is how an escape survives a slice.
+   */
+  client: ReadClient,
   args: GetInvestmentValueWindowArgs,
 ): Promise<Map<string, InvestmentValuationView>> {
-  const client = args.client ?? db;
   const holdConstant = args.holdConstantBeforeEarliest === true;
   const visibilityScope: InvestmentVisibilityScope = args.visibilityScope ?? "all";
 
@@ -257,11 +311,14 @@ export async function getInvestmentValueForWindow(
     }),
     client.positionReconstruction.findMany({
       where: { financialAccountId: { in: accountIds } },
-      select: { financialAccountId: true, instrumentId: true, conflicted: true },
+      select: RECONSTRUCTION_VALUATION_SELECT,
     }),
   ]);
 
-  return valuePositionRowsOverDates({ client, dates, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows });
+  return valuePositionRowsOverDates({
+    client, dates, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows,
+    authorityLedgerOut: args.authorityLedgerOut,
+  });
 }
 
 /**
@@ -302,6 +359,12 @@ export async function resolveInvestmentScopeAndCurrency(
  * single-date list — the per-day valuation logic lives in exactly one place, so
  * the window batch (HIST-1C) and the single read produce byte-identical views.
  */
+/** Current quotes for ONE market date (see valuePositionRowsOverDates). */
+export interface CurrentQuoteInput {
+  dateISO:      string;
+  byInstrument: ReadonlyMap<string, { price: number; currency: string }>;
+}
+
 export async function valuePositionRows(args: {
   client:            Client;
   asOf:              string;
@@ -310,6 +373,8 @@ export async function valuePositionRows(args: {
   holdConstant:      boolean;
   posRows:           readonly ObservationValuationRow[];
   reconRows:         readonly ReconstructionConflictRow[];
+  /** See `valuePositionRowsOverDates` — one date only; the current-value path alone passes it. */
+  currentQuotes?:    CurrentQuoteInput;
 }): Promise<InvestmentValuationView> {
   const byDate = await valuePositionRowsOverDates({
     client: args.client,
@@ -319,6 +384,7 @@ export async function valuePositionRows(args: {
     holdConstant: args.holdConstant,
     posRows: args.posRows,
     reconRows: args.reconRows,
+    currentQuotes: args.currentQuotes,
   });
   // valuePortfolioAsOf always returns a view for a requested date (empty when no
   // holdings), so this is defined; the fallback keeps the function total-typed.
@@ -348,12 +414,35 @@ export async function valuePositionRowsOverDates(args: {
   holdConstant:      boolean;
   posRows:           readonly ObservationValuationRow[];
   reconRows:         readonly ReconstructionConflictRow[];
+  /**
+   * V26-QUANTITY-1G — receives the decision ledger when the quantity authority
+   * is consulted. Optional and inert when `QUANTITY_AUTHORITY_MODE` is off.
+   */
+  authorityLedgerOut?: ComparisonRow[];
+  /**
+   * 2026-09-21 — CURRENT quotes (PriceBasis.INTRADAY, lib/prices/current-quotes)
+   * for the ONE market date they belong to. Accepted ONLY when this valuation is
+   * for exactly one date and it is that date; anything else throws, so no
+   * multi-date caller — every historical reconstruction — can be handed an
+   * intraday price. The only caller (loadWalletCurrentValues) passes them for
+   * TODAY, and the archive never holds today's date (assertClosedDateISO), so a
+   * price dated today in the result can only have come from here.
+   */
+  currentQuotes?: CurrentQuoteInput;
 }): Promise<Map<string, InvestmentValuationView>> {
   const { client, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows } = args;
 
   const out = new Map<string, InvestmentValuationView>();
   const dates = [...new Set(args.dates)].sort();
   if (dates.length === 0) return out;
+  if (args.currentQuotes && args.currentQuotes.byInstrument.size > 0) {
+    if (dates.length !== 1 || dates[0] !== args.currentQuotes.dateISO) {
+      throw new Error(
+        `[valuation] current quotes for ${args.currentQuotes.dateISO} refused for dates ${dates.join(",")} — ` +
+        "a quote prices its own day only; historical valuation reads RAW_CLOSE and nothing else",
+      );
+    }
+  }
 
   // ── Shared prep, built ONCE for every requested date ───────────────────────
   // Group full rows by (account|instrument).
@@ -379,7 +468,13 @@ export async function valuePositionRowsOverDates(args: {
   }
 
   const conflictByPair = new Map<string, boolean>();
-  for (const r of reconRows) conflictByPair.set(`${r.financialAccountId}|${r.instrumentId}`, r.conflicted);
+  /** V26-INVESTMENTS-HISTORY — the reconstruction's verdict, per (account, instrument). */
+  const reconciliationByPair = new Map<string, string | null>();
+  for (const r of reconRows) {
+    const k = `${r.financialAccountId}|${r.instrumentId}`;
+    conflictByPair.set(k, r.conflicted);
+    reconciliationByPair.set(k, r.reconciliation ?? null);
+  }
 
   // Instrument currency / cash fallback.
   const instruments = await client.instrument.findMany({
@@ -396,6 +491,13 @@ export async function valuePositionRowsOverDates(args: {
   const maxDate = dates[dates.length - 1];
   const floorISO = minusDaysISO(minDate, PRICE_MAX_STALE_DAYS);
   const priceWindow = (await priceArchive.readRange?.([...instrumentIds], PriceBasis.RAW_CLOSE, floorISO, maxDate)) ?? [];
+  // TODAY's current quotes join the in-memory window dated today (guarded above),
+  // so they win nearest-on-or-before for today and are invisible to any other date.
+  if (args.currentQuotes) {
+    for (const [instrumentId, q] of args.currentQuotes.byInstrument) {
+      if (instrumentIds.has(instrumentId)) priceWindow.push({ instrumentId, dateISO: maxDate, price: q.price, currency: q.currency } as (typeof priceWindow)[number]);
+    }
+  }
   const priceService = createPriceService(memoryPriceReader(priceWindow));
 
   // ── One conversion context spanning every date × every native currency ─────
@@ -405,39 +507,167 @@ export async function valuePositionRowsOverDates(args: {
   const currencySet = new Set<string>();
   for (const rows of byPair.values()) for (const r of rows) if (r.currency) currencySet.add(r.currency);
   for (const meta of instrumentMeta.values()) if (meta.currency) currencySet.add(meta.currency);
-  const ctx = contextSpaceId
-    ? await buildSpaceConversionContextById(contextSpaceId, { currencies: [...currencySet], dates })
+  const ctxSpace = contextSpaceId
+    ? await client.space.findUnique({
+        where: { id: contextSpaceId }, select: { reportingCurrency: true } })
+    : null;
+  const ctx = ctxSpace
+    ? await buildSpaceConversionContext(ctxSpace, { currencies: [...currencySet], dates })
     : identityContext(reportingCurrency);
+
+  // ── V26-QUANTITY-1G — the quantity authority, when opted in ───────────────
+  // Built once for the whole date span. `off` returns an inert context without
+  // issuing a query, so this costs nothing unless someone asked for it.
+  const authorityCtx = await buildQuantityAuthorityContext({
+    client,
+    dates,
+    financialAccountIds: [...new Set(posRows.map((r) => r.financialAccountId))],
+  });
 
   // ── Value each requested date independently against the shared prep ────────
   for (const asOf of dates) {
     const inputs: Array<{ input: InstrumentValuationInput; nonCash: boolean }> = [];
+    /** Components the authority refused — unvalued, never absent. */
+    const excluded: Array<{
+      instrumentId: string; accountId: string;
+      quantity: number | null; quantityTier: CompletenessTier; reason: string;
+    }> = [];
     for (const [key, rows] of byPair) {
       const [financialAccountId, instrumentId] = key.split("|");
       const resolved = resolvePositionAsOf(rows, asOf);
-      let quantity      = resolved.quantity;
-      let quantityDate  = resolved.date;
-      let quantityTier  = resolved.tier;
-      let resolvedRow   = pickResolvedRow(rows, resolved.date, resolved.origin);
-      let heldConstant  = false;
+      // V26-QUANTITY-1A — the constant-quantity fallback is decided by ONE pure
+      // authority (valuation-core.resolveHeldQuantity), which distinguishes "no
+      // observation covers this date" (null — may hold constant) from "an
+      // observation proves this position was closed" (0 — never may). Previously
+      // both entered the fallback, so every sold position was resurrected at its
+      // earliest quantity on every later date.
+      // V26-S4 — THE BACKWARD CARRY MAY NOT LEAN ON A WALK THAT DID NOT CLOSE.
+      //
+      // `resolveHeldQuantity` carries the EARLIEST row backward when nothing
+      // covers the date. Since S1 that earliest row is normally the walk's
+      // OPENING ANCHOR — its own statement of what was held before its first
+      // event — so the carry is the reconstruction speaking, and is licensed.
+      //
+      // It is NOT licensed when the walk FAILED or its sources CONFLICT. There
+      // the earliest row is whatever the replay reached before it stopped, and
+      // projecting it into prehistory dresses a stop in the clothes of an
+      // answer. TQQQ is the worked example: while its split had no terms its
+      // walk stopped at 2025-11-20 holding 20 shares, and a carry would have
+      // spread today's post-split count across every earlier date.
+      //
+      // Refusing here leaves the component unresolved, which the caller already
+      // treats as not-held — never a fabricated quantity, never a fabricated
+      // ownership (ownership is decided elsewhere and is not consulted here).
+      const pairReconciliation = reconciliationByPair.get(key) ?? null;
+      const carryLicensed = pairReconciliation !== "FAILED" && !(conflictByPair.get(key) ?? false);
+      const held = resolveHeldQuantity(resolved, rows, holdConstant && carryLicensed);
+      // V26-QUANTITY-1G — consult the authority. In `compare` this records what
+      // it would have said and returns the legacy value unchanged; only `adopt`
+      // lets it move money, and only where the timeline is absolute, covered,
+      // and its ordering evidenced rather than tie-broken. Every other date
+      // falls back to `resolveHeldQuantity` WITH a recorded reason.
+      const consulted = consultQuantityAuthority({
+        ctx: authorityCtx, dateISO: asOf,
+        financialAccountId, instrumentId, legacyQuantity: held.quantity,
+      });
+      const quantity     = consulted.quantity;
+      const quantityDate = consulted.usedAuthority ? asOf : held.date;
+      // An adopted quantity is the authority's own evidence grade: an observed
+      // anchor is observed, a replayed interval is derived from observed events.
+      // Carrying the legacy tier would mislabel it.
+      const quantityTier = consulted.usedAuthority
+        ? (consulted.decision.source === "AUTHORITY" && consulted.decision.basis === "OBSERVED_ANCHOR"
+            ? "observed" : "derived")
+        : held.tier;
+      // The backward carry is a LEGACY concept, retained for the quantity tier.
+      // It no longer gates the institution anchor — that is date-gated below,
+      // independently of where the quantity came from.
+      const heldConstant = consulted.usedAuthority ? false : held.heldConstant;
+      void heldConstant;
+      const resolvedRow  = held.sourceRow ?? pickResolvedRow(rows, resolved.date, resolved.origin);
 
-      // Constant-quantity fallback (holdConstant): nothing covers asOf → hold the
-      // EARLIEST observed quantity backward as a labeled estimate (price is real).
-      if ((quantity == null || quantity === 0) && holdConstant && rows.length > 0) {
-        const earliest = rows.reduce((min, r) => (r.date < min.date ? r : min), rows[0]);
-        if (earliest.quantity > 0) {
-          quantity     = earliest.quantity;
-          quantityDate = earliest.date;
-          quantityTier = "estimated";
-          resolvedRow  = earliest;
-          heldConstant = true;
-        }
+      // V26-INVESTMENTS-HISTORY — an EXCLUDED component must stay visible.
+      //
+      // Dropping it here removed it from the total AND from completeness
+      // accounting, so an opening built from 8 supported positions while 12
+      // were omitted reported `unvalued 0 · tier estimated` — LESS doubt than
+      // before, on less evidence. A component the authority will not support is
+      // unvalued, not absent, and it carries the authority's own reason so the
+      // omission is inspectable rather than inferable.
+      if (consulted.excluded) {
+        excluded.push({
+          instrumentId, accountId: financialAccountId,
+          quantity: held.quantity, quantityTier: held.tier,
+          reason: consulted.decision.source === "LEGACY"
+            ? `Quantity unsupported (${consulted.decision.reason}): ${consulted.decision.detail}`
+            : "Quantity unsupported by the quantity authority.",
+        });
+        continue;
+      }
+
+      // V26-INVESTMENTS-HISTORY — RECONSTRUCTION RESIDUE IS NOT A SHORT POSITION.
+      //
+      // A DERIVED negative quantity from a reconstruction that could not close
+      // its own books (PARTIAL / FAILED / no summary) is the backward replay
+      // running out of history, not evidence of a short. Valuing it multiplied
+      // an unexplained opening by a real market price and booked the product as
+      // portfolio value — locally, six positions on one Schwab account turned
+      // ~$3.4k of unknown history into ~−$3.4k of asserted value.
+      //
+      // Refused as UNVALUED-with-a-reason through the same `excluded` path a
+      // refused authority quantity takes: the component keeps its instrument,
+      // account, quantity and evidence tier, stays out of the subtotal, and
+      // degrades the portfolio's completeness — never clamped to zero, never
+      // dropped. The reconstruction's own verdict is the authority here; this
+      // binding only stops ignoring it.
+      //
+      // Scoped to the legacy resolver deliberately: when the quantity authority
+      // ADOPTS a value it owns its own evidence grade and exclusion path, so
+      // second-guessing it here would be a different decision in a second place.
+      const reconciliation = reconciliationByPair.get(key) ?? null;
+      if (
+        !consulted.usedAuthority &&
+        isReconstructionResidue({
+          quantity,
+          origin: resolvedRow?.origin ?? resolved.origin ?? null,
+          reconciliation,
+        })
+      ) {
+        excluded.push({
+          instrumentId, accountId: financialAccountId,
+          quantity, quantityTier,
+          reason: reconstructionResidueReason(quantity, reconciliation),
+        });
+        continue;
       }
 
       // Not held at asOf (no covering row, or an explicit closed-zero) → excluded.
+      // This is a KNOWN ZERO, categorically different from the case above: the
+      // evidence says the position was not held, rather than saying nothing.
       if (quantity == null || quantity === 0) continue;
+      const anchorPertainsToAsOf = resolvedRow?.date === asOf;
       const meta = instrumentMeta.get(instrumentId);
-      const isCash = resolvedRow?.isCash ?? meta?.isCash ?? false;
+      // V26-S3-CASH — CASH-EQUIVALENCE IS A PROPERTY OF THE INSTRUMENT.
+      //
+      // This was `resolvedRow?.isCash ?? meta?.isCash ?? false`, and `??` only
+      // falls through null/undefined — never `false`. Since `isCash` is a
+      // NOT NULL column defaulting to false, ANY row that omitted it (every
+      // DERIVED reconstruction row until this slice) permanently out-voted the
+      // instrument, and a dollar balance was sent to a market-price lookup.
+      //
+      // The rule, stated once: an Instrument marked `isCashEquivalent` IS cash,
+      // whatever a row's column happens to hold — that flag is the instrument's
+      // financial identity and a per-row default cannot revoke it. A row may
+      // still ASSERT cash for an instrument not so marked (a provider stating
+      // something about one specific holding), so the two are OR'd rather than
+      // the instrument simply winning.
+      //
+      // Deliberately NOT a blanket "treat false as absent": `false` stays
+      // meaningful everywhere it is a real statement — a wallet position, an
+      // equity holding, a security whose provider flag says non-cash. Only the
+      // instrument's own cash identity can override it, and only in one
+      // direction.
+      const isCash = meta?.isCash === true || resolvedRow?.isCash === true;
       const nativeCurrency = resolvedRow?.currency ?? meta?.currency ?? null;
 
       inputs.push({
@@ -457,9 +687,24 @@ export async function valuePositionRowsOverDates(args: {
           // CURRENT value. Drop the institution anchor so non-cash positions fall
           // through to the real RAW_CLOSE market price at asOf ("price is real",
           // above); cash still resolves via its unit-price branch.
-          institutionValue: heldConstant ? null : (resolvedRow?.institutionValue ?? null),
-          institutionPrice: heldConstant ? null : (resolvedRow?.institutionPrice ?? null),
-          institutionPriceDate: heldConstant ? null : (resolvedRow?.institutionPriceDate ?? null),
+          // V26-INVESTMENTS-HISTORY — the institution anchor belongs to the DATE
+          // OF THE ROW THAT SUPPLIED IT, and to no other date.
+          //
+          // Passing it through on any other day short-circuits
+          // valueInstrumentAsOf's Precedence 1 and values that day at the
+          // anchor's price. With observations that begin in July, a 2026-01-01
+          // valuation was priced at the 2026-07-17 close — a look-forward of
+          // seven months. The previous gate keyed on `heldConstant`, which only
+          // covered the legacy backward-carry, so the same hole reopened the
+          // moment quantity came from anywhere else.
+          //
+          // The rule is therefore independent of quantity provenance: same date
+          // or nothing. When it is nothing, the component falls through to the
+          // canonical RAW_CLOSE lookup on or before asOf, and is left unvalued
+          // with a reason when no such price exists.
+          institutionValue: anchorPertainsToAsOf ? (resolvedRow?.institutionValue ?? null) : null,
+          institutionPrice: anchorPertainsToAsOf ? (resolvedRow?.institutionPrice ?? null) : null,
+          institutionPriceDate: anchorPertainsToAsOf ? (resolvedRow?.institutionPriceDate ?? null) : null,
           price: null, // filled below for non-cash without an institution anchor
           conflicted: conflictByPair.get(key) ?? false,
         },
@@ -475,8 +720,23 @@ export async function valuePositionRowsOverDates(args: {
     }
 
     const components: InstrumentValuation[] = inputs.map(({ input }) => valueInstrumentAsOf(input, asOf, ctx));
+    // Refused components enter the view as UNVALUED: `reportingValue: null`
+    // keeps them out of the subtotal while `valuePortfolioAsOf` counts them and
+    // degrades the tier through `worstTier`.
+    for (const e of excluded) {
+      components.push({
+        instrumentId: e.instrumentId, accountId: e.accountId, quantity: e.quantity,
+        nativePrice: null, nativeValue: null, reportingValue: null,
+        currency: null, reportingCurrency: ctx.target,
+        quantityTier: e.quantityTier, priceTier: "unknown", fxTier: "unknown",
+        overallTier: "unknown", basisUsed: null,
+        priceDate: null, staleDays: null, reason: e.reason, conflicted: false,
+      });
+    }
     out.set(asOf, valuePortfolioAsOf(components, asOf, ctx.target));
   }
+
+  if (args.authorityLedgerOut) args.authorityLedgerOut.push(...authorityCtx.ledger);
 
   return out;
 }

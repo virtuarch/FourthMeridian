@@ -9,11 +9,12 @@
  *
  * OPS-2D-2 — the matrix enumerates ALL_ACCESS_LEVELS (derived from LEVEL_RANK)
  * rather than a local literal, so it cannot silently fall behind the model
- * again. CONTROL renders as a RESERVED cell: present, ranked, and visibly not
- * issuable. That is the honest depiction of the current state — the level
- * exists canonically and nothing consumes it — and it is enforced twice over:
- * the button is `disabled`, and setLevel() refuses any non-issuable level
- * before it can reach the network. The route rejects it a third time.
+ * again. PLATFORM OPS POLICIES (Slice 2) made CONTROL issuable together with
+ * its first consumer (the financial-refresh cadence editor), so its cell is now
+ * a live third choice. The RESERVED rendering path is kept for any future level
+ * that exists in the model before anything consumes it: such a cell renders
+ * `disabled`, setLevel() refuses it before the network, and the route rejects
+ * it a third time — all driven by isIssuableLevel, never by a local list.
  *
  * Mutations go through the extra-guarded routes:
  *   POST  /api/admin/platform-grants            { userId, area, level }
@@ -61,7 +62,7 @@ const INITIAL: Record<PlatformAccessLevel, string> = { READ: "R", WRITE: "W", CO
 const LEVEL_COPY: Record<PlatformAccessLevel, string> = {
   READ:    "Can inspect authorized platform state.",
   WRITE:   "Can perform existing operational work.",
-  CONTROL: "Reserved for future authority to change platform behavior. Not currently issuable.",
+  CONTROL: "Can change declared operational policy (financial refresh cadence). Distinct from WRITE; granted deliberately.",
 };
 
 /**
@@ -72,6 +73,8 @@ const LEVEL_COPY: Record<PlatformAccessLevel, string> = {
  */
 const CHIP_RESERVED =
   "bg-transparent text-[var(--text-faint)] border-dashed border-[var(--border-hairline)] opacity-60";
+/** The CONTROL current-state chip — Atlas brass, the platform widgets' action tone. */
+const CHIP_CONTROL_CURRENT = { background: "rgba(201,155,60,.14)", color: "var(--brass-300)", borderColor: "rgba(201,155,60,.3)" } as const;
 /** The neutral, selectable chip — used by the legend for issuable levels. */
 const CHIP_LEGEND =
   "bg-white/5 text-[var(--text-muted)] border-[var(--border-hairline)]";
@@ -306,11 +309,16 @@ export default function PlatformAccessPage() {
                                         !issuable
                                           ? `${CHIP_RESERVED} cursor-not-allowed`
                                           : isCurrent
-                                            ? lvl === "WRITE"
-                                              ? "bg-amber-500/15 text-amber-400 border-amber-500/30 cursor-default"
-                                              : "bg-blue-500/15 text-blue-400 border-blue-500/30 cursor-default"
+                                            ? lvl === "CONTROL"
+                                              ? "cursor-default"
+                                              : lvl === "WRITE"
+                                                ? "bg-amber-500/15 text-amber-400 border-amber-500/30 cursor-default"
+                                                : "bg-blue-500/15 text-blue-400 border-blue-500/30 cursor-default"
                                             : "bg-gray-800/60 text-gray-500 border-gray-700/60 hover:text-white hover:border-gray-600",
                                       ].join(" ")}
+                                      // The CONTROL current-state chip is expressed in Atlas tokens (the
+                                      // platform widgets' brass action tone), not raw palette classes.
+                                      style={issuable && isCurrent && lvl === "CONTROL" ? CHIP_CONTROL_CURRENT : undefined}
                                     >
                                       {INITIAL[lvl]}
                                     </button>

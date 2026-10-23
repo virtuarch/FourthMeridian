@@ -5,7 +5,7 @@
  *
  * The project has no test runner (no jest/vitest). This is a standalone,
  * dependency-free script runnable with the already-installed `tsx`, mirroring
- * lib/space-nav.test.ts and lib/ai/output-validator.test.ts:
+ * lib/space-nav.test.ts:
  *
  *     ENCRYPTION_KEY=$(openssl rand -hex 32) npx tsx lib/plaid/encryption.test.ts
  *

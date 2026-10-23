@@ -75,7 +75,7 @@ for (const { file, action } of ROUTES) {
   // Auth-before-audit: the guard must return BEFORE any audit write, so a
   // rejected caller never produces a misleading record. Assert the guard's
   // early-return precedes the first auditLog.create in source order.
-  const guardIdx = code.search(/requireSystemAdmin\s*\(\s*\)/);
+  const guardIdx = code.search(/require(Fresh)?SystemAdmin\s*\(\s*\)/);
   const errReturnIdx = code.search(/if\s*\(\s*err\s*\)\s*return\s+err/);
   const auditIdx = code.search(/auditLog\.create/);
   check(
@@ -95,6 +95,15 @@ for (const { file, action } of ROUTES) {
       `"${secret}" appears within the audit metadata block`,
     );
   }
+}
+
+// Launch-readiness audit (2026-10-06): the two CONTROL routes — they retire a
+// live Plaid item / disconnect accounts — must re-read the admin role live, so a
+// just-revoked admin cannot act inside the 30 s session-cache window.
+for (const file of ["app/api/admin/plaid/retire-superseded-item/route.ts", "app/api/admin/plaid/exchange-expanded-history-token/route.ts"]) {
+  const code = stripComments(read(file));
+  check(`${file} is a control action and uses requireFreshSystemAdmin (not the cached gate)`,
+    /await requireFreshSystemAdmin\(\)/.test(code) && !/requireSystemAdmin\(/.test(code));
 }
 
 console.log(`\nadmin-plaid-audit: ${passes} passed, ${failures} failed`);

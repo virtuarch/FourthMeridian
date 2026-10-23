@@ -44,10 +44,18 @@ function main(): void {
   console.log("1. no category leads with (or contains) a comingSoon lens");
   for (const cat of categories) {
     const defs = getPerspectivesForCategory(cat);
-    const soon = defs.filter((d) => d.status === "comingSoon").map((d) => d.id);
+    // OWNER DECISION 3 (2026-10-22, pre-beta remediation): Markets is an upcoming
+    // capability, listed as Coming Soon. It is the ONE exemption: its renderer is
+    // gated to an honest "Coming soon." placeholder by the registry status
+    // (components/space/workspaces/workspaceRenderers.tsx), so it promises nothing.
+    const COMING_SOON_EXEMPT = new Set(["markets"]);
+    const soon = defs.filter((d) => d.status === "comingSoon" && !COMING_SOON_EXEMPT.has(d.id)).map((d) => d.id);
     check(`${cat}: no comingSoon lens in the perspective list`, soon.length === 0,
       soon.length ? `found ${soon.join(", ")}` : undefined);
   }
+  check("the Markets exemption is backed by the placeholder gate",
+    /comingSoon/.test(read("components/space/workspaces/workspaceRenderers.tsx"))
+    && /WorkspaceComingSoon/.test(read("components/space/workspaces/workspaceRenderers.tsx")));
   // Explicit regression pins for the two the audit removed.
   check("PROPERTY no longer surfaces the `property` lens",
     !getPerspectivesForCategory("PROPERTY").some((d) => d.id === "property"));
@@ -97,12 +105,24 @@ function main(): void {
 
   console.log("6. removed templates are gone from the picker but still resolvable");
   const pickerIds = new Set([...live, ...soon].map((t) => t.id));
-  for (const id of ["household", "debt-payoff", "emergency-fund", "investment", "equipment", "other"]) {
+  for (const id of ["debt-payoff", "emergency-fund", "investment", "equipment", "other"]) {
     check(`"${id}" is not offered in the picker`, !pickerIds.has(id));
     check(`"${id}" still resolves (existing Spaces materialize)`, getTemplate(id) !== undefined);
   }
-  check("Household was merged into Family (Family is selectable)",
-    live.some((t) => t.id === "family") && !pickerIds.has("household"));
+  // W1 — HOUSEHOLD is retired OUTRIGHT: its template was DELETED (zero
+  // production Spaces to materialize), not merely hidden. FAMILY is the sole
+  // shared-family-space concept and stays selectable.
+  check(`"household" does not resolve at all (concept retired, template deleted)`,
+    getTemplate("household") === undefined && !pickerIds.has("household"));
+  check("Family carries the household concept (Family is selectable)",
+    live.some((t) => t.id === "family"));
+  // W2 — GOALS and RETIREMENT retired OUTRIGHT (product decision, final): both
+  // templates DELETED — including the "retirement" comingSoon placeholder, which
+  // is NOT preserved as a roadmap surface. Zero production Spaces to materialize.
+  check(`"retirement" does not resolve at all (concept retired, template deleted — not a roadmap card)`,
+    getTemplate("retirement") === undefined && !pickerIds.has("retirement"));
+  check(`"goal" does not resolve at all (concept retired, template deleted)`,
+    getTemplate("goal") === undefined && !pickerIds.has("goal"));
 
   console.log(failures === 0 ? "\nPASS" : `\nFAIL — ${failures} check(s)`);
   process.exit(failures === 0 ? 0 : 1);

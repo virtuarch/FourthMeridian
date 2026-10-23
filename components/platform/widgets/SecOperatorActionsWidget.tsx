@@ -1,28 +1,33 @@
 "use client";
 
 /**
- * components/platform/widgets/SecOperatorActionsWidget.tsx  (PO-3A · sec_operator_actions)
+ * components/platform/widgets/SecOperatorActionsWidget.tsx  (PO-3A · sec_operator_actions → BETA V2 group)
  *
- * The "what did operators do?" feed, over GET
- * /api/platform/security-ops/operator-actions (requirePlatformAccess
- * SECURITY_OPS READ). Distinct from SecAuditFeedWidget (end-user auth events):
- * this surfaces operator-performed platform actions — grant changes, manual
- * operations, beta decisions, operator account state changes — each attributed
- * to the acting operator (performedByAdminId). Read-only; no actions here.
+ * The Operator actions GROUP of the one Security posture surface
+ * (SecurityPostureWidget.tsx), over GET /api/platform/security-ops/operator-actions
+ * (requirePlatformAccess SECURITY_OPS READ). Distinct from the End-user auth group:
+ * this is what operators DID to the platform — grant changes, manual operations,
+ * beta decisions, operator account state changes, the P1 consequential actions —
+ * each attributed to the acting operator, with the reason CODE (never the note),
+ * the result as a word in its tone, and opaque execution handles. Read-only.
+ *
+ * The action and reason vocabularies stay in this file (lib/platform/
+ * operator-action-adoption.test.ts pins that the feed widget labels the P1
+ * actions and never renders a note).
+ *
+ * `SecOperatorActionsWidget` (the registry export for `sec_operator_actions`)
+ * renders nothing: the section is absorbed by the surface `sec_auth_posture` hosts.
  */
 
-import { UserCog } from "lucide-react";
-import {
-  PlatformWidgetCard,
-  WidgetMessage,
-  timeAgo,
-  useWidgetFetch,
-  type PlatformSection,
-} from "../widget-kit";
+import type { PlatformSection } from "../widget-kit";
+import { ToneBadge, TwoLine } from "../platform-surface";
 import type { OperatorActionsResponse } from "@/app/api/platform/security-ops/operator-actions/route";
+import { OPERATOR_RESULT_TONE, OPERATOR_RESULT_WORD, feedDepthText, operatorLine, type Fetched } from "./security-posture-view";
+import { SourceGate } from "./SecurityPostureParts";
+import { relTime } from "./job-health-format";
 
 /** Humanize the audit action into a short operator-verb. Unknown → the raw action. */
-const ACTION_LABEL: Record<string, string> = {
+export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   PLATFORM_GRANT_CREATED:       "Granted platform access",
   PLATFORM_GRANT_LEVEL_CHANGED: "Changed access level",
   PLATFORM_GRANT_REVOKED:       "Revoked platform access",
@@ -40,39 +45,54 @@ const ACTION_LABEL: Record<string, string> = {
   CONNECTION_REAUTH_REQUESTED:  "Requested reauthorization",
   ACCOUNT_DEACTIVATED:          "Deactivated an account",
   ACCOUNT_REACTIVATED:          "Reactivated an account",
+  // P1 — customer policy / cohort, execution cadence, operator refresh-all.
+  CUSTOMER_POLICY_ASSIGNED:        "Assigned a policy group",
+  CUSTOMER_POLICY_OVERLAY_CHANGED: "Changed a policy overlay",
+  CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED: "Changed a customer's AI allowance override",
+  CUSTOMER_COHORT_ASSIGNED:        "Assigned a cohort",
+  JOB_CADENCE_CHANGED:             "Changed a job cadence",
+  JOB_CADENCE_RESET:               "Reset a job cadence",
+  OPERATOR_REFRESH_ALL:            "Refreshed a customer's authorities",
+  PLAID_ITEM_REVOCATION_RETRY_REQUESTED: "Retried provider cleanup",
 };
 
-export function SecOperatorActionsWidget({ section }: { section: PlatformSection }) {
-  const { data, loading, error } = useWidgetFetch<OperatorActionsResponse>(
-    "/api/platform/security-ops/operator-actions",
-  );
+/** Reason codes, humanised. Unknown → the raw code. */
+export const OPERATOR_REASON_LABEL: Record<string, string> = {
+  BETA_ONBOARDING: "beta onboarding", SUPPORT_REQUEST: "support request", DOGFOOD: "dogfood", TESTING: "testing",
+  POLICY_ROLLOUT: "policy rollout", INCIDENT: "incident", ABUSE: "abuse", OTHER: "other",
+};
 
+const reasonWord = (code: string): string => OPERATOR_REASON_LABEL[code] ?? code;
+
+export function OperatorActionsGroup({ operators, nowMs }: { operators: Fetched<OperatorActionsResponse>; nowMs: number }) {
   return (
-    <PlatformWidgetCard label={section.label} icon={UserCog}>
-      {loading || error || !data ? (
-        <WidgetMessage loading={loading} error={error} />
-      ) : data.events.length === 0 ? (
-        <p className="text-xs text-[var(--text-secondary)]">No operator actions recorded.</p>
-      ) : (
-        <ul className="-mx-1 divide-y divide-[var(--border-hairline)]">
-          {data.events.map((e) => (
-            <li key={e.id} className="flex items-center justify-between gap-3 px-1 py-2">
-              <span className="min-w-0">
-                <span className="text-xs font-medium text-[var(--text-primary)]">
-                  {ACTION_LABEL[e.action] ?? e.action}
-                </span>
-                <span className="block text-[11px] text-[var(--text-muted)] truncate">
-                  {e.operator}
-                  {/* Show "→ target" only when the target differs from the actor
-                      (a platform-setting change like mode has no distinct subject). */}
-                  {e.target && e.target !== e.operator ? ` → ${e.target}` : ""}
-                </span>
-              </span>
-              <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-faint)]">{timeAgo(e.at)}</span>
-            </li>
-          ))}
-        </ul>
+    <SourceGate source="Operator actions" fetched={operators}>
+      {(d) => (
+        <div>
+          {d.events.length === 0 ? (
+            <p role="status" className="text-xs text-[var(--text-secondary)]">{feedDepthText(0, "operator actions")}</p>
+          ) : (
+            <ul className="flex flex-col">
+              {d.events.map((e) => (
+                <li key={e.id} className="flex items-start justify-between gap-3 border-b px-1 py-2 last:border-b-0" style={{ borderColor: "var(--border-hairline)" }}>
+                  <TwoLine value={OPERATOR_ACTION_LABEL[e.action] ?? e.action} qualifier={operatorLine(e, reasonWord)} />
+                  <span className="flex shrink-0 flex-col items-end gap-1">
+                    {/* The result is a WORD in its tone; a success is the quiet default and is not badged. */}
+                    {e.result && e.result !== "SUCCESS" && <ToneBadge word={OPERATOR_RESULT_WORD[e.result]} tone={OPERATOR_RESULT_TONE[e.result]} />}
+                    <span className="text-[11px] tabular-nums text-[var(--text-muted)]">{relTime(e.at, nowMs)}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {d.events.length > 0 && <p className="mt-2 text-[10px] leading-relaxed text-[var(--text-faint)]">{feedDepthText(d.events.length, "operator actions")}</p>}
+        </div>
       )}
-    </PlatformWidgetCard>
+    </SourceGate>
   );
+}
+
+/** Registry export for `sec_operator_actions` — absorbed into the Security posture surface; renders nothing. */
+export function SecOperatorActionsWidget(_props: { section: PlatformSection }) {
+  return null;
 }

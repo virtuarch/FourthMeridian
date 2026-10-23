@@ -32,8 +32,12 @@ function check(name: string, cond: boolean, detail?: string): void {
 const ROOT = process.cwd();
 const BASE = "app/api/platform/platform-ops/refresh";
 
-/** The four projection routes and the one seam route this slice ships. */
-const PROJECTION_ROUTES = ["summary", "provider-operations", "coverage", "failures"] as const;
+/** The projection routes and the one seam route.
+ *  (REVIEW-3: the "failures" projection route was deleted — no widget was ever
+ *  built over it and it had zero non-test callers; getFailureSummary remains in
+ *  the read model, unrouted.) */
+// UX-P1 · D8 — the day-series route joins the projection routes under the same ratchet.
+const PROJECTION_ROUTES = ["summary", "provider-operations", "coverage", "daily"] as const;
 const SEAM_ROUTE = "executions";
 const ALL_ROUTES = [...PROJECTION_ROUTES, SEAM_ROUTE];
 
@@ -64,7 +68,7 @@ function main() {
       // The gate must precede the work: the auth call must appear before any
       // projection/seam invocation in the file.
       const gateAt = src.indexOf("requirePlatformAccess");
-      const workAt = src.search(/await\s+(getRefreshSummary|getProviderOperationSummary|getCoverageSummary|getFailureSummary|queryRefreshExecutions)/);
+      const workAt = src.search(/await\s+(getRefreshSummary|getProviderOperationSummary|getCoverageSummary|getRefreshDailySeries|getFailureSummary|queryRefreshExecutions)/);
       check(`${r}: authorization happens BEFORE any read`, gateAt >= 0 && workAt > gateAt);
     }
   }
@@ -95,9 +99,11 @@ function main() {
       summary: "getRefreshSummary",
       "provider-operations": "getProviderOperationSummary",
       coverage: "getCoverageSummary",
-      failures: "getFailureSummary",
+      daily: "getRefreshDailySeries",
     };
-    const all = Object.values(expected);
+    // getFailureSummary stays in the ban list: its route was deleted, so no
+    // surviving route may quietly adopt the unrouted projection.
+    const all = [...Object.values(expected), "getFailureSummary"];
     for (const r of PROJECTION_ROUTES) {
       const src = code(routeFile(r));
       check(`${r}: calls ${expected[r]}`, new RegExp(`\\b${expected[r]}\\(`).test(src));
@@ -111,7 +117,7 @@ function main() {
   {
     const src = code(routeFile(SEAM_ROUTE));
     check("uses the row seam", /queryRefreshExecutions\(/.test(src));
-    check("calls no projection", !/getRefreshSummary|getProviderOperationSummary|getCoverageSummary|getFailureSummary/.test(src));
+    check("calls no projection", !/getRefreshSummary|getProviderOperationSummary|getCoverageSummary|getRefreshDailySeries|getFailureSummary/.test(src));
     check('audience is hardcoded "operator"', /audience:\s*["']operator["']/.test(src));
     check(
       "audience is NOT read from the request",

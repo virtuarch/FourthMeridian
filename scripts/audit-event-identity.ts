@@ -1,0 +1,304 @@
+/**
+ * scripts/audit-event-identity.ts   (L8 — Parts 7, 8, 9, 10)
+ *
+ * The standing corpus probe for event identity. READ-ONLY.
+ *
+ *  - structural invariants that need the whole corpus
+ *  - first-observed coverage (Part 7)
+ *  - provider-latency READINESS, with pre-backfill values labelled unknown (Part 8)
+ *
+ * Run: npx tsx --env-file=.env.local scripts/audit-event-identity.ts
+ *      (or: npm run audit:event-identity)
+ */
+
+import { db } from "@/lib/db";
+import { createHash } from "node:crypto";
+import { projectEvent, type ObservationFacts } from "@/lib/transactions/event-identity";
+import { eventsWithMultipleLiveRows } from "@/lib/transactions/event-projection";
+
+const bar = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".repeat(78)}`);
+const pct = (n: number, d: number) => (d === 0 ? "—" : `${((100 * n) / d).toFixed(1)}%`);
+let failures = 0;
+const check = (name: string, ok: boolean, detail = "") => {
+  if (ok) console.log(`  ✓ ${name}`);
+  else { failures++; console.error(`  ✗ ${name}${detail ? `\n      ${detail}` : ""}`); }
+};
+
+async function main() {
+  console.log(`\n[AUDIT] Event identity — READ-ONLY\n`);
+
+  const events = await db.transactionEvent.findMany({
+    select: {
+      id: true, financialAccountId: true, lifecycle: true, economicDate: true,
+      currentAmount: true, currentTransactionId: true, observationCount: true,
+      firstObservedAt: true, lastObservedAt: true, firstPendingObservedAt: true, postedObservedAt: true,
+    },
+  });
+  const observations = await db.transactionObservation.findMany({
+    select: {
+      id: true, eventId: true, transactionId: true, financialAccountId: true, provider: true,
+      providerRowId: true, providerPendingRef: true, observedAt: true, lifecycle: true,
+      amount: true, postingDate: true, economicDate: true, authorizedAt: true, observationKey: true,
+      // W1 (D6) — the evidence ledger.
+      linkBasis: true, linkRefusal: true,
+    },
+  });
+  const txs = await db.transaction.findMany({
+    select: { id: true, transactionEventId: true, deletedAt: true, economicDate: true, date: true, pending: true, createdAt: true },
+  });
+  const T = new Map(txs.map((t) => [t.id, t]));
+
+  bar("POPULATION");
+  console.log(`  logical events        : ${events.length}`);
+  console.log(`  observations          : ${observations.length}`);
+  console.log(`  transactions linked   : ${txs.filter((t) => t.transactionEventId).length} / ${txs.length}`);
+  const byLc = new Map<string, number>();
+  for (const e of events) byLc.set(e.lifecycle, (byLc.get(e.lifecycle) ?? 0) + 1);
+  console.log(`  lifecycle             :`, Object.fromEntries(byLc));
+  console.log(`  multi-observation     : ${events.filter((e) => e.observationCount > 1).length}`);
+
+  bar("STRUCTURAL INVARIANTS");
+  // 1 — one observation belongs to exactly one event.
+  const eventIds = new Set(events.map((e) => e.id));
+  check("INV-1 every observation belongs to exactly one existing event",
+    observations.every((o) => eventIds.has(o.eventId)));
+  // 2 — one transaction row links to at most one event (the FK guarantees it);
+  //     and every observation's row links to ITS event, not another's.
+  const mismatched = observations.filter(
+    (o) => o.transactionId && T.get(o.transactionId)?.transactionEventId !== o.eventId);
+  check("INV-2 every observed row links to the event that observed it", mismatched.length === 0,
+    mismatched.slice(0, 3).map((o) => `${o.transactionId} → ${T.get(o.transactionId!)?.transactionEventId} ≠ ${o.eventId}`).join("; "));
+  // 5 — observation keys are unique (the DB enforces it; verified in case a
+  //     future writer bypasses the constraint via raw SQL).
+  check("INV-5 observation keys are unique",
+    new Set(observations.map((o) => o.observationKey)).size === observations.length);
+  // 4 — at most one LIVE row per event: pending and posted cannot both count.
+  //
+  // v2.6-EVENT-2 — this counted OBSERVATIONS whose row is live, not distinct
+  // ROWS, so an event that observed ONE row twice scored 2 and failed a check
+  // about how many rows it has. That is a legitimate state: a DF-4 re-key
+  // (Plaid issues a new `transaction_id` for a row we already hold) reuses the
+  // row and records a second observation of it. The invariant is unchanged —
+  // two live rows would double-count money — only the counter is corrected, and
+  // the correction is pinned in lib/transactions/event-live-row-count.test.ts.
+  const liveIds = new Set(
+    [...T.entries()].filter(([, t]) => !t.deletedAt).map(([id]) => id),
+  );
+  const doubleCount = eventsWithMultipleLiveRows(observations, liveIds);
+  check("INV-4 no event has two LIVE transaction rows", doubleCount.length === 0,
+    doubleCount.slice(0, 3).join("; "));
+
+  // Re-derive every projection and compare — the event state must be a pure
+  // function of its observations, or it has drifted.
+  const obsByEvent = new Map<string, typeof observations>();
+  for (const o of observations) (obsByEvent.get(o.eventId) ?? obsByEvent.set(o.eventId, []).get(o.eventId)!).push(o);
+  let drift = 0;
+  const driftExamples: string[] = [];
+  for (const e of events) {
+    const os = obsByEvent.get(e.id) ?? [];
+    if (os.length === 0) { drift++; driftExamples.push(`${e.id}: no observations`); continue; }
+    const facts: ObservationFacts[] = os.map((o) => {
+      const t = o.transactionId ? T.get(o.transactionId) : undefined;
+      return {
+        observedAt: o.observedAt, lifecycle: o.lifecycle as "PENDING" | "POSTED",
+        amount: o.amount, postingDate: o.postingDate, economicDate: o.economicDate,
+        authorizedAt: o.authorizedAt,
+        liveTransactionId: t && !t.deletedAt ? t.id : null,
+      };
+    });
+    const p = projectEvent(facts);
+    const same =
+      p.lifecycle === e.lifecycle &&
+      p.economicDate.toISOString() === e.economicDate.toISOString() &&
+      Math.abs(p.currentAmount - e.currentAmount) < 0.005 &&
+      (p.currentTransactionId ?? null) === (e.currentTransactionId ?? null) &&
+      p.observationCount === e.observationCount;
+    if (!same) { drift++; if (driftExamples.length < 4) driftExamples.push(`${e.id}: stored ${e.lifecycle}/${e.currentAmount} vs derived ${p.lifecycle}/${p.currentAmount}`); }
+  }
+  check("the stored projection equals the derived projection for every event", drift === 0, driftExamples.join("; "));
+
+  // ── 7 — THE EVENT'S PIN DOES NOT MOVE. (Restated 2026-10-02.) ─────────────
+  //
+  // This shipped as "no multi-observation event has a moving economic date",
+  // implemented by counting events whose OBSERVATIONS hold more than one
+  // distinct economicDate:
+  //
+  //     const uniq = new Set(os.map(o => o.economicDate.toISOString()));
+  //     if (uniq.size > 1) moved++;
+  //
+  // B-6 (c1036dd, 2026-08-17) made that a FALSE invariant. An observation
+  // records the resolution of ITS OWN payload at the moment it arrived; when a
+  // provider restates `authorized_date` between the pending and the posted
+  // delivery — which Plaid does — the two observations legitimately disagree,
+  // and the whole purpose of the pin is that the EVENT does not follow them.
+  // The audit was therefore asserting the opposite of the doctrine it was
+  // written to protect, and flagged 4 events whose pins were exactly right.
+  //
+  // What matters is FIRST RESOLUTION WINS: where a credible first-PENDING
+  // observation exists, the event's published date is that one, for ever. So
+  // that is what is asserted — against the first PENDING observation by
+  // observedAt, which is precisely the `firstPendingDate` the writer feeds to
+  // resolveEconomicDate (lib/transactions/event-identity.ts:273).
+  //
+  // This still catches genuine movement: anything that re-pinned an event to a
+  // later payload's date makes it disagree with its own first pending
+  // observation. Events with no pending observation are governed by row
+  // evidence, which scripts/audit-economic-date-persistence.ts adjudicates
+  // (it asserts every event pin is the authority's answer).
+  let moved = 0;
+  let pinnedByPending = 0;
+  const movedExamples: string[] = [];
+  const eventsById = new Map(events.map((e) => [e.id, e]));
+  for (const [eventId, os] of obsByEvent) {
+    const ev = eventsById.get(eventId);
+    if (!ev) continue;
+    const pending = os
+      .filter((o) => o.lifecycle === "PENDING")
+      .sort((a, b) => a.observedAt.getTime() - b.observedAt.getTime());
+    if (pending.length === 0) continue;     // row-evidence governed; not this check's business
+    pinnedByPending++;
+    const first = pending[0].economicDate.toISOString();
+    if (ev.economicDate.toISOString() !== first) {
+      moved++;
+      if (movedExamples.length < 4) {
+        movedExamples.push(`${eventId}: pin ${ev.economicDate.toISOString().slice(0, 10)} ≠ first pending ${first.slice(0, 10)}`);
+      }
+    }
+  }
+  console.log(`  events pinned by a first PENDING observation : ${pinnedByPending}`);
+  check("INV-7 the event's pin equals its FIRST pending observation — first resolution wins",
+    moved === 0, movedExamples.join("; ") || `${moved} moved`);
+
+  // ⚠️ AND THE RESTATED INVARIANT MUST HAVE A POPULATION. An event set with no
+  // pending observations at all would satisfy the loop above vacuously, which is
+  // how this check could be retired by a fixture change rather than by a
+  // decision. A corpus with multi-observation events must have some.
+  const multiObs = [...obsByEvent.values()].filter((os) => os.length >= 2).length;
+  check("INV-7 is not vacuous — some event is actually pinned by a pending observation",
+    multiObs === 0 || pinnedByPending > 0,
+    `${multiObs} multi-observation event(s) but ${pinnedByPending} pinned by pending`);
+  // ...and the event's economic date matches its live row's.
+  const econMismatch = events.filter((e) => {
+    if (!e.currentTransactionId) return false;
+    const t = T.get(e.currentTransactionId);
+    return t?.economicDate && t.economicDate.toISOString() !== e.economicDate.toISOString();
+  });
+  check("the event's economic date matches its live row's", econMismatch.length === 0,
+    econMismatch.slice(0, 3).map((e) => e.id).join("; "));
+
+  // 17 — crypto stayed out.
+  const cryptoObs = observations.filter((o) => o.provider === "WALLET" || o.provider === "EXCHANGE");
+  check("INV-17 no crypto observation entered the banking tables", cryptoObs.length === 0);
+
+  bar("PART 7 — FIRST-OBSERVED COVERAGE");
+  const withPending = events.filter((e) => e.firstPendingObservedAt != null);
+  const withPosted = events.filter((e) => e.postedObservedAt != null);
+  console.log(`  events with firstObservedAt        : ${events.length}  (100%)`);
+  console.log(`  events with firstPendingObservedAt : ${withPending.length}  ${pct(withPending.length, events.length)}`);
+  console.log(`  events with postedObservedAt       : ${withPosted.length}  ${pct(withPosted.length, events.length)}`);
+
+  // The population the FUTURE precedence would affect: no authorizedAt, but a
+  // first-pending observation now exists.
+  const noAuth = await db.transaction.findMany({
+    where: { authorizedAt: null, transactionEventId: { not: null } },
+    select: { id: true, transactionEventId: true, date: true, economicDate: true },
+  });
+  const eventById = new Map(events.map((e) => [e.id, e]));
+  const gained = noAuth.filter((t) => {
+    const e = t.transactionEventId ? eventById.get(t.transactionEventId) : undefined;
+    return e?.firstPendingObservedAt != null;
+  });
+  console.log(`\n  rows lacking authorizedAt              : ${noAuth.length}`);
+  console.log(`  ...that NOW have first-pending evidence: ${gained.length}`);
+  console.log(`\n  ✓ B-6 precedence (APPLIED — REVIEW-3): first credible pending observation`);
+  console.log(`    ?? authorizedAt ?? posting date. projectEvent derives through`);
+  console.log(`    resolveEconomicDate and reprojectEvent materializes the event's answer`);
+  console.log(`    into Transaction.economicDate — the row/event match above is structural.`);
+
+  bar("PART 8 — PROVIDER LATENCY READINESS");
+  // ⚠️ Every backfilled observedAt is Transaction.createdAt — a RECONSTRUCTION,
+  // not a measurement. Latency derived from it would describe when we wrote the
+  // row, not when the provider delivered it.
+  const backfillCutoff = observations.reduce((min, o) => (o.observedAt < min ? o.observedAt : min), new Date());
+  const prospective = observations.filter((o) => o.observedAt.getTime() > Date.now() - 60_000);
+  console.log(`  observations recorded                 : ${observations.length}`);
+  console.log(`  ...from the BACKFILL (reconstructed)  : ${observations.length - prospective.length}`);
+  console.log(`  ...observed live since dual-write     : ${prospective.length}`);
+  console.log(`  earliest observedAt in the table      : ${backfillCutoff.toISOString().slice(0, 10)}`);
+  console.log(`\n  ⚠️ EVERY value above is UNKNOWN for latency purposes. Backfilled observedAt`);
+  console.log(`     is Transaction.createdAt — when Fourth Meridian wrote the row, not when`);
+  console.log(`     the provider delivered it. Latency is PROSPECTIVE from here.`);
+  console.log(`\n  measurable once live observations accumulate:`);
+  for (const m of [
+    "pending first seen → posted first seen   (firstPendingObservedAt → postedObservedAt)",
+    "authorized date    → pending first seen   (observation.authorizedAt → observedAt)",
+    "posted date        → posted first seen    (observation.postingDate → observedAt)",
+    "per-institution distributions             (join through financialAccount.institutionId)",
+  ]) console.log(`    · ${m}`);
+  // The one thing measurable TODAY, and honestly labelled.
+  const chains = [...obsByEvent.values()].filter((os) => os.length > 1);
+  const postingLag = new Map<number, number>();
+  for (const os of chains) {
+    const pre = os.find((o) => o.lifecycle === "PENDING"), post = os.find((o) => o.lifecycle === "POSTED");
+    if (!pre || !post) continue;
+    const d = Math.round((post.postingDate.getTime() - pre.postingDate.getTime()) / 86_400_000);
+    postingLag.set(d, (postingLag.get(d) ?? 0) + 1);
+  }
+  console.log(`\n  POSTING-DATE lag across ${chains.length} chains (a provider-DATED fact, so measurable now):`);
+  console.log(`    ${[...postingLag].sort((a, b) => a[0] - b[0]).map(([d, c]) => `${d}d:${c}`).join("  ")}`);
+
+  bar("W1 — LINK-EVIDENCE LEDGER (basis / refusal / unhealed splits)");
+  // Recorded at write time by the one writer; null = written before the ledger
+  // existed (pre-W1 rows — re-derivable only by replay, which also HEALS
+  // formerly-dangling splits when the predecessor now exists).
+  const byBasis = new Map<string, number>();
+  const byRefusal = new Map<string, number>();
+  for (const o of observations) {
+    byBasis.set(o.linkBasis ?? "(pre-ledger)", (byBasis.get(o.linkBasis ?? "(pre-ledger)") ?? 0) + 1);
+    if (o.linkRefusal) byRefusal.set(o.linkRefusal, (byRefusal.get(o.linkRefusal) ?? 0) + 1);
+  }
+  console.log(`  by basis   :`, Object.fromEntries([...byBasis].sort()));
+  console.log(`  by refusal :`, byRefusal.size ? Object.fromEntries([...byRefusal].sort()) : "(none recorded)");
+
+  // DANGLING-SPLIT-UNHEALED counter: observations whose providerPendingRef NOW
+  // resolves to a same-account observation on a DIFFERENT event. Each is a split
+  // the replay-heal path would repair on the next idempotent replay of its
+  // payload. A COUNTER, not an invariant: a dangling claim whose predecessor
+  // never arrives is a permanent, honest refusal, and a healable one is repaired
+  // by replay, not by this audit.
+  const eventByRowId = new Map<string, { eventId: string; financialAccountId: string }>();
+  for (const o of observations) {
+    if (o.providerRowId) eventByRowId.set(o.providerRowId, { eventId: o.eventId, financialAccountId: o.financialAccountId });
+  }
+  const unhealed = observations.filter((o) => {
+    if (!o.providerPendingRef) return false;
+    const target = eventByRowId.get(o.providerPendingRef);
+    return !!target && target.financialAccountId === o.financialAccountId && target.eventId !== o.eventId;
+  });
+  const danglingNow = observations.filter((o) => o.providerPendingRef && !eventByRowId.has(o.providerPendingRef));
+  console.log(`  pending-ref claims dangling (predecessor absent)   : ${danglingNow.length}`);
+  console.log(`  HEALABLE splits (predecessor present, event differs): ${unhealed.length}`);
+  if (unhealed.length > 0) {
+    console.log(`    ⚠ each heals on the next idempotent replay of its payload (recordTransactionObservation)`);
+    for (const o of unhealed.slice(0, 5)) console.log(`      · obs ${o.id} claims ${o.providerPendingRef} → event ${eventByRowId.get(o.providerPendingRef!)?.eventId}, sits on ${o.eventId}`);
+  }
+
+  bar("FINGERPRINTS");
+  const fp = (label: string, parts: string[]) =>
+    console.log(`  ${label.padEnd(28)} ${createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 16)}  (${parts.length})`);
+  fp("events", events.map((e) => `${e.id}|${e.lifecycle}|${e.economicDate.toISOString()}|${e.currentAmount}|${e.currentTransactionId}|${e.observationCount}`).sort());
+  fp("observations", observations.map((o) => `${o.observationKey}|${o.eventId}|${o.transactionId}|${o.lifecycle}|${o.amount}`).sort());
+  fp("transaction → event links", txs.filter((t) => t.transactionEventId).map((t) => `${t.id}|${t.transactionEventId}`).sort());
+  // W1 (D6) — ADDITIVE fourth line; the three above keep their historical
+  // material so pre/post-W1 runs stay comparable.
+  fp("link-evidence ledger", observations.map((o) => `${o.observationKey}|${o.linkBasis ?? ""}|${o.linkRefusal ?? ""}`).sort());
+
+  if (failures > 0) {
+    console.error(`\n[AUDIT] FAILED — ${failures} invariant(s) violated.\n`);
+    await db.$disconnect();
+    process.exit(1);
+  }
+  console.log(`\n[AUDIT] PASSED — event identity holds across the corpus. ✓\n`);
+  await db.$disconnect();
+}
+main().catch((e) => { console.error(e); process.exit(1); });

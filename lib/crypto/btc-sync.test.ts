@@ -12,17 +12,21 @@
  * PART B source-scans the DB-touching modules (which pull @/lib/db and can't
  * import under bare tsx — same constraint the sibling route tests document) for
  * the invariants this slice must not regress.
+ * PART J (merged from btc-identity.test.ts, V26-PRE B4 era) covers the BTC
+ * transaction identity defenses: filterFreshMovements tombstone-wins semantics,
+ * the dedupe/skipDuplicates write contract, and the partial-unique-index
+ * migration backstop. Importing filterFreshMovements pulls @/lib/db, so this
+ * file now runs with scripts/lib/server-only-preload.cjs and tolerates the
+ * PrismaClient engine warm-up floating-rejection on mismatched sandboxes.
  */
 
 import { readFileSync } from "fs";
 import { join } from "path";
 import {
   parseConfirmedSats,
-  parseUsdPrice,
   satsToBtc,
   computeUsdBalance,
   fetchConfirmedSats,
-  fetchBtcUsdPrice,
   fetchAddressTxCount,
   parseMultiaddrStats,
   fetchAddressStatsBatch,
@@ -31,6 +35,18 @@ import {
   SATS_PER_BTC,
   type RawBtcTx,
 } from "@/lib/crypto/btc-explorer";
+import { filterFreshMovements } from "./btc-sync";
+
+// Environment tolerance (see create.test.ts): the shared PrismaClient's
+// background engine warm-up floating-rejects on platform-mismatched sandboxes.
+// Nothing here uses Prisma — filterFreshMovements is pure.
+process.on("unhandledRejection", (err) => {
+  if ((err as { constructor?: { name?: string } })?.constructor?.name === "PrismaClientInitializationError") {
+    return;
+  }
+  console.error("unexpected unhandled rejection:", err);
+  process.exit(1);
+});
 
 let failures = 0;
 let passes = 0;
@@ -83,10 +99,6 @@ async function main(): Promise<void> {
   check("parseConfirmedSats throws on negative balance",
     await throwsAsync(async () => parseConfirmedSats({ chain_stats: { funded_txo_sum: 1, spent_txo_sum: 2 } })));
 
-  check("parseUsdPrice reads USD", parseUsdPrice({ USD: 65000 }) === 65000);
-  check("parseUsdPrice throws on missing USD", await throwsAsync(async () => parseUsdPrice({ EUR: 1 })));
-  check("parseUsdPrice throws on non-positive USD", await throwsAsync(async () => parseUsdPrice({ USD: 0 })));
-
   check("computeUsdBalance rounds to cents",
     computeUsdBalance(EXPECTED_BTC, 65000) === 4117.82,
     `got ${computeUsdBalance(EXPECTED_BTC, 65000)}`);
@@ -95,19 +107,40 @@ async function main(): Promise<void> {
   const sats = await fetchConfirmedSats("1Cn7RXTTd5aN1ys32GfXVdXUzTyDxdpS1D", stubFetch(okResponse(ADDR_FIXTURE)));
   check("fetchConfirmedSats (injected fetch) returns confirmed sats", sats === EXPECTED_SATS, `got ${sats}`);
 
-  const price = await fetchBtcUsdPrice(stubFetch(okResponse({ USD: 65000, EUR: 60000 })));
-  check("fetchBtcUsdPrice (injected fetch) returns USD", price === 65000, `got ${price}`);
-
-  // Explorer / price failure → typed, staged BtcSyncError (drives honest SyncIssue).
+  // Explorer failure → typed, staged BtcSyncError (drives honest SyncIssue).
   let balErr: unknown;
   try { await fetchConfirmedSats("addr", stubFetch(failResponse(500))); } catch (e) { balErr = e; }
   check("balance HTTP failure throws BtcSyncError stage=balance",
     balErr instanceof BtcSyncError && balErr.stage === "balance");
 
-  let priceErr: unknown;
-  try { await fetchBtcUsdPrice(stubFetch(failResponse(503))); } catch (e) { priceErr = e; }
-  check("price HTTP failure throws BtcSyncError stage=price",
-    priceErr instanceof BtcSyncError && priceErr.stage === "price");
+  // ── 2026-09-15 — A PROVIDER THAT NEVER ANSWERS IS NAMED, WITH ITS BUDGET ───
+  //
+  // mempool.space accepted TCP and then never completed a TLS handshake. Node's
+  // abort timer fired and the error that reached the SyncIssue, the Connection
+  // and the 502 body was "This operation was aborted" — no host, no duration,
+  // nothing to tell an upstream outage from an application defect. The fetch
+  // below honours the abort signal exactly as undici does and never resolves.
+  const hangingFetch = ((_url: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
+    const signal = init?.signal;
+    if (!signal) return;
+    const abort = () => { const e = new Error("This operation was aborted"); e.name = "AbortError"; reject(e); };
+    if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
+  })) as unknown as typeof fetch;
+  const savedTimeout = process.env.BTC_SYNC_TIMEOUT_MS;
+  process.env.BTC_SYNC_TIMEOUT_MS = "25";
+  let hangErr: unknown;
+  const hangStart = Date.now();
+  try { await fetchConfirmedSats("addr", hangingFetch); } catch (e) { hangErr = e; }
+  const hangMs = Date.now() - hangStart;
+  if (savedTimeout === undefined) delete process.env.BTC_SYNC_TIMEOUT_MS; else process.env.BTC_SYNC_TIMEOUT_MS = savedTimeout;
+  check("a hanging provider fails as a staged BtcSyncError, once, within its budget",
+    hangErr instanceof BtcSyncError && hangErr.stage === "balance" && hangMs < 2000, `took ${hangMs} ms`);
+  // 2026-09-21 — the single-address BALANCE authority is its own Esplora host
+  // (blockstream.info), no longer the history explorer's — so the host named
+  // here is the balance authority's.
+  check("…whose reason names the host and the timeout budget, not Node's abort text",
+    hangErr instanceof Error && /^blockstream\.info did not respond within 25 ms$/.test(hangErr.message),
+    hangErr instanceof Error ? hangErr.message : String(hangErr));
 
   // ── PART B — source-scan invariants on the DB-touching modules ──────────────
 
@@ -115,7 +148,27 @@ async function main(): Promise<void> {
   check("explorer stays pure (no @/lib/db import)", !explorer.includes("@/lib/db"));
   check("explorer stays pure (no next/* import)", !/from\s+["']next\//.test(explorer));
 
+  // ── 2026-09-15 — THE USD COLUMN IS PRICED FROM THE CANONICAL ARCHIVE ───────
+  //
+  // The sync fetched a live BTC→USD spot from a SECOND provider endpoint
+  // (mempool.space /api/v1/prices) and failed the WHOLE sync — before the
+  // canonical observation was written — when that quote did not arrive, even
+  // though the balance HAD been read from the batch provider. No canonical
+  // surface reads that column (W6d); the account card values the observed
+  // position at the archived close. The column now derives from that same
+  // reader, so a BTC refresh has exactly ONE live dependency: the chain read.
+  check("explorer has no price endpoint (no spot-price fetch survives)",
+    !/prices|fetchBtcUsdPrice|btcPriceUrl|parseUsdPrice|BTC_PRICE_URL/.test(explorer));
+
   const sync = code(read("lib", "crypto", "btc-sync.ts"));
+  // 2026-09-15 — see the explorer pin above: the USD column derives from the
+  // canonical archived close, through the shared reader, with no live fallback.
+  check("sync prices the legacy USD column through the canonical crypto reader",
+    sync.includes("readCryptoUsdWindows([BTC_ASSET]") && !/fetchBtcUsdPrice|btcPriceUrl/.test(sync));
+  const closeFn = sync.slice(sync.indexOf("async function canonicalBtcCloseUsd"));
+  const closeBody = closeFn.slice(0, closeFn.indexOf("\n}\n"));
+  check("…and refuses by name when the archive has no close — never a live quote",
+    /no canonical BTC close in the price archive/.test(closeBody) && !/fetch/.test(closeBody));
   // Honest partial→pending invariant, without pinning the exact ternary spelling
   // (`syncStatus: discoveryComplete ? "synced" : "pending"`): assert the status is
   // driven by discoveryComplete and only "synced"/"pending" appear (never "error").
@@ -141,7 +194,7 @@ async function main(): Promise<void> {
   // (v4: xpub is now IN scope for sync — the former "no xpub" guard is retired.)
 
   const job = code(read("jobs", "sync-crypto.ts"));
-  check("job body delegates to syncAllBtcWallets", job.includes("syncAllBtcWallets"));
+  check("job body runs the unified wallet sweep (every syncable chain, not BTC only)", job.includes("refreshScheduledWallets"));
   // CH-3 — the cron body also regenerates wealth history for the wallets it
   // synced (the step 965e0bd anticipated for this path), gated on the flag.
   check("job body regenerates wealth history for synced wallets",
@@ -149,20 +202,37 @@ async function main(): Promise<void> {
   check("job body gates the bulk regen on WEALTH_REGENERATION_ENABLED",
     job.includes("wealthRegenerationEnabled"));
 
+  // PERF-1 — slots live in the facts authority (registry.core.ts); the
+  // executable registry adds the body.
+  const registryFacts = code(read("lib", "jobs", "registry.core.ts"));
   const registry = code(read("lib", "jobs", "registry.ts"));
   // CH-3 — sync-crypto is now REGISTERED (every 6 hours), unlocked by the Vercel
   // plan upgrade off Hobby. The former "deferred — R7" ruling is retired.
-  check("sync-crypto is registered in the dispatcher (6-hourly)",
-    /name:\s*["']sync-crypto["']/.test(registry) && registry.includes("expectedEveryHours: 6"));
+  check("sync-crypto is registered in the dispatcher (6-hourly, derived from its [0,6,12,18] slots)",
+    /name:\s*["']sync-crypto["'],\s*hourUTC:\s*\[0,\s*6,\s*12,\s*18\]/.test(registryFacts) &&
+    /["']sync-crypto["']:\s*async\s*\(\)\s*=>\s*\(await import\(["']@\/jobs\/sync-crypto["']\)\)\.syncCrypto\(\)/.test(registry));
 
   const manual = code(read("app", "api", "accounts", "[id]", "sync", "route.ts"));
   check("manual route authenticates", manual.includes("requireUser"));
   check("manual route is owner-only", /ownerUserId\s*!==\s*user\.id/.test(manual));
-  check("manual route is BTC-only", manual.includes("BTC_CHAIN"));
-  check("manual route runs the sync", manual.includes("syncBtcWallet("));
+  // W-M1d — THE ROUTE NO LONGER NAMES BITCOIN, AND THAT IS THE POINT.
+  //
+  // These asserted `BTC_CHAIN` and `syncBtcWallet(` directly, which pinned the
+  // MECHANISM rather than the guarantee. The route now dispatches by chain
+  // through lib/crypto/wallet-sync-dispatch.ts, so the guarantees are: a wallet
+  // whose chain cannot be read is still refused before any adapter is reached,
+  // and a BTC wallet still reaches syncBtcWallet — which the registry pins.
+  check("manual route refuses a chain it cannot read, before dispatching",
+    manual.includes("isSyncableChain(account.walletChain)"));
+  check("manual route runs the sync through the ONE chain registry",
+    /syncWalletByChain\(id, account\.walletChain(, \{ trigger: "MANUAL" \})?\)/.test(manual));
+  check("…and BTC still resolves to syncBtcWallet in that registry",
+    /\[BTC_CHAIN\]:[\s\S]*?syncBtcWallet\(id\)/
+      .test(code(read("lib", "crypto", "wallet-sync-dispatch.ts"))));
 
   const walletRoute = code(read("app", "api", "accounts", "wallet", "route.ts"));
-  check("wallet route runs balance sync on add (run-on-add)", walletRoute.includes("syncBtcWallet("));
+  check("wallet route runs balance sync on add (run-on-add)",
+    walletRoute.includes("syncWalletBestEffort(fa.id, chain)"));
   // No Transaction-model usage / import (the `db.$transaction` atomic wrapper is
   // unrelated and allowed — hence the capital-T model-name boundary check).
   check("wallet route creates/imports no transactions",
@@ -172,12 +242,15 @@ async function main(): Promise<void> {
 
   // Backend correction: the active-duplicate re-add branch now syncs too, so
   // an already-existing BTC wallet has an automatic trigger. All three branches
-  // (active-dup, reactivate, new-create) must call syncBtcWallet.
-  // The active-dup branch is the load-bearing correction (it pins the exact call
-  // target); the former "all three branches" `>= 3` call-count pin was brittle and
-  // is dropped.
+  // (active-dup, reactivate, new-create) must run the balance sync. The
+  // active-dup branch is the load-bearing correction — it pins the exact call
+  // target — and W-M1d moved that target from `syncBtcWallet` to the chain
+  // dispatcher, which routes BTC back to syncBtcWallet. The guarantee is
+  // unchanged: connecting an already-active wallet re-reads its balance.
   check("wallet route syncs on re-add of an existing wallet (active-dup branch)",
-    walletRoute.includes("syncBtcWallet(activeFa.id)"));
+    walletRoute.includes("syncWalletBestEffort(activeFa.id, chain)"));
+  check("…and on restore of an archived one",
+    walletRoute.includes("syncWalletBestEffort(archivedFa.id, chain)"));
 
   // AccountCard was retired with the standalone /dashboard/accounts page; the
   // live surface that renders the wallet sync affordance is now ConnectionCard
@@ -197,15 +270,14 @@ async function main(): Promise<void> {
   check("SyncWalletButton label: pending -> 'Sync wallet', else 'Refresh'",
     /syncStatus\s*===\s*["']pending["']/.test(btn) && btn.includes("Sync wallet") && btn.includes("Refresh"));
 
-  // ── PART D — Wallet Provider v2: BTC as a Holding ────────────────────────────
-  check("sync upserts a BTC Holding on the (financialAccountId, symbol) key",
-    /holding\.upsert/.test(sync) && /financialAccountId_symbol/.test(sync) && /symbol:\s*BTC_SYMBOL/.test(sync));
-  check("BTC Holding value mirrors the account balance (no double count)",
-    /value:\s*amounts\.balanceUsd/.test(sync));
-  check("BTC Holding carries native-BTC quantity, price, and USD currency",
-    /quantity:\s*amounts\.nativeBalance/.test(sync) && /price:\s*amounts\.priceUsd/.test(sync) && /currency:\s*["']USD["']/.test(sync));
-  check("BTC Holding write is best-effort (never fails the sync)",
-    /writeBtcHolding/.test(sync) && /catch/.test(sync));
+  // ── PART D — Wallet Provider v2 → W5: BTC position is SPINE-ONLY ─────────────
+  // W5 executed the dual-write's deletion condition: no legacy Holding row is
+  // written; the position fact is the canonical PositionObservation (quantity-
+  // only, valued at read time through the dated price archive).
+  check("sync writes NO legacy Holding row (W5 — dual-write retired)",
+    !/holding\.upsert/.test(sync) && !/writeBtcHolding/.test(sync));
+  check("sync records the spine observation (best-effort, never fails the sync)",
+    /writeBtcObservation/.test(sync) && /catch/.test(sync));
   check("sync still writes transitional FinancialAccount.balance/nativeBalance",
     /financialAccount\.update/.test(sync) && /balance:\s*balanceUsd/.test(sync) && /nativeBalance/.test(sync));
 
@@ -270,8 +342,21 @@ async function main(): Promise<void> {
   check("import is idempotent: dedupes on existing externalTransactionId before createMany",
     /transaction\.findMany/.test(sync) && /externalTransactionId/.test(sync) &&
     /new Set\(/.test(sync) && /transaction\.createMany/.test(sync));
-  check("transactions are stored as normal Transaction rows in BTC currency",
-    /currency:\s*["']BTC["']/.test(sync));
+  // W-M0 — the rows are still BTC-denominated; what changed is WHERE that string
+  // comes from. It is read from the shared native-asset descriptor, which is also
+  // what the ledger predicate selects by and what the canonical Instrument is
+  // tickered with, so the write and the reconciliation cannot drift apart. The
+  // second half is the invariant that matters: NO bare currency literal survives
+  // in this adapter, because a literal is exactly what let the historical engine
+  // assume every wallet was Bitcoin.
+  check("transactions are stored as normal Transaction rows in the native asset's currency",
+    /currency:\s*BTC_NATIVE\.symbol/.test(sync));
+  check("no bare currency literal survives in the BTC adapter (one descriptor, not four literals)",
+    !/currency:\s*["']BTC["']/.test(sync));
+  check("the chain token is the descriptor's, not a second declaration",
+    /BTC_CHAIN\s*=\s*BTC_NATIVE\.chain/.test(sync));
+  check("the ledger reconciliation is asked at THIS asset's base unit",
+    /epsilon:\s*ledgerEpsilonFor\(BTC_NATIVE\)/.test(sync));
   check("internal-transfer resolution via ProviderAccountIdentity + counterpartyAccountId",
     /providerAccountIdentity\.findMany/.test(sync) && /counterpartyAccountId/.test(sync) &&
     /FlowDirection\.INTERNAL/.test(sync));
@@ -314,8 +399,25 @@ async function main(): Promise<void> {
     /parseExtendedKey/.test(sync) && /deriveAddressAt/.test(sync));
   check("partial xpub → pending, complete → synced (honest status)",
     /discoveryComplete/.test(sync) && sync.includes('"pending"') && sync.includes('"synced"'));
-  check("tx import is bounded per run (behemoth-safe)",
-    /BTC_TX_ADDR_CAP/.test(sync) && /addresses\.slice\(0, txAddrCap\)/.test(sync));
+  // V26-S1-BTC — the bound is EVIDENCE, not a count.
+  //
+  // This previously pinned `addresses.slice(0, txAddrCap)` and called it
+  // "behemoth-safe". It was not: slice(0, N) is deterministic, so it selected
+  // the SAME first N addresses on every run and addresses N+1.. never had their
+  // transactions imported — while their balances DID count, because the balance
+  // step walks the whole set. The wallet's ledger then structurally could not
+  // explain its own balance.
+  //
+  // The replacement asserts the new intent (only addresses with on-chain
+  // activity are asked, using stats discovery already produced) AND pins the old
+  // defect out.
+  check("tx import is scoped by demonstrated activity, not by a positional cap",
+    /txCount \?\? 0\) > 0/.test(sync) && /txAddresses/.test(sync) &&
+    !/addresses\.slice\(0,/.test(sync));
+  check("address transaction history is PAGINATED to exhaustion",
+    /last_seen|lastSeenTxid/.test(explorer) && /txPageBudget/.test(explorer));
+  check("ledger completeness is reconciled against the observed balance",
+    /reconcileWalletLedger/.test(code(read("lib", "snapshots", "regenerate-history.ts"))));
   check("xpub balance uses the batch provider (not per-address probing)",
     /fetchAddressStatsBatch\(addresses/.test(sync) || /batchStatsFetcher\(addresses\)/.test(sync));
   check("discovery writes per-address identities via the KEPT composite unique (not dualWrite)",
@@ -326,9 +428,14 @@ async function main(): Promise<void> {
     /isXpub && connection/.test(sync) && sync.includes("touchWalletConnectionStatus"));
   check("raw txs deduped by txid across addresses before normalization",
     sync.includes("dedupeRawTxsByTxid"));
-  check("one Holding + one balance write regardless of address count",
-    (sync.match(/holding\.upsert/g) || []).length === 1 &&
-    (sync.match(/financialAccount\.update/g) || []).length === 1);
+  // 2026-09-21 (slice 3) — the position is persisted BEFORE history enrichment,
+  // so a second write may follow it: STATUS ONLY, when the import changed the
+  // ledger verdict. Still exactly one BALANCE write, whatever the address count.
+  check("one balance write + zero Holding writes regardless of address count (W5)",
+    (sync.match(/holding\.upsert/g) || []).length === 0 &&
+    (sync.match(/financialAccount\.update/g) || []).length === 2 &&
+    (sync.match(/nativeBalance, balance: balanceUsd/g) || []).length === 1 &&
+    /financialAccount\.update\(\{ where: \{ id: accountId \}, data: \{ syncStatus: finalStatus \} \}\)/.test(sync));
 
   // ── Schema: the approved constraint drop (durable STATE, not the migration SQL) ─
   // The schema.prisma checks below are the source of truth for the constraint; the
@@ -408,8 +515,8 @@ async function main(): Promise<void> {
   // xpub's discovery has a Connection to read the descriptor from.
   // Minimal durable form: the route both aligns the Connection spine and runs the
   // sync (was a brittle `indexOf(...) < indexOf(...)` statement-order pin).
-  check("run-on-add aligns the Connection spine and runs syncBtcWallet (xpub discovery has a Connection)",
-    /alignWalletProviderSpine\(/.test(walletRoute) && /syncBtcWallet\(/.test(walletRoute));
+  check("run-on-add aligns the Connection spine and runs the sync (xpub discovery has a Connection)",
+    /alignWalletProviderSpine\(/.test(walletRoute) && /syncWalletBestEffort\(/.test(walletRoute));
 
   // ── PART H — batch stats provider (multiaddr) ────────────────────────────────
   const multiaddrFixture = {
@@ -430,6 +537,73 @@ async function main(): Promise<void> {
   const batched = await fetchAddressStatsBatch(["A1", "A2", "A3"], batchFetch);
   check("fetchAddressStatsBatch: ONE request per chunk (vs one-per-address)",
     batchCalls === 1 && batched.get("A1")?.sats === 500000);
+
+  // ═══ PART J — merged from btc-identity.test.ts (V26-PRE B4 era) ─────────────
+  //
+  // BTC transaction identity defenses. The Plaid write path has a per-item
+  // lock plus a plaidTransactionId unique backstop; the BTC wallet path had
+  // NEITHER: find-then-createMany with no constraint (a manual sync racing
+  // the daily cron duplicated movements), and a `deletedAt: null` dedupe
+  // filter that re-created tombstoned rows as new ACTIVE rows on the next
+  // sync — violating the identity doctrine's replay invariant.
+
+  // ── J.A — Behavioral: tombstone-wins filter (pure) ──────────────────────────
+  const M = (externalId: string) => ({ externalId });
+  {
+    const fresh = filterFreshMovements([M("tx1"), M("tx2"), M("tx3")], ["tx2"]);
+    check("known id filtered, unknown ids kept", fresh.map((m) => m.externalId).join(",") === "tx1,tx3");
+  }
+  {
+    // The core B4 scenario: the existing set now includes TOMBSTONED rows' ids —
+    // a deliberate deletion must block re-creation exactly like an active row.
+    const fresh = filterFreshMovements([M("tx1"), M("tx2")], ["tx1", "tx2"]);
+    check("tombstone-wins: previously-imported ids never re-import", fresh.length === 0);
+  }
+  {
+    const fresh = filterFreshMovements([M("tx1")], []);
+    check("empty existing set → everything fresh", fresh.length === 1);
+  }
+  {
+    // Null externalTransactionId rows (non-import rows caught by a broad read)
+    // must not poison the set.
+    const fresh = filterFreshMovements([M("tx1")], [null, null]);
+    check("null ids in the existing read are ignored", fresh.length === 1);
+  }
+
+  // ── J.B — Source-scan: the import step's write contract ─────────────────────
+
+  // The dedupe read: the findMany selecting externalTransactionId for the
+  // account must NOT filter deletedAt — tombstones are part of identity.
+  const dedupeRead = sync.match(/findMany\(\{\s*where:\s*\{\s*financialAccountId:[^}]*externalTransactionId:\s*\{\s*in:[^}]*\}[^}]*\}/);
+  check("dedupe read exists (find existing ids for the account)", dedupeRead !== null);
+  check(
+    "dedupe read INCLUDES tombstones (no deletedAt filter — tombstone wins)",
+    dedupeRead !== null && !dedupeRead[0].includes("deletedAt"),
+    dedupeRead?.[0],
+  );
+  check(
+    "createMany passes skipDuplicates (concurrent-writer overlap no-ops via the active-row index)",
+    /createMany\(\{[\s\S]{0,200}?skipDuplicates:\s*true/.test(sync),
+  );
+  check("movement filtering goes through the tested pure helper", sync.includes("filterFreshMovements(movements"));
+
+  // ── J.C — Migration: the DB-level backstop ──────────────────────────────────
+  const MIGRATION = join(process.cwd(), "prisma", "migrations", "20260727_v26pre_b4_btc_identity_backstop", "migration.sql");
+  let sql = "";
+  try { sql = readFileSync(MIGRATION, "utf8"); } catch { /* handled below */ }
+
+  check("B4 migration exists", sql.length > 0, MIGRATION);
+  check("index is UNIQUE on (financialAccountId, externalTransactionId)",
+    /CREATE UNIQUE INDEX[^;]*"Transaction"\s*\("financialAccountId",\s*"externalTransactionId"\)/.test(sql));
+  check("index is PARTIAL: non-null external ids only",
+    /WHERE[^;]*"externalTransactionId"\s+IS\s+NOT\s+NULL/.test(sql));
+  check("index is PARTIAL: ACTIVE rows only (tombstones excluded — rollback → re-import unaffected)",
+    /WHERE[^;]*"deletedAt"\s+IS\s+NULL/.test(sql));
+
+  // The pre-deploy duplicate check (scripts/check-external-id-duplicates.ts) was
+  // RETIRED once the B4 migration applied — the unique index above now enforces
+  // what it checked — and the file was deleted in REVIEW-3 wave 3 (tombstoned in
+  // scripts/audit-registry.ts). The migration assertions above are the live guard.
 
   // ── Summary ─────────────────────────────────────────────────────────────────
   console.log(`\nbtc-sync: ${passes} passed, ${failures} failed`);

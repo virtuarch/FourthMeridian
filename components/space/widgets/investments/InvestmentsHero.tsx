@@ -20,12 +20,13 @@
  * Presentation only — every figure comes from the InvestmentsSpaceData contract.
  */
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { InvestmentsPortfolio, InvestmentsReconciliation } from "@/lib/investments/investments-time-machine-core";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
+import { heroComparison, type PeriodAttribution } from "@/lib/investments/period-attribution.core";
 
 export function InvestmentsHero({
   portfolio,
@@ -34,7 +35,13 @@ export function InvestmentsHero({
   figureLabel,
   asOf,
   envelope,
+  attribution,
+  compact = false,
 }: {
+  /** OVERVIEW-CONSOLIDATION — rendered as the INVESTMENTS SECTION HEADER inside
+   *  the unified Assets page (a section figure, not a page hero). Same figures,
+   *  same coverage line, same trust; only the type scale changes. */
+  compact?:          boolean;
   portfolio:         InvestmentsPortfolio;
   reconciliation:    InvestmentsReconciliation | null;
   reportingCurrency: string;
@@ -43,12 +50,22 @@ export function InvestmentsHero({
   asOf:              string;
   /** The workspace's canonical trust envelope — drives the confidence chip. */
   envelope:          PerspectiveEnvelope;
+  /** Canonical period verdict — the ONE rule the hero and the card both obey. */
+  attribution?:      PeriodAttribution | null;
 }) {
   const ccy = reportingCurrency;
   const totalPositions = portfolio.valuedCount + portfolio.unvaluedCount;
-  const change = reconciliation?.totalChange ?? null;
-  const opening = reconciliation?.openingValue ?? null;
-  const pct = change != null && opening != null && opening !== 0 ? (change / opening) * 100 : null;
+  // V26-INVESTMENTS-HISTORY-FIX — the change and the percentage are GATED by the
+  // same verdict the period card reads. Previously this divided totalChange by
+  // openingValue with no reference to whether either endpoint was defensible,
+  // which is how a reconstructed $516.43 opening became "3857.0%".
+  const gate = attribution ? heroComparison(attribution) : null;
+  const change = gate ? (gate.showChange ? gate.changeAmount : null) : (reconciliation?.totalChange ?? null);
+  const opening = gate ? attribution!.openingValue : (reconciliation?.openingValue ?? null);
+  const pct = gate
+    ? (gate.showPercentage ? gate.percentage : null)
+    : (change != null && opening != null && opening !== 0 ? (change / opening) * 100 : null);
+  const suppressedReason = gate?.suppressedReason ?? null;
 
   return (
     // Bare hero — no card, no border. The most important figure doesn't need a
@@ -60,7 +77,11 @@ export function InvestmentsHero({
       </div>
 
       <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
-        <Figure value={formatCurrency(portfolio.valuedSubtotal, ccy)} size="hero" className="sm:text-5xl leading-none" />
+        <Figure
+          value={formatCurrency(portfolio.valuedSubtotal, ccy)}
+          size={compact ? "figure" : "hero"}
+          className={compact ? "sm:text-3xl leading-none" : "sm:text-5xl leading-none"}
+        />
         {change != null ? (
           <DeltaBadge
             abs={change}
@@ -70,6 +91,8 @@ export function InvestmentsHero({
             compareLabel={reconciliation?.from}
             className="!text-xs"
           />
+        ) : suppressedReason ? (
+          <span className="text-[11px] text-[var(--text-muted)]">Period change unavailable — {suppressedReason}</span>
         ) : (
           <span className="text-[11px] text-[var(--text-muted)]">Add a Compare To date above to see the change.</span>
         )}

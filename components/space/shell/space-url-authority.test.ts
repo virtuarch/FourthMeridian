@@ -53,6 +53,29 @@ check("SpaceDashboard routes navigation through useSpaceNavigation (no direct UR
 check("shell time hook uses the canonical authority (useSpaceUrl.commit/subscribe)",
   /useSpaceUrl\(\)/.test(shellCode) && /spaceUrl\.commit\(/.test(shellCode) && /spaceUrl\.subscribe\(/.test(shellCode));
 
+// ── UX-P1 Change A: the PLATFORM host routes through the same seam ─────────────
+// PlatformSpaceDashboard's open workspace is URL state (`?workspace=`), owned by
+// usePlatformWorkspaceNavigation — which, like useSpaceNavigation, writes ONLY
+// through useSpaceUrl. Neither the host nor the hook touches window.history or
+// registers a popstate listener; only useSpaceUrl writes history.
+const platCode    = stripComments(read("components/platform/PlatformSpaceDashboard.tsx"));
+const platNavCode = stripComments(read("lib/space/use-platform-workspace-navigation.ts"));
+check("PlatformSpaceDashboard performs no direct window.history manipulation", !HISTORY_WRITE.test(platCode));
+check("PlatformSpaceDashboard registers no popstate listener", !POPSTATE.test(platCode));
+check("PlatformSpaceDashboard routes navigation through usePlatformWorkspaceNavigation (no direct URL authority, no useState rail)",
+  platCode.includes("usePlatformWorkspaceNavigation(") && !/useSpaceUrl\(\)/.test(platCode) && !/useState</.test(platCode));
+check("platform navigation hook performs no direct window.history manipulation", !HISTORY_WRITE.test(platNavCode));
+check("platform navigation hook registers no popstate listener", !POPSTATE.test(platNavCode));
+check("platform navigation hook uses the canonical authority (useSpaceUrl.commit/subscribe)",
+  /useSpaceUrl\(\)/.test(platNavCode) && /spaceUrl\.commit\(/.test(platNavCode) && /spaceUrl\.subscribe\(/.test(platNavCode));
+check("platform navigation hook serializes through the shared core (buildSpaceUrl / readSpaceParam)",
+  /from "@\/lib\/space\/space-url"/.test(platNavCode) && /buildSpaceUrl\(/.test(platNavCode) && /readSpaceParam\(/.test(platNavCode));
+check("platform navigation hook DECLARES history intent (push on user change; replace on hydration/popstate)",
+  /historyIntent\.current = "push"/.test(platNavCode) && /historyIntent\.current = "replace"/.test(platNavCode) &&
+    /\{ history \}/.test(platNavCode));
+check("PlatformSpaceDashboard avoids useSearchParams (no new Suspense boundary)", !platCode.includes("useSearchParams"));
+check("platform navigation hook avoids useSearchParams", !platNavCode.includes("useSearchParams"));
+
 // ── SD-0A: SSR invariant preserved — no useSearchParams in the shell path ───────
 // (The Transaction drawer remains the one Suspense-bounded useSearchParams reader;
 //  it lives in useTransactionDrawer.ts / DashboardChrome, not here.)

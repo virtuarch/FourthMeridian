@@ -36,15 +36,14 @@ export const LIQUIDITY_WARNING_MONTHS  = 3;
 
 export const LIQUIDITY_EXCELLENT_MONTHS = 6;
 
-export const DEBT_FRACTION_DOMINANT    = 0.5;
-
-export const DEBT_FRACTION_PARTIAL     = 0.25;
+// W2 — DEBT_FRACTION_DOMINANT / DEBT_FRACTION_PARTIAL deleted: they gated the
+// deficit ladder's two intent rungs (INTENTIONAL_DEBT_PAYOFF / MIXED), which
+// died with the Goals retirement. Intent is never guessed from activity.
 /** Minimum monthly equivalent ($) for a REVIEW_NEEDED category to be surfaced. */
 
 export const REVIEW_MIN_MONTHLY        = 20;
-/** Days without a habit check-in before the habit is considered stale. */
-
-export const HABIT_STALE_DAYS          = 14;
+// W2 — HABIT_STALE_DAYS deleted with the goal-alignment engine (HABIT goals
+// were its only consumer; Goals retired).
 /** Monthly discretionary spend ($) above which a cut opportunity is HIGH impact. */
 
 export const OPP_DISCRETIONARY_HIGH_MONTHLY = 300;

@@ -1,0 +1,168 @@
+/**
+ * scripts/ci-local.test.ts
+ *
+ * `npm run ci` is only evidence about GitHub CI while it runs what GitHub runs,
+ * on the runtime GitHub and production run. This pins that: ci.yml's `run:`
+ * steps, per job and in order, ARE scripts/lib/ci-contract's lists; every job
+ * takes Node from .nvmrc (the site job from site/.nvmrc, the same major); .nvmrc and engines.node name the same major; the
+ * Postgres service is the one the local runner starts; and no job reaches for
+ * repository history (fetch-depth) — the unit tier is hermetic by contract.
+ *
+ * Hermetic: reads three committed files, spawns nothing.
+ *
+ * Run: npx tsx scripts/ci-local.test.ts
+ */
+
+import { readFileSync } from "node:fs";
+import {
+  ARCHITECTURE_JOB, CI_POSTGRES, DB_URL_VARS, SITE_DIR, SITE_JOB, TEST_JOB, enginesMajor, nvmrcMajor, siteJobEnv,
+  withoutDatabaseUrls,
+} from "./lib/ci-contract";
+
+let failures = 0, passes = 0;
+function check(name: string, ok: boolean, detail?: string): void {
+  if (ok) { passes++; console.log(`  ✓ ${name}`); }
+  else { failures++; console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
+}
+
+const yml = readFileSync(".github/workflows/ci.yml", "utf8");
+
+/** The text of one job block under `jobs:` (2-space job keys). */
+function jobBlock(key: string): string {
+  const start = yml.indexOf(`\n  ${key}:\n`);
+  if (start < 0) return "";
+  const rest = yml.slice(start + 1);
+  const next = rest.slice(1).search(/\n  [a-z][\w-]*:\n/);
+  return next < 0 ? rest : rest.slice(0, next + 1);
+}
+const runSteps = (block: string) =>
+  [...block.matchAll(/^\s+run:\s*(.+)$/gm)].map((m) => m[1].trim());
+
+console.log("ci.yml runs exactly what `npm run ci` runs");
+{
+  const test = runSteps(jobBlock("test"));
+  const arch = runSteps(jobBlock("architecture"));
+  check("test job steps === TEST_JOB, in order",
+    JSON.stringify(test) === JSON.stringify(TEST_JOB), JSON.stringify(test));
+  check("architecture job steps === ARCHITECTURE_JOB, in order",
+    JSON.stringify(arch) === JSON.stringify(ARCHITECTURE_JOB), JSON.stringify(arch));
+  const site = runSteps(jobBlock("site"));
+  check("site job steps === SITE_JOB, in order",
+    JSON.stringify(site) === JSON.stringify(SITE_JOB), JSON.stringify(site));
+  const jobs = [...yml.slice(yml.indexOf("\njobs:\n")).matchAll(/^ {2}([a-z][\w-]*):\s*$/gm)].map((m) => m[1]);
+  check("exactly the three jobs the contract covers", JSON.stringify(jobs) === '["test","architecture","site"]',
+    JSON.stringify(jobs));
+}
+
+console.log("CI hygiene (TEST-007 / TEST-012): least privilege, no runaway jobs, no queued duplicates");
+{
+  const config = yml.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  check("workflow-level permissions: contents: read", /^permissions:\n  contents: read\n/m.test(config));
+  check("no job widens permissions", ![...config.matchAll(/^ {4}permissions:/gm)].length);
+  check("a concurrency group keyed on the ref, cancelling superseded runs",
+    /^concurrency:\n  group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n  cancel-in-progress: true/m.test(config));
+  for (const key of ["test", "architecture", "site"]) {
+    const m = /timeout-minutes:\s*(\d+)/.exec(jobBlock(key));
+    check(`${key}: timeout-minutes set and ≤ 60`, !!m && Number(m[1]) > 0 && Number(m[1]) <= 60, m?.[0]);
+  }
+  const uses = [...config.matchAll(/uses:\s*([^\s@]+)@([^\s]+)/g)].map((m) => `${m[1]}@${m[2]}`);
+  check("every action is pinned to a major tag (v4 today), none floating on a branch",
+    uses.length > 0 && uses.every((u) => /@v\d+$/.test(u)), JSON.stringify(uses));
+  const drift = readFileSync(".github/workflows/status-drift-guard.yml", "utf8");
+  check("status-drift-guard: timeout-minutes and contents: read", /timeout-minutes:\s*\d+/.test(drift) && /permissions:\n  contents: read/.test(drift));
+  const smoke = readFileSync(".github/workflows/post-deploy-smoke.yml", "utf8");
+  check("post-deploy-smoke: triggered by deployment_status, success only",
+    /^on:\n  deployment_status:/m.test(smoke) && /github\.event\.deployment_status\.state == 'success'/.test(smoke));
+  // The verdict moved into scripts/post-deploy-smoke.mjs (unit-tested in
+  // post-deploy-smoke.test.ts): the inline version exited 0 on a Vercel 401.
+  const secretsUsed = [...smoke.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
+  check("post-deploy-smoke: holds NO secret (deployment_status runs the deployed commit's workflow file)",
+    secretsUsed.length === 0, JSON.stringify(secretsUsed));
+  const trusted = readFileSync(".github/workflows/trusted-deployment-health.yml", "utf8");
+  const onBlock = trusted.slice(trusted.indexOf("\non:"), trusted.indexOf("\npermissions:"));
+  check("trusted-deployment-health: triggers ONLY on push to v2.6/main",
+    /push:\n\s+branches: \[v2\.6, main\]/.test(onBlock)
+      && !/pull_request|workflow_dispatch|deployment_status|workflow_run|schedule/.test(onBlock), onBlock);
+  check("trusted-deployment-health: the job runs in the vercel-probe environment",
+    /\n    environment: vercel-probe\n/.test(trusted));
+  const tSecrets = [...trusted.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]).sort();
+  check("trusted-deployment-health: only the two per-project bypass secrets",
+    JSON.stringify(tSecrets) === JSON.stringify(["VERCEL_AUTOMATION_BYPASS_SECRET_APP", "VERCEL_AUTOMATION_BYPASS_SECRET_SITE"]), JSON.stringify(tSecrets));
+  check("trusted-deployment-health: read-only token, timeout set",
+    /permissions:\n  contents: read\n  deployments: read\n/.test(trusted) && /timeout-minutes:\s*\d+/.test(trusted));
+  check("post-deploy-smoke: runs the tested classifier, nothing inline, with a timeout",
+    /run: node scripts\/post-deploy-smoke\.mjs/.test(smoke) && !/curl /.test(smoke) && !/exit 0/.test(smoke) && /timeout-minutes/.test(smoke));
+}
+
+console.log("the dependency gate (SEC-002 / TEST-005) is in the test job, before anything runs on the install");
+{
+  const AUDIT = "npm audit --omit=dev --audit-level=high";
+  const i = TEST_JOB.indexOf(AUDIT as (typeof TEST_JOB)[number]);
+  check("TEST_JOB carries the production-dependency audit at HIGH", i >= 0, JSON.stringify(TEST_JOB));
+  check("the audit runs right after `npm ci` and before prisma generate / tests / typecheck / lint",
+    i === 1 && TEST_JOB[0] === "npm ci", `index ${i}`);
+  check("ci.yml test job runs that exact audit line", runSteps(jobBlock("test")).includes(AUDIT));
+  const dependabot = readFileSync(".github/dependabot.yml", "utf8");
+  check(".github/dependabot.yml proposes npm updates weekly for the app root",
+    /package-ecosystem:\s*npm/.test(dependabot) && /directory:\s*\/\s*$/m.test(dependabot) && /interval:\s*weekly/.test(dependabot));
+  check("dependabot groups minor/patch so one PR carries the week", /update-types:\s*\[\s*"minor",\s*"patch"\s*\]/.test(dependabot));
+}
+
+console.log("the site job is the public site's, and carries no authority");
+{
+  const block = jobBlock("site");
+  const runs = [...block.matchAll(/^\s+run:\s*(.+)$/gm)].length;
+  const dirs = [...block.matchAll(/^\s+working-directory:\s*(\S+)\s*$/gm)].map((m) => m[1]);
+  check(`every site step runs in ${SITE_DIR}/`, dirs.length === runs && dirs.every((d) => d === SITE_DIR), JSON.stringify(dirs));
+  check("site: setup-node reads site/.nvmrc", /node-version-file:\s*site\/\.nvmrc/.test(block));
+  check("site: npm cache keyed on site/package-lock.json", /cache-dependency-path:\s*site\/package-lock\.json/.test(block));
+  check("site: references no repository secret", !/\$\{\{\s*secrets\./.test(block));
+  check("site: declares no env and no service", !/^\s+env:\s*$/m.test(block) && !/^\s+services:\s*$/m.test(block));
+  const siteMajor = nvmrcMajor(readFileSync("site/.nvmrc", "utf8"));
+  check("site/.nvmrc names the same major as .nvmrc", siteMajor !== null && siteMajor === nvmrcMajor(readFileSync(".nvmrc", "utf8")));
+  const env = siteJobEnv({ PATH: "/bin", HOME: "/h", DATABASE_URL: "postgresql://x", NEXTAUTH_SECRET: "s", ENCRYPTION_KEY: "k", PLAID_SECRET: "p" });
+  check("the local site job inherits only PATH/HOME/TMPDIR (+CI)", JSON.stringify(Object.keys(env).sort()) === '["CI","HOME","PATH"]',
+    JSON.stringify(Object.keys(env)));
+}
+
+console.log("one runtime: .nvmrc = CI = engines.node (production)");
+{
+  const nvmrc = nvmrcMajor(readFileSync(".nvmrc", "utf8"));
+  const engines = enginesMajor(JSON.parse(readFileSync("package.json", "utf8")).engines?.node);
+  check(".nvmrc names a major", nvmrc !== null);
+  check("engines.node names the same major", engines !== null && engines === nvmrc, `${engines} vs ${nvmrc}`);
+  for (const key of ["test", "architecture"]) {
+    const block = jobBlock(key);
+    check(`${key}: setup-node reads .nvmrc`, /node-version-file:\s*\.nvmrc/.test(block));
+    check(`${key}: no hard-coded node-version`, !/node-version:\s/.test(block));
+  }
+}
+
+console.log("the throwaway database is the one CI uses");
+{
+  const arch = jobBlock("architecture");
+  check(`service image ${CI_POSTGRES.image}`, new RegExp(`image:\\s*${CI_POSTGRES.image}\\s*$`, "m").test(arch));
+  check("service user / password / database match",
+    arch.includes(`POSTGRES_USER: ${CI_POSTGRES.user}`)
+    && arch.includes(`POSTGRES_PASSWORD: ${CI_POSTGRES.password}`)
+    && arch.includes(`POSTGRES_DB: ${CI_POSTGRES.database}`));
+  const config = yml.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  check("no job needs repository history (no fetch-depth)", !/fetch-depth/.test(config));
+}
+
+console.log("contract helpers");
+{
+  check("nvmrc: 24 / v24 / 24.21.0 ⇒ 24",
+    nvmrcMajor("24\n") === 24 && nvmrcMajor("v24") === 24 && nvmrcMajor("24.21.0\n") === 24);
+  check("nvmrc: lts/* and garbage ⇒ null (refused, not guessed)",
+    nvmrcMajor("lts/*") === null && nvmrcMajor("") === null);
+  check("engines: 24.x / 24 ⇒ 24, a range ⇒ null", enginesMajor("24.x") === 24
+    && enginesMajor("24") === 24 && enginesMajor(">=20.9.0") === null && enginesMajor(undefined) === null);
+  const stripped = withoutDatabaseUrls({ NODE_ENV: "test", DATABASE_URL: "postgresql://x@h/fintracker",
+    DIRECT_URL: "d", SHADOW_DATABASE_URL: "s", KEEP: "k" });
+  check("every database URL is removed from the inherited environment",
+    DB_URL_VARS.every((k) => !(k in stripped)) && stripped.KEEP === "k" && stripped.NODE_ENV === "test");
+}
+
+console.log(`\n${passes} passed, ${failures} failed`);
+if (failures > 0) process.exit(1);

@@ -33,9 +33,15 @@
  * with no fault on the connection and nothing for the customer to do. Rendering
  * the second as the first is the lie this state exists to end.
  */
-import type { IngestionDeferral } from "@/lib/sync/deferred-ingestion";
+import { INGESTION_ACTIVITY_STALE_MS, type IngestionActivity, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
 
-export type SyncConnectionState = "importing" | "sync_deferred" | "ready" | "needs_reauth" | "error";
+/**
+ * "import_paused" — the first-run import is NOT finished and NOTHING is running
+ * for it now (the last attempt ended, typically failed). It continues only when
+ * a resume or a refresh runs it again. Rendering it as "importing" claimed work
+ * that was not happening (Preview Sandbox 2026-10-06: "100 imported" for good).
+ */
+export type SyncConnectionState = "importing" | "import_paused" | "sync_deferred" | "ready" | "needs_reauth" | "error";
 
 /** Provider-agnostic. PLAID + WALLET today; CSV / COINBASE / SCHWAB / … later. */
 export type SyncProvider = "PLAID" | "WALLET";
@@ -182,6 +188,13 @@ export function deriveConnectionState(
    * machine then behaves exactly as it did before.
    */
   deferral: IngestionDeferral | null = null,
+  /**
+   * Whether ingestion work is ACTUALLY running for this item (deriveIngestionActivity).
+   * Omitted by callers that have not resolved it: the state machine then behaves
+   * as before (an incomplete import reads "importing").
+   */
+  activity?: IngestionActivity,
+  now: Date = new Date(),
 ): SyncConnectionState | null {
   switch (item.status) {
     case "REVOKED":
@@ -203,13 +216,27 @@ export function deriveConnectionState(
         // Pending work AND canonical evidence that policy is what is holding it.
         // syncIncompleteAt alone can never reach this branch — see
         // deferred-ingestion.ts for why that distinction is the whole point.
-        return deferral !== null ? "sync_deferred" : "importing";
+        if (deferral !== null) return "sync_deferred";
+        // "importing" needs POSITIVE evidence of work. IDLE = the last attempt
+        // ended and nothing is running. UNKNOWN = no execution yet: honest as
+        // importing only briefly after the marker was set (a Link exchange
+        // writes its first execution within a second), not indefinitely.
+        if (activity === "IDLE") return "import_paused";
+        if (activity === "UNKNOWN" && !freshSince(item.syncIncompleteAt, now)) return "import_paused";
+        return "importing";
       }
-      return item.historyBuildStartedAt != null ? "importing" : "ready";
+      // The wealth-history rebuild marker is set at start and cleared in a
+      // `finally`; only a killed process leaves it behind. A stale one is not work.
+      return item.historyBuildStartedAt != null && freshSince(item.historyBuildStartedAt, now) ? "importing" : "ready";
     default:
       // Unknown/unexpected status — omit rather than guess.
       return null;
   }
+}
+
+/** True while `t` is recent enough to be evidence of live work. */
+function freshSince(t: Date | null | undefined, now: Date): boolean {
+  return t != null && now.getTime() - t.getTime() < INGESTION_ACTIVITY_STALE_MS;
 }
 
 /**
@@ -220,11 +247,17 @@ export function buildSyncStatus(
   items: PlaidItemStateInput[],
   /** itemId → deferral, from resolveIngestionDeferrals. Empty = none resolved. */
   deferrals: ReadonlyMap<string, IngestionDeferral | null> = new Map(),
+  /** itemId → activity, from getIngestionEvidence. Absent = not resolved (legacy behaviour). */
+  activity?: ReadonlyMap<string, IngestionActivity>,
+  now: Date = new Date(),
 ): SyncStatus {
   const connections: SyncConnection[] = [];
 
   for (const item of items) {
-    const state = deriveConnectionState(item, deferrals.get(item.id) ?? null);
+    const state = deriveConnectionState(
+      item, deferrals.get(item.id) ?? null,
+      activity ? (activity.get(item.id) ?? "UNKNOWN") : undefined, now,
+    );
     if (state === null) continue;
 
     connections.push({
@@ -236,13 +269,14 @@ export function buildSyncStatus(
       errorCode:    item.errorCode ?? null,
       investments:  deriveInvestmentsCapability(item.investmentsConsent),
       // Progress is only meaningful mid-import — see the field's contract.
-      importedCount: state === "importing" ? (item.syncImportedCount ?? 0) : null,
+      // A paused import still reports where it stopped ("paused at 100").
+      importedCount: state === "importing" || state === "import_paused" ? (item.syncImportedCount ?? 0) : null,
       // Present only on sync_deferred; the typed reason, never copy. Customer
       // surfaces ignore it; operator surfaces resolve a label from the canonical
       // admission registry with it.
       deferredReason: state === "sync_deferred" ? (deferrals.get(item.id)?.reason ?? null) : null,
       historyBuild:
-        item.historyBuildStartedAt != null && (item.historyBuildTotalDays ?? 0) > 0
+        state === "importing" && item.historyBuildStartedAt != null && (item.historyBuildTotalDays ?? 0) > 0
           ? { doneDays: item.historyBuildDoneDays ?? 0, totalDays: item.historyBuildTotalDays! }
           : null,
     });
@@ -264,8 +298,33 @@ export function buildSyncStatus(
 //   - status NEEDS_REAUTH              → "error"  (wallets never reauth; NEVER
 //                                                  surface Plaid reconnect)
 //   - status ACTIVE & lastSyncedAt set → "ready"
-//   - status ACTIVE & errorCode set    → "error"  (first sync failed)
-//   - status ACTIVE & neither          → "importing" (first sync pending)
+//   - status ACTIVE & errorCode set    → "error"  (sync failed / was refused)
+//   - status ACTIVE & discovery cursor → "importing"  (POSITIVE evidence)
+//   - status ACTIVE & none of those    → "error"  (never synced, nothing running)
+//
+// ── W-M2a — "IMPORTING" REQUIRES POSITIVE EVIDENCE, NOT AN ABSENCE ───────────
+//
+// The last clause used to be `→ "importing"`, on the reasoning that a wallet
+// which has neither succeeded nor recorded an error must still be working. That
+// is an inference from silence, and silence is not evidence of work.
+//
+// A real wallet proved it. A Solana wallet was connected on a deployment with no
+// Solana RPC endpoint; the adapter refused immediately at stage "config" and the
+// create route returned 201. The refusal was recorded as a SyncIssue but never
+// on the Connection, so `lastSyncedAt` and `errorCode` were both null — and this
+// function answered "importing". The card then span on "Discovering addresses…
+// (1 so far)" and invited the user to "press Refresh to continue discovery",
+// indefinitely, for a wallet whose sync could never begin. The copy was BTC's
+// xpub wording, applied to a chain that has no address discovery at all.
+//
+// So in-progress now requires a DISCOVERY CHECKPOINT: a resumable cursor written
+// by an adapter that genuinely stopped mid-acquisition and can continue. That is
+// a fact about work, not the absence of a fact about failure. Everything else
+// with no successful sync is terminal, and says so.
+//
+// None of these prove work is running, and none may produce "importing": the
+// account exists · a wallet identity exists · an address count is above zero ·
+// a chain is set · the sync has not succeeded yet.
 
 /** Structural shape from a Connection(provider=WALLET) row + its display name. */
 export interface WalletConnectionStateInput {
@@ -275,10 +334,21 @@ export interface WalletConnectionStateInput {
   status:       "ACTIVE" | "NEEDS_REAUTH" | "ERROR" | "REVOKED";
   lastSyncedAt: Date | null;
   errorCode:    string | null;
+  /**
+   * W-M2a — `Connection.cursor`, the resumable acquisition checkpoint.
+   *
+   * THE ONLY POSITIVE EVIDENCE that acquisition is genuinely mid-flight. An
+   * adapter writes it when it stops part-way through work it can continue (BTC's
+   * xpub discovery is the one that does today). Present ⇒ real, resumable work
+   * is outstanding. Absent ⇒ nothing is running, whatever else is or is not true
+   * about the account.
+   */
+  discoveryCursor: string | null;
 }
 
 export function deriveWalletConnectionState(
-  input: Pick<WalletConnectionStateInput, "status" | "lastSyncedAt" | "errorCode">,
+  input: Pick<WalletConnectionStateInput, "status" | "lastSyncedAt" | "errorCode"> &
+    Partial<Pick<WalletConnectionStateInput, "discoveryCursor">>,
 ): SyncConnectionState | null {
   switch (input.status) {
     case "REVOKED":      return null;
@@ -287,7 +357,10 @@ export function deriveWalletConnectionState(
     case "ACTIVE":
       if (input.lastSyncedAt !== null) return "ready";
       if (input.errorCode !== null)    return "error";
-      return "importing";
+      // Positive evidence of resumable work in flight — and nothing else.
+      if (input.discoveryCursor) return "importing";
+      // Never synced, nothing recorded, nothing running. Terminal, not pending.
+      return "error";
     default:             return null;
   }
 }

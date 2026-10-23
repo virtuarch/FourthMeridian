@@ -96,9 +96,10 @@ function main(): void {
 
   console.log("4. The current seam is NEVER a historical portal (asOf = today only)");
   // Any production (non-test) caller that passes an `asOf` to getCurrentPositions
-  // must bind it to todayIso() — the seam's injected clock, not a past date. A
-  // genuine as-of read is an A10 caller. (The one caller today is the AI holdings
-  // assembler; this catches a future regression.)
+  // must bind it to todayUTCISO() — THE clock seam (lib/time/clock.ts, B-6; was
+  // the module-local todayIso() before the chronology convergence), not a past
+  // date. A genuine as-of read is an A10 caller. (The one caller today is the AI
+  // holdings assembler; this catches a future regression.)
   const sources = [...collectSources("lib"), ...collectSources("app")];
   const offenders: string[] = [];
   // A genuine call passing an inline asOf option: `getCurrentPositions(<arg>, { …asOf… })`.
@@ -107,7 +108,7 @@ function main(): void {
   const INLINE_ASOF_CALL = /getCurrentPositions\s*\([^)]*,\s*\{[^}]*\basOf\b[^}]*\}/;
   for (const rel of sources) {
     const src = read(rel);
-    if (INLINE_ASOF_CALL.test(src) && !/todayIso\s*\(/.test(src)) {
+    if (INLINE_ASOF_CALL.test(src) && !/todayUTCISO\s*\(/.test(src)) {
       offenders.push(relative(ROOT, join(ROOT, rel)));
     }
   }

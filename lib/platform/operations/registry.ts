@@ -179,7 +179,7 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
     targetJob: "sync-crypto",
     label: "Crypto Wallets",
     description:
-      "Sweep BTC wallet balances and regenerate affected wealth history. Idempotent; never-throws per wallet.",
+      "Refresh every syncable wallet (BTC, ETH, SOL, …) through the one wallet pipeline, oldest first, skipping wallets not yet due under the WALLET refresh policy; regenerate affected snapshots and history. Idempotent; never-throws per wallet.",
     kinds: ["run-now", "dry-run"],
   },
   {
@@ -197,6 +197,22 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
       "Sync transactions for every active Plaid bank connection (fleet). Each item runs under its per-item sync lock (skipped if a sync is already in flight), so this respects the same locks the cron and per-item refresh use; per-item failures are isolated. Idempotent; retries previously-failed connections.",
     kinds: ["run-now", "dry-run"],
   },
+  {
+    // OPERATIONALIZATION P0 — the alert evaluation as a lever. Vercel fires crons
+    // on PRODUCTION deployments only, evaluate-alerts has no per-job fallback
+    // route, and CRON_SECRET is held by nobody (generated and piped straight into
+    // Vercel), so on Preview the alert path could never run at all — which means
+    // a configured PLATFORM_ALERTS_EMAIL could not be PROVEN to deliver before
+    // Production depended on it. The body is the OPS-5 S5 orchestrator verbatim:
+    // reads three authorities, suppresses breaches already delivered within the
+    // re-notify window (so a manual run after a cron run sends nothing twice),
+    // never throws, and ledgers its summary exactly as a cron run does.
+    targetJob: "evaluate-alerts",
+    label: "Alert Evaluation",
+    description:
+      "Evaluate every live alert rule against the current job-health, connection-health, resource-freshness and AI-failure authorities and deliver any breach not already notified within the re-notify window to PLATFORM_ALERTS_EMAIL. Read-only over product data; writes one JobRun summary (the alert history). Idempotent; never throws.",
+    kinds: ["run-now", "dry-run"],
+  },
 ];
 
 /**
@@ -210,8 +226,11 @@ export const EXCLUDED_TARGETS: Record<string, string> = {
   // per-item locks the OPS-4 exclusion required. See OPERATION_TARGETS above.
   "process-deletions":
     "Destructive (executes pending account/data deletions). Automatic-only; if ever exposed, requires WRITE + explicit typed confirm (investigation §5).",
+  // W2 — the goals purge arm was deleted (Goals retired); since the pre-beta
+  // remediation (PRIV-003/DB-001) the job body is the retention sweep
+  // (trashed Spaces/accounts are not hard-purged: owner decision). No operator value to expose.
   "purge-trash":
-    "Destructive (permanent goal-trash purge). Automatic-only (investigation §5).",
+    "Daily data-retention sweep (docs/operations/data-retention.md): prunes operational ledgers, revoked sessions, stale waitlist rows and old Briefs. Automatic-only (investigation §5).",
   "notification-cleanup": "Low operator value; no reason to expose (investigation §5 ➖).",
   "notification-retry": "Low operator value; the daily cadence is the retry mechanism (investigation §5 ➖).",
   "rate-limit-sweep": "Low operator value; automatic-only (investigation §5 ➖).",

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { LogOut } from "lucide-react";
 import { signOut } from "next-auth/react";
+import { clearAllTranscripts } from "@/components/ai/transcript-cache";
 
 interface Props {
   initial: string;
@@ -56,7 +57,7 @@ export function AdminUserMenu({ initial, name, username, email }: Props) {
           {/* Actions */}
           <div className="p-1.5">
             <button
-              onClick={async () => { await signOut({ redirect: false }); window.location.href = "/login"; }}
+              onClick={async () => { clearAllTranscripts(); await signOut({ redirect: false }); window.location.href = "/login"; }}
               className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-colors"
             >
               <LogOut size={14} />

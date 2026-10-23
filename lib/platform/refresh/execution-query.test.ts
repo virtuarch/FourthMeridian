@@ -71,6 +71,13 @@ function execution(over: Partial<ExecutionFact> = {}): ExecutionFact {
     parentJobRunId: null,
     errorSummary: "ITEM_LOGIN_REQUIRED at /accounts/get for item ins_3",
     deploymentSha: null,   // OPS-2C-4 — required on ExecutionFact; tests override via `over`
+    admissionReason: null,
+    sourceKind: "PLAID_ITEM",
+    sourceRef: null,
+    network: null,
+    failureStage: null,
+    failureCategory: null,
+    outcome: null,
     ...over,
   };
 }
@@ -127,6 +134,7 @@ function fakeReaders(over: Partial<ExecutionQueryReaders> = {}): ExecutionQueryR
   return {
     executions: async () => [execution()],
     execution: async () => execution(),
+    lastSucceeded: async () => null,
     endpoints: async () => [endpoint()],
     providerCalls: async () => [call()],
     coverage: async () => [coverage()],

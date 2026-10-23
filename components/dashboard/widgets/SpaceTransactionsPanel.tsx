@@ -43,6 +43,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Account, Transaction, TransactionCategory } from "@/types";
+import { describeRowNature, DIRECTION_SIGN } from "@/lib/transactions/flow-presentation";
 import { DataCard } from "@/components/atlas/DataCard";
 import { Search, X, SlidersHorizontal, CalendarDays, ChevronRight, ArrowDownUp, ArrowLeftRight, Loader2 } from "lucide-react";
 import { ToolbarMenuButton } from "@/components/dashboard/widgets/transactions/ToolbarMenuButton";
@@ -123,6 +124,13 @@ function formatDayHeader(iso: string): string {
  * Group the ALREADY-ORDERED server rows under their day. This is presentation only:
  * it preserves the server's sequence exactly (a Map keyed in insertion order) and
  * never reorders or filters. It is not a client query.
+ */
+/**
+ * L8-B — groups by `tx.date`, which IS the economic date since the cutover.
+ * Nothing here changed, and that is the point: the DTO moved, so every consumer
+ * that reads `date` moved with it. Migrating each call site to a
+ * differently-named field would have left the cutover one missed reader away
+ * from a mixed chronology — invisible until a month boundary moved 147 rows.
  */
 function groupByDay(rows: Transaction[]): [string, Transaction[]][] {
   const map = new Map<string, Transaction[]>();
@@ -517,8 +525,21 @@ function TxRow({
   /** TX-3.3 — the inspect→query pivot, enabled by the merchantId the DTO now carries. */
   onPivotMerchant?: (merchantId: string, label: string) => void;
 }) {
-  const isTransfer = tx.flowType === "TRANSFER";
-  const isCredit   = tx.amount > 0 && !isTransfer;
+  // v2.6-TRUTH-7 — one authority decides what this row IS and how it reads.
+  // This was `isCredit = tx.amount > 0 && !isTransfer`, under which a refund, an
+  // issuer credit, interest earned and a salary deposit all rendered identically:
+  // green, with a "+". Only earned income, interest and dividends are gains; a
+  // refund or an issuer credit returns money you already spent, so it is neutral.
+  const nature     = describeRowNature({
+    flowType:      tx.flowType ?? null,
+    incomeSubtype: tx.incomeSubtype ?? null,
+    transferMaturity: tx.transferMaturity ?? null,
+    amount:        tx.amount,
+    hasOwnedCounterparty: tx.counterpartyAccountId != null,
+  });
+  const isTransfer = nature.nature === "TRANSFER_IN" || nature.nature === "TRANSFER_OUT"
+                  || nature.nature === "INTERNAL_TRANSFER";
+  const isCredit   = nature.tone === "positive";
   const title      = tx.merchantDisplayName ?? tx.merchant; // MI M6 — resolved name, raw fallback
   const canPivot   = !!tx.merchantId && !!onPivotMerchant;
 
@@ -552,10 +573,16 @@ function TxRow({
           )}
         </div>
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+          {/* WHAT it is, from the authority — beside the provider's category, which
+              is a different (and weaker) statement. */}
           <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
-            {tx.category}
+            {nature.label}
           </span>
-          {tx.transferDisposition && (
+          {/* The disposition chip only when it SAYS something the nature chip did
+              not. Both render "Internal transfer" for an owned transfer, and two
+              identical chips side by side is noise, not evidence. */}
+          {tx.transferDisposition
+            && (TRANSFER_DISPOSITION_LABEL[tx.transferDisposition] ?? tx.transferDisposition) !== nature.label && (
             <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
               {TRANSFER_DISPOSITION_LABEL[tx.transferDisposition] ?? tx.transferDisposition}
             </span>
@@ -581,9 +608,13 @@ function TxRow({
       <div className="shrink-0 text-right">
         <p
           className="text-sm font-bold tabular-nums"
-          style={{ color: isCredit ? "var(--accent-positive)" : isTransfer ? "var(--text-secondary)" : "var(--text-primary)" }}
+          style={{ color: isCredit ? "var(--accent-positive)" : nature.tone === "neutral" ? "var(--text-secondary)" : "var(--text-primary)" }}
         >
-          {isTransfer ? "" : isCredit ? "+" : "−"}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
+          {/* v2.6-DIR-1 — the SIGN comes from the canonical direction, the COLOUR
+              from the tone. This was `tone === "neutral" ? "" : …`, which let a
+              neutral tone erase the direction: a −$650 outflow and its +$650
+              counterpart both rendered "$650.00". React derives nothing here. */}
+          {DIRECTION_SIGN[nature.direction]}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
         </p>
       </div>
 

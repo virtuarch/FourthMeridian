@@ -26,6 +26,16 @@
  *     empty 200 list for a non-FULL link — there the ACCOUNT is legitimately
  *     known to the caller; here the transaction row itself is the secret.
  *
+ * RLS-T1 — `id` ARRIVES FROM THE CLIENT, SO THE REFUSAL IS NOW ALSO THE
+ * DATABASE'S. `transactionDetailWhere` is unchanged and still the KD-15
+ * authority; what changes is that the read executes as the AUTHENTICATED CALLER,
+ * so `Transaction`'s policy (`fm_account_visible("financialAccountId")`) has to
+ * admit the row as well. The identity comes from `requireUser` — server-side
+ * session state — and the Space from `getSpaceContext`; the policy reads neither,
+ * it derives tenancy from ACTIVE SpaceMember rows, so a tampered active-Space
+ * cookie cannot widen the answer. See getTransactionDetail's header for why
+ * neither gate subsumes the other.
+ *
  * See docs/investigations/TRANSACTION_INTELLIGENCE_DETAIL_VIEW_INVESTIGATION_2026-07-06.md §2–§3
  * and NEXT_INITIATIVE_TI_VS_MI_INVESTIGATION_2026-07-06.md §7.1 (TI-1).
  */
@@ -34,6 +44,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser }               from "@/lib/session";
 import { getSpaceContext }           from "@/lib/space";
 import { getTransactionDetail }      from "@/lib/data/transactions";
+import { withTenantDb }              from "@/lib/db/tenant-context";
 
 export async function GET(
   _req: NextRequest,
@@ -41,12 +52,13 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  const [, err] = await requireUser();
+  const [user, err] = await requireUser();
   if (err) return err;
 
   const { spaceId } = await getSpaceContext();
 
-  const transaction = await getTransactionDetail(id, { spaceId });
+  const transaction = await withTenantDb(user.id, (tx) =>
+    getTransactionDetail(tx, id, { spaceId }));
   if (!transaction) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }

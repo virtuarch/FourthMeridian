@@ -2,9 +2,10 @@
  * POST /api/platform/growth-revenue/requests/[id]/approve  (Wave 1 S3)
  *
  * Approve a beta-access request = mint a single-use invite + email it, in one
- * step. Also serves RESEND: calling it again on an already-APPROVED request
- * rotates the token in place and re-sends (updating invitedAt), which is the
- * product rule (one outstanding invite per request — no token table).
+ * step. IDEMPOTENT: only the request that moves PENDING/DENIED → APPROVED mints
+ * and e-mails; a repeat or a concurrent second click on an APPROVED row returns
+ * 200 { alreadyApproved: true } and sends nothing (I4). Re-sending is the
+ * separate /resend route.
  *
  * AUTHORIZATION: requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE") — the
  * fresh (live-revocation-checked) variant, required for every platform mutation
@@ -25,6 +26,7 @@ import { sendEmail } from "@/lib/email/send";
 import { buildBetaInviteUrl } from "@/lib/email/beta-invite-url";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { BetaAccessRequestStatus } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -50,13 +52,24 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     return NextResponse.json({ error: "This request has already been redeemed." }, { status: 409 });
   }
 
-  // Mint / rotate the invite token (rotation covers resend on an APPROVED row).
+  // I4 (A7, 2026-10-22) — approve is a FIRST decision, idempotent under a double
+  // click. It used to rotate the token and re-send on an already-APPROVED row, so
+  // two concurrent clicks both returned 200, two invite e-mails went out and the
+  // first link died with the rotation. Re-sending is the separate /resend route
+  // (BETA_INVITATION_RESENT); approve now transitions only PENDING/DENIED.
+  if (request.status === BetaAccessRequestStatus.APPROVED) {
+    return NextResponse.json({ success: true, alreadyApproved: true, emailStatus: "skipped" });
+  }
+
   const rawToken = crypto.randomBytes(32).toString("hex");
   const now = new Date();
   const expiry = new Date(now.getTime() + INVITE_TTL_MS);
 
-  await db.betaAccessRequest.update({
-    where: { id },
+  // IDEMP-011 + I4: the checks above are reads. The status predicate makes the
+  // write conditional and the count says which side of a race we are on: only
+  // the request that moves PENDING/DENIED → APPROVED mints a token and e-mails.
+  const { count } = await db.betaAccessRequest.updateMany({
+    where: { id, status: { in: [BetaAccessRequestStatus.PENDING, BetaAccessRequestStatus.DENIED] } },
     data: {
       status:          BetaAccessRequestStatus.APPROVED,
       inviteTokenHash: hashResetToken(rawToken),
@@ -66,6 +79,14 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       decidedById:     auth.user.id,
     },
   });
+  if (count !== 1) {
+    // Lost the race: say what the winner left behind, send nothing.
+    const now2 = await db.betaAccessRequest.findUnique({ where: { id }, select: { status: true } });
+    if (now2?.status === BetaAccessRequestStatus.APPROVED) {
+      return NextResponse.json({ success: true, alreadyApproved: true, emailStatus: "skipped" });
+    }
+    return NextResponse.json({ error: "This request has already been redeemed." }, { status: 409 });
+  }
 
   // Absolute link from the trusted env base (never a request Host header).
   const inviteUrl = buildBetaInviteUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
@@ -82,7 +103,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       userId:             auth.user.id,
       performedByAdminId: auth.user.id,
       action:             AuditAction.BETA_ACCESS_APPROVED,
-      metadata:           { betaRequestId: id, email: request.email, emailStatus: emailResult.status },
+      metadata:           { betaRequestId: id, emailHash: auditEmailHash(request.email), emailStatus: emailResult.status },
     },
   });
 

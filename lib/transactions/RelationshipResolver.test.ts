@@ -24,9 +24,36 @@ function tx(over: Partial<RelationshipTransaction> = {}): RelationshipTransactio
     merchant: 'Blue Bottle Coffee',
     pending: false,
     deletedAt: null,
+    // v2.6-TRUTH-2 — the canonical authority's required leg facts. Defaults are the
+    // benign case: one owner, settled, no movement form.
+    ownerUserId: 'user_1',
+    settlementState: 'POSTED',
+    pfcDetailed: null,
+    pfcPrimary: null, persistedCounterpartyAccountId: null,
+    // Financial Truth — admission + external-leaf + identifier facts. Defaults are
+    // the benign case: a transfer-shaped category, no attested counterparty class,
+    // no institution extractor, no descriptor identifiers.
+    category: 'Transfer', counterpartyClass: null, institutionId: null, descriptor: null,
+    // W1 (D6) — similarity-evidence facts. Defaults: no separate raw descriptor
+    // (key falls back to merchant, the pre-DF-4 CSV shape) and no event identity
+    // (the ledger is silent, so fingerprint evidence may apply).
+    description: null, transactionEventId: null,
     ...over,
+    // L8-B — the matching chronology. A fixture that moves `date` means to move
+    // the leg in time, so mirror it unless the fixture set an economic date
+    // explicitly (which is how a lag case is written).
+    economicDate: over.economicDate ?? over.date ?? new Date('2026-06-01'),
   };
 }
+
+/** Account types for the matcher context. Tests override per case. */
+const CTX = {
+  accountTypeById: new Map<string, string>([
+    ['fa_1', 'checking'], ['fa_2', 'savings'], ['fa_3', 'debt'],
+    ['fa_a', 'checking'], ['fa_b', 'savings'], ['fa_c', 'debt'],
+    ['fa_chk', 'checking'], ['fa_sav', 'savings'], ['fa_brk', 'investment'],
+  ]),
+};
 
 /** A transfer leg: flowType TRANSFER + a currency, on a named account. */
 function leg(over: Partial<RelationshipTransaction> = {}): RelationshipTransaction {
@@ -37,32 +64,78 @@ function leg(over: Partial<RelationshipTransaction> = {}): RelationshipTransacti
 test('POSTED_FROM_PENDING: target ref matches a (tombstoned) pending row by plaidTransactionId', () => {
   const posted  = tx({ id: 'posted', plaidTransactionId: 'plaid_posted', pendingTransactionRef: 'plaid_pending', pending: false });
   const pending = tx({ id: 'pending', plaidTransactionId: 'plaid_pending', pending: true, deletedAt: new Date('2026-06-02') });
-  const r = resolveTransactionRelationships(posted, [pending]);
+  const r = resolveTransactionRelationships(posted, [pending], CTX);
   assert.deepEqual(r.pendingPosted, { role: 'POSTED_FROM_PENDING', transactionId: 'pending' });
 });
 
 test('PENDING_AWAITING_POST: target is pending and a posted successor points back', () => {
   const pending = tx({ id: 'pending', plaidTransactionId: 'plaid_pending', pending: true });
   const posted  = tx({ id: 'posted', plaidTransactionId: 'plaid_posted', pendingTransactionRef: 'plaid_pending', pending: false });
-  const r = resolveTransactionRelationships(pending, [posted]);
+  const r = resolveTransactionRelationships(pending, [posted], CTX);
   assert.deepEqual(r.pendingPosted, { role: 'PENDING_AWAITING_POST', transactionId: 'posted' });
 });
 
 test('pendingPosted is null when no counterpart / ref is absent', () => {
-  assert.equal(resolveTransactionRelationships(tx(), [tx({ id: 'other' })]).pendingPosted, null);
+  assert.equal(resolveTransactionRelationships(tx(), [tx({ id: 'other' })], CTX).pendingPosted, null);
   const posted = tx({ pendingTransactionRef: 'nonexistent' });
-  assert.equal(resolveTransactionRelationships(posted, [tx({ id: 'x', plaidTransactionId: 'different' })]).pendingPosted, null);
+  assert.equal(resolveTransactionRelationships(posted, [tx({ id: 'x', plaidTransactionId: 'different' })], CTX).pendingPosted, null);
 });
 
-// ── duplicate (exact fingerprint) ─────────────────────────────────────────────
-test('duplicate: exact fingerprint match (account+date+amount+pending+normalized merchant)', () => {
+// ── similarity (fingerprint-key EVIDENCE — W1/D6) ─────────────────────────────
+test('similarity: exact fingerprint-key match (account+date+amount+pending+normalized raw descriptor)', () => {
   const a = tx({ id: 'a' });
   const b = tx({ id: 'b', plaidTransactionId: 'plaid_2', merchant: '  blue bottle   coffee ' }); // case/space differ
-  const r = resolveTransactionRelationships(a, [b]);
-  assert.deepEqual(r.duplicate, { transactionIds: ['b'] });
+  const r = resolveTransactionRelationships(a, [b], CTX);
+  assert.deepEqual(r.similarity, { transactionIds: ['b'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' });
 });
 
-test('duplicate excludes self, tombstoned, different account/amount/merchant/pending', () => {
+// ⚠️ THE W1/D6 DOCTRINE PIN. Two rows on different TransactionEvents are two
+// events — the provider established two identities, and no fingerprint
+// coincidence may present them as one. This is the fixture the wave exists for.
+test('two rows on different TransactionEvents are NEVER similarity-flagged, however identical', () => {
+  const a = tx({ id: 'a', transactionEventId: 'evt_1' });
+  const b = tx({ id: 'b', plaidTransactionId: 'plaid_2', transactionEventId: 'evt_2' }); // byte-identical facts
+  assert.equal(resolveTransactionRelationships(a, [b], CTX).similarity, null);
+});
+
+test('two rows on the SAME TransactionEvent are not similarity-flagged (a lifecycle pair, not a repeat)', () => {
+  const a = tx({ id: 'a', transactionEventId: 'evt_1' });
+  const b = tx({ id: 'b', plaidTransactionId: 'plaid_2', transactionEventId: 'evt_1' });
+  assert.equal(resolveTransactionRelationships(a, [b], CTX).similarity, null);
+});
+
+test('similarity applies only while the event ledger is silent (either side unlinked)', () => {
+  // Target unlinked, candidate linked — the ledger cannot adjudicate: evidence stands.
+  const a = tx({ id: 'a', transactionEventId: null });
+  const b = tx({ id: 'b', plaidTransactionId: 'plaid_2', transactionEventId: 'evt_2' });
+  assert.deepEqual(resolveTransactionRelationships(a, [b], CTX).similarity,
+    { transactionIds: ['b'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' });
+  // Target linked, candidate unlinked — same.
+  const c = tx({ id: 'c', transactionEventId: 'evt_1' });
+  const d = tx({ id: 'd', plaidTransactionId: 'plaid_3', transactionEventId: null });
+  assert.deepEqual(resolveTransactionRelationships(c, [d], CTX).similarity,
+    { transactionIds: ['d'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' });
+});
+
+// DF-4 alignment: the key is the RAW descriptor (`description ?? merchant`),
+// mirroring lib/transactions/fingerprint.ts — enrichment drift on `merchant`
+// neither creates nor destroys a match when raw descriptors agree.
+test('similarity keys on the raw descriptor: enrichment drift on merchant does not break the match', () => {
+  // The six-Amazon shape: same raw descriptor, one row enriched, one not.
+  const a = tx({ id: 'a', merchant: 'Amazon',              description: 'AMZN Mktp US*RT4Y12' });
+  const b = tx({ id: 'b', plaidTransactionId: 'plaid_2',
+                 merchant: 'AMZN MKTP US*RT4Y12',          description: 'AMZN Mktp US*RT4Y12' });
+  assert.deepEqual(resolveTransactionRelationships(a, [b], CTX).similarity,
+    { transactionIds: ['b'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' });
+});
+
+test('similarity: matching enriched merchants with DIFFERENT raw descriptors do NOT match', () => {
+  const a = tx({ id: 'a', merchant: 'Amazon', description: 'AMZN Mktp US*RT4Y12' });
+  const b = tx({ id: 'b', plaidTransactionId: 'plaid_2', merchant: 'Amazon', description: 'AMZN Mktp US*ZZ9Q88' });
+  assert.equal(resolveTransactionRelationships(a, [b], CTX).similarity, null);
+});
+
+test('similarity excludes self, tombstoned, different account/amount/descriptor/pending', () => {
   const a = tx({ id: 'a' });
   const candidates = [
     tx({ id: 'a' }),                                               // self — excluded by id !== tx.id
@@ -72,24 +145,24 @@ test('duplicate excludes self, tombstoned, different account/amount/merchant/pen
     tx({ id: 'other-merchant', plaidTransactionId: 'p5', merchant: 'Starbucks' }),
     tx({ id: 'other-pending', plaidTransactionId: 'p6', pending: true }),
   ];
-  const r = resolveTransactionRelationships(a, candidates);
-  assert.equal(r.duplicate, null);
+  const r = resolveTransactionRelationships(a, candidates, CTX);
+  assert.equal(r.similarity, null);
 });
 
-test('duplicate returns null when candidate list is empty', () => {
-  assert.equal(resolveTransactionRelationships(tx(), []).duplicate, null);
+test('similarity returns null when candidate list is empty', () => {
+  assert.equal(resolveTransactionRelationships(tx(), [], CTX).similarity, null);
 });
 
-test('a pending row and its posted successor are NOT flagged as duplicates', () => {
+test('a pending row and its posted successor are NOT similarity-flagged', () => {
   // They differ in `pending` and the pending row is tombstoned — both exclusions apply.
   const posted  = tx({ id: 'posted', plaidTransactionId: 'plaid_posted', pendingTransactionRef: 'plaid_pending', pending: false });
   const pending = tx({ id: 'pending', plaidTransactionId: 'plaid_pending', pending: true, deletedAt: new Date() });
-  assert.equal(resolveTransactionRelationships(posted, [pending]).duplicate, null);
+  assert.equal(resolveTransactionRelationships(posted, [pending], CTX).similarity, null);
 });
 
 // ── reserved (refundCandidate still unratified); a non-transfer row never matches ─
 test('refundCandidate stays null; a REFUND row is not transfer-like so no transferCandidate', () => {
-  const r = resolveTransactionRelationships(tx({ flowType: 'REFUND', amount: 12.5 }), [tx({ id: 'purchase', amount: -12.5 })]);
+  const r = resolveTransactionRelationships(tx({ flowType: 'REFUND', amount: 12.5 }), [tx({ id: 'purchase', amount: -12.5 })], CTX);
   assert.equal(r.refundCandidate, null);
   assert.equal(r.transferCandidate, null);
 });
@@ -98,7 +171,7 @@ test('refundCandidate stays null; a REFUND row is not transfer-like so no transf
 test('checking → savings: unique opposite leg resolves to the counterparty account', () => {
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
   const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
-  const m = matchTransferCandidate(chk, [sav]);
+  const m = matchTransferCandidate(chk, [sav], CTX);
   assert.equal(m.status, 'RESOLVED');
   assert.equal(m.counterpartyAccountId, 'fa_sav');
   assert.equal(m.transactionId, 'sav');
@@ -109,7 +182,7 @@ test('checking → savings: unique opposite leg resolves to the counterparty acc
 test('savings → checking: matching is symmetric (opposite direction resolves too)', () => {
   const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
-  const m = matchTransferCandidate(sav, [chk]);
+  const m = matchTransferCandidate(sav, [chk], CTX);
   assert.equal(m.status, 'RESOLVED');
   assert.equal(m.counterpartyAccountId, 'fa_chk');
 });
@@ -117,7 +190,7 @@ test('savings → checking: matching is symmetric (opposite direction resolves t
 test('within window (±2 days) resolves; a cent-level amount difference still matches', () => {
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500.00, date: new Date('2026-06-01') });
   const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500.004, date: new Date('2026-06-03') });
-  const m = matchTransferCandidate(chk, [sav]);
+  const m = matchTransferCandidate(chk, [sav], CTX);
   assert.equal(m.status, 'RESOLVED');
   assert.equal(m.counterpartyAccountId, 'fa_sav');
 });
@@ -125,57 +198,180 @@ test('within window (±2 days) resolves; a cent-level amount difference still ma
 test('same absolute amount but SAME direction does not match', () => {
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
   const other = leg({ id: 'other', financialAccountId: 'fa_sav', amount: -500 }); // same sign
-  assert.equal(matchTransferCandidate(chk, [other]).status, 'NONE');
+  assert.equal(matchTransferCandidate(chk, [other], CTX).status, 'NONE');
 });
 
 test('different currencies do not match', () => {
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500, currency: 'USD' });
   const eur = leg({ id: 'eur', financialAccountId: 'fa_sav', amount: 500, currency: 'EUR' });
-  assert.equal(matchTransferCandidate(chk, [eur]).status, 'NONE');
+  assert.equal(matchTransferCandidate(chk, [eur], CTX).status, 'NONE');
 });
 
 test('a candidate outside the date window does not match', () => {
+  // v2.6-L4D — the window widened from 2 to 5 days (evidence-derived; see
+  // lib/transactions/transfer-maturation.ts). The INVARIANT is unchanged — a leg
+  // outside the window does not match — so the fixture moves to a genuinely
+  // outside distance rather than the assertion being weakened.
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500, date: new Date('2026-06-01') });
-  const far = leg({ id: 'far', financialAccountId: 'fa_sav', amount: 500, date: new Date('2026-06-05') }); // +4d
-  assert.equal(matchTransferCandidate(chk, [far]).status, 'NONE');
+  const far = leg({ id: 'far', financialAccountId: 'fa_sav', amount: 500, date: new Date('2026-06-08') }); // +7d
+  assert.equal(matchTransferCandidate(chk, [far], CTX).status, 'NONE');
+});
+
+test('v2.6-L4D: a 3-day skew DOES match — the real Chase→Amex-HYSA distance', () => {
+  // The live case the old 2-day window could never see: destination posted
+  // 2026-07-31, source pending 2026-08-03.
+  const source = leg({ id: 'src', financialAccountId: 'fa_chk', amount: -4000, date: new Date('2026-08-03') });
+  const dest   = leg({ id: 'dst', financialAccountId: 'fa_hysa', amount: 4000, date: new Date('2026-07-31') });
+  const r = matchTransferCandidate(source, [dest], CTX);
+  assert.equal(r.status, 'RESOLVED');
+  assert.equal(r.counterpartyAccountId, 'fa_hysa');
+});
+
+test('v2.6-L4D: destination BEFORE source is supported (distance is absolute)', () => {
+  const source = leg({ id: 'src', financialAccountId: 'fa_chk', amount: -4000, date: new Date('2026-08-03') });
+  const before = leg({ id: 'b', financialAccountId: 'fa_hysa', amount: 4000, date: new Date('2026-07-31') });
+  const after  = leg({ id: 'a', financialAccountId: 'fa_hysa', amount: 4000, date: new Date('2026-08-06') });
+  assert.equal(matchTransferCandidate(source, [before], CTX).status, 'RESOLVED');
+  assert.equal(matchTransferCandidate(source, [after], CTX).status, 'RESOLVED');
+});
+
+test('v2.6-L4C: a DEBT_PAYMENT leg is admitted as a transfer candidate', () => {
+  // The source leg is stored as DEBT_PAYMENT — the classification that excluded
+  // it from its own repair. Admission is not resolution: what it MEANS is then
+  // decided by the destination account type, in transfer-maturation.
+  const source = leg({ id: 'src', financialAccountId: 'fa_chk', amount: -4000, flowType: 'DEBT_PAYMENT' });
+  const dest   = leg({ id: 'dst', financialAccountId: 'fa_hysa', amount: 4000, flowType: 'TRANSFER' });
+  const r = matchTransferCandidate(source, [dest], CTX);
+  assert.equal(r.status, 'RESOLVED');
+  assert.equal(r.counterpartyAccountId, 'fa_hysa');
+});
+
+test('v2.6-L4C: SPENDING is still never a transfer leg', () => {
+  const spend = leg({ id: 's', financialAccountId: 'fa_chk', amount: -500, flowType: 'SPENDING' });
+  const dest  = leg({ id: 'd', financialAccountId: 'fa_sav', amount: 500, flowType: 'TRANSFER' });
+  assert.equal(matchTransferCandidate(spend, [dest], CTX).status, 'NONE');
+  const target = leg({ id: 't', financialAccountId: 'fa_chk', amount: -500, flowType: 'TRANSFER' });
+  const spendCandidate = leg({ id: 'sc', financialAccountId: 'fa_sav', amount: 500, flowType: 'SPENDING' });
+  assert.equal(matchTransferCandidate(target, [spendCandidate], CTX).status, 'NONE');
 });
 
 test('same account is never its own counterparty', () => {
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
   const sameAcct = leg({ id: 'x', financialAccountId: 'fa_chk', amount: 500 });
-  assert.equal(matchTransferCandidate(chk, [sameAcct]).status, 'NONE');
+  assert.equal(matchTransferCandidate(chk, [sameAcct], CTX).status, 'NONE');
 });
 
 test('multiple equal candidates across DIFFERENT accounts → AMBIGUOUS (refused, not guessed)', () => {
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
   const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
   const brk = leg({ id: 'brk', financialAccountId: 'fa_brk', amount: 500 });
-  const m = matchTransferCandidate(chk, [sav, brk]);
+  const m = matchTransferCandidate(chk, [sav, brk], CTX);
   assert.equal(m.status, 'AMBIGUOUS');
   assert.equal(m.counterpartyAccountId, null);
   assert.equal(m.reason, 'AMBIGUOUS_MULTIPLE_ACCOUNTS');
 });
 
-test('multiple equal candidates within ONE account → account is certain (leg id null)', () => {
+test('multiple equal candidates within ONE account → the ACCOUNT is certain, the LEG is not', () => {
+  // ── The history of this one test is the history of the whole arc ──────────
+  //
+  // v1 asserted RESOLVED with a null leg id — one-directional, and wrong: "one
+  //    destination ACCOUNT" was read as certainty when the PAIRING was not unique.
+  // v2 (v2.6-TRUTH-2) asserted AMBIGUOUS with a null account. That fixed the
+  //    over-claim by discarding a TRUE claim alongside the false one: both legs
+  //    are in fa_sav, so wherever the money went, it went to savings.
+  // v3 (this) separates the two questions. The ACCOUNT is a fact and is
+  //    persistable; the LEG is unknowable and is never invented.
+  //
+  // The soundness condition is pigeonhole, not "one account": ONE source and TWO
+  // qualifying legs means this source has a partner in fa_sav whichever leg was
+  // actually its own. The next test pins the case where that fails.
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
   const savA = leg({ id: 'savA', financialAccountId: 'fa_sav', amount: 500 });
   const savB = leg({ id: 'savB', financialAccountId: 'fa_sav', amount: 500 });
-  const m = matchTransferCandidate(chk, [savA, savB]);
+  const m = matchTransferCandidate(chk, [savA, savB], CTX);
   assert.equal(m.status, 'RESOLVED');
   assert.equal(m.counterpartyAccountId, 'fa_sav');
-  assert.equal(m.transactionId, null); // account certain, exact leg is not
+  // ⚠️ RESOLVED and yet NO leg. A consumer that inferred "resolved ⇒ I have a
+  // transactionId" would be wrong, which is why persistability is two booleans.
+  assert.equal(m.transactionId, null);
+  assert.equal(m.persistableCounterparty, true);
+  assert.equal(m.persistableLeg, false);
+  assert.equal(m.reason, 'ACCOUNT_CERTAIN_LEG_AMBIGUOUS');
+  assert.equal(m.evidenceLevel, 'ACCOUNT_CERTAIN_LEG_AMBIGUOUS');
+  assert.equal(m.destinationAccountType, 'savings');
+  assert.equal(m.maturity, 'SAVINGS_TRANSFER');
+  assert.equal(m.unresolvedReason, null);
+});
+
+test('...but ONE leg contested by TWO sources persists nothing — pigeonhole fails', () => {
+  // Two identical debits, one arrival. One of them did not go to savings at all,
+  // and nothing says which. Claiming fa_sav for both would double-claim the
+  // arrival — a coin flip wearing an identifier's authority.
+  //
+  // This is the guard that stops the leg-ambiguous rung from re-becoming the
+  // one-directional over-claim v1 shipped.
+  const s1 = leg({ id: 's1', financialAccountId: 'fa_chk', amount: -500 });
+  const s2 = leg({ id: 's2', financialAccountId: 'fa_chk2', amount: -500 });
+  const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
+  const m = matchTransferCandidate(s1, [s2, sav], {
+    accountTypeById: new Map([...CTX.accountTypeById, ['fa_chk2', 'checking']]),
+  });
+  assert.equal(m.status, 'AMBIGUOUS');
+  assert.equal(m.counterpartyAccountId, null);
+  assert.equal(m.transactionId, null);
+  assert.equal(m.persistableCounterparty, false);
+  assert.equal(m.reason, 'NOT_MUTUALLY_UNIQUE');
+  // What survives is still true: whatever this was, its destination is savings.
+  assert.equal(m.destinationAccountType, 'savings');
+  assert.equal(m.maturity, 'SAVINGS_TRANSFER');
+});
+
+test('a MUTUALLY unique pairing still resolves (the veto is not a blanket refusal)', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
+  const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
+  const m = matchTransferCandidate(chk, [sav], CTX);
+  assert.equal(m.status, 'RESOLVED');
+  assert.equal(m.counterpartyAccountId, 'fa_sav');
+  assert.equal(m.transactionId, 'sav');
+  assert.equal(m.evidenceLevel, 'ACCOUNT_CERTAIN');
+});
+
+test('a CASH movement never receives an account counterparty (v2.6-TRUTH-2)', () => {
+  // The live ATM withdrawal: a perfectly-matched opposite leg exists, and the
+  // read path must still refuse, exactly as the repair boundary does.
+  const atm = leg({ id: 'atm', financialAccountId: 'fa_chk', amount: -500, pfcDetailed: 'TRANSFER_OUT_WITHDRAWAL' });
+  const card = leg({ id: 'card', financialAccountId: 'fa_sav', amount: 500 });
+  const m = matchTransferCandidate(atm, [card], CTX);
+  assert.equal(m.status, 'NONE');
+  assert.equal(m.counterpartyAccountId, null);
+  assert.equal(m.reason, 'CASH_MOVEMENT_NO_COUNTERPARTY');
+  assert.equal(m.maturity, 'CASH_MOVEMENT');
+});
+
+test('a superseded (tombstoned) leg is dropped by the authority, not by this module', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
+  const dead = leg({ id: 'dead', financialAccountId: 'fa_sav', amount: 500, deletedAt: new Date('2026-06-02'), pending: true, settlementState: 'PENDING' });
+  const m = matchTransferCandidate(chk, [dead], CTX);
+  assert.equal(m.status, 'NONE');
+  assert.equal(m.reason, 'NO_CANDIDATE');
+});
+
+test('legs belonging to DIFFERENT owners never pair', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500, ownerUserId: 'user_1' });
+  const other = leg({ id: 'other', financialAccountId: 'fa_sav', amount: 500, ownerUserId: 'user_2' });
+  assert.equal(matchTransferCandidate(chk, [other], CTX).status, 'NONE');
 });
 
 test('a tombstoned candidate leg is never paired', () => {
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
   const dead = leg({ id: 'dead', financialAccountId: 'fa_sav', amount: 500, deletedAt: new Date('2026-06-02') });
-  assert.equal(matchTransferCandidate(chk, [dead]).status, 'NONE');
+  assert.equal(matchTransferCandidate(chk, [dead], CTX).status, 'NONE');
 });
 
 test('a non-transfer target is NOT transfer-like', () => {
   const spend = leg({ id: 's', flowType: 'SPENDING', financialAccountId: 'fa_chk', amount: -500 });
   const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
-  const m = matchTransferCandidate(spend, [sav]);
+  const m = matchTransferCandidate(spend, [sav], CTX);
   assert.equal(m.status, 'NONE');
   assert.equal(m.reason, 'NOT_TRANSFER_LIKE');
 });
@@ -184,22 +380,26 @@ test('resolveTransactionRelationships surfaces a RESOLVED match but hides AMBIGU
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
   const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
   const brk = leg({ id: 'brk', financialAccountId: 'fa_brk', amount: 500 });
-  assert.equal(resolveTransactionRelationships(chk, [sav]).transferCandidate?.counterpartyAccountId, 'fa_sav');
-  assert.equal(resolveTransactionRelationships(chk, [sav, brk]).transferCandidate, null); // ambiguous → null
+  assert.equal(resolveTransactionRelationships(chk, [sav], CTX).transferCandidate?.counterpartyAccountId, 'fa_sav');
+  assert.equal(resolveTransactionRelationships(chk, [sav, brk], CTX).transferCandidate, null); // ambiguous → null
 });
 
 // ── contract & determinism ────────────────────────────────────────────────────
-test('output shape is exactly the four keys', () => {
-  const r = resolveTransactionRelationships(tx(), []);
-  assert.deepEqual(Object.keys(r).sort(), ['duplicate', 'pendingPosted', 'refundCandidate', 'transferCandidate']);
+test('output shape is exactly the five keys', () => {
+  const r = resolveTransactionRelationships(tx(), [], CTX);
+  // v2.6-TRUTH-2 adds `transferAssessment` — the FULL outcome including refusals,
+  // so a surface can state what is known without reading a fabricated id.
+  assert.deepEqual(Object.keys(r).sort(), ['pendingPosted', 'refundCandidate', 'similarity', 'transferAssessment', 'transferCandidate']);
+  assert.equal(r.transferCandidate, null);
+  assert.equal(r.transferAssessment.counterpartyAccountId, null);
 });
 
 test('resolver is deterministic and does not mutate inputs', () => {
   const target = tx();
   const candidates = [tx({ id: 'b', plaidTransactionId: 'p2' })];
   const snapshot = JSON.stringify({ target, candidates });
-  const r1 = resolveTransactionRelationships(target, candidates);
-  const r2 = resolveTransactionRelationships(target, candidates);
+  const r1 = resolveTransactionRelationships(target, candidates, CTX);
+  const r2 = resolveTransactionRelationships(target, candidates, CTX);
   assert.deepEqual(r1, r2);
   assert.equal(JSON.stringify({ target, candidates }), snapshot); // inputs untouched
 });

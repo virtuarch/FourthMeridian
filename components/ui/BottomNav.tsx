@@ -3,12 +3,11 @@
 /**
  * components/ui/BottomNav.tsx
  *
- * The mobile presentation of the ONE navigation model (lib/space-nav GLOBAL_NAV)
- * — the same five destinations the desktop ContextualNavbar renders in global
- * mode: Spaces · Brief · AI · Connections · Settings. Desktop and mobile are two
- * responsive presentations of one model, not two separate legacy systems (the
- * former four-item Brief/Spaces/AI/Settings bar, which diverged from the model
- * and dropped Connections, is retired).
+ * The mobile bar: Brief · My Space · AI · Spaces · Connections — the mobile
+ * presentation of lib/space-nav PRIMARY_NAV, the SAME list, order, routes and
+ * active rule the desktop rail (ContextualNavbar, global mode) renders. My Space
+ * (/dashboard, the active Space's dashboard) is a destination of its own, distinct
+ * from the Spaces launcher, and Settings lives in the account menu, not here.
  *
  * Prototype behaviour (DS-5 §6): a phone has room for one nav level, so it shows
  * the top-level app destinations and lets in-Space navigation become the
@@ -20,28 +19,28 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  House,
   Layers,
   Newspaper,
   Sparkles,
   Link2,
-  Settings as SettingsIcon,
   type LucideIcon,
 } from "lucide-react";
-import { GLOBAL_NAV, isGlobalDestActive, type GlobalDestId } from "@/lib/space-nav";
+import { PRIMARY_NAV, isPrimaryDestActive, type PrimaryDestId } from "@/lib/space-nav";
 
-const NAV_ICONS: Record<GlobalDestId, LucideIcon> = {
-  spaces: Layers,
+const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
   brief: Newspaper,
+  myspace: House,
   ai: Sparkles,
+  spaces: Layers,
   connections: Link2,
-  settings: SettingsIcon,
 };
 
 export function BottomNav() {
   const pathname = usePathname();
   return (
     <nav
-      aria-label="Sections"
+      aria-label="Global"
       className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--border-hairline)] lg:hidden"
       style={{
         background: "var(--glass-regular)",
@@ -51,9 +50,9 @@ export function BottomNav() {
       }}
     >
       <div className="flex h-14 items-stretch">
-        {GLOBAL_NAV.map((d) => {
+        {PRIMARY_NAV.map((d) => {
           const Icon = NAV_ICONS[d.id];
-          const on = isGlobalDestActive(d.id, pathname);
+          const on = isPrimaryDestActive(d.id, pathname);
           const isAI = d.id === "ai";
           return (
             <Link
@@ -90,7 +89,7 @@ export function BottomNav() {
               </span>
               <span
                 className={[
-                  "text-[9px] leading-none transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                  "text-[10px] leading-none transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
                   on ? "text-[var(--text-secondary)]" : "text-[var(--text-muted)]",
                 ].join(" ")}
               >

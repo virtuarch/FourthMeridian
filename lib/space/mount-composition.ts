@@ -27,19 +27,62 @@
  * SpaceAccount / number) — all strings/numbers/booleans, byte-identical to the
  * fetch().json() the client used to receive — so hydrating from the RSC payload
  * cannot drift from the fetched shape.
+ *
+ * ── RLS SLICE B — THE CLIENT IS A PARAMETER, NOT AN IMPORT ───────────────────
+ * This file imports no Prisma client. Each loader takes the client it reads
+ * through as its FIRST, REQUIRED argument, so the authority a Space's mount data
+ * is composed under is decided by the caller that knows who is mounting, and
+ * TypeScript fails at any site that forgets to say.
+ *
+ * ⚠️ THE COMPOSER TAKES A PHASE RUNNER, NOT A CLIENT, AND THAT IS A PERFORMANCE
+ * DECISION AS MUCH AS A SECURITY ONE. The three loaders are independent and run
+ * in parallel — that parallelism is the whole point of PS-6B, which exists
+ * because the mount fan-out produced P2024 pool timeouts. Handing the composer
+ * ONE transaction would put all three on ONE connection and silently serialise
+ * them. It instead takes a runner, so each loader is its own short transaction
+ * and the three still overlap, exactly as the three independent queries did.
+ * In the product the runner is `withTenantDb(userId, fn)`; a test supplies its
+ * own and asserts what ran.
+ *
+ * ⚠️ THE MODULE STILL PERFORMS NO AUTHORIZATION, and RLS does not make it do so.
+ * A caller must still have authorized the Space (the routes' requireSpaceAction
+ * / requireSpaceRole, the page's getSpaceContext). What the tenant client adds
+ * is that a loader called for the WRONG Space now returns nothing instead of
+ * that Space's data — a backstop beneath the check, never a replacement for it.
  */
 
 import "server-only";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
+import { sortAccountsForDisplay } from "@/lib/data/accounts";
 
-import { db } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
 import { ShareStatus } from "@prisma/client";
-import { normalizeSharedAccounts } from "@/lib/account-privacy";
+import { normalizeSharedAccounts, aggregateCurrentCashState } from "@/lib/account-privacy";
 import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
+import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
+import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
+import { loadWalletCurrentValues, hasKnownValue } from "@/lib/crypto/wallet-current-value";
+
+/**
+ * The client these loaders read through.
+ *
+ * Deliberately the whole transaction client rather than a Pick: the accounts
+ * loader forwards it to `loadPendingEvidence` and `loadWalletCurrentValues`,
+ * each of which states its own narrower contract, and re-declaring their unions
+ * here would duplicate three invariants instead of stating one.
+ */
+export type SpaceCompositionClient = Prisma.TransactionClient;
+
+/** ONE short database operation, run under whatever authority the caller supplies. */
+export type SpaceCompositionPhase =
+  <T>(fn: (client: SpaceCompositionClient) => Promise<T>) => Promise<T>;
 
 /** THE sections loader (was inline in /api/spaces/[id]/sections). */
-export async function loadSpaceSections(spaceId: string): Promise<DashboardSection[]> {
-  const rows = await db.spaceDashboardSection.findMany({
+export async function loadSpaceSections(
+  client: SpaceCompositionClient, spaceId: string,
+): Promise<DashboardSection[]> {
+  const rows = await client.spaceDashboardSection.findMany({
     where:   { spaceId },
     orderBy: [{ tab: "asc" }, { order: "asc" }],
   });
@@ -58,8 +101,10 @@ export async function loadSpaceSections(spaceId: string): Promise<DashboardSecti
 
 /** THE accounts loader (was inline in /api/spaces/[id]/accounts) — identical
  *  links query + earliest-transaction floor + visibility normalization. */
-export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]> {
-  const links = await db.spaceAccountLink.findMany({
+export async function loadSpaceAccounts(
+  client: SpaceCompositionClient, spaceId: string,
+): Promise<SpaceAccount[]> {
+  const links = await client.spaceAccountLink.findMany({
     where: {
       spaceId,
       status:           ShareStatus.ACTIVE,
@@ -71,9 +116,30 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
       addedByUser: { select: { firstName: true, name: true } },
       financialAccount: {
         select: {
-          id: true, name: true, type: true, institution: true, balance: true,
+          id: true, type: true, institution: true, balance: true,
+          // v2.6-TRUTH-10 — THE ROOT CAUSE. This selected `name` alone, so the
+          // loader feeding every Space surface could not resolve an identity and
+          // emitted the provider's raw label — "CREDIT CARD" on Cash Flow while
+          // the Credit page, reading getAccounts, showed "Ultimate Rewards®" for
+          // the same row. Selecting the columns is what makes resolution possible.
+          ...ACCOUNT_NAME_SELECT,
           currency: true, lastUpdated: true, creditLimit: true, debtSubtype: true,
+          // 2026-10-07 — liquidity-access evidence (HSA / retirement / unverified).
+          providerSubtype: true,
+          // RWA-1 — marks a USER ESTIMATE (manual asset); read below into the
+          // additive `userEstimate` flag, never forwarded as a raw column.
+          syncStatus: true,
           interestRate: true, minimumPayment: true,
+          // v2.6-L3 — forwarded RAW into lib/balances (the only interpreter);
+          // never read as a value in this file.
+          availableBalance: true, walletAddress: true,
+          // W-M3a — names the wallet's asset, so the loader can tell a chain
+          // that writes the balance column (BTC) from one that does not.
+          walletChain: true,
+          // v2.6-L1 — the institution's balance-computation clock, carried so the
+          // freshness authority can distinguish provider attestation from our own
+          // write time instead of every surface assuming they are the same fact.
+          balanceLastUpdatedAt: true,
           // V26-PRE (B3) — DebtProfile joined so the EFFECTIVE terms authority
           // (lib/debt/effective-terms.ts) can resolve APR/minimum payment.
           // Before this join, Space debt widgets computed interest and payoff
@@ -91,7 +157,7 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
 
   const accountIds = links.map((l) => l.financialAccount.id);
   const floors = accountIds.length
-    ? await db.transaction.groupBy({
+    ? await client.transaction.groupBy({
         by:    ["financialAccountId"],
         where: { financialAccountId: { in: accountIds }, deletedAt: null },
         _min:  { date: true },
@@ -111,34 +177,131 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
   // shape the client has always received — no data is coerced.
   // V26-PRE (B3) — resolve effective debt terms through the single authority
   // BEFORE normalization, so every downstream consumer (LiabilitiesLedger
-  // interest math, SectionCard avgApr/payoff, avalanche ordering) reads the
+  // interest math, payoff summaries, avalanche ordering) reads the
   // same effective APR/minimum payment as the Personal Debt surface. The
   // normalized shape is unchanged: `interestRate`/`minimumPayment` now simply
   // carry the EFFECTIVE values (DebtProfile > flat column).
+  // W-M3a — a wallet on a chain that writes no `balance` column reached this
+  // loader as a structural 0 and was rendered as money: a Solana wallet holding
+  // a verified 0.751600602 SOL displayed $0.00 on every Space account surface,
+  // while the Investments workspace — reading the position spine — showed it
+  // correctly. The value is resolved from that same spine here.
+  //
+  // Substituted BEFORE normalizeSharedAccounts so a privacy-aggregated row sums
+  // the real value rather than the zero.
+  //
+  // W6d — Bitcoin is now in this map too, and this call did not change: it has
+  // always passed every linked account's chain and let the registry-backed
+  // authority decide which ones it serves. A wallet whose value is UNKNOWN still
+  // falls through to the column rather than having a number invented for it —
+  // see the fallback note in lib/data/accounts.ts for why that stays, and for
+  // its deletion condition.
+  //
+  // ⚠️ This payload carries no tri-state alongside the number, so the fallback
+  // is SILENT here in a way it is not on the account read. That is a knowing
+  // limit of the mount shape, not a claim that the figure is spine-backed.
+  const walletValueByAccount = await loadWalletCurrentValues(
+    links.map((l) => ({
+      id: l.financialAccount.id,
+      walletChain: l.financialAccount.walletChain,
+      lastUpdated: l.financialAccount.lastUpdated,
+    })),
+    // ⚠️ THE CLIENT IS PASSED EXPLICITLY. `loadWalletCurrentValues` still carries
+    // an optional `options.client ?? db` default — fifteen call sites wide, so
+    // not this slice's to remove — and a caller that said nothing would have
+    // dropped out of the tenant transaction without a word.
+    { contextSpaceId: spaceId, client },
+  );
+
   const effectiveLinks = links.map((l) => {
     const terms = resolveEffectiveDebtTerms(l.financialAccount);
     const { debtProfile: _profile, ...account } = l.financialAccount;
+    const walletValue = walletValueByAccount.get(account.id);
     return {
       ...l,
       financialAccount: {
         ...account,
+        // W6b — VALUED or STALE alike: a dated last-known figure beats an
+        // unwritten column that always reads zero. Staleness is disclosed by the
+        // richer account read, not by discarding the number here.
+        balance: hasKnownValue(walletValue) ? walletValue!.value! : account.balance,
+        // v2.6-TRUTH-10 — resolve the canonical identity HERE, once, so every
+        // Space surface downstream receives the same name the Credit page shows.
+        // ⚠️ `name` is overwritten with the resolved identity, NOT a new field:
+        // every consumer already reads `name`, and adding a second name field
+        // would recreate the divergence this slice removes.
+        name:           accountDisplayName(account),
         interestRate:   terms.apr,
         minimumPayment: terms.minimumPayment,
       },
     };
   });
 
-  return normalizeSharedAccounts(effectiveLinks).map((a) => ({
-    ...a,
-    earliestTxDate: floorByAccount.get(a.id) ?? null,
+  // v2.6-L3 — the canonical CURRENT-STATE claim, resolved ONCE here so every
+  // widget consumes the same answer and none of them re-derives it. Pending
+  // evidence is provider-observed only (loadPendingEvidence); nothing is
+  // inferred from recurrence, averages, or habits.
+  const pending = await loadPendingEvidence(client, accountIds);
+  const now = new Date();
+  const currentStateByAccount = new Map<string, SpaceAccount["currentState"]>();
+  for (const l of links) {
+    const fa = l.financialAccount;
+    const balances = resolveRowBalances(fa, now);
+    const rec = reconcileAccount(balances, pending.get(fa.id) ?? NO_PENDING, fa.creditLimit);
+    // Only cash accounts carry a reachable figure; for the rest the field is
+    // omitted entirely rather than populated with a null-that-reads-as-zero.
+    if (rec.basis !== "DEPOSITORY") continue;
+    currentStateByAccount.set(fa.id, {
+      reachable:    rec.reachable?.amount ?? null,
+      unexplained:  rec.unexplained,
+      state:        rec.state,
+      pendingCount: rec.pending.count,
+    });
+  }
+
+  // v2.6-TRUTH-10b — the query sorts on the STORED name and cannot do better;
+  // re-order the RESOLVED list so it reads the way it renders. Type order is
+  // unchanged, and this list is unpaginated so the sort is complete.
+  // REVIEW-3 B-1 — normalizeSharedAccounts now fails closed on non-disclosing
+  // tiers (they are absent from `accounts` and counted in `redactedCount`; the
+  // SpaceAccount[] payload shape has no population-level field to carry that
+  // count, and today no write path can produce such a link — the lens path
+  // (lib/data/accounts.ts → debt/liquidity cores) is the disclosure surface).
+  const { accounts: normalized } = normalizeSharedAccounts(effectiveLinks);
+  // RWA-1 — FULL rows keep their real id, so the estimate flag is a lookup by
+  // id; an aggregated row's synthetic id matches nothing and carries no flag.
+  const estimateIds = new Set(
+    links.filter((l) => l.financialAccount.syncStatus === "manual").map((l) => l.financialAccount.id),
+  );
+  return sortAccountsForDisplay(normalized.map((a) => {
+    // REVIEW-3 B-1 — an aggregated row's current-state claim is composed from
+    // its members' ALREADY-RESOLVED claims (the synthetic id maps to no single
+    // account, so the direct lookup used to miss and the LEDGER balance was
+    // published as reachable cash). Resolution stays above, per real account;
+    // this only combines, under the authority's weakest-member rules.
+    const currentState = a.aggregate
+      ? aggregateCurrentCashState(a.aggregate.memberAccountIds.map((id) => currentStateByAccount.get(id)))
+      : currentStateByAccount.get(a.id);
+    // 2026-09-21 — the PRICE's clock beside the number (never on an aggregated
+    // privacy row: its synthetic id maps to no single wallet).
+    const cryptoPrice = a.aggregate ? null : walletValueByAccount.get(a.id)?.price ?? null;
+    return {
+      ...a,
+      earliestTxDate: floorByAccount.get(a.id) ?? null,
+      ...(currentState ? { currentState } : {}),
+      ...(cryptoPrice ? { cryptoPrice } : {}),
+      ...(!a.aggregate && estimateIds.has(a.id) ? { userEstimate: true as const } : {}),
+    };
   })) as unknown as SpaceAccount[];
 }
 
 /** ACTIVE member count — the ONLY field the shell header reads from the heavy
  *  /api/spaces/[id] route. Composed as a cheap count so the mount need not call
  *  that route at all (the route stays for its other consumers). */
-export function getSpaceMemberCount(spaceId: string): Promise<number> {
-  return db.spaceMember.count({ where: { spaceId, status: "ACTIVE" } });
+export function getSpaceMemberCount(
+  client: SpaceCompositionClient, spaceId: string,
+): Promise<number> {
+  return client.spaceMember.count({ where: { spaceId, status: "ACTIVE" } });
 }
 
 /**
@@ -154,14 +317,21 @@ export interface FinancialInitialWorkspacePayload {
   memberCount: number;
 }
 
-/** Compose the finance initial payload for an ALREADY-AUTHORIZED space. */
+/**
+ * Compose the finance initial payload for an ALREADY-AUTHORIZED space.
+ *
+ * `asOwner` runs ONE loader under the mounting user's authority — see the header
+ * for why this is a runner and not a client: three short transactions that
+ * overlap, not one that serialises them.
+ */
 export async function composeFinancialInitialWorkspace(
+  asOwner: SpaceCompositionPhase,
   spaceId: string,
 ): Promise<FinancialInitialWorkspacePayload> {
   const [sections, accounts, memberCount] = await Promise.all([
-    loadSpaceSections(spaceId),
-    loadSpaceAccounts(spaceId),
-    getSpaceMemberCount(spaceId),
+    asOwner((c) => loadSpaceSections(c, spaceId)),
+    asOwner((c) => loadSpaceAccounts(c, spaceId)),
+    asOwner((c) => getSpaceMemberCount(c, spaceId)),
   ]);
   return { sections, accounts, memberCount };
 }

@@ -36,8 +36,20 @@ for (const cat of Object.values(SpaceCategory)) {
   );
 }
 
-// Use a template with several sections for the behavioral cases.
-const template = getTemplateForCategory(SpaceCategory.DEBT_PAYOFF)!;
+// Use a SYNTHETIC multi-section fixture for the behavioral cases. (REVIEW-3
+// slice F shrank every real template to the universal GOALS section — the
+// planner's skip/idempotence semantics still need a multi-section input, and
+// planTemplateApplication is pure over any SpaceTemplate shape.)
+import type { SpaceTemplate } from "./types";
+const template: SpaceTemplate = {
+  id: "fixture", name: "Fixture", description: "planner fixture", icon: "Target",
+  category: SpaceCategory.CUSTOM, version: 1, status: "hidden",
+  sections: [
+    { key: "fx_a", label: "A", tab: "GOALS",    enabled: true, order: 0, config: { n: 1 } },
+    { key: "fx_b", label: "B", tab: "GOALS",    enabled: true, order: 1 },
+    { key: "fx_c", label: "C", tab: "ACTIVITY", enabled: false, order: 0 },
+  ],
+};
 const allKeys = template.sections.map((s) => s.key);
 check("fixture template has multiple sections", allKeys.length >= 3);
 

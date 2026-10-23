@@ -7,14 +7,18 @@
 import Link from "next/link";
 import { Container } from "./Container";
 import { SITE } from "@/content/marketing/copy";
+import { PUBLIC_SITE_ORIGIN, publicSiteHref } from "@/lib/marketing/public-site";
 
+// Site-owned pages are absolute on the public site once one is configured
+// (domain split); /request-access is the application's own form.
+const site = (p: `/${string}`) => publicSiteHref(p, PUBLIC_SITE_ORIGIN);
 const FOOTER_LINKS = [
-  { label: "Security", href: "/security" },
-  { label: "About", href: "/about" },
+  { label: "Security", href: site("/security") },
+  { label: "About", href: site("/about") },
   { label: "Get Started", href: "/request-access" },
-  { label: "Terms", href: "/terms" },
-  { label: "Privacy", href: "/privacy" },
-  { label: "AI disclosures", href: "/legal/ai" },
+  { label: "Terms", href: site("/terms") },
+  { label: "Privacy", href: site("/privacy") },
+  { label: "AI disclosures", href: site("/legal/ai") },
 ] as const;
 
 export function MarketingFooter() {

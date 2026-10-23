@@ -5,8 +5,9 @@
  *
  * Assembles aggregated transaction intelligence for the validated Space.
  * RAW TRANSACTION ROWS ARE NEVER RETURNED — this domain is intentionally
- * summary-only. FinanceDomains.TRANSACTIONS_RAW is a separate future domain
- * for explicit opt-in raw access.
+ * summary-only. Raw access would be a separate domain with its own assembler
+ * and its own opt-in; the unbuilt FinanceDomains.TRANSACTIONS_RAW constant that
+ * used to stand in for it was deleted in V26-REASONING Slice 0.
  *
  * ── Transaction visibility ────────────────────────────────────────────────────
  * Transactions reach a Space via the canonical path (mirroring
@@ -28,15 +29,20 @@
  * they belong to a future investment-activity domain.
  *
  * ── Query window ─────────────────────────────────────────────────────────────
- *   scopeHint='brief' → last 30 days  (Daily Brief: recent activity)
- *   scopeHint='full'  → last 90 days  (full context: trend visibility)
+ *   Default: the ASSESSMENT WINDOW — the last 90 rolling days at EVERY scope
+ *   hint (W4). `scopeHint` is a transport knob: it may condense what this
+ *   section carries, never the period it measures. Explicit caller-directed
+ *   windows (D6 `transactionWindow`) are unchanged and scope-independent.
  * A fetch safety cap (TRANSACTION_FETCH_LIMIT) prevents unbounded queries
  * for Spaces with dense transaction history. Aggregation is over the returned
  * rows; if the cap is hit, the summary covers the most recent N rows within
  * the window.
  *
  * ── Permissions ──────────────────────────────────────────────────────────────
- * buildContext() validates Space membership before invoking any assembler.
+ * ⚠️ MEMBERSHIP IS THE CALLER'S, AND THE CALLER IS NO LONGER buildContext()
+ * (deleted, RLS-AI-S1). The live callers are `lib/ai/conversation/evidence.ts`
+ * and the tool layer, both reached from routes that re-resolve the Space and 403
+ * on a mismatch.
  * The OR query always scopes to the validated spaceId — no cross-Space rows
  * can appear. SpaceAccountLink.status = ACTIVE and a transaction-detail-
  * granting visibilityLevel (KD-1) are both enforced on the current path.
@@ -51,12 +57,11 @@
  *   drilldown share the same predicate constant.
  */
 
-import { db } from '@/lib/db';
+import type { ReadClient } from '@/lib/db/tenant-context';
 import { ShareStatus, TransactionCategory, FlowType } from '@prisma/client';
-import type { FlowDirection } from '@prisma/client';
+import type { FlowDirection, Prisma } from '@prisma/client';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
-import { TRANSACTION_DETAIL_VISIBILITY } from '@/lib/ai/visibility';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
   AssemblerOptions,
@@ -71,18 +76,87 @@ import type {
   DrilldownTransaction,
 } from '@/lib/ai/types';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
-import { isCostFlow, isRefund, isIncome, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue } from '@/lib/transactions/flow-predicates';
+// SEC-AI-005 — every merchant/descriptor string this assembler emits is scrubbed
+// (digit runs of 4+, reference symbols) by the one rule the Brief already applied.
+import { scrubDescriptor, scrubDescriptorText } from '@/lib/ai/privacy/scrub';
+import { isIncome, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue } from '@/lib/transactions/flow-predicates';
+// REVIEW-3 C-1 — THE economic fold. The window and monthly money folds below are
+// consumers of the SAME primitives the Cash Flow workspace folds with
+// (lib/transactions/cash-flow.ts): foldEconomicRow decides which bucket a row's
+// magnitude lands in, clampEconomicSpend is the sole netting/clamp site. This
+// assembler re-implemented that 3-way branch three times; it now re-implements
+// it zero times, and lib/ai/fold-enrolment.test.ts pins the enrolment.
+import {
+  foldEconomicRow, clampEconomicSpend, economicSideOf, foldCategorySpend,
+  type EconomicAccumulator, type CategoryLedgerRow, type CategorySpendLine,
+  clampEconomicIncome,
+} from '@/lib/transactions/cash-flow';
+import { categoryDefinition } from '@/lib/transactions/category-vocabulary';
+// REVIEW-3 C-2 — the canonical income taxonomy, run over the SAME evidence the
+// product DTO path feeds it (lib/transactions/serialize.ts). The payload's
+// incomeByClass / incomeSourcesByClass / incomeExcluded previously read
+// `(txn as {incomeClass?: string}).incomeClass` — NOT a Prisma column, derived
+// nowhere on this path — and therefore shipped structurally empty while claiming
+// to be the canonical income composition.
+import { attributeIncome, type IncomeAttribution } from '@/lib/transactions/income-source';
+import { liabilityInflowIsCustomerPayment } from '@/lib/transactions/liability-inflow';
+import type { FlowAuthorityName } from '@/lib/transactions/flow-authority';
+// REVIEW-3 C-3 — THE debt-payment authority. debtPaymentTotal is the CASH-leg
+// selection (selectDebtPaymentCashLegs), never `isDebtPayment && amt < 0`: the
+// old proxy counted unattested provider-categorised rows the authority refuses,
+// and missed transfer-typed rows whose destination the transfer authority proved
+// to be a liability.
+import { selectDebtPaymentCashLegs } from '@/lib/transactions/debt-payment-authority';
+// post-M1 D3 — THE debt-service decomposition. `netAfterDebtPayments` subtracts
+// only the NET PAYDOWN (payments beyond the new charges they settle and the
+// borrowing that funded them), never the raw payment total: purchases made on a
+// card are already inside `spending`, and subtracting their settlement as well
+// counted the same consumption twice.
+import { computeDebtService, netAfterDebtPaydown } from '@/lib/transactions/debt-service';
+import { tierResolver, type LiquidityTx } from '@/lib/transactions/liquidity';
+import { resolveTransferAssessments } from '@/lib/transactions/transfer-resolution';
+import { dispositionForMaturity } from '@/lib/transactions/transfer-evidence';
+// REVIEW-3 B-6 — the one clock (lib/time). This file carried two of the three
+// recorded lib/ai inline day derivations; the clock-authority guard now scans
+// lib/ai like everything else.
+import { todayUTCISO } from '@/lib/time/clock';
 // TE-2B — the canonical "needs classification" predicate (single authority; this
 // assembler is a consumer, never a fork). TI2-W1: needs-classification aggregates.
 import { shouldSurfaceAsNeedsClassification } from '@/lib/transactions/needs-classification';
-// TI4 Slice 1 — read-time owned-account transfer matching, the SAME impure wrapper
-// the Tab's list reads call (lib/data/transactions.ts:136). TI2-W1 §3.3 parity:
-// so a payment-app row the Tab shows as a resolved internal transfer is NOT counted
-// here as UNKNOWN_PAYMENT_APP_PURPOSE (a KD-10 cross-surface divergence otherwise).
-import { resolveOwnedTransferCounterparties } from '@/lib/transactions/transfer-resolution';
+// TI4 Slice 1 / REVIEW-3 C — read-time transfer assessments, the SAME canonical
+// entry point the Tab's list reads call (lib/data/transactions.ts). TI2-W1 §3.3
+// parity for needs-classification, plus the maturity verdicts the debt-payment
+// authority's attestation reads.
+// v2.6-TRUTH-10 — the ONE account-identity authority, and the select that makes
+// it answerable. A read that omits a name column silently downgrades the answer.
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from '@/lib/accounts/display-identity';
+// v2.6-BRIEF-1 — the flow-derived spending/non-spending taxonomy. The ONE owner
+// of that membership; the brief-scope category cap reads it rather than
+// re-listing {Income, Transfer, Payment} by hand.
+import { NON_SPENDING_CATEGORY_NAMES } from '@/lib/ai/spending-categories';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { convertMoney, identityContext } from '@/lib/money/convert';
-import { buildSpaceConversionContext, buildSpaceConversionContextById } from '@/lib/money/server-context';
+/**
+ * RLS-AI-S6 — `buildSpaceConversionContext` ONLY, and the `…ById` sibling is gone
+ * from this file on purpose.
+ *
+ * ⚠️ IT IS THE ONE LEAF ON THIS PATH WITH NO CLIENT SEAM. `buildSpaceConversionContextById`
+ * performs its own `db.space.findUnique` and takes no authority, so calling it from a
+ * tenant phase would have read the Space row as the migration principal while every
+ * other read in the phase ran as the caller. `buildSpaceConversionContext` itself
+ * "performs no Space reads" (its own header): it is given the Space row and reads
+ * only `FxRate` through the archive.
+ *
+ * ⚠️ AND `FxRate` IS CLASSIFIED, NOT WAVED THROUGH. It is in the GLOBAL REFERENCE
+ * family of the RLS migration (section 5: `Instrument`, `InstrumentAlias`,
+ * `PriceObservation`, `CorporateActionTerms`, `FxRate`, `Merchant`,
+ * `MerchantAlias`) — granted to fm_app outright, with no row-level security at
+ * all, because an exchange rate belongs to no tenant. Reading it on whatever
+ * client the archive holds is therefore deployment-wide BY CLASSIFICATION, which
+ * `lib/ai/evidence-authorities.ts` records and the theorem audit re-derives from
+ * the migration rather than taking on trust.
+ */
+import { buildSpaceConversionContext } from '@/lib/money/server-context';
 import type { ConversionContext } from '@/lib/money/types';
 import type { SpaceContext } from '@/lib/space';
 
@@ -129,7 +203,28 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
  * ADJUSTMENT is not spending, an UNKNOWN is not income). INVESTMENT stays out —
  * it is the sole flow outside the banking population.
  */
-const BANKING_POPULATION = { flowType: { not: FlowType.INVESTMENT } } as const;
+// v2.6-POP-1 — IMPORTED, no longer redeclared. This file used to carry its own
+// copy of the fragment with the same name and the same defect: `not: INVESTMENT`
+// drops NULLs, so the AI's "canonical banking population" silently excluded every
+// unclassified row while its comment claimed the opposite. Leaving the duplicate
+// after fixing the canonical one would be strictly worse than the original bug —
+// two constants, one name, two meanings, no way to notice.
+//
+// Both `where` clauses in this file are OR-free, so the fragment's new OR arm
+// spreads safely. This is a deduplication, NOT the AI read-boundary convergence
+// (event projection, economic-date windowing, transfer assessments) — those
+// remain open and are tracked separately.
+// v2.6-PARITY-1 — `bankingTransactionWhere` is now the AI's population too. The
+// bare `BANKING_POPULATION` fragment is no longer imported here: consuming the
+// half without the Space gate and the event projection is exactly how this file
+// came to read a population no other surface did.
+import { bankingTransactionWhere } from "@/lib/data/banking-population";
+import { readCanonicalSpending } from "@/lib/transactions/canonical-spending";
+import { boundedSelection, type BoundedSelection } from "@/lib/ai/bounded-selection";
+import {
+  SelectionReasons, TemporalRequests, CoverageBounds, ScopeProvenances,
+  type SelectionReason, type TemporalScope,
+} from "@/lib/ai/temporal-scope";
 
 // FlowType P5 Slice 4 (D-2) / TI1 — flows counted in expenseTotal (gross
 // Σ|amount|): SPENDING + FEE + INTEREST charges. This membership (the former
@@ -143,10 +238,36 @@ const BANKING_POPULATION = { flowType: { not: FlowType.INVESTMENT } } as const;
  * if a Space has more than this many banking transactions in the window the
  * summary reflects the most recent TRANSACTION_FETCH_LIMIT rows only.
  */
-const TRANSACTION_FETCH_LIMIT = 5_000;
+// ⚠️ EXPORTED so a second reader of the same population shares ONE ceiling. The
+// AI baseline harness pages the canonical keyset read to exhaustion when it must
+// rank a whole window, and a ranking bounded differently from the summary it sits
+// beside would let the two disagree about what "all of them" means.
+export const TRANSACTION_FETCH_LIMIT = 5_000;
 
-const WINDOW_BRIEF_DAYS = 30;
-const WINDOW_FULL_DAYS  = 90;
+/**
+ * W4 — THE assessment window: 90 rolling days, invariant across scopeHint.
+ *
+ * This is the period over which every figure `computeAssessment` reads from
+ * this section is measured (incomeTotal, expenseTotal, the net figures, the
+ * Income category count, monthlyBreakdown reach, windowDays itself). The
+ * Option-A decision (W4): the engine's confidence thresholds and fixtures were
+ * always calibrated to 90 days, and the hint must not change what is CONCLUDED
+ * about the user's finances — only what is CARRIED. The transport caps below
+ * (byCategory top-5-spending, merchant/income/recurring omissions) remain
+ * scopeHint-gated because they provably cannot move a conclusion — pinned in
+ * lib/ai/intelligence/brief-scope-adequacy.test.ts.
+ *
+ * WINDOW_BRIEF_DAYS (30) was DELETED here by W4. It made scopeHint='brief'
+ * assess a DIFFERENT PERIOD: on the live corpus the same Space, same day,
+ * graded deficitCause NOT_APPLICABLE under brief against a deficit under full,
+ * reported estimatedMonthlyExpenses null (a 30-day rolling window almost never
+ * contains a complete calendar month) and a ~3% different impliedMonthlyIncome.
+ * Do not reintroduce a scope-varying assessment window. A recent-activity
+ * DISPLAY block (Option D) is a separate additive payload question that must
+ * not touch this constant; a calendar-preset basis (PAST_QUARTER via
+ * compareToForPreset) remains an unmade product decision.
+ */
+const ASSESSMENT_WINDOW_DAYS = 90;
 
 /** Number of top categories surfaced per month in the monthly breakdown. */
 const MONTHLY_TOP_CATEGORIES = 3;
@@ -202,6 +323,17 @@ type TxnRow = {
   // population (`not: INVESTMENT`) admits UNKNOWN / ADJUSTMENT / null too, so
   // flowType can now be null here (non-economic residue — counted, never money-folded).
   flowType:      FlowType | null;
+  // v2.6-TRUTH-2 — supersession + movement-form evidence. The AI payload runs the
+  // SAME read-time matcher as the UI, so it must supply the same facts or it
+  // would receive the old, over-resolving answer while the UI receives the
+  // corrected one.
+  settlementState: string | null;
+  pfcDetailed:     string | null;
+  // v2.6-TRUTH-3 — provider FAMILY, for the liability-inflow authority.
+  pfcPrimary:      string | null;
+  // REVIEW-3 C-2 — WHO wrote the flow facts. The canonical income taxonomy
+  // refuses a row the on-chain ledger owns (rung 0); without this it cannot tell.
+  flowAuthority:   FlowAuthorityName | null;
   flowDirection: FlowDirection | null;
   // TI2-W1 — canonical inputs to shouldSurfaceAsNeedsClassification (all flat
   // persisted columns). counterpartyAccountId is the PERSISTED provider-confirmed
@@ -209,6 +341,16 @@ type TxnRow = {
   classificationReason:  string | null;
   transferRail:          string | null;
   counterpartyAccountId: string | null;
+  // Financial Truth (Transfer Authority) — the AI payload runs the SAME matcher
+  // as the UI, so it must supply the same facts. `counterpartyType` decides the
+  // external terminal leaves; `description` is read by the IDENTIFIER extractor
+  // and never by anything that could surface a provider token to the model.
+  counterpartyType: string | null;
+  description:      string | null;
+  // L8-B — the CANONICAL financial date the model reasons about. `date` stays as
+  // posting provenance; every chronology read below uses this one, so the AI's
+  // months, buckets and "largest expense on ..." agree with what the UI shows.
+  economicDate:     Date | null;
 };
 
 /**
@@ -216,7 +358,33 @@ type TxnRow = {
  * TxnRow so the KD-17 / golden fixtures (which never carry the TI2-W1 identity /
  * needs-classification columns) still satisfy the exported seam unchanged.
  */
-type MonthlyRow = Pick<TxnRow, 'date' | 'amount' | 'currency' | 'category' | 'flowType'>;
+type MonthlyRow = Pick<TxnRow, 'date' | 'amount' | 'currency' | 'category' | 'flowType'>
+  // L8-B — OPTIONAL here, and only here. The KD-17 / spending-trends golden
+  // fixtures predate the column and construct rows by hand; `econOf` falls back
+  // to `date` for them. A LIVE row always carries it (backfill + dual-write +
+  // audit:economic-date), so this cannot mix chronologies on real data.
+  & { economicDate?: Date | null }
+  // REVIEW-3 C — row identity, needed only when the caller supplies authority
+  // verdicts (debt-payment membership / income class) keyed by id. Optional so
+  // the KD-17 golden fixtures, which construct rows by hand, are unaffected.
+  & { id?: string }
+  // S1-N1 — the account a row posted to, read ONLY to attribute interest charged
+  // to the liability it was charged on (`interestByAccount`). Optional for the same
+  // reason `id` is; a row without it is interest nobody can attribute, and stays
+  // in the month's spending.
+  & { financialAccountId?: string | null };
+
+/**
+ * L8-B — the canonical financial date of a row.
+ *
+ * ⚠️ Falls back to `date` ONLY for a golden fixture that predates the column
+ * (`economicDate` absent, not null). A live row always carries it — the backfill,
+ * dual-write and `audit:economic-date` guarantee that — so this can never
+ * silently mix chronologies on real data.
+ */
+function econOf(r: { date: Date; economicDate?: Date | null }): Date {
+  return r.economicDate ?? r.date;
+}
 
 /**
  * MC1 Phase 2 Slice 4 — a row's amount in the money-context target, converted
@@ -233,7 +401,7 @@ function amountInTarget(
 ): { amount: number | null; estimated: boolean } {
   const c = convertMoney(
     { amount: txn.amount, currency: txn.currency },
-    txn.date.toISOString().slice(0, 10),
+    econOf(txn).toISOString().slice(0, 10),
     ctx,
   );
   // V25-FINAL-1 — `amount` is null when the conversion is UNAVAILABLE (no rate):
@@ -325,10 +493,116 @@ export function accumulateNeedsClassification(
 }
 
 // ---------------------------------------------------------------------------
+// The AI read boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * v2.6-PARITY-1 — THE population the AI reasons over. It is the product's.
+ *
+ * ── What this used to be ────────────────────────────────────────────────────
+ *
+ * A hand-built `where` that restated the KD-15 visibility gate, spread
+ * `BANKING_POPULATION`, applied NO event projection, and filtered its window on
+ * `date` while every bucket downstream keyed on `econOf`. Four statements of
+ * rules stated canonically elsewhere, and the model reasoned over their result.
+ *
+ * ── What it is now ──────────────────────────────────────────────────────────
+ *
+ * `bankingTransactionWhere` — the same fragment the transaction list, the
+ * explorer, the count, the exports and every audit read — AND-ed with a window
+ * on `economicDate`. That single substitution closes all three axes at once:
+ * the gate is stated once, the event projection comes along with it, and the
+ * basis is the one TIME_MODEL rule B1 requires of a flow read.
+ *
+ * ⚠️ Composed with `AND`, never by spreading. `bankingTransactionWhere` carries
+ * an `AND` (population) and an `OR` (event projection); spreading it beside any
+ * other fragment that has either key silently discards one of them. That hazard
+ * is why this reads the way it does, and `transactions.parity.test.ts` pins it.
+ *
+ * ── Measured effect of the cutover (audit-ai-read-parity, live corpus) ───────
+ *
+ *   axis 1  event projection : 0 rows — no live row is superseded today, so the
+ *                              projection changes nothing. It is a GUARANTEE
+ *                              acquired, not a defect fixed.
+ *   axis 3  gate drift       : 0 rows — the two statements happened to agree.
+ *   axis 2  basis            : 2 rows / $102.71 (30d), 6 / $445.89 (90d),
+ *                              7 / $240.15 (full span). All at the window FLOOR:
+ *                              rows that posted inside the window but happened
+ *                              before it. `economicDate <= date` on all 4,405
+ *                              live rows, so the correction can only ever move
+ *                              the floor edge, never the ceiling.
+ *
+ * The AI's totals move by those floor rows and nothing else.
+ */
+export function aiTransactionWhere(
+  spaceId: string,
+  win: { start: Date; end: Date | null },
+): Prisma.TransactionWhereInput {
+  return {
+    AND: [
+      // KD-15 visibility, deletedAt on both levels, the banking population and
+      // the event projection — one statement, shared with the whole product.
+      bankingTransactionWhere(spaceId),
+      // TIME_MODEL rule B1 — a FLOW read filters on the economic date. Floor
+      // always applied; ceiling only for an explicit past-bounded window.
+      { economicDate: win.end ? { gte: win.start, lte: win.end } : { gte: win.start } },
+    ],
+  };
+}
+
+/**
+ * v2.6-PARITY-1 — the DRILLDOWN's population. Also the product's.
+ *
+ * The drilldown is the AI's EVIDENCE path: "what is this made of?" It answers by
+ * re-reading real rows, so a row it can reach that no product surface can show
+ * is a row the model can cite and the user cannot find.
+ *
+ * It carried the same three divergences as the summary query, plus one of its
+ * own: on the CATEGORY path (`categoryWhere = { category: X }`) the banking
+ * population was not applied AT ALL — only the `includeNonSpending` path applied
+ * it. So an INVESTMENT row filed under a banking category was drillable and
+ * otherwise invisible. Measured before the change: 0 such rows on the live
+ * corpus (nothing INVESTMENT-flagged carries a banking category today), so this
+ * closes a structural hole rather than a live leak.
+ *
+ * ⚠️ AND-composed, for the same reason as above: `categoryWhere` may itself BE
+ * `BANKING_POPULATION` (an `{ AND: [...] }`), and `bankingTransactionWhere`
+ * carries both an `AND` and an `OR`. Spreading any two of these into one object
+ * literal drops keys silently. That is precisely the bug shape this file used to
+ * have, and the reason the composition is explicit.
+ *
+ * `pending: false` stays — the drilldown deliberately cites settled rows only.
+ */
+export function aiDrilldownWhere(
+  spaceId: string,
+  win:     { start: Date; end: Date },
+  parts:   {
+    categoryWhere: Prisma.TransactionWhereInput;
+    amountWhere:   Prisma.TransactionWhereInput;
+    merchantQuery: string | undefined;
+  },
+): Prisma.TransactionWhereInput {
+  return {
+    AND: [
+      bankingTransactionWhere(spaceId),
+      // Rule B1 — the drilldown is a flow read; its window is economic.
+      { pending: false, economicDate: { gte: win.start, lte: win.end } },
+      parts.categoryWhere,
+      parts.amountWhere,
+      ...(parts.merchantQuery
+        ? [{ merchant: { contains: parts.merchantQuery, mode: 'insensitive' as const } }]
+        : []),
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Assembler implementation
 // ---------------------------------------------------------------------------
 
 async function assembleTransactions(
+  /** RLS-AI-S6 — the authority every read below runs under. See AssemblerFn. */
+  client:   ReadClient,
   spaceCtx: SpaceContext,
   options:  AssemblerOptions,
 ): Promise<ContextDomainSection | null> {
@@ -337,12 +611,28 @@ async function assembleTransactions(
   const assembledAt = new Date().toISOString();
 
   // ── Resolve the analysis window ─────────────────────────────────────────────
-  // Default: rolling 30-day (brief) / 90-day (full) window, floor only.
+  // Default: the ASSESSMENT WINDOW (90 rolling days, W4 — invariant across
+  // scopeHint), floor only.
   // Explicit (D6): a caller-supplied inclusive [startDate, endDate] range. The
   // floor is clamped to MAX_EXPLICIT_WINDOW_DAYS so a request can never reach
   // unbounded history. windowDays is the inclusive day count — it feeds the
   // downstream monthly-equivalent math unchanged (only the span widens).
   const win = resolveWindow(scopeHint, transactionWindow);
+
+  // v2.6-ASSESS-2 — the DECLARED monthly-expense baseline, read from the same
+  // `emergency_fund_progress` config the Liquidity workspace and the Overview EF
+  // hero divide by. Reading it here puts both candidate baselines on one object
+  // so the authority can choose; without it the engine could only ever see the
+  // measured one, and "declared outranks measured" would be a rule with no rung.
+  const efSection = await client.spaceDashboardSection.findFirst({
+    where:  { spaceId, key: 'emergency_fund_progress' },
+    select: { config: true },
+  });
+  const rawDeclared = Number(
+    (efSection?.config as { monthlyExpenses?: unknown } | null)?.monthlyExpenses,
+  );
+  const declaredMonthlyExpenses: number | null =
+    Number.isFinite(rawDeclared) && rawDeclared > 0 ? rawDeclared : null;
 
   // ── Query ─────────────────────────────────────────────────────────────────
   // Mirrors the canonical scope in lib/data/transactions.ts: FinancialAccount
@@ -354,28 +644,8 @@ async function assembleTransactions(
   // deterministically whether the matching set exceeded TRANSACTION_FETCH_LIMIT.
   // Rows are newest-first, so any overflow drops the OLDEST rows — which would
   // silently deflate older-month totals, category/merchant rollups, and trends.
-  const fetched: TxnRow[] = await db.transaction.findMany({
-    where: {
-      financialAccount: {
-        deletedAt:         null,
-        spaceAccountLinks: {
-          some: {
-            spaceId,
-            status:          ShareStatus.ACTIVE,
-            visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
-          },
-        },
-      },
-      deletedAt: null,
-      // P2-7B — canonical banking population (`not: INVESTMENT`, incl. UNKNOWN /
-      // ADJUSTMENT / null), replacing the old `flowType: { in: BANKING_FLOWS }`
-      // allow-list that silently dropped UNKNOWN/ADJUSTMENT rows the UI still
-      // shows. Economics are unchanged — the money folds gate on
-      // isNonEconomicResidue (see the settled/pending loops).
-      ...BANKING_POPULATION,
-      // Floor always applied; ceiling only for an explicit past-bounded window.
-      date:      win.end ? { gte: win.start, lte: win.end } : { gte: win.start },
-    },
+  const fetched: TxnRow[] = await client.transaction.findMany({
+    where: aiTransactionWhere(spaceId, win),
     select: {
       // TI2-W1 — id + account key for the read-time transfer matcher (§3.3 parity).
       id:                 true,
@@ -395,8 +665,23 @@ async function assembleTransactions(
       classificationReason:  true,
       transferRail:          true,
       counterpartyAccountId: true,
+      // v2.6-TRUTH-2 — see TxnRow.
+      settlementState:       true,
+      pfcDetailed:           true,
+      pfcPrimary:            true,
+      // REVIEW-3 C-2 — income-taxonomy evidence (rung 0: on-chain refusal).
+      flowAuthority:         true,
+      // Financial Truth (Transfer Authority) — see TxnRow.
+      counterpartyType:      true,
+      description:           true,
+      // L8-B — the canonical financial chronology.
+      economicDate:          true,
     },
-    orderBy: { date: 'desc' },
+    // v2.6-PARITY-1 / rule B1 — a flow read ORDERS on the economic date too.
+    // This is load-bearing, not cosmetic: the KD-7 sentinel below takes
+    // newest-first and drops the OLDEST rows past the cap, so ordering on
+    // posting would truncate a different set than the window admits.
+    orderBy: { economicDate: 'desc' },
     take:    TRANSACTION_FETCH_LIMIT + 1,
   });
 
@@ -428,39 +713,116 @@ async function assembleTransactions(
   // estimated) and taint the summary's `estimated` flag — data-only, no
   // prompt/serializer change (presentation is Phase 4). Identity fallback
   // only if the Space row vanished mid-request.
-  const spaceRow = await db.space.findUnique({
+  const spaceRow = await client.space.findUnique({
     where:  { id: spaceId },
     select: { reportingCurrency: true },
   });
   const moneyCtx = spaceRow
     ? await buildSpaceConversionContext(spaceRow, {
         currencies: rows.map((r) => r.currency),
-        dates:      [...new Set(rows.map((r) => r.date.toISOString().slice(0, 10)))],
+        dates:      [...new Set(rows.map((r) => econOf(r).toISOString().slice(0, 10)))],
       })
     : identityContext(DEFAULT_DISPLAY_CURRENCY);
 
-  // ── TI2-W1: needs-classification disclosure aggregate ─────────────────────
-  // §3.3 counterparty parity: only pay for the read-time transfer matcher when
-  // an unresolved payment-app row actually exists in the window (the common
-  // case has none — one array scan to detect). Without such a row, a read-time
-  // match could not change any needs-classification verdict, so the extra
-  // queries are pure waste. When present, we call the SAME wrapper the Tab's
-  // list reads use, so a resolved internal transfer is not miscounted as
-  // UNKNOWN_PAYMENT_APP_PURPOSE (KD-10 cross-surface consistency).
-  const hasUnresolvedPaymentApp = rows.some(
-    (r) => r.transferRail === 'PAYMENT_APP' && r.counterpartyAccountId == null,
+  // ── REVIEW-3 C — ONE read-time transfer-assessment pass, reused three ways ──
+  // The Tab's list reads run the transfer-assessment ladder per row
+  // (lib/data/transactions.ts); this assembler now runs the SAME canonical entry
+  // point once and reuses its verdicts for:
+  //   1. needs-classification counterparty parity (TI2-W1 §3.3 — the previous
+  //      resolveOwnedTransferCounterparties call was a projection of this);
+  //   2. the debt-payment authority's attestation input (transferMaturity);
+  //   3. the movement-form disposition the liquidity classifier reads.
+  const assessments = await resolveTransferAssessments(client, rows, { spaceId });
+  const resolvedCp = new Set(
+    [...assessments].filter(([, a]) => a.counterpartyAccountId != null).map(([id]) => id),
   );
-  const resolvedCp = hasUnresolvedPaymentApp
-    ? new Set((await resolveOwnedTransferCounterparties(rows, { spaceId })).keys())
-    : new Set<string>();
   const needsClassification = accumulateNeedsClassification(rows, resolvedCp, moneyCtx);
+
+  // Account id → type for the liquidity tier resolver and the income taxonomy.
+  // IDs + types only — classification input, never disclosure; nothing from this
+  // query reaches the payload.
+  const spaceAccountTypes = await client.spaceAccountLink.findMany({
+    where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
+    select: { financialAccount: { select: { id: true, type: true } } },
+  });
+  const accountTypeById = new Map(
+    spaceAccountTypes.map((l) => [l.financialAccount.id, l.financialAccount.type]),
+  );
+  const liqCtx = tierResolver(
+    spaceAccountTypes.map((l) => ({ id: l.financialAccount.id, type: l.financialAccount.type })),
+  );
+
+  // ── REVIEW-3 C-2 — the REAL canonical income classification ────────────────
+  // Same gate and same evidence as the product DTO path
+  // (lib/transactions/serialize.ts → attributeIncome): attributed only for
+  // positive INCOME rows; the read-time transfer match is deliberately NOT
+  // consulted (the serializer refuses to guess from cross-row state, so this
+  // path must too — parity, not caution). The classes here are therefore the
+  // classes every product surface shows for the same rows.
+  const incomeAttrById = new Map<string, IncomeAttribution>();
+  for (const r of rows) {
+    if (!(r.amount > 0 && isIncome(r.flowType))) continue;
+    const acctType = (r.financialAccountId ? accountTypeById.get(r.financialAccountId) : null) ?? 'other';
+    incomeAttrById.set(r.id, attributeIncome({
+      flowType:       r.flowType,
+      flowAuthority:  r.flowAuthority,
+      providerFamily: r.pfcPrimary,
+      providerDetail: r.pfcDetailed,
+      accountType:    acctType,
+      amount:         r.amount,
+      isOwnedInternalTransfer: r.counterpartyAccountId != null,
+      sourceAccountId: r.financialAccountId,
+      liabilityInflowIsIssuerCredit:
+        acctType === 'debt' &&
+        liabilityInflowIsCustomerPayment({
+          providerFamily:                 r.pfcPrimary,
+          persistedCounterpartyAccountId: r.counterpartyAccountId,
+        }).verdict === 'NO',
+    }));
+  }
+
+  // ── REVIEW-3 C-3 — the debt-payment authority selects what counts ──────────
+  // `selectDebtPaymentCashLegs` (the ONE answer to "how much did I pay toward
+  // debt?") decides membership from classifyLiquidity over the enriched rows:
+  // CASH legs count once; liability-side legs are excluded (double count);
+  // unattested provider-categorised rows are refused; transfer-typed rows whose
+  // destination the transfer authority proved to be a liability are admitted.
+  // The old inline proxy (`isDebtPayment && amt < 0`) got all three wrong ways.
+  const asLiquidityTx = (r: TxnRow): LiquidityTx => {
+    const a    = assessments.get(r.id);
+    const attr = incomeAttrById.get(r.id);
+    return {
+      id:                    r.id,
+      accountId:             r.financialAccountId,
+      financialAccountId:    r.financialAccountId,
+      amount:                r.amount,
+      flowType:              r.flowType,
+      flowDirection:         r.flowDirection,
+      counterpartyAccountId: r.counterpartyAccountId ?? a?.counterpartyAccountId ?? null,
+      transferMaturity:      a?.maturity ?? null,
+      transferDisposition:   a?.maturity ? dispositionForMaturity(a.maturity) : null,
+      incomeClass:           attr?.incomeClass ?? null,
+      incomeSubtype:         attr?.subtype ?? null,
+    } as unknown as LiquidityTx;
+  };
+  const settledLiquidityRows = settled.map(asLiquidityTx);
+  const debtSelection  = selectDebtPaymentCashLegs(settledLiquidityRows, liqCtx);
+  const debtCountedIds = new Set(debtSelection.counted.map((t) => t.id));
 
   // MC1 P3 Slice 4 (D-7) — window-level taint, mirrors the monthly buckets.
   let windowEstimated = false;
 
-  let incomeTotal      = 0;
-  let expenseTotal     = 0;
-  let refundTotal      = 0;
+  // REVIEW-3 C-1 — the economic accumulator IS the canonical one. incomeTotal /
+  // expenseTotal / refundTotal below are projections of it: income, GROSS spend
+  // (a deliberately different measure from the workspace's clamped spend — see
+  // the payload comment), refunds. The fold itself is foldEconomicRow.
+  const eco: EconomicAccumulator = { income: 0, spendGross: 0, refunds: 0 };
+  // v2.6-TRUTH-5 — the canonical breakdown. Giving the model one "income" number
+  // lets it call interest a raise; these carry the composition and the
+  // exclusions so it can reason about what the money actually was.
+  const incomeByClass: Record<string, { amount: number; count: number }> = {};
+  const incomeSourceTotals: Record<string, { label: string; amount: number; count: number }> = {};
+  const incomeExcluded: { subtype: string; amount: number; count: number }[] = [];
   let debtPaymentTotal = 0;
   let transferTotal    = 0;
 
@@ -475,7 +837,13 @@ async function assembleTransactions(
   // misclassified as e.g. Other) inflate or deflate the category "spending"
   // figure relative to expenseTotal — which counts debit rows only. See
   // docs/investigations/KD17_TRANSACTION_LEVEL_PROOF.md.
-  const categoryMap = new Map<string, { debitTotal: number; creditTotal: number; count: number }>();
+  // FM-AUDIT-004 — category lines come from THE canonical ledger
+  // (foldCategorySpend), fed exactly the rows that reach the economic fold below,
+  // so Σ line gross === expenseTotal and Σ line credits === refundTotal by
+  // construction. `structuralCount` keeps the row count of NOT_SPENDING labels
+  // (Income's entry exists for its `count` — annotations/engine.ts reads it).
+  const ledgerRows: CategoryLedgerRow[] = [];
+  const structuralCount = new Map<string, number>();
 
   // P2-7B — the canonical population now admits non-economic residue (UNKNOWN /
   // ADJUSTMENT / null). These rows are counted in transactionCount and surfaced
@@ -507,33 +875,58 @@ async function assembleTransactions(
     if (conv.amount === null) continue;
     const amt = conv.amount;
 
-    // Category bucket accumulator
-    const entry = categoryMap.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
-    if (amt < 0) entry.debitTotal += Math.abs(amt);
-    else if (amt > 0) entry.creditTotal += amt;
-    entry.count += 1;
-    categoryMap.set(txn.category, entry);
+    // Structural labels keep a row count (never a money figure).
+    if (!isSpendRoleCategory(txn.category)) structuralCount.set(txn.category, (structuralCount.get(txn.category) ?? 0) + 1);
 
-    // FlowType P5 Slice 4 — partition by flowType (D-1..D-4). Each economic
-    // settled row lands in exactly one bucket; INVESTMENT never reaches this loop
-    // (out of population) and the non-economic residue was skipped above.
+    // FlowType P5 Slice 4 / REVIEW-3 C — each settled row is EITHER a movement
+    // (debt payment / transfer, disclosed but never economic) OR folds through
+    // the canonical economic authority. INVESTMENT never reaches this loop (out
+    // of population) and the non-economic residue was skipped above.
+    const mag = Math.abs(amt);
 
-    if (isTransfer(txn.flowType)) {
-      transferTotal += Math.abs(amt);
+    // Movement disclosures first. Membership in "paid toward debt" is the
+    // authority's verdict (debtCountedIds), which admits attested transfer-typed
+    // cash legs and refuses unattested provider-categorised rows. A transfer row
+    // the authority counted as a debt payment is disclosed ONCE, under debt.
+    if (debtCountedIds.has(txn.id)) {
+      debtPaymentTotal += mag;
       continue;
     }
-
     if (isDebtPayment(txn.flowType)) {
-      // Source-side legs only (amount < 0). Destination-side INFLOW legs on
-      // debt accounts are deliberately excluded — counting both sides would
-      // double-count; the per-liability view is Slice 3's DebtClient rollup.
-      if (amt < 0) debtPaymentTotal += Math.abs(amt);
+      // A DEBT_PAYMENT-typed row the authority did NOT count: the liability-side
+      // leg of a counted payment (counting both legs would double-count) or an
+      // unattested row it refused. Neither is economic; neither is disclosed as
+      // a payment. This replaces the old `amt < 0` proxy.
+      continue;
+    }
+    if (isTransfer(txn.flowType)) {
+      transferTotal += mag;
       continue;
     }
 
     if (isIncome(txn.flowType)) {
-      if (amt > 0) {
-        incomeTotal += amt;
+      // REVIEW-3 C-2 — the class is the canonical taxonomy's verdict, derived
+      // above from the same evidence the product DTO path feeds it. A NOT_INCOME
+      // row (an issuer credit landing on a card) is excluded from the total by
+      // foldEconomicRow below and REPORTED here, so the model sees the exclusion
+      // rather than a silently smaller number.
+      const attr = incomeAttrById.get(txn.id) ?? null;
+      const cls  = attr?.incomeClass ?? null;
+      if (cls === "NOT_INCOME") {
+        const sub = attr?.subtype ?? "NOT_INCOME";
+        const e = incomeExcluded.find((x) => x.subtype === sub);
+        if (e) { e.amount += mag; e.count++; } else incomeExcluded.push({ subtype: sub, amount: mag, count: 1 });
+      } else if (amt > 0) {
+        if (cls) {
+          const b = (incomeByClass[cls] ??= { amount: 0, count: 0 });
+          b.amount += mag; b.count++;
+          const srcId = attr?.sourceAccountId ?? attr?.instrumentId ?? null;
+          if (srcId) {
+            const sk = `${cls}:${srcId}`;
+            const sv = (incomeSourceTotals[sk] ??= { label: srcId, amount: 0, count: 0 });
+            sv.amount += mag; sv.count++;
+          }
+        }
         // Largest selected in TARGET units (identical under identity); the row
         // object itself keeps its native amount for downstream serialization.
         if (!largestIncomeRow || amt > largestIncomeAmt) {
@@ -541,28 +934,57 @@ async function assembleTransactions(
           largestIncomeAmt = amt;
         }
       }
-      continue;
     }
 
-    if (isRefund(txn.flowType)) {
-      // D-3: disclosed gross; never netted into expenseTotal (KD-17) and
-      // never counted as income (a refund reverses prior spending).
-      refundTotal += Math.abs(amt);
-      continue;
-    }
-
-    // D-2: SPENDING + FEE + INTEREST charges, gross.
-    if (isCostFlow(txn.flowType)) {
-      expenseTotal += Math.abs(amt);
-      if (!largestExpenseRow || Math.abs(amt) > largestExpenseAmt) {
+    if (economicSideOf(txn.flowType, amt) === "SPEND") { // a charge — never a reversal (FM-AUDIT-006)
+      if (!largestExpenseRow || mag > largestExpenseAmt) {
         largestExpenseRow = txn;
-        largestExpenseAmt = Math.abs(amt);
+        largestExpenseAmt = mag;
       }
     }
+
+    // ── THE canonical economic fold (REVIEW-3 C-1) ──────────────────────────
+    // One authority decides which economic bucket this magnitude lands in —
+    // the same foldEconomicRow the Cash Flow workspace folds with. NOT_INCOME
+    // exclusion happens inside it, from the same class derived above.
+    foldEconomicRow(eco, { flowType: txn.flowType, amount: amt, incomeClass: incomeAttrById.get(txn.id)?.incomeClass ?? null });
+    ledgerRows.push({ id: txn.id, category: txn.category, flowType: txn.flowType, amount: amt });
   }
 
-  // D-4: refunds offset spend in the net figure; transfers stay excluded.
-  const netCashFlow = incomeTotal + refundTotal - expenseTotal - debtPaymentTotal;
+  // FIN-003: the fold sums INCOME signed (a clawback nets); the window total is
+  // floored at 0 like refunds on spend, so a clawback-only month never reads negative.
+  const incomeTotal  = clampEconomicIncome(eco.income);
+  const expenseTotal = eco.spendGross; // GROSS — a named, deliberately different measure (see payload)
+  const refundTotal  = eco.refunds;
+
+  // REVIEW-3 C-3 — the HEADLINE net is the canonical economic net: income minus
+  // clamped economic spend, the exact figure the Cash Flow workspace renders
+  // (perspectiveTotals "economic"). Debt payments are NOT subtracted here — that
+  // measure is real but DIFFERENT, and ships beside it, named
+  // netAfterDebtPayments. The old formula (income + refunds − gross expense −
+  // debt payments) was a fourth definition of "net" and let the Brief print
+  // "you spent more than you took in" while the workspace showed a surplus.
+  const netCashFlow          = incomeTotal - clampEconomicSpend(eco.spendGross, eco.refunds);
+
+  // post-M1 D3 — the after-paydown net subtracts the NET PAYDOWN, not the payment
+  // total. `netCashFlow` already contains every purchase made on a card (the
+  // economic axis counts it the day it happened), so `netCashFlow −
+  // debtPaymentTotal` subtracted those purchases a second time when they were
+  // settled: a household paying its cards in full was reported thousands in
+  // deficit and graded DEBT_DRIVEN. The decomposition, its identity and every
+  // case it resolves live in lib/transactions/debt-service.ts.
+  //
+  // Row exclusions are THIS loop's, restated once: non-economic residue and
+  // unconvertible rows fold into no money figure above, so they fold into none
+  // here — `debtService.payments` is therefore `debtPaymentTotal` by
+  // construction (same selection, same rows, same conversion).
+  const settledById = new Map(settled.map((r) => [r.id, r]));
+  const debtService = computeDebtService(settledLiquidityRows, liqCtx, (lr) => {
+    const r = settledById.get(lr.id);
+    if (!r || isNonEconomicResidue(r.flowType)) return null;
+    return amountInTarget(r, moneyCtx).amount;
+  });
+  const netAfterDebtPayments = netAfterDebtPaydown(netCashFlow, debtService);
 
   // ── Pending aggregation ───────────────────────────────────────────────────
 
@@ -590,38 +1012,79 @@ async function assembleTransactions(
   }
 
   // ── By-category summary ───────────────────────────────────────────────────
-  // KD-17 universal rule: `total` is the DEBIT-ONLY sum — the exact population
-  // expenseTotal and the drilldown aggregate — for every category, including
-  // non-spending ones (Income's inflow figure is carried by incomeTotal, not
-  // byCategory; its byCategory entry exists for its `count`, which
-  // lib/ai/intelligence/annotations.ts reads for incomeTransactionCount).
-  // Credits are disclosed separately via `creditTotal`, never netted.
-  // Zero-total entries are intentionally KEPT at the window level (count
-  // consumers); serialization filters them. Sorted by debit total descending.
+  // FM-AUDIT-004 — `total` is the canonical ledger's GROSS (charges of cost-flow
+  // rows, by flow verdict and sign), `refundTotal` its credits (refunds + cost
+  // reversals), `netTotal` what the line cost. Spending lines come from the ledger
+  // alone; a structural label (Income, Transfer, Payment…) keeps a count-only
+  // entry with total 0 — it is never a spending line (a vetoed purchase that
+  // still carries "Payment" is filed under Other by the vocabulary).
+  // Zero-total count entries are intentionally KEPT at the window level (count consumers).
+  const byCategory: CategorySpend[] = categorySpendEntries(foldCategorySpend(ledgerRows), structuralCount);
 
-  const byCategory: CategorySpend[] = Array.from(categoryMap.entries())
-    .map(([category, { debitTotal, creditTotal, count }]): CategorySpend => ({
-      category,
-      total: Math.round(debitTotal * 100) / 100,
-      ...(creditTotal > 0 ? { creditTotal: Math.round(creditTotal * 100) / 100 } : {}),
-      count,
-    }))
-    .sort((a, b) => b.total - a.total);
+  // For brief scope: keep only the top 5 SPENDING categories (enough for a
+  // morning summary).
+  //
+  // ── v2.6-BRIEF-1: why the truncation is spending-ranked ────────────────────
+  //
+  // It was `byCategory.slice(0, 5)` over the whole list. `total` is the
+  // DEBIT-ONLY sum (KD-17 — see the comment above), so an INFLOW category has
+  // total 0, sorts LAST, and was always the first thing the slice discarded.
+  // Income is exactly such a category, and the comment above says why its entry
+  // exists at all: "its byCategory entry exists for its `count`, which
+  // lib/ai/intelligence/annotations.ts reads for incomeTransactionCount".
+  //
+  // So the condensed payload silently destroyed the one value the assessment
+  // engine reads it for. Measured on the live corpus: 11 categories → 5, Income
+  // dropped, incomeTransactionCount 8 → 0, and from that single missing row the
+  // engine concluded incomeConfidence LOW, cashFlow UNRELIABLE, deficitCause
+  // LOW_INCOME_SAMPLE and currentStatePriority DATA_QUALITY — about a Space
+  // whose income data is complete (scripts/audit-brief-assessment-parity.ts).
+  //
+  // Ranking within SPENDING categories is what the cap was ever for; a
+  // non-spending entry was never competing for a spending slot. Membership comes
+  // from the existing flow-derived authority (lib/ai/spending-categories.ts),
+  // never a hand-written {Income, Transfer, Payment} list — that copy is the
+  // thing that module was created to end.
+  //
+  // ⚠️ The result stays in the ORIGINAL debit-total-descending order. Ranking the
+  // survivors separately and concatenating would re-order the list, and
+  // `context-serializer.ts` takes `.filter(total > 0).slice(0, 8)` off the front
+  // of it — a non-spending category with real debits (Payment, Transfer) would
+  // have jumped the queue and changed which categories the model is shown. The
+  // cap is the only thing that changes here; the order is not ours to move.
+  const topSpending = new Set(
+    byCategory
+      .filter((c) => !NON_SPENDING_CATEGORY_NAMES.has(c.category))
+      .slice(0, 5)
+      .map((c) => c.category),
+  );
+  const byCategoryOutput = scopeHint === 'brief'
+    ? byCategory.filter((c) => topSpending.has(c.category) || NON_SPENDING_CATEGORY_NAMES.has(c.category))
+    : byCategory;
 
-  // For brief scope: keep only top 5 categories (enough for a morning summary).
-  const byCategoryOutput = scopeHint === 'brief' ? byCategory.slice(0, 5) : byCategory;
+  // ── CF-1 — the category denominator, taken BEFORE the scope cap ───────────
+  //
+  // The serializer prints a bounded slice of `byCategory` and must say what it
+  // is a slice OF. Under scopeHint='brief' the array it receives has ALREADY
+  // been narrowed here, so measuring it there would report "all 5" about a
+  // Space with eleven categories — a false completeness claim, which is worse
+  // than the silence CF-0 found.
+  //
+  // Counted over the same population the serializer renders (total > 0), so the
+  // two numbers describe one thing and the ratio is meaningful.
+  const byCategoryTotalCount = byCategory.filter((c) => c.total > 0).length;
 
   // ── Monthly rollups (D6 — deterministic, per calendar month) ──────────────
   // Buckets are built directly from the queried rows so month-by-month answers
   // never require the LLM to divide a window total by a month count. The
   // effective ceiling is the explicit window end, or today for a rolling window,
   // so partial-month detection reflects the actual coverage of the request.
-  const effectiveEndIso = win.endIso ?? new Date().toISOString().split('T')[0];
+  const effectiveEndIso = win.endIso ?? todayUTCISO();
   // KD-7: when truncated, the oldest RETAINED row is the true coverage floor.
   // Rows are date-desc, so the last element is the oldest kept row. The month it
   // falls in had older rows dropped and is therefore incomplete.
   const coverageStartIso = truncated
-    ? rows[rows.length - 1].date.toISOString().split('T')[0]
+    ? econOf(rows[rows.length - 1]).toISOString().split('T')[0]
     : win.startIso;
   const monthlyBreakdown = buildMonthlyBreakdown(
     settled,
@@ -630,6 +1093,13 @@ async function assembleTransactions(
     effectiveEndIso,
     truncated ? coverageStartIso.slice(0, 7) : null,
     moneyCtx, // MC1 P2 Slice 4 — identity today; Phase 3 flips the target here too
+    // REVIEW-3 C — the SAME authority verdicts as the window fold, so
+    // Σ(monthly figures) reconciles with the window figures by construction.
+    {
+      debtCountedIds,
+      incomeClassOf: (id) => incomeAttrById.get(id)?.incomeClass ?? null,
+    },
+    effectiveEndIso >= todayUTCISO(),
   );
 
   // ── Date range ────────────────────────────────────────────────────────────
@@ -638,7 +1108,7 @@ async function assembleTransactions(
   // provenance block shows the exact period asked for; otherwise it is the most
   // recent transaction date (default rolling-window behavior, unchanged).
 
-  const newestDate = win.endIso ?? rows[0].date.toISOString().split('T')[0];
+  const newestDate = win.endIso ?? econOf(rows[0]).toISOString().split('T')[0];
 
   // ── Recurring candidates (settled transactions, full scope only) ──────────
   // Heuristic: merchants appearing 2+ times in the window are candidates.
@@ -666,7 +1136,7 @@ async function assembleTransactions(
   // P2-7C — the rollup converts each row per its own date into the reporting
   // currency before summing (was a native Σ|amount|), so a merchant total can
   // never be a native-currency sum shown next to a converted expenseTotal.
-  const merchants: MerchantSummary[] | undefined =
+  const merchants: BoundedSelection<MerchantSummary> | undefined =
     scopeHint !== 'brief'
       ? buildMerchantRollup(settled, moneyCtx, MERCHANT_ROLLUP_LIMIT)
       : undefined;
@@ -681,9 +1151,10 @@ async function assembleTransactions(
 
   // P2-7C — same per-row conversion as the merchant rollup, so income sources
   // reconcile with the converted incomeTotal (never a native Σ txn.amount).
-  const incomeSources: IncomeSource[] | undefined =
+  const incomeSources: BoundedSelection<IncomeSource> | undefined =
     scopeHint !== 'brief'
-      ? buildIncomeSourceRollup(settled, moneyCtx, INCOME_SOURCE_ROLLUP_LIMIT)
+      ? buildIncomeSourceRollup(settled, moneyCtx, INCOME_SOURCE_ROLLUP_LIMIT,
+          (id) => incomeAttrById.get(id)?.incomeClass ?? null)
       : undefined;
 
   // ── Drilldown evidence (D6 — only when an explicit drilldown was requested) ─
@@ -691,16 +1162,54 @@ async function assembleTransactions(
   // Never runs on ordinary prompts (the option is absent) and only reads rows
   // inside the Space's FULL-visibility boundary.
   const drilldown = options.drilldown
-    ? await assembleDrilldown(spaceCtx, options.drilldown, win)
+    ? await assembleDrilldown(client, spaceCtx, options.drilldown, win)
     : undefined;
 
   // ── Assemble payload ──────────────────────────────────────────────────────
 
+  // ── CF-2 — the four temporal authorities, kept apart ───────────────────────
+  //
+  // Assembled HERE because this is the only place all four are known at once:
+  // the caller's request, the clamp's verdict, the rows that came back, and
+  // whether the fetch cap bit. A consumer downstream can derive none of them
+  // from `startDate`/`endDate` alone, which is why CF-0 found the model unable
+  // to distinguish a served period from a substituted one.
+  const temporalScope: TemporalScope = {
+    requested: {
+      intent: transactionWindow?.requested ?? TemporalRequests.UNSPECIFIED,
+      label:  transactionWindow?.label ?? 'no period named',
+      startDate: transactionWindow?.requestedStart ?? null,
+      endDate:   transactionWindow?.requestedEnd   ?? null,
+      // CF-4 — passed through, never derived here. The assembler cannot see the
+      // conversation, so it must not guess where the period came from.
+      provenance:    transactionWindow?.provenance ?? ScopeProvenances.NONE,
+      inheritedFrom: transactionWindow?.inheritedFrom ?? null,
+    },
+    selected: {
+      startDate: win.startIso,
+      endDate:   win.endIso ?? effectiveEndIso,
+      days:      win.days,
+      reason:    win.reason,
+      interpretation: null,   // set by the framing layer, which owns the wording
+    },
+    coverage: {
+      // KD-7 already computed the true evidence floor; reuse it rather than
+      // inventing a second opinion about the same rows.
+      fromDate: coverageStartIso,
+      toDate:   newestDate,
+      transactionCount: rows.length,
+      boundedBy: truncated ? CoverageBounds.FETCH_CAP : null,
+    },
+  };
+
   const data: TransactionsSummaryData = {
+    // REVIEW-3 C-6 — the currency every money total below is stated in.
+    currency:         moneyCtx.target,
     windowDays:       win.days,
     startDate:        win.startIso,
     endDate:          newestDate,
     transactionCount: rows.length,
+    temporalScope,
 
     // KD-7 fetch-cap coverage flags.
     truncated,
@@ -708,11 +1217,37 @@ async function assembleTransactions(
     fetchLimit:        TRANSACTION_FETCH_LIMIT,
 
     incomeTotal:      Math.round(incomeTotal      * 100) / 100,
+    // v2.6-TRUTH-5 — the canonical income composition. `incomeTotal` above is the
+    // BANK-TRANSACTION broad income and equals the sum of these classes;
+    // investment dividends are a separate ledger (see income-rollup.ts) and are
+    // deliberately absent rather than silently folded in.
+    incomeScope: "BANK_TRANSACTIONS" as const,
+    incomeByClass: Object.fromEntries(Object.entries(incomeByClass).map(([k, v]) =>
+      [k, { amount: Math.round(v.amount * 100) / 100, count: v.count }])),
+    incomeSourcesByClass: Object.fromEntries(Object.entries(incomeSourceTotals).map(([k, v]) =>
+      [k, { amount: Math.round(v.amount * 100) / 100, count: v.count }])),
+    incomeExcluded: incomeExcluded.map((e) => ({
+      subtype: e.subtype, amount: Math.round(e.amount * 100) / 100, count: e.count,
+      reason: "Classified NOT_INCOME by the canonical income authority — excluded from broad income.",
+    })),
+    // GROSS cost flows (SPENDING+FEE+INTEREST), refunds never netted (KD-17).
+    // A DIFFERENT question from the workspace's clamped "spend" — deliberately
+    // so, and named: the clamped figure is derivable as
+    // expenseTotal − refundTotal floored at 0 (clampEconomicSpend).
     expenseTotal:     Math.round(expenseTotal     * 100) / 100,
     refundTotal:      Math.round(refundTotal      * 100) / 100,
     debtPaymentTotal: Math.round(debtPaymentTotal * 100) / 100,
     transferTotal:    Math.round(transferTotal    * 100) / 100,
-    netCashFlow:      Math.round(netCashFlow      * 100) / 100,
+    // REVIEW-3 C-3 — netCashFlow is THE canonical economic net (income −
+    // clamped spend), identical in definition to the Cash Flow workspace's net.
+    // netAfterDebtPayments is the cash position after debt paydown — a separate,
+    // named measure, never the headline.
+    netCashFlow:          Math.round(netCashFlow          * 100) / 100,
+    netAfterDebtPayments: Math.round(netAfterDebtPayments * 100) / 100,
+    // post-M1 D3 — the decomposition behind it, so the figure travels with its
+    // reason: what was paid, what of it settled charges already in spending,
+    // what was borrowed, and what is left as genuine paydown.
+    debtService,
     estimated:        windowEstimated, // MC1 P3 Slice 4 (D-7) — data-only until Phase 4
 
     pendingCreditCount,
@@ -738,8 +1273,16 @@ async function assembleTransactions(
     },
 
     byCategory: byCategoryOutput,
+    byCategoryTotalCount,
 
     monthlyBreakdown,
+
+    // v2.6-ASSESS-2 — the user's DECLARED monthly-expense figure, carried beside
+    // the measured spending it competes with. `computeAverageMonthlySpending`
+    // reads this same object, so `resolveExpenseBaseline` can see both candidate
+    // baselines at once and pick between them ONCE, instead of the product
+    // dividing by one and the assessment engine by the other.
+    declaredMonthlyExpenses,
 
     // P2-7C — serialize the amount already converted into the reporting currency
     // (largestIncomeAmt / largestExpenseAmt, the same target units used to SELECT
@@ -747,17 +1290,17 @@ async function assembleTransactions(
     // income €5,000" would sit beside a converted incomeTotal in USD.
     largestIncome: largestIncomeRow
       ? {
-          merchant: largestIncomeRow.merchant,
+          merchant: scrubDescriptorText(largestIncomeRow.merchant),
           amount:   Math.round(largestIncomeAmt * 100) / 100,
-          date:     largestIncomeRow.date.toISOString().split('T')[0],
+          date:     econOf(largestIncomeRow).toISOString().split('T')[0],
         }
       : null,
 
     largestExpense: largestExpenseRow
       ? {
-          merchant: largestExpenseRow.merchant,
+          merchant: scrubDescriptorText(largestExpenseRow.merchant),
           amount:   Math.round(largestExpenseAmt * 100) / 100,
-          date:     largestExpenseRow.date.toISOString().split('T')[0],
+          date:     econOf(largestExpenseRow).toISOString().split('T')[0],
         }
       : null,
 
@@ -766,6 +1309,26 @@ async function assembleTransactions(
     ...(incomeSources !== undefined ? { incomeSources } : {}),
     ...(drilldown !== undefined ? { drilldown } : {}),
   };
+
+  // ── The canonical spending baseline, when this read was asked for it ───────
+  // ⚠️ A SECOND READ OVER ITS OWN CALENDAR WINDOW, under the SAME client. The
+  // window above is the assessment window (W4, 90 rolling days) and stays exactly
+  // what it was; the baseline's months are decided by the as-of date alone
+  // (lib/transactions/canonical-spending.ts). The nested read never asks again.
+  if (options.canonicalSpendingAsOf) {
+    data.canonicalSpending = await readCanonicalSpending({
+      asOf: options.canonicalSpendingAsOf,
+      readWindow: async (w) => ((await assembleTransactions(client, spaceCtx,
+        { scopeHint, transactionWindow: w }))?.data as TransactionsSummaryData | undefined) ?? null,
+      readHistory: async (asOf) => {
+        // ⚠️ LAZY: `transaction-query` is server-only, and this module is loaded by
+        // scripts and audits that never ask for the canonical read.
+        const { transactionCorpusSpan } = await import('@/lib/data/transaction-query');
+        const span = await transactionCorpusSpan(client, { spaceId, asOf });
+        return { from: span.from, to: span.to };
+      },
+    });
+  }
 
   return {
     domain:      FinanceDomains.TRANSACTIONS_SUMMARY,
@@ -779,6 +1342,40 @@ async function assembleTransactions(
 // ---------------------------------------------------------------------------
 
 /** UTC calendar month key (YYYY-MM) for a Date. */
+/**
+ * REFUND-1 — a category's refund disclosure, present ONLY when REFUND rows exist
+ * in it. `total` stays the debit-only gross (KD-17, unchanged); `netTotal` is the
+ * code-owned answer to "what did this category actually cost", through the ONE
+ * clamp authority (clampEconomicSpend) the Cash Flow workspace nets with — so the
+ * model never subtracts a refund in prose, and the two surfaces cannot disagree.
+ */
+/**
+ * FM-AUDIT-004 — the AI's category entries, projected from THE canonical ledger
+ * (foldCategorySpend). `total` = the line's gross charges; `refundTotal` /
+ * `netTotal` = its credits and what it cost, present exactly when credits exist.
+ * `structuralCount` adds count-only (total 0) entries for NOT_SPENDING labels —
+ * never a money figure. Ordered by gross descending.
+ */
+function categorySpendEntries(
+  lines: readonly CategorySpendLine[], structuralCount?: ReadonlyMap<string, number>,
+): CategorySpend[] {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const entries: CategorySpend[] = lines
+    .filter((l) => l.gross > 0 || l.refunds > 0)
+    .map((l) => ({
+      category: l.category,
+      total: r2(l.gross),
+      ...(l.refunds > 0 ? { refundTotal: r2(l.refunds), netTotal: r2(l.net) } : {}),
+      count: l.count,
+    }));
+  for (const [category, count] of structuralCount ?? []) entries.push({ category, total: 0, count });
+  return entries.sort((a, b) => b.total - a.total);
+}
+
+function isSpendRoleCategory(category: string): boolean {
+  return categoryDefinition(category)?.role === "SPENDING";
+}
+
 function monthKey(d: Date): string {
   return d.toISOString().slice(0, 7);
 }
@@ -863,11 +1460,24 @@ export function buildMonthlyBreakdown(
   // byte-for-byte the pre-threading behavior (kd17's call sites are unchanged);
   // the assembler passes its identity context (identical output, golden-pinned).
   ctx?: ConversionContext,
+  // REVIEW-3 C — the window fold's authority verdicts, so the monthly fold asks
+  // the SAME questions: debt-payment membership is the debt-payment authority's
+  // counted CASH-leg set; income classes are the canonical taxonomy's. Absent
+  // (golden fixtures) ⇒ the legacy proxies (`amt < 0` source-side legs; no
+  // income-class exclusion), preserving fixture behaviour byte-for-byte.
+  authority?: {
+    debtCountedIds: ReadonlySet<string>;
+    incomeClassOf?: (id: string) => string | null;
+  },
+  // B2 — the read's end is TODAY (or later), so the end month is still in
+  // progress even when today is its last calendar day. Absent ⇒ the end date
+  // alone decides, byte-for-byte the prior behaviour for a closed historical window.
+  endInProgress?: boolean,
 ): MonthlyBreakdownEntry[] {
   type Bucket = {
-    incomeTotal:      number;
-    expenseTotal:     number;
-    refundTotal:      number;
+    // REVIEW-3 C-1 — the economic buckets are folded by the canonical authority
+    // (foldEconomicRow); incomeTotal/expenseTotal/refundTotal are projections.
+    eco:              EconomicAccumulator;
     debtPaymentTotal: number;
     transferTotal:    number;
     transactionCount: number;
@@ -877,7 +1487,12 @@ export function buildMonthlyBreakdown(
     // KD-17: per-category debit sum + credit sum + settled row count, mirroring
     // the top-level byCategory (debit-only `total`, credits disclosed
     // separately — never a signed net). count mirrors CategorySpend.count.
-    categoryAgg:      Map<string, { debitTotal: number; creditTotal: number; count: number }>;
+    // FM-AUDIT-004 — the month's rows as the canonical ledger reads them (the
+    // rows that reach this month's economic fold), folded after the loop.
+    ledgerRows:       CategoryLedgerRow[];
+    // S1-N1 — INTEREST flow rows that reached the economic fold, by the account
+    // they posted to: charges and credits apart, exactly as the fold split them.
+    interestByAccount: Map<string, { charges: number; credits: number }>;
   };
 
   const buckets = new Map<string, Bucket>();
@@ -886,8 +1501,9 @@ export function buildMonthlyBreakdown(
     let b = buckets.get(key);
     if (!b) {
       b = {
-        incomeTotal: 0, expenseTotal: 0, refundTotal: 0, debtPaymentTotal: 0,
-        transferTotal: 0, transactionCount: 0, estimated: false, categoryAgg: new Map(),
+        eco: { income: 0, spendGross: 0, refunds: 0 }, debtPaymentTotal: 0,
+        transferTotal: 0, transactionCount: 0, estimated: false, ledgerRows: [],
+        interestByAccount: new Map(),
       };
       buckets.set(key, b);
     }
@@ -898,7 +1514,7 @@ export function buildMonthlyBreakdown(
   for (const txn of settled) {
     // MC1 Phase 2 Slice 4 — per-row target amount (native when no ctx).
     // MC1 Phase 3 Slice 2 — the same conversion carries the estimated taint (D-7).
-    const b = bucketFor(monthKey(txn.date));
+    const b = bucketFor(monthKey(econOf(txn)));
     b.transactionCount += 1;
     // P2-7B — non-economic residue (UNKNOWN / ADJUSTMENT / null) is counted in
     // this month's transactionCount but never folded into its category or money
@@ -913,61 +1529,76 @@ export function buildMonthlyBreakdown(
       if (c.amount === null) continue;
       amt = c.amount;
     }
-    const agg = b.categoryAgg.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
-    if (amt < 0) agg.debitTotal += Math.abs(amt);
-    else if (amt > 0) agg.creditTotal += amt;
-    agg.count  += 1;
-    b.categoryAgg.set(txn.category, agg);
 
-    // FlowType P5 Slice 4 — same flow partition rules as the window loop.
-    if (isTransfer(txn.flowType)) {
-      b.transferTotal += Math.abs(amt);
+    // REVIEW-3 C — same partition rules as the window loop, from the SAME
+    // authorities. With `authority` supplied, debt-payment membership is the
+    // counted CASH-leg set (a counted transfer-typed row is disclosed under
+    // debt, once) and income classes exclude NOT_INCOME inside foldEconomicRow.
+    // Without it (golden fixtures), the legacy proxies apply unchanged.
+    const mag = Math.abs(amt);
+    const counted = authority && txn.id !== undefined
+      ? authority.debtCountedIds.has(txn.id)
+      : isDebtPayment(txn.flowType) && amt < 0; // legacy fixture proxy
+    if (counted) {
+      b.debtPaymentTotal += mag;
     } else if (isDebtPayment(txn.flowType)) {
-      if (amt < 0) b.debtPaymentTotal += Math.abs(amt);
-    } else if (isIncome(txn.flowType)) {
-      if (amt > 0) b.incomeTotal += amt;
-    } else if (isRefund(txn.flowType)) {
-      b.refundTotal += Math.abs(amt);
-    } else if (isCostFlow(txn.flowType)) {
-      b.expenseTotal += Math.abs(amt);
+      // Uncounted leg / refused row — not a payment, not economic (see window loop).
+    } else if (isTransfer(txn.flowType)) {
+      b.transferTotal += mag;
+    } else if (isIncome(txn.flowType) && !authority && amt <= 0) {
+      // Legacy fixture behaviour: only positive income folded when no authority.
+    } else {
+      // ── THE canonical economic fold (REVIEW-3 C-1) ───────────────────────
+      foldEconomicRow(b.eco, {
+        flowType: txn.flowType, amount: amt,
+        incomeClass: authority?.incomeClassOf && txn.id !== undefined ? authority.incomeClassOf(txn.id) : null,
+      });
+      b.ledgerRows.push({ id: txn.id, category: txn.category, flowType: txn.flowType, amount: amt });
+      // S1-N1 — the SAME side the fold just used, so Σ charges ⊆ expenseTotal and
+      // Σ credits ⊆ refundTotal by construction.
+      if (txn.flowType === 'INTEREST' && txn.financialAccountId) {
+        const side = economicSideOf(txn.flowType, amt);
+        if (side === 'SPEND' || side === 'CREDIT') {
+          const a = b.interestByAccount.get(txn.financialAccountId) ?? { charges: 0, credits: 0 };
+          if (side === 'SPEND') a.charges += Math.abs(amt); else a.credits += Math.abs(amt);
+          b.interestByAccount.set(txn.financialAccountId, a);
+        }
+      }
     }
   }
 
   // Pending rows only bump the count (excluded from money totals, as top-level).
   for (const txn of pending) {
-    bucketFor(monthKey(txn.date)).transactionCount += 1;
+    bucketFor(monthKey(econOf(txn))).transactionCount += 1;
   }
 
   const startMonth   = startIso.slice(0, 7);
   const startClipped = Number(startIso.slice(8, 10)) > 1;
   const endMonth     = endIso.slice(0, 7);
-  const endClipped   = !isLastDayOfMonth(endIso);
+  // ⚠️ A MONTH IS COMPLETE WHEN IT HAS ENDED, NOT WHEN TODAY IS ITS LAST DAY. On
+  // 09-30 the rolling read ended "on the last day of September" and counted an
+  // unfinished September complete — which is how nine days of 2026 averaged three
+  // months and every other day two.
+  const endClipped   = !isLastDayOfMonth(endIso) || endInProgress === true;
 
   return Array.from(buckets.entries())
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)) // oldest → newest
     .map(([month, b]): MonthlyBreakdownEntry => {
-      // Full deterministic per-category totals for this month (all present
-      // categories, non-zero debit total only). This is the authoritative
-      // per-month category source — absence means "no classified settled
-      // SPENDING (debit rows) this month", never $0. KD-17: `total` is the
-      // debit-only sum (same population as expenseTotal and the drilldown);
-      // credits are disclosed via `creditTotal`, never netted. A pure-credit
-      // category month (refund-only) is dropped rather than shown as phantom
-      // spending.
-      const byCategory: CategorySpend[] = Array.from(b.categoryAgg.entries())
-        .map(([category, { debitTotal, creditTotal, count }]): CategorySpend => ({
-          category,
-          total: Math.round(debitTotal * 100) / 100,
-          ...(creditTotal > 0 ? { creditTotal: Math.round(creditTotal * 100) / 100 } : {}),
-          count,
-        }))
-        .filter((c) => c.total > 0)
-        .sort((x, y) => y.total - x.total);
+      // Full deterministic per-category spending lines for this month, from THE
+      // canonical ledger (FM-AUDIT-004) — the same primitive as the window and the
+      // Cash Flow workspace. Absence means "no spending row this month in that
+      // line", never $0. A credit-only line (a refund of an earlier month's
+      // purchase) is KEPT, so Σ line credits === this month's refundTotal.
+      const byCategory: CategorySpend[] = categorySpendEntries(foldCategorySpend(b.ledgerRows));
 
       // topCategories stays a compact convenience slice of byCategory.
-      const topCategories = byCategory
-        .slice(0, MONTHLY_TOP_CATEGORIES)
-        .map(({ category, total }) => ({ category, total }));
+      // CF-1 — and says so: `byCategory` sits beside it complete, but a
+      // convenience slice that does not name its own denominator is exactly the
+      // shape that produced an unqualified superlative on the merchant rollup.
+      const topCategories = boundedSelection(
+        byCategory.map(({ category, total }) => ({ category, total })),
+        MONTHLY_TOP_CATEGORIES,
+      );
 
       const partial =
         (month === startMonth && startClipped) ||
@@ -978,9 +1609,9 @@ export function buildMonthlyBreakdown(
 
       return {
         month,
-        incomeTotal:      Math.round(b.incomeTotal      * 100) / 100,
-        expenseTotal:     Math.round(b.expenseTotal     * 100) / 100,
-        refundTotal:      Math.round(b.refundTotal      * 100) / 100,
+        incomeTotal:      Math.round(b.eco.income     * 100) / 100,
+        expenseTotal:     Math.round(b.eco.spendGross * 100) / 100,
+        refundTotal:      Math.round(b.eco.refunds    * 100) / 100,
         debtPaymentTotal: Math.round(b.debtPaymentTotal * 100) / 100,
         transferTotal:    Math.round(b.transferTotal    * 100) / 100,
         transactionCount: b.transactionCount,
@@ -988,7 +1619,12 @@ export function buildMonthlyBreakdown(
         ...(partial ? { partial: true } : {}),
         ...(monthTruncated ? { truncated: true } : {}),
         byCategory,
-        ...(topCategories.length > 0 ? { topCategories } : {}),
+        ...(topCategories.items.length > 0 ? { topCategories } : {}),
+        // Emitted only when there is some, so every payload without attributable
+        // interest is byte-identical to before.
+        ...(b.interestByAccount.size > 0 ? { interestByAccount: Object.fromEntries(
+          [...b.interestByAccount].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)).map(([id, v]) =>
+            [id, { charges: Math.round(v.charges * 100) / 100, credits: Math.round(v.credits * 100) / 100 }])) } : {}),
       };
     });
 }
@@ -1006,6 +1642,9 @@ export function buildMonthlyBreakdown(
 
 /** The minimal per-row facts the rollup helpers read (a structural subset of TxnRow). */
 export interface RollupRow {
+  /** REVIEW-3 C-2 — row identity for authority-verdict lookups; optional so the
+   *  FX fixtures that construct rows by hand are unaffected. */
+  id?:               string;
   merchant:          string;
   merchantId?:       string | null;
   resolvedMerchant?: { displayName: string } | null;
@@ -1039,7 +1678,7 @@ export function buildMerchantRollup(
   settled: readonly RollupRow[],
   ctx:     ConversionContext,
   limit:   number,
-): MerchantSummary[] {
+): BoundedSelection<MerchantSummary> {
   type MerchantAgg = {
     canonicalName: string;
     total:         number; // absolute settled expense sum, in ctx.target
@@ -1053,12 +1692,16 @@ export function buildMerchantRollup(
   const merchantMap = new Map<string, MerchantAgg>();
 
   for (const txn of settled) {
-    // Spending merchants only (Slice 4): payroll (INCOME), transfers, debt
-    // payments, fees, and refunds structurally cannot surface here.
+    // ⚠️ DIFFERENT QUESTION, named (REVIEW-3 C-1): "who did I spend with" is
+    // deliberately NARROWER than the COST_FLOWS economic-spend membership —
+    // FEE and INTEREST are costs but not merchants, so this rollup admits
+    // flowType=SPENDING only. Do not "fix" this to isCostFlow: that would put
+    // an interest charge in the top-merchants list. Payroll (INCOME),
+    // transfers, debt payments, and refunds structurally cannot surface here.
     if (txn.flowType !== FlowType.SPENDING) continue;
 
     const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
-    const iso  = txn.date.toISOString().split('T')[0];
+    const iso  = econOf(txn).toISOString().split('T')[0];
     const conv = amountInTarget(txn, ctx);
     // V25-FINAL-1 — occurrence is still evidence the merchant exists, but an
     // unconvertible amount is EXCLUDED from `total` (never a native magnitude /
@@ -1089,7 +1732,7 @@ export function buildMerchantRollup(
     merchantMap.set(canonicalKey, agg);
   }
 
-  return Array.from(merchantMap.entries())
+  const ranked = Array.from(merchantMap.entries())
     .map(([canonicalKey, agg]): MerchantSummary => {
       // Dominant category: most transactions, ties broken by larger abs total.
       let dominant = '';
@@ -1104,7 +1747,7 @@ export function buildMerchantRollup(
         }
       }
       return {
-        canonicalName: agg.canonicalName,
+        canonicalName: scrubDescriptorText(agg.canonicalName),
         canonicalKey,
         occurrences:   agg.occurrences,
         total:         Math.round(agg.total * 100) / 100,
@@ -1114,8 +1757,12 @@ export function buildMerchantRollup(
         ...(agg.estimated ? { estimated: true } : {}),
       };
     })
-    .sort((a, b) => b.total - a.total)
-    .slice(0, limit);
+    .sort((a, b) => b.total - a.total);
+  // CF-1 — the eligible population exists HERE and nowhere later. One line ago
+  // this was `.slice(0, limit)` and the count of everything ranked was lost, so
+  // the serializer could only measure the survivors and the model was handed a
+  // bounded list indistinguishable from a complete one.
+  return boundedSelection(ranked, limit);
 }
 
 /**
@@ -1127,7 +1774,14 @@ export function buildIncomeSourceRollup(
   settled: readonly RollupRow[],
   ctx:     ConversionContext,
   limit:   number,
-): IncomeSource[] {
+  /**
+   * REVIEW-3 C-2 — the canonical taxonomy's class for a row (by id). When
+   * supplied, NOT_INCOME rows are excluded so this rollup covers the SAME
+   * population as incomeTotal (the numbers reconcile — v2.6-TRUTH-6's rule,
+   * applied to the AI path). Absent (FX fixtures) ⇒ prior behaviour.
+   */
+  incomeClassOf?: (id: string) => string | null,
+): BoundedSelection<IncomeSource> {
   type IncomeAgg = {
     canonicalName: string;
     total:         number; // positive settled inflow sum, in ctx.target
@@ -1140,13 +1794,19 @@ export function buildIncomeSourceRollup(
   const incomeMap = new Map<string, IncomeAgg>();
 
   for (const txn of settled) {
-    if (txn.flowType !== FlowType.INCOME) continue;
+    // REVIEW-3 C-1 — enrolled on the canonical income predicate (was an inline
+    // `!== FlowType.INCOME` — the same question the economic fold asks).
+    if (!isIncome(txn.flowType)) continue;
     // Native sign gate: conversion preserves sign (positive rates), so a native
     // inflow is a converted inflow — identical population either way.
     if (txn.amount <= 0) continue;
+    // REVIEW-3 C-2 — a NOT_INCOME inflow (issuer credit, internal transfer) is
+    // excluded from incomeTotal by the canonical fold, so it must not appear as
+    // an "income source" either.
+    if (incomeClassOf && txn.id !== undefined && incomeClassOf(txn.id) === 'NOT_INCOME') continue;
 
     const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
-    const iso  = txn.date.toISOString().split('T')[0];
+    const iso  = econOf(txn).toISOString().split('T')[0];
     const conv = amountInTarget(txn, ctx);
 
     const agg = incomeMap.get(canonicalKey) ?? {
@@ -1167,9 +1827,9 @@ export function buildIncomeSourceRollup(
     incomeMap.set(canonicalKey, agg);
   }
 
-  return Array.from(incomeMap.entries())
+  const ranked = Array.from(incomeMap.entries())
     .map(([canonicalKey, agg]): IncomeSource => ({
-      canonicalName: agg.canonicalName,
+      canonicalName: scrubDescriptorText(agg.canonicalName),
       canonicalKey,
       occurrences:   agg.occurrences,
       total:         Math.round(agg.total * 100) / 100,
@@ -1177,8 +1837,9 @@ export function buildIncomeSourceRollup(
       lastSeen:      agg.lastSeen,
       ...(agg.estimated ? { estimated: true } : {}),
     }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, limit);
+    .sort((a, b) => b.total - a.total);
+  // CF-1 — see buildMerchantRollup: the denominator travels with the selection.
+  return boundedSelection(ranked, limit);
 }
 
 /**
@@ -1216,7 +1877,8 @@ export function buildRecurringCandidates(
     const sum = group.amounts.reduce((s, a) => s + a, 0);
     const avg = sum / group.amounts.length;
     out.push({
-      merchant,
+      // The grouping key is the raw lowercased descriptor; what LEAVES is scrubbed.
+      merchant:      scrubDescriptorText(merchant),
       occurrences:   group.count,
       typicalAmount: Math.round(avg * 100) / 100,
       category:      group.category,
@@ -1249,36 +1911,71 @@ function inclusiveDaySpan(startIso: string, endIso: string): number {
 }
 
 /**
- * Resolve the query window from scopeHint + an optional explicit request.
+ * Resolve the query window from an optional explicit request.
  *
- * Default (no explicit window): rolling floor only — 30 days (brief) / 90 days
- * (full), matching the pre-D6 behavior exactly.
+ * Default (no explicit window): the ASSESSMENT WINDOW — 90 rolling days, floor
+ * only, IDENTICAL at every scope hint (W4). The `scopeHint` parameter is
+ * deliberately kept in the signature and deliberately NOT consulted: callers
+ * legitimately pass their hint, and the invariance pin
+ * (lib/ai/assemblers/transactions.parity.test.ts) asserts that passing either
+ * value resolves the same window. Re-keying `days` on the hint is the exact
+ * seam W4 removed — same corpus, same day, different scopeHint must yield the
+ * same assessment conclusions.
  *
- * Explicit (D6): inclusive [startDate, endDate]. The floor is clamped so it can
- * never reach further back than MAX_EXPLICIT_WINDOW_DAYS. `days` is the
- * inclusive day count used for downstream monthly-equivalent math.
+ * Explicit (D6): inclusive [startDate, endDate] — caller-directed, always
+ * scope-independent. The floor is clamped so it can never reach further back
+ * than MAX_EXPLICIT_WINDOW_DAYS. `days` is the inclusive day count used for
+ * downstream monthly-equivalent math.
+ *
+ * ⚠️ EXPORTED for `scripts/audit-ai-read-parity.ts` (and the W4 invariance
+ * pin) only. The audit measures the AI read boundary against the UI's, and a
+ * measurement taken over a window the assembler does not actually use measures
+ * nothing. It calls this function rather than reconstructing "90 days back" —
+ * a second copy of a window is how a probe starts agreeing with itself instead
+ * of with the code.
  */
-function resolveWindow(
-  scopeHint:         'full' | 'brief',
+export function resolveWindow(
+  _scopeHint:        'full' | 'brief',
   transactionWindow: AssemblerOptions['transactionWindow'],
-): { start: Date; end: Date | null; startIso: string; endIso: string | null; days: number } {
-  if (!transactionWindow) {
-    const days  = scopeHint === 'brief' ? WINDOW_BRIEF_DAYS : WINDOW_FULL_DAYS;
+): {
+  start: Date; end: Date | null; startIso: string; endIso: string | null; days: number;
+  /** CF-2 — why these bounds, so the clamp stops being invisible. */
+  reason: SelectionReason;
+} {
+  // CF-2 — a request with no servable interval lands here too, and takes the
+  // same default window it always did. Retrieval is unchanged; the difference
+  // is that the request itself survives on `transactionWindow.requested` for
+  // the framing layer to compare against.
+  if (!transactionWindow?.startDate || !transactionWindow.endDate) {
+    const days  = ASSESSMENT_WINDOW_DAYS; // W4 — never keyed on the scope hint
     const start = startOfDay(-days);
-    return { start, end: null, startIso: start.toISOString().split('T')[0], endIso: null, days };
+    return {
+      start, end: null, startIso: start.toISOString().split('T')[0], endIso: null, days,
+      reason: SelectionReasons.DEFAULT_WINDOW,
+    };
   }
 
   // Clamp the floor to the defensive maximum lookback.
+  //
+  // CF-2 — this clamp is correct and stays. What was wrong is that it was
+  // SILENT: "How much did I spend in 2024?" had its floor moved from January to
+  // the following June, and both the routing block and the context block went
+  // on describing the result as the requested period. The clamp now reports
+  // itself, and the framing layer turns that into a shortfall the model can see.
   const earliestAllowed = startOfDay(-MAX_EXPLICIT_WINDOW_DAYS);
-  let start = new Date(`${transactionWindow.startDate}T00:00:00.000Z`);
-  if (start < earliestAllowed) start = earliestAllowed;
+  const asked = new Date(`${transactionWindow.startDate}T00:00:00.000Z`);
+  const clamped = asked < earliestAllowed;
+  const start = clamped ? earliestAllowed : asked;
 
   const startIso = start.toISOString().split('T')[0];
   const endIso   = transactionWindow.endDate;
   // Inclusive ceiling: end of the requested day.
   const end = new Date(`${endIso}T23:59:59.999Z`);
 
-  return { start, end, startIso, endIso, days: inclusiveDaySpan(startIso, endIso) };
+  return {
+    start, end, startIso, endIso, days: inclusiveDaySpan(startIso, endIso),
+    reason: clamped ? SelectionReasons.LOOKBACK_CLAMP : SelectionReasons.AS_REQUESTED,
+  };
 }
 
 /** Resolve a free-text category name to a TransactionCategory, or null. */
@@ -1309,6 +2006,8 @@ function resolveCategory(raw: string | undefined): TransactionCategory | null {
  * unless the caller explicitly asked about a non-spending category.
  */
 async function assembleDrilldown(
+  /** RLS-AI-S6 — the same authority the summary above ran under, never a second one. */
+  client:    ReadClient,
   spaceCtx:  SpaceContext,
   request:   NonNullable<AssemblerOptions['drilldown']>,
   defaultWin: { startIso: string; endIso: string | null },
@@ -1317,7 +2016,7 @@ async function assembleDrilldown(
 
   // Window: explicit drilldown bounds win, else fall back to the summary window.
   const startIso = request.startDate ?? defaultWin.startIso;
-  const endIso   = request.endDate   ?? defaultWin.endIso ?? new Date().toISOString().split('T')[0];
+  const endIso   = request.endDate   ?? defaultWin.endIso ?? todayUTCISO();
   const start = new Date(`${startIso}T00:00:00.000Z`);
   const end   = new Date(`${endIso}T23:59:59.999Z`);
 
@@ -1327,40 +2026,25 @@ async function assembleDrilldown(
 
   // Category constraint (Slice 4, D-5; P2-7B population):
   //   - a specific resolved category → exactly that category (explicit ask)
-  //   - includeNonSpending           → any banking-population row (canonical:
-  //                                     not INVESTMENT — incl. UNKNOWN/ADJUSTMENT,
-  //                                     so an explicit "show me everything" drill
-  //                                     matches the same rows the UI shows)
+  //   - includeNonSpending           → NO extra constraint: "show me everything"
+  //                                     means the whole banking population, which
+  //                                     `aiDrilldownWhere` now applies for every
+  //                                     path via `bankingTransactionWhere`
+  //                                     (v2.6-PARITY-1). This arm used to be the
+  //                                     ONLY one that applied it.
   //   - default                      → discretionary spending (flowType=SPENDING)
-  const categoryWhere = resolvedCategory
+  const categoryWhere: Prisma.TransactionWhereInput = resolvedCategory
     ? { category: resolvedCategory }
     : includeNonSpending
-      ? BANKING_POPULATION
+      ? {}
       : { flowType: FlowType.SPENDING };
 
   // Sign constraint: spending only (amount < 0) unless a non-spending category
   // was explicitly requested (income is positive, etc.).
   const amountWhere = includeNonSpending ? {} : { amount: { lt: 0 } };
 
-  const rows = await db.transaction.findMany({
-    where: {
-      financialAccount: {
-        deletedAt:         null,
-        spaceAccountLinks: {
-          some: {
-            spaceId,
-            status:          ShareStatus.ACTIVE,
-            visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
-          },
-        },
-      },
-      deletedAt: null,
-      pending:   false,
-      date:      { gte: start, lte: end },
-      ...categoryWhere,
-      ...amountWhere,
-      ...(merchantQuery ? { merchant: { contains: merchantQuery, mode: 'insensitive' } } : {}),
-    },
+  const rows = await client.transaction.findMany({
+    where: aiDrilldownWhere(spaceId, { start, end }, { categoryWhere, amountWhere, merchantQuery }),
     select: {
       date:        true,
       merchant:    true,
@@ -1371,9 +2055,16 @@ async function assembleDrilldown(
       category:    true,
       amount:      true,
       currency:    true, // P2-7C — conversion input for the drilldown's FX seam
-      financialAccount: { select: { name: true, displayName: true } },
+      economicDate: true, // L8-B — the canonical financial chronology
+      // v2.6-TRUTH-10 (completed) — ACCOUNT_NAME_SELECT, not a hand-written pair.
+      // This read selected `{ name, displayName }` ONLY, so `officialName` and
+      // `plaidName` were unreachable and the resolve below could never consult
+      // them. That is the same shape as the original defect: a narrow `select`
+      // making the identity authority structurally unable to answer.
+      financialAccount: { select: ACCOUNT_NAME_SELECT },
     },
-    orderBy: { date: 'desc' },
+    // v2.6-PARITY-1 / rule B1 — same reason as the summary query above.
+    orderBy: { economicDate: 'desc' },
     // KD-7: same LIMIT+1 sentinel as the summary query so a fetch-cap hit here is
     // detected rather than silently under-reporting matchedTotal/totalCount.
     take:    TRANSACTION_FETCH_LIMIT + 1,
@@ -1389,10 +2080,20 @@ async function assembleDrilldown(
   // Space conversion context over exactly the capped rows' (currency × date)
   // pairs and convert every row at its own date, mirroring the summary seam.
   // Degrades to identity if the Space row vanished mid-request.
-  const drillCtx = await buildSpaceConversionContextById(spaceId, {
-    currencies: capped.map((r) => r.currency),
-    dates:      [...new Set(capped.map((r) => r.date.toISOString().slice(0, 10)))],
+  // RLS-AI-S6 — the Space row is read on THIS phase's authority and the FX
+  // context built from it, rather than through `…ById`, which would have reached
+  // its own client. Identity fallback when the Space row is not readable — the
+  // same degradation the summary seam above already had, for the same reason.
+  const drillSpace = await client.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
   });
+  const drillCtx = drillSpace
+    ? await buildSpaceConversionContext(drillSpace, {
+        currencies: capped.map((r) => r.currency),
+        dates:      [...new Set(capped.map((r) => econOf(r).toISOString().slice(0, 10)))],
+      })
+    : identityContext(DEFAULT_DISPLAY_CURRENCY);
   // One converted magnitude per row drives matchedTotal, the "largest" sort, and
   // each serialized amount — never a native amount beside a converted total.
   const convertedAll = capped.map((r) => {
@@ -1422,15 +2123,26 @@ async function assembleDrilldown(
     .slice(0, limit);
 
   const transactions: DrilldownTransaction[] = shown.map(({ row: r, amount, estimated }) => {
-    const accountName =
-      r.financialAccount?.displayName ?? r.financialAccount?.name ?? undefined;
+    // v2.6-TRUTH-10 (completed) — the ONE identity authority. This was
+    // `displayName ?? name`, a TWO-rung fallback that skipped `officialName` and
+    // `plaidName`, so a Chase card the whole product calls "Ultimate Rewards®"
+    // was narrated to the model as "CREDIT CARD" — the exact divergence TRUTH-10
+    // removed everywhere else.
+    const accountName = r.financialAccount
+      ? accountDisplayName(r.financialAccount)
+      : undefined;
     return {
-      date:     r.date.toISOString().split('T')[0],
+      date:     econOf(r).toISOString().split('T')[0],
+      // Posting date rides as PROVENANCE, explicitly labelled, never as the date.
+      postedDate: r.date.toISOString().split('T')[0],
       // MI M6 read cutover — resolved Merchant display name, else the normalizer.
-      merchant: r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName,
-      // Forensic preservation — the original provider descriptor is never lost.
-      ...(r.merchant !== (r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName) ? { rawMerchant: r.merchant } : {}),
-      ...(r.description ? { description: r.description } : {}),
+      // SEC-AI-005 — scrubbed on the way out, like every descriptor here.
+      merchant: scrubDescriptorText(r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName),
+      // The original provider descriptor, when it differs — SCRUBBED (SEC-AI-005):
+      // cheque, reference and partial card numbers never leave the server. The raw
+      // `description` is no longer sent at all; no tool declares a need for it.
+      ...(r.merchant !== (r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName) && scrubDescriptor(r.merchant)
+        ? { rawMerchant: scrubDescriptor(r.merchant) } : {}),
       amount:   Math.round(amount * 100) / 100, // P2-7C — reporting currency, at row date
       category: r.category,
       ...(accountName ? { accountName } : {}),

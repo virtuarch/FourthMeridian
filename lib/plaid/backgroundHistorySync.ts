@@ -29,12 +29,17 @@
  */
 
 import { db } from "@/lib/db";
-import { ShareStatus, SpaceType } from "@prisma/client";
+import { ShareStatus, SpaceType, SyncIssueKind } from "@prisma/client";
+import { plaidClient } from "@/lib/plaid/client";
+import { withPlaidRetry } from "@/lib/plaid/retry";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
+import { recoverMissingPlaidAccountsForItem } from "@/lib/accounts/recover-plaid-account";
 import { AuditAction } from "@/lib/audit-actions";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 // DF-2C — observational execution-ledger seam. Optional; when absent,
 // runDeferredHistorySync behaves byte-identically.
 import type { RefreshStageRecorder } from "@/lib/plaid/refresh-execution-types";
+import type { LedgerHandle } from "@/lib/plaid/refresh-ledger";
 import { classifyPlaidErrorForHealth, plaidErrorSummary, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed, notifyItemSyncComplete } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
@@ -157,7 +162,19 @@ export async function regenerateWealthHistoryForItem(
   }
 }
 
-async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
+async function backfillHistoryForItem(
+  plaidItemId: string,
+  /**
+   * V26-STAGE-1 — when present, each of the five historical stages is persisted
+   * AS IT SETTLES, so a crash or failure is resumable instead of re-paying the
+   * whole pipeline. Absent ⇒ byte-identical prior behaviour, unrecorded.
+   *
+   * ⚠️ RLS-P-1 — THE DOOR, NOT AN ID. This was `refreshExecutionId?: string`,
+   * which is precisely the argument a caller could point at another execution.
+   * A handle minted its own id and accepts none.
+   */
+  ledger?: LedgerHandle,
+): Promise<void> {
   try {
     const conns = await db.accountConnection.findMany({
       where:  { plaidItemDbId: plaidItemId, deletedAt: null },
@@ -197,6 +214,40 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
       });
       const investmentFaIds = relevant.map((a) => a.id);
 
+      // COVERAGE — provider event ingestion and its coverage rows are written by
+      // the connect/webhook ingest that ran BEFORE this function
+      // (investment-event-ingest.ts records InvestmentEventCoverage, then
+      // repairs reconstructions). This stage therefore RECORDS what that
+      // ingestion demonstrated rather than re-fetching it: re-requesting the
+      // corpus here would double provider cost to learn nothing.
+      if (ledger) {
+        const covStartedAt = new Date();
+        const cov = await db.investmentEventCoverage.findMany({
+          where:  { financialAccountId: { in: investmentFaIds } },
+          select: { outcome: true, earliestReturnedDate: true },
+        });
+        const complete = cov.filter((c) => c.outcome === "COMPLETE").length;
+        const floors = cov.map((c) => c.earliestReturnedDate).filter((d): d is Date => d != null);
+        const demonstratedFloor = floors.length
+          ? new Date(Math.min(...floors.map((d) => d.getTime()))).toISOString().slice(0, 10)
+          : null;
+        // No coverage row at all means the provider corpus was never
+        // demonstrated for these accounts — reported as a provider limit, not a
+        // success, so downstream stages are not credited with evidence.
+        await ledger.settleHistoricalStage({
+          stage: "COVERAGE",
+          status: cov.length === 0 ? "PROVIDER_LIMITED" : "SUCCEEDED",
+          startedAt: covStartedAt,
+          windowFromISO: demonstratedFloor,
+          errorCode: cov.length === 0 ? "PROVIDER_LIMIT" : null,
+          retryable: false,
+          resultSummary: {
+            accounts: investmentFaIds.length, coverageRows: cov.length,
+            complete, demonstratedFloor,
+          },
+        });
+      }
+
       if (investmentFaIds.length > 0) {
         // A4 — bootstrap per-holding quantity reconstruction from the canonical
         // InvestmentEvents already ingested inline at connect (exchangeToken).
@@ -208,18 +259,46 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
         // its own DERIVED rows), and it MUST run BEFORE wealth regen, which reads
         // the DERIVED PositionObservation rows it produces.
         if (investmentReconstructionEnabled()) {
+          const reconStartedAt = new Date();
+          let reconOk = 0, reconFailed = 0, reconConflicted = 0, reconDerived = 0;
           for (const faId of investmentFaIds) {
             try {
-              const m = await reconstructAccount({ financialAccountId: faId, now: new Date() });
+              // RLS-C-S8 — a background job's authority, stated at the call site.
+              const m = await reconstructAccount(db, { financialAccountId: faId, now: new Date() });
+              reconOk += m.complete; reconFailed += m.failed;
+              reconConflicted += m.conflicted; reconDerived += m.derivedRows;
               console.log(
                 `[plaid][A4] reconstructed account ${faId} (item ${plaidItemId}) — ` +
                   `${m.instruments} instrument(s): ${m.complete} complete, ${m.partial} partial, ` +
                   `${m.failed} failed, ${m.conflicted} conflicted, ${m.derivedRows} derived row(s)`,
               );
             } catch (e) {
+              reconFailed++;
               console.error(`[plaid][A4] reconstruction failed for account ${faId} (item ${plaidItemId}, non-fatal):`, redactedErrorForLog(e));
             }
           }
+          // A conflicted or failed instrument does not fail the STAGE: downstream
+          // safely excludes it (the residue guard and ownership licensing both
+          // refuse it), so the honest report is a success whose summary names
+          // exactly what did not resolve.
+          if (ledger) {
+            await ledger.settleHistoricalStage({
+              stage: "RECONSTRUCTION",
+              status: reconConflicted > 0 || reconFailed > 0 ? "SUCCEEDED" : "SUCCEEDED",
+              startedAt: reconStartedAt,
+              errorCode: reconConflicted > 0 ? "RECONSTRUCTION_CONFLICT" : null,
+              resultSummary: {
+                accounts: investmentFaIds.length, complete: reconOk,
+                failed: reconFailed, conflicted: reconConflicted, derivedRows: reconDerived,
+              },
+            });
+          }
+        } else if (ledger) {
+          await ledger.settleHistoricalStage({
+            stage: "RECONSTRUCTION", status: "SKIPPED",
+            startedAt: new Date(), skipReason: "NOT_APPLICABLE",
+            resultSummary: { reason: "reconstruction disabled" },
+          });
         }
 
         // A8-3B — auto-trigger the historical price backfill for the newly-held
@@ -232,9 +311,17 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
         // and soft-bounded (PRICE_BACKFILL_BUDGET_MS) so it can't starve regen; a
         // truncated run resumes on the next connect (missing-only/idempotent).
         if (priceBackfillEnabled) {
+          const priceStartedAt = new Date();
           try {
+            // V26-PRICE-4 — the `quantity > 0` filter was removed. It scoped price
+            // coverage to CURRENTLY-held instruments, so a position sold last
+            // year was never priced and its contribution to last year's history
+            // stayed permanently unrecoverable. Historical valuation needs prices
+            // for everything that was EVER held over the window, not just what
+            // remains. Coverage keeps the cost bounded: a fully covered
+            // instrument still costs zero network calls.
             const heldRows = await db.positionObservation.findMany({
-              where:    { financialAccountId: { in: investmentFaIds }, supersededById: null, deletedAt: null, quantity: { gt: 0 } },
+              where:    { financialAccountId: { in: investmentFaIds }, supersededById: null, deletedAt: null },
               select:   { instrumentId: true },
               distinct: ["instrumentId"],
             });
@@ -245,8 +332,37 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
                 registry:        priceRegistry,
                 deadlineEpochMs: Date.now() + PRICE_BACKFILL_BUDGET_MS,
               });
+              // OWNERSHIP settled inside acquisition: backfillPricesForInstruments
+              // resolves ownership windows and plans only inside them, so the
+              // licensing decision is made and observable here rather than being
+              // a separate re-derivation that could disagree with it.
+              if (ledger) {
+                await ledger.settleHistoricalStage({
+                  stage: "OWNERSHIP", status: "SUCCEEDED",
+                  startedAt: priceStartedAt,
+                  resultSummary: { instrumentsConsidered: heldInstrumentIds.length },
+                });
+                // A budget-truncated run is NOT a success: some planned dates were
+                // never attempted, and calling that SUCCEEDED would let readiness
+                // claim a completeness the archive does not have.
+                await ledger.settleHistoricalStage({
+                  stage: "PRICES",
+                  status: m.skippedForBudget ? "FAILED" : "SUCCEEDED",
+                  startedAt: priceStartedAt,
+                  errorCode: m.skippedForBudget ? "PRICE_GAP" : null,
+                  retryable: !!m.skippedForBudget,
+                  errorSummary: m.skippedForBudget
+                    ? `${m.skippedForBudget} instrument(s) deferred by the background budget`
+                    : null,
+                  resultSummary: {
+                    instruments: heldInstrumentIds.length, planned: m.planned,
+                    fetched: m.fetchedInstruments, stored: m.inserted,
+                    deferredForBudget: m.skippedForBudget ?? 0,
+                  },
+                });
+              }
               console.log(
-                `[plaid][A8-3B] price backfill (item ${plaidItemId}) — ${heldInstrumentIds.length} held instrument(s): ` +
+                `[plaid][A8-3B] price backfill (item ${plaidItemId}) — ${heldInstrumentIds.length} ever-held instrument(s): ` +
                   `planned ${m.planned}, fetched ${m.fetchedInstruments}, stored ${m.inserted} row(s)` +
                   (m.skippedForBudget ? `, deferred ${m.skippedForBudget} to next connect (budget)` : ""),
               );
@@ -274,7 +390,29 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
     // WEALTH_REGENERATION_ENABLED; jobs/sync-banks.ts calls this same
     // function after every daily sync too, so if evidence still isn't there
     // yet, this keeps self-healing on its own without a manual re-run.
-    await regenerateWealthHistoryForItem(plaidItemId, faIds);
+    // REGENERATION — the ONLY stage that may advance snapshot support.
+    const regenStartedAt = new Date();
+    try {
+      await regenerateWealthHistoryForItem(plaidItemId, faIds);
+      if (ledger) {
+        await ledger.settleHistoricalStage({
+          stage: "REGENERATION", status: "SUCCEEDED",
+          startedAt: regenStartedAt,
+          resultSummary: { accounts: faIds.length },
+        });
+      }
+    } catch (regenErr) {
+      // Prices and every upstream stage stay settled; only REGENERATION is
+      // marked failed, so a retry resumes here and does not refetch a thing.
+      if (ledger) {
+        await ledger.settleHistoricalStage({
+          stage: "REGENERATION", status: "FAILED",
+          startedAt: regenStartedAt, errorCode: "REGENERATION_FAILED", retryable: true,
+          errorSummary: regenErr instanceof Error ? regenErr.message : String(regenErr),
+        });
+      }
+      throw regenErr;
+    }
   } catch (e) {
     console.error(`[plaid][D2x-slice4] snapshot backfill resolution failed for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
   }
@@ -301,6 +439,15 @@ async function recordSyncComplete(plaidItemId: string): Promise<void> {
       select: { userId: true, institutionName: true },
     });
     if (!item) return;
+
+    // ONCE per connection. Several paths can finish a first-run import (connect,
+    // webhook, cron resume, browser resume); only the first records it, so the
+    // owner gets one "history ready" bell, not one per path.
+    const already = await db.auditLog.findFirst({
+      where:  { userId: item.userId, action: AuditAction.PLAID_HISTORY_SYNCED, metadata: { path: ["plaidItemId"], equals: plaidItemId } },
+      select: { id: true },
+    });
+    if (already) return;
 
     // Space to surface the activity entry in: the item's accounts' ACTIVE-linked
     // spaces, preferring the user's PERSONAL space (the connect home).
@@ -351,6 +498,68 @@ export async function runDeferredHistorySync(
   runId?: string,
 ): Promise<boolean> {
   try {
+    // ── LIVENESS — RECOVER AN ACCOUNT THE IMPORT NEVER CREATED ──────────────
+    // BEFORE the transactions stage, because this is what unblocks it. A page
+    // containing a transaction for an account that does not exist locally can
+    // never persist, so the CURSOR SAFETY GATE holds the cursor and this exact
+    // Plaid page is re-fetched and re-billed every five minutes, forever, with
+    // the item's whole history stuck behind it.
+    //
+    // ⚠️ IT CANNOT GO AFTER THE BALANCE STAGE, WHICH IS WHERE THE AUTHORITATIVE
+    // ACCOUNT LIST IS ALREADY FETCHED. `syncTransactionsForItem` runs first and
+    // THROWS on a blocked item, so everything below it — including
+    // `refreshBalancesForItem` — is skipped on precisely the items that need
+    // this. Recovery has to precede the thing it repairs.
+    //
+    // Cost on a healthy item is one indexed count (`@@index([plaidItemId, kind])`)
+    // and nothing else: the trigger is the durable record the detector already
+    // writes, and the existing auto-resolution clears it once a page proves
+    // recovery, so the trigger disarms itself. Non-fatal by construction — a
+    // recovery failure leaves the item exactly as blocked as it already was,
+    // which is no worse, and the SyncIssue remains the record.
+    try {
+      const recovery = await recoverMissingPlaidAccountsForItem(plaidItemId, {
+        loadItem: async (id) => {
+          const row = await db.plaidItem.findUnique({
+            where:  { id },
+            select: {
+              userId: true, encryptedToken: true, institutionName: true, institutionId: true,
+              user:   { select: { deactivatedAt: true } },
+            },
+          });
+          if (!row) return null;
+          return {
+            userId:           row.userId,
+            ownerDeactivated: row.user.deactivatedAt !== null,
+            accessToken:      decryptWithPurpose(row.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN),
+            institutionName:  row.institutionName,
+            institutionId:    row.institutionId,
+          };
+        },
+        // Both lifecycle columns, not just one: `resolved` is a compatibility
+        // projection the lifecycle service writes in lockstep with `resolvedAt`,
+        // but legacy rows predate that service, so requiring BOTH to be open
+        // counts only issues that are unambiguously still open.
+        countBlockingIssues: (id) => db.syncIssue.count({
+          where: { plaidItemId: id, kind: SyncIssueKind.MISSING_ACCOUNT, resolvedAt: null, resolved: false },
+        }),
+        fetchProviderAccounts: async (accessToken) => {
+          const res = await withPlaidRetry(() => plaidClient.accountsGet({ access_token: accessToken }), "accountsGet");
+          return res.data.accounts;
+        },
+      });
+      if (recovery.attempted) {
+        const created = recovery.results.filter((x) => x.status === "CREATED");
+        console.log(
+          `[plaid][liveness] account recovery for item ${plaidItemId} — created ${created.length}, ` +
+          `refused ${recovery.results.length - created.length} ` +
+          `(${recovery.results.filter((x) => x.status === "REFUSED").map((x) => x.reason).join(",") || "none"})`,
+        );
+      }
+    } catch (e) {
+      console.error(`[plaid][liveness] account recovery failed for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
+    }
+
     recorder?.begin("TRANSACTIONS", "PROVIDER");
     const r = runId
       ? await syncTransactionsForItem(plaidItemId, { runId })
@@ -398,9 +607,11 @@ export async function runDeferredHistorySync(
     // D2.x Slice 4 — reconstruct historical snapshots now that full history
     // exists. Best-effort/non-fatal and gated to new Spaces inside. DF-2C records
     // it as the HISTORY_BACKFILL stage — the reconnect/webhook-defining work.
-    recorder?.begin("HISTORY_BACKFILL", "DERIVED");
-    await backfillHistoryForItem(plaidItemId);
-    recorder?.succeed("HISTORY_BACKFILL");
+    // V26-STAGE-1 — the opaque HISTORY_BACKFILL stage is NO LONGER WRITTEN by
+    // this path. Its five constituents now record themselves individually and
+    // incrementally, so a failure is attributable and a retry is resumable. Old
+    // executions keep their HISTORY_BACKFILL rows and stay readable.
+    await backfillHistoryForItem(plaidItemId, recorder?.ledger);
 
     // Part-3 — the FULL deferred pipeline is done: record it + notify the owner
     // (bell + Recent Activity, from ONE AuditLog record). Only reached on a
@@ -418,7 +629,7 @@ export async function runDeferredHistorySync(
     recorder?.failOpen(e);
     console.error(
       `[plaid][D2x-slice2] background history sync FAILED for item ${plaidItemId} (non-fatal — Link already succeeded): ${plaidErrorSummary(e)}`,
-      e,
+      redactedErrorForLog(e),
     );
 
     // Write an EXPLICIT incomplete-sync marker so the item is never left
@@ -453,7 +664,7 @@ export async function runDeferredHistorySync(
     } catch (updateErr) {
       console.error(
         `[plaid][D2x-slice2] failed to persist PlaidItem health for item ${plaidItemId} (non-fatal):`,
-        updateErr,
+        redactedErrorForLog(updateErr),
       );
     }
     // Failure: history genuinely did not complete — the incomplete marker set

@@ -14,24 +14,38 @@
  * Drill-down reuses the shared TransactionSliceDrawer via CashFlowCategoryBreakdown.
  */
 
-import { filterByPeriod, type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
-import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { filterByPeriod, asOfAnchor, type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
+import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import {
+  selectDebtPaymentCashLegs, groupDebtPaymentsByCreditor, UNRESOLVED_CREDITOR_KEY,
+} from "@/lib/transactions/debt-payment-authority";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { CashFlowCategoryBreakdown } from "@/components/space/widgets/CashFlowCategoryBreakdown";
-import { groupDebtPaymentsByCreditor, normalizeCreditor, rawCreditorLabel } from "@/lib/transactions/debt-payments";
 
 interface Props {
   transactions: Transaction[] | null | undefined;
   period:       CashFlowPeriod;
   ctx?:         ConversionContext;
-  accounts:     { id: string; type: string }[];
+  /** id + type for the tier resolver; `name` additionally lets the breakdown
+   *  head a group with the creditor ACCOUNT rather than a descriptor. */
+  accounts:     { id: string; type: string; name?: string | null }[];
   /** SD-6C — the period-windowed rows from CashFlowSpaceData (the workspace
    *  composition boundary). When supplied the widget consumes it instead of
    *  re-running `filterByPeriod` — the byte-identical slice. Absent ⇒ the
    *  standalone/registry path windows here, exactly as before. */
   windowRows?:  Transaction[];
+  /**
+   * The selected as-of date — the anchor for the fallback window.
+   *
+   * Without it `filterByPeriod` defaults to `new Date()`, so this widget showed
+   * TODAY's period on the section path while the dashboard displayed a
+   * historical date. The workspace path passes `windowRows` and never reaches
+   * the fallback; the section path has no canonical rows to pass, so it must at
+   * least window against the right anchor.
+   */
+  asOf?:        string;
 }
 
 function magnitude(t: Transaction, ctx?: ConversionContext): number {
@@ -41,22 +55,23 @@ function magnitude(t: Transaction, ctx?: ConversionContext): number {
   return Math.abs(amt);
 }
 
-function isDebtPaymentRow(t: LiquidityTx, liqCtx: ReturnType<typeof tierResolver>): boolean {
-  const c = classifyLiquidity(t, liqCtx);
-  return c.effect === "CASH_OUT" && c.reason === "DEBT_PAYMENT";
-}
-
-export function DebtPaymentsWidget({ transactions, period, ctx, accounts, windowRows }: Props) {
+export function DebtPaymentsWidget({ transactions, period, ctx, accounts, windowRows, asOf }: Props) {
   if (transactions == null) {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;
   }
-  const rows = (windowRows ?? filterByPeriod(transactions, period)) as LiquidityTx[];
+  const rows = (windowRows
+    ?? filterByPeriod(transactions, period, asOfAnchor(asOf))) as LiquidityTx[];
   const liqCtx = tierResolver(accounts);
-  // Canonical DEBT_PAYMENT liquidity rows (CASH_OUT/DEBT_PAYMENT) — the spendable-
-  // cash leg that pays down a liability; the liability-side leg is NEUTRAL, so a
-  // payment is counted once. Aggregated by normalized creditor (Phase 3).
-  const payments = rows.filter((t) => isDebtPaymentRow(t, liqCtx));
-  const items = groupDebtPaymentsByCreditor(payments, (t) => magnitude(t, ctx));
+  // v2.6-TRUTH-7 — the ONE debt-payment authority selects the counted leg. This
+  // widget used to carry its own `isDebtPaymentRow` predicate; DebtClient carried
+  // a different one, and the two totals differed by $6,000.
+  const payments = selectDebtPaymentCashLegs(rows, liqCtx).counted;
+  // v2.6-TRUTH-9 — grouped by CREDITOR ACCOUNT. Presentation only: every counted
+  // row lands in exactly one group, so the heading a payment sits under can
+  // change while the total cannot.
+  const creditorAccounts = new Map(accounts.map((a) => [a.id, { id: a.id, name: a.name ?? null, type: a.type }]));
+  const items = groupDebtPaymentsByCreditor(
+    payments as never, creditorAccounts, (t) => magnitude(t as never, ctx));
 
   return (
     <CashFlowCategoryBreakdown
@@ -66,8 +81,21 @@ export function DebtPaymentsWidget({ transactions, period, ctx, accounts, window
       emptyHeadline="No debt payments in this period"
       emptySubline="Card and loan payments appear here once you make them."
       invalidationKey={periodKey(period)}
-      sliceSubtitle="Debt payments to this creditor"
-      sliceFor={(item) => payments.filter((t) => normalizeCreditor(rawCreditorLabel(t)) === item.id)}
+      // ⚠️ The unresolved bucket must not be described as a creditor. Its rows
+      //    ARE debt payments; what is unknown is which account received them.
+      sliceSubtitle={(item) => item.id === UNRESOLVED_CREDITOR_KEY
+        ? "Debt payments whose receiving account could not be established"
+        : "Debt payments to this creditor"}
+      sliceFor={(item) => byId(payments, item.transactionIds)}
     />
   );
+}
+
+/**
+ * Rows for a group, BY IDENTITY — the ids the authority recorded while summing.
+ * A lookup, not a classification: React decides nothing here.
+ */
+function byId<T extends { id: string }>(rows: readonly T[], ids: readonly string[]): T[] {
+  const want = new Set(ids);
+  return rows.filter((r) => want.has(r.id));
 }

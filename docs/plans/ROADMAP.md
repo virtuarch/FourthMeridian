@@ -1,89 +1,158 @@
 # Roadmap
 
-*Phases are gated by **exit criteria**, not feature lists. The roadmap ends at launch; everything past it lives in [parked-ideas.md](./parked-ideas.md). Completed work is not described here — see release notes and git history.*
+*Phases are gated by **exit criteria**, not feature lists. The roadmap ends at launch; everything past it lives in [parked-ideas.md](./parked-ideas.md). This file is the owner's phase structure; **current state lives in [`/STATUS.md`](../../STATUS.md)**, and nothing here is evidence of completion on its own.*
 
-The AI evolution ladder frames the whole roadmap: **v2.4.5 makes every answer honest → v2.5 / v2.5.5 make the data singular and semantically sound → v2.6a makes conversations coherent → v2.6b earns the right to speak unprompted → v3.0 sells it.** Each phase's exit criteria are the next phase's entry criteria.
+**Re-baselined 2026-10-14** against the repository at `ece2ff6` (`v2.6`), the GitHub CI record and the dated program reports under `docs/plans/`. The previous baseline was 2026-09-07. Every item below carries one of four states, and the state is only as good as the evidence named beside it:
 
-## v2.5 — Spaces Completion + Design Foundation — *released*
+| State | Meaning |
+|---|---|
+| **COMPLETED** | Shipped on `v2.6` with a linked commit or report. Not the same as "on Production" — Production runs the July release until the cutover ([STATUS §14](../../STATUS.md)). |
+| **ACTIVE** | Being built now, with a named owner. |
+| **DEFERRED** | Consciously not scheduled; the unpark condition is stated here or in parked-ideas. |
+| **BLOCKED** | Cannot proceed until a named gate or owner act clears. |
+| *NOT VERIFIED* | A claim this re-baseline could not confirm from the repository without running something. |
+
+The AI evolution ladder that framed the roadmap still stands, with one correction from experience: **v2.4.5 made every answer honest → v2.5 / REVIEW-3 made the data singular and semantically sound → the conversation layer was then deleted and rebuilt from exemplar conversations (September) → the product now speaks unprompted through the Daily Brief under a deterministic licence → the beta path is operability and tenancy (October) → v3.0 sells it.**
+
+---
+
+## v2.5 — Spaces Completion + Design Foundation — **COMPLETED (released)**
 
 **Closed 2026-07-27 — tag `v2.5.0`, merged to `main`, production-verified.** Development ran on `feature/v2.5-spaces-completion` and finished on `main`. Full scope and the release-day verification record: [releases/v2.5.md](../releases/v2.5.md). Closure included the **V26-PRE B1–B5** production-hardening wave (update-path fact preservation, AI snapshot convergence, single debt-terms authority, BTC identity backstop, CI verification integrity), independently audited and independently certified before integration.
 
-**Remaining exit criteria: none.** The last one — **Atlas/design-system closure** — landed in V25-CLOSE-2: the palette-ratchet fence now scans `components/**` and `app/**` (exclusions: vendored third-party, untracked prototypes, `lib/` which holds no JSX), and the pattern list was corrected so `bg-`/`border-` carry the same colour list as `text-`. That correction is why the baseline moved from `{}` to 41 files / 937 violations — the fence had been reporting clean because it was not looking, not because the burn-down had finished. See [audits/V25_CLOSE_2_GUARD_HARDENING.md](../archive/completed-plans/documentation-audit-pre-migration.md).
+**Exit criteria: all met.** The last one — **Atlas/design-system closure** — landed in V25-CLOSE-2: the palette-ratchet fence scans `components/**` and `app/**`, and the pattern list was corrected so `bg-`/`border-` carry the same colour list as `text-`. See [the pre-migration documentation audit](../archive/completed-plans/documentation-audit-pre-migration.md).
 
-*Already met:* **`SpaceDashboard.tsx` decomposition substantially complete** (the SD-x wave — SpaceShell, workspace registry, declarative loading, and standard/perspective workspace extraction all landed; host reduced ~3,731 → ~1,480 LOC; SD-8 census concluded the decomposition clean — see [../doctrine/spaces.md](../architecture/SPACE_ARCHITECTURE.md)); legacy `Account` physically retired; WorkspaceAccountShare retired; BALANCE_ONLY guarantee proven end-to-end; new surfaces ship in Atlas; **hygiene closed** — `.env.example` drift resolved and the latent `.gitignore` `.env*` re-ignore ordering fixed in V25-CLOSE-1.
+*Also met:* `SpaceDashboard.tsx` decomposition (SD-x wave; host ~3,731 → ~1,480 LOC; SD-8 census clean — [SPACE_ARCHITECTURE](../architecture/SPACE_ARCHITECTURE.md)); legacy `Account` physically retired; WorkspaceAccountShare retired; BALANCE_ONLY guarantee proven end-to-end; new surfaces ship in Atlas; hygiene closed in V25-CLOSE-1.
 
-**Absorbed into v2.5 without a roadmap entry** (recorded here so the phase can account for its own scope): Transaction Explorer **TX-1→TX-4**; connection lifecycle **CONN-1→CONN-4A**; **TimelineLens v4** promotion to sole time selector; **PO-4A/PO-5/PO-5A** platform-ops and beta-gate work; marketing-boundary hardening; admin TOTP enrollment fix. Commit references in [STATUS.md](../../STATUS.md). *Process note: these shipped across 97 commits with no roadmap update — see the V25-CLOSE-1 audit for why the drift guard did not fire.*
+**Absorbed into v2.5 without a roadmap entry** (recorded so the phase accounts for its own scope): Transaction Explorer TX-1→TX-4; connection lifecycle CONN-1→CONN-4A; TimelineLens v4 promotion to sole time selector; PO-4A/PO-5/PO-5A platform-ops and beta-gate work; marketing-boundary hardening; admin TOTP enrollment fix. *Process note: these shipped across 97 commits with no roadmap update — see the V25-CLOSE-1 audit for why the drift guard did not fire. The same failure recurred at a larger scale between 2026-09-07 and 2026-10-14; the fix adopted is to keep STATUS.md and this file in the same commit as any migration or program closure.*
 
-### Remaining-work classification
+### v2.5 remaining-work classification (historical, with 2026-10-14 state)
 
-Every open item below is classified. Nothing sits in an unlabelled "future" bucket.
-
-| Class | Meaning | Items |
+| Class | Meaning | Items and current state |
 |---|---|---|
-| **A** | Must complete before v2.5 closure | **None — class A is empty.** V25-CLOSE-1 closed ledger reconciliation, prototype containment, test-discovery boundary, archive removal and `.gitignore` ordering; V25-CLOSE-1A greened the CI lint gate; V25-CLOSE-2 expanded the Atlas ratchet and added the prototype-route and visibility-parity guards. |
-| **B** | Good v2.5 polish — improves honesty/safety, does not gate closure | FX rate-miss disclosure (*anchor corrected V26-PRE:* `convertMoney` now returns `amount: null` on a known-currency miss — V25-FINAL-1 landed; the one surviving native-relabel is `lib/investments/display-conversion.ts:59`, which returns the unconverted magnitude under the target label and drops the `estimated` taint on partial-coverage contexts); audit + fresh-access on the three `app/api/admin/plaid/*` operator routes; Debt/Liquidity zero-data workspace states; Space template picker descriptions; dead-code sweep (~694 LOC). **From V25-CLOSE-2:** `resolveSingleAccountScope` should honour `spaceIdHint` when supplied (a semantics decision, not a guard); convert the in-memory `=== VisibilityLevel.FULL` comparisons to `grantsTransactionDetail()`; burn down the 937 baselined palette violations (551 in `app/admin`, 223 in `components/admin` — both retiring into Platform HQ). |
-| **C** | v2.6 work — do not pull forward | Conversation state / `conversationId` (v2.6a); `AiAdvice` write path KD-14 (v2.6b); `context-priority` planner activation; `comingSoon` lenses (tax/property/businessHealth); provider expansion. |
-| **D** | Later scaling work | TX-5 explorer query cost (gated on KD-15 boundary relocation); PROV-6 provider-neutral ingestion payload (correctly deferred until a second real ingesting provider); `SectionCard.tsx:160-163` legacy section-key data migration. |
+| **A** | Must complete before v2.5 closure | None — closed 2026-07. |
+| **B** | v2.5 polish, does not gate closure | FX rate-miss disclosure (COMPLETED, V25-FINAL-1; the `display-conversion.ts` native-relabel residue is *NOT VERIFIED* closed); audit + fresh-access on `app/api/admin/plaid/*` (COMPLETED, V25-CLOSE-3); Debt/Liquidity zero-data states; Space template picker descriptions; dead-code sweep (REVIEW-3 removed 6,690 LOC — [report](v2.6-REVIEW-3-EXECUTION-REPORT.md)); `resolveSingleAccountScope` honouring `spaceIdHint`, `grantsTransactionDetail()` conversions, and the 937 baselined palette violations in `app/admin` / `components/admin` — all *NOT VERIFIED* in this re-baseline; treat as open polish. |
+| **C** | v2.6 work | Conversation state (resolved by design: stateless turns + a sealed carrier + Financial Memory V2 — see v2.6a); `AiAdvice` write path KD-14 (open, v2.6b); `comingSoon` lenses (tax/property/businessHealth — DEFERRED); provider expansion (DEFERRED). |
+| **D** | Later scaling work | TX-5 explorer query cost; PROV-6 provider-neutral ingestion payload (deferred until a second real ingesting provider, [ADR-006](../decisions/ADR-006-provider-abstraction-timing.md)); `SectionCard.tsx` legacy section-key data migration. All DEFERRED. |
 
-**Boundary note (binding):** the only v2.5-side obligations that v2.6 genuinely depends on are relocating `lib/ai/visibility.ts` out of the AI namespace (13 non-AI files import it, making the privacy predicate load-bearing for the financial data layer) and btc-sync flow-authority convergence. Everything conversational is additive and touches no financial code.
+**Boundary note (binding, still true):** everything conversational is additive and touches no financial code; the AI layer consumes authorities and never rebuilds them.
 
-## v2.5.5 — Financial Intelligence — *convergence/doctrine closeout*
+## v2.5.5 — Financial Intelligence — **COMPLETED by absorption, partly NOT VERIFIED**
 
-Point milestone: pure data-semantics, **zero new product surface**. The canonical aggregation architecture is substantially implemented (see [../systems/cash-flow.md](../systems/cash-flow.md)); what remains is convergence + test enforcement, not construction.
+This point milestone (pure data-semantics, zero new surface) did not run as a phase. Its exit criteria were absorbed by REVIEW-3 and later slices:
 
-**Exit criteria (must-have):** DayFacts sole-fold convergence (delete the four dead folds); single-site `economicSpend` clamp; explicitly named net measures; classifier v4 for liability payment-app outflow (version-gated backfill, recorded — `FLOW_CLASSIFIER_VERSION = 4`; earlier drafts of this line said v3, which never matched the code); transfer-evidence stamping decoupled from `flowType === "TRANSFER"`; compact doctrine oracle + the four named gap tests green; cross-surface parity fixture; multi-currency assembler rollup threading; clean `audit:flow-desync` + `audit:pending-posted`; TI3/backfill runtime verification recorded. **Should-have:** minimum transaction-correction tooling. **Explicitly out:** any new surface, `refundCandidate`, review-queue platform, Decimal money migration.
+| Exit criterion | State | Evidence |
+|---|---|---|
+| Single-site `economicSpend` clamp | COMPLETED | REVIEW-3 report (`clampEconomicSpend` SINGLE owner) |
+| Explicitly named net measures | COMPLETED | REVIEW-3 canonical net; the money-presentation and prose-money rules (`6c40490`, `2a201f7`); net-of-refund category authority (`cdbb047`) |
+| Classifier v4 for liability payment-app outflow | COMPLETED and superseded | `FLOW_CLASSIFIER_VERSION = 5` (refund economics, `382897e`; liability-inflow income veto) |
+| DayFacts sole-fold convergence (delete the dead folds) | *NOT VERIFIED* | `docs/systems/cash-flow.md` describes `DayFacts` as the one fold; no census of dead folds was run for this re-baseline |
+| Transfer-evidence stamping decoupled from `flowType` | *NOT VERIFIED* | see the transfer-authority ledger under `docs/plans/v2.6-TRANSFER-*` |
+| Cross-surface parity fixture; doctrine oracle | COMPLETED in substance | REVIEW-3: all 12 measured contradictions verified non-reproducible by an independent pass; the Cash Flow reconciliation slice (`7bdae15`, `3702bb3`) |
+| Clean `audit:flow-desync` + `audit:pending-posted`; TI3/backfill runtime verification | *NOT VERIFIED* | requires running the audits against a database |
 
-## OPS-1 — Platform Operations Foundation — *gates private beta, runs in parallel*
+Nothing from this phase blocks anything else. The two *NOT VERIFIED* census items are good candidates for the next read-only audit pass.
 
-S9 legal/public surfaces and S10 beta-access system are substantially shipped. Remaining is **consent + disclosure + a production operational/config floor** — see the production-readiness audit in [../audits/](../audits/).
+## OPS-1 — Platform Operations Foundation — **mostly COMPLETED; the rest is BLOCKED on owner acts**
 
-1. **Consent + disclosure (code + decision):** `User.acceptedTermsAt` capture at registration; `/legal/ai` names OpenAI + a retention posture; legal effective-dates precise; support address published.
-2. **Production verification:** `registration_mode=invite_only` verified in prod; Turnstile keys live; one end-to-end invite executed and recorded.
-3. **Ops floor:** Sentry (or equivalent) error monitoring; external uptime monitor on `/api/health`; backup-restore drill written up (verify Supabase PITR); production Plaid decision/credentials; Resend/domain verification.
+The S9 legal/public surfaces and the S10 beta-access system shipped in v2.5. The floor items, with their 2026-10-14 state (sources: [P0 report](OPERATIONALIZATION-P0-REPORT-2026-10-07.md), [production-readiness.md](../operations/production-readiness.md), [production-cutover-plan.md](../operations/production-cutover-plan.md)):
 
-## v2.6 — Milestone plan — *opened 2026-07-27 from the `v2.5.0` tag*
+1. **Consent + disclosure.** `User.acceptedTermsAt` capture — COMPLETED (PO-5A). `/legal/ai` names OpenAI, what is sent and what is never sent — COMPLETED (P0, 2026-10-07; `legal-factual-basis-2026-10-07.md`); the **retention window is withheld pending the provider's answer** (owner/counsel). Support address published — COMPLETED (P0).
+2. **Production verification.** `registration_mode=invite_only` — verified 2026-08-17, *NOT re-verified since*. Turnstile keys — **BLOCKED (absent on Production; CAPTCHA is a no-op)**. One end-to-end invite executed and recorded — *NOT VERIFIED*.
+3. **Ops floor.** Sentry — DSN COMPLETED (code V25-FINAL-2; DSN present on Production as of 2026-10-06; event delivery last proven for the v2.5 build on 2026-07-26 — see STATUS §12); job and AI-provider failures now reach Sentry (P0). Uptime monitor on `/api/health` — **open, ops act**. Backup-restore drill — **open**; the cutover plan rehearses a dump/restore in a clone before any Production step. Production Plaid — COMPLETED in configuration (`PLAID_ENV=production`, real Items live). Resend/domain verification — *NOT VERIFIED*. **New since P0:** `PLATFORM_ALERTS_EMAIL` must be set on Production before the next deploy (boot refuses without it) — **BLOCKED on the owner**.
 
-Branch: `v2.6`, branched from the tag (not from `main`) so the baseline is exactly what was released and production-verified.
+## v2.6 — what the plan said, what ran, and why — **ACTIVE**
 
-Five workstreams, **in this order**. The ordering is not preference — it is dependency. v2.5's own evidence is that duplicated authority is this codebase's most expensive recurring defect class: two of the five V26-PRE production blockers (B2, B3) were one fact with two owners, and both survived until an external audit. Every AI workstream *consumes* financial metrics, so a metric with two owners becomes a confidently-stated wrong number the moment the product speaks unprompted.
+Branch `v2.6`, opened 2026-07-27 from the `v2.5.0` tag. The 2026-07 plan ordered five workstreams by dependency: *1 Semantic Authority Convergence → 2 AI Truth Convergence → 3 Ambient Intelligence → 4 Mobile UX (parallel) → 5 Provider expansion.* Workstreams 1 and 2 ran exactly as planned and closed as REVIEW-3 on 2026-08-17. From September the sequence changed, for three recorded reasons, each with its own report:
 
-**1. Semantic Authority Convergence** — *foundation; do first*
-Every percentage and derived financial metric has exactly one canonical owner. Extends the pattern proven by B3: a single resolver module plus a source-scan guard that bans inline re-derivation repo-wide (`lib/debt/effective-terms.ts` + `effective-terms.test.ts` is the reference implementation). Absorbs the v2.5.5 exit criteria that are the same shape — DayFacts sole-fold, single-site `economicSpend` clamp, explicitly named net measures.
-*Exit:* no displayed percentage or derived metric is computed at more than one site; each has a named owner and an enrolment guard.
+- **The conversation layer failed its own dogfood and was deleted rather than patched** (2026-09-07, [AI-CONVERSATION-RESET.md](AI-CONVERSATION-RESET.md)). The v2.6a plan assumed additions to that layer; the replacement was designed from exemplar conversations and measured in a harness before it was promoted (2026-09-13, [AI-PRODUCTION-PROMOTION.md](AI-PRODUCTION-PROMOTION.md)). Workstream 3's gate — *the system may not speak unprompted until it cannot misquote a number* — was met for the Daily Brief by a deterministic licence rather than the deleted output validator.
+- **Tenancy had to stop depending on application code before the first external user** (2026-10-01→06, [POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md](POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md)). Row-Level Security with role-scoped runtime principals was not on the July roadmap; it was pulled forward because the beta path exposed real financial data to a second tenant for the first time.
+- **The founder could not operate five customers from inside the product** (2026-10-07, [OPERATIONALIZATION-INVESTIGATION-2026-10-07.md](OPERATIONALIZATION-INVESTIGATION-2026-10-07.md)). P0 and P1 were run ahead of everything else because every other milestone assumed an operable product.
 
-**2. AI Truth Convergence** — *consumes 1*
-B2 converged exactly one assembler onto the canonical snapshot authority. Sweep the rest (`accounts`, `transactions`, `holdings`, `goals`) the same way: consume the canonical authority, never rebuild, exclude-and-disclose what cannot be converted. Feeds directly into the v2.6a substrate below.
-*Exit:* no AI assembler holds an independent financial truth source; every derived figure carries or suppresses its input caveats.
+Mobile UX (workstream 4) ran as slices, not a program; the first UX *program* of v2.6 is Platform Spaces UX Refinement P1, desktop-first by owner decision. Provider expansion (5) has not started, by design.
 
-**3. Ambient Intelligence throughout Spaces** — *gated on 1 + 2*
-Contextual insight surfaced naturally across the product. Detailed exit criteria live in **v2.6b** below; the gate is unchanged and binding — *the system may not speak unprompted until it cannot misquote a number.*
+### Workstream state
 
-**4. Mobile UX refinement** — *parallel track, any time*
-Interaction, hierarchy and integration. Presentation-layer and low-coupling to the semantic work, so it runs alongside 1–3 rather than queuing behind them.
+| # | Workstream (July plan) | State | Evidence |
+|---|---|---|---|
+| 1 | Semantic Authority Convergence | **COMPLETED** 2026-08-17 as REVIEW-3 (64 commits; population, chronology, snapshot read boundary; 12/12 contradictions non-reproducible) | [v2.6-REVIEW-3-EXECUTION-REPORT.md](v2.6-REVIEW-3-EXECUTION-REPORT.md) |
+| 2 | AI Truth Convergence | **COMPLETED** in REVIEW-3 (AI/Brief convergence onto canonical folds, real income classification, canonical net, authority debt legs); then **superseded in form** by the rebuilt runtime, whose tools read authorities and never rebuild them (`lib/ai/conversation/tools.ts`) | REVIEW-3 report; [AI-PRODUCTION-PROMOTION.md](AI-PRODUCTION-PROMOTION.md) |
+| 3 | Ambient Intelligence | **PARTIALLY COMPLETED**: the Daily Brief ships (slices 1–4.1, `0e1cf1e` → `fd41f5a`; per-source data health, claim-scoped, version-gated reuse). `AiAdvice` write path, signals → notifications, AI Inbox, advisory modes — **DEFERRED** (see v2.6b) | STATUS §5 |
+| 4 | Mobile UX refinement | **ACTIVE as slices**: workspace sidebar + rail-below-lg, one primary nav, site nav inside a Space, AI page UX (September). No mobile *program* has been chartered. The active UX program is **Platform Spaces UX Refinement P1** (desktop-first; `railVisibility="belowLg"` keeps the touch rail) | [UX P1 coordination](PLATFORM-SPACES-UX-REFINEMENT-P1-COORDINATION.md) |
+| 5 | Provider expansion | **DEFERRED** by decision; a provider-neutral spine is budgeted as part of this work, not before it | [ADR-006](../decisions/ADR-006-provider-abstraction-timing.md), parked-ideas |
 
-**5. Provider expansion** — *last of the majors*
-Extend a **provider-neutral** ingestion architecture to further institutions. Deliberately last: PROV-1 found `plaidAdapter` decorative with no provider-neutral `persistAccountSpine`, and B1/B4 hardened Plaid and BTC identity *separately*. Budget the provider-neutral spine (PROV-6) as part of this work — not as a prerequisite blocking it, and not as a follow-up after a second hardcoded path exists.
+### Programs that ran in v2.6 beyond the five workstreams (all COMPLETED unless marked)
+
+| Program | When | Record |
+|---|---|---|
+| Historical-truth arc (replay, provider-bound crypto history, aggregate authorisation, universal lens roots) | Aug | [universal lens roots](v2.6-INVESTIGATION-UNIVERSAL-LENS-ROOTS.md) |
+| AI conversation reset → baseline harness → experiments → production promotion (`gpt-5.1`) | 09-07 → 09-13 | [reset](AI-CONVERSATION-RESET.md), [investigation](AI-CONVERSATION-INVESTIGATION.md), [goldens](AI-CONVERSATION-GOLDENS.md), [promotion](AI-PRODUCTION-PROMOTION.md) |
+| Daily Brief 1–4.1; scenario ledger, goal seek, liquid floor, checkpoints, elapsed time; exact temporal predicates; transcript cache | 09-13 → 09-14 | STATUS §5 |
+| Platform Ops cost accounting, policies (READ/WRITE/CONTROL), control plane, cockpit | 09-09 → 09-15 | [control-plane investigation](PLATFORM-OPS-CONTROL-PLANE-INVESTIGATION.md) |
+| Post-M1 architecture program; Financial Memory V2; pre-execution planning continuity; I1 / M1 / L1 / S1 | 09-20 → 09-22 | [post-M1 closure](AI-POSTM1-ARCHITECTURE-PROGRAM-CLOSURE.md), [Memory V2 design](AI-FINANCIAL-MEMORY-V2-DESIGN.md), [planning continuity closure](AI-PREEXECUTION-PLANNING-CONTINUITY-CLOSURE.md), [I1 closure](AI-INCOME-CHANGES-I1-CLOSURE.md), [S1 investigation](AI-CATEGORY-SPENDING-S1-INVESTIGATION.md) |
+| Debt Overview and per-liability payoff; Cash Flow reconciliation; refund economics; money presentation; Space workspace navigation; Markets skeleton | 09-20 → 09-21 | STATUS §5 |
+| Pre-S1 full-system audit (the live defect register) + gate repair + CI parity on Node 24 | 09-21 → 09-22 | [audit](../audits/PRE-S1-FULL-SYSTEM-AUDIT-2026-09-21.md) |
+| Crypto refresh incident and repair | 10-01 | [incident](CRYPTO-REFRESH-INCIDENT-2026-10-01.md), [closure](CRYPTO-REFRESH-REPAIR-CLOSURE-2026-10-01.md) |
+| Postgres RLS: roles, policies, strict mode, Preview cutover | 10-01 → 10-06 | [investigation](POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md), [runbook](../operations/rls-preview-cutover.md) |
+| Plaid hardening (identity exclusivity, liveness, revoke, pagination restart, webhook verification, sandbox lane) | 10-04 → 10-07 | STATUS §5; [sandbox lane](../operations/plaid-sandbox-lane-2026-10-06.md) |
+| Public/app domain split — architecture, `site/`, Preview rehearsal; environment separation | 10-02 → 10-07 | [architecture](PUBLIC-APP-DOMAIN-SPLIT-ARCHITECTURE.md), [Preview record](../operations/domain-split-preview.md), [environment separation](../operations/environment-separation.md). **Production steps DEFERRED until after the cutover** |
+| Operationalization P0 (facts, alerting, intake, legal) and P1 (human operability) | 10-07 → 10-08 | [P0](OPERATIONALIZATION-P0-REPORT-2026-10-07.md), [P1](OPERATIONALIZATION-P1-REPORT-2026-10-08.md) |
+| **Platform Spaces UX Refinement P1** | 10-14 → | **ACTIVE** — [investigation](PLATFORM-SPACES-UX-REFINEMENT-P1-INVESTIGATION-2026-10-14.md), [coordination](PLATFORM-SPACES-UX-REFINEMENT-P1-COORDINATION.md) |
 
 ### v2.6 backlog
 
-**DF-6 — Historical Production Duplicate Cleanup.** Retire the three historical duplicate lineages left in production by the 2026-07-22 reconnect re-pull that predates DF-4 (T-Mobile −119.00 / 2026-07-08; YouTube Premium −15.99 / 2026-06-28; Anthropic −42.22 / 2026-07-01 — all on one Amex account). Extend the **DF-5** repair pattern: dry-run by default, `--apply` required to write, **soft-delete only** (preserve forensic evidence), abort on shape mismatch, idempotent, narrowly scoped to the three proven `(date, amount, raw descriptor)` lineages. Retire the later row of each pair — the earlier row is the lineage the provider still maintains. **Not to be executed during a release window.**
+**DF-6 — Historical Production Duplicate Cleanup — DEFERRED, unscheduled.** Retire the three historical duplicate lineages left in production by the 2026-07-22 reconnect re-pull that predates DF-4 (T-Mobile −119.00 / 2026-07-08; YouTube Premium −15.99 / 2026-06-28; Anthropic −42.22 / 2026-07-01, one Amex account). Extend the DF-5 repair pattern: dry-run by default, `--apply` to write, soft-delete only, abort on shape mismatch, idempotent, scoped to the three proven `(date, amount, raw descriptor)` lineages; retire the later row of each pair. No commit has referenced DF-6 since August. **Not to be executed during a release window**, and not before the cutover's own duplicate-identity preflight (which measured 0 duplicate PLAID identities on 2026-10-06 — a different check; the three lineages are economic duplicates, not identity duplicates).
 
-## v2.6a — Advisor Intelligence (AI-5)
+## v2.6a — Advisor Intelligence (AI-5) — **SUPERSEDED**
 
-Conversation-state substrate (no `conversationId` exists today); active-window + context-change disclosure; confidence/completeness propagation; intent-path consistency (KD-16); graceful context compression; advisor-quality presentation. KD-8 rides here.
+The July plan ([ai-5-advisor-intelligence.md](ai-5-advisor-intelligence.md)) scoped *additions* to a conversational layer that was deleted on 2026-09-07. The record of what was believed before the reset is preserved there and in the reset document; the plan's **solutions are void**, and the two **problems** it named have been answered differently by the rebuilt runtime:
 
-**Layered entry gates (do not collapse):** zero-schema foundation (AI5-0 failure-corpus reconstruction, AI5-1 window semantics, AI5-2 disclosure) may begin now in a parallel worktree under a **bounds-not-dollars** test rule; shadow persisted-state integration gates on v2.5 A1-M1 + v2.5.5 items 1–4; live user-facing state persistence gates on full v2.5.5 closeout + the OPS-1 beta floor.
+| AI-5 problem | How the live runtime answers it | State |
+|---|---|---|
+| "Conversation state does not exist" | By design it still does not persist: each turn is stateless, the active hypothetical crosses turns in a sealed `HttpOnly` carrier, and what the user *states* about their money is held in Financial Memory V2 (user-stated figures only, with a user-visible panel). A durable transcript store was consciously not built. | COMPLETED (different design) |
+| "A reply must not silently change its time window" | The per-turn heuristic window resolver (`lib/ai/intent/classifier.ts`) no longer exists. Time now enters through tool contracts: four separated temporal authorities (`lib/ai/temporal-scope.ts`: requested / selected / coverage / satisfied), the coverage envelope that states what exists versus what was loaded, two measured frames (`recent` 90-day, `activity` six-month) whose existence rules were measured, and exact temporal predicates taken off the model. | COMPLETED as to the defect; the **cross-turn** continuity criterion is open — see KD-16 in [STATUS §10](../../STATUS.md) |
 
-**Exit criteria:** the reconstructed eight observed conversation-quality failures reproduced as green tests; no reply silently changes its time window; no contradictory data-availability claims across intent paths; every derived metric carries or suppresses its input caveats; KD-8 and KD-16 closed; validator authority unchanged.
+The former exit criteria ("eight observed failures reproduced as green tests; KD-8 and KD-16 closed; validator authority unchanged") no longer describe anything buildable: the corpus measured a pipeline that is gone, the validator was deleted with it, and KD-8/KD-16 are assessed against the live runtime in STATUS §10 (recommendations pending owner decision — not changed here).
 
-## v2.6b — Ambient Intelligence
+## v2.6b — Ambient Intelligence — **PARTIALLY COMPLETED; remainder DEFERRED**
 
-Scheduler substrate; `AiAdvice` write path; Daily Brief generation; signals → notifications; AI Inbox; context-priority planner; advisory modes. KD-9, KD-12, KD-14 close here. Start the Plaid production application during this window (longest external lead time).
+| Item | State |
+|---|---|
+| Scheduler substrate | COMPLETED (typed job runtime; 15-minute dispatcher wake with ledger-driven cadence policy, P1) |
+| Daily Brief generation | COMPLETED (slices 1–4.1): per-(Space, owner, day) rows, watermark/digest, deterministic licence that honours truncation, quiet derived from importance, two clocks with per-source data health |
+| `AiAdvice` write path (KD-14) | DEFERRED — zero writers repo-wide (STATUS §10) |
+| Signals → notifications; AI Inbox; advisory modes | DEFERRED — not started |
+| Audit-log growth bounded (KD-12) | Open, low (STATUS §10) |
+| "Start the Plaid production application during this window" | **Stale line, retired:** Production already runs `PLAID_ENV=production` against real Items (cutover plan §1) |
 
-**Entry:** v2.6a exit — the system may not speak unprompted until it cannot misquote a number **and** can hold a coherent conversation when prompted. **Exit:** one week of scheduled briefs with zero validator failures; notification opt-in/out; audit-log growth bounded.
+**Entry gate, restated:** the Daily Brief speaks unprompted under a deterministic licence; nothing else may speak unprompted until it has its own licence of the same kind. **Exit:** one week of scheduled Briefs with zero honesty failures, measured — the output validator the July criterion assumed is gone, so the measurement needs an owner in whatever ships next.
 
-## v3.0 — Launch (L-1)
+## Path to the first five beta users — **BLOCKED on owner-gated acts** (added 2026-10-14)
 
-Billing/subscription; onboarding funnel; production Plaid live; counsel-reviewed legal/compliance posture; tested backups + incident response + alerting; support tooling; accessibility/perf polish. **Zero new product surface.**
+This is the critical path today and did not exist on the July roadmap. The code verdict is *GO, conditional* (P0 §I, P1 §O). What remains is external administration, in order:
+
+1. **Production cutover** — v2.6 + RLS authority + secret rotation: candidate SHA fixed by a no-content merge, Preview provider acceptance and job-body execution on the candidate, clone rehearsal, staged-login rehearsal, then execution under the verbatim authorisation in [production-cutover-plan.md §10](../operations/production-cutover-plan.md). **NO-GO until its §6 gates are green.**
+2. **Configuration acts** — `PLATFORM_ALERTS_EMAIL`, `FM_RLS_STRICT` + role URLs, Turnstile keys, operator grants confirmed, support inbox monitored.
+3. **Domain split on Production** — [domain-split-preview.md §6.2](../operations/domain-split-preview.md), after the cutover.
+4. **Invite the first five** — the P1 report's operational verdict covers routine operation from inside the product.
+
+## v3.0 — Launch (L-1) — **not started**
+
+Billing/subscription; onboarding funnel; counsel-reviewed legal/compliance posture; tested backups + incident response + alerting; support tooling; accessibility/perf polish. **Zero new product surface.** Production Plaid is already live, so that line of the July text is retired.
 
 **Exit:** a stranger can pay, connect a bank, share a Space with a partner, and be supported and recovered.
+
+---
+
+## Sequencing changes log
+
+| Date | Change | Why | Record |
+|---|---|---|---|
+| 2026-07-02 | v2.6 split into v2.6a / v2.6b; AI-5 approved | AI evolution ladder | git `bb60a04` |
+| 2026-07-27 | v2.6 opened from the `v2.5.0` tag with five ordered workstreams | duplicated authority was the most expensive defect class (B2, B3) | this file's history |
+| 2026-08-17 | Workstreams 1–2 closed as REVIEW-3 | one coordinated convergence pass | [REVIEW-3 report](v2.6-REVIEW-3-EXECUTION-REPORT.md) |
+| 2026-09-07 | v2.6a superseded; conversation layer deleted | failed dogfood; redesign from exemplars | [reset](AI-CONVERSATION-RESET.md) |
+| 2026-09-13 | Conversation runtime promoted to production ahead of any "ambient" work; Daily Brief followed | measured gates, not plan order | [promotion](AI-PRODUCTION-PROMOTION.md) |
+| 2026-10-01 | RLS pulled forward ahead of UX and provider work | tenancy must not depend on application code before external users | [RLS investigation](POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md) |
+| 2026-10-07 | Operationalization P0/P1 run before the cutover | first-five beta operability | [operationalization investigation](OPERATIONALIZATION-INVESTIGATION-2026-10-07.md) |
+| 2026-10-14 | Platform Spaces UX Refinement P1 chartered as the first v2.6 UX program; roadmap re-baselined | owner authorisation D1–D14 | [UX P1 coordination](PLATFORM-SPACES-UX-REFINEMENT-P1-COORDINATION.md) |

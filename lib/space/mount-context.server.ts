@@ -104,6 +104,7 @@ export function financialMountContext(
     access: {
       canRead:  ctx.permissions.canRead,
       canWrite: ctx.permissions.canWrite,
+      canControl: false,                      // no control-plane authority exists on a financial Space
       level:    ctx.role, // SpaceMemberRole vocabulary — descriptive label only
     },
     display: { name: ctx.space.name },
@@ -159,6 +160,8 @@ export function platformMountContext(
       // WRITE 1 ≥ 1 true); OPS-2D-2 changed this from `=== "WRITE"` so that a
       // higher rank can never read as *less* write access than WRITE itself.
       canWrite: LEVEL_RANK[input.accessLevel] >= LEVEL_RANK.WRITE,
+      // Slice 2 — the same rank rule, one step up. Only the Policies editor reads it.
+      canControl: LEVEL_RANK[input.accessLevel] >= LEVEL_RANK.CONTROL,
       level:    input.accessLevel,            // PlatformAccessLevel vocabulary — descriptive only
     },
     display: { name: input.spaceName, label: input.areaLabel },

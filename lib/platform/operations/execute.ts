@@ -30,7 +30,7 @@
  */
 
 import "server-only";
-import { runJob as realRunJob, type JobTrigger } from "@/lib/jobs/run";
+import { runJob as realRunJob, currentJobRun, type JobTrigger } from "@/lib/jobs/run";
 import { STALE_RUNNING_HOURS } from "@/lib/jobs/health";
 import { resolveJobBody, type OperationCommand } from "./registry";
 
@@ -78,6 +78,13 @@ export interface OperationRunResult {
   error?: string;
   /** Present on outcome "planned" (dry-run). */
   plan?: DryRunPlan;
+  /**
+   * P1 — the JobRun this Run Now opened (executed OR failed), read from the
+   * runJob context inside the body. Null when the start write never landed or
+   * nothing ran. The audit row records it as its execution reference, so
+   * "operator ran X → run #Y failed" is one join instead of time-proximity.
+   */
+  jobRunId?: string | null;
 }
 
 /** Injected I/O — real deps in the route, fakes in tests. */
@@ -86,6 +93,10 @@ export interface OperationDeps {
   /** Newest "running" JobRun row for a jobName (the in-flight lock), or null. */
   findRunningJobRun: (jobName: string) => Promise<RunningJobRow | null>;
   now: () => Date;
+  /** The JobRun id the current body runs under (runJob's ALS). Injectable for tests. */
+  currentJobRunId?: () => string | null;
+  /** The canonical body for a target. Defaults to the registry; injectable so a test can run a harmless body. */
+  resolveBody?: (targetJob: string) => () => Promise<unknown>;
 }
 
 /**
@@ -126,16 +137,24 @@ export async function runOperation(
   }
 
   // Canonical execution: the SAME body the dispatcher runs, through runJob.
-  const body = resolveJobBody(command.targetJob);
+  const body = (deps.resolveBody ?? resolveJobBody)(command.targetJob);
+  const readJobRunId = deps.currentJobRunId ?? (() => currentJobRun()?.id ?? null);
+  // P1 — capture the JobRun id runJob minted, from INSIDE the body (the only
+  // place runJob exposes it), before the body can throw. No lib/jobs change.
+  let jobRunId: string | null = null;
   try {
-    const summary = await deps.runJob(command.jobName, body, { trigger: "manual" });
-    return { ...base, outcome: "executed", status: "succeeded", summary };
+    const summary = await deps.runJob(command.jobName, async () => {
+      jobRunId = readJobRunId();
+      return body();
+    }, { trigger: "manual" });
+    return { ...base, outcome: "executed", status: "succeeded", summary, jobRunId };
   } catch (err) {
     // runJob already ledgered status "failed" + errorSummary; surface, don't rethrow.
     return {
       ...base,
       outcome: "failed",
       error: err instanceof Error ? err.message : String(err),
+      jobRunId,
     };
   }
 }

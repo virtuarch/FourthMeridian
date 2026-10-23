@@ -22,6 +22,10 @@
 
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
+import type { BoundedSelection } from "@/lib/ai/bounded-selection";
+import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
+import type { DebtService } from "@/lib/transactions/debt-service";
+import type { CanonicalSpendingRead } from "@/lib/transactions/canonical-spending";
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -42,14 +46,16 @@ export type ContextDomain = string;
 export const FinanceDomains = {
   ACCOUNTS:             'accounts',
   TRANSACTIONS_SUMMARY: 'transactions_summary',
-  TRANSACTIONS_RAW:     'transactions_raw',
   HOLDINGS_SUMMARY:     'holdings_summary',
-  HOLDINGS_RAW:         'holdings_raw',
-  GOALS:                'goals',
-  MEMBERS:              'members',
   SNAPSHOT_HISTORY:     'snapshot_history',
-  PROVIDERS:            'providers',
-  PLATFORM_HEALTH:      'platform_health',
+  // W2 — GOALS deleted (Goals retired; the 'goals' domain has no assembler,
+  // no manifest entry, and no payload types any more).
+  //
+  // V26-REASONING Slice 0 — TRANSACTIONS_RAW, HOLDINGS_RAW, MEMBERS, PROVIDERS
+  // and PLATFORM_HEALTH deleted. Each named a domain with no assembler, no
+  // manifest entry and no reader; REVIEW-3 C-10 had already removed
+  // MEMBERS/PROVIDERS from every manifest and every classifier rule. A domain
+  // constant nothing can assemble is a promise the registry cannot keep.
 } as const;
 
 export type FinanceDomain = typeof FinanceDomains[keyof typeof FinanceDomains];
@@ -77,19 +83,71 @@ export interface ContextDomainSection {
  * `scopeHint` lets callers signal intent without changing the domain list:
  *   - 'brief'  → assembler may return a condensed summary (for Daily Brief)
  *   - 'full'   → assembler returns the complete section (default)
+ *
+ * ── W4 doctrine: scopeHint is TRANSPORT, never SEMANTICS ────────────────────
+ * The hint controls what a section CARRIES (truncated lists, omitted rollups,
+ * the DEBT_ONLY account subset — see `accountListScope`), never what the
+ * assessment CONCLUDES: it must not alter the period over which the user's
+ * financial condition is measured, nor any input that can move a
+ * `computeAssessment` verdict. Same corpus + same day + different scopeHint
+ * ⇒ same assessment conclusions. (Before W4 the transactions assembler keyed
+ * its default query window on the hint — 30 vs 90 days — and brief/full
+ * reached different deficit, priority, and monthly-figure conclusions from the
+ * same corpus.) A transport omission is legal only where it provably cannot
+ * change a conclusion — pinned in brief-scope-adequacy.test.ts and measured by
+ * scripts/audit-brief-assessment-parity.ts, whose expected drift is ZERO.
  */
 export interface AssemblerOptions {
   scopeHint?: 'full' | 'brief';
   /**
    * Optional explicit transaction window (D6 dynamic windows). When present,
    * the transactions assembler summarizes this UTC date range instead of its
-   * default 30/90-day span. Both bounds are inclusive YYYY-MM-DD dates. Other
-   * assemblers ignore this field. Absent → default behavior is preserved.
+   * default assessment window (90 rolling days at every scope hint — W4).
+   * Both bounds are inclusive YYYY-MM-DD dates. Other assemblers ignore this
+   * field. Absent → default behavior is preserved. Always caller-directed and
+   * scope-independent.
    */
+  /**
+   * CF-12 — which side of the portfolio a question is about, from CF-7's
+   * concept breadth. Narrows the holdings POSITION LIST; every total stays
+   * whole-portfolio. Absent ⇒ ALL, which is the pre-CF-12 behaviour.
+   */
+  positionClass?: 'ALL' | 'TRADITIONAL' | 'DIGITAL';
+  /**
+   * The canonical spending baseline as of this date (lib/transactions/canonical-spending):
+   * when set, the transactions assembler ALSO reads the trailing 3 complete calendar
+   * months before this date over an explicit window and attaches the result as
+   * `canonicalSpending`. Opt-in, because it is a second read: a surface that prints
+   * "how much do I spend" asks for it; a measurement over a named window never does.
+   */
+  canonicalSpendingAsOf?: string;
   transactionWindow?: {
-    startDate: string; // YYYY-MM-DD, inclusive floor
-    endDate:   string; // YYYY-MM-DD, inclusive ceiling
+    /**
+     * YYYY-MM-DD, inclusive floor. CF-2 — OPTIONAL, because a temporal request
+     * need not denote a servable interval: "ever" and "before June 2024" make a
+     * real claim with no bounded window behind it. When either bound is absent
+     * the assembler keeps its default window and records the request, which is
+     * what lets the prompt say "you asked for X, you were given Y".
+     */
+    startDate?: string;
+    endDate?:   string; // YYYY-MM-DD, inclusive ceiling
     label?:    string; // human phrase for provenance ("year-to-date 2026")
+    /**
+     * CF-2 — the temporal CLAIM behind the interval, carried so the assembler
+     * can report whether its selection discharged it. The interval alone cannot
+     * say: a floor moved by the lookback clamp looks identical to a floor the
+     * user chose.
+     */
+    requested?:      TemporalRequest;
+    requestedStart?: string | null;
+    requestedEnd?:   string | null;
+    /**
+     * CF-4 — whether the caller named this period in the message being
+     * answered, carried it forward from an earlier turn, or discarded one.
+     * The assembler passes it through untouched; only the prompt reads it.
+     */
+    provenance?:     ScopeProvenance;
+    inheritedFrom?:  string | null;
   };
   /**
    * Optional transaction-drilldown request (D6 — category/merchant evidence
@@ -182,16 +240,26 @@ export interface AccountHealthSummary {
  * SUMMARY_ONLY accounts to prevent identifying financial assumptions from leaking
  * across Space membership boundaries.
  *
- * `rateSource` reflects where the effective APR came from:
- *   'user'     — DebtProfile.apr was set by the account owner
- *   'provider' — FinancialAccount.interestRate was populated by Plaid or another
- *                provider; not user-confirmed
- *   null       — no rate data available from any source
+ * `rateSource` reflects where the effective APR came from. REVIEW-3 C-2: every
+ * live rate store is user-entered — no provider ingest writes a rate today:
+ *   'user'         — DebtProfile.apr, set in the debt-profile editor
+ *   'user_account' — FinancialAccount.interestRate, set in the account editor
+ *                    (the column's only writer; historically mislabelled
+ *                    'provider')
+ *   null           — no rate data available from any source
  */
 export interface AccountSummaryItem {
   id:               string;
   name:             string;
   type:             string;
+  /**
+   * 2026-10-07 — FinancialAccount.providerSubtype (provider evidence), so a
+   * consumer can state THIS account's liquidityAccess verdict. Without it every
+   * row classified as subtype-unknown: on Preview the HSA read access=cash next
+   * to a restricted-cash total that contained it. On an aggregate row it is the
+   * members' (aggregates are keyed by access, so they share the verdict).
+   */
+  providerSubtype?: string | null;
   institution?:     string;
   balance:          number;
   currency:         string;
@@ -232,6 +300,113 @@ export interface AccountSummaryItem {
    *  supply this field (currently all institutions except Capital One).
    *  Optional until the corresponding FinancialAccount schema field lands. */
   balanceLastUpdatedAt?: string | null;
+  /**
+   * v2.6-L1 — the RESOLVED freshness claim for this balance, so the model is not
+   * left to infer one from two raw timestamps. Given only
+   * `lastUpdated: <today>` and `balanceLastUpdatedAt: null`, a model will
+   * reasonably narrate "your balance was updated today" — which asserts the
+   * institution's clock from ours. `basis` forecloses that: INGESTION means
+   * "Fourth Meridian fetched it then", and `ageDays` is a LOWER BOUND on the true
+   * age of the figure.
+   */
+  /**
+   * RWA-1 — present only on a manual asset (syncStatus "manual"): the balance is
+   * a value the USER ENTERED — their estimate of a home, vehicle or valuable —
+   * not a market price and not anything Fourth Meridian fetched. On such a row
+   * `balanceFreshness.basis` INGESTION dates when the user last entered it, and
+   * its band is judged on the estimate horizon (stale after 180 days).
+   */
+  valuationSource?: 'USER_ESTIMATE';
+  /**
+   * RWA-2A — the asset's RECORDED valuation anchors: values the USER entered for
+   * those dates (one per date, the latest correction winning), ascending, the
+   * latest 12 only. They are the user's estimates, not market prices.
+   * PURCHASE_PRICE appears only when the user opted to use the purchase price as
+   * the starting value; LEGACY_BALANCE is a pre-ledger asset's last entered value.
+   * Manual FULL rows only.
+   */
+  valuations?: { date: string; value: number; kind: 'USER_VALUATION' | 'PURCHASE_PRICE' | 'LEGACY_BALANCE' }[];
+  /**
+   * RWA-2A — a DESCRIPTOR of the modeled curve between the recorded anchors (no
+   * points): straight-line between two of the user's estimates, carried forward
+   * unchanged after the latest one. Modeled values are NOT observed market
+   * prices. Present only when at least two anchors exist.
+   */
+  modeledHistory?: {
+    basis:              'MODELED';
+    method:             'LINEAR_BETWEEN_ANCHORS';
+    from:               string;
+    to:                 string;
+    anchorCount:        number;
+    carriedForwardFrom: string | null;
+    meaning:            string;
+  };
+  /**
+   * RWA-2A — the USER-REPORTED appreciation (positive) or depreciation (negative)
+   * between the first and the latest recorded anchors, in the asset's currency.
+   * A difference between two of the user's own estimates, not a measured return.
+   * Present only when at least two anchors exist.
+   */
+  valueChangeSinceFirstRecorded?: { from: string; to: string; fromValue: number; toValue: number; change: number };
+  balanceFreshness?: {
+    /** PROVIDER_ATTESTED | INGESTION | UNOBSERVED. */
+    basis:      string;
+    /** The instant the claim is anchored on, ISO-8601. Null when unobserved. */
+    observedAt: string | null;
+    /** Age in days at assembly time. Null when unobserved — never a 0 stand-in. */
+    ageDays:    number | null;
+    /** LIVE | RECENT | STALE | VERY_STALE | UNKNOWN. */
+    band:       string;
+    /** True when the institution never reported its own computation time. */
+    providerClockUnknown: boolean;
+  };
+  /**
+   * v2.6-L2 — the account-type-aware reading of `availableBalance`, resolved by
+   * the balance authority. The RAW column is never sent: it carries reachable
+   * cash on a checking account, settled cash on a brokerage, and an unused
+   * CREDIT LINE on a card, and a model given one unlabelled number would have to
+   * guess which. On the Chase card that guess is wrong by $32,460.
+   *
+   * `quantity` is present only when a quantity could be named; otherwise
+   * `reason` says why not, and there is no amount to misread.
+   */
+  availableQuantity?: {
+    /** AVAILABLE_CASH | AVAILABLE_CREDIT | SETTLED_CASH, when named. */
+    quantity?: string;
+    amount?:   number;
+    /** PROVIDER_DID_NOT_REPORT | SEMANTICS_UNATTESTED | NOT_APPLICABLE. */
+    reason?:   string;
+    /** The wording a surface would show, e.g. "Available credit". */
+    label:     string;
+  };
+  /**
+   * v2.6-L3 — the current-state reconciliation. Sent so the model states what is
+   * REACHABLE and what is unexplained, instead of narrating an observed ledger
+   * balance as spendable money. On CHASE COLLEGE the difference is $4,000.
+   *
+   * `predicted` is present ONLY when provider-observed pending rows licensed it;
+   * `unexplained` is a first-class output and must be surfaced, never absorbed.
+   */
+  currentState?: {
+    /** DEPOSITORY | REVOLVING_CREDIT | NONE. */
+    basis:        string;
+    /** EXACT | PARTIALLY_ATTRIBUTED | UNAVAILABLE | CONTRADICTORY. */
+    state:        string;
+    /** Provider-observed pending rows counted, and their signed sum (native currency). */
+    pendingCount: number;
+    pendingSum:   number;
+    /** Observed + pending. Absent when no pending evidence exists. */
+    predicted?:   number;
+    /** Reachable cash. Absent on non-cash accounts and when unknown. */
+    reachable?:   number;
+    /** The residual. Positive = held back and unexplained. Absent when not reconcilable. */
+    unexplained?: number;
+    /** One deterministic sentence stating what the numbers mean. */
+    explanation:  string;
+  };
+  // NOTE: debt exposure is NOT re-declared here. `amountOwed` / `creditBalance` /
+  // `liabilityState` already exist below (V25-SIDE-1) from the same authority the
+  // balance module composes (lib/debt/balance-semantics). One field, one source.
   syncStatus?:      string | null;
   needsReauth:      boolean;
   visibilityLevel:  'FULL' | 'BALANCE_ONLY';
@@ -259,11 +434,24 @@ export interface AccountSummaryItem {
   // All fields are undefined for non-debt account types and for BALANCE_ONLY accounts.
   apr?:                   number | null; // effective APR; null = known missing
   minimumPayment?:        number | null; // effective minimum payment; null = known missing
-  rateSource?:            'user' | 'provider' | null;
+  rateSource?:            'user' | 'user_account' | null;
   dueDay?:                number | null; // day of month (1–31)
   statementCloseDay?:     number | null; // day of month (1–31)
   promoAprEndDate?:       string | null; // ISO-8601 date string
   debtProfileUpdatedAt?:  string | null; // ISO-8601 — when DebtProfile was last touched
+
+  /**
+   * REVIEW-3 C-4 — present ONLY on aggregated privacy-reduced rows (synthetic
+   * id), from lib/account-privacy's PrivacyAggregate: member identity/count so
+   * per-member state can resolve, and owed vs issuer-credit carried SEPARATELY
+   * (never netted — an issuer credit cannot discharge another account's debt).
+   */
+  aggregate?: {
+    memberAccountIds: string[];
+    memberCount:      number;
+    owedTotal:        number;
+    creditTotal:      number;
+  };
 }
 
 /**
@@ -309,10 +497,25 @@ export interface KnowledgeGap {
  */
 export interface AccountsSectionData {
   totalCount:         number;
+  /**
+   * REVIEW-3 C-4 — ACTIVE links whose visibility tier grants no balance
+   * disclosure (SUMMARY_ONLY / PRIVATE / legacy SHARED / unknown). They fail
+   * closed: no per-account row, no contribution to any total; this count is the
+   * only disclosure (mirrors lib/account-privacy's redactedCount). Optional so
+   * fixtures predating it still compile; the assembler always emits it.
+   */
+  redactedCount?:     number;
   totalAssets:        number;
   totalLiabilities:   number;
   netWorth:           number;
   totalLiquid:        number;
+  /**
+   * 2026-10-07 — classifyAccounts().totalRestrictedCash: checking/savings value
+   * whose use is restricted (e.g. an HSA). Owned and in netWorth/totalAssets,
+   * NOT in totalLiquid. Optional so older payloads/fixtures still type-check;
+   * ABSENT means "not reported", never 0.
+   */
+  totalRestrictedCash?: number;
   totalInvestments:   number;
   totalDigitalAssets: number;
   totalRealAssets:    number;
@@ -340,7 +543,31 @@ export interface AccountsSectionData {
   };
   health:         AccountHealthSummary;
   knowledgeGaps:  KnowledgeGap[];          // always present, possibly empty
-  accounts?:      AccountSummaryItem[];    // omitted when scopeHint === 'brief'
+  /**
+   * W3 — the per-account list is now ALWAYS emitted by the assembler; under
+   * scopeHint='brief' it is the DEBT subset (see `accountListScope`). Optional
+   * only for payloads not built by the assembler (fixtures, older stored
+   * contexts) — an undefined list is a PAYLOAD GAP the engine refuses to grade
+   * from, never a scope choice.
+   */
+  accounts?:      AccountSummaryItem[];
+  /**
+   * W3 — WHICH population `accounts` carries, so the payload states its own
+   * boundary instead of leaving the model (or the engine) to infer it.
+   *
+   *   'FULL'      — every disclosing link's rows (full scope).
+   *   'DEBT_ONLY' — the debt rows only (brief scope).
+   *
+   * ⚠️ 'DEBT_ONLY' is a TRANSPORT BOUNDARY for W3, not product doctrine. The
+   * Brief's doctrine is ASSESSMENT-COMPLETE canonical context: no canonical
+   * fact a grade requires may be withheld for payload economy. Debt is the
+   * domain whose grade requires per-account rows today; if another section's
+   * grade ever requires rows, this scope WIDENS — it is never an argument for
+   * withholding them. Rows in this subset are byte-identical to the same rows
+   * under 'FULL' (same builder, same order, filtered) — cross-scope grade
+   * parity is by construction, pinned in brief-scope-adequacy.test.ts.
+   */
+  accountListScope?: 'FULL' | 'DEBT_ONLY';
   /**
    * Distinct FinancialAccount ids visible in this Space (one per SpaceAccountLink).
    * Populated regardless of scopeHint — used by the Daily Brief to deduplicate
@@ -395,6 +622,18 @@ export interface CategorySpend {
   /** Sum of positive-amount rows in this category, when > 0. Disclosure only —
    *  never added to `total`, never counted as spending. (KD-17) */
   creditTotal?: number;
+  /**
+   * REFUND-1 — Σ|amount| of rows the classifier typed REFUND in this category,
+   * when > 0. A verdict, not a sign test: a positive Payment / Transfer / Income
+   * row is a credit (`creditTotal`) but never a refund.
+   */
+  refundTotal?: number;
+  /**
+   * REFUND-1 — what the category actually cost: max(0, total − refundTotal), by
+   * the one clamp authority. Present exactly when `refundTotal` is. State THIS
+   * when asked what was spent on the category; never subtract in prose.
+   */
+  netTotal?: number;
   count:    number;
 }
 
@@ -454,9 +693,18 @@ export interface MonthlyBreakdownEntry {
    * Always present (possibly empty).
    */
   byCategory:       CategorySpend[];
-  /** Top categories by absolute settled total in this month (≤3). Convenience
+  /** Top categories by absolute settled total in this month, as a CF-1 bounded
+   *  selection (≤3 items, `totalCount` = every category this month). Convenience
    *  slice of `byCategory` — kept for compact summaries. */
-  topCategories?:   Array<{ category: string; total: number }>;
+  topCategories?:   BoundedSelection<{ category: string; total: number }>;
+  /**
+   * S1-N1 — interest CHARGED this month (flowType INTEREST, settled, inside the
+   * economic fold), by the account it posted to: `charges` ⊆ expenseTotal and
+   * `credits` ⊆ refundTotal. Read by the scenario spine to leave out of ordinary
+   * spending the interest of a liability whose FUTURE interest the scenario ledger
+   * accrues itself — counted once. Absent when the month has none attributable.
+   */
+  interestByAccount?: Record<string, { charges: number; credits: number }>;
 }
 
 /**
@@ -637,6 +885,13 @@ export interface TransactionDrilldown {
  * `recurringCandidates` is omitted when scopeHint='brief'.
  */
 export interface TransactionsSummaryData {
+  /**
+   * REVIEW-3 C-6 — the reporting currency every money total in this section is
+   * stated in (the assembler's conversion target). Consumers that render money
+   * (signal detectors, the Brief) format with THIS, never a hard-coded symbol.
+   * Optional only for fixtures predating it.
+   */
+  currency?:        string;
   windowDays:       number;
   startDate:        string; // YYYY-MM-DD — window floor (requested)
   endDate:          string; // YYYY-MM-DD — most recent transaction date (or today)
@@ -665,6 +920,20 @@ export interface TransactionsSummaryData {
   /** Sum of positive flowType=INCOME amounts (includes dividends, doctrine §5). */
   incomeTotal:       number;
   /**
+   * v2.6-TRUTH-5 — the canonical income composition, so the model never has to
+   * infer what an "income" number contains. `incomeTotal` is BANK-TRANSACTION
+   * broad income and equals the sum of `incomeByClass`; investment dividends
+   * live in a separate ledger and are deliberately NOT folded in (double
+   * counting — see lib/transactions/income-rollup.ts).
+   */
+  incomeScope?:      "BANK_TRANSACTIONS" | "ALL_SOURCES";
+  /** EARNED_INCOME | INTEREST_INCOME | DIVIDEND_INCOME | OTHER_INCOME → totals. */
+  incomeByClass?:    Record<string, { amount: number; count: number }>;
+  /** "<class>:<accountId|instrumentId>" → the paying account or security. */
+  incomeSourcesByClass?: Record<string, { amount: number; count: number }>;
+  /** Inflows EXCLUDED from broad income, each with its reason. */
+  incomeExcluded?:   { subtype: string; amount: number; count: number; reason: string }[];
+  /**
    * Gross absolute sum over flowType ∈ {SPENDING, FEE, INTEREST} (D-2).
    * Refunds are NEVER netted here — see refundTotal (D-3) — preserving the
    * KD-17 debit-only reconciliation with byCategory.
@@ -677,12 +946,52 @@ export interface TransactionsSummaryData {
    * folded to REFUND (e.g. misclassified card-payment credits — N10 caveat).
    */
   refundTotal:       number;
-  /** Absolute sum of source-side (amount < 0) flowType=DEBT_PAYMENT legs. */
+  /**
+   * REVIEW-3 C-3 — Σ|amount| over the debt-payment authority's counted CASH
+   * legs (lib/transactions/debt-payment-authority.ts selectDebtPaymentCashLegs),
+   * settled rows only. NOT the old `flowType=DEBT_PAYMENT && amount<0` proxy:
+   * the authority refuses unattested provider-categorised rows, admits attested
+   * transfer-typed cash legs, and never counts the liability-side leg.
+   */
   debtPaymentTotal:  number;
-  /** Absolute sum of flowType=TRANSFER (internal moves, both directions). */
+  /** Absolute sum of flowType=TRANSFER moves NOT counted as debt-payment cash
+   *  legs (a counted transfer is disclosed once, under debtPaymentTotal). */
   transferTotal:     number;
-  /** incomeTotal + refundTotal − expenseTotal − debtPaymentTotal (D-4; excludes transfers). */
+  /**
+   * REVIEW-3 C-3 — THE canonical economic net: incomeTotal −
+   * clampEconomicSpend(expenseTotal, refundTotal). Identical in definition to
+   * the Cash Flow workspace's net (foldEconomicRow / clampEconomicSpend are the
+   * shared authority). Transfers and debt payments are movement, not cash flow,
+   * and are excluded — see netAfterDebtPayments for the after-paydown position.
+   */
   netCashFlow:       number;
+  /**
+   * netCashFlow − debtService.netPaydown: the economic net after the cash that
+   * genuinely went to REDUCING debt. A SEPARATE, named measure — never the
+   * headline net (a debt payment is capital directed at a goal, not
+   * consumption). Always ≤ netCashFlow.
+   *
+   * post-M1 D3 — this was `netCashFlow − debtPaymentTotal`, which double-counted
+   * card-funded spending: `netCashFlow` already contains every purchase made on
+   * a card, and subtracting the payment that settles it subtracts it again. A
+   * household paying its cards in full read as deeply in deficit. Only the NET
+   * PAYDOWN is subtracted now (lib/transactions/debt-service.ts).
+   *
+   * Optional only so fixtures that predate it still compile; the assembler
+   * always emits it.
+   */
+  netAfterDebtPayments?: number;
+  /**
+   * post-M1 D3 — what the cash sent toward liabilities in this window actually
+   * did (lib/transactions/debt-service.ts): `payments` (=== debtPaymentTotal),
+   * the `newChargesOnLiabilities` they settle (a SUBSET of expenseTotal — never
+   * add the two), attested `debtProceeds`, and the resulting `netPaydown` /
+   * `netNewBorrowing`. OBSERVED HISTORICAL FLOW — not Σ stated minimums
+   * (lib/debt/aggregates.ts), not the payoff planner's chosen payment
+   * (lib/debt/payoff.ts), not L1's projected minimums (scenario-ledger.ts).
+   * Optional only so fixtures that predate it still compile.
+   */
+  debtService?: DebtService;
   /**
    * MC1 Phase 3 Slice 4 (D-7) — true when any converted row in the window
    * totals above was estimated (rate walked back / missing, or null-residue
@@ -736,8 +1045,33 @@ export interface TransactionsSummaryData {
     counterpartyResolution: 'PERSISTED_AND_READ_TIME' | 'PERSISTED_ONLY';
   };
 
+  /**
+   * CF-2 — the temporal framing contract: what was asked for, what was
+   * selected, and what the evidence covers.
+   *
+   * Deliberately NOT merged into `startDate`/`endDate`/`windowDays`, which say
+   * only what was queried. A reader given those three cannot tell a period the
+   * user chose from a period the lookback clamp substituted, and that is the
+   * distinction the whole slice exists to preserve.
+   *
+   * Optional for fixtures predating CF-2; the assembler always emits it.
+   */
+  temporalScope?: TemporalScope;
+
   // ── By category ─────────────────────────────────────────────────────────
   byCategory: CategorySpend[];
+  /**
+   * CF-1 — how many categories with settled debits EXIST in this window, before
+   * both the scope cap (`scopeHint: 'brief'` keeps the top five spending
+   * categories) and the serializer's render cap.
+   *
+   * The denominator for any claim about "your categories". It has to travel
+   * from here because `byCategory` may already be narrowed by the time a
+   * consumer sees it, and measuring a narrowed array reports it as complete.
+   *
+   * Optional only for fixtures predating CF-1; the assembler always emits it.
+   */
+  byCategoryTotalCount?: number;
 
   // ── Monthly rollups (deterministic; D6) ─────────────────────────────────
   /**
@@ -747,6 +1081,26 @@ export interface TransactionsSummaryData {
    * dividing a window total by a month count.
    */
   monthlyBreakdown: MonthlyBreakdownEntry[];
+  /**
+   * v2.6-ASSESS-2 — the user's DECLARED monthly expenses
+   * (`emergency_fund_progress` config), when they have set one.
+   *
+   * It sits here, beside the measured spending it competes with, deliberately:
+   * `computeAverageMonthlySpending` reads this same object, so the two candidate
+   * baselines for "months of expenses covered" are visible together and
+   * `resolveExpenseBaseline` (lib/liquidity/expense-baseline.ts) picks between
+   * them once. Undefined when the Space has no declared figure.
+   *
+   * ⚠️ Not a measurement. It is the user's own statement, and any surface
+   * quoting a coverage figure must say which of the two it divided by.
+   */
+  declaredMonthlyExpenses?: number | null;
+  /**
+   * The canonical spending baseline and its months, present when the read asked for
+   * it (`AssemblerOptions.canonicalSpendingAsOf`). Every "how much do I spend a
+   * month" figure on a surface reads THIS, not the reliable months of the window.
+   */
+  canonicalSpending?: CanonicalSpendingRead;
 
   // ── Highlights ──────────────────────────────────────────────────────────
   largestIncome:  { merchant: string; amount: number; date: string } | null;
@@ -763,7 +1117,9 @@ export interface TransactionsSummaryData {
    * Settled expense rows only — income, interest, transfers, and debt payments
    * are excluded (see MerchantSummary). Omitted when scopeHint='brief'.
    */
-  merchants?: MerchantSummary[];
+  /** CF-1 — a bounded selection, denominator included. The array alone could
+   *  not distinguish "the top 8" from "the 8 we chose to send". */
+  merchants?: BoundedSelection<MerchantSummary>;
 
   // ── Income-source rollup (D6.3 stabilization; omitted on scopeHint='brief') ─
   /**
@@ -773,7 +1129,8 @@ export interface TransactionsSummaryData {
    * Income/Interest rows only (see IncomeSource). Payroll surfaces here — never
    * in `merchants`. Omitted when scopeHint='brief'.
    */
-  incomeSources?: IncomeSource[];
+  /** CF-1 — bounded selection; see `merchants`. */
+  incomeSources?: BoundedSelection<IncomeSource>;
 
   // ── Drilldown evidence (D6; present only on explicit drilldown follow-ups) ─
   /**
@@ -873,6 +1230,79 @@ export interface HoldingsConcentration {
   top5Weight:        number | null;
   herfindahl:        number | null;
   effectiveHoldings: number | null;
+  /**
+   * ⚠️ WHAT THE WEIGHTS ARE A SHARE OF. Required, and deliberately INSIDE this
+   * object so a consumer cannot serialize `classification` without it.
+   *
+   * A concentration statistic is a ratio, and a ratio without its denominator is
+   * not evidence. Measured on the real Space: two positions worth $11.62 could be
+   * priced out of thirteen positions worth ~$23,983, and this object said
+   * `HIGHLY_CONCENTRATED / topSymbol TTWO / topWeight 0.75` with nothing stating
+   * that the population was 0.05% of the money. Every one of those numbers is
+   * arithmetically correct about its population. Nothing said what the population
+   * was, and a downstream reader would reasonably render it as
+   * "your portfolio is highly concentrated in TTWO".
+   */
+  population: ConcentrationPopulation;
+}
+
+/**
+ * The population a `HoldingsConcentration` describes.
+ *
+ * Generic by construction — it names the SHAPE of the exclusion (unpriced,
+ * withheld for visibility, cash), never a particular instrument, account or
+ * provider. Nothing here re-prices, re-classifies or re-composes anything: every
+ * figure is carried from the canonical valuation seam.
+ */
+export interface ConcentrationPopulation {
+  /**
+   * One sentence naming the population, for a consumer that will quote it.
+   * e.g. "2 of 13 positions that could be priced, held in fully visible accounts".
+   */
+  label:              string;
+  /** The denominator, in reporting currency. Equals `analyzedInvestedValue`. */
+  value:              number;
+  /** Distinct instruments inside the population. */
+  positionCount:      number;
+  /** Positions excluded because no price could be resolved. Never re-priced here. */
+  unvaluedCount:      number;
+  /** Non-cash value present in the spine but withheld from the population by visibility. */
+  hiddenValue:        number;
+  /**
+   * The population's share of every position value this domain could price
+   * (`valuedPositionsTotal`), 0..1. Null when nothing could be priced.
+   *
+   * ⚠️ THE FIELD THAT MAKES THE STATISTIC READABLE. Well below 1 means the
+   * classification describes a SUBSET and must not be restated as a claim about
+   * the portfolio.
+   */
+  shareOfValuedTotal: number | null;
+  /**
+   * True when every position in scope could be priced and none was withheld —
+   * i.e. the population IS the whole analyzable portfolio. Derived from the two
+   * counts above, stated so a consumer need not re-derive it.
+   */
+  isComplete:         boolean;
+}
+
+/**
+ * A position the canonical valuation seam could not price.
+ *
+ * ⚠️ CARRIED AS DATA, NOT AS A COUNT IN A SENTENCE. The prose note said
+ * "9 position(s) could not be valued"; it could not say WHICH, so a reader had no
+ * way to know the missing ones included every crypto position on the Space.
+ * `reason` is the seam's own words — nothing is paraphrased and no price is
+ * invented or walked forward.
+ */
+export interface UnvaluedPosition {
+  symbol:     string | null;
+  name:       string | null;
+  /** The canonical `AssetClass` (EQUITY, ETF, CRYPTO, …). */
+  assetClass: string | null;
+  /** Observed quantity. Present because the quantity IS known; only the price is not. */
+  quantity:   number | null;
+  /** The valuation seam's reason, verbatim. */
+  reason:     string | null;
 }
 
 /**
@@ -886,9 +1316,17 @@ export interface HoldingsConcentration {
  * (not yet threaded through the conversion seam — recorded as a Phase 3
  * closeout finding alongside F-3); all-USD data is unaffected.
  *
+ * ⚠️ THIS DOMAIN IS THE POSITION SPINE, NOT THE PORTFOLIO. Every figure below is
+ * scoped to positions the canonical valuation seam could PRICE. The authority on
+ * what the user's investments are WORTH is the accounts domain composed through
+ * `composeInvestments` (CF-7) — traditional investments + digital assets,
+ * disjoint by construction. Do not add a figure from this domain to one from
+ * that one, and do not present a figure from here as an investment total.
+ *
  * ── Visibility model (mirrors lib/ai/assemblers/accounts.ts) ─────────────────
- * Aggregate value totals (totalPortfolioValue, investedValue, cashValue,
- * cashPct) include EVERY visible account regardless of visibility level — these
+ * Aggregate value totals (valuedPositionsTotal, valuedNonCashTotal,
+ * valuedCashTotal, cashPct) include EVERY visible account regardless of
+ * visibility level — these
  * are sums and reveal nothing identifying, exactly like the accounts domain
  * totals. Position-level detail (topPositions, positionCount, concentration) is
  * computed ONLY over FULL-visibility accounts. When any visible account is
@@ -904,24 +1342,61 @@ export interface HoldingsSummaryData {
    * currency). Data-only: no prompt or serializer consumes it yet.
    */
   totalsEstimated:     boolean;
-  /** All visible holdings incl. synthetic cash rows (converted into the Space's reporting currency). */
-  totalPortfolioValue: number;
-  /** Non-cash holdings across all visible accounts. */
-  investedValue:       number;
-  /** Synthetic uninvested-cash rows (isCash) across all visible accounts. */
-  cashValue:           number;
-  /** cashValue / totalPortfolioValue, 0..1 (0 when total is 0). */
+  /**
+   * Σ of every position this domain COULD PRICE, cash rows included, across all
+   * visibility levels, in the Space's reporting currency.
+   *
+   * ⚠️ NOT THE PORTFOLIO, AND THE OLD NAME SAID IT WAS. This field was called
+   * `totalPortfolioValue`. On the real Space it reads $4,040.60 while the
+   * canonical account composition (`composeInvestments`) reads $23,982.89,
+   * because nine of thirteen positions had no resolvable price. A consumer given
+   * a field called "total portfolio value" will state it as the portfolio.
+   * Read `valuationCompleteness` before quoting this as any kind of total.
+   */
+  valuedPositionsTotal: number;
+  /** Non-cash portion of `valuedPositionsTotal`. Same scope, same caveat. */
+  valuedNonCashTotal:   number;
+  /** Uninvested-cash rows (isCash) inside `valuedPositionsTotal`. */
+  valuedCashTotal:      number;
+  /** valuedCashTotal / valuedPositionsTotal, 0..1 (0 when the total is 0). */
   cashPct:             number;
-  /** Count of distinct symbols in the analyzable (FULL, non-cash) set. */
+  /**
+   * Count of distinct instruments in the analyzable set: FULL visibility,
+   * non-cash, AND successfully priced.
+   *
+   * ⚠️ IT IS NOT "HOW MANY POSITIONS YOU HOLD". On the real Space it reads 2
+   * against 13 held positions. `valuationCompleteness` carries both numbers.
+   */
   positionCount:       number;
-  /** Value the concentration analysis is computed over (FULL, non-cash). */
+  /** Value the concentration analysis is computed over — its denominator. */
   analyzedInvestedValue: number;
+  /**
+   * What the canonical valuation seam said about its own completeness, carried
+   * verbatim rather than re-derived.
+   *
+   * ⚠️ THE SEAM ALREADY KNEW. `getInvestmentValueAsOf` returns
+   * `{ tier, reason, valuedCount, unvaluedCount }` — "9 of 13 holdings could not
+   * be valued for 2026-09-07; the total shown is a partial subtotal" — and this
+   * payload used to discard it and rebuild a weaker sentence from the
+   * FULL-visibility rows alone.
+   */
+  valuationCompleteness: {
+    /** The seam's own tier, e.g. 'observed' | 'incomplete'. */
+    tier:          string;
+    /** The seam's own sentence. Never paraphrased. */
+    reason:        string | null;
+    valuedCount:   number;
+    unvaluedCount: number;
+  };
+  /** The positions that could not be priced, so a consumer can name them. */
+  unvaluedPositions:   UnvaluedPosition[];
   /** True when some visible accounts are shared below FULL visibility and
    *  their positions are therefore excluded from position/concentration analysis. */
   positionsPartiallyHidden: boolean;
-  /** Largest analyzable positions by value, descending (≤ HOLDINGS_TOP_N).
-   *  Omitted when scopeHint === 'brief'. */
-  topPositions?:       HoldingPosition[];
+  /** Largest analyzable positions by value, descending, as a CF-1 bounded
+   *  selection — `totalCount` is the eligible position population, so a reader
+   *  can tell "the largest 10" from "all 10". Omitted when scopeHint === 'brief'. */
+  topPositions?:       BoundedSelection<HoldingPosition>;
   concentration:       HoldingsConcentration;
   /** Deterministic statements of what this domain cannot answer, so the LLM
    *  never implies cost basis, gains, returns, or asset-class data exists. */
@@ -938,14 +1413,39 @@ export interface HoldingsSummaryData {
  */
 export interface SnapshotDataPoint {
   date:         string; // YYYY-MM-DD
-  netWorth:     number;
-  totalAssets:  number;
+  // V26-CRYPTO-STATUS-1 — NULLABLE where the component may not be asserted.
+  // `netWorth` and `totalAssets` are arithmetically composed WITH crypto, so an
+  // unassertable digital-asset component makes both of them unassertable too.
+  // Null here means EXPLICITLY UNKNOWN and is always accompanied by
+  // `digitalAssetsUnavailableReason` — never omitted, because an absent key
+  // invites the model to infer zero.
+  netWorth:     number | null;
+  totalAssets:  number | null;
   liabilities:  number; // `debt` column — positive absolute value
   liquid:       number; // cash + savings
   investments:  number; // `stocks` column
-  digitalAssets: number; // `crypto` column
+  digitalAssets: number | null; // `crypto` column — null when unassertable
   cashOnHand:   number;
   netLiquid:    number;
+  /**
+   * Machine-readable reason the digital-asset figure (and the two totals built
+   * on it) could not be asserted for this date. Present ONLY on such points.
+   *   HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE — refused: a holding existed but
+   *     no historical valuation could be supported.
+   *   HISTORICAL_CRYPTO_VALUATION_UNRECORDED  — a legacy row that predates the
+   *     availability scalar; nothing attests to how its number was produced.
+   */
+  digitalAssetsUnavailableReason?: string;
+  /**
+   * RWA-2B — present (true) ONLY when this reconstructed point's real-asset
+   * component is a MODELED value: a straight line between two of the user's
+   * dated estimates for a manual asset, not an observed or walked-back figure.
+   * `netWorth` and `totalAssets` include that component; `liabilities`,
+   * `liquid`, `investments`, `digitalAssets`, `cashOnHand`, `netLiquid` do not.
+   * Resolved at the canonical read boundary (lib/data/snapshots.ts); a fact in
+   * the data, never instruction text.
+   */
+  realAssetsModeled?: true;
 }
 
 /**
@@ -956,13 +1456,74 @@ export interface SnapshotDataPoint {
  * `latest` + trend deltas are returned.
  */
 export interface SnapshotSectionData {
+  /**
+   * REVIEW-3 C-6 — the currency the section's figures are actually IN, from the
+   * canonical stamp-aware read (Snapshot.currency: the resolved EFFECTIVE
+   * target). Consumers that render money (the snapshot signal detector, the
+   * Brief) format with THIS, never a hard-coded symbol. Optional only for
+   * fixtures predating it.
+   */
+  currency?:       string;
+  /**
+   * How many snapshot ROWS the section covers.
+   *
+   * ⚠️ v2.6-WINDOW-1 — a COUNT, never a duration. It is the row cap applied by
+   * `getRecentSnapshots` (`take: -days`), and it equals a number of days only
+   * when snapshots are daily AND contiguous. Four surfaces rendered it as "N
+   * days" and one of them, the Daily Brief, disagreed with the Space by a factor
+   * of three for the same words. Use `spanDays` for any claim about time.
+   */
   snapshotCount:   number;
+  /**
+   * v2.6-WINDOW-1 — the TRUE calendar distance in days between `oldestDate` and
+   * `newestDate`. This is the only field that may be described as a duration.
+   */
+  spanDays:        number;
+  /**
+   * v2.6-WINDOW-1 — the net-worth change over a window the product DEFINES,
+   * resolved through `compareToForPreset` — the same authority the Space
+   * launcher and the inside-Space time selector use, so all three state one
+   * number. Null when history does not reach back that far: a refusal, never a
+   * fallback to the earliest available point.
+   *
+   * ⚠️ The ONLY window-change figure in this payload (the accidental-window
+   * trend pair was deleted at REVIEW-3 integration). Use for anything a user
+   * reads. Those span oldest→newest of whatever rows were fetched — a real
+   * number over an ACCIDENTAL window.
+   */
+  canonicalChange: {
+    fromDate:  string;
+    toDate:    string;
+    fromValue: number;
+    toValue:   number;
+    pct:       number | null;
+    abs:       number;
+    preset:    string;
+  } | null;
+  /**
+   * W3 — the LIABILITIES change over the same product-defined window, from the
+   * same authority (`canonicalWindowChange`), so the debt trend never again
+   * derives from "oldest row we happen to hold vs newest" (the accidental
+   * fetched-row window this replaces — see engine.ts's IMPROVING rung). Null is
+   * a refusal (history does not reach the window's start), never a fallback.
+   * Present at BOTH scope hints: it derives from the same series
+   * `canonicalChange` uses, before any brief-scope history truncation.
+   */
+  liabilitiesChange: {
+    fromDate:  string;
+    toDate:    string;
+    fromValue: number;
+    toValue:   number;
+    pct:       number | null;
+    abs:       number;
+    preset:    string;
+  } | null;
   oldestDate:      string | null; // YYYY-MM-DD
   newestDate:      string | null; // YYYY-MM-DD
-  /** Absolute net-worth change from oldest to newest in the window. */
-  netWorthTrend:   number | null; // null if fewer than 2 snapshots
-  /** Percentage change, null if oldest net worth was 0. */
-  netWorthTrendPct: number | null;
+  /** Absolute net-worth change from oldest to newest in the window.
+   *  ⚠️ An ACCIDENTAL window — see `canonicalChange`. */
+  /** Percentage change, null if oldest net worth was 0.
+   *  ⚠️ An ACCIDENTAL window — see `canonicalChange`. */
   latest:          SnapshotDataPoint | null;
   history:         SnapshotDataPoint[]; // omitted on scopeHint='brief'
   /**
@@ -975,65 +1536,27 @@ export interface SnapshotSectionData {
    */
   estimated?:            boolean;
   excludedFxMissPoints?: number;
+  /**
+   * V26-CRYPTO-STATUS-1 — how many history points carry an unassertable
+   * digital-asset figure (and therefore null netWorth/totalAssets). Absent when
+   * none do, so clean histories stay byte-identical.
+   */
+  unassertableCryptoPoints?: number;
 }
 
 // ---------------------------------------------------------------------------
-// Goals domain types
+// Goals domain types — DELETED (W2)
 // ---------------------------------------------------------------------------
-
-/**
- * A single goal summary for AI context.
- * Only fields relevant to AI-generated advice are included.
- * Sensitive or purely-UI fields (description, spendingCategory, etc.) are
- * omitted to keep the context payload lean.
- */
-export interface GoalSummaryItem {
-  id:       string;
-  name:     string;
-  category: string; // GoalCategory
-  goalType: string; // GoalType
-  status:   string; // GoalStatus
-
-  // FINANCIAL / SPENDING_LIMIT — amounts and progress
-  targetAmount?:  number | null;
-  currentAmount?: number;
-  /** 0-100 integer, null when not computable (HABIT, DEBT_REDUCTION). */
-  progressPct?:   number | null;
-  targetDate?:    string | null; // YYYY-MM-DD
-
-  // DEBT_REDUCTION — debt-specific reduction targets
-  targetReductionAmount?: number | null;
-  targetReductionPct?:    number | null;
-  snapshotBalance?:       number | null;
-
-  // HABIT — streak tracking
-  habitFrequency?: string | null;
-  currentStreak?:  number;
-  longestStreak?:  number;
-  lastCheckIn?:    string | null; // ISO-8601
-
-  completedAt?: string | null; // ISO-8601
-}
-
-/**
- * Data payload for the 'goals' context domain.
- */
-export interface GoalsSectionData {
-  totalCount: number;
-  counts: {
-    active:    number;
-    paused:    number;
-    completed: number;
-  };
-  goals: GoalSummaryItem[];
-}
+// GoalSummaryItem / GoalsSectionData were removed with the Goals retirement:
+// the 'goals' domain no longer exists, so there is no payload to type.
 
 // ---------------------------------------------------------------------------
 // Assembled context
 // ---------------------------------------------------------------------------
 
 /**
- * The complete AI context object returned by buildContext().
+ * The complete AI context object. (Named for `buildContext()`, deleted in
+ * RLS-AI-S1; `assembleFullContext` in lib/ai/conversation/evidence.ts builds it.)
  *
  * `domains` is an open map keyed by ContextDomain string — consumers
  * access sections by key (e.g. ctx.domains['accounts']) rather than
@@ -1053,6 +1576,20 @@ export interface SpaceContext_AI {
   role:            SpaceMemberRole;
   agentId:         string;
   resolvedDomains: string[]; // ordered list of domains that were attempted
+  /**
+   * RLS-AI-S0 — domains whose authority THREW and were therefore not assembled.
+   *
+   * ⚠️ A MISSING DOMAIN AND A BROKEN ONE USED TO LOOK IDENTICAL. The assembler
+   * loop catches every exception into `console.error` and continues, which is the
+   * lesser evil (the four assemblers return `null`, not zeroes, so `thinCore`
+   * renders honest ambiguity) — but a BROKEN authority then produced an answer
+   * with nothing anywhere saying so. Listed here, and stated in the evidence pack,
+   * so "we could not read it" is never delivered as "there is none".
+   *
+   * Optional: absent and empty mean the same thing, and every existing fixture
+   * stays valid.
+   */
+  unreadableDomains?: string[];
   space: {
     id:       string;
     name:     string;

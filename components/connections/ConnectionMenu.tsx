@@ -42,6 +42,8 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
   const [open, setOpen] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [busy, setBusy] = useState<null | "refresh" | "restore" | "disconnect">(null);
+  // UI-006: a failed action is said out loud, never swallowed into a silent refresh.
+  const [failure, setFailure] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -60,27 +62,41 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
 
   const isPlaid = connection.provider === "PLAID";
 
-  async function post(url: string, body: unknown) {
-    await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {});
+  /** UI-006 — resolves to null on success, or the message to show on failure. Never throws. */
+  async function post(url: string, body: unknown): Promise<string | null> {
+    try {
+      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (res.ok) return null;
+      const data = await res.json().catch(() => null) as { error?: unknown } | null;
+      return typeof data?.error === "string" && data.error ? data.error : `The request failed (${res.status}).`;
+    } catch {
+      return "Could not reach Fourth Meridian. Check your connection and try again.";
+    }
   }
 
   async function refresh() {
     setBusy("refresh"); setOpen(false);
-    await post("/api/plaid/refresh", { plaidItemId: connection.id });
+    setFailure(null);
+    const err = await post("/api/plaid/refresh", { plaidItemId: connection.id });
+    if (err) setFailure(err);
     setBusy(null);
     router.refresh();
   }
 
   async function restore() {
     setBusy("restore"); setOpen(false);
-    await post("/api/connections/build-intelligence", { connectionIds: [connection.id] });
+    setFailure(null);
+    const err = await post("/api/connections/build-intelligence", { connectionIds: [connection.id] });
+    if (err) setFailure(err);
     setBusy(null);
     router.refresh();
   }
 
   async function disconnect() {
     setBusy("disconnect");
-    await post(`/api/connections/${connection.id}/disconnect`, {});
+    setFailure(null);
+    const err = await post(`/api/connections/${connection.id}/disconnect`, {});
+    if (err) setFailure(err);
     setBusy(null);
     setConfirmDisconnect(false);
     router.refresh();
@@ -88,6 +104,12 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
 
   return (
     <div ref={rootRef} className="relative">
+      {failure && (
+        <p role="alert" aria-live="assertive" data-connection-failure
+          className="absolute right-0 top-full z-10 mt-1 w-64 rounded-[var(--radius-sm)] border border-[rgba(248,113,113,.3)] bg-[var(--surface-1,#161a22)] px-2 py-1.5 text-[11px] text-[var(--danger-400,#f87171)]">
+          {failure}
+        </p>
+      )}
       <button
         type="button"
         aria-label="Connection options"

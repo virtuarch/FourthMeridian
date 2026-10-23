@@ -20,7 +20,24 @@
  * ip/user-agent so the intake is forensically visible even though the request
  * row itself keeps minimal PII.
  *
- * Body: { email: string, note?: string, captchaToken?: string }
+ * OPERATIONALIZATION P0 (2026-10-07) — ACQUISITION FACTS. Every submission,
+ * including a repeat for an address already on the waitlist, ALSO inserts one
+ * BetaAccessRequestEvent row carrying a BOUNDED `source` (lib/marketing/
+ * acquisition.ts: allowlisted utm_* / ref / source keys, the landing path the
+ * public site forwarded, a cross-origin referrer's host, and the edge's
+ * two-letter country — never an IP, user agent or raw header). The parent row
+ * is untouched, the count from createMany is still discarded, and the response
+ * is still the identical 200: requestCount and lastRequestedAt are COUNT/MAX
+ * over these rows by an operator, never a branch here.
+ *
+ * PRIV-012 — NOTICE + CONSENT. The form shows a privacy notice and a required
+ * consent checkbox; this route refuses (400) any submission without
+ * `consent: true`, BEFORE anything is stored or e-mailed, so no waitlist row
+ * exists for an applicant who was not shown the notice. The forensic audit row
+ * records the notice version the applicant agreed to. (Retention/purge of
+ * BetaAccessRequest is Agent C's half of PRIV-012.)
+ *
+ * Body: { email: string, consent: true, note?: string, captchaToken?: string, source?: object }
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -31,10 +48,14 @@ import { getRequestMeta } from "@/lib/api";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
+import { boundAcquisitionSource, withCountry } from "@/lib/marketing/acquisition";
+import { ACCESS_REQUEST_NOTICE_VERSION, CONSENT_REQUIRED_ERROR } from "@/components/marketing/access-request-consent";
 
 export const runtime = "nodejs";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const NOTE_MAX = 1000;
 
 export async function POST(req: NextRequest) {
@@ -44,13 +65,18 @@ export async function POST(req: NextRequest) {
 
     const meta = getRequestMeta(req);
     const body = await req.json().catch(() => ({}));
-    const { email, note, captchaToken } = body ?? {};
+    const { email, note, captchaToken, source, consent } = body ?? {};
 
     // Basic shape validation. An invalid email is a real 400 (it's not a
     // state-disclosure — any client can tell a malformed address from a valid
     // one on its own); everything past this point is non-enumerating.
     if (!email || typeof email !== "string" || !EMAIL_RE.test(email)) {
       return NextResponse.json({ error: "A valid email is required." }, { status: 400 });
+    }
+    // PRIV-012 — consent to the privacy notice is required, strictly `true`
+    // (not "true", not 1), and checked before anything is stored or e-mailed.
+    if (consent !== true) {
+      return NextResponse.json({ error: CONSENT_REQUIRED_ERROR }, { status: 400 });
     }
     if (note !== undefined && (typeof note !== "string" || note.length > NOTE_MAX)) {
       return NextResponse.json({ error: `Note must be ${NOTE_MAX} characters or fewer.` }, { status: 400 });
@@ -65,17 +91,41 @@ export async function POST(req: NextRequest) {
     const normalizedEmail = email.toLowerCase().trim();
     const trimmedNote = typeof note === "string" ? note.trim() : "";
 
-    // Upsert-by-email: a re-submission of the same address updates nothing that
-    // could leak state (it only refreshes the note on a still-PENDING row) and
-    // never resets an APPROVED/DENIED/REDEEMED lifecycle. Create-side seeds a
-    // fresh PENDING request. Either way the response is identical (below).
-    await db.betaAccessRequest.upsert({
-      where:  { email: normalizedEmail },
-      update: {}, // never disturb an existing request's status/token/decision
-      create: {
-        email: normalizedEmail,
-        note:  trimmedNote || null,
-      },
+    // INSERT … ON CONFLICT DO NOTHING, by email.
+    //
+    // This was an `upsert` with an EMPTY `update`, which is the same intent said
+    // a more expensive way: never disturb an existing request's status, token or
+    // decision. RLS-C-S6 narrowed the statement to match the intent, because the
+    // two differ in AUTHORITY. An upsert needs SELECT (to detect the conflict)
+    // and UPDATE (to resolve it) on a table whose only non-operator privilege is
+    // INSERT, so under any converted role a repeat submission failed. A
+    // conflict-ignoring insert needs neither, which means the public intake
+    // STRUCTURALLY CANNOT READ this table — the strongest form of the
+    // non-enumeration property the route already promises, since a privilege it
+    // does not hold cannot be misused by a later edit.
+    //
+    // ⚠️ THE COUNT IS DELIBERATELY DISCARDED. `createMany` returns 1 for a new
+    // address and 0 for one already on the waitlist: branching on it — or
+    // letting it reach the response — would reintroduce exactly the existence
+    // oracle this endpoint is built not to be. The response below is identical
+    // either way.
+    await db.betaAccessRequest.createMany({
+      data: [{ email: normalizedEmail, note: trimmedNote || null }],
+      skipDuplicates: true,
+    });
+
+    // The submission FACT — one row per submission, first or repeat, never
+    // conditional on the createMany outcome above. `source` is bounded by the
+    // shared allowlist; the country comes from the edge header (Cloudflare's
+    // cf-ipcountry via getRequestMeta, else Vercel's x-vercel-ip-country), and
+    // nothing else about the request is kept here (ip/user-agent live on the
+    // AuditLog forensic row below, as before).
+    const acquisition = withCountry(
+      boundAcquisitionSource(source),
+      meta.country ?? req.headers.get("x-vercel-ip-country"),
+    );
+    await db.betaAccessRequestEvent.create({
+      data: { email: normalizedEmail, ...(acquisition ? { source: acquisition } : {}) },
     });
 
     // Forensic trail — no userId (there is no account), ip/user-agent captured.
@@ -84,7 +134,11 @@ export async function POST(req: NextRequest) {
         action:    AuditAction.BETA_ACCESS_REQUESTED,
         ipAddress: meta.ip,
         userAgent: meta.userAgent,
-        metadata:  { email: normalizedEmail },
+        // BETA A7 — the address is referenced by digest, never stored (lib/audit.ts
+        // auditEmailHash). The BetaAccessRequest row above is the identity-resolving
+        // record; the forensic row only needs to be joinable to it by hash.
+        // PRIV-012 — which privacy notice the applicant consented to.
+        metadata:  { emailHash: auditEmailHash(normalizedEmail), consentNoticeVersion: ACCESS_REQUEST_NOTICE_VERSION },
       },
     });
 

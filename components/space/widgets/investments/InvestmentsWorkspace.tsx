@@ -23,9 +23,20 @@
  * the canonical persisted SpaceSnapshot window (investments + crypto, no double-count).
  * All money is display-converted through the ONE canonical seam; the envelope is emitted
  * from the UNCONVERTED historical (trust is currency-agnostic). No new data contracts.
+ *
+ * OVERVIEW-CONSOLIDATION — Investments is no longer a peer Overview lens. This
+ * workspace now renders EMBEDDED as the INVESTMENTS SECTION of the unified Net
+ * Worth → Assets page (`embedded`): the same data hook, the same contract, the
+ * same bridge / holdings / allocation / concentration / activity / connections
+ * surfaces. Embedded, it (a) renders its hero as a compact section header, (b)
+ * omits its own balance-history chart — the Assets chart directly above slices to
+ * the SAME stocks + crypto series, carrying this lens's three-state confidence and
+ * "N of M positions valued" disclosure per point — and (c) publishes neither
+ * sidebar sections nor the shell envelope: the Assets page owns both, while the
+ * section keeps its own per-figure TrustIndicator.
  */
 
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { Info, Loader2, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
@@ -36,12 +47,15 @@ import { convertPortfolioValueSeries } from "@/lib/investments/portfolio-series"
 import { Surface, Block } from "@/components/atlas/Surface";
 import { DataCard } from "@/components/atlas/DataCard";
 import { useInvestmentsSpaceData } from "./useInvestmentsSpaceData";
+// B-6 — THE today/history switch (one comparison, shared with the server).
+import { isHistoricalDay } from "@/lib/time/basis";
 import { InvestmentsActivityCard } from "./InvestmentsActivityCard";
 import { InvestmentsBridgeCard } from "./InvestmentsBridgeCard";
-import { InvestmentConnectionsCard } from "./InvestmentConnectionsCard";
+import { InvestmentAccountsLedger } from "./InvestmentAccountsLedger";
 import { InvestmentAllocationPanel } from "./InvestmentAllocationPanel";
 import { InvestmentsHero } from "./InvestmentsHero";
 import { InvestmentsBalanceHistory } from "./InvestmentsBalanceHistory";
+import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { HoldingsLedger } from "./HoldingsLedger";
 import { HoldingsConcentration } from "./HoldingsConcentration";
 
@@ -58,7 +72,7 @@ const INVESTMENTS_SECTIONS: SpaceChromeSection[] = [
 ];
 
 export function InvestmentsWorkspace({
-  spaceId, asOf, compareTo, active, today, accounts, ctx, onEnvelopeChange,
+  spaceId, asOf, compareTo, active, today, accounts, ctx, onEnvelopeChange, embedded = false,
 }: {
   spaceId:   string;
   asOf:      string;
@@ -67,9 +81,28 @@ export function InvestmentsWorkspace({
   today:     string;
   accounts:  { id: string; name: string }[];
   ctx?:      ConversionContext;
-  onEnvelopeChange: (env: PerspectiveEnvelope) => void;
+  /** Omitted when embedded — the Assets page owns the shell slot. */
+  onEnvelopeChange?: (env: PerspectiveEnvelope) => void;
+  /** Rendered as the Investments section inside Net Worth → Assets (see header). */
+  embedded?: boolean;
 }) {
-  const { data: raw, series: rawSeries, loading, error, reload } = useInvestmentsSpaceData(spaceId, asOf, compareTo, active);
+  const { data: raw, series: rawSeries, loading, error, reload, serverToday } = useInvestmentsSpaceData(spaceId, asOf, compareTo, active);
+  // V26-S3-DETAIL — which historical point the reader asked about. The chart
+  // reports a DATE and nothing else; the panel asks the canonical historical
+  // authority what that date was made of.
+  // v2.6 — the INVESTMENTS root, through the ONE shared explorer. The legacy
+  // per-lens drawer is retired: two drawers meant two answers to the same
+  // question, which is what this arc exists to remove.
+  const exploration = useHistoryExploration();
+  const handleSelectPoint = useCallback(
+    (dateISO: string) => {
+      const pts = rawSeries ?? [];
+      const first = pts[0]?.date ?? dateISO;
+      const last = pts[pts.length - 1]?.date ?? dateISO;
+      exploration.openPoint("investments", dateISO, first, last);
+    },
+    [rawSeries, exploration],
+  );
 
   // Trust envelope — resolved from the UNCONVERTED historical (currency-agnostic tiers),
   // reusing the ONE canonical resolver. Memoized so the effect only fires on change, and
@@ -78,22 +111,29 @@ export function InvestmentsWorkspace({
     () => resolvePerspectiveEnvelope({ perspectiveId: "investments", investmentsResult: raw?.historical ?? null }),
     [raw],
   );
-  useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
+  useEffect(() => { onEnvelopeChange?.(envelope); }, [envelope, onEnvelopeChange]);
 
   // Display-currency conversion (pure; identity when reporting === target).
   const data = useMemo(() => (raw && ctx ? convertInvestmentsSpaceData(raw, ctx, asOf) : raw), [raw, ctx, asOf]);
   const series = useMemo(() => (ctx ? convertPortfolioValueSeries(rawSeries, ctx, asOf) : rawSeries), [rawSeries, ctx, asOf]);
 
-  const historicalMode = !!data && asOf < today && data.historical != null;
+  // B-6 — SERVER-AUTHORITATIVE classification (lib/time/basis.ts): asOf is
+  // historical iff the SERVER's UTC day says so. `serverToday` rides every
+  // /space-data response; the client `today` prop is only the pre-first-fetch
+  // fallback (where `data` is null and this is false regardless). Before B-6
+  // this compared the client clock while lib/history/account-series.ts compared
+  // the server's — around midnight the same date sat on both sides at once.
+  const historicalMode = !!data && isHistoricalDay(asOf, serverToday ?? today) && data.historical != null;
   const primary = data ? (historicalMode && data.historical ? data.historical : data.current) : null;
 
   // Publish section anchors to the sidebar once real holdings exist (cleared on unmount).
   const publishSections = useSpaceSectionsPublisher();
   const showSections = !!primary && (primary.holdings.length > 0 || primary.portfolio.unvaluedCount > 0);
   useEffect(() => {
+    if (embedded) return; // the Assets page publishes ONE list for the whole page
     publishSections(showSections ? INVESTMENTS_SECTIONS : []);
     return () => publishSections([]);
-  }, [publishSections, showSections]);
+  }, [publishSections, showSections, embedded]);
 
   if (!data || !primary) {
     if (error) {
@@ -116,11 +156,28 @@ export function InvestmentsWorkspace({
   // HIST-1D — shared-Space scope disclosure (currency-agnostic; from the UNCONVERTED contract).
   const scopeDivergence = raw?.scopeDivergence ?? null;
 
+  // The investment ACCOUNTS behind the canonical figure (current day). An account
+  // with a balance but no holdings is still an investment asset — it is listed,
+  // not replaced by "No holdings" (lib/investments/investment-accounts.ts).
+  const accountsLedger = !historicalMode && data.accounts && data.accounts.rows.length > 0 ? (
+    <Block id="investments-accounts" label="Accounts"
+      hint={<span className="text-[11px] tabular-nums text-[var(--text-faint)]">{data.accounts.rows.length}</span>}>
+      <InvestmentAccountsLedger slice={data.accounts} />
+    </Block>
+  ) : null;
+
   const isEmpty = primary.holdings.length === 0 && primary.portfolio.unvaluedCount === 0;
+  if (isEmpty && accountsLedger) {
+    // Balances without security-level holdings: the accounts ARE the investment
+    // picture. No $0 "portfolio value", no "connect a brokerage" — the money is here.
+    return <div className="space-y-8 min-w-0">{accountsLedger}</div>;
+  }
   if (isEmpty) {
     return (
       <div className="space-y-8 min-w-0">
         <InvestmentsHero
+          compact={embedded}
+          attribution={data?.historical?.attribution ?? null}
           portfolio={primary.portfolio} reconciliation={reconciliation}
           reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
         />
@@ -132,7 +189,6 @@ export function InvestmentsWorkspace({
             Connect an investment account →
           </Link>
         </Surface>
-        <InvestmentConnectionsCard spaceId={spaceId} />
       </div>
     );
   }
@@ -145,13 +201,18 @@ export function InvestmentsWorkspace({
         </div>
       )}
 
-      {/* ① Lede. */}
+      {/* ① Lede (embedded: the Investments section header). */}
       <div id="investments-summary" className="scroll-mt-20">
         <InvestmentsHero
+          compact={embedded}
+          attribution={data?.historical?.attribution ?? null}
           portfolio={primary.portfolio} reconciliation={reconciliation}
           reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
         />
       </div>
+
+      {/* Accounts — every investment account at its balance; holdings enrich it. */}
+      {accountsLedger}
 
       {/* ② Excluded — the positions left out of the headline, stated up front. */}
       {primary.portfolio.unvaluedCount > 0 && (
@@ -166,15 +227,20 @@ export function InvestmentsWorkspace({
         </div>
       )}
 
-      {/* ③ Balance history — invested value over time (the SHARED Net Worth chart). */}
-      <div id="investments-history" className="scroll-mt-20">
-        <InvestmentsBalanceHistory points={series} currency={reportingCurrency} asOf={asOf} compareTo={compareTo} />
-      </div>
+      {/* ③ Balance history — invested value over time (the SHARED Net Worth chart).
+           Embedded, the unified Assets chart above already slices to this SAME
+           series WITH this lens's per-point confidence + coverage disclosures
+           (wealth-trend-points.ts), so a second identical chart is not drawn. */}
+      {!embedded && (
+        <div id="investments-history" className="scroll-mt-20">
+          <InvestmentsBalanceHistory points={series} currency={reportingCurrency} asOf={asOf} compareTo={compareTo} onSelectPoint={handleSelectPoint} />
+        </div>
+      )}
 
       {/* ④ This period — the opening → in → out → change → closing movement bridge. */}
       <div id="investments-period" className="scroll-mt-20">
         <Block label="This period">
-          <Surface className="p-4"><InvestmentsBridgeCard reconciliation={reconciliation} flows={flows} /></Surface>
+          <Surface className="p-4"><InvestmentsBridgeCard reconciliation={reconciliation} flows={flows} attribution={data?.historical?.attribution ?? null} /></Surface>
         </Block>
       </div>
 
@@ -214,8 +280,6 @@ export function InvestmentsWorkspace({
         </Block>
       </div>
 
-      {/* Connections — renders its own panel only when an account needs attention. */}
-      <InvestmentConnectionsCard spaceId={spaceId} />
     </div>
   );
 }

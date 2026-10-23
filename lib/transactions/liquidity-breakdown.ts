@@ -21,9 +21,16 @@ import type { DayFacts } from "@/lib/transactions/cash-flow-projection";
 /** User-facing labels — liquidity terminology, not economic (see doctrine). */
 export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
   EARNED_INCOME:     "Earned income",
+  INTEREST_INCOME:   "Interest",
+  DIVIDEND_INCOME:   "Dividends",
+  OTHER_INCOME:      "Other income",
   ASSET_LIQUIDATION: "Asset liquidation",
   DEBT_PROCEEDS:     "Debt proceeds",
   REFUND:            "Refunds",
+  // v2.6-TRUTH-7 — an issuer-originated credit on a card (rewards, statement
+  // credit, purchase reversal). Reduces what you owe without moving cash, so it
+  // is a context line, never Cash In.
+  ISSUER_CREDIT:     "Issuer credits",
   // Liquidity axis: only cost flows paid FROM a liquid account (checking/savings)
   // reach Cash Out. Named to distinguish from economic "Spending by Category"
   // (which includes credit-card purchases). Card spending surfaces separately as
@@ -54,6 +61,9 @@ export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
  */
 export const LIQUIDITY_REASON_SIDE: Record<LiquidityReason, "in" | "out" | "context"> = {
   EARNED_INCOME:       "in",
+  INTEREST_INCOME:     "in",
+  DIVIDEND_INCOME:     "in",
+  OTHER_INCOME:        "in",
   REFUND:              "in",
   ASSET_LIQUIDATION:   "in",
   DEBT_PROCEEDS:       "in",
@@ -65,6 +75,8 @@ export const LIQUIDITY_REASON_SIDE: Record<LiquidityReason, "in" | "out" | "cont
   INVESTMENT_OUTFLOW:  "out",
   PAYMENT_APP_OUTFLOW: "out",
   ASSET_CONVERSION:    "context",
+  // No spendable cash moved — it lowered a liability balance.
+  ISSUER_CREDIT:       "context",
   INTERNAL_TRANSFER:   "context",
   NON_CASH:            "context",
   UNRESOLVED:          "context",

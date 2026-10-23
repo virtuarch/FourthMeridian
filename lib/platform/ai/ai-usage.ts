@@ -15,7 +15,7 @@
 
 import "server-only";
 import { db } from "@/lib/db";
-import { estimateUnitSpendUsd, isPricingConfigured } from "@/lib/usage/pricing";
+import { priceAiUsage, isPricingConfigured } from "@/lib/usage/pricing";
 import type { OperationalTier } from "@/lib/platform/history/types";
 
 const DAY_MS = 86_400_000;
@@ -32,7 +32,7 @@ export interface AiUsageDay {
   calls: number;
   promptTokens: number;
   completionTokens: number;
-  /** Estimated USD for the day, or null when no pricing is configured. */
+  /** Estimated USD for the day, or null when no rate was in force that day. */
   estimatedSpendUsd: number | null;
 }
 export interface AiUsageTrend {
@@ -44,6 +44,15 @@ export interface AiUsageTrend {
   pricingConfigured: boolean;
   /** observed for counts; the spend is estimated (or unknown when unpriced). */
   tier: OperationalTier;
+  /**
+   * Token usage in the window that no rate covered, and the days it fell on.
+   *
+   * ⚠️ COVERAGE, NOT A CAVEAT. A spend figure over a window where half the days
+   * predate the earliest configured rate is not wrong — it is PARTIAL, and
+   * saying which part is the difference between an estimate and a claim.
+   */
+  unpricedTokens: number;
+  unpricedDays: string[];
   checkedAt: string;
 }
 
@@ -54,16 +63,31 @@ export function buildAiUsageTrend(rows: readonly AiUsageRow[], now: Date, days: 
   const models = new Set<string>();
   let anySpend = false;
 
+  // ⚠️ PRICED PER DAY, AS A SET — never row by row. The input rate depends on a
+  // second row (cached tokens are a SUBSET of prompt tokens), so a per-row
+  // accumulation can only ignore caching or double count it. Rows are bucketed
+  // first, then each day's whole set is handed to the one reducer.
+  const rowsByDay = new Map<string, AiUsageRow[]>();
+
   for (const r of rows) {
     const key = r.day.toISOString().slice(0, 10);
-    const d = byDay.get(key) ?? { day: key, calls: 0, promptTokens: 0, completionTokens: 0, estimatedSpendUsd: priced ? 0 : null };
+    const d = byDay.get(key) ?? { day: key, calls: 0, promptTokens: 0, completionTokens: 0, estimatedSpendUsd: null };
     if (r.unit === "calls") d.calls += r.count;
     else if (r.unit === "prompt_tokens") d.promptTokens += r.count;
     else if (r.unit === "completion_tokens") d.completionTokens += r.count;
     if (r.provider === "OPENAI" && r.metric.startsWith("chat.completions:")) models.add(r.metric.slice("chat.completions:".length));
-    const spend = estimateUnitSpendUsd(r.provider, r.metric, r.unit, r.count);
-    if (spend != null) { d.estimatedSpendUsd = (d.estimatedSpendUsd ?? 0) + spend; anySpend = true; }
     byDay.set(key, d);
+    rowsByDay.set(key, [...(rowsByDay.get(key) ?? []), r]);
+  }
+
+  let unpricedTokens = 0;
+  const unpricedDays = new Set<string>();
+  for (const [key, d] of byDay) {
+    const p = priceAiUsage(rowsByDay.get(key) ?? []);
+    d.estimatedSpendUsd = p.usd;
+    if (p.usd != null) anySpend = true;
+    unpricedTokens += p.unpricedTokens;
+    for (const day of p.unpricedDays) unpricedDays.add(day);
   }
 
   const daysArr = [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
@@ -72,9 +96,9 @@ export function buildAiUsageTrend(rows: readonly AiUsageRow[], now: Date, days: 
       calls: t.calls + d.calls,
       promptTokens: t.promptTokens + d.promptTokens,
       completionTokens: t.completionTokens + d.completionTokens,
-      estimatedSpendUsd: priced ? (t.estimatedSpendUsd ?? 0) + (d.estimatedSpendUsd ?? 0) : null,
+      estimatedSpendUsd: anySpend ? (t.estimatedSpendUsd ?? 0) + (d.estimatedSpendUsd ?? 0) : null,
     }),
-    { calls: 0, promptTokens: 0, completionTokens: 0, estimatedSpendUsd: priced ? 0 : null } as AiUsageTrend["totals"],
+    { calls: 0, promptTokens: 0, completionTokens: 0, estimatedSpendUsd: anySpend ? 0 : null } as AiUsageTrend["totals"],
   );
 
   return {
@@ -84,6 +108,8 @@ export function buildAiUsageTrend(rows: readonly AiUsageRow[], now: Date, days: 
     models: [...models].sort(),
     pricingConfigured: priced,
     tier: anySpend ? "estimated" : "observed",
+    unpricedTokens,
+    unpricedDays: [...unpricedDays].sort(),
     checkedAt: now.toISOString(),
   };
 }

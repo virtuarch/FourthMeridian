@@ -19,11 +19,28 @@
  * already existed and re-points the one existing caller onto it.
  */
 
-import { db } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
 
 export type TransactionFingerprintCandidate = {
   id: string;
   plaidTransactionId: string | null;
+  /**
+   * v2.6-EVENT-2 — the logical event this candidate already belongs to, so a
+   * caller can tell whether adopting it would OVERRIDE stronger provider
+   * identity evidence (a `pending_transaction_id` naming a different event).
+   * Additive: the CSV importer ignores it.
+   */
+  transactionEventId?: string | null;
+  /**
+   * W1 (D6) — the candidate's OWN provider succession claim
+   * (`Transaction.pendingTransactionRef`). The EVENT-2 guard compares it against
+   * the incoming row's `pending_transaction_id` directly, so the
+   * provider-identity protection is live even while `transactionEventId` is null
+   * everywhere — which is every production row during the event-backfill window,
+   * exactly when TALABAT-class collisions are most likely. Additive: the CSV
+   * importer ignores it.
+   */
+  pendingTransactionRef?: string | null;
 };
 
 /**
@@ -64,7 +81,9 @@ export function normalizeMerchantKey(value: string): string {
  * See docs/architecture/TRANSACTION_IDENTITY_DOCTRINE.md.
  *
  * Returns the first match, logging a warning if more than one candidate
- * matches (unexpected, but handled deterministically rather than erroring).
+ * matches. FIN-009 — that "first of several" is a LEGACY contract kept only for
+ * the CSV import (which re-checks ambiguity and SKIPs); a writer that would BIND
+ * a provider id must call `resolveFingerprint` and refuse on AMBIGUOUS.
  */
 export async function findByFingerprint(
   financialAccountId: string,
@@ -74,14 +93,48 @@ export async function findByFingerprint(
   descriptor: string,
   pending: boolean,
   /**
-   * PRE-V26-PLAID-CLOSE — optional injected Prisma client (defaults to the real
-   * `db`). Additive: every existing caller is unchanged. Needed so a sync run
-   * driven by an injected fake client does not silently read through to the real
-   * database here — without it, the fingerprint fallback would be the one path
-   * in the sync loop that escapes the test seam.
+   * RLS-PREP-C — REQUIRED. This was `= db`: an optional authority is an ambient
+   * one, and the ambient one here was the migration principal. The CSV import
+   * route reached it without importing `db` at all, so the read that decides
+   * whether a file row is a duplicate ran as the table owner while the route
+   * looked converted. Every caller already passed a client (the Plaid sync its
+   * own, the tests a fake); the default existed only to be fallen into.
    */
-  client: Pick<typeof db, "transaction"> = db,
+  client: Pick<Prisma.TransactionClient, "transaction">,
 ): Promise<TransactionFingerprintCandidate | null> {
+  const r = await resolveFingerprint(financialAccountId, date, amount, descriptor, pending, client);
+  if (r.kind === "NONE") return null;
+  if (r.kind === "MATCH") return r.row;
+  // FIN-009 — the legacy contract: first of several. Kept for the CSV import,
+  // which re-checks ambiguity itself and SKIPs (lib/imports/csv.ts); the Plaid
+  // sync no longer takes this path (it calls `resolveFingerprint` and refuses).
+  console.warn(
+    `[plaid sync] fingerprint match ambiguous — ${r.matches.length} existing rows match financialAccountId=${financialAccountId} date=${date.toISOString().slice(0, 10)} amount=${amount} descriptor="${descriptor}"; using the first (id=${r.matches[0].id})`
+  );
+  return r.matches[0];
+}
+
+/** FIN-009 — the fingerprint question answered honestly, ambiguity included. */
+export type FingerprintResolution =
+  | { kind: "NONE" }
+  | { kind: "MATCH"; row: TransactionFingerprintCandidate }
+  /**
+   * More than one existing row carries this fingerprint. A fingerprint cannot
+   * say WHICH twin the incoming row is, so binding a provider id to `matches[0]`
+   * is a coin toss that, lost, writes the wrong `plaidTransactionId` onto a row
+   * and lets the real twin arrive later as a duplicate. The caller must refuse
+   * to adopt and say so.
+   */
+  | { kind: "AMBIGUOUS"; matches: TransactionFingerprintCandidate[] };
+
+export async function resolveFingerprint(
+  financialAccountId: string,
+  date: Date,
+  amount: number,
+  descriptor: string,
+  pending: boolean,
+  client: Pick<Prisma.TransactionClient, "transaction">,
+): Promise<FingerprintResolution> {
   const candidates = await client.transaction.findMany({
     // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import
     // rollback must never be treated as a match candidate. Without this,
@@ -93,20 +146,15 @@ export async function findByFingerprint(
     // this helper. See
     // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
     where:  { financialAccountId, date, amount, pending, deletedAt: null },
-    select: { id: true, merchant: true, description: true, plaidTransactionId: true },
+    select: { id: true, merchant: true, description: true, plaidTransactionId: true, transactionEventId: true, pendingTransactionRef: true },
   });
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return { kind: "NONE" };
 
   // DF-4 — narrow on the RAW descriptor (`description ?? merchant`), stable across
   // Plaid enrichment drift, instead of the enriched `merchant` (which drifts).
   const target  = normalizeMerchantKey(descriptor);
   const matches = candidates.filter((c) => normalizeMerchantKey(c.description ?? c.merchant) === target);
-  if (matches.length === 0) return null;
-
-  if (matches.length > 1) {
-    console.warn(
-      `[plaid sync] fingerprint match ambiguous — ${matches.length} existing rows match financialAccountId=${financialAccountId} date=${date.toISOString().slice(0, 10)} amount=${amount} descriptor="${descriptor}"; using the first (id=${matches[0].id})`
-    );
-  }
-  return matches[0];
+  if (matches.length === 0) return { kind: "NONE" };
+  if (matches.length > 1) return { kind: "AMBIGUOUS", matches };
+  return { kind: "MATCH", row: matches[0] };
 }

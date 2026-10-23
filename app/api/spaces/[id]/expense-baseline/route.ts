@@ -1,0 +1,176 @@
+/**
+ * GET /api/spaces/[id]/expense-baseline
+ *
+ * v2.6-ASSESS-4 — the Space's RESOLVED monthly-expense baseline. SPACE-LEVEL,
+ * deliberately: it is a shared UNIT, not one surface's input.
+ *
+ * ── Different questions, one unit ───────────────────────────────────────────
+ *
+ * Two surfaces express an answer in "months of my expenses" while asking
+ * genuinely different financial questions:
+ *
+ *   Overview EF hero      "How much of my emergency-fund TARGET have I built?"
+ *                         — goal progress over a DEDICATED savings buffer
+ *                           (emergency_fund_progress: requires accountTypes
+ *                           ["savings"], tab GOALS, targetMonths 3/6/9/12)
+ *
+ *   Liquidity workspace   "If income stopped, how long could I last on money I
+ *                          can reach RIGHT NOW?" — runway over ALL reachable
+ *                          cash, graded CRITICAL → EXCELLENT
+ *
+ * Those questions keep separate authorities: different populations, different
+ * numerators, different verdicts. What they must NOT keep separate is the unit
+ * they are both denominated in. "A month of my expenses" has to mean one amount
+ * on a Space, whichever question is asking — otherwise the two figures are not
+ * merely different answers, they are answers in different currencies.
+ *
+ * Hence: Space-level route, one authority, both consumers. It lived under
+ * /liquidity/ when only one surface used it; that path implied ownership the
+ * figure never had.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ *
+ * v2.6-ASSESS-2 gave the baseline one authority — DECLARED (the user's
+ * `emergency_fund_progress` figure) outranks MEASURED (the reliable-month
+ * average), and a non-positive figure is a refusal. The assessment engine
+ * consumed it immediately; the client surfaces could not, because the two
+ * candidate figures live on opposite sides of the client/server boundary: the
+ * declared one arrives with the section config, and the measured one requires
+ * the transactions assembler.
+ *
+ * ⚠️ The MEASURED rung is not an invention of this arc. The widget's own config
+ * hint has always said the declared figure "will auto-populate from the
+ * monthly_expenses widget when that widget is built" — a derived monthly-expense
+ * source was always the intent; it simply never existed until
+ * `computeAverageMonthlySpending` did.
+ *
+ * So the workspace showed NOTHING whenever a Space had only a measurement —
+ * every Space on the corpus — while the engine graded the same position and told
+ * the AI about it (Chris' Space: "1.6 months", a WARNING, that no product surface
+ * mentioned).
+ *
+ * This route closes that: it resolves the baseline SERVER-side, through the one
+ * authority, and hands back the answer plus WHICH rung produced it. The client
+ * renders it. Nothing is re-derived in React.
+ *
+ * ── Why a route and not the mount payload ───────────────────────────────────
+ *
+ * The mount hydration doctrine (lib/space/mount-payload-boundary.test.ts) rejects
+ * "workspace analytics / perspectives (computed projections)" from the initial
+ * payload and says they stay "a workspace responsibility (lazy, canonical
+ * loader)". A transaction-derived average is exactly that, so it is fetched
+ * lazily — only when a surface that needs it is actually on screen — rather than
+ * loaded on every Space mount for every Space type.
+ *
+ * ── What it does NOT do ─────────────────────────────────────────────────────
+ *
+ * No numerator, no classification, no thresholds. It returns a denominator and
+ * its provenance. Coverage months are still `cashNow / baseline.amount` in the
+ * workspace, over the reachable-cash numerator that surface has always used, and
+ * the CRITICAL/WARNING/SAFE grading remains the assessment engine's alone.
+ *
+ * Security: caller must be an ACTIVE member (VIEWER+), like every other
+ * Space-scoped read. The measured figure is derived from the caller's own
+ * visibility-gated transaction population by the assembler.
+ *
+ * ── RLS-T2 — AND NOW THAT SENTENCE IS TRUE OF THE DATABASE, NOT JUST THE JOIN ──
+ * Both reads run as the authenticated caller. Nothing in this route was
+ * unclassifiable, so it holds no deployment-wide client at all.
+ *
+ * ⚠️ TWO SHORT PHASES, NOT ONE. The declared figure is a single
+ * `SpaceDashboardSection` row (`"spaceId" IN fm_visible_space_ids()`, which the
+ * VIEWER guard has established); the measured figure is the transactions
+ * assembler, ~24 reads over the account subtree. `resolveSpaceContext` sits
+ * between them and is NOT a tenant read — it resolves the caller's Space scope
+ * from session state — so there was never one coherent phase to put them in, and
+ * a transaction spanning both would be a boundary held across a resolution it
+ * does not police.
+ *
+ * ⚠️ THE ASSEMBLER PHASE'S BUDGET IS IMPORTED, NOT CHOSEN HERE.
+ * `PHASE_BUDGET_MS.PROLOGUE` is the budget the AI surface already derived from a
+ * MEASUREMENT of this exact assembler (~24 queries, the heaviest prologue
+ * domain). A hand-copied 5_000 here would be the same number today and silently
+ * the wrong one the day that measurement moves — the failure mode this
+ * programme's own history calls "the floor hand-copied, not derived".
+ */
+
+import { NextRequest, NextResponse } from "next/server";
+import { SpaceMemberRole } from "@prisma/client";
+
+import { requireSpaceRole } from "@/lib/session";
+import { withTenantDb } from "@/lib/db/tenant-context";
+import { PHASE_BUDGET_MS } from "@/lib/ai/tenant-phase";
+import { resolveSpaceContext } from "@/lib/space";
+import { readCanonicalSpending } from "@/lib/transactions/canonical-spending";
+import { transactionCorpusSpan } from "@/lib/data/transaction-query";
+import { todayUTCISO } from "@/lib/time/clock";
+import { resolveExpenseBaseline } from "@/lib/liquidity/expense-baseline";
+import { getAssembler } from "@/lib/ai/assembler-registry";
+import { FinanceDomains } from "@/lib/ai/types";
+import type { TransactionsSummaryData } from "@/lib/ai/types";
+
+// Side-effect registration of the ONE assembler this route needs — the same
+// house pattern the perspectives route uses for its lenses. Deliberately not the
+// barrel: this route needs the transactions summary and nothing else.
+import "@/lib/ai/assemblers/transactions";
+
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id: spaceId } = await params;
+
+  const [viewer, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
+  if (err) return err;
+
+  // The DECLARED figure — the same `emergency_fund_progress` config the
+  // workspace has always divided by.
+  const section = await withTenantDb(viewer.user.id, (tx) => tx.spaceDashboardSection.findFirst({
+    where:  { spaceId, key: "emergency_fund_progress" },
+    select: { config: true },
+  }));
+  const rawDeclared = Number(
+    (section?.config as { monthlyExpenses?: unknown } | null)?.monthlyExpenses,
+  );
+  const declared = Number.isFinite(rawDeclared) ? rawDeclared : null;
+
+  // The MEASURED figure — the assessment engine's own call, through the real
+  // assembler, so the two surfaces divide by the same number rather than by two
+  // implementations of the same idea.
+  const spaceCtx = await resolveSpaceContext(viewer.user.id, spaceId);
+  const assemble = getAssembler(FinanceDomains.TRANSACTIONS_SUMMARY);
+  // RLS-AI-S6 — the assembler takes its authority from the caller. RLS-T2 — and
+  // the authority it is handed is now the authenticated caller's own, so the
+  // MEASURED rung is computed over exactly the transaction population the caller
+  // may see, which is what the security note above has always claimed.
+  //
+  // ⚠️ THE CANONICAL MONTHS, READ OVER THEIR OWN CALENDAR WINDOW. This read the
+  // assessment's 90-day window, whose reliable months were two on 356 days of
+  // 2026; the canonical baseline is the trailing three COMPLETE months before
+  // today (lib/transactions/canonical-spending), the same figure the Daily Brief,
+  // the assessment and every scenario now average.
+  const canonical = assemble
+    ? await withTenantDb(
+        viewer.user.id,
+        (tx) => readCanonicalSpending({
+          asOf: todayUTCISO(),
+          readWindow: async (w) => ((await assemble(tx, spaceCtx,
+            { scopeHint: "full", transactionWindow: w }))?.data as TransactionsSummaryData | undefined) ?? null,
+          readHistory: async (asOf) => {
+            const span = await transactionCorpusSpan(tx, { spaceId, asOf });
+            return { from: span.from, to: span.to };
+          },
+        }),
+        { timeout: PHASE_BUDGET_MS.PROLOGUE },
+      )
+    : null;
+  const measured = canonical?.baseline.monthly ?? null;
+
+  // THE authority decides. Precedence and the positive-or-refuse rule live there,
+  // not here — this route supplies evidence and serializes the verdict.
+  const baseline = resolveExpenseBaseline({ declared, measured,
+    measuredOver: canonical && canonical.baseline.monthCount > 0
+      ? { label: canonical.baseline.label, count: canonical.baseline.monthCount } : null });
+
+  return NextResponse.json({ baseline });
+}

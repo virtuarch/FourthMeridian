@@ -295,6 +295,14 @@ const REASON_TO_PRISMA: Record<FlowReason, PrismaFlowClassificationReason> = {
 export interface FlowWriteFields {
   flowType:                 PrismaFlowType | null;
   flowDirection:            PrismaFlowDirection | null;
+  /**
+   * v2.6-OWN-1 — WHICH authority produced flowType/flowDirection. Every field
+   * below is the CLASSIFIER's output, so every field-set this builder returns is
+   * stamped `CLASSIFIER`, and the all-null set is stamped null (unowned).
+   * Coupled to `flowType` by construction here, which is why no classifier write
+   * site has to remember it.
+   */
+  flowAuthority:            "CLASSIFIER" | null;
   counterpartyAccountId:    string | null;
   classificationConfidence: number | null;
   classificationReason:     PrismaFlowClassificationReason | null;
@@ -312,6 +320,10 @@ export interface FlowWriteFields {
 export const NULL_FLOW_WRITE_FIELDS: FlowWriteFields = {
   flowType:                 null,
   flowDirection:            null,
+  // v2.6-OWN-1 — no flowType means no owner. Classification failed; nobody
+  // classified the row, so nobody claims it. This keeps the coupling invariant
+  // (flowType null ⟺ flowAuthority null) true on the failure path too.
+  flowAuthority:            null,
   counterpartyAccountId:    null,
   classificationConfidence: null,
   classificationReason:     null,
@@ -337,6 +349,11 @@ export function buildFlowWriteFields(
   return {
     flowType:                 FLOW_TYPE_TO_PRISMA[classification.flowType],
     flowDirection:            FLOW_DIRECTION_TO_PRISMA[classification.flowDirection],
+    // v2.6-OWN-1 — the classifier stamps itself, here, once. Every classifier
+    // write site (Plaid sync create + update, CSV import, merchant corrections,
+    // backfill-flowtype, repair-refund-misclassification) goes through this
+    // builder, so none of them can produce a flow value without an author.
+    flowAuthority:            "CLASSIFIER",
     counterpartyAccountId:    null,
     classificationConfidence: classification.confidence,
     classificationReason:     REASON_TO_PRISMA[classification.reason],
@@ -400,7 +417,22 @@ export interface FlowRowInput {
   pfcDetailed:        string | null;
   pfcConfidenceLevel: string | null;
   merchantEntityId:   string | null;
+  /**
+   * FIN-002 — the row's `categorySource` (Prisma `CategorySource`, string-typed
+   * here). When it is a USER source the provider taxonomy is carried but
+   * suppressed as a classification signal (`isUserCategorySource`). Optional so
+   * every existing caller compiles; omitted ⇒ the provider taxonomy decides, as
+   * before. ⚠️ A recompute site that certifies or rewrites stored rows
+   * (audit-flow-desync, backfill-flowtype) MUST pass it, or it recomputes a
+   * user-corrected row under the provider's verdict.
+   */
+  categorySource?:    string | null;
 }
+
+/** FIN-002 — the category sources that mean "the user said so". */
+export const USER_CATEGORY_SOURCES: ReadonlySet<string> = new Set(["USER_RULE", "USER_OVERRIDE"]);
+export const isUserCategorySource = (source: string | null | undefined): boolean =>
+  typeof source === "string" && USER_CATEGORY_SOURCES.has(source);
 
 /** Account context resolved from whichever FK the row uses (FinancialAccount or legacy Account). */
 export interface FlowRowAccountContext {
@@ -424,8 +456,12 @@ export function buildFlowInputFromRow(
     amount:      row.amount,
     accountType: acct.accountType ?? null,
     debtSubtype: acct.debtSubtype ?? null,
+    // FIN-002 — the PFC stays on the input VERBATIM (buildFlowWriteFields
+    // persists it from here, so the provider fact is never mutated); what a USER
+    // source changes is whether it may DECIDE.
     pfcPrimary:  row.pfcPrimary ?? null,
     pfcDetailed: row.pfcDetailed ?? null,
+    ...(isUserCategorySource(row.categorySource) ? { providerTaxonomySuppressed: true } : {}),
   };
 
   const captured: CapturedPlaidMetadata = {

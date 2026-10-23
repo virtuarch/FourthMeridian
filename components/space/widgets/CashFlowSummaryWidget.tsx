@@ -24,12 +24,12 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency } from "@/lib/format";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import {
   filterByPeriod,
+  asOfAnchor,
   type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import {
   classifyLiquidity,
@@ -39,15 +39,14 @@ import {
 } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
 import { groupCashFlowContext, type CashFlowContext } from "@/lib/transactions/cash-flow-context";
-import { aggregateDayFacts, economicSpend, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
+import { aggregateDayFacts, economicSpend, economicSpendByTier, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import { CashFlowFilterControls, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 
 function fmt(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
+  return formatAggregateMoney(v, ctx);
 }
 
 interface TierAccount { id: string; type: string }
@@ -70,6 +69,15 @@ interface Props {
    *  re-folding from raw rows — byte-identical (same authority, same window). Absent
    *  ⇒ the standalone/registry path computes them here, exactly as before. */
   windowRows?:          Transaction[];
+  /**
+   * The SELECTED as-of date (YYYY-MM-DD) — the anchor for the fallback window.
+   *
+   * The workspace path supplies `windowRows` and never re-windows. The section /
+   * registry path has no pre-computed rows, so it windowed against `new Date()`
+   * and showed TODAY's period while the dashboard displayed a historical date.
+   * The window belongs to the shell, not the widget.
+   */
+  asOf?:                string;
   facts?:               DayFacts;
   context?:             CashFlowContext;
   /** CF-1 — when the editorial CashFlowHero owns the lede (headline Net + the
@@ -80,10 +88,13 @@ interface Props {
   hideHeadline?:        boolean;
 }
 
+/** The Cash Out tile's note — exported so a test can pin the exact copy. */
+export const CASH_OUT_HINT = "Card purchases count here when you pay the card.";
+
 /** One expandable side (Cash In or Cash Out) with its reason breakdown. Each
  *  reason line drills into its exact transactions when `onOpenLine` is provided. */
 function AxisTile({
-  label, total, accent, lines, ctx, sign, onOpenLine,
+  label, total, accent, lines, ctx, sign, onOpenLine, hint,
 }: {
   label:  string;
   total:  number;
@@ -92,6 +103,8 @@ function AxisTile({
   ctx?:   ConversionContext;
   sign:   "+" | "−";
   onOpenLine?: (line: TileLine) => void;
+  /** A one-line, visually subordinate note under the figure. */
+  hint?:  string;
 }) {
   const [open, setOpen] = useState(false);
   const color = accent === "green" ? "var(--accent-positive)" : "var(--accent-negative)";
@@ -117,6 +130,7 @@ function AxisTile({
         </span>
         <span className="shrink-0 text-base sm:text-lg font-semibold tabular-nums" style={{ color }} title={`${sign}${fmt(total, ctx)}`}>{sign}{fmt(total, ctx)}</span>
       </button>
+      {hint && <p data-tile-hint className="mt-1 text-[10px] leading-snug text-[var(--text-faint)]">{hint}</p>}
 
       {open && canExpand && (
         <div className="mt-2 space-y-1 border-t border-[var(--border-hairline)] pt-2">
@@ -161,7 +175,7 @@ function ContextRow({ label, value, onOpen }: { label: string; value: string; on
   );
 }
 
-export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, perspective: controlledPerspective, onPerspectiveChange, windowRows, facts: factsProp, context: contextProp, hideHeadline = false }: Props) {
+export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, perspective: controlledPerspective, onPerspectiveChange, windowRows, asOf, facts: factsProp, context: contextProp, hideHeadline = false }: Props) {
   // CF-3 — perspective toggle (Cash Flow ⇄ Spending). Controlled by the shared
   // workspace perspective when provided; otherwise self-managed for standalone use.
   const [localPerspective, setLocalPerspective] = useState<CashFlowPerspective>("liquidity");
@@ -174,7 +188,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   if (transactions == null) {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;
   }
-  const rows = (windowRows ?? filterByPeriod(transactions, period)) as LiquidityTx[];
+  const rows = (windowRows ?? filterByPeriod(transactions, period, asOfAnchor(asOf))) as LiquidityTx[];
   if (rows.length === 0) {
     return (
       <div className="text-center py-8">
@@ -196,8 +210,11 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   // (no second fold); its per-side totals equal facts.cashIn/out by construction.
   const breakdown = groupLiquidityByReason(facts);
   const econSpendTotal = economicSpend(facts);
-  const econCard = Math.min(facts.creditCardSpending, econSpendTotal);
-  const econOther = Math.max(0, econSpendTotal - econCard);
+  // CF-RECON-1 — the parts of Spending come from the fold, each net of the refunds
+  // on its OWN tier. This was `min(cardGross, net)` / `net − that` in React, which
+  // credited every card refund to direct spending (a $27.86 direct line printed as
+  // $0 while the card line absorbed it). Floored excess is disclosed, never moved.
+  const econTier = economicSpendByTier(facts);
   const econNet = facts.income - econSpendTotal;
   // CF-1 — human context projection (presentation only; never feeds Cash In/Out/Net).
   const context = contextProp ?? groupCashFlowContext(rows, liqCtx, ctx);
@@ -230,18 +247,35 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   const isLiabilityRow = (r: LiquidityTx) => liqCtx.tierOf(r.financialAccountId ?? r.accountId ?? null) === "liability";
   const openEconSlice = (line: TileLine) => {
     if (line.reason === "INCOME") {
-      setSlice({ title: "Income", subtitle: "Earned income this period", rows: rows.filter((r) => isIncome(r.flowType)) });
+      // v2.6-TRUTH-5 — was subtitled "Earned income this period" over EVERY
+      // income row, which called 45 rows of deposit interest earned income. The
+      // slice spans the whole canonical breakdown, so it says so, and a row the
+      // authority classes NOT_INCOME is excluded here exactly as it is from the
+      // headline. No classification happens in this component — it reads
+      // `incomeClass` off the DTO.
+      setSlice({
+        title: "Income (bank transactions)",
+        subtitle: "Earned, interest and other income this period",
+        rows: rows.filter((r) => isIncome(r.flowType) && r.incomeClass !== "NOT_INCOME"),
+      });
     } else if (line.reason === "CARD_SPEND") {
-      setSlice({ title: "Credit-card spending", subtitle: "Bought on credit this period", rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) });
+      // Charges AND refunds on card accounts — the rows the net line folded.
+      setSlice({ title: "Credit-card spending", subtitle: "Spending & refunds on credit this period", total: line.amount, totalLabel: "Net",
+        rows: rows.filter((r) => (isCostFlow(r.flowType) || isRefund(r.flowType)) && isLiabilityRow(r)) });
+    } else if (line.reason === "REFUNDS_UNAPPLIED") {
+      setSlice({ title: "Refunds beyond charges", subtitle: "Refunds larger than the charges on the same accounts this period", total: line.amount, totalLabel: "Total",
+        rows: rows.filter((r) => isRefund(r.flowType)) });
     } else {
-      setSlice({ title: "Direct & other spending", subtitle: "Spending & refunds this period", rows: rows.filter((r) => (isCostFlow(r.flowType) || isRefund(r.flowType)) && !isLiabilityRow(r)) });
+      setSlice({ title: "Direct & other spending", subtitle: "Spending & refunds this period", total: line.amount, totalLabel: "Net",
+        rows: rows.filter((r) => (isCostFlow(r.flowType) || isRefund(r.flowType)) && !isLiabilityRow(r)) });
     }
   };
 
-  const econInLines:  TileLine[] = [{ reason: "INCOME", label: "Income", amount: facts.income }].filter((l) => l.amount > 0);
+  const econInLines:  TileLine[] = [{ reason: "INCOME", label: "Income (bank transactions)", amount: facts.income }].filter((l) => l.amount > 0);
   const econOutLines: TileLine[] = [
-    { reason: "CARD_SPEND",   label: "Credit-card spending",   amount: econCard },
-    { reason: "DIRECT_SPEND", label: "Direct & other spending", amount: econOther },
+    { reason: "CARD_SPEND",        label: "Credit-card spending",    amount: econTier.creditCard },
+    { reason: "DIRECT_SPEND",      label: "Direct & other spending", amount: econTier.direct },
+    { reason: "REFUNDS_UNAPPLIED", label: "Less refunds beyond charges", amount: econTier.refundsUnapplied },
   ].filter((l) => l.amount > 0);
 
   return (
@@ -279,20 +313,28 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
         /* Liquidity: Cash In / Cash Out — expandable into reason breakdown. */
         <div className="grid grid-cols-2 gap-3">
           <AxisTile label="Cash In"  total={facts.cashIn}  accent="green" sign="+" lines={breakdown.cashIn}  ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_IN", l)} />
-          <AxisTile label="Cash Out" total={facts.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_OUT", l)} />
+          {/* CF-TIER-NET — Cash Out is a CASH measure, not spending: a card purchase
+              moves no cash until the card is paid, so it enters here as a debt
+              payment, possibly in another period. One line says the timing; it
+              claims no matching between payments and purchases. */}
+          <AxisTile label="Cash Out" total={facts.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_OUT", l)}
+            hint={CASH_OUT_HINT} />
         </div>
       )}
 
       {/* Credit-card spending is honestly visible in BOTH perspectives: on the
           liquidity axis it is NOT Cash Out (the cash leaves later as a Debt
           payment), so it surfaces here as a context figure that drills into the
-          card cost-flow rows — reconciles with Spending by Category. */}
+          card cost-flow rows. CF-RECON-1 — it is GROSS (what was charged, before
+          refunds, fees included), so it says "Charged", never "Spent": the word
+          "spending" on this page is the NET figure (Spending tile = Total spending). */}
       {!economic && facts.creditCardSpending > 0 && (
         <div className="pt-1 border-t border-[var(--border-hairline)]">
           <ContextRow
-            label="Spent on credit (no cash moved at purchase)"
+            label="Charged on credit (no cash moved at purchase)"
             value={fmt(facts.creditCardSpending, ctx)}
-            onOpen={() => setSlice({ title: "Credit-card spending", subtitle: "Bought on credit this period", rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) })}
+            onOpen={() => setSlice({ title: "Charged on credit", subtitle: "Bought on credit this period", spendLabel: "Charged",
+              rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) })}
           />
         </div>
       )}

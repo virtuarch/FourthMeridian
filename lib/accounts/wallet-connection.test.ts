@@ -37,7 +37,14 @@ function code(src: string): string {
 
 check("credential is the trimmed address", walletConnectionCredential("  1Cn7RXTTd5aN1ys32GfXVdXUzTyDxdpS1D  ") === "1Cn7RXTTd5aN1ys32GfXVdXUzTyDxdpS1D");
 check("externalConnectionId is CHAIN:address", walletExternalConnectionId("btc", " 1Cn7RX ") === "BTC:1Cn7RX");
-check("externalConnectionId upper-cases the chain", walletExternalConnectionId(" eth ", "0xABC") === "ETH:0xABC");
+// UI-C1 — the chain is still upper-cased; the ADDRESS is now canonicalised the
+// same way the credential is, so a debug id can never disagree with the identity
+// it labels. An EVM address is case-folded (the EIP-55 checksum is not part of
+// the identity); base58/bech32 chains keep their case exactly.
+check("externalConnectionId upper-cases the chain and canonicalises an EVM address",
+  walletExternalConnectionId(" eth ", "0xABC") === "ETH:0xabc");
+check("…and leaves a base58 address untouched",
+  walletExternalConnectionId("SOL", "9nPLXXQoRR") === "SOL:9nPLXXQoRR");
 
 // ── PART B — source-scan the spine modules ─────────────────────────────────────
 
@@ -75,8 +82,11 @@ check("btc-sync records the Connection on a successful sync (markSynced)",
   sync.includes("alignWalletProviderSpine") && /markSynced:\s*true/.test(sync));
 check("btc-sync selects ownerUserId for spine alignment", /ownerUserId:\s*true/.test(sync));
 
-const backfill = code(read("scripts", "backfill-wallet-connections.ts"));
-check("backfill script reuses alignWalletProviderSpine", backfill.includes("alignWalletProviderSpine"));
+// REVIEW-3 — scripts/backfill-wallet-connections.ts was DELETED: its work is
+// done (the live add/re-add/reactivate/sync paths self-heal the spine, above),
+// and it called alignWalletProviderSpine WITHOUT descriptorOnly, which for an
+// xpub wallet repoints a discovered-address PAI row to the xpub descriptor and
+// silently loses that address from getWalletAddresses.
 
 // ── PART C — v1.5 cleanup: AccountConnection mirror + schema doctrine ───────────
 

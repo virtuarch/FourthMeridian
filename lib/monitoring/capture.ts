@@ -23,7 +23,15 @@
 
 import "server-only";
 
-import * as Sentry from "@sentry/nextjs";
+// PERF-2 — capture through @sentry/core, never the @sentry/nextjs SDK entry.
+// On the server @sentry/nextjs resolves to the full Node SDK (OpenTelemetry,
+// auto-instrumentations, a JS parser for import hooks): ~730 modules compiled
+// into every route that reaches this file — and lib/auth.ts / lib/session.ts
+// do. captureException is the SAME function in both (asserted by
+// lib/monitoring/sentry-capture-boundary.test.ts) and writes to the global
+// carrier the SDK's init in instrumentation.ts populated, so what is captured,
+// scrubbed and sent is unchanged. The init surfaces stay on @sentry/nextjs.
+import * as Sentry from "@sentry/core";
 
 /**
  * The authentication stage an infrastructure failure occurred in. Kept coarse
@@ -160,5 +168,306 @@ export function captureSessionRevocationFailure(args: {
     Sentry.captureException(args.error, buildSessionRevocationCapture(args));
   } catch {
     // Monitoring must never take down the request it is observing.
+  }
+}
+
+// ── Operational-ledger write failures (SCHEDULER-DISPATCH-RESTORE-1) ─────────
+//
+// WHY THIS EXISTS. Both append-only execution ledgers write best-effort and
+// swallow their own failures on purpose — "the ledger must never break the job
+// it observes" (lib/jobs/run.ts) and the identical contract in
+// lib/plaid/refresh-execution.ts. That contract is correct and is NOT changed
+// here. What was missing is that a swallowed failure went only to console.error,
+// so a ledger that had gone completely write-dead stayed invisible: the
+// dispatcher still returned 200, the Vercel cron dashboard stayed green, and the
+// only visible symptom was every job drifting to "overdue" on a surface nobody
+// watches minute-to-minute.
+//
+// That is exactly what happened on 2026-07-26: the deploy shipped OPS-2B′
+// (JobRun.deploymentSha) without its migration, so every jobRun.create() failed
+// P2022 for ten hours while every job body ran normally. RefreshExecution was
+// worse — its table was absent entirely, so the DF-2 ledger had been write-dead
+// since 07-24 and nothing reported it.
+//
+// So: still swallowed, still non-fatal, but now escalated. A write-dead ledger
+// reports itself instead of hiding behind a 200.
+
+/**
+ * The append-only operational ledgers whose writes are best-effort.
+ *
+ * ── RLS-P-2 — WIDENED FROM TWO TO SEVEN, BECAUSE TWO WAS NOT THE TRUTH ───────
+ * `JobRun` and `RefreshExecution` were the only two tables a swallowed write
+ * could be REPORTED under, so the five other operational tables — the ones that
+ * carry the per-stage evidence, the per-account coverage, the provider attempts
+ * and the incident episodes — had no vocabulary at all. Their failures reached
+ * `console.error` and stopped there, which is the SAME defect this module was
+ * created for on 2026-07-26, one layer down.
+ *
+ * ⚠️ THE UNION IS THE WRITE SURFACE, NOT A CONVENIENCE. Every value here is a
+ * table `fm_app` is revoked from outright
+ * (prisma/migrations/20261002000100_rls_roles_and_policies §4), plus `JobRun`,
+ * which belongs to the same family and the same contract. Adding a value that is
+ * not one of those would make `area: "operational-ledger"` mean two things.
+ */
+export type OperationalLedger =
+  | "JobRun"
+  | "RefreshExecution"
+  | "RefreshEndpointResult"
+  | "RefreshEndpointAccountCoverage"
+  | "ProviderCall"
+  | "SyncIssue"
+  | "SyncIssueOccurrence"
+  | "AiInvocation";
+
+/**
+ * WHICH write failed.
+ *
+ * A phase names a WRITE, not a table: `start` and `completion` are shared by
+ * `JobRun` and `RefreshExecution`, and the remaining six each belong to exactly
+ * one table. That is why the effect sentence below can be keyed on the phase
+ * alone and still be exhaustive.
+ *
+ * ⚠️ `incident` AND `resolution` ARE SEPARATE AND MUST STAY SEPARATE. They are
+ * opposite statements — "a failure was observed" and "an open failure stopped
+ * being true" — and conflating them was the concrete gap RLS-P-1 recorded: the
+ * resolution authority returns `{resolved: 0}` both when nothing matched and
+ * when the write was refused, which is the silent-refusal defect
+ * (docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 1) on the operational ledger.
+ *
+ * `correlate` is the one READ in the family that is part of a write: resolving
+ * `runId` to a `RefreshExecution.id` before an occurrence is stored. Its failure
+ * is indistinguishable from "this run names no execution" unless it is reported,
+ * and the occurrence is then stored permanently unlinked.
+ */
+export type LedgerWritePhase =
+  | "start"
+  | "stages"
+  | "coverage"
+  | "providerCall"
+  | "incident"
+  | "resolution"
+  | "correlate"
+  | "completion";
+
+/**
+ * What a swallowed write of each phase COSTS, in the words of the thing that is
+ * now unreadable rather than in the words of the statement that failed.
+ *
+ * Exhaustive by type (`Record<LedgerWritePhase, string>`), so a new phase cannot
+ * be added without saying what losing it means — which is the only part of this
+ * payload an operator actually acts on. Keeps NO row contents, NO identifiers
+ * and NO message: a phase is a static vocabulary term.
+ */
+/**
+ * A swallowed operational-ledger write, named by table and phase and by nothing
+ * else.
+ *
+ * Exists so an authority that swallows its own failure — every one of them, by
+ * contract — can still TELL SOMEBODY, without the error object, the row or the
+ * message crossing the boundary. A table and a phase are enough to find the
+ * statement and the policy; that is the whole budget.
+ */
+export type LedgerWriteObserver = (ledger: OperationalLedger, phase: LedgerWritePhase) => void;
+
+const LEDGER_WRITE_EFFECT: Record<LedgerWritePhase, string> = {
+  start:        "run left NO row in this ledger; the completion write is skipped",
+  completion:   "row left permanently 'running'; the work itself succeeded",
+  stages:       "the execution row survives with NO per-stage evidence, so its status cannot be re-derived from its children",
+  coverage:     "the execution row survives with NO per-account coverage, so 'which accounts did this run touch' is unanswerable",
+  providerCall: "this provider attempt is unrecorded, so retry and rate-limit counts for this run are understated",
+  incident:     "the failure that was observed is NOT recorded, so the episode reads as if it never happened",
+  resolution:   "active episodes this success remediates stay OPEN, so a recovery that did happen is invisible",
+  correlate:    "the run correlator was not resolved, so the observation is stored UNLINKED and reads as 'this run named no execution'",
+};
+
+/**
+ * Prisma's schema-drift signatures: the deployed code references a column
+ * (P2022) or a table (P2021) that the target database does not have. Kept
+ * distinct from the pool-exhaustion codes above for the same reason those are
+ * kept distinct from each other — drift and contention have different fixes, so
+ * they must not share a fingerprint. P2022 IS the 2026-07-26 fingerprint.
+ */
+export function isSchemaDriftCode(code: string): boolean {
+  return code === "P2021" || code === "P2022";
+}
+
+/**
+ * Build the Sentry payload for a swallowed operational-ledger write failure.
+ *
+ * Split out as a PURE function for the same reason buildSessionRevocationCapture
+ * is: the tags, the drift fingerprint and — critically — the absence of any
+ * credential are then provable in a unit test without a Sentry double.
+ *
+ * Reuses classifyDbError() rather than reading `.code` locally; a second, blinder
+ * Prisma-code reader in this file would be exactly the drift that a single
+ * classification authority exists to prevent.
+ */
+export function buildLedgerWriteCapture(args: {
+  ledger:   OperationalLedger;
+  phase:    LedgerWritePhase;
+  error:    unknown;
+  /** Static registry identifier (lib/jobs/registry.ts). Never user content. */
+  jobName?: string;
+}): {
+  tags:     Record<string, string>;
+  contexts: Record<string, Record<string, unknown>>;
+  level:    "error";
+} {
+  const dbErrorCode = classifyDbError(args.error);
+  return {
+    tags: {
+      area:          "operational-ledger",
+      ledger:        args.ledger,
+      // `phase`, not `stage`: "stage" is the SyncIssue operation vocabulary
+      // (lib/platform/incidents) and the auth surface already had to rename away
+      // from it. Two unrelated meanings under one tag name makes filtering
+      // ambiguous.
+      phase:         args.phase,
+      db_error_code: dbErrorCode,
+      schema_drift:  String(isSchemaDriftCode(dbErrorCode)),
+      ...(args.jobName ? { jobName: args.jobName } : {}),
+      // The deployment is NOT tagged here, for the reason given above: Sentry's
+      // `release` already carries currentDeploymentSha() and OPS-2B′ keeps that
+      // resolver sole-sourced.
+    },
+    contexts: {
+      ledger_write: {
+        ledger: args.ledger,
+        phase:  args.phase,
+        // Names the outcome in the words of the incident this prevents, so an
+        // alert reads as a consequence rather than as a stack trace. Keyed on
+        // the phase through an EXHAUSTIVE table, so a new phase cannot ship
+        // without an effect sentence — the ternary this replaced silently
+        // described every non-start phase as a stuck 'running' row.
+        effect: LEDGER_WRITE_EFFECT[args.phase],
+      },
+    },
+    // Always an error: either shape makes a successful run unreadable afterwards.
+    level: "error",
+  };
+}
+
+/**
+ * Capture a swallowed operational-ledger write failure.
+ *
+ * SAFE CONTEXT ONLY — and note what is deliberately ABSENT: no summary, no row,
+ * no connection string, no user content. The job name is a static registry
+ * identifier, and the db error code is a static Prisma code. Never throws:
+ * capture must not become a second failure on a path whose whole contract is
+ * that it cannot fail the work it observes.
+ */
+export function captureLedgerWriteFailure(
+  ledger: OperationalLedger,
+  phase: LedgerWritePhase,
+  error: unknown,
+  jobName?: string,
+): void {
+  try {
+    Sentry.captureException(error, buildLedgerWriteCapture({ ledger, phase, error, jobName }));
+  } catch {
+    // Monitoring must never take down the request it is observing.
+  }
+}
+
+// ── OPERATIONALIZATION P0 (2026-10-07) — the two failures the owner heard about
+// from users first ─────────────────────────────────────────────────────────────
+//
+// A scheduled job that threw was a `failed` JobRun row and nothing else; an AI
+// provider failure (the Oct 4 Brief outage: `insufficient_quota`) was a console
+// line. Neither reached Sentry, so neither reached a person before a user did.
+// Both captures below carry static identifiers only — a registry job name, an
+// outcome word, a provider error CODE, a surface name, a model name — never a
+// prompt, a completion, a summary, a user id or a monetary value.
+
+/**
+ * Build the Sentry payload for a scheduled job whose body threw. Pure, so the
+ * tags and the absence of any content are provable without a Sentry double.
+ */
+export function buildJobFailureCapture(args: {
+  /** Static registry identifier (lib/jobs/registry.core.ts). Never user content. */
+  jobName: string;
+  /** The runJob execution id — an opaque correlation handle into the JobRun ledger. */
+  executionId?: string | null;
+}): { tags: Record<string, string>; level: "error" } {
+  return {
+    tags: {
+      area:    "scheduled-job",
+      jobName: args.jobName,
+      ...(args.executionId ? { executionId: args.executionId } : {}),
+    },
+    level: "error",
+  };
+}
+
+/** Capture a scheduled job failure. Never throws. */
+export function captureJobFailure(jobName: string, error: unknown, executionId?: string | null): void {
+  try {
+    Sentry.captureException(error, buildJobFailureCapture({ jobName, executionId }));
+  } catch {
+    // Monitoring must never take down the job it is observing.
+  }
+}
+
+// ── ARCH-004 / OPS-003 — withApiHandler 500s ─────────────────────────────────
+// lib/api.ts withApiHandler caught every unexpected route error and only
+// console.error'd it: a Prisma outage or a thrown invariant behind any wrapped
+// route produced a generic 500 nobody was told about. The route label is the
+// static string each route passes ("GET /api/spaces") — never the URL, the
+// query, a body or an id — so the tag identifies the surface and nothing else.
+
+/** Build the Sentry payload for an unhandled error in a wrapped API route. Pure. */
+export function buildApiHandlerFailureCapture(args: {
+  /** The static route label the handler was wrapped with, e.g. "GET /api/spaces". */
+  context: string;
+}): { tags: Record<string, string>; level: "error" } {
+  return {
+    tags:  { area: "api-handler", route: args.context },
+    level: "error",
+  };
+}
+
+/** Capture an unhandled API route error. Never throws. */
+export function captureApiHandlerFailure(context: string, error: unknown): void {
+  try {
+    Sentry.captureException(error, buildApiHandlerFailureCapture({ context }));
+  } catch {
+    // Monitoring must never turn one 500 into another.
+  }
+}
+
+/**
+ * Build the Sentry payload for an AI provider call that did not return usage.
+ * `outcome` is the AiInvocation outcome word ("FAILED" | "TIMEOUT" |
+ * "RATE_LIMITED" | "QUOTA"); `errorCode` is a provider CODE or HTTP status, never
+ * a message. A rate limit the caller will retry is a warning; everything else —
+ * and QUOTA above all, since waiting cannot cure it — is an error.
+ */
+export function buildAiProviderFailureCapture(args: {
+  outcome:   string;
+  errorCode: string | null;
+  surface:   string | null;
+  model:     string;
+}): { tags: Record<string, string>; level: "error" | "warning" } {
+  return {
+    tags: {
+      area:       "ai-provider",
+      ai_outcome: args.outcome,
+      model:      args.model,
+      ...(args.errorCode ? { error_code: args.errorCode } : {}),
+      ...(args.surface ? { surface: args.surface } : {}),
+    },
+    level: args.outcome === "RATE_LIMITED" ? "warning" : "error",
+  };
+}
+
+/** Capture an AI provider failure. Never throws. */
+export function captureAiProviderFailure(
+  args: { outcome: string; errorCode: string | null; surface: string | null; model: string },
+  error: unknown,
+): void {
+  try {
+    Sentry.captureException(error, buildAiProviderFailureCapture(args));
+  } catch {
+    // Monitoring must never take down the call it is observing.
   }
 }

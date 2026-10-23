@@ -19,7 +19,7 @@
  * adapter + routes for the invariants that must not regress.
  */
 
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { join }         from "path";
 import { can }          from "./policy";
 import type { SpaceMemberRole, SpaceMemberStatus, SpaceType } from "@prisma/client";
@@ -82,8 +82,16 @@ check("B adapter is server-only",              /import\s+["']server-only["']/.te
 check("B adapter reuses requireUser",          /requireUser\s*\(/.test(adapterCode) && /from\s+["']@\/lib\/session["']/.test(adapterCode));
 check("B adapter reuses forbidden",            /\bforbidden\s*\(\s*\)/.test(adapterCode));
 check("B adapter delegates to can()",          /\bcan\s*\(/.test(adapterCode) && /from\s+["']\.\/policy["']/.test(adapterCode));
+// ⚠️ IT FETCHES BOTH; IT NO LONGER JOINS THEM. RLS slice B split the
+// `space: { select: { type } }` include into a second read in the same
+// transaction, because `SpaceMember.space` is a REQUIRED relation whose policy
+// is not satisfied for a LEFT/REMOVED member — Prisma would raise
+// "Inconsistent query result" and turn a 403 into a 500. What must not regress
+// is that the adapter resolves BOTH the membership and the Space type.
 check("B adapter fetches membership + space.type",
-  /spaceMember\.findUnique/.test(adapterCode) && /space:\s*\{\s*select:\s*\{\s*type:\s*true/.test(adapterCode));
+  /spaceMember\.findUnique/.test(adapterCode) &&
+  /space\.findUnique/.test(adapterCode) &&
+  /select:\s*\{\s*type:\s*true/.test(adapterCode));
 check("B decideSpaceAction denies null membership",
   /if\s*\(\s*!membership\s*\)\s*return\s+false/.test(adapterCode));
 check("B adapter never emits 404",             !/404/.test(adapterCode));
@@ -141,17 +149,13 @@ check("C share no longer imports requireUser / SpaceMemberStatus",
 // Same source-scan tripwire approach. All three are "any ACTIVE member" doors.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const checkIn      = code(read("app", "api", "spaces", "[id]", "goals", "[goalId]", "check-in", "route.ts"));
+// W2 — the goal check-in route was DELETED with the Goals retirement; its three
+// door pins retired with it. The route's absence is itself pinned here so the
+// door cannot quietly return without re-enrolling in this scan.
+check("D goals routes stay deleted (Goals retired, W2)",
+  !existsSync(join(process.cwd(), "app", "api", "spaces", "[id]", "goals")));
 const activity     = code(read("app", "api", "spaces", "[id]", "activity", "route.ts"));
 const perspectives = code(read("app", "api", "spaces", "[id]", "perspectives", "route.ts"));
-
-// goal check-in
-check("D check-in uses requireSpaceAction goal:checkIn",
-  /requireSpaceAction\(\s*spaceId\s*,\s*["']goal:checkIn["']\s*\)/.test(checkIn));
-check("D check-in dropped inline spaceMember.findUnique",
-  !/spaceMember\.findUnique/.test(checkIn));
-check("D check-in keeps goal 404 + HABIT 400 residuals",
-  /status:\s*404/.test(checkIn) && /HABIT/.test(checkIn) && /status:\s*400/.test(checkIn));
 
 // activity
 check("D activity uses requireSpaceAction activity:read",
@@ -175,9 +179,14 @@ check("D perspectives keeps missing-spaceId 400 BEFORE the door",
 // that { spaceId, userId } is the scope passed to computePerspectives — WITHOUT
 // nailing the exact arity, so additive options (e.g. the "view as"
 // { targetCurrency } second argument) can't trip this tripwire.
+//
+// RLS-C-S2 — the scope is no longer the FIRST argument: the database authority
+// leads (`computePerspectives(tx, { spaceId, userId }, …)`). One identifier
+// before the scope object is therefore allowed; the SHAPE of the scope, which is
+// what this pins, is unchanged.
 check("D perspectives still computes as the requesting viewer (userId from auth)",
   /const\s+userId\s*=\s*auth\.user\.id/.test(perspectives) &&
-  /computePerspectives\(\s*\{\s*spaceId\s*,\s*userId\s*\}/.test(perspectives));
+  /computePerspectives\(\s*(?:[A-Za-z_$][\w$]*\s*,\s*)?\{\s*spaceId\s*,\s*userId\s*\}/.test(perspectives));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PART E — GET /api/spaces/[id] documented public-read exception (Batch 3).
@@ -203,8 +212,70 @@ const invite  = code(read("app", "api", "spaces", "[id]", "invite", "route.ts"))
 const members = code(read("app", "api", "spaces", "[id]", "members", "[userId]", "route.ts"));
 check("E invite door is requireSpaceRole(ADMIN); its findUnique is a target lookup",
   /requireSpaceRole\([^)]*ADMIN\)/.test(invite) && /spaceMember\.findUnique/.test(invite));
+// ⚠️ THE CLIENT IS NOT THE PROPERTY. This pinned `await db.spaceMember.findUnique`
+// until RLS slice B moved the lookup inside `withTenantDb`, where the same
+// statement reads `(tx) => tx.spaceMember.findUnique`. What must not regress is
+// that the members route's findUniques are TARGET lookups behind a
+// requireSpaceRole door — not that they run through any particular client.
 check("E members caller doors are requireSpaceRole; its findUniques are targetMembership",
-  /requireSpaceRole\(/.test(members) && /targetMembership\s*=\s*await\s+db\.spaceMember\.findUnique/.test(members));
+  /requireSpaceRole\(/.test(members) &&
+  /targetMembership\s*=\s*await[\s\S]{0,120}?\bspaceMember\.findUnique/.test(members));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PART F — RLS Slice 2: routes that authorized a DURABLE WRITE on a READ
+// predicate. `transactionDetailWhere(id, spaceId)` answers "may this Space see
+// this row's detail?" — an ACTIVE, FULL-tier SpaceAccountLink. It was the only
+// gate on POST /api/transactions/[id]/correct, so a VIEWER of a Space holding a
+// FULL link could stamp the row, mint a USER MerchantRule that steers every
+// future transaction, and set a category override. See
+// docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §17.1 item 7.
+//
+// The fix is AND, never OR: the role door is added, the read predicate stays.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Role semantics of the new action: MEMBER+ writes, VIEWER reads only.
+check("F transaction:correct VIEWER/ACTIVE deny (read visibility is not write authority)",
+  can("transaction:correct", A("VIEWER", "ACTIVE", "SHARED")) === false);
+check("F transaction:correct MEMBER/ACTIVE allow",
+  can("transaction:correct", A("MEMBER", "ACTIVE", "SHARED")) === true);
+check("F transaction:correct ADMIN/ACTIVE allow",
+  can("transaction:correct", A("ADMIN", "ACTIVE", "SHARED")) === true);
+check("F transaction:correct OWNER/ACTIVE allow",
+  can("transaction:correct", A("OWNER", "ACTIVE", "SHARED")) === true);
+check("F transaction:correct OWNER/REMOVED deny",
+  can("transaction:correct", A("OWNER", "REMOVED", "SHARED")) === false);
+check("F transaction:correct OWNER/LEFT deny",
+  can("transaction:correct", A("OWNER", "LEFT", "SHARED")) === false);
+// Corrections are a PERSONAL-Space operation too (that is where most of them
+// happen), so the action must not be sharedOnly.
+check("F transaction:correct PERSONAL OWNER allow (not sharedOnly)",
+  can("transaction:correct", A("OWNER", "ACTIVE", "PERSONAL")) === true);
+
+const correct = code(read("app", "api", "transactions", "[id]", "correct", "route.ts"));
+
+check("F correct POST adds the requireSpaceAction(transaction:correct) door",
+  /requireSpaceAction\(\s*spaceId\s*,\s*["']transaction:correct["']\s*\)/.test(correct));
+check("F correct POST returns the door's error response",
+  /if\s*\(\s*spaceErr\s*\)\s*return\s+spaceErr/.test(correct));
+// AND, not OR — the FULL-tier read predicate is a NECESSARY condition still.
+check("F correct POST KEEPS transactionDetailWhere (FULL tier stays necessary)",
+  /transactionDetailWhere\(\s*id\s*,\s*spaceId\s*\)/.test(correct));
+// Order: the door runs before the body parse and before the row is loaded.
+{
+  const doorAt = correct.indexOf('requireSpaceAction(spaceId, "transaction:correct")');
+  // RLS-PREP-C — the row read moved onto the tenant phase's client.
+  const rowAt  = correct.indexOf("tx.transaction.findFirst");
+  const bodyAt = correct.indexOf("req.json()");
+  check("F correct POST door precedes the row read",
+    doorAt !== -1 && rowAt !== -1 && doorAt < rowAt, `door@${doorAt} row@${rowAt}`);
+  check("F correct POST door precedes the body parse",
+    doorAt !== -1 && bodyAt !== -1 && doorAt < bodyAt, `door@${doorAt} body@${bodyAt}`);
+}
+// The three durable writes this door now covers must all stay behind it.
+check("F correct POST still performs the three durable corrections",
+  /applyMerchantIdentityCorrection/.test(correct) &&
+  /applyCategoryRuleCorrection/.test(correct) &&
+  /applyTransactionOverride/.test(correct));
 
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,8 @@
+{
+  "started": false,
+  "migrations": false,
+  "seeds": false,
+  "anonymousVolumeCount": 1,
+  "leakedVolumes": [],
+  "passed": true
+}

@@ -54,6 +54,43 @@ export interface CreditUtilizationResult {
   missingLimit: { id: string; name: string }[];
 }
 
+/**
+ * Utilization % for ONE revolving line, or null when it has no usable limit.
+ *
+ * v2.6-DEBT-1 — extracted so it is stated once. The ratio also lived in
+ * `components/space/widgets/debt/debt-ledger-util.ts`, which meant "what counts
+ * as a usable credit limit" had two definitions that happened to agree.
+ *
+ * V25-SIDE-1 — the numerator is the canonical amount OWED, so a credit balance
+ * reads 0% used rather than a negative utilization. The result is NOT clamped:
+ * a real over-limit position must be able to exceed 100 (`barPct` clamps for
+ * display, and `utilizationLevel` reports "over").
+ */
+
+/**
+ * REVIEW-3 C-4 — the ONE membership rule for "which lines participate in
+ * utilization". Utilization is a REVOLVING-credit concept: a loan that happens
+ * to carry a provider limit is not "utilized". A null subtype is admitted
+ * (legacy rows predate subtypes; a limit-bearing untyped debt account is a
+ * card in this corpus). Both the personal Credit page and the Space debt KPIs
+ * consume this predicate — the two previously asked different populations
+ * under the same word.
+ */
+export const REVOLVING_DEBT_SUBTYPES = new Set(["credit_card", "line_of_credit", "heloc"]);
+export function isRevolvingLine(a: { debtSubtype?: string | null; creditLimit?: number | null }): boolean {
+  return (
+    (a.debtSubtype == null || REVOLVING_DEBT_SUBTYPES.has(a.debtSubtype)) &&
+    a.creditLimit != null && a.creditLimit > 0
+  );
+}
+
+export function utilizationPercent(
+  account: { balance: number; creditLimit?: number | null },
+): number | null {
+  if (account.creditLimit == null || account.creditLimit <= 0) return null;
+  return (amountOwed(account.balance) / account.creditLimit) * 100;
+}
+
 export function creditUtilization(accounts: UtilizationInputAccount[]): CreditUtilizationResult {
   const debts = accounts.filter((a) => a.type === "debt");
 
@@ -61,9 +98,7 @@ export function creditUtilization(accounts: UtilizationInputAccount[]): CreditUt
     .filter((a) => a.creditLimit != null && a.creditLimit > 0)
     .map((a) => {
       const limit = a.creditLimit as number;
-      // V25-SIDE-1 — numerator is the canonical amount OWED, so a credit balance
-      // reads 0% used instead of a negative utilization.
-      const pct = (amountOwed(a.balance) / limit) * 100;
+      const pct = utilizationPercent(a) as number;
       return {
         id:      a.id,
         name:    a.name,

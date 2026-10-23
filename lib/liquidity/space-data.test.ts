@@ -55,7 +55,9 @@ function comp(accountId: string, reportingValue: number | null, overallTier: Com
 
 function acct(id: string, type: string, balance: number, tier: CompletenessTier) {
   return {
-    account: { id, type, balance, currency: "USD", creditLimit: null, lastUpdated: "2026-07-16T00:00:00.000Z" },
+    // "brk" is a KNOWN brokerage (2026-10-07: an investment without a provider
+    // subtype is "unverified", not marketable).
+    account: { id, type, providerSubtype: type === "investment" ? "brokerage" : null, balance, currency: "USD", creditLimit: null, lastUpdated: "2026-07-16T00:00:00.000Z" },
     visibilityLevel: "FULL",
     method: tier === "observed" ? "observed" : "held-flat",
     tier,
@@ -64,7 +66,11 @@ function acct(id: string, type: string, balance: number, tier: CompletenessTier)
 
 // ── Fake canonical reads (the injectable seam) ───────────────────────────────
 const deps: Partial<LiquidityEngineDeps> = {
-  getAccountsAsOf: (async ({ asOf }: { asOf: string }) => {
+  // RLS-C-S2 — the authority is the first parameter of every canonical read now.
+  // These fakes ignore it (they are DB-free by design) but MUST declare it: the
+  // positional shift is real at runtime, and a fake that destructured the first
+  // argument as the args object would have silently read `asOf` off a client.
+  getAccountsAsOf: (async (_client: unknown, { asOf }: { asOf: string }) => {
     const isToday = asOf >= TODAY;
     return [
       acct("chk", "checking", CASH[asOf] ?? STORED.chk, isToday ? "observed" : "derived"),
@@ -73,7 +79,12 @@ const deps: Partial<LiquidityEngineDeps> = {
     ];
   }) as unknown as LiquidityEngineDeps["getAccountsAsOf"],
 
-  getInvestmentValueAsOf: (async ({ asOf }: { asOf: string }) => ({
+  // RLS-AI-S7 — the authority is the LEADING argument now, so the stub takes
+  // (and deliberately ignores) a client before the args it actually reads. A stub
+  // that kept the old single-argument shape silently received the CLIENT as
+  // `{ asOf }` and destructured `undefined`, which is why five value assertions
+  // went red rather than one signature assertion.
+  getInvestmentValueAsOf: (async (_client: unknown, { asOf }: { asOf: string }) => ({
     asOf,
     reportingCurrency: REPORTING,
     valuedSubtotal: 0,
@@ -87,10 +98,10 @@ const deps: Partial<LiquidityEngineDeps> = {
   buildCtx: (async () => identityContext(REPORTING)) as unknown as LiquidityEngineDeps["buildCtx"],
 
   // Live current: computeLiquidity over the stored balances (no splice), identity FX.
-  computeCurrent: (async (scope: PerspectiveScope, now: () => Date): Promise<LensResult> => {
+  computeCurrent: (async (_client: unknown, scope: PerspectiveScope, now: () => Date): Promise<LensResult> => {
     const rows = [
       { id: "chk", type: "checking", balance: STORED.chk, currency: "USD", lastUpdated: "2026-07-16T00:00:00.000Z", visibilityLevel: "FULL" },
-      { id: "brk", type: "investment", balance: STORED.brk, currency: "USD", lastUpdated: "2026-07-16T00:00:00.000Z", visibilityLevel: "FULL" },
+      { id: "brk", type: "investment", providerSubtype: "brokerage", balance: STORED.brk, currency: "USD", lastUpdated: "2026-07-16T00:00:00.000Z", visibilityLevel: "FULL" },
       { id: "wallet", type: "crypto", balance: STORED.wallet, currency: "USD", lastUpdated: "2026-07-16T00:00:00.000Z", visibilityLevel: "FULL" },
     ];
     return computeLiquidity(scope, { now }, rows, identityContext(REPORTING));

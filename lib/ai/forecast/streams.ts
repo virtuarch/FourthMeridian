@@ -1,0 +1,313 @@
+/**
+ * lib/ai/forecast/streams.ts
+ *
+ * FORECAST-10 — THE DATABASE EDGE, AND THE ONLY ONE.
+ *
+ * ── Why a dedicated read ────────────────────────────────────────────────────
+ * FORECAST-1/2/5 need a DATED SERIES per income stream: settlement dates to
+ * derive a cadence from, a last-seen date to judge silence by, and the amounts
+ * of the recent regime. Measured at 714d099, nothing in the AI context carries
+ * one. `RecurringCandidate` is merchant frequency plus a mean — it holds no
+ * dates at all, so it cannot yield a cadence even in principle — and the
+ * `incomeSources` rollup is a total per source. Both are the shape FORECAST-4
+ * and FORECAST-6 explicitly declined to license as evidence about the future.
+ *
+ * So this reads dated INCOME rows through the canonical read authority
+ * (`queryTransactions`), groups them by source, and hands each series to the
+ * authorities. It computes no cadence, no activity and no amount of its own —
+ * three `derive*` calls, and their verdicts travel unchanged.
+ *
+ * ⚠️ BOUNDED BY CONSTRUCTION. One page, INCOME and INTEREST only, over a
+ * bounded lookback. The read authority caps a page at 100 rows; a corpus with
+ * more income rows than that in the window yields a series that is TRUNCATED
+ * and is reported as such rather than silently deriving a cadence from a
+ * partial history.
+ *
+ * ⚠️ AND IT TRUNCATES FROM THE PAST, WHICH IS THE ONLY SAFE END. The read was
+ * `sort: 'oldest'` until the local-UI parity investigation measured it on a
+ * real Space: the oldest 100 INCOME rows reached 2026-01-21 while the ledger
+ * ran to 2026-08-28, so seven months of the CURRENT regime were invisible.
+ * That is not a truncated series, it is a WRONG one — `observedThroughISO`
+ * came from a stale page, so FORECAST-2 judged every live stream SILENT and
+ * FORECAST-1 saw three scattered dates instead of nineteen biweekly ones. A
+ * dropped observation from two years ago costs a cadence nothing; a dropped
+ * observation from last fortnight costs it everything, because cadence,
+ * activity and the current periodic amount are all statements about the
+ * RECENT end. So the page is taken newest-first and each series is restored
+ * to chronological order before any authority sees it.
+ */
+
+import { queryTransactions } from '@/lib/data/transaction-query';
+import type { ReadClient } from '@/lib/db/tenant-context';
+import { MAX_TRANSACTION_PAGE_SIZE } from '@/lib/data/transaction-query-core';
+import { normalizeMerchant } from '@/lib/transactions/merchant';
+import { deriveCadence, isCadence, type CadenceResult } from '@/lib/forecast/cadence';
+import { resolveStreamActivity, type StreamActivity } from '@/lib/forecast/stream-activity';
+import { deriveCurrentPeriodicAmount, type PeriodicAmount } from '@/lib/forecast/periodic-amount';
+import { FlowRole, type FlowRoleKind } from '@/lib/forecast/future-cash-event';
+
+/** How far back to look for the series. Two years covers a biweekly regime many times over. */
+const LOOKBACK_DAYS = 730;
+/** Below this, no cadence is derivable and the stream is not worth carrying. */
+const MIN_OBSERVATIONS = 3;
+/** Account types where a credit means money ARRIVED and is spendable. */
+const DEPOSITORY_TYPES: ReadonlySet<string> = new Set(['checking', 'savings', 'cash']);
+
+export interface ResolvedIncomeStream {
+  /** `<canonical merchant key>@<accountId>` — one stream, one account. */
+  sourceKey: string;
+  /** The display name, so a prompt can name a stream without leaking an id. */
+  label: string;
+  role: FlowRoleKind;
+  cadence: CadenceResult;
+  activity: StreamActivity;
+  amount: PeriodicAmount | null;
+  projectionEligible: boolean;
+  /**
+   * PROJECTION-1 — the settlements landed in a DEPOSITORY account.
+   *
+   * ⚠️ THE ACCOUNT TYPE IS THE EVIDENCE. A credit that settled into a checking
+   * or savings account is money that arrived; there is no gross/net question to
+   * resolve about it, because the deduction — if any — happened before the
+   * credit. The same merchant paying into a brokerage or against a card is a
+   * different economic event and does not get this.
+   */
+  settledDepository: boolean;
+  observationCount: number;
+  /** True when the bounded page could not hold the whole series. */
+  truncated: boolean;
+}
+
+/**
+ * PARITY-2 — the read itself, injectable.
+ *
+ * ⚠️ THE SEAM EXISTS BECAUSE THE PAGE BOUNDARY IS THE DEFECT SURFACE. PARITY-1
+ * found this loader taking the OLDEST page of its window, which on a real Space
+ * hid seven months of the current regime; no test could reach that, because the
+ * behaviour only appears once a corpus exceeds the read authority's 100-row cap
+ * and `queryTransactions` talks to Postgres. So the ONE dependency that decides
+ * which rows arrive is a parameter with a production default.
+ *
+ * ⚠️ IT IS `typeof queryTransactions`, DELIBERATELY. Not a hand-written port,
+ * and not a repository abstraction: a narrowed structural type would let a fake
+ * satisfy a contract the real read authority does not, which is the fidelity
+ * gap this seam exists to close. Widening `queryTransactions` breaks the fakes,
+ * which is the correct direction for the failure to travel.
+ *
+ * ⚠️ RLS-C-S3 — AND SO THE SEAM NOW CARRIES THE AUTHORITY TOO. `queryTransactions`
+ * takes its client as a required leading parameter, so every fake does as well.
+ * That is the point of binding the type to the real function rather than to a
+ * hand-written shape: the authority could not be dropped from the seam without the
+ * compiler saying so.
+ */
+export type IncomeTransactionReader = typeof queryTransactions;
+
+const DAY_MS = 86_400_000;
+const shift = (iso: string, n: number) =>
+  new Date(Date.parse(`${iso}T00:00:00.000Z`) + n * DAY_MS).toISOString().slice(0, 10);
+
+/**
+ * Resolve every income stream this Space can license a forecast from.
+ *
+ * ⚠️ THE AUTHORITIES DECIDE, NOT THIS FILE. Grouping is the only judgement
+ * here, and it uses the canonical merchant key the rest of the system already
+ * groups income by, so a stream's identity is the same one the transactions
+ * assembler shows. Everything after the grouping is a delegated verdict.
+ */
+/**
+ * FM-AUDIT-010 — the account-type read, injectable for the same reason the page
+ * read is: the depository verdict decides whether a stream's settlements license
+ * an observed-settled projection, and a composition test that could not supply
+ * it would silently exercise the fail-closed branch instead of the real one.
+ */
+/**
+ * FIN-001 — one account's facts, as the loader needs them.
+ *
+ * `ledgerObservedThroughISO` is the account's TRANSACTION-FEED clock: the UTC
+ * date of the last SUCCESSFUL transaction sync on its canonical connection
+ * (`Connection.lastSyncedAt` for PLAID, where the item sync IS the transaction
+ * sync; `Connection.transactionsSyncedAt` for a WALLET — the same two facts
+ * `lib/connections/space-data.ts` reports as "Transactions: Updated"). Optional,
+ * so every existing fake still satisfies the contract; absent or null means
+ * "no clock on record" and the loader falls back to the page's newest row.
+ */
+export interface AccountFacts {
+  id: string;
+  type: string;
+  ledgerObservedThroughISO?: string | null;
+}
+export type AccountTypeReader = (accountIds: string[]) => Promise<AccountFacts[]>;
+
+const isoDateOf = (d: Date | null | undefined): string | null =>
+  d instanceof Date && Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : null;
+
+/**
+ * RLS-C-S3 — the production account-type reader is now a FACTORY over the client
+ * this loader was handed, not a closure over an imported global. The seam is
+ * unchanged for a test; what changed is that its production default can no longer
+ * reach a different authority than the page read beside it.
+ *
+ * FIN-001 — it also carries the feed clock (see `AccountFacts`), read off the
+ * canonical AccountConnection's Connection in the same query, so the clock and
+ * the type cannot come from two authorities either.
+ */
+const accountTypesVia = (client: ReadClient): AccountTypeReader => async (accountIds) => {
+  const rows = await client.financialAccount.findMany({
+    where: { id: { in: accountIds } },
+    select: {
+      id: true, type: true,
+      connections: {
+        where: { isCanonical: true },
+        select: { connection: { select: { provider: true, lastSyncedAt: true, transactionsSyncedAt: true } } },
+      },
+    },
+  });
+  return rows.map((r) => {
+    let through: string | null = null;
+    for (const ac of r.connections) {
+      const c = ac.connection;
+      if (!c) continue;
+      const clock = isoDateOf(c.provider === 'PLAID' ? c.lastSyncedAt : c.transactionsSyncedAt);
+      if (clock && (through === null || clock > through)) through = clock;
+    }
+    return { id: r.id, type: r.type, ledgerObservedThroughISO: through };
+  });
+};
+
+/**
+ * RLS-C-S3 — `client` is REQUIRED and leading. Both production defaults below are
+ * derived FROM it (a default parameter may reference an earlier one), so the two
+ * reads this loader makes cannot end up on two authorities — which is exactly what
+ * happened before: the page went through `queryTransactions`' ambient client and
+ * the account-type probe through this module's own import of the same global, and
+ * neither call site said so.
+ */
+export async function loadForecastIncomeStreams(
+  client: ReadClient,
+  spaceId: string, asOfISO: string, read: IncomeTransactionReader = queryTransactions,
+  accountTypes: AccountTypeReader = accountTypesVia(client),
+): Promise<ResolvedIncomeStream[]> {
+  const page = await read(client, {
+    spaceId,
+    query: {
+      dateFrom: shift(asOfISO, -LOOKBACK_DAYS),
+      dateTo: asOfISO,
+      flowTypes: ['INCOME', 'INTEREST'],
+      pending: false,
+      sort: 'newest',
+      limit: MAX_TRANSACTION_PAGE_SIZE,
+    },
+  });
+
+  // ⚠️ THE KEY IS SOURCE **AND** ACCOUNT, because FORECAST-1 says so in as many
+  // words: "a cadence belongs to ONE income stream on ONE account ... 'interest
+  // payment' across two savings accounts produced a nonsense gap histogram
+  // (5, 6, 7, 21, 25…33 days) that resolves into two clean monthly series the
+  // moment the account is part of the identity."
+  const groups = new Map<string, {
+    observations: { date: string; amount: number }[]; role: FlowRoleKind; label: string;
+    accountId: string;
+  }>();
+  for (const row of page.rows) {
+    if (row.amount <= 0) continue;
+    const norm = normalizeMerchant(row.merchantDisplayName ?? row.merchant);
+    const key = `${norm.canonicalKey}@${row.accountId}`;
+    const role = row.flowType === 'INTEREST' ? FlowRole.INTEREST : FlowRole.INCOME;
+    const g = groups.get(key)
+      ?? { observations: [], role, label: norm.canonicalName, accountId: row.accountId };
+    g.observations.push({ date: row.date, amount: row.amount });
+    groups.set(key, g);
+  }
+
+  // ⚠️ CHRONOLOGICAL, AS DEFENCE IN DEPTH. The page arrives newest-first (see the
+  // header note). Measured since: both authorities already sort defensively —
+  // `cadence.ts` uniques-and-sorts its dates, `periodic-amount.ts` sorts its
+  // observations — so removing this line changes no verdict today. It stays
+  // because a series handed to an authority should be a series, and the cost is
+  // one sort per stream.
+  //
+  // ⚠️ THE PAIRING IS THE PART THAT MATTERS. This replaced parallel `dates[]` and
+  // `amounts[]` arrays zipped by index, where any reordering of one desynchronised
+  // the other silently and a stream's current amount could come from a different
+  // settlement's date. Records make that unrepresentable.
+  for (const g of groups.values()) {
+    g.observations.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  // PROJECTION-1 — which of these accounts are depository. One indexed read over
+  // the accounts already named by the page, so a stream can say whether its
+  // settlements ARRIVED somewhere spendable.
+  const accountIds = [...new Set(page.rows.map((r) => r.accountId))];
+  const depository = new Set<string>();
+  // FIN-001 — and, from the same read, each account's transaction-feed clock.
+  const feedClock = new Map<string, string>();
+  try {
+    const accts = await accountTypes(accountIds);
+    for (const a of accts) {
+      if (DEPOSITORY_TYPES.has(a.type)) depository.add(a.id);
+      if (a.ledgerObservedThroughISO) feedClock.set(a.id, a.ledgerObservedThroughISO);
+    }
+  } catch (err) {
+    // ⚠️ FAILS CLOSED: no depository set means no observed-settled licence, which
+    // returns the projection to the pre-PROJECTION-1 refusal rather than
+    // guessing that a credit arrived somewhere spendable. No clock means the
+    // reach falls back to the page's newest row, exactly as before FIN-001.
+    console.error('[ai/forecast] account-type read failed (non-fatal):', err);
+  }
+
+  // How far the ledger reaches, for FORECAST-2: beyond it, silence proves nothing.
+  //
+  // ⚠️ FIN-001 — THE NEWEST INCOME ROW IS NOT HOW FAR THE FEED LOOKED. This was
+  // the newest row of the page, and the page is INCOME/INTEREST only — so for a
+  // payroll that simply had not paid yet, the "reach" was the last paycheck
+  // itself, the overdue slot read as "nobody looked" (UNKNOWN), and a feed that
+  // had looked every day since said nothing. Measured (runtime audit, 11 flat
+  // biweekly paychecks, newest slot five days overdue at as-of): UNKNOWN, not
+  // projectable, $15,000 of remaining paychecks dropped under a complete label.
+  //
+  // The feed's own clock is the fact: a successful transaction sync on the
+  // account's connection on date D means absence of a settlement before D was
+  // OBSERVED, not unobserved. So the reach is, per account, the LATER of its
+  // feed clock and the page's newest row (the pre-FIN-001 floor, still the only
+  // evidence when no clock is on record — a fake reader, a manual account), and
+  // never later than `asOfISO`: a retrospective run must not read the slots
+  // after its own standpoint as covered.
+  const pageNewestISO = page.rows.length > 0
+    ? page.rows.map((r) => r.date).sort().at(-1) ?? null
+    : null;
+  const observedThroughFor = (accountId: string): string | null => {
+    const clock = feedClock.get(accountId) ?? null;
+    const reach = clock && pageNewestISO ? (clock > pageNewestISO ? clock : pageNewestISO) : (clock ?? pageNewestISO);
+    return reach === null ? null : (reach > asOfISO ? asOfISO : reach);
+  };
+
+  const out: ResolvedIncomeStream[] = [];
+  for (const [sourceKey, g] of groups) {
+    const dates = g.observations.map((o) => o.date);
+    if (dates.length < MIN_OBSERVATIONS) continue;
+
+    const cadence = deriveCadence(dates, sourceKey);
+    const activity = resolveStreamActivity({
+      cadence, settlements: dates, observedThroughISO: observedThroughFor(g.accountId), asOfISO });
+    // ⚠️ A LEVEL NEEDS A SCHEDULE TO BE A LEVEL OF. FORECAST-5 takes an
+    // established cadence because its regime detection walks the schedule; an
+    // unknown cadence yields no amount, and that is a refusal rather than a gap
+    // to fill with a mean.
+    const amount = isCadence(cadence)
+      ? deriveCurrentPeriodicAmount(
+        g.observations.map((o) => ({ dateISO: o.date, value: o.amount, currency: 'USD' })),
+        cadence)
+      : null;
+
+    out.push({
+      sourceKey, label: g.label, role: g.role, cadence, activity, amount,
+      // ⚠️ FORECAST-2's field verbatim. Never `activity.state === CURRENT` —
+      // that is a re-derivation of the licence, and the licence is the contract.
+      projectionEligible: activity.mayGenerateExpectedOccurrences,
+      settledDepository: depository.has(g.accountId),
+      observationCount: dates.length,
+      truncated: page.hasMore,
+    });
+  }
+  return out;
+}

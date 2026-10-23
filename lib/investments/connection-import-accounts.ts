@@ -8,12 +8,18 @@
  * import target picker.
  */
 
-import { AccountType, type PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+import { AccountType } from "@prisma/client";
+import type { ReadClient } from "@/lib/db/tenant-context";
+// v2.6-TRUTH-10 — the ONE account-identity authority. This module used to
+// re-implement the resolution order inline; a fifth copy of a rule is a fifth
+// place for it to drift, which is exactly how the admin drawer once shipped a
+// version that omitted `plaidName`.
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 
 export interface ImportableConnectionAccount {
   id:          string;
-  name:        string;   // displayName ?? officialName ?? plaidName ?? name
+  /** The canonical display identity — `accountDisplayName`, never a local order. */
+  name:        string;
   type:        string;
   mask:        string | null;
   institution: string;
@@ -25,13 +31,22 @@ const INVESTMENT_TYPES: AccountType[] = [AccountType.investment, AccountType.cry
  * Investment/crypto accounts for a connection (PlaidItem.id) owned by `userId`.
  * Empty when the connection isn't the user's, has no investment accounts, or the
  * id is unknown — the caller treats an empty list as "import not available here".
+ *
+ * ── RLS-C-S8 — THE AUTHORITY IS THE FIRST PARAMETER AND HAS NO DEFAULT ───────
+ * This leaf has NO membership check of its own; it filters on the `userId` it is
+ * handed and nothing else. On a tenant client the two predicates COINCIDE rather
+ * than merely agree: the `fm_app` policy on PlaidItem is
+ * `"userId" = current_fm_user_id()`, which is the same question this `where`
+ * asks, so a caller that passes someone else's id now gets nothing from the
+ * database instead of being trusted. AccountConnection is additionally gated by
+ * `fm_account_visible("financialAccountId")`, so an account with no ACTIVE
+ * SpaceAccountLink into a Space the caller is an ACTIVE member of drops out —
+ * which is the same account the rest of the product already cannot show.
  */
-export async function getImportableAccountsForConnection(args: {
+export async function getImportableAccountsForConnection(client: ReadClient, args: {
   connectionId: string;
   userId:       string;
-  client?:      PrismaClient;
 }): Promise<ImportableConnectionAccount[]> {
-  const client = args.client ?? db;
   const links = await client.accountConnection.findMany({
     where: {
       plaidItemDbId:    args.connectionId,
@@ -40,7 +55,7 @@ export async function getImportableAccountsForConnection(args: {
     },
     select: {
       financialAccount: {
-        select: { id: true, name: true, displayName: true, officialName: true, plaidName: true, type: true, mask: true, institution: true },
+        select: { id: true, ...ACCOUNT_NAME_SELECT, type: true, mask: true, institution: true },
       },
     },
   });
@@ -51,7 +66,7 @@ export async function getImportableAccountsForConnection(args: {
     if (!a || byId.has(a.id)) continue;
     byId.set(a.id, {
       id:          a.id,
-      name:        a.displayName ?? a.officialName ?? a.plaidName ?? a.name,
+      name:        accountDisplayName(a),
       type:        a.type,
       mask:        a.mask,
       institution: a.institution,

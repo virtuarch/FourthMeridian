@@ -7,9 +7,10 @@
  *   - Future: Daily Briefing engine       (consumer)
  *   - Future: Notifications               (consumer)
  *
- * The widget never cares where an event came from — AuditLog,
- * SpaceGoal, account sync, or any other source. It only renders
- * a normalized event list.
+ * The widget never cares where an event came from — AuditLog, account sync,
+ * or any other source. It only renders a normalized event list. (W2: the
+ * Goals surface is retired; historical GOAL_* audit events remain renderable
+ * as ordinary typed events.)
  */
 
 export type TimelineTone =
@@ -27,7 +28,7 @@ export type TimelineTone =
  *
  *   financial  → manual asset lifecycle (add/archive/restore)
  *   connection → account link/unlink, provider sync, historical imports, sync issues
- *   space      → space lifecycle, members, sharing, goals
+ *   space      → space lifecycle, members, sharing (incl. historical goal events)
  *   system     → platform bookkeeping surfaced to members (e.g. import rollback)
  */
 export type ActivityCategory = "financial" | "connection" | "space" | "system";

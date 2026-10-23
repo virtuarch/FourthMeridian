@@ -17,8 +17,9 @@
  */
 
 import type { InvestmentTransaction, Security } from "plaid";
-import { ProviderType, type Prisma, type PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+import { ProviderType, type PrismaClient } from "@prisma/client";
+import { inOneTransaction, type WriteClient } from "@/lib/db/write-phase";
+import { assertAccountFkUnchanged } from "@/lib/accounts/account-reparenting";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
@@ -32,8 +33,8 @@ import {
   repairReconstructionForAccount,
 } from "@/lib/investments/reconstruction-runner";
 import { captureSecurityPrices, securityPriceCapturesEnabled } from "@/lib/prices/capture";
-
-type Client = PrismaClient | Prisma.TransactionClient;
+import { InvestmentCoverageOutcome } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 
 const PAGE_SIZE = 500;
 
@@ -111,6 +112,62 @@ export interface IngestMetrics {
   failed: number;
 }
 
+/**
+ * V26-QUANTITY-1E′ — record what was ASKED FOR and what came back.
+ *
+ * Append-only, one row per covered account, and deliberately written on EVERY
+ * outcome including failure: a window that was never successfully read must be
+ * recorded as unread, or its silence is indistinguishable from an empty one.
+ *
+ * Best-effort and non-fatal, like every other hook here — but note the
+ * asymmetry that makes that safe: a MISSING coverage row degrades to UNKNOWN,
+ * which withholds claims. A missing row can never cause an over-claim.
+ */
+async function recordCoverage(
+  client: PrismaClient,
+  args: {
+    plaidItemId?: string;
+    financialAccountIds: readonly string[];
+    window: { start: string; end: string };
+    outcome: InvestmentCoverageOutcome;
+    reportedTotal: number | null;
+    fetchedCount: number;
+    pagesFetched: number;
+    paginationReconciled: boolean;
+    /** Dates actually RETURNED — the only evidence of where provider history begins. */
+    earliestReturnedISO: string | null;
+    latestReturnedISO: string | null;
+    detail: string | null;
+    now: Date;
+  },
+): Promise<void> {
+  if (!args.plaidItemId || args.financialAccountIds.length === 0) return;
+  const attemptId = randomUUID();
+  try {
+    await client.investmentEventCoverage.createMany({
+      data: [...args.financialAccountIds].sort().map((financialAccountId) => ({
+        attemptId,
+        plaidItemId: args.plaidItemId!,
+        financialAccountId,
+        requestedFromDate: new Date(`${args.window.start}T00:00:00.000Z`),
+        requestedToDate: new Date(`${args.window.end}T00:00:00.000Z`),
+        outcome: args.outcome,
+        reportedTotal: args.reportedTotal,
+        fetchedCount: args.fetchedCount,
+        pagesFetched: args.pagesFetched,
+        paginationReconciled: args.paginationReconciled,
+        earliestReturnedDate: args.earliestReturnedISO ? new Date(`${args.earliestReturnedISO}T00:00:00.000Z`) : null,
+        latestReturnedDate: args.latestReturnedISO ? new Date(`${args.latestReturnedISO}T00:00:00.000Z`) : null,
+        detail: args.detail,
+        attemptedAt: args.now,
+      })),
+      skipDuplicates: true,
+    });
+  } catch (err) {
+    console.warn(`[investment-events] coverage record failed for item ${args.plaidItemId} (non-fatal): ${err instanceof Error ? err.message : err}`);
+  }
+}
+
 function emptyMetrics(status: IngestMetrics["status"]): IngestMetrics {
   return { status, requested: 0, fetched: 0, inserted: 0, unchanged: 0, corrected: 0, unknown: 0, unresolvedInstrument: 0, unmappedAccount: 0, skipped: 0, failed: 0 };
 }
@@ -121,27 +178,82 @@ export interface IngestParams {
   accessToken: string;
   /** Internal PlaidItem.id — for sync-issue context only (never the token). */
   plaidItemId?: string;
-  now: Date;
   /**
-   * OPS-2D-TX-1 — a ROOT client, never a `Prisma.TransactionClient`. This
-   * function records incidents, and incident recording must run on its own
-   * connection: a telemetry write that fails inside a caller's transaction
-   * aborts it, and the caller's COMMIT then silently degrades to ROLLBACK.
-   * Inner persistence helpers still accept the wider union — they write no
-   * telemetry, so they remain safe to run transactionally.
+   * V26-QUANTITY-1E′ — every investment FinancialAccount this item's request
+   * covers, supplied by the CALLER.
+   *
+   * It cannot be derived here: this function only ever sees accounts that
+   * returned a transaction, and an account with none is precisely the case
+   * coverage exists to record. Without the caller's list, "no events" and "not
+   * asked about" stay indistinguishable — the defect this slice removes.
    */
-  client?: PrismaClient;
+  coveredFinancialAccountIds?: readonly string[];
+  now: Date;
+}
+
+/**
+ * V26-QUANTITY-1E′ — record that a window was deliberately NOT requested.
+ *
+ * The kill switch is checked by the caller, so only the caller can record its
+ * effect. Without this, a period with the flag off is indistinguishable from a
+ * period in which nothing happened.
+ */
+export async function recordDisabledInvestmentEventCoverage(client: PrismaClient, args: {
+  plaidItemId: string;
+  coveredFinancialAccountIds: readonly string[];
+  now: Date;
+}): Promise<void> {
+  await recordCoverage(client, {
+    plaidItemId: args.plaidItemId,
+    financialAccountIds: args.coveredFinancialAccountIds,
+    window: computeIngestWindow(args.now),
+    outcome: InvestmentCoverageOutcome.DISABLED,
+    reportedTotal: null, fetchedCount: 0, pagesFetched: 0,
+    paginationReconciled: false, earliestReturnedISO: null, latestReturnedISO: null,
+    detail: "INVESTMENT_EVENTS_ENABLED is not 'true'", now: args.now,
+  });
 }
 
 /**
  * Ingest investment events for one Plaid Item. Never throws for expected Plaid
  * conditions (consent / PRODUCT_NOT_READY) — returns a status instead. Callers
  * still wrap in try/catch (best-effort contract).
+ *
+ * ── RLS-C-S8 — THE AUTHORITY IS THE FIRST PARAMETER, REQUIRED, AND IT IS A ROOT
+ *    CLIENT BY TYPE, NOT BY CONVENTION ─────────────────────────────────────────
+ * `PrismaClient` here is a statement the compiler enforces: THIS PATH CANNOT BE
+ * GIVEN A TENANT PHASE. Two independent reasons, both already in this file:
+ *
+ *   1. OPS-2D-TX-1 (the old `IngestParams.client` comment, kept below in spirit):
+ *      ingestion records incidents, and a telemetry write that fails inside a
+ *      caller's transaction ABORTS it — the caller's COMMIT then silently
+ *      degrades to ROLLBACK.
+ *   2. It writes SyncIssue, on which fm_app holds a column-level READ grant and
+ *      nothing more (prisma/migrations/…_rls_app_sync_issue_read). Under a tenant
+ *      authority every `recordSyncIssue` here would raise `permission denied`.
+ *      Split-authority for the Plaid surface is a LATER slice; this one makes the
+ *      authority visible at the call site so that slice is one line, not a hunt.
+ *
+ * It also paginates `investmentsTransactionsGet`. A tenant phase is a SECURITY
+ * BOUNDARY, not a request-lifetime container, and holding one across provider
+ * HTTP would pin a connection and a bound identity to somebody else's latency.
+ * The fetch loop below completes IN FULL before any persistence transaction
+ * opens, and lib/investments/transaction-boundary.test.ts keeps it that way.
  */
-export async function ingestInvestmentEvents(params: IngestParams): Promise<IngestMetrics> {
-  const client = params.client ?? db;
+export async function ingestInvestmentEvents(client: PrismaClient, params: IngestParams): Promise<IngestMetrics> {
   const metrics = emptyMetrics("ok");
   const { start, end } = computeIngestWindow(params.now);
+  const covered = params.coveredFinancialAccountIds ?? [];
+  const coverage = (
+    outcome: InvestmentCoverageOutcome, reportedTotal: number | null,
+    fetchedCount: number, pagesFetched: number, detail: string | null,
+    reconciled = false, earliestReturnedISO: string | null = null, latestReturnedISO: string | null = null,
+  ) => recordCoverage(client, {
+    plaidItemId: params.plaidItemId, financialAccountIds: covered,
+    window: { start, end }, outcome, reportedTotal, fetchedCount, pagesFetched,
+    paginationReconciled: reconciled, earliestReturnedISO, latestReturnedISO,
+    detail, now: params.now,
+  });
 
   // Dynamic import so this module (and its pure helpers/tests) loads without the
   // Plaid client's module-load env validation — the client is only needed here.
@@ -150,6 +262,12 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
   // ── Fetch (paginated) ────────────────────────────────────────────────────
   const all: InvestmentTransaction[] = [];
   const securitiesById: Record<string, Security> = {};
+  let pagesFetched = 0;
+  // COMPLETE requires the provider's own reported total to be reached. The loop
+  // also breaks on an empty page, which is NOT the same thing: a page that runs
+  // dry below the reported total means rows are missing, and calling that
+  // window complete is exactly the over-claim this ledger exists to prevent.
+  let reconciled = false;
   try {
     for (let offset = 0; ; offset += PAGE_SIZE) {
       const res = await withPlaidRetry(
@@ -161,19 +279,44 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
         }),
         "investmentsTransactionsGet",
       );
+      pagesFetched++;
       metrics.requested = res.data.total_investment_transactions;
       for (const s of res.data.securities) securitiesById[s.security_id] = s;
       all.push(...res.data.investment_transactions);
-      if (all.length >= metrics.requested || res.data.investment_transactions.length === 0) break;
+      if (all.length >= metrics.requested) { reconciled = true; break; }
+      if (res.data.investment_transactions.length === 0) break;
     }
   } catch (err) {
     const code = getPlaidErrorCode(err);
-    if (code === "ADDITIONAL_CONSENT_REQUIRED") return emptyMetrics("consent_required");
-    if (code === "PRODUCT_NOT_READY") return emptyMetrics("not_ready");
+    if (code === "ADDITIONAL_CONSENT_REQUIRED") {
+      await coverage(InvestmentCoverageOutcome.CONSENT_REQUIRED, null, 0, pagesFetched, "ADDITIONAL_CONSENT_REQUIRED");
+      return emptyMetrics("consent_required");
+    }
+    if (code === "PRODUCT_NOT_READY") {
+      await coverage(InvestmentCoverageOutcome.NOT_READY, null, 0, pagesFetched, "PRODUCT_NOT_READY");
+      return emptyMetrics("not_ready");
+    }
     console.warn(`[investment-events] fetch failed for item ${params.plaidItemId ?? "?"} (non-fatal): ${plaidErrorSummary(err)}`);
     await recordSyncIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", plaidItemId: params.plaidItemId ?? null, detail: { stage: "investment-events-fetch", error: plaidErrorSummary(err) } }, client);
+    await coverage(InvestmentCoverageOutcome.FAILED, null, all.length, pagesFetched, plaidErrorSummary(err));
     return { ...emptyMetrics("error"), failed: 1 };
   }
+
+  // Recorded BEFORE persistence: this states what the PROVIDER returned for the
+  // window. Whether every row then persisted is a separate question, answered by
+  // metrics and by SyncIssue — conflating the two would let a row-level failure
+  // silently retract a window the provider did answer in full.
+  // The dates actually returned. `earliestReturned` is the ONLY demonstrable
+  // evidence of where provider history begins — Plaid never reports its own
+  // floor, and `total_investment_transactions` is window-scoped, so a window
+  // reaching past that floor reconciles perfectly while containing nothing.
+  const returnedDates = all.map((t) => String(t.date).slice(0, 10)).sort();
+  await coverage(
+    reconciled ? InvestmentCoverageOutcome.COMPLETE : InvestmentCoverageOutcome.PARTIAL,
+    metrics.requested, all.length, pagesFetched,
+    reconciled ? null : `provider reported ${metrics.requested}, received ${all.length}`,
+    reconciled, returnedDates[0] ?? null, returnedDates[returnedDates.length - 1] ?? null,
+  );
 
   // ── Persist (stable order) ───────────────────────────────────────────────
   const accountCache = new Map<string, string | null>();
@@ -260,12 +403,11 @@ async function maybeRepairReconstructions(
   if (!investmentReconstructionEnabled() || affected.size === 0) return;
   for (const [financialAccountId, a] of affected) {
     try {
-      await repairReconstructionForAccount({
+      await repairReconstructionForAccount(client, {
         financialAccountId,
         affectedInstrumentIds: [...a.instrumentIds],
         affectedCash: a.cash,
         now,
-        client,
       });
     } catch (err) {
       console.warn(`[investment-events] reconstruction repair for account ${financialAccountId} failed (non-fatal): ${err instanceof Error ? err.message : err}`);
@@ -274,7 +416,7 @@ async function maybeRepairReconstructions(
   }
 }
 
-async function resolveFinancialAccountId(client: Client, plaidAccountId: string, cache: Map<string, string | null>): Promise<string | null> {
+async function resolveFinancialAccountId(client: WriteClient, plaidAccountId: string, cache: Map<string, string | null>): Promise<string | null> {
   if (cache.has(plaidAccountId)) return cache.get(plaidAccountId)!;
   // Canonical provider-account identity first (D2), legacy plaidAccountId fallback.
   const identity = await client.providerAccountIdentity.findFirst({
@@ -342,16 +484,43 @@ function eventData(faId: string, instrumentId: string | null, m: MappedInvestmen
  * and supersede the old row (its externalEventId released to null, recoverable
  * via the supersededById chain). Never mutates raw facts in place.
  */
-async function persistPlaidEvent(
-  client: Client,
+export async function persistPlaidEvent(
+  client: WriteClient,
   faId: string,
   instrumentId: string | null,
   mapped: MappedInvestmentEvent,
 ): Promise<"inserted" | "unchanged" | "corrected"> {
   const existing = await client.investmentEvent.findUnique({
     where: { source_externalEventId: { source: mapped.source, externalEventId: mapped.externalEventId } },
-    select: { id: true, type: true, date: true, quantity: true, price: true, amount: true, fees: true, currency: true, providerType: true, providerSubtype: true, providerSecurityId: true, description: true, instrumentId: true },
+    // ⚠️ RLS-ACC-FK — `financialAccountId` JOINS THIS READ, AND THAT IS MOST OF
+    // THE FIX. `@@unique([source, externalEventId])` is TENANT-WIDE: it names a
+    // ROW without naming an ACCOUNT. Every write below then uses `faId` — this
+    // ingest's account — so a key that resolved somebody else's row would
+    // RELOCATE it, twice over: the `unchanged` arm's `instrumentId` attach keeps
+    // the row where it is, but the CORRECTION arm appends a NEW row under
+    // `faId` and supersedes the foreign one, which moves the live event to this
+    // account and leaves the other account's history pointing at a superseded
+    // shell. Until this select read the FK there was nothing to compare.
+    select: { id: true, financialAccountId: true, type: true, date: true, quantity: true, price: true, amount: true, fees: true, currency: true, providerType: true, providerSubtype: true, providerSecurityId: true, description: true, instrumentId: true },
   });
+
+  if (existing) {
+    // ── RLS-ACC-FK — THE SAME KEY, A DIFFERENT ACCOUNT, IS A RELOCATION ──────
+    //
+    // Raised rather than skipped, unlike the Plaid transaction path. The two
+    // differ in what a caller can do about it: the Plaid loop holds a CURSOR
+    // whose stall would stop delivering every other transaction on the Item, so
+    // it records and continues. This function persists ONE event and returns a
+    // verdict; there is no shared progress to protect, and an `inserted` /
+    // `unchanged` / `corrected` verdict for a row that was not this account's is
+    // a lie its callers project into coverage and reconstruction state.
+    assertAccountFkUnchanged(
+      { table: "InvestmentEvent", fkField: "financialAccountId", operation: "update" },
+      existing.id,
+      existing.financialAccountId,
+      faId,
+    );
+  }
 
   if (!existing) {
     await client.investmentEvent.create({ data: eventData(faId, instrumentId, mapped) });
@@ -369,12 +538,11 @@ async function persistPlaidEvent(
 
   // Correction: append + supersede, releasing the unique key in a transaction so
   // two rows never hold the same [source, externalEventId] simultaneously.
-  const run = async (tx: Client) => {
+  const run = async (tx: WriteClient) => {
     const created = await tx.investmentEvent.create({ data: { ...eventData(faId, instrumentId, mapped), externalEventId: null } });
     await tx.investmentEvent.update({ where: { id: existing.id }, data: { externalEventId: null, supersededById: created.id } });
     await tx.investmentEvent.update({ where: { id: created.id }, data: { externalEventId: mapped.externalEventId } });
   };
-  if ("$transaction" in client) await (client as PrismaClient).$transaction((tx) => run(tx));
-  else await run(client);
+  await inOneTransaction(client, (tx) => run(tx));
   return "corrected";
 }

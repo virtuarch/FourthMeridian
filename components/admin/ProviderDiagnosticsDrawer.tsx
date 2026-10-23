@@ -19,7 +19,9 @@
  */
 
 import { useEffect, useState } from "react";
-import { X, ChevronDown, ChevronUp, AlertCircle, CheckCircle2, Clock, Database } from "lucide-react";
+import { accountDisplayName } from "@/lib/accounts/display-identity";
+import { RightPanel, PanelHeader, PanelContent, PanelFooter } from "@/components/atlas/panels";
+import { ChevronDown, ChevronUp, AlertCircle, CheckCircle2, Clock } from "lucide-react";
 import type { DiagnosticsResponse, DiagnosticsAccount } from "@/app/api/admin/plaid/diagnostics/route";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -49,11 +51,11 @@ const STATUS_PILL: Record<string, string> = {
   ACTIVE:       "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
   NEEDS_REAUTH: "bg-amber-500/10  text-amber-400  border-amber-500/20",
   ERROR:        "bg-red-500/15    text-red-400    border-red-500/20",
-  REVOKED:      "bg-gray-700/60   text-gray-400   border-gray-600/40",
+  REVOKED:      "bg-gray-700/60   text-[var(--text-secondary)]   border-gray-600/40",
 };
 
 function StatusPill({ value }: { value: string | null }) {
-  if (!value) return <span className="text-gray-500 text-xs">—</span>;
+  if (!value) return <span className="text-[var(--text-muted)] text-xs">—</span>;
   return (
     <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${STATUS_PILL[value] ?? STATUS_PILL.ACTIVE}`}>
       {value}
@@ -65,9 +67,9 @@ function StatusPill({ value }: { value: string | null }) {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-start gap-2 py-1.5 border-b border-gray-800/60 last:border-0">
-      <span className="w-44 shrink-0 text-xs text-gray-500">{label}</span>
-      <span className="text-xs text-gray-200 font-mono break-all">{children}</span>
+    <div className="flex flex-col sm:flex-row items-start gap-1 sm:gap-2 py-1.5 border-b border-[var(--border-hairline)]/60 last:border-0">
+      <span className="sm:w-44 shrink-0 text-xs text-[var(--text-muted)]">{label}</span>
+      <span className="min-w-0 text-xs text-[var(--text-primary)] font-mono break-all">{children}</span>
     </div>
   );
 }
@@ -77,7 +79,9 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function AccountCard({ acct }: { acct: DiagnosticsAccount }) {
   const [open, setOpen] = useState(true);
 
-  const displayLabel = acct.displayName ?? acct.officialName ?? acct.name;
+  // v2.6-TRUTH-10 — this omitted `plaidName`, so an account with only a provider
+  // name showed its stored fallback here and its provider name everywhere else.
+  const displayLabel = accountDisplayName(acct);
   const typeLabel    = acct.type.charAt(0).toUpperCase() + acct.type.slice(1);
 
   return (
@@ -89,11 +93,11 @@ function AccountCard({ acct }: { acct: DiagnosticsAccount }) {
       >
         <div className="flex items-center gap-3 min-w-0">
           <div className="min-w-0">
-            <p className={`text-sm font-medium truncate ${acct.isArchived ? "text-gray-500" : "text-white"}`}>
+            <p className={`text-sm font-medium truncate ${acct.isArchived ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
               {displayLabel}
-              {acct.mask && <span className="ml-1.5 text-gray-500">••{acct.mask}</span>}
+              {acct.mask && <span className="ml-1.5 text-[var(--text-muted)]">••{acct.mask}</span>}
             </p>
-            <p className="text-xs text-gray-500 mt-0.5">
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">
               {typeLabel}
               {acct.isArchived && (
                 <span className="ml-2 text-amber-500/80 font-medium">ARCHIVED</span>
@@ -103,8 +107,8 @@ function AccountCard({ acct }: { acct: DiagnosticsAccount }) {
         </div>
         <div className="flex items-center gap-3 shrink-0 ml-2">
           {open
-            ? <ChevronUp size={14} className="text-gray-500" />
-            : <ChevronDown size={14} className="text-gray-500" />}
+            ? <ChevronUp size={14} className="text-[var(--text-muted)]" />
+            : <ChevronDown size={14} className="text-[var(--text-muted)]" />}
         </div>
       </button>
 
@@ -151,13 +155,6 @@ export function ProviderDiagnosticsDrawer({ plaidItemId, institutionName, onClos
   const [data,    setData]    = useState<DiagnosticsResponse | null>(null);
   const [error,   setError]   = useState<string | null>(null);
 
-  // Escape key
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
-
   // Fetch diagnostics — all setState calls are inside async .then()/.catch()
   // so the effect body itself never calls setState synchronously.
   useEffect(() => {
@@ -203,37 +200,12 @@ export function ProviderDiagnosticsDrawer({ plaidItemId, institutionName, onClos
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex justify-end">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      {/* Drawer panel */}
-      <div className="relative w-full sm:max-w-xl bg-gray-950 border-l border-gray-800 shadow-2xl flex flex-col h-full overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
-          <div className="flex items-center gap-2.5">
-            <Database size={16} className="text-gray-400" />
-            <div>
-              <p className="text-sm font-semibold text-white">{institutionName}</p>
-              <p className="text-xs text-gray-500">Provider diagnostics</p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="text-gray-500 hover:text-white transition-colors p-1 rounded"
-          >
-            <X size={18} />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
+    <RightPanel open onClose={onClose} size="lg" ariaLabel="Provider diagnostics">
+      <PanelHeader title={institutionName} eyebrow="Provider diagnostics" />
+      <PanelContent className="space-y-6">
           {/* Loading */}
           {loading && (
-            <div className="flex items-center gap-2 text-sm text-gray-400 py-8 justify-center">
+            <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)] py-8 justify-center">
               <Clock size={14} className="animate-pulse" />
               Loading diagnostics…
             </div>
@@ -252,10 +224,10 @@ export function ProviderDiagnosticsDrawer({ plaidItemId, institutionName, onClos
             <>
               {/* ── PlaidItem section ── */}
               <section>
-                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+                <h3 className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">
                   PlaidItem
                 </h3>
-                <div className="rounded-xl border border-gray-800 bg-gray-900/60 px-4 py-2">
+                <div className="rounded-xl border border-[var(--border-hairline)] bg-[var(--surface-inset)] px-4 py-2">
                   <Field label="Internal ID">{data.id}</Field>
                   <Field label="Plaid item_id">{data.externalItemId}</Field>
                   <Field label="Institution">{data.institutionName}</Field>
@@ -285,12 +257,12 @@ export function ProviderDiagnosticsDrawer({ plaidItemId, institutionName, onClos
 
               {/* ── Linked accounts section ── */}
               <section>
-                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+                <h3 className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">
                   Linked accounts ({data.accounts.length})
                 </h3>
 
                 {data.accounts.length === 0 ? (
-                  <p className="text-sm text-gray-500 text-center py-6">
+                  <p className="text-sm text-[var(--text-muted)] text-center py-6">
                     No live AccountConnection rows for this item.
                   </p>
                 ) : (
@@ -303,19 +275,16 @@ export function ProviderDiagnosticsDrawer({ plaidItemId, institutionName, onClos
               </section>
             </>
           )}
-        </div>
-
-        {/* Footer */}
-        <div className="shrink-0 border-t border-gray-800 px-5 py-3 flex items-center justify-between">
-          <p className="text-xs text-gray-600">Read-only · No mutations</p>
+      </PanelContent>
+      <PanelFooter className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-xs text-[var(--text-faint)]">Read-only · No mutations</p>
           <button
             onClick={handleRefresh}
-            className="text-xs text-gray-400 hover:text-white transition-colors"
+            className="min-h-11 px-3 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
             Refresh
           </button>
-        </div>
-      </div>
-    </div>
+      </PanelFooter>
+    </RightPanel>
   );
 }

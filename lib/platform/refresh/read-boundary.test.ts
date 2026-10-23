@@ -47,10 +47,28 @@ const LEDGER_ACCESSOR =
  * Anything else is a consumer, and a consumer reads a seam.
  */
 const PERMITTED_DIRECT_READERS = new Set<string>([
-  "lib/plaid/refresh-execution.ts",
-  "lib/plaid/provider-call.ts",
+  // RLS-P-1 — THE ONE DOOR. It replaced three entries on this list
+  // (refresh-execution.ts, provider-call.ts, and the write half of
+  // historical-stage-recorder.ts): the four ledger tables are revoked from
+  // `fm_app` outright, so the authority that writes them has to be decidable in
+  // one place rather than resolved independently at nine call sites.
+  "lib/plaid/refresh-ledger.ts",
+  // V26-STAGE-1 — still here, now as a READER only. It owns the five historical
+  // stage facts and numbers their attempts (keyed by the execution id the door
+  // minted); the INSERT moved to the door above. Those stages must be persisted
+  // AS THEY SETTLE to be resumable, whereas the orchestrator flushes its provider
+  // stages once at completion — a crash mid-pipeline would otherwise leave
+  // nothing to resume to.
+  "lib/plaid/historical-stage-recorder.ts",
   "lib/platform/refresh/projections.ts",
   "lib/platform/refresh/execution-query.ts",
+  // P1 HUMAN OPERABILITY — the Customer Success per-customer reader. CUSTOMER_SUCCESS
+  // is the identity-resolving area by owner ruling, and "which refreshes touched
+  // THIS customer's connections" is a per-customer question the fleet seams
+  // (projections/execution-query) deliberately cannot ask, since they carry no
+  // owner. Read-only, fm_system, bounded (last 20 rows), projects trigger /
+  // status / timestamps only — never payloads. A doctrine decision, recorded.
+  "lib/platform/customer/customer-detail.ts",
 ]);
 
 /** This guard names the models in its own regex/allowlist — never scan itself. */

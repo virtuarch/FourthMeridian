@@ -92,13 +92,15 @@
 import { randomUUID } from "node:crypto";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
-import { db } from "@/lib/db";
-import { redactedErrorForLog } from "@/lib/plaid/errors";
+import { db, systemDb } from "@/lib/db";
+import { isPaginationMutation, redactedErrorForLog } from "@/lib/plaid/errors";
 import { ProviderType, PlaidItemStatus } from "@prisma/client";
 import { recordSyncIssue, resolveCursorBlockingIssues } from "@/lib/plaid/syncIssues";
+import { activeLedger } from "@/lib/plaid/refresh-ledger";
 import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
-import { findByFingerprint } from "@/lib/transactions/fingerprint";
+import { resolveFingerprint } from "@/lib/transactions/fingerprint";
+import { assertAccountFkUnchanged } from "@/lib/accounts/account-reparenting";
 // Pure Plaid → TransactionCategory mapping, extracted to a Prisma-free module so
 // it is unit-testable in isolation (lib/transactions/plaid-category.test.ts).
 // Re-exported below to preserve the historical `@/lib/plaid/syncTransactions`
@@ -112,6 +114,11 @@ import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-pa
 // BEFORE classifyFlow, so the descriptor decision produces category + flowType
 // coherently and the classifier stays descriptor-blind.
 import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
+// REFUND-1 — the merchant-credit category authority + its one evidence read: a
+// liability inflow the provider filed as INCOME is resolved to the spend category
+// it reverses (or `Other`) BEFORE classifyFlow, like the two rescues above.
+import { needsMerchantCreditEvidence, resolveLiabilityMerchantCreditCategory } from "@/lib/transactions/merchant-credit";
+import { readPriorPurchaseCategories, type MerchantCreditEvidenceClient } from "@/lib/transactions/merchant-credit-evidence";
 export { mapPlaidCategory } from "@/lib/transactions/plaid-category";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 // FlowType P2 (import fidelity) — shadow classification only. Nothing below is
@@ -131,6 +138,15 @@ import {
 // TE1 — provider-neutral transfer evidence: stage-1 Plaid adapter + persistence
 // mapper. Wired beside flowFields/factFields; liquidity/Cash Flow never see Plaid.
 import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
+// v2.6-OWN-1 — the flow-ownership rule. A provider re-sync is the CLASSIFIER
+// refreshing its own rows; it declares no claims, so it can never displace the
+// transfer authority or the crypto ledger.
+import { mayWriteFlow, type FlowAuthorityName } from "@/lib/transactions/flow-authority";
+import { economicDateWriteFields } from "@/lib/transactions/economic-date-write";
+// v2.6-EVENT-1 — `reprojectEvent` beside the observation writer: a tombstone
+// changes an event's liveness just as surely as a new observation does, and both
+// must go through the one module that owns event state.
+import { isEventWriteIntegrityFailure, recordTransactionObservation, reprojectEvent } from "@/lib/transactions/event-write";
 import {
   transferEvidenceWriteFields,
   NULL_TRANSFER_EVIDENCE_FIELDS,
@@ -201,7 +217,13 @@ export interface SyncTransactionsDeps {
    * before — behavior is unchanged for every existing caller.
    */
   runId?: string;
+  /** Base delay between pagination restarts (multiplied by the restart number). Tests pass 0. */
+  restartDelayMs?: number;
 }
+
+/** Restarts of one run's pagination loop after MUTATION_DURING_PAGINATION before the run fails. */
+const MAX_PAGINATION_RESTARTS = 3;
+const PAGINATION_RESTART_DELAY_MS = 2000;
 
 export interface SyncTransactionsResult {
   /** Count of transactions Plaid reported in its `added` array this run (Plaid's own count, unchanged semantics). */
@@ -220,6 +242,18 @@ export interface SyncTransactionsResult {
   updatedByFingerprint:  number;
   /** Transactions dropped because no FinancialAccount matched the Plaid account_id. */
   skippedMissingAccount: number;
+  /**
+   * RLS-ACC-FK — transactions dropped because the row their `plaidTransactionId`
+   * resolved lives on a DIFFERENT FinancialAccount, so updating it with this
+   * sync's fields would have RE-PARENTED it.
+   *
+   * ⚠️ THIS IS A REFUSAL, NOT A FAILURE, and the distinction is why it may be
+   * returned at all. The NOTE below forbids a `failedRows` counter because a
+   * returned result means complete persistence; this counter is the sibling of
+   * `skippedMissingAccount` — a row DELIBERATELY not persisted because it is not
+   * this account's row to write. Each one also carries a durable incident.
+   */
+  refusedReparenting:    number;
   // NOTE (PRE-V26-PLAID-CLOSE Phase 2): there is deliberately NO `failedRows`
   // field. A returned result is SYNONYMOUS with complete persistence — a page
   // with any unmet persistence obligation throws `PlaidSyncIncompleteError`
@@ -239,6 +273,24 @@ export async function syncTransactionsForItem(
   // One resolution point for the injected seam; everything below uses these.
   const database = deps.db    ?? db;
   const plaid    = deps.plaid ?? plaidClient;
+  // ⚠️ RLS-P-3a — THE INCIDENT AUTHORITY IS NOT THE SYNC'S AUTHORITY.
+  //
+  // `SyncIssue` / `SyncIssueOccurrence` are revoked from fm_app outright
+  // (…_rls_roles_and_policies §4), so they are fm_system work no matter which
+  // client this sync persists transactions through. The three `recordSyncIssue`
+  // calls below used to hand the facade `database`, which in production is the
+  // migration principal — the exact drift this slice removes.
+  //
+  // IT FALLS BACK TO `deps.db` WHEN ONE WAS INJECTED, AND THAT IS DELIBERATE.
+  // No production caller passes `deps.db` (verified over all nine call sites),
+  // so production always lands on fm_system. A test that injects a database is
+  // injecting it precisely so its error paths do not write into a real one —
+  // cursor-safety.test.ts and removed-tombstone-reprojection.test.ts both ASSERT
+  // the recorded issues through that fake, and the eight stray rows in the local
+  // dev database are what happens when telemetry escapes an injected client. So
+  // telemetry follows the injection when there is one, and fm_system when there
+  // is not.
+  const incidents = deps.db ?? systemDb;
 
   // PRE-V26-PLAID-CLOSE Phase 4 — one id per sync RUN, stamped into every
   // SyncIssue this invocation writes. Platform Ops correlates episodes on
@@ -267,7 +319,10 @@ export async function syncTransactionsForItem(
   let created               = 0;
   let updatedByPlaidId      = 0;
   let updatedByFingerprint  = 0;
+  /** FIN-009 — fingerprint adoptions refused because more than one row matched. */
+  let fingerprintAmbiguous  = 0;
   let skippedMissingAccount = 0;
+  let refusedReparenting    = 0;
 
   // Live import progress (see PlaidItem.syncImportedCount). A null cursor means
   // this is a FRESH import, so the counter starts at zero; any other value means
@@ -275,7 +330,25 @@ export async function syncTransactionsForItem(
   // reached — resetting there would make the customer's progress visibly jump
   // backwards, which is worse than showing nothing at all.
   const importedBase = item.cursor == null ? 0 : (item.syncImportedCount ?? 0);
-  const importedSoFar = () => importedBase + created + updatedByPlaidId + updatedByFingerprint;
+  // Re-based when a pagination restart re-delivers rows already counted.
+  let importedOffset = importedBase;
+  const importedSoFar = () => importedOffset + created + updatedByPlaidId + updatedByFingerprint;
+
+  // ── Where a pagination restart begins ─────────────────────────────────────
+  // TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION means Plaid's data changed
+  // under this loop: the whole loop restarts from where the last COMPLETED loop
+  // ended. `cursor` is persisted per page, so after page 1 it is a mid-loop value
+  // that fails identically forever — the Preview Sandbox OAuth Item stuck at
+  // "100 imported" (2026-10-06). A never-completed import restarts at the start
+  // of history; an Item that completed loops before syncOriginCursor existed
+  // falls back to its current cursor until its next completed loop writes it.
+  // Rows from abandoned pages are already committed; re-delivery is idempotent
+  // (every added/modified row resolves by its unique plaidTransactionId).
+  const originCursor: string | undefined = (item.completedSyncCount ?? 0) === 0
+    ? undefined
+    : (item.syncOriginCursor ?? item.cursor ?? undefined);
+  let paginationRestarts = 0;
+  const restartDelayMs = deps.restartDelayMs ?? PAGINATION_RESTART_DELAY_MS;
 
   // FlowType observability (FLOWTYPE_SHADOW). Classification itself now runs
   // unconditionally (P3 Phase B — it feeds the write); this flag only controls
@@ -346,13 +419,33 @@ export async function syncTransactionsForItem(
     // fully-persisted pages legitimately keep their advanced cursor.
     const pageFailures: PagePersistenceFailure[] = [];
 
-    const resp = await withPlaidRetry(
-      () => plaid.transactionsSync({
-        access_token: accessToken,
-        ...(cursor ? { cursor } : {}),
-      }),
-      "transactionsSync"
-    );
+    let resp: Awaited<ReturnType<typeof plaid.transactionsSync>>;
+    try {
+      resp = await withPlaidRetry(
+        () => plaid.transactionsSync({
+          access_token: accessToken,
+          ...(cursor ? { cursor } : {}),
+        }),
+        "transactionsSync"
+      );
+    } catch (err) {
+      if (!isPaginationMutation(err) || paginationRestarts >= MAX_PAGINATION_RESTARTS) throw err;
+      paginationRestarts++;
+      console.warn(
+        `[plaid sync] item ${plaidItemDbId} — data changed mid-pagination; restarting the loop from ` +
+        `${originCursor ? "the last completed cursor" : "the beginning"} (restart ${paginationRestarts}/${MAX_PAGINATION_RESTARTS})`,
+      );
+      cursor = originCursor;
+      importedOffset = (originCursor === undefined ? 0 : importedBase) - (created + updatedByPlaidId + updatedByFingerprint);
+      // Persist the restart point first: if this run dies or gives up, the next
+      // one begins where Plaid requires instead of on the dead mid-loop cursor.
+      await database.plaidItem.update({
+        where: { id: plaidItemDbId },
+        data:  { cursor: cursor ?? null, syncImportedCount: importedSoFar() },
+      });
+      await new Promise((r) => setTimeout(r, restartDelayMs * paginationRestarts));
+      continue;
+    }
     const { added: addedTxns, modified: modifiedTxns, removed: removedTxns, has_more, next_cursor } = resp.data;
 
     for (const txn of [...addedTxns, ...modifiedTxns]) {
@@ -369,7 +462,7 @@ export async function syncTransactionsForItem(
           plaidAccountId:     txn.account_id,
           plaidTransactionId: txn.transaction_id,
           detail:             { stage: "transaction-persist", runId, cursorBlocking: true, merchant: txn.merchant_name ?? txn.name, amount: txn.amount, date: txn.date, pending: txn.pending },
-        }, database);
+        }, incidents);
         // CURSOR SAFETY — this transaction was delivered and NOT persisted. The
         // page is incomplete, so its cursor must not advance (see header).
         pageFailures.push({
@@ -468,6 +561,31 @@ export async function syncTransactionsForItem(
         // DESCRIPTOR_EVIDENCE reason as a row the repair fixed retroactively.
         const payrollRescued = category !== categoryBeforePayroll;
 
+        // REFUND-1 — a credit on a LIABILITY that the provider filed as INCOME
+        // cannot be income (nobody is paid onto a credit card): it is a merchant
+        // credit Plaid labelled from the brand (an Airbnb refund → INCOME_RENTAL).
+        // The classifier's structural veto guarantees "never INCOME"; THIS step
+        // decides which spend category the credit reverses, from the same
+        // merchant's prior purchases on the same account (unanimous or `Other`),
+        // so one decision yields a coherent category + flowType (Travel/REFUND,
+        // or Other/UNKNOWN). Runs LAST in the rescue chain and only for that
+        // population, so the history read is paid on ~0.1% of rows.
+        if (needsMerchantCreditEvidence(category, "Income", { accountType: meta.type, debtSubtype: meta.debtSubtype, amount })) {
+          const priorPurchaseCategories = await readPriorPurchaseCategories(database as unknown as MerchantCreditEvidenceClient, {
+            financialAccountId,
+            merchantEntityId: txn.merchant_entity_id ?? null,
+            merchant,
+            description,
+            onOrBefore: date,
+          });
+          category = resolveLiabilityMerchantCreditCategory(category, "Income", "Other", {
+            accountType: meta.type,
+            debtSubtype: meta.debtSubtype,
+            amount,
+            priorPurchaseCategories,
+          }).category as typeof category;
+        }
+
         const { input, captured } = buildPlaidFlowInput(txn, {
           category,
           amount,
@@ -508,7 +626,7 @@ export async function syncTransactionsForItem(
         if (shadowEnabled) accumulateShadow(shadowStats, classification, category, amount);
         classified = true;
       } catch (e) {
-        console.warn(`[flowtype] classification skipped for ${txn.transaction_id} — null flow columns on create, existing facts preserved on update:`, e);
+        console.warn(`[flowtype] classification skipped for ${txn.transaction_id} — null flow columns on create, existing facts preserved on update:`, redactedErrorForLog(e));
       }
 
       // The 7 original values are byte-identical; flow columns are additive.
@@ -527,16 +645,28 @@ export async function syncTransactionsForItem(
       //     successful run persisted. Semantic columns ride ONLY when this run
       //     computed them (`classified`), `currency` only when known (null means
       //     "not recorded", which must not overwrite a recorded denomination),
-      //     and transfer evidence follows the reconcile planner's NO_WRITE rule
-      //     (lib/transactions/transfer-evidence-plan.ts): persist only when a
+      //     and transfer evidence follows the reconcile NO_WRITE rule
+      //     (lib/transactions/transfer-evidence-write.ts): persist only when a
       //     descriptive axis was RECOGNIZED — an unrecognized/no-signal run, or
       //     a row currently classified non-TRANSFER, never overwrites stamped
       //     evidence with nulls (evidence axes are write-time; wiped evidence is
       //     unrecoverable and silently kills the payment-app honesty prompts).
       const evidenceRecognized = transferFields !== NULL_TRANSFER_EVIDENCE_FIELDS;
-      const createFields = { financialAccountId, date, merchant, description, amount, pending: txn.pending, currency, ...factFields, ...transferFields };
+      // L8-A — the economic chronology rides WITH `date`, never separately, so a
+      // row can never carry a posting date without its economic twin. Derived
+      // from this row's own `date` + `authorizedAt` by the one write authority
+      // (which wraps the same resolver the read path uses).
+      //
+      // `factFields.authorizedAt` is the value being written on THIS row; reading
+      // it here rather than the Plaid payload keeps the two columns consistent by
+      // construction even if the fact builder ever changes what it stamps.
+      const econFields = economicDateWriteFields({
+        postingDate:  date,
+        authorizedAt: (factFields as { authorizedAt?: Date | string | null }).authorizedAt ?? null,
+      });
+      const createFields = { financialAccountId, date, ...econFields, merchant, description, amount, pending: txn.pending, currency, ...factFields, ...transferFields };
       const updateFields = {
-        financialAccountId, date, merchant, description, amount, pending: txn.pending,
+        financialAccountId, date, ...econFields, merchant, description, amount, pending: txn.pending,
         ...(currency !== null ? { currency } : {}),
         ...(classified ? factFields : {}),
         ...(evidenceRecognized ? transferFields : {}),
@@ -554,10 +684,36 @@ export async function syncTransactionsForItem(
       // withheld so existing persisted facts survive. A USER-rule override that
       // successfully re-classifies through the authoritative pipeline still
       // applies — that is a real classification, not a degradation.
+      //
+      // v2.6-OWN-1 — `flowAuthority` joins `current` for the same reason
+      // `categorySource` is already there: an UPDATE must not overwrite facts a
+      // different authority owns. Every one of the 12 rows the transfer-authority
+      // repairs corrected is Plaid-sourced, so before this gate the next
+      // `modified` page for any of them would have silently reverted the repair —
+      // a larger hole than the backfill the audit was pointing at.
       async function miData(current: {
         merchantId: string | null;
         categorySource: CategorySource | null;
+        flowAuthority: FlowAuthorityName | null;
       }, mode: "create" | "update"): Promise<Record<string, unknown>> {
+        /**
+         * Strip the flow columns from a patch when the CLASSIFIER may not write
+         * this row. Category and merchant columns are NOT stripped: they belong
+         * to the category/MI stack, which the transfer authority never touched.
+         *
+         * The classifier declares NO claims — a provider re-sync is routine, not
+         * an approved act of correction, so it can only ever refresh its own rows
+         * and adopt unowned ones. Displacing the transfer authority is a
+         * reviewed repair, and it says so at its own write site.
+         */
+        const ownFlow = <T extends object>(patch: T): Partial<T> => {
+          if (mayWriteFlow(current.flowAuthority, "CLASSIFIER").allowed) return patch;
+          const { flowType: _ft, flowDirection: _fd, flowAuthority: _fa,
+                  classificationConfidence: _cc, classificationReason: _cr,
+                  classifierVersion: _cv, counterpartyAccountId: _cp,
+                  ...rest } = patch as Record<string, unknown>;
+          return rest as Partial<T>;
+        };
         try {
           const meta = await resolveAccountMeta(financialAccountId as string);
           const mi = await resolveMerchantWrite(
@@ -585,36 +741,200 @@ export async function syncTransactionsForItem(
           // through the authoritative pipeline so category and flowType stay in sync.
           if (mi.category) {
             const { input, captured } = buildPlaidFlowInput(txn, { category: mi.category, amount, accountType: meta.type, debtSubtype: meta.debtSubtype });
-            const overrideFlow = buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
-            return { ...columns, category: mi.category, ...overrideFlow, categorySource: "USER_RULE", ...(mi.categoryRuleId ? { categoryRuleId: mi.categoryRuleId } : {}) };
+            // FIN-002: a USER rule's category outranks the provider taxonomy.
+            const overrideFlow = buildFlowWriteFields(classifyFlow({ ...input, providerTaxonomySuppressed: true }), input, captured, FLOW_CLASSIFIER_VERSION);
+            return { ...columns, category: mi.category, ...ownFlow(overrideFlow), categorySource: "USER_RULE", ...(mi.categoryRuleId ? { categoryRuleId: mi.categoryRuleId } : {}) };
           }
           // NORMAL — default category + flow, stamp confirmed provenance.
           // V26-PRE (B1): withheld on update when classification failed — the
           // "default" would be an un-rescued category + null flow columns.
           if (mode === "update" && !classified) return { ...columns };
-          return { ...columns, ...defaultCategoryFlow, ...(mi.categorySource ? { categorySource: mi.categorySource } : {}) };
+          return { ...columns, ...ownFlow(defaultCategoryFlow), ...(mi.categorySource ? { categorySource: mi.categorySource } : {}) };
         } catch (e) {
-          console.warn(`[merchant-intelligence] resolution skipped for ${txn.transaction_id} — default category/flow on create, existing facts preserved on update; no MI:`, e);
+          console.warn(`[merchant-intelligence] resolution skipped for ${txn.transaction_id} — default category/flow on create, existing facts preserved on update; no MI:`, redactedErrorForLog(e));
           // V26-PRE (B1): same preservation rule on the failure path.
           if (mode === "update" && !classified) return {};
-          return { ...defaultCategoryFlow };
+          return { ...ownFlow(defaultCategoryFlow) };
         }
       }
+
+      // L8 — record the provider OBSERVATION and resolve its logical event.
+      // One helper for all three write paths below, so a pending row and its
+      // posted successor are two observations of ONE event however the row was
+      // matched. Idempotent: replaying the same payload writes nothing.
+      //
+      // ⚠️ Deliberately NON-BLOCKING. Event identity is additive and nothing
+      // reads it yet; a failure here must never cost the transaction write or
+      // advance the cursor past an unpersisted page.
+      const recordObservation = async (transactionId: string) => {
+        try {
+          await recordTransactionObservation(database, {
+            transactionId,
+            financialAccountId,
+            provider: "PLAID",
+            providerRowId: txn.transaction_id,
+            providerPendingRef: txn.pending_transaction_id ?? null,
+            lifecycle: txn.pending ? "PENDING" : "POSTED",
+            amount,
+            postingDate: date,
+            economicDate: econFields.economicDate,
+            authorizedAt: txn.authorized_date ? new Date(`${txn.authorized_date}T00:00:00.000Z`) : null,
+            transactionIsLive: true,
+            observedAt: new Date(),
+          });
+        } catch (e) {
+          // ── RLS-P-2 / EVENT-WRITE-1 — A SWALLOWED WRITE GETS A DURABLE RECORD ──
+          //
+          // `EventWriteIntegrityFailure` says in its own TYPE that nothing of
+          // the event was persisted while the transaction row already
+          // committed (`canonicalStatePersisted: false`). That is precisely the
+          // shape this slice exists to stop losing: the `console.warn` below
+          // was the whole record, and a warn in a serverless log window is not
+          // a record. EVENT-WRITE-1 named this catch block as the integration
+          // point and correctly did not edit it.
+          //
+          // ⚠️ STILL NON-BLOCKING, AND THAT IS NOT NEGOTIABLE. Event identity
+          // is additive and nothing reads it yet. The cursor MUST still
+          // advance: holding a page because a derived layer failed would stop
+          // delivering real transactions over a gap that cost the member
+          // nothing. So this records and returns — it does not rethrow and it
+          // does not enter `pageFailures`.
+          if (isEventWriteIntegrityFailure(e)) {
+            await recordSyncIssue({
+              kind: "UPSERT_ERROR",
+              plaidItemId: plaidItemDbId,
+              financialAccountId,
+              // ⚠️ `plaidTransactionId` IS DELIBERATELY OMITTED, and omitting it
+              // is load-bearing rather than tidy. `classifySyncIssue` treats a
+              // row that names a bank transaction as an AFFIRMATIVE transaction
+              // signal and sets `customerActionable`, which tells the member to
+              // reconnect their bank. No member action helps here and no
+              // financial record is missing — the row committed. The provider's
+              // id travels inside `detail` instead, where the member-facing
+              // activity route is forbidden from reading it.
+              detail: {
+                // SPREAD FIRST. `EventWriteIntegrityDetail` has its own `stage`
+                // ("OBSERVATION_WRITE" | "REPLAY_HEAL" | "TERMINAL_STATE_CHECK")
+                // and `detail.stage` is the INCIDENT IDENTITY DISCRIMINATOR
+                // (lib/platform/incidents/operation-key.ts). Spreading after the
+                // assignment would key every episode on the event-writer's
+                // internal phase and split one operational problem into three.
+                ...e.detail,
+                eventWriteStage: e.detail.stage,
+                stage: "event-identity-persist",
+                runId,
+                // The cursor is NOT held, so a later successful sync proves
+                // nothing about this row and must never auto-resolve it
+                // (lib/plaid/syncIssues.ts). Stated rather than left to the
+                // absence of the key.
+                cursorBlocking: false,
+                canonicalStatePersisted: false,
+              },
+            }, incidents, {
+              onWriteFailure: (ledgerTable, phase) =>
+                console.error(
+                  `[l8] the event-identity incident could NOT be recorded either (${ledgerTable}/${phase}) — ` +
+                  `this failure now has no durable record at all for transaction ${txn.transaction_id}.`,
+                ),
+            });
+            return;
+          }
+          console.warn(`[l8] observation skipped for ${txn.transaction_id} — event identity is additive and non-blocking:`, redactedErrorForLog(e));
+        }
+      };
 
       try {
         // 1. Exact match — same row Plaid is telling us about.
         const existingByPlaidId = await database.transaction.findUnique({
           where:  { plaidTransactionId: txn.transaction_id },
-          select: { id: true, merchantId: true, categorySource: true },
+          // v2.6-OWN-1 — flowAuthority joins the read so the update arm can tell
+          // whether the classifier still owns this row's flow facts.
+          //
+          // ⚠️ RLS-ACC-FK — `financialAccountId` JOINS THIS READ, AND THAT IS
+          // MOST OF THE FIX. `plaidTransactionId` is a TENANT-WIDE `@unique`
+          // column: it names a ROW without naming an ACCOUNT, so this lookup can
+          // resolve a row belonging to a different account — and then the update
+          // below, which writes `updateFields` built for THIS sync's account,
+          // RELOCATES it. Until this select read the FK there was nothing to
+          // compare, so the move was not merely unrefused, it was UNOBSERVABLE.
+          //
+          // The event that makes the destination differ is real and is adjacent:
+          // `lib/accounts/provider-identity.ts` swallows a unique-constraint
+          // collision meaning "another FinancialAccount already owns this
+          // provider identity" and logs it as a non-fatal warn, so the identity
+          // mapping can point somewhere this row does not live.
+          select: { id: true, financialAccountId: true, merchantId: true, categorySource: true, flowAuthority: true },
         });
 
         if (existingByPlaidId) {
+          // ── RLS-ACC-FK — A RE-DELIVERED PROVIDER ID IS NOT A LICENCE TO MOVE A ROW ──
+          //
+          // Refuse the relocation, record it durably, and SKIP the row.
+          //
+          // ⚠️ DELIBERATELY NOT CURSOR-BLOCKING, and the reason is the one thing
+          // worth reading here: cursor safety exists for failures A REPLAY CAN
+          // FIX. This one is deterministic — the next attempt resolves the same
+          // row to the same foreign account and fails identically — so holding
+          // the cursor would convert an integrity anomaly on ONE row into a
+          // permanent sync outage for the whole Item, with no path to recovery
+          // and no remaining delivery of healthy transactions. So it records and
+          // continues, exactly as the non-blocking event-identity failure above
+          // does, and for the same stated reason.
+          //
+          // ⚠️ `plaidTransactionId` IS OMITTED FROM THE INCIDENT ENVELOPE on
+          // purpose, following that same precedent: `classifySyncIssue` reads a
+          // row that names a bank transaction as an AFFIRMATIVE transaction
+          // signal and sets `customerActionable`, which tells the member to
+          // reconnect their bank. No member action helps here. The provider's id
+          // travels inside `detail`, where the member-facing activity route is
+          // forbidden from reading it.
+          //
+          // The guard runs UNCONDITIONALLY rather than behind an inequality
+          // check. An `if (a !== b)` in front of it would be a SECOND copy of
+          // the comparison, in the one place where the two could drift — and the
+          // guard's null-handling (a forgotten `select` must refuse, not clear)
+          // is exactly what a hand-written inequality gets wrong.
+          try {
+            assertAccountFkUnchanged(
+              { table: "Transaction", fkField: "financialAccountId", operation: "update" },
+              existingByPlaidId.id,
+              existingByPlaidId.financialAccountId,
+              financialAccountId as string,
+            );
+          } catch (e) {
+            console.error(
+              `[plaid sync][RLS-ACC-FK] REFUSED to relocate transaction ${existingByPlaidId.id} — ` +
+              `plaidTransactionId ${txn.transaction_id} resolved a row on account ${existingByPlaidId.financialAccountId}, ` +
+              `but this sync is for account ${financialAccountId}. Row left where it is; NOT updated.`,
+              redactedErrorForLog(e),
+            );
+            await recordSyncIssue({
+              kind:               "UPSERT_ERROR",
+              plaidItemId:        plaidItemDbId,
+              financialAccountId,
+              plaidAccountId:     txn.account_id,
+              detail: {
+                stage:                   "reparenting-refused",
+                runId,
+                providerRowId:           txn.transaction_id,
+                transactionId:           existingByPlaidId.id,
+                rowBelongsToAccountId:   existingByPlaidId.financialAccountId,
+                syncIsForAccountId:      financialAccountId,
+                cursorBlocking:          false,
+                canonicalStatePersisted: false,
+                error:                   e instanceof Error ? e.message : String(e),
+              },
+            }, incidents);
+            refusedReparenting++;
+            continue;
+          }
           // Integrity hardening: resurrect (deletedAt: null). If this row had
           // been tombstoned by a prior removed[] and Plaid now re-sends it in
           // added/modified, it is live again — Plaid only sends added/modified
           // for live transactions, so clearing deletedAt here is correct.
-          const mi = await miData({ merchantId: existingByPlaidId.merchantId, categorySource: existingByPlaidId.categorySource }, "update");
+          const mi = await miData({ merchantId: existingByPlaidId.merchantId, categorySource: existingByPlaidId.categorySource, flowAuthority: existingByPlaidId.flowAuthority }, "update");
           await database.transaction.update({ where: { id: existingByPlaidId.id }, data: { ...updateFields, deletedAt: null, ...mi } });
+          await recordObservation(existingByPlaidId.id);
           updatedByPlaidId++;
           continue;
         }
@@ -626,20 +946,152 @@ export async function syncTransactionsForItem(
         // verbatim `txn.name`), NOT the enriched `merchant` which drifts across
         // re-pulls and created the 6-Amazon-rows duplicates. `description` is
         // always present for Plaid; `?? merchant` keeps the contract uniform.
-        const fingerprintMatch = await findByFingerprint(financialAccountId, date, amount, description ?? merchant, txn.pending, database);
+        //
+        // FIN-009 — AMBIGUITY IS A REFUSAL, NOT A COIN TOSS. `findByFingerprint`
+        // used to return `matches[0]` when several rows carried the fingerprint,
+        // and the adoption below then wrote THIS provider id onto whichever twin
+        // sorted first. Lost, that binds the id to the wrong row and leaves the
+        // real twin to arrive as a duplicate later. The sync now resolves the
+        // fingerprint honestly: on AMBIGUOUS it adopts nothing, records a
+        // non-cursor-blocking SyncIssue naming the candidates, and persists the
+        // incoming row as its own (the same destination the pending-ref refusal
+        // below takes). The CSV import keeps the legacy helper and SKIPs on its
+        // own ambiguity re-check.
+        const fingerprint = await resolveFingerprint(financialAccountId, date, amount, description ?? merchant, txn.pending, database);
+        const fingerprintMatch = fingerprint.kind === "MATCH" ? fingerprint.row : null;
+        if (fingerprint.kind === "AMBIGUOUS") {
+          fingerprintAmbiguous++;
+          console.warn(
+            `[plaid sync] fingerprint adoption REFUSED for ${txn.transaction_id} — ${fingerprint.matches.length} existing rows ` +
+            `carry the same account/date/amount/descriptor/pending fingerprint (${fingerprint.matches.map((m) => m.id).join(", ")}); ` +
+            `a fingerprint cannot say which one this is. Persisting as a distinct row.`,
+          );
+          await recordSyncIssue({
+            kind: "UPSERT_ERROR",
+            plaidItemId: plaidItemDbId,
+            financialAccountId,
+            // `plaidTransactionId` deliberately omitted (see the event-identity
+            // incident above): no financial record is missing and no member
+            // action helps. The provider id travels in `detail`.
+            detail: {
+              stage: "fingerprint-adoption-ambiguous",
+              runId,
+              cursorBlocking: false,
+              providerTransactionId: txn.transaction_id,
+              candidateTransactionIds: fingerprint.matches.map((m) => m.id),
+              candidateCount: fingerprint.matches.length,
+              date: date.toISOString().slice(0, 10),
+              amount,
+              pending: txn.pending,
+            },
+          }, incidents, {
+            onWriteFailure: (ledgerTable, phase) =>
+              console.error(
+                `[plaid sync] the ambiguous-fingerprint incident could NOT be recorded (${ledgerTable}/${phase}) ` +
+                `for transaction ${txn.transaction_id}.`,
+              ),
+          });
+        }
 
-        if (fingerprintMatch) {
+        // v2.6-EVENT-2 — STRONGER PROVIDER IDENTITY EVIDENCE OUTRANKS A FINGERPRINT.
+        //
+        // A fingerprint (account + date + amount + descriptor + pending) cannot
+        // establish identity — `lib/transactions/event-identity.ts` refuses it as
+        // rung 4 for exactly that reason, and ranks `pending_transaction_id` FIRST.
+        // But adoption happens here, on the ROW, upstream of that authority, so the
+        // observation layer used to inherit a decision the authority would refuse.
+        //
+        // Measured production shape (Chase "TAP TALABAT food", −12.05): two pending
+        // authorisations a day apart, then two posted settlements on the same day
+        // for the same amount under the same descriptor, each naming a DIFFERENT
+        // predecessor. The second settlement fingerprint-matched the first's row,
+        // overwrote its `plaidTransactionId`, and re-pointed it at the other event —
+        // leaving one row observed on two events, an orphaned provider id belonging
+        // to no row, and a stale projection on the event it left.
+        //
+        // The refusal is deliberately NARROW, because DF-4's duplicate prevention
+        // is load-bearing (the six-Amazon-rows incident). Adoption is refused ONLY
+        // on POSITIVE provider evidence that the incoming row and the candidate
+        // continue two DIFFERENT predecessors. No pending ref, an unresolvable
+        // one, or one naming the SAME predecessor/event ⇒ adoption proceeds
+        // exactly as before.
+        //
+        // W1 (D6) — GENERALIZED TO PROVIDER-REF COMPARISON. The original guard
+        // required `fingerprintMatch.transactionEventId`, which made it INERT for
+        // every row with no event link yet — i.e. ALL production rows during the
+        // event-backfill window (migrations not yet deployed), exactly when
+        // TALABAT-class collisions are most likely. The comparison now runs on the
+        // provider's own succession claims first, with events as the tie-breaker
+        // where both sides have them:
+        //
+        //   1. Both events known → compare events (unchanged). Events survive
+        //      provider id churn (an adopted pending row keeps its event), so this
+        //      rung is the most churn-robust and keeps precedence.
+        //   2. Otherwise, if the candidate carries its OWN pendingTransactionRef
+        //      and it names a DIFFERENT predecessor than the incoming row's —
+        //      and BOTH refs resolve to two DISTINCT rows in the corpus — the
+        //      provider has attested two successions. Refuse. (Requiring both
+        //      rows to resolve keeps the refusal narrow: a dangling candidate ref
+        //      can be a churned-away id of the SAME predecessor, and refusing on
+        //      it would re-open the six-Amazon duplication. The dangling-
+        //      predecessor fusion case remains a NAMED, accepted write-side
+        //      trade-off — see the Phase-1 D6 report.)
+        let adoptionRefusedByPendingRef = false;
+        if (fingerprintMatch && txn.pending_transaction_id) {
+          const predecessor = await database.transaction.findUnique({
+            where:  { plaidTransactionId: txn.pending_transaction_id },
+            select: { id: true, transactionEventId: true },
+          });
+          const claimedEventId = predecessor?.transactionEventId ?? null;
+          if (claimedEventId && fingerprintMatch.transactionEventId) {
+            // Rung 1 — event vs event (the pre-W1 guard, unchanged).
+            if (claimedEventId !== fingerprintMatch.transactionEventId) {
+              adoptionRefusedByPendingRef = true;
+              console.warn(
+                `[plaid sync] fingerprint adoption REFUSED for ${txn.transaction_id} — its ` +
+                `pending_transaction_id ${txn.pending_transaction_id} continues event ${claimedEventId}, ` +
+                `but the fingerprint candidate ${fingerprintMatch.id} belongs to event ` +
+                `${fingerprintMatch.transactionEventId}. Provider identity outranks a fingerprint; ` +
+                `persisting as a distinct row.`,
+              );
+            }
+          } else if (
+            predecessor &&
+            fingerprintMatch.pendingTransactionRef &&
+            fingerprintMatch.pendingTransactionRef !== txn.pending_transaction_id
+          ) {
+            // Rung 2 — provider-ref vs provider-ref (live pre-backfill). Refuse
+            // only when the candidate's own ref resolves to a DISTINCT row.
+            const candidatePredecessor = await database.transaction.findUnique({
+              where:  { plaidTransactionId: fingerprintMatch.pendingTransactionRef },
+              select: { id: true },
+            });
+            if (candidatePredecessor && candidatePredecessor.id !== predecessor.id) {
+              adoptionRefusedByPendingRef = true;
+              console.warn(
+                `[plaid sync] fingerprint adoption REFUSED for ${txn.transaction_id} — its ` +
+                `pending_transaction_id ${txn.pending_transaction_id} and the fingerprint ` +
+                `candidate ${fingerprintMatch.id}'s own pendingTransactionRef ` +
+                `${fingerprintMatch.pendingTransactionRef} resolve to two distinct predecessor ` +
+                `rows. Provider identity outranks a fingerprint; persisting as a distinct row.`,
+              );
+            }
+          }
+        }
+
+        if (fingerprintMatch && !adoptionRefusedByPendingRef) {
           // Read the matched row's current MI state so the update never
           // re-points an existing merchant or overwrites set provenance.
           const cur = await database.transaction.findUnique({
             where:  { id: fingerprintMatch.id },
-            select: { merchantId: true, categorySource: true },
+            select: { merchantId: true, categorySource: true, flowAuthority: true },
           });
-          const mi = await miData({ merchantId: cur?.merchantId ?? null, categorySource: cur?.categorySource ?? null }, "update");
+          const mi = await miData({ merchantId: cur?.merchantId ?? null, categorySource: cur?.categorySource ?? null, flowAuthority: cur?.flowAuthority ?? null }, "update");
           await database.transaction.update({
             where: { id: fingerprintMatch.id },
             data:  { ...updateFields, plaidTransactionId: txn.transaction_id, ...mi },
           });
+          await recordObservation(fingerprintMatch.id);
           updatedByFingerprint++;
           console.warn(
             `[plaid sync] fingerprint match — reusing existing transaction ${fingerprintMatch.id} for new plaidTransactionId ${txn.transaction_id} (previously ${fingerprintMatch.plaidTransactionId ?? "null"})`
@@ -650,8 +1102,13 @@ export async function syncTransactionsForItem(
         // 3. Genuinely new transaction. `category` is included explicitly as the
         // required baseline; miData's category (normal/override) overrides it via
         // the later spread (preserve never occurs on a create).
-        const mi = await miData({ merchantId: null, categorySource: null }, "create");
-        await database.transaction.create({ data: { ...createFields, category, plaidTransactionId: txn.transaction_id, ...mi } });
+        // A brand-new row is UNOWNED — nothing to displace (v2.6-OWN-1).
+        const mi = await miData({ merchantId: null, categorySource: null, flowAuthority: null }, "create");
+        const createdRow = await database.transaction.create({
+          data: { ...createFields, category, plaidTransactionId: txn.transaction_id, ...mi },
+          select: { id: true },
+        });
+        await recordObservation(createdRow.id);
         created++;
       } catch (e) {
         console.error(`[plaid sync] failed to upsert transaction ${txn.transaction_id}:`, redactedErrorForLog(e));
@@ -666,7 +1123,7 @@ export async function syncTransactionsForItem(
           plaidAccountId:     txn.account_id,
           plaidTransactionId: txn.transaction_id,
           detail:             { stage: "transaction-persist", runId, cursorBlocking: true, merchant, amount, date: date.toISOString(), pending: txn.pending, error: e instanceof Error ? e.message : String(e) },
-        }, database);
+        }, incidents);
         // CURSOR SAFETY — delivered and NOT persisted; the page is incomplete.
         pageFailures.push({
           kind:               "UPSERT_ERROR",
@@ -680,6 +1137,23 @@ export async function syncTransactionsForItem(
 
     if (removedTxns.length > 0) {
       const ids = removedTxns.map((t) => t.transaction_id);
+
+      // v2.6-EVENT-1 — the events these rows observe, read BEFORE the tombstone.
+      //
+      // Deliberately NOT filtered on `deletedAt: null`, unlike the update below.
+      // The update is guarded so a replay preserves the original removal time;
+      // this read must NOT be, because a replay is exactly when the reprojection
+      // needs to happen again — if a previous run tombstoned the row and then
+      // died before re-projecting, its event is still stale, and the guarded
+      // count would be 0 while the drift persists. Reading the wider set makes
+      // the recovery path self-healing rather than dependent on a run completing.
+      const affectedEventIds = [...new Set(
+        (await database.transaction.findMany({
+          where:  { plaidTransactionId: { in: ids }, transactionEventId: { not: null } },
+          select: { transactionEventId: true },
+        })).map((r) => r.transactionEventId).filter((x): x is string => x != null),
+      )];
+
       // Integrity hardening: SOFT-delete (tombstone) instead of physical delete.
       // Preserves the row + plaidTransactionId for forensics/recovery, so a
       // pending removed during a pending→posted transition is never lost without
@@ -692,16 +1166,38 @@ export async function syncTransactionsForItem(
         data:  { deletedAt: new Date() },
       });
       removed += result.count;
+
+      // v2.6-EVENT-1 — re-derive every event whose liveness just changed.
+      //
+      // ⚠️ AFTER the tombstone, never before: `reprojectEvent` decides liveness by
+      // reading `deletedAt`, and `projectEvent` derives WITHDRAWN precisely when no
+      // observation still points at a live row. Running it first would re-write the
+      // same stale state it is meant to correct.
+      //
+      // Without this, tombstoning silently invalidated the event's stored
+      // projection: the row vanished from every read while the event kept saying
+      // PENDING about it, and `audit-event-identity`'s stored-equals-derived
+      // invariant broke. Two events drifted this way on the dev corpus before the
+      // fix — a real state, since `removed[]` fires in production too.
+      //
+      // Idempotent by construction: the projection is a pure function of the
+      // observations and the current liveness, so re-running it writes the same
+      // values. That is what lets this run unconditionally on the wider set above.
+      for (const eventId of affectedEventIds) {
+        await reprojectEvent(database, eventId);
+      }
+
       if (result.count > 0) {
         console.warn(
-          `[plaid sync] removed[] soft-deleted ${result.count} transaction(s) for item ${plaidItemDbId} — plaidTransactionIds: ${ids.join(", ")}`
+          `[plaid sync] removed[] soft-deleted ${result.count} transaction(s) for item ${plaidItemDbId} — plaidTransactionIds: ${ids.join(", ")}` +
+          (affectedEventIds.length ? ` — re-projected ${affectedEventIds.length} event(s)` : "")
         );
         // M1 — durable record of the removed[] tombstone batch for forensics.
         await recordSyncIssue({
           kind:        "REMOVED_TOMBSTONE",
           plaidItemId: plaidItemDbId,
-          detail:      { runId, count: result.count, ids },
-        }, database);
+          detail:      { runId, count: result.count, ids, reprojectedEvents: affectedEventIds.length },
+        }, incidents);
       }
     }
 
@@ -775,7 +1271,7 @@ export async function syncTransactionsForItem(
   await setPlaidItemHealth(
     plaidItemDbId,
     { status: PlaidItemStatus.ACTIVE, errorCode: null },
-    { cursor: cursor ?? null, lastSyncedAt: new Date(),
+    { cursor: cursor ?? null, syncOriginCursor: cursor ?? null, lastSyncedAt: new Date(),
       syncIncompleteAt: settledSyncIncompleteAt, completedSyncCount: nextCompletedSyncCount,
       syncImportedCount: importedSoFar() },
     database,
@@ -791,7 +1287,17 @@ export async function syncTransactionsForItem(
   // RefreshExecution.runId when a caller threaded one; when nobody did (see
   // exchangeToken) it names no execution and the authority stores null rather
   // than inventing a link.
-  await resolveCursorBlockingIssues(plaidItemDbId, database, runId);
+  //
+  // RLS-P-1 — when this sync is running inside a refresh envelope the resolution
+  // goes through that execution's LEDGER DOOR, which supplies the correlator
+  // itself. The door is reached from the ambient provider-call context rather
+  // than through a new parameter on this function, and that is the point: this
+  // function is ALSO called with no envelope at all (exchangeToken), so a
+  // threaded execution id would be an argument that is sometimes real, sometimes
+  // invented, and always pointable.
+  const ledger = activeLedger();
+  if (ledger) await ledger.resolveIncidentsByRecovery({ plaidItemId: plaidItemDbId });
+  else await resolveCursorBlockingIssues(plaidItemDbId, incidents, runId);
 
   // OPS-3 S5 Wave 3 — the item provably works again: retire the open
   // SYNC_FAILED condition (releases the :open dedupe key + archives the stale
@@ -799,7 +1305,7 @@ export async function syncTransactionsForItem(
   await retireItemSyncFailure(plaidItemDbId, { itemClient: database });
 
   console.log(
-    `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, skippedMissingAccount ${skippedMissingAccount}, removed ${removed}`
+    `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, fingerprintAmbiguous ${fingerprintAmbiguous}, skippedMissingAccount ${skippedMissingAccount}, refusedReparenting ${refusedReparenting}, removed ${removed}`
   );
 
   // FlowType P2 shadow — one aggregate, non-PII summary line per run when enabled.
@@ -816,5 +1322,6 @@ export async function syncTransactionsForItem(
     updatedByPlaidId,
     updatedByFingerprint,
     skippedMissingAccount,
+    refusedReparenting,
   };
 }

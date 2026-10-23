@@ -52,9 +52,12 @@ function makeFakeDb(opts: {
   /** plaidAccountId -> financialAccountId. A missing key models MISSING_ACCOUNT. */
   accounts: Record<string, string>;
   failPlan?: FailPlan;
+  /** Extra PlaidItem columns (completedSyncCount, syncOriginCursor, syncImportedCount). */
+  itemExtra?: Record<string, unknown>;
 }) {
   const txns: Row[] = [];
-  const item = { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Chase" };
+  const item: Record<string, unknown> & { id: string; cursor: string | null } =
+    { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Chase", ...opts.itemExtra };
   const failPlan = opts.failPlan ?? new Map<string, number>();
   const cursorWrites: (string | null)[] = [];
   /** SyncIssue rows written through the INJECTED client (Phase 2 seam). */
@@ -117,8 +120,9 @@ function makeFakeDb(opts: {
     $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
     plaidItem: {
       findUnique: async () => ({ ...item }),
-      update: async ({ data }: { data: { cursor?: string | null } }) => {
+      update: async ({ data }: { data: { cursor?: string | null } & Record<string, unknown> }) => {
         if ("cursor" in data) { item.cursor = data.cursor ?? null; cursorWrites.push(data.cursor ?? null); }
+        for (const k of ["syncOriginCursor", "syncImportedCount", "completedSyncCount"]) if (k in data) item[k] = data[k];
         return item;
       },
     },
@@ -388,6 +392,102 @@ console.log("7. Multi-page — a good page keeps its cursor; only the failing pa
   check("page 2's cursor never persisted", !fdb._cursorWrites.includes("C_page2"));
   check("error's heldCursor is page 1's cursor", (thrown as PlaidSyncIncompleteError).heldCursor === "C_page1");
   check("only page 1's row is stored", fdb._txns.length === 1 && fdb._txns[0].plaidTransactionId === "txn_P1");
+}
+
+// ── 8. MUTATION_DURING_PAGINATION — restart the LOOP, never re-issue the page ─
+// Preview Sandbox 2026-10-06: a fresh OAuth Item imported page 1 (100 rows), page
+// 2 answered TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION, the same-cursor retry
+// and every later resume re-sent page 1's cursor and failed identically, and
+// the Item sat at "100 imported" for good. Plaid's rule: restart from where the
+// last COMPLETED loop ended.
+console.log("8. Pagination mutation — the loop restarts from its origin");
+{
+  const MUTATION = { isAxiosError: true, message: "Request failed with status code 400",
+    response: { status: 400, data: { error_type: "TRANSACTIONS_ERROR", error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" } } };
+  const BAD_TOKEN = { isAxiosError: true, message: "Request failed with status code 400",
+    response: { status: 400, data: { error_type: "INVALID_INPUT", error_code: "INVALID_ACCESS_TOKEN" } } };
+  type Step = { added?: unknown[]; next_cursor: string; has_more?: boolean } | "MUTATION" | "BAD_TOKEN";
+  const scripted = (steps: Step[]) => {
+    let i = 0;
+    const cursorsSent: (string | undefined)[] = [];
+    return {
+      _cursorsSent: cursorsSent,
+      transactionsSync: async ({ cursor }: { cursor?: string }) => {
+        cursorsSent.push(cursor);
+        const st = steps[Math.min(i++, steps.length - 1)];
+        if (st === "MUTATION") throw MUTATION;
+        if (st === "BAD_TOKEN") throw BAD_TOKEN;
+        return { data: { added: st.added ?? [], modified: [], removed: [], has_more: st.has_more ?? false, next_cursor: st.next_cursor } };
+      },
+    };
+  };
+  const runR = (fdb: ReturnType<typeof makeFakeDb>, fp: ReturnType<typeof scripted>) =>
+    syncTransactionsForItem("item_1", { db: fdb as never, plaid: fp as never, restartDelayMs: 0 });
+  const P1 = { added: [txn("txn_R1", "plaid_acct_1", 10)], next_cursor: "C_p1", has_more: true };
+  const P2 = { added: [txn("txn_R2", "plaid_acct_1", 20)], next_cursor: "C_p2", has_more: false };
+
+  // 8a — the live failure, end to end: fresh import, mutation on page 2.
+  {
+    const fdb = makeFakeDb({ cursor: null, accounts: ACCOUNTS, itemExtra: { completedSyncCount: 0 } });
+    const fp = scripted([P1, "MUTATION", P1, P2]);
+    const res = await runR(fdb, fp);
+    check("8a fresh import: restarts from the BEGINNING, never re-sends page 1's cursor after the mutation",
+      JSON.stringify(fp._cursorsSent) === JSON.stringify([undefined, "C_p1", undefined, "C_p1"]), JSON.stringify(fp._cursorsSent));
+    check("8a the restart point (null) is persisted before re-fetching", JSON.stringify(fdb._cursorWrites.slice(0, 2)) === JSON.stringify(["C_p1", null]), JSON.stringify(fdb._cursorWrites));
+    check("8a re-delivered page 1 does not duplicate: 2 rows, 2 distinct ids",
+      fdb._txns.length === 2 && new Set(fdb._txns.map((t) => t.plaidTransactionId)).size === 2, `${fdb._txns.length}`);
+    check("8a completes at C_p2 and records it as the next loop's origin",
+      res.cursor === "C_p2" && fdb._item.cursor === "C_p2" && fdb._item.syncOriginCursor === "C_p2", JSON.stringify(fdb._item));
+    check("8a import progress is not double-counted after the restart", fdb._item.syncImportedCount === 2, String(fdb._item.syncImportedCount));
+  }
+
+  // 8b — the Item already stuck in the field: stored cursor is page 1's, never completed.
+  {
+    const fdb = makeFakeDb({ cursor: "C_p1", accounts: ACCOUNTS, itemExtra: { completedSyncCount: 0, syncImportedCount: 1 } });
+    const fp = scripted(["MUTATION", P1, P2]);
+    await runR(fdb, fp);
+    check("8b a stuck never-completed import recovers: dead cursor once, then from the beginning",
+      JSON.stringify(fp._cursorsSent) === JSON.stringify(["C_p1", undefined, "C_p1"]) && fdb._item.cursor === "C_p2", JSON.stringify(fp._cursorsSent));
+  }
+
+  // 8c — an established Item restarts from its recorded origin, NOT from scratch
+  // (a from-scratch pull would never re-deliver removals since that origin).
+  {
+    const fdb = makeFakeDb({ cursor: "C_mid", accounts: ACCOUNTS, itemExtra: { completedSyncCount: 4, syncOriginCursor: "C_origin" } });
+    const fp = scripted(["MUTATION", P2]);
+    await runR(fdb, fp);
+    check("8c established Item: restarts from syncOriginCursor",
+      JSON.stringify(fp._cursorsSent) === JSON.stringify(["C_mid", "C_origin"]), JSON.stringify(fp._cursorsSent));
+  }
+
+  // 8d — completed loops before the column existed: fall back to the current cursor.
+  {
+    const fdb = makeFakeDb({ cursor: "C_cur", accounts: ACCOUNTS, itemExtra: { completedSyncCount: 2, syncOriginCursor: null } });
+    const fp = scripted(["MUTATION", P2]);
+    await runR(fdb, fp);
+    check("8d pre-column Item: restarts from its current cursor, then records the origin",
+      JSON.stringify(fp._cursorsSent) === JSON.stringify(["C_cur", "C_cur"]) && fdb._item.syncOriginCursor === "C_p2", JSON.stringify(fp._cursorsSent));
+  }
+
+  // 8e — mutation that never settles: bounded, fails, and leaves the ORIGIN stored.
+  {
+    const fdb = makeFakeDb({ cursor: null, accounts: ACCOUNTS, itemExtra: { completedSyncCount: 0 } });
+    const fp = scripted([P1, "MUTATION", "MUTATION", "MUTATION", "MUTATION"]);
+    let thrown: unknown = null;
+    try { await runR(fdb, fp); } catch (e) { thrown = e; }
+    check("8e gives up after 3 restarts with the provider's error", thrown === MUTATION && fp._cursorsSent.length === 5, `${fp._cursorsSent.length} calls`);
+    check("8e the next run starts at the origin, not the dead mid-loop cursor", fdb._item.cursor === null, String(fdb._item.cursor));
+  }
+
+  // 8f — NEGATIVE CONTROL: any other provider error is not a restart.
+  {
+    const fdb = makeFakeDb({ cursor: "C_cur", accounts: ACCOUNTS, itemExtra: { completedSyncCount: 2 } });
+    const fp = scripted(["BAD_TOKEN", P2]);
+    let thrown: unknown = null;
+    try { await runR(fdb, fp); } catch (e) { thrown = e; }
+    check("8f a non-mutation error throws after ONE call and moves no cursor",
+      thrown === BAD_TOKEN && fp._cursorsSent.length === 1 && fdb._cursorWrites.length === 0, `${fp._cursorsSent.length}`);
+  }
 }
 
 console.log(failures === 0

@@ -20,10 +20,12 @@
  * scope). No new schema.
  */
 
-import { db } from "@/lib/db";
-import { getSpaceContext } from "@/lib/space";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { getAccounts } from "@/lib/data/accounts";
 import { countCurrentPositionsByAccount } from "@/lib/investments/current-positions";
+// REVIEW-3 — the ONE gate function for the observation pipeline; consulted so a
+// disabled pipeline is reported as positions_unknown, never as zero_holdings.
+import { investmentObservationsEnabled } from "@/lib/investments/position-capture";
 import {
   buildInvestmentAccountsView,
   type InvestmentAccountInput,
@@ -34,22 +36,37 @@ import {
 export type { InvestmentAccountView } from "@/lib/investments/current-holdings";
 
 /**
- * Build the per-account Investments view for a Space. `userId` is the VIEWER —
+ * Build the per-account Investments view for a Space. `client` is the authority
+ * the calling phase earned (RLS-C-S2) — required and leading, forwarded to the
+ * account read and to the owner-scoped PlaidItem lookup. `userId` is the VIEWER —
  * Plaid consent/status and the Enable/Refresh affordances are attached only to
  * connections owned by that user (Space ownership rule); a member viewing
  * someone else's shared investment account sees its holdings (if FULL) but no
  * owner-only actions.
  */
 export async function getInvestmentAccountsView(
-  ctx?: { spaceId: string; userId: string },
+  client: ReadClient,
+  scope: { spaceId: string; userId: string },
 ): Promise<InvestmentAccountView[]> {
-  const { spaceId, userId } = ctx ?? (await getSpaceContext());
+  // RLS-C-S1 — both REQUIRED, no ambient space-context resolution. `userId` is a
+  // PRODUCT input: it scopes the Enable/Refresh affordances to the viewer's own
+  // PlaidItem below, and nothing else.
+  const { spaceId, userId } = scope;
 
   // Canonical non-cash position count per account (getCurrentPositions, FULL-gated
   // inside the seam) — the position-PRESENCE signal, not holding contents.
   const [accounts, positionCountByAccount] = await Promise.all([
-    getAccounts({ spaceId }),
-    countCurrentPositionsByAccount({ spaceId }),
+    // RLS-C-S1 fix — this DROPPED the `userId` it had just destructured, so the
+    // account read silently took the ambient branch and re-resolved the viewer
+    // from request scope. Forwarding it is the whole fix; behaviour is identical
+    // on the request path and now also correct off it.
+    getAccounts(client, { spaceId, userId }),
+    // RLS-AI-S7 — THE FOLLOW-UP THIS COMMENT RECORDED IS DONE.
+    // `countCurrentPositionsByAccount` took no client when that note was written
+    // and defaulted to the migration principal inside `getCurrentPositions`. It
+    // requires one now, so this read finally runs on the SAME authority as the
+    // `getAccounts` call beside it instead of on a different one by accident.
+    countCurrentPositionsByAccount(client, { spaceId }),
   ]);
 
   const investmentAccounts = accounts.filter(
@@ -62,7 +79,7 @@ export async function getInvestmentAccountsView(
   // Owner-scoped Plaid connection state per account. Only the viewer's own
   // connection (PlaidItem.userId === userId) attaches consent/status so the
   // Enable/Refresh affordances never appear on another member's account.
-  const conns = await db.accountConnection.findMany({
+  const conns = await client.accountConnection.findMany({
     where: {
       financialAccountId: { in: accountIds },
       deletedAt:          null,
@@ -105,6 +122,9 @@ export async function getInvestmentAccountsView(
       itemErrorCode:      item?.errorCode ?? null,
       lastSyncedAt:       item?.lastSyncedAt ? item.lastSyncedAt.toISOString() : null,
       positionCount:      positionCountByAccount[a.id] ?? 0,
+      // Evaluated per-request (cheap env read) so the honesty of the zero state
+      // always reflects the deployment's live switch, not a cached value.
+      positionSignalAvailable: investmentObservationsEnabled(),
     };
   });
 

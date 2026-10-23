@@ -7,9 +7,12 @@
  *  - payment-app persists no purpose/spending/income/P2P claim;
  *  - cash persists movement FORM with no counterparty/venue fabrication;
  *  - brokerage/crypto persist venue evidence;
- *  - no-detailed / unrecognized persists no fabricated evidence;
- *  - non-Plaid rows stay unclassified (no Plaid-derived default);
+ *  - no-detailed / unrecognized yields no descriptive axis (nothing to persist);
  *  - replay is idempotent; a version change is detected and replayed;
+ *  (Non-Plaid gating — only Plaid rows reach the adapter — is structural in
+ *  lib/plaid/syncTransactions.ts; the script-only planner module that once
+ *  re-packaged these rules, transfer-evidence-plan.ts, was deleted in
+ *  REVIEW-3 W3 along with its sole consumer backfill-transfer-evidence.)
  *  - higher-authority stored facts are never overwritten;
  *  - a mock second provider flows through the SAME mapper/reconcile unchanged;
  *  - liquidity / cash-flow / liquidity-breakdown import none of these modules.
@@ -31,7 +34,6 @@ import {
   NULL_TRANSFER_EVIDENCE_FIELDS,
   type TransferEvidenceFields,
 } from "./transfer-evidence-write";
-import { planTransferEvidence } from "./transfer-evidence-plan";
 import type { TransferEvidence } from "./transfer-evidence";
 
 /** Persisted fields for a Plaid detailed code (recognized). */
@@ -99,34 +101,26 @@ test("brokerage and crypto persist venue evidence", () => {
   assert.equal(fieldsFor("TRANSFER_OUT_CRYPTO").transferVenueClass, "EXCHANGE");
 });
 
-// ── 6. No-detailed / unrecognized persist no fabricated evidence ───────────────
-test("no-detailed and unrecognized Plaid rows persist no fabricated evidence", () => {
-  const noSignal = planTransferEvidence({ plaidTransactionId: "p1", pfcDetailed: null, amount: -100, stored: NULL_TRANSFER_EVIDENCE_FIELDS });
-  assert.equal(noSignal.signal, "no_signal");
-  assert.deepEqual(noSignal.proposed, NULL_TRANSFER_EVIDENCE_FIELDS);
-  assert.equal(noSignal.reconcile.write, false);
-
-  const unrec = planTransferEvidence({ plaidTransactionId: "p2", pfcDetailed: "TRANSFER_OUT_OTHER_TRANSFER_OUT", amount: -100, stored: NULL_TRANSFER_EVIDENCE_FIELDS });
-  assert.equal(unrec.signal, "unrecognized");
-  assert.deepEqual(unrec.proposed, NULL_TRANSFER_EVIDENCE_FIELDS);
-  assert.equal(unrec.reconcile.write, false);
-});
-
-// ── 7. Non-Plaid rows stay unclassified (no Plaid-derived default) ─────────────
-test("a non-Plaid row gets no adapter and stays fully unclassified", () => {
-  // Even if a stray pfcDetailed were present, a non-Plaid row must not be classified.
-  const plan = planTransferEvidence({ plaidTransactionId: null, pfcDetailed: "TRANSFER_OUT_CRYPTO", amount: -100, stored: NULL_TRANSFER_EVIDENCE_FIELDS });
-  assert.equal(plan.signal, "non_provider");
-  assert.deepEqual(plan.proposed, NULL_TRANSFER_EVIDENCE_FIELDS);
-  assert.equal(plan.reconcile.write, false);
+// ── 6. No-detailed / unrecognized yield no descriptive axis ────────────────────
+// The sync path persists evidence ONLY when a descriptive axis was recognized
+// (lib/plaid/syncTransactions.ts: `ev.railType || ev.movementForm || ev.venueClass`)
+// — so an adapter result with no axis means nothing is fabricated or written.
+test("no-detailed and unrecognized Plaid rows yield no descriptive axis to persist", () => {
+  for (const pfcDetailed of [null, "TRANSFER_OUT_OTHER_TRANSFER_OUT"]) {
+    const ev = plaidTransferEvidence({ pfcDetailed, amount: -100 });
+    assert.equal(ev.railType ?? null, null, String(pfcDetailed));
+    assert.equal(ev.movementForm ?? null, null, String(pfcDetailed));
+    assert.equal(ev.venueClass ?? null, null, String(pfcDetailed));
+  }
 });
 
 // ── 8. Replay is idempotent ────────────────────────────────────────────────────
 test("replaying the same adapter version is idempotent (no write)", () => {
   const stored = fieldsFor("TRANSFER_OUT_ACCOUNT_TRANSFER", -500);
-  const plan = planTransferEvidence({ plaidTransactionId: "p3", pfcDetailed: "TRANSFER_OUT_ACCOUNT_TRANSFER", amount: -500, stored });
-  assert.equal(plan.reconcile.reason, "unchanged");
-  assert.equal(plan.reconcile.write, false);
+  const incoming = fieldsFor("TRANSFER_OUT_ACCOUNT_TRANSFER", -500);
+  const r = reconcileTransferEvidence(stored, incoming);
+  assert.equal(r.reason, "unchanged");
+  assert.equal(r.write, false);
 });
 
 // ── 9. A mapping-version change is detected and replayed ───────────────────────
@@ -164,7 +158,7 @@ test("a mock second-provider's evidence uses the same neutral mapper + reconcile
 test("liquidity / cash-flow / liquidity-breakdown import none of the transfer-evidence write modules", () => {
   for (const f of ["liquidity.ts", "cash-flow.ts", "liquidity-breakdown.ts"]) {
     const src = readFileSync(join(process.cwd(), "lib", "transactions", f), "utf8");
-    for (const mod of ["transfer-evidence", "transfer-evidence-write", "transfer-evidence-plan", "plaid-transfer-evidence"]) {
+    for (const mod of ["transfer-evidence", "transfer-evidence-write", "plaid-transfer-evidence"]) {
       assert.ok(!src.includes(mod), `${f} must not import ${mod}`);
     }
     assert.ok(!/pfc/i.test(src), `${f} must stay provider-agnostic`);

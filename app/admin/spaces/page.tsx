@@ -40,13 +40,15 @@ const WS_ROLE_PILL: Record<string, string> = {
 };
 
 const CATEGORIES = [
-  "PERSONAL","HOUSEHOLD","FAMILY","BUSINESS","PROPERTY","VEHICLE",
+  "PERSONAL","FAMILY","BUSINESS","PROPERTY","VEHICLE",
   "TRIP","INVESTMENT","EQUIPMENT","RETIREMENT","DEBT_PAYOFF","EMERGENCY_FUND","CUSTOM","OTHER",
 ];
 
 export default function AdminSpacesPage() {
   const [spaces,  setSpaces]  = useState<Space[]>([]);
   const [loading,     setLoading]     = useState(true);
+  // UI-022 — the API returns at most 200 rows and says so; never present a capped list as the whole.
+  const [truncated,   setTruncated]   = useState(false);
   const [search,      setSearch]      = useState("");
   const [typeFilter,  setTypeFilter]  = useState("");
   const [catFilter,   setCatFilter]   = useState("");
@@ -56,7 +58,7 @@ export default function AdminSpacesPage() {
   useEffect(() => {
     fetch("/api/admin/spaces")
       .then((r) => r.json())
-      .then((d) => setSpaces(d.spaces ?? []))
+      .then((d) => { setSpaces(d.spaces ?? []); setTruncated(d.truncated === true); })
       .finally(() => setLoading(false));
   }, []);
 
@@ -84,6 +86,9 @@ export default function AdminSpacesPage() {
           <p className="text-sm text-gray-400 mt-0.5">
             {loading ? "Loading…" : `${filtered.length} of ${spaces.length} Space${spaces.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
           </p>
+          {truncated && (
+            <p className="text-xs text-[var(--brass-300,#d9b25a)]" data-truncated-hint>Showing the newest 200 Spaces. Older Spaces are not listed here.</p>
+          )}
         </div>
         <button
           onClick={() => setShowFilters((v) => !v)}

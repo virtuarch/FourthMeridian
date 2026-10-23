@@ -71,7 +71,12 @@ export interface LiquidityEngineDeps {
   getAccountsAsOf: typeof getAccountsAsOf;
   getInvestmentValueAsOf: typeof getInvestmentValueAsOf;
   buildCtx: typeof buildSpaceConversionContextById;
-  computeCurrent: (scope: PerspectiveScope, now: () => Date) => Promise<LensResult>;
+  /**
+   * RLS-C-S2 — `client` leads, like every other read in this composition. The
+   * live lens is a DB read; it must execute on the authority this loader was
+   * given, not on one it reaches for itself.
+   */
+  computeCurrent: (client: Client, scope: PerspectiveScope, now: () => Date) => Promise<LensResult>;
 }
 
 function resolveDeps(overrides?: Partial<LiquidityEngineDeps>): LiquidityEngineDeps {
@@ -81,7 +86,7 @@ function resolveDeps(overrides?: Partial<LiquidityEngineDeps>): LiquidityEngineD
     buildCtx: overrides?.buildCtx ?? buildSpaceConversionContextById,
     computeCurrent:
       overrides?.computeCurrent ??
-      ((scope, now) => computePerspective("liquidity", scope, { now })),
+      ((client, scope, now) => computePerspective(client, "liquidity", scope, { now })),
   };
 }
 
@@ -100,19 +105,36 @@ async function evaluateHistorical(
   client: Client,
 ): Promise<LensResult> {
   const [asOfAccounts, valuation] = await Promise.all([
-    deps.getAccountsAsOf({ spaceId: scope.spaceId, userId: scope.userId, asOf: date, now }),
-    deps.getInvestmentValueAsOf({ spaceId: scope.spaceId, asOf: date, visibilityScope: "all", client }),
+    deps.getAccountsAsOf(client, { spaceId: scope.spaceId, userId: scope.userId, asOf: date, now }),
+    deps.getInvestmentValueAsOf(client, { spaceId: scope.spaceId, asOf: date, visibilityScope: "all" }),
   ]);
+
+  // v2.6-L3 — "reachable right now" is a PRESENT-TENSE claim, so it applies to
+  // this path only when the as-of date IS today. The Liquidity workspace runs
+  // through here even for "as of today" (its default), which is why the claim
+  // must reach it — but on a genuinely past date the field is left absent and
+  // computeLiquidity keeps summing the reconstructed ledger balance. There is no
+  // "reachable" for 3 June; there is only what the balance was.
+  const isToday = date === toISODateUTC(now());
 
   const asOfRows: AsOfLiquidityRow[] = asOfAccounts.map((r) => ({
     id: r.account.id,
     type: r.account.type,
+    // 2026-10-07 — liquidity-access evidence; without it a historical tier
+    // would classify every investment as unverified and every HSA as cash.
+    providerSubtype: r.account.providerSubtype ?? null,
     balance: r.account.balance,
     currency: r.account.currency ?? null,
     creditLimit: r.account.creditLimit ?? undefined,
     lastUpdated: r.account.lastUpdated,
     visibilityLevel: r.visibilityLevel as string,
     tier: r.tier,
+    ...(isToday && r.account.currentState
+      ? {
+          reachableCash:   r.account.currentState.reachable,
+          unexplainedHold: r.account.currentState.unexplained,
+        }
+      : {}),
   }));
 
   const components: MarketableComponent[] = valuation.components.map((c) => ({
@@ -169,11 +191,17 @@ export async function loadLiquiditySpaceData(
   options?: LoadLiquiditySpaceDataOptions,
 ): Promise<LiquiditySpaceData> {
   const now = options?.now ?? (() => new Date());
+  // RLS-C-S2, UNRESOLVED and recorded as such: this loader's `client` is still
+  // `?? db` — an optional authority, which is an ambient one. It is left alone
+  // here because the fix belongs at the HTTP boundary (the Liquidity space-data
+  // route, which does pass a tenant client), and closing the default without
+  // converting every other caller of this loader would be a guess. Named in the
+  // slice report as a follow-up.
   const client = options?.client ?? db;
   const deps = resolveDeps(options?.deps);
 
   const [current, atAsOf, atCompareTo, baseCtx] = await Promise.all([
-    deps.computeCurrent(scope, now),
+    deps.computeCurrent(client, scope, now),
     options?.asOf ? evaluateHistorical(scope, options.asOf, now, deps, client) : Promise.resolve(null),
     options?.compareTo
       ? evaluateHistorical(scope, options.compareTo, now, deps, client)

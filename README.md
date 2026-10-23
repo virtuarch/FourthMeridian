@@ -7,7 +7,7 @@ A multi-tenant personal-finance intelligence platform built on Next.js 16 / Pris
 ## Project Status & Documentation
 
 - **[`STATUS.md`](STATUS.md)** — the current-state snapshot (version, active work, blockers, next steps, production readiness).
-- **[`docs/`](docs/README.md)** — the durable documentation set: `doctrine/` (the rules that bind the code), `systems/` (why each subsystem exists + its contracts), `architecture/` (decision records), `plans/` (roadmap + parked ideas), `operations/`, `releases/`, `audits/`, `design/`.
+- **[`docs/`](docs/README.md)** — the durable documentation set: `architecture/` (the binding doctrine), `systems/` (why each subsystem exists + its contracts), `decisions/` (ADRs), `plans/` (roadmap, parked ideas, investigations and program reports), `operations/` (runbooks, cutover plans, environment facts), `releases/`, `audits/` (the live defect register), `design-system/` and `design-studies/`.
 
 Features, APIs, and schemas evolve between versions. `docs/` is the source of intent; the code is the source of truth.
 
@@ -72,7 +72,7 @@ Production runs on Vercel + Supabase; the steps below spin up a local Postgres (
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 24 — the version in `.nvmrc`, which CI and production (`engines.node`, Vercel 24.x) also use. `nvm use` selects it.
 - Docker + Docker Compose (local Postgres only)
 - A [Plaid](https://plaid.com) developer account (sandbox is free)
 
@@ -87,10 +87,13 @@ npm install
 ### 2. Configure environment
 
 ```bash
-cp .env.example .env
+cp .env.example .env.local
 ```
 
-Edit `.env` with your values. **Never commit `.env`.**
+Edit `.env.local` with your values. **Never commit it.** `DATABASE_URL` and `DIRECT_URL`
+must name the **same** database (Prisma Migrate connects through `DIRECT_URL`; the DB guard
+refuses any command where the two differ). The `db:*` scripts read the shell environment, so
+load it first: `set -a; . ./.env.local; set +a`.
 
 ```bash
 openssl rand -base64 32   # → NEXTAUTH_SECRET
@@ -103,12 +106,15 @@ openssl rand -hex 32      # → ENCRYPTION_KEY
 docker compose up -d db
 ```
 
-### 4. Run migrations and generate client
+### 4. Apply migrations and generate client
 
 ```bash
-npx prisma migrate dev
+npm run db:migrate:safe     # guard (target identity) → backup → prisma migrate deploy (additive)
 npx prisma generate
 ```
+
+Never run raw `npx prisma migrate dev` / `migrate reset` — see
+[docs/operations/database-safety.md](docs/operations/database-safety.md).
 
 ### 5. Seed demo data (optional)
 
@@ -139,7 +145,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ```bash
 docker compose up -d          # app + db containers
-npx prisma migrate dev && npx prisma generate
+npm run db:migrate:safe && npx prisma generate
 open http://localhost:3000
 ```
 
@@ -151,11 +157,30 @@ open http://localhost:3000
 npm run dev           # Start dev server
 npm run build         # Production build
 npm run lint          # ESLint
-npm run db:migrate    # Run pending Prisma migrations
-npm run db:seed       # Seed demo data
-npm run db:studio     # Open Prisma Studio
-npm run db:reset      # Reset DB and re-run migrations (destroys data)
+npm run db:migrate:safe  # APPLY pending migrations: guard → backup → migrate deploy (never resets)
+npm run db:migrate       # AUTHOR a migration: guarded (refuses a non-interactive shell on a populated DB), backup first
+npm run db:backup        # pg_dump of the database the next command would change (DIRECT_URL)
+npm run db:seed          # Seed demo data (refuses a DB holding non-demo users)
+npm run db:studio        # Open Prisma Studio
+npm run db:reset         # DESTROYS data: ALLOW_DESTRUCTIVE_DB=true, and a typed host/db for anything not a clone
+npm run ci               # GitHub CI, locally — run before every push (see below)
 ```
+
+### Before you push: `npm run ci`
+
+`npm run ci` runs both GitHub CI jobs — `test` (unit tests, typecheck, lint) and
+`architecture` (migrate, seed, REQUIRED audits) — step for step, on a **clean
+depth-1 copy of HEAD**, so ignored local files and git history cannot make it pass
+where GitHub would fail. It gates commits: uncommitted edits are not included.
+
+- **Runtime:** it refuses to run unless Node's major matches `.nvmrc`.
+- **Database:** the audits run against a Postgres container it starts and removes
+  itself (Docker required). Your `DATABASE_URL` is stripped from its environment
+  and never used; the throwaway database must classify as a clone under
+  `lib/db/live-guard.ts`. Without Docker the architecture job fails — it does not
+  fall back.
+- **Parity:** the step lists live in `scripts/lib/ci-contract.ts`;
+  `scripts/ci-local.test.ts` fails if `.github/workflows/ci.yml` drifts from them.
 
 ---
 

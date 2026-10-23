@@ -5,7 +5,7 @@
  *
  * Each import below is a side-effect import — the module calls
  * registerAssembler() at load time, so importing this barrel is sufficient to
- * guarantee all assemblers are registered before buildContext() runs.
+ * guarantee all assemblers are registered before any context is assembled.
  *
  * To add a new assembler:
  *   1. Create lib/ai/assemblers/<domain>.ts
@@ -16,6 +16,8 @@
 // Finance assemblers (D4 Slice 2+)
 import './accounts';
 import './snapshot';
-import './goals';
+// W2 — './goals' DELETED (Goals retired; the GOALS domain no longer assembles).
+// ⚠️ Same runtime trap as lib/ai/signals/index.ts: tsc ignores a dangling
+// side-effect import — keep this list in lockstep with the directory.
 import './transactions';
 import './holdings';

@@ -38,6 +38,11 @@
  *   failure (marking sent without sending). A crash after claim but before
  *   send burns one attempt without a send — bounded loss, no duplicate.
  *
+ *   RLS-C-S6a: "zero rows updated = another pass already claimed it" is now
+ *   checked rather than assumed. A zero that comes with an INVISIBLE row is not
+ *   a race at all (removed row, or a refused write) and is counted as
+ *   claimIndeterminate with an error log, never as claimLost.
+ *
  * Row semantics preserved: attempts progress on the SAME row (the OPS-3
  * outbox model — one row per channel, not per attempt); status /
  * deliveredAt / provider / providerMessageId / error are updated from the
@@ -47,6 +52,7 @@
  */
 
 import { db } from "@/lib/db";
+import { IndeterminateWriteError, resolveConditionalWrite } from "@/lib/db/conditional-write";
 import { emailNotificationAdapter } from "@/lib/notifications/channels/email";
 import type {
   ChannelAdapter,
@@ -111,6 +117,12 @@ export interface NotificationRetryClient {
       where: { id: string; status: "error"; attempts: number };
       data: { attempts: { increment: 1 } };
     }): Promise<{ count: number }>;
+    /**
+     * RLS-C-S6a — the VISIBILITY PROBE for a lost claim. Asks the CAS's identity
+     * question WITHOUT its condition, through the same client, so "another pass
+     * claimed it" can be told apart from "this authority cannot see the row".
+     */
+    count(args: { where: { id: string } }): Promise<number>;
     /** Outcome / obsolete-closure write. */
     update(args: {
       where: { id: string };
@@ -138,6 +150,14 @@ export interface RetryNotificationsResult {
   skippedObsolete: number;
   /** Rows lost to the claim race (already claimed by a concurrent pass). */
   claimLost: number;
+  /**
+   * RLS-C-S6a — rows whose claim matched nothing AND whose row this authority
+   * cannot see. NOT a claim race: either the delivery was removed or the write
+   * was refused by a policy, and neither is a concurrent pass. Counted
+   * separately and logged at error level precisely so it can never be read as
+   * `claimLost` again.
+   */
+  claimIndeterminate: number;
 }
 
 export async function retryNotifications(
@@ -177,6 +197,7 @@ export async function retryNotifications(
     stillFailing: 0,
     skippedObsolete: 0,
     claimLost: 0,
+    claimIndeterminate: 0,
   };
 
   for (const row of rows) {
@@ -205,7 +226,27 @@ export async function retryNotifications(
       where: { id: row.id, status: "error", attempts: row.attempts },
       data: { attempts: { increment: 1 } },
     });
-    if (claim.count === 0) {
+
+    // RLS-C-S6a — a lost claim must be a lost RACE, not an invisible row.
+    // CAUGHT rather than propagated, and this is the one site of the four where
+    // that is the right call: the batch is a hundred INDEPENDENT rows, and one
+    // row that cannot be seen is no reason to abandon the ninety-nine that can.
+    // What must not survive is the silence, so it gets its own counter and an
+    // error log instead of being folded into claimLost's calm verdict.
+    let claimed: boolean;
+    try {
+      claimed = await resolveConditionalWrite(
+        claim.count,
+        { table: "NotificationDelivery", rowId: row.id, operation: "update" },
+        () => client.notificationDelivery.count({ where: { id: row.id } }),
+      );
+    } catch (err) {
+      if (!(err instanceof IndeterminateWriteError)) throw err;
+      console.error(`[notification-retry] INDETERMINATE claim on delivery ${row.id} — not a race: ${err.message}`);
+      result.claimIndeterminate++;
+      continue;
+    }
+    if (!claimed) {
       result.claimLost++;
       continue;
     }
@@ -244,7 +285,8 @@ export async function retryNotifications(
   if (result.examined > 0) {
     console.log(
       `[notification-retry] examined ${result.examined} — ${result.delivered} delivered, ` +
-        `${result.stillFailing} still failing, ${result.skippedObsolete} obsolete, ${result.claimLost} claim-lost`,
+        `${result.stillFailing} still failing, ${result.skippedObsolete} obsolete, ${result.claimLost} claim-lost, ` +
+        `${result.claimIndeterminate} claim-indeterminate`,
     );
   }
 

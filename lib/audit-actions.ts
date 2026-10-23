@@ -123,6 +123,9 @@ export const AuditAction = {
   MEMBER_JOINED:            "MEMBER_JOINED",
   MEMBER_REMOVED:           "MEMBER_REMOVED",
   MEMBER_ROLE_CHANGED:      "MEMBER_ROLE_CHANGED",
+  // A7 (2026-10-22) — an admin rescinded a pending invite. The DELETE used to
+  // leave no trace at all: the row is hard-deleted, so this is its only record.
+  MEMBER_INVITE_CANCELLED:  "MEMBER_INVITE_CANCELLED",
   // EV-1 Slice 3 — self-leave. Codifies the string the activity Timeline
   // already treats as a first-class action ("Member left"); value is unchanged
   // from the previous inline literal.
@@ -158,9 +161,58 @@ export const AuditAction = {
   // `status` on a recoverable failure).
   PLAID_ITEM_STATUS_CHANGED:        "PLAID_ITEM_STATUS_CHANGED",
   WALLET_CONNECTION_STATUS_CHANGED: "WALLET_CONNECTION_STATUS_CHANGED",
+
+  // ── Provider-removal confirmation, which is NOT the same fact as status ────
+  // `PlaidItem.status = REVOKED` is the PRODUCT truth: the user disconnected,
+  // and a failed upstream removal must never make the institution reappear
+  // (lib/connections/space-data.ts loads the hub with `status: { not: REVOKED }`).
+  // These two record the SEPARATE question of whether the removal was CONFIRMED
+  // upstream, because status could not carry it: REVOKED is a one-way door and
+  // every retry work-list selects `status: ACTIVE`, so an unconfirmed failure
+  // used to drop out of all of them at once while the Item kept existing — and,
+  // per the vendored SDK, kept BILLING — at Plaid. That is what stranded seven
+  // live Items on 2026-07-22 (named by path in 056de06).
+  // The pair is a LIFECYCLE, read newest-first: an item owes cleanup when its
+  // most recent marker is UNCONFIRMED. CONFIRMED resolves it additively, so the
+  // failure record is never deleted. No schema change — AuditLog.action is a
+  // String by design.
+  PLAID_ITEM_REVOCATION_UNCONFIRMED: "PLAID_ITEM_REVOCATION_UNCONFIRMED",
+  PLAID_ITEM_REVOCATION_CONFIRMED:   "PLAID_ITEM_REVOCATION_CONFIRMED",
+  // An OPERATOR asked for the cleanup to be retried (Platform Ops). Distinct
+  // from the two above on purpose: those are the lifecycle VERDICT, written by
+  // the revocation path itself, and this is a record of a human asking. Its
+  // `outcome` is read back off the marker after the attempt, never from
+  // PlaidItem.status.
+  PLAID_ITEM_REVOCATION_RETRY_REQUESTED: "PLAID_ITEM_REVOCATION_RETRY_REQUESTED",
   ACCOUNT_ADD:              "ACCOUNT_ADD",
   ACCOUNT_REMOVE:           "ACCOUNT_REMOVE",
+  // BETA A2 — two writers that pre-dated this canon and wrote raw strings
+  // (app/api/accounts/wallet, app/api/accounts/manual). Promoted so the
+  // product-analytics readers and the feed allowlists name one constant; the
+  // VALUES are unchanged, so historical rows still match. Their metadata is
+  // now ids and kinds only: { connectionId, chain } and { accountId, currency }
+  // — never the address, the name, the balance or the purchase price.
+  WALLET_ADD:               "WALLET_ADD",
+  MANUAL_ASSET_ADD:         "MANUAL_ASSET_ADD",
   REGISTER:                 "REGISTER",
+
+  // ── Product events (BETA A1–A8, lib/analytics/product-events.ts) ──────────
+  // First-party behavioural analytics, written SERVER-SIDE only, one row per
+  // (user, action, day-or-key) where stated, metadata = ids / kinds / UTC day
+  // only. They are PRESENCE and ENGAGEMENT facts, not security or operator
+  // events: PRODUCT_EVENT_ACTIONS below is pinned DISJOINT from every security,
+  // operator and member-feed allowlist, so a product event can never surface
+  // as "something happened to your account".
+  //   SESSION_ACTIVE_DAY          first live session check of a UTC day (presence)
+  //   SPACE_VIEWED                a Space's server page rendered for a member
+  //   BRIEF_VIEWED                a Daily Brief was shown to its reader
+  //   TRANSACTIONS_VIEWED         the Transactions workspace loaded its first page
+  //   MANUAL_ASSET_VALUE_UPDATED  a manual asset's value was changed (no value)
+  SESSION_ACTIVE_DAY:         "SESSION_ACTIVE_DAY",
+  SPACE_VIEWED:               "SPACE_VIEWED",
+  BRIEF_VIEWED:               "BRIEF_VIEWED",
+  TRANSACTIONS_VIEWED:        "TRANSACTIONS_VIEWED",
+  MANUAL_ASSET_VALUE_UPDATED: "MANUAL_ASSET_VALUE_UPDATED",
 
   // ── Imports (D2 Step 4D-3) ───────────────────────────────────────────────────
   // Only the rollback action is added in this slice — IMPORT_BATCH_CREATED /
@@ -217,6 +269,12 @@ export const AuditAction = {
   ADMIN_PLAID_HISTORY_TOKEN_EXCHANGED: "ADMIN_PLAID_HISTORY_TOKEN_EXCHANGED",
   ADMIN_PLAID_ITEM_RETIRED:            "ADMIN_PLAID_ITEM_RETIRED",
 
+  // ── Merchant operations (MERCHANT_OPS platform area) ─────────────────────
+  // A merge rewrites merchant identity for every tenant and is irreversible in
+  // the database; its record carries the full report and a recovery snapshot.
+  MERCHANT_MERGE_APPLIED:              "MERCHANT_MERGE_APPLIED",
+  MERCHANT_MERGE_DISMISSED:            "MERCHANT_MERGE_DISMISSED",
+
   // ── Platform access (PO1.0) ─────────────────────────────────────────────
   // Grant lifecycle on a platform area (user × area × level). Never free
   // strings — the SECOPS vocabulary lesson applied from birth. Written
@@ -238,6 +296,34 @@ export const AuditAction = {
   PLATFORM_OPERATION_EXECUTED:  "PLATFORM_OPERATION_EXECUTED",
   PLATFORM_OPERATION_DRY_RUN:   "PLATFORM_OPERATION_DRY_RUN",
 
+  // ── Platform policy (PLATFORM OPS POLICIES — Slice 2) ────────────────────
+  // A CONTROL grant-holder changed declared operational policy through the
+  // canonical mutation service (lib/platform/policies/mutate.ts). CHANGED is an
+  // override written (created or updated); RESET is the override row DELETED so
+  // the code default is in force again. Both are written in the SAME transaction
+  // as the PlatformSetting mutation — neither can exist without the other — and
+  // both carry performedByAdminId (the acting operator) plus metadata
+  // { key, sourceKind, previous: { raw, origin, cadence, overdueAfterHours,
+  // updatedAt }, next: { … } }: policy facts only, never a secret or a value.
+  PLATFORM_POLICY_CHANGED:      "PLATFORM_POLICY_CHANGED",
+  PLATFORM_POLICY_RESET:        "PLATFORM_POLICY_RESET",
+  // P1 HUMAN OPERABILITY — consequential operator actions on a CUSTOMER's
+  // policy/cohort (Customer Success), on platform execution cadence (Platform
+  // Ops CONTROL), and the two refresh-all authorities (the customer's own, and
+  // an operator's on their behalf). All written through recordOperatorAction()
+  // (lib/audit.ts) with a structured reason where REASON_REQUIRED_ACTIONS says so.
+  CUSTOMER_POLICY_ASSIGNED:        "CUSTOMER_POLICY_ASSIGNED",
+  CUSTOMER_POLICY_OVERLAY_CHANGED: "CUSTOMER_POLICY_OVERLAY_CHANGED",
+  // AI COST CONTROLS — the per-customer daily AI allowance override was set or
+  // removed (lib/platform/customer/assign.ts; reason-required; change carries
+  // the before/after USD figure, a policy value, never a balance).
+  CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED: "CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED",
+  CUSTOMER_COHORT_ASSIGNED:        "CUSTOMER_COHORT_ASSIGNED",
+  JOB_CADENCE_CHANGED:             "JOB_CADENCE_CHANGED",
+  JOB_CADENCE_RESET:               "JOB_CADENCE_RESET",
+  REFRESH_ALL_REQUESTED:           "REFRESH_ALL_REQUESTED",
+  OPERATOR_REFRESH_ALL:            "OPERATOR_REFRESH_ALL",
+
   // ── Security Ops anomalies (Wave 3 ⑧) ────────────────────────────────────
   // Written once per open anomaly window by lib/security/anomaly-alerts.ts when
   // a threshold trips (failed-login burst per identifier/IP, recovery-code
@@ -248,17 +334,57 @@ export const AuditAction = {
   SECURITY_ANOMALY_DETECTED:    "SECURITY_ANOMALY_DETECTED",
 
   // ── AI Context ───────────────────────────────────────────────────────────────
+  // ⚠️ NO LIVE WRITER. RLS-AI-S1 deleted `lib/ai/context-builder.ts`, which was
+  // this event's ONLY writer and had no importer outside its own barrel. The claim
+  // that stood here — "written on every context assembly; still live: the Brief
+  // and the expense-baseline route both build contexts" — was false in both
+  // halves before the deletion: `lib/ai/brief/load.ts` says in its own header that
+  // it calls the authorities DIRECTLY, not through the context builder, and the
+  // conversation surface (`lib/ai/conversation/evidence.ts`) assembles domains
+  // itself and writes no audit row.
+  //
+  // The constant stays because HISTORICAL ROWS CARRY IT and
+  // lib/security-history.test.ts pins the vocabulary; a new writer was NOT
+  // invented to preserve the event. If observability over context assembly is
+  // wanted again it belongs on the live boundary, which is the turn loop, and that
+  // is a decision with a cost (one row per turn) rather than a comment fix.
   AI_CONTEXT_ASSEMBLED:     "AI_CONTEXT_ASSEMBLED",
-  // Shadow-mode selection plan (D6.3D-1). Records what a token-budgeted
-  // selection WOULD include/trim. Purely observational — no prompt is changed.
-  AI_CONTEXT_SELECTION_PLANNED: "AI_CONTEXT_SELECTION_PLANNED",
-  // Shadow-mode output validation (AI-4 / KD-2). Written ONLY when an LLM reply
-  // contains a numeric claim that cannot be reconciled to the grounding context.
-  // Observational only — the reply is returned byte-for-byte unchanged.
-  AI_OUTPUT_VALIDATION_FLAGGED: "AI_OUTPUT_VALIDATION_FLAGGED",
+  // Memory V2 — the user erased one remembered item AND its history from their
+  // own Memory panel (DELETE /api/ai/memory/[id]). CONTENT-FREE by contract: the
+  // row says that an erasure happened, in which Space, of which class and how
+  // many versions — never what the item said, which is the thing they erased.
+  AI_MEMORY_ERASED:         "AI_MEMORY_ERASED",
+  //
+  // ⚠️ TWO CONSTANTS WERE REMOVED HERE BY THE AI CONVERSATION RESET, because
+  // their only writers were deleted with the conversation layer:
+  //   AI_CONTEXT_SELECTION_PLANNED   the shadow retrieval plan, per turn
+  //   AI_OUTPUT_VALIDATION_FLAGGED   an unreconciled numeric claim in a reply
+  // `AuditLog.action` is a plain String, so historical rows carrying those two
+  // values are unaffected and still render in the admin audit view. Neither
+  // appears in AUDIT_ACTION_GROUPS, so no filter changes. A constant with no
+  // writer is a promise the codebase no longer keeps.
 } as const;
 
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];
+
+/**
+ * BETA A2 — the product-event vocabulary. EXACTLY these five; the retention job
+ * (jobs/product-event-retention.ts) deletes rows of these actions after the
+ * owner's 13-month window and must never touch anything else, and every feed /
+ * security allowlist is pinned disjoint from this set (lib/security-surface.test.ts,
+ * lib/analytics/product-events.test.ts). WALLET_ADD / MANUAL_ASSET_ADD /
+ * ACCOUNT_ADD are product-LIFECYCLE events that the engagement predicate also
+ * reads (lib/platform/growth/product-analytics-core.ts), but they are not
+ * product events: they predate this slice, carry their own retention and
+ * already render in the member Space feed.
+ */
+export const PRODUCT_EVENT_ACTIONS: readonly AuditActionType[] = [
+  AuditAction.SESSION_ACTIVE_DAY,
+  AuditAction.SPACE_VIEWED,
+  AuditAction.BRIEF_VIEWED,
+  AuditAction.TRANSACTIONS_VIEWED,
+  AuditAction.MANUAL_ASSET_VALUE_UPDATED,
+];
 
 // ── Security-event classification (SEC-1) ─────────────────────────────────────
 //
@@ -327,6 +453,8 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.PLATFORM_GRANT_REINSTATED,
   AuditAction.PLATFORM_OPERATION_EXECUTED,
   AuditAction.PLATFORM_OPERATION_DRY_RUN,
+  AuditAction.PLATFORM_POLICY_CHANGED,
+  AuditAction.PLATFORM_POLICY_RESET,
   AuditAction.BETA_ACCESS_APPROVED,
   AuditAction.BETA_ACCESS_DENIED,
   AuditAction.BETA_MODE_CHANGED,
@@ -338,6 +466,16 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.CONNECTION_REAUTH_REQUESTED,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
+  // P1 — customer policy / cohort, execution cadence, operator refresh-all.
+  AuditAction.CUSTOMER_POLICY_ASSIGNED,
+  AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
+  AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,
+  AuditAction.CUSTOMER_COHORT_ASSIGNED,
+  AuditAction.JOB_CADENCE_CHANGED,
+  AuditAction.JOB_CADENCE_RESET,
+  AuditAction.OPERATOR_REFRESH_ALL,
+  // Pre-existing operator action that was never listed (the provider-cleanup retry).
+  AuditAction.PLAID_ITEM_REVOCATION_RETRY_REQUESTED,
 ];
 
 /** Actions counted by the admin audit "security only" quick-filter. */
@@ -373,6 +511,13 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
       AuditAction.PLATFORM_GRANT_LEVEL_CHANGED,
       AuditAction.PLATFORM_GRANT_REVOKED,
       AuditAction.PLATFORM_GRANT_REINSTATED,
+    ],
+  },
+  {
+    label: "Platform Policy",
+    actions: [
+      AuditAction.PLATFORM_POLICY_CHANGED,
+      AuditAction.PLATFORM_POLICY_RESET,
     ],
   },
   {
@@ -446,6 +591,7 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
     label: "Members",
     actions: [
       AuditAction.MEMBER_INVITED,
+      AuditAction.MEMBER_INVITE_CANCELLED,
       AuditAction.MEMBER_REMOVED,
       AuditAction.MEMBER_ROLE_CHANGED,
     ],

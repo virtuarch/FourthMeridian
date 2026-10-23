@@ -9,12 +9,21 @@
  *
  * The series value is the `cashNow` tier — `Snapshot.totalCash` (checking) +
  * `Snapshot.totalSavings` (savings). This is EXACTLY computeLiquidity's `cashNow`
- * (CASH_TYPES = {checking, savings}, lib/perspective-engine/lenses/liquidity.core.ts)
- * and the Hero's present-day figure of record (classifyAccounts.totalLiquid), so the
- * curve, the Ladder's "Available now" endpoint, and the headline share one basis. The
- * snapshot cash walk-back and the as-of Ladder endpoint (getAccountsAsOf) reconstruct
- * from the SAME posted-only anchor (lib/snapshots/reconstruction-basis.test.ts), so
- * this plotted series is basis-consistent with the reconstructed Ladder above it.
+ * (CASH_TYPES = {checking, savings}, lib/perspective-engine/lenses/liquidity.core.ts).
+ *
+ * ⚠️ FIN-005 — IT IS NOT THE HERO'S `totalLiquid`. The snapshot columns sum ALL
+ * checking and savings, RESTRICTED cash included (an HSA checking account,
+ * retirement cash), while `classifyAccounts.totalLiquid` — the Hero's "Available
+ * now", the AI's liquid figure, the runway denominator — excludes it. Runtime
+ * audit 2026-10-21: checking 10,000 + HSA 5,000 + savings 2,000 ⇒ this series
+ * 17,000, Hero 12,000. The snapshot stores no restricted split, so this series
+ * cannot exclude it without a schema change (`SpaceSnapshot.restrictedCash`);
+ * until that lands, the curve is the ALL-CASH tier and any surface that places
+ * it beside the Hero must label the basis. The earlier claim of parity here was
+ * false whenever restricted cash existed. The snapshot cash walk-back and the
+ * as-of Ladder endpoint (getAccountsAsOf) reconstruct from the SAME posted-only
+ * anchor (lib/snapshots/reconstruction-basis.test.ts), so the series is
+ * basis-consistent with the reconstructed Ladder above it.
  *
  * PURE — no DB, no clock, no network. Presentation-scoped (this is not the
  * LensResult-composition contract, which is space-data-core.ts): the cashNow series
@@ -28,7 +37,7 @@ import type { Snapshot } from "@/types";
 /** One clipped point — the cashNow (checking + savings) projection of a Snapshot. */
 export interface CashHistoryPoint {
   date: string;
-  /** totalCash (checking) + totalSavings (savings) — the "Available now" tier. */
+  /** totalCash (checking) + totalSavings (savings) — ALL cash, restricted included (FIN-005). */
   cashNow: number;
   /** True for a reconstructed/backfilled row (Snapshot.isEstimated). */
   isEstimated: boolean;
@@ -38,6 +47,12 @@ export interface CashHistoryPoint {
 export interface CashHistorySlice {
   /** Points clipped to [compareTo ?? earliest, asOf], fxMiss dropped, ascending. */
   points: CashHistoryPoint[];
+  /**
+   * FIN-005 — what the points SUM. `ALL_CASH` = every checking + savings balance
+   * the snapshot stored, restricted cash included; it is not `totalLiquid`.
+   * Stated on the slice so a renderer cannot label it "available" by accident.
+   */
+  basis: "ALL_CASH";
   /** The snapshot currency basis — NOT necessarily the display currency (a display
    *  switch reconverts current figures but historical totals are pre-stamped). Kept
    *  explicit so no consumer pretends one currency spans both axes. */
@@ -68,7 +83,7 @@ export function clipCashHistory(
     .map((s) => ({ date: s.date, cashNow: s.totalCash + s.totalSavings, isEstimated: s.isEstimated === true }));
 
   if (points.length === 0) return null;
-  return { points, currency, windowStart: compareTo, windowAsOf: asOf };
+  return { points, basis: "ALL_CASH", currency, windowStart: compareTo, windowAsOf: asOf };
 }
 
 /**

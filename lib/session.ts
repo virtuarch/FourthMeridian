@@ -49,8 +49,26 @@ import "server-only";
 import { getServerSession }      from "next-auth";
 import { NextResponse }          from "next/server";
 import { authOptions }           from "@/lib/auth";
-import { db }                    from "@/lib/db";
-import { setCachedRevocation }   from "@/lib/session-cache";
+// RLS-6 — this module spans the identity boundary, so it holds BOTH authorities
+// and the choice per query is deliberate:
+//
+//   authDb        the revocation re-check. It runs while establishing who the
+//                 caller is, so there is no app.user_id for a policy to use.
+//   withTenantDb  the Space membership lookup. By then the caller IS known, and
+//                 the row is their own — fm_app's SpaceMember policy admits
+//                 `userId = current_fm_user_id()`, so this needs no privilege
+//                 beyond the identity it already has.
+//
+// Routing the membership check through authDb would have been one character
+// easier and would have handed the pre-identity role a reason to read tenancy.
+import { authDb }                from "@/lib/db";
+import { withTenantDb }          from "@/lib/db/tenant-context";
+import { setCachedRevocation, type SessionFacts } from "@/lib/session-cache";
+import { factsFromRow, readSessionClaims, SESSION_ROW_SELECT } from "@/lib/auth/session-proof";
+import { authCookiesSecure, sessionCookieName } from "@/lib/auth/session-cookie";
+import { getToken }              from "next-auth/jwt";
+import { cookies }               from "next/headers";
+import { PlatformSettingKey }    from "@/lib/platform-settings";
 import { isRevocationIndeterminate } from "@/lib/auth/session-outcome";
 import { captureSessionRevocationFailure } from "@/lib/monitoring/capture";
 import { decideAdminApiAccess }  from "@/lib/admin-totp-enrollment";
@@ -127,6 +145,31 @@ type SessionResolution =
   | { kind: "anonymous" }
   | { kind: "indeterminate" };
 
+/**
+ * P1b — the current request's sessionToken, decrypted from its own session
+ * cookie on the server. The session callback no longer places it on the
+ * session object, because that object is serialised to the browser by
+ * GET /api/auth/session. Bound to the verified identity: the cookie's id must
+ * be the user getServerSession just proved, else null (the fresh guards then
+ * refuse). Cookies only — never an Authorization header — matching
+ * getServerSession, which reads the same cookie.
+ */
+async function sessionTokenFromCookie(verifiedUserId: string): Promise<string | null> {
+  try {
+    const secure = authCookiesSecure();
+    const token  = await getToken({
+      req:          { cookies: await cookies(), headers: {} } as unknown as Parameters<typeof getToken>[0]["req"],
+      secret:       process.env.NEXTAUTH_SECRET,
+      secureCookie: secure,
+      cookieName:   sessionCookieName(secure),
+    });
+    const claims = readSessionClaims(token);
+    return claims && claims.userId === verifiedUserId ? claims.sessionToken : null;
+  } catch {
+    return null;
+  }
+}
+
 async function resolveSession(): Promise<SessionResolution> {
   const session = await getServerSession(authOptions);
   // Checked BEFORE the user check: the degraded session deliberately carries no
@@ -139,7 +182,9 @@ async function resolveSession(): Promise<SessionResolution> {
       id:               session.user.id,
       role:             session.user.role,
       username:         session.user.username ?? null,
-      sessionToken:     session.sessionToken  ?? null,
+      // P1b — read from the cookie, never from the session object (which is
+      // what /api/auth/session serialises to the browser).
+      sessionToken:     await sessionTokenFromCookie(session.user.id),
       requireTotpSetup: session.requireTotpSetup ?? false,
     },
   };
@@ -154,17 +199,27 @@ async function resolveSession(): Promise<SessionResolution> {
  * session) but HONESTLY (503, not 401, and never a destroyed cookie).
  */
 async function recheckSessionLive(
-  sessionToken: string,
-): Promise<"valid" | "revoked" | "unavailable"> {
+  user: SessionUser,
+): Promise<{ verdict: "valid"; facts: SessionFacts } | { verdict: "revoked" } | { verdict: "unavailable" }> {
+  if (!user.sessionToken) return { verdict: "revoked" };
   try {
-    const dbSession = await db.userSession.findFirst({
-      where:  { sessionToken, revokedAt: null },
-      select: { id: true },
-    });
-    return dbSession ? "valid" : "revoked";
+    // P1 — the same proof the session callback applies (lib/auth/session-proof.ts):
+    // live, OWNED by this user, and carrying the owner's CURRENT role.
+    const facts = await factsFromRow(
+      await authDb.userSession.findFirst({
+        where:  { sessionToken: user.sessionToken },
+        select: SESSION_ROW_SELECT,
+      }),
+      async () => (await authDb.platformSetting.findUnique({
+        where:  { key: PlatformSettingKey.REQUIRE_TOTP_ALL_USERS },
+        select: { value: true },
+      }))?.value === "true",
+    );
+    if (!facts || facts.userId !== user.id) return { verdict: "revoked" };
+    return { verdict: "valid", facts };
   } catch (error) {
     captureSessionRevocationFailure({ error, disposition: "INDETERMINATE" });
-    return "unavailable";
+    return { verdict: "unavailable" };
   }
 }
 
@@ -244,17 +299,19 @@ export async function requireFreshUser(
   if (!user.sessionToken) return [null, unauthorized()];
 
   const t0 = Date.now();
-  const verdict = await recheckSessionLive(user.sessionToken);
+  const live = await recheckSessionLive(user);
   if (process.env.NODE_ENV !== "production") {
-    console.log(`[session] requireFreshUser live revocation check: ${Date.now() - t0}ms, verdict=${verdict}`);
+    console.log(`[session] requireFreshUser live revocation check: ${Date.now() - t0}ms, verdict=${live.verdict}`);
   }
 
-  if (verdict === "unavailable") return [null, serviceUnavailable()];
-  if (verdict === "revoked")     return [null, unauthorized()];
+  if (live.verdict === "unavailable") return [null, serviceUnavailable()];
+  if (live.verdict === "revoked")     return [null, unauthorized()];
 
   // Refresh the cache with this authoritative result so any cached reads
   // within the TTL window right after this reflect it too.
-  setCachedRevocation(user.sessionToken, true);
+  setCachedRevocation(user.sessionToken, live.facts);
+  // P1b — re-judge the enrolment gate on the requirement just read.
+  if (totpSetupPending({ ...user, requireTotpSetup: live.facts.requireTotpSetup }, opts)) return [null, forbidden()];
 
   return [user, null];
 }
@@ -315,15 +372,19 @@ export async function requireFreshSystemAdmin(): Promise<
   if (!user.sessionToken) return [null, unauthorized()];
 
   const t0 = Date.now();
-  const verdict = await recheckSessionLive(user.sessionToken);
+  const live = await recheckSessionLive(user);
   if (process.env.NODE_ENV !== "production") {
-    console.log(`[session] requireFreshSystemAdmin live revocation check: ${Date.now() - t0}ms, verdict=${verdict}`);
+    console.log(`[session] requireFreshSystemAdmin live revocation check: ${Date.now() - t0}ms, verdict=${live.verdict}`);
   }
 
-  if (verdict === "unavailable") return [null, serviceUnavailable()];
-  if (verdict === "revoked")     return [null, unauthorized()];
+  if (live.verdict === "unavailable") return [null, serviceUnavailable()];
+  if (live.verdict === "revoked")     return [null, unauthorized()];
 
-  setCachedRevocation(user.sessionToken, true);
+  setCachedRevocation(user.sessionToken, live.facts);
+  // P1 — the role re-read just now, not the one served from the 30s cache.
+  if (adminApiAccess({ ...user, role: live.facts.role as SessionUser["role"], requireTotpSetup: live.facts.requireTotpSetup }) !== "ALLOW") {
+    return [null, forbidden()];
+  }
 
   return [user, null];
 }
@@ -365,10 +426,15 @@ export async function requireSpaceRole(
   const user = resolution.user;
   if (totpSetupPending(user)) return [null, forbidden()];
 
-  const membership = await db.spaceMember.findUnique({
-    where:  { spaceId_userId: { spaceId, userId: user.id } },
-    select: { spaceId: true, userId: true, role: true, status: true },
-  });
+  // The caller is established, so this runs under their own identity. fm_app's
+  // SpaceMember policy admits a row whose userId is the current identity, which
+  // is exactly this row — no elevated authority is needed to ask "am I a member".
+  const membership = await withTenantDb(user.id, (tx) =>
+    tx.spaceMember.findUnique({
+      where:  { spaceId_userId: { spaceId, userId: user.id } },
+      select: { spaceId: true, userId: true, role: true, status: true },
+    }),
+  );
 
   if (!membership || membership.status !== "ACTIVE") return [null, forbidden()];
   if (!meetsMinRole(membership.role, minRole))        return [null, forbidden()];

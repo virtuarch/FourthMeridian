@@ -99,6 +99,7 @@ function errorRow(id: string, over: Partial<Row> = {}): Row {
 
 function makeStore(rows: Row[]) {
   const store = rows.map((r) => ({ ...r }));
+  const probes: string[] = [];
   const client: NotificationRetryClient = {
     notificationDelivery: {
       async findMany({ where, take }) {
@@ -127,9 +128,16 @@ function makeStore(rows: Row[]) {
         Object.assign(target, data);
         return target;
       },
+      // RLS-C-S6a — the visibility probe behind a lost claim. The store IS the
+      // visible set, so a row present here is a genuine race and a row absent
+      // from it is the indeterminate case.
+      async count({ where }) {
+        probes.push(where.id);
+        return store.some((r) => r.id === where.id) ? 1 : 0;
+      },
     },
   };
-  return { client, store };
+  return { client, store, probes };
 }
 
 function makeAdapter(script: ChannelResult[]) {
@@ -243,12 +251,76 @@ async function main(): Promise<void> {
           return client.notificationDelivery.updateMany(args);
         },
         update: (args) => client.notificationDelivery.update(args),
+        count: (args) => client.notificationDelivery.count(args),
       },
     };
     const { adapter, sends } = makeAdapter([{ status: "sent", provider: "resend" }]);
     const res = await mute(() => retryNotifications(raced, adapter, NOW));
     check("lost claim → zero sends (duplicate-send prevention)",
       sends.length === 0 && res.claimLost === 1 && res.retried === 0);
+    // RLS-C-S6a — the row is still THERE, so this remains an ordinary race.
+    check("a VISIBLE row keeps the claim-lost verdict (not indeterminate)",
+      res.claimIndeterminate === 0);
+  }
+
+  // ── 6b. RLS-C-S6a: the claim matched nothing and the row is INVISIBLE ───────
+  // Same observable zero, different cause — the delivery is gone (or the write
+  // was refused). Reporting that as claimLost is the silent refusal: the counter
+  // says "a concurrent pass has it", no pass does, and nothing is ever logged.
+  {
+    const { client, store, probes } = makeStore([errorRow("d1")]);
+    const vanished: NotificationRetryClient = {
+      notificationDelivery: {
+        findMany: (args) => client.notificationDelivery.findMany(args),
+        updateMany: async (args) => {
+          store.length = 0; // the row leaves the visible set between read and claim
+          return client.notificationDelivery.updateMany(args);
+        },
+        update: (args) => client.notificationDelivery.update(args),
+        count: (args) => client.notificationDelivery.count(args),
+      },
+    };
+    const { adapter, sends } = makeAdapter([{ status: "sent", provider: "resend" }]);
+    const res = await mute(() => retryNotifications(vanished, adapter, NOW));
+    check("an INVISIBLE row is counted as claimIndeterminate, never claimLost",
+      res.claimIndeterminate === 1 && res.claimLost === 0 && sends.length === 0,
+      JSON.stringify(res));
+    check("the probe ran exactly once, on the failure path",
+      probes.length === 1, `probes=${probes.length}`);
+  }
+
+  // ── 6c. the batch survives one indeterminate row ────────────────────────────
+  // The one site of the four that CATCHES rather than propagates: a hundred
+  // independent rows must not be abandoned because one cannot be seen.
+  {
+    const { client, store } = makeStore([errorRow("d1"), errorRow("d2")]);
+    const partial: NotificationRetryClient = {
+      notificationDelivery: {
+        findMany: (args) => client.notificationDelivery.findMany(args),
+        updateMany: async (args) => {
+          if (args.where.id === "d1") {
+            const i = store.findIndex((r) => r.id === "d1");
+            if (i >= 0) store.splice(i, 1);
+          }
+          return client.notificationDelivery.updateMany(args);
+        },
+        update: (args) => client.notificationDelivery.update(args),
+        count: (args) => client.notificationDelivery.count(args),
+      },
+    };
+    const { adapter, sends } = makeAdapter([{ status: "sent", id: "m", provider: "resend" }]);
+    const res = await mute(() => retryNotifications(partial, adapter, NOW));
+    check("one indeterminate row does not abort the batch (d2 still delivered)",
+      res.claimIndeterminate === 1 && res.delivered === 1 && sends.length === 1,
+      JSON.stringify(res));
+  }
+
+  // ── 6d. a SUCCESSFUL claim pays for no probe ────────────────────────────────
+  {
+    const { client, probes } = makeStore([errorRow("d1")]);
+    const { adapter } = makeAdapter([{ status: "sent", id: "m", provider: "resend" }]);
+    await mute(() => retryNotifications(client, adapter, NOW));
+    check("a claim that LANDS issues no visibility probe", probes.length === 0, `probes=${probes.length}`);
   }
 
   // ── 7. Idempotent re-run after success ─────────────────────────────────────

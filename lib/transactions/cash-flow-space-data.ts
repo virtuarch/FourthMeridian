@@ -44,12 +44,14 @@ import {
   type CashFlowPeriod,
   type CashFlowContribution,
   type AvailableHistoricalPeriods,
-  outflowByCategory,
+  categorySpendLedger,
+  rankCategorySpend,
   incomeBySource,
   economicTotals,
 } from "@/lib/transactions/cash-flow";
 import {
   aggregateDayFacts,
+  economicSpend,
   projectDailyFacts,
   bucketDayFacts,
   type DayFacts,
@@ -58,12 +60,14 @@ import {
 import { cashFlowStamp, type CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import { groupCashFlowContext, type CashFlowContext } from "@/lib/transactions/cash-flow-context";
 import {
-  classifyLiquidity,
-  tierResolver,
+    tierResolver,
   type LiquidityTx,
 } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason, type LiquiditySliceLine } from "@/lib/transactions/liquidity-breakdown";
-import { groupDebtPaymentsByCreditor, type DebtPaymentGroup } from "@/lib/transactions/debt-payments";
+import { rollupIncomeFromTransactions, type IncomeRollup } from "@/lib/transactions/income-rollup";
+import {
+  selectDebtPaymentCashLegs, groupDebtPaymentsByCreditor, type DebtPaymentGroup,
+} from "@/lib/transactions/debt-payment-authority";
 
 /**
  * THE canonical Cash Flow workspace contract — the perspective-AGNOSTIC data for
@@ -90,8 +94,34 @@ export interface CashFlowSpaceData {
   // ── derived presentation slices (each straight from an authority) ──
   /** Spending by Category (economic outflow). */
   outflowByCategory: CashFlowContribution[];
-  /** Income by Source (economic income). */
+  /**
+   * CF-RECON-1 — THE window's spending total, for every surface that prints one.
+   *
+   * `net` is `economicSpend(summary)` — the same figure the Spending tile shows —
+   * so "Total spending" under the category list and the Spending tile are ONE
+   * number, not two computations that usually agree. (The list's total used to be
+   * a React sum of the floored category lines, which exceeds the headline by
+   * exactly `refundsUnapplied` whenever a refund lands in a category with no
+   * matching charge in the window.)
+   *
+   * `refundsUnapplied` is the ledger's disclosure of that gap, so the lines
+   * reconcile to the total on screen: Σ category net − refundsUnapplied = net
+   * (whenever gross ≥ refunds; otherwise net floors at 0 and so do the lines).
+   */
+  spending: CashFlowSpending;
+  /** Income by Source (economic income). Presentation grouping by payer LABEL —
+   *  not a classification. `income` below is the canonical taxonomy. */
   incomeBySource: CashFlowContribution[];
+  /**
+   * v2.6-TRUTH-5 — THE canonical income breakdown for this window.
+   *
+   * Scope is BANK_TRANSACTIONS and the headline label says so. Investment
+   * dividends are NOT folded in: a dividend paid to a brokerage cash balance and
+   * later swept to checking would be counted twice, and Cash Flow answers "where
+   * did money move through my bank ledgers?". Investments Activity reports them
+   * from the same authority, under the same labels.
+   */
+  income: IncomeRollup;
   /** Cash In by reason (liquidity axis) — groupLiquidityByReason(summary).cashIn. */
   cashInByReason: LiquiditySliceLine[];
   /** Debt payments grouped by creditor — the canonical DEBT_PAYMENT liquidity rows. */
@@ -118,6 +148,18 @@ export interface CashFlowSpaceData {
   unconverted: boolean;
 }
 
+/** CF-RECON-1 — the window's spending figures, each straight from an authority. */
+export interface CashFlowSpending {
+  /** Net economic spending — `economicSpend(summary)`. THE "Total spending". */
+  net: number;
+  /** Gross cost flows charged in the window — `summary.spendGross` ("charged"). */
+  gross: number;
+  /** Refunds dated in the window — `summary.refunds`. */
+  refunds: number;
+  /** Σ categorySpendLedger `refundsUnapplied` — refunds beyond their category's charges. */
+  refundsUnapplied: number;
+}
+
 /** Converted absolute magnitude of a row at its own date; absent ctx ⇒ raw abs.
  *  V25-FINAL-1 — `null` when the conversion is UNAVAILABLE, so the consumer
  *  EXCLUDES the row (never a native magnitude, never a fake 0). */
@@ -142,7 +184,9 @@ function magnitude(t: Transaction, ctx?: ConversionContext): number | null {
  */
 export function buildCashFlowSpaceData(input: {
   transactions: Transaction[];
-  accounts: { id: string; type: string }[];
+  /** `name` is optional and used ONLY to label an interest payer; its absence
+   *  degrades the label to the account id, never the classification. */
+  accounts: { id: string; type: string; name?: string }[];
   period: CashFlowPeriod;
   now?: () => Date;
   moneyCtx?: ConversionContext;
@@ -154,31 +198,61 @@ export function buildCashFlowSpaceData(input: {
   const range = periodRange(period, nowDate);
   const windowed = filterByPeriod(transactions, period, nowDate);
   const liqCtx = tierResolver(accounts);
+  const creditorAccounts = new Map(accounts.map((a) => [a.id, { id: a.id, name: a.name ?? null, type: a.type }]));
   // The canonical projection consumes LiquidityTx (Transaction + optional transfer
   // fields); a plain Transaction[] satisfies it — the exact cast the widgets use.
   const rows = windowed as LiquidityTx[];
 
   const summary = aggregateDayFacts(rows, liqCtx, moneyCtx);
   const breakdown = groupLiquidityByReason(summary);
+  // CF-RECON-1 — the category ledger is folded ONCE: its ranking feeds the list and
+  // its `refundsUnapplied` feeds the disclosure beside the ONE spending total.
+  const spendLedger = categorySpendLedger(windowed, moneyCtx);
 
-  // Canonical DEBT_PAYMENT rows (classifyLiquidity CASH_OUT + DEBT_PAYMENT) — no new
-  // classifier; the SAME predicate the Debt Payments widget uses, applied once here.
-  const debtPaymentRows = rows.filter((t) => {
-    const c = classifyLiquidity(t, liqCtx);
-    return c.effect === "CASH_OUT" && c.reason === "DEBT_PAYMENT";
+  // v2.6-TRUTH-7 — the counted leg comes from the ONE debt-payment authority. This
+  // was a third inline copy of the predicate; the widget had a fourth, and
+  // DebtClient had a fifth that disagreed with all of them.
+  const debtPaymentRows = selectDebtPaymentCashLegs(rows, liqCtx).counted;
+
+  // v2.6-TRUTH-6 — the canonical rollup is built ONCE, and every income slice in
+  // this contract derives from it. `incomeBySource` is now a SUB-grouping of the
+  // rollup's included rows, not an independent authority that happened to agree.
+  const income = rollupIncomeFromTransactions(windowed, {
+    scope: "BANK_TRANSACTIONS",
+    ctx: moneyCtx,
+    accountLabels: new Map(input.accounts.filter((a) => a.name).map((a) => [a.id, a.name as string])),
   });
+  // Constrain membership ONLY when the rollup actually saw attributions. A read
+  // that did not select the income evidence yields an empty rollup, and an empty
+  // included-set would blank the payer card rather than degrade to prior
+  // behaviour — the same "absence is not a verdict" rule the economic fold uses.
+  const sawAttribution = windowed.some((t) => t.incomeClass != null);
+  const includedIncomeIds = sawAttribution
+    ? new Set(income.lines.flatMap((l) => l.rowIds))
+    : undefined;
 
   return {
     period,
     range,
+    income,
+    incomeBySource: incomeBySource(windowed, moneyCtx, includedIncomeIds),
     rows: windowed,
     summary,
     daily: projectDailyFacts(rows, liqCtx, moneyCtx),
     buckets: bucketDayFacts(rows, liqCtx, period, moneyCtx),
-    outflowByCategory: outflowByCategory(windowed, moneyCtx),
-    incomeBySource: incomeBySource(windowed, moneyCtx),
+    outflowByCategory: rankCategorySpend(spendLedger),
+    spending: {
+      net: economicSpend(summary),
+      gross: summary.spendGross,
+      refunds: summary.refunds,
+      refundsUnapplied: spendLedger.reduce((s, l) => s + l.refundsUnapplied, 0),
+    },
     cashInByReason: breakdown.cashIn,
-    debtPayments: groupDebtPaymentsByCreditor(debtPaymentRows, (t) => magnitude(t, moneyCtx)),
+    // v2.6-TRUTH-9 — grouped by CREDITOR ACCOUNT, from the same account graph the
+    // tier resolver uses. A payment whose creditor cannot be named lands in one
+    // honest bucket rather than under a descriptor pretending to be a creditor.
+    debtPayments: groupDebtPaymentsByCreditor(
+      debtPaymentRows as never, creditorAccounts, (t) => magnitude(t as never, moneyCtx)),
     context: groupCashFlowContext(rows, liqCtx, moneyCtx),
     stamp: cashFlowStamp({ transactions, period, now }),
     available: availableHistoricalPeriods(transactions),

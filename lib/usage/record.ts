@@ -18,7 +18,7 @@
  * serverless invocations never lose a count.
  */
 
-import { db } from "@/lib/db";
+import { systemDb } from "@/lib/db";
 
 /** Start of the current UTC day (00:00:00.000Z) — the counter's day bucket. */
 function utcDayBucket(now: Date = new Date()): Date {
@@ -44,7 +44,7 @@ export async function recordApiUsage(
   const inc = BigInt(Math.floor(n));
   try {
     const day = utcDayBucket();
-    await db.apiUsageCounter.upsert({
+    await systemDb.apiUsageCounter.upsert({
       where:  { provider_metric_unit_day: { provider, metric, unit, day } },
       create: { provider, metric, unit, day, count: inc },
       update: { count: { increment: inc } },

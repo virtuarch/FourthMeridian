@@ -10,6 +10,9 @@ import {
   periodRange,
   filterByPeriod,
   economicTotals,
+  foldEconomicRow,
+  clampEconomicIncome,
+  type EconomicAccumulator,
   granularityFor,
   outflowByCategory,
   incomeBySource,
@@ -226,6 +229,27 @@ check("transfers & debt payments excluded from cash flow",
   economicTotals([tx("2026-07-02", -1000, "TRANSFER"), tx("2026-07-02", -500, "DEBT_PAYMENT")]).net === 0);
 check("refund clamps spend at ≥ 0",
   economicTotals([tx("2026-07-02", -50, "SPENDING"), tx("2026-07-02", 200, "REFUND")]).spend === 0);
+
+// ── FIN-003 — negative INCOME rows (clawbacks, reversed deposits) REDUCE income ──
+//
+// Runtime audit 2026-10-21: +5,000 then −500 folded to 5,500 (|amount| on every
+// INCOME row), overstating income by twice the clawback. The fold is signed now;
+// the window total is floored at 0 by the same policy refunds use on spend.
+{
+  const clawback = economicTotals([tx("2026-07-02", 5000, "INCOME", "Income"), tx("2026-07-09", -500, "INCOME", "Income")]);
+  check("FIN-003: +5000 then −500 ⇒ income 4500 (not 5500)", clawback.income === 4500, String(clawback.income));
+  check("FIN-003: net follows the netted income", clawback.net === 4500);
+  const acc: EconomicAccumulator = { income: 0, spendGross: 0, refunds: 0 };
+  foldEconomicRow(acc, { flowType: "INCOME", amount: 5000 });
+  foldEconomicRow(acc, { flowType: "INCOME", amount: -500 });
+  check("FIN-003: the fold itself is signed (4500), so every reader of the accumulator nets the reversal", acc.income === 4500);
+  const only = economicTotals([tx("2026-07-09", -500, "INCOME", "Income")]);
+  check("FIN-003 clamp policy: a window holding only a clawback reads $0 income, never negative (same floor as refunds on spend)",
+    only.income === 0 && only.net === 0, String(only.income));
+  check("FIN-003: clampEconomicIncome floors at 0 and refuses NaN", clampEconomicIncome(-12) === 0 && clampEconomicIncome(12.5) === 12.5 && clampEconomicIncome(Number.NaN) === 0);
+  check("FIN-003: a NOT_INCOME reversal is still excluded, not subtracted",
+    (() => { const a: EconomicAccumulator = { income: 100, spendGross: 0, refunds: 0 }; foldEconomicRow(a, { flowType: "INCOME", amount: -40, incomeClass: "NOT_INCOME" }); return a.income === 100; })());
+}
 
 // ── History bucketing granularity (bucketCashFlow itself retired — P1 closeout) ──
 check("granularity: MTD → day",     granularityFor("MTD") === "day");

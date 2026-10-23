@@ -47,12 +47,24 @@
  *   - requireFreshUser() — this is a destructive, state-changing action;
  *     see lib/session.ts's doc comment on why sensitive actions should not
  *     trust the cached revocation check.
- *   - The caller's active Space (getSpaceContext()) must have an ACTIVE
- *     SpaceAccountLink for the batch's own financialAccountId — the same
- *     lookup POST .../accounts/[id]/import performs for the same id, just
- *     read from the batch row instead of a client-supplied path param. A
+ *   - The caller's active Space (getSpaceContext()) must resolve the batch's own
+ *     financialAccountId through resolveImportableFinancialAccount — the SAME
+ *     shared guard POST .../accounts/[id]/import and its four siblings use,
+ *     just read from the batch row instead of a client-supplied path param. A
  *     batch in a Space the caller can't see returns the same 404 as a
  *     missing batch, so existence is never leaked.
+ *
+ *     RLS Slice 2 — THIS ROUTE HAD DRIFTED. It used to perform its own inline
+ *     spaceAccountLink.findFirst({ spaceId, financialAccountId, status: ACTIVE
+ *     }) and that query OMITTED the visibilityLevel FULL gate (and the
+ *     financialAccount.deletedAt filter) which lib/imports/authorize.ts applies
+ *     for every other import route. Rollback is the most destructive operation
+ *     in the import feature — it soft-deletes every Transaction a batch
+ *     created — yet it was the ONE import route an OWNER/ADMIN holding only a
+ *     BALANCE_ONLY / SUMMARY_ONLY link could reach, erasing transaction detail
+ *     they were never permitted to READ. Two copies of one authority rule is
+ *     how that happens; there is now one copy. See
+ *     docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §17.1 item 7.
  *   - The caller must be either the batch's own creator (createdByUserId)
  *     or a canManage (OWNER/ADMIN) member of that Space — undoing your own
  *     import is unrestricted; undoing someone else's requires management
@@ -72,24 +84,51 @@
  *     requests for the same batch can never both "win" — whichever commits
  *     first flips the status; the second sees a non-eligible status and
  *     falls into the idempotent-success path.
+ *
+ * RLS-C-S8 — THREE TENANT PHASES, AND WHY THREE AND NOT ONE.
+ *
+ *   1. RESOLVE the batch. A row this identity cannot see is now indistinguishable
+ *      from a missing one AT THE DATABASE, not merely at the guard below. The
+ *      `fm_app` policy on ImportBatch is `fm_account_visible("financialAccountId")`,
+ *      which is strictly WIDER than this route's authorization rule (any Space the
+ *      caller is an ACTIVE member of, vs. the active Space at FULL visibility with
+ *      a permitted role), so the guard still decides and its 404/403 behaviour is
+ *      unchanged. The database just stops being the thing that trusted us.
+ *   2. CLAIM + soft-delete + audit, all-or-nothing. Unchanged in shape; it is the
+ *      SAME transaction it always was, now opened by `withTenantDb` so the
+ *      identity the policies read is bound transaction-locally for its duration.
+ *   3. REPAIR, in its own phase, deliberately NOT folded into 2. The repair is
+ *      best-effort and non-fatal by contract — a failure must never un-roll-back
+ *      a completed rollback — and a failure inside phase 2 would do exactly that.
+ *      Keeping it separate also keeps the destructive transaction short.
+ *
+ * `withTenantDb` is a SECURITY BOUNDARY, not a request-lifetime container. The
+ * authorization read and the SyncIssue fallback both sit OUTSIDE every phase: the
+ * first because `lib/imports/authorize.ts` is not yet converted, the second
+ * because `fm_app` holds only a column-level READ grant on SyncIssue and a
+ * telemetry write that failed inside a phase would abort the phase it was
+ * reporting on. No phase here spans a provider call, a model call or streaming.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireFreshUser } from "@/lib/session";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
+import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 import { getSpaceContext } from "@/lib/space";
-import { ShareStatus, ImportBatchStatus, ImportBatchKind } from "@prisma/client";
+import { ImportBatchStatus, ImportBatchKind } from "@prisma/client";
+import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { rollbackClaimWhere } from "@/lib/imports/claim";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { rollbackInvestmentBatchRows, type InvestmentRollbackResult } from "@/lib/investments/investment-import-rollback";
 import { repairReconstructionForAccount } from "@/lib/investments/reconstruction-runner";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 
-const ROLLBACK_ELIGIBLE_STATUSES: ImportBatchStatus[] = [
-  ImportBatchStatus.COMPLETED,
-  ImportBatchStatus.COMPLETED_WITH_ERRORS,
-  ImportBatchStatus.FAILED,
-];
+// IDEMP-001 c / OPS-007 — eligibility now lives in lib/imports/claim.ts
+// (rollbackClaimWhere): the three terminal statuses as before, PLUS a
+// PENDING/PROCESSING batch whose last write is older than the import's time
+// budget — a dead lambda's batch, whose committed rows the user could not undo
+// (the runtime audit's 409). The claim is still ONE conditional update.
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -101,42 +140,65 @@ export const POST = withApiHandler(async (
   const [user, err] = await requireFreshUser();
   if (err) return err;
 
-  // ── Resolve the batch ─────────────────────────────────────────────────────
-  const batch = await db.importBatch.findUnique({ where: { id } });
+  // ── Phase 1 — resolve the batch under the caller's own identity ───────────
+  const batch = await withTenantDb(user.id, (tx) => tx.importBatch.findUnique({ where: { id } }));
   if (!batch) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  // ── Authorize: caller's active Space must have an ACTIVE SpaceAccountLink
-  //    for the batch's own financialAccountId — same lookup
-  //    POST .../accounts/[id]/import performs for the same FinancialAccount.
-  //    A batch in a Space the caller can't see returns the same 404 as a
-  //    missing batch, avoiding an existence-enumeration signal.
+  // ── Authorize: the ONE shared import guard, never a second copy of it ─────
+  //    resolveImportableFinancialAccount applies the full contract the other
+  //    five import routes get: an ACTIVE, non-deleted-account SpaceAccountLink
+  //    in the caller's active Space (404 otherwise — a batch in a Space the
+  //    caller can't see is indistinguishable from a missing batch), then the
+  //    write-authority check, with the FULL visibility tier required on the
+  //    non-owner path. The inline lookup this replaces omitted that tier (see
+  //    module header, RLS Slice 2).
+  //
+  // RLS-ACC-S2 — AND IT RUNS AS THE CALLER NOW, WHICH IT DID NOT BEFORE.
+  // RLS-C-S8 converted all three phases of this route and left no `db` in its
+  // source — the suite asserts that by scan and was right. The authorization
+  // BETWEEN the phases was still running as the migration principal anyway,
+  // because the shared guard defaulted `client = db` one file away. Nothing here
+  // could see it; nothing here was wrong. The seam was. It is a required leading
+  // parameter now, so this phase is the authority the check actually uses.
   const { spaceId, permissions } = await getSpaceContext();
-  const link = await db.spaceAccountLink.findFirst({
-    where:  { spaceId, financialAccountId: batch.financialAccountId, status: ShareStatus.ACTIVE },
-    select: { id: true },
-  });
-  if (!link) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  const access = await withTenantDb(
+    user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, batch.financialAccountId));
+  if (!access.ok) return access.response;
 
   // ── Permission: the batch's own creator, or a canManage member ───────────
+  //    ADDITIONAL to the guard above, not a substitute for it: rollback can
+  //    erase another member's history, so passing the import guard is necessary
+  //    but not sufficient. Both must hold.
   const isCreator = batch.createdByUserId === user.id;
   if (!isCreator && !permissions.canManage) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  // ── Claim + soft-delete + audit, all-or-nothing ───────────────────────────
-  const result = await db.$transaction(async (tx) => {
+  // ── Phase 2 — claim + soft-delete + audit, all-or-nothing ─────────────────
+  const result = await withTenantDb(user.id, async (tx) => {
     const claim = await tx.importBatch.updateMany({
-      where: { id: batch.id, status: { in: ROLLBACK_ELIGIBLE_STATUSES } },
+      where: rollbackClaimWhere(batch.id, new Date()),
       data:  { status: ImportBatchStatus.ROLLED_BACK },
     });
 
     if (claim.count === 0) {
       // Either already rolled back (idempotent success) or still
       // PENDING/PROCESSING (not eligible yet) — re-read to tell which.
+      //
+      // RLS-C-S8 — THIS ZERO IS DETERMINATE, AND BY DESIGN RATHER THAN BY LUCK.
+      // S6a recorded that a zero-row conditional write under a tenant role is
+      // INDETERMINATE unless the row's visibility was established in the same
+      // phase, and noted that this site was already loud "by accident": the
+      // re-read is `findUniqueOrThrow`, which RAISES on a row the policy hides.
+      // It is kept, and it is kept in this exact form, because it is STRICTLY
+      // STRONGER than `resolveConditionalWrite` here — one statement both
+      // establishes visibility and discriminates the two business outcomes,
+      // where the helper would add a second round trip and still need this read
+      // afterwards. Converting it would be a regression dressed as consistency.
+      // Do not replace it with `findUnique` + a null check: that is the exact
+      // edit that turns a policy refusal back into "already rolled back".
       const current = await tx.importBatch.findUniqueOrThrow({ where: { id: batch.id } });
       if (current.status === ImportBatchStatus.ROLLED_BACK) {
         return { kind: "already_rolled_back" as const, batch: current };
@@ -148,10 +210,33 @@ export const POST = withApiHandler(async (
     // soft-delete. Deliberately scoped by importBatchId + deletedAt: null
     // only, never financialAccountId — see module header.
     const now = new Date();
+    // RLS-C-S8 — `rolledBackCount` is reported to the user, so it is measured
+    // rather than trusted: observe the eligible rows through THIS authority, in
+    // THIS phase, immediately before the statement, and refuse to report a
+    // rollback that fell short of what it had just seen. One indexed count on the
+    // rarest destructive path in the feature.
+    //
+    // ⚠️ RESIDUAL, RECORDED RATHER THAN HIDDEN. The `where` is deliberately
+    // `importBatchId` only, never `financialAccountId` (see the module header: a
+    // merge re-points Transaction.financialAccountId without updating the
+    // batch's). The policy, however, IS keyed on financialAccountId — so a row a
+    // merge relocated onto an account outside the caller's visible set is absent
+    // from the observation and from the write alike, and no shortfall can be
+    // raised for it. Establishing a batch's TRUE population needs an authority
+    // that can see all of it; that reconciliation is named as a follow-up and is
+    // not silently assumed away here.
+    const eligibleTransactions = await tx.transaction.count({
+      where: { importBatchId: batch.id, deletedAt: null },
+    });
     const softDeleted = await tx.transaction.updateMany({
       where: { importBatchId: batch.id, deletedAt: null },
       data:  { deletedAt: now },
     });
+    assertEveryObservedRowWasWritten(
+      { table: "Transaction", operation: "update", scope: "one import batch's live rows" },
+      eligibleTransactions,
+      softDeleted.count,
+    );
 
     // A7-5 — INVESTMENT_HISTORY batches additionally soft-delete their
     // InvestmentEvent / PositionObservation rows and un-supersede the assertions
@@ -190,12 +275,16 @@ export const POST = withApiHandler(async (
   //    superseded filters with zero core changes. Never fails the rollback.
   if (result.kind === "rolled_back" && result.investment) {
     try {
-      await repairReconstructionForAccount({
+      // Phase 3 — its own tenant phase, so the repair's per-account instrument
+      // set stays atomic (reconstructAccount joins THIS transaction rather than
+      // opening its own) without putting a best-effort write inside the
+      // destructive one.
+      await withTenantDb(user.id, (tx) => repairReconstructionForAccount(tx, {
         financialAccountId: batch.financialAccountId,
-        affectedInstrumentIds: result.investment.affectedInstrumentIds,
-        affectedCash: result.investment.affectedCash,
+        affectedInstrumentIds: result.investment!.affectedInstrumentIds,
+        affectedCash: result.investment!.affectedCash,
         now: new Date(),
-      });
+      }));
     } catch (e) {
       console.warn(`[import-rollback] reconstruction repair for account ${batch.financialAccountId} failed (non-fatal): ${e instanceof Error ? e.message : e}`);
       await recordSyncIssue({ kind: "IMPORT_ROLLBACK_FAILED", financialAccountId: batch.financialAccountId, detail: { stage: "import-rollback-repair", importBatchId: batch.id, error: e instanceof Error ? e.message : String(e) } });
@@ -205,7 +294,7 @@ export const POST = withApiHandler(async (
   if (result.kind === "ineligible") {
     return NextResponse.json(
       {
-        error: `Import batch is ${result.batch.status} and cannot be rolled back. Only COMPLETED, COMPLETED_WITH_ERRORS, or FAILED batches are eligible.`,
+        error: `Import batch is ${result.batch.status} and cannot be rolled back. Only COMPLETED, COMPLETED_WITH_ERRORS, or FAILED batches are eligible — or a PROCESSING batch that stalled past the import's time budget.`,
       },
       { status: 409 }
     );

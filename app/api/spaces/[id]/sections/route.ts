@@ -11,6 +11,7 @@
 
 import { NextRequest, NextResponse }      from "next/server";
 import { requireSpaceAction }             from "@/lib/spaces/authorize";
+import { withTenantDb }                   from "@/lib/db/tenant-context";
 import { loadSpaceSections }              from "@/lib/space/mount-composition";
 
 export async function GET(
@@ -20,11 +21,16 @@ export async function GET(
   const { id: spaceId } = await params;
 
   // Any ACTIVE member (any role) may read sections.
-  const [, err] = await requireSpaceAction(spaceId, "section:read");
+  const [auth, err] = await requireSpaceAction(spaceId, "section:read");
   if (err) return err;
 
   // PS-6B — ONE loader definition, shared with the /dashboard mount composition
   // (lib/space/mount-composition.ts). The authorization above is unchanged.
-  const sections = await loadSpaceSections(spaceId);
+  // RLS slice B — one short read, as the caller. `SpaceDashboardSection` is a
+  // §7 table: `spaceId IN fm_visible_space_ids()`, which the ACTIVE-member guard
+  // above has already established.
+  const sections = await withTenantDb(
+    auth.user.id, (tx) => loadSpaceSections(tx, spaceId),
+  );
   return NextResponse.json(sections);
 }

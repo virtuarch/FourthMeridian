@@ -32,15 +32,32 @@
  * manual assets aren't liquid.
  */
 
-import { db } from "@/lib/db";
+/**
+ * ── RLS-C-S7 — SNAPSHOT REGENERATION IS DEPLOYMENT-WIDE, AND ALWAYS WAS ──────
+ * Every caller of this module is either a job, a webhook, a cron, or a
+ * POST-COMMIT dispatch step of a request path, and the Spaces it regenerates are
+ * resolved from an account's links rather than from the actor's membership. A
+ * disconnect's whole point is that a CO-OWNER's snapshot stops counting the
+ * account — a Space the actor is not a member of and whose snapshot a tenant
+ * client cannot write. So the authority follows the operation: `fm_system`.
+ *
+ * `fm_app` could not express this. `SpaceSnapshot.fm_app_upd` is scoped to
+ * `spaceId IN (SELECT fm_visible_space_ids())`, so the co-owner's upsert would be
+ * refused — and an upsert refused by a policy raises rather than lying, which is
+ * why this was never going to be the silent half of the problem. It would simply
+ * have turned every multi-tenant account's disconnect into a 500.
+ */
+import { systemDb } from "@/lib/db";
 import {
+  consentPendingInvestmentAccountIds,
   readSpaceAccountsForSnapshot,
   type SnapshotAccountsClient,
 } from "@/lib/snapshots/space-accounts";
 import { classifyAccounts } from "@/lib/account-classifier";
+import { computeSnapshotFields } from "@/lib/snapshots/backfill-core";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { ShareStatus, PlaidInvestmentsConsent, type Prisma } from "@prisma/client";
+import { ShareStatus, type Prisma } from "@prisma/client";
 
 function todayUTC(): Date {
   const d = new Date();
@@ -99,7 +116,7 @@ export interface SpaceSnapshotClient extends SnapshotAccountsClient {
 export async function regenerateSpaceSnapshot(
   spaceId: string,
   date: Date = todayUTC(),
-  client: SpaceSnapshotClient = db,
+  client: SpaceSnapshotClient = systemDb,
 ): Promise<void> {
   const accounts = await readSpaceAccountsForSnapshot(spaceId, client);
 
@@ -113,20 +130,11 @@ export async function regenerateSpaceSnapshot(
   // account enters the trend smoothly. Suppress-until-consent (chosen over a
   // distinct "today dot", which needs new chart code) — honestly omits the
   // account until we have real data, rather than fabricating a jump.
+  // The rule is shared with the Assets investment-account ledger
+  // (lib/investments/investment-accounts.ts) so the two can never disagree.
   let eligible = accounts;
   if (accounts.length > 0) {
-    const gated = new Set(
-      (
-        await client.financialAccount.findMany({
-          where: {
-            id:          { in: accounts.map((a) => a.id) },
-            type:        "investment",
-            connections: { some: { plaidItem: { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED } } },
-          },
-          select: { id: true },
-        })
-      ).map((a) => a.id),
-    );
+    const gated = await consentPendingInvestmentAccountIds(client, accounts.map((a) => a.id));
     if (gated.size > 0) {
       eligible = accounts.filter((a) => !gated.has(a.id));
       console.log(`[snapshot] space ${spaceId}: excluding ${gated.size} consent-pending investment account(s) from the snapshot (no fabricated jump).`);
@@ -169,21 +177,22 @@ export async function regenerateSpaceSnapshot(
   });
   const c = classifyAccounts(eligible, ctx);
 
-  const stocks     = c.totalInvestments;
-  const crypto     = c.totalDigitalAssets;
-  const total      = stocks + crypto;
-  const cash       = c.totalChecking;
-  const savings    = c.totalSavings;
-  const debt       = c.totalLiabilities;
-  const realAssets = c.totalRealAssets;
-
-  const totalAssets = total + cash + savings + realAssets;
-  const netWorth    = totalAssets - debt;
-  const netLiquid   = cash + savings - debt;
-  // No "expense buffer" setting exists yet (schema comment: max(cash -
-  // expense_buffer, 0)) — until one is added, cashOnHand is plain checking
-  // cash rather than an invented buffer amount.
-  const cashOnHand  = Math.max(cash, 0);
+  // REVIEW-3 B-4 (matrix row 14) — the derived aggregates come from
+  // computeSnapshotFields (lib/snapshots/backfill-core.ts), the ONE place the
+  // snapshot arithmetic lives. This function used to carry a hand-copied
+  // duplicate of that formula with nothing enforcing parity; the historical
+  // writers (backfill.ts, regenerate-history.core.ts) already import it, so the
+  // live "today" row and every reconstructed row are now the same computation by
+  // construction, not by transcription. backfill-core.test.ts pins this import
+  // (and the absence of a re-inlined formula) so the formula cannot fork again.
+  //
+  // Note on cashOnHand: no "expense buffer" setting exists yet (schema comment:
+  // max(cash - expense_buffer, 0)) — until one is added, cashOnHand is plain
+  // checking cash (max(cash, 0)), exactly as computeSnapshotFields computes it.
+  const {
+    stocks, crypto, total, cash, savings, debt,
+    netWorth, totalAssets, netLiquid, cashOnHand,
+  } = computeSnapshotFields(c);
 
   // MC1 Phase 3 Slice 3 (F-2) — the stamp IS the context target: both come
   // from the same Space read above, in the same edit, so they can never
@@ -193,6 +202,75 @@ export async function regenerateSpaceSnapshot(
   // written to snapshots (approved D-7; Phase 4 open item).
   const reportingCurrency = space.reportingCurrency;
 
+  // V26-INVESTMENTS-HISTORY — this writer computes today's row from LIVE
+  // account balances via classifyAccounts; it runs no A8 historical valuation,
+  // so it has no completeness tier and no component composition to record. The
+  // three columns are therefore written as null — NOT RECORDED — rather than
+  // invented here.
+  //
+  // They are cleared on `update` as well, deliberately: if a historical
+  // regeneration had previously written a tier for this date, those counts
+  // describe an A8 valuation that no longer produced these numbers. A stale
+  // tier surviving onto a live-balance row would be the very "two sources of
+  // truth" this slice exists to avoid. Nothing is lost — today's row is an
+  // observation, and the frozen-row invariant lets a reader infer `observed`
+  // from `isEstimated=false` (see snapshot-completeness.core.ts).
+  //
+  // REVIEW-3 B-4 (matrix row 33) — ONE exception: when classifyAccounts reports
+  // `unconverted` (an account's balance was FX-UNAVAILABLE and therefore
+  // EXCLUDED from every total — an honest partial sum, never a native magnitude
+  // blended in), the partiality used to be DROPPED at this write boundary: the
+  // row stored the partial sum with nothing recording that anything was
+  // missing, and every reader downstream (charts, launcher, AI) presented it as
+  // complete. There is no `unconverted` column and this program allows no
+  // schema migration, so the smallest honest disclosure with EXISTING columns
+  // is the canonical completeness vocabulary: `completenessTier: "incomplete"`
+  // — the tier that already means "the row exists but part of it could not be
+  // valued" (snapshot-completeness.core.ts classifies it `unreliable`). The
+  // resolver's precedence (a RECORDED tier outranks the isEstimated flip-rule
+  // inference) makes this read correctly everywhere without touching
+  // `isEstimated`, whose reconstruction meaning — and the frozen-row guard
+  // built on it — must not be overloaded (approved D-7).
+  //
+  // WHAT THIS CANNOT SAY (named schema follow-up, REVIEW-3): WHICH component
+  // was partial and by how much. `contributingComponentCount` describes the A8
+  // investment valuation, not FX coverage, so it stays null here. A dedicated
+  // `unconvertedCount`/`unconvertedCurrencies` column is the honest fix once a
+  // migration window exists. Production today is all-USD (unconverted is
+  // always false), so no live row changes.
+  const composition = {
+    completenessTier: c.unconverted ? ("incomplete" as const) : null,
+    contributingComponentCount: null,
+    totalComponentCount: null,
+    // V26-CRYPTO-STATUS-1 — written EXPLICITLY null, never omitted. This writer
+    // recomputes the row from a different basis (today's live balances), so any
+    // status stamped by a historical regeneration describes a computation that
+    // no longer produced this number. Omitting it from `update` would let that
+    // stale authorization survive onto fresh values.
+    // W6b — a wallet reading older than the freshness horizon is the LAST KNOWN
+    // position, not a confirmation of the position now. This row is written
+    // `isEstimated=false`, which every consumer reads as "observed, trusted
+    // unconditionally" — so without an explicit stamp a week-old balance would
+    // be laundered into today's confirmed wealth. `stale` is the smallest honest
+    // statement using the column that already exists for exactly this purpose:
+    // the number stays, its authority to be called CURRENT does not.
+    //
+    // Not `unavailable`: there IS a real dated number here, and refusing it
+    // outright would discard evidence rather than qualify it.
+    //
+    // W6d — Bitcoin now reaches this stamp. While its value came from the
+    // sync-time column, a BTC wallet unsynced for a month contributed its stale
+    // figure to today's snapshot with nothing recording that: `cryptoStale` was
+    // structurally unreachable for the one chain most likely to be stale. It is
+    // reachable now, from the same `lastUpdated` clock every other chain uses,
+    // with no new TTL.
+    //
+    // ⚠️ This says nothing about a wallet with NO observation at all — that row
+    // falls through to its column and is stamped as if confirmed. See the
+    // disclosure gap noted in lib/snapshots/space-accounts.ts.
+    cryptoValuationStatus: accounts.some((a) => a.cryptoStale === true) ? "stale" as const : null,
+  };
+
   await client.spaceSnapshot.upsert({
     where: { spaceId_date: { spaceId, date } },
     create: {
@@ -200,11 +278,13 @@ export async function regenerateSpaceSnapshot(
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
       reportingCurrency,
+      ...composition,
     },
     update: {
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
       reportingCurrency,
+      ...composition,
     },
   });
 }
@@ -229,7 +309,7 @@ export async function regenerateSnapshotsForAccounts(
 ): Promise<string[]> {
   if (financialAccountIds.length === 0) return [];
 
-  const links = await db.spaceAccountLink.findMany({
+  const links = await systemDb.spaceAccountLink.findMany({
     where:  { financialAccountId: { in: financialAccountIds }, status: ShareStatus.ACTIVE },
     select: { spaceId: true },
   });

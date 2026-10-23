@@ -1,0 +1,14 @@
+-- MERCHANT-OPS AUTHORITY — merchant identity operations become PLATFORM authority.
+--
+-- The merge review (app/merchant-ops, POST /api/merchant-ops/decide) was gated by
+-- MEMBER of one ordinary Space named by MERCHANT_OPS_SPACE_ID: any member, and
+-- anyone that Space's admins invited, could merge merchants — an irreversible
+-- rewrite of merchant identity for every tenant. It is now gated by a
+-- PlatformGrant in this area (READ to view candidates, fresh WRITE to merge or
+-- dismiss), which only SYSTEM_ADMIN can mint.
+--
+-- Additive only. The new value is not used in this migration (Postgres forbids
+-- using an enum value in the transaction that adds it). The singleton platform
+-- Space for the area is created by ensurePlatformSpaces (lib/platform/seed.ts),
+-- not here — same as the other four areas.
+ALTER TYPE "PlatformArea" ADD VALUE IF NOT EXISTS 'MERCHANT_OPS';

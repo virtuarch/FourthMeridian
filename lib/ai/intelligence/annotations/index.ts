@@ -13,6 +13,7 @@ export {
   metricValue,
   reliableMonths,
   computeAverageMonthlySpending,
+  computeMonthlySpendingBasis,
   computeSpendingTrends,
 } from './metrics';
 
@@ -21,7 +22,13 @@ export type {
   ConfidenceLevel,
   CashFlowReliability,
   DeficitCauseClassification,
-  DebtHealthClassification,
+  DebtRateClassification,
+  ClassificationScope,
+  ClassificationReason,
+  EvidencePopulation,
+  DebtReasonCode,
+  LiquidityReasonCode,
+  DebtBurden,
   LiquidityCoverageClassification,
   CurrentStatePriority,
   AprCompleteness,
@@ -46,9 +53,7 @@ export type {
   SpendingTrendMetric,
   MetricTrend,
   SpendingTrendsSection,
-  GoalAlignmentStatus,
-  GoalAlignmentItem,
-  GoalAlignmentSection,
+  // W2 — GoalAlignment* exports deleted with the goal-alignment engine.
   InvestmentReadinessClassification,
   InvestmentReadinessSection,
   RiskSeverity,

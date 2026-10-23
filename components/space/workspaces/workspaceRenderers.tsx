@@ -20,18 +20,22 @@
  */
 
 import React from "react";
+import { HistoryExplorationSheet } from "@/components/history/HistoryExplorationSheet";
+import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { WealthWorkspace } from "@/components/space/widgets/wealth/WealthWorkspace";
 import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
-import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/LiquidityWorkspace";
-import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
-import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
-import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
+import { MarketsWorkspace } from "@/components/space/widgets/markets/MarketsWorkspace";
+import { WorkspaceComingSoon } from "./WorkspaceComingSoon";
+import { getWorkspaceDefinition, type PerspectiveDef } from "@/lib/perspectives";
+import type { AssetsSlice, WealthMode } from "@/lib/wealth/wealth-mode";
+import type { MarketsMode } from "@/lib/markets/markets-mode";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { ConversionContext } from "@/lib/money/types";
 import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
 import type { SpaceAccount } from "@/lib/space/dashboard-types";
+import type { SpaceReadErrors, SpaceReadKey } from "@/lib/space/use-space-data";
 import type { Snapshot, Transaction } from "@/types";
 
 /**
@@ -42,6 +46,8 @@ import type { Snapshot, Transaction } from "@/types";
 export interface WorkspaceRenderCtx {
   // Identity / props
   spaceId:                 string;
+  /** RWA-2B — "PERSONAL" | "SHARED"; gates the Real assets consent offer (display only). */
+  spaceType?:              string;
   /** Resolved snapshot-stamp currency (host's `snapshotCurrency ?? displayCurrency`). */
   snapshotCurrency:        string;
   ficoScore?:              number | null;
@@ -49,7 +55,9 @@ export interface WorkspaceRenderCtx {
   perspectiveTargetCurrency?: string;
   /** The Space's monthly-expense baseline (emergency_fund_progress config), or null.
    *  Drives the Liquidity Hero's honest Coverage stat; absent ⇒ no coverage shown. */
-  liquidityMonthlyExpenses?: number | null;
+  /** v2.6-ASSESS-3 — the RESOLVED baseline (declared or measured) + its basis,
+   *  or null when neither exists. Resolved server-side; never derived here. */
+  liquidityExpenseBaseline?: import("@/lib/liquidity/expense-baseline").ExpenseBaseline | null;
 
   // Shared data (useSpaceData)
   accounts:                SpaceAccount[];
@@ -60,6 +68,9 @@ export interface WorkspaceRenderCtx {
    *  the transaction-derived workspaces surface an honest "history incomplete" note
    *  when the TX-2 read was capped; null/complete ⇒ no indicator. */
   transactionsMeta:        TransactionsCoverage | null;
+  /** UI-006 — the shared reads that FAILED (never coerced to empty) + their retry. */
+  readErrors?:             SpaceReadErrors;
+  onRetryRead?:            (key: SpaceReadKey) => void;
   widgetCtx?:              ConversionContext;
   txCtx?:                  ConversionContext;
 
@@ -72,20 +83,31 @@ export interface WorkspaceRenderCtx {
   historicalCompareTo:     string | null;
   today:                   string;
 
-  // Per-lens activation (true when that lens is the engaged Perspective)
+  // OVERVIEW-CONSOLIDATION — per-MODE activation inside Net Worth (true when
+  // that mode of the engaged Net Worth lens is open). Gates the embedded
+  // historical fetches exactly as the retired peer lenses were gated.
   debtActive:              boolean;
-  liquidityActive:         boolean;
-  investmentsActive:       boolean;
+  assetsActive:            boolean;
 
   // Perspective-engine results (host-owned loader)
   lensResults:             Record<string, LensResult> | null;
 
-  // Cash Flow period + Wealth chart metric
+  // Cash Flow period + the Net Worth page subject / Assets slice (URL-synced)
   cashFlowPeriod:          CashFlowPeriod;
-  chartMetric:             WealthMetricKey;
+  wealthMode:              WealthMode;
+  assetsSlice:             AssetsSlice;
+  /** One-shot Assets section focus from a legacy lens deep link. */
+  wealthFocus:             "cash" | "investments" | null;
 
   // Callbacks
-  onMetricChange:          (m: WealthMetricKey) => void;
+  onModeChange:            (m: WealthMode) => void;
+  /** Net Worth's Total · Assets · Debt selector presentation (see WealthWorkspace). */
+  wealthModeSelectorVisibility?: "always" | "belowLg";
+  /** The Markets view (?view=) + its setter + selector presentation (skeleton). */
+  marketsMode:             MarketsMode;
+  onMarketsModeChange:     (m: MarketsMode) => void;
+  marketsModeSelectorVisibility?: "always" | "belowLg";
+  onSliceChange:           (s: AssetsSlice) => void;
   onSwitchLens:            (id: string) => void;
   onEnvelopeChange:        (env: PerspectiveEnvelope) => void;
   onSelectCashFlowPeriod:  (p: CashFlowPeriod) => void;
@@ -94,23 +116,95 @@ export interface WorkspaceRenderCtx {
 
 /**
  * id → render implementation. Keys are exactly the financial Perspective ids that
- * own an inline workspace (registry `kind: "perspective"`, `status: "available"`,
- * no routed-modal). The registry↔renderer parity test enforces this set.
+ * are OVERVIEW LENS DESTINATIONS with an inline workspace (registry `kind:
+ * "perspective"`, `status: "available"`). Since the Overview consolidation that
+ * is Net Worth (`wealth`) and Cash Flow; the registry↔renderer parity test
+ * (lib/perspectives/overview-lenses.test.ts) enforces this set.
  */
-export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => React.ReactNode> = {
+/**
+ * THE ONE exploration sheet, mounted ONCE for every workspace.
+ *
+ * Mounting it per workspace meant five mounts of one component, five chances for
+ * one of them to drift, and — worse — a deep link that opened nothing whenever
+ * the workspace behind it early-returned an empty state. The host always
+ * renders, so the sheet always restores.
+ *
+ * Each workspace still chooses its OWN root when a point is clicked; only the
+ * mount is shared. That is the whole design: one explorer, many entry points.
+ */
+export function WorkspaceExplorationHost({
+  spaceId, asOf, children,
+}: {
+  spaceId: string;
+  asOf: string;
+  children: React.ReactNode;
+}) {
+  const exploration = useHistoryExploration();
+  return (
+    <>
+      {children}
+      <HistoryExplorationSheet
+        spaceId={spaceId}
+        open={exploration.open}
+        root={exploration.root}
+        nodeType={exploration.nodeType}
+        nodeId={exploration.nodeId}
+        dateISO={exploration.dateISO ?? asOf}
+        fromISO={exploration.fromISO || asOf}
+        toISO={exploration.toISO || asOf}
+        onNavigate={exploration.navigate}
+        onClose={exploration.close}
+      />
+    </>
+  );
+}
+
+const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => React.ReactNode> = {
+  // OVERVIEW-CONSOLIDATION — the Net Worth workspace hosts Total · Assets (Cash +
+  // Investments embedded) · Debt. Liquidity / Investments / Debt are no longer
+  // peer lenses with their own renderer entries; their workspaces render INSIDE
+  // this one (see WealthWorkspace). The registry entries for those ids remain
+  // (engine lenses, category lists, present-day verdicts) — they are just not
+  // Overview destinations any more.
   wealth: (ctx) => (
     <WealthWorkspace
+      spaceId={ctx.spaceId}
+      spaceType={ctx.spaceType}
       snapshots={ctx.snapshots}
       snapshotCurrency={ctx.snapshotCurrency}
       asOf={ctx.asOf}
       compareTo={ctx.compareTo}
+      historicalCompareTo={ctx.historicalCompareTo}
+      today={ctx.today}
       accounts={ctx.accounts}
       ctx={ctx.widgetCtx}
-      metric={ctx.chartMetric}
-      onMetricChange={ctx.onMetricChange}
+      mode={ctx.wealthMode}
+      onModeChange={ctx.onModeChange}
+      modeSelectorVisibility={ctx.wealthModeSelectorVisibility}
+      slice={ctx.assetsSlice}
+      onSliceChange={ctx.onSliceChange}
+      focusSection={ctx.wealthFocus}
+      active={ctx.assetsActive || ctx.debtActive}
+      cash={{
+        expenseBaseline:  ctx.liquidityExpenseBaseline,
+        presentLens:      ctx.lensResults?.["liquidity"] ?? null,
+        transactions:     ctx.transactions,
+        transactionsMeta: ctx.transactionsMeta,
+        txCtx:            ctx.txCtx,
+        period:           ctx.cashFlowPeriod,
+        onOpenCashFlow:   ctx.onOpenCashFlow,
+      }}
+      debt={{
+        ficoScore:      ctx.ficoScore,
+        ficoUpdatedAt:  ctx.ficoUpdatedAt,
+        presentLens:    ctx.lensResults?.["debt"] ?? null,
+        targetCurrency: ctx.perspectiveTargetCurrency,
+      }}
       onSwitchLens={ctx.onSwitchLens}
       onEnvelopeChange={ctx.onEnvelopeChange}
       backfillInProgress={ctx.snapshotsBackfilling}
+      snapshotsError={ctx.readErrors?.snapshots?.message ?? null}
+      onRetrySnapshots={ctx.onRetryRead ? () => ctx.onRetryRead?.("snapshots") : undefined}
     />
   ),
   cashFlow: (ctx) => (
@@ -124,57 +218,44 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
       compareTo={ctx.historicalCompareTo}
       onSelectPeriod={ctx.onSelectCashFlowPeriod}
       onEnvelopeChange={ctx.onEnvelopeChange}
+      transactionsError={ctx.readErrors?.transactions?.message ?? null}
+      onRetryTransactions={ctx.onRetryRead ? () => ctx.onRetryRead?.("transactions") : undefined}
     />
   ),
-  liquidity: (ctx) => (
-    <LiquidityWorkspace
-      spaceId={ctx.spaceId}
-      asOf={ctx.asOf}
-      compareTo={ctx.historicalCompareTo}
-      today={ctx.today}
-      active={ctx.liquidityActive}
-      accounts={ctx.accounts}
-      ctx={ctx.widgetCtx}
-      snapshots={ctx.snapshots}
-      snapshotCurrency={ctx.snapshotCurrency}
-      monthlyExpenses={ctx.liquidityMonthlyExpenses}
-      presentLens={ctx.lensResults?.["liquidity"] ?? null}
-      transactions={ctx.transactions}
-      transactionsMeta={ctx.transactionsMeta}
-      txCtx={ctx.txCtx}
-      period={ctx.cashFlowPeriod}
-      onOpenCashFlow={ctx.onOpenCashFlow}
-      onEnvelopeChange={ctx.onEnvelopeChange}
-    />
-  ),
-  investments: (ctx) => (
-    <InvestmentsWorkspace
-      spaceId={ctx.spaceId}
-      asOf={ctx.asOf}
-      compareTo={ctx.historicalCompareTo}
-      active={ctx.investmentsActive}
-      today={ctx.today}
-      accounts={ctx.accounts}
-      ctx={ctx.widgetCtx}
-      onEnvelopeChange={ctx.onEnvelopeChange}
-    />
-  ),
-  debt: (ctx) => (
-    <DebtWorkspace
-      spaceId={ctx.spaceId}
-      asOf={ctx.asOf}
-      compareTo={ctx.historicalCompareTo}
-      today={ctx.today}
-      active={ctx.debtActive}
-      accounts={ctx.accounts}
-      ctx={ctx.widgetCtx}
-      snapshots={ctx.snapshots}
-      snapshotCurrency={ctx.snapshotCurrency}
-      ficoScore={ctx.ficoScore}
-      ficoUpdatedAt={ctx.ficoUpdatedAt}
-      presentLens={ctx.lensResults?.["debt"] ?? null}
-      targetCurrency={ctx.perspectiveTargetCurrency}
+  // MARKETS (skeleton) — five views, each an honest empty state; no data needs.
+  // UI-014: the registry marks it `comingSoon` for beta, so the gate below
+  // renders WorkspaceComingSoon instead; this implementation stays wired.
+  markets: (ctx) => (
+    <MarketsWorkspace
+      mode={ctx.marketsMode}
+      onModeChange={ctx.onMarketsModeChange}
+      modeSelectorVisibility={ctx.marketsModeSelectorVisibility}
       onEnvelopeChange={ctx.onEnvelopeChange}
     />
   ),
 };
+
+/**
+ * UI-014 / MARKETS-COMING-SOON (2026-10-22) — the registry's `status` is a REAL
+ * mechanism for workspace renderers. A destination whose PerspectiveDef says
+ * `comingSoon` renders the honest WorkspaceComingSoon placeholder (and
+ * publishes the empty envelope) instead of its implementation. Nothing is
+ * deleted: the implementation stays in the map above, so flipping the
+ * registry entry back to "available" restores it with no change here. Keys
+ * are unchanged, so the registry↔renderer parity test still binds the two.
+ */
+function isComingSoon(id: string): boolean {
+  const def = getWorkspaceDefinition(id);
+  return !!def && (def as Partial<PerspectiveDef>).status === "comingSoon";
+}
+
+export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => React.ReactNode> =
+  Object.fromEntries(
+    Object.entries(WORKSPACE_RENDERER_IMPLS).map(([id, render]) => [
+      id,
+      (ctx: WorkspaceRenderCtx) =>
+        isComingSoon(id)
+          ? <WorkspaceComingSoon definition={getWorkspaceDefinition(id) as PerspectiveDef} onEnvelopeChange={ctx.onEnvelopeChange} />
+          : render(ctx),
+    ]),
+  );

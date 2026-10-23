@@ -4,10 +4,11 @@
  * BTC wallet balance sync v1 — orchestration + persistence.
  *
  * Reads a self-custodied BTC FinancialAccount (walletChain="BTC"), fetches its
- * confirmed on-chain balance and a BTC→USD spot price (lib/crypto/btc-explorer.ts),
- * and writes:
+ * confirmed on-chain balance (lib/crypto/btc-explorer.ts), reads the CANONICAL
+ * BTC→USD close from the price archive (lib/crypto/crypto-price-window.ts), and
+ * writes:
  *   - nativeBalance : balance in BTC
- *   - balance       : USD value at the spot price
+ *   - balance       : USD value at the canonical dated close
  *   - currency      : "USD"
  *   - syncStatus    : "pending" → "synced"
  *   - lastUpdated   : now
@@ -44,7 +45,6 @@ import {
 } from "@/lib/accounts/wallet-connection";
 import {
   fetchConfirmedSatsForAddresses,
-  fetchBtcUsdPrice,
   fetchAddressTxsRaw,
   fetchAddressStatsBatch,
   normalizeBtcAddressTxs,
@@ -69,9 +69,27 @@ import {
 } from "@/lib/crypto/btc-discovery-core";
 import { captureWalletPosition } from "@/lib/crypto/wallet-position-capture";
 import { BTC_ASSET } from "@/lib/investments/crypto-instrument";
+import { readCryptoUsdWindows } from "@/lib/crypto/crypto-price-window";
+import {
+  ensureCryptoCloseCoverage, coverageCanValue, type CryptoCloseCoverage,
+} from "@/lib/crypto/crypto-close-coverage";
+import { todayUTCISO } from "@/lib/time/clock";
+import { BTC_NATIVE, ledgerEpsilonFor } from "@/lib/crypto/native-asset";
+import { reconcileWalletLedger, type LedgerReconciliation } from "@/lib/crypto/ledger-completeness.core";
+import { economicDateFor } from "@/lib/transactions/economic-date-write";
+// v2.6-OWN-1 — the on-chain ledger names itself as the author of its flow facts.
+import { foreignFlowOwnershipFields } from "@/lib/transactions/flow-authority";
 
-/** The only chain this v1 sync supports. */
-export const BTC_CHAIN = "BTC";
+/**
+ * The only chain this v1 sync supports.
+ *
+ * W-M0 — sourced from the shared native-asset descriptor rather than declared
+ * here, so this adapter's chain token, the currency it stamps on movement rows,
+ * the symbol its ledger predicate selects and the canonical Instrument ticker
+ * are all ONE string. They were four independent literals; four literals that
+ * must agree are a drift waiting to happen.
+ */
+export const BTC_CHAIN = BTC_NATIVE.chain;
 
 export interface BtcWalletSyncResult {
   accountId: string;
@@ -83,17 +101,82 @@ export interface BtcWalletSyncResult {
   balanceUsd?: number;
   priceUsd?: number;
   /** On failure: which step failed and why (also recorded as a SyncIssue). */
-  stage?: "load" | "discovery" | "balance" | "price";
+  // ("price" is no longer returned — a missing close is `valuation: UNAVAILABLE`
+  // on an ok run — and stays in the union only for readers of old results.)
+  stage?: "load" | "discovery" | "balance" | "price" | "transactions" | "capture";
   reason?: string;
+  /**
+   * V26-S3-LEDGER — does the imported movement ledger account for the observed
+   * balance? A wallet is not history-ready until this is true, and the caller
+   * can see it rather than having to re-derive it.
+   */
+  ledgerComplete?: boolean;
+  ledgerResidual?: number | null;
+  /**
+   * What the HISTORICAL transaction import did on this run — present on every
+   * run that reached it (i.e. every `ok` run). The import is best-effort
+   * enrichment and never decides `ok`: the current position and its valuation
+   * are written whether it succeeds or not. This field is how that partiality
+   * is reported instead of disappearing into a console warning.
+   */
+  transactionImport?: BtcTransactionImportOutcome;
+  /**
+   * The valuation of the quantity this run observed — separate from the
+   * quantity, which is written whether or not a canonical close exists.
+   * UNAVAILABLE ⇒ `balanceUsd`/`priceUsd` are absent and the USD column was not
+   * rewritten; the read model shows the position unpriced, not stale-priced.
+   */
+  valuation?: BtcValuationOutcome;
+  /**
+   * CRYPTO-LATCH-1 — what RAW_CLOSE archive maintenance did, when the canonical
+   * close was missing and the default price authority repaired it. Absent when
+   * the archive was already covered (the overwhelmingly common case), so its
+   * PRESENCE means "the archive was short and this run acted on it".
+   */
+  closeCoverage?: CryptoCloseCoverage;
 }
+
+export type BtcValuationOutcome =
+  | { status: "PRICED"; priceUsd: number; balanceUsd: number; startedAt: Date; durationMs: number }
+  | { status: "UNAVAILABLE"; reason: string; startedAt: Date; durationMs: number };
+
+/**
+ * The historical transaction import's own outcome, measured by the import.
+ *
+ * IMPORTED — every requested address was read to exhaustion; `written` new rows
+ *            were persisted (0 is a normal, complete answer).
+ * FAILED   — the provider did not answer (or answered garbage). NOTHING was
+ *            written: the fetch is complete-or-throw, so previously imported
+ *            history is untouched and no partial page is persisted.
+ *
+ * `startedAt`/`durationMs` are the import's own clock so the refresh ledger can
+ * record it as its own stage without inventing a duration.
+ */
+export type BtcTransactionImportOutcome =
+  | { status: "IMPORTED"; addresses: number; fetched: number; written: number; startedAt: Date; durationMs: number }
+  | { status: "FAILED"; addresses: number; reason: string; startedAt: Date; durationMs: number };
 
 export interface BtcSyncDeps {
   /** Injected fetch (offline tests / alternate transport). */
   fetchImpl?: FetchFn;
   /** Override the balance fetch — returns confirmed satoshis for an address. */
   balanceFetcher?: (address: string) => Promise<number>;
-  /** Override the price fetch — returns BTC→USD. */
+  /**
+   * Override the BTC→USD read (offline tests). Default: the canonical archived
+   * close, WITH its own archive maintenance (`canonicalBtcCloseUsdMaintained`).
+   *
+   * CRYPTO-LATCH-1 — an injected fetcher REPLACES the canonical close authority
+   * wholesale, so it owns its own coverage and no maintenance runs behind it.
+   * That is why every pre-existing test that injects a failing `priceFetcher`
+   * still observes a plain UNAVAILABLE and never reaches the network.
+   */
   priceFetcher?: () => Promise<number>;
+  /**
+   * Override the RAW_CLOSE archive maintenance the default price authority
+   * performs on a miss (offline tests). Only consulted when `priceFetcher` is
+   * NOT injected — see above.
+   */
+  closeCoverage?: (asOfISO: string) => Promise<CryptoCloseCoverage>;
   /** Override the confirmed-transactions fetch (offline tests). */
   txFetcher?: (address: string) => Promise<RawBtcTx[]>;
   /** Override the xpub batch address-stats lookup (offline tests). */
@@ -108,7 +191,7 @@ export interface BtcSyncDeps {
 /** Best-effort SyncIssue writer — never throws (mirrors lib/plaid/syncIssues.ts). */
 async function recordWalletSyncIssue(
   financialAccountId: string,
-  stage: "discovery" | "balance" | "price",
+  stage: "discovery" | "balance" | "price" | "transactions" | "capture",
   message: string,
   extra?: Record<string, unknown>,
 ): Promise<void> {
@@ -131,81 +214,91 @@ async function recordWalletSyncIssue(
   });
 }
 
-/** Canonical asset identity for the wallet's native BTC position. */
-const BTC_SYMBOL = "BTC";
-const BTC_ASSET_NAME = "Bitcoin";
-
 /**
- * Wallet Provider v2 — persist/refresh the wallet's native BTC Holding.
+ * P2-6 (completed at W5) — the wallet's position write is SPINE-ONLY. The
+ * balance is recorded as a canonical OBSERVED `PositionObservation` (via the
+ * ONE canonical BTC Instrument), quantity-only: valuation happens at read time
+ * through the canonical dated price series (getCurrentPositions /
+ * historical-crypto-valuation), never from a stored undated figure. A zero
+ * balance writes a `quantity:0` closure row. Gated behind
+ * INVESTMENT_OBSERVATIONS_ENABLED (inside captureWalletPosition) and
+ * best-effort/non-fatal.
  *
- * Upserts on the existing (financialAccountId, symbol) unique key — no schema
- * change. `value` mirrors the account's USD balance EXACTLY (same balanceUsd),
- * so nothing that sums account balances double-counts, and net worth (which
- * reads FinancialAccount.balance by type, not Holdings, this slice) is
- * unchanged. Going forward Holding is the authoritative balance source; the
- * FinancialAccount.balance/nativeBalance columns remain transitional
- * compatibility fields (see prisma/schema.prisma).
+ * W5 executed the dual-write's own DELETION CONDITION: the legacy `Holding`
+ * mirror (`writeBtcHolding`) was removed once the census showed zero remaining
+ * production `Holding` readers (the AI assembler, the data export and the
+ * account read all consume getCurrentPositions; the crypto-only bridge is
+ * deleted). scripts/audit-crypto-holding-tombstone.ts keeps the count at zero
+ * — do not reintroduce a wallet `Holding` write to satisfy a new reader; new
+ * readers consume the spine.
  *
- * Best-effort/non-fatal: the balance write is what net worth reads this slice,
- * so a Holding failure is logged and swallowed rather than failing the sync.
- */
-async function writeBtcHolding(
-  financialAccountId: string,
-  amounts: { nativeBalance: number; priceUsd: number; balanceUsd: number },
-): Promise<void> {
-  try {
-    await db.holding.upsert({
-      where: { financialAccountId_symbol: { financialAccountId, symbol: BTC_SYMBOL } },
-      create: {
-        financialAccountId,
-        symbol:   BTC_SYMBOL,
-        name:     BTC_ASSET_NAME,
-        quantity: amounts.nativeBalance,
-        price:    amounts.priceUsd,
-        value:    amounts.balanceUsd,
-        currency: "USD",
-        isCash:   false,
-      },
-      update: {
-        quantity: amounts.nativeBalance,
-        price:    amounts.priceUsd,
-        value:    amounts.balanceUsd,
-        currency: "USD",
-      },
-    });
-  } catch (e) {
-    console.warn(`[btc-sync] BTC Holding upsert failed for account ${financialAccountId} (non-fatal):`, e);
-  }
-}
-
-/**
- * P2-6 — TRANSITIONAL DUAL-WRITE. Alongside the legacy `Holding` above, record the
- * same balance as a canonical OBSERVED `PositionObservation` on the investment
- * spine (via the ONE canonical BTC Instrument), so `getCurrentPositions()` sees
- * crypto without a legacy Holding compatibility reader. Quantity-only: valued
- * through the canonical RAW_CLOSE price series, never a synthetic institution
- * anchor (see wallet-position-capture.ts). A zero balance writes a `quantity:0`
- * closure row. Gated behind INVESTMENT_OBSERVATIONS_ENABLED and best-effort/
- * non-fatal — the balance/Holding write above is what Wealth still reads this
- * slice, so a spine-write failure never fails the sync.
+ * ── W6d — WHY THIS IS NO LONGER UNCONDITIONALLY NON-FATAL ───────────────────
+ * "Best-effort" was defensible for exactly as long as `FinancialAccount.balance`
+ * was Bitcoin's CURRENT-value authority: a swallowed capture failure cost the
+ * spine a row, and every account surface still read a real number from the
+ * column. W6d moves that authority onto the spine, and the same swallowed
+ * failure then costs the wallet its value — the row would be written with a
+ * balance nothing canonical reads, the spine would hold no observation for
+ * today, and the account would resolve NO_OBSERVATION. A wallet that silently
+ * loses its worth because a non-fatal warning was logged is precisely the
+ * two-chains-of-custody defect this program exists to close.
  *
- * DELETION CONDITION — this dual-write drops to a spine-only write (remove the
- * `writeBtcHolding` call) once EVERY current crypto `Holding` reader is cut over
- * to `getCurrentPositions()` (P2-4 AI holdings assembler, P2-5 data export +
- * ConnectionsCard) AND the Part 9 census shows zero remaining crypto Holding
- * readers. Kept dual only to protect those concurrently-migrating consumers from
- * timing; NOT indefinitely. Invariant covered by wallet-position-capture.test.ts.
+ * So the severity FOLLOWS the authority, read from the ONE registry that owns
+ * it, rather than being a second place where a chain's participation is decided:
+ *
+ *   legacy column still authoritative → warn, continue (today's behaviour,
+ *                                       byte-identical)
+ *   spine is authoritative            → REFUSE the sync at stage "capture"
+ *
+ * This is what Solana already does (sol-sync.ts step 3), and refusing is the
+ * honest outcome: `lastUpdated` is not advanced, so the wallet AGES into STALE
+ * and then VERY_STALE instead of claiming a confirmation it never got.
+ *
+ * The registry is reached by DYNAMIC import on purpose. `wallet-sync-dispatch`
+ * imports `syncBtcWallet` from this module to build its adapter table, so a
+ * static import here would close a module cycle at evaluation time; the lazy
+ * import resolves at call time, when both modules are already initialised.
+ * (Same reason and same shape as lib/snapshots/space-accounts.ts's lazy import
+ * of the wallet-value authority.)
+ *
+ * @returns null on success; a refusal reason when the caller must abort.
  */
 async function writeBtcObservation(
   financialAccountId: string,
   nativeBalance: number,
   date: Date,
-): Promise<void> {
+): Promise<string | null> {
+  const { usesLegacyColumnForCurrentValue } = await import("@/lib/crypto/wallet-sync-dispatch");
+  // The column is Bitcoin's current-value authority ⇒ the spine is a mirror, and
+  // losing the mirror is not a reason to refuse a balance we did read.
+  const spineIsCurrentAuthority = !usesLegacyColumnForCurrentValue(BTC_CHAIN);
+
+  let written = false;
   try {
-    await captureWalletPosition({ financialAccountId, asset: BTC_ASSET, quantity: nativeBalance, date });
+    ({ written } = await captureWalletPosition({ financialAccountId, asset: BTC_ASSET, quantity: nativeBalance, date }));
   } catch (e) {
-    console.warn(`[btc-sync] BTC PositionObservation write failed for account ${financialAccountId} (non-fatal):`, e);
+    const reason = `position capture failed: ${e instanceof Error ? e.message : String(e)}`;
+    if (!spineIsCurrentAuthority) {
+      console.warn(`[btc-sync] BTC PositionObservation write failed for account ${financialAccountId} (non-fatal):`, e);
+      return null;
+    }
+    await recordWalletSyncIssue(financialAccountId, "capture", reason, { nativeBalance });
+    return reason;
   }
+
+  // `written: false` is NOT an error — it is INVESTMENT_OBSERVATIONS_ENABLED
+  // being off on this deployment. It is nevertheless fatal once the spine is the
+  // authority: the balance was read and there is nowhere canonical to record it,
+  // so reporting "synced" would present that silence as a completed sync.
+  if (!written && spineIsCurrentAuthority) {
+    const reason =
+      "The balance was read, but canonical position capture is disabled on this deployment " +
+      "(INVESTMENT_OBSERVATIONS_ENABLED), so there is nowhere to record it.";
+    await recordWalletSyncIssue(financialAccountId, "capture", reason, { nativeBalance });
+    return reason;
+  }
+
+  return null;
 }
 
 // ── Wallet Provider v3 — BTC transactions → normal Transaction rows ───────────
@@ -259,6 +352,12 @@ async function resolveOwnWalletAddresses(
  * made executable policy — not a comment anyone can quietly copy — by
  * lib/transactions/flow-classifier-authority.test.ts, which fails if this marker
  * is removed OR if any OTHER file starts hand-writing flowType off-classifier.
+ *
+ * v2.6-OWN-1 — that distinctness is now a VALUE, not an absence: every row this
+ * builder produces is stamped `flowAuthority = CRYPTO_LEDGER`. "classifierVersion
+ * IS NULL" previously meant two different things — this authority, and the
+ * never-classified seed backlog — and the two are now separable by construction.
+ * `classifierVersion` stays null, which remains a true statement about the row.
  */
 function buildTransactionRow(
   financialAccountId: string,
@@ -293,15 +392,23 @@ function buildTransactionRow(
   return {
     financialAccountId,
     date:                  m.occurredAt,
+    // L8-A — on-chain rows carry no authorization, so the economic date IS the
+    // occurrence date. Routed through the one write authority anyway, so a
+    // future chain that DOES attest an earlier time needs no change here.
+    economicDate:          economicDateFor({ postingDate: m.occurredAt, authorizedAt: null }),
     merchant,
     description:           m.description,
     category,
     amount:                m.amountBtc,   // native BTC; inflow +, outflow/fee −
-    currency:              "BTC",
+    currency:              BTC_NATIVE.symbol,
     pending:               m.settlement === "PENDING",
     externalTransactionId: m.externalId,
     flowType,
     flowDirection,
+    // v2.6-OWN-1 — this authority names itself. `classifierVersion` stays absent
+    // (null), so the two facts agree: the classifier did not write this row, and
+    // the ledger that did is named.
+    ...foreignFlowOwnershipFields("CRYPTO_LEDGER"),
     settlementState:       m.settlement === "POSTED" ? SettlementState.POSTED : SettlementState.PENDING,
     ...(counterpartyAccountId ? { counterpartyAccountId } : {}),
     ...(classificationReason  ? { classificationReason }  : {}),
@@ -340,14 +447,19 @@ export function filterFreshMovements<T extends { externalId: string }>(
 async function importBtcTransactions(
   account: { id: string; ownerUserId: string | null; addresses: string[] },
   deps: BtcSyncDeps,
-): Promise<void> {
+): Promise<BtcTransactionImportOutcome> {
+  const startedAt = new Date();
+  const t0 = Date.now();
+  const addresses = account.addresses.length;
+  const imported = (fetched: number, written: number): BtcTransactionImportOutcome =>
+    ({ status: "IMPORTED", addresses, fetched, written, startedAt, durationMs: Date.now() - t0 });
   try {
     const fetchTxs = deps.txFetcher ?? ((a: string) => fetchAddressTxsRaw(a, deps.fetchImpl));
     const lists = await Promise.all(account.addresses.map(fetchTxs));
     const rawTxs = dedupeRawTxsByTxid(lists.flat());
 
     const movements = normalizeBtcAddressTxs(rawTxs, account.addresses);
-    if (movements.length === 0) return;
+    if (movements.length === 0) return imported(rawTxs.length, 0);
 
     // Engine-level counterparty resolution → INTERNAL transfers.
     const ownByAddress = account.ownerUserId
@@ -384,14 +496,21 @@ async function importBtcTransactions(
       select: { externalTransactionId: true },
     });
     const fresh = filterFreshMovements(movements, existing.map((e) => e.externalTransactionId));
-    if (fresh.length === 0) return;
+    if (fresh.length === 0) return imported(rawTxs.length, 0);
 
-    await db.transaction.createMany({
+    const { count } = await db.transaction.createMany({
       data: fresh.map((m) => buildTransactionRow(account.id, m, ownByAddress)),
       skipDuplicates: true,
     });
+    return imported(rawTxs.length, count);
   } catch (e) {
-    console.warn(`[btc-sync] transaction import failed for account ${account.id} (non-fatal):`, e);
+    // NON-FATAL MEANS EXACTLY THIS: the caller goes on to write the current
+    // position and its valuation, and this outcome travels on the result (and
+    // into the refresh ledger as a FAILED TRANSACTIONS stage) so the run is
+    // reported PARTIAL rather than as a clean success. It does NOT mean ignored.
+    const reason = e instanceof Error ? e.message : String(e);
+    console.warn(`[btc-sync] transaction import failed for account ${account.id} (non-fatal — position still written):`, reason);
+    return { status: "FAILED", addresses, reason, startedAt, durationMs: Date.now() - t0 };
   }
 }
 
@@ -514,12 +633,114 @@ async function discoverXpubStep(params: {
  * Sync one BTC wallet account — single-address OR xpub. Never throws.
  *
  * xpub: discovery runs first to populate ProviderAccountIdentity; the confirmed
- * balance is SUMMED across every discovered address into ONE Holding, and
+ * balance is SUMMED across every discovered address into ONE position (the
+ * account balance + ONE spine observation — W5: no legacy Holding row), and
  * transactions from every address are aggregated (deduped by txid) into ONE
  * history. Single-address wallets behave exactly as before, resolved through the
  * same identity path. On any external failure the account is left untouched
  * (visible, "pending") and a SyncIssue is recorded.
  */
+/**
+ * V26-S3-LEDGER — reconcile this wallet's STORED movement ledger against a
+ * freshly observed balance, through the canonical authority.
+ *
+ * The predicates are the binding's documented responsibility and are exactly the
+ * ones the regenerator applies (regenerate-history.ts): this account only,
+ * native-denominated, POSTED, not deleted. Keeping them identical is the point —
+ * two reconciliations that disagreed about what counts would be worse than none.
+ */
+async function reconcileWalletLedgerForAccount(
+  accountId: string,
+  observedBalance: number,
+): Promise<LedgerReconciliation> {
+  const rows = await db.transaction.findMany({
+    where: {
+      financialAccountId: accountId,
+      // W-M0 — the SAME string this adapter stamps on the rows it writes, and
+      // the same one the historical predicates select by. Not a coincidence to
+      // be maintained; one descriptor read from three places.
+      currency:           BTC_NATIVE.symbol,
+      deletedAt:          null,
+      settlementState:    SettlementState.POSTED,
+    },
+    select: { amount: true },
+  });
+  return reconcileWalletLedger({
+    observedBalance,
+    movements: rows.map((r) => r.amount),
+    // One satoshi — the value this reconciliation always used, now stated as a
+    // property of the asset instead of a constant that happened to be Bitcoin's.
+    epsilon:   ledgerEpsilonFor(BTC_NATIVE),
+  });
+}
+
+/**
+ * The canonical BTC→USD figure for the legacy USD column: the archived
+ * RAW_CLOSE nearest on or before today, through the SAME reader every crypto
+ * valuation uses (`readCryptoUsdWindows`, with its own staleness bound).
+ * Throws when the archive has no usable close — never a live quote instead.
+ */
+async function canonicalBtcCloseUsd(now: Date = new Date()): Promise<number> {
+  const todayISO = todayUTCISO(now);
+  const window = await readCryptoUsdWindows([BTC_ASSET], todayISO, todayISO);
+  const close = window(BTC_ASSET.assetKey, todayISO);
+  if (close === null || !Number.isFinite(close) || close <= 0) {
+    throw new Error(`no canonical BTC close in the price archive on or before ${todayISO}`);
+  }
+  return close;
+}
+
+/**
+ * CRYPTO-LATCH-1 — THE CANONICAL CLOSE AUTHORITY, WITH ITS OWN MAINTENANCE.
+ *
+ * `canonicalBtcCloseUsd` above is a pure archive read, and a pure archive read
+ * is how the latch happened: a miss returned UNAVAILABLE, UNAVAILABLE closed
+ * `outcomeRevalued`, and `outcomeRevalued` gated the ONLY code that could have
+ * refilled the archive. Every BTC refresh from 2026-09-28 to 10-01 refused in
+ * 29–36 ms without one network call, and nothing a BTC-only holder could press
+ * would ever fix it.
+ *
+ * So the authority now owns the prerequisite it depends on: on a miss it
+ * repairs exactly the walk-back window and asks ITS OWN READER again. Not a
+ * fallback to a different price — the same basis, the same reader, the same
+ * tolerance, with the archive made able to answer first.
+ *
+ * ORDER MATTERS AND IS DELIBERATE: read, then repair, then re-read. A covered
+ * archive never issues a vendor request, so the happy path is unchanged and
+ * costs nothing — which is what makes this safe on every refresh.
+ *
+ * `onCoverage` reports what maintenance did so the caller can account for it as
+ * its own stage with its own clock. A repair that runs invisibly is the same
+ * mistake as a latch that fails invisibly.
+ */
+async function canonicalBtcCloseUsdMaintained(
+  onCoverage: (c: CryptoCloseCoverage) => void,
+  deps: Pick<BtcSyncDeps, "closeCoverage">,
+  now: Date = new Date(),
+): Promise<number> {
+  try {
+    return await canonicalBtcCloseUsd(now);
+  } catch (firstMiss) {
+    const asOfISO = todayUTCISO(now);
+    const ensure = deps.closeCoverage ?? ((iso: string) => ensureCryptoCloseCoverage(BTC_ASSET, iso));
+    const coverage = await ensure(asOfISO);
+    onCoverage(coverage);
+    if (!coverageCanValue(coverage)) {
+      // The archive still cannot answer. Report the MAINTENANCE reason, which
+      // says what was attempted and what the vendor returned — strictly more
+      // than the bare archive miss, which only ever said "no close".
+      throw new Error(
+        `no canonical BTC close in the price archive on or before ${asOfISO} ` +
+        `(archive maintenance ${coverage.status}${coverage.reason ? `: ${coverage.reason}` : ""})`,
+      );
+    }
+    // Repaired — re-read through the SAME reader. Never trust `inserted`: a
+    // vendor can write rows that still do not reach `asOfISO`.
+    void firstMiss;
+    return await canonicalBtcCloseUsd(now);
+  }
+}
+
 export async function syncBtcWallet(
   accountId: string,
   deps: BtcSyncDeps = {},
@@ -579,17 +800,26 @@ export async function syncBtcWallet(
     return { accountId, ok: false, stage: "load", reason: "no addresses to sync" };
   }
 
-  const priceFetcher = deps.priceFetcher ?? (() => fetchBtcUsdPrice(deps.fetchImpl));
+  // CRYPTO-LATCH-1 — the default authority carries its own archive maintenance.
+  // `closeCoverage` is captured here so the outcome travels on the result and
+  // can be recorded as its own stage.
+  let closeCoverage: CryptoCloseCoverage | undefined;
+  const priceFetcher = deps.priceFetcher
+    ?? (() => canonicalBtcCloseUsdMaintained((c) => { closeCoverage = c; }, deps));
 
   // 1) Confirmed balance across every KNOWN address — batch (one request per 50)
   //    for xpub, per-address for single-address. For a partially-discovered xpub
   //    this is a PARTIAL balance (completes as discovery advances).
   let sats: number;
+  // V26-S1-BTC — retained so the transaction import can select addresses by
+  // DEMONSTRATED ACTIVITY rather than by position. See the import call below.
+  let statsByAddress: Map<string, AddrStat> | null = null;
   try {
     if (deps.balanceFetcher) {
       sats = (await Promise.all(addresses.map(deps.balanceFetcher))).reduce((s, x) => s + x, 0);
     } else if (isXpub) {
       const stats = deps.batchStatsFetcher ? await deps.batchStatsFetcher(addresses) : await fetchAddressStatsBatch(addresses, deps.fetchImpl);
+      statsByAddress = stats;
       sats = addresses.reduce((s, a) => s + (stats.get(a)?.sats ?? 0), 0);
     } else {
       sats = await fetchConfirmedSatsForAddresses(addresses, deps.fetchImpl);
@@ -600,34 +830,223 @@ export async function syncBtcWallet(
     return { accountId, ok: false, stage: "balance", reason };
   }
 
-  // 2) BTC→USD spot price.
-  let priceUsd: number;
+  // 2) BTC→USD for the legacy USD column — the CANONICAL dated close.
+  //
+  // This was a live spot quote from a SECOND provider (mempool.space
+  // /api/v1/prices), fetched even for an xpub wallet whose balance comes from
+  // the batch provider — so a wallet whose canonical quantity HAD been read was
+  // refused, before the observation was written, by a figure no canonical
+  // surface reads (W6d). On 2026-09-15 mempool.space stopped completing TLS
+  // handshakes and every BTC refresh spent the 10 s timeout and failed here.
+  // The archive is the authority the account card already values against
+  // (loadWalletCurrentValues), so the column now agrees with it by construction.
+  // No fallback to a live quote: a wallet with no archived close is reported
+  // UNPRICED by name (below) — never valued from a second, undated source.
+  //
+  // 2026-09-21 — AND IT NO LONGER GATES THE QUANTITY. A missing close used to
+  // return here, before the observation, so a wallet whose balance authority HAD
+  // answered lost its current position to a valuation problem. Quantity and
+  // valuation are separate dimensions: the observation is quantity-only and is
+  // valued at READ time through the same archive reader with the same staleness
+  // bound. The sync now records the quantity ON THE SPINE, leaves the legacy USD
+  // pair AND its clock exactly as the last priced run left them (see the account
+  // write below for why the clock must not move), reports the valuation as
+  // UNAVAILABLE — a VALUATION stage failure, so the run is PARTIAL — and the
+  // callers skip snapshot/wealth regeneration (`outcomeRevalued`), because there
+  // is no new valuation evidence to rebuild from.
+  const valuationStartedAt = new Date();
+  const valuationT0 = Date.now();
+  let priceUsd: number | null = null;
+  let priceFailure: string | null = null;
   try {
     priceUsd = await priceFetcher();
   } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    await recordWalletSyncIssue(accountId, "price", reason);
-    return { accountId, ok: false, stage: "price", reason };
+    priceFailure = err instanceof Error ? err.message : String(err);
+    await recordWalletSyncIssue(accountId, "price", priceFailure);
   }
+  const valuationDurationMs = Date.now() - valuationT0;
 
   // 3) Persist the aggregated balance (one account, one balance — no duplicates).
   //    Until an xpub's discovery completes, the account is "pending" (partial),
   //    not "synced" — honest status while more addresses are still being found.
   const nativeBalance = satsToBtc(sats);
-  const balanceUsd = computeUsdBalance(nativeBalance, priceUsd);
-  await db.financialAccount.update({
-    where: { id: accountId },
-    data: { nativeBalance, balance: balanceUsd, currency: "USD", syncStatus: discoveryComplete ? "synced" : "pending", lastUpdated: new Date() },
-  });
+  // REVIEW-3 (BTC money contract, point 1) — the native quantity is the
+  // canonical stored fact; everything USD below is DERIVED from it. Assert its
+  // coherence before anything derives from it: a provider returning garbage
+  // must fail the sync, not write a fabricated quantity and valuation.
+  if (!Number.isFinite(nativeBalance) || nativeBalance < 0) {
+    const reason = `incoherent native balance from provider (sats=${sats})`;
+    await recordWalletSyncIssue(accountId, "balance", reason);
+    return { accountId, ok: false, stage: "balance", reason };
+  }
+  const balanceUsd = priceUsd === null ? null : computeUsdBalance(nativeBalance, priceUsd);
+  const valuation: BtcValuationOutcome = priceUsd !== null && balanceUsd !== null
+    ? { status: "PRICED", priceUsd, balanceUsd, startedAt: valuationStartedAt, durationMs: valuationDurationMs }
+    : { status: "UNAVAILABLE", reason: priceFailure ?? "no BTC price", startedAt: valuationStartedAt, durationMs: valuationDurationMs };
 
-  // v2 — one BTC Holding (summed). v3 — transactions aggregated across addresses,
+  // v2 — one summed BTC position (W5: FA balance + spine observation; the
+  //    legacy Holding mirror is retired). v3 — transactions aggregated across addresses,
   //    BOUNDED to the first N addresses per run so a behemoth wallet never issues
   //    hundreds of tx requests; history fills in across runs (idempotent dedupe).
-  await writeBtcHolding(accountId, { nativeBalance, priceUsd, balanceUsd });
-  // P2-6 — transitional dual-write onto the canonical spine (gated, non-fatal).
-  await writeBtcObservation(accountId, nativeBalance, new Date());
-  const txAddrCap = Number(process.env.BTC_TX_ADDR_CAP) || 25;
-  await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: addresses.slice(0, txAddrCap) }, deps);
+  // V26-S1-BTC — IMPORT TRANSACTIONS FOR EVERY ADDRESS THAT HAS ANY.
+  //
+  // This was `addresses.slice(0, BTC_TX_ADDR_CAP || 25)`, commented "history
+  // fills in across runs (idempotent dedupe)". It does not: `slice(0, 25)` is
+  // deterministic, so it selects the SAME first 25 addresses on every run and
+  // addresses 26+ never have their transactions imported — while their balances
+  // ARE counted, because the balance step above walks the whole set. The result
+  // is a wallet whose balance is complete and whose ledger structurally cannot
+  // be, which is precisely what reconcileWalletLedger now refuses.
+  //
+  // The correct bound is not a count, it is EVIDENCE: only an address with
+  // on-chain activity has transactions to fetch, and discovery already told us
+  // which those are (AddrStat.txCount, from the same batch call that produced
+  // the balance). For the live wallet that is 1 address out of 41 — fewer
+  // requests than the cap it replaces, and complete.
+  //
+  // Without stats (single-address wallets, or an injected balanceFetcher) every
+  // known address is asked, which for those shapes is a set of one or two.
+  const txAddresses = statsByAddress
+    ? addresses.filter((a) => (statsByAddress.get(a)?.txCount ?? 0) > 0)
+    : addresses;
+  // (The import itself runs AFTER the current position is persisted — below.)
+
+  // V26-S3-LEDGER — A WALLET IS NOT HISTORY-READY UNTIL ITS LEDGER RECONCILES.
+  //
+  // Balance and ledger are gathered by different means: the balance walks every
+  // discovered address in one batch call, the ledger paginates each active
+  // address. They can therefore disagree, and until now nothing at sync time
+  // asked whether they did. `syncStatus` flipped to "synced" on discovery alone,
+  // so a wallet whose import was short — the live one, 25 of 28 confirmed
+  // transactions — reported itself fully synced while its history was missing
+  // 8.4% of the coin.
+  //
+  // Regeneration already refuses such a wallet (S1), but it refuses SILENTLY
+  // from the wallet's point of view: the account looked healthy and the history
+  // simply never appeared. The verdict belongs here too, at the moment the
+  // evidence is gathered, on the SAME authority the regenerator uses — never a
+  // second reconciliation rule.
+  //
+  // 2026-09-21 — CURRENT POSITION BEFORE HISTORY ENRICHMENT. The import used to
+  // run first, so a slow or hanging explorer (up to 40 pages × 10 s per address)
+  // stood between a balance we HAD read and its persistence — a function timeout
+  // there lost a valid current observation to optional enrichment. Now the
+  // observation and the account row are written first, and the import follows.
+  //
+  // The completeness invariant is kept, not relaxed: the status written with the
+  // position is reconciled against the ledger AS STORED at that instant — true
+  // then — so it can never claim "synced" for a ledger known to be short. After
+  // the import the ledger is reconciled again and the status is rewritten only
+  // if the verdict changed (a short ledger the import completed ⇒ synced; one it
+  // could not ⇒ stays pending). Never an over-claim in either window.
+  //
+  // This gate is identical for a first connection and a resync because there is
+  // exactly ONE sync path (`syncBtcWallet`); the connect route, the manual sync
+  // route and the cron all call it. A newly connected wallet therefore cannot
+  // reach "synced" — and the history regeneration the connect route runs
+  // immediately afterwards cannot license its quantity — until the ledger
+  // accounts for the balance.
+  // W5 — spine-only position write (the legacy Holding dual-write is retired;
+  // see writeBtcObservation's doc).
+  //
+  // W6d — this runs BEFORE the row is updated, and its refusal aborts before
+  // ANY column is written. That ordering is the point: once the spine carries
+  // the current value, a run that writes `balance` while failing to write the
+  // observation would leave the two stores disagreeing about the same instant,
+  // with the authoritative one empty. Refusing leaves the row exactly as the
+  // previous successful sync left it — the failure policy this file has always
+  // had — and lets freshness age it honestly.
+  const captureRefusal = await writeBtcObservation(accountId, nativeBalance, new Date());
+  if (captureRefusal !== null) {
+    return { accountId, ok: false, stage: "capture", reason: captureRefusal };
+  }
+
+  // Reconciled against the ledger as stored NOW, before any enrichment.
+  const ledgerBefore = await reconcileWalletLedgerForAccount(accountId, nativeBalance);
+
+  // ── THE BTC MONEY CONTRACT (REVIEW-3, row 30/33 — read before touching) ─────
+  //
+  //  1. NATIVE QUANTITY IS CANONICAL. `nativeBalance` (BTC, from confirmed
+  //     on-chain sats) is the stored financial FACT for this wallet. It is the
+  //     value the ledger reconciliation checks, the quantity the observation
+  //     spine records, and the only number here with provenance.
+  //  1a. W6d — THE USD COLUMN IS NO LONGER A READ AUTHORITY. It is still
+  //     written (below), and deliberately: `nativeBalance` is what
+  //     regenerate-history reads to decide whether a wallet ever held anything
+  //     material, and the pair is the last-resort fallback for a wallet with no
+  //     spine evidence at all. But no canonical CURRENT read composes value from
+  //     it once the registry stops naming BTC LEGACY_BALANCE_COLUMN — the
+  //     account card, the detail route, the Space mount payload and today's
+  //     snapshot all resolve through `loadWalletCurrentValues`, which prices the
+  //     OBSERVED position written above at the canonical dated close.
+  //     Measured on the live wallet, that moved the figure by +$108.86 on
+  //     0.24060252 BTC: an undated 78,426.98 spot against the canonical
+  //     78,879.42 close. The column is a WRITE for compatibility; treating it as
+  //     truth is the defect.
+  //  2. THE USD FIGURE IS VALUATION-DERIVED PRESENTATION, NOT FX TRUTH.
+  //     `balance`/`currency:"USD"` is quantity × the canonical RAW_CLOSE from
+  //     the price archive (`priceUsd`, nearest on or before today), deliberately BYPASSING
+  //     convertMoney: BTC is an asset with a fiat valuation, not a cash
+  //     currency, so this is a price×quantity valuation, not a currency
+  //     conversion (docs/systems/money-and-fx.md). Nothing downstream may
+  //     treat this column as a dated FX fact — historical crypto valuation
+  //     re-values from `nativeBalance` × the dated price archive
+  //     (historical-crypto-valuation.core.ts), never from this column.
+  //  3. VALUATION INSTANT / SOURCE — DOCUMENTED LIMIT. The close's date is not
+  //     stored alongside the column and FinancialAccount has
+  //     NO column for a valuation source or instant; `lastUpdated` (written
+  //     below, same run as the price fetch) is the closest recorded instant,
+  //     and `balanceLastUpdatedAt` is deliberately NOT reused — it is typed as
+  //     the INSTITUTION's balance clock (D4) and freshness surfaces consume it
+  //     with that meaning. Adding a provenance column is schema work owned by
+  //     the "crypto valuation spine completion" workstream, NOT this program —
+  //     do not smuggle the instant into a column that means something else.
+  await db.financialAccount.update({
+    where: { id: accountId },
+    data: {
+      // ONLY A PRICED RUN MOVES THE LEGACY PAIR AND ITS CLOCK. `lastUpdated` is
+      // both the read model's observedAt AND (point 3 above) the instant of the
+      // USD column's valuation, and three readers fall back to that column when
+      // the read model answers NO_PRICE (space-accounts snapshot, Space mount,
+      // applyCanonicalWalletBalances). Advancing the clock and quantity while
+      // keeping the old USD figure would publish old-quantity × old-price as a
+      // FRESH value (and $0 on a first connect) — adversarial review, 2026-09-21.
+      // So an unpriced run leaves the pair and clock exactly as the last priced
+      // run left them: the fresh QUANTITY lives on the spine observation written
+      // above (dated today), the value is reported UNAVAILABLE, and every reader
+      // keeps seeing a last-known figure with its true, older clock.
+      ...(balanceUsd !== null
+        ? { nativeBalance, balance: balanceUsd, currency: "USD", lastUpdated: new Date() }
+        : {}),
+      // "pending" is the honest status when the ledger is short: the balance is
+      // real, the history is still incomplete, and the next run continues the
+      // pagination.
+      syncStatus: discoveryComplete && ledgerBefore.complete ? "synced" : "pending",
+    },
+  });
+
+  // ── HISTORY ENRICHMENT — after the position is durable ─────────────────────
+  // Best-effort: its outcome is REPORTED (result + refresh ledger), never
+  // gating, and nothing above can be undone by it. Complete-or-throw: a failed
+  // import writes no rows, so prior history is untouched.
+  const transactionImport = await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: txAddresses }, deps);
+  const ledger = await reconcileWalletLedgerForAccount(accountId, nativeBalance);
+  const finalStatus = discoveryComplete && ledger.complete ? "synced" : "pending";
+  if (ledger.complete !== ledgerBefore.complete) {
+    await db.financialAccount.update({ where: { id: accountId }, data: { syncStatus: finalStatus } });
+  }
+
+  if (!ledger.complete) {
+    await recordWalletSyncIssue(accountId, "transactions", ledger.reason, {
+      movementCount: ledger.movementCount,
+      movementTotal: ledger.movementTotal,
+      observedBalance: nativeBalance,
+      residual: ledger.residual,
+      // A short ledger while the transaction provider was unreachable is an
+      // outage, not missing history — say which, so the two are never confused.
+      ...(transactionImport.status === "FAILED" ? { transactionImportFailed: transactionImport.reason } : {}),
+    });
+  }
 
   // v1.5 spine — record the sync. For an xpub the Connection status reflects the
   // discovery lifecycle honestly:
@@ -663,8 +1082,21 @@ export async function syncBtcWallet(
   return {
     accountId,
     ok:           true,
-    syncStatus:   discoveryComplete ? "synced" : "pending",
-    nativeBalance, balanceUsd, priceUsd,
+    // V26-S3-LEDGER — "synced" now requires BOTH halves: discovery finished AND
+    // the movement ledger accounts for the balance. Reporting "synced" on a
+    // ledger we know is short is the dishonesty this gate removes, and it is the
+    // status the connect route's history regeneration runs against.
+    syncStatus:   discoveryComplete && ledger.complete ? "synced" : "pending",
+    nativeBalance,
+    ...(balanceUsd !== null && priceUsd !== null ? { balanceUsd, priceUsd } : {}),
+    valuation,
+    // CRYPTO-LATCH-1 — present only when the archive was short and maintenance
+    // acted, so the dispatch can record a PRICE_ARCHIVE stage for exactly those
+    // runs and stay silent on the ones where nothing was needed.
+    ...(closeCoverage ? { closeCoverage } : {}),
+    ledgerComplete: ledger.complete,
+    ledgerResidual: ledger.residual,
+    transactionImport,
   };
 }
 
@@ -683,7 +1115,7 @@ export interface SyncAllBtcWalletsResult {
 }
 
 /**
- * Sync every active BTC wallet. The BTC→USD price is fetched once and shared
+ * Sync every active BTC wallet. The BTC→USD close is read once and shared
  * across accounts (they all value at the same spot). One wallet's failure never
  * blocks the rest — each is wrapped by syncBtcWallet's own never-throw contract.
  */
@@ -693,18 +1125,19 @@ export async function syncAllBtcWallets(deps: BtcSyncDeps = {}): Promise<SyncAll
     select: { id: true },
   });
 
-  // Memoize the price fetch for the batch (unless the caller injected one).
+  // Memoize the archive read for the batch (unless the caller injected one).
   let priceOnce: Promise<number> | null = null;
   const sharedPriceFetcher =
     deps.priceFetcher ??
-    (() => (priceOnce ??= fetchBtcUsdPrice(deps.fetchImpl)));
+    (() => (priceOnce ??= canonicalBtcCloseUsd()));
 
   let succeeded = 0;
   let failed = 0;
   const syncedAccountIds: string[] = [];
   for (const w of wallets) {
     const r = await syncBtcWallet(w.id, { ...deps, priceFetcher: sharedPriceFetcher });
-    if (r.ok) { succeeded++; syncedAccountIds.push(w.id); }
+    // Regeneration input = runs with NEW VALUATION evidence (see outcomeRevalued).
+    if (r.ok) { succeeded++; if (r.valuation?.status !== "UNAVAILABLE") syncedAccountIds.push(w.id); }
     else failed++;
   }
 

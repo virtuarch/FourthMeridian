@@ -1,0 +1,40 @@
+# SEC-002 / TEST-005 — dependency update proposals.
+#
+# Weekly, production and development dependencies alike, grouped so one PR
+# carries every minor/patch bump of the week and a separate PR carries each
+# major. Nothing here merges anything: CI (ci.yml) gates every PR, and the
+# `npm audit --omit=dev --audit-level=high` step in the `test` job is what
+# fails a build on an advisory — this file only proposes the fix.
+#
+# `next` and `eslint-config-next` are pinned exact and must move together
+# (same version); the group keeps them in one PR.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    labels: ["dependencies"]
+
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    labels: ["dependencies", "site"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: ["dependencies", "ci"]

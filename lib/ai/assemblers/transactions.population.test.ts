@@ -106,8 +106,22 @@ function row(dateISO: string, amount: number, flowType: string | null, category:
   check("guard: no `const BANKING_FLOWS: FlowType[]` population allow-list in the assembler",
     !/const\s+BANKING_FLOWS\s*:/.test(src),
     "P2-7B retired it — use the canonical BANKING_POPULATION (`not: INVESTMENT`) instead");
-  check("guard: assembler consumes the canonical banking population (`not: FlowType.INVESTMENT`)",
-    /flowType:\s*\{\s*not:\s*FlowType\.INVESTMENT\s*\}/.test(src));
+  // v2.6-POP-1 — the assembler now IMPORTS the canonical fragment instead of
+  // typing its own copy. Asserting the literal was convergence by coincidence:
+  // when the canonical fragment gained its `flowType: null` arm (a bare
+  // `not: INVESTMENT` drops NULLs), a duplicate would have kept the defective
+  // meaning under the same name, undetected. Assert the stronger property.
+  check("guard: assembler declares no local BANKING_POPULATION copy",
+    !/const\s+BANKING_POPULATION\s*[:=]/.test(src),
+    "two definitions under one name is worse than none — import the canonical fragment");
+  // v2.6-PARITY-1 — strengthened. Importing `BANKING_POPULATION` was true while
+  // the assembler still read a population nothing else read: that fragment is the
+  // FLOW half only, and the KD-15 gate beside it was hand-spelled while the event
+  // projection was absent entirely. `bankingTransactionWhere` is the whole
+  // boundary, and consuming the half is now the regression this pins.
+  check("guard: assembler consumes the whole read boundary (bankingTransactionWhere)",
+    /import\s*\{[^}]*\bbankingTransactionWhere\b[^}]*\}\s*from\s*["'][^"']*banking-population["']/.test(src),
+    "the AI must read bankingTransactionWhere(spaceId) — gate, population and event projection");
   check("guard: money folds gate on isNonEconomicResidue (canonical predicate, not a local set)",
     /isNonEconomicResidue/.test(src));
 }

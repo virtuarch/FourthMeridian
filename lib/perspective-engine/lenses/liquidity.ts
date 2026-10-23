@@ -25,6 +25,7 @@
  * computePerspective("liquidity", scope).
  */
 
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
 import { getAccountsAsOf } from "@/lib/data/accounts-asof";
 import { buildSpaceConversionContext, buildSpaceConversionContextById } from "@/lib/money/server-context";
@@ -35,6 +36,11 @@ import { computeLiquidity, type LiquidityAccountRow } from "./liquidity.core";
 import { buildLiquidityCompleteness, liquidityComponent } from "./asof-completeness";
 
 async function liquidityLens(
+  // RLS-C-S2 — the authority the calling phase earned, handed to this binding by
+  // the engine and forwarded to every data read below. The lens chooses nothing:
+  // it cannot import a client (the engine import-graph guard forbids it) and it
+  // cannot open a transaction (ReadClient has no `$transaction`).
+  client:  ReadClient,
   scope:   PerspectiveScope,
   options: ComputeOptions,
 ): Promise<LensResult> {
@@ -43,7 +49,7 @@ async function liquidityLens(
   const stamps = new Map<string, { tier: CompletenessTier; type: string }>();
 
   const visRows = options.asOf
-    ? (await getAccountsAsOf({
+    ? (await getAccountsAsOf(client, {
         spaceId: scope.spaceId,
         userId:  scope.userId,
         asOf:    options.asOf,
@@ -52,7 +58,7 @@ async function liquidityLens(
         stamps.set(r.account.id, { tier: r.tier, type: r.account.type });
         return { account: r.account, visibilityLevel: r.visibilityLevel as string };
       })
-    : (await getAccountsWithVisibility({
+    : (await getAccountsWithVisibility(client, {
         spaceId: scope.spaceId,
         // Always the viewing member — visibility is computed for the requester,
         // never a stored or elevated identity (investigation §5.9).
@@ -65,12 +71,30 @@ async function liquidityLens(
   const lensRows: LiquidityAccountRow[] = visRows.map(({ account, visibilityLevel }) => ({
     id:              account.id,
     type:            account.type,
+    // 2026-10-07 — liquidity-access evidence (HSA / retirement / unverified);
+    // a category, not an identity, so the lens privacy contract holds.
+    providerSubtype: account.providerSubtype ?? null,
     balance:         account.balance,
     // MC1 P3 Slice 5 — native currency rides along (non-identifying; the
     // privacy contract of this boundary is about names/institutions).
     currency:        account.currency ?? null,
     creditLimit:     account.creditLimit ?? undefined,
     lastUpdated:     account.lastUpdated,
+    // v2.6-L2 — the institution's own clock, so dataAsOfBasis can tell "as of"
+    // from "checked". Null on every account in the corpus today.
+    balanceLastUpdatedAt: account.balanceLastUpdatedAt ?? null,
+    // v2.6-L3 — the CURRENT-state claim, resolved by the KD-19 visibility
+    // authority (lib/data/accounts.ts) and carried on the Account it returns.
+    // The as-of path returns reconstructed accounts with NO currentState, so
+    // these stay absent there — a present-tense "reachable" claim over a
+    // reconstructed past balance would be a category error, and the core
+    // distinguishes absent (use the ledger figure) from null (unknown).
+    ...(account.currentState
+      ? {
+          reachableCash:   account.currentState.reachable,
+          unexplainedHold: account.currentState.unexplained,
+        }
+      : {}),
     visibilityLevel,
   }));
 

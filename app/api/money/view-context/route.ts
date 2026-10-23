@@ -7,6 +7,25 @@
  * target currency, covering the active Space's account balances (latest
  * close) and transaction rows (per-row dates).
  *
+ * ── v2.6-CHRON-1: this endpoint serves BOTH bases ───────────────────────────
+ *
+ * It is the worked example in docs/architecture/TIME_MODEL.md §8.4. The context
+ * it returns is used to convert two populations that carry different dates:
+ *
+ *   transaction rows  → converted by the flow folds at the DTO's `date`,
+ *                       which since L8-B is the ECONOMIC date
+ *   snapshot points   → converted at the snapshot's own date, POSTING basis
+ *
+ * It used to enumerate `groupBy(["date"])` over the flow population: posting
+ * keys for rows that would be asked for at economic dates. Measured on the live
+ * corpus, 31 economic dates had NO prefetched rate and 163 rows landed on them —
+ * they would have converted as unavailable while neighbouring rows converted
+ * cleanly. `FxRate` is empty today so nothing was visibly wrong; the defect was
+ * latent and would have surfaced as an unexplainable scatter of missing
+ * conversions the first time a non-USD reporting currency was used.
+ *
+ * Rule B3: a surface serving both bases enumerates BOTH. It does not pick one.
+ *
  * READ-ONLY BY DOCTRINE: this endpoint writes nothing and the override is
  * never persisted anywhere — not on the Space, not on the User, not in a
  * cookie. Writers (snapshot regenerate/backfill, assemblers) never consult
@@ -15,10 +34,10 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { getSpaceContext } from "@/lib/space";
 import { getAccounts } from "@/lib/data/accounts";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { bankingTransactionWhere } from "@/lib/data/transactions";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { resolveEffectiveSpaceConversionSerialized } from "@/lib/money/server-context";
@@ -41,16 +60,51 @@ export async function GET(req: NextRequest) {
   // population as getTransactions — one row per distinct currency / calendar day,
   // bounded by days not transaction count — instead of loading the full history.
   const txWhere = bankingTransactionWhere(ctx.spaceId);
-  const [accounts, currencyRows, dateRows, snapshots] = await Promise.all([
-    getAccounts({ spaceId: ctx.spaceId }),
-    db.transaction.groupBy({ by: ["currency"], where: txWhere }),
-    db.transaction.groupBy({ by: ["date"], where: txWhere }),
-    // Snapshot dates + the Space's stamp currency are enumerated so the chart's
-    // per-point conversion resolves under the override instead of rate-missing
-    // (each historical net-worth point converts at its own date). Same 365-day
-    // window the Overview chart reads.
-    getRecentSnapshots(365, { spaceId: ctx.spaceId }),
-  ]);
+  // RLS-C-S1 fix — `ctx.userId` was in scope and was not forwarded, so the
+  // account read took `getAccounts`' ambient branch and re-resolved the viewer
+  // inside the leaf. Same value, now stated by the caller.
+  //
+  // RLS-C-S2/S3 wrapped the account read and the snapshot read in TWO separate
+  // short transactions, and said why: "the two groupBy aggregates between them
+  // are leaves this slice does not own". RLS-T1 OWNS THEM — they are reads of the
+  // banking population this slice converted — so the stated reason has expired
+  // and the four reads collapse into ONE short boundary. Every one of them is a
+  // pure Space-scoped read with no network, no model call and no user think time
+  // between them, which is the only shape `withTenantDb` may be used for.
+  //
+  // The identity is the authenticated session's (requireUser above, then
+  // getSpaceContext) — never the Space cookie, never the `target` query param.
+  //
+  // The FX resolution below stays OUTSIDE: it reads the rate archive on its own
+  // client and may kick off a background freshness check, and a security
+  // boundary is not a request-lifetime container.
+  const { accounts, currencyRows, dateRows, snapshots } = await withTenantDb(
+    ctx.userId,
+    async (tx) => {
+      const [accounts, currencyRows, dateRows, snapshots] = await Promise.all([
+        getAccounts(tx, { spaceId: ctx.spaceId, userId: ctx.userId }),
+        tx.transaction.groupBy({ by: ["currency"], where: txWhere }),
+        // v2.6-CHRON-1 — ECONOMIC dates. This population is flow-shaped
+        // (bankingTransactionWhere), and the folds that will consume this context
+        // convert at the DTO's `date`, which IS the economic date. Enumerating
+        // posting dates here prefetched rates for days the client never asks about
+        // while missing the days it does. `nulls` cannot occur — economicDate is
+        // NOT NULL for every live row (audit:economic-date) — but the filter is
+        // spelled out so a future backfill gap degrades to "fewer dates", never to
+        // a crash on a null key.
+        tx.transaction.groupBy({ by: ["economicDate"], where: txWhere }),
+        // Snapshot dates + the Space's stamp currency are enumerated so the chart's
+        // per-point conversion resolves under the override instead of rate-missing
+        // (each historical net-worth point converts at its own date).
+        //
+        // v2.6-WINDOW-2 — the same ROW cap the Overview chart reads
+        // (app/api/spaces/[id]/snapshots), so the two enumerate the same dates. The
+        // comment here used to say "365-day window"; it was 365 rows then too.
+        getRecentSnapshots(tx, { rows: 365 }, { spaceId: ctx.spaceId }),
+      ]);
+      return { accounts, currencyRows, dateRows, snapshots };
+    },
+  );
 
   // Same input coverage as before — balances at the latest close, the distinct
   // transaction currencies + dates, plus the snapshot series — all targeted at
@@ -72,7 +126,10 @@ export async function GET(req: NextRequest) {
       ],
       dates: [
         yesterdayUTCISO(),
-        ...dateRows.map((r) => r.date.toISOString().split("T")[0]),
+        // v2.6-CHRON-1 — the flow population's ECONOMIC dates (the days the
+        // client will actually ask about). Snapshot dates below cover the
+        // balance basis; together they satisfy rule B3.
+        ...dateRows.flatMap((r) => (r.economicDate ? [r.economicDate.toISOString().split("T")[0]] : [])),
         ...snapshots.map((s) => s.date),
       ],
     },

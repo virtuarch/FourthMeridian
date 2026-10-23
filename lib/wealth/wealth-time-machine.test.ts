@@ -133,6 +133,8 @@ console.log("S5 regression lock — pre-existing fields byte-identical (only the
 {
   const r = computeWealthTimeMachine(base({ asOf: "2026-07-15", compareTo: "2026-01-01" }));
   // explanation holds the exact former `story` content (rename only).
+  // MONEY-PRECISION-2 — the STORY is prose: whole dollars. Structured wealth
+  // figures (hero, composition, ledger) keep their cents. Arithmetic unchanged.
   check("explanation carries the deterministic sentence (former story content)",
     /^Your net worth increased by \$37,000 since Jan 1, 2026\. Assets increased by \$32,000 and liabilities decreased by \$5,000\.$/.test(r.explanation ?? ""));
   check("chart.points unchanged by the compareSeries addition",

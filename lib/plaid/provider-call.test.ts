@@ -11,18 +11,18 @@
  * distinct immutable attempts (1, 2) · pagination increments attempt per call ·
  * only allowlisted fields are persisted (no token/secret/payload) · a throwing
  * telemetry write never turns a successful provider call into a failure ·
- * recordProviderCall swallows a write-client failure.
+ * RLS-P-1: the emit carries NO execution id, because the ledger door fills its
+ * own (the write itself is guarded in lib/plaid/refresh-ledger.test.ts).
  */
 
 import {
   instrumentProviderCall,
-  recordProviderCall,
   extractPlaidRequestId,
   classifyProviderCallError,
-  type ProviderCallInput,
-  type ProviderCallWriteClient,
+  type ProviderCallFacts,
 } from "@/lib/plaid/provider-call";
 import type { ProviderCallContext } from "@/lib/plaid/provider-call-context";
+import type { LedgerHandle } from "@/lib/plaid/refresh-ledger";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -35,12 +35,32 @@ process.on("unhandledRejection", (err) => {
   process.exit(1);
 });
 
+/**
+ * RLS-P-1 — the context now carries the LEDGER DOOR, not an execution id. This
+ * stand-in records what the proxy emitted and proves what it could NOT reach:
+ * there is no `refreshExecutionId` anywhere in the emitted row.
+ */
+function fakeHandle(): LedgerHandle & { emitted: ProviderCallFacts[] } {
+  const emitted: ProviderCallFacts[] = [];
+  return {
+    emitted,
+    executionId: "exec-1",
+    degradations: [],
+    recordStages: async () => {},
+    recordCoverage: async () => {},
+    recordProviderCall: (input) => { emitted.push(input); },
+    settleHistoricalStage: async () => {},
+    recordIncident: async () => {},
+    resolveIncidentsByRecovery: async () => {},
+    close: async () => {},
+  };
+}
 function ctxOf(over: Partial<ProviderCallContext> = {}): ProviderCallContext {
-  return { refreshExecutionId: "exec-1", currentEndpoint: "TRANSACTIONS", attempts: new Map(), ...over };
+  return { ledger: fakeHandle(), currentEndpoint: "TRANSACTIONS", attempts: new Map(), ...over };
 }
 function collector() {
-  const rows: ProviderCallInput[] = [];
-  return { rows, record: (i: ProviderCallInput) => { rows.push(i); } };
+  const rows: ProviderCallFacts[] = [];
+  return { rows, record: (i: ProviderCallFacts) => { rows.push(i); } };
 }
 
 // A Plaid-shaped success response and Axios-shaped errors (safe subsets only).
@@ -117,13 +137,18 @@ async function main() {
     check("telemetry-throw on success: call still returns result, not thrown", thrown === false && res === okRes);
   }
 
-  // recordProviderCall swallows a write-client failure.
+  // RLS-P-1 — with no `record` injected, the emit reaches the context's ledger
+  // door and NOTHING ELSE. The row carries no execution id: the door fills its
+  // own from the id it minted, which is what makes this leaf unable to attribute
+  // a call to another execution.
   {
-    const throwingClient: ProviderCallWriteClient = { providerCall: { create: async () => { throw new Error("db down"); } } };
-    let threw = false;
-    try { await recordProviderCall({ refreshExecutionId: "e", provider: "PLAID", operation: "accountsGet", status: "SUCCEEDED", attempt: 1, startedAt: new Date(0), completedAt: new Date(0), durationMs: 0 }, throwingClient); }
-    catch { threw = true; }
-    check("recordProviderCall swallows write failure (best-effort)", threw === false);
+    const ctx = ctxOf();
+    const handle = ctx.ledger as ReturnType<typeof fakeHandle>;
+    await instrumentProviderCall("accountsGet", ctx, async () => okRes);
+    check("default emit goes through the context's ledger door", handle.emitted.length === 1);
+    check("the emitted row carries NO execution id",
+      handle.emitted.length === 1 && !("refreshExecutionId" in handle.emitted[0]));
+    check("the door, not the leaf, knows the execution", ctx.ledger.executionId === "exec-1");
   }
 
   console.log(failures === 0 ? "\nAll provider-call guards passed." : `\n${failures} guard(s) failed.`);

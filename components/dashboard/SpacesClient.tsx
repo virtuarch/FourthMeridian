@@ -16,8 +16,8 @@
  *   Create Space — persistent right-side panel (scrolls with the page,
  *   per Phase G — no longer sticky)
  *
- * Backend is untouched: same /api/spaces, /api/space/switch,
- * /api/user/profile endpoints, and the same `space-list-changed` /
+ * Backend is untouched: same /api/spaces and /api/space/switch
+ * endpoints, and the same `space-list-changed` /
  * `space-invites-changed` events other components (Sidebar) already
  * listen for. Only the presentation layer and the "Space" → "Space"
  * terminology changed.
@@ -46,9 +46,10 @@ import {
   Plus, Globe, Lock, Users, Crown, Mail, Loader2, Check, X,
   Pencil, ChevronRight, ChevronDown, Home, Briefcase, Car, Plane, TrendingUp,
   Wrench, CreditCard, Target, LayoutDashboard, MoreHorizontal,
-  Sunset, Building2, Shield, ArrowUpRight,
+  Sunset, Building2, Shield, ArrowUpRight, AlertTriangle,
 } from "lucide-react";
 import { Surface, Figure } from "@/components/atlas/Surface";
+import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
@@ -59,8 +60,9 @@ import {
   CATEGORY_ICONS,
   SpaceCategory,
 } from "@/lib/space-presets";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { DEFAULT_DISPLAY_CURRENCY, compactCurrencyOptions } from "@/lib/currency";
 import { displaySpaceName, formatDate } from "@/lib/format";
+import { effectiveDefaultSpaceId } from "@/lib/spaces/default-space";
 import {
   SPACE_LIST_CHANGED_EVENT,
   SPACE_INVITES_CHANGED_EVENT,
@@ -99,7 +101,25 @@ type SpaceItem = {
   // (never the active Space's). Defaults to USD upstream.
   currency: string;
   trend: number[];
+  /** REVIEW-3 B-4 — true when the figure shown is a reconstruction/estimate
+   *  (row isEstimated, or display-converted off its stamp). Renders the ≈
+   *  marker so a reconstructed value never poses as an observation. */
+  estimated?: boolean;
   lastUpdated: string | null;
+  /** v2.6-L4F — the canonical 1M change, from the SAME authority the inside-Space
+   *  view uses. Null when the Space's history does not reach back a month. */
+  change?: {
+    fromDate: string; toDate: string; fromValue: number; toValue: number;
+    // v2.6-WINDOW-1 — widened with the authority (canonicalWindowChange is no
+    // longer month-only). Still PAST_MONTH for this card; the card renders the
+    // window it is GIVEN rather than assuming which one arrived.
+    pct: number | null; abs: number; preset: string;
+  } | null;
+  /** v2.6-L4F — ACCOUNT freshness (Slice 1). Null when the Space has no accounts. */
+  freshness?: {
+    label: string; anchorObservedAt: string | null; qualifier: string | null;
+    claim: string; accountCount: number; staleAccountCount: number;
+  } | null;
 };
 
 type Invite = {
@@ -111,14 +131,11 @@ type Invite = {
   invitedBy: { id: string; name: string | null; username: string | null };
 };
 
-// PO1.0 — access-derived platform Spaces (one ACTIVE grant each). Rendered as
-// a separate card group linking to the platform host; never a switch target.
-type PlatformSpaceItem = {
-  id:     string;
-  name:   string;
-  area:   string;
-  access: string;
-};
+// UX-P2 (decision N1) — the access-derived Platform Spaces no longer render
+// here. Their one home is the Platform Spaces directory
+// (app/(shell)/dashboard/platform, components/platform/PlatformSpaceDirectory),
+// reached through the GlobalHeader's context switch. This launcher is the
+// PERSONAL directory only.
 
 interface Props {
   mine: SpaceItem[];
@@ -127,7 +144,6 @@ interface Props {
   currentUserId: string;
   activeSpaceId: string | null;
   preferredSpaceId: string | null;
-  platformSpaces?: PlatformSpaceItem[];
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -167,7 +183,6 @@ export function CategoryIcon({ name }: { name: string }) {
 // repeated for every category.
 const CATEGORY_TILE: Record<string, string> = {
   PERSONAL:       "linear-gradient(135deg, var(--meridian-400), var(--meridian-700))",
-  HOUSEHOLD:      "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
   FAMILY:         "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
   BUSINESS:       "linear-gradient(135deg, var(--emerald-400), var(--emerald-700))",
   PROPERTY:       "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
@@ -193,7 +208,6 @@ function categoryTile(category: string): string {
 // Space this is, never its health/state. Product-specified palette.
 const SPACE_IDENTITY_TINT: Record<string, string> = {
   PERSONAL:       "#C89B3C",
-  HOUSEHOLD:      "#4F8DFF",
   FAMILY:         "#4F8DFF",
   BUSINESS:       "#2FBF71",
   INVESTMENT:     "#8B6CFF",
@@ -246,15 +260,29 @@ function formatCurrency(value: number, currency = DEFAULT_DISPLAY_CURRENCY) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
 }
 
-function formatActivity(lastUpdated: string | null, createdAt: string): string {
-  const iso = lastUpdated ?? createdAt;
-  const verb = lastUpdated ? "Updated" : "Created";
+/**
+ * v2.6-L4F — the card's freshness line, from the Slice 1 ACCOUNT-freshness
+ * authority. It used to read `formatActivity(space.lastUpdated, …)` where
+ * `lastUpdated` was the latest SNAPSHOT date — i.e. when we last computed, not
+ * when any balance was observed. Falls back to the creation date only when the
+ * Space has no accounts at all, which is an honest "nothing to observe yet".
+ */
+function formatFreshness(space: SpaceItem): string {
+  const f = space.freshness;
+  if (!f) return `Created ${formatRelative(space.createdAt)}`;
+  if (f.anchorObservedAt === null) return f.label;
+  return `${f.label} ${formatRelative(f.anchorObservedAt)}`;
+}
+
+/** Relative wording only — the VERB is supplied by the caller's authority, so a
+ *  card can never say "Updated" about a clock that did not update anything. */
+function formatRelative(iso: string): string {
   const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-  if (days <= 0) return `${verb} today`;
-  if (days === 1) return `${verb} yesterday`;
-  if (days < 7) return `${verb} ${days}d ago`;
-  if (days < 30) return `${verb} ${Math.floor(days / 7)}w ago`;
-  return `${verb} ${new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })}`;
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days}d ago`;
+  if (days < 30) return `${Math.floor(days / 7)}w ago`;
+  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 // Tiny inline trend visualization — intentionally hand-rolled SVG rather
@@ -333,23 +361,20 @@ function Sparkline({
 // cookie-switch on click. Only the presentation moved from tile to row.
 
 // Compact money for the row figure so long balances (S$1,284,320) read as
-// S$1.28M and never wrap the right column. Same currency, same source number.
+// S$1.3M and never wrap the right column. Same currency, same source number.
+// The Intl options are lib/currency's pinned compact contract — this stays the
+// launcher's own formatter (never the cents one), with no runtime defaults.
 function formatCurrencyCompact(value: number, currency = DEFAULT_DISPLAY_CURRENCY) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency", currency, notation: "compact", maximumFractionDigits: 1,
-  }).format(value);
+  return new Intl.NumberFormat("en-US", compactCurrencyOptions(currency, 1)).format(value);
 }
 
-// Period change derived from the SAME trend series the sparkline draws — not a
-// new number. Math.abs on the base keeps the sign honest for debt Spaces (whose
-// base can be negative). Null when there isn't enough history to state a change.
-function trendDeltaPct(trend: number[]): number | null {
-  if (trend.length < 2) return null;
-  const first = trend[0];
-  const last = trend[trend.length - 1];
-  if (first === 0) return null;
-  return ((last - first) / Math.abs(first)) * 100;
-}
+// v2.6-L4F — `trendDeltaPct(trend)` was REMOVED. It ran over the last 14 SNAPSHOT
+// ROWS, which is neither a month nor 30 days nor any window the product defines,
+// and it therefore disagreed with the inside-Space view for the same Space on the
+// same day (25.0% outside vs 49.2% inside on the live corpus). The percentage now
+// comes from `space.change`, resolved server-side through the canonical
+// PAST_MONTH authority — the same one the inside hero consumes. The sparkline
+// keeps using `trend`, because a sparkline is a shape, not a claim.
 
 function SpaceCard({
   space,
@@ -359,9 +384,7 @@ function SpaceCard({
   interactive = true,
   onOpen,
   onManage,
-  onSetDefault,
   switching,
-  settingDefault,
 }: {
   space: SpaceItem;
   isActive?: boolean;
@@ -370,9 +393,7 @@ function SpaceCard({
   interactive?: boolean;
   onOpen?: () => void;
   onManage?: () => void;
-  onSetDefault?: () => void;
   switching?: boolean;
-  settingDefault?: boolean;
 }) {
   const canManage = interactive && !!onManage && ["OWNER", "ADMIN"].includes(space.myRole ?? "") && !isPersonal;
   const tone: "positive" | "danger" | "neutral" =
@@ -382,7 +403,9 @@ function SpaceCard({
   const category = space.category as SpaceCategory;
   const tint = spaceIdentityTint(category);
   const hasFigure = space.trend.length > 0;
-  const delta = trendDeltaPct(space.trend);
+  // v2.6-L4F — the canonical 1M change, resolved server-side. Never re-derived
+  // here: a percentage computed in React is a second authority by construction.
+  const delta = space.change?.pct ?? null;
   const isShared = space.type === "SHARED";
 
   // The whole left/centre/figure region is one enter affordance (onOpen →
@@ -441,7 +464,7 @@ function SpaceCard({
           <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
             {CATEGORY_LABELS[category] ?? "Space"}
             {" · "}{space.members.length} member{space.members.length === 1 ? "" : "s"}
-            {" · "}{formatActivity(space.lastUpdated, space.createdAt)}
+            {" · "}{formatFreshness(space)}
           </p>
         </div>
 
@@ -453,7 +476,9 @@ function SpaceCard({
         {/* One real figure + its derived change. Money is neutral (a number is
             not a claim); only the delta carries gain/loss colour. */}
         <div className="shrink-0 text-right">
-          <Figure value={hasFigure ? formatCurrencyCompact(space.netWorth, space.currency) : "—"} size="lede" />
+          {/* REVIEW-3 B-4 — ≈ marks a reconstructed/estimated figure (the same
+              provenance the inside-Space history badges disclose). */}
+          <Figure value={hasFigure ? `${space.estimated ? "≈" : ""}${formatCurrencyCompact(space.netWorth, space.currency)}` : "—"} size="lede" />
           {delta !== null && (
             <p className={["tabular-nums mt-0.5 text-[11px]", delta >= 0 ? "text-[var(--accent-positive)]" : "text-[var(--accent-negative)]"].join(" ")}>
               {delta >= 0 ? "+" : ""}{delta.toFixed(1)}%
@@ -468,21 +493,16 @@ function SpaceCard({
         />
       </button>
 
-      {/* Row actions — siblings of the enter button, revealed on hover/focus. */}
-      {interactive && (isDefault || onSetDefault || canManage) && (
+      {/* Row actions — siblings of the enter button, revealed on hover/focus.
+          The crown is an INDICATOR only. Choosing the default Space lives in
+          ONE place — Settings → Preferences → Default Space — so this row no
+          longer carries a second "Set as default Space" control. */}
+      {interactive && (isDefault || canManage) && (
         <div className="flex items-center gap-0.5 pr-3 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-          {isDefault ? (
+          {isDefault && (
             <span title="Default landing Space" className="p-1.5">
               <Crown size={13} className="text-[var(--brass-400)]" />
             </span>
-          ) : onSetDefault && (
-            <button
-              onClick={onSetDefault}
-              title="Set as default Space"
-              className="rounded-[var(--radius-xs)] p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover-strong)] hover:text-[var(--text-primary)]"
-            >
-              {settingDefault ? <Loader2 size={13} className="animate-spin" /> : <Crown size={13} />}
-            </button>
           )}
           {canManage && (
             <button
@@ -572,10 +592,10 @@ function PublicSpaceCard({ space, onOpen }: { space: SpaceItem; onOpen: () => vo
           {metricLabelForCategory(category)}
         </p>
         <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums truncate">
-          {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
+          {space.trend.length > 0 ? `${space.estimated ? "≈" : ""}${formatCurrency(space.netWorth, space.currency)}` : "—"}
         </p>
         <p className="text-[9px] text-[var(--text-muted)] mt-0.5 truncate">
-          {formatActivity(space.lastUpdated, space.createdAt)}
+          {formatFreshness(space)}
         </p>
       </div>
     </div>
@@ -633,7 +653,7 @@ function PublicEmptyState() {
 }
 
 // Read-only detail view for a public Space the viewer hasn't joined. Mirrors
-// ManageSpaceModal's shell (fixed backdrop + GlassPanel depth="thick", same
+// Shared OverlaySurface shell (focus, scrolling and mobile sheet behavior; same
 // header/close-button recipe) so it reads as the same family of surface, but
 // has no tabs and no mutation — just the fuller picture the compact card can't
 // fit. "Join Space" is intentionally inert: public join permissions,
@@ -647,21 +667,17 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
       ? space.trend[space.trend.length - 1] >= space.trend[0] ? "positive" : "danger"
       : "neutral";
 
-  function handleBackdrop(e: React.MouseEvent<HTMLDivElement>) {
-    if (e.target === e.currentTarget) onClose();
-  }
-
   return (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center p-4 sm:p-6"
-      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
-      onClick={handleBackdrop}
-    >
-      <GlassPanel depth="thick" elevation="e4" radius="xl" className="w-full sm:max-w-md">
-        <div className="flex flex-col max-h-[calc(100dvh-2rem)] sm:max-h-[88dvh]">
-          {/* Header */}
-          <div
-            className="flex items-start justify-between gap-3 px-5 pt-5 pb-4"
+    <OverlaySurface
+      open
+      onClose={onClose}
+      title={displaySpaceName(space.name)}
+      size="sm"
+      zIndex={200}
+      hideHeader
+      toolbar={
+        <div
+            className="flex items-start justify-between gap-3 pb-3"
             style={{ borderBottom: "1px solid var(--border-hairline)" }}
           >
             <div className="flex items-start gap-3 min-w-0">
@@ -672,7 +688,7 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
                 <CategoryIcon name={CATEGORY_ICONS[category] ?? "LayoutDashboard"} />
               </div>
               <div className="min-w-0">
-                <p className="text-base font-semibold text-[var(--text-primary)] truncate">{displaySpaceName(space.name)}</p>
+                <p className="text-base font-semibold text-[var(--text-primary)] break-words">{displaySpaceName(space.name)}</p>
                 <p className="text-xs text-[var(--text-muted)] mt-0.5 flex items-center gap-1">
                   {CATEGORY_LABELS[category] ?? "Space"} · <Globe size={10} className="shrink-0" /> Public
                 </p>
@@ -681,28 +697,39 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
             <button
               onClick={onClose}
               aria-label="Close"
-              className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
+              className="min-h-11 min-w-11 flex items-center justify-center rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
             >
               <X size={16} />
             </button>
           </div>
-
-          {/* Body */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-5 min-h-0">
-            <div className="flex items-end justify-between gap-3">
+      }
+      footer={
+        <div className="shrink-0">
+            <GlassButton tone="meridian" fullWidth disabled title="Public Space joining is coming soon">
+              <Users size={13} />
+              Join Space
+            </GlassButton>
+            <p className="text-[11px] text-[var(--text-muted)] text-center mt-2">
+              Public joining is coming soon.
+            </p>
+          </div>
+      }
+    >
+        <div className="space-y-5">
+            <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">
                   {metricLabelForCategory(category)}
                 </p>
-                <p className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">
-                  {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
+                <p className="text-2xl font-bold text-[var(--text-primary)] tabular-nums [overflow-wrap:anywhere]">
+                  {space.trend.length > 0 ? `${space.estimated ? "≈" : ""}${formatCurrency(space.netWorth, space.currency)}` : "—"}
                 </p>
               </div>
               <Sparkline values={space.trend} tone={tone} />
             </div>
 
             {space.description && (
-              <p className="text-sm text-[var(--text-secondary)] leading-relaxed">{space.description}</p>
+              <p className="text-sm text-[var(--text-secondary)] leading-relaxed break-words">{space.description}</p>
             )}
 
             <div className="grid grid-cols-2 gap-3">
@@ -719,7 +746,7 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
               {owner && (
                 <div className="rounded-[var(--radius-md)] p-3" style={{ background: "var(--surface-muted)" }}>
                   <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Owner</p>
-                  <p className="text-sm text-[var(--text-primary)] truncate">
+                  <p className="text-sm text-[var(--text-primary)] break-words">
                     {owner.user.name ?? `@${owner.user.username}`}
                   </p>
                 </div>
@@ -732,23 +759,7 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
               </div>
             </div>
           </div>
-
-          {/* Footer — "Join Space" is intentionally disabled. See file-level
-              comment: public join backend (permissions, viewer-only
-              membership, audit logs, invite rules, abuse controls) is a
-              dedicated future pass, not part of this presentation redesign. */}
-          <div className="px-5 py-4 shrink-0" style={{ borderTop: "1px solid var(--border-hairline)" }}>
-            <GlassButton tone="meridian" fullWidth disabled title="Public Space joining is coming soon">
-              <Users size={13} />
-              Join Space
-            </GlassButton>
-            <p className="text-[11px] text-[var(--text-muted)] text-center mt-2">
-              Public joining is coming soon.
-            </p>
-          </div>
-        </div>
-      </GlassPanel>
-    </div>
+    </OverlaySurface>
   );
 }
 
@@ -757,9 +768,12 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
 function InviteRow({ invite, onAction }: { invite: Invite; onAction: () => void }) {
   const [busy, setBusy] = useState<"accept" | "decline" | null>(null);
   const [done, setDone] = useState(false);
+  // UI-006 — a refused accept/decline used to leave the row unchanged in silence.
+  const [error, setError] = useState<string | null>(null);
 
   async function act(action: "accept" | "decline") {
     setBusy(action);
+    setError(null);
     try {
       const res = await fetch(`/api/spaces/${invite.space.id}/invites/${invite.id}`, {
         method: "PATCH",
@@ -767,6 +781,12 @@ function InviteRow({ invite, onAction }: { invite: Invite; onAction: () => void 
         body: JSON.stringify({ action }),
       });
       if (res.ok) { setDone(true); onAction(); }
+      else {
+        const d = await res.json().catch(() => ({}));
+        setError(d.error ?? `Couldn't ${action} this invite. Try again.`);
+      }
+    } catch {
+      setError(`Couldn't reach Fourth Meridian — the invite was not ${action === "accept" ? "accepted" : "declined"}.`);
     } finally {
       setBusy(null);
     }
@@ -781,14 +801,16 @@ function InviteRow({ invite, onAction }: { invite: Invite; onAction: () => void 
         <p className="text-xs text-[var(--text-muted)] truncate">
           Invited by {invite.invitedBy.name ?? `@${invite.invitedBy.username}`} · {ROLE_LABELS[invite.role] ?? invite.role}
         </p>
+        {error && <p role="alert" className="mt-0.5 text-xs text-[var(--coral-400)]">{error}</p>}
       </div>
       <button
         onClick={() => act("decline")}
         disabled={!!busy}
         className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] disabled:opacity-50 transition-colors shrink-0"
         title="Decline"
+        aria-label={`Decline invite to ${displaySpaceName(invite.space.name)}`}
       >
-        {busy === "decline" ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
+        {busy === "decline" ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <X size={14} aria-hidden />}
       </button>
       <GlassButton
         onClick={() => act("accept")}
@@ -837,61 +859,6 @@ function InviteBanner({ invites, onAction }: { invites: Invite[]; onAction: () =
         </div>
       )}
     </GlassPanel>
-  );
-}
-
-// ─── Platform card group (PO1.0) ──────────────────────────────────────────────
-//
-// Access-derived (from PlatformGrant); rendered only for grant-holders. Each
-// card is a plain link to /dashboard/platform/[area] — NOT a switch target, so
-// the ambient Space context never points at a platform Space. Visually quieter
-// and distinct from customer Space cards (Shield glyph, access badge) so the two
-// families never read as the same thing.
-
-function PlatformSpaceGroup({ spaces }: { spaces: PlatformSpaceItem[] }) {
-  const router = useRouter();
-  if (spaces.length === 0) return null;
-
-  return (
-    <div className="mt-10">
-      {/* Divider label — the same "operator Spaces, distinct section, same shell"
-          treatment as the prototype's Fourth Meridian HQ (Launcher.tsx §5.2). */}
-      <div className="mb-3 flex items-center gap-3">
-        <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-          Fourth Meridian HQ
-        </span>
-        <span className="h-px flex-1 bg-[var(--border-hairline)]" aria-hidden />
-      </div>
-      <ul className="space-y-2.5">
-        {spaces.map((p) => {
-          const href = `/dashboard/platform/${p.area}`;
-          return (
-            <Surface as="li" key={p.id} className="group transition-colors duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:border-[var(--border-hairline-strong)]">
-              <button
-                type="button"
-                onClick={() => router.push(href)}
-                aria-label={`Open ${displaySpaceName(p.name)}`}
-                className="flex w-full items-center gap-4 p-4 text-left sm:p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-inset"
-              >
-                {/* HQ badge — operator identity, never a financial figure. */}
-                <span className="grid size-9 shrink-0 place-items-center rounded-full border border-[var(--border-hairline-strong)] text-[9px] font-semibold text-[var(--brass-300)]">
-                  HQ
-                </span>
-                <div className="min-w-0 flex-1">
-                  <h2 className="truncate font-semibold text-[var(--text-primary)]">{displaySpaceName(p.name)}</h2>
-                  <p className="mt-1 truncate text-xs text-[var(--text-muted)]">Platform area · {p.access}</p>
-                </div>
-                <ArrowUpRight
-                  size={15}
-                  aria-hidden
-                  className="shrink-0 text-[var(--text-muted)] transition-[transform,color] duration-[var(--dur-base)] ease-[var(--ease-standard)] group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-[var(--text-secondary)]"
-                />
-              </button>
-            </Surface>
-          );
-        })}
-      </ul>
-    </div>
   );
 }
 
@@ -959,15 +926,14 @@ export function SpacesClient({
   currentUserId,
   activeSpaceId: initialActiveId,
   preferredSpaceId: initialPreferredId,
-  platformSpaces = [],
 }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
 
   const [activeId, setActiveId]               = useState<string | null>(initialActiveId);
-  const [preferredId, setPreferredId]          = useState<string | null>(initialPreferredId);
   const [switchingId, setSwitchingId]          = useState<string | null>(null);
-  const [settingDefaultId, setSettingDefaultId] = useState<string | null>(null);
+  // UI-006 — a refused Space switch used to do nothing visible.
+  const [switchError, setSwitchError]          = useState<string | null>(null);
   const [managingSpace, setManagingSpace]      = useState<SpaceItem | null>(null);
   const [showAllSpaces, setShowAllSpaces]      = useState(false);
   const [viewingPublicSpace, setViewingPublicSpace] = useState<SpaceItem | null>(null);
@@ -1015,6 +981,7 @@ export function SpacesClient({
 
   const handleSwitch = useCallback(async (spaceId: string) => {
     setSwitchingId(spaceId);
+    setSwitchError(null);
     try {
       const res = await fetch("/api/space/switch", {
         method:  "POST",
@@ -1032,30 +999,23 @@ export function SpacesClient({
         // active-Space cookie (parity with Sidebar.handleSwitch).
         router.refresh();
         router.push("/dashboard");
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setSwitchError(d.error ?? "Couldn't open that Space. Try again.");
       }
+    } catch {
+      setSwitchError("Couldn't reach Fourth Meridian — the Space was not opened.");
     } finally {
       setSwitchingId(null);
     }
   }, [router]);
 
-  async function handleSetDefault(spaceId: string) {
-    const newVal = preferredId === spaceId ? "" : spaceId;
-    setSettingDefaultId(spaceId);
-    try {
-      const res = await fetch("/api/user/profile", {
-        method:  "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ preferredSpaceId: newVal || null }),
-      });
-      if (res.ok) setPreferredId(newVal || null);
-    } finally {
-      setSettingDefaultId(null);
-    }
-  }
-
   const personal = mine.find((w) => w.type === "PERSONAL" && w.myRole === "OWNER");
   const others   = mine.filter((w) => w.id !== personal?.id);
   const ordered  = personal ? [personal, ...others] : others;
+  // Display only — the Space resolveSpaceContext would land on with no cookie:
+  // the preference while it names a Space still in `mine`, else personal.
+  const defaultId = effectiveDefaultSpaceId(initialPreferredId, mine.map((w) => w.id), personal?.id ?? null);
 
   // Caps the initial grid so the canvas reads the same whether someone has
   // 1 Space or 50+ — the rest are one click away via "Show N more" instead
@@ -1099,6 +1059,12 @@ export function SpacesClient({
 
         {pendingInvites.length > 0 && <InviteBanner invites={pendingInvites} onAction={refresh} />}
 
+        {switchError && (
+          <p role="alert" className="mb-3 flex items-center gap-1.5 text-xs text-[var(--coral-400)]">
+            <AlertTriangle size={12} aria-hidden /> {switchError}
+          </p>
+        )}
+
         {/* A LIST, not a grid — rooms you already own, on one reading axis
             (prototype Launcher.tsx). Each row is a solid Atlas Surface; the
             personal Space is pinned first upstream (`ordered`). */}
@@ -1108,13 +1074,11 @@ export function SpacesClient({
               key={space.id}
               space={space}
               isActive={resolvedActiveId === space.id}
-              isDefault={preferredId ? preferredId === space.id : space.id === personal?.id}
+              isDefault={defaultId === space.id}
               isPersonal={space.id === personal?.id}
               onOpen={() => handleOpen(space)}
               onManage={() => setManagingSpace(space)}
-              onSetDefault={space.id === personal?.id ? undefined : () => handleSetDefault(space.id)}
               switching={switchingId === space.id}
-              settingDefault={settingDefaultId === space.id}
             />
           ))}
         </ul>
@@ -1127,9 +1091,6 @@ export function SpacesClient({
             </GlassButton>
           </div>
         )}
-
-        {/* PO1.0 — Platform group (access-derived; only shown to grant-holders). */}
-        <PlatformSpaceGroup spaces={platformSpaces} />
 
         {/* Explore Public Spaces — ALWAYS rendered. When public Spaces exist,
             it shows the compact preview grid; when none exist, it shows an

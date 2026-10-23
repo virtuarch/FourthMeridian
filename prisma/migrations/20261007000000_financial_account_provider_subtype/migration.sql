@@ -1,0 +1,11 @@
+-- FinancialAccount.providerSubtype — the provider's own account subtype (Plaid
+-- `subtype`), which mapAccountType reduced to a broad type and then discarded:
+-- a 401(k) and a taxable brokerage were both just `investment`, and an HSA was
+-- `checking`, so the liquidity views counted retirement money as "within days"
+-- and HSA money as ordinary cash (Preview, 2026-10-07).
+--
+-- Additive and nullable, no backfill: null means UNKNOWN and is classified as
+-- such (lib/liquidity/access.ts). Plaid rows are written on link, recovery and
+-- every refresh from the provider's own answer; nothing is inferred from names.
+-- Table-level grants cover it.
+ALTER TABLE "FinancialAccount" ADD COLUMN "providerSubtype" TEXT;

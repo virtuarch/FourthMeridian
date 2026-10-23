@@ -5,14 +5,67 @@
  *
  * DELETE /api/spaces/[id]/invites/[inviteId]
  * Cancel a pending invite. Only OWNER/ADMIN of the space can call this.
+ *
+ * ── RLS SLICE B — THE ACCEPT TRANSACTION IS THE ONE THING fm_app CANNOT DO ───
+ * This route is CONVERTED IN PART. The invite read, the decline and the cancel
+ * all run as the caller; the ACCEPT pair does not, and the reason is specific
+ * enough to be worth stating rather than discovering.
+ *
+ *   ⚠️ THE TOKEN `spaceMember` + `.upsert` IS DELIBERATELY NOT SPELLED AS ONE
+ *   WORD ANYWHERE IN THIS COMMENT. Two source-scan tests
+ *   (lib/spaces/invite-role.test.ts, personal-single-user.test.ts) prove the
+ *   PERSONAL and role guards fire BEFORE the membership write by comparing
+ *   character offsets in the RAW file, so naming the write up here would put it
+ *   "before" its own guard and fail a check about something else entirely.
+ *
+ *   The membership upsert has two arms. The INSERT arm is admissible —
+ *   `SpaceMember.fm_app_ins` is `spaceId IN fm_visible_space_ids() OR
+ *   "userId" = current_fm_user_id()`, and the invitee, who is NOT yet a member,
+ *   is admitted by the second. The UPDATE arm — the RE-JOIN path, where a
+ *   LEFT/REMOVED row already exists under the unique key — is NOT:
+ *   `SpaceMember.fm_app_upd` is `spaceId IN fm_visible_space_ids()` on BOTH
+ *   USING and WITH CHECK, with no `userId` arm, and a non-ACTIVE member's Space
+ *   is by definition not in that set. Prisma issues the upsert as
+ *   INSERT … ON CONFLICT DO UPDATE, for which Postgres evaluates the UPDATE
+ *   policy's USING clause against the existing row and ERRORS when it fails.
+ *   So re-joining a Space you once left would stop working — loudly, but
+ *   wrongly.
+ *
+ *   The fix is one policy arm —
+ *     ALTER POLICY fm_app_upd ON "SpaceMember" …
+ *       USING ("spaceId" IN (SELECT fm_visible_space_ids())
+ *              OR "userId" = current_fm_user_id())
+ *   mirroring the SELECT and INSERT policies that already carry it — and that is
+ *   a migration, so it is the owner's call, not a route's. Until then the accept
+ *   pair stays on the deployment-wide client, atomic exactly as it was.
+ *
+ * ⚠️ AND THE PERSONAL GUARD WOULD HAVE FAILED SILENTLY. The `space.findUnique`
+ * below is read by the INVITEE, who is not a member: as fm_app it returns null,
+ * `space?.type === PERSONAL` is then false, and the guard that calls itself "the
+ * last line of defense" would simply stop defending — no error, no log. A guard
+ * that can only fail open must not be moved behind a policy that hides its
+ * subject. It stays on `db`, named.
+ *
+ * ── RLS-T2 — AND THE CANCEL WAS REPORTING SUCCESS IT HAD NOT EARNED ──────────
+ * DELETE discarded its `deleteMany` count and returned `{ ok: true }`
+ * unconditionally. A DELETE a policy refuses returns `{ count: 0 }` silently, so
+ * a cancel that cancelled nothing looked identical to one that worked — and the
+ * invite stayed redeemable. The rows are now counted in the same phase and
+ * `assertEveryObservedRowWasWritten` compares. See the note at that statement for
+ * why the bulk helper is the right one and `resolveConditionalWrite` is not.
  */
 
 import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
+import { withTenantDb }                           from "@/lib/db/tenant-context";
+import { assertEveryObservedRowWasWritten }       from "@/lib/db/conditional-write";
 import { requireUser, requireSpaceRole }      from "@/lib/session";
+import { isInvitableSpaceRole }                   from "@/lib/spaces/invite-role";
 import { SpaceMemberRole, SpaceMemberStatus, SpaceType } from "@prisma/client";
 import { getClientIp }                            from "@/lib/api";
-import { emitDomainEvent }                        from "@/lib/events/emit";
+import { AuditAction }                            from "@/lib/audit-actions";
+import { emitDomainEvent, dispatchDomainEvent }   from "@/lib/events/emit";
+import type { DomainEvent }                       from "@/lib/events/types";
 
 export async function PATCH(
   req: NextRequest,
@@ -22,7 +75,19 @@ export async function PATCH(
   const [user, err] = await requireUser();
   if (err) return err;
 
-  const invite = await db.spaceInvite.findUnique({ where: { id: inviteId } });
+  // RLS slice B — a bare-id fetch followed by an ownership check. As the tenant
+  // the fetch simply returns nothing for an invite that is neither in a Space the
+  // caller can see nor addressed to them (`SpaceInvite.fm_app_sel` =
+  // `spaceId IN fm_visible_space_ids() OR "invitedUserId" = me`), so the row no
+  // longer leaves the database before the check.
+  //
+  // ⚠️ THE TWO CHECKS BELOW ARE NOW REDUNDANT RATHER THAN LOAD-BEARING, AND THEY
+  // STAY. The 403 in particular is not reachable for a foreign invite any more —
+  // it would 404 first — but it is the application's own statement of who may act
+  // on an invitation, and RLS is tenancy, not authorization. Both must hold.
+  const invite = await withTenantDb(user.id, (tx) => tx.spaceInvite.findUnique({
+    where: { id: inviteId },
+  }));
   if (!invite || invite.spaceId !== spaceId) {
     return NextResponse.json({ error: "Invite not found" }, { status: 404 });
   }
@@ -41,14 +106,35 @@ export async function PATCH(
     // guard. This is the choke point where the SpaceMember row is actually
     // written, so it's the last line of defense behind the invite route.
     // Decline still works (below) so a stray invite can be cleared.
+    // ⚠️ DELIBERATELY NOT withTenantDb — see the header. The invitee cannot see
+    // this Space yet, and a null here reads as "not PERSONAL": the guard would
+    // fail OPEN.
     const space = await db.space.findUnique({ where: { id: spaceId }, select: { type: true } });
     if (space?.type === SpaceType.PERSONAL) {
       return NextResponse.json({ error: "Personal Spaces can't have additional members." }, { status: 400 });
     }
 
+    // W1-D3 — validation must hold at the point the SpaceMember row is
+    // WRITTEN, not just where the invite was created: a pre-existing invite
+    // row carrying OWNER (minted before the invite route validated roles)
+    // must never materialize a second OWNER here. Same allowlist as the
+    // invite route (ADMIN/MEMBER/VIEWER); decline still works so a bad
+    // invite can be cleared.
+    if (!isInvitableSpaceRole(invite.role)) {
+      return NextResponse.json(
+        { error: "This invite carries a role that can't be granted. Ask a Space admin to send a new invite." },
+        { status: 400 }
+      );
+    }
+
     // Use upsert to handle re-joins: if the user previously left or was removed,
     // a stale SpaceMember row (status REMOVED/LEFT) already exists with a
     // unique constraint on [spaceId, userId]. A plain create() would fail.
+    // ⚠️ DELIBERATELY NOT withTenantDb — see the header: the UPDATE arm
+    // (re-join) has no `userId` arm in `SpaceMember.fm_app_upd`, and Postgres
+    // errors on ON CONFLICT DO UPDATE when the UPDATE policy's USING clause
+    // rejects the existing row. Left exactly as it was, atomic, pending the
+    // policy arm named in the header.
     await db.$transaction([
       db.spaceMember.upsert({
         where:  { spaceId_userId: { spaceId, userId: user.id } },
@@ -71,22 +157,30 @@ export async function PATCH(
     // Timeline-visible row. Emitted post-commit (no-tx) so the array-form
     // transaction above is untouched; actorUserId is the joining user, from
     // which the activity consumer derives "{name} joined the space".
-    await emitDomainEvent({
+    // The joiner is now an ACTIVE member, so the audit row runs as them. The
+    // handler phase stays outside: MemberJoined notifies the INVITER, and
+    // `Notification.fm_app_ins` is `userId = current_fm_user_id()`.
+    const event: DomainEvent = {
       type:        "MemberJoined",
       spaceId,
       actorUserId: user.id,
       ipAddress:   getClientIp(req),
       payload:     { userId: user.id, role: invite.role },
-    });
+    };
+    await withTenantDb(user.id, (tx) => emitDomainEvent(tx, event));
+    await dispatchDomainEvent(event);
 
     return NextResponse.json({ ok: true, joined: true });
   }
 
   if (action === "decline") {
-    await db.spaceInvite.update({
+    // `SpaceInvite.fm_app_upd` carries `invitedUserId = me` on both clauses, so
+    // a non-member declining their own invitation is admissible and nothing else
+    // is.
+    await withTenantDb(user.id, (tx) => tx.spaceInvite.update({
       where: { id: inviteId },
       data:  { status: "DECLINED" },
-    });
+    }));
     return NextResponse.json({ ok: true, joined: false });
   }
 
@@ -100,9 +194,54 @@ export async function DELETE(
   const { id: spaceId, inviteId } = await params;
 
   // requireSpaceRole enforces ACTIVE status — REMOVED/LEFT admins cannot cancel invites.
-  const [, err] = await requireSpaceRole(spaceId, SpaceMemberRole.ADMIN);
+  const [auth, err] = await requireSpaceRole(spaceId, SpaceMemberRole.ADMIN);
   if (err) return err;
 
-  await db.spaceInvite.deleteMany({ where: { id: inviteId, spaceId } });
-  return NextResponse.json({ ok: true });
+  // `SpaceInvite.fm_app_del` is `spaceId IN fm_visible_space_ids()`, which the
+  // ACTIVE ADMIN guard has established.
+  //
+  // ⚠️ RLS-T2 — THE COUNT WAS DISCARDED AND `{ ok: true }` WAS RETURNED EITHER
+  // WAY. A DELETE a policy refuses returns `{ count: 0 }` with no error and no
+  // log (lib/db/conditional-write.ts), so a cancel that cancelled nothing told
+  // the admin it had worked and left the invite redeemable. That is the same
+  // shape of defect this family has already shipped once — a refused UPDATE made
+  // a single-use invite infinitely reusable.
+  //
+  // ⚠️ AND `resolveConditionalWrite` IS THE WRONG TOOL HERE, DELIBERATELY NOT A
+  // THIRD VARIANT. Its probe conflates "the policy hid the row" with "the row is
+  // gone", and for a cancel the second of those is the EXPECTED idempotent
+  // outcome (already accepted, already cancelled) — so it would throw on the
+  // route's happy repeat. The bulk form asks the question a delete can answer:
+  // count the eligible rows in the SAME phase, then insist every one of them was
+  // written. Nothing observed ⇒ nothing written ⇒ honestly idempotent; one
+  // observed and none written ⇒ raises.
+  const scope = { id: inviteId, spaceId };
+  const eligible = await withTenantDb(auth.user.id, async (tx) => {
+    // The audit row's facts are read first — the row is gone after the delete.
+    const target = await tx.spaceInvite.findFirst({ where: scope, select: { invitedUserId: true, role: true, status: true } });
+    const observed = await tx.spaceInvite.count({ where: scope });
+    const { count } = await tx.spaceInvite.deleteMany({ where: scope });
+    assertEveryObservedRowWasWritten(
+      { table: "SpaceInvite", operation: "delete", scope: "one invite id in this Space" },
+      observed,
+      count,
+    );
+    // A7 — the invite row is hard-deleted, so the audit row is its only trace;
+    // written in the SAME transaction, so a cancel is never unrecorded.
+    if (target && count > 0) {
+      await tx.auditLog.create({
+        data: {
+          userId:  auth.user.id,
+          spaceId,
+          action:  AuditAction.MEMBER_INVITE_CANCELLED,
+          metadata: { inviteId, invitedUserId: target.invitedUserId, role: target.role, status: target.status },
+        },
+      });
+    }
+    return observed;
+  });
+  // The shape is unchanged for both outcomes (a cancel has always been
+  // idempotent); `cancelled` merely stops the response claiming more than
+  // happened for a caller that wants to know.
+  return NextResponse.json({ ok: true, cancelled: eligible > 0 });
 }

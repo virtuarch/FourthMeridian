@@ -79,6 +79,13 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // PLATFORM_AREA_WORKSPACES (right after connection_health); this materialized
       // order is just a unique Int.
       { key: "ops_connection_diagnostics", label: "Connection Diagnostics", order: 14 },
+      // Provider-cleanup visibility: Plaid items whose newest revocation marker
+      // is UNCONFIRMED, i.e. the removal was attempted and never confirmed
+      // upstream. Deliberately SEPARATE from connection health, because the
+      // item is REVOKED from the product's point of view and would never show
+      // up there — which is exactly how a failed itemRemove stayed invisible
+      // and kept billing. Backfilled onto the live Space by ensurePlatformSections.
+      { key: "ops_provider_cleanup", label: "Provider Cleanup", order: 16 },
       // PO-5A — email-delivery visibility (sent/captured/error over NotificationDelivery).
       { key: "ops_email_delivery", label: "Email Delivery", order: 15 },
       // OPS-5 S1 — content-aware resource freshness (FX rates, security prices).
@@ -122,6 +129,21 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // Jobs → Platform Health); this materialized order is just a unique Int.
       // Backfilled onto the live Space by ensurePlatformSections.
       { key: "ops_platform_health", label: "Platform Health", order: 21 },
+      // PLATFORM OPS POLICIES (Slice 1) — declared operational policy, read-only:
+      // what is configured, what is effective, what the deployed scheduler can
+      // honour, what the latest sweep ran under. Backfilled by ensurePlatformSections.
+      { key: "ops_policies", label: "Policies", order: 22 },
+      // PLATFORM OPS OBSERVABILITY — the operations cockpit and the readers over
+      // authorities that had none (AiInvocation, DailyBrief, Plaid Item-months).
+      // Backfilled onto the live Space by ensurePlatformSections.
+      { key: "ops_overview",       label: "Operations",     order: 23 },
+      { key: "ops_ai_invocations", label: "AI Invocations", order: 24 },
+      { key: "ops_brief_ops",      label: "Daily Brief",    order: 25 },
+      { key: "ops_plaid_usage",    label: "Plaid Usage",    order: 26 },
+      // AI COST CONTROLS — budget utilization (estimated AI spend against the
+      // allowance and the two alert thresholds) on the Economics workspace.
+      // Needs `platform:seed-spaces` on every environment after this registry change.
+      { key: "ops_ai_budget",      label: "AI Budget",      order: 27 },
     ],
   },
   SECURITY_OPS: {
@@ -161,6 +183,15 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "growth_activity", label: "User Activity", order: 3 },
       // OPS-6F Growth — beta conversion + activation funnel (projection).
       { key: "growth_funnel", label: "Growth Funnel", order: 4 },
+      // P1 — the Policy Group catalogue (definitions, ceilings, overlays, cohorts):
+      // GROWTH_REVENUE owns definitions and rollout policy; assignment is a
+      // Customer Success action. Backfilled onto the live Space by ensurePlatformSections.
+      { key: "growth_policy_groups", label: "Policy Groups", order: 5 },
+      // BETA A5/V3 — first-party product analytics (fleet, identity-minimised):
+      // registrations, present vs engaged D/W/M, retention cohorts, onboarding
+      // funnel, feature adoption, cost per engaged user. Seeded onto every env
+      // with platform:seed-spaces (create-only).
+      { key: "growth_product_analytics", label: "Product Analytics", order: 6 },
     ],
   },
   CUSTOMER_SUCCESS: {
@@ -168,12 +199,30 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
     label: "Customer Success",
     spaceName: "Customer Success",
     spaceDescription:
-      "Operational health signals. No purpose-built customer-success primitives exist yet.",
+      "The customer spine: who each customer is, what they are entitled to and why, their beta lifecycle, Spaces, connections, incidents and AI usage — and the safe actions available.",
     sections: [
+      // P1 — the Customer Success customer spine (identity-resolving by the
+      // 2026-10-07 owner ruling). Backfilled onto the live Space by ensurePlatformSections.
+      { key: "cs_customers", label: "Customers", order: 0 },
       // OPS-2D-5D-1 — "incidents", not "issues": the surface renders EPISODES
       // with their occurrence depth, not one row per failed attempt. The section
       // key is unchanged (it is persisted layout identity, not wording).
-      { key: "cs_sync_issues", label: "Sync Incidents", order: 0 },
+      { key: "cs_sync_issues", label: "Sync Incidents", order: 1 },
+    ],
+  },
+  // MERCHANT-OPS AUTHORITY (2026-10-06) — merchant identity operations. A merge
+  // rewrites merchant identity for every tenant, so it is platform authority:
+  // READ views the merge-review candidates, a FRESH WRITE grant merges or
+  // dismisses. The review itself stays at /merchant-ops; this workspace is the
+  // doorway to it.
+  MERCHANT_OPS: {
+    key: "MERCHANT_OPS",
+    label: "Merchant Operations",
+    spaceName: "Merchant Operations",
+    spaceDescription:
+      "Merchant identity review across the platform. Merges are irreversible and audited.",
+    sections: [
+      { key: "merchant_review", label: "Merge Review", order: 0 },
     ],
   },
 };
@@ -230,24 +279,21 @@ export const ALL_ACCESS_LEVELS: readonly PlatformAccessLevel[] =
 
 /**
  * The levels the grant-administration surface (POST /api/admin/platform-grants)
- * may actually mint. Deliberately NARROWER than the enum.
+ * may actually mint. Derived from the same exhaustive list the matrix renders.
  *
- * CONTROL is canonical but NOT issuable in OPS-2D-2. The reason is truthfulness,
- * not caution: nothing consumes CONTROL yet, and the admin matrix
- * (app/admin/platform-access/page.tsx) renders exactly two cells per area — so a
- * CONTROL grant would confer no capability anyone asks for while displaying as
- * *no* grant at all in the operator's own UI. An unrenderable grant is worse
- * than an absent one.
+ * OPS-2D-2 kept CONTROL canonical but NOT issuable, for truthfulness: nothing
+ * consumed it and the admin matrix could not render it. PLATFORM OPS POLICIES
+ * (Slice 2) shipped the first consumer — the financial-refresh cadence editor
+ * (control-plane-policy, app/api/platform/platform-ops/policies) — and the
+ * matrix's third cell in the same change, so a CONTROL grant now confers
+ * exactly one thing anyone asks for and displays as what it is.
  *
- * This list — not `Object.values(PlatformAccessLevel)` — is what the grant route
- * validates against, which is precisely why adding CONTROL to the enum changed
- * no authorization behaviour: `level: "CONTROL"` was a 400 before this slice and
- * is a 400 after it.
- *
- * Whoever makes CONTROL issuable owes the admin matrix a third cell in the same
- * change. `capability-classification.ts` records what would justify that.
+ * CONTROL stays a RANK above WRITE (LEVEL_RANK): every existing WRITE holder
+ * keeps exactly the reach they had, and CONTROL must be granted deliberately.
+ * It grants no Space, financial, or grant-administration authority
+ * (capability-classification.ts, grant-administration).
  */
-export const ISSUABLE_LEVELS: readonly PlatformAccessLevel[] = ["READ", "WRITE"];
+export const ISSUABLE_LEVELS: readonly PlatformAccessLevel[] = ALL_ACCESS_LEVELS;
 
 /** Is `level` a level the grant surface may mint today? */
 export function isIssuableLevel(level: PlatformAccessLevel): boolean {

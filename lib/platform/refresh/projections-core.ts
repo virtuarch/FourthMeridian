@@ -38,6 +38,9 @@
 import type {
   AccountCoverageRollup,
   CoverageEndpointRollup,
+  RefreshDayBucket,
+  RefreshDailySourceKind,
+  RefreshDailyStatus,
   CoverageFact,
   EndpointFact,
   EndpointRollup,
@@ -45,6 +48,10 @@ import type {
   ProviderCallFact,
   ProviderOperationRollup,
   TimelineEntry,
+  PipelineStatus,
+  PipelineKindRollup,
+  PipelineNetworkRollup,
+  ProjectionEnvelope,
 } from "@/lib/platform/refresh/types";
 import type { OperationalTier } from "@/lib/platform/history/types";
 
@@ -300,75 +307,9 @@ export function buildCoverageSummary(coverage: readonly CoverageFact[]): Coverag
 
 // ── Failure Summary ─────────────────────────────────────────────────────────────
 
-export interface FailureSummaryCore {
-  executions: { status: string; count: number }[];
-  endpoints: { endpoint: string; failed: number }[];
-  providerCalls: {
-    provider: string;
-    operation: string;
-    status: string;
-    errorCode: string | null;
-    errorCategory: string | null;
-    count: number;
-  }[];
-  totalFailedExecutions: number;
-  totalFailedStages: number;
-  totalFailedCalls: number;
-  tier: OperationalTier;
-}
 
 /** Execution statuses that represent a non-clean outcome. RUNNING is not a failure. */
-const NON_SUCCESS_STATUSES = new Set(["FAILED", "PARTIAL"]);
 
-/**
- * Group failures ONLY by taxonomies that already exist. Free-text `errorSummary`
- * is never grouped — it is not a controlled vocabulary, and grouping it would
- * mint a failure taxonomy this projection has no authority to own.
- */
-export function buildFailureSummary(
-  executions: readonly ExecutionFact[],
-  endpoints: readonly EndpointFact[],
-  calls: readonly ProviderCallFact[],
-): FailureSummaryCore {
-  const failedExecutions = executions.filter((e) => NON_SUCCESS_STATUSES.has(e.overallStatus));
-  const executionCounts = tally(failedExecutions.map((e) => e.overallStatus));
-
-  const failedStages = endpoints.filter((r) => r.status === "FAILED");
-  const stageCounts = tally(failedStages.map((r) => r.endpoint));
-
-  const failedCalls = calls.filter((c) => c.status === "FAILED" || c.status === "RATE_LIMITED");
-  const callGroups = groupBy(
-    failedCalls,
-    (c) => [c.provider, c.operation, c.status, c.errorCode ?? "", c.errorCategory ?? ""].join(" "),
-  );
-
-  return {
-    executions: Object.keys(executionCounts).map((status) => ({
-      status,
-      count: executionCounts[status],
-    })),
-    endpoints: Object.keys(stageCounts).map((endpoint) => ({
-      endpoint,
-      failed: stageCounts[endpoint],
-    })),
-    providerCalls: [...callGroups.keys()].sort().map((key) => {
-      const rows = callGroups.get(key)!;
-      const [provider, operation, status, errorCode, errorCategory] = key.split(" ");
-      return {
-        provider,
-        operation,
-        status,
-        errorCode: errorCode === "" ? null : errorCode,
-        errorCategory: errorCategory === "" ? null : errorCategory,
-        count: rows.length,
-      };
-    }),
-    totalFailedExecutions: failedExecutions.length,
-    totalFailedStages: failedStages.length,
-    totalFailedCalls: failedCalls.length,
-    tier: tierFor(executions.length + endpoints.length + calls.length, false),
-  };
-}
 
 // ── Execution Timeline ──────────────────────────────────────────────────────────
 
@@ -391,6 +332,61 @@ const KIND_ORDER: Record<TimelineEntry["kind"], number> = {
  * byte-stable regardless of input order — a timeline that reshuffles on re-read
  * is not citable in an incident record.
  */
+/**
+ * PLATFORM OPS OBSERVABILITY — the pipeline status fold. Pure: counts by
+ * status, by source kind and by network over the window's executions, the open
+ * count by the ONE open-execution rule, and a bounded list of the newest
+ * failures. `lastSucceededByKind` is supplied by the authority (it is a lookup
+ * beyond the window) and passed through per kind; a kind with executions in the
+ * window but no successful execution ever recorded reports null, never "now".
+ */
+export function buildPipelineStatus(
+  executions: readonly ExecutionFact[],
+  lastSucceededByKind: Readonly<Record<string, ExecutionFact | null>>,
+  failuresLimit = 5,
+): Omit<PipelineStatus, keyof ProjectionEnvelope> {
+  const byStatus = tally(executions.map((e) => e.overallStatus));
+  const kindKeys = new Set<string>([...executions.map((e) => e.sourceKind), ...Object.keys(lastSucceededByKind)]);
+  const kinds: PipelineKindRollup[] = [...kindKeys].sort().map((kind) => {
+    const rows = executions.filter((e) => e.sourceKind === kind);
+    return {
+      kind,
+      total: rows.length,
+      succeeded: rows.filter((e) => e.overallStatus === "SUCCEEDED").length,
+      failed: rows.filter((e) => e.overallStatus === "FAILED").length,
+      partial: rows.filter((e) => e.overallStatus === "PARTIAL").length,
+      skipped: rows.filter((e) => e.overallStatus === "SKIPPED").length,
+      running: countOpenExecutions(rows),
+      lastSucceededAt: lastSucceededByKind[kind]?.startedAt.toISOString() ?? null,
+    };
+  });
+  const networks: PipelineNetworkRollup[] = [...groupBy(executions.filter((e) => e.network !== null), (e) => e.network as string).entries()]
+    .map(([network, rows]) => {
+      const newest = [...rows].sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime() || (a.id < b.id ? 1 : -1))[0];
+      return {
+        network,
+        total: rows.length,
+        failed: rows.filter((e) => e.overallStatus === "FAILED" || e.overallStatus === "PARTIAL").length,
+        lastStatus: newest.overallStatus,
+        lastStartedAt: newest.startedAt.toISOString(),
+      };
+    })
+    .sort((a, b) => a.network.localeCompare(b.network));
+  const latestFailures = executions
+    .filter((e) => e.overallStatus === "FAILED" || e.overallStatus === "PARTIAL")
+    .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime() || (a.id < b.id ? 1 : -1))
+    .slice(0, Math.max(0, failuresLimit));
+  return {
+    executions: executions.length,
+    byStatus,
+    kinds,
+    networks,
+    openExecutions: countOpenExecutions(executions),
+    latestFailures,
+    tier: tierFor(executions.length, false),
+  };
+}
+
 export function buildExecutionTimeline(
   execution: ExecutionFact,
   endpoints: readonly EndpointFact[],
@@ -487,4 +483,85 @@ export function buildExecutionTimeline(
 
   const complete = execution.completedAt != null && execution.overallStatus !== "RUNNING";
   return { entries, complete, tier: complete ? "observed" : "incomplete" };
+}
+
+// ── Refresh Daily Series (UX-P1 · D8) ───────────────────────────────────────────
+
+const DAY_MS = 86_400_000;
+
+/** The UTC day an instant falls on. */
+function utcDayOf(at: Date): string {
+  return at.toISOString().slice(0, 10);
+}
+
+/** Every YYYY-MM-DD from `from` to `to` inclusive, ascending. Empty when from > to. */
+export function utcDaysBetween(from: string, to: string): string[] {
+  const start = Date.parse(`${from}T00:00:00.000Z`);
+  const end = Date.parse(`${to}T00:00:00.000Z`);
+  if (Number.isNaN(start) || Number.isNaN(end) || start > end) return [];
+  const days: string[] = [];
+  for (let t = start; t <= end; t += DAY_MS) days.push(new Date(t).toISOString().slice(0, 10));
+  return days;
+}
+
+export interface RefreshDailySeriesCore {
+  days: RefreshDayBucket[];
+  executions: number;
+  floor: boolean;
+  tier: OperationalTier;
+}
+
+/**
+ * Bucket executions by the UTC day of `startedAt`.
+ *
+ * Every day of the window is emitted, ascending, with real counts — a day with
+ * no rows is a ZERO, because the ledger is the authority and a closed day it
+ * holds no row for is a day on which nothing ran. The one exception is the
+ * fact cap: the reader loads newest-first up to a ceiling, so when `capHit` is
+ * true the oldest loaded day is only partially known and every day older than
+ * it is unknowable. Those older days are OMITTED (not zero), the partial day is
+ * reported unsettled, and the series says `floor`.
+ *
+ * `settled` per day = the day is strictly before `todayISO` AND holds no open
+ * execution AND was fully loaded. `todayISO` is passed in by the authority so
+ * this core reads no clock (identical inputs ⇒ identical bytes).
+ *
+ * `overallStatus` and `admissionReason` are READ, never re-derived; an unknown
+ * status still counts in `total` and simply has no named column.
+ */
+export function buildRefreshDailySeries(
+  executions: readonly ExecutionFact[],
+  window: { from: string; to: string },
+  opts: { todayISO: string; capHit: boolean },
+): RefreshDailySeriesCore {
+  const byDay = groupBy(executions, (e) => utcDayOf(e.startedAt));
+  const loadedDays = [...byDay.keys()].sort();
+  const oldestLoaded = opts.capHit && loadedDays.length ? loadedDays[0] : null;
+
+  const days: RefreshDayBucket[] = [];
+  for (const day of utcDaysBetween(window.from, window.to)) {
+    // Older than the oldest loaded row under the cap: unknowable, not zero.
+    if (oldestLoaded !== null && day < oldestLoaded) continue;
+    const rows = byDay.get(day) ?? [];
+
+    const byStatus: Record<RefreshDailyStatus, number> = { SUCCEEDED: 0, PARTIAL: 0, FAILED: 0, SKIPPED: 0, RUNNING: 0 };
+    const bySourceKind: Record<RefreshDailySourceKind, number> = { PLAID_ITEM: 0, WALLET: 0 };
+    let admissionDenied = 0;
+    for (const r of rows) {
+      if (r.overallStatus in byStatus) byStatus[r.overallStatus as RefreshDailyStatus] += 1;
+      if (r.sourceKind in bySourceKind) bySourceKind[r.sourceKind as RefreshDailySourceKind] += 1;
+      if (r.admissionReason != null) admissionDenied += 1;
+    }
+
+    const partial = oldestLoaded !== null && day === oldestLoaded;
+    const settled = day < opts.todayISO && countOpenExecutions(rows) === 0 && !partial;
+    days.push({ day, total: rows.length, byStatus, bySourceKind, admissionDenied, settled });
+  }
+
+  return {
+    days,
+    executions: executions.length,
+    floor: opts.capHit,
+    tier: tierFor(executions.length, false),
+  };
 }

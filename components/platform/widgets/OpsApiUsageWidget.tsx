@@ -40,7 +40,7 @@ export function OpsApiUsageWidget({ section }: { section: PlatformSection }) {
                 <li key={p.provider} className="flex items-center justify-between gap-2 text-xs">
                   <span className="font-medium text-[var(--text-primary)]">{p.provider}</span>
                   <span className="text-[var(--text-secondary)] tabular-nums">
-                    {fmt(p.callsToday)} today · {fmt(p.calls7d)} · 7d {fmt(p.calls30d)} · 30d calls
+                    {fmt(p.callsToday)} today · {fmt(p.calls7d)} 7d · {fmt(p.calls30d)} 30d calls
                   </span>
                 </li>
               ))}
@@ -59,7 +59,15 @@ export function OpsApiUsageWidget({ section }: { section: PlatformSection }) {
           )}
 
           {data.estimatedSpendUsd !== null ? (
-            <WidgetStat value={`~$${data.estimatedSpendUsd.toFixed(2)}`} label="Est. spend · 30d" />
+            <>
+              <WidgetStat value={`~$${data.estimatedSpendUsd.toFixed(2)}`} label="Est. spend · 30d" />
+              {data.unpricedTokens > 0 ? (
+                <p className="text-[10px] text-[var(--text-muted)]">
+                  Covers the {data.unpricedDays.length === 0 ? "window" : "priced part of the window"} only —
+                  {" "}{data.unpricedDays.length} day(s) had no rate in force and are excluded, not counted as zero.
+                </p>
+              ) : null}
+            </>
           ) : (
             <p className="text-[10px] text-[var(--text-muted)]">
               Call &amp; token volume only — no billing API to reconcile true cost. Populate price constants to show an estimate.

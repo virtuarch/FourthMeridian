@@ -39,6 +39,7 @@ import type { TransactionDetail } from "@/types";
 import { useTransactionDrawer } from "./useTransactionDrawer";
 import { TransactionDetailContent } from "./TransactionDetailContent";
 import { TransactionCorrection } from "./TransactionCorrection";
+import { describeRowNature, DIRECTION_SIGN } from "@/lib/transactions/flow-presentation";
 
 type LoadState =
   | { status: "loading" }
@@ -60,12 +61,6 @@ function money(amount: number, currency: string | null): string {
     currency: currency ?? "USD",
     maximumFractionDigits: 2,
   }).format(amount);
-}
-
-/** ENUM_VALUE → "Enum value" (mirrors detail-sections' chip wording). */
-function humanize(v: string): string {
-  const s = v.replace(/_/g, " ").toLowerCase();
-  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 export function TransactionDetailDrawer() {
@@ -119,8 +114,19 @@ function TransactionDetailFetcher({ id }: { id: string }) {
 
   return (
     <>
+      {/* v2.6-TRUTH-7 — the eyebrow is the canonical nature, not the provider
+          category string. It read "INCOME" directly above a chip saying "Issuer
+          credit", which is the loudest place in the drawer to contradict
+          yourself. The provider's category is still shown, labelled as itself,
+          in the Summary section below. */}
       <PanelHeader
-        eyebrow={detail ? detail.category : undefined}
+        eyebrow={detail ? describeRowNature({
+          flowType:      detail.flowType ?? null,
+          incomeSubtype: detail.incomeSubtype ?? null,
+    transferMaturity: detail.transferMaturity ?? null,
+          amount:        detail.amount,
+          hasOwnedCounterparty: detail.counterpartyAccountId != null,
+        }).label : undefined}
         title={detail ? (detail.merchantDisplayName ?? detail.merchant) : "Transaction"}
       />
       <PanelContent>
@@ -147,22 +153,38 @@ function TransactionDetailFetcher({ id }: { id: string }) {
   );
 }
 
-/** The editorial headline — the amount as a Figure (colour only for real income),
- *  with flow/pending/currency chips. Transfers are neutral: moving your own money
- *  is structural, neither gain nor loss (Design Language Law 7). */
+/** The editorial headline — the amount as a Figure, with a nature/pending/currency
+ *  chip row.
+ *
+ *  v2.6-TRUTH-7 — the chip is the canonical row NATURE, not `humanize(flowType)`.
+ *  Four live rows the income authority had already classified ISSUER_CREDIT (a
+ *  Microsoft rebate, an Uber credit, a HungerStation credit, an EasyTime credit,
+ *  all on a CREDIT CARD) read "Income" here because this drawer never consulted
+ *  it. Tone follows the same authority: a refund and an issuer credit put back
+ *  money you already spent, so they are neutral, not green (Design Language
+ *  Law 7 — the same reason a transfer is neutral). */
 function TransactionHeadline({ detail }: { detail: TransactionDetail }) {
-  const isTransfer = detail.flowType === "TRANSFER";
-  const isCredit = detail.amount > 0 && !isTransfer;
-  const sign = isTransfer ? "" : isCredit ? "+" : "−";
+  const nature = describeRowNature({
+    flowType:      detail.flowType ?? null,
+    incomeSubtype: detail.incomeSubtype ?? null,
+    transferMaturity: detail.transferMaturity ?? null,
+    amount:        detail.amount,
+    hasOwnedCounterparty: detail.counterpartyAccountId != null,
+  });
+  // v2.6-DIR-1 — the canonical direction. This read the TONE twice: once to
+  // decide whether to show a sign at all, and once to decide which sign — so it
+  // never consulted the amount, and every neutral row (transfer, debt payment,
+  // refund, issuer credit) rendered directionless.
+  const sign = DIRECTION_SIGN[nature.direction];
   return (
     <div className="space-y-3">
       <Figure
         value={`${sign}${money(Math.abs(detail.amount), detail.currency ?? null)}`}
         size="figure"
-        tone={isCredit ? "up" : "neutral"}
+        tone={nature.tone === "positive" ? "up" : "neutral"}
       />
       <div className="flex flex-wrap gap-2">
-        {detail.flowType && <Chip>{humanize(detail.flowType)}</Chip>}
+        <Chip>{nature.label}</Chip>
         {detail.pending && <Chip>Pending</Chip>}
         {detail.currency && detail.currency !== "USD" && <Chip>{detail.currency}</Chip>}
       </div>

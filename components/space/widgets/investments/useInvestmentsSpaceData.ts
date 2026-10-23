@@ -26,8 +26,12 @@ import { useCallback, useEffect, useState } from "react";
 import type { InvestmentsSpaceData } from "@/lib/investments/space-data-core";
 import type { PortfolioValuePoint } from "@/lib/investments/portfolio-series";
 
-/** The /space-data response: the composed contract PLUS the Portfolio Value series. */
-type InvestmentsWorkspaceResponse = InvestmentsSpaceData & { series: PortfolioValuePoint[] };
+/** The /space-data response: the composed contract PLUS the Portfolio Value series
+ *  PLUS the server's UTC day (B-6 — the authoritative today/history classifier). */
+type InvestmentsWorkspaceResponse = InvestmentsSpaceData & {
+  series: PortfolioValuePoint[];
+  serverToday?: string;
+};
 
 export interface UseInvestmentsSpaceData {
   /** The latest successfully-fetched contract; kept during refetch, null until first success. */
@@ -40,6 +44,11 @@ export interface UseInvestmentsSpaceData {
   error:   boolean;
   /** Imperative refetch for the retry affordance. */
   reload:  () => void;
+  /** B-6 — the SERVER's UTC day, carried on the response. The workspace must
+   *  classify asOf against THIS, never the client clock, so the historical/
+   *  present switch always agrees with the server surfaces (lib/time/basis.ts).
+   *  Null until the first successful fetch (when `data` is also null). */
+  serverToday: string | null;
 }
 
 /**
@@ -92,5 +101,5 @@ export function useInvestmentsSpaceData(
     return () => { alive = false; };
   }, [spaceId, asOf, compareToForFetch, active, nonce]);
 
-  return { data, series: data?.series ?? [], loading, error, reload };
+  return { data, series: data?.series ?? [], loading, error, reload, serverToday: data?.serverToday ?? null };
 }

@@ -40,7 +40,7 @@ function lensFixture(withCompleteness: boolean): LensResult {
     headline: { id: "total", label: "Total debt", value: 4200, format: "currency" },
     metrics: [],
     assumptions: [],
-    provenance: { accountIds: ["a1"], tierCounts: { full: 1, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: "2026-06-29", redactions: [] },
+    provenance: { accountIds: ["a1"], tierCounts: { full: 1, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: "2026-06-29", dataAsOfBasis: "INGESTION", redactions: [] },
     ...(withCompleteness ? { completeness: COMPLETENESS } : {}),
   };
 }

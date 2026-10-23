@@ -36,7 +36,7 @@ function view(asOf: string, rows: Array<{ id: string; qty: number; price: number
 }
 
 function ev(type: InvestmentEventType, amount: number | null, date: string, opts: Partial<FlowEvent> = {}): FlowEvent {
-  return { type, date, amount, fxEstimated: opts.fxEstimated ?? false, hasQuantity: opts.hasQuantity ?? false };
+  return { type, date, amount, fxEstimated: opts.fxEstimated ?? false, hasQuantity: opts.hasQuantity ?? false, accountId: "acc-1", instrumentId: null, symbol: null, name: null, quantity: null };
 }
 
 const ASOF = "2026-06-30";

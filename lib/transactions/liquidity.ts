@@ -32,6 +32,8 @@ import {
 } from "@/lib/transactions/flow-predicates";
 import { accountTier, type AccountTier } from "@/lib/account-classifier";
 import type { Transaction } from "@/types";
+// v2.6-DEBT-1 — the ONE debt-payment attestation rule.
+import { isDebtPaymentAttested } from "@/lib/transactions/debt-payment-attestation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -51,9 +53,15 @@ export type LiquidityEffect = "CASH_IN" | "CASH_OUT" | "NEUTRAL" | "UNRESOLVED";
 
 /** Why the effect was assigned — the durable, explainable label for AI. */
 export type LiquidityReason =
-  | "EARNED_INCOME"      // INCOME arriving in a spendable (liquid) account
+  | "EARNED_INCOME"      // EARNED income arriving in a spendable (liquid) account
+  | "INTEREST_INCOME"    // v2.6-TRUTH-5 — interest paid by a deposit account
+  | "DIVIDEND_INCOME"    // v2.6-TRUTH-5 — a distribution from a holding
+  | "OTHER_INCOME"       // v2.6-TRUTH-5 — income whose source is not established
   | "REAL_COST"          // SPENDING / FEE / INTEREST leaving the liquid tier
   | "REFUND"             // reversal of prior spend, cash back
+  | "ISSUER_CREDIT"      // v2.6-TRUTH-7 — a card credit the issuer originated
+                         // (rewards, statement credit, purchase reversal). Reduces
+                         // what you owe; never income, never spendable cash in.
   | "ASSET_LIQUIDATION"  // asset tier → liquid (crypto/stock sale proceeds to bank)
   | "ASSET_DEPLOYMENT"   // liquid → asset tier (brokerage/crypto contribution)
   | "INVESTMENT_INFLOW"  // CF-2: liquid ← investment venue, resolved by transfer EVIDENCE
@@ -107,6 +115,30 @@ function make(
  * asset conversion (NEUTRAL on this axis); its cash face only appears on the
  * transfer leg that lands the proceeds in a liquid account.
  */
+/** Canonical income class → its liquidity reason. One mapping, no re-derivation. */
+const INCOME_REASON_BY_CLASS: Record<string, LiquidityReason> = {
+  EARNED_INCOME:   "EARNED_INCOME",
+  INTEREST_INCOME: "INTEREST_INCOME",
+  DIVIDEND_INCOME: "DIVIDEND_INCOME",
+  OTHER_INCOME:    "OTHER_INCOME",
+};
+
+/**
+ * Canonical NOT_INCOME subtype → its liquidity reason. v2.6-TRUTH-7.
+ *
+ * ⚠️ A mapping, not a decision: every key is a subtype
+ * lib/transactions/income-source.ts already assigned. A subtype absent from this
+ * map resolves to UNRESOLVED rather than to a guess.
+ */
+const NOT_INCOME_REASON_BY_SUBTYPE: Record<string, LiquidityReason> = {
+  ISSUER_CREDIT:     "ISSUER_CREDIT",
+  REFUND_REVERSAL:   "REFUND",
+  INTERNAL_TRANSFER: "INTERNAL_TRANSFER",
+  LOAN_PROCEEDS:     "DEBT_PROCEEDS",
+  SALE_PROCEEDS:     "ASSET_LIQUIDATION",
+  CAPITAL_CONTRIBUTION: "OTHER_INCOME",
+};
+
 export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): LiquidityClassification {
   const ft = tx.flowType ?? null;
   const ownTier = ctx.tierOf(tx.financialAccountId ?? tx.accountId ?? null);
@@ -115,13 +147,48 @@ export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): Liqui
   // income routed into an asset account (e.g. reinvested dividend) is earned but
   // not spendable, so it's neutral on the liquidity axis.
   if (isIncome(ft)) {
+    // v2.6-TRUTH-5 — the reason follows the CANONICAL income class, not the bare
+    // flow type. Every income row previously reported EARNED_INCOME, so the
+    // Income-by-source card rendered "Earned income · 100.0%" over a window that
+    // was $10,573.03 earned and $6.01 of deposit interest. The class is read off
+    // the DTO; nothing is re-derived here.
+    //
+    // v2.6-TRUTH-7 — a NOT_INCOME row now reports WHICH not-income it is, from the
+    // taxonomy's own subtype. It previously returned OTHER_INCOME, so a Microsoft
+    // rebate on a credit card was filed under an income reason while the taxonomy
+    // had already called it ISSUER_CREDIT. The effect (NEUTRAL) was right; the
+    // word was not, and the word is what a surface prints.
+    if (tx.incomeClass === "NOT_INCOME") {
+      return make(ft, "NEUTRAL", NOT_INCOME_REASON_BY_SUBTYPE[tx.incomeSubtype ?? ""] ?? "UNRESOLVED", 0.9);
+    }
+    // ⚠️ This read `?? "EARNED_INCOME"` — a row whose read did not supply an income
+    // class was ASSERTED to be salary. OTHER_INCOME is the reason that already
+    // means exactly "income whose source is not established", so the uncertainty
+    // is stated instead of hidden, and the cash effect is unchanged (both are
+    // side "in", so no money leaves the Cash In total).
+    //
+    // Measured: 0 of 136 live INCOME rows lack an attribution — the serializer
+    // emits one for every positive income row, and there are no negative ones.
+    // This branch is reachable only from a read that did not select the evidence.
+    const reason = INCOME_REASON_BY_CLASS[tx.incomeClass ?? ""] ?? "OTHER_INCOME";
+    const confidence = tx.incomeClass ? 1 : 0.5;
     return ownTier === "liquid"
-      ? make(ft, "CASH_IN", "EARNED_INCOME", 1)
-      : make(ft, "NEUTRAL", "EARNED_INCOME", 0.7);
+      ? make(ft, "CASH_IN", reason, confidence)
+      : make(ft, "NEUTRAL", reason, Math.min(confidence, 0.7));
   }
 
   // REFUND — reversal of prior spend; small cash back when it hits liquid.
   if (isRefund(ft)) {
+    return ownTier === "liquid"
+      ? make(ft, "CASH_IN", "REFUND", 0.9)
+      : make(ft, "NEUTRAL", "REFUND", 0.6);
+  }
+
+  // FM-AUDIT-006 — a cost-flow row with money IN (a fee rebate, an interest
+  // reversal) is a reversal of spending, exactly as a REFUND is: cash back when it
+  // lands on the liquid tier, never "Cash Out". The economic fold nets it against
+  // spending by the same rule (economicSideOf), so the two axes agree.
+  if (isCostFlow(ft) && tx.amount > 0) {
     return ownTier === "liquid"
       ? make(ft, "CASH_IN", "REFUND", 0.9)
       : make(ft, "NEUTRAL", "REFUND", 0.6);
@@ -139,9 +206,61 @@ export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): Liqui
   // DEBT_PAYMENT — paying down a liability. Cash out when it leaves the liquid
   // tier; the liability-side leg (payment received on the card) is neutral.
   if (isDebtPayment(ft)) {
-    return ownTier === "liquid"
-      ? make(ft, "CASH_OUT", "DEBT_PAYMENT", 1)
-      : make(ft, "NEUTRAL", "DEBT_PAYMENT", 0.8);
+    // ⚠️ DEBT_PAYMENT is a claim about the DESTINATION, and `flowType` alone does
+    // not attest one — it is frequently just the provider's own category, which
+    // is derived from a descriptor and is wrong whenever an institution issues
+    // both a card and a deposit account. A live $4,000 movement from checking
+    // into a SAVINGS account carried a card-payment category for exactly that
+    // reason; this branch returned CASH_OUT/DEBT_PAYMENT at confidence 1 for it,
+    // so a savings transfer entered both household Cash Out and the Debt Payments
+    // card while the transfer authority had already resolved its destination to
+    // that savings account.
+    //
+    // On the CASH-side leg the counterparty IS the destination. When the
+    // counterparty authority has named an owned account that is not a liability,
+    // it contradicts the provider outright, and the structural fact wins — the
+    // same precedence the income taxonomy already takes over `flowType`.
+    //
+    // ⚠️ Only the liquid side. On the LIABILITY-side leg the counterparty is the
+    // SOURCE (money arriving on a card from checking), so its tier says nothing
+    // about the destination and this must not fire — 109 live rows are in that
+    // shape and stay NEUTRAL/DEBT_PAYMENT.
+    //
+    // Measured: exactly ONE row in the corpus is diverted by this.
+    const destinationTier = ctx.tierOf(tx.counterpartyAccountId ?? null);
+
+    // v2.6-DEBT-1 — POSITIVE ATTESTATION, not absence of contradiction.
+    //
+    // This branch used to divert a row only when the destination was KNOWN and
+    // NOT a liability; an UNKNOWN destination fell through and was counted, at
+    // confidence 1. A row was therefore admitted because nothing had disproved
+    // it — and "nothing disproved it" is not evidence. The only thing standing
+    // behind such a row is `flowType = DEBT_PAYMENT`, which is frequently just
+    // the provider's category, derived from descriptor text, and wrong whenever
+    // an institution issues both a card and a deposit account.
+    //
+    // Membership now requires the transfer authority to positively attest the
+    // destination: an OWNED LIABILITY counterparty, or a proven liability
+    // destination TYPE. `isDebtPaymentAttested` states that once
+    // (lib/transactions/debt-payment-authority.ts).
+    //
+    // ⚠️ Only the CASH leg. On the LIABILITY-side leg the destination IS the own
+    // account — money arriving on a card — which is structurally certain and
+    // needs no counterparty evidence. Requiring attestation there would refuse
+    // 109 live rows whose destination is not in question.
+    if (ownTier === "liquid") {
+      const attested = isDebtPaymentAttested({
+        counterpartyTier: destinationTier,
+        transferMaturity: (tx as { transferMaturity?: string | null }).transferMaturity ?? null,
+      });
+      // Unattested — including the previously-admitted "unknown destination" —
+      // is a movement whose purpose is not established. It is resolved as the
+      // transfer it structurally is, which leaves it UNRESOLVED when the
+      // destination is genuinely unknown rather than asserting a debt payment.
+      if (!attested) return classifyTransfer(tx, ownTier, ctx);
+      return make(ft, "CASH_OUT", "DEBT_PAYMENT", 1);
+    }
+    return make(ft, "NEUTRAL", "DEBT_PAYMENT", 0.8);
   }
 
   // INVESTMENT — asset conversion / security activity (net-worth-neutral). The
@@ -224,3 +343,25 @@ function classifyTransfer(
   return make(ft, "UNRESOLVED", "UNRESOLVED", 0.2);
 }
 
+
+/**
+ * reason → the transaction ids classified into it, for one effect.
+ *
+ * Exists so a drill-down looks rows up by identity instead of re-running
+ * `classifyLiquidity` in a React closure. The classification stays here, in the
+ * authority, and is performed ONCE over the row set — which is what keeps a
+ * slice incapable of disagreeing with the total beside it.
+ */
+export function liquidityIdsByReason(
+  rows: readonly LiquidityTx[],
+  ctx: Parameters<typeof classifyLiquidity>[1],
+  effect: "CASH_IN" | "CASH_OUT",
+): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const t of rows) {
+    const c = classifyLiquidity(t, ctx);
+    if (c.effect !== effect) continue;
+    out.set(c.reason, [...(out.get(c.reason) ?? []), t.id]);
+  }
+  return out;
+}

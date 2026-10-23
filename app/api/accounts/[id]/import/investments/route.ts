@@ -8,16 +8,20 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireFreshUser } from "@/lib/session";
-import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { ImportSource } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { withTenantDb } from "@/lib/db/tenant-context";
+import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { investmentImportsEnabled } from "@/lib/investments/opening-position";
 import { commitInvestmentImport, type UserDecisions } from "@/lib/investments/investment-import-commit";
 import { runInvestmentImportPipelineFromCsv } from "@/lib/imports/investments/pipeline";
 import { buildImportPreview } from "@/lib/investments/investment-import-preview";
 import { guardImportUpload } from "@/lib/investments/import-upload-guard";
+
+/** One read-only phase over a whole file; Prisma's 5 s default is sized for a single statement group. */
+const PREVIEW_PHASE_TIMEOUT_MS = 30_000;
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -33,7 +37,8 @@ export const POST = withApiHandler(async (
   // authority; the previously-inlined redundant FULL check (which gated the
   // owner too) was removed so this route cannot disagree with it.
   const { spaceId } = await getSpaceContext();
-  const access = await resolveImportableFinancialAccount(user.id, spaceId, id);
+  const access = await withTenantDb(
+    user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, id));
   if (!access.ok) return access.response;
 
   const form = await req.formData().catch(() => null);
@@ -57,11 +62,16 @@ export const POST = withApiHandler(async (
   // be committed even if a client bypasses the preview. Blocking ⇒ 422; an
   // unproven-but-plausible file (generic/unverified) requires the explicit
   // `acknowledged` flag the UI's confirm step sends ⇒ else 409.
-  const acct = await db.financialAccount.findUnique({ where: { id }, select: { institution: true, mask: true } });
-  const preview = await buildImportPreview({
-    csvText: text, profileKey, rowKindOverride,
-    financialAccountId: id, connectionInstitution: acct?.institution ?? "", targetMask: acct?.mask ?? null, client: db,
-  });
+  //
+  // RLS-PREP-C — the gate's reads run on the tenant role, in one phase (pure
+  // reads, no network), exactly as the preview route's do.
+  const preview = await withTenantDb(user.id, async (tx) => {
+    const acct = await tx.financialAccount.findUnique({ where: { id }, select: { institution: true, mask: true } });
+    return buildImportPreview({
+      csvText: text, profileKey, rowKindOverride,
+      financialAccountId: id, connectionInstitution: acct?.institution ?? "", targetMask: acct?.mask ?? null, client: tx,
+    });
+  }, { timeout: PREVIEW_PHASE_TIMEOUT_MS });
   if (!preview.canCommit) {
     return NextResponse.json({ error: "This file can't be imported into this account.", blockingReasons: preview.blockingReasons, preview }, { status: 422 });
   }
@@ -71,7 +81,15 @@ export const POST = withApiHandler(async (
 
   const pipeline = runInvestmentImportPipelineFromCsv(text, { profileKey, rowKindOverride });
 
+  // RLS-PREP-2 — the write runs as the CALLER. The writer holds no client: each
+  // of its phases is opened here on the tenant role, so RLS — not this route's
+  // guard alone — decides which account's rows it may create. `recordIssue` is
+  // the incident recorder on its own fm_system default; it takes one typed
+  // incident and is called only after a tenant phase has admitted the account
+  // and ended (lib/investments/opening-position.ts records the contract).
   const result = await commitInvestmentImport({
+    tenant: (fn, opts) => withTenantDb(user.id, fn, opts),
+    recordIssue: (issue) => recordSyncIssue(issue),
     financialAccountId: id, userId: user.id,
     profileKey, profileVersion: pipeline.resolvedColumnMapping.profileVersion,
     source: ImportSource.CSV,

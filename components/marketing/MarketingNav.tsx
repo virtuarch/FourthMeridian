@@ -6,12 +6,16 @@ import { Menu, X } from "lucide-react";
 import { Container } from "./Container";
 import { Wordmark } from "./Wordmark";
 import styles from "./MarketingNav.module.css";
+import { PUBLIC_SITE_ORIGIN, publicSiteHref } from "@/lib/marketing/public-site";
 
+// Site-owned pages: absolute on the public site once one is configured
+// (domain split), relative while the application still serves them.
 const links = [
-  { label: "Product", href: "/#product" },
-  { label: "Vision", href: "/#vision" },
-  { label: "About", href: "/#about" },
+  { label: "Product", href: publicSiteHref("/#product", PUBLIC_SITE_ORIGIN) },
+  { label: "Vision", href: publicSiteHref("/#vision", PUBLIC_SITE_ORIGIN) },
+  { label: "About", href: publicSiteHref("/#about", PUBLIC_SITE_ORIGIN) },
 ] as const;
+const homeHref = publicSiteHref("/", PUBLIC_SITE_ORIGIN);
 
 export function MarketingNav() {
   const [open, setOpen] = useState(false);
@@ -24,7 +28,7 @@ export function MarketingNav() {
   return (
     <header className={styles.header}>
       <Container className={styles.bar}>
-        <Link href="/" aria-label="Fourth Meridian home" className={styles.brand}><Wordmark /></Link>
+        <Link href={homeHref} aria-label="Fourth Meridian home" className={styles.brand}><Wordmark /></Link>
         <nav className={styles.desktopNav} aria-label="Primary navigation">
           {links.map((link) => <Link key={link.href} href={link.href}>{link.label}</Link>)}
         </nav>

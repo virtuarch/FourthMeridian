@@ -7,8 +7,8 @@
  * and a MASKED account label — never a raw account number or provider token.
  */
 
-import { ImportBatchKind, type PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+import { ImportBatchKind } from "@prisma/client";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { getImportableAccountsForConnection } from "@/lib/investments/connection-import-accounts";
 import { maskAccountLabel } from "@/lib/imports/investments/import-validation";
 
@@ -23,13 +23,16 @@ export interface ImportBatchSummary {
   counts:      { rowCount: number; importedCount: number; matchedCount: number; skippedCount: number; failedCount: number };
 }
 
-export async function getInvestmentImportHistoryForConnection(args: {
+/**
+ * RLS-C-S8 — the authority is the first parameter and has no default. The two
+ * reads below MUST share it: the account set bounds the batch query, and a
+ * breadcrumb assembled by one authority and a list by another is not one answer.
+ */
+export async function getInvestmentImportHistoryForConnection(client: ReadClient, args: {
   connectionId: string;
   userId:       string;
-  client?:      PrismaClient;
 }): Promise<ImportBatchSummary[]> {
-  const client = args.client ?? db;
-  const accounts = await getImportableAccountsForConnection({ connectionId: args.connectionId, userId: args.userId, client });
+  const accounts = await getImportableAccountsForConnection(client, { connectionId: args.connectionId, userId: args.userId });
   if (accounts.length === 0) return [];
 
   const accountById = new Map(accounts.map((a) => [a.id, a]));

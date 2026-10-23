@@ -22,6 +22,7 @@
 
 import type { InvestmentsReconciliation } from "@/lib/investments/investments-time-machine-core";
 import type { PeriodFlows } from "@/lib/investments/investment-flows-core";
+import type { PeriodAttribution } from "@/lib/investments/period-attribution.core";
 
 export type BridgeRowKey = "opening" | "money_in" | "money_out" | "residual" | "closing";
 
@@ -35,7 +36,13 @@ export interface BridgeRow {
 }
 
 export interface BridgeModel {
-  state: "no-comparison" | "reconciled";
+  /**
+   * V26-INVESTMENTS-HISTORY-FIX — `not-attributable` and `partial` are the two
+   * states that previously did not exist. The waterfall used to render
+   * regardless, with the guard demoted to a caveat line beneath it; a caveat
+   * under a number does not stop the number being read.
+   */
+  state: "no-comparison" | "reconciled" | "partial" | "not-attributable";
   reportingCurrency: string | null;
   rows:  BridgeRow[];
   /** The residual amount, surfaced for the "what's inside" copy. */
@@ -44,6 +51,9 @@ export interface BridgeModel {
   residualReason: string | null;
   /** Set when either endpoint is a partial subtotal or a conflict is present. */
   caveat: string | null;
+  /** Present unless the period is fully attributable — why the claim is withheld. */
+  headline: string | null;
+  reasons:  string[];
 }
 
 /** Floating-point identity tolerance (reporting-currency units). */
@@ -59,9 +69,39 @@ const EPSILON = 0.01;
 export function buildBridgeRows(
   reconciliation: InvestmentsReconciliation | null,
   flows:          PeriodFlows | null,
+  /**
+   * The canonical verdict from `assembleInvestmentsTimeMachine`. Optional only
+   * so existing callers compile; when absent the previous behaviour is kept,
+   * which is why the composition always passes it.
+   */
+  attribution?:   PeriodAttribution | null,
 ): BridgeModel {
   if (reconciliation === null) {
-    return { state: "no-comparison", reportingCurrency: null, rows: [], residual: 0, residualReason: null, caveat: null };
+    return { state: "no-comparison", reportingCurrency: null, rows: [], residual: 0, residualReason: null, caveat: null, headline: null, reasons: [] };
+  }
+
+  // ── The eligibility gate ────────────────────────────────────────────────
+  // A period that cannot be attributed renders NO waterfall. Not a greyed one,
+  // not one with an asterisk: the rows themselves are the claim, and the claim
+  // is unsupported. The closing value survives because it is a fact.
+  if (attribution && attribution.kind !== "ATTRIBUTABLE") {
+    const rows: BridgeRow[] = [
+      { key: "closing", label: "Current value", amount: attribution.closingValue, isLevel: true },
+    ];
+    if (attribution.moneyIn !== null) {
+      rows.unshift({ key: "money_out", label: "Money out", amount: attribution.moneyOut ?? 0, isLevel: false });
+      rows.unshift({ key: "money_in",  label: "Money in",  amount: attribution.moneyIn,       isLevel: false });
+    }
+    return {
+      state: attribution.kind === "PARTIALLY_ATTRIBUTABLE" ? "partial" : "not-attributable",
+      reportingCurrency: attribution.reportingCurrency,
+      rows,
+      residual: 0,
+      residualReason: null,
+      caveat: null,
+      headline: attribution.headline,
+      reasons: attribution.refusals.map((r) => r.copy),
+    };
   }
 
   const { openingValue, closingValue, netExternalFlows, residualChange, reportingCurrency } = reconciliation;
@@ -98,5 +138,7 @@ export function buildBridgeRows(
     residual: residualChange,
     residualReason: reconciliation.residualReason,
     caveat,
+    headline: null,
+    reasons: [],
   };
 }

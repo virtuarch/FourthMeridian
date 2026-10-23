@@ -15,7 +15,7 @@
  * each wallet's own account(s).
  */
 
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { ProviderType, ConnectionStatus } from "@prisma/client";
 import { buildWalletSyncStatus, type SyncConnection, type WalletConnectionStateInput } from "@/lib/sync/status";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
@@ -26,8 +26,8 @@ export interface WalletSyncData {
   accountsByConnectionId: Record<string, AccountLite[]>;
 }
 
-export async function loadWalletSyncConnections(userId: string): Promise<WalletSyncData> {
-  const rows = await db.connection.findMany({
+export async function loadWalletSyncConnections(client: ReadClient, userId: string): Promise<WalletSyncData> {
+  const rows = await client.connection.findMany({
     where: {
       userId,
       provider: ProviderType.WALLET,
@@ -38,6 +38,9 @@ export async function loadWalletSyncConnections(userId: string): Promise<WalletS
       status:       true,
       lastSyncedAt: true,
       errorCode:    true,
+      // W-M2a — the resumable acquisition checkpoint. The ONLY positive evidence
+      // that discovery is genuinely mid-flight; see deriveWalletConnectionState.
+      cursor:       true,
       accountConnections: {
         where:  { deletedAt: null },
         select: { financialAccount: { select: { id: true, name: true, type: true, deletedAt: true } } },
@@ -68,6 +71,7 @@ export async function loadWalletSyncConnections(userId: string): Promise<WalletS
       status:       c.status as WalletConnectionStateInput["status"],
       lastSyncedAt: c.lastSyncedAt,
       errorCode:    c.errorCode,
+      discoveryCursor: c.cursor ?? null,
     });
   }
 

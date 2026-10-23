@@ -6,7 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { AuditAction } from "@/lib/audit-actions";
 import { requireFreshUser } from "@/lib/session";
 import { invalidateSession } from "@/lib/session-cache";
@@ -27,9 +27,11 @@ export async function DELETE(
   const confirmSelf    = req.nextUrl.searchParams.get("confirmSelf") === "true";
 
   // Load the target session — must belong to this user
-  const target = await db.userSession.findFirst({
+  // RLS slice A — the guard read, as the user. Kept as its own short transaction so
+  // the original two-step shape (check, then write) is preserved exactly.
+  const target = await withTenantDb(userId, (tx) => tx.userSession.findFirst({
     where: { id: sessionId, userId },
-  });
+  }));
 
   if (!target) return NextResponse.json({ error: "Session not found." }, { status: 404 });
   if (target.revokedAt) return NextResponse.json({ error: "Session already revoked." }, { status: 400 });
@@ -43,19 +45,23 @@ export async function DELETE(
     );
   }
 
-  const [, auditRow] = await db.$transaction([
-    db.userSession.update({
+  // ⚠️ THE BATCH ARRAY BECAME AN INTERACTIVE TRANSACTION, AND IT IS THE SAME ONE
+  // THAT CARRIES THE IDENTITY. `withTenantDb` opens exactly one transaction and sets
+  // `app.user_id` inside it, so the revocation and its audit row commit together, as
+  // before — a `db.$transaction([...])` could not have carried the identity at all.
+  const auditRow = await withTenantDb(userId, async (tx) => {
+    await tx.userSession.update({
       where: { id: sessionId },
       data:  { revokedAt: new Date() },
-    }),
-    db.auditLog.create({
+    });
+    return tx.auditLog.create({
       data: {
         userId,
         action:   AuditAction.SESSION_REVOKED,
         metadata: { sessionId, isCurrent: !!isCurrent },
       },
-    }),
-  ]);
+    });
+  });
 
   // We have the exact token that was just revoked — targeted invalidation
   // instead of clearing the whole cache.

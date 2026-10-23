@@ -8,15 +8,23 @@
  * webhook when more is ready. Without a receiver the app assumed "first sync =
  * full history", which is the real backfill gap.
  *
- * Flow:
+ * Flow (the decision itself lives in lib/plaid/webhook-receiver.ts, pure and
+ * tested branch by branch; this file is the adapter that supplies real I/O):
  *   1. Read the RAW body (needed for signature verification) and verify Plaid's
- *      JWT signature (lib/plaid/webhook-verify). An invalid signature is a 401.
- *   2. For a transactions sync signal, resolve the PlaidItem by Plaid item_id and
- *      run the FULL deferred pipeline for it (sync → snapshot backfill →
- *      reconstruction → price backfill → wealth regen) via the concurrency-guarded
- *      syncPlaidItemFromWebhook — reusing the exact machinery the connect flow
- *      uses, never a parallel implementation.
- *   3. Everything else is acknowledged (200) but not processed.
+ *      JWT signature (lib/plaid/webhook-verify). An invalid signature is a 401
+ *      and records NOTHING.
+ *   2. Resolve the PlaidItem by Plaid item_id WITH its status and owner state.
+ *   3. For a sync trigger on an ELIGIBLE Item (status ACTIVE, owner not
+ *      deactivated — the daily cron's predicate), run the FULL deferred pipeline
+ *      via the concurrency-guarded syncPlaidItemFromWebhook. A trigger for a
+ *      REVOKED / NEEDS_REAUTH / ERROR Item or an inactive owner is acknowledged
+ *      and REFUSED (OPERATIONALIZATION P0, 2026-10-07): before this, a
+ *      REVOKED Item — whose token we still hold — ran the whole pipeline against
+ *      Plaid on every delivery.
+ *   4. EVERY verified webhook, acted on or not, leaves one PlaidWebhookEvent
+ *      row (lib/plaid/webhook-event.ts): the beta's first
+ *      USER_PERMISSION_REVOKED is evidence, not a log line.
+ *   5. Everything verified is acknowledged (200) so Plaid never retries.
  *
  * The manual "Sync Now" / cooldown / daily-cron paths are unchanged — the
  * webhook is the primary correct trigger, not a replacement for those safety nets.
@@ -24,77 +32,39 @@
 
 import { NextRequest, NextResponse, after } from "next/server";
 import { db } from "@/lib/db";
+import { deploymentEnvironment } from "@/lib/env";
 import { verifyPlaidWebhook } from "@/lib/plaid/webhook-verify";
 import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
+import { handlePlaidWebhook } from "@/lib/plaid/webhook-receiver";
+import { recordPlaidWebhookEvent } from "@/lib/plaid/webhook-event";
 
 // The deferred pipeline runs here (post-response, same invocation), so give it
 // the same budget as the connect flow / daily cron. Raised 60→300 with them
 // (see resume-sync/route.ts) — this route was timing out mid-import too.
 export const maxDuration = 300;
 
-// TRANSACTIONS webhook codes that mean "there is transaction data to pull".
-// SYNC_UPDATES_AVAILABLE is the one that fires for /transactions/sync (which
-// this app uses throughout); the legacy get-flow codes are handled defensively
-// (they trigger the same idempotent sync) in case a dashboard config surfaces one.
-const SYNC_TRIGGER_CODES = new Set([
-  "SYNC_UPDATES_AVAILABLE",
-  "HISTORICAL_UPDATE",
-  "INITIAL_UPDATE",
-  "DEFAULT_UPDATE",
-]);
-
 export async function POST(req: NextRequest) {
   // RAW body FIRST — the signature commits to sha256(body), so it must be read
   // before (and instead of) req.json().
   const rawBody = await req.text();
 
-  const verified = await verifyPlaidWebhook(rawBody, req.headers.get("plaid-verification"));
-  if (!verified.ok) {
-    console.warn(`[plaid webhook] signature rejected: ${verified.reason}`);
-    return NextResponse.json({ error: "invalid webhook signature" }, { status: 401 });
-  }
-
-  let body: { webhook_type?: string; webhook_code?: string; item_id?: string };
-  try {
-    body = JSON.parse(rawBody);
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
-
-  const { webhook_type, webhook_code, item_id } = body;
-  console.log(`[plaid webhook] ${webhook_type ?? "?"}/${webhook_code ?? "?"} item=${item_id ?? "—"}`);
-
-  // TRANSACTIONS sync signals (above) OR a HOLDINGS update (Plaid fires
-  // webhook_type "HOLDINGS" / webhook_code "DEFAULT_UPDATE" once investment
-  // holdings are ready — e.g. after the user grants Investments consent via
-  // EnableInvestmentsButton). Both re-invoke the FULL deferred pipeline via
-  // syncPlaidItemFromWebhook (sync → snapshot backfill → reconstruction → prices
-  // → wealth regen), NOT a narrow holdings-only sync, or the snapshot/A9 steps
-  // go stale — same discipline as the transactions webhook fix.
-  const isSyncTrigger =
-    (webhook_type === "TRANSACTIONS" && typeof webhook_code === "string" && SYNC_TRIGGER_CODES.has(webhook_code)) ||
-    (webhook_type === "HOLDINGS" && webhook_code === "DEFAULT_UPDATE");
-
-  if (!isSyncTrigger || !item_id) {
-    // Verified but not something we act on — ack so Plaid doesn't retry.
-    return NextResponse.json({ received: true, handled: false });
-  }
-
-  const item = await db.plaidItem.findUnique({
-    where:  { externalItemId: item_id },
-    select: { id: true },
+  const result = await handlePlaidWebhook(rawBody, req.headers.get("plaid-verification"), {
+    verify: verifyPlaidWebhook,
+    lookupItem: async (externalItemId) => {
+      const item = await db.plaidItem.findUnique({
+        where:  { externalItemId },
+        select: { id: true, status: true, user: { select: { deactivatedAt: true } } },
+      });
+      return item ? { id: item.id, status: item.status, ownerDeactivated: item.user.deactivatedAt !== null } : null;
+    },
+    recordEvent: (event) => recordPlaidWebhookEvent(event),
+    // Run the guarded full pipeline AFTER responding, so Plaid gets a fast 200 and
+    // never retries on our latency. The guard (syncPlaidItemFromWebhook) makes a
+    // duplicated/racing delivery safe. DF-2C — trigger WEBHOOK: the execution
+    // ledger records that this refresh was initiated by a provider webhook.
+    scheduleSync: (plaidItemId) => after(() => syncPlaidItemFromWebhook(plaidItemId, "WEBHOOK")),
+    environment: deploymentEnvironment,
   });
-  if (!item) {
-    console.warn(`[plaid webhook] no PlaidItem for item_id ${item_id} — ack, nothing to do`);
-    return NextResponse.json({ received: true, handled: false });
-  }
 
-  // Run the guarded full pipeline AFTER responding, so Plaid gets a fast 200 and
-  // never retries on our latency. The guard (syncPlaidItemFromWebhook) makes a
-  // duplicated/racing delivery safe.
-  // DF-2C — trigger WEBHOOK: same deferred pipeline, execution ledger records
-  // that this refresh was initiated by a provider webhook.
-  after(() => syncPlaidItemFromWebhook(item.id, "WEBHOOK"));
-
-  return NextResponse.json({ received: true, handled: true });
+  return NextResponse.json(result.body, { status: result.status });
 }

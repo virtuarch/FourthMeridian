@@ -15,7 +15,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
@@ -42,10 +42,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "A 6-digit code is required." }, { status: 400 });
   }
 
-  const dbUser = await db.user.findUnique({
+  // RLS slice A — their own row, as them.
+  const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
     where:  { id: user.id },
     select: { totpSecret: true, totpEnabled: true },
-  });
+  }));
 
   if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -81,24 +82,27 @@ export async function POST(req: NextRequest) {
   }
 
   // Enable 2FA
-  await db.user.update({
+  await withTenantDb(user.id, (tx) => tx.user.update({
     where: { id: user.id },
     data:  { totpEnabled: true },
-  });
+  }));
 
-  // Generate recovery codes and write TWO_FACTOR_ENABLED audit log
-  const plainCodes = await generateRecoveryCodes(
+  // RLS-13 — POST-IDENTITY, so it runs as the user. lib/recovery-codes.ts no
+  // longer owns a client: the authority follows the execution phase, and here
+  // the caller is authenticated and is acting on their OWN codes.
+  const plainCodes = await withTenantDb(user.id, (tx) => generateRecoveryCodes(
+    tx,
     user.id,
     false, // not a regen — first-time setup
-  );
+  ));
 
   // generateRecoveryCodes writes RECOVERY_CODES_GENERATED; write TWO_FACTOR_ENABLED separately
-  const auditRow = await db.auditLog.create({
+  const auditRow = await withTenantDb(user.id, (tx) => tx.auditLog.create({
     data: {
       userId: user.id,
       action: AuditAction.TWO_FACTOR_ENABLED,
     },
-  });
+  }));
 
   // OPS-3 S5 Wave 1 — bell mirror. Non-throwing.
   await createNotification({

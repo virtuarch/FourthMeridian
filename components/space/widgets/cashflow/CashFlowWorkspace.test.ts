@@ -76,7 +76,11 @@ console.log("2. CashFlowSpaceData is the composition boundary");
   check("panels consume the contract's daily/buckets slices", WS.includes("data?.daily") && WS.includes("data?.buckets"));
   check("windowed rows come from the contract", WS.includes("data?.rows"));
   check("spending consumes data.outflowByCategory", WS.includes("data.outflowByCategory"));
-  check("income consumes data.cashInByReason / data.incomeBySource", WS.includes("data.cashInByReason") && WS.includes("data.incomeBySource"));
+  // v2.6-TRUTH-6 — the economic axis now consumes the CANONICAL income rollup.
+  // `data.incomeBySource` was the old presentation authority and admitted rows
+  // the taxonomy classes NOT_INCOME, so the card and the headline could disagree.
+  check("income consumes data.cashInByReason / data.income.lines",
+    WS.includes("data.cashInByReason") && WS.includes("data.income.lines"));
 }
 
 console.log("3. The workspace duplicates NO canonical projection");
@@ -124,7 +128,9 @@ console.log("8. Display currency (FX) is not regressed");
 {
   check("workspace threads txCtx into the contract as moneyCtx", WS.includes("moneyCtx: txCtx"));
   check("workspace passes the tx conversion context to its panels", WS.includes("ctx={txCtx}"));
-  check("host still passes the tx conversion context to the workspace", DASH.includes("txCtx={txConversionCtx}"));
+  // W2 — the JSX-prop delivery went with the routed-modal/section path; the ONE
+  // surviving delivery is the workspace render context the host materializes.
+  check("host still passes the tx conversion context to the workspace (renderCtx)", DASH.includes("txCtx: txConversionCtx"));
 }
 
 console.log("9. Old Cash Flow host composition retired/reduced");
@@ -165,8 +171,8 @@ console.log("11. CF-4 — category exploration via Preview → LeftPanel → Rig
   check("workspace mounts CashFlowCategoryLedger for exploration", WS.includes("<CashFlowCategoryLedger"));
   check("workspace no longer mounts the always-expanded CashFlowCategoryBreakdown", !WS.includes("CashFlowCategoryBreakdown"));
   // Category data still flows from the contract slices (fed as props, not re-derived).
-  check("ledger is fed the contract's outflowByCategory / incomeBySource / cashInByReason",
-    WS.includes("items={data.outflowByCategory}") && WS.includes("items={data.incomeBySource}") && WS.includes("data.cashInByReason"));
+  check("ledger is fed the contract's outflowByCategory / income.lines / cashInByReason",
+    WS.includes("items={data.outflowByCategory}") && WS.includes("data.income.lines") && WS.includes("data.cashInByReason"));
 
   // The ledger COMPOSES the Atlas panel primitives — it is NOT a bespoke CashFlow panel.
   check("ledger composes Atlas panel primitives (no CashFlowPanel primitive)",

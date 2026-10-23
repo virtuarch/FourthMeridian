@@ -5,7 +5,7 @@
  *
  * The project has no test runner (no jest/vitest). This file is a standalone,
  * dependency-free script runnable with the already-installed `tsx`, mirroring
- * lib/ai/intent/classifier.test.ts:
+ * every other test in this repository:
  *
  *     npx tsx lib/ai/assemblers/transactions.privacy.test.ts
  *
@@ -68,7 +68,8 @@ check(
 );
 
 // SHARED is the legacy "maps to FULL" value. The 2026-07-02 data audit
-// (scripts/audit-visibility-levels.ts) confirmed zero SHARED rows in dev and
+// (audit-visibility-levels, retired and deleted REVIEW-3 W3; tombstoned in
+// scripts/audit-registry.ts) confirmed zero SHARED rows in dev and
 // prod, and no write path can produce one, so the predicate excludes it and
 // fails closed. This assertion makes that decision executable: if SHARED is
 // ever added to the predicate, this test must be changed consciously,
@@ -97,11 +98,37 @@ const predicateUseCount = (
   source.match(/visibilityLevel: \{ in: TRANSACTION_DETAIL_VISIBILITY \}/g) ?? []
 ).length;
 
+// v2.6-PARITY-1 — the assembler no longer queries SpaceAccountLink at all: both
+// of its reads delegate to `bankingTransactionWhere`, which carries the gate for
+// the whole product.
+//
+// ⚠️ That makes the ORIGINAL form of this check — "salQueryCount > 0 and every
+// one carries the predicate" — pass vacuously the moment the gate is DELETED,
+// which is the exact failure it exists to catch. So it is split in two:
+//
+//   (a) any SAL query the assembler still writes must carry the predicate; and
+//   (b) the gate must be REACHED — by delegation, and the delegate is read here
+//       and proven to apply it, rather than trusted because of its name.
 check(
-  'every SpaceAccountLink query carries the shared predicate',
-  salQueryCount > 0 && salQueryCount === predicateUseCount,
+  'every SpaceAccountLink query in the assembler carries the shared predicate',
+  salQueryCount === predicateUseCount,
   `spaceAccountLinks queries: ${salQueryCount}, predicate uses: ${predicateUseCount} — ` +
     'a SAL query was added without the KD-1 visibility constraint',
+);
+
+const boundarySrc = readFileSync(
+  join(process.cwd(), 'lib', 'data', 'banking-population.ts'), 'utf8',
+);
+const delegates = /import\s*\{[^}]*\bbankingTransactionWhere\b[^}]*\}\s*from\s*["'][^"']*banking-population["']/
+  .test(source);
+check(
+  'the AI read is KD-1 gated — directly, or by a delegate that provably gates',
+  (salQueryCount > 0 && salQueryCount === predicateUseCount) ||
+    (delegates &&
+      /spaceAccountLinks:\s*\{\s*some:\s*\{[^}]*visibilityLevel:\s*\{\s*in:\s*TRANSACTION_DETAIL_VISIBILITY/
+        .test(boundarySrc)),
+  'the assembler neither gates its own SAL query nor delegates to a boundary that does — ' +
+    'the AI would read transactions from BALANCE_ONLY / SUMMARY_ONLY shared accounts',
 );
 
 check(
@@ -110,9 +137,42 @@ check(
   'found a visibilityLevel: VisibilityLevel.<LITERAL> — use TRANSACTION_DETAIL_VISIBILITY instead',
 );
 
+// ⚠️ THIS CHECK WAS BEING SATISFIED BY AN EMPTY IMPORT (V26-REASONING Slice 0).
+// Since v2.6-PARITY-1 the assembler delegates its gate to
+// `bankingTransactionWhere` and uses nothing from `lib/ai/visibility` — but the
+// statement `import { } from '@/lib/ai/visibility';` was left behind, importing
+// no binding and executing no code, and it is the ONLY reason this line passed.
+// A check kept green by a syntactically empty import is testing nothing.
+//
+// The real question is the one above: is the KD-1 gate REACHED? That check
+// reads the delegate's source and proves it applies the predicate. What is left
+// to pin here is the other half — that the assembler has not quietly grown a
+// SECOND, ungated path to transaction rows.
+// ⚠️ RLS-AI-S6 — THE READS ARE ON `client`, NOT `db`, AND THE NEEDLE HAD TO
+// FOLLOW. The assembler no longer imports a Prisma client at all: the authority
+// is a required leading parameter. A needle still spelled `db.transaction.` would
+// have matched NOTHING after that change and reported clean over zero call sites —
+// the precise failure mode recorded for the `\b$transaction\s*\(` scan in this
+// programme. Both spellings are admitted so the scan cannot go quiet on either,
+// and the count assertion below is what makes its silence meaningful.
+const txReadWheres = [...source.matchAll(
+  /(?:db|client)\.transaction\.(?:findMany|findFirst|count|aggregate|groupBy)\(\{\s*\n\s*where:\s*([A-Za-z_$][\w$]*)\(/g,
+)].map((m) => m[1]);
 check(
-  'assembler imports the canonical predicate module',
-  source.includes("from '@/lib/ai/visibility'"),
+  'the where-builder scan found BOTH transaction reads — it is not reporting clean over nothing',
+  txReadWheres.length === 2,
+  `found ${txReadWheres.length}: [${txReadWheres.join(', ')}]`,
+);
+check(
+  'the assembler holds no Prisma client of its own — the authority is a parameter',
+  !/from\s*['"]@\/lib\/db['"]/.test(source.replace(/db\/tenant-context/g, 'TC')),
+);
+check(
+  'every transaction read is built by a gated where-builder, and there is at least one',
+  txReadWheres.length > 0 &&
+    txReadWheres.every((f) => f === 'aiTransactionWhere' || f === 'aiDrilldownWhere'),
+  `transaction-read where builders: [${txReadWheres.join(', ')}] — a read whose ` +
+    'where clause is written inline bypasses the delegate proven gated above',
 );
 
 // ---------------------------------------------------------------------------

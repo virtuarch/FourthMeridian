@@ -1,123 +1,35 @@
 /**
- * app/api/accounts/[id]/import/route.ts
+ * POST /api/accounts/[id]/import  — CSV / XLSX banking import.
  *
- * id refers to a FinancialAccount.id.
+ * ── IDEMP-001 / SEC-007 / OPS-007 (2026-10-22) ────────────────────────────────
+ * The runtime audit submitted one 6-row file twice concurrently and got 12
+ * rows (both 201, two COMPLETED batches): the fingerprint dedupe is a READ, so
+ * two overlapping requests never saw each other. A simulated crash left a
+ * PROCESSING batch the rollback route refused (409) with its rows live. The
+ * route had no maxDuration and no caps.
  *
- * POST — D2 Step 4D-1 CSV import MVP, extended in D2 Step 4D-2 to also accept
- * Excel (.xlsx) files. Accepts a file (multipart/form-data), parses +
- * classifies each row against existing Transaction history, and writes an
- * ImportBatch + any newly-created Transaction rows.
+ * The order now:
+ *   1. authorize the account (unchanged);
+ *   2. read the upload — refuse over IMPORT_MAX_BYTES (413) BEFORE hashing;
+ *   3. CLAIM: create the ImportBatch (PENDING) with sha256(bytes). The partial
+ *      unique index ImportBatch_account_file_live_key refuses a second live
+ *      batch for the same account + file ⇒ 409 with the existing batch id;
+ *   4. parse; refuse over IMPORT_MAX_ROWS (400) — the claimed batch is marked
+ *      FAILED so the slot frees (FAILED is outside the index predicate);
+ *   5. write rows in CHUNKS: each chunk of IMPORT_CHUNK_ROWS runs inside ONE
+ *      tenant phase (fast path). A chunk that throws is re-run row by row with
+ *      the original per-row tenant phases, so one bad row still only costs
+ *      that row (the fallback path is the pre-remediation loop, verbatim);
+ *   6. complete the batch (unchanged); a batch whose lambda died stays
+ *      PROCESSING and becomes rollback-eligible after the budget
+ *      (lib/imports/claim.ts rollbackClaimWhere).
  *
- * Format is sniffed from the uploaded file's name/MIME type — see
- * docs/initiatives/d2/investigations/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md §5:
- *   - `.xlsx` extension, or the OOXML spreadsheet MIME type → Excel branch
- *     (lib/imports/excel.ts).
- *   - Legacy binary `.xls` → rejected with a 400 (exceljs, the parsing
- *     library this route depends on, only reads the modern OOXML `.xlsx`
- *     format — see lib/imports/excel.ts's module header).
- *   - Everything else → CSV branch (lib/imports/csv.ts), unchanged from
- *     4D-1 — this is not a new restriction, it's the same permissive
- *     fallback the route always had (no file-type check existed before
- *     4D-2; only a positive Excel match is carved out of that fallback).
- * Both branches converge on the same NormalizedTransaction[]-driven
- * batch-create/loop/finalize body below.
- *
- * Body (multipart/form-data):
- *   file:           File   — required, the CSV or .xlsx file to import
- *   signConvention: string — optional, "creditPositive" (default) | "debitPositive"
- *                    Only used when the file has a single signed Amount
- *                    column (not a Debit/Credit pair, which is
- *                    sign-unambiguous). "creditPositive" matches this app's
- *                    own convention (positive = money in) — see
- *                    lib/plaid/syncTransactions.ts's sign-flip comment.
- *   columnMapping:  string — optional, D2 Step 4D-5a. JSON-encoded object
- *                    mapping CsvColumnMap field names (date, merchant,
- *                    description, amount, debit, credit, category,
- *                    reference) to this file's actual header strings, e.g.
- *                    {"date":"Posting Date","debit":"Debit Amount"}. When
- *                    present, used all-or-nothing in place of
- *                    detectColumns()'s alias-based auto-detection — see
- *                    lib/imports/csv.ts's applyExplicitMapping(). Absent →
- *                    auto-detection behavior is unchanged from 4D-1/4D-2.
- *   source:         string — optional, D2 Step 4D-4. "QUICKBOOKS" asserts
- *                    this file is a QuickBooks export — caller-asserted,
- *                    never content-detected; format-sniffing below is
- *                    unaffected (see lib/imports/pipeline.ts's
- *                    sourceOverride). Any other value, or absent, behaves
- *                    exactly as before (source is sniffed from the file as
- *                    CSV or EXCEL). Only "QUICKBOOKS" combined with an exact
- *                    externalTransactionId match (matchedVia: "externalId")
- *                    triggers update-on-match below — never a fingerprint
- *                    fallback match, regardless of source.
- *
- * D2 Step 4D-5b — column resolution for both branches now goes through
- * lib/imports/csv.ts's resolveColumns(), which adds a third source after
- * explicitMapping/detectColumns: this Space's saved ImportMappingProfile
- * rows, trial-applied in recency order. Every ImportBatch now also records
- * resolvedColumnMapping (the actual CsvColumnMap used, regardless of source)
- * and mappingProfileId (set only when a saved profile matched). A matched
- * profile's lastUsedAt/useCount are bumped after the import completes. No
- * request shape change — there is still no route to create/edit/list
- * profiles in this slice; see
- * docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md.
- *
- * D2 Step 4D-5c-1 — the format-sniff → parse → resolveColumns() → normalize
- * sequence above has been extracted into lib/imports/pipeline.ts's
- * runImportPipeline(), called once below instead of being inlined per
- * CSV/Excel branch. Zero behavior change: same error strings/status codes
- * (including the legacy-.xls rejection, now surfaced as a normal
- * runImportPipeline() `{ error }` instead of a dedicated early return), same
- * resolvedColumnMapping/mappingProfileId stamping. Done so the future
- * preview route (D2 Step 4D-5c-2) can call the same pipeline instead of
- * duplicating it. Classification (resolveFingerprintOutcome, below) and all
- * persistence deliberately stay here, unmodified — see
- * docs/initiatives/d2/implementation/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md §3 on why
- * classification can't be hoisted into that helper without breaking the
- * sequential within-file duplicate-detection invariant documented in the
- * paragraph below.
- *
- * D2 Step 4D-5c-2 — the account-resolution/authorization check below (was
- * inlined here) is now lib/imports/authorize.ts's
- * resolveImportableFinancialAccount(), shared verbatim with the new, purely
- * read-only `POST .../import/preview` route
- * (app/api/accounts/[id]/import/preview/route.ts), which calls
- * runImportPipeline() and resolveFingerprintOutcome() exactly as this route
- * does but never creates an ImportBatch/Transaction or bumps a profile's
- * usage counters. Zero behavior change here. See
- * docs/initiatives/d2/implementation/D2_STEP4D5C2_IMPLEMENTATION_PLAN.md.
- *
- * Per-row outcome (see lib/imports/csv.ts for the classification logic,
- * shared unmodified by the Excel branch):
- *   CREATED — no existing match found; a new Transaction was written.
- *   MATCHED — resolved to an already-existing Transaction (exact
- *             externalTransactionId, or an unambiguous fingerprint match).
- *             No write, except: D2 Step 4D-4 — a QUICKBOOKS-sourced batch
- *             whose match was via externalId (never a fingerprint match)
- *             overwrites the existing row's allow-listed fields (date,
- *             amount, merchant, description, category) when they differ
- *             from the incoming row — see lib/imports/csv.ts's
- *             computeQuickBooksUpdateDiff(). Otherwise the existing row
- *             (possibly Plaid-sourced, or from a prior CSV/Excel import) is
- *             left untouched.
- *   SKIPPED — ambiguous fingerprint match (more than one existing row could
- *             be "the same" transaction). Recorded in errorSummary.
- *   FAILED  — row could not be parsed (bad date/amount, missing
- *             merchant/description). Recorded in errorSummary.
- *
- * Explicitly out of scope for this slice (see
- * docs/initiatives/d2/investigations/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md):
- * rollback, any UI, background/async processing, a generic
- * provider-adapter abstraction, multi-sheet selection. Rows are processed
- * sequentially (not Promise.all) — later rows must see earlier rows'
- * commits so within-file duplicates land on the fingerprint-match path
- * instead of racing past each other and double-creating; see the
- * dualWriteSpaceAccountLink comment in app/api/accounts/manual/route.ts for
- * the same race lesson on a different table.
+ * `maxDuration = 300` matches the dispatcher's budget. Reads go through the
+ * tenant client only (no `@/lib/db` here — RLS-PREP-C).
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
 import { createNotification } from "@/lib/notifications/create";
 import { getSpaceContext } from "@/lib/space";
 import { ImportBatchStatus, ImportSource, Prisma, type CategorySource } from "@prisma/client";
@@ -128,30 +40,43 @@ import {
   computeQuickBooksUpdateDiff,
   type SignConvention,
   type SavedMappingProfileLite,
+  type NormalizedTransaction,
 } from "@/lib/imports/csv";
 import { runImportPipeline } from "@/lib/imports/pipeline";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import {
+  claimImportBatch, findLiveImportBatch, chunkRows, sha256Hex, IMPORT_MAX_BYTES, IMPORT_MAX_ROWS,
+} from "@/lib/imports/claim";
+import { withTenantDb, type TenantClient } from "@/lib/db/tenant-context";
 import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
-// FlowType P5 Slice 0 — same classification contract as the Plaid sync write path.
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
 import { buildFlowInputFromRow, buildFlowWriteFields } from "@/lib/transactions/plaid-flow-input";
-// CCPAY-2C-4 — the ONE card-payment category rescue, shared with the Plaid sync
-// seam. File imports supply evidence; the authority owns the decision.
+import { mayWriteFlow } from "@/lib/transactions/flow-authority";
 import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
-// SR-2 — the payroll descriptor-evidence rescue, applied on the same seam and in
-// the same order as the Plaid sync path (card-payment rescue, then payroll).
 import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
-// TI2-5 — stamp durable TI facts beside FlowType on the import write paths.
-// Imports carry no provider metadata, so only the honestly-derivable facts are
-// non-null (settlementState from pending=false; fxApplied from the single
-// account currency; tiFactsVersion). Provider-only facts stay NULL.
 import { buildTransactionFacts } from "@/lib/transactions/transaction-facts";
-// Merchant Intelligence M4 — stamp merchant identity + category provenance on
-// newly-imported rows, consistent with Plaid sync and the historical backfill.
-// Imports carry no provider merchant-entity id or counterparties, so no
-// enrichment is captured here. Best-effort: a failure degrades to null MI
-// columns and never blocks the import.
 import { resolveMerchantWrite } from "@/lib/transactions/merchant-write";
+import { economicDateFor } from "@/lib/transactions/economic-date-write";
+import { recordTransactionObservation } from "@/lib/transactions/event-write";
+
+export const maxDuration = 300;
+
+/** A tenant phase runner: the per-row fallback passes `tenant`; the chunk fast path passes `(fn) => fn(tx)`. */
+type Run = <T>(fn: (tx: TenantClient) => Promise<T>) => Promise<T>;
+
+interface RowTally {
+  created: number;
+  matched: number;
+  skipped: number;
+  failed: number;
+  errors: { row: number; reason: string }[];
+  updatedTransactionIds: string[];
+}
+const emptyTally = (): RowTally => ({ created: 0, matched: 0, skipped: 0, failed: 0, errors: [], updatedTransactionIds: [] });
+function mergeTally(into: RowTally, from: RowTally): void {
+  into.created += from.created; into.matched += from.matched; into.skipped += from.skipped; into.failed += from.failed;
+  into.errors.push(...from.errors); into.updatedTransactionIds.push(...from.updatedTransactionIds);
+}
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -162,20 +87,15 @@ export const POST = withApiHandler(async (
 
   const [user, err] = await requireUser();
   if (err) return err;
+  const userId = user.id; // captured: closures below lose the narrowing
 
   const { spaceId } = await getSpaceContext();
 
-  // Resolve + authorize the target account — D2 Step 4D-5c-2 extracted this
-  // check into lib/imports/authorize.ts's resolveImportableFinancialAccount()
-  // so the new preview route shares it verbatim instead of duplicating it.
-  // Zero behavior change here — same two db reads, same NextResponse
-  // bodies/status codes. See that module's header for the
-  // SpaceAccountLink-first/legacy-Account-fallback rationale.
-  const access = await resolveImportableFinancialAccount(user.id, spaceId, id);
+  const access = await withTenantDb(
+    user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, id));
   if (!access.ok) return access.response;
   const { financialAccountId } = access;
 
-  // ── Parse request ────────────────────────────────────────────────────────
   let formData: FormData;
   try {
     formData = await req.formData();
@@ -188,26 +108,27 @@ export const POST = withApiHandler(async (
     return NextResponse.json({ error: "Missing file." }, { status: 400 });
   }
 
+  // ── 2. Byte cap BEFORE the bytes are read into memory for hashing ──────────
+  if (file.size > IMPORT_MAX_BYTES) {
+    return NextResponse.json(
+      { error: `File is too large to import (limit ${Math.floor(IMPORT_MAX_BYTES / (1024 * 1024))} MB).` },
+      { status: 413 },
+    );
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.byteLength > IMPORT_MAX_BYTES) {
+    return NextResponse.json({ error: "File is too large to import." }, { status: 413 });
+  }
+  const fileSha256 = sha256Hex(bytes);
+
   const signConventionRaw = formData.get("signConvention");
   const signConvention: SignConvention =
     signConventionRaw === "debitPositive" ? "debitPositive" : "creditPositive";
 
-  // ── Source override (D2 Step 4D-4) ───────────────────────────────────────
-  // Caller-asserted only — never inferred from file content. See module
-  // header's `source` field doc and lib/imports/pipeline.ts's
-  // sourceOverride. Any value other than "QUICKBOOKS" (including absent)
-  // leaves source exactly as today's format-sniffing produces it.
   const sourceRaw = formData.get("source");
   const sourceOverride: ImportSource | undefined =
     sourceRaw === "QUICKBOOKS" ? ImportSource.QUICKBOOKS : undefined;
 
-  // ── Explicit column mapping (D2 Step 4D-5a) ──────────────────────────────
-  // Optional caller-supplied mapping, JSON-encoded in a form field. Present →
-  // validated here at the shape level (object, string|null values), then
-  // used all-or-nothing in place of detectColumns()'s alias-based
-  // auto-detection by applyExplicitMapping() below (field-name/header
-  // validation happens there, not here). Absent → today's exact behavior,
-  // unchanged. See docs/initiatives/d2/implementation/D2_STEP4D5A_IMPLEMENTATION_PLAN.md.
   const columnMappingRaw = formData.get("columnMapping");
   let explicitMapping: Record<string, string | null | undefined> | undefined;
   if (typeof columnMappingRaw === "string" && columnMappingRaw.trim() !== "") {
@@ -231,122 +152,92 @@ export const POST = withApiHandler(async (
     explicitMapping = parsedMapping as Record<string, string | null | undefined>;
   }
 
-  // ── Saved column-mapping profiles (D2 Step 4D-5b) ────────────────────────
-  // Fetched once per request, passed into runImportPipeline() below rather
-  // than fetched by it — the pipeline helper is deliberately DB-free (D2
-  // Step 4D-5c-1, see
-  // docs/initiatives/d2/implementation/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md §2). Sorted
-  // lastUsedAt desc (nulls last) then createdAt desc so the most-recently-
-  // used matching profile wins when more than one of this Space's profiles
-  // would trial-apply successfully — see
-  // docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5's tie-break.
-  // Every Space with zero saved profiles (every Space today — no route
-  // creates one yet) gets an empty array here, which makes the saved-profile
-  // branch of resolveColumns() a no-op — identical to pre-4D-5b behavior.
-  const savedProfileRows = await db.importMappingProfile.findMany({
+  const tenant = <T,>(fn: (tx: TenantClient) => Promise<T>) => withTenantDb(user.id, fn);
+
+  // ── 3. CLAIM the (account, file) slot BEFORE parsing ───────────────────────
+  // The provisional source mirrors the pipeline's own detection (an .xlsx is
+  // EXCEL, anything else CSV, QUICKBOOKS when the client says so); the parsed
+  // source is written back at completion.
+  const provisionalSource = sourceOverride
+    ?? ((file.name || "").toLowerCase().endsWith(".xlsx") ? ImportSource.EXCEL : ImportSource.CSV);
+  const claim = await tenant((tx) => claimImportBatch(tx, {
+    financialAccountId,
+    createdByUserId:  user.id,
+    source:           provisionalSource,
+    originalFilename: file.name || null,
+    fileSha256,
+  }));
+  if (!claim.ok) {
+    // J-D6 — the losing claim's transaction is aborted by the unique violation,
+    // so the winner is read in a fresh phase. Best-effort: the 409 stands even
+    // if this read fails.
+    const existing = await tenant((tx) => findLiveImportBatch(tx, { financialAccountId, fileSha256 })).catch(() => null);
+    return NextResponse.json(
+      {
+        error:         "duplicate-import",
+        message:       "This file has already been imported into this account. Roll back the earlier import to import it again.",
+        importBatchId: existing?.id ?? null,
+        status:        existing?.status ?? null,
+      },
+      { status: 409 },
+    );
+  }
+  const batchId = claim.batchId;
+  const failBatch = (reason: string) => tenant((tx) => tx.importBatch.update({
+    where: { id: batchId },
+    data:  { status: ImportBatchStatus.FAILED, errorSummary: [{ row: 0, reason }], completedAt: new Date() },
+  })).catch((e) => console.error(`[import] batch ${batchId} could not be marked FAILED:`, e));
+
+  // ── 4. Parse, then the row cap ─────────────────────────────────────────────
+  const savedProfileRows = await tenant((tx) => tx.importMappingProfile.findMany({
     where:   { spaceId },
     orderBy: [{ lastUsedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
     select:  { id: true, mapping: true },
-  });
+  }));
   const savedProfilesLite: SavedMappingProfileLite[] = savedProfileRows.map((p) => ({
     id:      p.id,
-    // Json column at the Prisma layer is looser (Prisma.JsonValue) than this
-    // module's CsvColumnMap-shaped assumption — every row here was written
-    // either by applyExplicitMapping()'s own output (route-created profiles,
-    // once 4D-5c adds that) or by a validation script seeding rows directly
-    // in that exact shape (4D-5b has no CRUD route yet). See
-    // D2_STEP4D5B_IMPLEMENTATION_PLAN.md §3.
     mapping: p.mapping as Record<string, string | null>,
   }));
 
-  // ── Format-sniffed parse / resolve / normalize (D2 Step 4D-5c-1) ────────
-  // Converges on the same NormalizedTransaction[] shape regardless of source
-  // format — see module header and
-  // D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md §3/§5. Extracted into
-  // runImportPipeline() so the future preview route (D2 Step 4D-5c-2) can
-  // call the identical logic instead of duplicating it — see
-  // docs/initiatives/d2/implementation/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md. Deliberately
-  // does not classify rows against existing Transaction history or write
-  // anything — that stays below, in the sequential loop, unchanged (see
-  // this route's module header above on why classification can't be
-  // hoisted into a batch pre-pass without breaking within-file duplicate
-  // detection).
-  const pipelineResult = await runImportPipeline(file, {
+  const pipelineResult = await runImportPipeline(new File([bytes], file.name, { type: file.type }), {
     signConvention,
     explicitMapping,
     savedProfiles: savedProfilesLite,
     sourceOverride,
   });
   if ("error" in pipelineResult) {
+    await failBatch(pipelineResult.error);
     return NextResponse.json({ error: pipelineResult.error }, { status: 400 });
   }
   const { source, rows, resolvedColumnMapping, matchedProfileId } = pipelineResult;
+  if (rows.length > IMPORT_MAX_ROWS) {
+    const reason = `File has ${rows.length} rows; the limit is ${IMPORT_MAX_ROWS} per import. Split the file and import the parts.`;
+    await failBatch(reason);
+    return NextResponse.json({ error: reason }, { status: 400 });
+  }
 
-  // ── Create the batch ─────────────────────────────────────────────────────
-  // Only created once the file shape is known-valid — a file with the wrong
-  // columns never becomes an ImportBatch row (see module header).
-  const batch = await db.importBatch.create({
-    data: {
-      financialAccountId,
-      createdByUserId:  user.id,
-      source,
-      originalFilename: file.name || null,
-      status:           ImportBatchStatus.PROCESSING,
-      rowCount:         rows.length,
-      // D2 Step 4D-5b — written on every batch regardless of which
-      // resolveColumns() branch (now inside runImportPipeline(), D2 Step
-      // 4D-5c-1) produced resolvedColumnMapping; mappingProfileId stays null
-      // unless the saved-profile branch matched.
-      //
-      // Cast (not a behavior change): CsvColumnMap is a plain, JSON-
-      // compatible interface (string | null fields only), but Prisma's Json
-      // input type (Prisma.InputJsonObject) requires a string index
-      // signature for assignability, which a named interface doesn't carry
-      // automatically — TS won't bridge that gap with a direct cast either
-      // ("neither type sufficiently overlaps"), so this goes through
-      // `unknown` first, same as the pre-existing exceljs Buffer-typing cast
-      // in lib/imports/excel.ts's parseExcelFile(). The values written are
-      // unaffected — this only satisfies the type checker at this one call
-      // site.
-      resolvedColumnMapping: resolvedColumnMapping as unknown as Prisma.InputJsonValue,
-      mappingProfileId:      matchedProfileId,
-    },
+  const flowAcct = await tenant(async (tx) => {
+    await tx.importBatch.update({
+      where: { id: batchId },
+      data: {
+        source,
+        status:                ImportBatchStatus.PROCESSING,
+        rowCount:              rows.length,
+        resolvedColumnMapping: resolvedColumnMapping as unknown as Prisma.InputJsonValue,
+        mappingProfileId:      matchedProfileId,
+      },
+    });
+    return tx.financialAccount.findUnique({
+      where:  { id: financialAccountId },
+      select: { type: true, debtSubtype: true, currency: true },
+    });
   });
+  const batch = { id: batchId };
 
-  let created = 0;
-  let matched = 0;
-  let skipped = 0;
-  let failed  = 0;
-  const errors: { row: number; reason: string }[] = [];
-  // D2 Step 4D-4 — ids of rows actually overwritten by update-on-match.
-  // Drives the single batch-level audit entry below; not a new ImportBatch
-  // counter (see D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §5).
-  const updatedTransactionIds: string[] = [];
-
-  // FlowType P5 Slice 0 — populate flow columns on import writes using the same
-  // contract as lib/plaid/syncTransactions.ts. Account context is loaded ONCE per
-  // batch (every row targets this single FinancialAccount). CSV/Excel/QuickBooks
-  // carry no Plaid PFC, so pfc*/merchantEntityId are null on create; on
-  // update-on-match they are preserved from the existing row (never nulled).
-  // counterpartyAccountId stays null throughout (no inference).
-  const flowAcct = await db.financialAccount.findUnique({
-    where:  { id: financialAccountId },
-    // currency: MC1 Phase 0 Slice 2 — import files carry no per-row currency
-    // column (lib/imports/csv.ts), so created rows are stamped with the
-    // target account's currency; null if the account row is missing. Never
-    // defaulted to USD here.
-    select: { type: true, debtSubtype: true, currency: true },
-  });
   const flowAccountContext = {
     accountType: (flowAcct?.type as string | null) ?? null,
     debtSubtype: flowAcct?.debtSubtype ?? null,
   };
-  // CCPAY-2C-5 — merchant/description removed: the classifier is descriptor-blind
-  // by contract, and the descriptor's classification role is already spent one
-  // layer up, in resolveLiabilityPaymentCategory. This signature is a hand-written
-  // mirror of FlowRowInput, so tsc's excess-property check does NOT catch drift
-  // here (rowLike is a named parameter, not an object literal) — it must be kept
-  // in step by hand.
   function computeFlowFields(rowLike: {
     category:           string;
     amount:             number;
@@ -358,15 +249,6 @@ export const POST = withApiHandler(async (
     const { input, captured } = buildFlowInputFromRow(rowLike, flowAccountContext);
     return buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
   }
-
-  // TI2-5 — durable TI facts for imported rows. Reuses buildTransactionFacts with
-  // only the context imports genuinely know: no provider metadata (empty capture),
-  // pending=false (imports are posted), and the row's currency (always the target
-  // account's currency — files carry no per-row currency). The builder yields
-  // settlementState=POSTED, fxApplied (false when currency known, else null), and
-  // tiFactsVersion; every provider-only fact degrades to null. paymentMethod is
-  // forced to null (not the builder's UNKNOWN sentinel): these providers never
-  // supply payment metadata, so NULL — "not captured" — is the honest state.
   function computeFactFields(rowCurrency: string | null) {
     const facts = buildTransactionFacts({
       captured:        { pfcConfidenceLevel: null, merchantEntityId: null, counterparties: [] },
@@ -377,205 +259,195 @@ export const POST = withApiHandler(async (
     return { ...facts, paymentMethod: null };
   }
 
-  for (const row of rows) {
+  /**
+   * ONE row, against whichever phase runner the caller supplies. On the fast
+   * path `run` is the chunk's shared tenant transaction; on the fallback path
+   * it is `tenant` (a phase per write, the pre-remediation shape). A thrown
+   * error propagates to the caller, which decides what isolation it buys.
+   */
+  async function importRow(run: Run, row: NormalizedTransaction, tally: RowTally): Promise<void> {
     const lineNumber = row.lineNumber; // data-row index, 1-indexed, header row excluded
-
     if (row.error || !row.date || row.amount === null || !row.merchant) {
-      failed++;
-      errors.push({ row: lineNumber, reason: row.error ?? "missing required field" });
-      continue;
+      tally.failed++;
+      tally.errors.push({ row: lineNumber, reason: row.error ?? "missing required field" });
+      return;
     }
-
-    // CCPAY-2C-4 — file imports now participate in the ONE card-payment rescue
-    // (lib/transactions/liability-payment.ts), the same authority the Plaid sync
-    // seam calls. Until this slice the rescue existed ONLY on the Plaid path, so
-    // a CSV-imported card-payment leg ("PAYMENT THANK YOU", +5000, on a credit
-    // card) persisted as category=Other → flowType=REFUND, with no self-healing
-    // path: unlike a Plaid row it is never re-synced, so it stayed wrong forever.
-    //
-    // Rescued ONCE per row, above the CREATE/UPDATE fork, and consumed by BOTH.
-    // Computing it per-branch would let the two disagree — precisely the split
-    // authority CCPAY-2A exists to eliminate.
-    //
-    // Files carry no provider taxonomy: csv.ts's mapCategory only reads an
-    // optional Category/Type column and otherwise yields Other, so the descriptor
-    // is the ONLY payment evidence a file import ever has. Both descriptor fields
-    // are passed — a Payee-only file leaves description null, a Description-only
-    // file duplicates it into both (csv.ts:473-474).
-    //
-    // Sign convention is safe here: csv.ts normalizes to FM's (amount = credit −
-    // debit, so a payment credit is positive). A file imported under the wrong
-    // signConvention flips payments negative, which the liability+inflow guard
-    // rejects — a MISS, never a false DEBT_PAYMENT.
-    const paymentRescuedCategory = resolveLiabilityPaymentCategory(row.category, "Payment", {
+    const vrow = { ...row, date: row.date, amount: row.amount, merchant: row.merchant };
+    const paymentRescuedCategory = resolveLiabilityPaymentCategory(vrow.category, "Payment", {
       ...flowAccountContext,
-      amount:      row.amount,
-      merchant:    row.merchant,
-      description: row.description,
+      amount:      vrow.amount,
+      merchant:    vrow.merchant,
+      description: vrow.description,
     });
-    // SR-2 — payroll descriptor rescue, same order as the Plaid sync seam. Both
-    // are rescue-only + Other-only, so an already-rescued Payment leg passes
-    // through untouched and only a still-"Other" inbound payroll credit promotes.
     const rescuedCategory = resolvePayrollIncomeCategory(paymentRescuedCategory, "Income", {
-      amount:      row.amount,
-      merchant:    row.merchant,
-      description: row.description,
+      amount:      vrow.amount,
+      merchant:    vrow.merchant,
+      description: vrow.description,
     });
 
-    try {
-      const result = await resolveFingerprintOutcome(
-        financialAccountId,
-        row.date,
-        row.amount,
-        row.merchant,
-        row.externalTransactionId,
-        row.description // DF-4 — fingerprint on the raw descriptor
-      );
+    const result = await run((tx) => resolveFingerprintOutcome(
+      financialAccountId,
+      vrow.date,
+      vrow.amount,
+      vrow.merchant,
+      vrow.externalTransactionId,
+      vrow.description, // DF-4 — fingerprint on the raw descriptor
+      tx,
+    ));
 
-      if (result.outcome === "CREATE") {
-        // FlowType P5 Slice 0 — classify from the incoming row (no Plaid PFC).
-        let finalCategory: typeof row.category = rescuedCategory;
-        let finalFlow = computeFlowFields({
-          category:           rescuedCategory,
-          amount:             row.amount,
-          pfcPrimary:         null,
-          pfcDetailed:        null,
-          pfcConfidenceLevel: null,
-          merchantEntityId:   null,
-        });
-        // MI M4/M5 — resolve identity + provenance for the new row (no provider
-        // hints/enrichment on imports); apply the importer's USER rule if the
-        // merchant has one, re-deriving flow from the corrected category. The
-        // import CREATE path never hits an existing USER_* row (create only), so
-        // no preserve case arises. Best-effort; never blocks the create.
-        const mi: { merchantId?: string; categorySource?: CategorySource; categoryRuleId?: string } = {};
-        try {
-          const miResult = await resolveMerchantWrite(db, {
-            merchant:        row.merchant,
-            description:     row.description,
-            // CCPAY-2C-4 — the RESCUED category, matching what this path actually
-            // persists and mirroring the Plaid seam (syncTransactions passes its
-            // post-rescue `category` here too). MI reads currentCategory to decide
-            // whether the global catalog CONFIRMS the category as provenance;
-            // handing it a value we are not writing would compare against a
-            // category that never reaches the row.
-            currentCategory: rescuedCategory,
-            ownerUserId:     user.id,
+    if (result.outcome === "CREATE") {
+      let finalCategory: typeof vrow.category = rescuedCategory;
+      let finalFlow = computeFlowFields({
+        category:           rescuedCategory,
+        amount:             vrow.amount,
+        pfcPrimary:         null,
+        pfcDetailed:        null,
+        pfcConfidenceLevel: null,
+        merchantEntityId:   null,
+      });
+      const mi: { merchantId?: string; categorySource?: CategorySource; categoryRuleId?: string } = {};
+      try {
+        const miResult = await run((tx) => resolveMerchantWrite(tx, {
+          merchant:        vrow.merchant,
+          description:     vrow.description,
+          currentCategory: rescuedCategory,
+          ownerUserId:     userId,
+        }));
+        if (miResult.setMerchantId && miResult.merchantId) mi.merchantId = miResult.merchantId;
+        if (miResult.category) {
+          finalCategory = miResult.category;
+          finalFlow = computeFlowFields({
+            category: finalCategory, amount: vrow.amount,
+            pfcPrimary: null, pfcDetailed: null, pfcConfidenceLevel: null, merchantEntityId: null,
           });
-          if (miResult.setMerchantId && miResult.merchantId) mi.merchantId = miResult.merchantId;
-          if (miResult.category) {
-            finalCategory = miResult.category;
-            finalFlow = computeFlowFields({
-              category: finalCategory, amount: row.amount,
-              pfcPrimary: null, pfcDetailed: null, pfcConfidenceLevel: null, merchantEntityId: null,
-            });
-            mi.categorySource = "USER_RULE";
-            if (miResult.categoryRuleId) mi.categoryRuleId = miResult.categoryRuleId;
-          } else if (miResult.categorySource) {
-            mi.categorySource = miResult.categorySource;
-          }
-        } catch (miErr) {
-          console.warn(`[merchant-intelligence] import resolution skipped for row ${lineNumber} — writing null MI columns:`, miErr);
+          mi.categorySource = "USER_RULE";
+          if (miResult.categoryRuleId) mi.categoryRuleId = miResult.categoryRuleId;
+        } else if (miResult.categorySource) {
+          mi.categorySource = miResult.categorySource;
         }
-        await db.transaction.create({
-          data: {
-            financialAccountId,
-            date:                  row.date,
-            merchant:              row.merchant,
-            description:           row.description,
-            category:              finalCategory,
-            amount:                row.amount,
-            pending:               false,
-            externalTransactionId: row.externalTransactionId,
-            importBatchId:         batch.id, // only set on rows this batch creates — never on MATCH
-            // MC1 Phase 0 Slice 2 — the target account's currency (files
-            // carry no per-row currency column).
-            currency:              flowAcct?.currency ?? null,
-            ...finalFlow,
-            ...computeFactFields(flowAcct?.currency ?? null),
-            ...mi,
-          },
-        });
-        created++;
-      } else if (result.outcome === "MATCH") {
-        matched++;
-        // D2 Step 4D-4 / D2 Step 5 slice #1 — update-on-match. Gate: source
-        // supports update-on-match (lib/imports/provider-capabilities.ts) +
-        // an exact externalId match only — never a fingerprint-fallback
-        // match, regardless of source.
-        if (getImportProviderCapabilities(source).supportsUpdateOnMatch && result.matchedVia === "externalId") {
-          const existing = await db.transaction.findUnique({
-            where:  { id: result.transactionId },
+      } catch (miErr) {
+        console.warn(`[merchant-intelligence] import resolution skipped for row ${lineNumber} — writing null MI columns:`, miErr);
+      }
+
+      const createdRow = await run((tx) => tx.transaction.create({
+        data: {
+          financialAccountId,
+          date:                  vrow.date,
+          economicDate:          economicDateFor({ postingDate: vrow.date, authorizedAt: null }),
+          merchant:              vrow.merchant,
+          description:           vrow.description,
+          category:              finalCategory,
+          amount:                vrow.amount,
+          pending:               false,
+          externalTransactionId: vrow.externalTransactionId,
+          importBatchId:         batch.id, // only set on rows this batch creates — never on MATCH
+          currency:              flowAcct?.currency ?? null,
+          ...finalFlow,
+          ...computeFactFields(flowAcct?.currency ?? null),
+          ...mi,
+        },
+        select: { id: true },
+      }));
+      try {
+        await run((tx) => recordTransactionObservation(tx, {
+          transactionId:      createdRow.id,
+          financialAccountId,
+          provider:           "CSV",
+          providerRowId:      vrow.externalTransactionId ?? null,
+          providerPendingRef: null,
+          lifecycle:          "POSTED",
+          amount:             vrow.amount,
+          postingDate:        vrow.date,
+          economicDate:       economicDateFor({ postingDate: vrow.date, authorizedAt: null }),
+          authorizedAt:       null,
+          transactionIsLive:  true,
+          observedAt:         new Date(),
+        }));
+      } catch (e) {
+        console.warn(`[l8] observation skipped for imported row ${lineNumber} — event identity is additive and non-blocking:`, e);
+      }
+      tally.created++;
+    } else if (result.outcome === "MATCH") {
+      tally.matched++;
+      if (getImportProviderCapabilities(source).supportsUpdateOnMatch && result.matchedVia === "externalId") {
+        const matchedId = result.transactionId;
+        const didUpdate = await run(async (tx) => {
+          const existing = await tx.transaction.findUnique({
+            where:  { id: matchedId },
             select: {
               date: true, amount: true, merchant: true, description: true, category: true,
-              // FlowType P5 Slice 0 — read existing provider hints so a re-classify
-              // preserves them (never overwrites pfc/merchantEntityId with null).
               pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true, merchantEntityId: true,
-              // MC1 Phase 0 Slice 2 — read the existing stamp so the update
-              // below preserves it (or fills it opportunistically if null).
               currency: true,
+              flowAuthority: true,
             },
           });
-          if (existing) {
-            // CCPAY-2C-4 — the RESCUED category, so update-on-match and CREATE
-            // cannot disagree about the same file row. Feeding the raw category
-            // here while the flow below classified the rescued one would persist
-            // category=Other alongside flowType=DEBT_PAYMENT — a desync produced
-            // by this route itself.
-            //
-            // Consequence, deliberate: the rescue can now TRIGGER an update when
-            // it disagrees with a stored category. That is a correction (a row
-            // imported before this slice as Other becomes Payment on re-import),
-            // and it converges — the second re-import diffs clean. This differs
-            // from `currency` below, which is excluded from the diff precisely so
-            // it can never trigger one; currency is an opportunistic backfill,
-            // whereas category is a value this route authoritatively writes.
-            const diff = computeQuickBooksUpdateDiff(existing, {
-              date:        row.date,
-              amount:      row.amount,
-              merchant:    row.merchant,
-              description: row.description,
-              category:    rescuedCategory,
-            });
-            if (diff) {
-              // FlowType P5 Slice 0 — re-classify from the incoming values so a
-              // changed category/amount never leaves flowType stale (the P4
-              // backfill would not re-select a current-version row). Existing
-              // provider hints are re-fed and preserved.
-              const flowFields = computeFlowFields({
+          if (!existing) return false;
+          const diff = computeQuickBooksUpdateDiff(existing, {
+            date:        vrow.date,
+            amount:      vrow.amount,
+            merchant:    vrow.merchant,
+            description: vrow.description,
+            category:    rescuedCategory,
+          });
+          if (!diff) return false;
+          const flowFields = mayWriteFlow(existing.flowAuthority, "CLASSIFIER").allowed
+            ? computeFlowFields({
                 category:           rescuedCategory,
-                amount:             row.amount,
+                amount:             vrow.amount,
                 pfcPrimary:         existing.pfcPrimary,
                 pfcDetailed:        existing.pfcDetailed,
                 pfcConfidenceLevel: existing.pfcConfidenceLevel,
                 merchantEntityId:   existing.merchantEntityId,
-              });
-              await db.transaction.update({
-                where: { id: result.transactionId },
-                // currency (MC1 Phase 0 Slice 2): preserve the existing stamp,
-                // else stamp the target account's currency opportunistically.
-                // Deliberately NOT part of computeQuickBooksUpdateDiff —
-                // currency must never be what *triggers* an update.
-                data:  { ...diff, ...flowFields, ...computeFactFields(existing.currency ?? flowAcct?.currency ?? null), currency: existing.currency ?? flowAcct?.currency ?? null },
-              });
-              updatedTransactionIds.push(result.transactionId);
-            }
-          }
-        }
-      } else {
-        skipped++;
-        errors.push({ row: lineNumber, reason: result.reason });
+              })
+            : {};
+          await tx.transaction.update({
+            where: { id: matchedId },
+            data:  { ...diff, ...flowFields, ...computeFactFields(existing.currency ?? flowAcct?.currency ?? null), currency: existing.currency ?? flowAcct?.currency ?? null },
+          });
+          return true;
+        });
+        if (didUpdate) tally.updatedTransactionIds.push(matchedId);
       }
-    } catch (rowErr) {
-      failed++;
-      errors.push({ row: lineNumber, reason: "unexpected error writing row" });
-      console.error(`[import] batch ${batch.id} row ${lineNumber} failed:`, rowErr);
+    } else {
+      tally.skipped++;
+      tally.errors.push({ row: lineNumber, reason: result.reason });
     }
   }
 
-  const finalStatus = failed > 0 ? ImportBatchStatus.COMPLETED_WITH_ERRORS : ImportBatchStatus.COMPLETED;
+  // ── 5. Chunked write: one tenant phase per chunk, per-row fallback ─────────
+  const total = emptyTally();
+  for (const chunk of chunkRows(rows)) {
+    const fast = emptyTally();
+    try {
+      await tenant(async (tx) => {
+        const inTx: Run = (fn) => fn(tx);
+        for (const row of chunk) await importRow(inTx, row, fast);
+      });
+      mergeTally(total, fast);
+      continue;
+    } catch (chunkErr) {
+      // The chunk's transaction rolled back: none of its rows exist. Re-run
+      // the chunk one row at a time, each phase its own tenant transaction, so
+      // a refusal on one row looks like a bad row and costs only that row.
+      console.warn(`[import] batch ${batch.id}: chunk of ${chunk.length} rows fell back to per-row writes:`, chunkErr);
+    }
+    const slow = emptyTally();
+    for (const row of chunk) {
+      try {
+        await importRow(tenant, row, slow);
+      } catch (rowErr) {
+        slow.failed++;
+        slow.errors.push({ row: row.lineNumber, reason: "unexpected error writing row" });
+        console.error(`[import] batch ${batch.id} row ${row.lineNumber} failed:`, rowErr);
+      }
+    }
+    mergeTally(total, slow);
+  }
+  const { created, matched, skipped, failed, errors, updatedTransactionIds } = total;
 
-  const updated = await db.importBatch.update({
+  // ── 6. Complete ────────────────────────────────────────────────────────────
+  const finalStatus = failed > 0 ? ImportBatchStatus.COMPLETED_WITH_ERRORS : ImportBatchStatus.COMPLETED;
+  const updated = await tenant((tx) => tx.importBatch.update({
     where: { id: batch.id },
     data: {
       importedCount: created,
@@ -586,12 +458,8 @@ export const POST = withApiHandler(async (
       status:        finalStatus,
       completedAt:   new Date(),
     },
-  });
+  }));
 
-  // OPS-3 S5 Wave 3 — batch-completion record for the bell (the importing
-  // user; particularly valuable for the WITH_ERRORS case, whose row count
-  // detail outlives the response toast). Non-throwing by contract; dedupe
-  // none (each batch is a distinct fact).
   await createNotification(
     finalStatus === ImportBatchStatus.COMPLETED_WITH_ERRORS
       ? {
@@ -606,15 +474,9 @@ export const POST = withApiHandler(async (
         },
   );
 
-  // D2 Step 4D-4 — one batch-level audit event, written only if at least
-  // one row was actually overwritten (diff was non-empty for at least one
-  // row). Mirrors the existing IMPORT_BATCH_ROLLED_BACK pattern exactly:
-  // single row, structured metadata, no per-row spam, no before/after
-  // snapshots, no versioning. Non-fatal — a failure here must not turn an
-  // otherwise-successful import response into an error.
   if (updatedTransactionIds.length > 0) {
     try {
-      await db.auditLog.create({
+      await tenant((tx) => tx.auditLog.create({
         data: {
           userId:    user.id,
           spaceId,
@@ -626,7 +488,7 @@ export const POST = withApiHandler(async (
           },
           ipAddress: getClientIp(req),
         },
-      });
+      }));
     } catch (auditErr) {
       console.error(
         `[import] batch ${batch.id} failed to write update-on-match audit log:`,
@@ -635,19 +497,12 @@ export const POST = withApiHandler(async (
     }
   }
 
-  // D2 Step 4D-5b — a "successful import" here means the batch ran to
-  // completion (COMPLETED or COMPLETED_WITH_ERRORS, set just above), not
-  // that every row succeeded; a request that 400'd earlier never created a
-  // batch and never reaches this point. Atomic increment ({ increment: 1 })
-  // rather than read-then-write, so concurrent imports against the same
-  // profile can't lose an update. Non-fatal: a failure here must not turn an
-  // otherwise-successful import response into an error.
   if (matchedProfileId) {
     try {
-      await db.importMappingProfile.update({
+      await tenant((tx) => tx.importMappingProfile.update({
         where: { id: matchedProfileId },
         data:  { useCount: { increment: 1 }, lastUsedAt: new Date() },
-      });
+      }));
     } catch (profileErr) {
       console.error(
         `[import] batch ${batch.id} failed to bump mapping profile ${matchedProfileId} usage:`,

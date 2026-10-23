@@ -25,9 +25,17 @@
  */
 
 import type { SyncConnection, SyncConnectionState } from "@/lib/sync/status";
+import type { IngestionActivity } from "@/lib/sync/deferred-ingestion";
+import { deriveSourceHealth, type SourceHealth, type SourceHealthInput } from "@/lib/connections/space-data-health.core";
 
-export type TransactionHistoryStatus = "READY" | "IMPORTING" | "UNKNOWN";
-export type IntelligenceStatus = "READY" | "REBUILDING" | "NOT_READY";
+export type TransactionHistoryStatus = "READY" | "IMPORTING" | "PAUSED" | "UNKNOWN";
+/**
+ * NOT_BUILT — transactions are done, no reconstruction is recorded, and NOTHING
+ * is building one. Distinct from REBUILDING, which now requires running work:
+ * "building your timeline — this finishes in the background" was shown for an
+ * Item whose recovery path never built it (Preview Sandbox, 2026-10-06).
+ */
+export type IntelligenceStatus = "READY" | "REBUILDING" | "NOT_BUILT" | "NOT_READY";
 
 /**
  * Derived UI phase (CONN-2E). Provider truth is NOT expanded into these — they
@@ -40,7 +48,9 @@ export type IntelligenceStatus = "READY" | "REBUILDING" | "NOT_READY";
  */
 export type ConnectionLifecyclePhase =
   | "IMPORTING"
+  | "IMPORT_PAUSED"            // import unfinished, nothing running — needs a resume/refresh
   | "BUILDING_INTELLIGENCE"
+  | "INTELLIGENCE_NOT_BUILT"   // transactions ready, timeline never built, nothing building it
   | "READY"
   | "ACTION_REQUIRED";
 
@@ -70,10 +80,41 @@ export interface ConnectionIntelligenceStatus {
   connectedAt:             string | null; // ISO
   /** DATA freshness — last successful transaction acquisition (PlaidItem.lastSyncedAt). */
   lastSyncedAt:            string | null; // ISO
-  /** BALANCE freshness (CONN-3) — when current balances were last confirmed via
-   *  accountsGet (MAX FinancialAccount.lastUpdated across the connection's
-   *  accounts). A timestamp only — never a balance value (PCS-2-safe). null if unknown. */
-  balanceVerifiedAt:       string | null; // ISO
+  /** BALANCE freshness (CONN-3) — the OLDEST FinancialAccount.lastUpdated across the
+   *  connection's accounts: every balance was received at least this recently.
+   *  (Slice 4.1: this was the NEWEST, so one fresh account hid a stale one, and it
+   *  was labelled "Verified", which a write timestamp does not prove.) A timestamp
+   *  only — never a balance value (PCS-2-safe). null if unknown. */
+  balancesUpdatedAt:       string | null; // ISO
+  /** The source's health by the SAME rule the Daily Brief shows
+   *  (space-data-health.core deriveSourceHealth). null when not derived. */
+  sourceHealth:            SourceHealth | null;
+  // ── CRYPTO-FRESHNESS-1 — FOUR FACETS, FOUR AUTHORITIES ───────────────────
+  //
+  // Each of these answers a DIFFERENT question, and the incident of 2026-10-01
+  // happened because three of them were being answered by one clock
+  // (`Connection.lastSyncedAt`, which for a wallet means "the balance was
+  // read"). A BTC refresh whose transaction import had aborted rendered
+  // "Transactions: Updated today".
+  //
+  // null means NEVER SUCCESSFULLY ESTABLISHED, and the UI must render null as
+  // silence. It must never fall back to another facet's clock.
+
+  /** CURRENT POSITION — newest PositionObservation date. The authoritative record
+   *  that a quantity was observed, independent of whether it could be PRICED. */
+  positionObservedAt:      string | null; // ISO
+  /** TRANSACTION HISTORY — last SUCCESSFUL acquisition. Plaid: the item sync (its
+   *  sync IS transactions). Wallet: `Connection.transactionsSyncedAt`, written
+   *  only when the import completed. */
+  transactionsSyncedAt:    string | null; // ISO
+  /** VALUATION — when the stored value was last computed. For BTC this is
+   *  `FinancialAccount.lastUpdated`, which that adapter advances ONLY on a priced
+   *  run, deliberately (btc-sync: an unpriced run must not publish
+   *  old-quantity × old-price as fresh). */
+  valuationUpdatedAt:      string | null; // ISO
+  /** True when this source's value is derived at READ time rather than stored, so
+   *  a "valuation" clock would be meaningless for it (ETH, SOL). */
+  valuationIsReadTime:     boolean;
 }
 
 /** Structural input for the pure derivation — gathered by the loader. */
@@ -88,11 +129,35 @@ export interface IntelligenceInput {
   earliestTxDate:  Date | null;
   /** Connection.createdAt — the authorization/connected time, or null. */
   connectedAt:     Date | null;
+  /**
+   * Is ingestion work ACTUALLY running for this connection (Plaid; from
+   * getIngestionEvidence)? Omitted ⇒ unresolved: a Plaid connection without an
+   * anchor then reads REBUILDING, the pre-evidence behaviour.
+   */
+  ingestionActivity?: IngestionActivity;
   /** Connection.lastSyncedAt — last successful acquisition (data freshness), or null. */
   lastSyncedAt:    Date | null;
-  /** MAX FinancialAccount.lastUpdated across the connection's accounts — balance
+  /** OLDEST FinancialAccount.lastUpdated across the connection's accounts — balance
    *  freshness (CONN-3). Timestamp only. null if unknown. */
-  balanceVerifiedAt: Date | null;
+  balancesUpdatedAt: Date | null;
+  /** From sourceHealthForConnection — omitted by callers that do not derive it (ops). */
+  sourceHealth?: SourceHealth | null;
+  // ── CRYPTO-FRESHNESS-1 ────────────────────────────────────────────────────
+  /** Newest PositionObservation date across the connection's accounts. */
+  positionObservedAt?: Date | null;
+  /**
+   * Last SUCCESSFUL transaction acquisition.
+   *
+   * ⚠️ The loader must pass `Connection.transactionsSyncedAt` for a WALLET, NOT
+   * `lastSyncedAt`. For PLAID the item sync IS the transaction sync, so
+   * `lastSyncedAt` is the correct authority there and passing it is not a
+   * fallback — it is the same fact under a different name.
+   */
+  transactionsSyncedAt?: Date | null;
+  /** When the stored valuation was last computed (null for read-time chains). */
+  valuationUpdatedAt?: Date | null;
+  /** True when value is derived at read time and no valuation clock applies. */
+  valuationIsReadTime?: boolean;
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -119,6 +184,7 @@ export function computeAvailableHistory(earliest: Date | null, now: Date): Avail
 function deriveTransactionHistory(state: SyncConnectionState): TransactionHistoryStatus {
   switch (state) {
     case "importing": return "IMPORTING";
+    case "import_paused": return "PAUSED";
     // OPS-2D-4A — history has not begun arriving and will not until the platform
     // resumes. Not IMPORTING (nothing is running) and not READY. UNKNOWN is the
     // existing honest member — the arrival time genuinely is not known — rather
@@ -139,19 +205,23 @@ function deriveIntelligence(
   provider: SyncConnection["provider"],
   state: SyncConnectionState,
   historySyncedAt: Date | null,
+  activity: IngestionActivity | undefined,
 ): IntelligenceStatus {
   if (historySyncedAt !== null) return "READY";
   if (provider === "WALLET") return state === "ready" ? "READY" : "NOT_READY";
-  // Plaid, no anchor yet:
-  if (state === "ready") return "REBUILDING"; // transactions done, intelligence building
+  // Plaid, no anchor yet. Transactions done is not evidence that anything is
+  // building the timeline: the pipeline that writes the anchor must be RUNNING.
+  if (state === "ready") return activity === undefined || activity === "RUNNING" ? "REBUILDING" : "NOT_BUILT";
   return "NOT_READY";
 }
 
 function derivePhase(state: SyncConnectionState, intelligence: IntelligenceStatus): ConnectionLifecyclePhase {
   if (state === "needs_reauth" || state === "error") return "ACTION_REQUIRED";
   if (state === "importing") return "IMPORTING";
+  if (state === "import_paused") return "IMPORT_PAUSED";
   if (state === "sync_deferred") return "IMPORTING"; // lifecycle phase: pre-ready, awaiting data
   // state === "ready":
+  if (intelligence === "NOT_BUILT") return "INTELLIGENCE_NOT_BUILT";
   return intelligence === "READY" ? "READY" : "BUILDING_INTELLIGENCE";
 }
 
@@ -161,7 +231,7 @@ export function deriveConnectionIntelligence(
   now: Date,
 ): ConnectionIntelligenceStatus {
   const transactionHistory = deriveTransactionHistory(input.state);
-  const intelligence = deriveIntelligence(input.provider, input.state, input.historySyncedAt);
+  const intelligence = deriveIntelligence(input.provider, input.state, input.historySyncedAt, input.ingestionActivity);
   const phase = derivePhase(input.state, intelligence);
   return {
     transactionHistory,
@@ -173,8 +243,41 @@ export function deriveConnectionIntelligence(
     lastReconstructedAt: input.historySyncedAt ? input.historySyncedAt.toISOString() : null,
     connectedAt:  input.connectedAt  ? input.connectedAt.toISOString()  : null,
     lastSyncedAt: input.lastSyncedAt ? input.lastSyncedAt.toISOString() : null,
-    balanceVerifiedAt: input.balanceVerifiedAt ? input.balanceVerifiedAt.toISOString() : null,
+    balancesUpdatedAt: input.balancesUpdatedAt ? input.balancesUpdatedAt.toISOString() : null,
+    sourceHealth: input.sourceHealth ?? null,
+    // CRYPTO-FRESHNESS-1 — each passed through from its OWN authority. No
+    // coalescing: an absent facet clock stays absent, because substituting
+    // another facet's clock is exactly the defect being removed.
+    positionObservedAt:   input.positionObservedAt   ? input.positionObservedAt.toISOString()   : null,
+    transactionsSyncedAt: input.transactionsSyncedAt ? input.transactionsSyncedAt.toISOString() : null,
+    valuationUpdatedAt:   input.valuationUpdatedAt   ? input.valuationUpdatedAt.toISOString()   : null,
+    valuationIsReadTime:  input.valuationIsReadTime === true,
   };
+}
+
+/**
+ * Slice 4.1 — a connection's source health, by the Daily Brief's rule. The
+ * Connections loader passes the connection's raw provider fields and the
+ * lastUpdated of its accounts; nothing here re-decides a state.
+ */
+export function sourceHealthForConnection(
+  input: {
+    provider: SyncConnection["provider"];
+    accountsUpdated: (Date | null)[];
+    plaid?: SourceHealthInput["plaid"];
+    wallet?: SourceHealthInput["wallet"];
+    /** The resolved BANK (Plaid) or WALLET refresh policy. */
+    policy?: SourceHealthInput["policy"];
+  },
+  now: Date,
+): SourceHealth {
+  return deriveSourceHealth({
+    kind: input.provider === "PLAID" ? "BANK" : "WALLET",
+    accountsUpdated: input.accountsUpdated,
+    plaid: input.provider === "PLAID" ? input.plaid ?? null : null,
+    wallet: input.provider === "WALLET" ? input.wallet ?? null : null,
+    policy: input.policy ?? null,
+  }, now);
 }
 
 /** True iff any connection is still building intelligence (importing OR
@@ -221,9 +324,10 @@ export function deriveConnectionTimeline(s: ConnectionIntelligenceStatus): Conne
       cashFlow:       transactionsAvailable,
       lastBuiltAt:    s.lastReconstructedAt,
     },
-    // Current freshness prefers the balance-verified time (CONN-3, the truest
-    // "is today's state current?"), falling back to the last data sync.
-    freshness: { lastUpdatedAt: s.balanceVerifiedAt ?? s.lastSyncedAt },
+    // Current freshness is the source's health clock when derived — the oldest
+    // successful update, the same date the Daily Brief shows — else the oldest
+    // balance update, else the last data sync.
+    freshness: { lastUpdatedAt: s.sourceHealth?.lastUpdatedAt ?? s.balancesUpdatedAt ?? s.lastSyncedAt },
   };
 }
 

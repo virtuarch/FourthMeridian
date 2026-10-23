@@ -38,6 +38,8 @@ import {
   encodeCursor,
 } from "@/lib/data/transaction-query";
 import { countTransactions } from "@/lib/data/transaction-count";
+import { withTenantDb } from "@/lib/db/tenant-context";
+import { recordTransactionsViewed } from "@/lib/analytics/product-events";
 
 export async function GET(
   req: NextRequest,
@@ -45,7 +47,7 @@ export async function GET(
 ) {
   const { id: spaceId } = await params;
 
-  const [, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
+  const [ctx, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
   if (err) return err;
 
   const parsed = parseTransactionQueryParams(req.nextUrl.searchParams);
@@ -60,10 +62,26 @@ export async function GET(
   // mid-scroll cannot change the answer.
   const isFirstPage = query.cursor == null;
 
-  const [page, count] = await Promise.all([
-    queryTransactions({ spaceId, query }),
-    isFirstPage ? countTransactions({ spaceId, query }) : Promise.resolve(null),
-  ]);
+  // RLS-C-S3 — the page and its count execute as the TENANT, in ONE short
+  // transaction, so they cannot be read on two authorities. The identity is the
+  // authenticated requester (requireSpaceRole above, already proved an ACTIVE
+  // member of this Space); the policies then decide row by row what that identity
+  // may see, so the membership gate and the database agree by construction rather
+  // than by review. Nothing in here makes a network or model call, so there is
+  // nothing the transaction must not be held across.
+  const [page, count] = await withTenantDb(ctx.user.id, (tx) => Promise.all([
+    queryTransactions(tx, { spaceId, query }),
+    isFirstPage ? countTransactions(tx, { spaceId, query }) : Promise.resolve(null),
+  ]));
+
+  // BETA A2 — TRANSACTIONS_VIEWED: the Transactions workspace loading its FIRST
+  // page is the view (once per user, Space, UTC day; the writer dedupes). A cursor
+  // continuation is scrolling, not viewing, and writes nothing. Its own short
+  // tenant phase, after the read: the writer never throws, and a refused insert
+  // must not abort the transaction the page was read in.
+  if (isFirstPage) {
+    await withTenantDb(ctx.user.id, (tx) => recordTransactionsViewed(tx, { userId: ctx.user.id, spaceId }));
+  }
 
   return NextResponse.json({
     transactions: page.rows,

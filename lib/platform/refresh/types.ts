@@ -34,7 +34,12 @@ import type { OperationalTier } from "@/lib/platform/history/types";
 export interface ExecutionFact {
   id: string;
   runId: string;
-  plaidItemId: string;
+  /** The Plaid item, or null for a non-Plaid source. */
+  plaidItemId: string | null;
+  /** PLATFORM OPS OBSERVABILITY — generic source identity (schema RefreshExecution). */
+  sourceKind: string;
+  sourceRef: string | null;
+  network: string | null;
   trigger: string;
   profile: string;
   startedAt: Date;
@@ -51,6 +56,12 @@ export interface ExecutionFact {
    * honest answer rather than a gap to be filled.
    */
   deploymentSha: string | null;
+  /** OPS-2D-3 — the typed admission reason on a denied execution; null when admitted. */
+  admissionReason: string | null;
+  /** PLATFORM OPS OBSERVABILITY — the derived verdict; null when not failed / not provable. */
+  failureStage: string | null;
+  failureCategory: string | null;
+  outcome: string | null;
 }
 
 /** One `RefreshEndpointResult` row — stage facts within one execution. */
@@ -254,33 +265,6 @@ export interface CoverageSummary extends ProjectionEnvelope {
   tier: OperationalTier;
 }
 
-// ── Failure Summary ─────────────────────────────────────────────────────────────
-
-/**
- * Failures grouped ONLY by taxonomies that already exist — the execution's
- * derived `overallStatus`, the stage `endpoint`, and Plaid's OWN
- * `errorCode`/`errorCategory`. No new failure taxonomy is invented here, and
- * free-text `errorSummary` is never grouped (it is not a controlled vocabulary).
- */
-export interface FailureSummary extends ProjectionEnvelope {
-  /** Executions by non-success status. Stable order: by status. */
-  executions: readonly { status: string; count: number }[];
-  /** Failed stages by endpoint. Stable order: by endpoint. */
-  endpoints: readonly { endpoint: string; failed: number }[];
-  /** Failed/rate-limited provider attempts by the PROVIDER's own code. */
-  providerCalls: readonly {
-    provider: string;
-    operation: string;
-    status: string;
-    errorCode: string | null;
-    errorCategory: string | null;
-    count: number;
-  }[];
-  totalFailedExecutions: number;
-  totalFailedStages: number;
-  totalFailedCalls: number;
-  tier: OperationalTier;
-}
 
 // ── Execution Timeline ──────────────────────────────────────────────────────────
 
@@ -309,5 +293,105 @@ export interface ExecutionTimeline {
   complete: boolean;
   /** Chronological, with a stable tiebreak so equal timestamps never reorder. */
   entries: readonly TimelineEntry[];
+  tier: OperationalTier;
+}
+
+/**
+ * PLATFORM OPS OBSERVABILITY — the data pipeline's recent state for the
+ * operations overview: what ran in the window by source kind and network, what
+ * failed, what is still open, and when each source kind last succeeded (looked
+ * up beyond the window, so a quiet day still shows the last good run). A
+ * projection like the others: derived from the ledger, carrying the envelope.
+ */
+export interface PipelineKindRollup {
+  kind: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  partial: number;
+  skipped: number;
+  running: number;
+  /** ISO instant of the newest SUCCEEDED execution of this kind, any window; null = never recorded. */
+  lastSucceededAt: string | null;
+}
+
+export interface PipelineNetworkRollup {
+  network: string;
+  total: number;
+  failed: number;
+  lastStatus: string;
+  lastStartedAt: string;
+}
+
+export interface PipelineStatus extends ProjectionEnvelope {
+  executions: number;
+  byStatus: Readonly<Record<string, number>>;
+  kinds: readonly PipelineKindRollup[];
+  networks: readonly PipelineNetworkRollup[];
+  /** Executions still open in the window (RUNNING, or never completed). */
+  openExecutions: number;
+  /** The newest failed / partial executions in the window, newest first, bounded. */
+  latestFailures: readonly ExecutionFact[];
+  tier: OperationalTier;
+}
+
+// ── Refresh Daily Series (UX-P1 · D8) ───────────────────────────────────────────
+
+/**
+ * The five execution statuses the day series counts by name. The ledger stores
+ * Strings, so a status outside this list still counts toward a day's `total`
+ * and is never dropped — it simply has no named column until the vocabulary
+ * learns it.
+ */
+export const REFRESH_DAILY_STATUSES = ["SUCCEEDED", "PARTIAL", "FAILED", "SKIPPED", "RUNNING"] as const;
+export type RefreshDailyStatus = (typeof REFRESH_DAILY_STATUSES)[number];
+
+/** The two source kinds the series names. Others count toward `total` only. */
+export const REFRESH_DAILY_SOURCE_KINDS = ["PLAID_ITEM", "WALLET"] as const;
+export type RefreshDailySourceKind = (typeof REFRESH_DAILY_SOURCE_KINDS)[number];
+
+/**
+ * One UTC day of refresh executions, bucketed by `startedAt`.
+ *
+ * `settled` is the per-day half of the envelope's determinism rule: true when
+ * the day is strictly before today (UTC), holds no open execution, and every
+ * row of the day was loaded (the fact cap did not cut into it). A settled day
+ * with `total: 0` is a TRUE ZERO — the ledger is the authority and it holds no
+ * row for that day. An unsettled day's counts are what has been observed so
+ * far, never a final figure.
+ */
+export interface RefreshDayBucket {
+  /** YYYY-MM-DD, UTC. */
+  day: string;
+  total: number;
+  byStatus: Readonly<Record<RefreshDailyStatus, number>>;
+  bySourceKind: Readonly<Record<RefreshDailySourceKind, number>>;
+  /**
+   * Executions the admission authority refused (a typed `admissionReason` on
+   * the row — ledgered as SKIPPED). The ONLY refusal the ledger records: a
+   * customer-facing cooldown refusal (HTTP 429) writes no row and cannot appear.
+   */
+  admissionDenied: number;
+  settled: boolean;
+}
+
+export interface RefreshDailySeries {
+  envelope: ProjectionEnvelope;
+  /**
+   * Ascending by day. Every day of the window is present EXCEPT days the fact
+   * cap made unknowable (older than the oldest loaded row when the cap was hit)
+   * — those are omitted rather than reported as zero, and `floor` says so.
+   */
+  days: readonly RefreshDayBucket[];
+  /** Inclusive day count of the window actually projected. */
+  windowDays: number;
+  /** The ceiling the window was clamped to. */
+  maxWindowDays: number;
+  /** Executions the series was built from (the loaded fact rows). */
+  executions: number;
+  /** True when the fact cap was reached: counts are a floor and older days are missing. */
+  floor: boolean;
+  /** Honesty notes for the consumer, in plain words (what the ledger can and cannot show). */
+  notes: readonly string[];
   tier: OperationalTier;
 }

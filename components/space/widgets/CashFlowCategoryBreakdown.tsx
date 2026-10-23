@@ -13,13 +13,15 @@
  *      and shorter than N full-width bars for 3–12 categories.
  *
  * SAME data + math as before: `outflowByCategory` (FlowType-aware, refunds net
- * their category, descending). Presentation only — no new calculation.
+ * their category, descending). Presentation only — no new calculation. A
+ * category with refunds in the window also prints the ledger's own gross and
+ * refund figures under its net (REFUND-1), so net ≠ charged is explained.
  */
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency } from "@/lib/format";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
+import { formatCurrency } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import type { CashFlowContribution } from "@/lib/transactions/cash-flow";
 import type { Transaction } from "@/types";
@@ -32,7 +34,7 @@ import { CHART_PALETTE } from "@/lib/charts/chart-palette";
 const PALETTE = CHART_PALETTE;
 
 interface Props {
-  items: CashFlowContribution[];   // descending, value > 0 (from outflowByCategory / incomeBySource)
+  items: CashFlowContribution[];   // descending, value > 0 (from outflowByCategory, or the canonical income rollup's lines)
   ctx?:  ConversionContext;
   /** Header total label — defaults to spending. Income by Source passes its own. */
   totalLabel?:    string;
@@ -41,7 +43,9 @@ interface Props {
   /** Drill-down: resolve the transactions behind one item (category / source).
    *  When provided, cards + strip segments open a TransactionSliceDrawer. */
   sliceFor?:      (item: CashFlowContribution) => Transaction[];
-  sliceSubtitle?: string;
+  /** A fixed subtitle, or one derived from the group being opened — so a group
+   *  that names no creditor is not described as if it did. */
+  sliceSubtitle?: string | ((item: { id: string; label: string }) => string);
   /** Identifies the time window these items describe (periodKey). A change
    *  closes any open slice panel — the question it answered is gone. */
   invalidationKey: string;
@@ -77,16 +81,19 @@ export function CashFlowCategoryBreakdown({
   const [mobileExpanded, setMobileExpanded] = useState(false);
   const openSlice = sliceFor
     ? (item: CashFlowContribution) => setSlice({
-        title: item.label, subtitle: sliceSubtitle, rows: sliceFor(item),
+        title: item.label,
+        subtitle: typeof sliceSubtitle === "function" ? sliceSubtitle(item) : sliceSubtitle,
+        rows: sliceFor(item),
         // The clicked value, so the drawer visibly reconciles even for slices
         // whose rows are neither income nor spending (debt payments, cash-in
         // reasons) — the drawer shows it only when the flow totals are both 0.
         total: item.value, totalLabel: "Total",
       })
     : undefined;
-  const fmt = ctx
-    ? (v: number) => formatCurrency(v, ctx.target)
-    : (v: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const aggregateCurrency = useAggregateCurrency(ctx);
+  const fmt = (v: number) => formatCurrency(v, aggregateCurrency);
 
   const total = items.reduce((s, c) => s + c.value, 0);
   if (items.length === 0 || total <= 0) {
@@ -147,6 +154,15 @@ export function CashFlowCategoryBreakdown({
                 </div>
                 <span className="text-xs font-semibold tabular-nums text-[var(--text-primary)] shrink-0">{fmt(c.value)}</span>
               </div>
+              {/* REFUND-1 — only a category that HAD refunds explains itself: the
+                  value above is net, and this names the two figures it came from.
+                  Both are the ledger's (categorySpendLedger) — nothing is
+                  subtracted here. Worded as what happened, never as a saving. */}
+              {c.gross !== undefined && c.refunds !== undefined && (
+                <p className="text-[10px] tabular-nums text-[var(--text-faint)] truncate">
+                  {fmt(c.gross)} charged · −{fmt(c.refunds)} refunded
+                </p>
+              )}
             </>
           );
           const cardStyle = { background: "var(--surface-inset)", borderColor: "var(--border-subtle, rgba(255,255,255,0.06))" };

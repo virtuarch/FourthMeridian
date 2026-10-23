@@ -74,7 +74,10 @@ function freshReport(over: Partial<ResourceFreshnessReport> = {}): ResourceFresh
 
 const connRow = (over: Partial<ConnectionHealthRow>): ConnectionHealthRow => ({
   source: "PLAID", id: "i1", label: "Chase", status: "ACTIVE", errorCode: null,
-  healthState: "HEALTHY", lastSyncedAt: "2026-07-16T06:00:00Z", since: null, ...over,
+  healthState: "HEALTHY", lastSyncedAt: "2026-07-16T06:00:00Z", since: null,
+  // UX-P1 additive row facts (derivations; see lib/connections/health.ts)
+  kind: "BANK", institution: "Chase", network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["resync", "request-reauth"],
+  ...over,
 });
 
 async function main(): Promise<void> {
@@ -202,7 +205,8 @@ async function main(): Promise<void> {
       checkedAt: NOW, allFresh: true, resources: [freshReport({})],
     };
     const connections: ConnectionHealthResult = {
-      total: 2, counts: { HEALTHY: 2, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [],
+      total: 2, counts: { HEALTHY: 2, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 },
+      checkedAt: NOW.toISOString(), cap: 20, listedScope: "unhealthy",
     };
 
     const result = await getProviderHealth({

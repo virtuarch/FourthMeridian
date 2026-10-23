@@ -1,41 +1,36 @@
 /**
  * jobs/purge-trash.ts
  *
- * Permanently deletes SpaceGoal rows that have been in the trash
- * (deletedAt IS NOT NULL) for more than 7 days.
+ * W2 — the goals purge arm (its ONLY arm) was deleted with the Goals
+ * retirement. DB-side FK cascades (SpaceGoal→Space, GoalContribution→
+ * SpaceGoal/FinancialAccount, GoalCheckIn→SpaceGoal, all onDelete: Cascade)
+ * own goal-row cleanup — so code-side goal-row deletion is redundant by
+ * doctrine and must not return.
  *
- * SCHEDULED (OPS-4 S3): registered in lib/jobs/registry.ts (07:30 UTC slot)
- * and executed through the dispatcher + runJob() — the first time this body
- * runs in production, making the 7-day goal-trash retention promise true
- * (dormant since the in-process scheduler was retired in S2, and never
- * invoked before that either). Safe to run multiple times — idempotent
- * (WHERE-guarded deleteMany against an absolute cutoff).
+ * The job REGISTRATION was intentionally kept (07:30 UTC slot) because the
+ * scheduler, dispatch ledger, platform-ops registry and health widgets all
+ * reference the job by name — "when a future retention arm lands, it goes
+ * here." PRIV-003 / DB-001 (2026-10-22) is that arm: the operational-ledger
+ * and identity-table retention schedule (jobs/data-retention.ts). No registry
+ * entry is added or renamed.
+ *
+ * DECIDED NOT TO IMPLEMENT a trashed-Space / trashed-account hard purge here:
+ * Space/FinancialAccount `deletedAt` is "moved to trash, restorable", and the
+ * product's permanent-delete routes are the user's explicit erasure. An
+ * automatic time-based hard delete of financial data is an owner policy
+ * decision (window, notice), not a code default — recorded in the Agent C
+ * report as an open decision.
  */
 
-import { db } from "@/lib/db";
-
-const TRASH_RETENTION_DAYS = 7;
+import { runDataRetention, type DataRetentionResult } from "@/jobs/data-retention";
 
 export interface PurgeTrashResult {
-  /** Trashed goals permanently deleted this run (count only — S1 doctrine). */
+  /** Trashed goals permanently deleted this run — always 0 since W2 (see header). */
   purgedGoals: number;
+  /** PRIV-003 / DB-001 — rows deleted per retention rule. */
+  retention: DataRetentionResult;
 }
 
 export async function purgeTrash(): Promise<PurgeTrashResult> {
-  const cutoff = new Date(Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = await (db as any).spaceGoal.deleteMany({
-    where: {
-      deletedAt: { not: null, lte: cutoff },
-    },
-  });
-
-  if (result.count > 0) {
-    console.log(`[purge-trash] Permanently deleted ${result.count} goal(s) older than ${TRASH_RETENTION_DAYS} days.`);
-  }
-
-  // Purge behavior unchanged (OPS-4 S3 rule); the count it already computed
-  // is returned so the JobRun ledger records a meaningful summary.
-  return { purgedGoals: result.count };
+  return { purgedGoals: 0, retention: await runDataRetention() };
 }

@@ -31,6 +31,15 @@ For a single-secret exposure, rotate just that secret; the order above is severi
 - **Downtime:** Plaid API calls fail between dashboard rotation and the redeploy going live — keep the window short; the 06:00 sync self-heals the next day, and users see refresh errors only inside the window.
 - **Validate:** manual "Sync Now" on a connected item succeeds; 06:00 `sync-banks` JobRun row is `succeeded` next morning.
 
+## OPENAI_API_KEY (+ OPENAI_PROJECT_ID, OPENAI_EXPECTED_ENVIRONMENT)
+
+- **Used by:** `lib/ai/openai-credentials.ts` (the credential seam behind `lib/ai/provider.ts`, the single OpenAI SDK import site). **Optional, not boot-validated** — absent ⇒ AI refuses at the first call with a clear message; everything else runs. One key name, no fallback, one record per Vercel environment, one OpenAI project per environment (`docs/operations/openai-environment-separation.md`).
+- **Nothing stored depends on it** — no data is encrypted or signed with it; rotation is create-before-revoke with zero data effect.
+- **Procedure:** in the environment's OWN OpenAI project (`fourth-meridian-dev` / `-preview` / `-prod`) create a NEW service-account key → paste it into the Vercel record of that environment (Sensitive) → redeploy → verify per `openai-environment-separation.md` §4 (env-status pin shows `project key · pinned · proj_… · match`; one turn lands in that project's usage) → revoke the OLD key in the OpenAI dashboard. `OPENAI_PROJECT_ID` and `OPENAI_EXPECTED_ENVIRONMENT` do not rotate; they change only if the project changes.
+- **Downtime:** none (create-before-revoke). Between revoke and redeploy, if done in the wrong order, every AI call fails 401 and is ledgered `FAILED`; customers see the provider-error sentence; nothing else is affected.
+- **Validate:** a chat turn returns; `AiInvocation` rows `RETURNED` for the environment; the OpenAI usage dashboard for that project shows the requests and the other two projects show none; a call with the OLD key (from the OpenAI dashboard's key page, not from the app) is listed as revoked.
+- **Production:** NOT AUTHORIZED in the AI COST CONTROLS milestone — owner only, later.
+
 ## NEXTAUTH_SECRET
 
 - **Used by:** NextAuth JWT signing (`lib/auth.ts`, `strategy: "jwt"` — no DB sessions).

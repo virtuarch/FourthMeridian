@@ -21,7 +21,7 @@
  * the output carries balance + method + tier, never subtype/limit/createdAt.
  */
 
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { ShareStatus, type VisibilityLevel } from "@prisma/client";
 import { Account } from "@/types";
 import {
@@ -39,7 +39,9 @@ import {
   type AsOfAccountInput,
   type AsOfMethod,
 } from "./accounts-asof.core";
+import { getAccountCoverage } from "./account-coverage";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
+import { applyCanonicalWalletBalances } from "@/lib/crypto/wallet-current-value";
 
 /**
  * One visible account with its balance resolved to `asOf`. Same shape as
@@ -62,31 +64,40 @@ function todayUTC(now: () => Date): Date {
 
 /**
  * All accounts visible to the space, each resolved to `asOf` (YYYY-MM-DD).
- * Mirrors getAccountsWithVisibility's argument contract (`spaceId`/`userId` are
- * the same optional internal/test seam; production callers pass at most
- * `{ spaceId }` and resolve the viewer from request scope).
+ * Mirrors getAccountsWithVisibility's argument contract — RLS-C-S1: `spaceId` and
+ * `userId` are both REQUIRED and are forwarded verbatim. This function never
+ * resolved identity itself; it now cannot pass an absent viewer downstream either.
  *
  * `now` is an injectable clock so callers can stay deterministic; it defaults
  * to the real clock. Resolution semantics live entirely in the pure core — this
  * function adds no rule of its own (downstream streams that need a new rule must
  * extend the core, not patch around it here).
+ *
+ * RLS-C-S2 — `client` is REQUIRED and leading, and it is forwarded to EVERY read
+ * this function composes: the visibility rows, the link metadata, the coverage
+ * authority, the canonical wallet valuation and the delta groupBy. One as-of
+ * answer, one authority — a mixed-authority composition would be a row set
+ * partly policy-filtered and partly not, which is worse than either.
  */
-export async function getAccountsAsOf(args: {
-  spaceId: string;
-  userId?: string;
-  asOf:    string;
-  now?:    () => Date;
-}): Promise<AccountAsOf[]> {
+export async function getAccountsAsOf(
+  client: ReadClient,
+  args: {
+    spaceId: string;
+    userId:  string;
+    asOf:    string;
+    now?:    () => Date;
+  },
+): Promise<AccountAsOf[]> {
   const { spaceId, userId, asOf } = args;
   const now = args.now ?? (() => new Date());
 
   // 1. The visibility-redacted rows every existing caller sees (current balance).
-  const visRows = await getAccountsWithVisibility({ spaceId, userId });
+  const visRows = await getAccountsWithVisibility(client, { spaceId, userId });
 
   // 2. Classification + floor metadata, read directly from the ACTIVE, non-deleted
   //    links (the SAME set getAccountsWithVisibility queries — ids agree). This
   //    is the server-side "how/from-when" input, never exposed on the output row.
-  const linkRows = await db.spaceAccountLink.findMany({
+  const linkRows = await client.spaceAccountLink.findMany({
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: {
       createdAt: true,
@@ -94,6 +105,8 @@ export async function getAccountsAsOf(args: {
         select: {
           id: true, type: true, balance: true, createdAt: true,
           debtSubtype: true, creditLimit: true,
+          // W6e — the wallet's asset and its successful-read clock.
+          walletChain: true, lastUpdated: true,
         },
       },
     },
@@ -102,15 +115,55 @@ export async function getAccountsAsOf(args: {
   const today   = todayUTC(now);
   const asOfDay = fromISO(asOf);
 
-  const accounts: AsOfAccountInput[] = linkRows.map((l) => ({
+  // The connection date is PROVENANCE, not a history floor. It stays the
+  // fallback, and dated evidence may carry the floor earlier — resolved by THE
+  // one coverage authority, shared with getAccountBalancesOverWindow so a lens
+  // and a drill-down can never disagree about how far back an account reaches.
+  const refs = linkRows.map((l) => ({
+    id:   l.financialAccount.id,
+    type: l.financialAccount.type as string,
+    reconstructableCard: isReconstructableCard({
+      type: l.financialAccount.type as string,
+      debtSubtype: l.financialAccount.debtSubtype,
+      creditLimit: l.financialAccount.creditLimit,
+    }),
+    connectionFloorISO: isoDate(maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))),
+  }));
+  const coverage = await getAccountCoverage(client, refs);
+
+  // W6e — THE PRESENT DAY IS A CURRENT CLAIM, AND MUST USE THE CURRENT AUTHORITY.
+  //
+  // This module's own contract says `asOf` on or after today resolves `observed`
+  // — so for that one day it is not making a historical claim at all, it is
+  // making the same claim the account card makes, and it was making it from the
+  // legacy column while the card used the spine. One wallet, two current values,
+  // decided by which consumer asked.
+  //
+  // Only the INPUT balance changes. The as-of ladder is untouched: a historical
+  // date still walks back or holds flat exactly as before, and nothing here
+  // carries a current quantity into history — the walk-backs receive the same
+  // shape they always did, and `floorISO` still bounds them.
+  const canonicalBalance = new Map(
+    (await applyCanonicalWalletBalances(
+      linkRows.map((l) => ({
+        id: l.financialAccount.id,
+        walletChain: l.financialAccount.walletChain,
+        lastUpdated: l.financialAccount.lastUpdated,
+        balance: l.financialAccount.balance,
+      })),
+      { client, contextSpaceId: spaceId },
+    )).map((r) => [r.id, r.balance] as const),
+  );
+
+  const accounts: AsOfAccountInput[] = linkRows.map((l, idx) => ({
     id:          l.financialAccount.id,
     type:        l.financialAccount.type as string,
-    balance:     l.financialAccount.balance,
+    balance:     canonicalBalance.get(l.financialAccount.id) ?? l.financialAccount.balance,
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
-    // Earliest defensible date — an account cannot be resolved before it existed
-    // or was linked (matches backfill.ts's floor derivation exactly).
-    floorISO:    isoDate(maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))),
+    // The REPLAY floor, never the existence floor: knowing an account is older
+    // does not license carrying today's balance back across the extra years.
+    floorISO:    coverage.get(l.financialAccount.id)?.displayFromISO ?? refs[idx].connectionFloorISO,
   }));
 
   // 3. Transaction deltas for the accounts the core will walk (cash + card),
@@ -129,8 +182,8 @@ export async function getAccountsAsOf(args: {
   // phantom. buildDeltas is unconditionally posted-only — there is no pending-
   // inclusive variant to pass, by construction (the regression wall).
   const [cashDeltas, cardDeltas] = await Promise.all([
-    buildDeltas(cashIds, asOfDay, today),
-    buildDeltas(cardIds, asOfDay, today),
+    buildDeltas(client, cashIds, asOfDay, today),
+    buildDeltas(client, cardIds, asOfDay, today),
   ]);
 
   // 4. Pure resolution, then merge onto the visibility rows by id.
@@ -162,6 +215,7 @@ export async function getAccountsAsOf(args: {
  * reintroduce the reconstructed-history phantom this walk once carried for cash.
  */
 async function buildDeltas(
+  client: ReadClient,
   ids:   string[],
   asOf:  Date,
   today: Date,
@@ -169,7 +223,7 @@ async function buildDeltas(
   const out = new Map<string, Map<string, number>>();
   if (ids.length === 0) return out;
 
-  const grouped = await db.transaction.groupBy({
+  const grouped = await client.transaction.groupBy({
     by: ["financialAccountId", "date"],
     where: {
       financialAccountId: { in: ids },

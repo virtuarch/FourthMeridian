@@ -8,6 +8,9 @@ import type { NeedsClassificationReason } from '@/lib/transactions/needs-classif
 // CF-1 — the canonical TransferDisposition surfaces on the list DTO for the Cash
 // Flow context projection. Type-only; the source module is pure/Prisma-free.
 import type { TransferDisposition } from '@/lib/transactions/transfer-evidence';
+// V26-INVESTMENTS-HISTORY — the canonical trust vocabulary on the Snapshot DTO.
+// Type-only; the perspective-engine types module is pure/Prisma-free.
+import type { CompletenessTier } from '@/lib/perspective-engine/types';
 
 export type AccountType = 'checking' | 'savings' | 'investment' | 'crypto' | 'debt' | 'other';
 
@@ -21,7 +24,53 @@ export interface Account {
   institution: string;
   balance: number;
   currency: string;
+  /** Fourth Meridian's write clock. NOT the institution's — see below. */
   lastUpdated: string;
+  /**
+   * v2.6-L1/L2 — the institution's own attestation of when it computed the
+   * balance (FinancialAccount.balanceLastUpdatedAt), or null when it reports
+   * none. Null is honest and must never be backfilled from `lastUpdated`: the
+   * freshness authority reports basis INGESTION on a null, which is what lets a
+   * surface say "checked" instead of the unearned "as of".
+   *
+   * Deliberately NOT accompanied by `availableBalance` here. That column is
+   * polymorphic and may only be interpreted by lib/balances/account-balances.ts;
+   * putting it on this widely-consumed shape would re-open the exact hazard the
+   * balance authority exists to close.
+   */
+  balanceLastUpdatedAt?: string | null;
+  /**
+   * REVIEW-3 B-1 — true when the link's visibility tier grants NO balance
+   * disclosure (SUMMARY_ONLY / PRIVATE / legacy SHARED / unknown — fail
+   * closed). On such a row `balance` is 0 as a STRUCTURAL placeholder, never a
+   * claim the account is settled: it must be excluded from every balance sum
+   * and rendered as withheld, and `balanceLastUpdatedAt` / `currentState` are
+   * withheld with it (they describe a balance this tier does not disclose).
+   * Absent (never false) on FULL and BALANCE_ONLY rows.
+   */
+  balanceRedacted?: true;
+  /**
+   * v2.6-L3 — the CURRENT-state claim for this account, resolved by the KD-19
+   * visibility authority (lib/data/accounts.ts) through lib/balances. Present on
+   * CASH accounts only, and ONLY on the live path — the historical as-of
+   * reconstruction deliberately omits it, because a present-tense "reachable"
+   * claim over a reconstructed past balance is a category error.
+   *
+   * Carried at BOTH visibility tiers. It describes the same balance the tier
+   * already discloses (same reasoning as `balanceLastUpdatedAt`), and the
+   * alternative is worse: if BALANCE_ONLY rows lacked it, a liquidity total
+   * would silently mix reachable figures with ledger balances.
+   */
+  currentState?: {
+    /** Reachable cash, native currency. Null = UNKNOWN, never 0, never the ledger. */
+    reachable:    number | null;
+    /** The residual against the provider's figure, or null when not reconcilable. */
+    unexplained:  number | null;
+    /** EXACT | PARTIALLY_ATTRIBUTED | UNAVAILABLE | CONTRADICTORY. */
+    state:        string;
+    /** Provider-observed pending rows behind the prediction. */
+    pendingCount: number;
+  };
   // Display-name metadata (Plaid values are never overwritten after import).
   plaidName?:    string;  // raw value Plaid returned for this account, frozen at import
   officialName?: string;  // Plaid's official_name, if provided, frozen at import
@@ -30,6 +79,9 @@ export interface Account {
   // back to the legacy flat columns otherwise.
   creditLimit?:    number;  // populated from Plaid balances.limit or manual entry
   debtSubtype?:    string;  // credit_card | line_of_credit | heloc | auto_loan | mortgage | personal_loan | student_loan
+  /** 2026-10-07 — FinancialAccount.providerSubtype (provider evidence: "hsa",
+   *  "401k", "brokerage", …). Read only by liquidityAccess; null/absent = unknown. */
+  providerSubtype?: string | null;
   interestRate?:   number;  // Annual Percentage Rate (APR), e.g. 19.99
   minimumPayment?: number;  // Minimum monthly payment amount — manual entry, or an estimate (see minimumPaymentIsEstimated)
   /** True when minimumPayment was computed from APR/balance, not entered by the user or provided by the issuer. */
@@ -47,6 +99,56 @@ export interface Account {
   walletAddress?: string;
   walletChain?: WalletChain;
   nativeBalance?: number;   // amount in native token (e.g. 0.085 BTC)
+  /**
+   * W-M3a — the CURRENT position behind a wallet's value.
+   *
+   * Present for every SYNCABLE wallet chain (W6d added BTC to SOL, ETH, BNB and
+   * AVAX); absent for every non-wallet account, which keeps the column. Which
+   * chains qualify is a registry fact (`writesLegacyBalanceColumn`) and is
+   * deliberately not restated as a list any consumer can drift from.
+   *
+   * `balance` alone cannot express this. The column is NOT NULL DEFAULT 0, so a
+   * wallet whose value is WITHHELD or UNKNOWN reached the UI as the number zero
+   * and was rendered as money — a verified 0.751600602 SOL displayed as $0.00.
+   *
+   * The three states are distinct facts and must not be collapsed:
+   *   VALUED          `quantity` and `value` are real AND the observation behind
+   *                   them is fresh. A provider-confirmed zero balance arrives
+   *                   here as `quantity: 0` — a fact.
+   *   STALE           (W6b) real numbers from an observation older than the
+   *                   freshness horizon. LAST KNOWN, not confirmed-now. Must not
+   *                   be shown as an unqualified live balance — and a stale
+   *                   non-zero is emphatically not a zero, nor is a stale zero a
+   *                   fresh confirmation that the wallet is empty.
+   *   NO_PRICE        held, quantity known, worth unknown. `value` is null.
+   *   NO_OBSERVATION  never observed. Both null. NOT zero.
+   *
+   * `balance` falls back to the column for the latter two, so any surface that
+   * renders money for a wallet must branch on `state` rather than trust it.
+   *
+   * ⚠️ W6d — that fallback is no longer always a zero. A BTC wallet never taken
+   * through `syncBtcWallet` (the seeded demo wallets) carries a real-looking USD
+   * figure in the column with no dated provenance behind it, and it arrives here
+   * as `state: "NO_OBSERVATION"` beside a non-zero `balance`. Both readings are
+   * wrong to publish unqualified; only `state` tells them apart.
+   */
+  cryptoPosition?: {
+    state:     "VALUED" | "STALE" | "NO_PRICE" | "NO_OBSERVATION";
+    /** Canonical freshness band of the successful provider read behind this. */
+    freshness: "LIVE" | "RECENT" | "STALE" | "VERY_STALE" | "UNKNOWN";
+    /** When the provider last confirmed it. Null when never / unknown. */
+    observedAt: string | null;
+    /** Native units. Null is UNKNOWN — never 0. */
+    quantity:  number | null;
+    /** Reporting-currency value. Null is UNKNOWN — never 0. */
+    value:     number | null;
+    symbol:    string | null;
+    assetKey:  string | null;
+    priceDate: string | null;
+    asOf:      string;
+    /** 2026-09-21 — the PRICE's own clock (CURRENT_QUOTE / LAST_CLOSE); see lib/prices/current-quote.core. */
+    price:     { basis: "CURRENT_QUOTE" | "LAST_CLOSE"; asOf: string; freshness: "CURRENT" | "DELAYED" | "LAST_CLOSE" } | null;
+  };
   /**
    * 'manual'  = user-entered asset (AccountType.other, no Plaid connection)
    * 'synced'  = Plaid sync successful
@@ -88,6 +190,12 @@ export interface Snapshot {
   totalSavings: number;   // savings only
   totalInvestments: number;
   totalCrypto: number;
+  /**
+   * v2.6 — the stored `total` column: investments + crypto, i.e. the INVESTED
+   * value the Investments chart plots. Optional so pre-existing constructors of
+   * this DTO are unaffected; the canonical read boundary always populates it.
+   */
+  total?: number;
   cashOnHand: number;
   // V26-PRE (B2) — `netLiquid` column threaded through the canonical read so
   // AI consumers need no direct SpaceSnapshot query. Optional: pre-existing
@@ -96,12 +204,85 @@ export interface Snapshot {
   // D2.x Slice 4 — true for reconstructed/backfilled historical rows. Optional
   // so existing constructors default to undefined (treated as not-estimated).
   isEstimated?: boolean;
+  /**
+   * v2.6-B — the currency these totals are actually IN.
+   *
+   * The read boundary already resolves an EFFECTIVE target (V25-CLOSE-3A: a
+   * Space whose requested currency has no rates falls back to USD), and it was
+   * the only thing that knew. Every consumer had to assume, and an assumption
+   * that is right today is a mislabelled chart the day the fallback fires.
+   * Optional, so pre-existing constructors are unaffected.
+   */
+  currency?: string;
+  // ── V26-CRYPTO-STATUS-1 — the row's crypto authority, resolved ONCE ────────
+  //
+  // `totalCrypto` above is always a number, because SpaceSnapshot.crypto is NOT
+  // NULL. These say whether it may be ASSERTED. Resolved at the single read
+  // boundary (lib/data/snapshots.ts) from the persisted status + observation +
+  // materiality; consumers must not re-derive it.
+  //
+  // `assetSideContaminated` is the load-bearing one for totals: `netWorth` and
+  // `totalAssets` are arithmetically composed WITH crypto, so an unassertable
+  // component makes both of them unassertable too — on the affected rows the
+  // component is 41.7%–99.9% of totalAssets. `totalCash`, `totalSavings`,
+  // `totalDebt` and `netLiquid` never touched crypto and stay valid.
+  //
+  // All optional so every pre-existing constructor of this DTO is unaffected.
+  cryptoValuationState?: "observed" | "supported" | "unavailable" | "stale" | "legacy-unrecorded" | "none";
+  cryptoAssertable?: boolean;
+  /** W6b — the number is a LAST-KNOWN reading, not a confirmation of now. */
+  cryptoLastKnown?: boolean;
+  assetSideContaminated?: boolean;
+  cryptoUnavailableReason?: string;
+
+  // ── v2.6-A — AGGREGATE AUTHORISATION ───────────────────────────────────────
+  //
+  // Per-aggregate answer to "may this number be asserted?", resolved at the SAME
+  // single read boundary from the SAME component verdicts above. Components
+  // carried authorisation and aggregates did not, so `netWorth` and
+  // `totalAssets` could be asserted on rows whose crypto explicitly may not be.
+  //
+  // Each entry carries the canonical reconciliation state (EXACT /
+  // PARTIALLY_ATTRIBUTED / CONTRADICTORY / UNAVAILABLE) — the SAME vocabulary
+  // the Investments point detail uses, imported, never restated.
+  //
+  // Optional, exactly like the crypto fields: every pre-existing constructor of
+  // this DTO is unaffected, and a consumer that does not read it behaves as
+  // before.
+  aggregateAuthorisation?: import("@/lib/snapshots/aggregate-authorisation.core").AggregateAuthorisationMap;
+
   // MC1 QA Q4b — true when this off-stamp point's FX rate MISSED, so its values
   // are native/unconverted and sit at a different magnitude than the resolving
   // points. Additive and absent on homogeneous histories and successful
   // conversions (byte-identical DTOs), letting a presentation guard drop only
   // the genuinely mixed-unit points from a series.
   fxMiss?: true;
+  // V26-INVESTMENTS-HISTORY — how this row was computed, RESOLVED once at the
+  // read boundary by lib/snapshots/snapshot-completeness.core.ts. `isEstimated`
+  // above stays for existing consumers (it answers "is this a reconstruction?",
+  // which is still a valid question), but anything reasoning about CONFIDENCE
+  // must use these — never the raw pair, and never its own combination of them.
+  //
+  // `completenessTier` is always a canonical member when present; `recorded`
+  // distinguishes a written fact from the frozen-row inference. The counts
+  // describe the day's INVESTMENT valuation and are null when not recorded —
+  // null is "we did not write it down", never "zero contributed".
+  //
+  // Optional so every pre-existing constructor of this DTO is unaffected.
+  completenessTier?:           CompletenessTier;
+  completenessRecorded?:       boolean;
+  contributingComponentCount?: number | null;
+  totalComponentCount?:        number | null;
+  /**
+   * RWA-2B — true when this RECONSTRUCTED row's real-asset component rests on a
+   * MODELED value: a straight line between two of the user's dated estimates
+   * for a manual asset (lib/assets/valuation-series.core.ts), not an observed
+   * or walked-back figure. Resolved ONCE at the read boundary from the asset's
+   * valuation ledger (lib/snapshots/real-asset-basis.core.ts); present only
+   * when true, so every other row's DTO is byte-identical. `netWorth` and
+   * `totalAssets` include that component; `netLiquid`, cash and debt never did.
+   */
+  realAssetsModeled?:          true;
 }
 
 export type TransactionCategory =
@@ -150,6 +331,59 @@ export type FlowClassificationReason =
   | 'SIGN_DEFAULT_SPENDING' | 'SIGN_DEFAULT_INFLOW' | 'AMBIGUOUS_UNKNOWN';
 
 export interface Transaction {
+  // ── v2.6-L4 derived read-model (DERIVED ONLY — never persisted) ────────────
+  // `date` above remains the POSTING date, unchanged and load-bearing for the
+  // historical engine. These are resolved at read time by
+  // lib/transactions/{lifecycle,economic-date}.ts and are absent when the read
+  // did not select the underlying evidence.
+  /** PENDING | POSTED | WITHDRAWN | REVERSED | UNKNOWN. */
+  lifecycleState?:      string;
+  /** Which evidence decided it (SETTLEMENT_STATE | COMPATIBILITY_FLAG | …). */
+  lifecycleBasis?:      string;
+  /** YYYY-MM-DD — when the activity occurred. May differ from `date`. */
+  economicDate?:        string;
+  /** YYYY-MM-DD — when it posted. Equals `date`. */
+  postingDate?:         string;
+  /** AUTHORIZATION | FIRST_PENDING_OBSERVATION | POSTING | USER_SUPPLIED. */
+  economicDateBasis?:   string;
+  /** OK | CONTRADICTORY. */
+  economicDateState?:   string;
+  /** postingDate − economicDate, in whole days. */
+  economicDateLagDays?: number;
+
+  // ── v2.6-TRUTH-4 derived read-model (never persisted) ─────────────────────
+  /** Canonical income class: EARNED_INCOME | INTEREST_INCOME | DIVIDEND_INCOME
+   *  | OTHER_INCOME | NOT_INCOME. Present on inflows the read supplied evidence
+   *  for. A surface that shows an income total MUST break it down by this. */
+  /** v2.6-TRUTH-8 — the transfer authority's verdict about this movement's
+   *  DESTINATION (SAVINGS_TRANSFER | DEBT_PAYMENT | INTERNAL_TRANSFER | …).
+   *  Absent when the read did not assess the row (e.g. it already had a
+   *  persisted counterparty, or it is not transfer-shaped). */
+  transferMaturity?:    string | null;
+  /** L8-B1 — the logical event this row projects (pending and posted share one).
+   *  Absent when the read did not select it; null outside the banking event
+   *  domain (self-custody crypto). */
+  transactionEventId?:  string | null;
+  incomeClass?:         string;
+  /** The finer subtype (SALARY, DEPOSIT_INTEREST, SECURITY_DIVIDEND, …). */
+  incomeSubtype?:       string;
+  /** The security that paid a dividend, where evidence names one. */
+  incomeInstrumentId?:  string | null;
+  /** The account that paid interest, where evidence names one. */
+  incomeSourceAccountId?: string | null;
+  // NOTE — there are deliberately NO chain fields here yet.
+  //
+  // `lib/transactions/transfer-chain.ts` exists and is tested, but a chain is a
+  // property of the WHOLE corpus, not of a page: resolving one needs every leg,
+  // and a bounded list read holds 50. Populating a chain field from a page would
+  // report SINGLE_HOP for journeys that a full read would link — a wrong answer
+  // dressed as a real one. And an optional field that production never populates
+  // is the defect pattern this arc has removed twice already.
+  //
+  // The live corpus contains ZERO multi-leg chains (see the authority's header),
+  // so nothing is hidden by waiting. These fields land when there is a
+  // corpus-scoped seam to fill them and a surface that consumes them.
+
   id: string;
   accountId: string;
   date: string;           // ISO date (YYYY-MM-DD)
@@ -327,7 +561,8 @@ export interface TransactionDetail extends Transaction {
 
   // ── TI5-2 — read-time relationship facts (RelationshipResolver) ────────────
   // Computed on read from a tiny candidate set; never persisted. Deterministic
-  // only (pendingPosted, duplicate); refundCandidate/transferCandidate are null.
+  // only (pendingPosted, similarity — W1/D6: fingerprint-key matching EVIDENCE,
+  // never an identity verdict); refundCandidate/transferCandidate are null.
   relationships: TransactionRelationships;
 
   // ── TE-2B — needs-classification disclosure (derived server-side) ──────────
@@ -338,6 +573,92 @@ export interface TransactionDetail extends Transaction {
   // non-technical disclosure when true. Ordinary low-confidence purchases are false.
   needsClassification:       boolean;
   needsClassificationReason: NeedsClassificationReason | null;
+}
+
+/**
+ * A piece of evidence Fourth Meridian does not have, in the shape a client may
+ * render it.
+ *
+ * ⚠️ THE PUBLIC MIRROR OF `KnowledgeGap` (lib/ai/types), AND DELIBERATELY A
+ * SEPARATE DECLARATION. The server type lives beside the assembler that computes
+ * it and may grow fields that are nobody's business outside the server; this one
+ * is the contract a browser is allowed to see, and the route projects field by
+ * field into it rather than spreading. `lib/ai/conversation/knowledge-gaps.test.ts`
+ * asserts the two stay mutually assignable, so they cannot drift apart silently.
+ *
+ * ⚠️ ONE MEANING TODAY, AND ONLY ONE. A gap is a debt metadata field — an APR or
+ * a minimum payment — that is null on a debt account the viewer can see in full.
+ * It is actionable (the user can supply it), it is never computed for accounts
+ * whose detail is withheld, and it is not a general taxonomy of things the model
+ * does not know. Nothing else in the runtime produces one.
+ */
+export interface AiKnowledgeGap {
+  /** The account the field belongs to. Needed to save it back. */
+  accountId:    string;
+  /** Display-safe account name, already resolved server-side. */
+  accountName:  string;
+  /** Stable machine key for the missing field. */
+  field:        'apr' | 'minimumPayment';
+  /** Human-readable field name, contextualised by debt subtype ("Mortgage Rate"). */
+  label:        string;
+  /** FinancialAccount.debtSubtype when present — lets a client phrase the label. */
+  debtSubtype?: string | null;
+}
+
+/**
+ * What POST /api/ai/chat returns when it answers.
+ *
+ * ⚠️ A KNOWLEDGE GAP IS NOT A FAILURE. It travels WITH a successful answer, on a
+ * 200, beside the prose — what Fourth Meridian could say and what it could not
+ * yet establish are both part of the response. A refusal is a different thing
+ * entirely: a non-OK status carrying `{ error }`.
+ *
+ * ⚠️ `knowledgeGapMode` IS THE CLIENT'S, NOT THE SERVER'S. The distinction
+ * between "evidence is limited, here it is anyway" and "give me this before I
+ * continue" does not exist in the conversation runtime, so the server never sets
+ * this field; a gap arrives unqualified and the surface decides how loudly to
+ * ask. It is declared because the client's rendering branch already reads it —
+ * not because the server has an opinion to express through it.
+ */
+/**
+ * What kind of guidance an answer is. See lib/ai/conversation/guidance.ts.
+ *
+ * ⚠️ A LABEL ON THE ANSWER, NOT PART OF IT. It is produced after the answer by a
+ * separate classification, never re-enters the transcript, and decides only how
+ * the surface frames the answer (lib `disclosureTier` / `disclosurePlan`).
+ */
+export type AiGuidanceLevel = 'UNDERSTANDING' | 'PLANNING' | 'RECOMMENDATION';
+export type AiGuidanceAdjacency = 'SECURITIES' | 'TAX' | 'LEGAL' | 'RETIREMENT_ACCOUNTS' | 'LEVERAGE';
+export interface AiGuidance {
+  level: AiGuidanceLevel;
+  /** Subjects the product has something specific to say about. Canonical order, no repeats. */
+  adjacencies: AiGuidanceAdjacency[];
+}
+
+export interface AiChatResponse {
+  /** The assistant's answer. Markdown, as the surface already renders it. */
+  message: string;
+  /**
+   * The answer's guidance level. Omitted when classification failed — the
+   * surface then inherits the conversation's last tier rather than dropping it.
+   */
+  guidance?: AiGuidance;
+  /** Evidence the answer wanted and did not have. Omitted when there is none. */
+  knowledgeGaps?: AiKnowledgeGap[];
+  /** Never emitted by the current runtime. See above. */
+  knowledgeGapMode?: 'clarification' | 'form';
+  /**
+   * FM-AUDIT-018 — present ONLY when the plan this conversation built (an executed
+   * scenario and/or staged conditions) could NOT be carried to the next turn
+   * because it was too large. The next turn is told the same thing; a surface
+   * shows this so the loss is never silent. Omitted in the ordinary case.
+   */
+  continuity?: {
+    carried: false;
+    reason: 'TOO_LARGE';
+    droppedScenario: boolean;
+    droppedPendingClauses: number;
+  };
 }
 
 export interface AiAdvice {

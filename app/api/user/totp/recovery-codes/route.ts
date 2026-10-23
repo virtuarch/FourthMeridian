@@ -18,7 +18,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { verifyTOTP } from "@/lib/totp";
@@ -43,10 +43,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const dbUser = await db.user.findUnique({
+  // RLS slice A — their own row, as them.
+  const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
     where:  { id: user.id },
     select: { totpEnabled: true, totpSecret: true },
-  });
+  }));
 
   if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -72,8 +73,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Regenerate codes (isRegen = true → RECOVERY_CODES_REGENERATED audit event)
-  const plainCodes = await generateRecoveryCodes(user.id, true);
+  // RLS-13 — POST-IDENTITY: the user is regenerating their OWN codes, so this
+  // runs under their identity. The admin route that regenerates someone else's
+  // uses systemDb instead, because fm_app's RecoveryCode policy is
+  // `userId = current_fm_user_id()` and could not reach them.
+  const plainCodes = await withTenantDb(user.id, (tx) => generateRecoveryCodes(tx, user.id, true));
 
   return NextResponse.json({
     ok:            true,

@@ -262,9 +262,9 @@ function main() {
     check("customer Link authenticates before calling the exchange",
       at(link, /await requireUser\(\)|getSpaceContext\(/) < at(link, /performPlaidTokenExchange\(/));
     const admin = body(ADMIN_ROUTE);
-    check("admin route requires SYSTEM_ADMIN before calling the exchange",
-      at(admin, /await requireSystemAdmin\(\)/) >= 0 &&
-      at(admin, /await requireSystemAdmin\(\)/) < at(admin, /performPlaidTokenExchange\(/));
+    check("admin route requires SYSTEM_ADMIN, re-read LIVE (fresh), before calling the exchange",
+      at(admin, /await requireFreshSystemAdmin\(\)/) >= 0 &&
+      at(admin, /await requireFreshSystemAdmin\(\)/) < at(admin, /performPlaidTokenExchange\(/));
     // No role or capability may skip the gate.
     for (const f of [EXCHANGE, LINK_ROUTE, ADMIN_ROUTE]) {
       check(`${f}: no role/capability short-circuits admission`,

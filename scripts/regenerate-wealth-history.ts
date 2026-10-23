@@ -18,7 +18,8 @@
  *
  * 2026-07-15 — --space is optional: pass --email=<login-email> instead (or
  * nothing at all — defaults to chr.hogan1997@gmail.com) to auto-resolve that
- * user's PERSONAL Space, matching scripts/diagnose-wealth-chart-gap.ts. Lets
+ * user's PERSONAL Space (the convention the since-deleted diagnose-wealth-chart-gap
+ * diagnostic established). Lets
  * this run as a one-liner without looking up a Space id first.
  *
  * 2026-07-15 — loads .env.local itself (house pattern — see

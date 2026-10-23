@@ -28,9 +28,10 @@ export interface Money {
  *
  * V25-FINAL-1 (FX Honesty) — the UNAVAILABLE case (a KNOWN foreign currency
  * with no acceptable rate) no longer relabels the native magnitude as the
- * target currency. `amount` is forced to 0 so the value contributes NOTHING to
- * any target-currency sum (exclusion by construction — the ~20 hand-rolled
- * aggregate consumers become truthful without a per-consumer change), and the
+ * target currency. `amount` is `null` (there is NO valid target-currency
+ * value — see the field doc below; deliberately not 0, which would be a fake
+ * financial statement), so every aggregate consumer must handle the member
+ * explicitly — convertAndSum excludes it and counts it in `excluded` — and the
  * real native value is carried on `native` for honest display. This closes the
  * "¥1,000,000 surfaces as $1,000,000 estimated" false-unit hole. The
  * null-residue case (currency unknown) is deliberately NOT excluded — it has no
@@ -66,11 +67,12 @@ export interface ConvertedMoney {
   };
   /**
    * V25-FINAL-1 — present ONLY for the UNAVAILABLE case (known foreign currency,
-   * no acceptable rate). When set, `amount` is 0 and this carries the untouched
-   * native value so a display surface can honestly show it in its own currency
-   * ("¥1,000,000, rate unavailable") instead of a mislabeled target figure or a
-   * bare "$0". Absent on every convertible/identity/null-residue result, so the
-   * all-USD path serializes byte-identically (the field is simply not emitted).
+   * no acceptable rate). When set, `amount` is `null` and this carries the
+   * untouched native value so a display surface can honestly show it in its own
+   * currency ("¥1,000,000, rate unavailable") instead of a mislabeled target
+   * figure or a bare "$0". Absent on every convertible/identity/null-residue
+   * result, so the all-USD path serializes byte-identically (the field is
+   * simply not emitted).
    */
   native?: { amount: number; currency: string };
 }
@@ -103,10 +105,12 @@ export interface ConvertedTotal {
  * How honest a converted value is, derived purely from a ConvertedMoney
  * (`fxDisclosureOf`). Ordered by severity:
  *   - "exact"       — identity or an exact applied rate; show as authoritative.
- *   - "estimated"   — a real rate was applied but walked back in time (stale).
- *   - "unavailable" — NO rate applied; the amount is native units shown as the
- *                     target currency (rate missing or null-residue currency).
- *                     This is the case that must be disclosed unmistakably.
+ *   - "estimated"   — a real rate was applied but walked back in time (stale),
+ *                     OR the null-residue assume-target passthrough.
+ *   - "unavailable" — a KNOWN foreign currency with no acceptable rate:
+ *                     `amount` is null (no valid target-currency value exists)
+ *                     and the truth rides on `native`. This is the case that
+ *                     must be disclosed unmistakably.
  */
 export type FxDisclosure = "exact" | "estimated" | "unavailable";
 

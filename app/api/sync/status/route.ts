@@ -20,8 +20,12 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { loadConnectionsSyncStatus } from "@/lib/connections/space-data";
+import { withTenantDb } from "@/lib/db/tenant-context";
 
 export const dynamic = "force-dynamic";
+
+/** Same read as the Connections page; same ceiling. */
+const SYNC_STATUS_PHASE_TIMEOUT_MS = 15_000;
 
 export async function GET() {
   const [user, err] = await requireUser();
@@ -30,5 +34,8 @@ export async function GET() {
   // PCS-2 — one shared assembly (Plaid + WALLET) with the first render, so the
   // poll can never derive state differently. WALLET connections are included so
   // polling never drops wallet cards (same ids the account map is keyed on).
-  return NextResponse.json(await loadConnectionsSyncStatus(user.id));
+  //
+  // RLS-PREP-C — the poll runs on the tenant role, in one phase, like the page.
+  return NextResponse.json(await withTenantDb(
+    user.id, (tx) => loadConnectionsSyncStatus(tx, user.id), { timeout: SYNC_STATUS_PHASE_TIMEOUT_MS }));
 }

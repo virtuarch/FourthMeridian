@@ -35,16 +35,20 @@ import { FinanceDomains, type ContextDomain } from '@/lib/ai/types';
  * Ordered so the most important data is assembled first.
  *
  * SNAPSHOT_HISTORY is included here (not just in FINANCE_WITH_HOLDINGS) so
- * that Personal, Business, Household, Debt-focused, and Goal-focused Spaces
+ * that Personal, Business, Family, Debt-focused, and Goal-focused Spaces
  * can all answer 90-day net-worth and trend questions. It is pre-aggregated
  * data (SpaceSnapshot rows) — cheap to assemble, high advisory value.
  */
+// REVIEW-3 C-10 — MEMBERS / PROVIDERS removed from every manifest: no
+// assembler has ever been registered for either domain, so every context build
+// recorded them as permanent skipped-domain noise ('no_assembler') and every
+// manifest claimed data it could not assemble. Re-add them here WHEN their
+// assemblers land (assembler-registry registration is the gate that matters).
+// W2 — GOALS removed from every manifest list below (Goals retired; the
+// domain, its assembler, and its payload types no longer exist).
 const FINANCE_CORE: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.GOALS,
-  FinanceDomains.MEMBERS,
-  FinanceDomains.PROVIDERS,
   FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
@@ -59,46 +63,22 @@ const FINANCE_WITH_HOLDINGS: ContextDomain[] = [
 ];
 
 /**
- * Finance core + member management emphasis.
- * Used for HOUSEHOLD and FAMILY categories where member roles matter.
- * SNAPSHOT_HISTORY included: multi-member Spaces benefit from net-worth trend
- * context to show collective progress across members.
+ * ⚠️ FINANCE_WITH_MEMBERS / FINANCE_DEBT_FOCUSED / FINANCE_GOAL_FOCUSED DELETED
+ * (V26-REASONING Slice 0).
+ *
+ * All three were byte-identical to FINANCE_CORE. The last one carried an
+ * explicit argument for staying named — "their domain set is its own
+ * declaration; aliasing it to FINANCE_CORE would silently couple those
+ * categories to future core edits" — and that argument is why the duplication
+ * survived W2. It is the wrong way round: three lists that no reader can tell
+ * apart do not record an independent decision, they record a divergence that
+ * does not exist, and the coupling they were meant to prevent is invisible
+ * either way. When a category's domain set genuinely differs, it gets its own
+ * list again at that moment, with the difference visible in the diff.
+ *
+ * (FAMILY's list was never about members in any case: REVIEW-3 C-10 removed
+ * MEMBERS from every manifest because no assembler was ever registered for it.)
  */
-const FINANCE_WITH_MEMBERS: ContextDomain[] = [
-  FinanceDomains.ACCOUNTS,
-  FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.MEMBERS,
-  FinanceDomains.GOALS,
-  FinanceDomains.PROVIDERS,
-  FinanceDomains.SNAPSHOT_HISTORY,
-];
-
-/**
- * Focused debt payoff domain list.
- * SNAPSHOT_HISTORY included: 90-day balance trend is the primary signal for
- * debt reduction velocity — essential for questions like "am I paying this down
- * fast enough?" or "how has my total debt changed?"
- */
-const FINANCE_DEBT_FOCUSED: ContextDomain[] = [
-  FinanceDomains.ACCOUNTS,
-  FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.GOALS,
-  FinanceDomains.PROVIDERS,
-  FinanceDomains.SNAPSHOT_HISTORY,
-];
-
-/**
- * Emergency fund / goal-focused domain list.
- * SNAPSHOT_HISTORY included: savings trajectory over 90 days is the primary
- * signal for emergency fund and goal-progress questions.
- */
-const FINANCE_GOAL_FOCUSED: ContextDomain[] = [
-  FinanceDomains.ACCOUNTS,
-  FinanceDomains.GOALS,
-  FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.PROVIDERS,
-  FinanceDomains.SNAPSHOT_HISTORY,
-];
 
 // ---------------------------------------------------------------------------
 // Manifest map
@@ -119,14 +99,13 @@ const FINANCE_GOAL_FOCUSED: ContextDomain[] = [
 const DOMAIN_MANIFEST_BY_CATEGORY: Record<string, ContextDomain[]> = {
   // Finance categories
   PERSONAL:        FINANCE_CORE,
-  HOUSEHOLD:       FINANCE_WITH_MEMBERS,
-  FAMILY:          FINANCE_WITH_MEMBERS,
+  FAMILY:          FINANCE_CORE,
   BUSINESS:        FINANCE_CORE,
   INVESTMENT:      FINANCE_WITH_HOLDINGS,
   RETIREMENT:      FINANCE_WITH_HOLDINGS,
-  DEBT_PAYOFF:     FINANCE_DEBT_FOCUSED,
-  EMERGENCY_FUND:  FINANCE_GOAL_FOCUSED,
-  GOAL:            FINANCE_GOAL_FOCUSED,
+  DEBT_PAYOFF:     FINANCE_CORE,
+  EMERGENCY_FUND:  FINANCE_CORE,
+  GOAL:            FINANCE_CORE,
 
   // Non-finance categories — placeholder domain lists.
   // These will be replaced when their templates land (D9 or later).

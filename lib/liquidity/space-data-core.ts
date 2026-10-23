@@ -53,6 +53,10 @@ export interface LiquidityDelta {
   cashNow: number;
   marketable: number;
   illiquid: number;
+  /** 2026-10-07 — retirement/HSA and unverified-investment change. Owned value,
+   *  never accessible: reported beside the tiers, EXCLUDED from `net`. */
+  restricted: number;
+  unverified: number;
   credit: number;
   /**
    * Accessible-asset net change: Δcash + Δmarketable + Δilliquid. Credit is
@@ -161,12 +165,16 @@ export function assembleLiquiditySpaceData(args: {
     const dMkt = metricValue(atAsOf, "marketable") - metricValue(atCompareTo, "marketable");
     const dIll = metricValue(atAsOf, "illiquid") - metricValue(atCompareTo, "illiquid");
     const dCred = metricValue(atAsOf, "availableCredit") - metricValue(atCompareTo, "availableCredit");
+    const dRes = metricValue(atAsOf, "restricted") - metricValue(atCompareTo, "restricted");
+    const dUnv = metricValue(atAsOf, "unverified") - metricValue(atCompareTo, "unverified");
     delta = {
       from: compareTo ?? args.asOf,
       to: args.asOf,
       cashNow: dCash,
       marketable: dMkt,
       illiquid: dIll,
+      restricted: dRes,
+      unverified: dUnv,
       credit: dCred,
       net: dCash + dMkt + dIll,
       trust: worstOfCompleteness(

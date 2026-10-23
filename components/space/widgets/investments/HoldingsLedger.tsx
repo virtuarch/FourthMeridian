@@ -20,7 +20,7 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, Search } from "lucide-react";
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { Surface } from "@/components/atlas/Surface";
 import { LeftPanel, RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import { rowKey, rowLabel, tierDotColor } from "./holdings-util";
@@ -77,7 +77,7 @@ export function HoldingsLedger({
         <button
           type="button"
           onClick={() => { setQuery(""); setBrowserOpen(true); }}
-          className="mt-2 text-xs font-medium text-[var(--meridian-400)] hover:underline"
+          className="mt-2 min-h-11 text-xs font-medium text-[var(--meridian-400)] hover:underline"
         >
           View all {holdings.length} holdings →
         </button>
@@ -88,7 +88,7 @@ export function HoldingsLedger({
         <PanelHeader title="Holdings" />
         <PanelContent className="px-0">
           <div className="px-5 pb-3">
-            <div className="flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border-hairline)] bg-[var(--surface-muted)] px-3 py-2">
+            <div className="flex items-center gap-2 focus-within:ring-2 focus-within:ring-[var(--meridian-400)] rounded-[var(--radius-md)] border border-[var(--border-hairline)] bg-[var(--surface-muted)] px-3 py-2">
               <Search size={14} className="shrink-0 text-[var(--text-faint)]" aria-hidden />
               <input
                 type="text"
@@ -96,7 +96,7 @@ export function HoldingsLedger({
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search holdings"
                 aria-label="Search holdings"
-                className="min-w-0 flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none"
+                className="min-h-7 min-w-0 flex-1 bg-transparent text-base sm:text-sm text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none"
               />
             </div>
           </div>
@@ -147,7 +147,7 @@ function HoldingLedgerRow({
     <button
       type="button"
       onClick={onOpen}
-      className={`group relative flex w-full items-center gap-3 overflow-hidden px-4 py-3 text-left transition-colors hover:bg-[var(--surface-hover)] ${
+      className={`group relative flex w-full flex-wrap items-center gap-x-3 gap-y-2 overflow-hidden px-4 py-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--meridian-400)] hover:bg-[var(--surface-hover)] ${
         unvalued ? "opacity-60" : ""
       }`}
     >
@@ -164,7 +164,7 @@ function HoldingLedgerRow({
         className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-[var(--meridian-400)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
       />
 
-      <div className="relative min-w-0 flex-1">
+      <div className="relative min-w-[min(100%,8rem)] flex-1">
         <p className="flex items-center gap-1.5 truncate text-sm font-medium text-[var(--text-primary)]">
           {label}
           {showTierDot && (
@@ -179,7 +179,7 @@ function HoldingLedgerRow({
         </p>
       </div>
 
-      <div className="relative shrink-0 text-right">
+      <div className="relative ml-auto max-w-full text-right [overflow-wrap:anywhere]">
         <p className={`tabular-nums text-sm ${unvalued ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
           {unvalued ? "—" : formatCurrency(row.reportingValue as number, reportingCurrency)}
         </p>

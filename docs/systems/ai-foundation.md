@@ -1,6 +1,6 @@
 # AI Foundation — Financial Intelligence
 
-*Governs how the platform thinks: deterministic modules compute financial knowledge, the LLM narrates it, and a validator enforces honesty. The north-star reference every future architectural proposal is measured against. These are binding rules, not a status report. See also [Financial Truth Spine](../architecture/FINANCIAL_TRUTH_SPINE.md), [money & FX](./money-and-fx.md).*
+*Governs how the platform thinks: deterministic modules compute financial knowledge, and anything that speaks about money narrates what they computed. The north-star reference every future architectural proposal is measured against. These are binding rules, not a status report — and as of the AI conversation reset there is no conversational consumer of them in the repository. See also [Financial Truth Spine](../architecture/FINANCIAL_TRUTH_SPINE.md), [money & FX](./money-and-fx.md).*
 
 > **New here? The one inversion.** **Financial Intelligence is NOT AI.** Financial
 > Intelligence is *deterministic knowledge* — computed by pure, versioned code from
@@ -11,9 +11,34 @@
 > (`lib/ai/provider.ts`, the only OpenAI import site), reading grounded context built
 > by `buildContext`, gated by the **one** visibility predicate (`[FULL]`), narrating
 > facts the [Financial Truth Spine](../architecture/FINANCIAL_TRUTH_SPINE.md) already
-> computed — and checked by an output validator that referees the model's numbers.
+> computed. (An output validator used to referee the model's numbers; it was removed
+> with the conversation layer. The principle survives; that implementation does not.)
 > The implementation section at the end of this doc is the map; the doctrine below is
 > the law.
+
+> **⚠️ STALE STATUS BELOW (FM-AUDIT-066, open).** The "conversation layer was removed"
+> note that follows is historical: `/api/ai/chat` is live again (a 20-tool engine,
+> Memory V2, a sealed scenario carrier). This doc has not been re-baselined yet; the one
+> section kept current is [Conversation state carrier](#conversation-state-carrier-current).
+
+> ## ⚠️ The conversation layer was removed (AI conversation reset)
+>
+> **The doctrine below is unchanged and still binding. The conversational layer
+> that consumed it is gone.** `/api/ai/chat` returns an explicit
+> `503 AWAITING_REDESIGN`; there is no prompt builder, no router, no planner, no
+> output validator and no answer verifier in this repository today. Nothing in
+> the product issues a chat completion.
+>
+> What survives is exactly the half this document calls binding: the
+> deterministic financial intelligence (`lib/ai/intelligence/**`), the grounded
+> context builder and its assemblers, the visibility gate, the forecast engine,
+> and the single provider seam. See
+> [`docs/plans/AI-CONVERSATION-RESET.md`](../plans/AI-CONVERSATION-RESET.md) for
+> what was removed, what was kept, and why. **No replacement architecture has
+> been chosen.**
+>
+> Read the "Implementation map" at the end of this document with that in mind —
+> it has been corrected, and it now names fewer things.
 
 This is the foundational architectural doctrine for Financial Intelligence inside
 Fourth Meridian. It defines how the platform thinks, how future systems must be
@@ -337,14 +362,15 @@ requesting Space is not permitted to see.
   excluded; absence of a grant is exclusion. `VIEWER` role is excluded from chat as
   defense in depth. The data layer and the assemblers share the one predicate so a
   drifted copy can never leak.
-- **Output validator** — `lib/ai/output-validator.ts` enforces "the model narrates, it
-  never calculates" by **membership with tolerance**: each flag-eligible numeric claim
-  in the reply must reconcile (within `max($0.01, 0.5%)` + coarse-rounding tolerance)
-  to a number already in the prompt or a prior user turn. It is membership, not
-  recomputation — a pure, fast, side-effect-free string function (Enforcement, "referee
-  not player"). Modes (`AI_OUTPUT_VALIDATION_MODE`): `shadow | annotate | block`
-  (default `annotate`); enforcement is append-only and never edits the model's text;
-  validation failures are swallowed so they can never break the chat.
+- **Enforcement — currently NONE, and deliberately so.** `lib/ai/output-validator.ts`
+  (membership-with-tolerance over the reply's numbers) was deleted in the AI
+  conversation reset, along with the assessment-contradiction guard, the forecast
+  figure licence, the typed answer boundary and the answer verifier. The
+  *principle* in this document stands: a referee that judges artifacts and never
+  finances. What was removed is one particular referee, built to police prose,
+  which grew until it became the product's behaviour rather than its backstop.
+  **A new conversation layer must arrive with its own enforcement story; it does
+  not inherit one.**
 - **Stateless by design** — there is **no** `Conversation`/`ChatMessage`/`conversationId`
   model. Each turn is stateless; the client owns history. Only `AuditLog` and
   `ApiUsageCounter` are persisted. Conversation persistence and durable memory are
@@ -352,11 +378,46 @@ requesting Space is not permitted to see.
   deterministic-and-narrate core is proven, and the prompt forbids the model implying
   a persistence capability it lacks. (This is the major unbuilt AI layer — see
   `/STATUS.md`.)
-- **Orchestration** — `app/api/ai/chat/route.ts` sequences permission → context →
-  prompt → model call → validation → response, emitting an `AI_CONTEXT_ASSEMBLED`
-  audit event.
+- **Orchestration — absent.** `app/api/ai/chat/route.ts` authenticates, rate
+  limits, and returns `503 AWAITING_REDESIGN`. `AI_CONTEXT_ASSEMBLED` is still
+  emitted, by `buildContext` itself, on every Brief and expense-baseline build.
+- **Deterministic forecast** — `lib/forecast/**` (the engine and its authorities)
+  and `lib/ai/forecast/{assemble,streams,pay-dates}.ts` (the Space adapter, the
+  bounded ledger read, the pay-date resolver) project cash from EXPLICIT typed
+  inputs. They read no sentence and have no conversational dependency; the
+  natural-language extractors that used to feed them were deleted with the
+  conversation layer.
 
 **Where AI attaches, in one line:** one provider import site (`lib/ai/provider.ts`),
 one visibility gate (`lib/ai/visibility.ts` `[FULL]`), one context entry
 (`buildContext → SpaceContext_AI`), narrating facts the Financial Truth Spine owns —
 never authoring them.
+
+---
+
+## Conversation state carrier (current)
+
+*Kept current by the pre-S1 gate repairs (FM-AUDIT-018, FM-AUDIT-019), 2026-09-22.*
+
+A chat conversation carries three things between turns, in ONE sealed, HttpOnly,
+path-scoped cookie (`fm_ai_state`, `lib/ai/conversation/runtime-state.ts`): the
+**executed scenario** (what ran), the **staged conditions** (stated, not yet run) and — only
+when needed — a **continuity-loss** descriptor. Three slots, never merged; none is a
+financial truth, and none is durable (2 h TTL, bound to user + Space + the digest of the
+last assistant reply, so a new chat or another Space opens to nothing).
+
+- **Cipher:** the repo's purpose-derived AES-256-GCM (`sealWithPurpose`), as one base64url
+  token (`c1.` iv‖tag‖ciphertext, 12-byte IV, 16-byte tag pinned both sides).
+- **Capacity:** 3,900 characters — a browser discards a cookie over 4,096 bytes silently —
+  holding ~2,890 bytes of state (base64url; the previous hex encoding held ~1,915).
+- **Overflow is explicit, never silent.** State that does not fit is replaced by a sealed
+  continuity marker naming what was lost (an executed scenario, N staged clauses). The next
+  turn receives a `CONTINUITY NOT CARRIED` notice (`continuity.ts`) saying the plan is not in
+  force; the plan stays *in play* (project_cash refuses to answer it from the current trend
+  unless `ignoreStaged`); the loss is carried until a scenario runs again; the response
+  carries `continuity` on the turn it happens and the chat UI shows a notice.
+- **Durable memory** (`SpaceMemory`, Memory V2) is separate from the carrier and is written
+  only when the turn's context says `memoryWrites: true` — the product chat route. Dogfood /
+  evaluation harnesses are read-only for memory unless `FM_AI_MEMORY_WRITES=clone-only` against
+  a clone (`memory-write-policy.ts`).
+

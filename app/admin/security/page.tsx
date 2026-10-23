@@ -27,6 +27,7 @@
 
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
+import { redirectToLogin } from "@/lib/auth/login-redirect";
 import { UserRole } from "@prisma/client";
 import { authOptions } from "@/lib/auth";
 import { resolveAdminTotpPhase } from "@/lib/admin-totp-enrollment";
@@ -36,7 +37,7 @@ import { AdminTotpEnrollment } from "@/components/admin/AdminTotpEnrollment";
 export default async function AdminSecurityPage() {
   const session = await getServerSession(authOptions);
 
-  if (!session?.user?.id) redirect("/login");
+  if (!session?.user?.id) return redirectToLogin();
   if (session.user.role !== UserRole.SYSTEM_ADMIN) redirect("/dashboard");
 
   const phase = resolveAdminTotpPhase({

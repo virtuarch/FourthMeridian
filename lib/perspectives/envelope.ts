@@ -28,7 +28,7 @@
 import type { LensResult, CompletenessTier } from "@/lib/perspective-engine/types";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import type { InvestmentsTimeMachineResult } from "@/lib/investments/investments-time-machine-core";
 import { buildInvestmentsTrustSummary } from "@/lib/investments/investments-trust";
@@ -321,7 +321,16 @@ function lensEnvelope(lens: LensResult): PerspectiveEnvelope {
       tone:  lens.completeness?.conflict ? "warning" : preset.tone,
       detail:
         lens.completeness?.reason ??
-        (p.dataAsOf ? `Live account balances, as of ${p.dataAsOf.slice(0, 10)}.` : preset.detail),
+        // v2.6-L1 — this read "Live account balances, as of <date>", which made two
+        // claims the data does not support: "live" (24 of 35 accounts in the live
+        // corpus are past a week) and "as of" (the institution's clock, which no
+        // institution here reports). `dataAsOf` is in fact the OLDEST time any
+        // contributing balance was observed.
+        // v2.6-L2 — and WHICH clock that was is now stated, not assumed: "as of"
+        // is used only when every contributor carries an institution timestamp.
+        (p.dataAsOf
+          ? `${p.dataAsOfBasis === "PROVIDER_ATTESTED" ? "Oldest balance as of" : "Oldest balance checked"} ${p.dataAsOf.slice(0, 10)}.`
+          : preset.detail),
     },
     evidence: n > 0 ? { label: `${n} account${n === 1 ? "" : "s"}` } : undefined,
     // V25-FINAL-1 — `unconverted` (a balance excluded for lack of a rate) is the

@@ -3,8 +3,13 @@
  *
  * BTC wallet balance sync v1 — pure provider layer.
  *
- * Fetches a public BTC address's CONFIRMED balance and a BTC→USD spot price
- * from a keyless block explorer (mempool.space by default). Deliberately has
+ * Fetches a public BTC address's CONFIRMED balance, usage and confirmed
+ * transactions from a keyless Esplora block explorer (blockstream.info by default).
+ * NO PRICE: the BTC→USD figure a sync writes is the CANONICAL dated close from
+ * the price archive (see btc-sync.ts), never a live spot quote from here — a
+ * second provider's undated quote was gating the canonical reconciliation
+ * (2026-09-15: mempool.space unreachable ⇒ every BTC refresh failed at "price"
+ * although the balance had been read). Deliberately has
  * NO dependency on @/lib/db or next/* so it imports cleanly under the bare-tsx
  * unit runner (scripts/run-tests.ts) and can be exercised offline with an
  * injected `fetch`.
@@ -13,19 +18,32 @@
  * address balance only. No xpub, no transaction history, no other chains, no
  * schema changes. The orchestration + persistence live in ./btc-sync.ts.
  *
- * Confirmed-only: balance = chain_stats.funded_txo_sum - chain_stats.spent_txo_sum
- * (mempool_stats — unconfirmed — is intentionally ignored).
+ * Confirmed-only (single-address): balance = chain_stats.funded_txo_sum -
+ * chain_stats.spent_txo_sum (mempool_stats — unconfirmed — intentionally ignored),
+ * read from the BALANCE authority (`btcBalanceBaseUrl`, Esplora), which is a
+ * different host from the HISTORY explorer (`btcExplorerBaseUrl`).
+ * ⚠️ xpub balances come from the batch provider (blockchain.info), whose
+ * `final_balance` INCLUDES unconfirmed effects — a known, measured divergence
+ * between wallet shapes (see `parseMultiaddrStats`), not an equivalence.
  */
 
 /** 1 BTC = 100,000,000 satoshis. */
 export const SATS_PER_BTC = 100_000_000;
 
-const DEFAULT_EXPLORER_BASE = "https://mempool.space";
-const DEFAULT_PRICE_URL = "https://mempool.space/api/v1/prices";
+// 2026-09-21 — the HISTORY authority's default moved from mempool.space (TCP
+// refused on every IP) to blockstream.info, after proof rather than on the
+// strength of "both are Esplora": the live wallet's history fetched from
+// blockstream and run through `normalizeBtcAddressTxs` reproduced all 28 stored
+// rows exactly — ids, sats, dates, flow, settlement; 0 extra, 0 missing. Still
+// ONE configured authority (BTC_EXPLORER_BASE_URL overrides it), never a runtime
+// fallback chain: two hosts at different chain tips would make a history that
+// depends on which one answered.
+const DEFAULT_EXPLORER_BASE = "https://blockstream.info";
+const DEFAULT_BALANCE_BASE  = "https://blockstream.info";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Which external call failed — carried on the error and into any SyncIssue. */
-export type BtcSyncStage = "balance" | "price" | "transactions" | "discovery";
+export type BtcSyncStage = "balance" | "transactions" | "discovery";
 
 /** Typed failure so callers can record an honest, staged sync issue. */
 export class BtcSyncError extends Error {
@@ -35,15 +53,48 @@ export class BtcSyncError extends Error {
   }
 }
 
-/** Explorer base URL (trailing slashes trimmed). Overridable, keyless default. */
+/**
+ * HISTORY explorer base URL (trailing slashes trimmed) — the transaction-history
+ * authority. Overridable, keyless default.
+ */
 export function btcExplorerBaseUrl(): string {
   const base = process.env.BTC_EXPLORER_BASE_URL?.trim() || DEFAULT_EXPLORER_BASE;
   return base.replace(/\/+$/, "");
 }
 
-/** BTC→USD price endpoint. Overridable, keyless default. */
-export function btcPriceUrl(): string {
-  return process.env.BTC_PRICE_URL?.trim() || DEFAULT_PRICE_URL;
+/**
+ * CURRENT-BALANCE authority for single-address wallets — an Esplora host,
+ * configured SEPARATELY from the history explorer (`btcExplorerBaseUrl`).
+ *
+ * ⚠️ Since the history default also moved to blockstream.info (proven 28/28),
+ * the two DEFAULTS coincide. That is shared availability, not shared fate: a
+ * history failure is non-fatal by construction (the import never gates the
+ * position), whatever host serves it. They remain two settings because they are
+ * two authorities, and either can be pointed elsewhere without touching the other.
+ *
+ * Both used to be mempool.space, so one explorer outage was two outages: on
+ * 2026-09-21 mempool.space refused TCP and every single-address wallet failed at
+ * "balance" — its current position lost to what should only have been a history
+ * problem. Separate hosts, one interface: blockstream.info serves the SAME
+ * Esplora API mempool.space does (the multi-network investigation already named
+ * Esplora the canonical Bitcoin interface), so `parseConfirmedSats` reads the
+ * same `chain_stats` and the semantics — CONFIRMED only — are unchanged. Measured
+ * before switching: blockstream's confirmed balance and tx count for the live
+ * wallet's active address equal the figures mempool.space reported (24,060,252
+ * sats, 28 txs), and every public fixture agreed to the satoshi.
+ *
+ * NOT blockchain.info, although xpub balances come from there: every balance it
+ * serves (multiaddr `final_balance`, `/balance`, `/q/addressbalance`, which
+ * ignores `?confirmations=`) INCLUDES unconfirmed effects — measured
+ * final = confirmed + mempool Δ on every address with pending activity — so
+ * moving single-address wallets there would silently change what "balance"
+ * means. There is deliberately NO fallback chain: one authority per dimension,
+ * and an unavailable authority is reported, never papered over by a second
+ * provider whose answer means something else.
+ */
+export function btcBalanceBaseUrl(): string {
+  const base = process.env.BTC_BALANCE_API_URL?.trim() || DEFAULT_BALANCE_BASE;
+  return base.replace(/\/+$/, "");
 }
 
 function timeoutMs(): number {
@@ -76,19 +127,6 @@ export function parseConfirmedSats(json: unknown): number {
 }
 
 /**
- * BTC→USD price from a mempool.space `/api/v1/prices` response (`{ USD: n }`).
- * Throws BtcSyncError("price") when USD is missing or non-positive — we never
- * value a wallet at a bogus price.
- */
-export function parseUsdPrice(json: unknown): number {
-  const usd = (json as { USD?: unknown } | null)?.USD;
-  if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0) {
-    throw new BtcSyncError("price", "unexpected/invalid price response (missing USD)");
-  }
-  return usd;
-}
-
-/**
  * Total transaction count for an address (confirmed + mempool) — the "is this
  * address used?" signal for xpub gap-limit discovery.
  */
@@ -104,7 +142,23 @@ export function satsToBtc(sats: number): number {
   return sats / SATS_PER_BTC;
 }
 
-/** USD value of a BTC amount at a spot price, rounded to cents. */
+/**
+ * USD value of a BTC amount at a spot price, rounded to cents.
+ *
+ * REVIEW-3 — WHY THIS MAY ROUND when lib/money/convert.ts forbids rounding
+ * (plan D-4): the no-rounding doctrine governs the READ-TIME CONVERSION CORE,
+ * where rounding would compound through convert-then-sum aggregation and
+ * belongs to the display boundary. This is not that path. This is a WRITE-TIME
+ * VALUATION at the provider-ingest boundary — quantity × undated spot quote,
+ * deliberately outside convertMoney (BTC is an asset, not a cash currency; see
+ * the BTC money contract at the btc-sync write site and
+ * docs/systems/money-and-fx.md). The product of a ~8-decimal BTC quantity and
+ * a float spot price carries sub-cent noise with no financial meaning;
+ * stabilising the STORED presentation figure to cents keeps the
+ * Holding/balance upserts idempotent (equality checks don't churn on float
+ * dust). The canonical fact, `nativeBalance`, is stored UNROUNDED — nothing
+ * financial is lost to this rounding.
+ */
 export function computeUsdBalance(btc: number, priceUsd: number): number {
   return Math.round(btc * priceUsd * 100) / 100;
 }
@@ -141,7 +195,8 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
 
   for (let attempt = 0; ; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs());
+    const budgetMs = timeoutMs();
+    const timer = setTimeout(() => controller.abort(), budgetMs);
     let retryAfterMs: number | undefined;
     try {
       const res = await fetchImpl(url, {
@@ -153,13 +208,29 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
         if (Number.isFinite(ra) && ra > 0) retryAfterMs = ra * 1000;
         // fall through to backoff/retry below (after finally clears the timer)
       } else if (!res.ok) {
-        throw new BtcSyncError(stage, `HTTP ${res.status} from ${url}`);
+        // The HOST, never the URL: the path carries wallet addresses (up to 50
+        // per multiaddr call), and this text reaches SyncIssue rows, the route's
+        // 502 body and the Refresh button.
+        throw new BtcSyncError(stage, `HTTP ${res.status} from ${new URL(url).host}`);
       } else {
         return await res.json();
       }
     } catch (err) {
       if (err instanceof BtcSyncError) throw err;
-      throw new BtcSyncError(stage, err instanceof Error ? err.message : String(err));
+      // NAME THE FAILURE. Node reports the abort timer as "This operation was
+      // aborted", which says neither that it was a timeout nor which provider
+      // stopped answering — and that text reached the SyncIssue, the Connection
+      // and the 502 body verbatim (2026-09-15), so an operator could not tell an
+      // upstream outage from an application defect.
+      const host = new URL(url).host;
+      if (controller.signal.aborted) {
+        throw new BtcSyncError(stage, `${host} did not respond within ${budgetMs} ms`);
+      }
+      // The transport's own text is passed through with the URL (and so any
+      // address in it) replaced by the host — undici says "fetch failed", but an
+      // injected transport may quote the request.
+      const detail = (err instanceof Error ? err.message : String(err)).split(url).join(host);
+      throw new BtcSyncError(stage, `network error reaching ${host}: ${detail}`);
     } finally {
       clearTimeout(timer);
     }
@@ -173,9 +244,9 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
   }
 }
 
-/** Confirmed balance (satoshis) for a public BTC address. */
+/** Confirmed balance (satoshis) for a public BTC address — from the BALANCE authority. */
 export async function fetchConfirmedSats(address: string, fetchImpl: FetchFn = fetch): Promise<number> {
-  const url = `${btcExplorerBaseUrl()}/api/address/${encodeURIComponent(address)}`;
+  const url = `${btcBalanceBaseUrl()}/api/address/${encodeURIComponent(address)}`;
   return parseConfirmedSats(await getJson(url, "balance", fetchImpl));
 }
 
@@ -215,7 +286,13 @@ export const BATCH_CHUNK = 50;
 
 /**
  * Parse a blockchain.info `/multiaddr` response into per-address stats for
- * EXACTLY the requested addresses. Addresses the provider omits (no activity)
+ * EXACTLY the requested addresses.
+ *
+ * ⚠️ `final_balance` is NOT confirmed-only: measured 2026-09-21, it equals
+ * Esplora's confirmed balance PLUS its mempool delta on every address with
+ * pending activity (and it counts the unspendable genesis coinbase). For an
+ * address with no pending activity the two agree to the satoshi. xpub balances
+ * therefore include unconfirmed effects while single-address balances do not. Addresses the provider omits (no activity)
  * default to zero, so the result always has an entry per requested address.
  */
 export function parseMultiaddrStats(json: unknown, requested: string[]): Map<string, AddrStat> {
@@ -254,11 +331,6 @@ export async function fetchAddressStatsBatch(addresses: string[], fetchImpl: Fet
     for (const [k, v] of stats) result.set(k, v);
   }
   return result;
-}
-
-/** Current BTC→USD spot price. */
-export async function fetchBtcUsdPrice(fetchImpl: FetchFn = fetch): Promise<number> {
-  return parseUsdPrice(await getJson(btcPriceUrl(), "price", fetchImpl));
 }
 
 // ── Transactions (Wallet Provider v3) ────────────────────────────────────────
@@ -399,11 +471,83 @@ export function normalizeBtcAddressTxs(rawTxs: RawBtcTx[], myAddresses: string[]
  * `/txs/chain` returns the most-recent confirmed page; cursor-based backfill of
  * older history is a later refinement (keeps v3 minimal and volume-safe).
  */
+/**
+ * Hard bound on pagination requests per address. A wallet with more confirmed
+ * transactions than this stops early — which is precisely why the LEDGER
+ * RECONCILIATION (reconcileWalletLedger) is the authority on completeness and
+ * this loop is not: an exhausted page budget must be caught by arithmetic, not
+ * assumed away. Env-overridable for a genuinely large wallet.
+ */
+/**
+ * Esplora's fixed confirmed-tx page size for `/address/:a/txs/chain` (the same
+ * on mempool.space and blockstream.info — measured: 25, 25, 25, 25, 22 for 122).
+ */
+export const ESPLORA_CHAIN_PAGE_SIZE = 25;
+
+function txPageBudget(): number {
+  const n = Number(process.env.BTC_TX_PAGE_BUDGET);
+  return Number.isFinite(n) && n > 0 ? n : 40; // 40 pages × 25 = 1000 confirmed txs
+}
+
+/**
+ * EVERY confirmed transaction for one address, following the explorer's
+ * pagination to exhaustion.
+ *
+ * ── The bug this exists to prevent (V26-S1-BTC) ──────────────────────────────
+ * This issued exactly ONE request to `/api/address/{addr}/txs/chain` and
+ * returned whatever came back. mempool.space pages that endpoint (25 confirmed
+ * transactions, newest first) and signals "more" only by returning a full page.
+ *
+ * Measured on the live wallet: address bc1q8kv3hyy… has 28 confirmed
+ * transactions and a confirmed balance of 0.24060252 BTC. We imported 25,
+ * summing 0.22031745 BTC — 0.02028507 BTC (8.4% of the wallet) of history
+ * silently absent, and absent from the OLD end, so every backward replay and
+ * every carry licence was reasoning over a ledger that began mid-history.
+ *
+ * Pagination is by `:last_seen_txid`: each page continues from the last txid of
+ * the previous one. The loop stops when a page comes back empty, short, or
+ * fails to advance (a defensive guard against a provider that ignores the
+ * cursor and would otherwise loop forever returning the same page).
+ *
+ * Complete-or-throw, like every other call here: a mid-pagination failure
+ * throws rather than returning a partial list, because a partial list that
+ * looks complete is exactly the failure being repaired.
+ */
 export async function fetchAddressTxsRaw(address: string, fetchImpl: FetchFn = fetch): Promise<RawBtcTx[]> {
-  const url = `${btcExplorerBaseUrl()}/api/address/${encodeURIComponent(address)}/txs/chain`;
-  const json = await getJson(url, "transactions", fetchImpl);
-  if (!Array.isArray(json)) {
-    throw new BtcSyncError("transactions", "unexpected txs response shape (expected array)");
+  const base = `${btcExplorerBaseUrl()}/api/address/${encodeURIComponent(address)}/txs/chain`;
+  const budget = txPageBudget();
+  const out: RawBtcTx[] = [];
+  const seen = new Set<string>();
+  let lastSeenTxid: string | null = null;
+
+  for (let page = 0; page < budget; page++) {
+    const url = lastSeenTxid ? `${base}/${encodeURIComponent(lastSeenTxid)}` : base;
+    const json = await getJson(url, "transactions", fetchImpl);
+    if (!Array.isArray(json)) {
+      throw new BtcSyncError("transactions", "unexpected txs response shape (expected array)");
+    }
+    const rows = json as RawBtcTx[];
+    if (rows.length === 0) break;
+    const shortPage = rows.length < ESPLORA_CHAIN_PAGE_SIZE;
+
+    // A page that adds nothing new means the cursor did not advance. Stop rather
+    // than spin — and never let a repeated page inflate the movement set.
+    let added = 0;
+    for (const tx of rows) {
+      if (!tx || typeof tx.txid !== "string" || seen.has(tx.txid)) continue;
+      seen.add(tx.txid);
+      out.push(tx);
+      added++;
+    }
+    const next = rows[rows.length - 1]?.txid;
+    if (added === 0 || typeof next !== "string" || next === lastSeenTxid) break;
+    // A SHORT page is Esplora's end-of-history signal (it pages confirmed txs in
+    // fixed pages and returns a full page whenever more exist). The loop used to
+    // spend one more request to receive an empty page it could already predict —
+    // one wasted round trip per address per sync (measured: 28 txs ⇒ 3 requests).
+    if (shortPage) break;
+    lastSeenTxid = next;
   }
-  return json as RawBtcTx[];
+
+  return out;
 }

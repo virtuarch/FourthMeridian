@@ -23,6 +23,15 @@
  * Concurrency defaults to (CPU count - 1) and is overridable:
  *     TEST_CONCURRENCY=4 npm test        # cap the pool at 4 processes
  *     TEST_BAIL=1        npm test        # stop scheduling new files on first fail
+ *     TEST_FILE_TIMEOUT_MS=180000 npm test  # per-file watchdog (default 180 s)
+ *
+ * WATCHDOG (TEST-007 / TEST-012): every child gets a per-file deadline. A file
+ * that has not exited by then is killed (SIGKILL — a child wedged at 0% CPU
+ * in state S does not answer SIGTERM), reported as FAILED under its own name
+ * with "timed out after N s", and the run continues. Before this, `npm run ci`
+ * could block indefinitely on one such child (root cause still unknown, see
+ * memory: CI-LOCAL completion defect) and the only signal was a human noticing
+ * nothing had printed for twenty minutes.
  *
  * Usage:  npm test   |   npm run test:unit   |   npx tsx scripts/run-tests.ts
  *
@@ -45,10 +54,10 @@
  *   `*.test.ts`), require a live Postgres / Plaid, and are not unit tests.
  *   The glob below never matches them; keep it that way.
  */
-import { spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { runChild } from "./lib/test-child";
 
 const ROOT = process.cwd();
 const PRELOAD = path.join(ROOT, "scripts", "lib", "server-only-preload.cjs");
@@ -84,6 +93,20 @@ function collectTests(dir: string): string[] {
 // mutable filesystem/DB state. Everything else runs in the bounded pool.
 const SERIAL_FILES = new Set<string>([
   path.join("lib", "atlas", "palette-ratchet.test.ts"),
+  // The forecast mutation suites (FORECAST-8/9A/9). Each writes a deliberately
+  // broken copy of its module into lib/forecast/, imports it, asserts the right
+  // test fails, and deletes it — the only way to prove a negative-regression
+  // test actually pins what it claims. The transient file is a .ts under lib/,
+  // so the many repo-wide source scanners in the pool can glob it and then find
+  // it gone a millisecond later; freshness-convergence.test.ts did exactly that
+  // and died on ENOENT. Isolating the writers is this file's documented remedy
+  // and costs about a second, where teaching a dozen readers to expect a
+  // vanishing file would be a standing tax on every future scanner.
+  path.join("lib", "forecast", "policy.test.ts"),
+  path.join("lib", "forecast", "periodic-amount.test.ts"),
+  path.join("lib", "forecast", "operating-state.test.ts"),
+  path.join("lib", "forecast", "engine.test.ts"),
+  path.join("lib", "ai", "forecast", "forecast-integration.test.ts"),
 ]);
 
 // Deterministic, predictable order. `components` carries colocated presentational
@@ -120,25 +143,27 @@ const concurrency = Math.min(
 );
 const BAIL = process.env.TEST_BAIL === "1" || process.env.TEST_BAIL === "true";
 
+// Per-file watchdog. 180 s is ~30× the slowest file on a cold laptop (the
+// forecast integration suite, ~6 s) and well under any CI job timeout, so a
+// wedged child fails the run in minutes rather than hours.
+const DEFAULT_FILE_TIMEOUT_MS = 180_000;
+const requestedTimeout = Number.parseInt(process.env.TEST_FILE_TIMEOUT_MS ?? "", 10);
+const FILE_TIMEOUT_MS = Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? requestedTimeout : DEFAULT_FILE_TIMEOUT_MS;
+
 console.log(
   `run-tests: ${files.length} test file(s) — ${parallelFiles.length} parallel ` +
-    `(concurrency ${concurrency}), ${serialFiles.length} serial\n`,
+    `(concurrency ${concurrency}), ${serialFiles.length} serial, ${Math.round(FILE_TIMEOUT_MS / 1000)} s per-file watchdog\n`,
 );
 
-type Result = { file: string; ok: boolean; output: string };
+type Result = { file: string; ok: boolean; timedOut: boolean; output: string };
 
-// Run one test file in its own child process. Resolves (never rejects) with the
-// captured status + combined stdout/stderr, so one crashed child can't take down
-// the pool. `process.exit(1)` in the test surfaces as a nonzero `code` here.
+// Run one test file in its own child process under the per-file watchdog
+// (scripts/lib/test-child.ts). Resolves (never rejects) with the captured
+// status + combined stdout/stderr, so one crashed or wedged child can't take
+// down the pool. `process.exit(1)` in the test surfaces as a nonzero `code`;
+// a child that outlives FILE_TIMEOUT_MS is killed and reported as failed.
 function runFile(file: string): Promise<Result> {
-  return new Promise((resolve) => {
-    const child = spawn(TSX_BIN, ["--require", PRELOAD, file], { cwd: ROOT });
-    let output = "";
-    child.stdout.on("data", (d: Buffer) => (output += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (output += d.toString()));
-    child.on("error", (err) => resolve({ file, ok: false, output: `spawn error: ${String(err)}` }));
-    child.on("close", (code) => resolve({ file, ok: code === 0, output: output.trimEnd() }));
-  });
+  return runChild({ bin: TSX_BIN, args: ["--require", PRELOAD, file], cwd: ROOT, file, timeoutMs: FILE_TIMEOUT_MS });
 }
 
 // Bounded worker pool: `concurrency` workers pull from a shared cursor until the
@@ -155,7 +180,7 @@ async function runPool(list: string[], poolSize: number): Promise<Result[]> {
       const file = list[cursor++];
       const result = await runFile(file);
       results.push(result);
-      console.log(`  ${result.ok ? "✓" : "✗"} ${result.file}`);
+      console.log(`  ${result.ok ? "✓" : "✗"} ${result.file}${result.timedOut ? "  (timed out)" : ""}`);
       if (!result.ok && BAIL) bailed = true;
     }
   }
@@ -170,7 +195,7 @@ async function main(): Promise<void> {
     if (BAIL && serialResults.some((r) => !r.ok)) break;
     const result = await runFile(file);
     serialResults.push(result);
-    console.log(`  ${result.ok ? "✓" : "✗"} ${result.file} (serial)`);
+    console.log(`  ${result.ok ? "✓" : "✗"} ${result.file} (serial)${result.timedOut ? "  (timed out)" : ""}`);
   }
 
   const parallelResults = parallelFiles.length > 0 ? await runPool(parallelFiles, concurrency) : [];

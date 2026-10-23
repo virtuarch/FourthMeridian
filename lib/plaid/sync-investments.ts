@@ -37,16 +37,19 @@
 
 import type { AccountBase, Item } from "plaid";
 import { PlaidInvestmentsConsent } from "@prisma/client";
-import { db } from "@/lib/db";
+import { db, systemDb } from "@/lib/db";
 import { plaidClient } from "@/lib/plaid/client";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
-import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
+import { offersInvestments, reconcileInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
 import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
 import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
 import { syncCurrentHoldings } from "@/lib/investments/sync-current-holdings";
 import type { AccountCoverageFact } from "@/lib/plaid/refresh-execution-types";
-import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
+import {
+  ingestInvestmentEvents, investmentEventsEnabled,
+  recordDisabledInvestmentEventCoverage,
+} from "@/lib/investments/investment-event-ingest";
 
 const LOG = "[plaid-investments]";
 
@@ -108,10 +111,12 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
 
   // ── Consent (DRIFT-1: change-detect + log; seeds at link since stored=null) ──
   let consent: PlaidInvestmentsConsent | null = storedConsent;
-  const derived = deriveInvestmentsConsent(item);
+  // Stored UNSUPPORTED (learned from the endpoint) is not undone by consent
+  // metadata alone — see reconcileInvestmentsConsent.
+  const derived = reconcileInvestmentsConsent(storedConsent, item);
   if (derived !== null && derived !== storedConsent) {
     await db.plaidItem.update({ where: { id: plaidItemId }, data: { investmentsConsent: derived } });
-    console.log(`${LOG} consent ${storedConsent ?? "unknown"} → ${derived} for item ${plaidItemId} ("${institutionName}")`);
+    console.log(`${LOG} consent ${storedConsent ?? "unknown"} → ${derived} for item ${plaidItemId} ("${institutionName}") — offered by Plaid: ${offersInvestments(item)}`);
   }
   if (derived !== null) consent = derived;
 
@@ -134,7 +139,11 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
       // DF-2E — resolve identity first so a no-holdings account can be recorded
       // as SKIPPED/NO_HOLDINGS (resolution is a read; no behavior change for
       // accounts that do have holdings).
-      const fa = await resolvePlaidAccountByExternalId(plaidAcct.account_id);
+      // RLS-ACC-S5 — `systemDb`, for the same reason as lib/plaid/refresh.ts:
+      // the holdings loop is background provider ingestion with no user identity
+      // to bind. The authority is now stated at the call site instead of being
+      // resolved from a module global inside the leaf.
+      const fa = await resolvePlaidAccountByExternalId(systemDb, plaidAcct.account_id);
       if (!fa) continue; // no FinancialAccount identity to attribute
 
       const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
@@ -165,7 +174,13 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
 
       // A2 — stable per-holding reconciliation (insert / update-in-place /
       // remove-stale), the shared writer. Cash/no-ticker stay filtered.
-      const syncCounts = await syncCurrentHoldings({
+      // RLS-C-S8 — the authority is STATED, in one visible place, rather than
+      // resolved by the writer from a global. It stays `db` deliberately: this is
+      // the Plaid provider sync path, it records SyncIssue (on which fm_app holds
+      // a READ-only column grant) and it is a job authority, not a tenant one.
+      // Split-authority for the Plaid surface is a later slice; when it lands,
+      // these three call sites are the one line it has to change.
+      const syncCounts = await syncCurrentHoldings(db, {
         financialAccountId: fa.id,
         plaidHoldings:      acctHoldings,
         securitiesById:     secById,
@@ -182,12 +197,28 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
 
     // A3 — canonical investment event ingestion (once per item; separate
     // investmentsTransactionsGet call). Kill-switch gated, isolated best-effort.
+    // V26-QUANTITY-1E′ — the accounts this item's request covers. Resolved here
+    // rather than inside ingestion, which only ever sees accounts that returned
+    // a transaction; an investment account with none is exactly the case the
+    // coverage ledger has to record.
+    const coveredFinancialAccountIds: string[] = [];
+    for (const plaidAcct of investmentAccounts) {
+      const fa = await resolvePlaidAccountByExternalId(systemDb, plaidAcct.account_id);
+      if (fa) coveredFinancialAccountIds.push(fa.id);
+    }
+
     if (investmentEventsEnabled()) {
       try {
-        await ingestInvestmentEvents({ accessToken, plaidItemId, now: new Date() });
+        await ingestInvestmentEvents(db, { accessToken, plaidItemId, now: new Date(), coveredFinancialAccountIds });
       } catch (evErr) {
         console.warn(`${LOG} investment event ingestion failed for item ${plaidItemId} (non-fatal): ${evErr instanceof Error ? evErr.message : evErr}`);
       }
+    } else {
+      // A window that was never requested must say so. Silence here would be
+      // read downstream as "no movement", which is the defect this ledger closes.
+      await recordDisabledInvestmentEventCoverage(db, {
+        plaidItemId, coveredFinancialAccountIds, now: new Date(),
+      });
     }
 
     // Unknown (pre-DTM) probe succeeded — remember it.
@@ -202,6 +233,13 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
       await db.plaidItem.update({ where: { id: plaidItemId }, data: { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED } });
       consent = PlaidInvestmentsConsent.CONSENT_REQUIRED;
       console.log(`${LOG} item ${plaidItemId} ("${institutionName}") lacks Investments consent — holdings skipped until granted via Link update mode`);
+    } else if (getPlaidErrorCode(holdingsErr) === "PRODUCTS_NOT_SUPPORTED") {
+      // The institution offers no Investments product, whatever the consent
+      // list says. Record the endpoint's answer: the call stops repeating on
+      // every refresh, and the card stops claiming "Investments synced".
+      await db.plaidItem.update({ where: { id: plaidItemId }, data: { investmentsConsent: PlaidInvestmentsConsent.UNSUPPORTED } });
+      consent = PlaidInvestmentsConsent.UNSUPPORTED;
+      console.log(`${LOG} item ${plaidItemId} ("${institutionName}") — Investments not supported by the institution; holdings skipped`);
     } else {
       console.warn(`${LOG} investmentsHoldingsGet failed for item ${plaidItemId} (non-fatal): ${plaidErrorSummary(holdingsErr)}`);
     }

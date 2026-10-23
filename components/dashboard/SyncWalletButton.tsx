@@ -31,11 +31,14 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // A PARTIAL success: the balance refreshed, but its value or its history did not.
+  const [notice, setNotice] = useState("");
 
   const idleLabel = syncStatus === "pending" ? "Sync wallet" : "Refresh";
 
   async function handleSync() {
     setError("");
+    setNotice("");
     setLoading(true);
     try {
       const res = await fetch(`/api/accounts/${accountId}/sync`, { method: "POST" });
@@ -44,8 +47,28 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
       // and { error } (400/404) for guard failures — the account stays visible
       // and "pending" either way; surface a clear message.
       if (!res.ok || data?.ok === false) {
-        setError(data?.error ?? data?.reason ?? "Sync failed. Please try again.");
+        // CRYPTO-COPY-1 — `userMessage` FIRST. `reason` is the provider's own
+        // text and used to arrive here verbatim, so on 2026-10-01 the user was
+        // shown "network error: This operation was aborted" — undici's wording
+        // for the SERVER's 10 s timeout, which reads as "your internet failed".
+        // There is no client-side timeout on this request; the browser was fine.
+        // `reason` stays as the last resort so an unclassified failure still
+        // says something concrete rather than nothing.
+        setError(data?.error ?? data?.userMessage ?? data?.reason ?? "Sync failed. Please try again.");
         return;
+      }
+      // The historical import is best-effort: when it failed, the balance and
+      // value still refreshed and the existing history was kept. Say so, rather
+      // than letting a clean-looking refresh hide it or an error overstate it.
+      // Likewise the valuation: the quantity is current even when no price is.
+      const historyFailed = data?.transactionImport?.status === "FAILED";
+      const unpriced      = data?.valuation?.status === "UNAVAILABLE";
+      if (historyFailed || unpriced) {
+        setNotice([
+          "Balance updated.",
+          ...(unpriced ? ["Its USD value couldn't be priced right now."] : []),
+          ...(historyFailed ? ["Transaction history couldn't be refreshed right now. Existing history is kept."] : []),
+        ].join(" "));
       }
       router.refresh();
     } catch {
@@ -70,6 +93,7 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
         {loading ? "Syncing…" : idleLabel}
       </button>
       {error && <p className="text-xs text-[var(--accent-negative)] mt-1">{error}</p>}
+      {notice && <p className="text-xs text-[var(--text-secondary)] mt-1">{notice}</p>}
     </div>
   );
 }

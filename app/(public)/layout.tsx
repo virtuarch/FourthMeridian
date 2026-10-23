@@ -19,9 +19,9 @@ import { MarketingNav } from "@/components/marketing/MarketingNav";
 import { MarketingFooter } from "@/components/marketing/MarketingFooter";
 
 export const metadata: Metadata = {
-  title: "Fourth Meridian — Transform data into clarity",
+  title: "Fourth Meridian — AI-native wealth management",
   description:
-    "An intelligent financial ecosystem for individuals, families, and businesses—turning fragmented financial data into clarity and action.",
+    "Fourth Meridian is an AI-native wealth management platform: one continuously updated understanding of your cash, spending, income, debt and investments, with a Daily Brief and Conversations grounded in your own numbers. Closed beta, invite-only.",
 };
 
 export default function PublicLayout({

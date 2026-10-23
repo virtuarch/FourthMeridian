@@ -86,13 +86,10 @@ export async function POST(req: NextRequest) {
   if (typeof area !== "string" || !(Object.values(PlatformArea) as string[]).includes(area)) {
     return NextResponse.json({ error: "Invalid area" }, { status: 400 });
   }
-  // Validated against ISSUABLE_LEVELS, NOT the raw enum. OPS-2D-2 added CONTROL
-  // to PlatformAccessLevel as a canonical rank with no consumers; minting one
-  // would produce a grant that confers nothing anyone asks for and that the
-  // admin matrix (READ/WRITE cells only) cannot render. Behaviour is unchanged:
-  // READ/WRITE are accepted exactly as before and every other string — CONTROL
-  // included — is still a 400. Whoever makes CONTROL issuable owes the matrix a
-  // third cell in the same change.
+  // Validated against ISSUABLE_LEVELS, NOT the raw enum, so issuance follows
+  // the one policy list. PLATFORM OPS POLICIES (Slice 2) made CONTROL issuable
+  // together with its first consumer (the refresh-cadence editor) and the
+  // matrix's third cell; any string outside the list is still a 400.
   if (
     typeof level !== "string" ||
     !(Object.values(PlatformAccessLevel) as string[]).includes(level) ||

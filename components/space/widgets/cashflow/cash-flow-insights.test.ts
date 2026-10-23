@@ -144,14 +144,17 @@ console.log("7. P2-1B — credit insight is a two-fact statement (no unpaid-bala
 {
   const ccAccounts = [{ id: "chk", type: "checking" }, { id: "cc", type: "debt" }];
   const creditSpend = tx({ amount: -300, date: "2026-05-18", category: "Shopping", flowType: "SPENDING", accountId: "cc", financialAccountId: "cc" });
-  const debtPay = tx({ amount: -800, date: "2026-05-20", category: "Payment", flowType: "DEBT_PAYMENT" }); // liquid chk → debt payment
+  // v2.6-DEBT-1 — the counterparty IS the evidence. Membership requires a proven
+  // liability destination; the bare flowType is a provider category.
+  const debtPay = tx({ amount: -800, date: "2026-05-20", category: "Payment", flowType: "DEBT_PAYMENT", counterpartyAccountId: "cc" }); // liquid chk → debt payment
 
   // (a) credit spend + visible debt payments → combined two-fact sentence.
   const combined = buildCashFlowInsights({ transactions: [...rows, creditSpend, debtPay], accounts: ccAccounts, period: MAY, perspective: "economic", now: CLOCK });
   const cCombined = combined.find((i) => i.id === "credit")!;
   check("combined bullet present", !!cCombined);
   check("combined bullet states BOTH facts (on credit + debt payments)",
-    /went on credit this period/.test(cCombined.text) && /of cash went to debt payments/.test(cCombined.text));
+    // CF-RECON-1 — the card figure is GROSS, so it is "charged", never "of spending".
+    /charged to credit this period/.test(cCombined.text) && !/of spending/.test(cCombined.text) && /of cash went to debt payments/.test(cCombined.text));
   check("combined bullet carries the no-subtraction clarifier (earlier periods)",
     /earlier periods/.test(cCombined.text) && /won.t necessarily match/.test(cCombined.text));
   check("combined bullet NEVER implies unpaid balance / subtraction",
@@ -186,6 +189,28 @@ console.log("8. P2-1B — source-scan: overclaim wording removed, no subtraction
   const insCode = insSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
   check("insights: credit spend is never subtracted from debt payments (no unpaid-debt math)",
     !/creditCardSpending\s*[-−]\s*[^;]*DEBT_PAYMENT/.test(insCode) && !/DEBT_PAYMENT[^;]*[-−]\s*[^;]*creditCardSpending/.test(insCode));
+}
+
+console.log("9. REVIEW-3 B-5 — sentence money labels the currency actually computed");
+{
+  // EUR-target context: USD rows convert at 0.5 → the bullets must say €, not $.
+  const eurCtx = Object.freeze({
+    target: "EUR",
+    resolve(from: string, dateISO: string) {
+      return from === "EUR"
+        ? { kind: "rate" as const, rate: 1, requestedDateISO: dateISO, effectiveDates: { from: dateISO, to: dateISO }, staleness: "exact" as const }
+        : { kind: "rate" as const, rate: 0.5, requestedDateISO: dateISO, effectiveDates: { from: dateISO, to: dateISO }, staleness: "exact" as const };
+    },
+  });
+  const eur = buildCashFlowInsights({ transactions: rows, accounts, period: MAY, perspective: "economic", now: CLOCK, moneyCtx: eurCtx });
+  check("with an EUR context, bullets label €", eur.some((i) => i.text.includes("€")));
+  check("with an EUR context, no bullet claims $", !eur.some((i) => i.text.includes("$")));
+
+  // NO context ⇒ native magnitudes pass through and the sentence claims NO
+  // currency (formatAggregateMoney): the former USD relabel is banned by the
+  // display-currency-fallback ratchet.
+  const bare = buildCashFlowInsights({ transactions: rows, accounts, period: MAY, perspective: "economic", now: CLOCK });
+  check("without a context, no bullet relabels amounts as $", !bare.some((i) => i.text.includes("$")));
 }
 
 if (failures > 0) { console.error(`\n${failures} cash-flow-insights check(s) failed`); process.exit(1); }

@@ -21,6 +21,16 @@
  * columns are a no-op (email already equals pendingEmail); Settings/export treat
  * that state as "no pending change".
  *
+ * ⚠️ NOT TENANT-SCOPED, AND IT CANNOT BE (RLS slice A). Two reasons, either of
+ * which is sufficient. First, there is no identity to scope TO: the user is
+ * resolved BY TOKEN, with no session, so `withTenantDb` has nothing to bind — this
+ * is a PRE-IDENTITY path of exactly the kind fm_auth exists for. Second, the
+ * uniqueness re-check below asks whether ANOTHER account now owns the address, and
+ * fm_app's `User` policy is `id = current_fm_user_id()`, so the tenant role cannot
+ * see another account at all. Both halves are an owner decision about the
+ * pre-identity surface, not something a product route should settle by widening a
+ * role, so this file is deliberately unchanged and the decision is reported.
+ *
  * Body: { token: string }
  * Responses (always JSON with a `status`):
  *   200 { success: true,  status: "changed", newEmail }  — swapped, or idempotent repeat
@@ -31,10 +41,18 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+// RLS-13 — PRE-IDENTITY BY DESIGN, and deliberately kept that way. The
+// confirmation token IS the credential for this operation; requiring a session
+// would break the case it exists for (confirming from the link in the email,
+// in whatever browser opened it). There is no app.user_id to bind, so it runs
+// on the authentication authority — which is granted User, UserSession,
+// RecoveryCode, an AuditLog INSERT and nothing financial at all. The narrowness
+// is the containment: this route cannot reach money even by mistake.
+import { authDb as db } from "@/lib/db";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditInsert } from "@/lib/audit";
 import { limitByIp } from "@/lib/rate-limit";
 import { isEmailChangeAlreadyApplied } from "@/lib/email/email-change-confirm";
 import { createNotification } from "@/lib/notifications/create";
@@ -119,13 +137,13 @@ export async function POST(req: NextRequest) {
     // the new email.
     const revokedSessions = await revokeAllUserSessions(user.id);
 
-    const auditRow = await db.auditLog.create({
-      data: {
-        userId:   user.id,
-        action:   AuditAction.EMAIL_CHANGE_COMPLETED,
-        metadata: { oldEmail, newEmail, revokedSessions },
-      },
+    // auditInsert, never create(): fm_auth may INSERT AuditLog but not read it back.
+    const auditRow = auditInsert(db, {
+      userId:   user.id,
+      action:   AuditAction.EMAIL_CHANGE_COMPLETED,
+      metadata: { oldEmail, newEmail, revokedSessions },
     });
+    await auditRow.write;
 
     // OPS-3 S5 Wave 1 — bell mirror, seen on next sign-in (all sessions were
     // just revoked). Non-throwing.

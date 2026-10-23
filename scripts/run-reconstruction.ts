@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   const totals = { instruments: 0, complete: 0, partial: 0, failed: 0, conflicted: 0, derivedRows: 0 };
   for (const financialAccountId of accounts) {
     try {
-      const m = await reconstructAccount({ financialAccountId, now, client: db });
+      const m = await reconstructAccount(db, { financialAccountId, now });
       totals.instruments += m.instruments;
       totals.complete += m.complete;
       totals.partial += m.partial;

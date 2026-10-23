@@ -1,11 +1,11 @@
 /**
  * POST /api/plaid/refresh
  *
- * Manual "Refresh" trigger — refreshes balances, investment holdings, and
- * transactions for every active PlaidItem owned by the caller. Wraps
- * lib/plaid/refresh.ts's refreshAllActiveItemsForUser()/refreshPlaidItem(),
- * the same functions intended for a future daily cron job and webhook
- * handler — no refresh logic is duplicated here.
+ * Manual "Refresh" trigger for the caller's Plaid items. The single-item branch
+ * runs one item under the canonical execution envelope; the bulk branch is a
+ * thin, Plaid-only caller of the provider-agnostic orchestrator
+ * (lib/refresh/refresh-all.ts) — the product's "Refresh All" gesture now lives
+ * at POST /api/refresh/all. No refresh logic is duplicated here.
  *
  * Body (optional): { plaidItemId?: string }
  *   - plaidItemId provided: refresh only that item (must belong to the caller).
@@ -17,11 +17,11 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
-import { refreshAllActiveItemsForUser, type RefreshSummary, type RefreshItemResult } from "@/lib/plaid/refresh";
+import type { RefreshSummary, RefreshItemResult } from "@/lib/plaid/refresh";
 // DF-2A — the single-item manual refresh runs under the canonical execution
 // authority (opens one immutable RefreshExecution, persists per-stage results,
 // derives overall status). Behavior/return value are unchanged; telemetry is
@@ -31,7 +31,11 @@ import { classifyPlaidErrorForHealth, redactedErrorForLog } from "@/lib/plaid/er
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
-import { checkManualRefreshCooldown, markManualRefreshed, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
+import { checkManualRefreshCooldown, cooldownMsFromMinutes, markManualRefreshed } from "@/lib/plaid/refreshCooldown";
+import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
+import { refreshAllForUser } from "@/lib/refresh/refresh-all";
+import { tenantRefreshDeps } from "@/lib/refresh/deps";
+import type { RefreshAllReport } from "@/lib/refresh/outcomes";
 import { limitByUser } from "@/lib/rate-limit";
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
 
@@ -39,6 +43,15 @@ interface RefreshBody {
   plaidItemId?: string;
 }
 
+// RLS-PREP-C — this route's OWN reads and writes run on the tenant role.
+// `PlaidItem` and `Connection` are user-scoped tables (`"userId" = me`) and
+// `AuditLog` inserts are open to fm_app, so each statement the handler issues
+// directly is one short `withTenantDb` phase: the lookup that decides WHICH item
+// a user may act on is now a database guarantee, not a `where` clause on the
+// owner's connection. The provider work those lookups authorise — the sync and
+// refresh pipelines in lib/plaid/ — runs on its own authority and is not part of
+// this conversion (it interleaves Plaid HTTP with its writes, and a tenant phase
+// must never span a network round trip).
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;
@@ -67,21 +80,26 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   }
 
 
+  // P1 — the manual cooldown is the customer's effective entitlement, not a literal.
+  const entitlements = await withTenantDb(user.id, (tx) => loadEffectiveEntitlements(tx, user.id));
+  const cooldownMs = cooldownMsFromMinutes(Number(entitlements.dimensions.manualBankRefreshCooldownMinutes.value));
+
   const body = (await req.json().catch(() => ({}))) as RefreshBody;
 
   let summary: RefreshSummary;
 
   if (body.plaidItemId) {
-    const item = await db.plaidItem.findFirst({
-      where:  { id: body.plaidItemId, userId: user.id, status: PlaidItemStatus.ACTIVE },
+    const requestedItemId = body.plaidItemId;
+    const item = await withTenantDb(user.id, (tx) => tx.plaidItem.findFirst({
+      where:  { id: requestedItemId, userId: user.id, status: PlaidItemStatus.ACTIVE },
       select: { id: true, lastManualRefreshAt: true },
-    });
+    }));
     if (!item) {
       return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
     }
 
     // D2 Step 7B — manual-refresh cooldown, checked before calling Plaid.
-    const cooldown = checkManualRefreshCooldown(item.lastManualRefreshAt);
+    const cooldown = checkManualRefreshCooldown(item.lastManualRefreshAt, cooldownMs);
     if (cooldown.onCooldown) {
       return NextResponse.json(
         { error: "cooldown", retryAfterSeconds: cooldown.retryAfterSeconds },
@@ -128,50 +146,42 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       return NextResponse.json({ error: "Refresh failed" }, { status: 500 });
     }
   } else {
-    // D2 Step 7B — partition active items into on-cooldown (skipped, no
-    // Plaid call) vs. eligible before refreshing. Cooldown is marked on
-    // every eligible item up front (every attempt counts, success or
-    // failure — see D2-7B checklist §5), then refreshAllActiveItemsForUser
-    // excludes the on-cooldown ids so it never calls Plaid for them.
-    const items = await db.plaidItem.findMany({
-      where:  { userId: user.id, status: PlaidItemStatus.ACTIVE },
-      select: { id: true, institutionName: true, lastManualRefreshAt: true },
+    // P1 — THE BULK BRANCH IS A THIN CALLER OF THE ORCHESTRATOR, Plaid-only.
+    // The product's "Refresh All" gesture now lives at POST /api/refresh/all
+    // (every provider). This branch is kept for callers that still post here
+    // without an id: it runs the same decision layer (entitlement cooldown,
+    // in-flight lock, admission already checked above) over the caller's Plaid
+    // items only and reports in the legacy RefreshSummary shape, with the
+    // structured report alongside.
+    let plaidSummary: RefreshSummary | null = null;
+    const deps = tenantRefreshDeps(user.id);
+    const report: RefreshAllReport = await refreshAllForUser(
+      { userId: user.id, authority: "USER", entitlements },
+      // The orchestrator asks admission itself (one authority, asked once per
+      // decision layer); the route-level check above already refused a paused
+      // platform before any entitlement read.
+      { ...deps, listWallets: async () => [], onPlaidSummary: (sum) => { plaidSummary = sum; } },
+    );
+    const legacy: RefreshItemResult[] = report.outcomes.map((o) => {
+      const r = plaidSummary?.results.find((x) => x.plaidItemId === o.id);
+      if (r) return r;
+      return {
+        plaidItemId: o.id, institution: o.label, ok: o.decision === "STARTED",
+        accountsUpdated: 0, holdingsUpdated: 0, transactionsAdded: 0, transactionsModified: 0, transactionsRemoved: 0,
+        spacesSnapshotted: [],
+        ...(o.reason === "COOLDOWN" ? { skipped: "cooldown" as const, retryAfterSeconds: o.retryAfterSeconds } : {}),
+        ...(o.reason === "IN_FLIGHT" ? { skipped: "in-flight" as const } : {}),
+        ...(o.decision === "REFUSED" || o.decision === "FAILED" ? { error: o.reason ?? "ERROR" } : {}),
+      };
     });
-
-    const skippedResults: RefreshItemResult[] = [];
-    const onCooldownIds: string[] = [];
-    const eligibleIds: string[] = [];
-
-    for (const item of items) {
-      const cooldown = checkManualRefreshCooldown(item.lastManualRefreshAt);
-      if (cooldown.onCooldown) {
-        onCooldownIds.push(item.id);
-        skippedResults.push({
-          plaidItemId:          item.id,
-          institution:          item.institutionName,
-          ok:                   false,
-          accountsUpdated:      0,
-          holdingsUpdated:      0,
-          transactionsAdded:    0,
-          transactionsModified: 0,
-          transactionsRemoved:  0,
-          spacesSnapshotted:    [],
-          skipped:              "cooldown",
-          retryAfterSeconds:    cooldown.retryAfterSeconds,
-        });
-      } else {
-        eligibleIds.push(item.id);
-      }
-    }
-
-    await markManyManualRefreshed(eligibleIds);
-
-    summary = await refreshAllActiveItemsForUser(user.id, { excludeItemIds: onCooldownIds });
-    summary.results   = [...summary.results, ...skippedResults];
-    summary.itemCount = summary.itemCount + skippedResults.length;
+    const base = plaidSummary ?? {
+      results: [], itemCount: 0, totalAccountsUpdated: 0, totalHoldingsUpdated: 0,
+      totalTransactionsAdded: 0, totalTransactionsModified: 0, totalTransactionsRemoved: 0, spacesSnapshotted: [],
+    };
+    summary = { ...base, results: legacy, itemCount: legacy.length, ...({ report } as object) } as RefreshSummary;
   }
 
-  await db.auditLog.create({
+  await withTenantDb(user.id, (tx) => tx.auditLog.create({
     data: {
       userId:    user.id,
       action:    AuditAction.PLAID_REFRESH,
@@ -186,7 +196,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       },
       ipAddress: getClientIp(req),
     },
-  });
+  }));
 
   return NextResponse.json({ ok: true, ...summary });
 }, "POST /api/plaid/refresh");

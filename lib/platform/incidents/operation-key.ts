@@ -64,6 +64,44 @@ export const OPERATION_KEYS = {
   "investment-import-repair":     "investment-import-repair",
   "opening-position-repair":      "opening-position-repair",
 
+  // ── Event identity (derived identity, NOT financial data) ──────────────────
+  // Written when the observation unit loses canonical event state — the
+  // transaction row committed and the cursor is NOT held, so no financial record
+  // is missing and no member action helps. It exists so that a P2002 on
+  // TransactionEvent.currentTransactionId stops being visible only to
+  // console.warn (RLS-P-2b / EVENT-WRITE-1).
+  "event-identity-persist": "event-identity-persist",
+
+  // ── Fingerprint adoption refused as ambiguous (FIN-009) ───────────────────
+  // A synced Plaid row's fingerprint matched MORE THAN ONE existing row, so the
+  // sync refused to bind its provider id to any of them and persisted it as a
+  // distinct row. Not cursor-blocking; it names a possible duplicate an operator
+  // may want to review. Distinct from transaction-persist on purpose.
+  "fingerprint-adoption-ambiguous": "fingerprint-adoption-ambiguous",
+
+  // ── Plaid exchange account collision (IDEMP-008) ─────────────────────────
+  // One Plaid account hit a uniqueness collision while the exchange persisted
+  // it; the other accounts of the Item still imported. Recorded by
+  // lib/plaid/exchange-collision.ts, never by exchangeToken.ts itself.
+  "exchange-account-persist": "exchange-account-persist",
+
+  // ── Account-FK re-parenting refused (RLS-ACC-FK) ───────────────────────────
+  // Written when a provider identifier resolved an EXISTING row that belongs to
+  // a DIFFERENT FinancialAccount, so updating it with this sync's fields would
+  // have RE-PARENTED it. The row is left where it is and skipped.
+  //
+  // ⚠️ A SEPARATE KEY, NOT `transaction-persist`, AND THE DISTINCTION IS THE
+  // ONE THIS REGISTRY EXISTS FOR: OPERATOR REMEDIATION. `transaction-persist`
+  // means "a bank transaction failed to persist, the cursor is held, replay it";
+  // this means "two accounts claim one provider identity, a replay will fail
+  // identically for ever, go look at the identity mapping." Merging them would
+  // bury a permanent integrity anomaly inside a pile of transient retryable
+  // failures and tell the operator to wait.
+  //
+  // Deliberately NOT cursor-blocking either, for the same reason: cursor safety
+  // is for failures a replay can fix.
+  "reparenting-refused": "reparenting-refused",
+
   // ── Instrument identity (EVENT evidence) ───────────────────────────────────
   "import-weak-ambiguous":  "import-weak-ambiguous",
   "import-strong-conflict": "import-strong-conflict",
@@ -71,10 +109,30 @@ export const OPERATION_KEYS = {
   // ── User imports ───────────────────────────────────────────────────────────
   "import-rollback-repair": "import-rollback-repair",
 
-  // ── Wallet sync (BTC) ──────────────────────────────────────────────────────
+  // ── Wallet sync — shared across chains ─────────────────────────────────────
+  // `balance` is deliberately ONE operation for every chain: "we could not read
+  // this wallet's balance" is the same operational failure whether the provider
+  // was a Bitcoin explorer or an Ethereum RPC, and the chain is already carried
+  // in the incident detail. Splitting it per chain would fragment one episode
+  // into N and make the operator's question ("are wallet balances failing?")
+  // unanswerable from the key alone.
   discovery: "discovery",
   balance:   "balance",
   price:     "price",
+  // ── Wallet sync — W-M1b, the balance-only chains ───────────────────────────
+  // `config`  the deployment has no provider endpoint for this chain at all.
+  //           Distinct from `balance`: nothing was attempted and nothing is
+  //           wrong with the wallet. It is an OPERATOR action (configure a
+  //           provider), not a retry, and merging it into `balance` would bury
+  //           a one-line fix inside a pile of transient network failures.
+  // `address` the stored address is not well-formed for its chain. Permanent
+  //           until the user corrects it — never retried, never a provider fault.
+  // `capture` the balance was read but the canonical position could not be
+  //           recorded. The acquisition succeeded and the persistence did not,
+  //           which is a different team's problem from either of the above.
+  config:    "config",
+  address:   "address",
+  capture:   "capture",
 } as const;
 
 export type OperationKey = (typeof OPERATION_KEYS)[keyof typeof OPERATION_KEYS];

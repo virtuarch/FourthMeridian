@@ -10,6 +10,7 @@
  *   - useWidgetFetch<T>    self-fetch hook (same-origin GET, {data,loading,error})
  *   - PlatformWidgetCard   the card shell (header icon + label, muted surface)
  *   - WidgetMessage        the loading / error / empty single-line states
+ *   - UtcStamp / fmtUtc    (UI-009) the ABSOLUTE UTC instant beside relative ages
  *
  * Deliberately NO customer-axis machinery — widgets only fetch their own
  * platform data route (gated by requirePlatformAccess) and render JSON. This
@@ -39,10 +40,18 @@ export type PlatformSection = { id: string; key: string; label: string };
  * left to a comment. Give a widget a changing url only by remounting it with a
  * React `key`, which resets this state honestly.
  */
-export function useWidgetFetch<T>(url: string): { data: T | null; loading: boolean; error: string | null } {
+export function useWidgetFetch<T>(url: string): {
+  data: T | null;
+  loading: boolean;
+  error: string | null;
+  /** UI-009 — ISO instant the response landed (null until then): the anchor every
+   *  relative age in the widget was computed against, for a UtcStamp. */
+  fetchedAt: string | null;
+} {
   const [data, setData]       = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -54,6 +63,7 @@ export function useWidgetFetch<T>(url: string): { data: T | null; loading: boole
       .then((j) => {
         if (!alive) return;
         setData(j);
+        setFetchedAt(new Date().toISOString());
         setLoading(false);
       })
       .catch((e) => {
@@ -66,7 +76,44 @@ export function useWidgetFetch<T>(url: string): { data: T | null; loading: boole
     };
   }, [url]);
 
-  return { data, loading, error };
+  return { data, loading, error, fetchedAt };
+}
+
+/**
+ * UI-009 — an ISO instant as an absolute UTC wall-clock string,
+ * "2026-10-22 14:03:12 UTC". Pure; "—" on an unparseable value. Relative ages
+ * ("3m") are computed once and never tick, so an open tab would show "3m" for
+ * hours; the absolute instant beside them is what makes a stale tab visible.
+ */
+export function fmtUtc(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  return `${new Date(t).toISOString().slice(0, 19).replace("T", " ")} UTC`;
+}
+
+/**
+ * UI-009 — "<label> 2026-10-22 14:03:12 UTC" as a <time> element. Render it
+ * beside any relative age (or once per card — see PlatformWidgetCard).
+ */
+export function UtcStamp({ iso, label = "Checked" }: { iso: string | null | undefined; label?: string }) {
+  if (!iso || Number.isNaN(Date.parse(iso))) return null;
+  return (
+    <span className="text-[10px] tabular-nums text-[var(--text-faint)]" data-utc-stamp>
+      {label} <time dateTime={iso}>{fmtUtc(iso)}</time>
+    </span>
+  );
+}
+
+/** A relative age with its absolute UTC instant as the tooltip and beside it:
+ *  "3m ago · 2026-10-22 14:03:12 UTC". */
+export function AgeWithUtc({ iso }: { iso: string | null | undefined }) {
+  if (!iso || Number.isNaN(Date.parse(iso))) return <span>—</span>;
+  return (
+    <span>
+      {timeAgo(iso)} ago <span className="text-[var(--text-faint)]">· <time dateTime={iso}>{fmtUtc(iso)}</time></span>
+    </span>
+  );
 }
 
 /**
@@ -85,14 +132,34 @@ export function PlatformWidgetCard({
   label,
   icon: Icon,
   children,
+  checkedAt,
 }: {
   label:    string;
   icon:     LucideIcon;
   children: ReactNode;
+  /**
+   * UI-009 — the payload's own `checkedAt` when the widget has one. Absent ⇒ the
+   * instant this card mounted in the browser (≈ when its data was fetched and its
+   * relative ages were computed). Either way the card header states an ABSOLUTE
+   * UTC instant, so a tab left open shows how old its "3m ago" really is.
+   */
+  checkedAt?: string | null;
 }) {
+  // Client-only: set after mount (never during SSR) so server and client markup
+  // agree; a rAF keeps the setState out of the effect body.
+  const [mountedAt, setMountedAt] = useState<string | null>(null);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setMountedAt(new Date().toISOString()));
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  const stampIso = checkedAt ?? mountedAt;
   return (
-    <Block label={label} hint={<Icon size={12} aria-hidden className="text-[var(--text-faint)]" />}>
-      <Surface className="p-4 md:p-5 flex flex-col gap-3">{children}</Surface>
+    <Block
+      label={label}
+      hint={<Icon size={12} aria-hidden className="text-[var(--text-faint)]" />}
+      action={stampIso ? <UtcStamp iso={stampIso} label={checkedAt ? "Checked" : "Loaded"} /> : undefined}
+    >
+      <Surface className="min-w-0 p-4 md:p-5 flex flex-col gap-3">{children}</Surface>
     </Block>
   );
 }
@@ -108,21 +175,24 @@ export function WidgetMessage({
   error?:   string | null;
   empty?:   string;
 }) {
+  // UX-P1 — live regions: the loading→error→empty transitions were silent to
+  // assistive technology across ~29 widgets. `status` is polite (loading/empty),
+  // `alert` is assertive (error). Icons are decorative; the text is the content.
   if (loading) {
     return (
-      <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
-        <Loader2 size={12} className="animate-spin" /> Loading…
+      <p role="status" className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
+        <Loader2 size={12} className="animate-spin" aria-hidden /> Loading…
       </p>
     );
   }
   if (error) {
     return (
-      <p className="flex items-center gap-1.5 text-xs" style={{ color: "var(--danger-400, #f87171)" }}>
-        <AlertTriangle size={12} /> {error}
+      <p role="alert" className="flex items-center gap-1.5 text-xs" style={{ color: "var(--coral-400)" }}>
+        <AlertTriangle size={12} aria-hidden /> {error}
       </p>
     );
   }
-  return <p className="text-xs text-[var(--text-secondary)]">{empty ?? "Nothing to show."}</p>;
+  return <p role="status" className="text-xs text-[var(--text-secondary)]">{empty ?? "Nothing to show."}</p>;
 }
 
 /** Compact relative time ("3m", "2h", "5d") from an ISO timestamp. Pure; falls
@@ -145,7 +215,7 @@ export function timeAgo(iso: string): string {
  *  type as customer-Space figures. */
 export function WidgetStat({ value, label }: { value: string | number; label: string }) {
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex min-w-0 flex-col gap-1 break-words">
       <Figure value={value} size="figure" />
       <span className="text-[11px] uppercase tracking-wide text-[var(--text-secondary)]">{label}</span>
     </div>

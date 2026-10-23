@@ -28,6 +28,7 @@
 import { db } from "@/lib/db";
 import { createNotification } from "@/lib/notifications/create";
 import { retireOpenNotification } from "@/lib/notifications/resolve";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 interface ItemOwnerRow {
   userId: string;
@@ -76,7 +77,7 @@ export async function notifyItemSyncComplete(
       data:   { plaidItemId: args.plaidItemId, institutionName: args.institutionName ?? "" },
     });
   } catch (err) {
-    console.warn(`[notifyItemSyncComplete] non-fatal failure for item ${args.plaidItemId}:`, err);
+    console.warn(`[notifyItemSyncComplete] non-fatal failure for item ${args.plaidItemId}:`, redactedErrorForLog(err));
   }
 }
 
@@ -104,7 +105,7 @@ export async function notifyItemSyncFailed(
       },
     });
   } catch (err) {
-    console.warn(`[notifyItemSyncFailed] non-fatal failure for item ${plaidItemId}:`, err);
+    console.warn(`[notifyItemSyncFailed] non-fatal failure for item ${plaidItemId}:`, redactedErrorForLog(err));
   }
 }
 
@@ -127,6 +128,6 @@ export async function retireItemSyncFailure(
       plaidItemId,
     });
   } catch (err) {
-    console.warn(`[retireItemSyncFailure] non-fatal failure for item ${plaidItemId}:`, err);
+    console.warn(`[retireItemSyncFailure] non-fatal failure for item ${plaidItemId}:`, redactedErrorForLog(err));
   }
 }

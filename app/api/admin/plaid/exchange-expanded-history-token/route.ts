@@ -18,7 +18,7 @@
  *     4. Cause retire-superseded-item to fail (it queries for a new PlaidItem
  *        with the same userId as the old one — admin userId wouldn't match).
  *
- * AUTH: SYSTEM_ADMIN only (requireSystemAdmin).
+ * AUTH: SYSTEM_ADMIN only, re-read live (requireFreshSystemAdmin) — a CONTROL action.
  *
  * Body: { publicToken: string, oldPlaidItemId: string }
  *
@@ -41,18 +41,22 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { requireSystemAdmin } from "@/lib/session";
+import { requireFreshSystemAdmin } from "@/lib/session";
 import { db } from "@/lib/db";
 import { resolveSpaceContext } from "@/lib/space";
 import { performPlaidTokenExchange, parsePlaidError, AdmissionDeniedError } from "@/lib/plaid/exchangeToken";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 export async function POST(req: NextRequest) {
   // Capture the acting admin for attribution. The guard returns before any state
   // change, so a rejected caller never reaches the success-path audit write.
-  const [admin, err] = await requireSystemAdmin();
+  // Fresh: this is a CONTROL action (it retires a live Plaid item / disconnects
+  // accounts), so the admin role is re-read live rather than trusted from the
+  // 30 s session cache — a just-revoked admin cannot act inside that window.
+  const [admin, err] = await requireFreshSystemAdmin();
   if (err) return err;
 
   // ── Parse body ────────────────────────────────────────────────────────────
@@ -108,7 +112,7 @@ export async function POST(req: NextRequest) {
       `[admin][expand-history] resolved target user ${oldItem.userId} → spaceId ${spaceId}`,
     );
   } catch (spaceErr) {
-    console.error("[admin][expand-history] failed to resolve target user space:", spaceErr);
+    console.error("[admin][expand-history] failed to resolve target user space:", redactedErrorForLog(spaceErr));
     return NextResponse.json(
       { error: "Could not resolve the institution owner's Space. The user may have no active Space membership." },
       { status: 422 },
@@ -180,7 +184,7 @@ export async function POST(req: NextRequest) {
     console.error(
       `[admin][expand-history] WARNING: exchange succeeded but retire failed for ${oldPlaidItemId}. ` +
         "Old PlaidItem is still ACTIVE. Run retire-superseded-item manually to clean up.",
-      retireErr,
+      redactedErrorForLog(retireErr),
     );
   }
 

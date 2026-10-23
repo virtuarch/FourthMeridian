@@ -30,11 +30,20 @@
  * Whenever a category changes (category rule / override), flow is re-derived
  * from the new category through the authoritative pipeline (buildFlowInputFromRow
  * → classifyFlow → buildFlowWriteFields), so category and flowType never desync.
+ *
+ * FIN-002 (2026-10-22) — and the USER'S category is the signal in that
+ * re-derivation. The new `categorySource` travels into `buildFlowInputFromRow`,
+ * which marks the provider taxonomy SUPPRESSED for a USER source; the PFC
+ * columns are persisted unchanged (immutable provider facts), they simply no
+ * longer outrank the user. The ownership gate above it is untouched: a row the
+ * transfer authority or the crypto ledger owns still writes nothing.
  */
 
 import type { CategorySource, MerchantAliasSource, Prisma, TransactionCategory } from "@prisma/client";
 import { normalizeMerchantIdentity } from "@/lib/transactions/merchant-resolver";
-import { buildFlowInputFromRow, buildFlowWriteFields } from "@/lib/transactions/plaid-flow-input";
+import { buildFlowInputFromRow, buildFlowWriteFields, type FlowWriteFields } from "@/lib/transactions/plaid-flow-input";
+// v2.6-OWN-1 — the flow-ownership rule (see lib/transactions/flow-authority.ts).
+import { mayWriteFlow, type FlowAuthorityName } from "@/lib/transactions/flow-authority";
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
 
 /** A PrismaClient or a $transaction client. */
@@ -53,6 +62,8 @@ export interface CorrectionRow {
   pfcPrimary: string | null;
   pfcDetailed: string | null;
   pfcConfidenceLevel: string | null;
+  /** v2.6-OWN-1 — who owns this row's flow facts. See `recomputeFlowFields`. */
+  flowAuthority: FlowAuthorityName | null;
 }
 
 /** Account context for the authoritative flow re-derivation. */
@@ -103,8 +114,34 @@ export function planMerchantIdentityCorrection(input: MerchantIdentityInput): Me
 
 // ── Flow re-derivation (authoritative pipeline) ───────────────────────────────
 
-/** Re-derive the flow write-columns for a row's (possibly new) category. Pure. */
-export function recomputeFlowFields(row: CorrectionRow, acct: CorrectionAcct, category: TransactionCategory) {
+/**
+ * Re-derive the flow write-columns for a row's (possibly new) category. Pure.
+ *
+ * v2.6-OWN-1 — returns `{}` (write nothing) when the CLASSIFIER does not own the
+ * row's flow facts. Re-categorising is a statement about what a purchase WAS;
+ * it is not evidence about where money WENT, and the transfer authority reached
+ * its verdict from the counterparty leg, the venue and the account type — none
+ * of which a category can contradict. The correction still lands: `category` and
+ * `categorySource` are written by the callers below, which this does not gate.
+ *
+ * The classifier declares NO claims anywhere. Displacing another authority is an
+ * approved, reviewed act, and the acts that do it say so at their own write site
+ * (scripts/repair-*.ts).
+ */
+export function recomputeFlowFields(
+  row: CorrectionRow,
+  acct: CorrectionAcct,
+  category: TransactionCategory,
+  /**
+   * FIN-002 — the category source the caller is ABOUT TO STAMP (USER_RULE for a
+   * rule, USER_OVERRIDE for a one-row override). It is what tells the
+   * classifier that the provider taxonomy no longer decides this row — before
+   * this, a PFC-bearing row re-derived the provider's own flowType whatever
+   * category the user chose, and the correction never reached money.
+   */
+  categorySource: CategorySource = "USER_OVERRIDE",
+): Partial<FlowWriteFields> {
+  if (!mayWriteFlow(row.flowAuthority, "CLASSIFIER").allowed) return {};
   // CCPAY-2C-5 — no merchant/description: the classifier is descriptor-blind by
   // contract. CorrectionRow still carries them for the merchant-identity work
   // below; they simply never reach the flow layer.
@@ -116,6 +153,7 @@ export function recomputeFlowFields(row: CorrectionRow, acct: CorrectionAcct, ca
       pfcDetailed: row.pfcDetailed,
       pfcConfidenceLevel: row.pfcConfidenceLevel,
       merchantEntityId: row.merchantEntityId,
+      categorySource,
     },
     acct,
   );
@@ -211,7 +249,7 @@ export async function applyCategoryRuleCorrection(
         select: { id: true },
       });
 
-  const flow = recomputeFlowFields(row, acct, category);
+  const flow = recomputeFlowFields(row, acct, category, "USER_RULE");
   await client.transaction.update({
     where: { id: row.id },
     data: { category, categorySource: "USER_RULE", categoryRuleId: rule.id, ...flow },
@@ -229,7 +267,7 @@ export async function applyTransactionOverride(
   acct: CorrectionAcct,
   category: TransactionCategory,
 ): Promise<void> {
-  const flow = recomputeFlowFields(row, acct, category);
+  const flow = recomputeFlowFields(row, acct, category, "USER_OVERRIDE");
   await client.transaction.update({
     where: { id: row.id },
     data: { category, categorySource: "USER_OVERRIDE", categoryRuleId: null, ...flow },

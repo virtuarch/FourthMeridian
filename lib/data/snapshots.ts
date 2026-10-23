@@ -14,29 +14,34 @@
  * and no rate is ever resolved. Stored rows are never rewritten.
  */
 
-import { db } from "@/lib/db";
-import { getSpaceContext } from "@/lib/space";
-import { buildSpaceConversionContext, resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
+import type { ReadClient } from "@/lib/db/tenant-context";
+import { type TimePreset } from "@/lib/perspectives/time-range";
+import { resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
+import {
+  resolveSnapshotRowProvenance, admissibleNetWorthSeries, summarizeNetWorthSeries,
+} from "@/lib/data/snapshot-summary.core";
 import type { ConversionContext } from "@/lib/money/types";
 import { Snapshot } from "@/types";
+// RWA-2B — whether a reconstructed row's real-asset component is a MODELED
+// value, re-derived from the manual assets' valuation ledger through the same
+// resolver the history engine wrote it with. The stored row cannot say it.
+import { loadRealAssetBasisByDate } from "@/lib/snapshots/real-asset-basis";
+import { isRealAssetsModeled } from "@/lib/snapshots/real-asset-basis.core";
+import { todayUTCISO } from "@/lib/time/clock";
 
 /**
- * Resolve the stamp-conversion context for a set of snapshot rows.
+ * Resolve the stamp-conversion context for a set of snapshot rows against the
+ * requested reporting currency (the caller supplies it from its own Space
+ * read, so batch callers resolve it once per Space without a second query).
  * Returns `{ target, ctx: null }` on the homogeneous fast path (every stamp
- * already matches the Space's current reporting currency) — callers then map
- * rows exactly as they always have.
+ * already matches the effective target) — callers then map rows exactly as
+ * they always have.
  */
 async function resolveStampContext(
-  spaceId: string,
+  requested: string,
   rows: { date: Date; reportingCurrency?: string | null }[],
 ): Promise<{ target: string; ctx: ConversionContext | null }> {
-  const space = await db.space.findUnique({
-    where:  { id: spaceId },
-    select: { reportingCurrency: true },
-  });
-  const requested = space?.reportingCurrency ?? "USD";
-
   const offStamp = rows.filter((r) => (r.reportingCurrency ?? "USD") !== requested);
   if (offStamp.length === 0) return { target: requested, ctx: null };
 
@@ -64,23 +69,123 @@ async function resolveStampContext(
 }
 
 /**
- * Last N days of snapshots — used by the 30-day net-worth chart on the dashboard.
- * Returns newest-last so chart renders left→right in time order.
+ * How much history to read. A ROW bound — deliberately the only shape available.
+ *
+ * ── Why this is an object (v2.6-WINDOW-2) ───────────────────────────────────
+ *
+ * The parameter was `days = 30`, and it was used as `take: -days`: a ROW LIMIT
+ * wearing a duration's name. Every caller inherited the misnomer, and one of
+ * them — the Daily Brief — published it, telling a user "up 14.9% over the last
+ * 90 days" about a 90-ROW window while the Space said 47.4% for the same words
+ * (v2.6-WINDOW-1).
+ *
+ * A positional number cannot say which unit it is. This object can, and a bare
+ * `getRecentSnapshots(365)` no longer compiles — so the ambiguity is not fixed
+ * by everyone remembering, it is fixed by the type.
  */
-export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): Promise<Snapshot[]> {
-  const { spaceId } = ctx ?? (await getSpaceContext());
+export interface SnapshotReadBound {
+  /**
+   * Read the newest N ROWS.
+   *
+   * ⚠️ Rows, not days — but safely so, and this is the fact that makes every
+   * current caller correct. `SpaceSnapshot` carries `@@unique([spaceId, date])`,
+   * so a Space has AT MOST one row per day. N rows therefore always span at
+   * least N−1 calendar days: a row cap is a CONSERVATIVE over-cover of the same
+   * number of days, never a silent truncation. Measured across the corpus, every
+   * Space runs at exactly 1.00 rows/day, and gaps only widen the span (Jane's
+   * Space: 366 rows over 371 calendar days).
+   *
+   * That is why the callers below are all generous caps with client-side
+   * clipping and none of them needs a date-bounded read. A surface that wants to
+   * make a CLAIM about a window must not count rows to do it — it resolves the
+   * window through `canonicalWindowChange` (lib/data/snapshot-window.ts), which
+   * is what the Brief now does.
+   */
+  rows: number;
+}
 
-  const rows = await db.spaceSnapshot.findMany({
+/**
+ * CF-5 — how far the snapshot record REACHES, without reading it.
+ *
+ * An extent, not history: one indexed min/max/count, no rows, no values. The
+ * coverage envelope needs to say "net-worth history exists from July 2024"
+ * while loading none of it, and `getRecentSnapshots` is the wrong tool for that
+ * — it would pull hundreds of rows to answer a question about their bounds.
+ *
+ * It lives HERE rather than in the caller because snapshot reads have one
+ * authority (lib/data/snapshot-read-boundary.test.ts enforces it), and an
+ * aggregate is still a read: putting it in lib/ai would be the fourth place
+ * that knows how to query this table.
+ *
+ * RLS-C-S3 — `client` is REQUIRED and leading. An EXTENT is exactly the kind of
+ * claim an authority silently changes: `count: 0` reads as "this Space has no
+ * history" whichever role asked, and on a tenant client it can also mean "this
+ * identity may see none of it". Naming the client is what makes the difference
+ * visible at the call site.
+ */
+export async function getSnapshotExtent(
+  client: ReadClient,
+  spaceId: string,
+): Promise<{ fromISO: string | null; toISO: string | null; count: number }> {
+  const agg = await client.spaceSnapshot.aggregate({
+    where: { spaceId },
+    _min: { date: true }, _max: { date: true }, _count: true,
+  });
+  const iso = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
+  return { fromISO: iso(agg._min.date), toISO: iso(agg._max.date), count: agg._count };
+}
+
+/**
+ * Snapshot history for a Space, oldest-first so a chart renders left→right in
+ * time order. Bounded by ROW COUNT — see `SnapshotReadBound`.
+ *
+ * ── RLS-C-S3 — THE AUTHORITY IS AN ARGUMENT, REQUIRED AND FIRST ─────────────
+ * S1 made the SPACE explicit. The AUTHORITY was still ambient: this module
+ * imported the migration principal — the one client exempt from every policy —
+ * and all fifteen snapshot reads in the codebase ran through it, so a
+ * tenant-scoped history read and a platform-wide one were spelled identically.
+ *
+ * `client` is typed `ReadClient` (= `Prisma.TransactionClient`), which has no
+ * `$transaction` member, so this leaf cannot open a transaction of its own and the
+ * phase boundary always belongs to the caller. `PrismaClient` is structurally
+ * assignable, so a job holding `systemDb` — or a caller this slice did not convert,
+ * holding `db` — can still pass one. There is deliberately NO DEFAULT: an optional
+ * authority is an ambient authority wearing a parameter's clothes.
+ */
+export async function getRecentSnapshots(
+  client: ReadClient,
+  bound: SnapshotReadBound,
+  scope: { spaceId: string },
+): Promise<Snapshot[]> {
+  // RLS-C-S1 — the Space is an argument, REQUIRED. The ambient
+  // ambient space-context fallback is gone; every one of the eleven call sites
+  // already stated `{ spaceId }`, so none of them changes shape.
+  const { spaceId } = scope;
+
+  const rows = await client.spaceSnapshot.findMany({
     where:   { spaceId },
     orderBy: { date: "asc" },
-    take:    -days, // last N rows
+    take:    -bound.rows, // the newest N rows (negative take = from the end)
   });
 
-  const { target, ctx: stampCtx } = await resolveStampContext(spaceId, rows);
+  const space = await client.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
+  });
+  const { target, ctx: stampCtx } = await resolveStampContext(space?.reportingCurrency ?? "USD", rows);
+
+  // RWA-2B — the real-asset basis per date, from the ledger, on THIS client.
+  // Decided on the STORED (pre-conversion) row like every other provenance
+  // field: it is a statement about evidence, not presentation.
+  const realAssetBasis = await loadRealAssetBasisByDate(
+    client, spaceId, rows.map((r) => r.date.toISOString().slice(0, 10)), todayUTCISO(),
+  );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return rows.map((r: any) => {
     const stamp = r.reportingCurrency ?? "USD";
+    const dateISO = r.date.toISOString().slice(0, 10);
+    const modeled = isRealAssetsModeled(r, realAssetBasis.get(dateISO)) ? { realAssetsModeled: true as const } : {};
     const raw = {
       netWorth:         r.netWorth,
       totalAssets:      r.totalAssets,
@@ -89,11 +194,26 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       totalSavings:     r.savings,
       totalInvestments: r.stocks,
       totalCrypto:      r.crypto,
+      total:            r.total,
       cashOnHand:       r.cashOnHand,
       // V26-PRE (B2) — rides the same stamp-aware conversion as every other
       // total (convertStampedValues converts all keys of this object).
       netLiquid:        r.netLiquid,
     };
+
+    // V26-INVESTMENTS-HISTORY / V26-CRYPTO-STATUS-1 / v2.6-A — the row's
+    // confidence, crypto authority and AGGREGATE AUTHORISATION, resolved ONCE.
+    //
+    // REVIEW-3 B-4 (E4): the resolution moved verbatim into
+    // lib/data/snapshot-summary.core.ts (`resolveSnapshotRowProvenance`) so the
+    // Spaces-launcher reader below shares the SAME per-row interpretation
+    // instead of bypassing it. Everything the original inline block asserted
+    // still holds: downstream surfaces never see the raw
+    // (isEstimated, completenessTier, cryptoValuationStatus) fields;
+    // authorisation is computed on the STORED (pre-conversion) values, because
+    // it is a statement about EVIDENCE, not presentation; and `crypto` is the
+    // only component carrying authorisation today.
+    const { provenance } = resolveSnapshotRowProvenance(r);
 
     // Homogeneous fast path (stampCtx null) or on-stamp row → pre-MC1 mapping.
     if (!stampCtx || stamp === target) {
@@ -102,6 +222,11 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
         ...raw,
         // D2.x Slice 4 — provenance for the estimated-history badge.
         isEstimated: r.isEstimated ?? false,
+        // v2.6-B — the EFFECTIVE currency these totals are in, stated rather than
+        // assumed. On the fast path it is the row's own stamp.
+        currency: target,
+        ...provenance,
+        ...modeled,
       };
     }
 
@@ -112,6 +237,9 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       date: r.date.toISOString().split("T")[0],
       ...converted.values,
       isEstimated: (r.isEstimated ?? false) || converted.estimated,
+      currency: target,
+      ...provenance,
+      ...modeled,
       // MC1 QA Q4b — additive: only a genuine rate MISS (native pass-through)
       // sets this; resolving off-stamp rows omit it, so homogeneous histories
       // stay byte-identical. The hero series drops these points downstream.
@@ -143,74 +271,129 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
  * resolve to netWorth: 0, trend: [], asOf: null — the card renders its
  * "no history yet" state from that.
  */
+// v2.6-WINDOW-1 — the canonical windowed change now lives in a module with no
+// `server-only` in its import graph, so an audit and the AI context layer can
+// both reach it. Re-exported here so no existing consumer moved. See that
+// module's header for what the unreachability cost.
+export { canonicalWindowChange, seriesSpanDays } from "@/lib/data/snapshot-window";
+
+export interface SpaceNetWorthSummary {
+  netWorth: number;
+  currency: string;
+  trend: number[];
+  /**
+   * The latest ADMISSIBLE snapshot date — the date of the number the card
+   * actually shows (REVIEW-3: a fresher row whose netWorth may not be asserted
+   * never becomes the card figure, so this is never that row's date either).
+   * A history fact — never a freshness claim.
+   */
+  asOf: string | null;
+  /**
+   * REVIEW-3 B-4 — true when the value shown is a reconstruction/estimate
+   * (row `isEstimated`, or display-converted off its stamp). The card renders
+   * its marker from this; a reconstructed value never poses as an observation.
+   */
+  estimated: boolean;
+  /**
+   * v2.6-L4F — the CANONICAL 1M change, resolved through the same authority the
+   * inside-Space view uses (`compareToForPreset("PAST_MONTH", asOf)` from
+   * lib/perspectives/time-range), so the outer card and the inner hero cannot
+   * disagree. Null when there is no comparison point.
+   *
+   * This replaces a card-local `trendDeltaPct(trend)` that ran over the last 14
+   * SNAPSHOT ROWS — neither a month nor 30 days. On Chris' Space that read 25.0%
+   * against the inside view's 49.2%, for the same Space on the same day.
+   */
+  change: {
+    /** YYYY-MM-DD — the window's opening point (the resolved compare-to). */
+    fromDate: string;
+    /** YYYY-MM-DD — the window's closing point (asOf). */
+    toDate: string;
+    fromValue: number;
+    toValue: number;
+    /** (to − from) / |from| × 100. Null when `from` is 0. */
+    pct: number | null;
+    abs: number;
+    /**
+     * The preset this window represents.
+     *
+     * v2.6-WINDOW-1 — widened from the literal `"PAST_MONTH"` when
+     * `canonicalWindowChange` became the shared authority. It stays PAST_MONTH
+     * for every caller today; the field exists so a surface RENDERS the window
+     * it was given rather than assuming which one it received.
+     */
+    preset: TimePreset;
+  } | null;
+}
+
+/**
+ * RLS-C-S3 — `client` is REQUIRED and leading here too, and this is the one
+ * snapshot read where the authority CHANGES THE SET rather than just the rows'
+ * provenance: it is handed a LIST of Space ids. On the migration principal it
+ * answers for any id at all; on a tenant client the `fm_app` SpaceSnapshot and
+ * Space policies drop the ones the identity is not an ACTIVE member of, so a
+ * launcher that passed somebody else's Space id gets no card instead of a figure.
+ */
 export async function getSpaceNetWorthSummaries(
-  spaceIds: string[]
-): Promise<Record<string, { netWorth: number; currency: string; trend: number[]; asOf: string | null }>> {
+  client: ReadClient,
+  spaceIds: string[],
+): Promise<Record<string, SpaceNetWorthSummary>> {
   if (spaceIds.length === 0) return {};
 
   // Each Space's own reporting currency (the card label source). Selected here
   // so no card ever borrows the active Space's currency.
-  const spaces = await db.space.findMany({
+  const spaces = await client.space.findMany({
     where:  { id: { in: spaceIds } },
     select: { id: true, reportingCurrency: true },
   });
   const currencyById = new Map(spaces.map((s) => [s.id, s.reportingCurrency ?? "USD"]));
 
-  const rows = await db.spaceSnapshot.findMany({
+  // REVIEW-3 B-4 (E4, matrix row 13) — this reader now goes THROUGH the read
+  // boundary's per-row authority instead of bypassing it. One batch query still
+  // covers every card on the page; it selects the full component/authority
+  // columns because admissibility (aggregate authorisation, crypto
+  // assertability, completeness) is resolved per row by the SAME
+  // `resolveSnapshotRowProvenance` getRecentSnapshots uses — see
+  // lib/data/snapshot-summary.core.ts for the launcher's honest-presentation
+  // rule this implements.
+  const rows = await client.spaceSnapshot.findMany({
     where:   { spaceId: { in: spaceIds } },
     orderBy: { date: "asc" },
-    select:  { spaceId: true, date: true, netWorth: true, reportingCurrency: true },
+    select:  {
+      spaceId: true, date: true, reportingCurrency: true,
+      stocks: true, crypto: true, total: true, cash: true, savings: true, debt: true,
+      netWorth: true, totalAssets: true, netLiquid: true, cashOnHand: true,
+      isEstimated: true, cryptoValuationStatus: true,
+      completenessTier: true, contributingComponentCount: true, totalComponentCount: true,
+    },
   });
 
-  const bySpace = new Map<string, { date: Date; netWorth: number; stamp: string }[]>();
+  type SummaryRow = (typeof rows)[number];
+  const bySpace = new Map<string, SummaryRow[]>();
   for (const r of rows) {
     const list = bySpace.get(r.spaceId) ?? [];
-    list.push({ date: r.date, netWorth: r.netWorth, stamp: r.reportingCurrency ?? "USD" });
+    list.push(r);
     bySpace.set(r.spaceId, list);
   }
 
-  const result: Record<string, { netWorth: number; currency: string; trend: number[]; asOf: string | null }> = {};
+  const result: Record<string, SpaceNetWorthSummary> = {};
   for (const id of spaceIds) {
-    const currency = currencyById.get(id) ?? "USD";
-    const series   = bySpace.get(id) ?? [];
+    const series = bySpace.get(id) ?? [];
 
-    // Build a conversion context only when the Space has off-stamp rows; a
-    // homogeneous Space (all rows already in `currency`) keeps the fast path
-    // and never touches the FX archive.
-    const offStamp = series.filter((s) => s.stamp !== currency);
-    const stampCtx = offStamp.length > 0
-      ? await buildSpaceConversionContext(
-          { reportingCurrency: currency },
-          {
-            currencies: [...new Set(offStamp.map((s) => s.stamp))],
-            dates:      [...new Set(offStamp.map((s) => s.date.toISOString().slice(0, 10)))],
-          },
-        )
-      : null;
+    // The SAME effective-currency resolution getRecentSnapshots uses
+    // (V25-CLOSE-3A): a Space switched to a currency the archive cannot satisfy
+    // reads its history in USD — on the launcher exactly as inside the Space —
+    // instead of dropping every point. Homogeneous Spaces (all-USD today) take
+    // the fast path and never touch the FX archive.
+    const { target, ctx: stampCtx } = await resolveStampContext(currencyById.get(id) ?? "USD", series);
 
-    // Convert each point at its own date; keep on-stamp rows as-is. Omit ONLY
-    // the points whose rate missed (they would be native-magnitude, mixing
-    // units) — every convertible point stays, so the card never blanks merely
-    // because its history predates the currency switch.
-    const points: { date: Date; value: number }[] = [];
-    for (const s of series) {
-      if (!stampCtx || s.stamp === currency) {
-        points.push({ date: s.date, value: s.netWorth });
-        continue;
-      }
-      const conv = convertStampedValues({ v: s.netWorth }, s.stamp, s.date.toISOString().slice(0, 10), stampCtx);
-      if (conv.missed) continue; // unconvertible — drop this point only
-      points.push({ date: s.date, value: conv.values.v });
-    }
-
-    const recent = points.slice(-14); // last ~2 weeks for the card sparkline
-    const latest = points[points.length - 1];
-    result[id] = {
-      netWorth: latest?.value ?? 0,
-      currency,
-      trend:    recent.map((p) => p.value),
-      asOf:     latest?.date.toISOString() ?? null,
-    };
+    // Admissibility + per-point stamp conversion + summary, all shared with
+    // the read boundary (snapshot-summary.core.ts). Non-assertable rows and
+    // genuine rate misses are omitted — never rendered as plain numbers, never
+    // native magnitudes relabelled. No admissible point ⇒ the card's explicit
+    // "no figure" state (netWorth 0, trend [], asOf null).
+    const summary = summarizeNetWorthSeries(admissibleNetWorthSeries(series, target, stampCtx));
+    result[id] = { currency: target, ...summary };
   }
   return result;
 }

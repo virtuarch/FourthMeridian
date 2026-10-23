@@ -27,7 +27,9 @@
  */
 
 import type { ReactNode } from "react";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatDate } from "@/lib/format";
+import { formatCurrency, formatCurrencyWhole } from "@/lib/currency";
+import { describeExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
@@ -49,6 +51,14 @@ export interface LiquidityCoverage {
   months: number;
   /** The Space-native monthly expense figure (for the disclosed assumption). */
   monthlyExpenses: number;
+  /**
+   * v2.6-ASSESS-2 — WHICH baseline this is: the user's DECLARED figure or a
+   * MEASURED average. A coverage multiple that does not say what it assumed is
+   * how one judgment ended up with two answers.
+   */
+  basis: import("@/lib/liquidity/expense-baseline").ExpenseBaselineBasis;
+  /** MEASURED only — the complete months averaged, named in the label. */
+  measuredOver?: { label: string; count: number };
 }
 
 export function LiquidityHero({
@@ -63,11 +73,17 @@ export function LiquidityHero({
   today,
   historical,
   change,
+  deltaBasisDiffers,
   envelope,
   verdict,
   verdictAsOf,
   redactions,
+  compact = false,
 }: {
+  /** OVERVIEW-CONSOLIDATION — rendered as the CASH SECTION HEADER inside the
+   *  unified Assets page (a section figure, not a page hero). Same figures, same
+   *  trust, same verdict; only the type scale changes. */
+  compact?:      boolean;
   /** Present-day accessible cash (cashNow tier) — the figure of record. */
   cashNow:       number;
   /** Reachable within days (marketable tier), for the secondary line. */
@@ -85,6 +101,9 @@ export function LiquidityHero({
   today:         string;
   /** asOf < today ⇒ the headline is present-day while trend/verdict are as-of. */
   historical:    boolean;
+  /** v2.6-L3 — true when the headline is reachable cash but `change` was computed
+   *  on the ledger-balance snapshot series. The delta is then suppressed. */
+  deltaBasisDiffers: boolean;
   /** The balance-history window delta, or null when no window exists. */
   change:        LiquidityWindowChange | null;
   /** The workspace's canonical trust envelope — drives the confidence chip. */
@@ -111,14 +130,20 @@ export function LiquidityHero({
       <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
         <Figure
           value={`${approx}${formatCurrency(cashNow, currency)}`}
-          size="hero"
-          className="sm:text-5xl leading-none"
+          size={compact ? "figure" : "hero"}
+          className={compact ? "sm:text-3xl leading-none" : "sm:text-5xl leading-none"}
         />
         {/* The window delta rides the balance-history (cashNow snapshot) basis. Present-day
             it coincides with this headline, so it's coherent; in a HISTORICAL view the
             headline is present-day while the trend is as-of — different bases, so the delta
             is deferred to the chart and dropped here (the Debt precedent). */}
-        {!historical && (
+        {/* v2.6-L3 — the headline is now REACHABLE cash while the balance-history
+            series is a ledger-cash snapshot series. Those are different bases, so
+            the delta is DROPPED here for exactly the reason the historical case
+            already drops it: a change computed on one basis printed beside a
+            figure on another is a wrong number, not an approximate one. The
+            chart below still shows the ledger series honestly, on its own axis. */}
+        {!historical && !deltaBasisDiffers && (
           change != null ? (
             <DeltaBadge
               abs={change.abs}
@@ -131,6 +156,11 @@ export function LiquidityHero({
           ) : (
             <span className="text-[11px] text-[var(--text-muted)]">Add a Compare To date above to see the change.</span>
           )
+        )}
+        {!historical && deltaBasisDiffers && (
+          <span className="text-[11px] text-[var(--text-muted)]">
+            Change over time is shown in the chart below — it tracks ledger balances, not reachable cash.
+          </span>
         )}
       </div>
 
@@ -151,12 +181,30 @@ export function LiquidityHero({
           available. Coverage is the resilience headline; it is NEVER fabricated. */}
       {(coverage || reachableSoon > 0 || sharePctNow != null) && (
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)]">
+          {/* v2.6-ASSESS-4 — "Reachable cash covers", not bare "Coverage". The
+              Overview emergency-fund hero also answers in months, from a
+              DIFFERENT question: goal progress over a dedicated savings buffer.
+              Two real questions sharing one unit need labels that say which is
+              which, or the reader treats them as one figure disagreeing with
+              itself. This one is runway over money reachable right now. */}
           {coverage && (
-            <Stat label="Coverage">
+            <Stat label="Reachable cash covers">
               <span style={{ color: coverage.months >= 6 ? "var(--accent-positive)" : coverage.months >= 3 ? "#f59e0b" : "var(--accent-negative)" }}>
                 {coverage.months.toFixed(1)} months
               </span>
-              <span className="text-[var(--text-faint)]"> · at {formatCurrency(coverage.monthlyExpenses, currency)}/mo</span>
+              {/* v2.6-ASSESS-2 — name the baseline. "at $4,000/mo" alone does not say
+                  whether that is the user's own figure or our average of their
+                  complete months, and those are different claims. */}
+              <span className="text-[var(--text-faint)]">
+                {" · "}{describeExpenseBaseline(
+                  { amount: coverage.monthlyExpenses, basis: coverage.basis,
+                    ...(coverage.measuredOver ? { measuredOver: coverage.measuredOver } : {}) },
+                  // MONEY-PRECISION-2 — "at $4,000/mo — the figure you set" is a
+                  // clause, not a field: whole dollars. The coverage figure and
+                  // every structured amount on this hero keep their cents.
+                  (n: number) => formatCurrencyWhole(n, currency),
+                )}
+              </span>
             </Stat>
           )}
           {reachableSoon > 0 && (

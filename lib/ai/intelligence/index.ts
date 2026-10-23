@@ -9,7 +9,7 @@
  *
  */
 
-export { computeAssessment, computeSpendingTrends, computeAverageMonthlySpending, reliableMonths } from './annotations';
+export { computeAssessment, computeSpendingTrends, computeAverageMonthlySpending, computeMonthlySpendingBasis, reliableMonths } from './annotations';
 
 export type {
   FinancialAssessment,
@@ -31,9 +31,7 @@ export type {
   MetricTrend,
   SpendingTrendMetric,
   TrendDirection,
-  GoalAlignmentSection,
-  GoalAlignmentItem,
-  GoalAlignmentStatus,
+  // W2 — GoalAlignment* exports deleted with the goal-alignment engine.
   InvestmentReadinessSection,
   InvestmentReadinessClassification,
   RiskOpportunitySection,
@@ -51,7 +49,13 @@ export type {
   ConfidenceLevel,
   CashFlowReliability,
   DeficitCauseClassification,
-  DebtHealthClassification,
+  DebtRateClassification,
+  ClassificationScope,
+  ClassificationReason,
+  EvidencePopulation,
+  DebtReasonCode,
+  LiquidityReasonCode,
+  DebtBurden,
   LiquidityCoverageClassification,
   CurrentStatePriority,
 } from './annotations';

@@ -25,7 +25,8 @@
  *  - drivers are real snapshot component deltas — never invented attribution.
  */
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — `fmt` below is used ONLY by the story sentence
+import { derivedRealAssets } from "@/lib/snapshots/aggregate-authorisation.core";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 import { wealthBasisDisclosure, type WealthBasisDisclosure } from "@/lib/wealth/basis-disclosure";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
@@ -38,6 +39,17 @@ export interface WealthMetrics {
   totalAssets:      number;
   totalLiabilities: number;
   liquidNetWorth:   number;
+  /**
+   * OVERVIEW-CONSOLIDATION — the two ASSET dimensions the unified Assets view
+   * slices by. Both are projections of columns already on the row, and both are
+   * the SAME arithmetic the former peer lenses plotted:
+   *   cash     = totalCash + totalSavings          (Liquidity's cashNow tier)
+   *   invested = totalInvestments + totalCrypto    (Investments' portfolio value)
+   * They are disjoint buckets of totalAssets — never double-counted, and never
+   * a third derivation of either series.
+   */
+  cash:             number;
+  invested:         number;
 }
 
 export interface WealthComposition {
@@ -100,6 +112,13 @@ export interface WealthDelta {
 export interface WealthChartPoint extends WealthMetrics {
   date:        string;
   isEstimated: boolean;
+  /**
+   * RWA-2B — this reconstructed point's real-asset component is a MODELED value
+   * (a straight line between two of the user's dated estimates for a manual
+   * asset). Carried from the Snapshot DTO; present only when true. `netWorth`
+   * and `totalAssets` include that component; the other series never did.
+   */
+  realAssetsModeled?: true;
 }
 
 export interface WealthDriver {
@@ -114,6 +133,8 @@ export interface WealthDeltas {
   totalAssets:      WealthDelta;
   totalLiabilities: WealthDelta;
   liquidNetWorth:   WealthDelta;
+  cash:             WealthDelta;
+  invested:         WealthDelta;
   composition:      WealthComposition; // signed component deltas (as-of − comparison)
 }
 
@@ -168,7 +189,17 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
   const cash        = s.totalCash + s.totalSavings;
   const investments = s.totalInvestments;
   const crypto      = s.totalCrypto;
-  const real        = Math.max(0, s.totalAssets - cash - investments - crypto);
+  // v2.6 — the real-assets residual is CANONICAL arithmetic, owned by
+  // `derivedRealAssets`. Re-deriving it here (as `max(0, totalAssets − …)`) was
+  // a second copy of a formula that already exists, and a second copy is a
+  // divergence waiting for one of them to be corrected alone.
+  const real        = derivedRealAssets({
+    stocks: s.totalInvestments, crypto: s.totalCrypto, cash: s.totalCash,
+    savings: s.totalSavings, debt: s.totalDebt,
+    total: s.totalInvestments + s.totalCrypto,
+    totalAssets: s.totalAssets, netWorth: s.netWorth,
+    netLiquid: s.netLiquid ?? 0, cashOnHand: s.cashOnHand,
+  });
   const liabilities = s.totalDebt;
   return {
     date:           s.date,
@@ -176,7 +207,15 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
     netWorth:       s.netWorth,
     totalAssets:    s.totalAssets,
     totalLiabilities: liabilities,
-    liquidNetWorth: s.totalCash + s.totalSavings - s.totalDebt,
+    // v2.6 — READ the authorised column rather than re-deriving its formula.
+    // `netLiquid` is a stored aggregate with its own authorisation
+    // (`be39b1d`) and its own repair history (`86f3b74`); computing
+    // `cash + savings − debt` here produced the same number by luck of both
+    // copies agreeing, and would silently disagree the moment one was fixed.
+    // The `??` fallback covers a pre-column DTO only.
+    liquidNetWorth: s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt),
+    cash,
+    invested:       investments + crypto,
     composition:    { cash, investments, crypto, real, liabilities },
   };
 }
@@ -184,16 +223,20 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
 const EMPTY_STATE: WealthState = {
   found: false, date: null, isEstimated: false,
   netWorth: 0, totalAssets: 0, totalLiabilities: 0, liquidNetWorth: 0,
+  cash: 0, invested: 0,
   composition: { cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0 },
 };
 
-/** A snapshot → chart point (all four metric series + the estimated flag). */
+/** A snapshot → chart point (every metric series + the estimated flag). */
 function toChartPoint(s: Snapshot): WealthChartPoint {
   const st = toState(s);
   return {
     date: s.date, isEstimated: st.isEstimated,
     netWorth: st.netWorth, totalAssets: st.totalAssets,
     totalLiabilities: st.totalLiabilities, liquidNetWorth: st.liquidNetWorth,
+    cash: st.cash, invested: st.invested,
+    // RWA-2B — only ever carried, never decided here; absent ⇒ byte-identical.
+    ...(s.realAssetsModeled && st.isEstimated ? { realAssetsModeled: true as const } : {}),
   };
 }
 
@@ -234,12 +277,50 @@ export function formatWealthDate(iso: string): string {
 
 export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthResult {
   const { asOf, compareTo, currency } = input;
-  const fmt = (n: number) => formatCurrency(n, currency);
+  // The wealth STORY ("Your net worth increased by $37,000 since …") is prose:
+  // whole dollars. Every structured wealth figure is formatted by its surface
+  // through the cents formatter; this module renders no field.
+  const fmt = (n: number) => formatCurrencyWhole(n, currency);
 
   // Drop mixed-unit fx-miss points (the hero/chart reads drop these too), then
   // sort ascending so "nearest ≤ date" is a single linear pass.
+  //
+  // V26-CRYPTO-STATUS-1 — also drop ASSET-SIDE CONTAMINATED points, on the same
+  // honesty rule and for a stronger reason. Every metric this module produces —
+  // netWorth, totalAssets, and the `real` residual computed as
+  // `totalAssets − cash − investments − crypto` — is arithmetically composed
+  // WITH the crypto component. When that component may not be asserted, none of
+  // them may be either: on the affected rows it is 41.7%–99.9% of totalAssets,
+  // averaging 53.5%. A caveat beside a figure that is 99.9% fabricated is a
+  // disclaimer on fiction, not a qualification of a measurement, so the point is
+  // REFUSED and the chart shows a genuine gap.
+  //
+  // The row itself is untouched: `totalCash`, `totalSavings`, `totalDebt` and
+  // `netLiquid` never involved crypto, and Liquidity and Debt read those
+  // directly without passing through here.
+  //
+  // Absent the flag (any DTO built before this slice) nothing is dropped, so
+  // existing behaviour is byte-identical.
+  // v2.6-A/B — refuse on the AGGREGATE's own verdict.
+  //
+  // This filtered on `assetSideContaminated`, which is one component's boolean
+  // ("crypto may not be asserted, therefore the asset side is contaminated").
+  // It was correct and it is now the special case of a general rule: Slice A
+  // authorises every aggregate from every component it is composed from. Reading
+  // the aggregate verdict means this stays right when a SECOND component gains
+  // authorisation, instead of silently continuing to ask only about crypto.
+  //
+  // Behaviour is unchanged today — the two agree on every live row by
+  // construction, which a test pins — and the boolean remains the fallback for
+  // any DTO built before Slice A.
+  const netWorthRefused = (s: Snapshot): boolean =>
+    s.aggregateAuthorisation
+      ? s.aggregateAuthorisation.netWorth.assertable === false
+      : s.assetSideContaminated === true;
+
   const series = input.snapshots
     .filter((s) => !s.fxMiss)
+    .filter((s) => !netWorthRefused(s))
     .slice()
     .sort((a, b) => a.date.localeCompare(b.date));
 
@@ -259,6 +340,8 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
       totalAssets:      delta(asOfState.totalAssets, c.totalAssets),
       totalLiabilities: delta(asOfState.totalLiabilities, c.totalLiabilities),
       liquidNetWorth:   delta(asOfState.liquidNetWorth, c.liquidNetWorth),
+      cash:             delta(asOfState.cash, c.cash),
+      invested:         delta(asOfState.invested, c.invested),
       composition: {
         cash:        asOfState.composition.cash        - c.composition.cash,
         investments: asOfState.composition.investments - c.composition.investments,

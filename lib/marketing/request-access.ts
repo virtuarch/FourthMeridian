@@ -12,13 +12,15 @@
  * auth. Keep this file free of any such import so that split stays a move, not
  * a rewrite.
  *
- * Graceful degradation: Wave 1② runs in parallel and may not have landed yet.
- * If the endpoint 404s (route absent), we treat the request as "queued" rather
- * than an error — the page shows the same "thanks, we'll be in touch" state it
- * would on success, so the form is never a dead end during the rollout window.
- * A genuine failure (network error, 5xx, rate-limit) still surfaces as an error
- * the user can retry.
+ * TRUTHFUL OUTCOME. Only a 2xx from the endpoint is success. A 404 used to be
+ * shown as success ("degraded": the endpoint had not landed yet during the Wave 1
+ * rollout). That window is long closed, and under the domain split a form
+ * posting to an origin without the route would have told every visitor "thanks,
+ * we'll be in touch" while the request went nowhere. Now a 404 is an error like
+ * any other non-2xx, non-429 response.
  */
+
+import type { AcquisitionSource } from "@/lib/marketing/acquisition";
 
 /** The one URL that is the entire beta-gate seam. Relative on purpose: same
  *  origin today; a config value when the marketing site splits out. */
@@ -31,15 +33,21 @@ export type AccessRequestInput = {
   /** Cloudflare Turnstile token (Wave 2 ⑥). Sent when a site key is configured;
    *  the server verifies it (env-gated — skipped when CAPTCHA is unconfigured). */
   captchaToken?: string | null;
+  /** Bounded acquisition context (lib/marketing/acquisition.ts) — utm_* / ref,
+   *  the public-site page the visitor came from, a referrer host. Omitted when
+   *  there is nothing to attribute. */
+  source?: AcquisitionSource | null;
+  /** PRIV-012 — the applicant ticked the privacy-notice consent box. The
+   *  server refuses a submission without `consent: true`. */
+  consent?: boolean;
 };
 
 export type AccessRequestResult =
-  /** Server accepted the request (2xx), or the endpoint isn't live yet (404) —
-   *  either way the user should see the success/"we'll be in touch" shell. */
-  | { status: "queued"; degraded: boolean }
+  /** Server accepted the request (2xx) — the only success. */
+  | { status: "queued" }
   /** The user submitted too quickly / too often (rate-limited, 429). */
   | { status: "rate_limited"; message: string }
-  /** A real failure the user can retry (network error, 5xx, malformed input). */
+  /** A real failure the user can retry (network error, 404, 5xx, malformed input). */
   | { status: "error"; message: string };
 
 /** Minimal RFC-5322-ish sanity check — the real validation lives server-side
@@ -55,6 +63,7 @@ export async function submitAccessRequest(
   const email = input.email.trim().toLowerCase();
   const note = input.note?.trim();
   const captchaToken = input.captchaToken || undefined;
+  const source = input.source && Object.keys(input.source).length > 0 ? input.source : undefined;
 
   if (!isProbablyEmail(email)) {
     return { status: "error", message: "Please enter a valid email address." };
@@ -67,8 +76,10 @@ export async function submitAccessRequest(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         email,
+        ...(input.consent === true ? { consent: true } : {}),
         ...(note ? { note } : {}),
         ...(captchaToken ? { captchaToken } : {}),
+        ...(source ? { source } : {}),
       }),
     });
   } catch {
@@ -79,12 +90,6 @@ export async function submitAccessRequest(
     };
   }
 
-  // Endpoint not live yet (Wave 1② hasn't landed): degrade to the success
-  // shell rather than showing the user an error for our own rollout ordering.
-  if (res.status === 404) {
-    return { status: "queued", degraded: true };
-  }
-
   if (res.status === 429) {
     return {
       status: "rate_limited",
@@ -93,7 +98,7 @@ export async function submitAccessRequest(
   }
 
   if (res.ok) {
-    return { status: "queued", degraded: false };
+    return { status: "queued" };
   }
 
   return {

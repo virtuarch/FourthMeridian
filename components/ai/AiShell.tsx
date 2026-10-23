@@ -1,49 +1,76 @@
 "use client";
 
-/**
- * components/ai/AiShell.tsx  (AI Experience Convergence — AI-1)
- *
- * The AI destination frame — a full-height single column that reads as an always-
- * available surface, not a card on a page. A quiet header (the AI mark + identity +
- * an optional context control), the scrolling conversation body (`children`), and a
- * pinned composer at the bottom. Presentation + layout only; the host supplies the
- * conversation and the composer.
- */
-
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { AiMark } from "@/components/ai/AiMark";
+import type { ConversationLayoutMode } from "@/components/ai/conversation-surface";
 
 export interface AiShellProps {
-  /** The Space/scope control shown at the right of the header. */
-  contextControl?: ReactNode;
-  /** The conversation body (a ConversationView). */
+  mode: ConversationLayoutMode;
+  controls?: ReactNode;
   children: ReactNode;
-  /** The composer, pinned to the bottom. */
   composer: ReactNode;
+  lead?: ReactNode;
+  aside?: ReactNode;
+  contextLabel?: string;
 }
 
-export function AiShell({ contextControl, children, composer }: AiShellProps) {
+/** Three fixed regions: header, a flexible reading area, and the composer.
+ * Keep the composer mounted in one slot so submitting preserves focus and draft.
+ * The shell reserves the same navigation footprint as DashboardChrome.
+ */
+export function AiShell({ mode, controls, children, composer, lead, aside, contextLabel }: AiShellProps) {
+  const empty = mode === "empty";
+  const shellRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    // Mobile keyboards can shrink the visual viewport without changing dvh.
+    const resize = () => {
+      shellRef.current?.style.setProperty("--ai-viewport-height", `${viewport.height}px`);
+    };
+    resize();
+    viewport.addEventListener("resize", resize);
+    return () => viewport.removeEventListener("resize", resize);
+  }, []);
+
   return (
-    <div className="flex flex-col h-[calc(100dvh-172px)] lg:h-[calc(100dvh-108px)] min-h-[420px]">
-      {/* Header */}
-      <div className="shrink-0 flex items-center gap-3 pb-4">
+    <div
+      ref={shellRef}
+      data-ai-layout={mode}
+      className="flex min-h-0 min-w-0 flex-col overflow-hidden h-[calc(var(--ai-viewport-height,100dvh)-4.5625rem-3.5rem-1px-env(safe-area-inset-bottom))] lg:h-[calc(var(--ai-viewport-height,100dvh)-5.5625rem)]"
+    >
+      <header className="shrink-0 flex items-center gap-2.5 pb-3">
         <AiMark />
-        <div className="min-w-0 flex-1">
-          <h1 className="text-xl font-bold leading-tight" style={{ color: "var(--text-primary)" }}>
+        <div className="min-w-0 flex-1 flex flex-col sm:flex-row sm:items-baseline gap-0.5 sm:gap-2">
+          <h1 className="text-base font-semibold leading-tight text-[var(--text-primary)]">
             Fourth Meridian AI
           </h1>
-          <p className="text-xs leading-tight mt-0.5" style={{ color: "var(--text-muted)" }}>
-            Grounded in your financial context.
-          </p>
+          {contextLabel && (
+            <p className="min-w-0 truncate text-xs text-[var(--text-muted)]">
+              <span className="sr-only">Space: </span>
+              {contextLabel}
+            </p>
+          )}
         </div>
-        {contextControl && <div className="shrink-0">{contextControl}</div>}
+        {controls && <div className="shrink-0 flex items-center gap-1.5">{controls}</div>}
+      </header>
+
+      <div data-ai-scroll className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+        {empty ? (
+          <div className="flex min-h-full flex-col justify-center max-w-3xl mx-auto w-full px-1 py-4">
+            {lead}
+            {aside}
+          </div>
+        ) : children}
       </div>
 
-      {/* Conversation — the one primary scroll container */}
-      <div className="flex-1 min-h-0 overflow-y-auto">{children}</div>
-
-      {/* Composer — pinned to the bottom of the surface */}
-      <div className="shrink-0 border-t pt-3 mt-2" style={{ borderColor: "var(--border-hairline)" }}>
+      <div data-ai-dock={mode} className="shrink-0 relative pt-1">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -top-8 h-8"
+          style={{ background: "linear-gradient(to top, var(--bg-base), transparent)" }}
+        />
         {composer}
       </div>
     </div>

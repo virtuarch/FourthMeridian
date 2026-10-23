@@ -12,19 +12,30 @@
  *
  * WHY IT READS AS AN APP, NOT A WEBSITE (prototype doctrine):
  *  • 48px, not 56–72px — app chrome is short because it's in the way of work.
- *  • The centre is empty and STAYS empty — no nav, no search. Navigation lives
- *    in the ContextualNavbar (left rail on desktop, BottomNav on mobile); the
- *    header's job is identity (left) and utilities (right).
+ *  • The centre carries no nav and no search. Navigation lives in the
+ *    ContextualNavbar (left rail on desktop, BottomNav on mobile); the header's
+ *    job is identity (left) and utilities (right) — plus, since UX-P2, the ONE
+ *    thing that is neither: the CONTEXT switch between Personal Spaces and
+ *    Platform Spaces (PlatformContextSwitch), because the header is the only
+ *    chrome present at every width and on both navigation axes. It renders
+ *    nothing for a viewer without a platform grant, so for everyone else the
+ *    centre is exactly as empty as before.
  *  • Icon-only utilities on the right (GlobalActions).
  *
  * The header itself is domain- and route-agnostic: it never changes between the
- * launcher and inside a Space. Only the ContextualNavbar below it transforms.
+ * launcher and inside a Space. Only the ContextualNavbar below it transforms
+ * (the context switch lights by route, but it is the same control everywhere).
+ *
+ * `hasPlatformGrants` is a SERVER fact (app/(shell)/dashboard/layout.tsx counts
+ * the viewer's ACTIVE grants as the tenant, fail-closed) handed down through
+ * DashboardChrome — no client fetch, so no pop-in after mount.
  */
 
 import { AppLogo } from "@/components/ui/AppLogo";
 import { GlobalActions } from "@/components/ui/GlobalActions";
+import { PlatformContextSwitch } from "@/components/ui/PlatformContextSwitch";
 
-export function GlobalHeader() {
+export function GlobalHeader({ hasPlatformGrants = false }: { hasPlatformGrants?: boolean }) {
   return (
     <header
       className="sticky top-0 z-40 shrink-0 border-b border-[var(--border-hairline)]"
@@ -44,8 +55,10 @@ export function GlobalHeader() {
           wordmarkClassName="hidden sm:inline text-[13px] font-semibold tracking-[-0.01em] text-[var(--text-primary)]"
         />
 
-        {/* Centre — deliberately, permanently empty. */}
-        <div className="flex-1" />
+        {/* Centre — the context switch (UX-P2), or nothing at all. */}
+        <div className="flex min-w-0 flex-1 items-center justify-center">
+          <PlatformContextSwitch hasPlatformGrants={hasPlatformGrants} />
+        </div>
 
         <GlobalActions />
       </div>

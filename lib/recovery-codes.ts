@@ -9,8 +9,57 @@
 
 import bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
-import { db } from "@/lib/db";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditInsert } from "@/lib/audit";
+
+/**
+ * ── RLS-13 — AUTHORITY FOLLOWS THE EXECUTION PHASE, NOT THE MODULE ──────────
+ *
+ * This module used to import one client, which quietly asserted that every
+ * recovery-code operation has the same authority. It does not. The SAME code
+ * path runs under three of them:
+ *
+ *   verifyRecoveryCode     PRE-IDENTITY. It is one of the two ways a session is
+ *                          established, so there is no app.user_id yet and
+ *                          there cannot be. Caller supplies `authDb` (fm_auth).
+ *
+ *   generateRecoveryCodes  POST-IDENTITY when a user enrols or regenerates
+ *                          their own codes — the caller is authenticated, so it
+ *                          runs inside withTenantDb under their identity.
+ *                          OPERATOR when an admin regenerates codes for SOMEONE
+ *                          ELSE: fm_app's RecoveryCode policy is
+ *                          `userId = current_fm_user_id()`, so the tenant role
+ *                          structurally cannot do it, and the admin route
+ *                          supplies `systemDb`.
+ *
+ *   countRemainingCodes    POST-IDENTITY for a user reading their own count;
+ *                          OPERATOR for the admin console reading another's.
+ *
+ * So the client is a REQUIRED FIRST PARAMETER and every call site states its
+ * own authority. The alternative — leaving the whole module on fm_auth because
+ * one of its functions is pre-identity — would have made the login role a
+ * convenience authority for authenticated user operations, which is exactly
+ * what fm_auth must never become.
+ */
+export type RecoveryCodeClient =
+  Pick<Prisma.TransactionClient, "recoveryCode" | "auditLog"> &
+  Partial<Pick<PrismaClient, "$transaction">>;
+
+/** Run `fn` in ONE transaction: open one if the client can, else the caller already did. */
+async function inOneTransaction<T>(
+  client: RecoveryCodeClient,
+  fn: (tx: Pick<Prisma.TransactionClient, "recoveryCode" | "auditLog">) => Promise<T>,
+): Promise<T> {
+  // ⚠️ A CAPABILITY TEST, NEVER AN IDENTITY TEST. Prisma.TransactionClient has
+  // no $transaction (ITXClientDenyList), a PrismaClient does. Comparing against
+  // a particular client object silently drops atomicity for any client that is
+  // not that exact object — a bug this programme already found once.
+  if ("$transaction" in client && typeof client.$transaction === "function") {
+    return (client as PrismaClient).$transaction((tx) => fn(tx));
+  }
+  return fn(client);
+}
 
 const CODE_COUNT = 10;
 const BCRYPT_ROUNDS = 10;
@@ -34,6 +83,7 @@ function generatePlaintextCode(): string {
  * @param adminId  Admin performing the action (optional — set for admin-initiated regeneration)
  */
 export async function generateRecoveryCodes(
+  client: RecoveryCodeClient,
   userId: string,
   isRegen: boolean,
   adminId?: string,
@@ -47,25 +97,20 @@ export async function generateRecoveryCodes(
     hashes.push(await bcrypt.hash(code, BCRYPT_ROUNDS));
   }
 
-  await db.$transaction([
-    // Invalidate all existing (unused) codes for this user
-    db.recoveryCode.deleteMany({
-      where: { userId, usedAt: null },
-    }),
-    // Create new codes
-    db.recoveryCode.createMany({
-      data: hashes.map((codeHash) => ({ userId, codeHash })),
-    }),
-    // Audit log
-    db.auditLog.create({
-      data: {
-        userId,
-        action: isRegen ? AuditAction.RECOVERY_CODES_REGENERATED : AuditAction.RECOVERY_CODES_GENERATED,
-        performedByAdminId: adminId ?? null,
-        metadata: { codeCount: CODE_COUNT, triggeredByAdmin: !!adminId },
-      },
-    }),
-  ]);
+  // Still ONE transaction: the old codes stop working, the new ones start, and
+  // the audit fact lands, or none of it does. The batch array became an
+  // interactive callback only so the caller's authority can wrap it.
+  await inOneTransaction(client, async (tx) => {
+    await tx.recoveryCode.deleteMany({ where: { userId, usedAt: null } });
+    await tx.recoveryCode.createMany({ data: hashes.map((codeHash) => ({ userId, codeHash })) });
+    // auditInsert, never create(): fm_auth may INSERT AuditLog but not read it back.
+    await auditInsert(tx, {
+      userId,
+      action: isRegen ? AuditAction.RECOVERY_CODES_REGENERATED : AuditAction.RECOVERY_CODES_GENERATED,
+      performedByAdminId: adminId ?? null,
+      metadata: { codeCount: CODE_COUNT, triggeredByAdmin: !!adminId },
+    }).write;
+  });
 
   return plaintextCodes;
 }
@@ -76,26 +121,26 @@ export async function generateRecoveryCodes(
  * Writes a RECOVERY_CODE_USED audit log event.
  */
 export async function verifyRecoveryCode(
+  client: RecoveryCodeClient,
   userId: string,
   plaintextCode: string,
 ): Promise<boolean> {
-  const unusedCodes = await db.recoveryCode.findMany({
+  const unusedCodes = await client.recoveryCode.findMany({
     where: { userId, usedAt: null },
   });
 
   for (const row of unusedCodes) {
     const match = await bcrypt.compare(plaintextCode, row.codeHash);
     if (match) {
-      await db.$transaction([
-        db.recoveryCode.update({
-          where: { id: row.id },
-          data:  { usedAt: new Date() },
-        }),
-        db.auditLog.create({
-          data: { userId, action: AuditAction.RECOVERY_CODE_USED },
-        }),
-      ]);
-      return true;
+      // J-D2 — single use under concurrency. Two sign-ins presenting the same code
+      // both read it unused above; only the one whose conditional write still
+      // finds `usedAt: null` consumes it. The other gets false and no audit row.
+      return inOneTransaction(client, async (tx) => {
+        const consumed = await tx.recoveryCode.updateMany({ where: { id: row.id, usedAt: null }, data: { usedAt: new Date() } });
+        if (consumed.count !== 1) return false;
+        await auditInsert(tx, { userId, action: AuditAction.RECOVERY_CODE_USED }).write;
+        return true;
+      });
     }
   }
 
@@ -103,6 +148,9 @@ export async function verifyRecoveryCode(
 }
 
 /** Count remaining (unused) recovery codes for a user. */
-export async function countRemainingCodes(userId: string): Promise<number> {
-  return db.recoveryCode.count({ where: { userId, usedAt: null } });
+export async function countRemainingCodes(
+  client: Pick<Prisma.TransactionClient, "recoveryCode">,
+  userId: string,
+): Promise<number> {
+  return client.recoveryCode.count({ where: { userId, usedAt: null } });
 }

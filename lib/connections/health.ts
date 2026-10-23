@@ -21,7 +21,17 @@
  * DERIVED HEALTH: wallet failures set `errorCode` WITHOUT flipping `status`
  * (a transient explorer error is recoverable), so raw status alone is not the
  * signal. Precedence: REVOKED/ERROR/NEEDS_REAUTH (from status) → DEGRADED
- * (errorCode present) → STALE (lastSyncedAt beyond a provider window) → HEALTHY.
+ * (errorCode present) → STALE (lastSyncedAt beyond the source kind's overdue
+ * threshold) → HEALTHY.
+ *
+ * THE THRESHOLD IS THE REFRESH POLICY (PLATFORM OPS POLICIES, Slice 1). STALE
+ * means "older than cadence + grace" under the SAME resolved RefreshPolicy the
+ * customer's Connections page and the Brief judge OUT_OF_DATE by
+ * (lib/platform/refresh-policy.ts). This module used to hold its own 48h/12h
+ * windows — a frozen copy of a policy that is now runtime-editable, which would
+ * have let the operator's overdue count silently disagree with the customer's
+ * the moment a cadence changed. The vocabularies stay different (STALE here,
+ * OUT_OF_DATE there); the threshold does not.
  *
  * "BROKEN SINCE": joined from the durable transition log (CH-2 audit actions
  * PLAID_ITEM_STATUS_CHANGED / WALLET_CONNECTION_STATUS_CHANGED) — the most
@@ -29,14 +39,57 @@
  * Nullable: degrades gracefully if no transition row exists.
  *
  * NO PII: rows carry institution/provider/status/errorCode/timestamps only — no
- * userId, no email — matching PO1's aggregate-only posture.
+ * userId, no email — matching PO1's aggregate-only posture. The owner's
+ * `deactivatedAt` is READ (to exclude the item) and never emitted.
+ *
+ * THE POPULATION IS THE LIVE FLEET (OPERATIONALIZATION P0, 2026-10-07). A
+ * REVOKED connection is not an unhealthy connection: it is a FORMER one — the
+ * customer removed it (or itemRemove ran), its token is dead, and the CH-2
+ * chokepoint refuses ever to flip it back to ACTIVE. Counting it made the
+ * provider-unhealthy alert fire CRITICAL every cycle for as long as the row
+ * existed (Production carries 3 such Items), which is exactly the
+ * "everything is critical" noise that teaches an operator to ignore mail.
+ * Likewise an Item whose owner is deactivated / pending deletion is not
+ * synced by anything (jobs/sync-banks.ts filters `user.deactivatedAt: null`),
+ * so judging it STALE reports a fault nothing will fix. Both are EXCLUDED
+ * from `total`/`counts`/`unhealthy` and reported under `retired`, so nothing
+ * disappears silently — the widget can still say "3 revoked (retired)".
+ *
+ * UX-P1 (2026-10-14) — ADDITIVE ROW FACTS, NO NEW VERDICT. The row now also
+ * carries the facts the drill-down table renders, every one a DERIVATION over
+ * a value this module already read or applied, never a second judgement:
+ *   kind              the refresh-policy source kind the row was JUDGED BY
+ *                     (PLAID ⇒ BANK; every non-Plaid syncing provider ⇒ WALLET,
+ *                     exactly as the threshold selection below has always done)
+ *   institution       Plaid institutionName; for a wallet, its chain label
+ *   network           the chain symbol of a wallet's linked account(s); null
+ *                     for banks and for a wallet whose account records no chain
+ *   overdueAfterHours the policy threshold that was applied to THIS row
+ *   neverSynced       lastSyncedAt == null — the verdict stays STALE (unchanged
+ *                     precedence); the fact is exposed so a surface can say
+ *                     "never synced" instead of inventing a lag
+ *   availableActions  which operator WRITE routes accept this row today, from
+ *                     source + raw status only (the routes' own admission rule)
+ * The response carries `checkedAt` (the instant every verdict was judged at,
+ * so a "stale for" duration is computed against the same clock), `cap` and
+ * `listedScope: "unhealthy"` (the list never contains a HEALTHY row).
+ * Still NO userId, email, address or token — owner resolution is a separate
+ * CUSTOMER_SUCCESS reader (lib/platform/customer/connection-owners.ts).
  */
 
 import { db } from "@/lib/db";
 import { ProviderType } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
+import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refresh-policy";
+import type { RefreshPolicy } from "@/lib/platform/refresh-policy.core";
 
 export type HealthState = "HEALTHY" | "STALE" | "DEGRADED" | "NEEDS_REAUTH" | "ERROR" | "REVOKED";
+
+/** The refresh-policy source kind a row is judged by (lib/platform/refresh-policy.core.ts). */
+export type ConnectionKind = "BANK" | "WALLET";
+
+/** An operator WRITE route that accepts the row today (app/api/platform/platform-ops/connections/[id]/…). */
+export type ConnectionAction = "resync" | "request-reauth";
 
 export interface ConnectionHealthRow {
   source:       string;         // "PLAID" | "WALLET" | "EXCHANGE" | "BROKERAGE"
@@ -47,20 +100,47 @@ export interface ConnectionHealthRow {
   healthState:  HealthState;
   lastSyncedAt: string | null;  // ISO
   since:        string | null;  // ISO — when it entered its current broken state
+  // ── UX-P1 additive facts (derivations, never verdicts) ──────────────────────
+  /** Which refresh policy judged this row: PLAID ⇒ BANK, every other syncing provider ⇒ WALLET. */
+  kind:              ConnectionKind;
+  /** Plaid institutionName; a wallet's chain label; null when neither is recorded. */
+  institution:       string | null;
+  /** Chain symbol(s) of a wallet's linked account(s) ("ETH", "BTC"); null for banks / unrecorded. */
+  network:           string | null;
+  /** The policy threshold (hours since last sync) applied to THIS row's STALE judgement. */
+  overdueAfterHours: number;
+  /** lastSyncedAt == null. The verdict is still STALE; this names the reason. */
+  neverSynced:       boolean;
+  /** WRITE routes that admit this row today, derived from source + raw status only. */
+  availableActions:  ConnectionAction[];
 }
 
 export interface ConnectionHealthResult {
   total:     number;
   counts:    Record<HealthState, number>;
   unhealthy: ConnectionHealthRow[]; // worst-first, capped
+  /** The instant every verdict above was judged at (ISO). "Stale for" is measured against this. */
+  checkedAt: string;
+  /** The cap applied to `unhealthy`. When `unhealthy.length < total - counts.HEALTHY` the list is a floor. */
+  cap:       number;
+  /** The list holds non-HEALTHY rows only — a reader must never treat it as the fleet. */
+  listedScope: "unhealthy";
+  /**
+   * Connections EXCLUDED from the population above, by reason — former
+   * connections, not unhealthy ones. `revoked` = status REVOKED (either table);
+   * `ownerInactive` = a non-revoked connection whose owner is deactivated or
+   * pending deletion (nothing syncs it, so nothing can heal it).
+   */
+  retired:   { revoked: number; ownerInactive: number };
 }
 
 const HOUR_MS = 60 * 60 * 1000;
-// Plaid: >48h is stale given the daily-to-6-hourly sync cron.
-const PLAID_STALE_MS = 48 * HOUR_MS;
-// Wallet: 2× the 6-hourly crypto cadence Wave 1④ shipped = 12h.
-const WALLET_STALE_MS = 12 * HOUR_MS;
 const DEFAULT_CAP = 20;
+
+/** The operator staleness window for a source kind: its policy's overdue threshold, in ms. */
+export function staleWindowMs(policy: Pick<RefreshPolicy, "overdueAfterHours">): number {
+  return policy.overdueAfterHours * HOUR_MS;
+}
 
 /** Worst-first ordering: higher = more severe. HEALTHY never appears in the list. */
 const SEVERITY: Record<HealthState, number> = {
@@ -88,9 +168,36 @@ export function deriveConnectionHealthState(
   return "HEALTHY";
 }
 
-/** Staleness windows (exported so tests and callers share the same constants). */
-export const PLAID_STALE_MS_EXPORT = PLAID_STALE_MS;
-export const WALLET_STALE_MS_EXPORT = WALLET_STALE_MS;
+/**
+ * Which operator WRITE routes admit a row — the routes' OWN admission rules,
+ * restated so a surface can show the right control before the click:
+ *   resync          app/api/platform/platform-ops/connections/[id]/resync
+ *                   (Plaid only; 409 on NEEDS_REAUTH or REVOKED)
+ *   request-reauth  …/connections/[id]/request-reauth (Plaid only; 409 on REVOKED)
+ * Non-Plaid providers have no operator route today ⇒ []. Pure; exported for tests.
+ */
+export function deriveAvailableActions(source: string, status: string): ConnectionAction[] {
+  if (source !== "PLAID") return [];
+  const actions: ConnectionAction[] = [];
+  if (status !== "REVOKED" && status !== "NEEDS_REAUTH") actions.push("resync");
+  if (status !== "REVOKED") actions.push("request-reauth");
+  return actions;
+}
+
+/** The refresh-policy source kind a row is judged by. Mirrors the threshold selection in getConnectionHealth. */
+export function connectionKind(source: string): ConnectionKind {
+  return source === "PLAID" ? "BANK" : "WALLET";
+}
+
+/**
+ * The chain label of a wallet connection from the `walletChain` of its linked
+ * accounts: distinct symbols, sorted, joined — or null when no account records
+ * one. Pure; exported for tests.
+ */
+export function walletNetwork(chains: readonly (string | null | undefined)[]): string | null {
+  const distinct = [...new Set(chains.filter((c): c is string => typeof c === "string" && c.trim().length > 0).map((c) => c.trim()))].sort();
+  return distinct.length === 0 ? null : distinct.join(" · ");
+}
 
 /** Derive a non-PII wallet/exchange label from its opaque external id. */
 function connectionLabel(provider: string, externalConnectionId: string | null): string {
@@ -131,27 +238,51 @@ async function loadBrokenSince(): Promise<Map<string, string>> {
 }
 
 /**
- * Normalized connection-health snapshot across all providers. `cap` bounds the
+ * Normalized connection-health snapshot across the LIVE fleet (REVOKED and
+ * owner-inactive connections are `retired`, not members). `cap` bounds the
  * returned non-healthy list (default 20); `counts` and `total` are unbounded.
  */
-export async function getConnectionHealth(cap: number = DEFAULT_CAP): Promise<ConnectionHealthResult> {
+export async function getConnectionHealth(
+  cap: number = DEFAULT_CAP,
+  policies?: RefreshPolicies,
+): Promise<ConnectionHealthResult> {
   const now = Date.now();
 
-  const [plaidItems, connections, brokenSince] = await Promise.all([
+  const [plaidItems, connections, brokenSince, resolved] = await Promise.all([
+    // The owner's lifecycle flag is selected ONLY to decide membership of the
+    // population; it never reaches a row. No email, no name.
     db.plaidItem.findMany({
-      select: { id: true, institutionName: true, status: true, errorCode: true, lastSyncedAt: true },
+      select: { id: true, institutionName: true, status: true, errorCode: true, lastSyncedAt: true,
+                user: { select: { deactivatedAt: true } } },
     }),
     db.connection.findMany({
       where:  { provider: { notIn: [ProviderType.PLAID, ProviderType.MANUAL, ProviderType.CSV] } },
-      select: { id: true, provider: true, externalConnectionId: true, status: true, errorCode: true, lastSyncedAt: true },
+      select: { id: true, provider: true, externalConnectionId: true, status: true, errorCode: true, lastSyncedAt: true,
+                user: { select: { deactivatedAt: true } },
+                // UX-P1 — the chain a wallet denominates lives on its linked
+                // account (FinancialAccount.walletChain, the UI-C1 seam the
+                // diagnostics reader already walks). Chain symbol only: no
+                // address, no monetary field, no account name.
+                accountConnections: { where: { deletedAt: null }, select: { financialAccount: { select: { walletChain: true } } } } },
     }),
     loadBrokenSince(),
+    policies ? Promise.resolve(policies) : loadRefreshPolicies(db),
   ]);
+  const plaidStaleMs = staleWindowMs(resolved.BANK);
+  const walletStaleMs = staleWindowMs(resolved.WALLET);
 
   const rows: ConnectionHealthRow[] = [];
+  const retired = { revoked: 0, ownerInactive: 0 };
+  /** True when the connection is a former one and must leave the population. */
+  const isRetired = (c: { status: string; user: { deactivatedAt: Date | null } | null }): boolean => {
+    if (c.status === "REVOKED") { retired.revoked++; return true; }
+    if (c.user?.deactivatedAt != null) { retired.ownerInactive++; return true; }
+    return false;
+  };
 
   for (const it of plaidItems) {
-    const healthState = deriveConnectionHealthState(it.status, it.errorCode, it.lastSyncedAt, PLAID_STALE_MS, now);
+    if (isRetired(it)) continue;
+    const healthState = deriveConnectionHealthState(it.status, it.errorCode, it.lastSyncedAt, plaidStaleMs, now);
     rows.push({
       source:       "PLAID",
       id:           it.id,
@@ -161,11 +292,19 @@ export async function getConnectionHealth(cap: number = DEFAULT_CAP): Promise<Co
       healthState,
       lastSyncedAt: it.lastSyncedAt?.toISOString() ?? null,
       since:        brokenSince.get(it.id) ?? null,
+      kind:              connectionKind("PLAID"),
+      institution:       it.institutionName,
+      network:           null,
+      overdueAfterHours: resolved.BANK.overdueAfterHours,
+      neverSynced:       it.lastSyncedAt == null,
+      availableActions:  deriveAvailableActions("PLAID", it.status),
     });
   }
 
   for (const c of connections) {
-    const healthState = deriveConnectionHealthState(c.status, c.errorCode, c.lastSyncedAt, WALLET_STALE_MS, now);
+    if (isRetired(c)) continue;
+    const healthState = deriveConnectionHealthState(c.status, c.errorCode, c.lastSyncedAt, walletStaleMs, now);
+    const network = walletNetwork(c.accountConnections.map((a) => a.financialAccount.walletChain));
     rows.push({
       source:       c.provider,
       id:           c.id,
@@ -175,6 +314,12 @@ export async function getConnectionHealth(cap: number = DEFAULT_CAP): Promise<Co
       healthState,
       lastSyncedAt: c.lastSyncedAt?.toISOString() ?? null,
       since:        brokenSince.get(c.id) ?? null,
+      kind:              connectionKind(c.provider),
+      institution:       network,
+      network,
+      overdueAfterHours: resolved.WALLET.overdueAfterHours,
+      neverSynced:       c.lastSyncedAt == null,
+      availableActions:  deriveAvailableActions(c.provider, c.status),
     });
   }
 
@@ -195,5 +340,8 @@ export async function getConnectionHealth(cap: number = DEFAULT_CAP): Promise<Co
     })
     .slice(0, cap);
 
-  return { total: rows.length, counts, unhealthy };
+  return {
+    total: rows.length, counts, unhealthy, retired,
+    checkedAt: new Date(now).toISOString(), cap, listedScope: "unhealthy",
+  };
 }

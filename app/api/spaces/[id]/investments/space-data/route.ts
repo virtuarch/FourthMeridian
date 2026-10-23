@@ -27,15 +27,32 @@ import { SpaceMemberRole } from "@prisma/client";
 import { requireSpaceRole } from "@/lib/session";
 import { loadInvestmentsSpaceData } from "@/lib/investments/space-data";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { buildPortfolioValueSeries } from "@/lib/investments/portfolio-series";
+// REVIEW-3 B-6 — the server's UTC day rides the response (`serverToday`) so the
+// client classifies asOf against THE authoritative clock, not its own.
+import { todayUTCISO } from "@/lib/time/clock";
 
 export const dynamic = "force-dynamic";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-// Portfolio Value Over Time — how many trailing SpaceSnapshot rows to read for the
-// series (one query, at most one row/day). Generous enough for an "All Time" view of a
-// space's history; the chart clips to the shell window client-side.
-const SERIES_DAYS = 1100;
+// Portfolio Value Over Time — how many trailing SpaceSnapshot ROWS to read for
+// the series (one query, at most one row/day — @@unique([spaceId, date])).
+// Generous enough for an "All Time" view of a space's history; the chart clips to
+// the shell window client-side.
+//
+// v2.6-WINDOW-2 — was `SERIES_DAYS`. The value and the behaviour are unchanged;
+// the name was the only thing claiming a duration, and a name that lies is how
+// the Brief ended up publishing a row count as "90 days".
+const SERIES_ROWS = 1100;
+
+/**
+ * The composition runs the valuation engine at up to two dates inside one
+ * transaction. Prisma's 5 s default is sized for a handful of statements; this
+ * is the same order of work the liquidity loader does, with a wider ceiling so a
+ * large Space degrades to a slow read rather than a refused one.
+ */
+const COMPOSITION_PHASE_TIMEOUT_MS = 20_000;
 
 export async function GET(
   req: NextRequest,
@@ -58,16 +75,40 @@ export async function GET(
     return NextResponse.json({ error: "compareTo must be earlier than asOf" }, { status: 400 });
   }
 
-  // Membership above is the gate; per-account visibility is enforced inside the loaders.
-  void ctx;
+  // Membership above is the gate; per-account visibility is enforced inside the
+  // loaders. RLS-C-S3 — `ctx` is no longer discarded: the snapshot series now
+  // executes as the authenticated requester, so the gate and the policies agree.
+
   // The composed contract AND the canonical Portfolio Value Over Time series, read in
   // ONE pass. The series REUSES the persisted SpaceSnapshot window (getRecentSnapshots,
   // a single query) — never an N×date getInvestmentValueAsOf sampler. Value per point =
   // investments + crypto (two disjoint buckets, each asset once; no double-count).
+  // V26-CRYPTO-STATUS-1 — the route supplies no crypto interpretation at all. The
+  // snapshot read boundary already resolved each row's crypto state (observation
+  // + persisted status + materiality), so the series reads `cryptoAssertable`
+  // rather than a price floor. This replaced a per-request archive read whose
+  // answer moved with the provider tier.
   const [data, snaps] = await Promise.all([
-    loadInvestmentsSpaceData({ spaceId }, { history: { asOf, compareTo: compareToRaw ?? null } }),
-    getRecentSnapshots(SERIES_DAYS, { spaceId }),
+    // RLS-PREP-C — the composition loader is the leaf RLS-C-S3 said it did not
+    // own. It took no client and resolved `?? db`, so the entire Investments
+    // workspace was read as the migration principal behind a route that imports
+    // no `db`. It now runs in its OWN tenant phase: pure reads (current
+    // positions, valuation at one or two dates, period flows), no network.
+    withTenantDb(ctx.user.id, (tx) => loadInvestmentsSpaceData(
+      { spaceId },
+      { history: { asOf, compareTo: compareToRaw ?? null }, client: tx },
+    ), { timeout: COMPOSITION_PHASE_TIMEOUT_MS }),
+    // RLS-C-S3 — a second short tenant transaction around the snapshot read.
+    // Two phases rather than one so the two reads stay CONCURRENT, which a
+    // single shared transaction would have serialised.
+    withTenantDb(ctx.user.id, (tx) => getRecentSnapshots(tx, { rows: SERIES_ROWS }, { spaceId })),
   ]);
   const series = buildPortfolioValueSeries(snaps, data.current.reportingCurrency);
-  return NextResponse.json({ ...data, series });
+  // B-6 — the today/history switch is SERVER-AUTHORITATIVE (lib/time/basis.ts):
+  // the same server clock account-series' observedPoint classifies with. The
+  // workspace uses this, never the client's clock, to decide historical mode —
+  // so one calendar date can never land on different sides of the switch on
+  // two surfaces (the pre-B-6 defect: a client-supplied `today` prop there vs
+  // a server `new Date()` in lib/history/account-series.ts).
+  return NextResponse.json({ ...data, series, serverToday: todayUTCISO() });
 }

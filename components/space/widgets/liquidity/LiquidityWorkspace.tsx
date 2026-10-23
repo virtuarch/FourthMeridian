@@ -39,13 +39,25 @@
  * reporting-currency sentence.
  *
  * Owns NO time state — asOf / compareTo / today are shell props threaded into the hook.
+ *
+ * OVERVIEW-CONSOLIDATION — Liquidity is no longer a peer Overview lens. This
+ * workspace now renders EMBEDDED as the CASH SECTION of the unified Net Worth →
+ * Assets page (`embedded`): the same data hook, the same figure authorities, the
+ * same Sources / Resilience / What-changed surfaces. Embedded, it (a) renders its
+ * hero as a compact section header, (b) omits its own balance-history chart —
+ * the Assets chart directly above slices to the SAME cashNow series — and (c)
+ * publishes neither sidebar sections nor the shell envelope: the Assets page owns
+ * both, while the Cash section keeps its own per-figure TrustIndicator so mixed
+ * evidence is never flattened into page-wide certainty.
  */
 
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { reachableNow, accessTotals } from "@/components/space/widgets/liquidity-adapters";
+import { HORIZON_COLOR, HORIZON_LABEL, HORIZON_META } from "./horizons";
+import { formatAggregateMoney, useAggregateCurrency } from "@/components/space/widgets/display-money";
+import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
@@ -59,6 +71,7 @@ import { Surface, Block } from "@/components/atlas/Surface";
 import { TransactionCoverageNote } from "@/components/space/trust/TransactionCoverageNote";
 import { LiquidityHero, type LiquidityWindowChange, type LiquidityCoverage } from "./LiquidityHero";
 import { LiquidityBalanceHistory } from "./LiquidityBalanceHistory";
+import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { SourcesLedger } from "./SourcesLedger";
 import { buildSourceRows } from "./liquidity-sources-util";
 import { LiquidityWhatChangedCard } from "./LiquidityWhatChangedCard";
@@ -66,9 +79,8 @@ import { useLiquiditySpaceData } from "./useLiquiditySpaceData";
 import type { LiquidityAdapterAccount } from "@/components/space/widgets/liquidity-adapters";
 
 function fmtMoney(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
+  return formatAggregateMoney(v, ctx);
 }
 
 function fmtSigned(v: number, ctx?: ConversionContext): string {
@@ -95,7 +107,7 @@ export function LiquidityWorkspace({
   ctx,
   snapshots,
   snapshotCurrency,
-  monthlyExpenses,
+  expenseBaseline,
   presentLens,
   transactions,
   transactionsMeta,
@@ -103,7 +115,10 @@ export function LiquidityWorkspace({
   period,
   onOpenCashFlow,
   onEnvelopeChange,
+  embedded = false,
 }: {
+  /** Rendered as the Cash section inside Net Worth → Assets (see header). */
+  embedded?: boolean;
   spaceId: string;
   /** Resolved closing date (YYYY-MM-DD) from the shell. */
   asOf: string;
@@ -122,7 +137,10 @@ export function LiquidityWorkspace({
   snapshotCurrency: string;
   /** The Space's monthly-expense baseline (emergency_fund_progress config), or null.
    *  Drives the honest Coverage stat; absent ⇒ no coverage shown (never fabricated). */
-  monthlyExpenses?: number | null;
+  /** v2.6-ASSESS-3 — the RESOLVED baseline + its basis, from the server. Null
+   *  when neither a declared nor a measured figure exists: the surface then shows
+   *  no coverage, exactly as before. */
+  expenseBaseline?: import("@/lib/liquidity/expense-baseline").ExpenseBaseline | null;
   /** The host's already-fetched present-day liquidity lens (lensResults["liquidity"]).
    *  Reused as `current` on the present-day branch (byte-identical, no round-trip). */
   presentLens?: LensResult | null;
@@ -136,9 +154,14 @@ export function LiquidityWorkspace({
   period?: CashFlowPeriod;
   onOpenCashFlow?: () => void;
   /** Emit the trust envelope up to the shell Completeness chip (the host owns no
-   *  Liquidity data). Present-day ⇒ the current lens; historical ⇒ the atAsOf lens. */
-  onEnvelopeChange: (env: PerspectiveEnvelope) => void;
+   *  Liquidity data). Present-day ⇒ the current lens; historical ⇒ the atAsOf lens.
+   *  Omitted when embedded — the Assets page owns the shell slot. */
+  onEnvelopeChange?: (env: PerspectiveEnvelope) => void;
 }) {
+  // v2.6 — the LIQUIDITY root. Its children are TIERS, not buckets: liquidity
+  // classifies by how fast an asset converts, and has no liability side at all.
+  const exploration = useHistoryExploration();
+
   // Activate the canonical contract: fetch the whole historical envelope when a past
   // date / comparison is requested; synthesize the current-only contract from the
   // host lens present-day (no fetch).
@@ -175,17 +198,29 @@ export function LiquidityWorkspace({
     () => resolvePerspectiveEnvelope({ perspectiveId: "liquidity", lensResult: ledeLens }),
     [ledeLens],
   );
-  useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
+  useEffect(() => { onEnvelopeChange?.(envelope); }, [envelope, onEnvelopeChange]);
 
   // FIGURES OF RECORD — present-day, from the accounts array (never the lens). The Hero
   // headline (cashNow tier) is the SAME figure the SourcesLedger sums, so they agree.
   const classification = useMemo(() => classifyAccounts(accounts, ctx), [accounts, ctx]);
-  const cashNow = classification.totalLiquid;
-  const reachableSoon = classification.totalInvestments + classification.totalDigitalAssets;
+  // v2.6-L3 — the headline is REACHABLE cash, not the ledger sum. The copy under
+  // it has always read "reachable right now"; on the live corpus the ledger sum
+  // was $13,674.16 while $8,000 of it was not reachable at all. Same authority
+  // the Sources ledger rows use, so the headline and its ledger still agree.
+  const reach = useMemo(() => reachableNow(accounts as never, ctx), [accounts, ctx]);
+  const cashNow = reach.total;
+  // 2026-10-07 — "within days" is KNOWN brokerage + crypto (liquidityAccess);
+  // retirement/HSA and unverified investments are owned, not reachable soon.
+  const reachableSoon = accessTotals(accounts as never, ctx).marketable;
   const sharePctNow = classification.totalAssets > 0 ? (cashNow / classification.totalAssets) * 100 : null;
-  const nowSourceCount = classification.liquid.filter((a) => a.balance > 0).length;
+  // Count the sources that actually CONTRIBUTE to the headline — an account
+  // whose reachable figure is unknown is excluded from the total, so counting it
+  // as a source would describe money the figure does not include.
+  const nowSourceCount = reach.coveredCount;
 
-  const displayCurrency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const displayCurrency = useAggregateCurrency(ctx);
   const historical = asOf < today;
 
   // ② Balance history — the cashNow tier over time, clipped to the shell window from the
@@ -209,10 +244,25 @@ export function LiquidityWorkspace({
   }, [cashHistory]);
 
   // Coverage months — honest ONLY when a monthly-expense baseline exists (never fabricated).
+  //
+  // v2.6-ASSESS-3 — the baseline arrives ALREADY RESOLVED from the server, which
+  // ran the one authority (`lib/liquidity/expense-baseline.ts`: declared outranks
+  // measured, non-positive refuses). Nothing about which figure wins is decided
+  // here, and the measured average is never recomputed in React — this component
+  // divides and labels.
+  //
+  // Until ASSESS-3 this surface could only ever see the DECLARED figure, so on a
+  // corpus where no Space declared one it showed no coverage at all while the
+  // assessment engine graded the same position from the measured average.
   const coverage = useMemo<LiquidityCoverage | null>(() => {
-    if (monthlyExpenses == null || !(monthlyExpenses > 0) || cashNow <= 0) return null;
-    return { months: cashNow / monthlyExpenses, monthlyExpenses };
-  }, [monthlyExpenses, cashNow]);
+    if (!expenseBaseline || cashNow <= 0) return null;
+    return {
+      months:          cashNow / expenseBaseline.amount,
+      monthlyExpenses: expenseBaseline.amount,
+      basis:           expenseBaseline.basis,
+      ...(expenseBaseline.measuredOver ? { measuredOver: expenseBaseline.measuredOver } : {}),
+    };
+  }, [expenseBaseline, cashNow]);
 
   // Cash concentration signal (Resilience) — the top reachable-now source's share of cashNow,
   // via the SAME one-FX-pass the ledger uses (no bespoke FX here). Present-day anchor.
@@ -231,9 +281,11 @@ export function LiquidityWorkspace({
     : null;
   const redactions = verdict ? (ledeLens?.provenance.redactions?.length ?? 0) : 0;
 
-  // Publish section anchors to the sidebar (cleared on unmount).
+  // Publish section anchors to the sidebar (cleared on unmount). Embedded, the
+  // Assets page publishes ONE list for the whole page; this section stays quiet.
   const publishSections = useSpaceSectionsPublisher();
   useEffect(() => {
+    if (embedded) return;
     const sections: SpaceChromeSection[] = [
       { label: "Summary",         anchor: "liquidity-summary" },
       { label: "Balance history", anchor: "liquidity-history" },
@@ -243,7 +295,17 @@ export function LiquidityWorkspace({
     ];
     publishSections(sections);
     return () => publishSections([]);
-  }, [publishSections, period]);
+  }, [publishSections, period, embedded]);
+
+  const liquidityPoints = cashHistory?.points ?? [];
+  const handleSelectPoint = useCallback(
+    (dateISO: string) => {
+      const first = liquidityPoints[0]?.date ?? dateISO;
+      const last = liquidityPoints[liquidityPoints.length - 1]?.date ?? dateISO;
+      exploration.openPoint("liquidity", dateISO, first, last);
+    },
+    [liquidityPoints, exploration],
+  );
 
   return (
     <div className="space-y-8 sm:space-y-10 min-w-0">
@@ -253,9 +315,10 @@ export function LiquidityWorkspace({
         </div>
       )}
 
-      {/* ① Summary — the editorial lede. */}
+      {/* ① Summary — the editorial lede (embedded: the Cash section header). */}
       <div id="liquidity-summary" className="scroll-mt-20">
         <LiquidityHero
+          compact={embedded}
           cashNow={cashNow}
           reachableSoon={reachableSoon}
           sharePctNow={sharePctNow}
@@ -267,6 +330,10 @@ export function LiquidityWorkspace({
           today={today}
           historical={historical}
           change={change}
+          // The headline uses reachable cash whenever ANY account supplied a
+          // current-state claim; the window delta is computed from the ledger
+          // snapshot series, so the two bases diverge exactly then.
+          deltaBasisDiffers={reach.coveredCount > 0 && cashNow !== classification.totalLiquid}
           envelope={envelope}
           verdict={verdict}
           verdictAsOf={verdictAsOf}
@@ -274,9 +341,20 @@ export function LiquidityWorkspace({
         />
       </div>
 
-      {/* ② Balance history — accessible cash over time, the SHARED TrendChart. */}
+      {/* ② Balance history — accessible cash over time, the SHARED TrendChart.
+           Embedded, the unified Assets chart above already slices to this SAME
+           series (WealthChartPoint.cash === totalCash + totalSavings), so a second
+           identical chart is not drawn; the as-of retry affordance stays. */}
       <div id="liquidity-history" className="scroll-mt-20">
-        <LiquidityBalanceHistory history={cashHistory} currency={displayCurrency} asOf={asOf} compareTo={compareTo} />
+        {!embedded && (
+          <LiquidityBalanceHistory
+            history={cashHistory}
+            currency={displayCurrency}
+            asOf={asOf}
+            compareTo={compareTo}
+            onSelectPoint={handleSelectPoint}
+          />
+        )}
         {error && (
           <button
             type="button"
@@ -376,6 +454,7 @@ export function LiquidityWorkspace({
               accounts={accounts}
               period={period}
               ctx={txCtx}
+              asOf={asOf}
               onOpenCashFlow={onOpenCashFlow}
             />
           </Surface>
@@ -391,9 +470,11 @@ export function LiquidityWorkspace({
   // the ledger honestly degrades to tier totals + delta chips here (said in the block header).
   function renderHistoricalTiers(): ReactNode {
     const tiers = [
-      { id: "now",      label: "Available now",     color: "#22c55e", meta: "Checking · savings",              value: metricValue(atAsOf, "cashNow"),    d: delta?.cashNow },
-      { id: "days",     label: "Available in days", color: "#3b82f6", meta: "Brokerage · crypto (settlement)", value: metricValue(atAsOf, "marketable"), d: delta?.marketable },
-      { id: "illiquid", label: "Illiquid",          color: "#6b7280", meta: "Property · other long-term",      value: metricValue(atAsOf, "illiquid"),   d: delta?.illiquid },
+      { id: "now",        label: HORIZON_LABEL.now,        color: HORIZON_COLOR.now,        meta: HORIZON_META.now,        value: metricValue(atAsOf, "cashNow"),    d: delta?.cashNow },
+      { id: "days",       label: HORIZON_LABEL.days,       color: HORIZON_COLOR.days,       meta: HORIZON_META.days,       value: metricValue(atAsOf, "marketable"), d: delta?.marketable },
+      { id: "restricted", label: HORIZON_LABEL.restricted, color: HORIZON_COLOR.restricted, meta: HORIZON_META.restricted, value: metricValue(atAsOf, "restricted"), d: delta?.restricted },
+      { id: "unverified", label: HORIZON_LABEL.unverified, color: HORIZON_COLOR.unverified, meta: HORIZON_META.unverified, value: metricValue(atAsOf, "unverified"), d: delta?.unverified },
+      { id: "illiquid",   label: HORIZON_LABEL.illiquid,   color: HORIZON_COLOR.illiquid,   meta: HORIZON_META.illiquid,   value: metricValue(atAsOf, "illiquid"),   d: delta?.illiquid },
     ].filter((t) => t.value !== 0 || (t.d != null && t.d !== 0));
 
     const credit = metricValue(atAsOf, "availableCredit");

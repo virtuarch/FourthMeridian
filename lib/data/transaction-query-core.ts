@@ -2,7 +2,8 @@
  * lib/data/transaction-query-core.ts  (TX-3.0, hardened in TX-3.1b)
  *
  * The PURE query contract + keyset-pagination logic for the Transaction Explorer —
- * deliberately free of any server-only dependency (no `db`, no `getSpaceContext`) so
+ * deliberately free of any server-only dependency (no `db`, no ambient space
+ * context) so
  * every ordering/cursor/filter/parse rule is unit-testable in isolation. The server
  * authorities (transaction-query.ts / transaction-aggregate.ts) are thin shells that
  * compose THESE fragments with the existing population/visibility authority
@@ -123,15 +124,32 @@ export function clampLimit(limit?: number): number {
 // ── Ordering ────────────────────────────────────────────────────────────────
 
 /**
- * The Prisma ordering for a sort — always a STRICT TOTAL ORDER (date then id), so
- * keyset pagination is exact. Note `date` is `@db.Date`, so same-day rows all tie on
- * the primary key and fall to the `id` tie-break: same-day order is STABLE but
- * arbitrary (cuid), not chronological. Consumers group by day, so this is invisible.
+ * The Prisma ordering for a sort — always a STRICT TOTAL ORDER (economicDate then
+ * id), so keyset pagination is exact. `economicDate` is `@db.Date`, so same-day
+ * rows all tie on the primary key and fall to the `id` tie-break: same-day order
+ * is STABLE but arbitrary (cuid), not chronological. Consumers group by day, so
+ * this is invisible.
+ *
+ * ── L8-B — the chronology is ECONOMIC ──────────────────────────────────────
+ *
+ * This ordered by the POSTING date until the cutover. Ordering, the keyset
+ * cursor, the date filter and the count all moved together and must stay
+ * together: a cursor minted on one column and applied against an ordering on
+ * another does not merely mis-sort, it silently duplicates and skips rows at
+ * every page boundary. `compareForSort` is the single comparator both the SQL
+ * ordering and the pure reference matcher derive from, so that can be proven
+ * rather than asserted.
+ *
+ * ⚠️ `nulls: "last"` on both sorts. The column is guaranteed non-null by the
+ * backfill, dual-write and `audit:economic-date` — but the TYPE is nullable, and
+ * Postgres puts NULLS FIRST on DESC by default. An unbackfilled row would
+ * otherwise land at the TOP of the newest-first list, which is the loudest
+ * possible place for a silent data defect to hide. Last is where it is visible.
  */
 export function orderByForSort(sort: TransactionSort): Prisma.TransactionOrderByWithRelationInput[] {
   return sort === "oldest"
-    ? [{ date: "asc" }, { id: "asc" }]
-    : [{ date: "desc" }, { id: "desc" }];
+    ? [{ economicDate: { sort: "asc",  nulls: "last" } }, { id: "asc" }]
+    : [{ economicDate: { sort: "desc", nulls: "last" } }, { id: "desc" }];
 }
 
 // ── Date helpers (the `date` column is @db.Date — compare at UTC midnight) ────
@@ -192,9 +210,11 @@ export function resolveCursor(
 export function keysetWhere(sort: TransactionSort, cursor?: TransactionCursor): Prisma.TransactionWhereInput | null {
   if (!cursor || !isCursorCompatible(sort, cursor)) return null;
   const d = toDbDate(cursor.lastDate);
+  // L8-B — the same column `orderByForSort` orders on. These two are the pair
+  // that must never diverge.
   return sort === "oldest"
-    ? { OR: [{ date: { gt: d } }, { date: d, id: { gt: cursor.lastId } }] }
-    : { OR: [{ date: { lt: d } }, { date: d, id: { lt: cursor.lastId } }] };
+    ? { OR: [{ economicDate: { gt: d } }, { economicDate: d, id: { gt: cursor.lastId } }] }
+    : { OR: [{ economicDate: { lt: d } }, { economicDate: d, id: { lt: cursor.lastId } }] };
 }
 
 // ── Filter WHERE ────────────────────────────────────────────────────────────
@@ -238,8 +258,12 @@ export function buildFilterWhere(query: TransactionQuery): Prisma.TransactionWhe
   const and: Prisma.TransactionWhereInput[] = [];
 
   if (query.dateFrom || query.dateTo) {
+    // L8-B — filtering is ECONOMIC, like the ordering and the cursor. Because
+    // `transaction-count.ts` shares this function verbatim, the count moves with
+    // the list by construction: "1,284 results" cannot describe a different
+    // population from the one being scrolled.
     and.push({
-      date: {
+      economicDate: {
         ...(query.dateFrom ? { gte: toDbDate(query.dateFrom) } : {}),
         ...(query.dateTo   ? { lte: toDbDate(query.dateTo) }   : {}),
       },
@@ -280,15 +304,31 @@ export function buildFilterWhere(query: TransactionQuery): Prisma.TransactionWhe
 
 // ── Cursor derivation + reference ordering (also used by the tests) ──────────
 
-/** The minimal row shape the keyset needs: the sort key + the id tie-break. */
+/**
+ * The minimal row shape the keyset needs: the sort key + the id tie-break.
+ *
+ * L8-B — the sort key is `economicDate`. It is typed NULLABLE because the column
+ * is, and `cursorFromRow` refuses a null rather than substituting `date`: a
+ * silent fallback to posting chronology at a page boundary is exactly the mixed
+ * ordering this cutover exists to eliminate, and it would be invisible.
+ */
 export interface KeyedRow {
   id: string;
-  date: Date;
+  economicDate: Date | null;
 }
 
 /** The cursor that continues AFTER this row under the given sort (sort-tagged, M2). */
 export function cursorFromRow(row: KeyedRow, sort: TransactionSort): TransactionCursor {
-  return { sort, lastDate: toISODate(row.date), lastId: row.id };
+  if (row.economicDate == null) {
+    // Loud, not lenient. `audit:economic-date` proves this cannot happen; if it
+    // ever does, the corpus has an unbackfilled row and pagination is not the
+    // place to paper over it.
+    throw new Error(
+      `transaction cursor: row ${row.id} has no economicDate. The chronology column is ` +
+      `required for ordering; run npm run backfill:economic-date and npm run audit:economic-date.`,
+    );
+  }
+  return { sort, lastDate: toISODate(row.economicDate), lastId: row.id };
 }
 
 /**
@@ -298,7 +338,14 @@ export function cursorFromRow(row: KeyedRow, sort: TransactionSort): Transaction
  */
 export function compareForSort(a: KeyedRow, b: KeyedRow, sort: TransactionSort): number {
   const cmpId = a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  const da = a.date.getTime(), db = b.date.getTime();
+  // NULLS LAST in both directions, matching `orderByForSort`. A null is a data
+  // defect the audit catches; the comparator only has to agree with SQL about
+  // where it lands so the keyset proof stays exact.
+  if (a.economicDate == null || b.economicDate == null) {
+    if (a.economicDate == null && b.economicDate == null) return cmpId;
+    return a.economicDate == null ? 1 : -1;
+  }
+  const da = a.economicDate.getTime(), db = b.economicDate.getTime();
   const primary = da !== db ? (da < db ? -1 : 1) : cmpId;
   return sort === "oldest" ? primary : -primary; // newest ⇒ descending
 }
@@ -309,7 +356,7 @@ export function compareForSort(a: KeyedRow, b: KeyedRow, sort: TransactionSort):
  * prove no-duplicate / no-missing / same-day ordering across simulated pages.
  */
 export function afterCursorMatches(row: KeyedRow, sort: TransactionSort, cursor: TransactionCursor): boolean {
-  const cursorRow: KeyedRow = { id: cursor.lastId, date: toDbDate(cursor.lastDate) };
+  const cursorRow: KeyedRow = { id: cursor.lastId, economicDate: toDbDate(cursor.lastDate) };
   return compareForSort(cursorRow, row, sort) < 0; // row sorts strictly after the cursor
 }
 
@@ -490,4 +537,99 @@ export function parseTransactionQuery(
 
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, query, cursorReset };
+}
+
+// ── Corpus coverage — the boundary a windowed result declares about itself ───
+
+/**
+ * The bounds of the transaction record a query could have reached. Resolved by
+ * the server authority (`transactionCorpusSpan`) from the SAME population
+ * `queryTransactions` composes; shaped for a consumer by `transactionCoverage`
+ * below, which is pure so the semantics are testable without a database.
+ *
+ * ⚠️ NULL IS NOT A DATE AND MUST NEVER BECOME ONE. When the record has no dated
+ * transaction to bound, both ends are null with a reason. Substituting the
+ * requested window, today, or the earliest returned row would manufacture exactly
+ * the certainty this pair exists to withhold.
+ */
+export interface TransactionCorpusBounds {
+  from: string | null;
+  to: string | null;
+  unavailableReason: string | null;
+  /**
+   * RLS-AI-S0 — WHICH KIND OF EMPTY this is. Null when bounds exist.
+   *
+   * ⚠️ `unavailableReason` ALONE CANNOT CARRY THIS, which is the whole point.
+   * It is a SENTENCE, and the two cases need different sentences: "no dated
+   * transactions are available for this Space" is a claim about the Space, and
+   * under a tenant client an empty aggregate can equally mean "nothing this
+   * identity may see". A consumer that renders prose reads this field; a consumer
+   * that only forwards the reason gets a reason that has already been reworded
+   * for it. See lib/ai/absence.ts.
+   */
+  absence: 'PROVEN_EMPTY' | 'INDETERMINATE' | null;
+}
+
+export interface TransactionCoverage {
+  /** Earliest transaction available to search, independent of this query. */
+  transactionsAvailableFrom: string | null;
+  /** Latest available at or before the information ceiling, independent of this query. */
+  transactionsAvailableTo: string | null;
+  /**
+   * Whether the searched window spans the whole available record. FALSE is the
+   * load-bearing value: it says an empty result establishes an absence in this
+   * window and nothing more.
+   */
+  windowCoversAvailableRecord: boolean;
+  unavailableReason?: string;
+  /**
+   * RLS-AI-S0 — carried straight through from the corpus bounds, never re-derived.
+   * Present only when the corpus had no bounds. `'INDETERMINATE'` means the
+   * emptiness of this coverage statement establishes NOTHING about the Space.
+   */
+  absence?: 'PROVEN_EMPTY' | 'INDETERMINATE';
+  note?: string;
+}
+
+/**
+ * Shape the corpus bounds against the window a result actually searched.
+ *
+ * ⚠️ THE INPUTS ARE THE WINDOW AND THE CORPUS — NEVER THE ROWS. Filters (`text`,
+ * flow, category) shrink what MATCHED; they do not shrink what was AVAILABLE. A
+ * "coinbase" search returning nothing must still report the full span it searched
+ * inside, because the whole point is to qualify the miss.
+ *
+ * An open-ended `searchedFrom` (null — no `from` supplied) reaches the start of
+ * the record, so it covers the corpus whenever `searchedTo` reaches the end.
+ */
+export function transactionCoverage(args: {
+  corpus: TransactionCorpusBounds;
+  /** The `from` actually applied, or null when the query was left open-ended. */
+  searchedFrom: string | null;
+  /** The `to` actually applied after ceiling clamping. Always present. */
+  searchedTo: string;
+}): TransactionCoverage {
+  const { corpus, searchedFrom, searchedTo } = args;
+  if (corpus.from === null || corpus.to === null) {
+    return {
+      transactionsAvailableFrom: null,
+      transactionsAvailableTo: null,
+      windowCoversAvailableRecord: false,
+      ...(corpus.unavailableReason ? { unavailableReason: corpus.unavailableReason } : {}),
+      // ⚠️ FORWARDED, NOT INFERRED. `from === null` is exactly the ambiguity this
+      // field exists to resolve; re-deriving it here from the nulls would
+      // reintroduce it one layer up.
+      ...(corpus.absence ? { absence: corpus.absence } : {}),
+    };
+  }
+  const covers = (searchedFrom === null || searchedFrom <= corpus.from) && searchedTo >= corpus.to;
+  return {
+    transactionsAvailableFrom: corpus.from,
+    transactionsAvailableTo: corpus.to,
+    windowCoversAvailableRecord: covers,
+    ...(covers ? {} : { note:
+      `Searched ${searchedFrom ?? corpus.from}..${searchedTo}. Transactions are available from `
+      + `${corpus.from} to ${corpus.to}; rows outside the searched window were not read, so an `
+      + 'empty or short result describes this window only, not the whole available record.' }),
+  };
 }

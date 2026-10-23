@@ -8,15 +8,21 @@
  * Rules (enforced here so the UI stays dumb):
  *  - Never emit a null/empty fact row, and never emit an empty section.
  *  - Relationship wording never overclaims: pendingPosted makes no amount claim
- *    (the DTO carries only the counterpart id), and duplicate / transferCandidate
- *    are always hedged ("possible" / "appears to match").
- *  - transferCandidate (TI4 Slice 1) renders a hedged, account-name-free note when
- *    a deterministic owned-account transfer match resolves (KD-15-gated upstream).
- *    refundCandidate remains reserved-null and is never rendered.
+ *    (the DTO carries only the counterpart id), and similarity / transferCandidate
+ *    are always hedged ("looks similar" / "appears to match"). W1 (D6): the
+ *    similarity note is EVIDENCE language by doctrine — event identity is the only
+ *    read-side identity authority, and rows on different TransactionEvents never
+ *    reach this surface as "duplicates" at all (excluded upstream).
+ *  - transferCandidate (TI4 Slice 1) renders a hedged note when a deterministic
+ *    owned-account transfer match resolves (KD-15-gated upstream). v2.6-XFER-3 —
+ *    it NAMES the other account when the DTO carries a visible counterparty block
+ *    for that same account id, and falls back to the generic wording otherwise.
+ *    Raw ids are never rendered. refundCandidate remains reserved-null.
  *  - tiFactsVersion and raw provider ids are omitted from the UI.
  */
 
 import type { TransactionDetail } from "@/types";
+import { describeRowNature, flowTypeLabel, DIRECTION_SIGN, type RowDirection } from "@/lib/transactions/flow-presentation";
 
 export interface DetailRow {
   label: string;
@@ -47,8 +53,14 @@ function money(amount: number, currency: string | null): string {
   }).format(amount);
 }
 
-function signedMoney(amount: number, currency: string | null): string {
-  return `${amount > 0 ? "+" : "−"}${money(Math.abs(amount), currency)}`;
+/**
+ * v2.6-DIR-1 — the sign comes from the canonical direction, never from a local
+ * comparison. Behaviour here is unchanged (this helper always showed a sign);
+ * what changes is that there is now exactly ONE place that decides which glyph a
+ * transaction amount carries, so this cannot drift from the ledger.
+ */
+function signedMoney(direction: RowDirection, amount: number, currency: string | null): string {
+  return `${DIRECTION_SIGN[direction]}${money(Math.abs(amount), currency)}`;
 }
 
 /** Push a row only when the value is present (non-empty). */
@@ -60,12 +72,31 @@ function pushIf(rows: DetailRow[], label: string, value: string | null | undefin
 
 function summary(d: TransactionDetail): DetailSection {
   const rows: DetailRow[] = [];
+  // v2.6-DIR-1 — resolved BEFORE the Amount row, so the amount and the "What"
+  // row below are two readings of the same single verdict.
+  const nature = describeRowNature({
+    flowType:      d.flowType ?? null,
+    incomeSubtype: d.incomeSubtype ?? null,
+    transferMaturity: d.transferMaturity ?? null,
+    amount:        d.amount,
+    hasOwnedCounterparty: d.counterpartyAccountId != null,
+  });
   pushIf(rows, "Merchant", d.merchantDisplayName ?? d.merchant);
-  pushIf(rows, "Amount", signedMoney(d.amount, d.currency ?? null));
+  pushIf(rows, "Amount", signedMoney(nature.direction, d.amount, d.currency ?? null));
+  // L8-B — `d.date` is now the ECONOMIC date: when the activity happened. The
+  // posting date rides beside it as provenance, never instead of it.
   pushIf(rows, "Date", d.date);
+  if (d.postingDate && d.postingDate !== d.date) pushIf(rows, "Posted", d.postingDate);
   pushIf(rows, "Category", d.category);
+  // v2.6-TRUTH-7 — "What" is the canonical row NATURE, from the one presentation
+  // authority. This row read `humanize(flowType)`, so a Microsoft issuer credit
+  // said "Income · Inflow" while the taxonomy had already called it an issuer
+  // credit. `flowDirection` stays beside it — a provider fact, still true.
   if (d.flowType) {
-    pushIf(rows, "Flow", d.flowDirection ? `${humanize(d.flowType)} · ${humanize(d.flowDirection)}` : humanize(d.flowType));
+    pushIf(rows, "What", d.flowDirection ? `${nature.label} · ${humanize(d.flowDirection)}` : nature.label);
+    // The persisted economic kind, kept and labelled as itself, so the finer
+    // nature never hides the coarser fact it was derived from.
+    if (nature.basis === "INCOME_TAXONOMY") pushIf(rows, "Flow type", flowTypeLabel(d.flowType));
   }
   return { title: "Summary", rows };
 }
@@ -105,9 +136,38 @@ function transactionIntelligence(d: TransactionDetail): DetailSection {
   // Summary date already covers it).
   if (d.authorizedAt) {
     pushIf(rows, "Authorized", d.authorizedAt);
-    pushIf(rows, "Posted", d.date);
+    // ⚠️ The POSTING date explicitly — `d.date` is the economic one now, and
+    // labelling it "Posted" would be a false claim on 2,813 live rows.
+    pushIf(rows, "Posted", d.postingDate ?? d.date);
   }
-  if (d.counterpartyType) pushIf(rows, "Counterparty", humanize(d.counterpartyType));
+  // ── v2.6-XFER-2 — the RESOLVED counterparty, when there is one ────────────
+  //
+  // `d.counterpartyType` is the PROVIDER'S CLASS — "Financial institution",
+  // "Merchant". It is a real fact and it is the right answer for a purchase. It
+  // is the WRONG answer for a movement between the user's own accounts, where
+  // the transfer authority has resolved a specific owned account and the DTO is
+  // already carrying its name.
+  //
+  // That name was populated by the read and rendered by NOTHING: three AMEX
+  // savings→checking transfers resolved to "Rewards Checking" and the drawer
+  // still said "Financial institution".
+  //
+  // Precedence — most specific true statement first:
+  //   1. a resolved, VISIBLE owned account  → its name (the identity authority's)
+  //   2. a resolved but NOT-visible account → "Another account"; KD-15 forbids
+  //      the name, and saying nothing would imply there was no counterparty
+  //   3. otherwise                          → the provider's class, as before
+  //
+  // The name is never derived here. `TransactionDetail.counterparty.name` comes
+  // from `accountDisplayName` at the read boundary, so this surface and every
+  // other one call the same account by the same name.
+  if (d.counterparty?.visible && d.counterparty.name) {
+    pushIf(rows, "Counterparty", d.counterparty.name);
+  } else if (d.counterparty && !d.counterparty.visible) {
+    pushIf(rows, "Counterparty", "Another account");
+  } else if (d.counterpartyType) {
+    pushIf(rows, "Counterparty", humanize(d.counterpartyType));
+  }
   // fxApplied is only notable when true; false/null is noise.
   if (d.fxApplied === true) pushIf(rows, "Foreign exchange", "Yes");
   // tiFactsVersion intentionally omitted from the UI (debug/version integer).
@@ -121,24 +181,73 @@ function relationshipIntelligence(d: TransactionDetail): DetailSection {
     if (pp.role === "POSTED_FROM_PENDING") {
       notes.push(
         d.authorizedAt
-          ? `Posted from a pending transaction. Authorized ${d.authorizedAt}, posted ${d.date}.`
+          ? `Posted from a pending transaction. Authorized ${d.authorizedAt}, posted ${d.postingDate ?? d.date}.`
           : "Posted from a pending transaction.",
       );
     } else {
       notes.push("A posted version of this pending transaction exists.");
     }
   }
-  const dup = d.relationships.duplicate;
-  if (dup && dup.transactionIds.length > 0) {
-    const n = dup.transactionIds.length;
-    notes.push(`Possible duplicate — appears to match ${n} other transaction${n > 1 ? "s" : ""} on ${d.date}.`);
+  // W1 (D6) — SIMILARITY EVIDENCE, not an identity verdict. The resolver has
+  // already excluded every candidate whose TransactionEvent identity settles the
+  // question (two events are two transactions; one event is a lifecycle pair).
+  // What remains is honest: rows the event ledger cannot yet distinguish that
+  // collide on the write-side fingerprint key. The wording claims exactly that —
+  // "looks similar … may be a repeated charge or a duplicate record" — and never
+  // asserts that they ARE one transaction.
+  const sim = d.relationships.similarity;
+  if (sim && sim.transactionIds.length > 0) {
+    const n = sim.transactionIds.length;
+    notes.push(
+      `Looks similar to ${n} other transaction${n > 1 ? "s" : ""} on ${d.date} — same account, ` +
+      `amount, and description. This may be a repeated charge or a duplicate record.`,
+    );
   }
+  // ── v2.6-XFER-3 — the note names the account, when the DTO can prove it ────
+  //
   // transferCandidate (TI4 Slice 1) is non-null only when a deterministic
   // owned-account transfer match RESOLVED and passed the KD-15 visibility gate
-  // upstream. Hedged and account-name-free — the DTO carries only an id, never a
-  // name, and the match is a candidate, not an unqualified claim.
+  // upstream. The note stayed generic — "between your own accounts" — even after
+  // v2.6-XFER-2 put the resolved account's NAME two rows above it. Same defect
+  // XFER-2 closed, in a second consumer: the evidence was present and this
+  // surface declined to read it.
+  //
+  // Three conditions, all required, before a name may appear:
+  //   · the match resolved to an account id at all;
+  //   · the DTO carries a counterparty block marked VISIBLE — the KD-15 gate's
+  //     own verdict, never re-derived here;
+  //   · that block is about THE SAME ACCOUNT. `d.counterparty` prefers the
+  //     PERSISTED link, which need not be the leg this read matched; naming one
+  //     account from a block describing another is a fabrication, so the ids
+  //     must agree or the note stays generic.
+  //
+  // Direction comes from the one presentation authority (v2.6-DIR-1), so "to" vs
+  // "from" is the same verdict the Amount row's sign renders — never a second
+  // local comparison on the amount.
+  //
+  // Still hedged: "Appears to match" is a candidate claim, and naming the other
+  // side does not upgrade it to an assertion that the transfer occurred.
   if (d.relationships.transferCandidate) {
-    notes.push("Appears to match a transfer between your own accounts.");
+    const tc = d.relationships.transferCandidate;
+    const named =
+      tc.counterpartyAccountId != null &&
+      d.counterparty?.visible === true &&
+      d.counterparty.accountId === tc.counterpartyAccountId
+        ? d.counterparty.name
+        : null;
+    if (named) {
+      const direction = describeRowNature({
+        flowType:      d.flowType ?? null,
+        incomeSubtype: d.incomeSubtype ?? null,
+        transferMaturity: d.transferMaturity ?? null,
+        amount:        d.amount,
+        hasOwnedCounterparty: d.counterpartyAccountId != null,
+      }).direction;
+      const preposition = direction === "OUT" ? "to" : direction === "IN" ? "from" : "with";
+      notes.push(`Appears to match a transfer ${preposition} ${named}.`);
+    } else {
+      notes.push("Appears to match a transfer between your own accounts.");
+    }
   }
   // refundCandidate is reserved-null: never rendered.
   return { title: "Relationship Intelligence", notes };

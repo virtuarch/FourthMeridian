@@ -22,16 +22,47 @@
  * }
  *
  * Returns: { accountId: string }
+ *
+ * ── RLS-ACC-S3 — THE WRITE ORDER WAS ONE RLS FORBIDS ─────────────────────────
+ * This route created the `AccountConnection` BEFORE the `SpaceAccountLink`, and
+ * under `fm_app` that order cannot work. The two policies are asymmetric by
+ * design (migration §14 vs §15):
+ *
+ *   FinancialAccount.fm_app_ins   WITH CHECK ("ownerUserId" = current_fm_user_id())
+ *   AccountConnection.fm_app_ins  WITH CHECK (fm_account_visible("financialAccountId"))
+ *
+ * `fm_account_visible` is true only while an ACTIVE `SpaceAccountLink` exists in
+ * a Space this identity belongs to. A brand-new account has NO link yet, so the
+ * connection insert is refused with SQLSTATE 42501 — and an INSERT refusal
+ * RAISES, so the whole `$transaction` rolls back and the manual asset is simply
+ * never created. The pivot has an `ownerUserId` arm for exactly the "visible to
+ * its creator before any link exists" case; its subtree does not.
+ *
+ * So the order is INVERTED: FinancialAccount, then the Space links, then the
+ * connection. Measured as succeeding in that order against a real `fm_app` role.
+ * This is the FOURTH instance of this phenomenon in the codebase — RLS-C-S7
+ * (b42e8e0) recorded two opposite orderings for disconnect and restore, and
+ * RLS-ACC-S4 inverts the shared `persistAccountSpine` writer for the same
+ * reason. The loop stays SEQUENTIAL inside the transaction, because
+ * `computeLinkKind` counts existing links to decide HOME vs SHARED and a
+ * concurrent loop could assign HOME twice (KD-5); inverting the order does not
+ * disturb that, and the first target is still `personalSpaceId`, so it is still
+ * the one that becomes HOME.
  */
 
 import { NextRequest, NextResponse }        from "next/server";
-import { db }                               from "@/lib/db";
+import { withTenantDb }                     from "@/lib/db/tenant-context";
+import { AuditAction }                      from "@/lib/audit-actions";
+import { manualAssetAddMetadata }           from "@/lib/analytics/product-events";
 import { getSpaceContext }              from "@/lib/space";
 import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, SpaceMemberStatus, SpaceMemberRole } from "@prisma/client";
 import { requireUser }                      from "@/lib/session";
+import { isSupportedCurrency }              from "@/lib/fx/config";
 import { withApiHandler }                   from "@/lib/api";
 import { dualWriteSpaceAccountLink }        from "@/lib/accounts/space-account-link";
 import { regenerateSnapshotsForAccounts }   from "@/lib/snapshots/regenerate";
+import { recordInitialValuation, type AcquisitionInput } from "@/lib/assets/valuations";
+import { checkAcquisitionDate, checkEffectiveDate, estimateInstant, isoDateOf } from "@/lib/assets/valuation-series.core";
 
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
@@ -47,6 +78,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     purchaseDate?:  string;
     notes?:         string;
     spaceIds?:  string[];
+    // RWA-2A — optional acquisition facts and the first valuation's date.
+    acquisitionDate?:              string;
+    purchasePriceIsStartingValue?: boolean;
+    valuationDate?:                string;
   };
 
   const {
@@ -71,38 +106,70 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   if (!VALID_KINDS.includes(assetKind))
                                return NextResponse.json({ error: `Invalid assetKind. Use: ${VALID_KINDS.join(", ")}` }, { status: 400 });
 
-  // ── Get user's personal space ──────────────────────────────────────────
-  const ctx = await getSpaceContext();
-  const personalSpaceId = ctx.space.type === "PERSONAL"
-    ? ctx.spaceId
-    : (await db.spaceMember.findFirst({
-        // role: OWNER — defense in depth (PERSONAL Spaces are single-owner by
-        // construction now); never resolve to a stranger's personal Space.
-        where: { userId, status: SpaceMemberStatus.ACTIVE, role: SpaceMemberRole.OWNER, space: { type: "PERSONAL" } },
-        select: { spaceId: true },
-      }))?.spaceId;
+  // REVIEW-3 B-5 — the currency goes through the SAME allowlist rule the
+  // reporting-currency boundary enforces (lib/spaces/reporting-currency.ts →
+  // isSupportedCurrency: FX_BASE + SUPPORTED_QUOTES). This route used to
+  // uppercase ARBITRARY input and store it: an unsupported-but-real code was
+  // permanently FX-unavailable (excluded from every converted total forever),
+  // and a malformed code ("US", "DOLLARS") throws RangeError inside the Intl
+  // formatters at render. Rejecting at the boundary is the same 400 contract
+  // the Space PATCH route applies.
+  if (typeof currency !== "string" || currency.trim() === "")
+                               return NextResponse.json({ error: "currency must be a non-empty string." }, { status: 400 });
+  const normalizedCurrency = currency.trim().toUpperCase();
+  if (!isSupportedCurrency(normalizedCurrency))
+                               return NextResponse.json({ error: `Unsupported currency "${normalizedCurrency}" — must be USD or one of the supported quote currencies.` }, { status: 400 });
 
-  if (!personalSpaceId) {
+  // ── RWA-2A — the valuation's date and the optional acquisition facts ────────
+  // Validated by the same pure rules the forms use (lib/assets/valuation-series.core.ts).
+  const acquisition = parseAcquisition(body);
+  if ("error" in acquisition) return NextResponse.json({ error: acquisition.error }, { status: 400 });
+
+  // ── Get user's personal space ──────────────────────────────────────────
+  // ONE short tenant read phase for both membership questions. `SpaceMember`'s
+  // policy is `spaceId IN (SELECT fm_visible_space_ids()) OR "userId" =
+  // current_fm_user_id()`, so the caller's OWN membership rows are exactly what
+  // is visible — which is all either question asks about. The `userId:` filters
+  // are kept: they now SELECT rather than ISOLATE, and the `role`/`status`
+  // narrowings are still the route's own rule, not the policy's.
+  const ctx = await getSpaceContext();
+  const resolved = await withTenantDb(userId, async (tx) => {
+    const personalSpaceId = ctx.space.type === "PERSONAL"
+      ? ctx.spaceId
+      : (await tx.spaceMember.findFirst({
+          // role: OWNER — defense in depth (PERSONAL Spaces are single-owner by
+          // construction now); never resolve to a stranger's personal Space.
+          where: { userId, status: SpaceMemberStatus.ACTIVE, role: SpaceMemberRole.OWNER, space: { type: "PERSONAL" } },
+          select: { spaceId: true },
+        }))?.spaceId;
+
+    if (!personalSpaceId) return { kind: "noPersonalSpace" as const };
+
+    // ── Validate additional space IDs (must be member of each) ────────────
+    const additionalIds = [...new Set(spaceIds.filter((id) => id !== personalSpaceId))];
+    if (additionalIds.length > 0) {
+      const memberships = await tx.spaceMember.findMany({
+        where: {
+          userId,
+          status:      SpaceMemberStatus.ACTIVE,
+          spaceId: { in: additionalIds },
+        },
+        select: { spaceId: true },
+      });
+      const validIds = new Set(memberships.map((m) => m.spaceId));
+      const invalid  = additionalIds.filter((id) => !validIds.has(id));
+      if (invalid.length > 0) return { kind: "notAMember" as const };
+    }
+    return { kind: "ok" as const, personalSpaceId, additionalIds };
+  });
+
+  if (resolved.kind === "noPersonalSpace") {
     return NextResponse.json({ error: "Personal Space not found." }, { status: 500 });
   }
-
-  // ── Validate additional space IDs (must be member of each) ────────────
-  const additionalIds = [...new Set(spaceIds.filter((id) => id !== personalSpaceId))];
-  if (additionalIds.length > 0) {
-    const memberships = await db.spaceMember.findMany({
-      where: {
-        userId,
-        status:      SpaceMemberStatus.ACTIVE,
-        spaceId: { in: additionalIds },
-      },
-      select: { spaceId: true },
-    });
-    const validIds = new Set(memberships.map((m) => m.spaceId));
-    const invalid  = additionalIds.filter((id) => !validIds.has(id));
-    if (invalid.length > 0) {
-      return NextResponse.json({ error: "Not a member of one or more requested Spaces." }, { status: 403 });
-    }
+  if (resolved.kind === "notAMember") {
+    return NextResponse.json({ error: "Not a member of one or more requested Spaces." }, { status: 403 });
   }
+  const { personalSpaceId, additionalIds } = resolved;
 
   // ── D3 Stage B3 — SpaceAccountLink is the sole write target ─────────────
   // Sequential, NOT Promise.all: computeLinkKind() inside
@@ -119,7 +186,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // ── KD-4 Phase 3 — FinancialAccount + AccountConnection + SAL links commit
   //    atomically. A partial failure previously could leave an account with no
   //    links (invisible/orphaned) or shared into some spaces but not others.
-  const fa = await db.$transaction(async (tx) => {
+  //
+  //    RLS-ACC-S3 — and the transaction is now a TENANT one, which is also what
+  //    forced the write order below. See the header.
+  const fa = await withTenantDb(userId, async (tx) => {
     const created = await tx.financialAccount.create({
       data: {
         ownerType:   AccountOwnerType.USER,
@@ -129,28 +199,24 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         type:        AccountType.other,
         institution: "Manual Entry",
         balance,
-        currency:    currency.toUpperCase(),
+        currency:    normalizedCurrency,
         syncStatus:  "manual",
-        lastUpdated: new Date(),
+        // RWA-2A — dated by the estimate, so a backdated first value ages correctly.
+        lastUpdated: estimateInstant(acquisition.valuationDate, new Date()),
       },
     });
 
-    // AccountConnection (no PlaidItem, no walletAddress)
-    await tx.accountConnection.create({
-      data: {
-        financialAccountId: created.id,
-        connectedByUserId:  userId,
-        syncStatus:         "manual",
-        isCanonical:        true,
-      },
-    });
-
+    // THE SPACE LINKS COME FIRST, AND THAT IS NOT A PREFERENCE.
+    // `AccountConnection.fm_app_ins` is `WITH CHECK (fm_account_visible(...))`,
+    // which is false until an ACTIVE link exists in a Space this identity
+    // belongs to. Written the other way round — as this route did — the
+    // connection insert is refused 42501 and the whole asset creation rolls
+    // back. See the module header.
     for (const wsId of shareTargets) {
-      await dualWriteSpaceAccountLink({
+      await dualWriteSpaceAccountLink(tx, {
         spaceId:            wsId,
         financialAccountId: created.id,
         creatorUserId:       userId,
-        client:              tx,
         create: {
           addedByUserId:    userId,
           visibilityLevel:  VisibilityLevel.FULL,
@@ -165,6 +231,21 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       });
     }
 
+    // AccountConnection (no PlaidItem, no walletAddress) — LAST, because its
+    // WITH CHECK needs the links above to exist first.
+    await tx.accountConnection.create({
+      data: {
+        financialAccountId: created.id,
+        connectedByUserId:  userId,
+        syncStatus:         "manual",
+        isCanonical:        true,
+      },
+    });
+
+    // RWA-2A — the asset's first dated valuation (+ acquisition facts), in the
+    // same transaction, after the links its RLS insert predicate needs.
+    await recordInitialValuation(tx, { financialAccountId: created.id, userId, value: balance, currency: normalizedCurrency, effectiveDate: acquisition.valuationDate, acquisition: acquisition.facts });
+
     return created;
   });
 
@@ -178,22 +259,24 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   }
 
   // ── Audit log ─────────────────────────────────────────────────────────────
-  await db.auditLog.create({
+  // Its own short phase, AFTER the snapshot regeneration, exactly where it was.
+  // `AuditLog.fm_app_ins` is `WITH CHECK (true)` (migration §18 — 90 independent
+  // writers and a shared shape helper with no spaceId parameter), so the tenant
+  // role can write it; it is deliberately NOT folded into the create transaction,
+  // because that would make an audit failure roll back the asset.
+  // BETA A7 — ids and kinds only. The name, the balance, the purchase price
+  // and date used to be written here, against lib/audit.ts's own contract
+  // ("never financial values or user content"). The account id is the
+  // reference; the currency is the kind. The Space feed renders "Manual asset
+  // added" from the action alone.
+  await withTenantDb(userId, (tx) => tx.auditLog.create({
     data: {
       userId,
       spaceId: personalSpaceId,
-      action:      "MANUAL_ASSET_ADD",
-      metadata: {
-        name:           fa.name,
-        balance,
-        currency:       fa.currency,
-        assetKind,
-        purchasePrice,
-        purchaseDate,
-        sharedSpaces: shareTargets,
-      },
+      action:      AuditAction.MANUAL_ASSET_ADD,
+      metadata: manualAssetAddMetadata({ accountId: fa.id, currency: fa.currency }),
     },
-  });
+  }));
 
   return NextResponse.json({
     accountId:    fa.id,
@@ -206,3 +289,32 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     notes,
   }, { status: 201 });
 }, "POST /api/accounts/manual");
+
+/**
+ * RWA-2A — parse + validate the optional acquisition facts and the first
+ * valuation's effective date. The acquisition date may not be in the future; the
+ * valuation may not be in the future or before the acquisition; a purchase price
+ * is finite and ≥ 0; using it as the starting value needs both a date and a price.
+ */
+function parseAcquisition(body: {
+  acquisitionDate?: string; purchasePrice?: number; purchasePriceIsStartingValue?: boolean; valuationDate?: string;
+}): { valuationDate: string; facts: AcquisitionInput } | { error: string } {
+  const today = isoDateOf(new Date());
+  const acquisitionDate = body.acquisitionDate == null || body.acquisitionDate === "" ? null : body.acquisitionDate;
+  if (acquisitionDate !== null) {
+    const c = checkAcquisitionDate(acquisitionDate, today);
+    if (!c.ok) return { error: c.error };
+  }
+  const purchasePrice = body.purchasePrice == null ? null : body.purchasePrice;
+  if (purchasePrice !== null && (typeof purchasePrice !== "number" || !Number.isFinite(purchasePrice) || purchasePrice < 0)) {
+    return { error: "Purchase price must be a non-negative number." };
+  }
+  const startingValue = body.purchasePriceIsStartingValue === true;
+  if (startingValue && (acquisitionDate === null || purchasePrice === null)) {
+    return { error: "Using the purchase price as a starting value needs both an acquisition date and a purchase price." };
+  }
+  const valuationDate = body.valuationDate == null || body.valuationDate === "" ? today : body.valuationDate;
+  const v = checkEffectiveDate(valuationDate, today, acquisitionDate);
+  if (!v.ok) return { error: v.error };
+  return { valuationDate, facts: { acquisitionDate, purchasePrice, purchasePriceIsStartingValue: startingValue } };
+}

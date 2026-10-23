@@ -29,8 +29,7 @@
 import "server-only";
 
 import type { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
-import { getSpaceContext } from "@/lib/space";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { bankingTransactionWhere } from "@/lib/data/transactions";
 import { buildFilterWhere, type TransactionQuery } from "@/lib/data/transaction-query-core";
 import { resolveVisibleAccountIds } from "@/lib/data/transaction-query";
@@ -40,19 +39,29 @@ import { resolveVisibleAccountIds } from "@/lib/data/transaction-query";
  *
  * `cursor`, `sort` and `limit` are IGNORED by design — a count is a property of the
  * filtered SET, not of any page through it.
+ *
+ * RLS-C-S3 — `client` is REQUIRED and leading, and the PARITY GUARANTEE above now
+ * extends to it: a count taken on one authority beside a page taken on another
+ * would be the same drift this module exists to prevent, one level down. The
+ * caller passes ONE client to both.
  */
-export async function countTransactions(args: {
-  spaceId?: string;
-  query: TransactionQuery;
-}): Promise<number> {
-  const spaceId = args.spaceId ?? (await getSpaceContext()).spaceId;
+export async function countTransactions(
+  client: ReadClient,
+  args: {
+    /** RLS-C-S1 — REQUIRED. No ambient space-context fallback: a count must
+     *  be scoped by its caller, never by a leaf re-deriving its own identity. */
+    spaceId: string;
+    query: TransactionQuery;
+  },
+): Promise<number> {
+  const spaceId = args.spaceId;
   const query = args.query;
 
   // The same visibility intersection the row query applies — a count must never
   // include a row the page would not show.
   let accountIds = query.accountIds;
   if (accountIds && accountIds.length > 0) {
-    const visible = await resolveVisibleAccountIds(spaceId);
+    const visible = await resolveVisibleAccountIds(client, spaceId);
     accountIds = accountIds.filter((id) => visible.has(id));
     if (accountIds.length === 0) return 0;
   }
@@ -64,5 +73,5 @@ export async function countTransactions(args: {
     ],
   };
 
-  return db.transaction.count({ where });
+  return client.transaction.count({ where });
 }

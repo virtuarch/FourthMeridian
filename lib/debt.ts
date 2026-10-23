@@ -8,6 +8,7 @@
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
 import { isDebtPayment } from "@/lib/transactions/flow-predicates";
+import { estimatedMonthlyInterest } from "@/lib/debt/interest-cost";
 
 /**
  * Estimates a monthly minimum payment when the user has supplied an APR but
@@ -17,11 +18,17 @@ import { isDebtPayment } from "@/lib/transactions/flow-predicates";
  * and must prefer any manually-entered value over this estimate.
  *
  * Formula: max($35, 1% of balance + that month's interest accrual).
+ *
+ * CQ-008 (2026-10-22) — the month's interest is THE one monthly-interest
+ * formula, `estimatedMonthlyInterest` in lib/debt/interest-cost.ts (owed ×
+ * APR/100/12); it used to be written out again here. `amountOwed` there is the
+ * same max(balance, 0) clamp as `safeBalance`, so every figure is unchanged
+ * (lib/debt/interest-cost.test.ts pins the parity).
  */
 export function estimateMinimumPayment(balance: number, aprPercent: number): number {
   const safeBalance = Math.max(0, balance);
   const safeApr     = Math.max(0, aprPercent);
-  const monthlyInterest = safeBalance * (safeApr / 100 / 12);
+  const monthlyInterest = estimatedMonthlyInterest(safeBalance, safeApr) ?? 0;
   return Math.max(35, safeBalance * 0.01 + monthlyInterest);
 }
 
@@ -67,25 +74,23 @@ function rowAmount(
 }
 
 /**
- * Total paid toward debt: Σ|amount| over `flowType = DEBT_PAYMENT` rows.
- * Replaces the legacy `category === 'Payment'` string heuristic (P5 Slice 3).
+ * ⚠️ `totalDebtPaid` USED TO LIVE HERE, and it was the defect.
  *
- * Sign-agnostic by design: destination-side legs on debt accounts carry either
- * sign depending on source convention (see flow-classifier.ts — DEBT_PAYMENT
- * is INTERNAL when negative, INFLOW when positive), matching the abs-sum shape
- * of the legacy computation. Rows with null flowType are excluded — the
- * non-null invariant holds for all production writers (P5 Slice 0 + backfill).
+ * It abs-summed every `DEBT_PAYMENT` row it was handed. A card payment is two
+ * rows — the cash leg leaving checking and the liability leg arriving on the
+ * card — so the answer depended entirely on what the caller happened to pass.
+ * DebtClient passed liability legs and reported $239,592.37; the Debt Payments
+ * widget selected cash legs and reported $245,592.37; a caller passing both
+ * would have got $485,184.74.
+ *
+ * It now lives in lib/transactions/debt-payment-authority.ts, which takes a tier
+ * resolver and SELECTS the counted leg itself — so no caller can double-count,
+ * because no caller chooses.
+ *
+ * `rollupDebtPaymentsByAccount` below stays, and deliberately reads the LIABILITY
+ * leg: it is the only leg that names which card received the money. Two
+ * questions, two answers, and the authority says which is which.
  */
-export function totalDebtPaid(txs: DebtPaymentTxnLike[], ctx?: ConversionContext): number {
-  let sum = 0;
-  for (const t of txs) {
-    if (!isDebtPayment(t.flowType)) continue;
-    const a = rowAmount(t, ctx);
-    if (a === null) continue; // V25-FINAL-1 — unavailable row excluded from the partial total
-    sum += Math.abs(a);
-  }
-  return sum;
-}
 
 /** One liability's received payments within the caller's row scope. */
 export interface DebtPaymentRollupEntry {

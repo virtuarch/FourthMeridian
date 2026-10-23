@@ -54,6 +54,9 @@ export interface ExecutionQueryParams {
   filter?: {
     overallStatus?: readonly string[];
     trigger?: readonly string[];
+    sourceKind?: readonly string[];
+    network?: readonly string[];
+    sourceRef?: string;
     since?: Date;
     until?: Date;
   };
@@ -79,12 +82,20 @@ function parseInstant(raw: string | null): Date | undefined {
 export function parseExecutionQueryParams(params: URLSearchParams): ExecutionQueryParams {
   const overallStatus = params.getAll("status").filter((s) => s.trim().length > 0);
   const trigger = params.getAll("trigger").filter((s) => s.trim().length > 0);
+  // PLATFORM OPS OBSERVABILITY — source filters. Uppercased: the ledger stores
+  // canonical tokens ("WALLET", "BTC"), and an operator typing "btc" means BTC.
+  const sourceKind = params.getAll("sourceKind").map((s) => s.trim().toUpperCase()).filter((s) => s.length > 0);
+  const network = params.getAll("network").map((s) => s.trim().toUpperCase()).filter((s) => s.length > 0);
+  const sourceRef = params.get("sourceRef")?.trim() || undefined;
   const since = parseInstant(params.get("since"));
   const until = parseInstant(params.get("until"));
 
   const filter: NonNullable<ExecutionQueryParams["filter"]> = {};
   if (overallStatus.length) filter.overallStatus = overallStatus;
   if (trigger.length) filter.trigger = trigger;
+  if (sourceKind.length) filter.sourceKind = sourceKind;
+  if (network.length) filter.network = network;
+  if (sourceRef) filter.sourceRef = sourceRef;
   if (since) filter.since = since;
   if (until) filter.until = until;
 

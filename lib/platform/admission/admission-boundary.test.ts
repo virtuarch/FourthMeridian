@@ -80,7 +80,6 @@ const PRODUCERS = [
   { file: "app/api/platform/platform-ops/connections/[id]/resync/route.ts", migrated: true,
     note: "representative path — operator-triggered, provable without a provider call" },
   { file: "app/api/plaid/refresh/route.ts",             migrated: true, note: "owner manual refresh" },
-  { file: "app/api/plaid/sync/route.ts",                migrated: true, note: "owner manual transaction sync" },
   { file: "app/api/plaid/resume-sync/route.ts",         migrated: true, note: "client-driven import recovery" },
   { file: "app/api/plaid/investments/enable/route.ts",  migrated: true, note: "consent-driven full refresh" },
   { file: "jobs/sync-banks.ts",                         migrated: true, note: "the scheduled batch" },
@@ -90,6 +89,13 @@ const PRODUCERS = [
   // It is the only consumer that declares BOTH work classes; its detailed
   // contract lives in connection-establishment.test.ts.
   { file: "lib/plaid/exchangeToken.ts",                 migrated: true, note: "connection establishment + initial ingestion (two work classes)" },
+  // The scheduled wallet sweep (every syncable chain) — provider ingestion, gated once per sweep like sync-banks.
+  { file: "lib/crypto/wallet-refresh.ts",               migrated: true, note: "the scheduled wallet sweep" },
+  // P1 REFRESH ALL — the provider-agnostic orchestrator asks ONCE per decision
+  // layer (every authority is REFUSED NOT_ADMITTED on a denial, no clock touched);
+  // the manual wallet sync route gained the gate it lacked (it had none).
+  { file: "lib/refresh/refresh-all.ts",                 migrated: true, note: "customer / operator Refresh All (every authority)" },
+  { file: "app/api/accounts/[id]/sync/route.ts",         migrated: true, note: "owner manual wallet sync (gained the gate in P1)" },
 ] as const;
 
 function main() {
@@ -222,7 +228,8 @@ function main() {
     // list forces a deliberate decision rather than defaulting to "migrated".
     check("every censused producer is migrated (OPS-2D-4)",
       PRODUCERS.filter((p) => p.migrated).length === PRODUCERS.length);
-    check("the census still holds all nine known producers", PRODUCERS.length === 9);
+    // ARCH-007 (2026-10-22): 12 → 11 — POST /api/plaid/sync was deleted (no consumer).
+    check("the census still holds all eleven known producers", (PRODUCERS.length as number) === 11);
 
     // No producer OUTSIDE the census may consume admission.
     const consumers = [...walk("app"), ...walk("jobs"), ...walk("lib")]

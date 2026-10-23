@@ -23,7 +23,8 @@
  */
 
 import type { ReactNode } from "react";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatDate } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { DebtKpis } from "./debt-kpis";
 import { Figure } from "@/components/atlas/Surface";
@@ -141,11 +142,6 @@ export function DebtHero({
           {kpis.utilizationPct != null && kpis.utilizationLevel != null && (
             <Stat label="Utilization">
               <span style={{ color: UTIL_COLOR[kpis.utilizationLevel] }}>{kpis.utilizationPct.toFixed(0)}%</span>
-            </Stat>
-          )}
-          {kpis.minPayments > 0 && (
-            <Stat label="Min. payments">
-              {approx}{formatCurrency(kpis.minPayments, currency)}/mo
             </Stat>
           )}
         </div>

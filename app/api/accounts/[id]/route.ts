@@ -14,11 +14,24 @@
  *          minimumPayment (manual entry), and displayName (user-editable
  *          rename — never touches plaidName/officialName, which stay frozen
  *          at whatever Plaid returned at import time).
+ *
+ * ── RLS-C-S7 — BOTH HANDLERS RUN AS THE CALLER ───────────────────────────────
+ * Every read and write here is a `withTenantDb` phase, so the ownership checks
+ * below are backed by a policy instead of by review. DELETE's authorization read
+ * in particular is the gate in front of the deployment-wide link revocation
+ * inside `disconnectAccounts` (lib/accounts/links-everywhere.ts), which is why it
+ * must be a tenant read: a check that cannot see the row it is checking is not a
+ * check.
+ *
+ * The transactions are short on purpose. `withTenantDb` is a SECURITY BOUNDARY,
+ * not a request-lifetime container — `disconnectAccounts` opens its own phases
+ * and performs its provider calls and snapshot regeneration outside all of them,
+ * so it is deliberately NOT wrapped in one here.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { ShareStatus } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
@@ -70,7 +83,15 @@ export const PATCH = withApiHandler(async (
       normalizedDisplayName = trimmed.length > 0 ? trimmed : null;
     }
 
-    const fa = await db.financialAccount.findUnique({ where: { id } });
+    // RLS-C-S7 — the ownership read runs as the caller. `FinancialAccount`'s
+    // SELECT policy admits `ownerUserId = me OR fm_account_visible(id)`, so the
+    // 403 below stays load-bearing: the policy's second arm admits an account the
+    // caller can merely SEE through a shared Space, and editing a credit limit or
+    // an APR requires owning it.
+    const fa = await withTenantDb(user.id, (tx) => tx.financialAccount.findUnique({
+      where:  { id },
+      select: { ownerUserId: true },
+    }));
     if (!fa) return NextResponse.json({ error: "Account not found" }, { status: 404 });
 
     // Verify ownership: caller must own this account (ownerUserId)
@@ -78,27 +99,30 @@ export const PATCH = withApiHandler(async (
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    await db.financialAccount.update({
-      where: { id },
-      data: {
-        ...(creditLimit    !== undefined && { creditLimit }),
-        ...(debtSubtype    !== undefined && { debtSubtype }),
-        ...(interestRate   !== undefined && { interestRate }),
-        ...(minimumPayment !== undefined && { minimumPayment }),
-        ...(displayName    !== undefined && { displayName: normalizedDisplayName }),
-      },
-    });
-
-    if (displayName !== undefined) {
-      await db.auditLog.create({
+    // The field update and its audit row commit together, as the caller.
+    await withTenantDb(user.id, async (tx) => {
+      await tx.financialAccount.update({
+        where: { id },
         data: {
-          userId:    user.id,
-          action:    AuditAction.ACCOUNT_RENAMED,
-          metadata:  { accountId: id, displayName: normalizedDisplayName },
-          ipAddress: getClientIp(req),
+          ...(creditLimit    !== undefined && { creditLimit }),
+          ...(debtSubtype    !== undefined && { debtSubtype }),
+          ...(interestRate   !== undefined && { interestRate }),
+          ...(minimumPayment !== undefined && { minimumPayment }),
+          ...(displayName    !== undefined && { displayName: normalizedDisplayName }),
         },
       });
-    }
+
+      if (displayName !== undefined) {
+        await tx.auditLog.create({
+          data: {
+            userId:    user.id,
+            action:    AuditAction.ACCOUNT_RENAMED,
+            metadata:  { accountId: id, displayName: normalizedDisplayName },
+            ipAddress: getClientIp(req),
+          },
+        });
+      }
+    });
 
     return NextResponse.json({ ok: true });
   } catch (err) {
@@ -118,26 +142,37 @@ export const DELETE = withApiHandler(async (
   if (err) return err;
 
   try {
-    // Fetch the account for the existence check + audit metadata (name/type).
+    // Fetch the account for the existence check + audit metadata (name/type),
+    // and the authorization read, in ONE tenant phase.
     // The Plaid-item orphan revocation is handled inside disconnectAccounts.
-    const fa = await db.financialAccount.findUnique({
-      where:  { id },
-      select: { id: true, name: true, type: true },
+    //
+    // RLS-C-S7 — THIS IS THE GATE IN FRONT OF A DEPLOYMENT-WIDE WRITE. The link
+    // revocation inside `disconnectAccounts` runs on `fm_system` and reaches
+    // Spaces this caller is not a member of, so the proof that they may do it at
+    // all has to be a read the policy constrains. Both reads below are now that.
+    const authorized = await withTenantDb(user.id, async (tx) => {
+      const fa = await tx.financialAccount.findUnique({
+        where:  { id },
+        select: { id: true, name: true, type: true },
+      });
+      if (!fa) return { fa: null, userLink: null };
+
+      // D3 Stage A — authorization read on SpaceAccountLink.
+      const userLink = await tx.spaceAccountLink.findFirst({
+        where: {
+          financialAccountId: id,
+          addedByUserId:      user.id,
+          status:             ShareStatus.ACTIVE,
+        },
+        select: { spaceId: true },
+      });
+      return { fa, userLink };
     });
 
+    const { fa, userLink } = authorized;
     if (!fa) {
       return NextResponse.json({ error: "Account not found" }, { status: 404 });
     }
-
-    // D3 Stage A — authorization read on SpaceAccountLink.
-    const userLink = await db.spaceAccountLink.findFirst({
-      where: {
-        financialAccountId: id,
-        addedByUserId:      user.id,
-        status:             ShareStatus.ACTIVE,
-      },
-      select: { spaceId: true },
-    });
     if (!userLink) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
@@ -149,7 +184,7 @@ export const DELETE = withApiHandler(async (
     await disconnectAccounts([id], user.id);
 
     // ── Audit log ──────────────────────────────────────────────────────────────
-    await db.auditLog.create({
+    await withTenantDb(user.id, (tx) => tx.auditLog.create({
       data: {
         userId:      user.id,
         spaceId: userLink.spaceId,
@@ -157,7 +192,7 @@ export const DELETE = withApiHandler(async (
         metadata:    { accountName: fa.name, accountType: fa.type },
         ipAddress:   getClientIp(req),
       },
-    });
+    }));
 
     return NextResponse.json({ ok: true });
   } catch (err) {

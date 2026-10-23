@@ -25,19 +25,30 @@ export function InvestmentsBalanceHistory({
   currency,
   asOf,
   compareTo,
+  onSelectPoint,
 }: {
   points:    PortfolioValuePoint[];
   currency:  string;
   asOf:      string;
   compareTo: string | null;
+  /** V26-S3-DETAIL — passed straight through; this component decides nothing. */
+  onSelectPoint?: (dateISO: string) => void;
 }) {
   // Clip to the shell window (end travels with asOf; start at compareTo when set) —
   // the same windowing the shell's time controls drive for every temporal surface.
+  // V26-INVESTMENTS-HISTORY — `confidence` and `coverageLabel` are carried
+  // through VERBATIM. They were classified and worded upstream (the series
+  // builder, from the snapshot's persisted completeness); this component only
+  // clips the window and renames `confidence` to the chart's `basis` slot. It
+  // reads no tier, compares no count, and writes no copy.
   const trendPoints: TrendPoint[] = useMemo(
     () =>
       points
         .filter((p) => p.date <= asOf && (!compareTo || p.date >= compareTo))
-        .map((p) => ({ date: p.date, value: p.value, estimated: p.estimated })),
+        .map((p) => ({
+          date: p.date, value: p.value, estimated: p.estimated,
+          basis: p.confidence, coverageLabel: p.coverageLabel,
+        })),
     [points, asOf, compareTo],
   );
 
@@ -54,6 +65,7 @@ export function InvestmentsBalanceHistory({
       ariaLabel="Invested value over time"
       emptyMessage="No portfolio history in this range yet. Widen the range or connect accounts to build history."
       formatDate={formatWealthDate}
+      onSelectPoint={onSelectPoint}
     />
   );
 }

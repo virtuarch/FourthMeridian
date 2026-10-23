@@ -28,6 +28,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSpaceAction } from "@/lib/spaces/authorize";
 import { withApiHandler } from "@/lib/api";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { computePerspective } from "@/lib/perspective-engine";
 import type { LensResult } from "@/lib/perspective-engine";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
@@ -63,11 +64,18 @@ export const GET = withApiHandler(async (
   // Compute the debt lens AS-OF, always as the requesting viewer. `asOf` puts the
   // lens on the as-of path (completeness envelope stamped); the client composes the
   // rest of DebtSpaceData (history clip, FICO) purely.
-  const lens: LensResult = await computePerspective(
+  //
+  // RLS-C-S2 — inside ONE short tenant transaction, identity from the
+  // authenticated session (requireSpaceAction above). The as-of path is the
+  // heaviest read in the engine (visibility rows + link metadata + coverage +
+  // wallet valuation + a posted-delta groupBy), and every one of those statements
+  // is now policy-checked rather than running as the migration principal.
+  const lens: LensResult = await withTenantDb(userId, (tx) => computePerspective(
+    tx,
     "debt",
     { spaceId, userId },
     { asOf, targetCurrency },
-  );
+  ));
 
   return NextResponse.json({ lens });
 }, "GET /api/spaces/[id]/debt/space-data");

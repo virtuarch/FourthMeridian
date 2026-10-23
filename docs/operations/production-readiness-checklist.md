@@ -7,6 +7,7 @@
 - [ ] `CRON_SECRET` set in production (boot-validated; without it every cron request 401s).
 - [ ] `ENCRYPTION_KEY`, `NEXTAUTH_SECRET`, `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`, `DATABASE_URL` set (boot-required everywhere).
 - [ ] `RESEND_API_KEY`, `NEXTAUTH_URL`, `NEXT_PUBLIC_APP_URL` set (prod-required; email otherwise captures silently).
+- [ ] `PLATFORM_ALERTS_EMAIL` set to a monitored mailbox (**prod-required since 2026-10-07**, OPERATIONALIZATION P0; boot refuses without it — an alert engine with no destination is a silent one). **Production has NO record of it as of 2026-10-07 — this is a config act before the next Production deploy.** `BETA_REQUESTS_EMAIL` stays optional (the Growth & Revenue queue is the intake authority; the mail is a convenience).
 - [ ] Preview and production do NOT share secret values (Vercel env scopes — KEY_ROTATION_RUNBOOK ground rule).
 - [ ] Deploy boots clean: `[instrumentation] validateEnv passed` in the boot log.
 

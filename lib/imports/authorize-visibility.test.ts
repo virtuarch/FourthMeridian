@@ -68,7 +68,13 @@ function fakeClient(f: Fixture) {
 }
 
 async function access(userId: string, f: Fixture, spaceId: string = SPACE) {
-  return resolveImportableFinancialAccount(userId, spaceId, FA, fakeClient(f));
+  // RLS-ACC-S2 — the authority is REQUIRED and LEADING. The fake is structurally
+  // assignable to `ReadClient`, which is the point of that type: a test can still
+  // drive this gate with a faithful fake, and no production caller can pass
+  // nothing. Note the fake is NOT policy-aware — it reproduces the resolver's own
+  // where-clauses, so these cases prove the APPLICATION rule. Whether the role is
+  // allowed to see the rows at all is the acceptance suite's question.
+  return resolveImportableFinancialAccount(fakeClient(f), userId, spaceId, FA);
 }
 function activeLink(visibilityLevel: VisibilityLevel, deleted = false) {
   return { visibilityLevel, status: ShareStatus.ACTIVE, deleted };
@@ -152,6 +158,12 @@ async function main(): Promise<void> {
       ["app", "api", "accounts", "[id]", "import", "investments", "route.ts"],
       ["app", "api", "accounts", "[id]", "import", "investments", "preview", "route.ts"],
       ["app", "api", "investments", "opening-position", "route.ts"],
+      // RLS Slice 2 — the SIXTH import route. Rollback had its own inline
+      // spaceAccountLink.findFirst that omitted the FULL tier, so it was the one
+      // import route a BALANCE_ONLY / SUMMARY_ONLY OWNER/ADMIN could reach — and
+      // the most destructive one (it soft-deletes every Transaction the batch
+      // created, i.e. detail they could not read). It now shares the one guard.
+      ["app", "api", "imports", "[id]", "rollback", "route.ts"],
     ];
     for (const rel of routes) {
       const src = readFileSync(join(process.cwd(), ...rel), "utf8");
@@ -159,6 +171,61 @@ async function main(): Promise<void> {
       check(`${label} calls the shared guard`, src.includes("resolveImportableFinancialAccount("));
       check(`${label} has no redundant local FULL re-check`, !/visibilityLevel\s*!==\s*VisibilityLevel\.FULL/.test(src));
     }
+  }
+
+  // ── 9. Rollback-specific pins (RLS Slice 2) ───────────────────────────────
+  // The defect was a SECOND, weaker copy of the same authority rule. These pin
+  // that the copy is gone, that the guard is driven off the BATCH's own account
+  // (never a client-supplied id), and that the creator/canManage check survives
+  // as an ADDITIONAL restriction rather than being replaced by the guard.
+  console.log("9. source-scan — rollback uses the guard and keeps its own extra restriction");
+  {
+    const src = readFileSync(
+      join(process.cwd(), "app", "api", "imports", "[id]", "rollback", "route.ts"), "utf8");
+    // Comments legitimately describe the removed query, so scan real code only.
+    const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+
+    check("rollback dropped its inline spaceAccountLink lookup (no second copy of the rule)",
+      !code.includes("spaceAccountLink."));
+    check("rollback no longer imports ShareStatus (the inline query's only user)",
+      !code.includes("ShareStatus"));
+    // RLS-ACC-S2 — the guard's authority became a required LEADING parameter, so
+    // the shape moved by one argument. The invariant did not weaken: what this
+    // pins is still that the account id comes from the BATCH and never from a path
+    // param, and it now additionally pins that the client is the TENANT one.
+    check("guard is driven off the BATCH's own financialAccountId, not a path param",
+      /resolveImportableFinancialAccount\(\s*tx,\s*user\.id,\s*spaceId,\s*batch\.financialAccountId\s*\)/.test(code));
+    check("…and the guard runs inside a tenant phase, not on a defaulted authority",
+      /withTenantDb\(\s*\n?\s*user\.id,\s*\(tx\)\s*=>\s*resolveImportableFinancialAccount\(/.test(code));
+    check("rollback returns the guard's own response (same 404/403 bodies as its siblings)",
+      /if\s*\(\s*!access\.ok\s*\)\s*return\s+access\.response/.test(code));
+    check("rollback KEEPS the creator-or-canManage restriction on top of the guard",
+      /batch\.createdByUserId === user\.id/.test(code) &&
+      /!isCreator\s*&&\s*!permissions\.canManage/.test(code));
+    check("rollback still requires a FRESH session (destructive action)",
+      /requireFreshUser\s*\(\s*\)/.test(code));
+
+    // Order: authorize before any destructive work.
+    //
+    // RLS-C-S8 — this used to look for `db.$transaction`, which no longer exists:
+    // the route runs in three `withTenantDb` phases, and the FIRST of them now
+    // precedes the guard on purpose (it resolves the batch under the caller's own
+    // identity, because the guard needs the batch's financialAccountId to run at
+    // all). So the anchor moved to the DESTRUCTIVE STATEMENT ITSELF rather than to
+    // whatever opens a transaction — which is both what the comment above always
+    // meant and immune to the next change of opener.
+    const guardAt     = code.indexOf("resolveImportableFinancialAccount(");
+    const softDelete  = code.indexOf("transaction.updateMany");
+    check("guard precedes the soft-delete",
+      guardAt !== -1 && softDelete !== -1 && guardAt < softDelete, `guard@${guardAt} softDelete@${softDelete}`);
+    // …and the one thing that legitimately runs BEFORE the guard is a READ.
+    const firstPhase = code.indexOf("withTenantDb");
+    const resolveRead = code.indexOf("importBatch.findUnique");
+    check("the only pre-guard database work is the batch resolution READ",
+      firstPhase !== -1 && firstPhase < guardAt && resolveRead > firstPhase && resolveRead < guardAt,
+      `phase@${firstPhase} read@${resolveRead} guard@${guardAt}`);
+    check("every destructive write happens inside a tenant phase, never on a root client",
+      !/\bdb\s*\.\w/.test(code) && !/db\.\$transaction/.test(code));
   }
 
   if (failures > 0) {

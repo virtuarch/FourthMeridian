@@ -80,6 +80,14 @@ export interface MountPrincipalSummary {
 export interface SpaceMountAccess {
   canRead: boolean;
   canWrite: boolean;
+  /**
+   * PLATFORM OPS POLICIES (Slice 2) — may this principal change declared
+   * operational policy? Platform-only: computed by RANK from the grant level
+   * (CONTROL ≥ CONTROL); always false for a financial Space, where no such
+   * authority exists. Descriptive, like its siblings: the server gate is the
+   * authority, this only decides whether an editor is RENDERED.
+   */
+  canControl: boolean;
   /** Descriptive label of the resolved level (domain vocabulary). Not a role enum. */
   level: string;
 }

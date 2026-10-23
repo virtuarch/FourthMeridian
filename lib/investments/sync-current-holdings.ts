@@ -18,11 +18,33 @@
  * Pure core (isHoldingEligible / mapPlaidHoldingToRow / planHoldingSync) is
  * unit-testable without a DB; the thin DB binding applies the plan in one
  * transaction so a failure never deletes or corrupts valid existing rows.
+ *
+ * ── REVIEW-3 — reader status, and why this writer is deliberately KEPT ───────
+ * As of REVIEW-3 the brokerage `Holding` rows this writes have NO production
+ * reader — and as of W5 there is NO production Holding reader of any kind
+ * (the crypto-only bridge and btc-sync's wallet Holding upsert are both
+ * deleted; the general getHoldings reader went at REVIEW-3). This writer is
+ * therefore the LAST production toucher of the `Holding` table. It stays
+ * anyway, deliberately, because:
+ *   1. Its SyncCounts ARE the user-facing import evidence — `holdingsImported`
+ *      (link, lib/plaid/exchangeToken.ts), `holdingsUpdated` (refresh +
+ *      /api/plaid/investments/enable) and the per-account HOLDINGS coverage
+ *      facts (DF-2B/DF-2E) all derive from this reconciliation of the REAL
+ *      Plaid payload. The counts report what Plaid returned and was processed,
+ *      so they are honest regardless of who reads the table.
+ *   2. `Holding` remains the current-state projection the flag-off /rollback
+ *      posture falls back to; deleting the brokerage write while
+ *      INVESTMENT_OBSERVATIONS_ENABLED is still a kill switch would make that
+ *      switch one-way.
+ * DELETION CONDITION: retire this writer (and report the enable/refresh counts
+ * from the observation path) when the PositionObservation spine is declared the
+ * sole current-state authority and the Holding table's remaining readers are
+ * zero — tracked as the "crypto/holdings spine completion" workstream (P2-6
+ * close-out), not this program.
  */
 
 import type { Holding as PlaidHolding, Security } from "plaid";
-import type { Prisma, PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+import { inOneTransaction, type WriteClient } from "@/lib/db/write-phase";
 
 // ─── Pure core ────────────────────────────────────────────────────────────────
 
@@ -124,8 +146,6 @@ export function planHoldingSync(params: {
 
 // ─── DB binding ───────────────────────────────────────────────────────────────
 
-type Client = PrismaClient | Prisma.TransactionClient;
-
 export interface SyncCurrentHoldingsParams {
   financialAccountId: string;
   /** RAW, unfiltered Plaid holdings for THIS account. */
@@ -135,17 +155,26 @@ export interface SyncCurrentHoldingsParams {
   accountCurrency: string | null;
   /** false ⇒ degraded payload (is_investments_fallback_item); stale rows are NOT removed. */
   payloadComplete?: boolean;
-  client?: Client;
 }
 
 /**
  * Synchronize the current Holding projection for one account. Idempotent:
  * a same-payload re-run produces all-unchanged and no id churn. Only ever call
  * this after a SUCCESSFUL holdings fetch (a partial/failed fetch must not reach
- * here) so removal is safe. Applies the plan in a single transaction.
+ * here) so removal is safe. Applies the plan as ONE atomic unit.
+ *
+ * ── RLS-C-S8 — THE AUTHORITY IS THE FIRST PARAMETER, AND IT HAS NO DEFAULT ───
+ * It used to be `params.client ?? db`: an OPTIONAL authority, which is an
+ * AMBIENT one. Every one of this writer's call sites spelled a Plaid job and a
+ * tenant request identically, and the sites that forget are exactly the ones
+ * nobody reviews. Required means the compiler enumerates the callers; first
+ * means the authority is read next to the function's own name.
+ *
+ * A root client (`db`, `systemDb`) opens the transaction; a tenant phase's
+ * client joins ITS transaction. See lib/db/write-phase.ts for why that
+ * distinction is made in one place instead of three.
  */
-export async function syncCurrentHoldings(params: SyncCurrentHoldingsParams): Promise<SyncCounts> {
-  const client = params.client ?? db;
+export async function syncCurrentHoldings(client: WriteClient, params: SyncCurrentHoldingsParams): Promise<SyncCounts> {
   const removeStale = params.payloadComplete ?? true;
 
   const current: TargetRow[] = [];
@@ -164,14 +193,34 @@ export async function syncCurrentHoldings(params: SyncCurrentHoldingsParams): Pr
 
   const plan = planHoldingSync({ current, existing, removeStale });
 
-  // Single transaction: delete stale → update in place → insert new. A failure
+  // ONE atomic unit: delete stale → update in place → insert new. A failure
   // rolls back, so valid existing rows are never left corrupted or removed.
-  const apply = async (tx: Client) => {
+  // THIS IS A LOAD-BEARING REQUIREMENT, not a performance choice — the three
+  // statements are a reconciliation, and two of three applied is a projection
+  // that states positions the account does not hold.
+  const apply = async (tx: WriteClient) => {
     if (plan.deleteIds.length) {
       await tx.holding.deleteMany({ where: { id: { in: plan.deleteIds } } });
     }
     for (const u of plan.update) {
-      await tx.holding.update({ where: { id: u.id }, data: { ...u.row, financialAccountId: params.financialAccountId } });
+      // ⚠️ RLS-ACC-FK — `financialAccountId` IS DELIBERATELY ABSENT FROM THIS
+      // `data`, AND ITS ABSENCE IS THE POINT.
+      //
+      // It used to be re-stated here, which was a NO-OP TODAY and a silent
+      // relocation path TOMORROW. `plan.update` is derived from `existingRaw`,
+      // read moments earlier with `where: { financialAccountId:
+      // params.financialAccountId }`, so the clause read and wrote the identical
+      // expression — it could not change anything, and it bought nothing.
+      //
+      // What it DID buy was a live FK write on the holdings reconciliation path,
+      // which is exactly where a relocation would appear the moment the merge is
+      // extended: `reconcile.ts` re-points only `Transaction` and `DebtProfile`,
+      // leaving `Holding` (and PositionObservation / InvestmentEvent /
+      // ImportBatch / PositionReconstruction / PositionCoverage) STRANDED on the
+      // soft-deleted loser. The day somebody adds `Holding` to that merge, a
+      // sync that re-states the FK can quietly carry rows between accounts.
+      // Dropping the clause is behaviour-preserving today and removes the site.
+      await tx.holding.update({ where: { id: u.id }, data: u.row });
     }
     if (plan.insert.length) {
       await tx.holding.createMany({
@@ -179,12 +228,7 @@ export async function syncCurrentHoldings(params: SyncCurrentHoldingsParams): Pr
       });
     }
   };
-  // Use an interactive transaction only when not already inside one.
-  if ("$transaction" in client) {
-    await (client as PrismaClient).$transaction((tx) => apply(tx));
-  } else {
-    await apply(client);
-  }
+  await inOneTransaction(client, (tx) => apply(tx));
 
   if (plan.conflicts.length) {
     console.warn(

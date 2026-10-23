@@ -36,22 +36,22 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import {
   periodLabel,
-  periodRange,
   isExplicitPeriod,
-  incomeSourceLabel,
   type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import { formatDate } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
-import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
+import { liquidityIdsByReason, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import type { CashFlowPerspective as CashFlowPerspectiveMode } from "@/lib/transactions/cash-flow-projection";
 import { cashFlowStamp, compareCashFlow } from "@/lib/transactions/cash-flow-compare";
 import { buildCashFlowSpaceData } from "@/lib/transactions/cash-flow-space-data";
+import { resolveFinancialWindow } from "@/lib/perspectives/financial-window";
+import type { TimePreset } from "@/lib/perspectives/time-range";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { Surface, Block } from "@/components/atlas/Surface";
 import { TransactionCoverageNote } from "@/components/space/trust/TransactionCoverageNote";
 import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
+import { SpaceReadFailure } from "@/components/space/SpaceReadFailure";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { CashFlowSummaryWidget } from "@/components/space/widgets/CashFlowSummaryWidget";
 import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";
@@ -98,6 +98,8 @@ export function CashFlowWorkspace({
   compareTo,
   onSelectPeriod,
   onEnvelopeChange,
+  transactionsError = null,
+  onRetryTransactions,
 }: {
   transactions?:   Transaction[] | null;
   /** TX-2A — coverage state for an honest "history incomplete" caveat when the
@@ -107,7 +109,7 @@ export function CashFlowWorkspace({
   accounts:        { id: string; type: string }[];
   period:          CashFlowPeriod;
   /** Canonical As-of — the ANCHOR for the selected period. The window's end travels
-   *  with asOf (periodRange(period, asOf)), so Cash Flow is historical, not today-only. */
+   *  with asOf via the canonical FLOW window, so Cash Flow is historical, not today-only. */
   asOf:            string;
   /** Canonical compareTo (strictly-earlier) — anchors the then-vs-now comparison. */
   compareTo?:      string | null;
@@ -116,6 +118,11 @@ export function CashFlowWorkspace({
    *  own transactions + period) and emits the resulting trust envelope; the host
    *  merely relays it to the shell chip (mirrors Wealth/Investments/Liquidity). */
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
+  /** UI-006 — the shared transaction read FAILED (the sentence to show), or null.
+   *  With nothing loaded it replaces the workspace (never an endless "Loading" or
+   *  "No money moved"); over stale rows it is a one-line notice. */
+  transactionsError?: string | null;
+  onRetryTransactions?: () => void;
 }) {
   // Workspace-local semantic slice — the perspective toggle + measure filter,
   // relocated here from the host. The Hero / History widgets host the selector
@@ -130,7 +137,7 @@ export function CashFlowWorkspace({
   // The canonical As-of clock — the ONE anchor for every period→range resolution in
   // this workspace (the contract fold, the stamp, the calendar grid, the insights
   // comparison, the hero delta). Replacing the former implicit `new Date()` (today)
-  // makes the whole Cash Flow window travel with asOf: periodRange(period, asOf).
+  // makes the whole Cash Flow window travel with asOf, resolved by the ONE authority.
   const asOfClock = useMemo(() => () => new Date(`${asOf}T00:00:00`), [asOf]);
 
   // THE composition boundary — one canonical projection of the selected window,
@@ -149,10 +156,11 @@ export function CashFlowWorkspace({
       : null),
     [transactions, period, asOfClock],
   );
-  // ONE trust envelope from the stamp — shared by the shell (onEnvelopeChange) and the
-  // hero's TrustIndicator, so the two can never disagree.
+  // ONE trust envelope from the stamp — reported UP to the shell (onEnvelopeChange),
+  // whose ShellTrustRow renders its orthogonal caveats. The Cash Flow hero mounts no
+  // provenance badge of its own, so the envelope is not passed down to it.
   // V25-FINAL-1 — carry the window's FX-exclusion flag (a foreign row with no rate
-  // was excluded from income/spend/net) so the hero + shell chip disclose the total
+  // was excluded from income/spend/net) so the shell caveat chip discloses the total
   // is a partial. Same `unconverted` the headline authority (economicTotals) computes.
   const fxUnconverted = data?.unconverted ?? false;
   const envelope = useMemo(
@@ -174,7 +182,19 @@ export function CashFlowWorkspace({
   const change = useMemo<CashFlowHeroChange | null>(() => {
     if (!transactions || !data || data.rows.length === 0) return null;
     const clock = asOfClock;
-    const primaryStart = (period === "ALL" || isExplicitPeriod(period)) ? null : periodRange(period, clock()).start;
+    // CANONICAL FLOW WINDOW. A component must not derive a financial window
+    // itself — even a correct derivation is a second place the rule lives, and
+    // that is how the two parsers happened. Cash Flow asks a FLOW question
+    // (events on the displayed calendar dates), so it reads `flow`.
+    //
+    // ALL and explicit periods ("2026-07") are not relative presets and have no
+    // preset-derived start; the existing guard already returns null for them, so
+    // `period` is a relative preset wherever the window is resolved below.
+    const isRelative = period !== "ALL" && !isExplicitPeriod(period);
+    const primaryWindow = isRelative
+      ? resolveFinancialWindow({ preset: period as TimePreset, asOf, compareTo: null })
+      : null;
+    const primaryStart = primaryWindow?.flow.fromInclusiveISO ?? null;
     const compareToClock =
       compareTo && primaryStart && compareTo < primaryStart
         ? () => new Date(`${compareTo}T00:00:00`)
@@ -194,14 +214,21 @@ export function CashFlowWorkspace({
     const abs = cmp.delta.totals.net;
     const fromNet = cmp.then.totals.net;
     const pct = fromNet !== 0 ? (abs / Math.abs(fromNet)) * 100 : null;
-    const cmpRange = compareToClock ? periodRange(period, compareToClock()) : null;
-    const fromLabel = cmpRange
-      ? `${formatDate(cmpRange.start)} – ${formatDate(cmpRange.end)}`
+    // The SAME period resolved at the comparison anchor — again the canonical
+    // FLOW interval, so the label cannot describe a different window than the
+    // comparison actually used.
+    const cmpWindow = compareToClock && isRelative
+      ? resolveFinancialWindow({ preset: period as TimePreset, asOf: compareTo!, compareTo: null })
+      : null;
+    const fromLabel = cmpWindow
+      ? `${formatDate(cmpWindow.flow.fromInclusiveISO)} – ${formatDate(cmpWindow.flow.toInclusiveISO)}`
       : periodLabel(then);
     return { abs, pct, fromLabel };
-  }, [transactions, data, period, compareTo, perspective, liqCtx, txCtx, asOfClock]);
+  }, [transactions, data, period, compareTo, perspective, liqCtx, txCtx, asOfClock, asOf]);
 
-  const displayCurrency = txCtx?.target ?? DEFAULT_DISPLAY_CURRENCY;
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const displayCurrency = useAggregateCurrency(txCtx);
 
   // Publish section anchors to the sidebar (cleared on unmount).
   const publishSections = useSpaceSectionsPublisher();
@@ -221,6 +248,11 @@ export function CashFlowWorkspace({
       <CashFlowCategoryLedger
         invalidationKey={periodKey(period)}
         items={data.outflowByCategory}
+        // CF-RECON-1 — THE window's spending total (economicSpend(summary), the
+        // Spending tile's figure), plus the refunds that no listed category could
+        // absorb, so the lines reconcile to it on screen.
+        total={data.spending.net}
+        adjustment={{ label: "Net of refunds with no matching purchase in this period", value: data.spending.refundsUnapplied }}
         ctx={txCtx}
         totalLabel="Total spending"
         browserTitle="Spending categories"
@@ -231,22 +263,30 @@ export function CashFlowWorkspace({
         sliceSubtitle="Spending in this category"
         emptyHeadline="No spending in this period"
         emptySubline="Spending by category appears once you have outflows."
-        sliceFor={(item) => data.rows.filter((t) => t.category === item.id && (isCostFlow(t.flowType) || isRefund(t.flowType)))}
+        sliceFor={(item) => byId(data.rows, item.transactionIds)}
       />
     );
   }
 
   // ── Income by Source — perspective-aware, from the contract's canonical slices
-  //    (cashInByReason on the liquidity axis, incomeBySource on the economic axis).
+  //    (cashInByReason on the liquidity axis, the canonical income rollup on the
+  //    economic axis — v2.6-TRUTH-6 retired incomeBySource as a UI authority).
   //    CF-4: same exploration ledger as Spending (consistency). ──
   function renderIncome(): ReactNode {
     if (data == null) return <LoadingCard />;
     if (perspective === "liquidity") {
       if (data.rows.length === 0) return <EmptyCard headline="No money moved in this period" sub="Cash in by source appears once cash arrives." />;
+      // ONE canonical classification pass over the windowed rows; the slice
+      // below reads identities from it rather than re-classifying per item.
+      const cashInIds = liquidityIdsByReason(data.rows as LiquidityTx[], liqCtx, "CASH_IN");
       return (
         <CashFlowCategoryLedger
         invalidationKey={periodKey(period)}
-          items={data.cashInByReason.map((l) => ({ id: l.reason, label: l.label, value: l.amount }))}
+          items={data.cashInByReason.map((l) => ({
+            id: l.reason, label: l.label, value: l.amount,
+            transactionIds: cashInIds.get(l.reason) ?? [],
+          }))}
+          total={data.summary.cashIn}
           ctx={txCtx}
           totalLabel="Total cash in"
           browserTitle="Cash in by source"
@@ -257,10 +297,7 @@ export function CashFlowWorkspace({
           sliceSubtitle="Cash in from this source"
           emptyHeadline="No cash arrived in this period"
           emptySubline="Cash in by source appears once cash arrives."
-          sliceFor={(item) => (data.rows as LiquidityTx[]).filter((t) => {
-            const c = classifyLiquidity(t, liqCtx);
-            return c.effect === "CASH_IN" && c.reason === item.id;
-          })}
+          sliceFor={(item) => byId(data.rows, item.transactionIds)}
         />
       );
     }
@@ -268,9 +305,17 @@ export function CashFlowWorkspace({
     return (
       <CashFlowCategoryLedger
         invalidationKey={periodKey(period)}
-        items={data.incomeBySource}
+        // v2.6-TRUTH-6 — the CANONICAL income composition, straight off the
+        // contract. Each item IS a rollup line, so its value and its row
+        // identities come from the same object the headline sums; a card and a
+        // headline cannot drift apart because there is nothing to drift.
+        // `incomeBySource` (payer labels) is no longer an independent authority.
+        items={data.income.lines.map((l) => ({
+          id: l.incomeClass, label: l.label, value: l.amount, transactionIds: l.rowIds,
+        }))}
+        total={data.income.broad}
         ctx={txCtx}
-        totalLabel="Total income"
+        totalLabel="Total income (bank transactions)"
         browserTitle="Income sources"
         browserEyebrow="Income"
         noun="sources"
@@ -279,14 +324,26 @@ export function CashFlowWorkspace({
         sliceSubtitle="Income from this source"
         emptyHeadline="No income in this period"
         emptySubline="Income by source appears once you have inflows."
-        sliceFor={(item) => data.rows.filter((t) => isIncome(t.flowType) && incomeSourceLabel(t) === item.id)}
+        sliceFor={(item) => byId(data.rows, item.transactionIds)}
       />
+    );
+  }
+
+  // UI-006 — the read failed and nothing is loaded: say so instead of loading forever.
+  if (transactionsError && transactions == null) {
+    return (
+      <div className="min-w-0">
+        <SpaceReadFailure what="cash flow activity" message={transactionsError} onRetry={onRetryTransactions} />
+      </div>
     );
   }
 
   return (
     <div className="space-y-8 sm:space-y-10 min-w-0">
-      {/* ① Summary — the editorial lede (Net + trust + delta + perspective toggle)
+      {transactionsError && (
+        <SpaceReadFailure variant="inline" what="cash flow activity" message={transactionsError} onRetry={onRetryTransactions} />
+      )}
+      {/* ① Summary — the editorial lede (Net + delta + perspective toggle)
            over the headless breakdown body (Cash In/Out tiles + movement context). */}
       <section id="cashflow-summary" className="scroll-mt-20">
         <CashFlowHero
@@ -298,7 +355,6 @@ export function CashFlowWorkspace({
           period={period}
           asOf={asOf}
           change={change}
-          envelope={envelope}
         />
         <div className="mt-5">
           <CashFlowSummaryWidget
@@ -396,4 +452,19 @@ export function CashFlowWorkspace({
       </Block>
     </div>
   );
+}
+
+/**
+ * Rows for a contribution, BY IDENTITY.
+ *
+ * The drill-down reads the ids the authority recorded while computing the total,
+ * so a slice cannot include a row its own total excluded — which is exactly what
+ * a re-derived predicate did: the grouping functions skip a row whose amount
+ * cannot be converted (V25-FINAL-1) and the React filter did not.
+ *
+ * This is a lookup, not a classification. React decides nothing here.
+ */
+function byId<T extends { id: string }>(rows: readonly T[], ids: readonly string[]): T[] {
+  const want = new Set(ids);
+  return rows.filter((r) => want.has(r.id));
 }

@@ -41,8 +41,9 @@ export function MembersRoster({
   isOwner: boolean;
   changingRoleId: string | null;
   removingId: string | null;
-  onChangeRole: (userId: string, role: string) => void;
-  onRemove: (userId: string) => void;
+  onChangeRole: (userId: string, role: string) => void | Promise<unknown>;
+  /** UI-003 — reached only through MemberDetail's ConfirmDialog; resolves to an error message on refusal. */
+  onRemove: (userId: string) => void | Promise<string | null | void>;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = selectedId ? members.find((m) => m.user.id === selectedId) ?? null : null;

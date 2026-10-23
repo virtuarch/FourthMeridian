@@ -1,15 +1,43 @@
 /**
- * components/ai/ai.test.ts  (AI Experience Convergence — AI-1)
+ * components/ai/ai.test.ts  (AI Experience Convergence — AI-1, conversation-first AI-3)
  *
  * Guards for the AI presentation layer. Standalone tsx (house pattern):
  * npx tsx components/ai/ai.test.ts — exits 0/1. Auto-discovered by run-tests.
- * The components are React (no DOM runner in-repo), so this source-scans the
- * load-bearing boundaries: presentation-only (no fetch), no workspace/runtime
- * imports, no financial calculation, and the honest future-slot contract.
+ * There is no DOM runner in-repo, so this (a) source-scans the load-bearing
+ * boundaries: presentation-only (no fetch), no workspace/runtime imports, no
+ * financial calculation, the honest future-slot contract; and (b) renders the real
+ * components to static markup with react-dom/server — which is exactly the first
+ * paint — to pin the conversation-first layout contract (AI-3).
  */
 
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
+import { createElement as h } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { AiShell } from "@/components/ai/AiShell";
+import { Composer } from "@/components/ai/Composer";
+import { ConversationView } from "@/components/ai/ConversationView";
+import { StarterLine } from "@/components/ai/StarterLine";
+import {
+  EMPTY_STATE_SUGGESTIONS,
+  STARTER_LINES,
+  conversationLayoutMode,
+  isSendKey,
+  nextStarterIndex,
+  normalizeStarterIndex,
+  starterIndexFrom,
+  composeStarters,
+} from "@/components/ai/conversation-surface";
+import { AnalyzeClient } from "@/components/dashboard/AnalyzeClient";
+import { KnowledgeGapCard } from "@/components/ai/KnowledgeGapCard";
+import { KnowledgeClarificationCard } from "@/components/dashboard/KnowledgeAcquisitionCard";
+import { readKnowledgeGaps } from "@/lib/ai/conversation/knowledge-gaps";
+import { AiDisclosure, AI_DISCLOSURE_LINE, AI_DISCLOSURE_ABOUT } from "@/components/ai/AiDisclosure";
+import {
+  GuidanceNote, GUIDANCE_NOTE_STANDARD, GUIDANCE_NOTE_COMPACT, GUIDANCE_NOTE_ADJACENCY,
+} from "@/components/ai/GuidanceNote";
+import { disclosurePlan } from "@/lib/ai/conversation/guidance";
+import { AnswerCard } from "@/components/ai/AnswerCard";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -19,10 +47,11 @@ function check(name: string, cond: boolean, detail?: string): void {
 const AI_DIR = path.join(process.cwd(), "components", "ai");
 const read = (f: string) => readFileSync(path.join(AI_DIR, f), "utf8");
 const files = readdirSync(AI_DIR).filter((f) => (f.endsWith(".tsx") || f.endsWith(".ts")) && !f.endsWith(".test.ts"));
+const noop = () => {};
 
 console.log("the named components exist");
 {
-  for (const f of ["AiShell.tsx", "ConversationView.tsx", "MessageCard.tsx", "AnswerCard.tsx", "Composer.tsx", "SuggestedPrompt.tsx", "KnowledgeGapCard.tsx", "index.ts"]) {
+  for (const f of ["AiShell.tsx", "ConversationView.tsx", "MessageCard.tsx", "AnswerCard.tsx", "Composer.tsx", "SuggestedPrompt.tsx", "KnowledgeGapCard.tsx", "StarterLine.tsx", "conversation-surface.ts", "index.ts"]) {
     check(`components/ai/${f} exists`, existsSync(path.join(AI_DIR, f)));
   }
 }
@@ -59,6 +88,330 @@ console.log("kit reuse (Composer on Atlas Textarea)");
 {
   check("Composer builds on the Atlas Textarea (not a bare <textarea>)",
     /from "@\/components\/atlas\/fields"/.test(read("Composer.tsx")) && !/<textarea/.test(read("Composer.tsx")));
+}
+
+// ── AI-3: conversation-first layout ─────────────────────────────────────────────
+
+console.log("layout mode is derived from the turn count alone");
+{
+  check("no turns ⇒ empty", conversationLayoutMode(0) === "empty");
+  check("one (just-submitted) user turn ⇒ conversation", conversationLayoutMode(1) === "conversation");
+  check("restored history ⇒ conversation", conversationLayoutMode(6) === "conversation");
+  const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
+  // ⚠️ STILL ONE AUTHORITY, WITH ONE EXTRA INPUT. A returning user's first paint
+  // must not be the empty state — watching a starter headline be replaced by your
+  // own conversation is the flicker this avoids — so `restoring` counts as a turn
+  // until the local cache has been consulted. It is not a state machine: the
+  // layout is still `conversationLayoutMode` of a number.
+  check("AnalyzeClient derives mode from the turn count (no page state machine)",
+    /conversationLayoutMode\(restoring \? 1 : messages\.length\)/.test(client));
+  check("…and `restoring` is seeded by the server so the first render agrees with the HTML",
+    /useState\(expectTranscript\)/.test(client));
+  check("AnalyzeClient starts with no synthetic greeting turn", /useState<Message\[\]>\(\[\]\)/.test(client));
+}
+
+console.log("1. empty conversation — starter in reading region, anchored composer");
+{
+  const html = renderToStaticMarkup(h(AnalyzeClient, {
+    advice: null, starterIndex: 2, spaceId: "space_active", spaceName: "Household", starter: composeStarters(null),
+    userId: "usr_1", expectTranscript: false,
+  }));
+  check("layout is empty", html.includes('data-ai-layout="empty"'));
+  check("composer sits in the empty dock", html.includes('data-ai-dock="empty"') && !html.includes('data-ai-dock="conversation"'));
+  check("empty reading region scrolls without a conversation log", html.includes("data-ai-scroll") && !html.includes('role="log"'));
+  check("the server-chosen starter line is shown", html.includes(STARTER_LINES[2]));
+  check("the starter is a heading under the page h1", /<h1[^>]*>Fourth Meridian AI<\/h1>/.test(html) && /<h2[^>]*>What do you want|<h2[^>]*>Want to project something\?<\/h2>/.test(html));
+  check("the composer is present exactly once", (html.match(/<textarea/g) ?? []).length === 1);
+  for (const s of EMPTY_STATE_SUGGESTIONS) check(`suggestion chip "${s.label}" shown`, html.includes(`>${s.label}</button>`));
+  check("no 'New chat' control before a conversation exists", !html.includes("New chat"));
+  check("the starter and suggestions precede the anchored composer",
+    html.indexOf(STARTER_LINES[2]) < html.indexOf("<textarea") && html.indexOf(EMPTY_STATE_SUGGESTIONS[0].label) < html.indexOf("<textarea"));
+  // AI-4: no Space selector — the active Space is named as plain text.
+  check("no Space selector (no <select>, no \"All My Spaces\")", !html.includes("<select") && !html.includes("All My Spaces"));
+  check("the active Space name is shown as plain text in the header",
+    /<header[\s\S]*<span class="sr-only">Space: <\/span>Household<\/p>[\s\S]*<\/header>/.test(html));
+}
+
+console.log("1a. personal starters (memory-backed) render as ordinary chips");
+{
+  const starter = composeStarters({
+    headline: "Still aiming for $750K by 2029?",
+    prompts: [
+      { label: "Am I on pace for $750K by 2029?", prompt: "Am I still on pace for my $750K net worth goal by the end of 2029?", topic: "goal" },
+      { label: "Check my year-end cash projection", prompt: "How is my cash projection for the end of this year tracking?", topic: "cash-projection" },
+    ],
+  });
+  const html = renderToStaticMarkup(h(AnalyzeClient, { advice: null, starterIndex: 0, spaceId: "s1", spaceName: "Mine", starter,
+    userId: "usr_1", expectTranscript: false }));
+  check("the personal headline replaces the generic line", html.includes(">Still aiming for $750K by 2029?</h2>") && !STARTER_LINES.some((l) => html.includes(l)));
+  check("personal chips lead, generics fill, the duplicate cash chip steps aside",
+    html.indexOf(">Am I on pace for $750K by 2029?</button>") > -1
+    && html.indexOf(">Am I on pace for $750K by 2029?</button>") < html.indexOf(">Check my year-end cash projection</button>")
+    && html.includes(">How am I looking?</button>") && !html.includes(">Project my cash</button>"));
+  check("no data attributes or hidden fields ride on a chip", !/<button[^>]*data-(memory|topic|id)/.test(html) && !html.includes('type="hidden"'));
+  const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
+  check("a chip sends its prose through the ordinary sendMessage path",
+    /starter\.prompts\.map\(\(s\) => \([\s\S]*onSelect=\{\(\) => sendMessage\(s\.prompt\)\}/.test(client));
+  check("a personal headline never idles away", /const still = frozen \|\| Boolean\(headline\);/.test(read("StarterLine.tsx")));
+}
+
+console.log("1b. one conversation, one active Space");
+{
+  const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
+  const page = readFileSync(path.join(process.cwd(), "app", "(shell)", "dashboard", "analyze", "page.tsx"), "utf8");
+  const route = readFileSync(path.join(process.cwd(), "app", "api", "ai", "chat", "route.ts"), "utf8");
+  const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("the client fetches no Space list and keeps no selector state",
+    !/api\/spaces|selectedSpaceId|setSelectedSpaceId|ELIGIBLE_ROLES|"master"|<Select/.test(code(client)));
+  check("the page resolves the dashboard's ACTIVE Space", /const ctx = await getSpaceContext\(\);/.test(page));
+  check("…and hands the client its id and name", /spaceId=\{ctx\.spaceId\}/.test(page) && /spaceName=\{ctx\.space\.name\}/.test(page));
+  check("a different Space remounts the client (new chat)", /key=\{ctx\.spaceId\}/.test(page));
+  check("the client posts exactly that id", /body: JSON\.stringify\(\{\s*spaceId,/.test(client));
+  // RLS-C-S3 — one leading identifier: the advice read takes its database
+  // authority first. The SPACE claim is unchanged, and the tenant wrapper is
+  // pinned on the line below.
+  check("advice is read for the same Space",
+    /getLatestAdvice\([A-Za-z_$][\w$]*, \{ spaceId: ctx\.spaceId \}\)/.test(page));
+  check("…and it runs AS the session's user, not on the migration principal",
+    /withTenantDb\(ctx\.userId, \(tx\) => getLatestAdvice\(tx,/.test(page));
+  check("memory is read scoped to this Space AND this user",
+    /recallMemories\(\s*tx,\s*\{ spaceId: ctx\.spaceId, ownerUserId: ctx\.userId \}/.test(page));
+  // RLS slice A — and it runs AS that user: the read is wrapped in the tenant
+  // boundary with the identity from the resolved Space context, so the Postgres
+  // policies on SpaceMemory apply on top of the application scope above.
+  check("…under the tenant boundary, with the identity from server-side state",
+    /withTenantDb\(ctx\.userId, \(tx\) => recallMemories\(/.test(page));
+  check("memory failure falls back instead of failing the page", /catch \{\s*return null;\s*\}/.test(page));
+  check("no model call, no transcript read on page load",
+    !/openai|runStatelessTurn|CHAT_MODEL|from "@\/lib\/ai\/conversation\/(engine|turn)"/.test(page));
+  check("raw memory rows never reach the client (only composed display strings)",
+    /starter=\{composeStarters\(personal\)\}/.test(page) && !/memories=|payload=/.test(page));
+  check("the route still re-resolves the posted Space and refuses a mismatch",
+    /resolveSpaceContext\(user\.id, parsed\.spaceId\)/.test(route) && /spaceCtx\.spaceId !== parsed\.spaceId[\s\S]{0,80}403/.test(route));
+  check("the sealed carrier still binds user + Space + tail",
+    /const binding = \{ userId: user\.id, spaceId: spaceCtx\.spaceId,/.test(route) && /openRuntimeState\(/.test(route));
+}
+
+console.log("2. existing conversation — first paint is already conversation mode");
+{
+  const messages = [
+    { role: "user" as const, content: "How am I looking?" },
+    { role: "assistant" as const, content: "**Net worth** is up this month." },
+  ];
+  const html = renderToStaticMarkup(
+    h(AiShell, {
+      mode: conversationLayoutMode(messages.length),
+      lead: h(StarterLine, { initialIndex: 0, frozen: false }),
+      aside: h("div", null, "SUGGESTIONS"),
+      composer: h(Composer, { value: "", onChange: noop, onSubmit: noop }),
+      children: h(ConversationView, { messages }),
+    }),
+  );
+  check("layout is conversation", html.includes('data-ai-layout="conversation"'));
+  check("composer is docked", html.includes('data-ai-dock="conversation"'));
+  check("conversation is the scroll region, rendered as a log", html.includes("data-ai-scroll") && html.includes('role="log"'));
+  check("both turns are visible", html.includes("How am I looking?") && html.includes("Net worth"));
+  check("no starter line, no suggestions, no centered state", !STARTER_LINES.some((l) => html.includes(l)) && !html.includes("SUGGESTIONS") && !html.includes('data-ai-dock="empty"'));
+  check("composer comes after the conversation (bottom-aligned)", html.indexOf('role="log"') < html.indexOf("<form"));
+  check("a fade separates the docked composer from scrolling text", html.includes("linear-gradient(to top, var(--bg-base), transparent)"));
+}
+
+console.log("3. first submit — composer stays mounted; the user turn enters conversation mode");
+{
+  const shell = read("AiShell.tsx");
+  check("AiShell renders the composer in one unconditional slot", (shell.match(/\{composer\}/g) ?? []).length === 1);
+  check("the empty reading content is independent of the composer", /\{lead\}/.test(shell) && /\{aside\}/.test(shell));
+  check("the composer stays anchored in both modes", /data-ai-dock=\{mode\} className="shrink-0 relative pt-1"/.test(shell));
+  const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
+  check("the user turn is appended before the request is sent",
+    client.indexOf("setMessages(nextMessages)") > -1 && client.indexOf("setMessages(nextMessages)") < client.indexOf('fetch("/api/ai/chat"'));
+  const busy = renderToStaticMarkup(h(ConversationView, { messages: [{ role: "user" as const, content: "Project my cash" }], busy: true }));
+  check("after the first submit the user's message and a thinking status render", busy.includes("Project my cash") && busy.includes('role="status"'));
+}
+
+console.log("4. input — typing + submission still go through the existing flow");
+{
+  const html = renderToStaticMarkup(h(Composer, { value: "Can I afford this?", onChange: noop, onSubmit: noop }));
+  check("the draft renders in the textarea", html.includes(">Can I afford this?</textarea>"));
+  check("the textarea has a real <label>", /<label for="([^"]+)"[^>]*>Message Fourth Meridian AI<\/label>/.test(html) && /<textarea[^>]*id="[^"]+-input"/.test(html));
+  check("it is a form with a submit button", html.includes("<form") && /<button type="submit"[^>]*aria-label="Send message"/.test(html));
+  check("send is enabled for a non-empty draft", !/<button type="submit"[^>]*\sdisabled=""/.test(html));
+  const blank = renderToStaticMarkup(h(Composer, { value: "   ", onChange: noop, onSubmit: noop }));
+  check("send is disabled for a blank draft", /<button type="submit"[^>]*\sdisabled=""/.test(blank));
+  const busy = renderToStaticMarkup(h(Composer, { value: "", onChange: noop, onSubmit: noop, onStop: noop, busy: true }));
+  check("busy shows an accessible stop button, not send", busy.includes('aria-label="Stop generating"') && !busy.includes("Send message"));
+  check("Enter sends", isSendKey({ key: "Enter", shiftKey: false }));
+  check("Shift+Enter does not send", !isSendKey({ key: "Enter", shiftKey: true }));
+  check("an IME-confirming Enter does not send", !isSendKey({ key: "Enter", shiftKey: false, isComposing: true }));
+  check("other keys do not send", !isSendKey({ key: "a", shiftKey: false }));
+}
+
+console.log("5. backend contract unchanged");
+{
+  const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
+  check("posts to /api/ai/chat", /fetch\("\/api\/ai\/chat", \{\s*method: "POST"/.test(client));
+  check("body is {spaceId, messages[{role, content}]}",
+    /spaceId,/.test(client) && /messages: nextMessages\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(client));
+  check("reads {message, knowledgeGaps, knowledgeGapMode}", /data\.message/.test(client) && /data\.knowledgeGaps/.test(client) && /data\.knowledgeGapMode/.test(client));
+  check("still non-streaming (one JSON response)", /await res\.json\(\)/.test(client) && !/getReader\(\)|EventSource/.test(client));
+  // ⚠️ ONE DECLARATION OF THE RESPONSE, SHARED WITH THE ROUTE. The client used to
+  // restate the shape inline, which is how a server field and a client field drift
+  // into two subtly different contracts.
+  check("the response is typed by the shared contract, not an inline literal",
+    /as AiChatResponse/.test(client) && /AiChatResponse/.test(readFileSync(path.join(process.cwd(), "types", "index.ts"), "utf8")));
+  check("the gaps are narrowed at the boundary, not trusted wholesale",
+    /readKnowledgeGaps\(data\.knowledgeGaps\)/.test(client));
+  // A knowledge gap travels with a 200; a refusal is the other branch entirely.
+  check("gaps are read on the OK path and never on the error path",
+    client.indexOf("readKnowledgeGaps(") < client.indexOf("data.error ??"));
+  check("the request still sends role and content only — a gap cannot be posted back",
+    !/knowledgeGaps:[^\n]*JSON\.stringify|body: JSON\.stringify\([^)]*knowledgeGap/.test(client));
+}
+
+console.log("5a. a knowledge gap renders beneath the answer it belongs to");
+{
+  const gaps = [
+    { accountId: "a1", accountName: "Amex Platinum", field: "apr" as const, label: "APR", debtSubtype: "credit_card" },
+  ];
+  const extras = () => h(KnowledgeGapCard, {
+    children: h(KnowledgeClarificationCard, { gaps, onExpand: noop, onSnooze: noop }),
+  });
+  const view = renderToStaticMarkup(h(ConversationView, {
+    messages: [
+      { role: "user" as const, content: "How fast can I clear the card?" },
+      { role: "assistant" as const, content: "About eleven months at your current pace." },
+    ],
+    renderExtras: (i: number) => (i === 1 ? extras() : null),
+  }));
+
+  check("the answer renders", view.includes("About eleven months at your current pace."));
+  check("the gap renders too", view.includes("APR") && view.includes("Amex Platinum"));
+  check("…in words, not by icon or colour alone",
+    view.includes("missing for") && view.includes("adding it improves accuracy"));
+  check("…beneath the answer, in document order",
+    view.indexOf("About eleven months") < view.indexOf("Amex Platinum"));
+  check("…under a quiet eyebrow, not a warning box",
+    view.includes("Sharpen this answer") && !/role="alert"|aria-live/.test(view));
+  check("the conversation log is the only announced region",
+    (view.match(/role="log"/g) ?? []).length === 1);
+  check("it offers an action and a way out", view.includes("Update APR") && view.includes("Not now"));
+  check("it stays inside the reading column — no overflow container of its own",
+    !/overflow-x|w-screen|absolute/.test(view.slice(view.indexOf("Sharpen this answer"))));
+
+  // The control: the same answer with no gap is the answer and nothing else.
+  const plain = renderToStaticMarkup(h(ConversationView, {
+    messages: [{ role: "assistant" as const, content: "About eleven months at your current pace." }],
+    renderExtras: () => null,
+  }));
+  check("an answer with no gap renders no frame at all",
+    !plain.includes("Sharpen this answer") && !plain.includes("Not now"));
+  check("…and the empty conversation is untouched by any of it",
+    !renderToStaticMarkup(h(ConversationView, { messages: [] })).includes("Sharpen this answer"));
+
+  // A malformed extra must cost the extra, never the answer.
+  const junk = readKnowledgeGaps([{ accountId: "a1" }, "nope", null]);
+  check("a malformed payload narrows to nothing, so nothing renders", junk.length === 0);
+  check("…and the answer is unaffected by that", plain.includes("About eleven months"));
+}
+
+console.log("6. starter copy — approved lines only, never fights the user");
+{
+  check("exactly the six approved lines", STARTER_LINES.length === 6 && STARTER_LINES[0] === "What do you want to check today?");
+  for (const r of [0, 0.2, 0.5, 0.9999999, 1, -1, Number.NaN]) {
+    const i = starterIndexFrom(r);
+    check(`starterIndexFrom(${r}) is a valid index`, Number.isInteger(i) && i >= 0 && i < STARTER_LINES.length);
+  }
+  check("an out-of-range prop still selects an approved line", normalizeStarterIndex(13) === 1 && normalizeStarterIndex(-1) === 5 && normalizeStarterIndex(1.5) === 0);
+  check("the idle swap cycles through the list", nextStarterIndex(STARTER_LINES.length - 1) === 0);
+  for (let i = 0; i < STARTER_LINES.length; i++) {
+    const html = renderToStaticMarkup(h(StarterLine, { initialIndex: i, frozen: false }));
+    check(`starter ${i} renders its approved line, fully visible`, html.includes(STARTER_LINES[i]) && html.includes("opacity:1"));
+  }
+  const starter = read("StarterLine.tsx");
+  check("the swap timer does not run once frozen (or when personal)", /const still = frozen \|\| Boolean\(headline\);/.test(starter) && /if \(still\) return;/.test(starter));
+  check("the swapping heading is not a live region", !/aria-live|role="status"/.test(starter));
+  const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
+  check("focus or typing freezes the starter", /onFocus=\{\(\) => setComposerEngaged\(true\)\}/.test(client) && /frozen=\{composerEngaged \|\| input\.length > 0\}/.test(client));
+  const page = readFileSync(path.join(process.cwd(), "app", "(shell)", "dashboard", "analyze", "page.tsx"), "utf8");
+  check("the starter is chosen server-side per request (no hydration mismatch)", /starterIndexFrom\(Math\.random\(\)\)/.test(page) && /starterIndex=\{starterIndex\}/.test(page));
+}
+
+console.log("7. responsive / layout classes");
+{
+  const composer = renderToStaticMarkup(h(Composer, { value: "", onChange: noop, onSubmit: noop }));
+  check("composer shares the reading-column width", composer.includes("max-w-3xl mx-auto w-full"));
+  check("textarea is 16px below sm (no iOS focus zoom)", composer.includes("max-sm:text-base"));
+  check("keyboard hint hidden on touch-sized screens", /class="hidden sm:block[^"]*"/.test(composer));
+  check("textarea has a viewport cap and keeps multiline drafts scrollable", /maxHeight: "min\(200px, 25dvh\)"/.test(read("Composer.tsx")) && /!overflow-y-auto/.test(read("Composer.tsx")));
+  check("textarea auto-grows to a cap", /maxHeightPx=\{200\}/.test(read("Composer.tsx")));
+  const log = renderToStaticMarkup(h(ConversationView, { messages: [{ role: "user" as const, content: "hi" }] }));
+  check("conversation column is max-w-3xl (768px) and centered", log.includes("max-w-3xl mx-auto w-full"));
+  check("conversation leaves bottom padding above the dock", /role="log"[^>]*class="[^"]*pb-10/.test(log));
+  const shell = read("AiShell.tsx");
+  const shellCode = shell.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("shell height uses dynamic viewport units, in CSS", /h-\[calc\(var\(--ai-viewport-height,100dvh\)-/.test(shell) && !/ResizeObserver/.test(shellCode));
+  check("visual viewport resizing keeps the composer above the keyboard",
+    /viewport\.addEventListener\("resize", resize\)/.test(shell));
+  check("scrolling stays inside the conversation container", /overflow-y-auto overscroll-contain/.test(shell) && /closest<HTMLElement>\("\[data-ai-scroll\]"\)/.test(read("ConversationView.tsx")));
+}
+
+console.log("8. the financial-guidance boundary (advice-boundary slice)");
+{
+  // ── Persistent disclosure: present in BOTH layouts, at every width, collapsed by default.
+  for (const mode of ["empty", "conversation"] as const) {
+    const html = renderToStaticMarkup(h(AiShell, {
+      mode, composer: h(Composer, { value: "", onChange: noop, onSubmit: noop }),
+      children: h(ConversationView, { messages: [{ role: "user" as const, content: "hi" }] }),
+    }));
+    check(`persistent disclosure is present in ${mode} mode`, html.includes("data-ai-disclosure") && html.includes(AI_DISCLOSURE_LINE.split(" · ")[1]));
+  }
+  const disclosure = renderToStaticMarkup(h(AiDisclosure));
+  check("…and is not hidden at any width (no hidden/sm: visibility class on it)",
+    !/<details[^>]*class="[^"]*\bhidden\b/.test(disclosure));
+  check("…its explanation opens with an accessible dialog trigger", /<button[^>]*aria-haspopup="dialog"/.test(disclosure) && /aria-expanded="false"/.test(disclosure) && !disclosure.includes("<details"));
+  check("…uses the shared responsive Panel", /<Panel open=/.test(read("AiDisclosure.tsx")));
+  check("…which says: AI-generated, can be wrong, not a licensed professional, not the only basis",
+    /generated by AI/.test(AI_DISCLOSURE_ABOUT.join(" ")) && /incomplete or wrong/.test(AI_DISCLOSURE_ABOUT.join(" "))
+      && /not a licensed financial adviser, broker, tax adviser or attorney/.test(AI_DISCLOSURE_ABOUT.join(" "))
+      && /shouldn't be the only basis/.test(AI_DISCLOSURE_ABOUT.join(" ")));
+  check("…and claims nothing counsel has not decided",
+    !/registered|regulated by|approved|we are not an investment adviser/i.test(read("AiDisclosure.tsx").replace(/\/\*[\s\S]*?\*\//g, "")));
+  check("…below the input, never over the conversation", (() => {
+    const composer = renderToStaticMarkup(h(Composer, { value: "", onChange: noop, onSubmit: noop }));
+    return composer.indexOf("<textarea") < composer.indexOf("data-ai-disclosure") && !/absolute|fixed/.test(read("AiDisclosure.tsx").replace(/\/\*[\s\S]*?\*\//g, ""));
+  })());
+
+  // ── Contextual note: drawn from the plan, beside the answer, never over it.
+  const full = renderToStaticMarkup(h(GuidanceNote, { tier: "STANDARD", form: "FULL", adjacencies: [] }));
+  check("a full standard note says it is AI planning guidance, not licensed advice", full.includes(GUIDANCE_NOTE_STANDARD) && /role="note"/.test(full));
+  const heightened = renderToStaticMarkup(h(GuidanceNote, { tier: "HEIGHTENED", form: "FULL", adjacencies: ["SECURITIES", "TAX"] }));
+  check("a heightened note adds one sentence per subject",
+    heightened.includes(GUIDANCE_NOTE_STANDARD.slice(0, 40)) && heightened.includes(GUIDANCE_NOTE_ADJACENCY.SECURITIES.replace("'", "&#x27;").slice(0, 20))
+      && heightened.includes(GUIDANCE_NOTE_ADJACENCY.TAX.slice(0, 20)));
+  const compact = renderToStaticMarkup(h(GuidanceNote, { tier: "HEIGHTENED", form: "COMPACT", adjacencies: ["SECURITIES"] }));
+  check("a compact reminder is one short line, without the paragraph",
+    compact.includes(GUIDANCE_NOTE_COMPACT.replace("·", "&#183;")) || compact.includes(GUIDANCE_NOTE_COMPACT));
+  check("…and without the full sentence", !compact.includes(GUIDANCE_NOTE_STANDARD.slice(0, 40)));
+  check("every adjacency has its sentence", Object.values(GUIDANCE_NOTE_ADJACENCY).every((x) => x.length > 20));
+  check("the note neither hides nor collapses anything", !/absolute|fixed|(?<!aria-)hidden|<details|onClick|useState/.test(read("GuidanceNote.tsx").replace(/\/\*[\s\S]*?\*\//g, "")));
+  const card = renderToStaticMarkup(h(AnswerCard, { message: "Paying $20k toward the card at 28.99% APR saves …" }, h(GuidanceNote, { tier: "STANDARD", form: "FULL", adjacencies: [] })));
+  check("the answer prose comes first; the note sits beneath it", card.indexOf("28.99% APR") > -1 && card.indexOf("28.99% APR") < card.indexOf('role="note"'));
+
+  // ── Ordinary analysis is not polluted: the plan the client renders from draws nothing.
+  const ordinary = disclosurePlan([null, { level: "UNDERSTANDING", adjacencies: [] }, null, { level: "UNDERSTANDING", adjacencies: ["SECURITIES"] }, null, { level: "PLANNING", adjacencies: [] }]);
+  check("ordinary analysis and planning draw no contextual note", ordinary.every((p) => p === null));
+
+  // ── The orchestrator: label in, plan out, nothing echoed back.
+  const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
+  check("the client narrows the label at the boundary (missing ⇒ UNCLASSIFIED, never dropped)",
+    /readGuidance\(data\.guidance\) \?\? "UNCLASSIFIED"/.test(client));
+  check("…computes ONE plan from every answer, in order", /disclosurePlan\(messages\.map\(/.test(client));
+  check("…and renders the note first in the answer's extras", /<>\{note\}\{notice\}\{gaps\}<\/>/.test(client));
+  check("the label is never posted back (the body is still role + content only)",
+    /messages: nextMessages\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(client) && !/guidance:[^\n]*JSON\.stringify/.test(client));
+  check("…nor cached (the transcript cache keeps prose only)", /list\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(client));
+  check("a refusal sentence carries no label (outside the boundary)",
+    /\{ role: "assistant", content: data\.error \?\? "Something went wrong\. Please try again\." \}/.test(client));
 }
 
 if (failures > 0) {

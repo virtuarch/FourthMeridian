@@ -1,0 +1,73 @@
+/* Layout primitives for the public site. Values reproduce the Tailwind utilities
+   the same components used inside the app (noted per rule), so the pages render
+   as they did there without the site depending on Tailwind. */
+
+/* mx-auto w-full max-w-5xl px-5 sm:px-8 */
+.container { margin-inline: auto; width: 100%; max-width: 64rem; padding-inline: 1.25rem; }
+@media (min-width: 640px) { .container { padding-inline: 2rem; } }
+
+/* flex min-h-[100svh] flex-col */
+.shell { display: flex; min-height: 100svh; flex-direction: column; background-color: var(--bg-deep); color: var(--text-primary); }
+.main { flex: 1 1 0%; }
+
+/* Page header: pt-16 pb-8 sm:pt-24 */
+.pageTop { padding-top: 4rem; padding-bottom: 2rem; }
+@media (min-width: 640px) { .pageTop { padding-top: 6rem; } }
+.eyebrow { font-size: .875rem; line-height: 1.25rem; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--brass-400); }
+.heading { margin-top: .75rem; max-width: 48rem; font-size: 1.875rem; line-height: 1.25; font-weight: 700; letter-spacing: -.025em; color: var(--text-primary); }
+@media (min-width: 640px) { .heading { font-size: 3rem; line-height: 1.25; } }
+.intro { margin-top: 1.25rem; max-width: 42rem; font-size: 1.125rem; line-height: 1.625; color: var(--text-secondary); }
+
+.section { padding-bottom: 2rem; }
+.prose { max-width: 42rem; }
+.prose > * + * { margin-top: 1.25rem; }
+.lead { font-size: 1.125rem; line-height: 1.625; color: var(--text-secondary); }
+
+/* Primary button: inline-flex rounded-xl px-5 py-3 text-sm font-semibold */
+.actions { margin-top: 2.5rem; display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+.button { display: inline-flex; border-radius: .75rem; padding: .75rem 1.25rem; font-size: .875rem; line-height: 1.25rem; font-weight: 600; background-color: var(--meridian-600); color: #fff; transition: opacity 180ms; }
+.button:hover { opacity: .9; }
+.quietLink { font-size: .875rem; color: var(--text-secondary); transition: color 180ms; }
+.quietLink:hover { color: var(--text-primary); }
+
+/* Security pillars: grid gap-4 sm:grid-cols-2; card rounded-2xl border p-6 */
+.grid { display: grid; gap: 1rem; }
+@media (min-width: 640px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.card { border-radius: 1rem; border: 1px solid var(--border-hairline); background-color: var(--glass-ultrathin); padding: 1.5rem; }
+.cardTitle { font-size: 1rem; line-height: 1.5rem; font-weight: 600; color: var(--text-primary); }
+.cardBody { margin-top: .5rem; font-size: .875rem; line-height: 1.625; color: var(--text-secondary); }
+.footnote { margin-top: 2rem; max-width: 42rem; font-size: .875rem; line-height: 1.625; color: var(--text-muted); }
+
+/* Footer: border-t py-12; flex-col gap-6 sm:flex-row sm:items-center sm:justify-between */
+.footer { border-top: 1px solid var(--border-hairline); padding-block: 3rem; }
+.footerInner { display: flex; flex-direction: column; gap: 1.5rem; }
+@media (min-width: 640px) { .footerInner { flex-direction: row; align-items: center; justify-content: space-between; } }
+.footerNav { display: flex; flex-wrap: wrap; column-gap: 1.25rem; row-gap: .5rem; }
+.footerLink { font-size: .875rem; line-height: 1.25rem; color: var(--text-secondary); transition: opacity 180ms; }
+.footerLink:hover { opacity: .8; }
+.copyright { font-size: .875rem; line-height: 1.25rem; color: var(--text-muted); }
+
+/* Wordmark: inline-flex items-center gap-2.5 min-w-0 */
+.wordmark { display: inline-flex; align-items: center; gap: .625rem; min-width: 0; }
+.wordmarkImage { border-radius: .5rem; object-fit: contain; flex-shrink: 0; }
+.wordmarkText { font-weight: 700; letter-spacing: -.025em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+
+/* Legal documents: max-w-3xl, react-markdown element styles */
+.legal { margin-inline: auto; max-width: 48rem; }
+.legalTitle { font-size: 1.875rem; line-height: 2.25rem; font-weight: 700; letter-spacing: -.025em; color: var(--text-primary); }
+@media (min-width: 640px) { .legalTitle { font-size: 2.25rem; line-height: 2.5rem; } }
+.legalUpdated { margin-top: .5rem; font-size: .875rem; line-height: 1.25rem; color: var(--text-muted); }
+.legalBody { margin-top: 2rem; }
+.md_h2 { margin-top: 2.5rem; margin-bottom: .75rem; font-size: 1.25rem; line-height: 1.75rem; font-weight: 600; letter-spacing: -.025em; color: var(--text-primary); }
+.md_h3 { margin-top: 1.5rem; margin-bottom: .5rem; font-size: 1rem; line-height: 1.5rem; font-weight: 600; color: var(--text-primary); }
+.md_p { margin-block: 1rem; font-size: 15px; line-height: 1.625; color: var(--text-secondary); }
+.md_ul, .md_ol { margin-block: 1rem; padding-left: 1.25rem; font-size: 15px; line-height: 1.625; color: var(--text-secondary); }
+.md_ul { list-style: disc; }
+.md_ol { list-style: decimal; }
+.md_ul > * + *, .md_ol > * + * { margin-top: .5rem; }
+.md_li { padding-left: .25rem; }
+.md_strong { font-weight: 600; color: var(--text-primary); }
+.md_a { text-decoration: underline; text-underline-offset: 2px; color: var(--meridian-400); transition: opacity 180ms; }
+.md_a:hover { opacity: .8; }
+
+.notFound { padding-block: 6rem; }

@@ -1,30 +1,57 @@
 /**
- * lib/account-deletion/purge.ts  (OPS-2 S7c)
+ * lib/account-deletion/purge.ts  (OPS-2 S7c · IDEMP-002 / PRIV-001 / DB-002 / DB-011)
  *
  * The irreversible account-deletion purge orchestrator. Executes the pipeline
  * in the order ratified by the S5 decision record
  * (OPS2_S5_DELETION_INVENTORY.md §4) for a single user whose grace window has
  * elapsed. Called only by jobs/process-deletions.ts (the Vercel-cron job).
  *
- * Order (each step reuses an existing primitive / precedent):
+ * ── Pre-beta remediation (2026-10-22, IDEMP-002) ─────────────────────────────
+ * The runtime audit ran two concurrent process-deletions wakes and BOTH
+ * executed the destructive tail: four ACCOUNT_DELETED rows for two users, two
+ * deletion e-mails each, and a P2025 at the final user.delete. The pipeline
+ * validated "due" once at the top and then issued ~15 independent writes.
+ *
+ * Now:
+ *   0. CLAIM FIRST. One conditional UPDATE sets `purgeStartedAt` where
+ *      deletionScheduledAt <= now AND (purgeStartedAt IS NULL OR stale).
+ *      count === 1 or this worker owns nothing and returns "claimed-elsewhere".
+ *      A claim older than PURGE_CLAIM_STALE_MS belongs to a crashed worker and
+ *      is re-claimable — the crash-safe retry.
  *   1. revoke sessions                    — revokeAllUserSessions (S1/S4)
- *   2. revoke provider connections        — disconnectPlaidItemIfOrphaned pattern
- *      (Plaid first; every item is orphaned by definition at full deletion —
- *      lib/plaid/disconnect.ts). Best-effort, logged, NEVER blocks the purge.
+ *   2. revoke provider connections        — Plaid itemRemove, best-effort, OUTSIDE
+ *      any transaction (KD-4). Idempotent across retries: only ACTIVE items are
+ *      attempted and a CONFIRMED removal flips the row to REVOKED, so a retry
+ *      never calls itemRemove twice for the same item. A HOLD releases the claim.
  *   3. revoke SALs the user added         — status REVOKED (account-DELETE route)
  *   4. canonical AccountConnection resolve — re-elect on SPACE-owned accounts (S5 §4c)
- *   5. delete USER-owned FinancialAccounts — explicit (ownerUserId SetNull ≠ cascade, S5 §4b)
- *   6. delete PERSONAL Space              — db.space.delete cascade (permanent-delete route)
- *   7. write ACCOUNT_DELETED audit         — audit-before-delete; survives anonymized (S5 §5)
- *   8. delete User                        — final cascade (S5 §1)
+ *   5–8. ONE TRANSACTION, fenced on the claim:
+ *      5a. re-validate — the row must still be due AND still carry THIS
+ *          worker's claim (the cancel-vs-purge race: a cancel-at-login clears
+ *          deletionScheduledAt, so the fence update matches nothing and the
+ *          tail is abandoned with the user intact);
+ *      5b. delete USER-owned FinancialAccounts and every account owned by a
+ *          Space that is about to go (PERSONAL, and — PRIV-001 — every SHARED
+ *          Space whose ONLY active member is this user; DB-011 — their
+ *          Space-owned accounts go with them, never orphaned);
+ *      6.  delete those Spaces (cascade);
+ *      6b. DB-002 soft-reference scrub: AiInvocation.userId → null,
+ *          BetaAccessRequest(+Event) rows for the e-mail deleted,
+ *          MerchantMergeDecision.decidedByUserId / PlatformSetting.updatedById → null;
+ *      7.  write ONE ACCOUNT_DELETED audit row (sha256(email) only; survives
+ *          anonymised through the SetNull FK);
+ *      8.  delete the User (final cascade).
+ *   9. AFTER COMMIT: the deletion-complete e-mail, exactly once — it is sent
+ *      only by the worker whose transaction committed in THIS run (the commit
+ *      is the marker; no other worker can hold the claim, and after commit
+ *      there is no row to claim).
  *
- * External side-effects (Plaid itemRemove) run OUTSIDE any transaction (KD-4
- * rule). DB steps run sequentially and idempotently; a mid-purge failure leaves
- * the User row intact so the next daily cron run resumes cleanly — no retry
- * framework, the cron IS the retry.
- *
- * NO new schema. NO ownership transfer. NO queue/worker. Provider revocation is
- * Plaid-only today (MANUAL/WALLET Connections have nothing to revoke upstream).
+ * Retained, by design and documented in TEST-009's census
+ * (lib/account-deletion/purge-census.test.ts): AuditLog rows (SetNull,
+ * forensic), and operator-identity columns that name the user as an ACTOR on
+ * someone else's record (UserSession.revokedById, SpaceMember.revokedById,
+ * BetaAccessRequest.decidedById, …) — those identify an operator, not the
+ * subject, and the id is an opaque cuid with no PII once the User row is gone.
  */
 
 import "server-only";
@@ -35,12 +62,18 @@ import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
-import { getPlaidErrorCode } from "@/lib/plaid/errors";
+import { getPlaidErrorCode, redactedErrorForLog } from "@/lib/plaid/errors";
 import {
   classifyRevocationFailure, decideRevocation, countPriorFailureDays,
   MAX_REVOCATION_ATTEMPT_DAYS,
 } from "@/lib/account-deletion/revocation";
-import { ShareStatus, PlaidItemStatus, SpaceMemberRole, SpaceMemberStatus } from "@prisma/client";
+import { ShareStatus, PlaidItemStatus, SpaceMemberRole, SpaceMemberStatus, SpaceType, type Prisma } from "@prisma/client";
+
+/** A claim older than this belongs to a crashed worker and may be re-claimed. */
+export const PURGE_CLAIM_STALE_MS = 30 * 60_000;
+
+/** The interactive-transaction budget for the destructive tail. */
+const PURGE_TX_TIMEOUT_MS = 120_000;
 
 export interface PurgeResult {
   userId:          string;
@@ -50,57 +83,181 @@ export interface PurgeResult {
    * ran but was deliberately HELD: upstream Plaid revocation failed retryably
    * and the daily attempt budget is not spent. The User row, the PlaidItem and
    * its encrypted token all survive so the next cron run can retry.
+   *
+   * IDEMP-002 — "claimed-elsewhere": another worker holds a live claim on this
+   * user; this worker did nothing. "cancelled": the user cancelled between the
+   * claim and the destructive tail; nothing irreversible happened.
    */
-  skipped?: "already-deleted" | "not-due" | "pending-provider-revocation";
+  skipped?: "already-deleted" | "not-due" | "pending-provider-revocation" | "claimed-elsewhere" | "cancelled";
   providerRevoked: number;
   providerFailed:  number;
   deletedAccounts: number;
   personalSpaces:  number;
+  /** PRIV-001 — SHARED Spaces deleted because this user was their only active member. */
+  soleMemberSharedSpaces: number;
 }
 
-export async function purgeUser(userId: string): Promise<PurgeResult> {
+// ── Narrow client contract (injection seam for the DB-free tests) ────────────
+//
+// Typed against exactly the operations the purge performs. The shared client
+// is cast once below (the lib/jobs/run.ts idiom), so the module stays
+// compile-independent of Prisma client regeneration and the tests can inject
+// an in-memory fake that evaluates these where-clauses the way Postgres would.
+
+type UserSnapshot = { id: string; email: string; deletionScheduledAt: Date | null; purgeStartedAt: Date | null };
+
+export interface PurgeTxClient {
+  user: {
+    updateMany(args: { where: Prisma.UserWhereInput; data: Prisma.UserUpdateManyMutationInput }): Promise<{ count: number }>;
+    delete(args: { where: { id: string } }): Promise<unknown>;
+  };
+  financialAccount: {
+    deleteMany(args: { where: Prisma.FinancialAccountWhereInput }): Promise<{ count: number }>;
+  };
+  space: {
+    delete(args: { where: { id: string } }): Promise<unknown>;
+  };
+  aiInvocation: {
+    updateMany(args: { where: Prisma.AiInvocationWhereInput; data: Prisma.AiInvocationUpdateManyMutationInput }): Promise<{ count: number }>;
+  };
+  betaAccessRequest: {
+    deleteMany(args: { where: Prisma.BetaAccessRequestWhereInput }): Promise<{ count: number }>;
+  };
+  betaAccessRequestEvent: {
+    deleteMany(args: { where: Prisma.BetaAccessRequestEventWhereInput }): Promise<{ count: number }>;
+  };
+  merchantMergeDecision: {
+    updateMany(args: { where: Prisma.MerchantMergeDecisionWhereInput; data: Prisma.MerchantMergeDecisionUpdateManyMutationInput }): Promise<{ count: number }>;
+  };
+  platformSetting: {
+    updateMany(args: { where: Prisma.PlatformSettingWhereInput; data: Prisma.PlatformSettingUpdateManyMutationInput }): Promise<{ count: number }>;
+  };
+  merchantRule: {
+    deleteMany(args: { where: Prisma.MerchantRuleWhereInput }): Promise<{ count: number }>;
+  };
+  investmentEvent: {
+    updateMany(args: { where: Prisma.InvestmentEventWhereInput; data: Prisma.InvestmentEventUpdateManyMutationInput }): Promise<{ count: number }>;
+  };
+  auditLog: {
+    create(args: { data: Prisma.AuditLogUncheckedCreateInput }): Promise<unknown>;
+  };
+}
+
+export interface PurgeClient extends PurgeTxClient {
+  user: PurgeTxClient["user"] & {
+    findUnique(args: { where: { id: string }; select: { id: true; email: true; deletionScheduledAt: true; purgeStartedAt: true } }): Promise<UserSnapshot | null>;
+  };
+  plaidItem: {
+    findMany(args: { where: Prisma.PlaidItemWhereInput; select: { id: true; encryptedToken: true; institutionName: true } }): Promise<{ id: string; encryptedToken: string; institutionName: string }[]>;
+    update(args: { where: { id: string }; data: Prisma.PlaidItemUpdateInput }): Promise<unknown>;
+  };
+  auditLog: PurgeTxClient["auditLog"] & {
+    findMany(args: { where: Prisma.AuditLogWhereInput; select: { createdAt: true } }): Promise<{ createdAt: Date }[]>;
+  };
+  spaceAccountLink: {
+    updateMany(args: { where: Prisma.SpaceAccountLinkWhereInput; data: Prisma.SpaceAccountLinkUncheckedUpdateManyInput }): Promise<{ count: number }>;
+  };
+  accountConnection: {
+    findMany(args: { where: Prisma.AccountConnectionWhereInput; select: { id: true; financialAccountId: true } }): Promise<{ id: string; financialAccountId: string }[]>;
+    findFirst(args: { where: Prisma.AccountConnectionWhereInput; select: { id: true } }): Promise<{ id: string } | null>;
+    update(args: { where: { id: string }; data: Prisma.AccountConnectionUpdateInput }): Promise<unknown>;
+  };
+  financialAccount: PurgeTxClient["financialAccount"] & {
+    update(args: { where: { id: string }; data: Prisma.FinancialAccountUpdateInput }): Promise<unknown>;
+  };
+  space: PurgeTxClient["space"] & {
+    findMany(args: { where: Prisma.SpaceWhereInput; select: { id: true } }): Promise<{ id: string }[]>;
+  };
+  $transaction<T>(fn: (tx: PurgeTxClient) => Promise<T>, options?: { timeout?: number; maxWait?: number }): Promise<T>;
+}
+
+const purgeDb = db as unknown as PurgeClient;
+
+export interface PurgeDeps {
+  /** Test injection seam — production callers never pass this. */
+  client?: PurgeClient;
+  plaid?: Pick<typeof plaidClient, "itemRemove">;
+  sendEmail?: typeof sendEmail;
+  revokeSessions?: (userId: string) => Promise<unknown>;
+  now?: () => Date;
+}
+
+/** The where-clause of the claim — exported so the test can assert its shape. */
+export function purgeClaimWhere(userId: string, now: Date): Prisma.UserWhereInput {
+  const staleBefore = new Date(now.getTime() - PURGE_CLAIM_STALE_MS);
+  return {
+    id: userId,
+    deletionScheduledAt: { lte: now },
+    OR: [{ purgeStartedAt: null }, { purgeStartedAt: { lte: staleBefore } }],
+  };
+}
+
+/**
+ * PRIV-001 — the SHARED Spaces that die with this user: every non-PERSONAL
+ * Space in which the user is an ACTIVE member and NO OTHER user is. Exported
+ * so the test can assert the predicate rather than a query's syntax.
+ */
+export function soleMemberSharedSpaceWhere(userId: string): Prisma.SpaceWhereInput {
+  return {
+    type: { not: SpaceType.PERSONAL },
+    platformArea: null,
+    members: { some: { userId, status: SpaceMemberStatus.ACTIVE } },
+    NOT: { members: { some: { userId: { not: userId }, status: SpaceMemberStatus.ACTIVE } } },
+  };
+}
+
+export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<PurgeResult> {
+  const client = deps.client ?? purgeDb;
+  const plaid = deps.plaid ?? plaidClient;
+  const email = deps.sendEmail ?? sendEmail;
+  const revokeSessions = deps.revokeSessions ?? revokeAllUserSessions;
+  const clock = deps.now ?? (() => new Date());
+
   const base: PurgeResult = {
     userId, purged: false, providerRevoked: 0, providerFailed: 0,
-    deletedAccounts: 0, personalSpaces: 0,
+    deletedAccounts: 0, personalSpaces: 0, soleMemberSharedSpaces: 0,
   };
 
   // Load the minimal snapshot we need (email for the final notice + audit hash).
-  const user = await db.user.findUnique({
+  const user = await client.user.findUnique({
     where:  { id: userId },
-    select: { id: true, email: true, deletionScheduledAt: true },
+    select: { id: true, email: true, deletionScheduledAt: true, purgeStartedAt: true },
   });
   if (!user) return { ...base, skipped: "already-deleted" };
 
-  // Safety re-check: only purge accounts that are genuinely due. Guards the
-  // cancel-vs-purge race — a cancellation clears deletionScheduledAt (S7a),
-  // so a user cancelled between the cron's selection and here is skipped.
-  if (!user.deletionScheduledAt || user.deletionScheduledAt > new Date()) {
+  const now = clock();
+
+  // Safety re-check: only purge accounts that are genuinely due.
+  if (!user.deletionScheduledAt || user.deletionScheduledAt > now) {
     return { ...base, skipped: "not-due" };
   }
 
-  const now = new Date();
+  // ── 0. CLAIM — exactly one worker proceeds ─────────────────────────────────
+  const claim = await client.user.updateMany({ where: purgeClaimWhere(userId, now), data: { purgeStartedAt: now } });
+  if (claim.count !== 1) {
+    console.log(`[purge] user ${userId} — claim refused (another worker holds it, or it is no longer due); nothing done.`);
+    return { ...base, skipped: "claimed-elsewhere" };
+  }
+  const claimedAt = now;
+  const releaseClaim = () =>
+    client.user.updateMany({ where: { id: userId, purgeStartedAt: claimedAt }, data: { purgeStartedAt: null } })
+      .catch((e) => console.error(`[purge] failed to release claim for user ${userId}:`, redactedErrorForLog(e)));
 
   // ── 1. Revoke all sessions (idempotent) ────────────────────────────────────
-  await revokeAllUserSessions(userId);
+  await revokeSessions(userId);
 
   // ── 2. Provider revocation — Plaid first, best-effort, OUTSIDE any tx ───────
   // At full-account deletion every PlaidItem is orphaned by definition, so we
   // apply lib/plaid/disconnect.ts's core (decrypt → itemRemove → mark REVOKED)
   // to each ACTIVE item directly. A failure is logged and counted, never fatal.
-  const items = await db.plaidItem.findMany({
+  const items = await client.plaidItem.findMany({
     where:  { userId, status: PlaidItemStatus.ACTIVE },
     select: { id: true, encryptedToken: true, institutionName: true },
   });
 
   // PRE-BETA-OPS-CLOSE Phase 3 — BOUNDED revocation retry.
   //
-  // Previously a failure here was counted, logged, and the item was marked
-  // REVOKED anyway — which also excluded it from THIS job's own `status: ACTIVE`
-  // filter, so the retry loop could never pick it up again — and then the purge
-  // completed, cascading the encrypted token away. Revocation became impossible
-  // and the upstream consent stayed live forever.
-  //
-  // Now: only a CONFIRMED revocation (or a proven already-absent item) marks
+  // Only a CONFIRMED revocation (or a proven already-absent item) marks
   // REVOKED. A retryable failure leaves the item ACTIVE and holds the deletion,
   // so the existing daily cron — already documented as idempotent and resumable
   // — retries it tomorrow with the token still intact.
@@ -111,7 +268,7 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
     let failure: { reason: string } | null = null;
     try {
       const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
-      await plaidClient.itemRemove({ access_token: accessToken });
+      await plaid.itemRemove({ access_token: accessToken });
       revoked = true;
       base.providerRevoked++;
     } catch (err) {
@@ -134,9 +291,10 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
 
     if (revoked) {
       // Mark REVOKED only on a CONFIRMED outcome. Keeps the ACTIVE filter above
-      // an honest work-list for the next run.
+      // an honest work-list for the next run — and makes the provider call
+      // once-only across retries (IDEMP-002 d).
       try {
-        await db.plaidItem.update({ where: { id: item.id }, data: { status: PlaidItemStatus.REVOKED } });
+        await client.plaidItem.update({ where: { id: item.id }, data: { status: PlaidItemStatus.REVOKED } });
       } catch { /* row will be cascade-deleted at step 8 regardless */ }
     } else if (failure) {
       retryableFailures.push({ itemId: item.id, institution: item.institutionName, reason: failure.reason });
@@ -146,10 +304,8 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
   // ── Bounded-attempt decision ───────────────────────────────────────────────
   // Attempts are counted in DISTINCT CALENDAR DAYS of prior failure, not audit
   // rows: the policy is "3 daily attempts", and day-counting makes a duplicate
-  // or manually re-run cron on the same day ONE attempt-day. A concurrent run
-  // therefore cannot burn the budget early and dump the user into terminal
-  // deletion after ~24h instead of ~72h.
-  const priorFailureAudits = await db.auditLog.findMany({
+  // or manually re-run cron on the same day ONE attempt-day.
+  const priorFailureAudits = await client.auditLog.findMany({
     where:  { userId, action: AuditAction.ACCOUNT_DELETION_REVOCATION_FAILED },
     select: { createdAt: true },
   });
@@ -159,7 +315,7 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
   if (decision.action !== "proceed") {
     // One durable, non-secret record per failed item for THIS attempt.
     for (const f of retryableFailures) {
-      await db.auditLog.create({
+      await client.auditLog.create({
         data: {
           userId,
           action:   AuditAction.ACCOUNT_DELETION_REVOCATION_FAILED,
@@ -180,7 +336,9 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
     // HOLD: do NOT delete the User, do NOT destroy the token, do NOT clear
     // deletionScheduledAt. Sessions are already revoked (step 1), so the user
     // cannot use the account meanwhile — deletion is genuinely in progress, and
-    // the next daily run retries with the token intact.
+    // the next daily run retries with the token intact. The claim is released
+    // so tomorrow's worker does not have to wait for it to go stale.
+    await releaseClaim();
     console.warn(
       `[purge] user ${userId} — deletion HELD pending provider revocation ` +
       `(attempt ${decision.attemptDay}/${MAX_REVOCATION_ATTEMPT_DAYS}, ${retryableFailures.length} item(s) unrevoked). Retrying next run.`,
@@ -196,7 +354,7 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
     // enough non-secret detail for an operator to revoke by hand in the Plaid
     // dashboard. It is a DISTINCT action from ACCOUNT_DELETED precisely so no
     // reader can mistake a completed deletion for a completed revocation.
-    await db.auditLog.create({
+    await client.auditLog.create({
       data: {
         userId,
         action:   AuditAction.ACCOUNT_DELETED_UNREVOKED,
@@ -219,7 +377,7 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
     // above is the truth), just local state consistency before the cascade.
     for (const f of retryableFailures) {
       try {
-        await db.plaidItem.update({ where: { id: f.itemId }, data: { status: PlaidItemStatus.REVOKED } });
+        await client.plaidItem.update({ where: { id: f.itemId }, data: { status: PlaidItemStatus.REVOKED } });
       } catch { /* cascade-deleted below regardless */ }
     }
   }
@@ -228,9 +386,8 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
 
   // ── 3. Revoke SALs the user added, in surviving Spaces ─────────────────────
   // status REVOKED (SAL doctrine); the S5 FK flip nulls addedByUserId harmlessly
-  // when the User row is deleted. USER-owned accounts' SALs are removed outright
-  // by their FinancialAccount delete in step 5.
-  await db.spaceAccountLink.updateMany({
+  // at step 8. Idempotent: an already-REVOKED link does not match.
+  await client.spaceAccountLink.updateMany({
     where: { addedByUserId: userId, status: ShareStatus.ACTIVE },
     data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: userId },
   });
@@ -240,7 +397,7 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
   // surviving SPACE-owned account, re-elect another live connection, else mark
   // the account stale. The account survives; the user's connection is cascade-
   // deleted at step 8. (S5 §4c.)
-  const canonicalConns = await db.accountConnection.findMany({
+  const canonicalConns = await client.accountConnection.findMany({
     where: {
       connectedByUserId: userId,
       deletedAt:         null,
@@ -250,75 +407,116 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
     select: { id: true, financialAccountId: true },
   });
   for (const conn of canonicalConns) {
-    const replacement = await db.accountConnection.findFirst({
+    const replacement = await client.accountConnection.findFirst({
       where:  { financialAccountId: conn.financialAccountId, deletedAt: null, connectedByUserId: { not: userId } },
       select: { id: true },
     });
     if (replacement) {
-      await db.accountConnection.update({ where: { id: replacement.id }, data: { isCanonical: true } });
-      await db.accountConnection.update({ where: { id: conn.id }, data: { isCanonical: false, deletedAt: now } });
+      await client.accountConnection.update({ where: { id: replacement.id }, data: { isCanonical: true } });
+      await client.accountConnection.update({ where: { id: conn.id }, data: { isCanonical: false, deletedAt: now } });
     } else {
-      await db.financialAccount.update({ where: { id: conn.financialAccountId }, data: { syncStatus: "stale" } });
-      await db.accountConnection.update({ where: { id: conn.id }, data: { deletedAt: now } });
+      await client.financialAccount.update({ where: { id: conn.financialAccountId }, data: { syncStatus: "stale" } });
+      await client.accountConnection.update({ where: { id: conn.id }, data: { deletedAt: now } });
     }
   }
 
-  // ── 5. Delete USER-owned FinancialAccounts (explicit — SetNull ≠ cascade) ──
-  // Also covers any account owned by the user's PERSONAL Space, so step 6's
-  // Space delete leaves no ownerless "ghost" account (S5 §4b). Deleting a
-  // FinancialAccount cascades its transactions, holdings, connections,
-  // debtProfile, provider identities, SALs, goal contributions and imports.
-  // role: OWNER, status: ACTIVE — this purge runs for a user whose OWN account
-  // is being permanently deleted; without this filter, ANY personal-type Space
-  // this user was ever added to (even as a long-removed VIEWER, or — pre the
-  // personal-space hardening fix — a still-active non-owner member) would
-  // match and be deleted at step 6 below, destroying a Space that may belong
-  // to someone else entirely. PERSONAL Spaces are enforced single-owner at
-  // every mutation entry point now, so this should be a no-op in practice —
-  // but this step is destructive and irreversible, so it gets the filter
-  // regardless of what the invariant elsewhere promises.
-  const personalSpaces = await db.space.findMany({
-    where:  { type: "PERSONAL", members: { some: { userId, role: SpaceMemberRole.OWNER, status: SpaceMemberStatus.ACTIVE } } },
+  // ── Scope of the destructive tail ──────────────────────────────────────────
+  // PERSONAL Spaces this user OWNS (role: OWNER, status: ACTIVE — without this
+  // filter any personal-type Space the user was ever added to would match and
+  // be destroyed; the step is irreversible, so it gets the filter regardless
+  // of what the invariant elsewhere promises), plus — PRIV-001 — every SHARED
+  // Space whose only active member is this user. The preflight blocks deletion
+  // only while OTHER active members remain, so a sole-member SHARED Space is
+  // exactly the row that used to survive "permanent" deletion with its
+  // accounts and transactions.
+  const personalSpaces = await client.space.findMany({
+    where:  { type: SpaceType.PERSONAL, members: { some: { userId, role: SpaceMemberRole.OWNER, status: SpaceMemberStatus.ACTIVE } } },
     select: { id: true },
   });
+  const soleShared = await client.space.findMany({ where: soleMemberSharedSpaceWhere(userId), select: { id: true } });
   const personalSpaceIds = personalSpaces.map((s) => s.id);
+  const soleSharedIds = soleShared.map((s) => s.id).filter((id) => !personalSpaceIds.includes(id));
+  const dyingSpaceIds = [...personalSpaceIds, ...soleSharedIds];
 
-  const deleted = await db.financialAccount.deleteMany({
-    where: { OR: [{ ownerUserId: userId }, { ownerSpaceId: { in: personalSpaceIds } }] },
-  });
-  base.deletedAccounts = deleted.count;
-
-  // ── 6. Delete the PERSONAL Space (existing cascade) ────────────────────────
-  // Cascades SpaceMember, SpaceInvite, AiAgent, AiAdvice,
-  // SpaceGoal (+contributions/check-ins), SpaceDashboardSection, SpaceSnapshot,
-  // ImportMappingProfile. Same cascade the permanent-delete route relies on.
-  for (const s of personalSpaces) {
-    await db.space.delete({ where: { id: s.id } });
-  }
-  base.personalSpaces = personalSpaces.length;
-
-  // ── 7. ACCOUNT_DELETED audit (written BEFORE the delete) ───────────────────
-  // userId is set now; the user delete below SetNulls it, so the row survives
-  // anonymized (S5 §5). Email is stored only as a one-way hash — the raw
-  // address must not persist on an anonymized row.
   const emailHash = createHash("sha256").update(user.email.toLowerCase()).digest("hex");
-  await db.auditLog.create({
-    data: {
-      userId,
-      action:   AuditAction.ACCOUNT_DELETED,
-      metadata: {
-        emailHash,
-        deletedAccounts: base.deletedAccounts,
-        personalSpaces:  base.personalSpaces,
-        providerRevoked: base.providerRevoked,
-        providerFailed:  base.providerFailed,
-      },
-    },
-  });
 
-  // Final notice — reuse the security-alert template. Sent BEFORE the User row
-  // (and its email) is gone. NON-THROWING: delivery failure never blocks.
-  const emailResult = await sendEmail("security-alert", user.email, {
+  // ── 5–8. The destructive tail — ONE transaction, fenced on the claim ───────
+  let committed = false;
+  await client.$transaction(async (tx) => {
+    // 5a. Re-validate IMMEDIATELY before anything irreversible. The row must
+    //     still be due and still carry THIS worker's claim. A cancel-at-login
+    //     (lib/auth.ts clears deletionScheduledAt) between the claim and here
+    //     makes this match nothing, and the tail is abandoned.
+    const fence = await tx.user.updateMany({
+      where: { id: userId, deletionScheduledAt: { lte: now }, purgeStartedAt: claimedAt },
+      data:  { purgeStartedAt: claimedAt },
+    });
+    if (fence.count !== 1) return;
+
+    // 5b. Delete USER-owned FinancialAccounts (explicit — SetNull ≠ cascade)
+    //     and every account owned by a Space that goes in step 6 (DB-011), so
+    //     no ownerless "ghost" account with its full history is left behind.
+    //     Deleting a FinancialAccount cascades its transactions, holdings,
+    //     connections, debtProfile, provider identities, SALs, goal
+    //     contributions and imports.
+    const deleted = await tx.financialAccount.deleteMany({
+      where: { OR: [{ ownerUserId: userId }, { ownerSpaceId: { in: dyingSpaceIds } }] },
+    });
+    base.deletedAccounts = deleted.count;
+
+    // 6. Delete the Spaces (existing cascade: SpaceMember, SpaceInvite, AiAgent,
+    //    AiAdvice, SpaceGoal, SpaceDashboardSection, SpaceSnapshot,
+    //    ImportMappingProfile, SpaceMemory, DailyBrief, …).
+    for (const id of dyingSpaceIds) {
+      await tx.space.delete({ where: { id } });
+    }
+    base.personalSpaces = personalSpaceIds.length;
+    base.soleMemberSharedSpaces = soleSharedIds.length;
+
+    // 6b. DB-002 — scrub the soft references the FK cascade cannot reach.
+    //     Pseudonymous ids are still identifiers; the subject's e-mail on the
+    //     waitlist is PII outright (PRIV-012).
+    await tx.aiInvocation.updateMany({ where: { userId }, data: { userId: null } });
+    await tx.betaAccessRequest.deleteMany({ where: { email: { equals: user.email, mode: "insensitive" } } });
+    await tx.betaAccessRequestEvent.deleteMany({ where: { email: { equals: user.email, mode: "insensitive" } } });
+    await tx.merchantMergeDecision.updateMany({ where: { decidedByUserId: userId }, data: { decidedByUserId: null } });
+    await tx.platformSetting.updateMany({ where: { updatedById: userId }, data: { updatedById: null } });
+    await tx.merchantRule.deleteMany({ where: { ownerUserId: userId } });
+    await tx.investmentEvent.updateMany({ where: { createdByUserId: userId }, data: { createdByUserId: null } });
+
+    // 7. ACCOUNT_DELETED audit (written BEFORE the delete). userId is set now;
+    //    the user delete below SetNulls it, so the row survives anonymized
+    //    (S5 §5). Email is stored only as a one-way hash — the raw address must
+    //    not persist on an anonymized row.
+    await tx.auditLog.create({
+      data: {
+        userId,
+        action:   AuditAction.ACCOUNT_DELETED,
+        metadata: {
+          emailHash,
+          deletedAccounts:        base.deletedAccounts,
+          personalSpaces:         base.personalSpaces,
+          soleMemberSharedSpaces: base.soleMemberSharedSpaces,
+          providerRevoked:        base.providerRevoked,
+          providerFailed:         base.providerFailed,
+        },
+      },
+    });
+
+    // 8. Delete the User (final cascade).
+    await tx.user.delete({ where: { id: userId } });
+    committed = true;
+  }, { timeout: PURGE_TX_TIMEOUT_MS, maxWait: 10_000 });
+
+  if (!committed) {
+    console.warn(`[purge] user ${userId} — deletion cancelled or re-claimed between the claim and the destructive tail; nothing irreversible happened.`);
+    return { ...base, skipped: "cancelled" };
+  }
+
+  // ── 9. Final notice — AFTER commit, exactly once ───────────────────────────
+  // Reuses the security-alert template. NON-THROWING: delivery failure never
+  // blocks. Only the worker whose transaction committed reaches this line.
+  const emailResult = await email("security-alert", user.email, {
     title:   "Your account has been deleted",
     message:
       `Your Fourth Meridian account and all associated data have been ` +
@@ -326,11 +524,8 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
       `expect this, contact support.`,
   });
   if (emailResult.status === "error") {
-    console.error("[purge] deletion-complete security-alert email failed to send:", emailResult.error);
+    console.error("[purge] deletion-complete security-alert email failed to send:", redactedErrorForLog(emailResult.error));
   }
-
-  // ── 8. Delete the User (final cascade) ─────────────────────────────────────
-  await db.user.delete({ where: { id: userId } });
 
   base.purged = true;
   return base;

@@ -18,9 +18,11 @@
  */
 
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { todayUTCISO } from "@/lib/time/clock"; // B-6 — THE clock seam
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireFreshUser } from "@/lib/session";
 import { limitByUser } from "@/lib/rate-limit";
+import { entitlementsForUser, countLimit } from "@/lib/entitlements/consume";
 import { sendEmail } from "@/lib/email/send";
 import { formatDateTime } from "@/lib/format";
 import { AuditAction } from "@/lib/audit-actions";
@@ -34,8 +36,10 @@ export async function POST() {
     const [user, err] = await requireFreshUser();
     if (err) return err;
 
-    // 3 exports per day per user.
-    const limited = await limitByUser(user.id, "data-export", { limit: 3, windowSec: 86_400 });
+    // P1 — exports per day is the customer's `exportsPerDay` entitlement
+    // (BETA_FULL_ACCESS_V1: 3; the founder overlay: the ceiling of 10).
+    const entitlements = await entitlementsForUser(user.id);
+    const limited = await limitByUser(user.id, "data-export", { limit: countLimit(entitlements, "exportsPerDay"), windowSec: 86_400 });
     if (limited) return limited;
 
     // Compose the bundle from the existing readers, then zip it.
@@ -43,7 +47,11 @@ export async function POST() {
     const zip = await buildExportZip(data);
 
     // The user's email lives on the row, not the session.
-    const dbUser = await db.user.findUnique({ where: { id: user.id }, select: { email: true } });
+    // RLS slice A. `assembleUserExport` above holds its own client and is not
+    // converted in this slice; this route's own two reads/writes run as the user, and
+    // the `sendEmail` between them is why each is its own short transaction.
+    const dbUser = await withTenantDb(user.id, (tx) =>
+      tx.user.findUnique({ where: { id: user.id }, select: { email: true } }));
 
     // Notify. NON-THROWING: a delivery failure is logged and audited, never
     // fails the export.
@@ -62,13 +70,13 @@ export async function POST() {
       }
     }
 
-    const auditRow = await db.auditLog.create({
+    const auditRow = await withTenantDb(user.id, (tx) => tx.auditLog.create({
       data: {
         userId:   user.id,
         action:   AuditAction.DATA_EXPORTED,
         metadata: { counts: data.manifest.counts, truncated: data.manifest.truncated, emailStatus },
       },
-    });
+    }));
 
     // OPS-3 S5 Wave 1 — bell mirror. Non-throwing.
     await createNotification({
@@ -77,7 +85,7 @@ export async function POST() {
       auditLogId: auditRow.id,
     });
 
-    const filename = `fourth-meridian-export-${new Date().toISOString().slice(0, 10)}.zip`;
+    const filename = `fourth-meridian-export-${todayUTCISO()}.zip`;
     return new NextResponse(new Uint8Array(zip), {
       status: 200,
       headers: {

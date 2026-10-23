@@ -13,7 +13,7 @@
  * authoritative identity.
  */
 
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { runInvestmentImportPipelineFromCsv } from "@/lib/imports/investments/pipeline";
 import {
   detectInvestmentSource, checkImportCompatibility, assessImportRows, assessAccountMapping,
@@ -30,7 +30,8 @@ export interface ImportPreviewParams {
   connectionInstitution: string;
   /** Target account last-4 mask (FinancialAccount.mask), server-resolved. */
   targetMask:            string | null;
-  client?:               PrismaClient;
+  /** RLS-PREP-C — REQUIRED read authority; see previewInvestmentImport. */
+  client:                Prisma.TransactionClient;
 }
 
 export interface ImportPreview {

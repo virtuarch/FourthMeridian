@@ -18,8 +18,11 @@
  */
 
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
+import { spendCategoryKey } from "@/lib/transactions/category-vocabulary";
+import { compareToForPreset } from "@/lib/perspectives/time-range";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
+import { round2 } from "@/lib/money/round";
 import type { Transaction } from "@/types";
 
 // ─── Period model ─────────────────────────────────────────────────────────────
@@ -141,37 +144,23 @@ export function periodRange(period: CashFlowPeriod, now: Date = new Date()): { s
   // filterByPeriod keeps the full visible history (imported/provider/wallet).
   if (period === "ALL") return { start: "0000-01-01", end: "9999-12-31" };
 
+  // ── ONE PARSER ────────────────────────────────────────────────────────────
+  //
+  // The preset→start-date question belongs to `compareToForPreset`, and asking
+  // it here as well is what made Cash Flow disagree with every other surface.
+  // The local-time `Date` switch this replaces used `setMonth(m - 1)`, which
+  // OVERFLOWS: on 2026-03-31 it produced 2026-03-03 (a three-day window) where
+  // the canonical parser gives 2026-02-28. Same on 2026-05-31 → 2026-05-01.
+  // A user on the last day of a long month saw Cash Flow tally three days while
+  // the chart beside it tallied a month.
+  //
+  // What stays here is the FLOW BOUNDARY — both endpoints inclusive — because
+  // that is Cash Flow's own question: every event on the displayed calendar
+  // dates. The window is shared; the boundary semantics are not, and that is
+  // deliberate (see lib/perspectives/financial-window.ts).
   const end = toISODate(now);
-  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // strip time
-  let start: Date;
-
-  switch (period) {
-    case "WTD": {                                   // from Sunday of this week
-      start = new Date(d);
-      start.setDate(d.getDate() - d.getDay());
-      break;
-    }
-    case "MTD":
-      start = new Date(d.getFullYear(), d.getMonth(), 1);
-      break;
-    case "QTD":
-      start = new Date(d.getFullYear(), Math.floor(d.getMonth() / 3) * 3, 1);
-      break;
-    case "YTD":
-      start = new Date(d.getFullYear(), 0, 1);
-      break;
-    case "PAST_WEEK":
-      start = new Date(d); start.setDate(d.getDate() - 7); break;
-    case "PAST_MONTH":
-      start = new Date(d); start.setMonth(d.getMonth() - 1); break;
-    case "PAST_QUARTER":
-      start = new Date(d); start.setMonth(d.getMonth() - 3); break;
-    case "PAST_6_MONTHS":
-      start = new Date(d); start.setMonth(d.getMonth() - 6); break;
-    case "PAST_YEAR":
-      start = new Date(d); start.setFullYear(d.getFullYear() - 1); break;
-  }
-  return { start: toISODate(start), end };
+  const start = compareToForPreset(period, end, null) ?? end;
+  return { start, end };
 }
 
 // ─── Historical option generation ───────────────────────────────────────────────
@@ -227,6 +216,22 @@ export function dataBearingYears(transactions: Transaction[]): number[] {
   );
 }
 
+/**
+ * Turn the shell's SELECTED as-of date into the anchor `periodRange` expects.
+ *
+ * THE one place an ISO date becomes a window anchor. `periodRange` does local-time
+ * `Date` arithmetic, so the anchor must be local midnight of the selected day —
+ * `new Date("2025-11-03")` parses as UTC midnight and lands on the previous day
+ * for anyone west of Greenwich, which would move a month boundary by a day.
+ *
+ * Returns undefined for an absent date so a caller with genuinely no selection
+ * keeps `filterByPeriod`'s documented default rather than being handed a
+ * fabricated one.
+ */
+export function asOfAnchor(asOf?: string | null): Date | undefined {
+  return asOf ? new Date(`${asOf}T00:00:00`) : undefined;
+}
+
 export function filterByPeriod(
   transactions: Transaction[],
   period: CashFlowPeriod,
@@ -258,6 +263,12 @@ export interface CashFlowTotals {
   spend:   number;   // COST_FLOWS minus REFUND, clamped ≥ 0
   refunds: number;   // Σ|amount| where REFUND (disclosed separately)
   net:     number;   // income − spend
+  /** CF-TIER-NET — Σ|amount| of cost flows BEFORE refunds ("charged"). `spend` is
+   *  clampEconomicSpend(spendGross, refunds); both come from the same fold. */
+  spendGross:       number;
+  /** Refunds beyond the charges in THIS row set: max(0, refunds − spendGross). The
+   *  amount the floor at zero absorbed — disclosed, never silently discarded. */
+  refundsUnapplied: number;
   /**
    * V25-FINAL-1 — true when at least one row had no acceptable FX rate and was
    * EXCLUDED from these totals (its native magnitude was never blended in). The
@@ -281,28 +292,178 @@ export interface CashFlowTotals {
 /** Mutable accumulator for the economic axis (tier-independent). DayFacts is a
  *  structural superset, so it can be passed directly where this is expected. */
 export interface EconomicAccumulator {
-  income:     number;   // Σ|amount| INCOME
-  spendGross: number;   // Σ|amount| cost flows (SPENDING+FEE+INTEREST), pre-refund
-  refunds:    number;   // Σ|amount| REFUND
+  /**
+   * Σ SIGNED INCOME amounts (FIN-003). A deposit adds; a negative INCOME row — a
+   * payroll clawback, a reversed deposit — SUBTRACTS. This was Σ|amount|, so a
+   * −$500 clawback ADDED $500 and income was overstated by twice the reversal
+   * (runtime audit 2026-10-21: +5,000 then −500 folded to 5,500). The raw sum
+   * may go negative over a window of only reversals; `clampEconomicIncome` is
+   * the floor at the read edge, exactly as `clampEconomicSpend` floors spend.
+   */
+  income:     number;
+  spendGross: number;   // Σ|amount| cost-flow CHARGES (SPENDING+FEE+INTEREST, amount < 0), pre-refund
+  refunds:    number;   // Σ|amount| CREDITS against spending: REFUND rows + cost-flow reversals (FM-AUDIT-006)
 }
 
 /**
- * Fold ONE row's already-converted magnitude into the economic accumulator by
- * FlowType. The single authority for what counts as income / gross spend /
- * refund. TRANSFER / DEBT_PAYMENT / INVESTMENT / null are not cash flow and are
- * ignored (matching SpaceTransactionsPanel exactly). `magnitude` must be the
- * non-negative converted amount (Math.abs of the row's converted amount).
+ * FM-AUDIT-006 — which side of the economic ledger ONE row lands on.
+ *
+ * MEMBERSHIP is the classifier's verdict (flowType), never the sign: only cost
+ * flows (SPENDING | FEE | INTEREST) and REFUND rows touch spending; INCOME
+ * touches income; everything else (TRANSFER, DEBT_PAYMENT, INVESTMENT,
+ * ADJUSTMENT, UNKNOWN, null) touches neither.
+ *
+ * DIRECTION, within spending, is the sign — because it is the only direction
+ * evidence the row carries. The persisted `flowDirection` cannot serve: a
+ * provider bank-fee row and liability INTEREST are classified OUTFLOW whatever the sign
+ * (flow-classifier.ts), so a $3 ATM-fee REBATE and an interest REVERSAL arrive
+ * as FEE / INTEREST rows with a POSITIVE amount (money in; the stored convention
+ * is +in / −out on every account). The fold used to add |amount| for any cost
+ * row, so "−$3 fee, +$3 rebate, −$100 groceries" reported $106 of spending. A
+ * credit against a cost flow is a reversal of spending, exactly as a REFUND is:
+ *
+ *     cost/refund row, amount < 0  → SPEND   (a charge)
+ *     cost/refund row, amount > 0  → CREDIT  (a refund or a reversal)
+ *     income row                   → INCOME  (SIGNED in the fold since FIN-003 — a reversal subtracts)
+ *
+ * The fold, the DayFacts tier split and the category ledger all route through
+ * this one decision, so they partition identically by construction.
  */
-export function foldEconomicRow(acc: EconomicAccumulator, flowType: string | null | undefined, magnitude: number): void {
-  if (isCostFlow(flowType)) acc.spendGross += magnitude;
-  else if (isRefund(flowType)) acc.refunds += magnitude;
-  else if (isIncome(flowType)) acc.income += magnitude;
+export type EconomicSide = "SPEND" | "CREDIT" | "INCOME" | null;
+
+export function economicSideOf(flowType: string | null | undefined, signedAmount: number): EconomicSide {
+  if (isCostFlow(flowType) || isRefund(flowType)) {
+    if (signedAmount < 0) return "SPEND";
+    if (signedAmount > 0) return "CREDIT";
+    return null;
+  }
+  if (isIncome(flowType)) return "INCOME";
+  return null;
+}
+
+/** One row as the economic fold reads it. `amount` is SIGNED (+in / −out), already converted. */
+export interface EconomicFoldRow {
+  flowType: string | null | undefined;
+  amount: number;
+  /**
+   * v2.6-TRUTH-5 — the row's canonical income class, when the DTO carried one.
+   *
+   * `flowType === INCOME` was the sole test, and it admitted four live rows that
+   * are not income at all: merchant credits landing on a CREDIT CARD which the
+   * provider tagged INCOME_SALARY / INCOME_CONTRACTOR / INCOME_GIG_ECONOMY
+   * ($495.65 across MICROSOFT, EasyTime, Uber, HUNGERSTATION). The canonical
+   * authority classes them NOT_INCOME, and a broad income total must not contain
+   * them.
+   *
+   * Omitted (undefined) means the read supplied no attribution — the old
+   * behaviour is kept rather than a row being dropped on an absence.
+   */
+  incomeClass?: string | null;
+}
+
+/**
+ * Fold ONE row into the economic accumulator. The single authority for what
+ * counts as income / gross spend / credits against spend. TRANSFER /
+ * DEBT_PAYMENT / INVESTMENT / null are not cash flow and are ignored.
+ *
+ * The row's amount is SIGNED — the object form exists so no caller can hand
+ * this a pre-`Math.abs`'d magnitude and silently turn every charge into a
+ * credit (the pre-FM-AUDIT-006 positional form took a magnitude).
+ */
+export function foldEconomicRow(acc: EconomicAccumulator, row: EconomicFoldRow): void {
+  const magnitude = Math.abs(row.amount);
+  switch (economicSideOf(row.flowType, row.amount)) {
+    case "SPEND":  acc.spendGross += magnitude; return;
+    case "CREDIT": acc.refunds    += magnitude; return;
+    case "INCOME":
+      if (row.incomeClass === "NOT_INCOME") return;   // named, excluded, never silent
+      // FIN-003 — SIGNED, not magnitude: a reversal reduces income.
+      acc.income += row.amount;
+      return;
+    default: return;
+  }
+}
+
+/**
+ * FIN-003 — economic income over a window: the signed INCOME sum floored at 0.
+ * The same policy `clampEconomicSpend` applies to refunds: a reversal nets
+ * against the deposits in the SAME window and never drives the window below
+ * zero. A window holding only a clawback (the deposit fell in an earlier
+ * window) reads $0 income, not negative income — the excess is not carried.
+ * Applied at the read edge (window totals, perspective totals); the
+ * accumulator itself stays signed so per-day facts remain honest.
+ */
+export function clampEconomicIncome(income: number): number {
+  return Math.max(0, Number.isFinite(income) ? income : 0);
 }
 
 /** Economic spend: gross cost flows minus refunds, floored at 0. The single
  *  clamp authority (was duplicated in economicTotals and economicSpend). */
 export function clampEconomicSpend(spendGross: number, refunds: number): number {
-  return Math.max(0, spendGross - refunds);
+  // NET-BASELINE-1 — a month with NO refund figure (an older payload, a fixture
+  // that predates `refundTotal`) has nothing to take off: net IS gross. Without
+  // this, `gross − undefined` is NaN, and a NaN month is silently DROPPED by the
+  // observed-rate filter and poisons a mean — a missing field must never read as
+  // a missing month.
+  return Math.max(0, spendGross - (Number.isFinite(refunds) ? refunds : 0));
+}
+
+/**
+ * NET-BASELINE-1 — a per-month refund effect smaller than this is not worth a
+ * sentence. The NET figure is always the one used; this only decides whether a
+ * surface also DISCLOSES the gross figure and the refund effect beside it, so an
+ * ordinary answer is not cluttered by a few cents of returned postage.
+ */
+export const MATERIAL_MONTHLY_REFUND_EFFECT = 1;
+
+/**
+ * NET-BASELINE-1 — "how much do I actually spend a month?", over WHOLE months the
+ * fold already produced. THE one place a monthly-spending mean is defined:
+ *
+ *     month's economic spend = clampEconomicSpend(gross, refunds dated that month)
+ *     monthly figure         = mean of those, over the months given
+ *
+ * It computes no refund: `gross` and `refunds` are each month's `foldEconomicRow`
+ * totals, so which rows are refunds (and which are card payments, transfers,
+ * rewards or reimbursements — none of which are) was decided once, upstream.
+ *
+ * PERIOD: a refund counts in the month it is DATED. A later refund never rewrites
+ * the month of the purchase; the mean simply contains one higher and one lower
+ * month. EXCESS: a month whose refunds exceed its charges floors at 0 — it is
+ * never negative consumption — and the excess is reported as `refundsUnapplied`
+ * rather than silently discarded or carried into another month.
+ *
+ * `null` when no month is given: no complete month ⇒ UNKNOWN, never 0.
+ */
+export interface MonthlyEconomicSpend {
+  /** Mean NET economic spend per month — the answer to "how much do I spend". */
+  net: number;
+  /** Mean GROSS charges per month — the answer to "how much was charged". */
+  gross: number;
+  /** `gross − net`, ≥ 0: what refunds took off the monthly figure. */
+  refundEffect: number;
+  /** Mean per month of refunds that exceeded their month's charges (floored away). */
+  refundsUnapplied: number;
+  /** True when `refundEffect` clears MATERIAL_MONTHLY_REFUND_EFFECT. */
+  material: boolean;
+  months: { month: string; gross: number; refunds: number; net: number }[];
+}
+
+export function meanMonthlyEconomicSpend(
+  months: readonly { month: string; expenseTotal: number; refundTotal: number }[],
+): MonthlyEconomicSpend | null {
+  if (months.length === 0) return null;
+  const lines = months.map((m) => ({
+    month: m.month, gross: m.expenseTotal, refunds: Number.isFinite(m.refundTotal) ? m.refundTotal : 0,
+    net: clampEconomicSpend(m.expenseTotal, m.refundTotal),
+  }));
+  const n = lines.length;
+  const gross = round2(lines.reduce((s, l) => s + l.gross, 0) / n);
+  const net   = round2(lines.reduce((s, l) => s + l.net, 0) / n);
+  const unapplied = round2(lines.reduce((s, l) => s + Math.max(0, l.refunds - l.gross), 0) / n);
+  const refundEffect = round2(gross - net);
+  return { net, gross, refundEffect, refundsUnapplied: unapplied,
+    material: refundEffect >= MATERIAL_MONTHLY_REFUND_EFFECT, months: lines };
 }
 
 /**
@@ -323,10 +484,12 @@ export function economicTotals(transactions: Transaction[], ctx?: ConversionCont
   for (const t of transactions) {
     const a = rowAmount(t, ctx);
     if (a === null) { unconverted = true; continue; } // V25-FINAL-1 — exclude the unconvertible row
-    foldEconomicRow(acc, t.flowType ?? null, Math.abs(a));
+    foldEconomicRow(acc, { flowType: t.flowType ?? null, amount: a, incomeClass: t.incomeClass ?? null });
   }
   const spend = clampEconomicSpend(acc.spendGross, acc.refunds);
-  return { income: acc.income, spend, refunds: acc.refunds, net: acc.income - spend, unconverted };
+  const income = clampEconomicIncome(acc.income);   // FIN-003 — signed sum, floored at the edge
+  return { income, spend, refunds: acc.refunds, net: income - spend, unconverted,
+    spendGross: acc.spendGross, refundsUnapplied: Math.max(0, acc.refunds - acc.spendGross) };
 }
 
 // ─── History (time buckets) ───────────────────────────────────────────────────
@@ -451,22 +614,161 @@ export function getDefaultCashFlowHistoryMode(period: CashFlowPeriod): CashFlowH
 
 // ─── Outflow contribution ─────────────────────────────────────────────────────
 
-export interface CashFlowContribution { id: string; label: string; value: number }
+/**
+ * One grouped contribution AND the rows that produced it.
+ *
+ * `transactionIds` exists so a drill-down reads the SAME rows the total was
+ * computed from, instead of re-deriving them with its own predicates. That
+ * re-derivation was the defect: these builders skip a row whose amount cannot be
+ * converted (`rowAmount === null`, V25-FINAL-1), and the drawer's React filter
+ * did not — so a category could list a row its own total excluded.
+ *
+ * Carrying identities makes card and drawer agree BY CONSTRUCTION rather than by
+ * two predicates happening to match.
+ */
+export interface CashFlowContribution {
+  id: string;
+  label: string;
+  value: number;
+  /** Transaction ids contributing to `value`, in encounter order. */
+  transactionIds: string[];
+  /**
+   * REFUND-1 — present ONLY on a spending category that had refunds in the
+   * window, so a surface can explain why `value` (net) is below what was
+   * charged without doing arithmetic: `value === max(0, gross − refunds)`.
+   * Absent on every other line (income sources, cash-in reasons, categories
+   * with no refund) — no clutter where there is nothing to explain.
+   */
+  gross?: number;
+  refunds?: number;
+}
 
-/** Where outflows go, grouped by transaction category (cost flows only),
- *  descending. Refunds reduce their category's total (clamped ≥ 0). */
-export function outflowByCategory(transactions: Transaction[], ctx?: ConversionContext): CashFlowContribution[] {
-  const byCategory = new Map<string, number>();
+/**
+ * THE CANONICAL CATEGORY-SPEND LEDGER (REFUND-1; FM-AUDIT-004/005/006).
+ *
+ * One spending category's economic ledger over a window:
+ *
+ *     gross            Σ|amount| of CHARGES (cost-flow / refund rows with amount < 0) DATED IN the window
+ *     refunds          Σ|amount| of CREDITS against spending DATED IN the window — REFUND rows AND
+ *                      reversals of cost flows (a fee rebate, an interest reversal)
+ *     net              max(0, gross − refunds)             — what the category cost
+ *     refundsUnapplied max(0, refunds − gross)             — credit for a charge that sits OUTSIDE the window
+ *
+ * ── ONE LEDGER, EVERY CONSUMER ───────────────────────────────────────────────
+ * Every row reaches its line through `foldEconomicRow` — the same fold that makes
+ * the headline spendGross / refunds — so the lines reconcile with the headline BY
+ * CONSTRUCTION, not by a parity test. The Cash Flow category list
+ * (`categorySpendLedger`), the AI assembler's `byCategory` and monthly lines, and
+ * therefore `get_spending`, `measure_flows` and the category baselines all build
+ * from `foldCategorySpend`. Before FM-AUDIT-004 the AI summed "every debit row in
+ * the category" whatever its flow — a Transfer-flow row in Shopping was AI
+ * spending and not UI spending, and "Payment" could exceed 100% of spending.
+ *
+ * ── MEMBERSHIP, LINE, DIRECTION ──────────────────────────────────────────────
+ *   membership  the classifier's flow verdict (cost flows + REFUND), never a sign test —
+ *               a card payment, a transfer, an issuer credit or income cannot enter;
+ *   line        `spendCategoryKey` (category-vocabulary.ts): a spending label is kept, a
+ *               structural label on a spending row (a vetoed "Payment" purchase) → Other;
+ *   direction   `economicSideOf`: a charge adds to gross, a credit to refunds — so a fee
+ *               and its rebate net to zero instead of doubling (FM-AUDIT-006).
+ *
+ * ── Period semantics (the ONE definition; every surface inherits it) ─────────
+ * A refund reduces its category IN THE PERIOD THE REFUND IS DATED, never the
+ * period of the purchase it reverses. No purchase is looked up, inside or
+ * outside the window — the provider gives no refund→purchase link, so pairing
+ * would be a guess, and re-opening a closed month when a refund arrives later
+ * would silently rewrite history the user already read.
+ *
+ *   purchase + refund in the window      gross 1,500 · refunds 500 · net 1,000
+ *   purchase BEFORE, refund IN           gross 0 · refunds 500 · net 0 · unapplied 500
+ *   purchase IN, refund AFTER            gross 1,500 · refunds 0 · net 1,500 (this window);
+ *                                        the later window shows the refund
+ *
+ * ⚠️ `refundsUnapplied` is what keeps the clamp HONEST. A category cannot cost
+ * less than nothing, so its net floors at 0 — but the headline (economicTotals)
+ * nets refunds against ALL spending, so without this field the category lines
+ * and the headline disagree by exactly the unapplied amount and nothing says
+ * why. Conservation, pinned by test:
+ *
+ *     Σ gross − Σ refunds  ===  Σ net − Σ refundsUnapplied  ===  headline spendGross − headline refunds
+ */
+export interface CategorySpendLine {
+  category: string;
+  gross: number;
+  refunds: number;
+  net: number;
+  refundsUnapplied: number;
+  /** Rows folded into this line (charges AND credits), in encounter order. */
+  transactionIds: string[];
+  /** Number of rows folded into this line. */
+  count: number;
+}
+
+/** One row as the category ledger reads it. `amount` is SIGNED (+in / −out), already converted. */
+export interface CategoryLedgerRow {
+  id?: string;
+  category: string;
+  flowType: string | null | undefined;
+  amount: number;
+}
+
+/**
+ * THE category-spend primitive. Rows that are not spending (by flow verdict) are
+ * skipped; every other row is folded through `foldEconomicRow` into its line.
+ * Unconvertible rows must be dropped by the caller (as every fold does).
+ */
+export function foldCategorySpend(rows: Iterable<CategoryLedgerRow>): CategorySpendLine[] {
+  const lines = new Map<string, { acc: EconomicAccumulator; ids: string[]; count: number }>();
+  for (const r of rows) {
+    const side = economicSideOf(r.flowType, r.amount);
+    if (side !== "SPEND" && side !== "CREDIT") continue;
+    const key = spendCategoryKey(r.category);
+    const line = lines.get(key) ?? { acc: { income: 0, spendGross: 0, refunds: 0 }, ids: [], count: 0 };
+    foldEconomicRow(line.acc, { flowType: r.flowType, amount: r.amount });
+    // Recorded on the SAME pass and under the SAME skip rules as the total, so a
+    // drill-down cannot include a row the total left out.
+    if (r.id !== undefined) line.ids.push(r.id);
+    line.count++;
+    lines.set(key, line);
+  }
+  return [...lines.entries()].map(([category, l]) => ({
+    category,
+    gross: l.acc.spendGross,
+    refunds: l.acc.refunds,
+    net: clampEconomicSpend(l.acc.spendGross, l.acc.refunds),
+    refundsUnapplied: Math.max(0, l.acc.refunds - l.acc.spendGross),
+    transactionIds: l.ids,
+    count: l.count,
+  }));
+}
+
+/** The Cash Flow workspace's category ledger: its rows, converted, through THE primitive. */
+export function categorySpendLedger(transactions: Transaction[], ctx?: ConversionContext): CategorySpendLine[] {
+  const rows: CategoryLedgerRow[] = [];
   for (const t of transactions) {
-    const flow = t.flowType ?? null;
     const raw = rowAmount(t, ctx);
     if (raw === null) continue; // V25-FINAL-1 — unconvertible row excluded from the category rollup
-    const amt = Math.abs(raw);
-    if (isCostFlow(flow)) byCategory.set(t.category, (byCategory.get(t.category) ?? 0) + amt);
-    else if (isRefund(flow)) byCategory.set(t.category, (byCategory.get(t.category) ?? 0) - amt);
+    rows.push({ id: t.id, category: t.category, flowType: t.flowType ?? null, amount: raw });
   }
-  return [...byCategory.entries()]
-    .map(([label, value]) => ({ id: label, label, value: Math.max(0, value) }))
+  return foldCategorySpend(rows);
+}
+
+/** Where outflows go, grouped by transaction category (cost flows only),
+ *  descending. Refunds reduce their category's total (clamped ≥ 0). A projection
+ *  of categorySpendLedger — the ledger is the arithmetic, this is the ranking. */
+export function outflowByCategory(transactions: Transaction[], ctx?: ConversionContext): CashFlowContribution[] {
+  return rankCategorySpend(categorySpendLedger(transactions, ctx));
+}
+
+/** The ranking step of outflowByCategory, over a ledger already built — so a caller
+ *  that also needs the ledger's `refundsUnapplied` folds the rows ONCE. */
+export function rankCategorySpend(ledger: readonly CategorySpendLine[]): CashFlowContribution[] {
+  return ledger
+    .map((l): CashFlowContribution => ({
+      id: l.category, label: l.category, value: l.net,
+      transactionIds: l.transactionIds,
+      ...(l.refunds > 0 ? { gross: l.gross, refunds: l.refunds } : {}),
+    }))
     .filter((c) => c.value > 0)
     .sort((a, b) => b.value - a.value);
 }
@@ -500,18 +802,37 @@ export function incomeSourceLabel(t: Transaction): string {
  * same FlowType doctrine the rest of Cash Flow uses. The twin of
  * outflowByCategory.
  */
-export function incomeBySource(transactions: Transaction[], ctx?: ConversionContext): CashFlowContribution[] {
+export function incomeBySource(
+  transactions: Transaction[],
+  ctx?: ConversionContext,
+  /**
+   * v2.6-TRUTH-6 — the row ids the canonical rollup INCLUDED in broad income.
+   *
+   * Membership is the rollup's decision, not this function's. Without it this
+   * grouping admitted every `flowType === INCOME` row, including the four issuer
+   * credits the taxonomy classes NOT_INCOME — so the payer card and the headline
+   * disagreed by $495.65 about what income even was. Passing the set makes the
+   * two structurally incapable of disagreeing.
+   *
+   * Omitted ⇒ prior behaviour, for the pure-projection callers that hold no
+   * rollup (the drawer over an arbitrary slice).
+   */
+  includedRowIds?: ReadonlySet<string>,
+): CashFlowContribution[] {
   const bySource = new Map<string, number>();
+  const idsBySource = new Map<string, string[]>();
   for (const t of transactions) {
     if (!isIncome(t.flowType ?? null)) continue;
+    if (includedRowIds && !includedRowIds.has(t.id)) continue;
     const raw = rowAmount(t, ctx);
     if (raw === null) continue; // V25-FINAL-1 — unconvertible income row excluded
     const amt = Math.abs(raw);
     const source = incomeSourceLabel(t);
     bySource.set(source, (bySource.get(source) ?? 0) + amt);
+    idsBySource.set(source, [...(idsBySource.get(source) ?? []), t.id]);
   }
   return [...bySource.entries()]
-    .map(([label, value]) => ({ id: label, label, value }))
+    .map(([label, value]) => ({ id: label, label, value, transactionIds: idsBySource.get(label) ?? [] }))
     .filter((c) => c.value > 0)
     .sort((a, b) => b.value - a.value);
 }

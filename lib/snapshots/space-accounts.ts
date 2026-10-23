@@ -62,6 +62,31 @@
  *     different row order could shift the last bits of netWorth. Keeping the
  *     order keeps the totals bit-identical, not merely equal.
  *
+ * W6 — WHY THIS READ *DOES* SOURCE A WALLET FROM THE SPINE
+ * ---------------------------------------------------------
+ * `getAccounts` re-sources the current value of a wallet whose chain writes no
+ * balance column (SOL/ETH/BNB/AVAX) from the position spine, because the column
+ * is `NOT NULL DEFAULT 0` and was publishing "withheld" as $0.00.
+ *
+ * W-M3a left this read on the column, on the stated grounds that it feeds
+ * per-day historical computation. That was WRONG about this function, and the
+ * note is corrected rather than quietly deleted: `readSpaceAccountsForSnapshot`
+ * has exactly ONE caller — lib/snapshots/regenerate.ts, which writes TODAY's row
+ * from TODAY's live balances. The historical writers (regenerate-history.ts,
+ * backfill.ts) never call it; they carry their own dated reads.
+ *
+ * So the doctrine applies cleanly rather than being in tension: a current
+ * observation licenses a POINT, and the point it licenses is exactly the row
+ * this read serves. Leaving it on the column meant today's stored snapshot
+ * omitted a wallet the account surfaces valued correctly — the same false zero,
+ * persisted, on a row marked `isEstimated=false` and therefore trusted
+ * unconditionally by every consumer.
+ *
+ * The field-level identity with `getAccounts` above is thereby PRESERVED, not
+ * excepted. What must never happen is this substitution reaching a HISTORICAL
+ * day, which is why it lives behind a single-caller read rather than in a
+ * shared loader.
+ *
  * SCOPE
  * -----
  * Deliberately NOT a general-purpose account read. It returns the minimum the
@@ -73,8 +98,8 @@
  * from regenerateSpaceSnapshot may import lib/space.ts or getServerSession.
  */
 
-import { db } from "@/lib/db";
-import { ShareStatus, type Prisma } from "@prisma/client";
+import { PlaidInvestmentsConsent, ShareStatus, type Prisma } from "@prisma/client";
+import { grantsBalanceDisclosure } from "@/lib/account-privacy";
 
 /**
  * The minimum account shape snapshot computation needs. Structurally
@@ -86,6 +111,16 @@ export interface SnapshotAccount {
   type:     string;
   balance:  number;
   currency: string;
+  /**
+   * W6b — this row's balance is a wallet reading older than the freshness
+   * horizon: the LAST KNOWN position rather than a confirmation of now.
+   *
+   * Additive and optional, so `classifyAccounts` (whose input contract declares
+   * only { type, balance, currency, syncStatus }) is untouched and every total
+   * is computed exactly as before. It exists so the WRITER can stamp the row's
+   * provenance instead of publishing a stale reading as today's observed wealth.
+   */
+  cryptoStale?: boolean;
 }
 
 /**
@@ -104,9 +139,9 @@ export interface SnapshotAccountsClient {
   spaceAccountLink: {
     findMany(args: {
       where:    Prisma.SpaceAccountLinkWhereInput;
-      select:   { financialAccount: { select: { id: true; type: true; balance: true; currency: true } } };
+      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true; walletChain: true; lastUpdated: true } } };
       orderBy:  Prisma.SpaceAccountLinkOrderByWithRelationInput[];
-    }): Promise<Array<{ financialAccount: { id: string; type: string; balance: number; currency: string } }>>;
+    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string; walletChain: string | null; lastUpdated: Date } }>>;
   };
 }
 
@@ -120,17 +155,27 @@ export interface SnapshotAccountsClient {
  */
 export async function readSpaceAccountsForSnapshot(
   spaceId: string,
-  client: SnapshotAccountsClient = db,
+  client?: SnapshotAccountsClient,
 ): Promise<SnapshotAccount[]> {
-  const links = await client.spaceAccountLink.findMany({
+  // Default client resolved LAZILY (dynamic import at call time, not a static
+  // module import): callers that inject a client — every test, and the
+  // regenerate path — never touch the real Prisma client, so this module can
+  // be exercised in environments with no database engine at all. Uninjected
+  // callers get the shared client exactly as before.
+  const prisma = client ?? (await import("@/lib/db")).db;
+  const { loadWalletCurrentValues, hasKnownValue, isFreshCurrentValue } =
+    await import("@/lib/crypto/wallet-current-value");
+
+  const links = await prisma.spaceAccountLink.findMany({
     where: {
       spaceId,
       status:           ShareStatus.ACTIVE,
       financialAccount: { deletedAt: null },
     },
     select: {
+      visibilityLevel: true, // read for the W1-D3 disclosure tripwire below
       financialAccount: {
-        select: { id: true, type: true, balance: true, currency: true },
+        select: { id: true, type: true, balance: true, currency: true, walletChain: true, lastUpdated: true },
       },
     },
     // Mirrors getAccountsWithVisibility so summation order — and therefore the
@@ -141,10 +186,103 @@ export async function readSpaceAccountsForSnapshot(
     ],
   });
 
-  return links.map((l) => ({
-    id:       l.financialAccount.id,
-    type:     l.financialAccount.type as string,
-    balance:  l.financialAccount.balance,
-    currency: l.financialAccount.currency,
-  }));
+  // ── W1-D3 — snapshot-population disclosure tripwire ─────────────────────────
+  // A link's balance may enter a Space snapshot ONLY if its visibility tier
+  // grants balance disclosure to that Space (grantsBalanceDisclosure — the same
+  // fail-closed predicate the presentation layer enforces via
+  // normalizeSharedAccounts). Today every production link is FULL, so this is
+  // a strict no-op; it exists so that if a non-disclosing tier (SUMMARY_ONLY /
+  // PRIVATE / legacy SHARED / unknown) is ever enabled, the snapshot writer
+  // FAILS LOUDLY instead of structurally leaking the masked amount into
+  // shared-space aggregates. Throwing (not silently dropping) is deliberate:
+  // silently excluding a link would change net worth without disclosure —
+  // resolving that is the tier-enablement wave's job, not this guard's.
+  for (const l of links) {
+    if (!grantsBalanceDisclosure(l.visibilityLevel)) {
+      throw new Error(
+        `snapshot-population disclosure violation: SpaceAccountLink for account ` +
+        `${l.financialAccount.id} in space ${spaceId} has visibility tier ` +
+        `"${l.visibilityLevel}", which grants no balance disclosure — refusing to ` +
+        `include its balance in the snapshot population.`,
+      );
+    }
+  }
+
+  // W6 — a spine-backed wallet's balance for TODAY comes from the spine, valued
+  // through the canonical path, exactly as the account surfaces resolve it. A
+  // real number (VALUED or STALE) displaces the column; UNKNOWN and NO_PRICE
+  // fall through rather than have a number invented.
+  //
+  // W6d — Bitcoin is in that map now, which means TODAY'S SNAPSHOT changes
+  // value: the same quantity priced by the canonical dated close instead of an
+  // undated sync-time spot (+$108.86 on the live 0.24060252 BTC wallet). This is
+  // the CURRENT row only — `regenerate-history.ts` owns every prior date and is
+  // untouched, so nothing written here back-paints history.
+  //
+  // ⚠️ A wallet that falls through to the column contributes that column's
+  // figure to net worth with NO disclosure on the snapshot row — `cryptoStale`
+  // covers a stale reading, not an absent one. See the deletion condition in
+  // lib/data/accounts.ts.
+  const walletValueByAccount = await loadWalletCurrentValues(
+    links.map((l) => ({
+      id: l.financialAccount.id,
+      walletChain: l.financialAccount.walletChain,
+      lastUpdated: l.financialAccount.lastUpdated,
+    })),
+    { client: prisma as never, contextSpaceId: spaceId },
+  );
+
+  return links.map((l) => {
+    const v = walletValueByAccount.get(l.financialAccount.id);
+    return {
+      id:       l.financialAccount.id,
+      type:     l.financialAccount.type as string,
+      // W6b — VALUED or STALE alike. A stale reading is the LAST KNOWN position
+      // and is still the best number there is; falling back to the column would
+      // swap it for an unwritten zero. Staleness is DISCLOSED (below), not
+      // expressed by discarding the figure.
+      balance:  hasKnownValue(v) ? v!.value! : l.financialAccount.balance,
+      currency: l.financialAccount.currency,
+      /**
+       * W6b — present ONLY when this row's balance came from a wallet
+       * observation older than the freshness horizon: the LAST KNOWN position
+       * rather than a confirmation of now. The writer stamps the snapshot from
+       * it, so a week-old reading is never published as today's confirmed
+       * wealth.
+       *
+       * OMITTED rather than `false` for everything else, so a non-wallet row is
+       * byte-identical to what this read has always returned — the field-level
+       * identity argued in the header stays a fact, not an aspiration.
+       */
+      ...(hasKnownValue(v) && !isFreshCurrentValue(v) ? { cryptoStale: true } : {}),
+    };
+  });
+}
+
+/**
+ * Investment accounts excluded from whole-Space wealth because Investments
+ * consent is still pending (CONSENT_REQUIRED): holdings were never fetched, so
+ * baking today's balance into the snapshot would fabricate a jump (see
+ * regenerateSpaceSnapshot). ONE rule, two readers — the snapshot and the Assets
+ * investment-account ledger — so what Assets lists as "counted" is exactly what
+ * the canonical investment aggregate counts.
+ */
+export async function consentPendingInvestmentAccountIds(
+  client: {
+    financialAccount: {
+      findMany(args: { where: Prisma.FinancialAccountWhereInput; select: { id: true } }): Promise<Array<{ id: string }>>;
+    };
+  },
+  accountIds: string[],
+): Promise<Set<string>> {
+  if (accountIds.length === 0) return new Set();
+  const rows = await client.financialAccount.findMany({
+    where: {
+      id:          { in: accountIds },
+      type:        "investment",
+      connections: { some: { plaidItem: { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED } } },
+    },
+    select: { id: true },
+  });
+  return new Set(rows.map((r) => r.id));
 }

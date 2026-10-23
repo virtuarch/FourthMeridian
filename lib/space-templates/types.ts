@@ -29,8 +29,9 @@ import type { SectionPreset, SpaceCategory } from "../space-presets";
  *                  (getComingSoonTemplates()).
  *  - "hidden"    — resolvable by id/category (so existing Spaces of that
  *                  category still materialize/render) but never listed in the
- *                  picker. Covers PERSONAL/legacy GOAL and templates retired
- *                  from the picker.
+ *                  picker. Covers PERSONAL and templates retired from the
+ *                  picker. (W2: the legacy GOAL and RETIREMENT templates are
+ *                  DELETED outright, not hidden — nothing to materialize.)
  */
 export type TemplateStatus = "live" | "comingSoon" | "hidden";
 
@@ -41,7 +42,7 @@ export interface SpaceTemplate {
   name: string;
   /** One-line description shown in pickers. */
   description: string;
-  /** Lucide icon name — same string convention as lib/widget-registry.ts. */
+  /** Lucide icon name (string, resolved by the consuming surface). */
   icon: string;
   /** Semantic classification the template implies. Reuses SpaceCategory. */
   category: SpaceCategory;
@@ -49,7 +50,8 @@ export interface SpaceTemplate {
    * The full, ordered section list a Space born from this template receives —
    * category signature sections merged with the universal sections, exactly
    * the shape POST /api/spaces materializes into SpaceDashboardSection rows.
-   * Section keys reference lib/widget-registry.ts entries (validated in tests).
+   * W2: every built-in template's list is EMPTY (the last seeded section
+   * retired with the Goals surface) — an empty plan is legal end-to-end.
    */
   sections: readonly SectionPreset[];
   /** Template content version. Bump when `sections` meaningfully change. */

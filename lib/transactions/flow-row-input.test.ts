@@ -77,6 +77,20 @@ function row(over: Partial<FlowRowInput> = {}): FlowRowInput {
   check("pfcDetailed preserved", input.pfcDetailed === "LOAN_PAYMENTS_CREDIT_CARD");
   check("pfcConfidenceLevel preserved", captured.pfcConfidenceLevel === "HIGH");
   check("merchantEntityId preserved", captured.merchantEntityId === "ent_chase");
+  // FIN-002 — a USER category source suppresses the provider taxonomy as a
+  // SIGNAL while leaving it on the input (so the write builder persists it).
+  check("FIN-002: no categorySource ⇒ not suppressed", input.providerTaxonomySuppressed === undefined);
+  for (const source of ["USER_RULE", "USER_OVERRIDE"]) {
+    const u = buildFlowInputFromRow({ category: "Transfer", amount: 500, pfcPrimary: "INCOME", pfcDetailed: "INCOME_WAGES",
+      pfcConfidenceLevel: "HIGH", merchantEntityId: null, categorySource: source }, { accountType: "checking", debtSubtype: null }).input;
+    check(`FIN-002: categorySource ${source} ⇒ providerTaxonomySuppressed, PFC still on the input`,
+      u.providerTaxonomySuppressed === true && u.pfcPrimary === "INCOME" && u.pfcDetailed === "INCOME_WAGES");
+  }
+  for (const source of ["PLAID_PFC", "MERCHANT_RULE", "SYSTEM", null]) {
+    const n = buildFlowInputFromRow({ category: "Transfer", amount: 500, pfcPrimary: "INCOME", pfcDetailed: null,
+      pfcConfidenceLevel: null, merchantEntityId: null, categorySource: source }, { accountType: "checking", debtSubtype: null }).input;
+    check(`FIN-002: categorySource ${String(source)} ⇒ the provider taxonomy still decides`, n.providerTaxonomySuppressed === undefined);
+  }
 }
 
 // Historical row: pfc/merchant null → carried through as null (coarse classification)
@@ -141,7 +155,9 @@ for (const over of [
   // The constant is wired through; do NOT re-pin its integer value (CCPAY-2F: a
   // literal here forces a second edit on every version bump for no added coverage).
   check("composed classifierVersion set", w.classifierVersion === FLOW_CLASSIFIER_VERSION);
-  check("composed 10 columns", Object.keys(w).length === 10);
+  // v2.6-OWN-1 — the eleventh column is the author.
+  check("composed flowAuthority CLASSIFIER", w.flowAuthority === "CLASSIFIER");
+  check("composed 11 columns", Object.keys(w).length === 11);
 }
 
 // Determinism → idempotency: same row yields byte-identical write fields twice

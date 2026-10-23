@@ -14,9 +14,17 @@
  * member:remove = ADMIN+, never the OWNER, never yourself here — self-leave lives in
  * the Danger tab). The Select + Remove call the SAME routes the manage modal uses; the
  * panel invents no permission it cannot enforce, and shows no action it cannot offer.
+ *
+ * UI-003 — both actions are destructive (removal also un-shares every account the
+ * member added), so neither fires on the first click: the Remove button and the role
+ * Select only OPEN a ConfirmDialog that states the consequence, and `onRemove` /
+ * `onChangeRole` are reachable from that dialog's onConfirm alone.
  */
 
-import { Loader2, UserMinus } from "lucide-react";
+import { useState } from "react";
+import { Loader2, UserMinus, ShieldAlert } from "lucide-react";
+import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
+import { changeRoleConfirm, removeMemberConfirm } from "@/components/space/manage/destructive-confirm";
 import { formatDate } from "@/lib/format";
 import { Select } from "@/components/atlas/fields";
 import { ROLE_LABELS, type Member } from "@/components/space/manage/manage-shared";
@@ -46,10 +54,33 @@ export function MemberDetail({
   canRemove: boolean;
   changing: boolean;
   removing: boolean;
-  onChangeRole: (role: string) => void;
-  onRemove: () => void;
+  onChangeRole: (role: string) => void | Promise<unknown>;
+  /** Resolves to an error message when the server refused, null/void on success. */
+  onRemove: () => void | Promise<string | null | void>;
 }) {
   const name = memberDisplayName(member);
+  // UI-003 — the pending confirmation. The Select stays controlled by the member's
+  // CURRENT role, so a choice snaps back until the owner confirms it.
+  const [pendingRole, setPendingRole] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const roleCopy = pendingRole
+    ? changeRoleConfirm(name, member.role, pendingRole, ROLE_ACCESS[pendingRole])
+    : null;
+  const removeCopy = removeMemberConfirm(name);
+
+  async function confirmRoleChange() {
+    const role = pendingRole;
+    setPendingRole(null);
+    if (role) await onChangeRole(role);
+  }
+
+  async function confirmRemoval() {
+    setRemoveError(null);
+    const err = await onRemove();
+    setConfirmRemove(false);
+    if (typeof err === "string" && err) setRemoveError(err);
+  }
 
   return (
     <div className="min-w-0">
@@ -96,19 +127,23 @@ export function MemberDetail({
         <div className="mt-5 space-y-3 border-t border-[var(--border-hairline)] pt-5">
           {canManageRole && (
             <div>
-              <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+              <label
+                htmlFor={`member-role-${member.id}`}
+                className="mb-1.5 block text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]"
+              >
                 Manage access
               </label>
               <Select
+                id={`member-role-${member.id}`}
                 value={member.role}
                 disabled={changing}
                 options={PROMOTABLE}
-                onChange={(e) => onChangeRole(e.target.value)}
+                onChange={(e) => { if (e.target.value !== member.role) setPendingRole(e.target.value); }}
                 className="w-full"
               />
               {changing && (
-                <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
-                  <Loader2 size={11} className="animate-spin" /> Updating role…
+                <p role="status" aria-live="polite" className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                  <Loader2 size={11} className="animate-spin" aria-hidden /> Updating role…
                 </p>
               )}
             </div>
@@ -117,13 +152,16 @@ export function MemberDetail({
           {canRemove && (
             <button
               type="button"
-              onClick={onRemove}
+              onClick={() => { setRemoveError(null); setConfirmRemove(true); }}
               disabled={removing}
               className="flex w-full items-center justify-center gap-2 rounded-[var(--radius-md)] border border-[rgba(237,82,71,.3)] px-3 py-2.5 text-sm font-medium text-[var(--coral-400)] transition-colors hover:bg-[rgba(237,82,71,.10)] disabled:opacity-50 focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--coral-400)]"
             >
-              {removing ? <Loader2 size={14} className="animate-spin" /> : <UserMinus size={14} />}
+              {removing ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <UserMinus size={14} aria-hidden />}
               Remove from Space
             </button>
+          )}
+          {removeError && (
+            <p role="alert" className="text-[11px] text-[var(--coral-400)]">{removeError}</p>
           )}
         </div>
       )}
@@ -137,6 +175,30 @@ export function MemberDetail({
               ? "The owner can't be changed or removed here."
               : "You don't have permission to change this member."}
         </p>
+      )}
+
+      {/* UI-003 — the ONLY paths to the two mutations. */}
+      {roleCopy && (
+        <ConfirmDialog
+          onClose={() => setPendingRole(null)}
+          onConfirm={confirmRoleChange}
+          icon={ShieldAlert}
+          title={roleCopy.title}
+          message={roleCopy.message}
+          confirmLabel={roleCopy.confirmLabel}
+          confirmTone="meridian"
+        />
+      )}
+      {confirmRemove && (
+        <ConfirmDialog
+          onClose={() => setConfirmRemove(false)}
+          onConfirm={confirmRemoval}
+          busy={removing}
+          icon={UserMinus}
+          title={removeCopy.title}
+          message={removeCopy.message}
+          confirmLabel={removeCopy.confirmLabel}
+        />
       )}
     </div>
   );

@@ -26,7 +26,7 @@ function detail(over: Partial<TransactionDetail> = {}): TransactionDetail {
     provenance: { source: 'plaid' },
     counterparty: null,
     reporting: null,
-    relationships: { pendingPosted: null, duplicate: null, refundCandidate: null, transferCandidate: null },
+    relationships: { pendingPosted: null, similarity: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } },
     needsClassification: false, needsClassificationReason: null,
   };
   return { ...base, ...over } as unknown as TransactionDetail;
@@ -38,15 +38,28 @@ test('Summary always renders merchant/amount/date/category; flow when present', 
   const secs = buildTransactionDetailSections(detail());
   const s = find(secs, 'Summary')!;
   const labels = s.rows!.map((r) => r.label);
-  assert.deepEqual(labels, ['Merchant', 'Amount', 'Date', 'Category', 'Flow']);
+  // v2.6-TRUTH-7 — "What" is the canonical row nature, not humanize(flowType).
+  assert.deepEqual(labels, ['Merchant', 'Amount', 'Date', 'Category', 'What']);
   assert.equal(s.rows!.find((r) => r.label === 'Amount')!.value, '−$12.50');
-  assert.equal(s.rows!.find((r) => r.label === 'Flow')!.value, 'Spending · Outflow');
+  assert.equal(s.rows!.find((r) => r.label === 'What')!.value, 'Spending · Outflow');
 });
 
-test('null facts are hidden; Flow row absent when flowType null', () => {
+test('null facts are hidden; the nature row is absent when flowType is null', () => {
   const secs = buildTransactionDetailSections(detail({ flowType: null, flowDirection: null }));
   const s = find(secs, 'Summary')!;
-  assert.ok(!s.rows!.some((r) => r.label === 'Flow'));
+  assert.ok(!s.rows!.some((r) => r.label === 'What'));
+});
+
+test('an issuer credit reads as one, and keeps its flow type beside it', () => {
+  // The Microsoft row: flowType INCOME, taxonomy ISSUER_CREDIT, on a card.
+  const secs = buildTransactionDetailSections(detail({
+    flowType: 'INCOME', flowDirection: 'INFLOW', amount: 280.45,
+    incomeClass: 'NOT_INCOME', incomeSubtype: 'ISSUER_CREDIT',
+  } as never));
+  const s = find(secs, 'Summary')!;
+  assert.equal(s.rows!.find((r) => r.label === 'What')!.value, 'Issuer credit · Inflow');
+  // The coarser persisted fact is kept, labelled as itself — never hidden.
+  assert.equal(s.rows!.find((r) => r.label === 'Flow type')!.value, 'Income');
 });
 
 test('Account shows mask formatted; omits mask when null', () => {
@@ -79,40 +92,51 @@ test('fxApplied false/null is not shown; tiFactsVersion never shown', () => {
 });
 
 test('pendingPosted wording — no amount claim', () => {
-  const posted = detail({ authorizedAt: '2026-05-30', relationships: { pendingPosted: { role: 'POSTED_FROM_PENDING', transactionId: 'x' }, duplicate: null, refundCandidate: null, transferCandidate: null } });
+  const posted = detail({ authorizedAt: '2026-05-30', relationships: { pendingPosted: { role: 'POSTED_FROM_PENDING', transactionId: 'x' }, similarity: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
   const notes = find(buildTransactionDetailSections(posted), 'Relationship Intelligence')!.notes!;
   assert.equal(notes[0], 'Posted from a pending transaction. Authorized 2026-05-30, posted 2026-06-01.');
   assert.ok(!/amount/i.test(notes.join(' ')));
-  const pending = detail({ relationships: { pendingPosted: { role: 'PENDING_AWAITING_POST', transactionId: 'x' }, duplicate: null, refundCandidate: null, transferCandidate: null } });
+  const pending = detail({ relationships: { pendingPosted: { role: 'PENDING_AWAITING_POST', transactionId: 'x' }, similarity: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
   assert.equal(find(buildTransactionDetailSections(pending), 'Relationship Intelligence')!.notes![0], 'A posted version of this pending transaction exists.');
 });
 
-test('duplicate wording is hedged, counts, pluralizes', () => {
-  const one = detail({ relationships: { pendingPosted: null, duplicate: { transactionIds: ['a'] }, refundCandidate: null, transferCandidate: null } });
-  assert.equal(find(buildTransactionDetailSections(one), 'Relationship Intelligence')!.notes![0], 'Possible duplicate — appears to match 1 other transaction on 2026-06-01.');
-  const two = detail({ relationships: { pendingPosted: null, duplicate: { transactionIds: ['a', 'b'] }, refundCandidate: null, transferCandidate: null } });
+test('similarity wording is evidence language — hedged, counts, pluralizes, never an identity verdict', () => {
+  const one = detail({ relationships: { pendingPosted: null, similarity: { transactionIds: ['a'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' }, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
+  assert.equal(
+    find(buildTransactionDetailSections(one), 'Relationship Intelligence')!.notes![0],
+    'Looks similar to 1 other transaction on 2026-06-01 — same account, amount, and description. This may be a repeated charge or a duplicate record.',
+  );
+  const two = detail({ relationships: { pendingPosted: null, similarity: { transactionIds: ['a', 'b'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' }, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
   const note = find(buildTransactionDetailSections(two), 'Relationship Intelligence')!.notes![0];
-  assert.match(note, /Possible duplicate/);
+  assert.match(note, /Looks similar/);
   assert.match(note, /2 other transactions/);
-  assert.ok(!/\bduplicate\b(?!.*possible)/i.test(note.replace('Possible duplicate', ''))); // never a bare certain "duplicate"
+  // W1 (D6) — the surface may name the POSSIBILITY of a duplicate record; it may
+  // never assert one. "Possible duplicate —" (the retired verdict-shaped lead)
+  // must not return, and "duplicate" may appear only inside the hedged clause.
+  assert.ok(!/Possible duplicate/.test(note));
+  assert.match(note, /may be a repeated charge or a duplicate record/);
 });
 
 test('refundCandidate / transferCandidate (null) never render a section', () => {
   assert.equal(find(buildTransactionDetailSections(detail()), 'Relationship Intelligence'), undefined);
 });
 
-test('transferCandidate renders a hedged, account-name-free note when resolved', () => {
+test('transferCandidate with no counterparty block stays generic and id-free', () => {
   const t = detail({
     relationships: {
       pendingPosted: null,
-      duplicate: null,
+      similarity: null,
       refundCandidate: null,
       transferCandidate: {
         status: 'RESOLVED',
         transactionId: 'leg2',
         counterpartyAccountId: 'acct-2',
         confidence: 1,
-        reason: 'DETERMINISTIC_UNIQUE',
+        reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED',
+      },
+      transferAssessment: {
+        status: 'RESOLVED', transactionId: 'leg2', counterpartyAccountId: 'acct-2', confidence: 1,
+        reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED',
       },
     },
   });
@@ -131,11 +155,15 @@ test('refundCandidate stays reserved-null even when transferCandidate resolves',
   const t = detail({
     relationships: {
       pendingPosted: null,
-      duplicate: null,
+      similarity: null,
       refundCandidate: null,
       transferCandidate: {
         status: 'RESOLVED', transactionId: null, counterpartyAccountId: 'acct-2',
-        confidence: 1, reason: 'DETERMINISTIC_UNIQUE',
+        confidence: 1, reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED',
+      },
+      transferAssessment: {
+        status: 'RESOLVED', transactionId: null, counterpartyAccountId: 'acct-2',
+        confidence: 1, reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED',
       },
     },
   });
@@ -198,5 +226,149 @@ test('Needs classification: hidden by default; shown with case-appropriate wordi
 test('no section is ever empty', () => {
   for (const s of buildTransactionDetailSections(detail())) {
     assert.ok((s.rows?.length ?? 0) > 0 || (s.notes?.length ?? 0) > 0, `${s.title} is empty`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.6-XFER-2 — the RESOLVED counterparty reaches the drawer
+//
+// `TransactionDetail.counterparty` carries a KD-15-gated, identity-authority
+// name, and it was rendered by NOTHING: the drawer showed only the provider's
+// counterparty CLASS. Three AMEX savings→checking transfers resolved to
+// "Rewards Checking" and still read "Financial institution".
+//
+// Precedence is most-specific-true-statement-first, and each branch is pinned:
+// a name when we may show one, "Another account" when KD-15 forbids the name but
+// a counterparty exists, and the provider's class only when there is no resolved
+// account at all.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const cpRow = (d: TransactionDetail): string | null => {
+  const sec = find(buildTransactionDetailSections(d), 'Transaction Intelligence');
+  return sec?.rows?.find((r) => r.label === 'Counterparty')?.value ?? null;
+};
+
+test('XFER-2: a resolved VISIBLE counterparty renders its account name', () => {
+  const v = cpRow(detail({
+    counterpartyType: 'FINANCIAL_INSTITUTION',
+    counterparty: { visible: true, accountId: 'a2', name: 'Rewards Checking' },
+  }));
+  assert.equal(v, 'Rewards Checking', 'the resolved account name must win over the provider class');
+});
+
+test('XFER-2: a resolved but NON-VISIBLE counterparty is named generically, never by name', () => {
+  const v = cpRow(detail({
+    counterpartyType: 'FINANCIAL_INSTITUTION',
+    counterparty: { visible: false },
+  }));
+  assert.equal(v, 'Another account',
+    'KD-15 forbids the name; saying nothing would imply there was no counterparty');
+});
+
+test('XFER-2: with NO resolved counterparty the provider class is preserved', () => {
+  assert.equal(
+    cpRow(detail({ counterpartyType: 'FINANCIAL_INSTITUTION', counterparty: null })),
+    'Financial institution',
+    'unchanged behaviour where the authority resolved nothing',
+  );
+  // …and a row with neither shows no counterparty row at all.
+  assert.equal(cpRow(detail({ counterpartyType: null, counterparty: null })), null);
+});
+
+test('XFER-2: the drawer never derives a counterparty name itself', () => {
+  // The name is whatever the read boundary put in the DTO — produced there by
+  // accountDisplayName, the ONE identity authority. This surface must render it
+  // verbatim so it cannot call an account something no other surface calls it.
+  const v = cpRow(detail({
+    counterpartyType: 'MERCHANT',
+    counterparty: { visible: true, accountId: 'a2', name: 'Ultimate Rewards®' },
+  }));
+  assert.equal(v, 'Ultimate Rewards®', 'rendered verbatim, never re-derived or re-formatted');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.6-XFER-3 — the relationship note names the account
+//
+// XFER-2 put the resolved name in the fact rows; the Relationship Intelligence
+// sentence beside it still read "a transfer between your own accounts" while the
+// account was named two rows above. Same defect, second consumer.
+//
+// A name may appear ONLY when the DTO proves all three: the match resolved to an
+// account, the counterparty block is VISIBLE (KD-15's own verdict), and the block
+// is about THAT account. Everything else keeps the generic wording. These probes
+// pin each condition separately, because the dangerous failure is not silence —
+// it is confidently naming the wrong account.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const resolvedTo = (acctId: string | null) => ({
+  status: 'RESOLVED', transactionId: 'leg2', counterpartyAccountId: acctId, confidence: 1,
+  reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'checking', maturity: 'INTERNAL_TRANSFER',
+  evidenceLevel: 'ACCOUNT_CERTAIN', persistableCounterparty: true, persistableLeg: true,
+  unresolvedReason: null, admission: 'ADMITTED',
+});
+const withMatch = (over: Partial<TransactionDetail>, acctId: string | null = 'a2') => detail({
+  relationships: {
+    pendingPosted: null, similarity: null, refundCandidate: null,
+    transferCandidate: resolvedTo(acctId), transferAssessment: resolvedTo(acctId),
+  },
+  ...over,
+} as Partial<TransactionDetail>);
+const relNote = (d: TransactionDetail): string =>
+  find(buildTransactionDetailSections(d), 'Relationship Intelligence')!.notes![0];
+
+test('XFER-3: the note names the account, and takes its direction from the sign', () => {
+  // The live AMEX case: −$500 out of High Yield Savings, matched to Rewards Checking.
+  const out = withMatch({
+    flowType: 'TRANSFER', flowDirection: 'OUTFLOW', amount: -500,
+    counterparty: { visible: true, accountId: 'a2', name: 'Rewards Checking' },
+  });
+  assert.equal(relNote(out), 'Appears to match a transfer to Rewards Checking.');
+
+  // The opposite leg reads the same fact from the other side.
+  const inbound = withMatch({
+    flowType: 'TRANSFER', flowDirection: 'INFLOW', amount: 500,
+    counterparty: { visible: true, accountId: 'a2', name: 'High Yield Savings Account' },
+  });
+  assert.equal(relNote(inbound), 'Appears to match a transfer from High Yield Savings Account.');
+
+  // Still HEDGED — naming the other side is not a claim that the transfer occurred.
+  assert.match(relNote(out), /^Appears to match/);
+});
+
+test('XFER-3: KD-15 governs the note exactly as it governs the fact row', () => {
+  const hidden = withMatch({
+    flowType: 'TRANSFER', flowDirection: 'OUTFLOW', amount: -500,
+    counterparty: { visible: false },
+  });
+  assert.equal(relNote(hidden), 'Appears to match a transfer between your own accounts.',
+    'an invisible counterparty must not be named here either');
+});
+
+test('XFER-3: a counterparty block about a DIFFERENT account never names the match', () => {
+  // `d.counterparty` prefers the PERSISTED link, which need not be the leg this
+  // read matched. Naming one account from a block describing another would be a
+  // fabrication that reads as authoritative — the note must fall back instead.
+  const mismatched = withMatch({
+    flowType: 'TRANSFER', flowDirection: 'OUTFLOW', amount: -500,
+    counterparty: { visible: true, accountId: 'SOMEONE-ELSE', name: 'Platinum Card®' },
+  });
+  assert.equal(relNote(mismatched), 'Appears to match a transfer between your own accounts.');
+  assert.ok(!/Platinum/.test(relNote(mismatched)), 'the wrong account must never be named');
+
+  // …and a match that resolved no account id at all cannot be named either.
+  const noId = withMatch({
+    flowType: 'TRANSFER', flowDirection: 'OUTFLOW', amount: -500,
+    counterparty: { visible: true, accountId: 'a2', name: 'Rewards Checking' },
+  }, null);
+  assert.equal(relNote(noId), 'Appears to match a transfer between your own accounts.');
+});
+
+test('XFER-3: the note never renders a raw id, named or generic', () => {
+  for (const d of [
+    withMatch({ flowType: 'TRANSFER', amount: -500, counterparty: { visible: true, accountId: 'a2', name: 'Rewards Checking' } }),
+    withMatch({ flowType: 'TRANSFER', amount: -500, counterparty: { visible: false } }),
+  ]) {
+    const notes = find(buildTransactionDetailSections(d), 'Relationship Intelligence')!.notes!.join(' ');
+    assert.ok(!/\ba2\b|leg2/.test(notes), `an id leaked into the note: ${notes}`);
   }
 });

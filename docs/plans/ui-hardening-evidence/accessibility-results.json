@@ -1,0 +1,8 @@
+{
+  "scope": "Shared Panel synthetic browser fixture",
+  "forwardTabTrap": "pass, 14 tabs",
+  "reverseTabTrap": "pass, 14 tabs",
+  "reducedMotion": "pass",
+  "screenReader": "not manually verified",
+  "contrast": "not comprehensively audited"
+}

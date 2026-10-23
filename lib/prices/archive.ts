@@ -100,6 +100,27 @@ export const priceArchive: PriceArchive = {
     }));
   },
 
+  // V26-PRICE-2 coverage access pattern — which dates exist, without the prices.
+  // Served by the same @@index([instrumentId, basis, date]) as readRange; the
+  // narrower projection keeps a multi-year ownership-window read cheap and keeps
+  // price values out of a code path that must not judge them.
+  async readCoveredDates(instrumentIds, basis, fromISO, toISO) {
+    if (instrumentIds.length === 0) return [];
+    const rows = await db.priceObservation.findMany({
+      where: {
+        instrumentId: { in: [...instrumentIds] },
+        basis,
+        date: { gte: isoToDate(fromISO), lte: isoToDate(toISO) },
+      },
+      select: { instrumentId: true, date: true, currency: true },
+    });
+    return rows.map((r) => ({
+      instrumentId: r.instrumentId,
+      dateISO:      toISODateUTC(r.date),
+      currency:     r.currency,
+    }));
+  },
+
   async writeBatch(source, rows) {
     if (!source) throw new Error("[prices] writeBatch requires a non-empty batch source");
 

@@ -33,17 +33,20 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { requireSystemAdmin } from "@/lib/session";
+import { requireFreshSystemAdmin } from "@/lib/session";
 import { db } from "@/lib/db";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 
 export async function POST(req: NextRequest) {
-  // Capture the acting admin so the retirement is attributable. requireSystemAdmin
+  // Capture the acting admin so the retirement is attributable. requireFreshSystemAdmin
   // returns BEFORE any state mutation, so a rejected caller can never reach the
   // audit write below (no misleading record for a failed authorization).
-  const [admin, err] = await requireSystemAdmin();
+  // Fresh: this is a CONTROL action (it retires a live Plaid item / disconnects
+  // accounts), so the admin role is re-read live rather than trusted from the
+  // 30 s session cache — a just-revoked admin cannot act inside that window.
+  const [admin, err] = await requireFreshSystemAdmin();
   if (err) return err;
 
   // ── Parse body ────────────────────────────────────────────────────────────

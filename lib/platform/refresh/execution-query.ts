@@ -33,7 +33,12 @@
 
 import "server-only";
 
-import { db } from "@/lib/db";
+// ⚠️ RLS-P-3a — fm_system, NOT the migration principal. Same reasoning as the
+// projection authority next door: every `db.` here read one of the four DF-2
+// refresh tables and nothing else, and fm_app holds no grant on any of them. The
+// reach does not change; the authority stops being incidental.
+import { systemDb } from "@/lib/db";
+import { captureLedgerWriteFailure } from "@/lib/monitoring/capture";
 import {
   clampLimit,
   decodeCursor,
@@ -45,6 +50,7 @@ import {
   resolveScope,
   type ExecutionDetailDTO,
   type ExecutionPageDTO,
+  type ExecutionRowDTO,
   type ExecutionScope,
   type SeamAudience,
 } from "@/lib/platform/refresh/execution-query-core";
@@ -65,6 +71,11 @@ export interface ExecutionQueryArgs {
   filter?: {
     overallStatus?: readonly string[];
     trigger?: readonly string[];
+    /** PLATFORM OPS OBSERVABILITY — source kind ("PLAID_ITEM" | "WALLET") and network ("BTC", …). */
+    sourceKind?: readonly string[];
+    network?: readonly string[];
+    /** One source's own id (a wallet's FinancialAccount.id, or a Plaid item id) — "this source's refreshes". */
+    sourceRef?: string;
     /** ISO instant lower bound (inclusive) on `startedAt`. */
     since?: Date;
     /** ISO instant upper bound (inclusive) on `startedAt`. */
@@ -86,12 +97,21 @@ export interface ExecutionQueryReaders {
     plaidItemIds: readonly string[] | undefined;
     overallStatus: readonly string[] | undefined;
     trigger: readonly string[] | undefined;
+    sourceKind: readonly string[] | undefined;
+    network: readonly string[] | undefined;
+    sourceRef: string | undefined;
     since: Date | undefined;
     until: Date | undefined;
     cursor: { startedAt: Date; id: string } | null;
     take: number;
   }): Promise<ExecutionFact[]>;
   execution(id: string): Promise<ExecutionFact | null>;
+  /**
+   * PLATFORM OPS OBSERVABILITY — the newest SUCCEEDED execution for one source
+   * (the "last successful refresh" beside a failed one), or null when none is
+   * recorded. Bounded: one indexed row.
+   */
+  lastSucceeded(source: { plaidItemId: string | null; sourceRef: string | null; before: Date; excludeId: string }): Promise<ExecutionFact | null>;
   endpoints(executionId: string): Promise<EndpointFact[]>;
   providerCalls(executionId: string): Promise<ProviderCallFact[]>;
   coverage(executionId: string): Promise<CoverageFact[]>;
@@ -116,16 +136,26 @@ const EXECUTION_SELECT = {
   parentJobRunId: true,
   errorSummary: true,
   deploymentSha: true,
+  admissionReason: true,
+  sourceKind: true,
+  sourceRef: true,
+  network: true,
+  failureStage: true,
+  failureCategory: true,
+  outcome: true,
 } as const;
 
 function realReaders(): ExecutionQueryReaders {
   return {
     async executions(params) {
-      return db.refreshExecution.findMany({
+      return systemDb.refreshExecution.findMany({
         where: {
           ...(params.plaidItemIds ? { plaidItemId: { in: [...params.plaidItemIds] } } : {}),
           ...(params.overallStatus ? { overallStatus: { in: [...params.overallStatus] } } : {}),
           ...(params.trigger ? { trigger: { in: [...params.trigger] } } : {}),
+          ...(params.sourceKind ? { sourceKind: { in: [...params.sourceKind] } } : {}),
+          ...(params.network ? { network: { in: [...params.network] } } : {}),
+          ...(params.sourceRef ? { OR: [{ sourceRef: params.sourceRef }, { plaidItemId: params.sourceRef }] } : {}),
           ...(params.since || params.until
             ? {
                 startedAt: {
@@ -151,10 +181,23 @@ function realReaders(): ExecutionQueryReaders {
       });
     },
     async execution(id) {
-      return db.refreshExecution.findUnique({ where: { id }, select: EXECUTION_SELECT });
+      return systemDb.refreshExecution.findUnique({ where: { id }, select: EXECUTION_SELECT });
+    },
+    async lastSucceeded(source) {
+      if (!source.plaidItemId && !source.sourceRef) return null;
+      return systemDb.refreshExecution.findFirst({
+        where: {
+          overallStatus: "SUCCEEDED",
+          startedAt: { lt: source.before },
+          id: { not: source.excludeId },
+          ...(source.plaidItemId ? { plaidItemId: source.plaidItemId } : { sourceRef: source.sourceRef }),
+        },
+        select: EXECUTION_SELECT,
+        orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+      });
     },
     async endpoints(executionId) {
-      return db.refreshEndpointResult.findMany({
+      return systemDb.refreshEndpointResult.findMany({
         where: { refreshExecutionId: executionId },
         select: {
           refreshExecutionId: true, endpoint: true, stageKind: true, status: true,
@@ -166,7 +209,7 @@ function realReaders(): ExecutionQueryReaders {
       });
     },
     async providerCalls(executionId) {
-      return db.providerCall.findMany({
+      return systemDb.providerCall.findMany({
         where: { refreshExecutionId: executionId },
         select: {
           refreshExecutionId: true, endpoint: true, provider: true, operation: true,
@@ -178,7 +221,7 @@ function realReaders(): ExecutionQueryReaders {
       });
     },
     async coverage(executionId) {
-      return db.refreshEndpointAccountCoverage.findMany({
+      return systemDb.refreshEndpointAccountCoverage.findMany({
         where: { refreshExecutionId: executionId },
         select: {
           refreshExecutionId: true, endpoint: true, financialAccountId: true,
@@ -222,6 +265,9 @@ export async function queryRefreshExecutions(
     plaidItemIds: scope.plaidItemIds,
     overallStatus: args.filter?.overallStatus,
     trigger: args.filter?.trigger,
+    sourceKind: args.filter?.sourceKind,
+    network: args.filter?.network,
+    sourceRef: args.filter?.sourceRef,
     since: args.filter?.since,
     until: args.filter?.until,
     cursor: decoded ? { startedAt: new Date(decoded.startedAt), id: decoded.id } : null,
@@ -260,7 +306,7 @@ export async function getRefreshExecutionDetail(
 
   // Scope re-check on the resolved row — a direct id lookup must never let a
   // scoped caller read outside its connections.
-  if (scope.plaidItemIds && !scope.plaidItemIds.includes(execution.plaidItemId)) return null;
+  if (scope.plaidItemIds && (execution.plaidItemId === null || !scope.plaidItemIds.includes(execution.plaidItemId))) return null;
 
   const [endpoints, providerCalls, coverage] = await Promise.all([
     readers.endpoints(execution.id),
@@ -287,11 +333,60 @@ export async function getRefreshExecutionDetail(
  * is a LOOKUP: null means the correlator named no execution, which is the honest
  * and common answer, not a reason to fabricate a link.
  */
+/**
+ * PLATFORM OPS OBSERVABILITY — the operator's CONTEXT for one execution: the
+ * source's last successful execution, so a failed run can be read beside the
+ * last time the same source worked. Operator audience only (it is composed by
+ * the platform detail route, never by a customer surface). Null when the
+ * execution is unknown.
+ */
+export async function getExecutionContext(
+  executionId: string,
+  deps?: ExecutionQueryDeps,
+): Promise<{ lastSucceeded: ExecutionRowDTO | null } | null> {
+  const readers = resolveReaders(deps);
+  const execution = await readers.execution(executionId);
+  if (!execution) return null;
+  // Strictly BEFORE this execution: "the last time this source worked before
+  // this run", so a successful execution never reports itself as its own context.
+  const last = await readers.lastSucceeded({
+    plaidItemId: execution.plaidItemId, sourceRef: execution.sourceRef,
+    before: execution.startedAt, excludeId: execution.id,
+  });
+  return { lastSucceeded: last ? projectExecutionRow(last, "operator") : null };
+}
+
+/**
+ * Resolve a run correlator to a `RefreshExecution.id`, or null.
+ *
+ * ── ⚠️ RLS-P-2 — `null` MEANT BOTH ANSWERS, AND ONE OF THEM WAS A FAILURE ────
+ * `null` is the honest and COMMON answer here: several incident producers have
+ * no refresh envelope at all, so their correlator legitimately names no
+ * execution and the FK is stored null rather than invented. That is why this
+ * read must not throw — a transient failure would otherwise cost the whole
+ * incident observation instead of just its correlation.
+ *
+ * But the bare `catch { return null }` meant a REFUSED or FAILED read produced
+ * the identical value, and the occurrence was then written permanently UNLINKED
+ * while every surface read it as "this run named no execution". The
+ * silent-refusal defect (docs/plans/RLS-SILENT-REFUSAL-CAS.md) on the
+ * correlation path: a refusal published as a fact.
+ *
+ * The value is unchanged — the honest one is still null, and the caller still
+ * cannot be made worse off. What changes is that the failure is now ESCALATED
+ * under its own phase, so "unlinked because nothing matched" and "unlinked
+ * because the read did not happen" stop being the same event in monitoring.
+ */
 export async function getExecutionIdByRunId(runId: string): Promise<string | null> {
   try {
-    const row = await db.refreshExecution.findUnique({ where: { runId }, select: { id: true } });
+    const row = await systemDb.refreshExecution.findUnique({ where: { runId }, select: { id: true } });
     return row?.id ?? null;
-  } catch {
+  } catch (e) {
+    console.error(
+      "[refresh/execution-query] the run correlator could not be resolved; the observation will be stored UNLINKED (non-fatal):",
+      e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    );
+    captureLedgerWriteFailure("RefreshExecution", "correlate", e);
     return null;
   }
 }

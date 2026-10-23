@@ -40,8 +40,8 @@
  */
 
 import { useState } from "react";
-import { formatCurrency } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatCurrency } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { assignStableColors, DEFAULT_CHART_COLOR } from "@/lib/charts/chart-palette";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -88,6 +88,24 @@ export interface BreakdownWidgetProps {
   emptyHeadline?: string;
   emptySubline?:  string;
   /**
+   * Donut only — the figure in the centre of the ring when it is NOT Σ items.
+   * The slices stay proportions of their own sum; this replaces only the resting
+   * centre label. Used where the slices are one leg of the headline (asset
+   * classes under a NET WORTH total, which liabilities reduce). The caller
+   * supplies the canonical figure — this presenter never derives it.
+   */
+  centerTotal?: { value: number; label: string };
+  /**
+   * Donut only — how the resting centre TOTAL is coloured.
+   *   "series"  (default) the first slice's colour, as it has always been;
+   *   "neutral" the primary text colour, for a card whose centre figure is a
+   *             HEADLINE VALUE rather than a legend of the ring beneath it.
+   * "Where it sits" uses "neutral" so its Assets figure reads like the Assets
+   * figure on the Overall tab, instead of inheriting Cash's blue. Legends,
+   * segments and hover values keep their series colours either way.
+   */
+  centerTone?: "series" | "neutral";
+  /**
    * Makes segments/rows interrogable. When omitted the widget is inert — and
    * importantly does NOT render a pointer cursor, which it previously did on
    * every donut segment while doing nothing on click.
@@ -127,8 +145,7 @@ function assignColors(items: BreakdownItem[]): ColoredItem[] {
   return items.map((item, i) => ({ ...item, color: item.color ?? derived[i] }));
 }
 
-const defaultFmt = (v: number) =>
-  formatCurrency(v, DEFAULT_DISPLAY_CURRENCY);
+
 
 /**
  * Pluralise the donut's centre noun. A bare `+ "s"` rendered "3 asset classs"
@@ -301,12 +318,16 @@ function DonutView({
   itemNoun,
   total,
   sel,
+  centerTotal,
+  centerTone = "series",
 }: {
   items:       ColoredItem[];
   formatValue: (v: number) => string;
   itemNoun:    string;
   total:       number;
   sel:         SelectApi;
+  centerTotal?: { value: number; label: string };
+  centerTone?: "series" | "neutral";
 }) {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const interactive = sel.onSelect != null;
@@ -337,7 +358,9 @@ function DonutView({
 
   const hovered       = hoveredIdx !== null ? segments[hoveredIdx] : null;
   // Centre label uses first item colour when showing totals (matches original red-gradient behaviour)
-  const totalColor    = items[0]?.color ?? DEFAULT_CHART_COLOR;
+  const totalColor    = centerTone === "neutral"
+    ? "var(--text-primary)"
+    : items[0]?.color ?? DEFAULT_CHART_COLOR;
   const pluralNoun    = items.length === 1 ? itemNoun : pluralize(itemNoun);
 
   return (
@@ -411,6 +434,15 @@ function DonutView({
                   {(hovered.pct * 100).toFixed(1)}% of total
                 </p>
               </>
+            ) : centerTotal ? (
+              <>
+                <p className="text-lg font-bold leading-tight" style={{ color: "var(--text-primary)" }} data-center-total>
+                  {formatValue(centerTotal.value)}
+                </p>
+                <p className="text-[10px] mt-0.5 leading-tight" style={{ color: "var(--text-muted)" }}>
+                  {centerTotal.label}
+                </p>
+              </>
             ) : (
               <>
                 <p className="text-lg font-bold leading-tight" style={{ color: totalColor }}>
@@ -468,15 +500,22 @@ function DonutView({
 export function BreakdownWidget({
   items,
   viewMode     = "donut",
-  formatValue  = defaultFmt,
+  formatValue: formatValueProp,
   itemNoun     = "item",
   footer,
   emptyHeadline,
   emptySubline,
+  centerTotal,
+  centerTone,
   onSelect,
   selectedId,
   selectLabel,
 }: BreakdownWidgetProps) {
+  // REVIEW-3 B-5 — when the caller supplies no formatter, label in the
+  // display-currency AUTHORITY (the Space's effective reporting currency),
+  // never a build-time USD literal. Resolved before any early return (hook rule).
+  const displayCurrency = useDisplayCurrency();
+  const formatValue = formatValueProp ?? ((v: number) => formatCurrency(v, displayCurrency));
   const sel: SelectApi = { onSelect, selectedId, selectLabel };
   if (items.length === 0) {
     return (
@@ -501,7 +540,7 @@ export function BreakdownWidget({
       {viewMode === "bar"  && <BarView  items={colored} formatValue={formatValue} total={total} sel={sel} />}
       {viewMode === "list" && <ListView items={colored} formatValue={formatValue} total={total} sel={sel} />}
       {viewMode === "donut" && (
-        <DonutView items={colored} formatValue={formatValue} itemNoun={itemNoun} total={total} sel={sel} />
+        <DonutView items={colored} formatValue={formatValue} itemNoun={itemNoun} total={total} sel={sel} centerTotal={centerTotal} centerTone={centerTone} />
       )}
       {footer && <div>{footer}</div>}
     </div>

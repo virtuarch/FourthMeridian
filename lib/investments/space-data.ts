@@ -43,10 +43,15 @@
  * the optional A10 result) and hands them to the pure assemblers.
  */
 
-import { SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+import { PlaidItemStatus, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
+import { readSpaceAccountsForSnapshot, consentPendingInvestmentAccountIds } from "@/lib/snapshots/space-accounts";
+import { buildSpaceConversionContext } from "@/lib/money/server-context";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import { assembleInvestmentAccounts, type InvestmentAccountsSlice } from "./investment-accounts";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
-import { DIGITAL_ASSET_ACCOUNT_TYPES } from "@/lib/account-classifier";
+import { DIGITAL_ASSET_ACCOUNT_TYPES, isDigitalAssetAccountType } from "@/lib/account-classifier";
 import {
   getCurrentPositions,
   type CurrentPositionsScope,
@@ -95,11 +100,12 @@ async function resolveAccountNames(
   if (accountIds.length === 0) return {};
   const rows = await client.financialAccount.findMany({
     where:  { id: { in: accountIds } },
-    select: { id: true, name: true, displayName: true, officialName: true, plaidName: true },
+    select: { id: true, ...ACCOUNT_NAME_SELECT },
   });
   const out: Record<string, string> = {};
   for (const r of rows) {
-    out[r.id] = r.displayName ?? r.officialName ?? r.plaidName ?? r.name;
+    // v2.6-TRUTH-10 — the ONE identity authority.
+    out[r.id] = accountDisplayName(r);
   }
   return out;
 }
@@ -154,6 +160,22 @@ export interface InvestmentsHistoryRequest {
 
 export interface LoadInvestmentsSpaceDataOptions extends CurrentPositionsOptions {
   history?: InvestmentsHistoryRequest;
+  /**
+   * RLS-AI-S7 — the authority this loader's reads run under.
+   *
+   * ⚠️ IT USED TO ARRIVE VIA `CurrentPositionsOptions.client`, which this interface
+   * extends, so the field was inherited from a leaf's option bag and defaulted to
+   * `db` two levels down. The leaf's option is gone; this surface names its own.
+   *
+   * RLS-PREP-C — AND IT IS REQUIRED NOW. "Optional here because this is a
+   * workspace loader with many callers" was the reasoning, and there is exactly
+   * ONE caller: the Investments workspace route, which passed nothing. So the
+   * whole Investments surface — current positions, the as-of/compare time
+   * machine, period flows — was read as the migration principal by a route that
+   * never imported `db`, and the authority ratchet could not see it. This module
+   * no longer imports `db` at all.
+   */
+  client: ReadClient;
 }
 
 /**
@@ -174,14 +196,14 @@ export interface LoadInvestmentsSpaceDataOptions extends CurrentPositionsOptions
  */
 export async function loadInvestmentsSpaceData(
   scope:    CurrentPositionsScope,
-  options?: LoadInvestmentsSpaceDataOptions,
+  options: LoadInvestmentsSpaceDataOptions,
 ): Promise<InvestmentsSpaceData> {
-  const client = options?.client ?? db;
+  const client = options.client;
 
   // The current positions read and the (independent) scope-divergence read run in
   // parallel, so the disclosure adds no latency to the workspace load.
   const [positions, scopeDivergence] = await Promise.all([
-    getCurrentPositions(scope, options),
+    getCurrentPositions(client, scope, options),
     resolveScopeDivergence(client, scope),
   ]);
   const accountIds = [...new Set(positions.rows.map((r) => r.accountId))];
@@ -190,7 +212,7 @@ export async function loadInvestmentsSpaceData(
 
   // Historical slice through the SAME A10 binding the /time-machine route uses —
   // scoped identically to the current read, so both views cover the same accounts.
-  const historical = options?.history
+  const historical = options.history
     ? await getInvestmentsTimeMachine({
         ...scope,
         asOf:      options.history.asOf,
@@ -200,7 +222,86 @@ export async function loadInvestmentsSpaceData(
     : null;
 
   const data = assembleInvestmentsSpaceData({ current, historical });
+
+  // The account ledger (Space reads only). Holdings counts come from the SAME
+  // current-positions read above — enrichment, never added to a balance.
+  const holdingsByAccount = new Map<string, number>();
+  for (const r of positions.rows) holdingsByAccount.set(r.accountId, (holdingsByAccount.get(r.accountId) ?? 0) + 1);
+  const accounts = "spaceId" in scope ? await loadInvestmentAccounts(client, scope.spaceId, holdingsByAccount) : null;
+
   // Attach the disclosure (HIST-1D) only when it applies — it is a currency-agnostic
   // transparency note, not a slice the pure assembler computes.
-  return scopeDivergence ? { ...data, scopeDivergence } : data;
+  return {
+    ...data,
+    ...(scopeDivergence ? { scopeDivergence } : {}),
+    ...(accounts ? { accounts } : {}),
+  };
+}
+
+/**
+ * The investment-account ledger for a Space, from the canonical population:
+ * readSpaceAccountsForSnapshot (the snapshot's own reader) + the shared
+ * consent-pending rule + the snapshot's conversion date. Runs on the caller's
+ * client, so a member sees exactly the links RLS lets them see. Null when the
+ * Space holds no investment or digital-asset account.
+ */
+async function loadInvestmentAccounts(
+  client:            ReadClient,
+  spaceId:           string,
+  holdingsByAccount: Map<string, number>,
+): Promise<InvestmentAccountsSlice | null> {
+  const population = (await readSpaceAccountsForSnapshot(spaceId, client as never))
+    .filter((a) => a.type === "investment" || isDigitalAssetAccountType(a.type));
+  if (population.length === 0) return null;
+  const ids = population.map((a) => a.id);
+
+  const [pending, links, space] = await Promise.all([
+    consentPendingInvestmentAccountIds(client as never, ids),
+    client.spaceAccountLink.findMany({
+      where:  { spaceId, status: "ACTIVE", financialAccountId: { in: ids } },
+      select: {
+        financialAccountId: true,
+        visibilityLevel:    true,
+        financialAccount: {
+          select: {
+            ...ACCOUNT_NAME_SELECT,
+            institution: true,
+            connections: { where: { deletedAt: null }, select: { plaidItem: { select: { status: true } } } },
+          },
+        },
+      },
+    }),
+    client.space.findUnique({ where: { id: spaceId }, select: { reportingCurrency: true } }),
+  ]);
+  if (!space) return null;
+  const byId = new Map(links.map((l) => [l.financialAccountId, l]));
+
+  const valuationDateISO = yesterdayUTCISO(); // the snapshot's valuation date
+  const ctx = await buildSpaceConversionContext(space, {
+    currencies: population.map((a) => a.currency ?? null).filter((c): c is string => !!c),
+    dates:      [valuationDateISO],
+  });
+
+  return assembleInvestmentAccounts(
+    population.map((a) => {
+      const link = byId.get(a.id);
+      const fa = link?.financialAccount;
+      return {
+        id:            a.id,
+        type:          a.type,
+        balance:       a.balance,
+        currency:      a.currency ?? null,
+        name:          fa ? accountDisplayName(fa) : "",
+        institution:   fa?.institution ?? null,
+        detailVisible: !!link && TRANSACTION_DETAIL_VISIBILITY.includes(link.visibilityLevel),
+        consentPending: pending.has(a.id),
+        connectionNeedsAttention: (fa?.connections ?? []).some((c) =>
+          c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH || c.plaidItem?.status === PlaidItemStatus.ERROR),
+        holdings:      holdingsByAccount.get(a.id) ?? 0,
+      };
+    }),
+    space.reportingCurrency,
+    ctx,
+    valuationDateISO,
+  );
 }

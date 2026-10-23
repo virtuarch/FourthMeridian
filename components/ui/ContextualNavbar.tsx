@@ -4,24 +4,59 @@
  * components/ui/ContextualNavbar.tsx
  *
  * The one desktop sidebar (prototype DS-4 §6 — components/shell/Sidebar.tsx).
- * It TRANSFORMS rather than appears:
  *
- *   global   — on the launcher and every non-Space route: the top-level app
- *              destinations (Spaces · Brief · AI · Connections · Settings), plus
- *              any platform-HQ destinations the user is granted.
+ * SITE NAVIGATION IS CONSTANT; the sidebar's CONTEXT block is what transforms.
+ * `PrimaryNav` — the five primary destinations (Brief · My Space · AI · Spaces ·
+ * Connections — lib/space-nav PRIMARY_NAV, the same list the mobile BottomNav
+ * renders; Settings is in the account menu, not here) — is rendered FIRST in
+ * BOTH modes, by one component, so entering a Space never takes Fourth Meridian
+ * away. It used to live inside global mode only, and the two modes were an
+ * either/or: the moment a Space published itself into SpaceChrome the site nav
+ * was unmounted, and desktop (where BottomNav is hidden) had no way to another
+ * destination except out through the launcher.
+ *
+ *   global   — on the launcher and every non-Space route: the site nav, plus any
+ *              platform-HQ destinations the user is granted.
  *   space    — inside a Space (published through SpaceChrome by SpaceDashboard):
- *              back-to-Spaces, the Space's identity, its display-currency + Manage
- *              controls, and the section anchors for the active workspace. Inside
- *              a PLATFORM Space it additionally carries the same access-derived
- *              Platform destinations global mode shows, so the operator can move
- *              between HQ Spaces without first leaving to the launcher.
+ *              the site nav, THEN — under a hairline, so the hierarchy reads
+ *              site → Space → workspace — the Space's display-currency +
+ *              Manage controls, its identity, and the Space's workspace
+ *              destinations: Net Worth · Cash Flow · Markets. There is NO
+ *              Sections list inside a customer Space (the page-anchor list was
+ *              retired in favour of workspace-level destinations). Inside a
+ *              PLATFORM Space the SAME workspace block carries that area's
+ *              workspaces (Overview · Jobs · Policies … — UX-P1 Change B: the
+ *              host publishes them through the one `workspaceNav` channel, so
+ *              at lg+ the sidebar is the primary switcher and the in-content
+ *              rail serves smaller screens), THEN the open workspace's section
+ *              anchors, THEN the same access-derived Platform destinations
+ *              global mode shows, so the operator can move between HQ Spaces
+ *              without first leaving to the launcher.
+ *
+ * UX-P2 Phase B — THE PLATFORM CONTEXT. Both modes additionally read the
+ * navigation CONTEXT (lib/space-nav `navContext`: a route fact). On the
+ * platform axis — the Platform Spaces directory (/dashboard/platform, global
+ * mode) and inside a Platform Space (space mode) — the ORDER changes:
+ *
+ *   platform — the granted Platform list (PlatformNav) LEADS; then, inside a
+ *              Platform Space, the Space block + its Sections as above; then a
+ *              single "Personal Spaces" exit row back to the launcher; then the
+ *              site nav RETAINED under a hairline — demoted, never removed.
+ *              Desktop has no BottomNav, so Brief / My Space / AI / Connections
+ *              must stay one click away even here (the either/or regression
+ *              site-nav-in-space.test.ts pins is not reintroduced on this axis).
+ *
+ * It is a REORDERING, not a duplication: PrimaryNav is still mounted exactly
+ * twice (once per mode), PlatformNav exactly twice, PRIMARY_NAV mapped once,
+ * /api/spaces fetched once. Inside a PERSONAL Space nothing changes (D2: no
+ * operator door in a member's room).
  *
  * Both modes share DOM position and the left-accent-bar selection idiom, so
  * moving between them reads as the sidebar re-resolving, not one panel replacing
  * another. This REPLACES the former components/ui/Sidebar.tsx, whose persistent
  * global tree, inline Spaces list, footer Refresh/Sign-out and brand row are all
  * retired — brand → GlobalHeader, Refresh/identity/Sign-out → GlobalActions,
- * the in-Space identity/FX/Manage/sections → Space mode here.
+ * the in-Space identity/FX/Manage/workspaces → Space mode here.
  *
  * Navigation is route-based (production uses real routes, not the prototype's
  * single-page state), so the mobile presentation of this SAME model is
@@ -32,36 +67,82 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
+  ArrowLeft,
+  House,
   Layers,
   Newspaper,
   Sparkles,
   Link2,
-  Settings as SettingsIcon,
   Shield,
-  ArrowLeft,
+  ChartCandlestick,
+  Gem,
   LayoutGrid,
   LogOut,
+  Waves,
+  LayoutDashboard,
+  Timer,
+  PlugZap,
+  History,
+  Gauge,
+  RefreshCw,
+  SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
-import { useSpaceChrome, type SpaceChromeSpace, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
+import {
+  useSpaceChrome,
+  type SpaceChromeSpace,
+  type SpaceChromeSection,
+  type SpaceChromeWorkspaceNav,
+} from "@/lib/space/space-chrome-context";
 import { SpaceControls } from "@/components/space/shell/SpaceControls";
 import {
-  GLOBAL_NAV,
-  isGlobalDestActive,
-  type GlobalDestId,
+  PRIMARY_NAV,
+  isPrimaryDestActive,
+  navContext,
+  primaryHref,
+  type PrimaryDestId,
 } from "@/lib/space-nav";
 import {
   SPACE_LIST_CHANGED_EVENT,
   SPACE_INVITES_CHANGED_EVENT,
 } from "@/lib/space-nav";
 
-const NAV_ICONS: Record<GlobalDestId, LucideIcon> = {
-  spaces: Layers,
+const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
   brief: Newspaper,
+  myspace: House,
   ai: Sparkles,
+  spaces: Layers,
   connections: Link2,
-  settings: SettingsIcon,
 };
+
+/**
+ * Workspace icons — the perspective library's own (lib/perspectives: wealth
+ * "Gem", cashFlow "Waves", markets "ChartCandlestick"), so the sidebar and the
+ * lens identity agree. Keyed by
+ * the lens id the host publishes; an unknown id renders without an icon rather
+ * than borrowing one.
+ */
+const WORKSPACE_ICONS: Record<string, LucideIcon> = {
+  networth: Gem,
+  cashFlow: Waves,
+  markets: ChartCandlestick,
+};
+
+/**
+ * Workspace icons by Lucide NAME — for a host that publishes each item's icon
+ * as the contract's string (a Platform Space: lib/platform/workspaces.ts
+ * `icon`, carried as `MountWorkspaceSummary.icon`). The sidebar resolves the
+ * name here and never imports a domain module to find it; an unknown name
+ * renders without an icon rather than borrowing one.
+ */
+const WORKSPACE_ICONS_BY_NAME: Record<string, LucideIcon> = {
+  LayoutDashboard, Timer, PlugZap, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal,
+};
+
+/** The row icon: the published icon NAME first, else the id-keyed lens map. */
+function workspaceIcon(item: { id: string; icon?: string }): LucideIcon | undefined {
+  return (item.icon ? WORKSPACE_ICONS_BY_NAME[item.icon] : undefined) ?? WORKSPACE_ICONS[item.id];
+}
 
 type PlatformItem = { id: string; name: string; platformArea: string };
 
@@ -193,41 +274,47 @@ export function PlatformNav({
 }
 
 export function ContextualNavbar() {
-  const { space, currencyControl, sections, activeSection, setActiveSection } = useSpaceChrome();
+  const { space, currencyControl, workspaceNav, sections, activeSection, setActiveSection } = useSpaceChrome();
+  // Owned HERE, above the mode switch: the site nav's inputs must not reset (and
+  // the badge must not re-fetch) when a Space publishes or clears its chrome.
+  const pathname = usePathname();
+  const pendingInvites = usePendingInvites();
 
   return (
     <aside className="hidden w-[212px] shrink-0 lg:block">
       <div className="sticky top-12 flex max-h-[calc(100dvh-3rem)] flex-col gap-5 overflow-y-auto py-6 pr-5">
         {space ? (
           <SpaceMode
+            pathname={pathname}
+            pendingInvites={pendingInvites}
             space={space}
             currencyControl={currencyControl}
+            workspaceNav={workspaceNav}
             sections={sections}
             activeSection={activeSection}
             onSelectSection={setActiveSection}
           />
         ) : (
-          <GlobalMode />
+          <GlobalMode pathname={pathname} pendingInvites={pendingInvites} />
         )}
       </div>
     </aside>
   );
 }
 
-// ── global mode ──────────────────────────────────────────────────────────────
+// ── site navigation (both modes) ─────────────────────────────────────────────
 
-function GlobalMode() {
-  const pathname = usePathname();
-  // The access-derived platform destinations — the SAME hook Space mode uses.
-  const platform = usePlatformDestinations(true);
+/**
+ * The pending-invite count for the Spaces badge. The sidebar does not inline the
+ * Spaces list (the prototype's flat nav model — switching happens on the Spaces
+ * launcher); it still needs this one number from the network, a no-op for users
+ * without invites. State is set only from the fetch callback
+ * (external-subscription shape), so a route change / re-fire never races a slow
+ * response into a stale setState.
+ */
+function usePendingInvites(): number {
   const [pendingInvites, setPendingInvites] = useState(0);
 
-  // Lightweight: the sidebar no longer inlines the Spaces list (the prototype's
-  // flat nav model — switching happens on the Spaces launcher). It still needs
-  // the pending-invite badge on Spaces from the network; a no-op for users
-  // without invites. State is set only from the fetch callback
-  // (external-subscription shape), so a route change / re-fire never races a
-  // slow response into a stale setState.
   const load = useCallback((signal: () => boolean) => {
     fetch("/api/spaces/invites/pending")
       .then((res) => (res.ok ? res.json() : null))
@@ -258,34 +345,52 @@ function GlobalMode() {
     };
   }, [load]);
 
+  return pendingInvites;
+}
+
+/**
+ * The SITE NAVIGATION block — ONE component, rendered by BOTH sidebar modes, so
+ * there is one desktop presentation of lib/space-nav PRIMARY_NAV and it cannot
+ * differ between "on the launcher" and "inside a Space". The list, the order,
+ * the routes and the active rule (`isPrimaryDestActive`) all come from
+ * lib/space-nav; nothing about a destination is restated here.
+ *
+ * Inside a Space the active rule is unchanged, deliberately: /dashboard IS the
+ * active Space's dashboard, so My Space is lit there exactly as it is on the
+ * mobile bar; a platform HQ route lights nothing, as it always has.
+ *
+ * Pure over its props (pathname + badge count) so it renders in a test without
+ * the App Router.
+ */
+export function PrimaryNav({
+  pathname: rawPathname,
+  pendingInvites = 0,
+}: {
+  pathname: string | null;
+  pendingInvites?: number;
+}) {
+  // Before hydration there may be no pathname: nothing is lit, nothing throws.
+  const pathname = rawPathname ?? "";
   return (
-    <>
-      <p className="px-1 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+    <div>
+      <p className="mb-1.5 px-1 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
         Fourth Meridian
       </p>
       <nav aria-label="Global" className="flex flex-col gap-0.5">
-        {GLOBAL_NAV.map((d) => {
+        {PRIMARY_NAV.map((d) => {
           const Icon = NAV_ICONS[d.id];
-          const on = isGlobalDestActive(d.id, pathname);
-          const live = d.live;
+          const on = isPrimaryDestActive(d.id, pathname);
           return (
             <Link
               key={d.id}
               href={d.href}
               aria-current={on ? "true" : undefined}
-              aria-disabled={!live}
-              tabIndex={live ? undefined : -1}
-              onClick={(e) => {
-                if (!live) e.preventDefault();
-              }}
               className={[
                 "group relative flex items-center gap-2.5 rounded-[var(--radius-sm)] py-1.5 pl-3 pr-2 text-left text-[13px]",
                 "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
-                !live
-                  ? "cursor-default text-[var(--text-muted)]"
-                  : on
-                    ? "text-[var(--text-primary)]"
-                    : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                on
+                  ? "text-[var(--text-primary)]"
+                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
               ].join(" ")}
             >
               <span
@@ -293,7 +398,7 @@ function GlobalMode() {
                 className={[
                   "absolute inset-y-1 left-0 w-0.5 rounded-full bg-[var(--meridian-400)]",
                   "transition-opacity duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
-                  on && live ? "opacity-100" : "opacity-0",
+                  on ? "opacity-100" : "opacity-0",
                 ].join(" ")}
               />
               <Icon size={14} strokeWidth={1.75} className="shrink-0" />
@@ -306,22 +411,201 @@ function GlobalMode() {
                   {pendingInvites > 9 ? "9+" : pendingInvites}
                 </span>
               )}
-              {!live && <span className="text-[10px] text-[var(--text-muted)]">soon</span>}
             </Link>
           );
         })}
       </nav>
+    </div>
+  );
+}
 
-      <PlatformNav items={platform} pathname={pathname} />
-    </>
+// ── the platform context's two fixtures (both modes) ─────────────────────────
+
+/**
+ * The ONE exit from the platform context — a single "Personal Spaces" row back
+ * to the launcher. The href is the Spaces primary destination's own route
+ * (lib/space-nav `primaryHref`), never restated here. It is a plain link: no
+ * cookie, no switch call — leaving the platform axis changes no Space.
+ */
+function PersonalSpacesExit() {
+  return (
+    <nav aria-label="Exit" className="flex flex-col gap-0.5">
+      <Link
+        href={primaryHref("spaces")}
+        className={[
+          "group relative flex items-center gap-2.5 rounded-[var(--radius-sm)] py-1.5 pl-3 pr-2 text-left text-[13px]",
+          "text-[var(--text-secondary)] transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)] hover:text-[var(--text-primary)]",
+        ].join(" ")}
+      >
+        <ArrowLeft size={14} strokeWidth={1.75} className="shrink-0" />
+        <span className="flex-1">Personal Spaces</span>
+      </Link>
+    </nav>
   );
 }
 
 /**
- * The SECTIONS block — the active workspace's "what's inside" anchors, published
- * up through SpaceChrome by whatever host is mounted (a customer workspace or a
- * Platform workspace; ONE model, one block). Extracted verbatim from Space mode
- * so it is directly renderable in a test — no markup, no behaviour change.
+ * The site nav, RETAINED under a hairline on the platform context. Demoted in
+ * position only — same block, same five, same active rule — so the operator
+ * never loses Fourth Meridian on desktop, where there is no BottomNav.
+ */
+function DemotedSiteNav({ children }: { children: React.ReactNode }) {
+  return (
+    <div data-nav-context="site" className="border-t border-[var(--border-hairline)] pt-5">
+      {children}
+    </div>
+  );
+}
+
+// ── global mode ──────────────────────────────────────────────────────────────
+
+/** Exported so the COMPOSITION (which list leads on which context) renders in a test. */
+export function GlobalMode({ pathname, pendingInvites }: { pathname: string | null; pendingInvites: number }) {
+  // The access-derived platform destinations — the SAME hook Space mode uses.
+  const platform = usePlatformDestinations(true);
+  const site = <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />;
+  const hq = <PlatformNav items={platform} pathname={pathname} />;
+
+  // UX-P2 Phase B — on the Platform Spaces DIRECTORY the operator stands on the
+  // platform axis without being inside a Space: the Platform list leads, one
+  // exit row returns to Personal Spaces, the site nav follows under a hairline.
+  if (navContext(pathname) === "platform") {
+    return (
+      <>
+        {hq}
+        <PersonalSpacesExit />
+        <DemotedSiteNav>{site}</DemotedSiteNav>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {site}
+      {hq}
+    </>
+  );
+}
+
+/** A plain primary click is handled in place; anything else (⌘/Ctrl/Shift/Alt,
+ *  middle button) is the browser's — open the canonical href in a new tab. */
+function isPlainPrimaryClick(e: React.MouseEvent): boolean {
+  return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+}
+
+/**
+ * The SPACE WORKSPACE block — the Space's workspace-level destinations (Net Worth
+ * · Cash Flow in a customer Space; Overview · Jobs · Policies … in a Platform
+ * Space), published by the host from the navigation state it owns. Peers of
+ * the site destinations above: same row, accent bar, icon size and type — never
+ * indented like a subsection.
+ *
+ * Each row is a real link to its canonical deep link (lib/space/use-space-
+ * navigation `lensHref`), so open-in-new-tab / copy-link work; a plain primary
+ * click selects IN PLACE through the host's state (`onSelect`) — the Space's
+ * navigation is History-driven, not a route change, and a router navigation to
+ * the same page would not re-read it. Active state is the host's `activeId`
+ * (the RENDERED workspace), never text matching, so Net Worth stays lit across
+ * its own Total · Assets · Debt modes.
+ *
+ * CHILDREN — a workspace that publishes `children` (Net Worth: Total · Assets ·
+ * Debt) shows them nested under it ONLY while it is the open workspace; they
+ * collapse when another workspace opens. They are links too (canonical href +
+ * in-place `onSelectChild`), grouped under the parent's name. ONE accent bar in
+ * this block at a time: while a child list is showing, the bar marks the current
+ * CHILD on the guide line and the parent reads as open through its text weight
+ * — so the parent and the child are never two identical indicators.
+ */
+export function SpaceWorkspaceNav({ nav }: { nav: SpaceChromeWorkspaceNav | null }) {
+  if (!nav || nav.items.length === 0) return null;
+  return (
+    <nav aria-label="Space" className="flex flex-col gap-0.5">
+      {nav.items.map((item) => {
+        const on = item.id === nav.activeId;
+        const Icon = workspaceIcon(item);
+        const children = on && item.children && item.children.length > 0 ? item.children : null;
+        return (
+          <div key={item.id} className="flex flex-col gap-0.5">
+            <a
+              href={item.href}
+              onClick={(e) => {
+                if (!isPlainPrimaryClick(e)) return;
+                e.preventDefault();
+                nav.onSelect(item.id);
+              }}
+              aria-current={on ? "true" : undefined}
+              className={[
+                "group relative flex items-center gap-2.5 rounded-[var(--radius-sm)] py-1.5 pl-3 pr-2 text-left text-[13px]",
+                "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                on
+                  ? "text-[var(--text-primary)]"
+                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                children ? "font-medium" : "",
+              ].join(" ")}
+            >
+              <span
+                aria-hidden
+                className={[
+                  "absolute inset-y-1 left-0 w-0.5 rounded-full bg-[var(--meridian-400)]",
+                  "transition-opacity duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                  on && !children ? "opacity-100" : "opacity-0",
+                ].join(" ")}
+              />
+              {Icon && <Icon size={14} strokeWidth={1.75} className="shrink-0" />}
+              <span className="flex-1 truncate">{item.label}</span>
+            </a>
+            {children && (
+              <div
+                role="group"
+                aria-label={item.label}
+                className="ml-[18px] flex flex-col border-l border-[var(--border-hairline)]"
+              >
+                {children.map((c) => {
+                  const cOn = c.id === nav.activeChildId;
+                  return (
+                    <a
+                      key={c.id}
+                      href={c.href}
+                      onClick={(e) => {
+                        if (!isPlainPrimaryClick(e)) return;
+                        e.preventDefault();
+                        nav.onSelectChild?.(item.id, c.id);
+                      }}
+                      aria-current={cOn ? "true" : undefined}
+                      className={[
+                        "relative block rounded-[var(--radius-sm)] py-1 pl-[17px] pr-2 text-left text-[12px]",
+                        "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                        cOn
+                          ? "text-[var(--text-primary)]"
+                          : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
+                      ].join(" ")}
+                    >
+                      <span
+                        aria-hidden
+                        className={[
+                          "absolute inset-y-1 -left-px w-0.5 rounded-full bg-[var(--meridian-400)]",
+                          "transition-opacity duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                          cOn ? "opacity-100" : "opacity-0",
+                        ].join(" ")}
+                      />
+                      <span className="truncate">{c.label}</span>
+                    </a>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </nav>
+  );
+}
+
+/**
+ * The SECTIONS block — a Platform workspace's "what's inside" anchors, published
+ * up through SpaceChrome. Rendered ONLY on the platform axis: inside a customer
+ * Space the sidebar shows workspace destinations (SpaceWorkspaceNav) instead, and
+ * never a section list. Directly renderable in a test.
  *
  * A section whose `anchor` is null is DISABLED and marked "· soon": the page has
  * no element to scroll to, and inventing one would scroll nowhere in silence.
@@ -389,20 +673,27 @@ export function SectionsNav({
 
 // ── space mode ───────────────────────────────────────────────────────────────
 
-function SpaceMode({
+/** Exported so the COMPOSITION (site nav above the Space block) renders in a test. */
+export function SpaceMode({
+  pathname,
+  pendingInvites,
   space,
   currencyControl,
+  workspaceNav,
   sections,
   activeSection,
   onSelectSection,
 }: {
+  pathname: string | null;
+  pendingInvites: number;
   space: SpaceChromeSpace;
   currencyControl: React.ReactNode;
+  workspaceNav: SpaceChromeWorkspaceNav | null;
   sections: SpaceChromeSection[];
   activeSection: string;
   onSelectSection: (label: string) => void;
 }) {
-  const { identity, onManage, onLeave, onLeaveSpace } = space;
+  const { identity, onManage, onLeaveSpace } = space;
 
   // PLATFORM inside a Space — rendered ONLY on the platform axis.
   //
@@ -416,20 +707,35 @@ function SpaceMode({
   //
   // The list itself is still access-derived (usePlatformDestinations → the same
   // /api/spaces `platform` projection): the route only decides WHETHER to ask.
-  const pathname = usePathname();
   const onPlatformAxis = isPlatformSpaceRoute(pathname);
   const platform = usePlatformDestinations(onPlatformAxis);
 
+  // SITE — the same block global mode renders. Fourth Meridian stays on screen;
+  // the Space is a place INSIDE it, not a shell that replaces it. In a personal
+  // Space it LEADS; in a Platform Space (UX-P2 Phase B) it is retained under a
+  // hairline after the exit row — one element, placed by context, never two.
+  const site = <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />;
+
   return (
     <>
-      <div>
-        <button
-          onClick={onLeave}
-          className="-ml-1 mb-2.5 flex items-center gap-1.5 rounded-[var(--radius-sm)] px-1 py-0.5 text-[11px] font-medium text-[var(--text-muted)] transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)] hover:text-[var(--text-secondary)]"
-        >
-          <ArrowLeft size={11} strokeWidth={2} />
-          All Spaces
-        </button>
+      {/* PLATFORM (platform axis only) — the granted HQ Spaces LEAD inside a
+          Platform Space (UX-P2 Phase B), so the operator moves between areas
+          first and reaches the site second. Gated on the route (see above). */}
+      {onPlatformAxis && <PlatformNav items={platform} pathname={pathname} />}
+
+      {!onPlatformAxis && site}
+
+      {/* SPACE — under a hairline, so the order reads site → this Space → its
+          workspaces (or, on the platform axis, Platform → this Space). There is
+          no in-Space "All Spaces" back control: the site's Spaces destination is
+          the way back up (same route, one hop). */}
+      <div data-nav-context="space" className="border-t border-[var(--border-hairline)] pt-5">
+        {/* SpaceControls — the canonical FX + Manage cluster, ABOVE the name it
+            governs. At this (wide) width it lives here in the Space sidebar.
+            Narrow widths get the SAME cluster relocated near the rail (see
+            SpaceShell). One state source: the FX node is owned above, Manage is
+            the host's handler; this is purely the wide mount point. */}
+        <SpaceControls currencyControl={currencyControl} onManage={onManage} className="mb-3" />
 
         <div className="flex items-center gap-2">
           <h1 className="truncate text-[15px] font-semibold text-[var(--text-primary)]">
@@ -448,24 +754,44 @@ function SpaceMode({
         {identity.updatedLabel && (
           <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{identity.updatedLabel}</p>
         )}
+        {/* v2.6-L1 — the freshness DISTRIBUTION the single age above cannot carry.
+            Warned (amber) only when stale or unverified value is what it reports;
+            a mere spread stays a quiet footnote. */}
+        {identity.freshnessNote && (
+          <p
+            className="mt-0.5 text-[11px]"
+            style={{ color: identity.freshnessWarn ? "var(--accent-warning)" : "var(--text-faint)" }}
+          >
+            {identity.freshnessNote}
+          </p>
+        )}
 
-        {/* SpaceControls — the canonical FX + Manage cluster. At this (wide)
-            width it lives here in the Space sidebar, exactly like the prototype.
-            Narrow widths get the SAME cluster relocated near the rail (see
-            SpaceShell). One state source: the FX node is owned above, Manage is
-            the host's handler; this is purely the wide mount point. */}
-        <div className="mt-3">
-          <SpaceControls currencyControl={currencyControl} onManage={onManage} />
-        </div>
+        {/* WORKSPACES — Net Worth · Cash Flow (or a Platform area's Overview ·
+            Jobs · …), inside the Space block so they read as THIS Space's
+            destinations, attached to its identity. */}
+        {workspaceNav && workspaceNav.items.length > 0 && (
+          <div className="mt-4">
+            <SpaceWorkspaceNav nav={workspaceNav} />
+          </div>
+        )}
       </div>
 
-      <SectionsNav
-        sections={sections}
-        activeSection={activeSection}
-        onSelectSection={onSelectSection}
-      />
+      {/* Section anchors survive ONLY on the platform axis, BELOW the workspace
+          list: "which workspace" above, "what's inside it" beneath (the labels
+          are DB text, the anchors are ids the workspace body really emits);
+          a customer Space never renders them. */}
+      {onPlatformAxis && (
+        <SectionsNav
+          sections={sections}
+          activeSection={activeSection}
+          onSelectSection={onSelectSection}
+        />
+      )}
 
-      {onPlatformAxis && <PlatformNav items={platform} pathname={pathname} className="mt-2" />}
+      {/* UX-P2 Phase B — the way OUT of the platform context, then the site nav
+          retained beneath a hairline (demoted, not removed). */}
+      {onPlatformAxis && <PersonalSpacesExit />}
+      {onPlatformAxis && <DemotedSiteNav>{site}</DemotedSiteNav>}
 
       {onLeaveSpace && (
         <button

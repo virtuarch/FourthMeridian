@@ -20,8 +20,8 @@
  *      lib/perspective-engine/lenses/<lensId>.ts (checked by source scan —
  *      importing the lens modules here would pull the data layer/Prisma
  *      into a pure config test).
- *   3. Lens-backed entries never leak into the composition switcher —
- *      exactly one navigation path per feature (the library's own rule).
+ *   3. (retired in REVIEW-3 — the composition switcher was deleted with the
+ *      Overview summary canvas.)
  *   4. Category lists only reference library ids, and every lens-backed
  *      entry is reachable from at least one category.
  */
@@ -31,7 +31,6 @@ import { join } from "path";
 
 import {
   PERSPECTIVE_LIBRARY,
-  getCompositionSwitcherItems,
   getPerspectivesForCategory,
 } from "./perspectives";
 
@@ -46,7 +45,10 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 // Categories exercised — superset of PERSPECTIVES_BY_CATEGORY's keys plus an
-// unknown one to cover the DEFAULT_PERSPECTIVES fallback path.
+// unknown one to cover the DEFAULT_PERSPECTIVES fallback path. "HOUSEHOLD" is
+// deliberately kept as a probe: the category is RETIRED (W1 — FAMILY is the
+// sole shared-family-space concept, and its PERSPECTIVES_BY_CATEGORY entry was
+// deleted), so it must degrade through the same fallback as any unknown value.
 const CATEGORIES = [
   "PERSONAL", "HOUSEHOLD", "FAMILY", "RETIREMENT", "INVESTMENT", "PROPERTY",
   "VEHICLE", "BUSINESS", "DEBT_PAYOFF", "EMERGENCY_FUND", "GOAL", "TRIP",
@@ -79,12 +81,10 @@ function main(): void {
       new RegExp(`registerLens\\(\\s*["']${p.lensId}["']`).test(src));
   }
 
-  console.log("3. One navigation path — lens-backed entries stay out of the composition switcher");
-  for (const cat of CATEGORIES) {
-    const leaked = getCompositionSwitcherItems(cat).filter((p) => p.lensId !== undefined);
-    check(`${cat}: switcher has no lens-backed entries`,
-      leaked.length === 0, leaked.map((p) => p.id).join(", "));
-  }
+  // (Invariant 3 retired in REVIEW-3 slice F: the Overview composition
+  // switcher and getCompositionSwitcherItems were deleted with the Overview
+  // summary canvas — the PerspectiveShell lens selector is the one lens
+  // navigation path now.)
 
   console.log("4. Category lists are library-consistent and lens entries are reachable");
   const reachable = new Set<string>();
@@ -97,6 +97,19 @@ function main(): void {
   for (const p of lensBacked) {
     check(`lens-backed "${p.id}" is reachable from at least one category`, reachable.has(p.id));
   }
+
+  console.log("5. W2 — the goals/retirement lenses are retired outright");
+  // Product decision (final): both entries are DELETED from the library — the
+  // retirement comingSoon placeholder included — and no category list may
+  // surface either id. An unknown ?perspective= id (incl. the legacy
+  // goals/retirement slugs) degrades to the default lens in the host URL layer
+  // (parsePerspectiveParam validates against this library), never a crash.
+  check(`the "goals" entry is deleted from PERSPECTIVE_LIBRARY`,
+    PERSPECTIVE_LIBRARY.goals === undefined);
+  check(`the "retirement" entry is deleted from PERSPECTIVE_LIBRARY`,
+    PERSPECTIVE_LIBRARY.retirement === undefined);
+  check("no category surfaces the retired goals/retirement lenses",
+    !reachable.has("goals") && !reachable.has("retirement"));
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);

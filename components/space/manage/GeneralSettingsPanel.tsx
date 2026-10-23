@@ -19,7 +19,7 @@ import {
 import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
 import {
   CATEGORY_LABELS, CATEGORY_ICONS,
-  PRIMARY_CATEGORIES, SECONDARY_CATEGORIES,
+  RECATEGORIZE_CATEGORIES,
   SpaceCategory,
 } from "@/lib/space-presets";
 import {
@@ -58,7 +58,12 @@ export function GeneralSettingsPanel({
   const [saved,       setSaved]       = useState(false);
   const [showCatPicker, setShowCatPicker] = useState(false);
 
-  const allCategories = [...PRIMARY_CATEGORIES, ...SECONDARY_CATEGORIES];
+  // REVIEW-3 (slice F): the picker offers only the currently-supported,
+  // re-categorizable set (FAMILY / CUSTOM / OTHER) — it used to offer all 13
+  // primary+secondary categories against an unvalidated PATCH. The Space's
+  // CURRENT category is shown even when legacy/unsupported (read-only truth);
+  // the server rejects writing any category outside the allowlist.
+  const allCategories = RECATEGORIZE_CATEGORIES;
 
   async function handleSave() {
     if (!name.trim()) { setError("Name is required"); return; }

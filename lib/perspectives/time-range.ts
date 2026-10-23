@@ -95,6 +95,33 @@ export function subMonths(iso: string, n: number): string {
   while (tm <= 0) { tm += 12; ty -= 1; }
   return fmt(ty, tm, Math.min(d, daysInMonth(ty, tm)));
 }
+/**
+ * As Of PLUS `n` calendar months, clamping to the last valid day of the target
+ * month (Jan 31 + 1 → Feb 28).
+ *
+ * ⚠️ ADDED FOR FORECAST-10, AND HERE RATHER THAN IN lib/forecast FOR A REASON.
+ * A forecast horizon needs "three months from today" as a real date, and the
+ * only honest way to get one is calendar arithmetic with a clamping rule. That
+ * rule already exists on `subMonths` directly above; forking it into a second
+ * module would create two answers to "what is Jan 31 plus one month", and the
+ * first place they would disagree is the end of a February. `subMonths` cannot
+ * simply be called with a negative `n` — its normalisation loop only walks
+ * months upward — so this is its mirror, sharing the same `daysInMonth` clamp.
+ */
+export function addMonths(iso: string, n: number): string {
+  const { y, m, d } = parse(iso);
+  let ty = y;
+  let tm = m + n;
+  while (tm > 12) { tm -= 12; ty += 1; }
+  while (tm <= 0) { tm += 12; ty -= 1; }
+  return fmt(ty, tm, Math.min(d, daysInMonth(ty, tm)));
+}
+
+/** As Of plus `n` days. Exact — a day is a day. */
+export function addDaysISO(iso: string, n: number): string {
+  return addDays(iso, n);
+}
+
 /** As Of minus `n` calendar years, clamping (e.g. Feb 29 → Feb 28 in a non-leap year). */
 export function subYears(iso: string, n: number): string {
   const { y, m, d } = parse(iso);
@@ -174,9 +201,25 @@ export function inferPerspectiveTimePreset(args: {
   return "CUSTOM";
 }
 
-/** The shell's initial state: MTD, As Of = today, Compare To = first of the month. */
+/**
+ * THE DEFAULT SLICE: a rolling month back from As Of.
+ *
+ * It was MTD, which is unstable by construction: on the 1st of a month the
+ * window is a single day, so the chart opens nearly empty and the shape lurches
+ * at every month boundary. A rolling month always spans the same amount of time,
+ * whatever the date.
+ *
+ * `PAST_MONTH` is `subMonths(asOf, 1)` — one CALENDAR month, using this module's
+ * own date arithmetic, not a 30-day approximation. Mar 31 → Feb 28 is 31 days
+ * and Jul 12 → Jun 12 is 30; both are "a month", which is what a reader means.
+ *
+ * MTD remains fully supported and is never rewritten when a user or a link
+ * selects it — this changes only what happens when NOTHING was selected.
+ */
+export const DEFAULT_TIME_PRESET = "PAST_MONTH" as const;
+
 export function defaultPerspectiveTimeState(today: string): PerspectiveTimeState {
-  return resolvePerspectiveTimeRange({ preset: "MTD", asOf: today, coverageFrom: null });
+  return resolvePerspectiveTimeRange({ preset: DEFAULT_TIME_PRESET, asOf: today, coverageFrom: null });
 }
 
 // ── Validation + derived values ────────────────────────────────────────────────
@@ -290,7 +333,7 @@ export function serializeShellTimeState(state: PerspectiveTimeState): Serialized
 /**
  * Rebuild shell state from URL params. A concrete preset id re-derives the pair
  * (canonical + self-consistent); "custom"/missing keeps the manual Compare To and
- * re-infers; anything invalid or future falls back to the default MTD state. The
+ * re-infers; anything invalid or future falls back to the default state. The
  * round-trip serialize → hydrate is identity (tested).
  */
 export function hydrateShellTimeState(
@@ -310,5 +353,5 @@ export function hydrateShellTimeState(
     const preset = inferPerspectiveTimePreset({ asOf, compareTo, coverageFrom });
     return { preset, asOf, compareTo };
   }
-  return resolvePerspectiveTimeRange({ preset: "MTD", asOf, coverageFrom });
+  return resolvePerspectiveTimeRange({ preset: DEFAULT_TIME_PRESET, asOf, coverageFrom });
 }

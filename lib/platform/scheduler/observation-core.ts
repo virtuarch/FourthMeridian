@@ -76,13 +76,13 @@ export interface SchedulerObserved {
 
 export interface SchedulerExpected {
   /**
-   * The next slot the REGISTRY declares, derived deterministically from the
-   * declared fire hours/minutes. This is configuration, not evidence: whether
-   * the dispatcher is actually invoked then depends on deploy config the
-   * platform does not own (see the notes).
+   * The next instant a registered job becomes DUE — lastStart + its resolved
+   * cadence, the dispatcher's own arithmetic (P1). This is derivation, not
+   * evidence: whether the dispatcher is actually woken then depends on deploy
+   * config the platform does not own (see the notes).
    */
   nextSlotAt: string | null;
-  /** Registry jobs declared to fire in that slot. Configuration. */
+  /** Registry jobs due at that instant. Derivation. */
   jobsInNextSlot: readonly string[];
   /** How many jobs the registry declares. Configuration. */
   registeredJobs: number;
@@ -109,10 +109,22 @@ export interface SchedulerRunFact {
  * rendered as observations. Each states a limit of what this surface can know.
  */
 export const SCHEDULER_NOTES: readonly string[] = [
-  "Dispatcher invocations are not recorded. A slot with no due jobs writes nothing, so ticks cannot be counted — only executions that happened can be.",
+  "Dispatcher wakes are not recorded. A wake with no due jobs writes nothing, so wakes cannot be counted — only executions that happened can be.",
   "A silent dispatcher surfaces as overdue work, not here.",
-  "Expected slots come from the job registry in code. Whether the dispatcher is actually invoked at those times depends on deployment configuration this platform does not own.",
+  "Next due comes from the last run of each job and its execution cadence (a platform policy). Whether the dispatcher is actually woken then depends on deployment configuration this platform does not own.",
 ];
+
+/**
+ * OBS-012 — the one wake-adjacent signal the ledger DOES hold. The backstop
+ * import cron has its own deployment schedule and leaves a row on every fire,
+ * so a recent row from it proves the cron provider is invoking this
+ * deployment at all. It does NOT prove the dispatcher route is woken or
+ * authorised — a per-wake heartbeat written by the dispatcher is the only
+ * thing that could, and the ledger has none. Appended only when an external
+ * cron was observed. Prose only.
+ */
+export const CRON_PROVIDER_NOTE =
+  "An external cron leaving rows shows the cron provider is reaching this deployment. It does not show that the dispatcher itself was woken: no wake is recorded, so a silent dispatcher and a wake with nothing due still look the same here.";
 
 /** Appended only when an unregistered job was actually observed. Still prose. */
 export const EXTERNAL_CRON_NOTE =
@@ -127,7 +139,7 @@ function iso(d: Date | null | undefined): string | null {
  *
  * `nextSlot` is injected rather than computed here so this stays a total
  * function of its inputs — the caller derives it through the job-health
- * authority's own `nextExpectedRun`, which already owns slot arithmetic.
+ * authority's own `nextExpectedRun` (last start + cadence).
  */
 export function buildSchedulerObservation(args: {
   jobs: readonly ScheduledJob[];
@@ -189,7 +201,7 @@ export function buildSchedulerObservation(args: {
       jobsInNextSlot: [...jobsInNextSlot].sort(),
       registeredJobs: jobs.length,
     },
-    notes: externalCrons.length > 0 ? [...SCHEDULER_NOTES, EXTERNAL_CRON_NOTE] : SCHEDULER_NOTES,
+    notes: externalCrons.length > 0 ? [...SCHEDULER_NOTES, EXTERNAL_CRON_NOTE, CRON_PROVIDER_NOTE] : SCHEDULER_NOTES,
     window,
   };
 }

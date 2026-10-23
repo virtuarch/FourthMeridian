@@ -30,6 +30,7 @@ function flows(over: Partial<PeriodFlows> & { byCategory: FlowCategorySummary[];
     contributions: 0, withdrawals: 0, transfersIn: 0, transfersOut: 0,
     buys: 0, sells: 0, income: 0, fees: 0, netExternalFlows: 0,
     inKindTransferCount: 0, unclassifiedCount: 0, externalAmountMissingCount: 0, fxEstimated: false,
+    events: [],
     completeness: "observed", reason: "",
     ...over,
   };

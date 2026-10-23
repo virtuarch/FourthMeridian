@@ -18,11 +18,22 @@
 
 import { readFileSync } from "node:fs";
 import {
+  buildLedgerWriteCapture,
+  isSchemaDriftCode,
+} from "@/lib/monitoring/capture";
+import { currentJobRun } from "@/lib/jobs/run";
+import {
   runJob,
   summarizeError,
   toJsonSummary,
+  finalizeStaleRuns,
+  JobAlreadyRunningError,
+  JobLedgerUnavailableError,
+  STALE_RUNNING_AFTER_MS,
+  STALE_RUN_ERROR_SUMMARY,
   type JobRunCompletionData,
   type JobRunStartData,
+  type JobRunStaleFinalizeArgs,
   type JobRunWriteClient,
 } from "@/lib/jobs/run";
 
@@ -52,26 +63,46 @@ process.on("unhandledRejection", (err) => {
 interface FakeOptions {
   failCreate?: boolean;
   failUpdate?: boolean;
+  /** Pre-existing `running` rows — the fake enforces JobRun_one_running_per_job (IDEMP-003). */
+  running?: Array<{ jobName: string; startedAt: Date }>;
 }
 
 function makeFake(opts: FakeOptions = {}) {
   const creates: JobRunStartData[] = [];
   const updates: Array<{ id: string; data: JobRunCompletionData }> = [];
+  const finalized: JobRunStaleFinalizeArgs[] = [];
+  const running = new Map<string, { id: string; startedAt: Date }>();
+  (opts.running ?? []).forEach((r, i) => running.set(r.jobName, { id: `stale-${i + 1}`, startedAt: r.startedAt }));
+  const yieldTick = () => new Promise<void>((r) => setImmediate(r));
   const client: JobRunWriteClient = {
     jobRun: {
       async create({ data }) {
+        await yieldTick(); // the round trip — two claims can interleave here
         if (opts.failCreate) throw new Error("ledger down");
+        if (running.has(data.jobName)) throw Object.assign(new Error("Unique constraint failed on the fields: (`jobName`)"), { code: "P2002" });
         creates.push(data);
-        return { id: `row-${creates.length}` };
+        const id = `row-${creates.length}`;
+        running.set(data.jobName, { id, startedAt: data.startedAt });
+        return { id };
       },
       async update({ where, data }) {
         if (opts.failUpdate) throw new Error("ledger down");
         updates.push({ id: where.id, data });
+        for (const [name, r] of running) if (r.id === where.id) running.delete(name);
         return {};
+      },
+      async updateMany(args) {
+        finalized.push(args);
+        let count = 0;
+        for (const [name, r] of running) {
+          if (args.where.jobName && args.where.jobName !== name) continue;
+          if (r.startedAt.getTime() < args.where.startedAt.lt.getTime()) { running.delete(name); count++; }
+        }
+        return { count };
       },
     },
   };
-  return { client, creates, updates };
+  return { client, creates, updates, finalized, running };
 }
 
 // Silence the wrapper's expected non-fatal console.error noise in the two
@@ -96,6 +127,24 @@ async function main(): Promise<void> {
     });
     check("success: fn result returned verbatim", result.added === 3 && result.removed === 1);
     check("success: exactly one start row", creates.length === 1);
+
+    // PLATFORM OPS OBSERVABILITY — the ambient run identity: visible inside the
+    // body, bound to the created row, absent outside.
+    const seen: { run: ReturnType<typeof currentJobRun> } = { run: null };
+    const ctxFake = makeFake();
+    await runJob("ctx-job", async () => { seen.run = currentJobRun(); }, { trigger: "cron", client: ctxFake.client });
+    check("context: the body sees its own JobRun id, name and trigger",
+      seen.run !== null && seen.run.id === "row-1" && seen.run.jobName === "ctx-job" && seen.run.trigger === "cron");
+    check("context: nothing outside a runJob body", currentJobRun() === null);
+    // IDEMP-003: a failed start write no longer runs the body at all, so there
+    // is no context without a row — the old "id null" arm is unreachable.
+    const failingClient = { jobRun: { create: async () => { throw new Error("db down"); }, update: async () => ({}), updateMany: async () => ({ count: 0 }) } };
+    const seenNoRow: { run: ReturnType<typeof currentJobRun>; ran: boolean } = { run: null, ran: false };
+    let refused: unknown = null;
+    try { await runJob("ctx-job-2", async () => { seenNoRow.ran = true; seenNoRow.run = currentJobRun(); }, { trigger: "cron", client: failingClient }); }
+    catch (e) { refused = e; }
+    check("context: a failed start write refuses the run — the body never sees an invented id",
+      refused instanceof JobLedgerUnavailableError && !seenNoRow.ran);
     check(
       "success: start row shape (name/trigger/status/executionId)",
       creates[0].jobName === "test-job" &&
@@ -146,14 +195,50 @@ async function main(): Promise<void> {
     check("default trigger is \"cron\"", creates[0].trigger === "cron");
   }
 
-  // ── 4. Ledger never breaks the job ─────────────────────────────────────────
+  // ── 4. The start write IS the claim (IDEMP-003) ────────────────────────────
   {
     const { client, updates } = makeFake({ failCreate: true });
-    const result = await muteConsoleError(() =>
-      runJob("test-job", async () => "ran anyway", { client }),
-    );
-    check("start-write failure: job still runs and returns", result === "ran anyway");
-    check("start-write failure: completion write skipped (no row to complete)", updates.length === 0);
+    let ran = false; let thrown: unknown = null;
+    try { await muteConsoleError(() => runJob("test-job", async () => { ran = true; return "ran anyway"; }, { client })); }
+    catch (e) { thrown = e; }
+    check("start-write failure: the run is ABORTED (no ledger row ⇒ no guard ⇒ no body)", thrown instanceof JobLedgerUnavailableError && !ran);
+    check("start-write failure: no completion write", updates.length === 0);
+  }
+  {
+    // Two concurrent runJob of the same name: exactly one body runs, the other
+    // is refused with JobAlreadyRunningError and leaves no row (the runtime
+    // audit's 11/11 doubled jobs).
+    const { client, creates } = makeFake();
+    let bodies = 0;
+    const settle = await Promise.allSettled([
+      runJob("same-job", async () => { bodies++; await new Promise((r) => setTimeout(r, 5)); return 1; }, { client }),
+      runJob("same-job", async () => { bodies++; await new Promise((r) => setTimeout(r, 5)); return 2; }, { client }),
+    ]);
+    const ok = settle.filter((r) => r.status === "fulfilled").length;
+    const refused = settle.filter((r) => r.status === "rejected" && (r as PromiseRejectedResult).reason instanceof JobAlreadyRunningError).length;
+    check("concurrent same-name runs: one runs, one is refused as already running", ok === 1 && refused === 1 && bodies === 1, `ok=${ok} refused=${refused} bodies=${bodies}`);
+    check("the refused run wrote no start row", creates.length === 1);
+    const again = await runJob("same-job", async () => 3, { client });
+    check("after completion the claim is free again", again === 3 && creates.length === 2);
+  }
+  {
+    // A crashed predecessor (running row older than the in-flight window) is
+    // finalised as failed/"stale" before the claim, so the job is not blocked
+    // forever; a FRESH running row still blocks.
+    const now = new Date();
+    const { client, finalized } = makeFake({ running: [{ jobName: "crashed", startedAt: new Date(now.getTime() - STALE_RUNNING_AFTER_MS - 1_000) }] });
+    const r = await muteConsoleError(() => runJob("crashed", async () => "recovered", { client }));
+    check("a stale running row is finalised and the job runs", r === "recovered");
+    check("the finaliser wrote failed/stale scoped to the job",
+      finalized.some((f) => f.where.jobName === "crashed" && f.data.status === "failed" && f.data.errorSummary === STALE_RUN_ERROR_SUMMARY));
+    const fresh = makeFake({ running: [{ jobName: "live", startedAt: new Date(now.getTime() - 60_000) }] });
+    let blocked: unknown = null;
+    try { await runJob("live", async () => "should not run", { client: fresh.client }); } catch (e) { blocked = e; }
+    check("a fresh running row (younger than the window) still refuses", blocked instanceof JobAlreadyRunningError);
+    const n = await finalizeStaleRuns(fresh.client, now);
+    check("finalizeStaleRuns leaves fresh rows alone", n === 0);
+    const broken = { jobRun: { updateMany: async () => { throw new Error("ledger down"); } } };
+    check("finalizeStaleRuns is non-throwing", (await muteConsoleError(() => finalizeStaleRuns(broken, now))) === 0);
   }
   {
     const { client, creates } = makeFake({ failUpdate: true });
@@ -218,6 +303,131 @@ async function main(): Promise<void> {
       "notification cleanup registered separately; process-deletions single-purpose (S3)",
       registrySrc.includes('"notification-cleanup"') && !routes[2].includes("cleanupNotifications"),
     );
+  }
+
+  // ── 7. Swallowed ledger failures are REPORTED (SCHEDULER-DISPATCH-RESTORE-1) ─
+  //
+  // The 2026-07-26 incident: a deploy shipped OPS-2B′ without its migration, so
+  // every jobRun.create() failed P2022. Ten jobs ran, none recorded, dispatch
+  // returned 200, and the only symptom was every job ageing into "overdue".
+  // Both catch blocks must escalate, not just console.error — the whole point is
+  // that a write-dead ledger cannot stay quiet again.
+  {
+    const src = readFileSync("lib/jobs/run.ts", "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    check(
+      "start-write failure is captured, not only logged",
+      /captureLedgerWriteFailure\(\s*"JobRun"\s*,\s*"start"/.test(src),
+    );
+    check(
+      "completion-write failure is captured, not only logged",
+      /captureLedgerWriteFailure\(\s*"JobRun"\s*,\s*"completion"/.test(src),
+    );
+    // The escalation must not have quietly become fatal: the swallow is the
+    // contract. Neither catch may rethrow.
+    // OPERATIONALIZATION P0 — the job's OWN failure reaches the error monitor
+    // (not only the ledger), after the "failed" completion write and before the
+    // unchanged rethrow. Static identifiers only.
+    check(
+      "job-body failure is captured to the error monitor (captureJobFailure after the failed completion write)",
+      /status:\s*"failed"[\s\S]*?captureJobFailure\(\s*jobName\s*,\s*err\s*,\s*executionId\s*\)[\s\S]*?throw err/.test(src),
+    );
+    check(
+      "capture did not make ledger writes fatal — neither catch rethrows",
+      !/catch\s*\(\s*err\s*\)\s*\{[^}]*captureLedgerWriteFailure[^}]*\bthrow\b/.test(src),
+    );
+    // The sibling ledger carries the identical contract and the identical gap.
+    // RLS-P-1 — the escalation moved WITH the writer: the operational ledger now
+    // has exactly one door, and the start/completion writes it swallows live
+    // there rather than in the orchestrator. The property asserted is unchanged.
+    const refreshSrc = readFileSync("lib/plaid/refresh-ledger.ts", "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    check(
+      "RefreshExecution start-write failure is captured too",
+      /captureLedgerWriteFailure\(\s*"RefreshExecution"\s*,\s*"start"/.test(refreshSrc),
+    );
+    check(
+      "RefreshExecution completion-write failure is captured too",
+      /captureLedgerWriteFailure\(\s*"RefreshExecution"\s*,\s*"completion"/.test(refreshSrc),
+    );
+    // IDEMP-003: a start-write failure now ABORTS the run before the body, so
+    // there is never a completion to skip — append-only holds by construction.
+    check(
+      "append-only preserved: a failed start write throws before any body or completion",
+      /throw new JobLedgerUnavailableError\(jobName, err\)/.test(src) && /throw new JobAlreadyRunningError\(jobName\)/.test(src),
+    );
+  }
+
+  // ── 7b. The capture PAYLOAD — extraction of SCHEDULER-DISPATCH-RESTORE-1 ────
+  //
+  // The builder is pure for the same reason buildSessionRevocationCapture is:
+  // the drift fingerprint and the ABSENCE of sensitive context are provable here
+  // without a Sentry double.
+  {
+    const p2022 = Object.assign(new Error("The column `deploymentSha` does not exist"), { code: "P2022" });
+    const drift = buildLedgerWriteCapture({ ledger: "JobRun", phase: "start", error: p2022, jobName: "fetch-fx-rates" });
+
+    check("P2022 is fingerprinted as schema drift", drift.tags.schema_drift === "true");
+    check("the Prisma code is carried as db_error_code", drift.tags.db_error_code === "P2022");
+    check("ledger and phase are tagged", drift.tags.ledger === "JobRun" && drift.tags.phase === "start");
+    check("the static job name is tagged", drift.tags.jobName === "fetch-fx-rates");
+    check("a write-dead ledger is an error, never a warning", drift.level === "error");
+    // The 2026-07-24 shape: the RefreshExecution TABLE was absent, not a column.
+    check("P2021 (missing table) is drift too", isSchemaDriftCode("P2021"));
+    check("a pool timeout is NOT mistaken for drift", !isSchemaDriftCode("P2024"));
+
+    // One classifier, reused — never a second, blinder reader of `.code`.
+    const unknown = buildLedgerWriteCapture({ ledger: "RefreshExecution", phase: "start", error: new Error("boom") });
+    check("an uncoded error still classifies (no undefined tag)", unknown.tags.db_error_code === "UNKNOWN");
+    check("an uncoded error is not called drift", unknown.tags.schema_drift === "false");
+    check("jobName is omitted when absent, never empty", !("jobName" in unknown.tags));
+
+    // NO SENSITIVE DATA. The whole payload is scanned, not just the fields we
+    // happen to remember — a future tag cannot quietly smuggle a secret in.
+    const serialized = JSON.stringify({ tags: drift.tags, contexts: drift.contexts });
+    const forbidden = ["postgres://", "postgresql://", "password", "secret", "token", "DATABASE_URL", "connection"];
+    check(
+      "payload carries no credential, connection string or token",
+      forbidden.every((f) => !serialized.toLowerCase().includes(f.toLowerCase())),
+      serialized,
+    );
+    // The deployment must come from Sentry's `release` (OPS-2B'), not a second read.
+    check("deployment sha is not re-tagged here", !/deploymentsha|release/i.test(JSON.stringify(drift.tags)));
+  }
+
+  // ── 8. The pre-deploy half of the same defence ──────────────────────────────
+  //
+  // Sentry catches drift that reached production. The drift guard catches it
+  // before it can. Neither replaces the other, so the script must keep existing
+  // and must stay read-only — it runs against production DATABASE_URLs.
+  {
+    const drift = readFileSync("scripts/check-schema-drift.ts", "utf8");
+    check(
+      "drift guard reads the real migration ledger",
+      drift.includes("_prisma_migrations") && drift.includes("prisma"),
+    );
+    check(
+      "drift guard exits nonzero on drift",
+      /process\.exit\(1\)/.test(drift),
+    );
+    const driftCode = drift.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    // Assert the CAPABILITY, not the vocabulary: the script prints the remediation
+    // command in its failure message, so banning the words "migrate deploy" would
+    // fail on advice rather than on an action. What must hold is that it cannot
+    // execute anything — no write query, no shell.
+    check(
+      "drift guard cannot write — no executeRaw, no shell",
+      !/\$execute(Raw|RawUnsafe)?\b/.test(driftCode) &&
+        !/child_process|execSync|spawn\(/.test(driftCode),
+    );
+    check(
+      "drift guard's only database call is a read",
+      (driftCode.match(/db\.\$\w+/g) ?? []).every((c) => c === "db.$queryRaw"),
+    );
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
+    check("drift guard is reachable as npm run db:drift", pkg.scripts["db:drift"]?.includes("check-schema-drift"));
   }
 
   if (failures > 0) {

@@ -26,7 +26,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 
 // ── A write-capturing fake client ────────────────────────────────────────────
 interface Row { [k: string]: unknown }
-function makeFake(seed: { priorEvents?: Row[]; priorObs?: Row[] } = {}) {
+function makeFake(seed: { priorEvents?: Row[]; priorObs?: Row[]; invisible?: boolean; weakMatches?: Row[]; repairThrows?: boolean; shortCount?: boolean } = {}) {
   const created = { events: [] as Row[], observations: [] as Row[] };
   const superseded = { events: [] as string[], observations: [] as string[] };
   let ev = 0, obs = 0;
@@ -34,16 +34,40 @@ function makeFake(seed: { priorEvents?: Row[]; priorObs?: Row[] } = {}) {
     investmentEvent: {
       create: async ({ data }: { data: Row }) => { const id = `ev_new_${ev++}`; created.events.push({ id, ...data }); return { id }; },
       findMany: async () => seed.priorEvents ?? [],
-      updateMany: async ({ where }: { where: { id: { in: string[] } } }) => { superseded.events.push(...where.id.in); return { count: where.id.in.length }; },
+      updateMany: async ({ where }: { where: { id: { in: string[] } } }) => { superseded.events.push(...where.id.in); return { count: seed.shortCount ? 0 : where.id.in.length }; },
     },
     positionObservation: {
       upsert: async ({ create, update }: { create: Row; update: Row }) => { const id = `obs_new_${obs++}`; created.observations.push({ id, create, update }); return { id }; },
       findMany: async () => seed.priorObs ?? [],
       updateMany: async ({ where }: { where: { id: { in: string[] } } }) => { superseded.observations.push(...where.id.in); return { count: where.id.in.length }; },
     },
-    $transaction: async (cb: (tx: unknown) => Promise<unknown>) => cb(client),
+    financialAccount: { findUnique: async () => (seed.invisible ? null : { id: "fa1" }) },
+    instrumentAlias: { findUnique: async () => null },
+    instrument: { findMany: async () => seed.weakMatches ?? [], create: async () => ({ id: "inst_new" }) },
+    positionReconstruction: { findMany: async () => { if (seed.repairThrows) throw new Error("repair boom"); return []; } },
   };
   return { client, created, superseded };
+}
+
+// RLS-PREP-2 — the writer takes a phase runner and an incident recorder, never
+// a client. `log` records the ORDER in which phases close and incidents are
+// recorded, which is the property the boundary rests on.
+function authority(client: unknown, log: string[] = []) {
+  const issues: { kind: string; detail?: unknown }[] = [];
+  let open = 0;
+  return {
+    issues, log,
+    tenant: async <T>(fn: (tx: never) => Promise<T>): Promise<T> => {
+      open++; log.push("phase:open");
+      try { const r = await fn(client as never); log.push("phase:commit"); return r; }
+      catch (e) { log.push("phase:rollback"); throw e; }
+      finally { open--; }
+    },
+    recordIssue: async (issue: { kind: string; detail?: unknown }) => {
+      log.push(open === 0 ? `issue:${issue.kind}` : `issue-INSIDE-PHASE:${issue.kind}`);
+      issues.push(issue);
+    },
+  };
 }
 
 async function main(): Promise<void> {
@@ -68,7 +92,7 @@ async function main(): Promise<void> {
     const { client, created } = makeFake();
     const res = await assertOpeningPosition({
       financialAccountId: "fa1", instrument: { instrumentId: "AAA" },
-      date: "2026-06-01", quantity: 12.5, costBasis: 1000, userId: "u1", now: new Date("2026-07-12T00:00:00Z"), client: client as never,
+      date: "2026-06-01", quantity: 12.5, costBasis: 1000, userId: "u1", now: new Date("2026-07-12T00:00:00Z"), ...authority(client),
     });
     check("status ok", res.status === "ok");
     check("one OPENING_BALANCE event, source user", created.events.length === 1 && created.events[0].type === InvestmentEventType.OPENING_BALANCE && created.events[0].source === "user" && created.events[0].createdByUserId === "u1");
@@ -87,11 +111,57 @@ async function main(): Promise<void> {
     const { client, created, superseded } = makeFake({ priorEvents: [{ id: "ev_old" }], priorObs: [{ id: "obs_old" }] });
     const res = await assertOpeningPosition({
       financialAccountId: "fa1", instrument: { instrumentId: "AAA" },
-      date: "2026-06-02", quantity: 20, userId: "u1", now: new Date("2026-07-12T00:00:00Z"), client: client as never,
+      date: "2026-06-02", quantity: 20, userId: "u1", now: new Date("2026-07-12T00:00:00Z"), ...authority(client),
     });
     check("new pair created", created.events.length === 1 && created.observations.length === 1);
     check("prior event superseded (append + supersede, not edited)", superseded.events.includes("ev_old") && res.supersededEventIds?.includes("ev_old") === true);
     check("prior observation superseded", superseded.observations.includes("obs_old") && res.supersededObservationIds?.includes("obs_old") === true);
+  }
+
+  // ── 3b. RLS-PREP-2 — the authority boundary ────────────────────────────────
+  console.log("authority: telemetry only after the phase ends; refusals raise");
+  {
+    // Ambiguous identity ⇒ conflict, ZERO writes, incident recorded AFTER the phase.
+    const { client, created } = makeFake({ weakMatches: [{ id: "i1" }, { id: "i2" }] });
+    const a = authority(client);
+    const res = await assertOpeningPosition({
+      financialAccountId: "fa1", instrument: { symbol: "DUP" },
+      date: "2026-06-01", quantity: 1, userId: "u1", ...a,
+    });
+    check("conflict, zero writes", res.status === "conflict" && created.events.length === 0 && created.observations.length === 0);
+    check("the incident is recorded after the phase has closed, never inside it",
+      a.log.join(",") === "phase:open,phase:commit,issue:INSTRUMENT_IDENTITY_CONFLICT", a.log.join(","));
+  }
+  {
+    // An account the tenant phase cannot see ⇒ raise before resolution, before any incident.
+    const { client, created } = makeFake({ invisible: true, weakMatches: [{ id: "i1" }, { id: "i2" }] });
+    const a = authority(client);
+    let raised = "";
+    try {
+      await assertOpeningPosition({ financialAccountId: "fa_foreign", instrument: { symbol: "DUP" }, date: "2026-06-01", quantity: 1, userId: "u1", ...a });
+    } catch (e) { raised = (e as Error).name; }
+    check("an invisible account raises, writes nothing and reaches no telemetry",
+      raised === "InvestmentAccountNotVisibleError" && created.events.length === 0 && a.issues.length === 0 && a.log.join(",") === "phase:open,phase:rollback", `${raised} ${a.log.join(",")}`);
+  }
+  {
+    // A supersession the policy filtered to fewer rows must not report success.
+    const { client } = makeFake({ priorEvents: [{ id: "ev_old" }], shortCount: true });
+    let raised = "";
+    try {
+      await assertOpeningPosition({ financialAccountId: "fa1", instrument: { instrumentId: "AAA" }, date: "2026-06-02", quantity: 20, userId: "u1", ...authority(client) });
+    } catch (e) { raised = (e as Error).name; }
+    check("a supersession that wrote fewer rows than it observed raises", raised === "PartialBulkWriteError", raised);
+  }
+  {
+    // A failed repair rolls back alone; the assertion stands and the incident follows.
+    process.env.INVESTMENT_RECONSTRUCTION_ENABLED = "true";
+    const { client, created } = makeFake({ repairThrows: true });
+    const a = authority(client);
+    const res = await assertOpeningPosition({ financialAccountId: "fa1", instrument: { instrumentId: "AAA" }, date: "2026-06-01", quantity: 5, userId: "u1", ...a });
+    delete process.env.INVESTMENT_RECONSTRUCTION_ENABLED;
+    check("repair failure is non-fatal: status ok, pair written, no repair result", res.status === "ok" && created.events.length === 1 && res.repair === undefined);
+    check("write phase commits, repair phase rolls back, THEN the incident is recorded",
+      a.log.join(",") === "phase:open,phase:commit,phase:open,phase:rollback,issue:INVESTMENT_DATA_PERSISTENCE_FAILED", a.log.join(","));
   }
 
   // ── 4. Kill switch — flag off ⇒ zero writes ────────────────────────────────
@@ -101,7 +171,7 @@ async function main(): Promise<void> {
     const { client, created } = makeFake();
     const res = await assertOpeningPosition({
       financialAccountId: "fa1", instrument: { instrumentId: "AAA" },
-      date: "2026-06-01", quantity: 5, userId: "u1", client: client as never,
+      date: "2026-06-01", quantity: 5, userId: "u1", ...authority(client),
     });
     check("status disabled", res.status === "disabled");
     check("no writes", created.events.length === 0 && created.observations.length === 0);

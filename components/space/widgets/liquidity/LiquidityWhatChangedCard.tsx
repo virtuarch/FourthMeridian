@@ -12,17 +12,15 @@
 
 import { useMemo } from "react";
 import { ArrowRight, Waves } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency } from "@/lib/format";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { periodKey, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { buildWhatChangedRows } from "./liquidity-what-changed";
 
 function fmtSigned(amount: number, ctx?: ConversionContext): string {
-  const abs = ctx
-    ? formatCurrency(Math.abs(amount), ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(Math.abs(amount));
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
+  const abs = formatAggregateMoney(Math.abs(amount), ctx);
   return `${amount >= 0 ? "+" : "−"}${abs}`;
 }
 
@@ -31,20 +29,25 @@ export function LiquidityWhatChangedCard({
   accounts,
   period,
   ctx,
+  asOf,
   onOpenCashFlow,
 }: {
   transactions?:  Transaction[] | null;
   accounts:       { id: string; type: string }[];
   period:         CashFlowPeriod;
   ctx?:           ConversionContext;
+  /** The shell's selected as-of date — the window anchor. Required: without it
+   *  this card windowed against today and disagreed with the Liquidity chart
+   *  beside it on any historical date. */
+  asOf:           string;
   onOpenCashFlow?: () => void;
 }) {
   const periodId = periodKey(period);
   const result = useMemo(
-    () => buildWhatChangedRows({ transactions, accounts, period, ctx }),
+    () => buildWhatChangedRows({ transactions, accounts, period, ctx, asOf }),
     // period is reconstructed from periodId (a stable primitive).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [transactions, accounts, periodId, ctx],
+    [transactions, accounts, periodId, ctx, asOf],
   );
 
   if (result.state === "loading") {

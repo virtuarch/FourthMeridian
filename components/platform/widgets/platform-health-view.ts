@@ -1,33 +1,32 @@
 /**
- * components/platform/widgets/platform-health-view.ts  (PM-1)
+ * components/platform/widgets/platform-health-view.ts  (PM-1 · UX-P1 compact posture)
  *
  * The consolidated Platform Health surface's presentation vocabulary. Pure,
  * React-free, clock-injected, and testable without rendering anything.
  *
  * ── WHAT IT MAY DO ───────────────────────────────────────────────────────────
  * Turn a value five EXISTING routes already serve into the exact words and the
- * exact design token used to show it, and ORDER states those routes' own
- * authorities already assigned.
+ * exact tone used to show it, ORDER states those routes' own authorities
+ * already assigned, and SPLIT each group's rows into the two that lead and the
+ * rest that live in a disclosure.
  *
  * ── WHAT IT MUST NOT DO ──────────────────────────────────────────────────────
  * Decide what any value IS. There is no staleness maths here, no availability
  * ratio, no trust computation, no threshold. Provider trust arrives decided by
  * lib/platform/provider-health.ts; resource health arrives decided by
- * lib/platform/resource-freshness.ts; env verdicts arrive decided by lib/env.ts.
- * The moment a function here computes one of those, the authority has been
- * forked and two parts of the product start disagreeing about the platform.
+ * lib/platform/resource-freshness.ts; env verdicts arrive decided by lib/env.ts;
+ * "firing now" arrives decided by the latest evaluate-alerts run.
  *
  * The three orderings below (`TRUST_STATUS`, `FRESHNESS_STATUS`, and env's
  * fail/warn/pass) are the one judgement this file makes, and each is a RANKING
- * of an authority's own enum, not a new opinion about a resource:
- *   · provider trust — lib/platform/provider-health.ts documents the roll-up as
- *     "content OR execution, worst-wins"; this ranks the result it produced.
- *   · resource state — lib/alerts/evaluate.ts already ranks these for alerting:
- *     `empty` (a cold archive — the incident shape) is critical, `stale` is a
- *     warning, and an `empty` whose trust is "unknown" is a KNOWN-BLOCKED
- *     pipeline that must not read as a failure ("honest, not a false alarm").
- *     That exact rule is mirrored here so the surface and the alerts agree.
- *   · env — `fail`/`warn`/`pass` is lib/env.ts's own three-way verdict.
+ * of an authority's own enum, not a new opinion about a resource.
+ *
+ * ── ALERTS: FIRING NOW vs HISTORY (UX-P1) ────────────────────────────────────
+ * The Alerts group's status used to rank the whole retained delivery history
+ * (~10 runs, ~2.5 days), so a critical delivered days ago kept "Action needed"
+ * lit until it aged out — a historical alert rendered as open. It now derives
+ * from `latest.rules[].firing` — the most recent evaluation's verdict — and the
+ * history is a list in the group's disclosure, labelled historical.
  *
  * ── THE FOUR STATES ──────────────────────────────────────────────────────────
  * loading ≠ empty ≠ error ≠ unknown. Loading and error are owned by the caller
@@ -44,6 +43,8 @@ import type { PlatformRateLimitsResponse } from "@/app/api/platform/platform-ops
 import type { PlatformEnvStatusResponse } from "@/app/api/platform/platform-ops/env-status/route";
 import type { ProviderTrust } from "@/lib/platform/provider-health";
 import type { FreshnessHealthState } from "@/lib/platform/resource-freshness";
+import { TONE_COLOR, type StatusTone } from "../platform-surface";
+import { openAiFactLines } from "./env-status-view";
 
 // ── Status vocabulary ─────────────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ import type { FreshnessHealthState } from "@/lib/platform/resource-freshness";
  */
 export type HealthStatus = "nominal" | "caution" | "critical" | "unknown";
 
-/** The WORD. Always rendered; colour is never the only carrier (StatusWord). */
+/** The WORD. Always rendered; colour is never the only carrier (ToneBadge). */
 export const STATUS_WORD: Record<HealthStatus, string> = {
   nominal:  "Nominal",
   caution:  "Caution",
@@ -65,20 +66,20 @@ export const STATUS_WORD: Record<HealthStatus, string> = {
   unknown:  "Unknown",
 };
 
-/**
- * The token. Urgency is SATURATION, not darkness — `--coral-600` measures 3.28:1
- * on the dark surface and fails WCAG AA for small text, so danger is the fully
- * saturated `--coral-400` and caution its lighter tint, matching the ramp
- * components/atlas/tones.ts ships and the map incident-preview-view.ts uses.
- *
- * `nominal` deliberately gets no colour of its own: a green "everything is fine"
- * pill is the single most dishonest mark an operational surface can carry.
- */
+/** The tone. `unknown` is muted — not-knowing never reads as fine. */
+export const STATUS_TONE: Record<HealthStatus, StatusTone> = {
+  nominal:  "ok",
+  caution:  "warn",
+  critical: "bad",
+  unknown:  "muted",
+};
+
+/** The token, for any consumer still painting a StatusWord. Derived, never re-declared. */
 export const STATUS_TOKEN: Record<HealthStatus, string> = {
-  nominal:  "var(--text-primary)",
-  caution:  "var(--coral-300)",
-  critical: "var(--coral-400)",
-  unknown:  "var(--text-muted)",
+  nominal:  TONE_COLOR[STATUS_TONE.nominal],
+  caution:  TONE_COLOR[STATUS_TONE.caution],
+  critical: TONE_COLOR[STATUS_TONE.critical],
+  unknown:  TONE_COLOR[STATUS_TONE.unknown],
 };
 
 /** Ordering only. `unknown` outranks `nominal` so not-knowing never reads as fine. */
@@ -110,6 +111,9 @@ export interface HealthLine {
   tone: LineTone;
 }
 
+/** How many rows a group shows before its disclosure. */
+export const LEAD_ROWS = 2;
+
 /**
  * One authority's answer, ready to render.
  *
@@ -117,14 +121,26 @@ export interface HealthLine {
  * no threshold for it, so it is reported and not judged. That is a third thing,
  * distinct from `nominal` (an authority looked and found nothing wrong) and from
  * `unknown` (an authority exists but has nothing to say yet).
+ *
+ * `lines` are the at-most-two rows that lead; `details` are the rest, rendered
+ * inside the group's disclosure together with the provenance and the note.
  */
 export interface SourceView {
   status: HealthStatus | null;
   /** The one line that decides whether an operator opens the detail workspace. */
   headline: string;
   lines: HealthLine[];
+  details: HealthLine[];
   /** The caveat that keeps the numbers above from being over-read. */
   note?: string;
+}
+
+/** Lead with the rows an authority judged bad or unknown, then the rest; at most `LEAD_ROWS`. */
+export function splitLines(all: readonly HealthLine[], lead: number = LEAD_ROWS): { lines: HealthLine[]; details: HealthLine[] } {
+  const flagged = all.filter((l) => l.tone !== "normal");
+  const rest = all.filter((l) => l.tone === "normal");
+  const ordered = [...flagged, ...rest];
+  return { lines: ordered.slice(0, lead), details: ordered.slice(lead) };
 }
 
 // ── Phrasing for the states the caller owns ───────────────────────────────────
@@ -140,11 +156,7 @@ export function unavailableText(subject: string): string {
   return `${subject} unavailable — the platform could not be asked. This is not a report that nothing is wrong.`;
 }
 
-/** The surface's own honesty line. Rendered once, under every group.
- *
- * The closing sentence is the prototype's, and it is what the doorways below
- * make true: this surface SUMMARISES four workspaces, so an operator who needs
- * the full read is told there is one and where it is. */
+/** The surface's own honesty line. Rendered once, under every group. */
 export const SURFACE_FOOTNOTE =
   "Each group reports only what its named authority observed. Nominal means that authority found nothing " +
   "outside its own thresholds — it is not a verdict on the platform, and anything no authority watches does " +
@@ -164,8 +176,8 @@ export const SURFACE_FOOTNOTE =
  *
  * Freshness and Providers deliberately share a target: `ops_resource_freshness`
  * is composed into the Providers workspace, which is where its detail actually
- * lives. Configuration opens Operations, which is the workspace that owns the
- * platform's manual operational surface.
+ * lives. Alerts and Configuration both open Policies & controls, which owns the
+ * alert rules and the platform's declared operational settings.
  */
 export type HealthGroupId = "alerts" | "providers" | "freshness" | "configuration";
 
@@ -178,10 +190,10 @@ export const GROUP_LABEL: Record<HealthGroupId, string> = {
 
 /** Group → the rail workspace id that owns its detail (PLATFORM_AREA_WORKSPACES). */
 export const GROUP_DOORWAY: Record<HealthGroupId, string> = {
-  alerts:        "platform-alerts",
+  alerts:        "platform-policies",
   providers:     "platform-providers",
   freshness:     "platform-providers",
-  configuration: "platform-operations",
+  configuration: "platform-policies",
 };
 
 /** The accessible name of a doorway. Begins with the visible text (WCAG 2.5.3)
@@ -197,9 +209,7 @@ export function doorwayLabel(workspaceLabel: string, group: HealthGroupId): stri
  *
  * A near-twin of widget-kit's `timeAgo`, and deliberately not a call to it: that
  * one reads `Date.now()` internally, which makes every phrase built from it
- * untestable and makes this module import a "use client" React file. Taking the
- * clock as an argument is what lets the tests pin the wording instead of the
- * hour they happened to run.
+ * untestable and makes this module import a "use client" React file.
  */
 export function relativeAge(iso: string, nowMs: number): string | null {
   const t = Date.parse(iso);
@@ -225,13 +235,11 @@ function agePhrase(iso: string | null, nowMs: number): string {
 /**
  * Alert posture from /api/platform/platform-ops/alerts.
  *
- * THE THING THIS MUST NOT SAY IS "n open". The prototype's headline was "1 open",
- * and there is no open/closed authority in production — `history` is a DELIVERY
- * log derived from evaluate-alerts JobRun summaries. So the headline counts
- * recent firings and the note names the gap rather than papering over it.
- *
- * When the evaluator has never run, nothing at all is known about alerting, and
- * that is `unknown` — not "0 recent firings", which would read as quiet.
+ * STATUS = FIRING NOW. `latest` is the most recent evaluation's per-rule
+ * verdict; a rule is active only if it breached there. `history` is a DELIVERY
+ * log and is listed in the disclosure, labelled historical — it never decides
+ * the word. When the evaluator has never run, nothing at all is known about
+ * alerting, and that is `unknown` — not "0 firing", which would read as quiet.
  */
 export function alertsView(d: PlatformAlertsResponse, nowMs: number): SourceView {
   if (d.rules.length === 0) {
@@ -239,61 +247,66 @@ export function alertsView(d: PlatformAlertsResponse, nowMs: number): SourceView
       status: "unknown",
       headline: "No alert rules registered",
       lines: [],
+      details: [],
       note: "Nothing is being watched, so nothing here can fire.",
     };
   }
 
   const enabled = d.rules.filter((r) => r.enabled).length;
   const dormant = d.rules.filter((r) => !r.live).length;
-  const neverEvaluated = d.lastEvaluatedAt == null;
-  const anyCritical = d.history.some((h) => h.severity === "critical");
+  const titleOf = (id: string) => d.rules.find((r) => r.id === id)?.title ?? id;
+  const neverEvaluated = d.latest == null;
+  const firing = d.latest ? d.latest.rules.filter((r) => r.firing) : [];
+  const anyCritical = firing.some((r) => r.severity === "critical");
 
-  const status: HealthStatus = neverEvaluated
-    ? "unknown"
-    : anyCritical
-      ? "critical"
-      : d.history.length > 0
-        ? "caution"
-        : "nominal";
+  const status: HealthStatus = neverEvaluated ? "unknown" : anyCritical ? "critical" : firing.length > 0 ? "caution" : "nominal";
 
   const headline = neverEvaluated
     ? "Never evaluated"
-    : d.history.length > 0
-      ? `${d.history.length} recent firing${d.history.length === 1 ? "" : "s"}`
-      : `${enabled} of ${d.rules.length} rules enabled`;
+    : firing.length > 0
+      ? `${firing.length} rule${firing.length === 1 ? "" : "s"} firing now`
+      : `No rule firing · ${enabled} of ${d.rules.length} enabled`;
 
-  const lines: HealthLine[] = [
-    {
-      label: "Rules enabled",
-      detail: dormant > 0
-        ? `${enabled} of ${d.rules.length} · ${dormant} dormant, awaiting an authority`
-        : `${enabled} of ${d.rules.length}`,
-      tone: "normal",
-    },
+  const firingLines: HealthLine[] = firing.map((r): HealthLine => ({
+    label: titleOf(r.id),
+    detail: `firing now · ${r.breaches} breach${r.breaches === 1 ? "" : "es"} · ${r.severity ?? "severity not recorded"}`,
+    tone: "bad",
+  }));
+
+  const facts: HealthLine[] = [
     {
       label: "Last evaluated",
-      detail: neverEvaluated ? "Never — no evaluation recorded" : agePhrase(d.lastEvaluatedAt, nowMs),
+      detail: neverEvaluated ? "Never — no evaluation recorded" : agePhrase(d.latest?.evaluatedAtISO ?? d.lastEvaluatedAt, nowMs),
       tone: neverEvaluated ? "unknown" : "normal",
+    },
+    {
+      label: "Rules enabled",
+      detail: dormant > 0 ? `${enabled} of ${d.rules.length} · ${dormant} dormant, awaiting an authority` : `${enabled} of ${d.rules.length}`,
+      tone: "normal",
     },
     {
       label: "Destination",
       // Not configured is a real operational fact: a firing rule with nowhere to
       // go is silent. It is worded, not blanked.
-      detail: d.destination ?? "Not configured — deliveries have nowhere to go",
-      tone: d.destination ? "normal" : "unknown",
+      detail: d.destinationConfigured ? "Configured" : "Not configured — deliveries have nowhere to go",
+      tone: d.destinationConfigured ? "normal" : "unknown",
     },
-    ...d.history.slice(0, 2).map((h): HealthLine => ({
-      label: h.summary,
-      detail: `${h.severity} · delivered ${agePhrase(h.deliveredAtISO, nowMs)}`,
-      tone: h.severity === "critical" ? "bad" : "normal",
-    })),
   ];
 
+  // HISTORY — every delivered firing in the retained window, each labelled as the past.
+  const history: HealthLine[] = d.history.map((h): HealthLine => ({
+    label: `Historical · ${h.summary}`,
+    detail: `${h.severity} · delivered ${agePhrase(h.deliveredAtISO, nowMs)}`,
+    tone: "normal",
+  }));
+
+  const { lines, details } = splitLines([...firingLines, ...facts]);
   return {
     status,
     headline,
     lines,
-    note: "Delivery history only — whether an alert is still open is not recorded anywhere.",
+    details: [...details, ...history],
+    note: `Firing means the latest evaluation. Recent firings (historical, last ${d.historyRuns} evaluation${d.historyRuns === 1 ? "" : "s"}): ${d.history.length} delivered — whether an alert is still open is not recorded anywhere.`,
   };
 }
 
@@ -323,23 +336,25 @@ export function providersView(d: ProviderHealthResponse): SourceView {
       status: "unknown",
       headline: "No providers registered",
       lines: [],
+      details: [],
       note: "The provider registry is empty, so no provider is being observed.",
     };
   }
 
   const status = worstStatus(d.providers.map((p) => TRUST_STATUS[p.trust]));
 
+  // Every registered provider is listed (lead rows + disclosure). The registry
+  // is small and static, so no provider a "top N" cut could hide is hidden.
+  const all = d.providers.map((p): HealthLine => ({
+    label: p.label,
+    detail: `${TRUST_WORD[p.trust]} · ${p.freshness.detail}`,
+    tone: TRUST_STATUS[p.trust] === "nominal" ? "normal" : TRUST_STATUS[p.trust] === "unknown" ? "unknown" : "bad",
+  }));
+
   return {
     status,
     headline: `${d.counts.OPERATIONAL} of ${d.providers.length} operational`,
-    // Every registered provider is listed. The registry is small and static, so
-    // there is no truncation and therefore no provider that a "top N" cut could
-    // hide precisely because it was the broken one.
-    lines: d.providers.map((p): HealthLine => ({
-      label: p.label,
-      detail: `${TRUST_WORD[p.trust]} · ${p.freshness.detail}`,
-      tone: TRUST_STATUS[p.trust] === "nominal" ? "normal" : TRUST_STATUS[p.trust] === "unknown" ? "unknown" : "bad",
-    })),
+    ...splitLines(all),
     note: "Trust is the provider authority's own roll-up of content and execution.",
   };
 }
@@ -374,6 +389,7 @@ export function freshnessView(d: ResourceFreshnessResponse): SourceView {
       status: "unknown",
       headline: "No refreshable resources registered",
       lines: [],
+      details: [],
       note: "Nothing is registered for freshness checking, so nothing here is being watched.",
     };
   }
@@ -383,19 +399,21 @@ export function freshnessView(d: ResourceFreshnessResponse): SourceView {
 
   const notFresh = d.counts.stale + d.counts.empty;
 
+  const all = d.resources.map((r): HealthLine => {
+    const st = statusOf(r);
+    const when = r.newestObservedDate ? `newest ${r.newestObservedDate}` : "no observations";
+    const caveat = r.trust.caveats[0];
+    return {
+      label: r.label,
+      detail: `${FRESHNESS_WORD[r.healthState]} · ${when} · trust ${r.trust.level}${caveat ? ` · ${caveat}` : ""}`,
+      tone: st === "nominal" ? "normal" : st === "unknown" ? "unknown" : "bad",
+    };
+  });
+
   return {
     status: worstStatus(d.resources.map(statusOf)),
     headline: notFresh > 0 ? `${notFresh} not fresh` : "Nothing stale or empty",
-    lines: d.resources.map((r): HealthLine => {
-      const st = statusOf(r);
-      const when = r.newestObservedDate ? `newest ${r.newestObservedDate}` : "no observations";
-      const caveat = r.trust.caveats[0];
-      return {
-        label: r.label,
-        detail: `${FRESHNESS_WORD[r.healthState]} · ${when} · trust ${r.trust.level}${caveat ? ` · ${caveat}` : ""}`,
-        tone: st === "nominal" ? "normal" : st === "unknown" ? "unknown" : "bad",
-      };
-    }),
+    ...splitLines(all),
     note: "Freshness is read from the stored data, never from a job's exit status.",
   };
 }
@@ -416,20 +434,30 @@ export function envView(d: PlatformEnvStatusResponse): SourceView {
         ? `${d.counts.warn} warning`
         : "All checked variables set";
 
+  const all: HealthLine[] = [
+    ...[...failing, ...warning].map((k): HealthLine => ({
+      label: k.key,
+      detail: `${k.status} · required ${k.scope}${k.note ? ` · ${k.note}` : ""}`,
+      tone: k.status === "fail" ? "bad" : "normal",
+    })),
+    { label: "Environment", detail: d.deploymentEnv, tone: "normal" },
+    // OPENAI ENVIRONMENT SEPARATION — the value-free OpenAI project pin, SURFACED
+    // HERE because ops_env_status is absorbed by this host (lib/platform/workspaces.ts)
+    // and the standalone widget is never composed: the credential kind, the
+    // project pin (proj_… in full, never the key) and the environment guard. A
+    // refusal state leads the list; the key itself never reaches the report.
+    ...(d.openAi ? openAiFactLines(d.openAi).map((l): HealthLine => ({
+      label: `OpenAI · ${l.label}`, detail: l.value, tone: l.tone === "bad" ? "bad" : "normal",
+    })) : []),
+  ];
+
   return {
     status,
     headline,
-    lines: [
-      { label: "Environment", detail: d.nodeEnv, tone: "normal" },
-      ...[...failing, ...warning].map((k): HealthLine => ({
-        label: k.key,
-        detail: `${k.status} · required ${k.scope}${k.note ? ` · ${k.note}` : ""}`,
-        tone: k.status === "fail" ? "bad" : "normal",
-      })),
-    ],
+    ...splitLines(all),
     // Says what the check covers, so a pass is not read as "the configuration is
-    // correct" — only as "the keys lib/env.ts knows about are present".
-    note: "Names and verdicts only, for the keys lib/env.ts checks. No value is ever read.",
+    // correct" — only as "the variables the environment check knows are present".
+    note: "Variable names and verdicts only. No value is ever read.",
   };
 }
 
@@ -445,8 +473,14 @@ export function envView(d: PlatformEnvStatusResponse): SourceView {
  * to compare it against. So it is reported and not judged, and the note says so.
  */
 export function rateLimitsView(d: PlatformRateLimitsResponse, nowMs: number): SourceView {
-  const TOP = 3;
-  const hidden = Math.max(0, d.topBuckets.length - TOP);
+  const all: HealthLine[] = [
+    { label: "Window opened", detail: agePhrase(d.windowSince, nowMs), tone: "normal" },
+    ...d.topBuckets.map((b): HealthLine => ({
+      label: b.bucket,
+      detail: `${b.hits} hits · ${b.keys} keys`,
+      tone: "normal",
+    })),
+  ];
 
   return {
     status: null,
@@ -454,17 +488,7 @@ export function rateLimitsView(d: PlatformRateLimitsResponse, nowMs: number): So
       d.totalRows === 0
         ? "No rate-limit activity in the window"
         : `${d.totalHits} hits across ${d.totalRows} keys`,
-    lines: [
-      { label: "Window opened", detail: agePhrase(d.windowSince, nowMs), tone: "normal" },
-      ...d.topBuckets.slice(0, TOP).map((b): HealthLine => ({
-        label: b.bucket,
-        detail: `${b.hits} hits · ${b.keys} keys`,
-        tone: "normal",
-      })),
-      ...(hidden > 0
-        ? [{ label: `${hidden} further endpoint bucket${hidden === 1 ? "" : "s"}`, detail: "not shown", tone: "normal" as LineTone }]
-        : []),
-    ],
+    ...splitLines(all),
     note: "No threshold authority exists for rate-limit pressure, so this is reported, not judged.",
   };
 }

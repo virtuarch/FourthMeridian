@@ -132,6 +132,7 @@ export function spliceLiquidityRows(
       rows.push({
         id: r.id,
         type: r.type,
+        providerSubtype: r.providerSubtype ?? null,
         balance: cov.valuedSum,
         currency: reportingCurrency, // already reported → identity-convert downstream
         creditLimit: r.creditLimit,
@@ -144,11 +145,21 @@ export function spliceLiquidityRows(
       rows.push({
         id: r.id,
         type: r.type,
+        providerSubtype: r.providerSubtype ?? null,
         balance: r.balance,
         currency: r.currency ?? null,
         creditLimit: r.creditLimit,
         lastUpdated: r.lastUpdated,
         visibilityLevel: r.visibilityLevel,
+        // v2.6-L3 — the CURRENT-state reachable claim, carried only when the
+        // caller attached one (i.e. the as-of date IS today). Absent on a
+        // genuinely historical date, where "reachable right now" has no meaning.
+        // Deliberately NOT carried on the splice branch above: that branch
+        // replaces a marketable balance with a valued figure, and marketable
+        // accounts never carry a reachable claim.
+        ...(r.reachableCash !== undefined
+          ? { reachableCash: r.reachableCash, unexplainedHold: r.unexplainedHold }
+          : {}),
       });
       stamps.set(r.id, { tier: r.tier, type: r.type });
     }

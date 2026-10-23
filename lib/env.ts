@@ -23,11 +23,29 @@
  * - Required variables are accessed via getters that throw at call-site if missing.
  *   This fails fast and gives a clear error rather than a cryptic downstream failure.
  * - Optional integrations expose the raw value (undefined if not set) and
- *   boolean feature flags (isPlaidEnabled, isAiEnabled, etc.) for guard clauses.
+ *   boolean feature flags (isPlaidEnabled, etc.) for guard clauses.
  * - `validateEnv()` can be called to validate everything eagerly at startup.
+ *
+ * FLAG PATTERN (v2.6 REVIEW-3, deliberate)
+ * ----------------------------------------
+ * Feature-flag and kill-switch TRUTH lives at each flag's OWN gate function,
+ * which reads `process.env.X` directly at CALL TIME (e.g.
+ * lib/investments/position-capture.ts `investmentObservationsEnabled()`).
+ * That is load-bearing, not sloppiness:
+ *   - the test suite toggles process.env at runtime and re-invokes the gates
+ *     (this module snapshots once at load, so a mirror here can NEVER be the
+ *     gate);
+ *   - operational scripts run the gated modules under plain `tsx`, where this
+ *     module's `server-only` import cannot be resolved without a preload.
+ * This module therefore carries NO duplicate boolean accessor for those flags
+ * — a second, documented-but-dead copy of a flag authority is exactly the
+ * drift REVIEW-3 removed. The snapshot entries below exist ONLY for startup
+ * validation and the value-free env report. `.env.example` is the single
+ * documentation surface for every variable and its default.
  */
 
 import "server-only";
+import { describeOpenAiConfiguration, type OpenAiConfigurationFacts } from "@/lib/ai/openai-configuration";
 
 // ── Internal snapshot (read once at module load) ──────────────────────────────
 
@@ -43,6 +61,21 @@ const _e = {
   PLAID_ENV:            process.env.PLAID_ENV,
 
   OPENAI_API_KEY:       process.env.OPENAI_API_KEY,
+  // OPENAI ENVIRONMENT SEPARATION (AI COST CONTROLS, Agent C) — two OPTIONAL
+  // companions of the key, read by the credential seam
+  // (lib/ai/openai-credentials.ts) at call time and mirrored here ONLY for the
+  // value-free env report:
+  //   OPENAI_PROJECT_ID           the `proj_…` pin passed to the SDK's `project`
+  //                               option (the OpenAI-Project header). A non-secret
+  //                               identifier — the report shows it in full.
+  //   OPENAI_EXPECTED_ENVIRONMENT development | preview | production. When set it
+  //                               must equal deploymentEnvironment() or the seam
+  //                               REFUSES to build the client: a record copied to
+  //                               the wrong environment fails closed before any call.
+  // Neither is a second name for the key. There is exactly one key name.
+  OPENAI_PROJECT_ID:           process.env.OPENAI_PROJECT_ID,
+  OPENAI_EXPECTED_ENVIRONMENT: process.env.OPENAI_EXPECTED_ENVIRONMENT,
+  ALCHEMY_API_KEY:      process.env.ALCHEMY_API_KEY,
   ETHERSCAN_API_KEY:    process.env.ETHERSCAN_API_KEY,
   HELIUS_API_KEY:       process.env.HELIUS_API_KEY,
 
@@ -54,17 +87,24 @@ const _e = {
   // when unset (still env-gated by RESEND_API_KEY like all mail).
   SECURITY_ALERTS_EMAIL: process.env.SECURITY_ALERTS_EMAIL,
 
-  // Platform Ops alert destination (OPS-5 S5). Optional — the alert evaluator
-  // emails the operator here on any breach. When UNSET there is no destination:
-  // alerts are still evaluated and recorded, but no mail is sent (an honest
-  // "skipped", surfaced in the Alerts widget) rather than sent to a guessed
-  // mailbox that might bounce. Still env-gated by RESEND_API_KEY like all mail.
+  // Platform Ops alert destination (OPS-5 S5). The alert evaluator emails the
+  // operator here on any breach. When UNSET there is no destination: alerts are
+  // still evaluated and recorded, but no mail is sent (an honest "skipped",
+  // surfaced in the Alerts widget) rather than sent to a guessed mailbox that
+  // might bounce. Still env-gated by RESEND_API_KEY like all mail.
+  //
+  // OPERATIONALIZATION P0 (2026-10-07): optional in dev/test/preview, REQUIRED
+  // in a production deployment (PROD_REQUIRED_KEYS below). An alert engine with
+  // no destination is a silent one, and "skipped" in a widget nobody opens is
+  // how the owner learns about breakage from a user.
   PLATFORM_ALERTS_EMAIL: process.env.PLATFORM_ALERTS_EMAIL,
 
-  // PO-3B — beta-request intake notification destination. Same honest-skip
-  // pattern as PLATFORM_ALERTS_EMAIL: null when unset ⇒ no operator notification
-  // is sent (the request is still recorded + reviewable in the queue). Never a
-  // hardcoded personal address.
+  // PO-3B — beta-request intake notification destination. Honest-skip: null
+  // when unset ⇒ no operator notification is sent (the request is still
+  // recorded + reviewable in the queue). Never a hardcoded personal address.
+  // Deliberately NOT production-required (unlike PLATFORM_ALERTS_EMAIL): the
+  // Growth & Revenue queue is the authority for intake and the mail is a
+  // convenience; a missed breach has no such second surface.
   BETA_REQUESTS_EMAIL: process.env.BETA_REQUESTS_EMAIL,
 
   // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Both optional — absent means
@@ -81,9 +121,18 @@ const _e = {
   CRON_SECRET:          process.env.CRON_SECRET,
   RATE_LIMIT_ENABLED:   process.env.RATE_LIMIT_ENABLED,
   RATE_LIMIT_SHADOW:    process.env.RATE_LIMIT_SHADOW,
+  // ARCH-003 — trust cf-connecting-ip only when Cloudflare fronts every request (lib/security/client-ip.ts).
+  CLIENT_IP_TRUST_CLOUDFLARE: process.env.CLIENT_IP_TRUST_CLOUDFLARE,
 
   DISABLE_SYSTEM_ADMIN: process.env.DISABLE_SYSTEM_ADMIN,
   NODE_ENV:             process.env.NODE_ENV,
+
+  // V26-ENV-1 — deployment-environment identity. `VERCEL` is "1" on every Vercel
+  // build/runtime; `VERCEL_ENV` is "production" | "preview" | "development".
+  // These are the ONLY authority on which deployment this is — NODE_ENV is not
+  // (see deploymentEnvironment() below for why that distinction is load-bearing).
+  VERCEL:               process.env.VERCEL,
+  VERCEL_ENV:           process.env.VERCEL_ENV,
 
   // V25-FINAL-2 (Area A) — error-monitoring (Sentry) DSN. PUBLISHABLE, not a
   // secret: it identifies the ingest project, not an auth credential, hence the
@@ -98,7 +147,6 @@ const _e = {
   // the merge-review surface fails CLOSED (no one is a member of "no space"), so
   // access is a deliberate SYSTEM_ADMIN act of creating the Space, setting this,
   // and granting membership. Config, not schema, per the ratified refinement.
-  MERCHANT_OPS_SPACE_ID: process.env.MERCHANT_OPS_SPACE_ID,
 
   // ── Price / FX vendor keys (A-track investment history + MC1 FX archive) ─────
   // Declared here for documentation + value-free env reporting. Each SDK/adapter
@@ -108,6 +156,11 @@ const _e = {
   // the integration gracefully (see the accessors below), never a boot failure.
   TIINGO_API_KEY:    process.env.TIINGO_API_KEY,    // securities price vendor (lib/prices/registry.ts)
   COINGECKO_API_KEY: process.env.COINGECKO_API_KEY, // BTC/USD daily close backfill (lib/crypto/btc-price.ts)
+  // V26-PRICE-4C — days of history the CONFIGURED CoinGecko tier serves. Absent
+  // ⇒ the Demo default (365). Possession of a key does NOT imply a paid plan, so
+  // a paid deployment must set this to match its tier; leaving it unset makes the
+  // adapter advertise less capability than it has, never more.
+  COINGECKO_HISTORY_DAYS: process.env.COINGECKO_HISTORY_DAYS,
   OXR_APP_ID:        process.env.OXR_APP_ID,        // primary FX provider (lib/fx/registry.ts)
 
   // ── Investment-history pipeline kill switches (A1/A3/A4/A9 + price capture) ──
@@ -121,14 +174,106 @@ const _e = {
   SECURITY_PRICES_ENABLED:           process.env.SECURITY_PRICES_ENABLED,
   INVESTMENT_IMPORTS_ENABLED:        process.env.INVESTMENT_IMPORTS_ENABLED,
 
-  // ── AI output enforcement / diagnostics ─────────────────────────────────────
-  // AI_OUTPUT_VALIDATION_MODE: shadow | annotate | block; unset/unrecognized ⇒
-  // 'annotate' (the live KD-2 default) at app/api/ai/chat/route.ts. FLOWTYPE_SHADOW
-  // toggles an optional non-PII flow-distribution log line only (no data-path
-  // effect); unset ⇒ "off". Both read directly at their sites — mirrored for docs.
-  AI_OUTPUT_VALIDATION_MODE: process.env.AI_OUTPUT_VALIDATION_MODE,
+  // ⚠️ QUANTITY_AUTHORITY_MODE — A MONEY SWITCH, not an ordinary feature flag
+  // (V26-QUANTITY-1G; declared here by REVIEW-3 — it was previously undeclared).
+  // Read at call time by lib/investments/quantity-authority.ts
+  // `quantityAuthorityMode()`, which IS wired into historical valuation
+  // (lib/investments/valuation.ts). Values:
+  //   unset / "off" / anything unrecognised → off (byte-identical valuation;
+  //     a typo must never silently enable an experimental money path)
+  //   "compare" → both quantity replays computed, LEGACY used, deltas ledgered
+  //   "adopt"   → the quantity-timeline authority's quantity is USED wherever
+  //     sufficiently supported — this REPOINTS historical quantity replay, i.e.
+  //     it changes money values. Never set in production without the
+  //     compare-mode ledger having been reviewed first.
+  // validateEnv() warns loudly on any non-off value; see .env.example.
+  QUANTITY_AUTHORITY_MODE: process.env.QUANTITY_AUTHORITY_MODE,
+
+  // ── AI ───────────────────────────────────────────────────────────────────
+  //
+  // ⚠️ SIX AI FLAGS WERE REMOVED HERE BY THE AI CONVERSATION RESET, because the
+  // machinery each one gated was deleted rather than switched off:
+  //   AI_OUTPUT_VALIDATION_MODE  the prose numerical sweep over model replies
+  //   AI_ASSESSMENT_GUARD_MODE   the assessment-contradiction guard + repair
+  //   AI_FORECAST_GUARD_MODE     the forecast figure licence + redaction
+  //   AI_ANSWER_MODE             the typed answer boundary
+  //   AI_REASONING_PATH          the legacy/new planner strangler
+  //   AI_PROMPT_SHAPE            the prompt-shape experiment
+  // A flag whose code is gone is not a kill switch, it is a lie in the
+  // environment surface. See docs/plans/AI-CONVERSATION-RESET.md.
+  //
+  // FLOWTYPE_SHADOW toggles an optional non-PII flow-distribution log line only
+  // (no data-path effect); unset ⇒ "off". Read directly at its site — mirrored
+  // here for docs.
   FLOWTYPE_SHADOW:           process.env.FLOWTYPE_SHADOW,
+  // PROJECTION-1 — the evidence-based cash projection beside the licensed
+  // forecast, in lib/ai/forecast/assemble.ts. Any value except the literal 'off'
+  // ⇒ ON, which is the shipped product decision.
+  //
+  // ⚠️ KEPT DELIBERATELY THROUGH THE RESET. It is not conversation machinery: it
+  // selects between two DETERMINISTIC results of the forecast engine, both of
+  // which are computed, tested and correct. Turning it off restores the prior
+  // contract exactly; nothing dormant hides behind either setting.
+  AI_FORECAST_PROJECTION:   process.env.AI_FORECAST_PROJECTION,
+  // The chat tier used by lib/ai/provider.ts. UNSET ⇒ 'gpt-4o-mini', which is
+  // what the provider has always defaulted to, so an unset environment is
+  // unchanged. The provider boundary survived the reset; the conversation layer
+  // that called it did not.
+  AI_CHAT_MODEL:            process.env.AI_CHAT_MODEL,
 } as const;
+
+// ── Deployment-environment classification (V26-ENV-1) ─────────────────────────
+
+/** The deployment environments this app recognises. */
+export type DeploymentEnvironment = "production" | "preview" | "development";
+
+/**
+ * THE TRAP THIS EXISTS TO CLOSE: **Vercel builds Preview deployments with
+ * `NODE_ENV=production`.** Every production-only guard in this file used to key
+ * on `NODE_ENV === "production"`, so a Preview deployment was classified as
+ * Production and had to satisfy every production requirement. Two consequences,
+ * both observed in the wild:
+ *
+ *   - `PROD_REQUIRED_KEYS` were enforced on Preview — which is why Preview was
+ *     made to carry a production-only NEXT_PUBLIC_SENTRY_DSN just to boot.
+ *   - The Plaid production guard fired on Preview, where `PLAID_ENV="sandbox"`
+ *     is the CORRECT setting. It throws from `validateEnv()`, which runs inside
+ *     the instrumentation `register()` hook — so the Preview server never
+ *     booted and EVERY route (not just Plaid) failed with "An error occurred
+ *     while loading instrumentation hook". Preview was down completely.
+ *
+ * `VERCEL_ENV` is the authority on Vercel. `NODE_ENV` is a BUILD-MODE signal
+ * ("is this an optimised build?"), NOT a deployment environment, and must never
+ * be used as one on Vercel.
+ *
+ * Outside Vercel (local dev, CI, tests) there is no `VERCEL_ENV`, so the
+ * original `NODE_ENV` behaviour is preserved exactly.
+ *
+ * NOTE on the `VERCEL=1` + `VERCEL_ENV` unset edge: this classifies as
+ * "development" (non-production), matching the specified contract. Vercel always
+ * sets `VERCEL_ENV` on a real deployment, so this state is not reachable there.
+ */
+export function deploymentEnvironment(): DeploymentEnvironment {
+  if (_e.VERCEL === "1") {
+    if (_e.VERCEL_ENV === "production") return "production";
+    if (_e.VERCEL_ENV === "preview")    return "preview";
+    return "development";
+  }
+  return _e.NODE_ENV === "production" ? "production" : "development";
+}
+
+/**
+ * The single classifier every production-only guard in this file consults.
+ * Equivalent to:
+ *
+ *   VERCEL === "1" ? VERCEL_ENV === "production" : NODE_ENV === "production"
+ *
+ * Expressed via `deploymentEnvironment()` so the boolean and the three-way
+ * classification can never disagree.
+ */
+export function isProductionDeployment(): boolean {
+  return deploymentEnvironment() === "production";
+}
 
 // ── Required variable getter ──────────────────────────────────────────────────
 
@@ -151,7 +296,9 @@ const REQUIRED_KEYS: (keyof typeof _e)[] = [
   "ENCRYPTION_KEY",
 ];
 
-// OPS-1 S6 — required in production only. Dev/test keep working without them:
+// OPS-1 S6 — required in a PRODUCTION DEPLOYMENT only (isProductionDeployment(),
+// i.e. VERCEL_ENV="production" on Vercel — NOT merely NODE_ENV="production", which
+// is also true on Preview). Dev/test/preview keep working without them:
 //   - NEXTAUTH_URL / NEXT_PUBLIC_APP_URL: auto-detected / localhost in dev,
 //     but production email links and auth redirects must never guess.
 //   - RESEND_API_KEY: without it lib/email/send.ts silently captures instead
@@ -167,8 +314,20 @@ const PROD_REQUIRED_KEYS: (keyof typeof _e)[] = [
   // V25-FINAL-2 (Area A) — production error monitoring is a pre-beta requirement
   // (docs/operations/production-readiness.md). Without a DSN a prod deploy would
   // run BLIND to serious failures, so boot fails fast rather than start silently
-  // unmonitored. Dev/test/preview do not require it (SDK simply stays disabled).
+  // unmonitored.
+  //
+  // V26-ENV-1: dev/test/preview genuinely do not require it now (the SDK simply
+  // stays disabled). Before the deployment-aware classifier this comment was
+  // FALSE — Preview matched NODE_ENV="production" and so was forced to carry a
+  // production-only DSN just to pass boot validation.
   "NEXT_PUBLIC_SENTRY_DSN",
+  // OPERATIONALIZATION P0 (2026-10-07) — the alert destination. Without it the
+  // evaluate-alerts job records every breach as deliveryStatus "skipped" and
+  // nobody is told; the Oct 4 Brief outage was reported by a user for exactly
+  // that reason. Production has NO such record today, so this is a CONFIG ACT
+  // before the next Production deploy (docs/operations/production-readiness-
+  // checklist.md §1), not a code change — boot refuses to start silent.
+  "PLATFORM_ALERTS_EMAIL",
 ];
 
 // ── Structured report (PO1.2 — additive; names only, never values) ─────────────
@@ -191,10 +350,22 @@ export interface EnvKeyReport {
 /** The structured, value-free environment report surfaced by the ops_env_status
  *  widget. `ok` is true iff nothing is a hard `fail`. */
 export interface EnvReport {
+  /** The build mode (NODE_ENV). Kept for the record; on Vercel Preview it reads "production". */
   nodeEnv: string;
+  /** PLATFORM OPS — the DEPLOYMENT environment (`deploymentEnvironment()`), the
+   *  value an operator means by "environment". */
+  deploymentEnv: DeploymentEnvironment;
   ok:      boolean;
   counts:  { pass: number; warn: number; fail: number };
   keys:    EnvKeyReport[];
+  /**
+   * OPENAI ENVIRONMENT SEPARATION — the value-free OpenAI configuration facts:
+   * whether the key is set (presence only) and its SHAPE, the project pin
+   * (pinned ⇒ the `proj_…` id in full, a non-secret identifier), and the
+   * expected-environment guard. Never the key; never a value that failed
+   * validation. The same facts the credential seam refuses on.
+   */
+  openAi:  OpenAiConfigurationFacts;
 }
 
 /**
@@ -205,7 +376,9 @@ export interface EnvReport {
  * required/prod-required/RATE_LIMIT conditions below.
  */
 export function getEnvReport(): EnvReport {
-  const isProd = _e.NODE_ENV === "production";
+  // V26-ENV-1 — deployment-aware, NOT NODE_ENV. On a Preview deployment the
+  // prod-only keys are a "warn" (unset is fine), never a "fail".
+  const isProd = isProductionDeployment();
   const keys: EnvKeyReport[] = [];
 
   for (const k of REQUIRED_KEYS) {
@@ -232,6 +405,18 @@ export function getEnvReport(): EnvReport {
     keys.push({ key: "RATE_LIMIT_ENABLED", status: "pass", scope: "optional" });
   }
 
+  // QUANTITY_AUTHORITY_MODE — a money switch (see the snapshot comment). Never
+  // fatal, but any non-off value is surfaced as a warn so an experimental
+  // quantity replay can never be silently live.
+  const qam = _e.QUANTITY_AUTHORITY_MODE;
+  if (qam === undefined || qam === "" || qam === "off") {
+    keys.push({ key: "QUANTITY_AUTHORITY_MODE", status: "pass", scope: "optional" });
+  } else if (qam === "compare" || qam === "adopt") {
+    keys.push({ key: "QUANTITY_AUTHORITY_MODE", status: "warn", scope: "optional", note: `quantity authority is "${qam}" — experimental quantity replay is active` });
+  } else {
+    keys.push({ key: "QUANTITY_AUTHORITY_MODE", status: "warn", scope: "optional", note: "unrecognised value — treated as off" });
+  }
+
   // Optional price/FX vendor keys — never fatal. Represented in the report so the
   // ops surface shows whether each external integration is configured. Absent is a
   // warn ("integration disabled / graceful degrade"), never a fail. Names only.
@@ -243,10 +428,43 @@ export function getEnvReport(): EnvReport {
     );
   }
 
+  // OPENAI ENVIRONMENT SEPARATION — the key (presence only), the project pin and
+  // the expected-environment guard. A state the credential seam REFUSES on is a
+  // "fail" here, because the next AI call will fail; it is never a boot throw
+  // (validateEnv below warns loudly instead), because an AI misconfiguration
+  // must not take every route down the way the Preview instrumentation throw
+  // once did. Names, states and two validated identifiers only.
+  const openAi = describeOpenAiConfiguration(_e, deploymentEnvironment());
+  keys.push(
+    openAi.keyConfigured
+      ? { key: "OPENAI_API_KEY", status: "pass", scope: "optional", note:
+          openAi.keyKind === "service-account" ? "service-account key (project-scoped)"
+          : openAi.keyKind === "project" ? "project key (project-scoped)"
+          : openAi.keyKind === "legacy" ? "legacy user key — unpinned usage lands in the key's default project"
+          : "unrecognised key shape" }
+      : { key: "OPENAI_API_KEY", status: "warn", scope: "optional", note: "optional vendor key — AI disabled" },
+  );
+  keys.push(
+    openAi.projectPin.state === "pinned"
+      ? { key: "OPENAI_PROJECT_ID", status: "pass", scope: "optional", note: `pinned to ${openAi.projectPin.projectId}` }
+      : openAi.projectPin.state === "unpinned"
+        ? { key: "OPENAI_PROJECT_ID", status: "warn", scope: "optional", note: "unpinned — usage lands in the key's own project" }
+        : { key: "OPENAI_PROJECT_ID", status: "fail", scope: "optional", note: "not a proj_ id — the credential seam refuses every AI call" },
+  );
+  keys.push(
+    openAi.expectedEnvironment.state === "match"
+      ? { key: "OPENAI_EXPECTED_ENVIRONMENT", status: "pass", scope: "optional", note: `guard matches (${openAi.expectedEnvironment.expected})` }
+      : openAi.expectedEnvironment.state === "unset"
+        ? { key: "OPENAI_EXPECTED_ENVIRONMENT", status: "warn", scope: "optional", note: "guard unset — a record copied from another environment would be accepted" }
+        : openAi.expectedEnvironment.state === "mismatch"
+          ? { key: "OPENAI_EXPECTED_ENVIRONMENT", status: "fail", scope: "optional", note: `guard says ${openAi.expectedEnvironment.expected} but this is ${openAi.expectedEnvironment.actual} — the credential seam refuses every AI call` }
+          : { key: "OPENAI_EXPECTED_ENVIRONMENT", status: "fail", scope: "optional", note: "unrecognised value — the credential seam refuses every AI call" },
+  );
+
   const counts = { pass: 0, warn: 0, fail: 0 };
   for (const k of keys) counts[k.status]++;
 
-  return { nodeEnv: _e.NODE_ENV ?? "development", ok: counts.fail === 0, counts, keys };
+  return { nodeEnv: _e.NODE_ENV ?? "development", deploymentEnv: deploymentEnvironment(), ok: counts.fail === 0, counts, keys, openAi };
 }
 
 /**
@@ -260,7 +478,10 @@ export function getEnvReport(): EnvReport {
  * needs the report without risking a throw uses `getEnvReport()` instead.
  */
 export function validateEnv(): EnvReport {
-  const isProd  = _e.NODE_ENV === "production";
+  // V26-ENV-1 — every production-only guard below keys on the DEPLOYMENT
+  // environment, not NODE_ENV (which Vercel also sets to "production" on
+  // Preview). See deploymentEnvironment() for the failure this prevents.
+  const isProd  = isProductionDeployment();
   const missing = [
     ...REQUIRED_KEYS.filter((k) => !_e[k]),
     ...(isProd ? PROD_REQUIRED_KEYS.filter((k) => !_e[k]) : []),
@@ -281,8 +502,14 @@ export function validateEnv(): EnvReport {
   // (both credentials present ⇒ real ingestion is expected), PLAID_ENV must be an
   // explicit "production": otherwise the app talks to sandbox with real users
   // (PLAID_ENV unset defaults to "sandbox" at the accessor), or hits an unguarded
-  // 500 on first call. Fail fast at boot instead. Dev/preview/test never reach
-  // this branch (isProd gate) and keep using sandbox freely.
+  // 500 on first call. Fail fast at boot instead.
+  //
+  // V26-ENV-1: dev/preview/test genuinely never reach this branch now, because
+  // the gate is isProductionDeployment(). The previous comment claimed the same
+  // thing while the gate was NODE_ENV-based — and it was FALSE: Vercel Preview
+  // builds set NODE_ENV="production", so Preview (correctly running
+  // PLAID_ENV="sandbox") threw here at boot and took the ENTIRE deployment down,
+  // every route, not just Plaid. Preview keeps using sandbox freely.
   if (isProd && _e.PLAID_CLIENT_ID && _e.PLAID_SECRET && _e.PLAID_ENV !== "production") {
     const shown = _e.PLAID_ENV ? `"${_e.PLAID_ENV}"` : "unset (defaults to sandbox)";
     throw new Error(
@@ -306,6 +533,48 @@ export function validateEnv(): EnvReport {
   if (rl !== undefined && rl !== "" && rl !== "true" && rl !== "false") {
     console.warn(
       `[env] RATE_LIMIT_ENABLED has unexpected value ${JSON.stringify(rl)} — expected "true" or "false".`
+    );
+  }
+
+  // QUANTITY_AUTHORITY_MODE (REVIEW-3) — a MONEY switch: "adopt" repoints
+  // historical quantity replay inside valuation (lib/investments/
+  // quantity-authority.ts). Never fatal (the reader treats any unrecognised
+  // value as off), but a non-off value must never be silently live.
+  const qam = _e.QUANTITY_AUTHORITY_MODE;
+  if (qam === "compare" || qam === "adopt") {
+    console.warn(
+      `[env] QUANTITY_AUTHORITY_MODE="${qam}" — the experimental quantity-timeline ` +
+      `authority is ${qam === "adopt" ? "ADOPTED into historical valuation (money values can change)" : "computed in compare mode (legacy values still used)"}.` +
+      (isProd ? " This is a PRODUCTION deployment — confirm this is deliberate." : "")
+    );
+  } else if (qam !== undefined && qam !== "" && qam !== "off") {
+    console.warn(
+      `[env] QUANTITY_AUTHORITY_MODE has unrecognised value ${JSON.stringify(qam)} — ` +
+      `treated as "off" (expected "off" | "compare" | "adopt").`
+    );
+  }
+
+  // OPENAI ENVIRONMENT SEPARATION — a pin or guard the credential seam will
+  // refuse on is said LOUDLY at boot, never thrown: AI refusing is the correct
+  // fail-closed outcome, and an instrumentation throw would take every route
+  // down with it (the Preview-boot trap above). Names and states only.
+  const openAi = describeOpenAiConfiguration(_e, deploymentEnvironment());
+  if (openAi.projectPin.state === "misconfigured") {
+    console.warn(
+      "[env] OPENAI_PROJECT_ID is set but is not an OpenAI project id (expected proj_ followed by " +
+      "letters and digits). Every AI call will be refused by the credential seam until it is fixed or removed.",
+    );
+  }
+  if (openAi.expectedEnvironment.state === "invalid") {
+    console.warn(
+      "[env] OPENAI_EXPECTED_ENVIRONMENT has an unrecognised value (expected development | preview | " +
+      "production). Every AI call will be refused by the credential seam until it is fixed or removed.",
+    );
+  } else if (openAi.expectedEnvironment.state === "mismatch") {
+    console.warn(
+      `[env] OPENAI_EXPECTED_ENVIRONMENT says "${openAi.expectedEnvironment.expected}" but this is a ` +
+      `"${openAi.expectedEnvironment.actual}" deployment — this OpenAI record belongs to another environment. ` +
+      "Every AI call will be refused by the credential seam until each environment carries its own record.",
     );
   }
 
@@ -337,12 +606,18 @@ export const env = {
   get PLAID_ENV()       { return (_e.PLAID_ENV ?? "sandbox") as "sandbox" | "development" | "production"; },
 
   // ── AI ────────────────────────────────────────────────────────────────────
-  // NOTE: lib/ai/provider.ts (the only OpenAI SDK import site) reads
-  // process.env.OPENAI_API_KEY directly so it can fail loudly at call time;
-  // this accessor exists for feature-flag checks, not for the SDK client.
+  // NOTE: lib/ai/openai-credentials.ts (the credential seam behind
+  // lib/ai/provider.ts, the only OpenAI SDK import site) reads
+  // process.env.OPENAI_API_KEY at call time so it can fail loudly at the first
+  // call; this accessor exists for feature-flag checks, not for the SDK client.
   get OPENAI_API_KEY()  { return _e.OPENAI_API_KEY; },
 
   // ── Crypto ────────────────────────────────────────────────────────────────
+  // NOTE: the acquisition adapters read process.env directly (lib/crypto/alchemy.ts),
+  // the same pattern lib/ai/provider.ts uses, so a missing key fails at the call
+  // site with a staged refusal rather than at import. These accessors exist for
+  // startup validation and the VALUE-FREE env report — never for the SDK path.
+  get ALCHEMY_API_KEY()    { return _e.ALCHEMY_API_KEY; },
   get ETHERSCAN_API_KEY()  { return _e.ETHERSCAN_API_KEY; },
   get HELIUS_API_KEY()     { return _e.HELIUS_API_KEY; },
 
@@ -382,61 +657,45 @@ export const env = {
 
   // ── Merchant Operations (MI2 S2) ────────────────────────────────────────────
   /** The designated Merchant Operations Space id, or null when unset (gate fails closed). */
-  get merchantOpsSpaceId() { return _e.MERCHANT_OPS_SPACE_ID ?? null; },
 
   // ── Price / FX vendor keys ──────────────────────────────────────────────────
   // NOTE: the price/FX registries read process.env directly at their call sites;
   // these accessors are for feature-flag checks and env reporting, not the SDKs.
   get TIINGO_API_KEY()    { return _e.TIINGO_API_KEY; },
   get COINGECKO_API_KEY() { return _e.COINGECKO_API_KEY; },
+  get COINGECKO_HISTORY_DAYS() { return _e.COINGECKO_HISTORY_DAYS; },
   get OXR_APP_ID()        { return _e.OXR_APP_ID; },
 
-  // ── Investment-history pipeline enablement (documentation mirror) ────────────
-  // Strict "true" semantics, matching each pipeline reader. These do NOT gate the
-  // pipeline (the readers own that) — they answer "is the switch on?" for reports.
-  get isInvestmentObservationsEnabled()   { return _e.INVESTMENT_OBSERVATIONS_ENABLED === "true"; },
-  get isInvestmentEventsEnabled()         { return _e.INVESTMENT_EVENTS_ENABLED === "true"; },
-  get isInvestmentReconstructionEnabled() { return _e.INVESTMENT_RECONSTRUCTION_ENABLED === "true"; },
-  get isWealthRegenerationEnabled()       { return _e.WEALTH_REGENERATION_ENABLED === "true"; },
-  get isSecurityPriceCaptureEnabled()     { return _e.SECURITY_PRICES_ENABLED === "true"; },
-  get isInvestmentImportsEnabled()        { return _e.INVESTMENT_IMPORTS_ENABLED === "true"; },
-  /** Securities price vendor (Tiingo) is available when the key is set (see lib/prices/registry.ts). */
-  get isSecurityPriceVendorEnabled()      { return !!_e.TIINGO_API_KEY; },
-  /** BTC daily-close backfill is available when the CoinGecko key is set. */
-  get isCryptoPriceVendorEnabled()        { return !!_e.COINGECKO_API_KEY; },
-  /** Primary FX provider (Open Exchange Rates) is available when OXR_APP_ID is set;
-   *  absent falls back to the keyless Frankfurter/ECB failover. */
-  get isFxPrimaryEnabled()                { return !!_e.OXR_APP_ID; },
-
-  // ── AI output enforcement mode (documentation mirror) ────────────────────────
-  /** shadow | annotate | block. Unset/unrecognized ⇒ 'annotate' (live default). */
-  get aiOutputValidationMode() {
-    const raw = (_e.AI_OUTPUT_VALIDATION_MODE ?? "annotate").toLowerCase();
-    return raw === "shadow" || raw === "block" ? raw : "annotate";
-  },
-
   // ── Feature flags ─────────────────────────────────────────────────────────
+  // REVIEW-3 flag hygiene: the accessors below are the ONLY flag accessors this
+  // module carries, because they are the only ones with consumers. Every other
+  // flag's truth lives at its own gate function, which reads process.env at
+  // call time (see the FLAG PATTERN note in the module header) and is
+  // documented in .env.example. Deleted here (all were consumer-less duplicate
+  // authorities): isAiEnabled, isEthEnabled, isSolanaEnabled, isCryptoEnabled,
+  // isEmailEnabled, isCaptchaEnabled, aiOutputValidationMode,
+  // isInvestment{Observations,Events,Reconstruction,Imports}Enabled,
+  // isWealthRegenerationEnabled, isSecurityPriceCaptureEnabled,
+  // isSecurityPriceVendorEnabled, isCryptoPriceVendorEnabled, isFxPrimaryEnabled.
   /** Plaid integration is available when both credentials are set. */
   get isPlaidEnabled()    { return !!_e.PLAID_CLIENT_ID && !!_e.PLAID_SECRET; },
-  /** AI chat/advice is available when the OpenAI key is set (see lib/ai/provider.ts). */
-  get isAiEnabled()       { return !!_e.OPENAI_API_KEY; },
-  /** Ethereum on-chain data is available when the Etherscan key is set. */
-  get isEthEnabled()      { return !!_e.ETHERSCAN_API_KEY; },
-  /** Solana on-chain data is available when the Helius key is set. */
-  get isSolanaEnabled()   { return !!_e.HELIUS_API_KEY; },
-  /** Either crypto network is available. */
-  get isCryptoEnabled()   { return !!_e.ETHERSCAN_API_KEY || !!_e.HELIUS_API_KEY; },
-  /** Real email delivery is available when the Resend key is set (see lib/email/providers/resend.ts). */
-  get isEmailEnabled()    { return !!_e.RESEND_API_KEY; },
-  /** CAPTCHA verification is active when the Turnstile secret is set (see lib/captcha.ts).
-   *  When false, verifyCaptchaToken skips and returns true (dev/test/unconfigured). */
-  get isCaptchaEnabled()  { return !!_e.TURNSTILE_SECRET_KEY; },
   /** V25-FINAL-2 — error monitoring (Sentry) is active when the DSN is set. Production
-   *  requires it (PROD_REQUIRED_KEYS); the SDK stays disabled without it elsewhere. */
+   *  requires it (PROD_REQUIRED_KEYS); the SDK stays disabled without it elsewhere.
+   *  Kept (despite no runtime consumer) as the discoverability contract pinned by
+   *  lib/monitoring/sentry-options.test.ts. */
   get isErrorMonitoringConfigured() { return !!_e.NEXT_PUBLIC_SENTRY_DSN; },
 
   // ── Runtime ───────────────────────────────────────────────────────────────
+  /** Next.js BUILD mode — "am I running `next dev`?". Deliberately still a
+   *  NODE_ENV question: it asks about the build, not the deployment. */
   get isDev()    { return _e.NODE_ENV === "development"; },
-  get isProd()   { return _e.NODE_ENV === "production"; },
+  /** V26-ENV-1 — "is this a PRODUCTION DEPLOYMENT?". Deployment-aware: on Vercel
+   *  this is VERCEL_ENV="production", so a Preview deployment reports false even
+   *  though Vercel builds it with NODE_ENV="production". */
+  get isProd()   { return isProductionDeployment(); },
+  /** Raw NODE_ENV (build mode). For "which deployment is this?" use
+   *  `deploymentEnv` — on Preview, nodeEnv is "production". */
   get nodeEnv()  { return _e.NODE_ENV ?? "development"; },
+  /** "production" | "preview" | "development" — the deployment environment. */
+  get deploymentEnv(): DeploymentEnvironment { return deploymentEnvironment(); },
 } as const;

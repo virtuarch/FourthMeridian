@@ -15,6 +15,14 @@
  * covered by source tripwires here plus the engine-wide import-graph guard
  * in engine.test.ts; its runtime behavior is a thin map over
  * getAccountsWithVisibility(), whose own redaction is KD-19-tested.
+ *
+ * Consolidated file: absorbs liquidity.mc1.test.ts (MC1 Phase 3 Slice 5 era)
+ * — the liquidity-lens conversion equivalence gates (F-3), mirroring the
+ * classifier gates (plan D-10): context-less byte-identical kill switch,
+ * pure-USD identity, non-USD conversion at the latest close, miss/null-
+ * residue honesty, verdict labels following the context target. That file
+ * used a silent passed-counter harness; converted to this file's
+ * check()/failures style.
  */
 
 import { readFileSync } from "fs";
@@ -27,6 +35,10 @@ import {
   LIQUIDITY_LENS_VERSION,
   type LiquidityAccountRow,
 } from "./lenses/liquidity.core";
+import { identityContext } from "@/lib/money/convert";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
 import type { ComputeOptions, PerspectiveScope } from "./types";
 
 let failures = 0;
@@ -57,7 +69,9 @@ function main(): void {
   const fullRows: LiquidityAccountRow[] = [
     row({ id: "fa_chk", type: "checking",   balance: 10_000 }),
     row({ id: "fa_sav", type: "savings",    balance: 8_400, lastUpdated: "2026-06-28T00:00:00.000Z" }),
-    row({ id: "fa_inv", type: "investment", balance: 40_000 }),
+    // A KNOWN brokerage: an investment with no provider subtype is "unverified"
+    // (2026-10-07, lib/liquidity/access.test.ts), never raisable within days.
+    row({ id: "fa_inv", type: "investment", providerSubtype: "brokerage", balance: 40_000 }),
     row({ id: "fa_cry", type: "crypto",     balance: 12_000 }),
     row({ id: "fa_oth", type: "other",      balance: 300_000 }),
     row({ id: "fa_cc",  type: "debt",       balance: 4_000, creditLimit: 10_000 }),
@@ -71,6 +85,9 @@ function main(): void {
   check("illiquid = 300,000", r1.metrics.find((m) => m.id === "illiquid")?.value === 300_000);
   check("available credit = 6,000 (limit 10k − |−4k|)",
     r1.metrics.find((m) => m.id === "availableCredit")?.value === 6_000);
+  // MONEY-PRECISION-2 — a VERDICT is a SENTENCE, so its figures are whole dollars
+  // (formatCurrencyWhole). Structured money inside a Space keeps its cents; the
+  // template, its branches and its arithmetic are unchanged either way.
   check("verdict is the exact deterministic template",
     r1.verdict === "About $18,400 is available as cash now, and roughly $52,000 more could be raised by selling investments.",
     r1.verdict);
@@ -82,9 +99,9 @@ function main(): void {
     r1.provenance.dataAsOf === "2026-06-28T00:00:00.000Z");
   check("tierCounts all-full", JSON.stringify(r1.provenance.tierCounts) === JSON.stringify({ full: 6, balanceOnly: 0, summaryOnly: 0 }));
   check("no redactions when nothing withheld", r1.provenance.redactions.length === 0);
-  check("marketable assumptions present (before-costs + retirement)",
+  check("marketable before-costs assumption present; retirement is now DISTINGUISHED, so its disclaimer is gone",
     r1.assumptions.some((a) => a.id === "marketable-before-costs") &&
-    r1.assumptions.some((a) => a.id === "retirement-not-distinguished"));
+    !r1.assumptions.some((a) => a.id === "retirement-not-distinguished"));
   check("credit-not-liquidity assumption present",
     r1.assumptions.some((a) => a.id === "credit-not-liquidity"));
 
@@ -156,7 +173,7 @@ function main(): void {
     computeLiquidity(SCOPE, OPTS, [row({ id: "c", balance: 500 })]).verdict ===
     "About $500 is available as cash now.");
   check("marketable-only verdict branch",
-    computeLiquidity(SCOPE, OPTS, [row({ id: "i", type: "investment", balance: 500 })]).verdict ===
+    computeLiquidity(SCOPE, OPTS, [row({ id: "i", type: "investment", providerSubtype: "brokerage", balance: 500 })]).verdict ===
     "No cash on hand, but roughly $500 could be raised by selling investments.");
 
   // ── 6. Source tripwires (name-freedom at the adapter boundary) ───────────
@@ -169,6 +186,108 @@ function main(): void {
     !/account\.(name|institution|displayName|officialName|plaidName)/.test(bindSrc));
   check("adapter reads through getAccountsWithVisibility (the KD-19 path)",
     /getAccountsWithVisibility/.test(bindSrc) && !/from ["']@\/lib\/db["']/.test(bindSrc));
+
+  // ═══ 7. Merged from liquidity.mc1.test.ts (MC1 Phase 3 Slice 5 era) ──────
+  //
+  // Liquidity-lens conversion equivalence gates (F-3), mirroring the
+  // classifier gates (plan D-10): context-less = byte-identical kill switch;
+  // pure-USD through a real context = numerically identical with
+  // estimated:false; non-USD converts at the latest close; miss/null-residue
+  // degrade honestly. Pure fixtures — no DB, no network.
+  console.log("7. MC1 conversion gates");
+  {
+    const NOW = new Date("2026-07-05T12:00:00Z");
+    const mc1Scope: PerspectiveScope = { spaceId: "s1", userId: "u1" } as PerspectiveScope;
+    const mc1Opts: ComputeOptions = { now: () => NOW } as ComputeOptions;
+    const CLOSE = minusDaysISO(toISODateUTC(NOW), 1); // the valuation date the lens derives
+
+    const mc1Row = (id: string, type: string, balance: number, currency?: string | null, extra: Partial<LiquidityAccountRow> = {}): LiquidityAccountRow => ({
+      id, type, balance, currency,
+      lastUpdated: "2026-07-04T00:00:00Z",
+      visibilityLevel: "FULL",
+      ...extra,
+    });
+
+    const metric = (r: ReturnType<typeof computeLiquidity>, id: string) =>
+      r.metrics.find((m) => m.id === id)?.value;
+
+    const usdRows: LiquidityAccountRow[] = [
+      mc1Row("a", "checking",   1200.55, "USD"),
+      mc1Row("b", "savings",    5000,    "USD"),
+      mc1Row("c", "investment", 30000,   "USD"),
+      mc1Row("d", "other",      90000,   "USD"),
+      mc1Row("e", "debt",        450,    "USD", { creditLimit: 5000 }),
+    ];
+
+    // kill switch: context-less result byte-identical to pre-flip shape
+    {
+      const r = computeLiquidity(mc1Scope, mc1Opts, usdRows);
+      check("kill switch: no estimated field without a context", !("estimated" in r));
+      check("kill switch: raw sums intact", metric(r, "cashNow") === 6200.55 && metric(r, "availableCredit") === 4550);
+    }
+
+    // pure-USD through identity/real-USD context: numerically identical
+    {
+      const withCtx = computeLiquidity(mc1Scope, mc1Opts, usdRows, identityContext(DEFAULT_DISPLAY_CURRENCY));
+      const without = computeLiquidity(mc1Scope, mc1Opts, usdRows);
+      check("all-USD: cash/marketable/illiquid/credit identical",
+        metric(withCtx, "cashNow") === metric(without, "cashNow") &&
+        metric(withCtx, "marketable") === metric(without, "marketable") &&
+        metric(withCtx, "illiquid") === metric(without, "illiquid") &&
+        metric(withCtx, "availableCredit") === metric(without, "availableCredit"));
+      check("all-USD: estimated false", withCtx.estimated === false);
+      check("all-USD: verdict identical", withCtx.verdict === without.verdict);
+    }
+
+    // non-USD converts at the latest close; miss/null degrade honestly
+    {
+      const realCtx: ConversionContext = {
+        target: "USD",
+        resolve: (from, dateISO) =>
+          from === "EUR" && dateISO === CLOSE
+            ? { kind: "rate", rate: 1.25, requestedDateISO: dateISO, effectiveDates: { from: dateISO, to: dateISO }, staleness: "exact" }
+            : { kind: "miss", quote: from, requestedDateISO: dateISO },
+      };
+      const mixed: LiquidityAccountRow[] = [
+        mc1Row("a", "checking", 100,  "EUR"),               // converts: 125
+        mc1Row("b", "checking", 50,   "SAR"),               // miss → UNAVAILABLE, excluded to 0
+        mc1Row("c", "savings",  10),                        // currency undefined → null-residue passthrough, kept
+        mc1Row("d", "debt",      100, "EUR", { creditLimit: 1100 }), // headroom 1000 EUR → 1250 USD
+      ];
+      const r = computeLiquidity(mc1Scope, mc1Opts, mixed, realCtx);
+      // V25-FINAL-1 — the SAR checking (50) is EXCLUDED (no rate), never blended as
+      // native-labelled-USD; the null-residue savings (10) still passes through.
+      check("non-USD: EUR converts, SAR excluded, null-residue kept (100×1.25 + 0 + 10 = 135)",
+        metric(r, "cashNow") === 135);
+      check("non-USD: credit headroom converts in native currency (1000 EUR → 1250)",
+        metric(r, "availableCredit") === 1250);
+      check("non-USD: miss + null-residue taint → estimated true", r.estimated === true);
+
+      const exactOnly = computeLiquidity(mc1Scope, mc1Opts, [mc1Row("a", "checking", 100, "EUR")], realCtx);
+      check("non-USD: exact-only conversion → estimated false", exactOnly.estimated === false);
+    }
+
+    // QA Q1: verdict labels follow the context target
+    {
+      // Identity context with a EUR target over EUR-native rows: values pass
+      // through as EUR amounts, so the verdict's embedded formatting must be €.
+      const eurCtx = identityContext("EUR");
+      const r = computeLiquidity(mc1Scope, mc1Opts, [mc1Row("a", "checking", 1200, "EUR")], eurCtx);
+      check("verdict label: EUR-target verdict formats in €", (r.verdict ?? "").includes("€"));
+      check("verdict label: no $ leaks into a EUR-target verdict", !(r.verdict ?? "").includes("$"));
+
+      // No context ⇒ historical USD default, exactly as before (kill switch).
+      const legacy = computeLiquidity(mc1Scope, mc1Opts, usdRows);
+      check("verdict label: context-less verdict keeps the USD default", (legacy.verdict ?? "").includes("$"));
+    }
+
+    // privacy/provenance shape untouched by the flip
+    {
+      const r = computeLiquidity(mc1Scope, mc1Opts, usdRows, identityContext("USD"));
+      check("provenance: accountIds/tierCounts unchanged by conversion threading",
+        r.provenance.accountIds.length === 5 && r.provenance.tierCounts.full === 5);
+    }
+  }
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);

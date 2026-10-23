@@ -17,7 +17,7 @@
  */
 
 import type { ReactNode } from "react";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import {
   HORIZON_LABEL, HORIZON_META, HORIZON_COLOR, type LiquiditySourceRow,
 } from "./liquidity-sources-util";

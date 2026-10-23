@@ -28,12 +28,14 @@ import { plaidClient, PLAID_ENV } from "@/lib/plaid/client";
 import { CountryCode, Products } from "plaid";
 import { requireUser } from "@/lib/session";
 import { parsePlaidError } from "@/lib/plaid/errors";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { limitByUser } from "@/lib/rate-limit";
 import { env } from "@/lib/env";
 import { resolvePlaidRedirectUri } from "@/lib/plaid/redirect-uri";
+// BETA C7′ — the connection-count entitlement (maxConnections), fresh links only.
+import { connectionCapForUser, connectionLimitResponse } from "@/lib/connections/connection-cap";
 
 /**
  * The public URL Plaid should POST webhooks to (TRANSACTIONS/SYNC_UPDATES_AVAILABLE).
@@ -52,6 +54,15 @@ function resolvePlaidWebhookUrl(): string | undefined {
   return url;
 }
 
+// RLS-PREP-C — this route's OWN reads and writes run on the tenant role.
+// `PlaidItem` and `Connection` are user-scoped tables (`"userId" = me`) and
+// `AuditLog` inserts are open to fm_app, so each statement the handler issues
+// directly is one short `withTenantDb` phase: the lookup that decides WHICH item
+// a user may act on is now a database guarantee, not a `where` clause on the
+// owner's connection. The provider work those lookups authorise — the sync and
+// refresh pipelines in lib/plaid/ — runs on its own authority and is not part of
+// this conversion (it interleaves Plaid HTTP with its writes, and a tenant phase
+// must never span a network round trip).
 export async function GET(req: NextRequest) {
   const [user, err] = await requireUser();
   if (err) return err;
@@ -89,10 +100,10 @@ export async function GET(req: NextRequest) {
 
     if (reconnectItemId) {
       // Existing path — unchanged from D2-7E.
-      const existing = await db.plaidItem.findFirst({
+      const existing = await withTenantDb(user.id, (tx) => tx.plaidItem.findFirst({
         where:  { id: reconnectItemId, userId: user.id },
         select: { encryptedToken: true },
-      });
+      }));
       if (!existing) {
         return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
       }
@@ -102,7 +113,7 @@ export async function GET(req: NextRequest) {
       // Check Connection layer first (written by exchange-token since Slice A);
       // fall back to PlaidItem for credentials that predate Slice A and have
       // no Connection row yet.
-      const existingConnection = await db.connection.findFirst({
+      const existingConnection = await withTenantDb(user.id, (tx) => tx.connection.findFirst({
         where:  {
           userId:               user.id,
           provider:             ProviderType.PLAID,
@@ -110,7 +121,7 @@ export async function GET(req: NextRequest) {
           status:               ConnectionStatus.ACTIVE,
         },
         select: { credential: true },
-      });
+      }));
 
       if (existingConnection?.credential) {
         accessToken = decryptWithPurpose(
@@ -122,11 +133,11 @@ export async function GET(req: NextRequest) {
         );
       } else {
         // Legacy fallback: PlaidItem has no Connection row yet (pre-Slice-A link).
-        const existingItem = await db.plaidItem.findFirst({
+        const existingItem = await withTenantDb(user.id, (tx) => tx.plaidItem.findFirst({
           where:   { userId: user.id, institutionId, status: PlaidItemStatus.ACTIVE },
           select:  { encryptedToken: true },
           orderBy: { updatedAt: "desc" },
-        });
+        }));
         if (existingItem) {
           accessToken = decryptWithPurpose(
             existingItem.encryptedToken,
@@ -137,6 +148,23 @@ export async function GET(req: NextRequest) {
           );
         }
         // Neither found → accessToken stays undefined → normal fresh-link flow.
+      }
+    }
+
+    // ── BETA C7′ — CONNECTION CAP, FRESH LINKS ONLY ──────────────────────────
+    // Every path above that found an existing credential set `accessToken`
+    // and will open Link in UPDATE mode, which heals an Item the customer
+    // already holds and mints nothing. Only a session that would create a NEW
+    // Item is counted against the customer's effective `maxConnections`
+    // (BETA 10; founder overlay and ceiling 25). Checked BEFORE the Plaid
+    // call so a refused session costs no link token. 403 with the shared
+    // `{ error, code: "CONNECTION_LIMIT", current, limit }` body; the Connect
+    // button renders `error` as-is.
+    if (!accessToken) {
+      const cap = await connectionCapForUser(user.id);
+      if (!cap.allowed) {
+        console.warn(`[plaid] link-token refused for user ${user.id} — ${cap.reason} (${cap.current} of ${cap.limit})`);
+        return connectionLimitResponse(cap);
       }
     }
 
@@ -155,13 +183,9 @@ export async function GET(req: NextRequest) {
     const products      = [Products.Transactions];
     const country_codes = [CountryCode.Us];
 
-    // Investments consent is added ONLY in update mode (accessToken present)
-    // and ONLY when explicitly requested for this specific Item. It is never
-    // added to a fresh-link session, so `products` stays Transactions-only for
-    // every normal Add Connection — AmEx and other credit-only institutions
-    // are unaffected. Placed in `additional_consented_products` (not
-    // `products`): this collects consent without gating the institution and is
-    // not billed until investmentsHoldingsGet is called on the Item.
+    // PRIV-014 (2026-10-22): the paragraph that used to sit here said consent
+    // is requested ONLY in update mode and never on a fresh link — the code
+    // below has done the opposite since B2. The B2 note is the true one.
     // B2 — request Investments consent UP FRONT via additional_consented_products
     // (NOT `products`). This is the DTM-correct, NON-GATING mechanism: it collects
     // Investments consent where the institution offers it (Schwab/Fidelity/etc.),

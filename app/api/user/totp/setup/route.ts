@@ -17,7 +17,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { AuditAction } from "@/lib/audit-actions";
 import { generateSecret, otpauthUri } from "@/lib/totp";
@@ -34,10 +34,12 @@ export async function POST() {
   const limited = await limitByUser(user.id, "totp-setup", { limit: 5, windowSec: 900 });
   if (limited) return limited;
 
-  const dbUser = await db.user.findUnique({
+  // RLS slice A — their own row, as them. The secret generation and the QR encode
+  // below are CPU work and sit outside any transaction.
+  const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
     where:  { id: user.id },
     select: { email: true, totpEnabled: true },
-  });
+  }));
 
   if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -60,18 +62,21 @@ export async function POST() {
   });
 
   // Persist the encrypted secret (totpEnabled stays false until verify)
-  await db.$transaction([
-    db.user.update({
+  // ⚠️ THE BATCH ARRAY BECAME THE TENANT TRANSACTION ITSELF. The two writes still
+  // commit together; what is new is that they commit with `app.user_id` set, which a
+  // `db.$transaction([...])` could not carry.
+  await withTenantDb(user.id, async (tx) => {
+    await tx.user.update({
       where: { id: user.id },
       data:  { totpSecret: encrypted },
-    }),
-    db.auditLog.create({
+    });
+    await tx.auditLog.create({
       data: {
         userId: user.id,
         action: AuditAction.TWO_FACTOR_SETUP_STARTED,
       },
-    }),
-  ]);
+    });
+  });
 
   return NextResponse.json({
     qrCodeDataUrl,

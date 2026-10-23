@@ -21,7 +21,7 @@
  * slice. The panel says so rather than letting the list imply completeness.
  */
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { Surface } from "@/components/atlas/Surface";
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
 import { rowKey, rowLabel, tierDotColor } from "./holdings-util";

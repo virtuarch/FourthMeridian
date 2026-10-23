@@ -4,7 +4,13 @@ import { ShieldCheck, PlusCircle } from "lucide-react";
 interface Props {
   score:       number | null;
   lastUpdated: string;
-  compact?:    boolean;
+  /**
+   * The empty state's "Add credit score" is a BUTTON that calls this: the
+   * host (Net Worth → Debt's CreditScoreInput) edits the score in place.
+   * RETIRE-CREDIT (2026-10-22): the legacy /dashboard/credit page this card
+   * used to link to is deleted, so there is no link fallback any more.
+   */
+  onAdd?:      () => void;
 }
 
 // FICO bands collapse to a restrained 3-step tone (Step B accent decision):
@@ -26,31 +32,9 @@ function getScoreBand(score: number): { tone: FicoTone; label: string } {
   return                { tone: "negative", label: "Poor" };
 }
 
-export function FicoCard({ score, lastUpdated, compact }: Props) {
+export function FicoCard({ score, lastUpdated, onAdd }: Props) {
   // ── Empty state ───────────────────────────────────────────────────────────
   if (score === null) {
-    if (compact) {
-      return (
-        <DataCard>
-          <div className="flex items-center justify-between">
-            <DataCardTitle>FICO</DataCardTitle>
-            <ShieldCheck size={12} style={{ color: "var(--text-faint)" }} />
-          </div>
-          <div className="mt-2 flex flex-col items-center text-center gap-1.5">
-            <PlusCircle size={20} style={{ color: "var(--text-faint)" }} />
-            <p className="text-xs leading-snug" style={{ color: "var(--text-muted)" }}>No score on file</p>
-            <a
-              href="/dashboard/credit"
-              className="text-[11px] font-semibold transition-colors"
-              style={{ color: "var(--accent-info)" }}
-            >
-              Add score
-            </a>
-          </div>
-        </DataCard>
-      );
-    }
-
     return (
       <DataCard>
         <div className="flex items-center justify-between">
@@ -63,14 +47,17 @@ export function FicoCard({ score, lastUpdated, compact }: Props) {
           <p className="text-xs leading-relaxed" style={{ color: "var(--text-faint)" }}>
             Add your score to start tracking credit history and unlock personalized advice.
           </p>
-          <a
-            href="/dashboard/credit"
-            className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold transition-colors"
-            style={{ color: "var(--accent-info)" }}
-          >
-            <PlusCircle size={13} />
-            Add credit score
-          </a>
+          {onAdd && (
+            <button
+              type="button"
+              onClick={onAdd}
+              className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold transition-colors"
+              style={{ color: "var(--accent-info)" }}
+            >
+              <PlusCircle size={13} />
+              Add credit score
+            </button>
+          )}
         </div>
       </DataCard>
     );
@@ -80,31 +67,6 @@ export function FicoCard({ score, lastUpdated, compact }: Props) {
   const { tone, label } = getScoreBand(score);
   const pct = ((score - 300) / (850 - 300)) * 100;
 
-  // ── Compact variant ───────────────────────────────────────────────────────
-  if (compact) {
-    return (
-      <DataCard>
-        <div className="flex items-center justify-between">
-          <DataCardTitle>FICO</DataCardTitle>
-          <ShieldCheck size={12} style={{ color: "var(--text-muted)" }} />
-        </div>
-        <div className="flex items-baseline gap-1.5 mt-1">
-          <p className="text-2xl font-bold" style={{ color: TONE[tone] }}>{score}</p>
-          <p className="text-[11px] font-semibold" style={{ color: TONE[tone] }}>{label}</p>
-        </div>
-        <div className="w-full rounded-full h-1.5 mt-2" style={{ background: "var(--surface-inset)" }}>
-          <div className="h-1.5 rounded-full" style={{ width: `${pct}%`, background: TONE[tone] }} />
-        </div>
-        <div className="flex justify-between mt-0.5">
-          <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>300</p>
-          <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>850</p>
-        </div>
-        <p className="text-[10px] mt-1.5" style={{ color: "var(--text-faint)" }}>Updated {lastUpdated}</p>
-      </DataCard>
-    );
-  }
-
-  // ── Full variant ──────────────────────────────────────────────────────────
   return (
     <DataCard>
       <div className="flex items-center justify-between">

@@ -18,7 +18,7 @@
  *   4. /api/health exposes no env secrets.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = process.cwd();
@@ -69,7 +69,6 @@ const surfaces: [string, string][] = [
   ["app/api/plaid/link-token/route.ts",         'limitByUser(user.id, "plaid-link-token"'],
   ["app/api/plaid/exchange-token/route.ts",     'limitByUser(userId, "plaid-exchange-token"'],
   ["app/api/plaid/refresh/route.ts",            'limitByUser(user.id, "plaid-refresh"'],
-  ["app/api/plaid/sync/route.ts",               'limitByUser(user.id, "plaid-sync"'],
   ["app/api/auth/pre-login/route.ts",           'checkIpLimitStrict(req, "pre-login"'], // PS-4A fail-closed
   ["app/api/health/route.ts",                   'limitByIp(req, "health"'],
 ];
@@ -124,6 +123,9 @@ const writerSurfaces: [string, string][] = [
   ["app/api/user/password/route.ts",        "AuditAction.PASSWORD_CHANGE_FAILED"],
   ["app/api/user/password/route.ts",        "AuditAction.PASSWORD_CHANGED"],
   ["app/api/auth/register/route.ts",        "AuditAction.REGISTER"],
+  // BETA A2 — the two lifecycle writers promoted into the canon.
+  ["app/api/accounts/wallet/route.ts",      "AuditAction.WALLET_ADD"],
+  ["app/api/accounts/manual/route.ts",      "AuditAction.MANUAL_ASSET_ADD"],
 ];
 for (const [file, needle] of writerSurfaces) {
   const s = src(file);
@@ -132,6 +134,28 @@ for (const [file, needle] of writerSurfaces) {
   const literal = needle.split(".")[1];
   const rawAssign = new RegExp(`action:\\s*"${literal}"`);
   check(`${file} writes ${needle} (not the raw literal)`, s.includes(needle) && !rawAssign.test(s));
+}
+
+console.log("5b. BETA A2 — product events are disjoint from every security surface");
+{
+  const canon = src("lib/audit-actions.ts");
+  const list = (name: string): string[] => {
+    const m = new RegExp(`export const ${name}[^=]*=\\s*\\[([\\s\\S]*?)\\n\\];`).exec(canon);
+    return m ? [...m[1].matchAll(/AuditAction\.([A-Z_]+)/g)].map((x) => x[1]) : [];
+  };
+  const product = list("PRODUCT_EVENT_ACTIONS");
+  check("PRODUCT_EVENT_ACTIONS is exactly the five presence/engagement events",
+    product.join() === "SESSION_ACTIVE_DAY,SPACE_VIEWED,BRIEF_VIEWED,TRANSACTIONS_VIEWED,MANUAL_ASSET_VALUE_UPDATED", product.join());
+  for (const name of ["USER_SECURITY_HISTORY_ACTIONS", "OPERATOR_ACTION_FEED_ACTIONS", "ADMIN_SECURITY_FILTER_ACTIONS"]) {
+    const l = list(name);
+    check(`${name} (${l.length} actions) admits no product event`, l.length > 3 && !product.some((a) => l.includes(a)));
+  }
+  const groups = [...canon.matchAll(/AuditAction\.([A-Z_]+),?\s*\n/g)].map((m) => m[1]);
+  const groupsBlock = canon.slice(canon.indexOf("export const AUDIT_ACTION_GROUPS"));
+  check("the admin dropdown groups (AUDIT_ACTION_GROUPS) name no product event", groups.length > 0 && !product.some((a) => new RegExp(`AuditAction\\.${a}\\b`).test(groupsBlock)));
+  const retention = src("jobs/product-event-retention.ts");
+  check("the retention job deletes by PRODUCT_EVENT_ACTIONS from the canon, never a hand-typed list", /import \{ PRODUCT_EVENT_ACTIONS \} from "@\/lib\/audit-actions"/.test(retention)
+    && !/"(LOGIN|REGISTER|ACCOUNT_ADD|WALLET_ADD|MANUAL_ASSET_ADD)"/.test(retention));
 }
 
 console.log("6. SEC-4 — password length reads the admin-configurable policy");
@@ -196,6 +220,68 @@ check(
   "login success is recorded through the buildAuditData() operator/security shape",
   authorizeBody.includes("buildAuditData({") && authorizeBody.includes("mfa: mfaMethod"),
 );
+
+// ── 6. RLS SLICE A — /api/user REACHES THE DATABASE AS ITS USER ──────────────
+//
+// The authority a request handler executes under is invisible at the call site, so
+// it is asserted here instead of reviewed by eye. The routes are ENUMERATED from
+// disk, not listed, so a new one is covered the day it is added.
+//
+// ⚠️ AN EXCEPTION MUST SAY WHY IN ITS OWN SOURCE. A bare path list would become a
+// quiet allowlist; a listed path whose file no longer states its reason fails.
+console.log("6. /api/user reaches the database as its user (RLS slice A)");
+{
+  const USER_API = path.join(ROOT, "app", "api", "user");
+  const walk = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(path.join(d, e.name)) : e.name === "route.ts" ? [path.join(d, e.name)] : []);
+  const routes = walk(USER_API).map((f) => path.relative(ROOT, f)).sort();
+
+  // RLS-13 — TWO OF THE THREE EXCEPTIONS ARE GONE.
+  //
+  // profile and email/request were exceptions because cross-user uniqueness is
+  // unanswerable as the tenant: fm_app's User policy is `id =
+  // current_fm_user_id()`, so under it every name reads as free. They held a
+  // deployment-wide client for that one question. They now call
+  // lib/users/availability.ts, which takes a value and returns a BOOLEAN — the
+  // widest authority reached through the narrowest opening — so neither route
+  // holds a general client any more and both are checked like every other.
+  //
+  // email/confirm REMAINS an exception, by owner decision and permanently: the
+  // confirmation token IS the credential, so requiring a session would break
+  // confirming from the emailed link. There is no identity to bind. It runs on
+  // the pre-identity authority, which is granted User, UserSession,
+  // RecoveryCode and an AuditLog INSERT, and nothing financial at all.
+  const EXCEPTIONS: Record<string, RegExp> = {
+    "app/api/user/email/confirm/route.ts": /PRE-IDENTITY BY DESIGN/,
+  };
+
+  check(`every route under /api/user is accounted for (${routes.length} found)`, routes.length >= 16);
+  for (const rel of routes) {
+    const s = src(rel);
+    if (EXCEPTIONS[rel]) {
+      check(`${rel} is a NAMED exception and states its reason in its own source`,
+        EXCEPTIONS[rel].test(s));
+      continue;
+    }
+    // `db` specifically — the migration principal. An explicit role client is
+    // an authority statement, not an escape, and the confinement check in
+    // scripts/audit-db-authority.ts is what polices which file may hold which.
+    check(`${rel} holds no deployment-wide client`,
+      !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*"@\/lib\/db"/.test(s));
+    const touchesDb = /\b(?:tx|db)\.[a-z]\w*\.(?:find|create|update|delete|upsert|count)/.test(s);
+    check(`${rel} ${touchesDb ? "enters the tenant boundary for its DB work" : "makes no direct DB call"}`,
+      !touchesDb || /withTenantDb\(/.test(s));
+  }
+  // A batch `$transaction([...])` cannot carry a `SET LOCAL` identity — the array
+  // form is issued without a callback, so there is nowhere to set one. Three of
+  // these routes used it; none may again.
+  // Read CODE, not prose: two of these files now explain in a comment what the
+  // array form could not do, and a scan that counted the explanation as the offence
+  // would be a scan nobody could satisfy.
+  const code = (rel: string) => src(rel).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  check("no /api/user route uses the batch $transaction([...]) form",
+    routes.every((rel) => !/\$transaction\(\[/.test(code(rel))));
+}
 
 console.log(failures === 0 ? "\nAll security-surface scans passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);

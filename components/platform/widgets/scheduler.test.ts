@@ -308,10 +308,10 @@ function main() {
     // EXPECTED — configuration, and evidence of nothing.
     check("the expected qualifier is signed and UTC", text.includes("in 2h · UTC"), text);
     check("the expected derivation names the registry",
-      text.includes("Derived from the schedules declared in the job registry"), text);
+      text.includes("Last run plus execution cadence (the arithmetic the dispatcher uses)"), text);
     check("the slot's jobs are named", text.includes("sync-crypto"), text);
     check("the expected figures are marked as configuration",
-      text.includes("Declared configuration, not evidence that anything ran"), text);
+      text.includes("Derived configuration, not evidence that anything ran"), text);
 
     // NOTES — the ROUTE's prose, verbatim, and no figure of its own.
     for (const n of [...SCHEDULER_NOTES, EXTERNAL_CRON_NOTE]) {

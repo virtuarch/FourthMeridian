@@ -22,6 +22,8 @@ import { db } from "@/lib/db";
 import { PlaidItemStatus } from "@prisma/client";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
+import { recordOperatorAction } from "@/lib/audit";
+import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 
@@ -53,14 +55,14 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
   await setPlaidItemHealth(item.id, { status: PlaidItemStatus.NEEDS_REAUTH });
   await notifyItemSyncFailed(item.id);
 
-  await db.auditLog.create({
-    data: {
-      // No userId: the target is the connection (institution), not a user;
-      // surfaced via metadata. performedByAdminId is the acting operator.
-      performedByAdminId: auth.user.id,
-      action:             AuditAction.CONNECTION_REAUTH_REQUESTED,
-      metadata:           { connectionId: item.id, provider: "PLAID", institution: item.institutionName },
-    },
+  // P1 — the operator-action chokepoint: target = the PLAID_ITEM (no USER
+  // subject); performedByAdminId is the acting operator; institution is a label.
+  await recordOperatorAction(db, {
+    actor:  operatorActorFrom(auth, "PLATFORM_OPS"),
+    action: AuditAction.CONNECTION_REAUTH_REQUESTED,
+    target: { kind: "PLAID_ITEM", id: item.id },
+    result: "SUCCESS",
+    detail: { connectionId: item.id, provider: "PLAID", institution: item.institutionName },
   });
 
   return NextResponse.json({ ok: true });

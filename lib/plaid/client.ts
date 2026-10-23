@@ -11,6 +11,13 @@ import { recordApiUsage } from "@/lib/usage/record";
 // when a refresh execution context is active (AsyncLocalStorage); otherwise the
 // call runs verbatim. Independent of and additive to recordApiUsage above.
 import { maybeInstrumentProviderCall } from "@/lib/plaid/provider-call";
+// FM-AUDIT-001 — every error leaving this client is stripped of its request
+// (headers carry PLAID-SECRET, body carries access_token) before any catch block
+// in the codebase can see — or log — it.
+import { sanitizeProviderErrorInPlace } from "@/lib/plaid/errors";
+
+/** OPS-004 — axios transport timeout for every Plaid call (ms). */
+export const PLAID_TRANSPORT_TIMEOUT_MS = 30_000;
 
 // ── Validate required env vars at module load time ───────────────────────────
 const VALID_ENVS = ["sandbox", "development", "production"] as const;
@@ -56,6 +63,11 @@ function realPlaidClient(): PlaidApi {
         "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID!,
         "PLAID-SECRET":    process.env.PLAID_SECRET!,
       },
+      // OPS-004 — axios defaults to NO timeout: a hung Plaid call held a
+      // per-Item sync, its tenant transaction and the dispatch slot until the
+      // lambda's maxDuration killed it. 30 s is generous for every Plaid
+      // endpoint this product calls (/transactions/sync pages in ~1-3 s).
+      timeout: PLAID_TRANSPORT_TIMEOUT_MS,
     },
   });
   _realClient = new PlaidApi(config);
@@ -80,9 +92,17 @@ export const plaidClient: PlaidApi = new Proxy({} as PlaidApi, {
       // DF-2D — when inside a refresh execution, record one immutable
       // ProviderCall per attempt (correlated to that execution + stage);
       // otherwise this is a verbatim passthrough. Never alters the call result.
-      return maybeInstrumentProviderCall(method, () =>
-        (value as (...a: unknown[]) => Promise<unknown>).apply(client, args),
-      );
+      // Sanitisation runs OUTSIDE instrumentation: ProviderCall classification
+      // reads only allowlisted fields, which sanitisation keeps anyway.
+      let pending: Promise<unknown>;
+      try {
+        pending = maybeInstrumentProviderCall(method, () =>
+          (value as (...a: unknown[]) => Promise<unknown>).apply(client, args),
+        );
+      } catch (err) {
+        throw sanitizeProviderErrorInPlace(err);
+      }
+      return pending.catch((err: unknown) => { throw sanitizeProviderErrorInPlace(err); });
     };
   },
 });

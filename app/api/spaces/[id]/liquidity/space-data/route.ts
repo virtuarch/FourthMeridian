@@ -31,6 +31,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSpaceAction } from "@/lib/spaces/authorize";
 import { withApiHandler } from "@/lib/api";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { loadLiquiditySpaceData } from "@/lib/liquidity/space-data";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -62,10 +63,20 @@ export const GET = withApiHandler(async (
   // The whole composed contract, through the single canonical loader. It runs the
   // splice engine at asOf (and compareTo when given), reuses the live lens for
   // `current`, and assembles delta + trust — this route composes / clips NOTHING.
-  const data = await loadLiquiditySpaceData(
+  //
+  // RLS-C-S2 — and it runs inside ONE short transaction on the tenant role. The
+  // loader already took a `client`; supplying a tenant one is what turns "the
+  // viewer's visibility is enforced inside the loaders" from an application
+  // convention into a database guarantee. Identity comes from the authenticated
+  // session (requireSpaceAction above), never from the request.
+  //
+  // Up to three date evaluations run in here (current, asOf, compareTo), each a
+  // read; no network or model call, so there is nothing the boundary must not
+  // cover.
+  const data = await withTenantDb(userId, (tx) => loadLiquiditySpaceData(
     { spaceId, userId },
-    { asOf, compareTo: compareToRaw ?? null },
-  );
+    { asOf, compareTo: compareToRaw ?? null, client: tx },
+  ));
 
   return NextResponse.json(data);
 }, "GET /api/spaces/[id]/liquidity/space-data");

@@ -30,10 +30,14 @@ import {
   SPENDING_FIXED,
   TREND_FLAT_PCT,
 } from './constants';
-import type { SpaceContext_AI, TransactionsSummaryData, MonthlyBreakdownEntry, SnapshotSectionData, AccountsSectionData, GoalsSectionData } from '@/lib/ai/types';
+import type { SpaceContext_AI, TransactionsSummaryData, MonthlyBreakdownEntry, SnapshotSectionData, AccountsSectionData } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
 import { classifyFlow, isExcludedFromSpending } from '@/lib/transactions/flow-classifier';
+// REVIEW-3 C-1/C-3 — the ONE spend-clamp authority; the monthly trend `net`
+// applies the same clamp the headline netCashFlow and the workspace use.
+import { clampEconomicSpend, meanMonthlyEconomicSpend, type MonthlyEconomicSpend } from '@/lib/transactions/cash-flow';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
+import { computeDebtAggregate, type DebtAggregateRow } from '@/lib/debt/aggregates';
 
 export function getTxnData(ctx: SpaceContext_AI): TransactionsSummaryData | null {
   const section = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY];
@@ -56,11 +60,8 @@ export function getAcctsData(ctx: SpaceContext_AI): AccountsSectionData | null {
 }
 
 
-export function getGoalsData(ctx: SpaceContext_AI): GoalsSectionData | null {
-  const section = ctx.domains[FinanceDomains.GOALS];
-  if (!section?.data) return null;
-  return section.data as GoalsSectionData;
-}
+// W2 — getGoalsData deleted (Goals retired; the 'goals' domain and its
+// GoalsSectionData payload no longer exist).
 
 // ── Heuristic derivation ──────────────────────────────────────────────────────
 
@@ -87,6 +88,33 @@ export function classifySpendingCategory(category: string): SpendingCategoryClas
 /**
  * Classifies and ranks expense categories by monthly equivalent.
  * Pure function. No DB queries. Excludes income, transfer, and debt-payment categories.
+ *
+ * post-M1 D2 — `monthlyEquivalent` is the mean over the assessment's RELIABLE
+ * MONTHS (`meanPerReliableMonth` — the one month-normalisation in this layer),
+ * read from each month's own `byCategory`. It used to be a day-normalised share
+ * of the 90-day window total — a window that includes two clipped months —
+ * printed beside, and graded against thresholds calibrated like, the
+ * complete-month expense mean. It FEEDS CLASSIFICATION (the opportunity impact
+ * rungs in engines.ts, and REVIEW_MIN_MONTHLY below), so the basis is not
+ * cosmetic.
+ *
+ * Three consequences, all deliberate:
+ *   · The category figures and `estimatedMonthlyExpenses` are means of the SAME
+ *     months, so they reconcile instead of describing two populations.
+ *   · A month in which a category has no row contributes ZERO to that
+ *     category's mean. That is arithmetic over a stated population, not an
+ *     invented $0 row: the denominator is the reliable months named in
+ *     `monthsAnalyzed`, never "the months this category happened to appear in".
+ *   · The per-month lists are complete at every scope hint, so the brief
+ *     transport cap on the window-level `byCategory` no longer reaches this
+ *     section (the documented W4 residual is gone).
+ *
+ * NO RELIABLE MONTH ⇒ REFUSAL. `monthsAnalyzed: []`, no categories, no top
+ * opportunity, `discretionaryTotal: null`. Never an extrapolation from a partial
+ * month. Downstream that means no CUT_TOP_DISCRETIONARY_CATEGORY and no
+ * REVIEW_OTHER_CATEGORY opportunity is graded at all — silence, not a severity
+ * computed from a guess. `hasTransactionData` stays true: rows exist; what is
+ * missing is a complete month to measure them over.
  */
 
 export function computeSpendingOpportunities(
@@ -97,33 +125,44 @@ export function computeSpendingOpportunities(
     return {
       confidence:              'LOW',
       windowDays:              txn?.windowDays ?? 0,
+      monthsAnalyzed:          [],
       topCategories:           [],
-      discretionaryTotal:      0,
+      discretionaryTotal:      null,
       topReductionOpportunity: null,
       categoriesNeedingReview: [],
       hasTransactionData:      false,
     };
   }
 
-  const windowDays = txn.windowDays > 0 ? txn.windowDays : 90;
+  const months         = reliableMonths(txn);
+  const monthsAnalyzed = months.map((m) => m.month);
+
+  // Every category that appears in ANY reliable month, with its row count over
+  // those same months (the population the figure beside it is a mean of).
+  // `?? []` is for hand-built payloads only — the assembler always emits the list.
+  const counts = new Map<string, number>();
+  for (const m of months) {
+    for (const c of m.byCategory ?? []) counts.set(c.category, (counts.get(c.category) ?? 0) + c.count);
+  }
 
   const categories: SpendingCategoryOpportunity[] = [];
-  for (const cat of txn.byCategory) {
-    const classification = classifySpendingCategory(cat.category);
+  for (const [category, transactionCount] of counts) {
+    const classification = classifySpendingCategory(category);
     if (classification === null) continue;
-    const monthlyEquivalent = Math.round((cat.total / windowDays * 30) * 100) / 100;
-    if (monthlyEquivalent < 1) continue; // skip negligible amounts
-    categories.push({
-      category: cat.category,
-      monthlyEquivalent,
-      classification,
-      transactionCount: cat.count,
+    // FM-AUDIT-004 — what the category COST each month (the canonical ledger's
+    // net: charges less the refunds and reversals dated in that month), not what
+    // was charged — the same basis as the expense baseline it is ranked beside.
+    const monthlyEquivalent = meanPerReliableMonth(txn, (m) => {
+      const c = (m.byCategory ?? []).find((x) => x.category === category);
+      return c ? (c.netTotal ?? c.total) : 0;
     });
+    if (monthlyEquivalent === null || monthlyEquivalent < 1) continue; // skip negligible amounts
+    categories.push({ category, monthlyEquivalent, classification, transactionCount });
   }
 
   categories.sort((a, b) => b.monthlyEquivalent - a.monthlyEquivalent);
 
-  const discretionaryTotal = Math.round(
+  const discretionaryTotal = months.length === 0 ? null : Math.round(
     categories
       .filter((c) => c.classification === 'DISCRETIONARY')
       .reduce((sum, c) => sum + c.monthlyEquivalent, 0) * 100,
@@ -138,7 +177,8 @@ export function computeSpendingOpportunities(
 
   return {
     confidence:              dataQuality.transactionHistoryCompleteness,
-    windowDays,
+    windowDays:              txn.windowDays,
+    monthsAnalyzed,
     topCategories:           categories,
     discretionaryTotal,
     topReductionOpportunity,
@@ -158,24 +198,25 @@ export function round2(n: number): number {
 /**
  * Value of a single cash-flow metric for one month.
  *
- * `net` is the canonical refund-inclusive net cash flow — byte-identical to the
- * assembler's window `netCashFlow` formula (lib/ai/assemblers/transactions.ts:
- * `incomeTotal + refundTotal - expenseTotal - debtPaymentTotal`), applied per
- * month. `refundTotal` MUST be added: expenseTotal is the gross cost-flow sum
- * (refunds are never netted into it — the KD-17 debit-only rule), so a net that
- * dropped refunds would understate cash flow by the month's refund total and no
- * longer mirror the top-level measure it advertises. Transfers stay excluded.
- * This is the sole trend/annotation net definition site; the parity test
- * (spending-trends-net.test.ts) pins it to the assembler formula so the two
- * same-named measures can never drift apart again.
+ * `net` mirrors the assembler's headline `netCashFlow` — which since REVIEW-3
+ * C-3 is THE canonical economic net: income − clampEconomicSpend(gross spend,
+ * refunds), the same clamp authority the Cash Flow workspace folds with. Debt
+ * payments are movement toward a goal, not cash flow, and are EXCLUDED (the old
+ * formula subtracted them, making the trend "net" a fourth definition).
+ * Transfers stay excluded. This is the sole trend/annotation net definition
+ * site; the parity test (spending-trends-net.test.ts) pins it to the assembler
+ * formula so the two same-named measures can never drift apart again.
  *
  * Exported for that doctrine/parity test — no runtime consumer outside this module.
  */
 
 export function metricValue(m: MonthlyBreakdownEntry, metric: SpendingTrendMetric): number {
   if (metric === 'income')  return m.incomeTotal;
-  if (metric === 'expense') return m.expenseTotal;
-  return m.incomeTotal + m.refundTotal - m.expenseTotal - m.debtPaymentTotal; // net
+  // NET-BASELINE-1 — the expense TREND is economic spend too, so the three rows
+  // reconcile: income − expense = net, month by month (it used to print a gross
+  // expense beside a net that had already taken refunds off).
+  if (metric === 'expense') return clampEconomicSpend(m.expenseTotal, m.refundTotal);
+  return m.incomeTotal - clampEconomicSpend(m.expenseTotal, m.refundTotal); // net — canonical
 }
 
 /**
@@ -258,19 +299,131 @@ export function reliableMonths(
 }
 
 /**
- * KD-10: the single authoritative monthly-spending value — the average of each
- * reliable month's expenseTotal. Returns null when no reliable month exists, so
- * every caller preserves the "no complete month => UNKNOWN" behavior instead of
- * falling back to a window-normalized estimate (the old competing figure).
+ * THE one month-normalisation in the assessment: the mean of a per-month figure
+ * over the RELIABLE months (complete calendar months the fetch cap did not
+ * truncate). Every "monthly" money figure this layer emits goes through here —
+ * spending, income, debt payments, each category — so they share one month
+ * population and can be printed side by side under one label.
+ *
+ * NULL when no reliable month exists. That is a REFUSAL, and every caller must
+ * keep it one: never fall back to a window total normalised by days (the
+ * retired day-normalisation, which a source scan now forbids anywhere in this
+ * directory), and never average a partial month.
  */
+export function meanPerReliableMonth(
+  txn:  TransactionsSummaryData | null,
+  pick: (month: MonthlyBreakdownEntry) => number,
+): number | null {
+  const months = reliableMonths(txn);
+  return meanOver(months, pick);
+}
 
+function meanOver(
+  months: readonly MonthlyBreakdownEntry[], pick: (month: MonthlyBreakdownEntry) => number,
+): number | null {
+  if (months.length === 0) return null;
+  const total = months.reduce((s, m) => s + pick(m), 0);
+  return Math.round((total / months.length) * 100) / 100;
+}
+
+/**
+ * KD-10: the single authoritative monthly-spending value. Returns null when no
+ * reliable month exists, so every caller preserves the "no complete month =>
+ * UNKNOWN" behavior instead of falling back to a window-normalized estimate (the
+ * old competing figure).
+ *
+ * NET-BASELINE-1 — it is NET ECONOMIC spending: each reliable month's gross
+ * charges less the refunds dated in that month, floored at 0, then averaged
+ * (`meanMonthlyEconomicSpend`, lib/transactions/cash-flow — the one definition).
+ * It was the mean of gross `expenseTotal`, so after REFUND-1 the Spending-by-
+ * category view netted refunds while runway, savings rate, the liquid floor and
+ * every "N months of expenses" still divided by what was CHARGED. Every caller
+ * of this function asks "how much do I spend", so every caller moves together.
+ * `computeMonthlySpendingBasis` carries the gross figure and the refund effect
+ * for a surface that needs to explain the difference.
+ *
+ * ⚠️ IT DOES NOT ROUTE THROUGH `meanPerReliableMonth`, AND THAT IS DELIBERATE.
+ * Both average over the SAME month population (`reliableMonths`); this one
+ * clamps each month's net at 0 before averaging, which is the refund authority's
+ * rule and lives with it. Routing it through the generic helper would put a
+ * second copy of that rule here.
+ */
 export function computeAverageMonthlySpending(
   txn: TransactionsSummaryData | null,
 ): number | null {
-  const months = reliableMonths(txn);
-  if (months.length === 0) return null;
-  const total = months.reduce((s, m) => s + m.expenseTotal, 0);
-  return Math.round((total / months.length) * 100) / 100;
+  return computeMonthlySpendingBasis(txn)?.net ?? null;
+}
+
+/** The same figure WITH its gross charges and refund effect — never re-derived by a caller. */
+export function computeMonthlySpendingBasis(
+  txn: TransactionsSummaryData | null,
+): MonthlyEconomicSpend | null {
+  return meanMonthlyEconomicSpend(baselineMonths(txn));
+}
+
+/**
+ * THE month population every "per month" figure on a surface averages over.
+ *
+ * ⚠️ THE CANONICAL MONTHS WHEN THE READ CARRIES THEM (the owner's trailing 3
+ * complete calendar months, zero months included — lib/transactions/
+ * canonical-spending). The reliable months of the 90-day assessment window were
+ * TWO on 356 days of 2026, which is how every surface came to average Aug+Sep
+ * while believing it averaged three months.
+ *
+ * Without a canonical read — a fixture, or a caller that did not ask — the
+ * window's own complete months are averaged, as before. Every production surface
+ * that prints a baseline asks (`canonicalSpendingAsOf`); a source scan holds them.
+ *
+ * ⚠️ INCOME AND DEBT PAYMENTS FOLLOW SPENDING. They are printed beside it under
+ * one "monthly averages" label and compared with it (surplus, deficit), so they
+ * must average the same months — a July in the spending mean and not in the
+ * income mean would manufacture a deficit.
+ */
+export function baselineMonths(txn: TransactionsSummaryData | null): MonthlyBreakdownEntry[] {
+  return txn?.canonicalSpending ? txn.canonicalSpending.months : reliableMonths(txn);
+}
+
+
+/**
+ * M1 — the single authoritative monthly-INCOME figure, over the SAME reliable
+ * months as spending. Replaces the day-normalised window total, which divided
+ * a 90-day window by days while spending was a calendar-month mean — so the two
+ * figures the Brief printed side by side were on different bases, and a window
+ * holding seven biweekly paychecks read as a higher "monthly" income than any
+ * month actually delivered. Null when no reliable month exists; a month can still
+ * hold two or three paychecks, which is a property of the month, not of a divisor.
+ */
+export function computeAverageMonthlyIncome(
+  txn: TransactionsSummaryData | null,
+): number | null {
+  return meanOver(baselineMonths(txn), (m) => m.incomeTotal);
+}
+
+/**
+ * post-M1 D1 — mean OBSERVED card-and-debt payment flow per reliable month: the
+ * debt-payment authority's counted CASH legs (`MonthlyBreakdownEntry.
+ * debtPaymentTotal`), over the SAME months as the income and spending figures it
+ * is printed beside. Replaces the last day-normalised money figure in the
+ * assessment. Agrees with `measure_flows(cardAndDebtPayments).perCompleteMonth`
+ * over the same months.
+ *
+ * Null when no reliable month exists. ZERO when the reliable months hold no
+ * payment — a measurement ("none observed"), where the old figure said null.
+ *
+ * ⚠️ This is ONE of four quantities that share the words "monthly debt payment",
+ * and it must never stand in for the other three:
+ *   1. THIS — observed historical flow. It includes card payments that merely
+ *      settle purchases already counted in spending, so it is NOT debt burden
+ *      and must never be added to, or subtracted alongside, monthly expenses
+ *      (see lib/transactions/debt-service.ts for the part that is real paydown).
+ *   2. Σ stated minimums now — lib/debt/aggregates.ts. The contractual floor.
+ *   3. The payoff planner's chosen payment — lib/debt/payoff.ts. A user budget.
+ *   4. L1's projected minimums — lib/ai/conversation/scenario-ledger.ts. A forecast.
+ */
+export function computeAverageMonthlyDebtPayments(
+  txn: TransactionsSummaryData | null,
+): number | null {
+  return meanOver(baselineMonths(txn), (m) => m.debtPaymentTotal);
 }
 
 /**
@@ -317,13 +470,12 @@ export function computeSpendingTrends(
   };
 }
 
-// ── 2.4 Goal Alignment computation ───────────────────────────────────────────
+// ── 2.2 Debt Strategy computation ────────────────────────────────────────────
 
 /**
- * Cross-references active goal state against observable spending, debt, and
- * snapshot behavior.
- * Pure function. No DB queries. Alignment is determined from assembled domain
- * data — no LLM inference.
+ * Derives avalanche/snowball candidates and payoff urgency from the assembled
+ * accounts list + the already-computed DebtSection.
+ * Pure function. No DB queries. Must be called after Step 3 (DebtSection).
  */
 
 export function computeDebtStrategy(
@@ -390,16 +542,25 @@ export function computeDebtStrategy(
 
   // Weighted average APR across accounts where APR is known — weighted by REPORTING
   // amount owed so a larger true (reporting-currency) debt carries more weight.
-  let totalWeighted    = 0;
-  let totalForWeighting = 0;
-  for (const a of fullWithApr) {
-    const bal         = amountOwed(a.reportingBalance);
-    totalWeighted    += (a.apr ?? 0) * bal;
-    totalForWeighting += bal;
-  }
-  const weightedAvgApr: number | null = totalForWeighting > 0
-    ? Math.round((totalWeighted / totalForWeighting) * 100) / 100
-    : null;
+  //
+  // v2.6-DEBT-1 — one authority, and two changes came with it:
+  //
+  //   · The population is now "an APR is on file", not `apr > 0`. A 0%
+  //     promotional balance is a KNOWN rate and genuinely lowers what the
+  //     borrower pays; excluding it overstated the blended rate.
+  //   · The 2dp rounding is GONE. `engine.ts` derived the same number from the
+  //     same population and did not round, so the assessment carried one figure
+  //     at two precisions. Rounding is presentation — every consumer already
+  //     calls `.toFixed(2)`.
+  const weightedAvgApr: number | null = computeDebtAggregate(
+    valuedDebt
+      .filter((a) => a.visibilityLevel === 'FULL' && a.apr != null)
+      .map((a): DebtAggregateRow => ({
+        balance:        a.reportingBalance,
+        apr:            a.apr ?? null,
+        minimumPayment: null,   // the strategy does not state a monthly obligation
+      })),
+  ).weightedApr;
 
   // P2-7D honesty: taint the strategy when any driving debt account had an
   // estimated reporting balance (missing/walked-back FX) — the ranking/weighting is

@@ -58,7 +58,7 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
 // ── Salary + liquidation compose correctly ─────────────────────────────────────
 {
   const rows: LiquidityTx[] = [
-    tx({ ownAccount: "chk", amount: 6000, flowType: "INCOME" }),
+    tx({ ownAccount: "chk", amount: 6000, flowType: "INCOME", incomeClass: "EARNED_INCOME" }),
     tx({ ownAccount: "chk", amount: 10044, flowType: "TRANSFER", counterpartyAccountId: "cb" }),
     tx({ ownAccount: "chk", amount: -1500, flowType: "SPENDING" }),
     tx({ ownAccount: "cb",  amount: 10044, flowType: "INVESTMENT" }),  // the sale itself → neutral
@@ -97,7 +97,7 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
 {
   const rows: LiquidityTx[] = [
     tx({ ownAccount: "chk", amount: 500, flowType: "TRANSFER" }),  // unknown counterparty → unresolved
-    tx({ ownAccount: "chk", amount: 200, flowType: "INCOME" }),
+    tx({ ownAccount: "chk", amount: 200, flowType: "INCOME", incomeClass: "EARNED_INCOME" }),
   ];
   const bd = groupLiquidityByReason(aggregateDayFacts(rows, ctx));
   check("breakdown lists only non-zero reasons",
@@ -111,7 +111,10 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
 {
   const rows: LiquidityTx[] = [
     tx({ ownAccount: "chk",  amount: -73,     flowType: "SPENDING" }),      // direct cash spending (liquid)
-    tx({ ownAccount: "chk",  amount: -30829,  flowType: "DEBT_PAYMENT" }),  // paid the card (cash out)
+    tx({ ownAccount: "chk",  amount: -30829,  flowType: "DEBT_PAYMENT", counterpartyAccountId: "card" }),  // paid the card (cash out)
+    // v2.6-DEBT-1 — the counterparty is REQUIRED now. Membership needs positive
+    // destination evidence; a bare DEBT_PAYMENT flowType is a provider category,
+    // and this fixture means "paid the card", so it must say which card.
     tx({ ownAccount: "card", amount: -23047,  flowType: "SPENDING" }),      // credit card purchases (context)
   ];
   const f = aggregateDayFacts(rows, ctx);
@@ -137,7 +140,7 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
 {
   const rows: LiquidityTx[] = [
     tx({ ownAccount: "chk",  amount: -73,    flowType: "SPENDING" }),                                  // Cash Out: direct cash
-    tx({ ownAccount: "chk",  amount: -30829, flowType: "DEBT_PAYMENT" }),                              // Cash Out: debt payment
+    tx({ ownAccount: "chk",  amount: -30829, flowType: "DEBT_PAYMENT", counterpartyAccountId: "card" }), // Cash Out: debt payment (attested)
     tx({ ownAccount: "card", amount: -23047, flowType: "SPENDING" }),                                  // context: credit card
     tx({ ownAccount: "chk",  amount: -500,   flowType: "TRANSFER", counterpartyAccountId: "sav" }),    // context: internal (liquid→liquid)
     tx({ ownAccount: "chk",  amount: 800,    flowType: "TRANSFER" }),                                  // context: unresolved (unknown cp)

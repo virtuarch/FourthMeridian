@@ -88,6 +88,17 @@ export interface StaleImportCandidate {
  * `drive` is separate so a test can choose between the real pipeline on fixture
  * items and a fully mocked driver.
  */
+/**
+ * IDEMP-007 — delay before the NEXT resume attempt after the Nth failed one
+ * (the first attempt is STALE_AFTER_MS after the marker): 15 min, 1 h, 6 h,
+ * then daily. A failed attempt is a "ran" outcome after which the Item is
+ * still incomplete; a lost lock race or a denied admission is not an attempt.
+ */
+export const RESUME_BACKOFF_MS: readonly number[] = [15 * 60_000, 60 * 60_000, 6 * 3_600_000, 24 * 3_600_000];
+export function resumeBackoffMs(failedAttempts: number): number {
+  return RESUME_BACKOFF_MS[Math.min(Math.max(failedAttempts, 1), RESUME_BACKOFF_MS.length) - 1];
+}
+
 export interface ResumeStaleImportsDeps {
   /** Returns the candidate population. Defaults to the platform-wide query. */
   loadCandidates?: (cutoff: Date, take: number) => Promise<{ candidates: number; items: StaleImportCandidate[] }>;
@@ -100,6 +111,11 @@ export interface ResumeStaleImportsDeps {
    * denied, which would make the isolation assertions vacuously true.
    */
   admit?: () => Promise<StampedAdmissionVerdict>;
+  /** IDEMP-007 — record a "ran" attempt's result (backoff when still incomplete). Default writes PlaidItem. */
+  recordAttempt?: (itemId: string, now: Date) => Promise<void>;
+  /** IDEMP-007 — reset the counter on Items that have since completed. */
+  resetCompleted?: () => Promise<void>;
+  now?: () => Date;
 }
 
 export interface ResumeStaleImportsResult {
@@ -132,7 +148,9 @@ async function loadStaleCandidates(
     // Same billing-honesty gate sync-banks uses: a deactivated user's items
     // shouldn't keep accruing Plaid calls.
     user: { deactivatedAt: null },
-  } as const;
+    // IDEMP-007 — only Items whose backoff has elapsed.
+    OR: [{ syncResumeNextAt: null }, { syncResumeNextAt: { lte: new Date() } }],
+  };
 
   const candidates = await db.plaidItem.count({ where });
   const items = await db.plaidItem.findMany({
@@ -149,7 +167,15 @@ async function loadStaleCandidates(
 export async function resumeStaleImports(
   deps: ResumeStaleImportsDeps = {},
 ): Promise<ResumeStaleImportsResult> {
-  const cutoff = new Date(Date.now() - STALE_AFTER_MS);
+  const now = (deps.now ?? (() => new Date()))();
+  const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
+  // IDEMP-007 — Items that completed since their last failed resume start over.
+  // Deliberately BEFORE admission: it touches only rows with syncIncompleteAt
+  // null (never a candidate) and makes no provider call, so a paused platform
+  // still converges its backoff bookkeeping; a stale counter would otherwise
+  // delay that Item's first resume after its next stall.
+  await (deps.resetCompleted ?? resetCompletedResumes)().catch((e) =>
+    console.warn("[resume-stale-imports] backoff reset failed (non-fatal):", e instanceof Error ? e.message : String(e)));
   const { candidates, items } = await (deps.loadCandidates ?? loadStaleCandidates)(cutoff, MAX_ITEMS_PER_RUN);
 
   const deferred = Math.max(0, candidates - items.length);
@@ -201,8 +227,34 @@ export async function resumeStaleImports(
     // dispatch (see the admission block above).
     const outcome = await (deps.drive ?? driveCandidate)(item.id, admission); // never throws, by contract
     if (outcome === "skipped-locked") skipped++; else ran++;
+    if (outcome === "ran") {
+      await (deps.recordAttempt ?? recordResumeAttempt)(item.id, now).catch((e) =>
+        console.warn(`[resume-stale-imports] backoff record failed for ${item.id} (non-fatal):`, e instanceof Error ? e.message : String(e)));
+    }
     console.log(`[resume-stale-imports] ${item.institutionName} (${item.id}) → ${outcome}`);
   }
 
   return { candidates, attempted: items.length, ran, skipped, deferred };
+}
+
+// ── IDEMP-007 backoff bookkeeping (declared after the job body so the source
+// order matches the runtime order the admission ratchet pins: these run only
+// after admission) ──────────────────────────────────────────────────────────
+
+/** IDEMP-007 — after a "ran": still incomplete ⇒ attempts+1 and the next slot pushed out. */
+async function recordResumeAttempt(itemId: string, now: Date): Promise<void> {
+  const row = await db.plaidItem.findUnique({ where: { id: itemId }, select: { syncIncompleteAt: true, syncResumeAttempts: true } });
+  if (!row || row.syncIncompleteAt === null) return; // completed — resetCompleted clears the counter
+  const attempts = row.syncResumeAttempts + 1;
+  await db.plaidItem.update({
+    where: { id: itemId },
+    data:  { syncResumeAttempts: attempts, syncResumeNextAt: new Date(now.getTime() + resumeBackoffMs(attempts)) },
+  });
+}
+
+async function resetCompletedResumes(): Promise<void> {
+  await db.plaidItem.updateMany({
+    where: { syncIncompleteAt: null, OR: [{ syncResumeAttempts: { gt: 0 } }, { syncResumeNextAt: { not: null } }] },
+    data:  { syncResumeAttempts: 0, syncResumeNextAt: null },
+  });
 }

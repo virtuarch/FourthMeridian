@@ -16,8 +16,9 @@
  * state / fetches / mutations live in its extracted panel under this directory
  * (GeneralSettingsPanel, MembersPanel, FinancesPanel, OverviewSectionsPanel,
  * DangerZonePanel). The former inline GoalsTab was unreachable dead code
- * (show:false, never selectable) and a stale, narrower duplicate of the
- * canonical GoalsCard / AddGoalModal capability — it was removed, not extracted.
+ * (show:false, never selectable) and was removed, not extracted; the Goals
+ * surface itself is retired outright in W2 (no goals affordance anywhere under
+ * manage/ — section CONFIG toggling in OverviewSectionsPanel is unaffected).
  *
  * The last tab is the single entry point for owner-initiated archive/trash
  * actions, or member-initiated leave (see DangerZonePanel) —

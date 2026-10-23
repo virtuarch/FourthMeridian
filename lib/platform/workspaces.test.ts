@@ -240,9 +240,9 @@ console.log("PLATFORM_OPS decomposition shape");
     `${overview.sections.length} of ${PLATFORM_AREAS.PLATFORM_OPS.sections.length}`);
 
   // Detailed capabilities have dedicated homes.
-  check("Manual Operations lives in the Operations workspace", byId.get("platform-operations")?.sections.includes("ops_manual_operations") === true);
+  check("Manual Operations lives in the Jobs workspace", byId.get("platform-jobs")?.sections.includes("ops_manual_operations") === true);
   check("Rich Job Health lives in the Jobs workspace", byId.get("platform-jobs")?.sections.includes("ops_job_health") === true);
-  check("Alerts detail lives in the Alerts workspace", byId.get("platform-alerts")?.sections.includes("ops_alerts") === true);
+  check("Alerts detail lives in the Policies workspace", byId.get("platform-policies")?.sections.includes("ops_alerts") === true);
   check("Providers workspace groups provider + connection + freshness + api", (() => {
     const p = byId.get("platform-providers")?.sections ?? [];
     return ["ops_provider_health", "ops_connection_health", "ops_resource_freshness", "ops_api_usage"].every((k) => p.includes(k));

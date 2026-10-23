@@ -24,9 +24,13 @@
  *     MERGER, a SPIN_OFF, or a quantity-bearing UNKNOWN STOPS the walk at that
  *     date with a failure reason — reconstruction never walks through a
  *     corporate action it cannot invert (A3 §8 guarantees 6, 7);
- *   - cash-only events (no instrumentId) route to the per-currency cash
- *     instrument's walk, by `amount`, never onto a security's quantity
- *     (A3 §8 guarantee 4);
+ *   - V26-S1-CASH — an event is routed by its EFFECT, not by the absence of an
+ *     instrument: its share leg (if any) walks the security by `quantity`, and
+ *     its cash leg (if any) walks the per-currency cash instrument by `amount`.
+ *     One event may therefore feed two walks — a sale moves shares out and cash
+ *     in — and a cash amount never lands on a security's quantity
+ *     (A3 §8 guarantee 4). Only a SHARE leg can be uninvertible; a cash leg
+ *     always inverts by subtraction (see WalkLeg);
  *   - closed positions (in the events, absent from holdings) anchor at 0;
  *   - the opening residual is persisted, never zeroed.
  *
@@ -87,6 +91,18 @@ export interface ReconstructParams {
   cashInstrumentByCurrency?: Record<string, string>;
   /** YYYY-MM-DD reconstruction run date — the anchor date for closed positions. */
   runDate: string;
+  /**
+   * V26-A4-OPENING — the account's demonstrated provider-data floor
+   * (MIN earliestReturnedDate over COMPLETE, reconciled coverage). An OPENING
+   * ANCHOR is never emitted before it: the day before the first event may fall
+   * outside anything the provider ever supplied, and a position row there would
+   * manufacture evidence in UNKNOWN prehistory.
+   *
+   * Optional and null-safe. When absent, no floor constraint is applied — the
+   * caller is stating it has no floor to enforce, not that the floor is
+   * unbounded, so callers that CAN supply one should.
+   */
+  providerFloorISO?: string | null;
 }
 
 // ── Outputs ───────────────────────────────────────────────────────────────────
@@ -141,26 +157,83 @@ export interface CheckpointConflict {
 
 // ── Routing ───────────────────────────────────────────────────────────────────
 
-/** A routed event: the walk it belongs to + the signed delta it applies there. */
+/**
+ * Which LEG of an event a routed entry represents.
+ *
+ * V26-S1-CASH — the distinction is load-bearing, not cosmetic. A corporate
+ * action can be uninvertible in SHARES (we may not know a split's ratio) while
+ * its CASH effect is a plain signed amount that inverts by subtraction like any
+ * other. Before this existed, `stopReasonFor` and the divide-by-ratio branch ran
+ * against whatever landed in a walk, so a ratio-less TQQQ split would have
+ * stopped the ACCOUNT'S CASH WALK at the split date — halting cash history for
+ * a reason that has nothing to do with cash.
+ *
+ * The rule, stated once: **a share leg can be uninvertible; a cash leg never
+ * is.** Everything below follows from it.
+ */
+export type WalkLeg = "SECURITY" | "CASH";
+
+/** A routed event: the walk it belongs to, which leg, + the signed delta. */
 interface RoutedEvent {
   event: ReconEventInput;
-  delta: number;   // security units (security walk) or cash amount (cash walk)
+  delta: number;   // security units (SECURITY leg) or cash amount (CASH leg)
+  leg:   WalkLeg;
 }
 
 export interface RoutingResult {
   /** instrumentId → routed events (security walks + resolvable cash walks). */
   byInstrument: Map<string, RoutedEvent[]>;
-  /** Cash-only events whose currency has no known cash instrument — unroutable. */
+  /** Events stating a cash effect whose currency has no known cash instrument. */
   unroutableCashEvents: ReconEventInput[];
 }
 
+/** Does this row state a material movement of money? */
+function hasMaterialAmount(e: ReconEventInput): boolean {
+  return e.amount != null && Number.isFinite(e.amount) && Math.abs(e.amount) > QUANTITY_EPSILON;
+}
+
 /**
- * Route each event to exactly one instrument walk. A row with an instrumentId is
- * a SECURITY event (delta = its quantity; a null quantity, e.g. a cash dividend
- * attributed to a security, contributes 0 — it changes no share count). A row
- * without an instrumentId is a CASH-ONLY event routed to the per-currency cash
- * instrument (delta = its cash amount). A cash-only event whose currency has no
- * known cash instrument is unroutable and reported, never silently applied.
+ * Route each event to the walks it affects. ONE EVENT MAY AFFECT TWO WALKS.
+ *
+ * ── The bug this exists to prevent (V26-S1-CASH) ─────────────────────────────
+ * This routed by the ABSENCE of an instrument: a row with an `instrumentId` was
+ * a security event and its cash leg was discarded; only a row WITHOUT one
+ * reached the cash walk. That predicate encodes an assumption about provider
+ * data shape that the provider does not satisfy.
+ *
+ * Measured on the live corpus: 47 of 51 investment events carry an
+ * `instrumentId`. Plaid attaches the PAYING security's id to a dividend, the
+ * TRADED security's id to a buy or sell, and — for a transfer — a synthetic
+ * instrument it invents for the transfer itself (rows literally named "Journal
+ * to …764" and "Tfr JPMORGAN CHASE BAN…", classified EQUITY). So on one live
+ * brokerage account, 36 events moved $3,480.08 of cash and NOT ONE reached the
+ * cash walk: its reconstruction ran with `eventCount = 0` and reported the
+ * account's entire present-day cash balance, $3,557.72, as an unexplained
+ * opening held before history began. The account's own observations put its
+ * cash at $11.65 five days earlier.
+ *
+ * The repair is to route by EFFECT rather than by absence:
+ *
+ *   SECURITY leg — every row with an instrumentId. delta = its signed quantity
+ *                  (null ⇒ 0: a cash dividend attributed to a security moves no
+ *                  shares). Unchanged from before.
+ *   CASH leg     — every row stating a material `amount`, routed to the
+ *                  per-currency cash instrument. delta = that amount, in the FM
+ *                  sign convention already documented on the schema and already
+ *                  verified against the corpus (+ cash in, − cash out).
+ *
+ * A row can therefore produce one entry, two, or none. A SELL contributes −N
+ * shares to its security walk AND +$X to the cash walk — which is what a sale
+ * is. A zero or absent amount produces no cash entry at all, so a split
+ * (amount 0) adds nothing and cannot manufacture a cash row.
+ *
+ * SAME-WALK COLLISION: if a row's own `instrumentId` IS the cash instrument, the
+ * security leg already owns that walk and the cash leg is DROPPED (reported as
+ * unroutable). Applying two deltas from one row to one walk would double-count
+ * it. No such row exists in the corpus; this is structural, not observed.
+ *
+ * A cash effect whose currency has no known cash instrument is unroutable and
+ * reported — never silently applied to some other currency's walk.
  */
 export function routeEvents(
   events: ReconEventInput[],
@@ -169,25 +242,38 @@ export function routeEvents(
   const byInstrument = new Map<string, RoutedEvent[]>();
   const unroutableCashEvents: ReconEventInput[] = [];
 
-  const push = (instrumentId: string, event: ReconEventInput, delta: number) => {
+  const push = (instrumentId: string, event: ReconEventInput, delta: number, leg: WalkLeg) => {
     const list = byInstrument.get(instrumentId) ?? [];
-    list.push({ event, delta });
+    list.push({ event, delta, leg });
     byInstrument.set(instrumentId, list);
   };
 
   for (const event of events) {
+    // ── SECURITY leg ────────────────────────────────────────────────────────
     if (event.instrumentId != null) {
-      push(event.instrumentId, event, event.quantity ?? 0);
-      continue;
+      push(event.instrumentId, event, event.quantity ?? 0, "SECURITY");
     }
+
+    // ── CASH leg — independent of whether a security leg was emitted ────────
+    if (!hasMaterialAmount(event)) continue;
     const cashInstrumentId = event.currency ? cashInstrumentByCurrency[event.currency] : undefined;
-    if (cashInstrumentId) push(cashInstrumentId, event, event.amount ?? 0);
-    else unroutableCashEvents.push(event);
+    if (!cashInstrumentId) { unroutableCashEvents.push(event); continue; }
+    if (cashInstrumentId === event.instrumentId) { unroutableCashEvents.push(event); continue; }
+    push(cashInstrumentId, event, event.amount!, "CASH");
   }
   return { byInstrument, unroutableCashEvents };
 }
 
 // ── Walk ──────────────────────────────────────────────────────────────────────
+
+/**
+ * The calendar day before an ISO date. Pure and clock-free — parses the date in
+ * UTC, so it is stable regardless of where it runs and correct across month,
+ * year and leap boundaries.
+ */
+export function previousDayISO(dateISO: string): string {
+  return new Date(Date.parse(`${dateISO}T00:00:00.000Z`) - 86_400_000).toISOString().slice(0, 10);
+}
 
 /** Does an event state a material share effect on THIS instrument's leg? */
 function hasMaterialQuantity(e: ReconEventInput): boolean {
@@ -222,13 +308,32 @@ function stopReasonFor(e: ReconEventInput): string | null {
   return null;
 }
 
-/** Deterministic total order for the walk: (date, source, externalEventId, id). */
+/**
+ * The stop reason for a ROUTED entry.
+ *
+ * V26-S1-CASH — only a SHARE leg can be uninvertible. `stopReasonFor` asks
+ * whether a corporate action's effect on a SHARE COUNT can be reversed; a cash
+ * amount has no ratio, no counterparty leg and no terms to be missing, so it
+ * inverts by subtraction like every other signed amount. Applying the share test
+ * to a cash entry would let a ratio-less split halt an account's cash history —
+ * a refusal about shares, silently spent on cash.
+ */
+function stopReasonForRouted(r: RoutedEvent): string | null {
+  return r.leg === "SECURITY" ? stopReasonFor(r.event) : null;
+}
+
+/** Deterministic total order for the walk: (date, source, externalEventId, id, leg). */
 function compareRouted(a: RoutedEvent, b: RoutedEvent): number {
   return (
     a.event.date.localeCompare(b.event.date) ||
     a.event.source.localeCompare(b.event.source) ||
     (a.event.externalEventId ?? "").localeCompare(b.event.externalEventId ?? "") ||
-    a.event.id.localeCompare(b.event.id)
+    a.event.id.localeCompare(b.event.id) ||
+    // One event can now produce two entries; the leg is the final tie-break so
+    // the total order stays total (A3 §8 guarantee 2). Legs never share a walk
+    // in practice — routing drops the collision — so this only ever settles a
+    // theoretical tie, deterministically.
+    a.leg.localeCompare(b.leg)
   );
 }
 
@@ -250,8 +355,12 @@ function resolveCancels(sorted: RoutedEvent[]): { active: RoutedEvent[]; conflic
   const consumed = new Set<RoutedEvent>();
   let conflicted = false;
   for (const cancel of cancels) {
+    // V26-S1-CASH — a cancel may only annul an entry on the SAME LEG. A share
+    // cancel that happened to be numerically equal-and-opposite to some cash
+    // amount would otherwise net the two to zero and delete both.
     const match = others.find(
-      (o) => !consumed.has(o) && Math.abs(o.delta + cancel.delta) <= QUANTITY_EPSILON,
+      (o) => !consumed.has(o) && o.leg === cancel.leg &&
+        Math.abs(o.delta + cancel.delta) <= QUANTITY_EPSILON,
     );
     if (match) {
       consumed.add(match);
@@ -281,6 +390,7 @@ function walkInstrument(
   anchorDate: string,
   anchorObservationId: string | null,
   routed: RoutedEvent[],
+  providerFloorISO: string | null,
 ): InstrumentReconstruction {
   // Only events on or before the anchor (today) inform the backward walk.
   const inWindow = routed.filter((r) => r.event.date <= anchorDate);
@@ -307,17 +417,23 @@ function walkInstrument(
       unexplainedQuantity: null,
     });
 
-    const stopEv = evs.find((r) => stopReasonFor(r.event));
+    const stopEv = evs.find((r) => stopReasonForRouted(r));
     if (stopEv) {
       stopped = true;
-      failureReason = stopReasonFor(stopEv.event);
+      failureReason = stopReasonForRouted(stopEv);
       earliest = date; // cannot reverse a corporate action we can't invert
       break;
     }
 
     // Reverse this date's events to reach the quantity that held just before it.
+    // The ratio branch is SHARE arithmetic and applies to the security leg only:
+    // dividing a cash balance by a split ratio is not a statement about money.
     for (const r of evs) {
-      if (r.event.type === InvestmentEventType.SPLIT && r.event.ratio != null && r.event.ratio !== 0) {
+      if (
+        r.leg === "SECURITY" &&
+        r.event.type === InvestmentEventType.SPLIT &&
+        r.event.ratio != null && r.event.ratio !== 0
+      ) {
         q = q / r.event.ratio;
       } else {
         q = q - r.delta;
@@ -345,6 +461,69 @@ function walkInstrument(
       boundary.completeness = "incomplete";
       boundary.unexplainedQuantity = opening;
     }
+  }
+
+  // ── V26-A4-OPENING — THE OPENING ANCHOR ───────────────────────────────────
+  //
+  // Every derived row above states the quantity as-of the END of an event date,
+  // so the earliest of them is the quantity AFTER the first event. Nothing
+  // represented the interval BEFORE it, even though `opening` states it exactly.
+  //
+  // The consequence was a silent over-count: with no row covering those dates,
+  // `resolvePositionAsOf` returns null and `holdConstantBeforeEarliest` carries
+  // the earliest row backward — the POST-event quantity. Locally that valued
+  // INTC as 5 shares for the 91 days before the BUY that took it 4 → 5, and
+  // NVDA as 2.0002 before the fractional buy that took it 2.0001 → 2.0002. The
+  // walk knew 4 and 2.0001 the whole time; it simply never said so where a
+  // reader could see it.
+  //
+  // So the residual is emitted as its own DERIVED row, dated the day before the
+  // first supported event. It is the SAME fact already stored as
+  // `openingQuantity` — published at the boundary rather than only summarised —
+  // which is why this belongs in the walk's output and not in a valuation-layer
+  // fallback.
+  //
+  // Refused, deliberately, when:
+  //   - the walk STOPPED (FAILED): everything before the stop is exactly what
+  //     could not be reconstructed. TQQQ keeps its pre-split history unlicensed.
+  //   - sources CONFLICT: an unusable opening must not be published as a fact.
+  //   - the opening is non-finite.
+  //   - the opening is ZERO. Introducing a zero row here would create a KNOWN
+  //     ABSENCE that valuation treats as a closed position, which is new zero
+  //     semantics this slice has not earned. Group A (opening 0) therefore emits
+  //     nothing and its ownership start is untouched.
+  //   - there are no events at all: `earliest` is the anchor date and there is
+  //     no "before the first event" to describe.
+  //   - the anchor date would fall before the account's provider floor.
+  //
+  // A genuinely negative opening KEEPS ITS SIGN. This publishes the walk's
+  // answer; it does not judge it. Valuation's residue guard independently
+  // refuses a DERIVED negative from a non-COMPLETE reconstruction, which is the
+  // right place for that judgement.
+  //
+  // Provenance is preserved, never upgraded: origin stays DERIVED (the writer's
+  // concern), completeness is "incomplete" and `unexplainedQuantity` carries the
+  // residual, because the entire quantity of this row is unexplained. It has no
+  // supporting events — `eventIds` is empty — as it IS the residual.
+  const openingAnchorDate = previousDayISO(earliest);
+  const emitOpeningAnchor =
+    !stopped &&
+    !conflicted &&
+    Number.isFinite(opening) &&
+    Math.abs(opening) > QUANTITY_EPSILON &&
+    rows.length > 0 &&
+    openingAnchorDate < earliest &&
+    !rows.some((r) => r.date === openingAnchorDate) &&
+    (providerFloorISO == null || openingAnchorDate >= providerFloorISO);
+
+  if (emitOpeningAnchor) {
+    rows.unshift({
+      date: openingAnchorDate,
+      quantity: opening,
+      eventIds: [],
+      completeness: "incomplete",
+      unexplainedQuantity: opening,
+    });
   }
 
   return {
@@ -393,6 +572,7 @@ export function reconstructPositions(params: ReconstructParams): InstrumentRecon
         anchor?.date ?? params.runDate,
         anchor?.observationId ?? null,
         routed,
+        params.providerFloorISO ?? null,
       ),
     );
   }
@@ -414,6 +594,85 @@ function walkQuantityAsOf(r: InstrumentReconstruction, date: string): number | n
   // No event on/before the date within coverage ⇒ the quantity held flat at the
   // anchor back to the earliest defensible date.
   return best ? best.quantity : r.observedCurrentQuantity;
+}
+
+// ── Cash reconciliation against provider observations (V26-S1-CASH) ───────────
+
+/** Default monetary tolerance for cash reconciliation, in account-currency units. */
+export const CASH_RECONCILIATION_TOLERANCE = 0.01;
+
+/** One date where the walk could be compared against an independent observation. */
+export interface WalkCheckpointResidual {
+  date:          string;
+  walkQuantity:  number;
+  observed:      number;
+  residual:      number;   // observed − walk
+  reconciled:    boolean;
+}
+
+/** How well a walk agrees with the observations it passes over. */
+export interface WalkReconciliation {
+  checkpoints:   number;
+  reconciled:    number;
+  maxResidual:   number;
+  tolerance:     number;
+  residuals:     WalkCheckpointResidual[];
+}
+
+/**
+ * Compare a walk against every independent OBSERVATION that falls inside its
+ * coverage, and report how well it agrees.
+ *
+ * ── Why this is EVIDENCE and not a conflict ──────────────────────────────────
+ * `detectCheckpointConflicts` above exists for IMPORTED statement anchors, where
+ * a disagreement is a genuine dispute between two sources and must block trust.
+ * This is a different question with a different consequence.
+ *
+ * A cash walk is anchored at the latest OBSERVED balance and passes over earlier
+ * OBSERVED balances on its way back. Those are free, independent checks — and
+ * they are exactly what makes cash reconstruction verifiable in a way share
+ * reconstruction is not (a share walk usually has only one anchor: today).
+ *
+ * But a disagreement here is NOT a dispute, because on any date carrying an
+ * observation, origin precedence (OBSERVED > DERIVED, resolvePositionAsOf)
+ * means the OBSERVATION is what every consumer reads. The derived row for that
+ * date is unreachable. A mismatch on an unreachable row tells us how good the
+ * model is; it does not put a displayed number in doubt. Where no observation
+ * exists — the dates that actually matter — there is nothing to disagree with.
+ *
+ * So this records rather than escalates. Measured on the live corpus, that is
+ * precisely the right severity: the walk reproduces the observed cash balance
+ * EXACTLY on 6 of 8 dates, and misses 2 by $1.50 — one dividend dated
+ * 2026-07-31 that posted to cash on 2026-08-03. That is settlement lag, a real
+ * property of brokerage cash, and it belongs in the evidence record rather than
+ * behind a "sources disagree, needs review" banner.
+ *
+ * Pure and deterministic. Observations outside the walk's coverage are skipped:
+ * a walk makes no claim there, so there is nothing to compare.
+ */
+export function reconcileWalkAgainstObservations(
+  r: InstrumentReconstruction,
+  observations: readonly { date: string; quantity: number }[],
+  tolerance: number = CASH_RECONCILIATION_TOLERANCE,
+): WalkReconciliation {
+  const residuals: WalkCheckpointResidual[] = [];
+  for (const o of observations) {
+    const walk = walkQuantityAsOf(r, o.date);
+    if (walk === null) continue; // outside coverage — no claim, nothing to check
+    const residual = o.quantity - walk;
+    residuals.push({
+      date: o.date, walkQuantity: walk, observed: o.quantity, residual,
+      reconciled: Math.abs(residual) <= tolerance,
+    });
+  }
+  residuals.sort((a, b) => a.date.localeCompare(b.date));
+  return {
+    checkpoints: residuals.length,
+    reconciled:  residuals.filter((x) => x.reconciled).length,
+    maxResidual: residuals.reduce((m, x) => Math.max(m, Math.abs(x.residual)), 0),
+    tolerance,
+    residuals,
+  };
 }
 
 /**

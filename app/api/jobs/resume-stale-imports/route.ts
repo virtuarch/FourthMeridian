@@ -18,6 +18,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
+import { isAuthorizedCronRequest } from "@/lib/jobs/cron-auth";
 import { runJob } from "@/lib/jobs/run";
 import { resumeStaleImports } from "@/jobs/resume-stale-imports";
 
@@ -26,10 +27,8 @@ import { resumeStaleImports } from "@/jobs/resume-stale-imports";
 export const maxDuration = 300;
 
 export const GET = withApiHandler(async (req: NextRequest) => {
-  const authHeader = req.headers.get("authorization");
-  const cronSecret = process.env.CRON_SECRET;
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+  // SEC-009 — timing-safe CRON_SECRET comparison (lib/jobs/cron-auth.ts).
+  if (!isAuthorizedCronRequest(req.headers.get("authorization"), process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

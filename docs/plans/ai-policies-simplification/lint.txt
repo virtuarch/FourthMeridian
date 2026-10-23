@@ -1,0 +1,50 @@
+
+/Users/chrstn/dev/FourthMeridian-ui/components/connections/ConnectionCard.tsx
+  48:10  warning  'providerName' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/Users/chrstn/dev/FourthMeridian-ui/components/dashboard/TotpSection.tsx
+  156:19  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+/Users/chrstn/dev/FourthMeridian-ui/components/space/widgets/AssetValueWidget.tsx
+  40:10  warning  'DEFAULT_DISPLAY_CURRENCY' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/Users/chrstn/dev/FourthMeridian-ui/components/space/widgets/ProgressWidget.tsx
+  28:10  warning  'DEFAULT_DISPLAY_CURRENCY' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/Users/chrstn/dev/FourthMeridian-ui/components/space/widgets/debt/DebtWorkspace.tsx
+  216:9  warning  The 'debtPoints' logical expression could make the dependencies of useCallback Hook (at line 224) change on every render. Move it inside the useCallback callback. Alternatively, wrap the initialization of 'debtPoints' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+/Users/chrstn/dev/FourthMeridian-ui/components/space/widgets/liquidity/LiquidityWorkspace.tsx
+  300:9  warning  The 'liquidityPoints' logical expression could make the dependencies of useCallback Hook (at line 307) change on every render. Move it inside the useCallback callback. Alternatively, wrap the initialization of 'liquidityPoints' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+/Users/chrstn/dev/FourthMeridian-ui/lib/accounts/account-spine-boundary.test.ts
+  54:10  warning  'DuplicateDetectionSource' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/Users/chrstn/dev/FourthMeridian-ui/lib/ai/conversation/evidence.ts
+  47:15  warning  'ReadClient' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/Users/chrstn/dev/FourthMeridian-ui/lib/ai/forecast/assemble.ts
+  67:26  warning  'conclusionLicence' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  67:45  warning  'Conclusion' is defined but never used. Allowed unused vars must match /^_/u         @typescript-eslint/no-unused-vars
+  68:8   warning  'ConclusionKind' is defined but never used. Allowed unused vars must match /^_/u     @typescript-eslint/no-unused-vars
+
+/Users/chrstn/dev/FourthMeridian-ui/lib/forecast/engine.ts
+  48:10  warning  'CURRENCY' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/Users/chrstn/dev/FourthMeridian-ui/lib/forecast/policy.ts
+   102:33  warning  'composeFutureCash' is defined but never used. Allowed unused vars must match /^_/u            @typescript-eslint/no-unused-vars
+   103:30  warning  'CashComposition' is defined but never used. Allowed unused vars must match /^_/u              @typescript-eslint/no-unused-vars
+  1190:7   warning  'label' is assigned a value but never used. Allowed unused vars must match /^_/u               @typescript-eslint/no-unused-vars
+  1192:7   warning  'describeAssumption' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/Users/chrstn/dev/FourthMeridian-ui/lib/platform/ai/invocation-economics.test.ts
+  33:5  warning  'seq' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/Users/chrstn/dev/FourthMeridian-ui/lib/platform/plaid/item-months.test.ts
+  30:7  warning  'AUG' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+/Users/chrstn/dev/FourthMeridian-ui/scripts/rls-app-acceptance.ts
+  313:9  warning  'reactivate' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+✖ 19 problems (0 errors, 19 warnings)
+

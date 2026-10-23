@@ -83,6 +83,17 @@ export interface SpaceShellProps {
   /** Customer surfaces opt into phone-sized rail targets without changing Platform frames. */
   mobileOptimized?: boolean;
 
+  /**
+   * Where the rail is SHOWN. "always" (default) — every width. "belowLg" — only
+   * below the `lg` breakpoint, for a host whose desktop sidebar already is the
+   * workspace switcher (a Platform Space publishes its workspaces to the
+   * ContextualNavbar's Space block, `hidden … lg:block`). The exact complement
+   * of that breakpoint, so exactly one switcher shows at any width. Presentation
+   * only: the rail stays mounted and its selection logic is untouched (mirrors
+   * PerspectiveShell `tabsVisibility`).
+   */
+  railVisibility?: "always" | "belowLg";
+
   /** The workspace viewport — the active tab's content. Owned by the host. */
   children: ReactNode;
 }
@@ -99,6 +110,7 @@ export function SpaceShell({
   variant = "space",
   headerActions,
   mobileOptimized = false,
+  railVisibility = "always",
   children,
 }: SpaceShellProps) {
   const isUtility = variant === "utility";
@@ -154,7 +166,11 @@ export function SpaceShell({
             in-flow on every Workspace AND every lens: no left-shift when a
             Perspective engages, no scroll-shrink float. Switching pages never
             moves the rail. (Suppressed for a single-workspace utility surface.) */}
-        {showRail && <div className="mb-7 flex justify-center">{rail}</div>}
+        {showRail && (
+          <div className={railVisibility === "belowLg" ? "lg:hidden mb-7 flex justify-center" : "mb-7 flex justify-center"}>
+            {rail}
+          </div>
+        )}
 
         {/* Workspace slot */}
         {children}

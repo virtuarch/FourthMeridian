@@ -22,6 +22,8 @@ import { requireFreshUser } from "@/lib/session";
 import { getSpaceContext } from "@/lib/space";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { withTenantDb } from "@/lib/db/tenant-context";
+import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { assertOpeningPosition, investmentImportsEnabled } from "@/lib/investments/opening-position";
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -65,11 +67,22 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
   // ── Authorize (canonical import rule — owner OR FULL non-owner + role) ──────
   const { spaceId } = await getSpaceContext();
-  const access = await resolveImportableFinancialAccount(user.id, spaceId, financialAccountId);
+  // RLS-ACC-S2 — the shared guard takes its authority as a required leading
+  // parameter now, so the check runs as the caller rather than as the
+  // migration principal it used to default to.
+  const access = await withTenantDb(
+    user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, financialAccountId));
   if (!access.ok) return access.response;
 
   // ── Write ──────────────────────────────────────────────────────────────────
+  // RLS-PREP-2 — the write runs as the CALLER, in phases opened here on the
+  // tenant role; the writer holds no database client. `recordIssue` is the
+  // incident recorder on its own fm_system default — one typed incident, never
+  // a client — and the writer calls it only after a tenant phase has admitted
+  // the account and ended (lib/investments/opening-position.ts).
   const result = await assertOpeningPosition({
+    tenant: (fn, opts) => withTenantDb(user.id, fn, opts),
+    recordIssue: (issue) => recordSyncIssue(issue),
     financialAccountId,
     instrument: hasInstrumentId
       ? { instrumentId: instrumentId as string }

@@ -46,8 +46,7 @@
  */
 
 import Papa from "papaparse";
-import { TransactionCategory } from "@prisma/client";
-import { db } from "@/lib/db";
+import { TransactionCategory, type Prisma } from "@prisma/client";
 import { findByFingerprint, normalizeMerchantKey } from "@/lib/transactions/fingerprint";
 
 export type SignConvention = "creditPositive" | "debitPositive";
@@ -518,7 +517,9 @@ export type FingerprintOutcome =
  *      helper Plaid sync uses (D2 Step 4C). Used as-is, unmodified.
  *   3. CSV-specific refinement findByFingerprint() doesn't expose: is the
  *      match ambiguous (more than one existing row shares
- *      date+amount+pending+normalized-merchant)? findByFingerprint() picks
+ *      date+amount+pending+normalized RAW descriptor — W1/D6: the same DF-4
+ *      key findByFingerprint narrows on, `description ?? merchant` on BOTH
+ *      sides)? findByFingerprint() picks
  *      the first deterministically and logs a warning; for an import we'd
  *      rather surface that ambiguity as a SKIPPED row than silently treat
  *      it as a clean match. Reuses normalizeMerchantKey() (the same
@@ -538,7 +539,13 @@ export async function resolveFingerprintOutcome(
   // fingerprint as `description ?? merchant` so CSV keys on the same stable raw
   // descriptor as Plaid sync (see lib/transactions/fingerprint.ts). Optional so
   // a caller without a separate descriptor keeps the prior merchant-keyed match.
-  description: string | null = null
+  description: string | null,
+  // RLS-PREP-C — REQUIRED, and `description` lost its default so that it can be.
+  // This was `= db`, which made the duplicate-detection read of BOTH import
+  // routes run as the migration principal although neither of them named it:
+  // the routes called this with six arguments and the seventh was supplied for
+  // them. They now pass the tenant phase they are executing in.
+  client: Pick<Prisma.TransactionClient, "transaction">
 ): Promise<FingerprintOutcome> {
   if (externalTransactionId) {
     // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import
@@ -546,7 +553,7 @@ export async function resolveFingerprintOutcome(
     // same file after a rollback would silently no-op instead of recreating
     // the row. See
     // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
-    const exact = await db.transaction.findFirst({
+    const exact = await client.transaction.findFirst({
       where:  { financialAccountId, externalTransactionId, deletedAt: null },
       select: { id: true },
     });
@@ -557,19 +564,28 @@ export async function resolveFingerprintOutcome(
     if (exact) return { outcome: "MATCH", transactionId: exact.id, matchedVia: "externalId" };
   }
 
-  const fpMatch = await findByFingerprint(financialAccountId, date, amount, description ?? merchant, false);
+  const fpMatch = await findByFingerprint(financialAccountId, date, amount, description ?? merchant, false, client);
   if (!fpMatch) return { outcome: "CREATE" };
 
   // deletedAt: null — same rationale as above. This candidate set must agree
   // with findByFingerprint()'s own (also deletedAt: null, D2 Step 4D-R)
   // candidate set, or the two could disagree on whether a match is
   // ambiguous.
-  const candidates = await db.transaction.findMany({
+  //
+  // W1 (D6) — the ambiguity re-check now narrows on the SAME key as
+  // findByFingerprint: the normalized RAW descriptor (`description ?? merchant`,
+  // DF-4), both for the incoming row and for each candidate. It previously keyed
+  // on the enriched `merchant` alone — so the match could be found under one key
+  // (raw descriptor) and its ambiguity assessed under another (merchant), and
+  // the two could disagree about whether the match was safe. One key, one
+  // doctrine: this is write-side idempotency evidence, and it must be computed
+  // exactly one way.
+  const candidates = await client.transaction.findMany({
     where:  { financialAccountId, date, amount, pending: false, deletedAt: null },
-    select: { id: true, merchant: true },
+    select: { id: true, merchant: true, description: true },
   });
-  const target  = normalizeMerchantKey(merchant);
-  const matches = candidates.filter((c) => normalizeMerchantKey(c.merchant) === target);
+  const target  = normalizeMerchantKey(description ?? merchant);
+  const matches = candidates.filter((c) => normalizeMerchantKey(c.description ?? c.merchant) === target);
 
   if (matches.length > 1) {
     return { outcome: "SKIP", reason: `ambiguous fingerprint match (${matches.length} existing rows)` };

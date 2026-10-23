@@ -4,9 +4,12 @@
  * components/connections/ConnectionsActions.tsx
  *
  * D2.x — page-level provider action cluster for the Connections hub, the single
- * entry point for all financial sources. Two actions today:
+ * entry point for all financial sources. Three actions today:
  *   - Connect institution → Plaid Link (usePlaid().openLink)
  *   - Add wallet          → the existing AddWalletModal
+ *   - Add asset           → the existing AddManualAssetModal (RWA-1: a home,
+ *                           vehicle or valuable the user values themselves — a
+ *                           first-class asset, not a provider connection)
  *
  * Visual language matches the Daily Brief hero CTAs (BriefHero): useAtlasLiquid()
  * picks the Liquid CTA (AtlasLiquidCta) when supported, else the Atlas Glass
@@ -18,12 +21,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Building2, Wallet, Loader2 } from "lucide-react";
+import { Building2, Wallet, Loader2, Home } from "lucide-react";
 import { usePlaid } from "@/context/PlaidContext";
 import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
+import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 
 interface Props {
   /** Center the cluster (used by the empty state). Default false. */
@@ -40,6 +44,7 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
   const { openLink, isLoading, error } = usePlaid();
   const liquid = useAtlasLiquid();
   const [walletOpen, setWalletOpen] = useState(false);
+  const [assetOpen, setAssetOpen] = useState(false);
 
   const connectLabel = isLoading ? "Opening…" : "Connect institution";
 
@@ -58,6 +63,13 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
     <>
       <Wallet size={16} className="shrink-0" />
       <span className="whitespace-nowrap">Add wallet (address or xpub)</span>
+    </>
+  );
+
+  const assetContent = (
+    <>
+      <Home size={16} className="shrink-0" />
+      <span className="whitespace-nowrap">Add asset</span>
     </>
   );
 
@@ -91,10 +103,27 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
             {walletContent}
           </GlassButton>
         )}
+
+        {liquid ? (
+          <AtlasLiquidCta onClick={() => setAssetOpen(true)} ariaLabel="Add a home, vehicle or other asset">
+            {assetContent}
+          </AtlasLiquidCta>
+        ) : (
+          <GlassButton tone="neutral" fullWidth className="sm:w-auto" onClick={() => setAssetOpen(true)}>
+            {assetContent}
+          </GlassButton>
+        )}
       </div>
 
       {error && (
         <p className="text-xs text-[var(--coral-400)] sm:self-center">{error}</p>
+      )}
+
+      {assetOpen && (
+        <AddManualAssetModal
+          onClose={() => setAssetOpen(false)}
+          onAdd={() => router.refresh()}
+        />
       )}
 
       {walletOpen && (

@@ -3,9 +3,9 @@
 /**
  * RefreshButton
  *
- * Calls POST /api/plaid/refresh — the one reusable refresh pipeline
- * (lib/plaid/refresh.ts) that also backs the future daily cron job and
- * webhook handler. On success, calls router.refresh() so the Server
+ * Calls POST /api/refresh/all — the customer's provider-agnostic Refresh All
+ * (lib/refresh/refresh-all.ts): every eligible authority (Plaid banking and
+ * investments, crypto wallets), one structured outcome each. On success, calls router.refresh() so the Server
  * Component data on the current page (balances, transactions, holdings)
  * re-fetches without a full reload.
  *

@@ -32,11 +32,16 @@
  */
 
 import { db } from "@/lib/db";
-import { ShareStatus, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
+import { AccountType, ShareStatus, SettlementState, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
-import { getInvestmentValueForWindow } from "@/lib/investments/valuation";
-import type { InvestmentValuationView } from "@/lib/investments/valuation-core";
+// V26-S2-OWNERSHIP — regeneration composes NOTHING of its own any more. It asks
+// the canonical historical-holdings query, which is the same query a drill-down
+// will ask, so the chart point and its explanation cannot diverge.
+import { historicalHoldingsForWindow } from "@/lib/investments/historical-holdings";
+import type { HistoricalHoldingsSet } from "@/lib/investments/historical-holdings.core";
+import { ownershipTier } from "@/lib/investments/historical-holdings.core";
+import { worstTier, isCompletenessTier } from "@/lib/perspective-engine/completeness";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import {
   reconstructDailyCashBalances,
@@ -52,8 +57,39 @@ import {
   type CashAccountBalance,
 } from "@/lib/snapshots/backfill-core";
 import { regenerateDay, type DayRegenInput, type DayRegenResult } from "@/lib/snapshots/regenerate-history.core";
-import { backfillBtcPrices, readBtcUsdWindow } from "@/lib/crypto/btc-price";
+import {
+  classifyRegeneration,
+  REGENERATION_DISPOSITIONS,
+  type RegenerationDisposition,
+} from "@/lib/snapshots/regeneration-candidates.core";
+import { resolveCryptoInstrumentId } from "@/lib/investments/crypto-instrument";
+import { readCryptoUsdWindows } from "@/lib/crypto/crypto-price-window";
+import { nativeAssetForChain, ledgerEpsilonFor, type NativeAsset } from "@/lib/crypto/native-asset";
+import { amountOwed } from "@/lib/debt/balance-semantics";
+import { getAccountBalancesOverWindow } from "@/lib/data/accounts-asof-window";
+import {
+  aggregateIdentityViolations, SERIES_IDENTITY_TOLERANCE,
+} from "@/lib/snapshots/series-integrity.core";
+import { licenseConstantQuantityCarry } from "@/lib/crypto/quantity-carry.core";
+import { feedsLegacyWealthHistory } from "@/lib/crypto/wallet-sync-dispatch";
+// W-M2c — THE canonical as-of position resolver, reused rather than reimplemented:
+// it carries the origin precedence (OBSERVED > IMPORTED > DERIVED > USER_ASSERTED)
+// that keeps an observation ranked above a reconstruction on a shared date.
+import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconstruction-read";
+import { loadPositionCoverage, resolveLicensedQuantityAsOf } from "@/lib/crypto/position-coverage";
+import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
+import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
+import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
 import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
+// RWA-2B — a manual real-world asset's past comes from ITS valuation ledger,
+// through THE one valuation policy (lib/assets/valuation-series.core.ts) every
+// other reader of that asset uses, never a second rule written here.
+import { loadHistoriesFor } from "@/lib/assets/valuations";
+import type { ValuationBasis } from "@/lib/assets/valuation-series.core";
+import {
+  isLegacyManualAsset, manualAssetHistoryFloor, manualAssetValueOn, realAssetTierFor,
+  type ManualAssetHistoryInput,
+} from "@/lib/snapshots/manual-asset-history.core";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -133,7 +169,19 @@ export interface RegenerateWealthHistoryResult {
   fromDate:           string;
   toDate:             string;
   considered:         number; // days evaluated
-  written:            number; // rows upserted (0 on dry-run / flag off)
+  written:            number; // rows upserted in full (0 on dry-run / flag off)
+  /** Rows where only the AUTHORISED fields were patched (0 on dry-run / flag off). */
+  patched:            number;
+  /**
+   * STANDING WRITE-TIME PROBE — did the series this run produced survive its own
+   * integrity check?
+   *
+   * The 2025-07-31 phantom was written by a run that had no way to notice it: it
+   * applied a delta the ledger did not contain and reported success. A stage may
+   * now report success only after the resulting component series agrees with the
+   * evidence behind it. Null when nothing was written (nothing to verify).
+   */
+  integrity: { checked: number; healthy: boolean; violations: string[] } | null;
   skippedFrozen:      number; // observed rows left untouched
   skippedUnsupported: number; // no A8 evidence — flat estimate preserved, not fabricated
   // 2026-07-15 — days left untouched because an account was removed from the
@@ -141,6 +189,19 @@ export interface RegenerateWealthHistoryResult {
   // "MEMBERSHIP CHANGED" guard and
   // docs/initiatives/wealth-timeline/WEALTH_TIMELINE_AMENDMENT_SYSTEM_PROPOSAL.md §9.
   skippedMembershipChanged: number;
+  /**
+   * V26-CRYPTO-STATUS-1 — rows whose crypto verdict was recorded WITHOUT
+   * rewriting the row: a single-column update marking the stored crypto figure
+   * unassertable. Counted separately from `written` because no financial scalar
+   * changed.
+   */
+  cryptoStatusStamped: number;
+  /**
+   * V26-PRICE-5 — every evaluated day by disposition. `written` counts only
+   * UPDATED days; UNCHANGED days are evaluated and deliberately left alone, so
+   * `considered` and `written` no longer imply one another.
+   */
+  dispositions:       Record<RegenerationDisposition, number>;
   applied:            boolean; // whether writes actually happened
   diffs:              WealthHistoryDiff[];
 }
@@ -158,7 +219,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const applyWrites = !args.dryRun && (wealthRegenerationEnabled() || args.isAmendment === true);
 
   const zero: RegenerateWealthHistoryResult = {
-    spaceId, fromDate, toDate, considered: 0, written: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0, applied: applyWrites, diffs: [],
+    spaceId, fromDate, toDate, considered: 0, written: 0, patched: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0, cryptoStatusStamped: 0,
+    dispositions: Object.fromEntries(REGENERATION_DISPOSITIONS.map((d) => [d, 0])) as Record<RegenerationDisposition, number>,
+    applied: applyWrites, diffs: [], integrity: null,
   };
 
   // Space reporting currency (for the per-day conversion context, historical FX)
@@ -173,34 +236,407 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: {
       createdAt: true,
-      financialAccount: { select: { id: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true } },
+      financialAccount: { select: { id: true, name: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true, lastUpdated: true, walletChain: true, syncStatus: true } },
     },
   });
   if (linkRows.length === 0) return zero;
 
   const accounts = linkRows.map((l) => ({
     id: l.financialAccount.id,
+    name: l.financialAccount.name,
     type: l.financialAccount.type as string,
+    // RWA-2B — "manual" marks a USER-ESTIMATED real asset (POST /api/accounts/manual),
+    // the only account kind whose history lives in a valuation ledger.
+    syncStatus: l.financialAccount.syncStatus,
     balance: l.financialAccount.balance,
     currency: l.financialAccount.currency,
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
-    nativeBalance: l.financialAccount.nativeBalance, // BTC quantity for crypto accounts
+    nativeBalance: l.financialAccount.nativeBalance, // native quantity for crypto accounts
+    lastUpdated: l.financialAccount.lastUpdated,     // when nativeBalance was observed
+    // W-M0 — the column that says WHAT nativeBalance counts. Without it the
+    // asset was a literal at the point of use; see cryptoAssetByAccount below.
+    walletChain: l.financialAccount.walletChain,
   }));
 
   // Part-A — crypto accounts get an honest per-day valuation: today's on-chain
   // quantity (nativeBalance, held CONSTANT — the block explorer in use is
   // current-balance-only, so historical per-day balance isn't derivable) × that
-  // day's CoinGecko BTC price. Backfill the window's BTC prices once (best-effort,
-  // dark without COINGECKO_API_KEY). Independent of the per-account floor: the
-  // constant-quantity assumption spans the whole window (a labeled estimate).
+  // day's archived close FOR THAT ASSET. Backfill the window's prices once
+  // (best-effort, dark without COINGECKO_API_KEY). Independent of the
+  // per-account floor: the constant-quantity assumption spans the whole window
+  // (a labeled estimate).
   const cryptoAccounts = accounts.filter((a) => a.type === "crypto" && a.nativeBalance != null);
+
+  // W-M0 — WHICH ASSET DOES EACH WALLET'S nativeBalance DENOMINATE?
+  //
+  // This used to be answered by a literal `"BTC"` at the two places the answer
+  // was needed: the movement-ledger predicate below and the `valueCryptoDay`
+  // call in the day loop. Correct while Bitcoin is the only chain that writes a
+  // native balance; a silent mispricing the moment one is not. Resolved ONCE,
+  // here, from the account's own chain, and null when the chain is unknown —
+  // which the valuation core refuses (UNKNOWN_ASSET) rather than defaulting.
+  const cryptoAssetByAccount = new Map<string, NativeAsset | null>(
+    cryptoAccounts.map((a) => [a.id, nativeAssetForChain(a.walletChain)]),
+  );
+  // The DENOMINATION each wallet's movement rows carry (Transaction.currency).
+  const cryptoSymbolByAccount = new Map<string, string | null>(
+    cryptoAccounts.map((a) => [a.id, cryptoAssetByAccount.get(a.id)?.symbol ?? null]),
+  );
+  const heldCryptoSymbols = [
+    ...new Set([...cryptoSymbolByAccount.values()].filter((s): s is string => s !== null)),
+  ].sort();
+  // W-M1a — the CANONICAL IDENTITY each wallet holds, which is what selects a
+  // price. Distinct from the symbol above on purpose: the ledger predicate reads
+  // a denomination off a Transaction row, the valuation resolves an asset.
+  //
+  // W-M1b — THE DECLARED SET IS THE ASSETS ACTUALLY HELD, NOT EVERY ASSET PRESENT.
+  //
+  // `unitPriceByAssetKey`'s keys are the caller's declaration of which assets
+  // this day concerns, and every declared asset must be priced or the day
+  // refuses (all-or-nothing). Declaring every crypto account's asset therefore
+  // had a consequence nobody would want: adding an EMPTY Ethereum wallet — which
+  // the wallet route already lets a user create, with `nativeBalance: 0` — would
+  // put ETH in the declared set, ETH has no archived closes, and the Space's
+  // entire Bitcoin history would refuse. A wallet holding nothing would have
+  // silently blacked out the wallet that holds something.
+  //
+  // So the declaration is the assets with a MATERIAL balance. When none is held
+  // the fallback is every resolved asset, which preserves the pre-W-M0 rule
+  // exactly: a drained wallet on a day with no close still refuses rather than
+  // asserting that digital assets are zero (see the CryptoDayInput contract).
+  const assetsOf = (accts: typeof cryptoAccounts) => [
+    ...new Map(
+      accts
+        .map((a) => cryptoAssetByAccount.get(a.id))
+        .filter((x): x is NonNullable<typeof x> => x != null)
+        .map((a) => [a.assetKey, a]),
+    ).values(),
+  ];
+  //
+  // ── W-M2c — THE SPINE BRIDGE: A DATED POSITION IS ALSO A CRYPTO QUANTITY ────
+  //
+  // Everything above sources a crypto quantity from `FinancialAccount
+  // .nativeBalance` — the legacy column Bitcoin writes at sync time and carries
+  // backward under licence. A chain that writes NO balance column is invisible
+  // to it, however much history it has.
+  //
+  // Solana is exactly that chain, and the consequence was measured on the real
+  // wallet: a fully reconstructed, zero-residual quantity timeline sat on the
+  // position spine — 100.7766 SOL on 26 February, 0.7516 on the 27th — while
+  // every SpaceSnapshot in that window recorded Bitcoin alone. The reconstruction
+  // was correct and reached no consumer, so the year chart showed nothing where a
+  // hundred-SOL custody change had happened.
+  //
+  // The bridge is the doctrine-correct direction and nothing more:
+  //
+  //     dated position (PositionObservation) × dated close = dated crypto value
+  //
+  // NOT today's nativeBalance painted backward, and NOT a missing legacy balance
+  // read as zero. Each account is sourced by exactly ONE authority — the chain
+  // that feeds the legacy path uses the legacy column, every other chain uses
+  // the spine — so no quantity can ever be counted twice.
+  //
+  // DELETION CONDITION: this bridge exists because the wealth-history composer
+  // reads a scalar column at all. When the net-worth convergence moves that
+  // composition onto the position spine for every asset, `legacyCryptoAccounts`
+  // and `spineCryptoAccounts` collapse into one list and this split disappears.
+  // The split is expressed as one predicate applied twice — in `spineCryptoAccounts`
+  // here, and per account in `cryptoQuantityOn` below. A chain that feeds the
+  // legacy column keeps it; every other chain reads the spine. One authority
+  // each, so no quantity can be counted twice.
+  const spineCryptoAccounts = cryptoAccounts.filter((a) => !feedsLegacyWealthHistory(a.walletChain));
+
+  // One bounded read for the whole window, then resolved per day in memory
+  // through THE canonical resolver — never a second position-resolution rule.
+  const spineRowsByAccount = new Map<string, PositionRow[]>();
+  if (spineCryptoAccounts.length > 0) {
+    const spineRows = await client.positionObservation.findMany({
+      where: {
+        financialAccountId: { in: spineCryptoAccounts.map((a) => a.id) },
+        supersededById: null, deletedAt: null,
+        date: { lte: fromISO(toDate) },
+      },
+      select: { financialAccountId: true, date: true, quantity: true, origin: true, completeness: true },
+      orderBy: { date: "asc" },
+    });
+    for (const r of spineRows) {
+      const list = spineRowsByAccount.get(r.financialAccountId) ?? [];
+      list.push({ date: isoDate(r.date), quantity: r.quantity, origin: r.origin, completeness: r.completeness ?? null });
+      spineRowsByAccount.set(r.financialAccountId, list);
+    }
+  }
+
+  /**
+   * The quantity this crypto account held on `dISO`.
+   *
+   * Legacy chains answer with the constant `nativeBalance` (the carry, licensed
+   * separately). Spine chains answer from dated evidence via
+   * `resolvePositionAsOf`, which applies the canonical origin precedence
+   * (OBSERVED > IMPORTED > DERIVED > USER_ASSERTED) — so an observation always
+   * outranks a reconstruction on a shared date.
+   *
+   * NULL means no dated evidence reaches this day, which the valuation core
+   * treats as "not a position" — never as a quantity of zero.
+   */
+  // ── W6b — THE LICENCE IS PERSISTED COVERAGE, NOT ROW PRESENCE ──────────────
+  //
+  // W6 bounded the carry at the first and last spine row. That was an
+  // improvement over an unbounded carry and still the wrong authority: it read
+  // the SHAPE of the evidence as the licence to project it. It only looked
+  // right because this replay writes one row per licensed day — an
+  // implementation detail, not doctrine. A sparse representation with a
+  // licensed interval would have been refused inside its own coverage, and a
+  // stray row beyond the edge would have licensed a date nothing proved.
+  //
+  // `ChainCoverage` is the authority and it is now persisted alongside the rows
+  // it licenses (lib/crypto/position-coverage.ts). Two independent questions,
+  // both of which must pass:
+  //
+  //   what is the latest defensible quantity?   → the rows
+  //   may it represent THIS date?               → the coverage
+  //
+  // A wallet with no coverage record licenses NOTHING. That is deliberate and it
+  // is not a fallback to the old behaviour: row presence may never stand in for
+  // a licence, so a reconstruction that predates this record must be re-acquired
+  // rather than trusted on the strength of the rows it left behind.
+  const coverageByAccount = await loadPositionCoverage(client, spineCryptoAccounts.map((a) => a.id));
+
+  // EXISTENCE is a separate, weaker claim than LICENCE, and it comes from a
+  // different fact. The earliest dated row says the wallet WAS here; it says
+  // nothing about what it held on any other day. Keeping the two apart is what
+  // lets an unlicensed wallet REFUSE a date (it existed, we cannot say) while a
+  // wallet that was simply not there yet contributes nothing and refuses nothing
+  // — the distinction that stops one current-only ETH wallet blacking out a year
+  // of Bitcoin history.
+  const earliestEvidenceISO = new Map<string, string>();
+  for (const [accountId, rows] of spineRowsByAccount) {
+    if (rows.length > 0) earliestEvidenceISO.set(accountId, rows[0].date);
+  }
+
+  // W6 — membership by CHAIN, not by whether rows happened to be found. Keying
+  // off map presence made a spine-backed wallet with no rows in the window fall
+  // through to `nativeBalance` — the legacy column, which for those chains is an
+  // unwritten 0. That is the false zero this slice exists to remove, arriving by
+  // the back door.
+  const spineAccountIds = new Set(spineCryptoAccounts.map((a) => a.id));
+
+  const cryptoQuantityOn = (accountId: string, dISO: string): number | null => {
+    if (spineAccountIds.has(accountId)) {
+      // Spine-backed: dated evidence or nothing. NEVER the legacy column.
+      const rows = spineRowsByAccount.get(accountId);
+      if (rows === undefined) return null;
+      // W6b — licence FIRST. `resolvePositionAsOf` still decides WHICH row wins
+      // (origin precedence: OBSERVED > IMPORTED > DERIVED > USER_ASSERTED); the
+      // coverage decides whether any row may speak for this date at all.
+      const licence = resolveLicensedQuantityAsOf(
+        rows.map((r) => ({ dateISO: r.date, quantity: r.quantity })),
+        coverageByAccount.get(accountId) ?? null,
+        dISO,
+      );
+      if (licence.refusal !== null) return null;
+      return resolvePositionAsOf(rows, dISO).quantity;
+    }
+    return cryptoAccounts.find((a) => a.id === accountId)?.nativeBalance ?? null;
+  };
+
+  /** Was this account within its defensible existence interval on `dISO`? */
+  const cryptoApplicableOn = (accountId: string, dISO: string): boolean => {
+    // A legacy-column account is governed by its own carry licence, unchanged —
+    // except that an ABSENT column is no balance evidence at all, so the account
+    // is not applicable rather than unknown. That is exactly the pre-W6
+    // behaviour (a null balance contributed nothing), and keeping it is what
+    // makes the BTC path byte-identical through this slice.
+    if (!spineAccountIds.has(accountId)) {
+      return cryptoAccounts.find((a) => a.id === accountId)?.nativeBalance != null;
+    }
+    // W6b — EXISTENCE, from evidence. A date before a wallet's earliest dated
+    // row is before it was here. Everything at or after is APPLICABLE, and
+    // whether a QUANTITY may be stated there is the coverage's separate
+    // question, asked in `cryptoQuantityOn`. An applicable date with no licensed
+    // quantity is UNKNOWN and refuses the day — it does not silently drop out,
+    // which is the whole point of W6.
+    const earliest = earliestEvidenceISO.get(accountId);
+    if (earliest !== undefined && dISO >= earliest) return true;
+
+    // W6c — A WALLET WITH NO RECONSTRUCTION IS NOT A WALLET THAT WAS NOT THERE.
+    //
+    // Bitcoin's move onto the spine brought with it wallets that hold a MATERIAL
+    // legacy balance and have no canonical quantity evidence at all — the seeded
+    // demo wallets, and any real wallet whose reconstruction refused. Treating
+    // them like a chain that simply was not here yet would drop them silently
+    // from a total that then reads as complete: the exact W6 defect, arriving
+    // through the door W6b opened for current-only chains.
+    //
+    // So a materially-held wallet is APPLICABLE from the day it was linked, and
+    // — having no licensed quantity — refuses every day it touches. That is the
+    // honest cost of retiring the carry, and it is not paid by inventing a
+    // number. A wallet holding nothing material is genuinely absent and refuses
+    // nothing, which is what keeps a current-only ETH wallet from blacking out a
+    // year of history it never claimed.
+    const account = cryptoAccounts.find((a) => a.id === accountId);
+    const materiallyHeld = Math.abs(account?.nativeBalance ?? 0) > 0;
+    if (!materiallyHeld) return false;
+    const floor = floorByAccount.get(accountId);
+    return floor !== undefined && dISO >= isoDate(floor);
+  };
+
+  // An account is MATERIAL if it ever held something across the window — by the
+  // legacy column, or by any dated position on the spine.
+  const materialCryptoAccounts = cryptoAccounts.filter((a) =>
+    Math.abs(a.nativeBalance ?? 0) > 0
+    || (spineRowsByAccount.get(a.id) ?? []).some((r) => Math.abs(r.quantity) > 0));
+  const heldCryptoAssets =
+    materialCryptoAccounts.length > 0 ? assetsOf(materialCryptoAccounts) : assetsOf(cryptoAccounts);
+
+  // V26-CRYPTO-QTY-1 — THE CONSTANT-QUANTITY CARRY IS NOW LICENSED, NOT ASSUMED.
+  //
+  // Carrying `nativeBalance` to a historical date claims the wallet held that
+  // amount then. That claim is only true across an interval containing no
+  // quantity-changing transaction, and nothing used to check. Load, ONCE:
+  //
+  //   anchor  — the date `nativeBalance` was observed (the account's last sync).
+  //   events  — the dates of quantity-changing wallet transactions.
+  //
+  // FILTERING PREDICATES (the binding's documented responsibility; the pure
+  // decision in quantity-carry.core.ts deliberately takes dates only):
+  //   · scoped to THIS wallet — another account's movements are not this
+  //     wallet's quantity, so they must never block it;
+  //   · currency = "BTC" — the native-amount column. A fiat row carries no BTC
+  //     quantity and is not a quantity event (never infer quantity from fiat);
+  //   · deletedAt IS NULL and settlementState = POSTED — pending/unconfirmed and
+  //     deleted rows are not settled quantity changes;
+  //   · every remaining row counts, whatever its sign or flowType. btc-sync
+  //     writes `amount` as a SIGNED native BTC delta (inflow +, outflow/fee −),
+  //     so inflows, outflows, fees and internal transfers all change THIS
+  //     wallet's balance and all must block. Internal transfers are not
+  //     double-counted: each leg is a row on its own account and only ever
+  //     blocks the account it belongs to.
+  const cryptoQuantityEventsByAccount = new Map<string, string[]>();
+  const cryptoAnchorByAccount = new Map<string, string>();
+  // V26-S1-BTC — the same rows, summed, answer a question the dates alone cannot:
+  // does this ledger account for the wallet's own balance? See below.
+  const cryptoLedgerCompleteByAccount = new Map<string, boolean>();
   if (cryptoAccounts.length > 0) {
+    for (const a of cryptoAccounts) {
+      // No sync timestamp ⇒ the quantity has no observation date to be carried
+      // FROM. Left unset, which the guard reports as NO_ANCHOR and refuses —
+      // never coerced to "now", which would silently license the whole window.
+      if (a.lastUpdated) cryptoAnchorByAccount.set(a.id, isoDate(a.lastUpdated));
+    }
+    const evRows = await client.transaction.findMany({
+      where: {
+        financialAccountId: { in: cryptoAccounts.map((a) => a.id) },
+        // W-M0 — the native-amount rows for EVERY asset held in this Space, then
+        // matched back to each account's OWN asset below. A single literal here
+        // would hand a Bitcoin-denominated movement to an Ethereum wallet's
+        // reconciliation, where it would be counted as that wallet's quantity.
+        currency:           { in: heldCryptoSymbols },
+        deletedAt:          null,
+        settlementState:    SettlementState.POSTED,
+      },
+      // V26-S1-BTC — `amount` joins the select: it is the SIGNED NATIVE delta the
+      // reconciliation sums. The same predicates already scope these rows to this
+      // wallet's settled native movements, which is exactly the ledger the
+      // reconciliation needs, so no second read is introduced.
+      select: { financialAccountId: true, date: true, amount: true, currency: true },
+    });
+    const movementsByAccount = new Map<string, number[]>();
+    for (const r of evRows) {
+      if (!r.financialAccountId) continue; // unattached row — not this wallet's activity
+      // W-M0 — a row counts for an account only if it denominates THAT account's
+      // native asset. With one chain this is always true and the filter is inert;
+      // with two it is the whole point.
+      if (r.currency !== cryptoSymbolByAccount.get(r.financialAccountId)) continue;
+      const list = cryptoQuantityEventsByAccount.get(r.financialAccountId) ?? [];
+      list.push(isoDate(r.date));
+      cryptoQuantityEventsByAccount.set(r.financialAccountId, list);
+      const amounts = movementsByAccount.get(r.financialAccountId) ?? [];
+      amounts.push(r.amount);
+      movementsByAccount.set(r.financialAccountId, amounts);
+    }
+
+    // V26-S1-BTC — LEDGER COMPLETENESS IS CHECKED, NOT ASSUMED.
+    //
+    // `licenseConstantQuantityCarry` decides by searching the event dates above
+    // for one that blocks the interval. That search is only meaningful if the
+    // list is complete, and it demonstrably was not: an unpaginated explorer
+    // fetch imported 25 of the wallet's 28 confirmed transactions, so the list
+    // began mid-history and "no event blocks this interval" was an artefact of
+    // the missing rows rather than a fact about the wallet.
+    //
+    // The chain makes this checkable for free — Σ signed movements must equal the
+    // observed balance — so we check it, per account, every run. A wallet whose
+    // ledger cannot explain its own balance licenses NOTHING historical; its
+    // current observed balance is untouched.
+    for (const a of cryptoAccounts) {
+      const recon = reconcileWalletLedger({
+        observedBalance: a.nativeBalance ?? null,
+        movements:       movementsByAccount.get(a.id) ?? [],
+        // W-M0 — one base unit OF THIS ASSET. A satoshi for BTC (unchanged); a
+        // lamport for SOL, which the old fixed satoshi tolerance would have let
+        // a ten-lamport shortfall pass under.
+        epsilon:         ledgerEpsilonFor(cryptoAssetByAccount.get(a.id) ?? null),
+      });
+      cryptoLedgerCompleteByAccount.set(a.id, recon.complete);
+      if (!recon.complete) {
+        console.warn(`[wealth-regen] ${spaceId}: wallet ${a.id} ledger INCOMPLETE — ${recon.reason}`);
+      }
+    }
+  }
+
+  /**
+   * May EVERY crypto account's constant quantity be carried to this date?
+   *
+   * All-or-nothing on purpose: valuing the licensed accounts while silently
+   * dropping a refused one would understate crypto and present the remainder as
+   * the whole — the precise dishonesty this slice exists to remove.
+   */
+  const cryptoQuantityLicensed = (dISO: string): boolean =>
+    // W6c — the constant carry now governs LEGACY-authority accounts only, of
+    // which there are none: Bitcoin was the last, and it earns a replayed,
+    // coverage-licensed timeline instead. A spine account's temporal licence is
+    // its PositionCoverage, asked per account in `cryptoQuantityOn`, so gating
+    // it on the carry as well would let one chain's ledger refuse another
+    // chain's proven history. The helper stays — lib/history/account-series.ts
+    // is still a legitimate caller — and this predicate is vacuously true until
+    // a future chain arrives with a legacy ingest path and no reconstruction.
+    cryptoAccounts.filter((a) => !spineAccountIds.has(a.id)).every((a) =>
+      licenseConstantQuantityCarry({
+        targetISO:      dISO,
+        anchorISO:      cryptoAnchorByAccount.get(a.id) ?? null,
+        eventDatesISO:  cryptoQuantityEventsByAccount.get(a.id) ?? [],
+        ledgerComplete: cryptoLedgerCompleteByAccount.get(a.id) ?? false,
+      }).licensed);
+
+  // V26-PRICE-5 — a DRY RUN MUST NOT ACQUIRE. `dryRun` previously suppressed
+  // only the snapshot upserts, so a "read-only" impact report still made live
+  // provider calls and wrote price rows. Valuation reads stored evidence only;
+  // acquisition is a separate, effectful phase and is skipped entirely here.
+  if (cryptoAccounts.length > 0 && !args.dryRun) {
     try {
-      const r = await backfillBtcPrices(fromDate, toDate);
-      console.log(`[wealth-regen] ${spaceId}: BTC price backfill — ${r.inserted} row(s)${r.configured ? "" : " (no COINGECKO_API_KEY — crypto stays flat)"}`);
+      // V26-PRICE-PROVIDER-UNIFICATION — crypto prices are acquired through the
+      // SAME path as equities (coverage → acquisition plan → capability routing
+      // → archive). This replaced a bespoke backfillBtcPrices that called
+      // CoinGecko directly and wrote to the archive itself. Nothing here is
+      // crypto-specific except resolving WHICH instrument to price.
+      // ETH-H2 — PRICE WHAT IS HELD, NOT WHAT BITCOIN IS.
+      //
+      // This resolved BTC's instrument and only ever backfilled Bitcoin, so a
+      // Space holding SOL or ETH had its quantities reconstructed and its prices
+      // never acquired — and an unpriced held asset refuses the whole day under
+      // the all-or-nothing rule. The instruments are now the ones this Space's
+      // crypto accounts actually denominate, resolved through the same identity
+      // authority the observations were written against. Bitcoin is included
+      // because it is held, not because it is Bitcoin.
+      const heldInstrumentIds = [...new Set((await Promise.all(
+        assetsOf(cryptoAccounts).map((a) => resolveCryptoInstrumentId(a).catch(() => null)),
+      )).filter((id): id is string => id !== null))];
+      const r = await backfillHeldInstrumentPrices(heldInstrumentIds, fromDate, toDate,
+        (line) => console.log(`[wealth-regen] ${spaceId}: ${line}`));
+      console.log(`[wealth-regen] ${spaceId}: crypto price backfill — planned ${r.planned}, ${r.inserted} row(s)`);
     } catch (e) {
-      console.warn(`[wealth-regen] ${spaceId}: BTC price backfill failed (non-fatal):`, e instanceof Error ? e.message : e);
+      console.warn(`[wealth-regen] ${spaceId}: crypto price backfill failed (non-fatal):`, e instanceof Error ? e.message : e);
     }
   }
   // Schwab-class fix — investment accounts with holdings but NO reconstructable
@@ -212,7 +648,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // fetches the historical span anyway). Best-effort/dark without a price vendor.
   const investmentAccounts = accounts.filter((a) => a.type === "investment");
   let heldInstrumentIds: string[] = [];
-  if (investmentAccounts.length > 0) {
+  // Same guard: no acquisition on a dry run. See the crypto branch above.
+  if (investmentAccounts.length > 0 && !args.dryRun) {
     heldInstrumentIds = [
       ...new Set(
         (
@@ -258,6 +695,49 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       if (g.financialAccountId && g._min.date) earliestTxByAccount.set(g.financialAccountId, truncDateUTC(g._min.date));
     }
   }
+  // ── RWA-2B — MANUAL REAL ASSETS ARE VALUED FROM THEIR LEDGER, NOT HELD FLAT ──
+  //
+  // A manual asset has no transactions, so until now it had no floor but
+  // "today" and sat at its current balance on any day it reached. Its history
+  // is the user's own dated estimates (AssetValuation + ManualAssetProfile),
+  // resolved by THE valuation policy: recorded on an anchor date, a straight
+  // line between two anchors (modeled), the latest estimate carried forward
+  // after the last one, and NOTHING before the first anchor. Loaded once for
+  // the window; answered per day in memory below.
+  //
+  // The FLOOR is the first anchor (manual-asset-history.core.ts), seeded here as
+  // the account's "earliest transaction" so computeAccountFloors — the single
+  // floor authority — still applies the SHARED-Space link-date bound on top: in
+  // a shared Space an asset's contribution begins at the later of its first
+  // anchor and the day it was linked in, never earlier.
+  //
+  // A LEGACY asset (no ledger rows, no profile) keeps floor = today, byte-for-
+  // byte the previous behaviour, so no existing Space's history changes without
+  // a user action (owner decision; see the core module's header).
+  const manualAssets = accounts.filter((a) => a.type === "other" && a.syncStatus === "manual");
+  const manualHistoryByAccount = new Map<string, ManualAssetHistoryInput>();
+  if (manualAssets.length > 0) {
+    const histories = await loadHistoriesFor(
+      client,
+      manualAssets.map((a) => ({ id: a.id, currency: a.currency, balance: a.balance, lastUpdated: a.lastUpdated })),
+      isoDate(today),
+    );
+    for (const a of manualAssets) {
+      const h = histories.get(a.id);
+      if (!h) continue;
+      const input: ManualAssetHistoryInput = {
+        resolved: h.resolved,
+        isLegacy: isLegacyManualAsset({ resolved: h.resolved, hasProfile: h.profile !== null }),
+      };
+      manualHistoryByAccount.set(a.id, input);
+      // The ledger floor stands in for the earliest transaction (a manual asset
+      // has none); it never overrides a real transaction floor if one existed.
+      if (!earliestTxByAccount.has(a.id)) {
+        earliestTxByAccount.set(a.id, fromISO(manualAssetHistoryFloor(input, isoDate(today))));
+      }
+    }
+  }
+
   // REG-2 — balance-bearing cash/savings/debt accounts with NO reconstructable
   // transaction history are HELD FLAT at their current balance across the window
   // (an honest estimate) rather than floored to today and dropped from every
@@ -318,7 +798,13 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // Existing rows in the window — for the frozen-row flag + before/after diffs.
   const existing = await client.spaceSnapshot.findMany({
     where:  { spaceId, date: { gte: fromISO(fromDate), lte: fromISO(toDate) } },
-    select: { date: true, isEstimated: true, stocks: true, crypto: true, cash: true, savings: true, debt: true, netWorth: true },
+    select: {
+      date: true, isEstimated: true, cryptoValuationStatus: true,
+      // EVERY field a component patch may name, so the diff compares like with
+      // like. A field absent here would always look "changed" and be rewritten.
+      stocks: true, crypto: true, total: true, cash: true, savings: true, debt: true,
+      netWorth: true, totalAssets: true, netLiquid: true, cashOnHand: true,
+    },
   });
   const existingByDate = new Map(existing.map((r) => [isoDate(r.date), r]));
 
@@ -350,31 +836,81 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // valuedSubtotal becomes each day's totalInvestments; crypto is valued separately
   // into totalDigitalAssets below, so it must NOT also count here or BTC is
   // double-counted (the historical net-worth cliff). Mirrors the live writer.
-  let investmentByDate = new Map<string, InvestmentValuationView>();
+  // V26-S2-OWNERSHIP — ONE call resolves both halves.
+  //
+  // This was two steps that had to be kept in agreement by hand: value the
+  // window, then resolve ownership per INSTRUMENT and filter. Instrument-scoped
+  // ownership let one account's evidence license another's — measured live, the
+  // LLC account's cash read as KNOWN OWNED back to 2025-08-27 on the strength of
+  // Robinhood's derived cash rows. And the denominator it produced counted every
+  // component the valuation considered, including the ones it had just refused.
+  //
+  // `historicalHoldingsForWindow` composes the same valuation engine with
+  // per-(account, instrument) ownership and returns the HELD set. Failure is
+  // non-fatal and CONSERVATIVE exactly as before: an empty map leaves every day
+  // with its flat estimate and routes it into the no-fabrication guard rather
+  // than valuing it on evidence we could not confirm.
+  let holdingsByDate = new Map<string, HistoricalHoldingsSet>();
   try {
-    investmentByDate = await getInvestmentValueForWindow({
+    holdingsByDate = await historicalHoldingsForWindow({
       spaceId,
       dates: candidateDates,
       client,
       holdConstantBeforeEarliest: true,
       excludeDigitalAssetAccounts: true,
+      // V26-S3-DETAIL — the ceiling is DERIVED from the account set's evidence,
+      // not pinned to this window's end. Pinning it here made the same holding
+      // on the same date resolve differently for a rebuild and for a
+      // drill-down; see resolveEvidenceCeiling.
     });
   } catch (err) {
-    console.warn(`[wealth-regen] ${spaceId}: batch A8 valuation failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+    console.warn(`[wealth-regen] ${spaceId}: historical holdings resolution failed (non-fatal, conservative): ${err instanceof Error ? err.message : err}`);
   }
 
-  // HIST-2C — resolve BTC/USD for the whole window in ONE archive read (built
-  // AFTER backfillBtcPrices above, so freshly-fetched closes are included), then
-  // answer each day from memory. Byte-identical to the former per-day
-  // readBtcUsdAsOf; only the D point reads collapse to one range read. Only built
-  // when there is crypto to value (else an all-null resolver, never queried).
-  const btcAt =
+  // HIST-2C — resolve the crypto closes for the whole window in ONE archive read
+  // (built AFTER the price backfill above, so freshly-fetched closes are
+  // included), then answer each day from memory. Byte-identical to the former
+  // per-day readBtcUsdAsOf; only the D point reads collapse to one range read.
+  // Only built when there is crypto to value (else an all-null resolver).
+  //
+  // W-M0 — the read is now keyed by ASSET SYMBOL and covers every asset held in
+  // this Space, not BTC alone. Still ONE range read: the assets are resolved to
+  // instruments up front and the whole set is fetched together.
+  const cryptoPriceAt =
     cryptoAccounts.length > 0
-      ? await readBtcUsdWindow(fromDate, toDate)
-      : (_dISO: string): number | null => null;
+      ? await readCryptoUsdWindows(heldCryptoAssets, fromDate, toDate, { client })
+      : (_assetKey: string, _dISO: string): number | null => null;
 
   const result: RegenerateWealthHistoryResult = { ...zero };
-  const writes: Array<{ date: Date; isEstimated: boolean; fields: NonNullable<DayRegenResult["fields"]> }> = [];
+  const writes: Array<{
+    date: Date;
+    isEstimated: boolean;
+    fields: NonNullable<DayRegenResult["fields"]>;
+    completenessTier: DayRegenResult["tier"];
+    contributingComponentCount: number | null;
+    totalComponentCount: number | null;
+    cryptoValuationStatus: DayRegenResult["cryptoValuationStatus"];
+  }> = [];
+
+  /**
+   * V26-CRYPTO-STATUS-1 — days that are NOT rewritten but whose crypto verdict
+   * must still be recorded. Applied as single-column updates (see below).
+   */
+  const metadataOnlyStamps: Array<{ date: Date; status: NonNullable<DayRegenResult["cryptoValuationStatus"]> }> = [];
+
+  /**
+   * Days where SOME component was supported and some was not. Each carries the
+   * field patch the core authorised — never a full replacement row.
+   */
+  const patches: Array<{
+    date: Date;
+    isEstimated: boolean;
+    fieldPatch: NonNullable<DayRegenResult["fieldPatch"]>;
+    completenessTier: DayRegenResult["tier"];
+    contributingComponentCount: number | null;
+    totalComponentCount: number | null;
+    cryptoValuationStatus: DayRegenResult["cryptoValuationStatus"];
+  }> = [];
 
   for (const dISO of candidateDates) {
     const d = fromISO(dISO);
@@ -387,13 +923,26 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // fallback below; note its presence so the day's cash/card tier degrades to
     // "estimated" (a held-flat balance is a weaker estimate than a walk-back).
     let dayHasHeldFlat = false;
+    // RWA-2B — the basis of every manual-asset value that entered this day
+    // (recorded / modeled / carried), so the row's tier can say what it rests on.
+    const dayRealAssetBases: ValuationBasis[] = [];
     const dayAccounts = accounts
       .filter((a) => floorByAccount.get(a.id)!.getTime() <= d.getTime())
-      .map((a) => {
+      .flatMap((a) => {
         if (heldFlatIds.has(a.id)) dayHasHeldFlat = true;
-        if (cashMap.has(a.id)) return { type: a.type, balance: cashMap.get(a.id)!, currency: a.currency };
-        if (cardMap?.has(a.id)) return { type: a.type, balance: cardMap.get(a.id)!, currency: a.currency };
-        return { type: a.type, balance: a.balance, currency: a.currency };
+        if (cashMap.has(a.id)) return [{ type: a.type, balance: cashMap.get(a.id)!, currency: a.currency }];
+        if (cardMap?.has(a.id)) return [{ type: a.type, balance: cardMap.get(a.id)!, currency: a.currency }];
+        // RWA-2B — a manual asset answers from its ledger: the resolver's value
+        // for THIS day, or nothing at all (not yet held / not yet valued — never
+        // today's balance painted backward, never a zero).
+        const ledger = manualHistoryByAccount.get(a.id);
+        if (ledger) {
+          const v = manualAssetValueOn(ledger, dISO);
+          if (!v) return [];
+          dayRealAssetBases.push(v.basis);
+          return [{ type: a.type, balance: v.value, currency: a.currency }];
+        }
+        return [{ type: a.type, balance: a.balance, currency: a.currency }];
       });
     // Skip a day only when there is nothing at all to value — but a holdings-only
     // Space (investment/crypto floored to today, so dayAccounts is empty) or a
@@ -411,12 +960,55 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     let investmentValue = c.totalInvestments;
     let investmentTier: CompletenessTier = "incomplete";
     let hasInvestmentEvidence = false;
-    const view = investmentByDate.get(dISO);
-    if (view) {
-      hasInvestmentEvidence = view.components.length > 0;
+    let ownershipIneligible = false;
+    // V26-INVESTMENTS-HISTORY — composition of the day's investment valuation,
+    // persisted alongside the tier so a stored row can distinguish "estimated
+    // but complete" from "estimated and mostly unknown". Null unless a real A8
+    // valuation produced the day's `investmentValue`; null means NOT RECORDED.
+    let contributingComponentCount: number | null = null;
+    let totalComponentCount: number | null = null;
+    const holdings = holdingsByDate.get(dISO);
+    if (holdings) {
+      // V26-S2-OWNERSHIP — the HELD set is the answer to every question here.
+      //
+      // `held` is what ownership licenses on THIS date, resolved per (account,
+      // instrument) from dated evidence alone. Nothing about today's portfolio
+      // reaches it: a quantity projected backwards onto a date ownership does
+      // not license is EXCLUDED, so the projection can supply a number for a
+      // licensed date but can never put a holding into the set.
+      //
+      // NOT a zero-valued portfolio when nothing is held: zero is a claim, and
+      // the truth is "we cannot say". Falling through with
+      // hasInvestmentEvidence=false routes the day into the existing
+      // NO-FABRICATION guard, which preserves the stored estimate.
+      hasInvestmentEvidence = holdings.heldCount > 0;
+      // Components existed and ownership refused every one — skip, never write
+      // a zero-valued portfolio. See the OWNERSHIP PREHISTORY guard in
+      // regenerate-history.core.ts.
+      ownershipIneligible = (holdings.held.length + holdings.excluded.length) > 0 && holdings.heldCount === 0;
       if (hasInvestmentEvidence) {
-        investmentValue = view.valuedSubtotal;
-        investmentTier = view.completeness.tier;
+        investmentValue = holdings.valuedSubtotal;
+        // Inferred ownership is carried forward, never silently absorbed. The
+        // valuation tier is the worst among HELD components only — a component
+        // ownership refused must not degrade a day it is not part of.
+        investmentTier = worstTier([
+          ...holdings.held.map((h) => h.tier),
+          ownershipTier(holdings.ownershipConfidence),
+        ]);
+        // V26-S2-OWNERSHIP — THE DENOMINATOR IS WHAT EXISTED, NOT WHAT EXISTS.
+        //
+        // This was `totalCount = every component the valuation considered`,
+        // which with the backward quantity projection is every pair the account
+        // has EVER observed — including the ones ownership had just refused.
+        // Measured live on 2026-01-01: `12 of 19`, where 6 of the 19 were
+        // positions the engine itself declared unowned on that date. It now
+        // reads `12 of 13`: twelve valued, of thirteen actually held.
+        //
+        // Both counts come from the SAME set that produced `investmentValue`
+        // above, so a label can never describe a different portfolio from the
+        // number beside it.
+        contributingComponentCount = holdings.valuedCount;
+        totalComponentCount = holdings.heldCount;
       }
     }
 
@@ -427,23 +1019,86 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // ⇒ no evidence ⇒ the flat value is preserved (never fabricated).
     let digitalAssetValue = c.totalDigitalAssets;
     let hasDigitalAssetEvidence = false;
+    let cryptoDayValuation: CryptoDayValuation | null = null;
     if (cryptoAccounts.length > 0) {
-      const btcUsd = btcAt(dISO); // HIST-2C — from the one-shot window read above
-      if (btcUsd != null) {
-        // Value each crypto account at its constant native quantity × the day's
-        // BTC price (USD), then let classifyAccounts do the FX to the reporting
-        // currency — the SAME conversion path every other total uses (no second
-        // FX interpretation opened in this binding).
-        const cryptoDay = cryptoAccounts.map((a) => ({ type: "crypto", balance: (a.nativeBalance ?? 0) * btcUsd, currency: "USD" }));
+      // HIST-2C / W-M0 — from the one-shot window read above, one entry per asset
+      // actually held. An asset with no close on this day maps to null, which the
+      // valuation core reports as NO_PRICE naming that symbol — never a
+      // substituted price from another asset.
+      const unitPriceByAssetKey = Object.fromEntries(
+        heldCryptoAssets.map((a) => [a.assetKey, cryptoPriceAt(a.assetKey, dISO)]),
+      );
+      // V26-CRYPTO-QTY-1 — BOTH are required, and they are independent evidence:
+      // a price reaching the day says nothing about what was held, and a licensed
+      // quantity says nothing about what it was worth. Either one missing leaves
+      // the day's crypto UNVALUED (never a carried fiat balance — see the flat
+      // guard in regenerate-history.core.ts).
+      // V26-S3-DETAIL — through the SHARED crypto day valuation, so the total
+      // this snapshot stores and the per-position breakdown a drill-down shows
+      // come from one call and cannot describe different portfolios.
+      cryptoDayValuation = valueCryptoDay({
+        // W-M2c — the quantity is resolved PER DAY per account: the legacy
+        // column for the chain that writes one, dated positions for every other.
+        accounts: cryptoAccounts.map((a) => ({
+          financialAccountId: a.id, name: a.name,
+          nativeBalance: cryptoQuantityOn(a.id, dISO),
+          assetKey: cryptoAssetByAccount.get(a.id)?.assetKey ?? null,
+          symbol:   cryptoSymbolByAccount.get(a.id) ?? null,
+          // W6 — outside its existence interval a wallet is NOT_APPLICABLE: it
+          // contributes nothing and refuses nothing. Inside it, an unresolved
+          // quantity is a genuine hole and the day refuses.
+          applicable: cryptoApplicableOn(a.id, dISO),
+        })),
+        unitPriceByAssetKey,
+        quantityLicensed: cryptoQuantityLicensed(dISO),
+      });
+      if (cryptoDayValuation.licensed) {
+        // classifyAccounts still does the FX to the reporting currency — the SAME
+        // conversion path every other total uses (no second FX interpretation).
+        const cryptoDay = cryptoDayValuation.positions.map((p) => ({ type: "crypto", balance: p.nativeValue, currency: "USD" }));
         digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;
         hasDigitalAssetEvidence = true;
       }
+    }
+
+    // V26-S2-OWNERSHIP — THE COUNTS MUST DESCRIBE THE PORTFOLIO THEY LABEL.
+    //
+    // These counts reach the user as "N of M positions valued" on the Investments
+    // chart, whose value is investments PLUS crypto. The counts were investments
+    // only, so a portfolio of one Bitcoin wallet and nothing else reported "no
+    // composition recorded" while the chart happily plotted its value — and the
+    // motivating case ("in 2023 I held only Bitcoin, it should read 1 of 1") was
+    // not expressible at all, because crypto was never counted.
+    //
+    // Crypto positions are counted the way the crypto path already decides them:
+    // a wallet with a material balance is a position that existed; it is VALUED
+    // only when a price reached the day AND the constant-quantity carry was
+    // licensed (which, since S1, also requires its movement ledger to reconcile).
+    // The all-or-nothing shape of that decision is the crypto path's, not a new
+    // rule invented here.
+    //
+    // Guarded on `hasInvestmentEvidence || cryptoPositions > 0` so a Space with
+    // neither still records null — NOT RECORDED, never a fabricated zero.
+    const cryptoPositions = cryptoDayValuation?.positionCount ?? 0;
+    if (cryptoPositions > 0) {
+      totalComponentCount = (totalComponentCount ?? 0) + cryptoPositions;
+      contributingComponentCount =
+        (contributingComponentCount ?? 0) + (hasDigitalAssetEvidence ? cryptoPositions : 0);
     }
 
     const prior = existingByDate.get(dISO);
     const input: DayRegenInput = {
       date: dISO,
       existingIsEstimated: prior ? prior.isEstimated : null,
+      // The stored row is what an unsupported component is PRESERVED from.
+      existing: prior
+        ? {
+            stocks: prior.stocks, crypto: prior.crypto, total: prior.total,
+            cash: prior.cash, savings: prior.savings, debt: prior.debt,
+            netWorth: prior.netWorth, totalAssets: prior.totalAssets,
+            netLiquid: prior.netLiquid, cashOnHand: prior.cashOnHand,
+          }
+        : null,
       base: {
         totalInvestments:   c.totalInvestments,
         totalDigitalAssets: c.totalDigitalAssets,
@@ -455,6 +1110,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       investmentValue,
       investmentTier,
       hasInvestmentEvidence,
+      ownershipIneligible,
+      contributingComponentCount,
+      totalComponentCount,
       digitalAssetValue,
       digitalAssetTier: "estimated", // constant-quantity assumption × real price
       hasDigitalAssetEvidence,
@@ -463,6 +1121,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // "estimated" (not "derived") value, so the row is honestly labeled a weaker
       // estimate. Still isEstimated=true either way; never presented as observed.
       cashCardTier: dayHasHeldFlat ? "estimated" : "derived",
+      // RWA-2B — a real-asset value modeled between, or carried from, the user's
+      // dated estimates makes the day an estimate; a recorded anchor adds nothing.
+      realAssetTier: realAssetTierFor(dayRealAssetBases),
       // 2026-07-15 §9 fix — any account revoked strictly after this day was
       // plausibly still a member of the Space as of this day; the `accounts`
       // array above only reflects CURRENTLY active links, so writing this day
@@ -501,16 +1162,99 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       netWorthAfter: res.fields ? res.fields.netWorth : null,
     });
 
-    if (res.action === "write" && res.fields) {
-      writes.push({ date: d, isEstimated: res.isEstimated, fields: res.fields });
+    // V26-PRICE-5 — classify against what is STORED before queueing a write.
+    // A day that recomputes identically is UNCHANGED and is deliberately NOT
+    // rewritten: beyond saving writes, a regeneration that touches thousands of
+    // rows to change none is indistinguishable in an audit trail from one that
+    // changed them all. BLOCKED (frozen / membership) and SKIPPED (invalid or
+    // absent evidence) never reach here — the core already refused them.
+    // A PARTIAL day is a real disposition of its own: some component was
+    // rewritten, some preserved. It never reaches classifyRegeneration's
+    // full-row comparison, because "did every field change" is not the question
+    // being asked of it.
+    if (res.action === "write-partial") {
+      const patch = res.fieldPatch ?? {};
+      if (Object.keys(patch).length > 0 && prior) {
+        patches.push({
+          date: d,
+          isEstimated: res.isEstimated,
+          fieldPatch: patch,
+          completenessTier: res.tier,
+          contributingComponentCount: res.contributingComponentCount,
+          totalComponentCount: res.totalComponentCount,
+          cryptoValuationStatus: res.cryptoValuationStatus,
+        });
+      }
+      result.dispositions.UPDATED += Object.keys(patch).length > 0 && prior ? 1 : 0;
+      continue;
+    }
+
+    const candidate = classifyRegeneration(res, prior ?? null);
+    result.dispositions[candidate.disposition]++;
+    if (candidate.disposition === "UPDATED" && res.fields) {
+      // V26-INVESTMENTS-HISTORY — `res.tier` was already computed here and then
+      // discarded at the upsert; it is the row-level worst-of(cash/card,
+      // investment, crypto) the FLIP rule derives `isEstimated` from. Persisting
+      // it makes `isEstimated` derivable rather than a second, lossier truth.
+      writes.push({
+        date: d,
+        isEstimated: res.isEstimated,
+        fields: res.fields,
+        completenessTier: res.tier,
+        contributingComponentCount: res.contributingComponentCount,
+        totalComponentCount: res.totalComponentCount,
+        cryptoValuationStatus: res.cryptoValuationStatus,
+      });
+    }
+
+    // V26-CRYPTO-STATUS-1 — THE METADATA-ONLY STAMP.
+    //
+    // A day whose crypto cannot be valued is deliberately NOT rewritten: there
+    // is no correct crypto number to write, and rewriting would either assert
+    // one or zero it. But the verdict itself is real evidence, and leaving it
+    // unrecorded forever means the stale stored figure keeps its authority.
+    //
+    // So this stamps the STATUS COLUMN ALONE. Not an upsert — an `update` naming
+    // exactly one field, so no financial scalar can be touched even by accident,
+    // and a row that does not exist is never created (creating one would require
+    // inventing the very financial fields this refuses to assert).
+    //
+    // Guarded on `prior.isEstimated === true`: a frozen observation is never
+    // written by any path, and its status stays null forever — which costs
+    // nothing, because the read boundary resolves observation BEFORE status.
+    // It applies to BOTH verdicts, for the same reason. A day that recomputes
+    // identically is UNCHANGED and deliberately not rewritten — but its crypto
+    // was still valued from evidence, and leaving that unrecorded would strand
+    // a correct value as `legacy-unrecorded` forever. Stamping is what makes the
+    // repair reach every day the regeneration actually classified.
+    if (
+      applyWrites &&
+      res.cryptoValuationStatus !== null &&
+      candidate.disposition !== "UPDATED" &&
+      prior && prior.isEstimated === true &&
+      prior.cryptoValuationStatus !== res.cryptoValuationStatus
+    ) {
+      metadataOnlyStamps.push({ date: d, status: res.cryptoValuationStatus });
     }
   }
 
+  // Only UPDATED days are written. `writes` is already filtered to them.
   if (applyWrites) {
     for (const w of writes) {
       const data = {
         ...w.fields,
         isEstimated: w.isEstimated,
+        // Guarded at the write boundary, exactly as A4 guards
+        // PositionObservation.completeness: no stream may smuggle a second trust
+        // vocabulary into the reserved String column.
+        completenessTier: isCompletenessTier(w.completenessTier) ? w.completenessTier : null,
+        contributingComponentCount: w.contributingComponentCount,
+        totalComponentCount: w.totalComponentCount,
+        // V26-CRYPTO-STATUS-1 — same reserved-String discipline as the tier
+        // above. Null on a written row means "no material crypto to authorize",
+        // never "unknown but assume fine": the read boundary resolves an
+        // immaterial component to `none`, which IS assertable.
+        cryptoValuationStatus: toStoredCryptoValuationStatus(w.cryptoValuationStatus),
         reportingCurrency: space.reportingCurrency,
         // Phase 2 — stamp the amendment that revised this row (amendment runs only).
         ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
@@ -522,9 +1266,112 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       });
     }
     result.written = writes.length;
+
+    // ── PARTIAL PATCHES ─────────────────────────────────────────────────────
+    //
+    // A day where some component could not be supported but another could. The
+    // update NAMES ONLY the authorised fields — never a reconstructed full row —
+    // so a preserved component is not rewritten with its own value, and a column
+    // this run has no authority over is not touched at all.
+    //
+    // `cryptoValuationStatus` is stamped alongside because a partial day still
+    // produced a real crypto verdict, and it is what keeps the read boundary
+    // refusing an aggregate that rests on a preserved component.
+    for (const p of patches) {
+      await client.spaceSnapshot.update({
+        where: { spaceId_date: { spaceId, date: p.date } },
+        data: {
+          ...p.fieldPatch,
+          isEstimated: p.isEstimated,
+          completenessTier: isCompletenessTier(p.completenessTier) ? p.completenessTier : null,
+          contributingComponentCount: p.contributingComponentCount,
+          totalComponentCount: p.totalComponentCount,
+          cryptoValuationStatus: toStoredCryptoValuationStatus(p.cryptoValuationStatus),
+          ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
+        },
+      });
+    }
+    result.patched = patches.length;
+
+    // Metadata-only stamps: ONE column, no financial scalar, existing rows only.
+    for (const m of metadataOnlyStamps) {
+      await client.spaceSnapshot.updateMany({
+        where: { spaceId, date: m.date, isEstimated: true },
+        data:  { cryptoValuationStatus: m.status },
+      });
+    }
+    result.cryptoStatusStamped = metadataOnlyStamps.length;
+
+    // ── STANDING WRITE-TIME PROBE ───────────────────────────────────────────
+    //
+    // Verify what we just wrote against the evidence that should support it.
+    // COMPONENT-TO-SNAPSHOT EQUALITY is the decisive check — the stored column
+    // must equal Σ amountOwed(walked balance), the same clamp `classifyAccounts`
+    // applies — with the ledger identity as a secondary locator for WHERE a
+    // series first diverges.
+    if (writes.length + patches.length > 0) {
+      result.integrity = await verifyLiabilitySeries(client, spaceId, fromDate, toDate);
+      if (!result.integrity.healthy) {
+        console.warn(
+          `[wealth-regen] ${spaceId}: INTEGRITY PROBE FAILED after writing — ` +
+          result.integrity.violations.join(" | "),
+        );
+      }
+    }
   }
 
   return result;
+}
+
+/**
+ * Read back the debt series and check it against the posted ledger.
+ *
+ * Read-only, and deliberately re-READS rather than trusting the in-memory rows:
+ * a probe that inspects what we intended to write cannot catch a write that went
+ * somewhere else.
+ */
+async function verifyLiabilitySeries(
+  client: Client, spaceId: string, fromDate: string, toDate: string,
+): Promise<{ checked: number; healthy: boolean; violations: string[] }> {
+  const rows = await client.spaceSnapshot.findMany({
+    where: { spaceId, date: { gte: fromISO(fromDate), lte: fromISO(toDate) } },
+    select: { date: true, debt: true, isEstimated: true, stocks: true, crypto: true, total: true,
+              cash: true, savings: true, netWorth: true, totalAssets: true, netLiquid: true },
+    orderBy: { date: "asc" },
+  });
+  if (rows.length === 0) return { checked: 0, healthy: true, violations: [] };
+
+  const violations: string[] = [];
+
+  // Aggregate arithmetic must hold on every row this run touched.
+  for (const r of rows) {
+    const bad = aggregateIdentityViolations(r);
+    if (bad.length > 0) violations.push(`${isoDate(r.date)} aggregate: ${bad.join("; ")}`);
+  }
+
+  // RLS-C-S2 — the authority this verification phase was handed, passed first.
+  const { accounts, byDate } = await getAccountBalancesOverWindow(client, {
+    spaceId, fromISO: fromDate, toISO: toDate, types: [AccountType.debt],
+  });
+  if (accounts.length > 0) {
+    const ids = accounts.map((a) => a.id);
+    for (const r of rows) {
+      if (!r.isEstimated) continue; // an observation was never walked
+      const dISO = isoDate(r.date);
+      const owed = ids.reduce((n, id) => n + amountOwed(byDate.get(dISO)?.get(id)?.balance ?? 0), 0);
+      if (Math.abs(owed - r.debt) > SERIES_IDENTITY_TOLERANCE) {
+        violations.push(`${dISO} debt: stored ${r.debt.toFixed(2)} != replay ${owed.toFixed(2)}`);
+      }
+    }
+  }
+
+  return {
+    checked: rows.length,
+    healthy: violations.length === 0,
+    // Bounded: a systemic defect produces hundreds of identical lines and the
+    // count already conveys the scale.
+    violations: violations.slice(0, 10),
+  };
 }
 
 /**

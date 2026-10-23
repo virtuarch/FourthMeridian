@@ -32,19 +32,75 @@ export interface PriceResult {
 }
 
 /**
- * A provider adapter: a dumb fetcher. No storage, no failover, no symbol
- * resolution above the vendor call — those live above the adapter (fetch
- * orchestration, A8-3). A new provider is a new implementation of this
- * interface plus a registry entry. `resolveSymbol` maps an instrument's
- * external identity to the vendor's symbol OUTSIDE the archive key.
+ * V26-S1-CA — a corporate action a PRICE vendor stated, in the same response as
+ * its prices.
+ *
+ * This lives here, beside PriceResult, for one reason: it arrives on the same
+ * HTTP call. It is deliberately NOT a price — it never enters the archive, never
+ * gets a basis, and never participates in valuation. It is the TERM of an event,
+ * carried out of the price pipeline to the corporate-action authority
+ * (lib/investments/corporate-actions.core.ts), which is the only module allowed
+ * to decide whether it may license a quantity replay.
+ *
+ * No `grade` field: the vendor states the term, this codebase grades the source.
+ * An adapter must never be able to declare its own answer authoritative.
+ */
+export interface ProviderCorporateAction {
+  instrumentId:  string;
+  /** "YYYY-MM-DD", UTC — the date the vendor states the action took effect. */
+  effectiveDate: string;
+  /** Canonical kind ("SPLIT"); validated by the corporate-action authority. */
+  kind:          string;
+  /** Shares out per share in. Never 1.0 — "nothing happened" is not an action. */
+  ratio:         number;
+  /** The raw vendor fields this was read from. Evidence, never an input. */
+  evidence?:     Record<string, unknown>;
+}
+
+/**
+ * The facts routing needs in order to choose a provider, without loading an
+ * Instrument row. V26-PRICE-PROVIDER-UNIFICATION — see ProviderResolution.
+ */
+export interface ProviderRoutingKey {
+  /** Instrument.assetClass as a plain string ("EQUITY", "ETF", "CRYPTO", …). */
+  assetClass:     string;
+  /** Vendor-side identity resolved by the caller (Instrument.tickerSymbol today). */
+  providerSymbol: string;
+  basis:          PriceBasis;
+}
+
+/**
+ * A provider adapter: a dumb fetcher. No storage, no symbol resolution above the
+ * vendor call — those live above the adapter (fetch orchestration, A8-3). A new
+ * provider is a new implementation of this interface plus a registry entry.
  */
 export interface PriceProviderAdapter {
-  /** Stable provenance identifier stored on PriceObservation.source (e.g. "plaid", "fixture"). */
+  /** Stable provenance identifier stored on PriceObservation.source (e.g. "tiingo", "coingecko"). */
   readonly source: string;
   /** Earliest ISO date this source can serve. */
   readonly historicalDepth: string;
+  /**
+   * V26-CAP-1 — the DECLARATION behind `historicalDepth`, so orchestration can
+   * compare capability over time without recomputing depth itself.
+   *
+   * `historicalDepth` alone is not comparable across days for a rolling-window
+   * provider: its floor advances one day every day, so a stored date would read
+   * as "narrowed" daily. This states the KIND and, for a rolling window, the
+   * depth that is actually stable.
+   *
+   * Optional so an adapter that has not declared one is simply not tracked —
+   * absence must never be read as a capability claim.
+   */
+  readonly capability?: import("./provider-capability.core").CapabilityDeclaration;
   /** Which bases this source can serve (e.g. an equities vendor: RAW_CLOSE only). */
   supportedBases(): readonly PriceBasis[];
+  /**
+   * DECLARED capability: can this adapter serve this instrument? Routing ASKS
+   * this — it never tries an adapter to find out, and it never falls through a
+   * list. Required, not optional: an adapter that does not state what it serves
+   * would reintroduce the positional guessing this replaces.
+   */
+  supportsInstrument(key: ProviderRoutingKey): boolean;
   /**
    * Fetch closed daily closes for ONE instrument over [fromISO, toISO] inclusive,
    * for the given basis. The adapter is handed the provider symbol/identity it
@@ -52,11 +108,31 @@ export interface PriceProviderAdapter {
    * instrumentId it was asked about. Complete-or-throw per adapter.
    */
   fetchDailyCloses(req: PriceFetchRequest): Promise<PriceResult[]>;
+  /**
+   * V26-S1-CA — the SAME window, also reporting any corporate action the vendor
+   * stated in that response.
+   *
+   * OPTIONAL, exactly like `readRange?` / `readCoveredDates?` on
+   * PriceArchiveReader: a vendor whose payload carries no corporate-action data
+   * omits it, and callers MUST fall back to `fetchDailyCloses`. That keeps this
+   * strictly additive — every existing adapter, fixture and test is unchanged.
+   *
+   * An adapter implementing this MUST NOT issue a second network request: the
+   * whole point is that the terms were already inside the response the price
+   * fetch paid for. Tiingo's daily-prices rows carry `splitFactor`; that field
+   * was being parsed away, which is why TQQQ's history stopped at a split whose
+   * ratio was sitting in the same payload as the prices around it.
+   */
+  fetchDailyClosesWithActions?(
+    req: PriceFetchRequest,
+  ): Promise<{ prices: PriceResult[]; corporateActions: ProviderCorporateAction[] }>;
 }
 
 /** One instrument's fetch request over a bounded window. */
 export interface PriceFetchRequest {
   instrumentId: string;
+  /** Instrument.assetClass — a routing input, not a vendor parameter. */
+  assetClass: string;
   /** Provider-side symbol/identity for this instrument (resolved outside the archive key). */
   providerSymbol: string;
   basis:   PriceBasis;
@@ -64,9 +140,57 @@ export interface PriceFetchRequest {
   toISO:   string;
 }
 
-/** Ordered adapter collection; order = failover priority. */
+/**
+ * Adapter collection. ORDER IS NOT SIGNIFICANT: routing resolves exactly one
+ * provider from declared capability (resolveProviderForInstrument), so changing
+ * registration order cannot change which vendor serves an instrument.
+ */
 export interface PriceRegistry {
   readonly adapters: readonly PriceProviderAdapter[];
+}
+
+/**
+ * The outcome of routing one instrument to one provider.
+ *
+ * Deliberately NOT "the first adapter that works". Order-dependent routing means
+ * a registration edit silently repoints a price series at a different vendor,
+ * and a provider hiccup silently substitutes another — both invisible in the
+ * archive, which records `source` but not why. Every outcome here is a function
+ * of declared capability alone.
+ *
+ * `ambiguous` is a configuration defect surfaced rather than resolved: two
+ * adapters claiming one instrument have no capability-based winner, and picking
+ * one would be exactly the positional guess being removed.
+ */
+export type ProviderResolution =
+  | { kind: "provider";    adapter: PriceProviderAdapter }
+  | { kind: "unsupported"; sourcesConsidered: string[] }
+  | { kind: "ambiguous";   sources: string[] };
+
+/**
+ * V26-PRICE-1 — the source of EXPECTED market dates for one asset class.
+ *
+ * The price archive cannot tell "the market was closed" from "we never fetched
+ * it": both are an absent row. A calendar supplies the missing half of that
+ * judgement, so coverage.core.ts can report a genuine acquisition gap instead of
+ * screaming about every weekend. `expectedDates` returns the dates a complete
+ * archive WOULD contain over [fromISO, toISO] — trading days for an equity
+ * calendar, every day for a 24/7 crypto calendar.
+ *
+ * Declared here (beside the other price contracts) with ZERO implementations —
+ * V26-PRICE-1 ships only the pure planner, which receives the expected-date set
+ * as data. Implementations and their holiday tables are V26-PRICE-2
+ * (lib/calendar/), which imports this interface rather than redeclaring it.
+ *
+ * `id` is stamped onto a CoverageReport as `calendarId`, so a report is
+ * self-describing about which expectations produced it — the diagnostic that
+ * makes an UNEXPECTED_OBSERVATION actionable when a holiday table goes stale.
+ */
+export interface TradingCalendar {
+  /** Stable provenance identifier, e.g. "us-equity", "crypto-247". */
+  readonly id: string;
+  /** Expected market dates in [fromISO, toISO] inclusive; ascending, deduped. */
+  expectedDates(fromISO: string, toISO: string): readonly string[];
 }
 
 /** A resolution request: the price of `instrumentId` as-of `dateISO` on one basis. */
@@ -145,6 +269,27 @@ export interface PriceArchiveReader {
     fromISO:       string,
     toISO:         string,
   ): Promise<{ instrumentId: string; dateISO: string; price: number; currency: string }[]>;
+
+  /**
+   * V26-PRICE-2 — the COVERAGE access pattern: which dates exist, without the
+   * prices. Same window and index as readRange, but it deliberately does not
+   * return `price`: coverage planning must never see a value it has no business
+   * judging, and the read stays cheap over long ownership windows.
+   *
+   * `currency` IS returned, because the binding filters observations by the
+   * instrument's expected quote currency before counting them as evidence — a
+   * row in the wrong currency is not coverage (OI-1). That check has to happen
+   * somewhere above the dates-only planner, and this is the read that feeds it.
+   *
+   * OPTIONAL, exactly like readRange: in-memory fakes may omit it, and callers
+   * MUST fall back to readRange when it is absent.
+   */
+  readCoveredDates?(
+    instrumentIds: readonly string[],
+    basis:         PriceBasis,
+    fromISO:       string,
+    toISO:         string,
+  ): Promise<{ instrumentId: string; dateISO: string; currency: string }[]>;
 }
 
 /** Full archive contract (reader + append-only writer). Implemented by lib/prices/archive.ts. */

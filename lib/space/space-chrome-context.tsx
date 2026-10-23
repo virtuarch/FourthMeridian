@@ -15,13 +15,20 @@
  * transforms to Space mode; when null (any non-Space route) it renders global
  * navigation — the production analog of the prototype's transforming sidebar.
  *
- * THREE INDEPENDENT CHANNELS, not one payload, each published from an effect
+ * FOUR INDEPENDENT CHANNELS, not one payload, each published from an effect
  * keyed on its own inputs so none re-render-loops against the others:
  *   • space           — identity + Manage/Leave (SpaceDashboard).
  *   • currencyControl  — the FX ReactNode (owned a level up; recreated each render).
+ *   • workspaceNav     — the Space's workspace-level destinations (Net Worth ·
+ *     Cash Flow) + which one is open. Published by the host (SpaceDashboard) from
+ *     the navigation state it already owns (useSpaceNavigation), so the sidebar
+ *     never derives "where am I" itself. Null ⇒ no block (a Platform Space).
  *   • sections         — the active WORKSPACE's section anchors + which is active.
- *     Published by the workspace itself (e.g. WealthWorkspace), so the sidebar
- *     shows "what's inside" the workspace — exactly the prototype's Sections list.
+ *     Published by the workspace itself (e.g. WealthWorkspace). The sidebar
+ *     renders them ONLY on the platform axis now: inside a customer Space the
+ *     Sections list was replaced by `workspaceNav`. Customer workspaces still
+ *     publish (and WealthWorkspace still drives `activeSection` for its focus
+ *     scroll) — the channel is shared infrastructure, not sidebar-owned.
  *     Active-section state lives HERE so both the sidebar (highlight) and the
  *     click handler (set active) share one source.
  */
@@ -42,13 +49,64 @@ export interface SpaceChromeSection {
   anchor: string | null;
 }
 
+/** One view INSIDE a workspace (Net Worth's Total · Assets · Debt). */
+export interface SpaceChromeWorkspaceChild {
+  id: string;
+  label: string;
+  /** The canonical deep link for this view. */
+  href: string;
+}
+
+/** One workspace-level destination inside a Space (Net Worth, Cash Flow). */
+export interface SpaceChromeWorkspaceItem {
+  id: string;
+  label: string;
+  /** The canonical deep link for this destination (open-in-new-tab, copy link). */
+  href: string;
+  /**
+   * Optional Lucide icon NAME (client-safe string data, e.g. a Platform
+   * workspace's `MountWorkspaceSummary.icon`), resolved by the sidebar. Omitted
+   * ⇒ the sidebar falls back to its own id-keyed map (the finance lenses).
+   */
+  icon?: string;
+  /**
+   * The workspace's own views, shown nested under it WHILE it is the open
+   * workspace (collapsed otherwise). Omitted ⇒ a leaf workspace (Cash Flow).
+   * The same state the workspace's in-content selector drives — never a copy.
+   */
+  children?: SpaceChromeWorkspaceChild[];
+}
+
+/** The Space's workspace navigation, published by the host that owns the state. */
+export interface SpaceChromeWorkspaceNav {
+  items: SpaceChromeWorkspaceItem[];
+  /** The open destination's id, or null when none is (e.g. the Accounts tab). */
+  activeId: string | null;
+  /** In-place selection through the host's navigation state (no route change). */
+  onSelect: (id: string) => void;
+  /** The open workspace's selected child id (only meaningful for `activeId`). */
+  activeChildId?: string | null;
+  /** Select a child view of the open workspace, through the host's state. */
+  onSelectChild?: (workspaceId: string, childId: string) => void;
+}
+
 /** Domain-agnostic Space identity — a finance Space or a platform HQ Space
  *  both render here, differing only in data (DS-5). */
 export interface SpaceChromeIdentity {
   name: string;
   subtitle: string;
-  /** Pre-formatted "Updated 2h ago" line, or null to omit. */
+  /** Pre-formatted freshness claim, e.g. "Last checked 2 hr ago". Null to omit. */
   updatedLabel?: string | null;
+  /**
+   * v2.6-L1 — what the claim above HIDES: how many accounts are stale, how much
+   * value sits behind them. A single age cannot carry a distribution, and the
+   * previous header carried the newest age with no disclosure at all. Null when
+   * the anchor hides nothing.
+   */
+  freshnessNote?: string | null;
+  /** True when `freshnessNote` describes stale or unverified value — the note is
+   *  then rendered as a warning rather than a footnote. */
+  freshnessWarn?: boolean;
   shared?: boolean;
 }
 
@@ -57,8 +115,6 @@ export interface SpaceChromeSpace {
   identity: SpaceChromeIdentity;
   /** Opens the Manage dialog; omitted ⇒ no Manage affordance (e.g. no rights). */
   onManage?: () => void;
-  /** "All Spaces" — back to the Spaces launcher (pure navigation). */
-  onLeave: () => void;
   /** Membership leave (destructive; shared Spaces only). Omitted ⇒ no affordance
    *  — e.g. a Personal Space, or an Owner/Admin who cannot leave their own. */
   onLeaveSpace?: () => void;
@@ -69,12 +125,15 @@ interface SpaceChromeValue {
   space: SpaceChromeSpace | null;
   /** The Space-level display-currency ("view as" / FX) control node, or null. */
   currencyControl: ReactNode | null;
+  /** The Space's workspace destinations, or null ⇒ no workspace block. */
+  workspaceNav: SpaceChromeWorkspaceNav | null;
   /** The active workspace's section anchors (empty ⇒ no Sections list). */
   sections: SpaceChromeSection[];
   /** Which section label is active (highlighted in the sidebar). */
   activeSection: string;
   setSpace: (s: SpaceChromeSpace | null) => void;
   setCurrencyControl: (node: ReactNode | null) => void;
+  setWorkspaceNav: (n: SpaceChromeWorkspaceNav | null) => void;
   setSections: (s: SpaceChromeSection[]) => void;
   setActiveSection: (label: string) => void;
 }
@@ -84,12 +143,16 @@ const SpaceChromeContext = createContext<SpaceChromeValue | null>(null);
 export function SpaceChromeProvider({ children }: { children: ReactNode }) {
   const [space, setSpace] = useState<SpaceChromeSpace | null>(null);
   const [currencyControl, setCurrencyControl] = useState<ReactNode | null>(null);
+  const [workspaceNav, setWorkspaceNav] = useState<SpaceChromeWorkspaceNav | null>(null);
   const [sections, setSections] = useState<SpaceChromeSection[]>([]);
   const [activeSection, setActiveSection] = useState<string>("");
 
   const value = useMemo<SpaceChromeValue>(
-    () => ({ space, currencyControl, sections, activeSection, setSpace, setCurrencyControl, setSections, setActiveSection }),
-    [space, currencyControl, sections, activeSection],
+    () => ({
+      space, currencyControl, workspaceNav, sections, activeSection,
+      setSpace, setCurrencyControl, setWorkspaceNav, setSections, setActiveSection,
+    }),
+    [space, currencyControl, workspaceNav, sections, activeSection],
   );
 
   return <SpaceChromeContext.Provider value={value}>{children}</SpaceChromeContext.Provider>;
@@ -105,10 +168,12 @@ export function useSpaceChrome(): SpaceChromeValue {
     return {
       space: null,
       currencyControl: null,
+      workspaceNav: null,
       sections: [],
       activeSection: "",
       setSpace: NOOP,
       setCurrencyControl: NOOP,
+      setWorkspaceNav: NOOP,
       setSections: NOOP,
       setActiveSection: NOOP,
     };
@@ -131,6 +196,15 @@ export function useSpaceChromePublisher(): {
     [setCurrencyControl],
   );
   return { publishSpace, publishCurrencyControl };
+}
+
+/**
+ * Publisher hook for the host's WORKSPACE navigation (Net Worth · Cash Flow).
+ * Same discipline as the others: publish from an effect, clear on unmount.
+ */
+export function useSpaceWorkspaceNavPublisher(): (n: SpaceChromeWorkspaceNav | null) => void {
+  const { setWorkspaceNav } = useSpaceChrome();
+  return useCallback((n: SpaceChromeWorkspaceNav | null) => setWorkspaceNav(n), [setWorkspaceNav]);
 }
 
 /**

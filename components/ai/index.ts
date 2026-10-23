@@ -14,5 +14,27 @@ export { Composer, type ComposerProps } from "@/components/ai/Composer";
 export { SuggestedPrompt } from "@/components/ai/SuggestedPrompt";
 export { KnowledgeGapCard } from "@/components/ai/KnowledgeGapCard";
 export { AiMark } from "@/components/ai/AiMark";
+export { StarterLine } from "@/components/ai/StarterLine";
 export { Markdown } from "@/components/ai/Markdown";
+export { AiDisclosure } from "@/components/ai/AiDisclosure";
+export { GuidanceNote, type GuidanceNoteProps } from "@/components/ai/GuidanceNote";
 export type { AiMessage } from "@/components/ai/types";
+export {
+  conversationLayoutMode,
+  STARTER_LINES,
+  EMPTY_STATE_SUGGESTIONS,
+  starterIndexFrom,
+  composeStarters,
+  type ConversationLayoutMode,
+  type StarterModel,
+  type StarterPrompt,
+} from "@/components/ai/conversation-surface";
+export {
+  readTranscript,
+  writeTranscript,
+  clearTranscript,
+  clearAllTranscripts,
+  TRANSCRIPT_HINT_COOKIE,
+  TRANSCRIPT_TTL_MS,
+  type CachedMessage,
+} from "@/components/ai/transcript-cache";

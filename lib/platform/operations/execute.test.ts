@@ -63,6 +63,28 @@ const dryRun = getOperationCommand("dry-run:fetch-fx-rates");
 if (!runNow || !dryRun) { console.error("  ✗ fixtures missing from registry"); process.exit(1); }
 
 async function main(): Promise<void> {
+console.log("execute: P1 — the JobRun id is captured as the execution reference");
+{
+  // A fake runJob that INVOKES the (harmless, injected) body, like the real one,
+  // under a fake "current JobRun" — the only place runJob exposes its id.
+  const calls: string[] = [];
+  const deps: OperationDeps = {
+    runJob: async <T>(name: string, fn: () => Promise<T>): Promise<T> => { calls.push(name); return fn(); },
+    findRunningJobRun: async () => null,
+    now: () => NOW,
+    currentJobRunId: () => "jobrun_abc123",
+    resolveBody: () => async () => ({ ok: true }),
+  };
+  const res = await runOperation(runNow!, deps);
+  check("executed run carries the JobRun id", res.outcome === "executed" && res.jobRunId === "jobrun_abc123");
+  const failing: OperationDeps = { ...deps, resolveBody: () => async () => { throw new Error("body blew up"); } };
+  const res2 = await runOperation(runNow!, failing);
+  check("a FAILED run still carries the JobRun id (captured before the body threw)", res2.outcome === "failed" && res2.jobRunId === "jobrun_abc123");
+  const planned = await runOperation(dryRun!, deps);
+  check("a dry-run has no JobRun id", planned.outcome === "planned" && planned.jobRunId === undefined);
+  check("the injected body ran through runJob", calls.length === 2);
+}
+
 console.log("execute: isInFlight staleness");
 {
   check("null row is never in flight", isInFlight(null, NOW) === false);

@@ -1,5 +1,5 @@
 /**
- * components/platform/widgets/platform-health.test.ts  (PM-1)
+ * components/platform/widgets/platform-health.test.ts  (PM-1 · UX-P1 compact posture)
  *
  * RENDER-PATH proof for the consolidated Platform Health surface
  * (house pattern: standalone tsx + renderToStaticMarkup, DB-free):
@@ -9,29 +9,26 @@
  * Two components are rendered, and the split matters:
  *   · `OpsPlatformHealthWidget` — the REAL self-fetching widget. Server
  *     rendering never runs an effect, so what it renders is exactly the first
- *     frame an operator sees. That is the only way to prove the loading state
- *     is genuinely the loading state and not a hopeful empty one.
+ *     frame an operator sees.
  *   · `PlatformHealthSurface` — the prop-driven surface, which is how failure,
  *     empty registries and populated data become reachable without a network.
  *
- * Fixtures use the REAL authorities wherever the authority is pure:
- * `getEnvReport()` is called for a genuine environment report, and the alert
- * views are pushed through the real `deriveAlertRuleViews` / `collectAlertHistory`
- * over the real `ALERT_RULES`. Provider and freshness reports are typed literals
- * (their authorities need a database), so drift in those shapes fails the
- * typecheck rather than passing silently.
- *
  * ── WHAT IS PINNED HERE ──────────────────────────────────────────────────────
- * Every one of these is a way this surface could quietly start lying:
  *   1. loading is not the empty state
  *   2. a failed fetch is not zero, not nominal, not "nothing to report"
  *   3. one source failing does not take down — or falsely reassure — the others
  *   4. an empty registry says the registry is empty, and is not nominal
  *   5. all four groups render, always
- *   6. Configuration represents BOTH rate limits and env-status, which are
- *      composed nowhere else and would otherwise become unreachable
+ *   6. Configuration represents BOTH rate limits and env-status
  *   7. urgency is never colour alone, and never the inaccessible coral
- *   8. no authority is re-derived in the presentation layer
+ *   8. a known-blocked empty archive is unknown, not red
+ *   9. UX-P1: the Alerts word derives from FIRING NOW — a critical in the
+ *      delivery history with nothing firing in the latest run is Nominal, and
+ *      the history is listed as historical in the disclosure
+ *  10. UX-P1: each group leads with at most two rows; provenance chips, notes
+ *      and the remaining rows sit inside a <details> disclosure
+ *  11. the presentation layer re-derives no authority
+ *  12. every group is a doorway onto a real, composed workspace
  */
 
 import { createElement } from "react";
@@ -40,6 +37,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { ALERT_RULES } from "@/lib/alerts/rules";
 import { collectAlertHistory, deriveAlertRuleViews, type AlertRunSummary } from "@/lib/alerts/evaluate";
+import { latestAlertEvaluation } from "@/lib/alerts/latest-evaluation";
 import { getEnvReport } from "@/lib/env";
 import type { ProviderHealth } from "@/lib/platform/provider-health";
 import type { ResourceFreshnessReport } from "@/lib/platform/resource-freshness";
@@ -53,7 +51,7 @@ import {
   PlatformHealthSurface,
   type FetchedResource,
 } from "./OpsPlatformHealthWidget";
-import { GROUP_DOORWAY, GROUP_LABEL, SURFACE_FOOTNOTE } from "./platform-health-view";
+import { GROUP_DOORWAY, GROUP_LABEL, LEAD_ROWS, SURFACE_FOOTNOTE, alertsView, envView } from "./platform-health-view";
 import { PLATFORM_AREA_WORKSPACES, getPlatformWorkspace } from "@/lib/platform/workspaces";
 
 let failures = 0;
@@ -77,12 +75,14 @@ const AGO = (mins: number) => new Date(NOW - mins * 60_000).toISOString();
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 /** Alert rule views through the REAL derivation over the REAL registry. */
-function alerts(runs: AlertRunSummary[], destination: string | null = "ops@example.test"): PlatformAlertsResponse {
+function alerts(runs: AlertRunSummary[], destinationConfigured = true): PlatformAlertsResponse {
   return {
-    destination,
+    destinationConfigured,
     lastEvaluatedAt: runs[0]?.evaluatedAtISO ?? null,
     rules: deriveAlertRuleViews(ALERT_RULES, () => true, runs),
     history: collectAlertHistory(runs),
+    historyRuns: runs.length,
+    latest: latestAlertEvaluation(runs),
   };
 }
 
@@ -91,27 +91,30 @@ function run(over: Partial<AlertRunSummary> & { evaluatedAtISO: string }): Alert
     destination: "ops@example.test",
     deliveryStatus: "sent",
     counts: { evaluated: 5, live: 4, enabled: 4, firing: 0, delivered: 0, suppressed: 0 },
-    rules: [],
+    rules: ALERT_RULES.map((r) => ({ id: r.id, kind: r.kind, enabled: r.live, live: r.live, firing: false, breaches: 0, severity: null })),
     fired: [],
     ...over,
   };
 }
 
+const CRITICAL_FIRED = {
+  ruleId: "job-failing" as const,
+  kind: "job-failing" as const,
+  dedupeKey: "job-failing:fetch-fx-rates",
+  severity: "critical" as const,
+  summary: 'Job "fetch-fx-rates" has failed its last 3 run(s).',
+  deliveredAtISO: AGO(120),
+};
+
 const QUIET_RUN = run({ evaluatedAtISO: AGO(30) });
+/** Firing NOW: the latest run's outcome breaches, and it was delivered. */
 const FIRING_RUN = run({
   evaluatedAtISO: AGO(30),
-  deliveryStatus: "sent",
-  fired: [
-    {
-      ruleId: "job-failing",
-      kind: "job-failing",
-      dedupeKey: "job-failing:fetch-fx-rates",
-      severity: "critical",
-      summary: 'Job "fetch-fx-rates" has failed its last 3 run(s).',
-      deliveredAtISO: AGO(120),
-    },
-  ],
+  rules: ALERT_RULES.map((r) => ({ id: r.id, kind: r.kind, enabled: r.live, live: r.live, firing: r.id === "job-failing", breaches: r.id === "job-failing" ? 1 : 0, severity: r.id === "job-failing" ? "critical" as const : null })),
+  fired: [CRITICAL_FIRED],
 });
+/** HISTORY ONLY: a critical was delivered two hours ago, but the latest run breached nothing. */
+const HISTORY_ONLY_RUN = run({ evaluatedAtISO: AGO(30), fired: [CRITICAL_FIRED] });
 
 function provider(over: Partial<ProviderHealth> & { key: string; label: string }): ProviderHealth {
   return {
@@ -175,26 +178,28 @@ const RATE_LIMITS: PlatformRateLimitsResponse = {
   ],
 };
 
-const EMPTY_RATE_LIMITS: PlatformRateLimitsResponse = {
-  windowSince: AGO(60),
-  totalRows: 0,
-  totalHits: 0,
-  topBuckets: [],
-};
+const EMPTY_RATE_LIMITS: PlatformRateLimitsResponse = { windowSince: AGO(60), totalRows: 0, totalHits: 0, topBuckets: [] };
 
 /** The REAL environment report for this process — a genuine authority answer. */
 const ENV: PlatformEnvStatusResponse = getEnvReport();
 
-/** A deterministic all-pass report, for the assertions that must not depend on
- *  which variables happen to be set in the process running the test. */
+/** A deterministic all-pass report. */
 const ENV_CLEAN: PlatformEnvStatusResponse = {
   nodeEnv: "test",
+  deploymentEnv: "development",
   ok: true,
   counts: { pass: 2, warn: 0, fail: 0 },
   keys: [
     { key: "DATABASE_URL", status: "pass", scope: "always" },
     { key: "NEXTAUTH_SECRET", status: "pass", scope: "always" },
   ],
+  // OPENAI ENVIRONMENT SEPARATION — the value-free OpenAI facts the report now carries.
+  openAi: {
+    keyConfigured: true, keyKind: "project",
+    projectPin: { state: "pinned", projectId: "proj_cleanFixture" },
+    expectedEnvironment: { state: "match", expected: "development", actual: "development" },
+    refused: false,
+  },
 };
 
 const ok = <T,>(data: T): FetchedResource<T> => ({ data, loading: false, error: null });
@@ -220,22 +225,15 @@ function renderSurface(over: Partial<Parameters<typeof PlatformHealthSurface>[0]
 const GROUPS = ["Alerts", "Providers", "Freshness", "Configuration"];
 const REASSURING = /healthy|all clear|all good|everything is|no issues|operating normally/i;
 
-/**
- * The surface's honesty footnote DEFINES the word "Nominal", so it necessarily
- * contains it. Assertions about what the surface CLAIMS therefore read the body
- * with the footnote removed — otherwise the explanation of a word would count as
- * a use of it.
- */
+/** The body with the footnote removed — it DEFINES "Nominal", so it necessarily contains it. */
 const body = (text: string) => text.replace(SURFACE_FOOTNOTE, "").trim();
 
-/**
- * Every verdict the surface rendered, extracted structurally from the markup
- * `StatusWord` emits. This is stronger than searching the text: it can prove
- * that ZERO verdicts were rendered, which is exactly what loading and failure
- * must look like.
- */
+/** Every verdict the surface rendered, extracted from the markup `ToneBadge` emits. */
 const verdicts = (html: string) =>
-  [...html.matchAll(/<span class="text-sm font-medium" style="color:[^"]*">([^<]*)<\/span>/g)].map((m) => m[1]);
+  [...html.matchAll(/<span class="text-xs font-medium">([^<]*)<\/span>/g)].map((m) => m[1]);
+
+/** The markup OUTSIDE every <details> disclosure — what an operator sees by default. */
+const outsideDetails = (html: string) => html.replace(/<details[\s\S]*?<\/details>/g, "");
 
 function main() {
   // ── 1. The real widget's FIRST FRAME is loading, and only loading ──────────
@@ -247,16 +245,11 @@ function main() {
     check("shows a loading line", /Loading/.test(text), text.slice(0, 200));
     check("one loading state per source (five)", (html.match(/role="status"/g) ?? []).length === 5,
       `${(html.match(/role="status"/g) ?? []).length}`);
-
-    // The four ways this frame could lie about a request that has not returned.
     check("renders NO verdict at all", verdicts(html).length === 0, verdicts(html).join(","));
     check("does not claim anything is nominal", !body(text).includes("Nominal"), body(text));
     check("does not claim an empty registry", !/No (providers|alert rules|refreshable)/.test(text), text);
     check("does not report a count", !/\d/.test(body(text)), body(text));
     check("does not read as reassuring", !REASSURING.test(text), text);
-
-    // All four groups are labelled from the very first frame — the operator can
-    // see what is being fetched, not a surface that grows sections as it loads.
     for (const g of GROUPS) check(`group "${g}" is labelled while loading`, text.includes(g));
   }
 
@@ -266,21 +259,16 @@ function main() {
     const { html, text } = renderSurface({
       alerts: failed(), providers: failed(), freshness: failed(), rateLimits: failed(), env: failed(),
     });
-
     for (const subject of ["Alert status", "Provider health", "Resource freshness", "Environment status", "Rate-limit pressure"]) {
       check(`${subject} states it is unavailable`, text.includes(`${subject} unavailable`), text);
     }
     check("explicitly disclaims a clean reading",
       (text.match(/This is not a report that nothing is wrong/g) ?? []).length === 5, text);
-
-    // The specific dishonesty this surface exists to prevent.
     check("renders NO verdict at all", verdicts(html).length === 0, verdicts(html).join(","));
     check("does not claim anything is nominal", !body(text).includes("Nominal"), body(text));
     check("renders no number at all", !/\d/.test(body(text)), body(text));
     check("does not read as reassuring", !REASSURING.test(text), text);
     check("does not say 0 providers or 0 alerts", !/\b0\b/.test(body(text)), body(text));
-
-    // Failure is still a status, and the four groups stay on the page.
     for (const g of GROUPS) check(`group "${g}" still renders`, text.includes(g));
   }
 
@@ -303,17 +291,12 @@ function main() {
     const { text } = renderSurface({ providers: failed() });
     check("the failed source says so", text.includes("Provider health unavailable"));
     check("the healthy-path sources still render", text.includes("FX rates"), text);
-    // The two Configuration sources are independent: env can answer while rate
-    // limits fail, and neither substitutes for the other.
     const cfg = renderSurface({ rateLimits: failed() });
     check("env renders while rate limits fail",
       cfg.text.includes("Rate-limit pressure unavailable") && cfg.text.includes("Environment"), cfg.text);
     const cfg2 = renderSurface({ env: failed() });
     check("rate limits render while env fails",
       cfg2.text.includes("Environment status unavailable") && cfg2.text.includes("ip:pre-login"), cfg2.text);
-
-    // A source still in flight while its neighbours have answered stays LOADING;
-    // it does not borrow their result and it does not render as empty.
     const slow = renderSurface({ freshness: loadingState() });
     check("a still-loading source shows loading, not empty",
       slow.text.includes("Loading") && !slow.text.includes("No refreshable resources registered"), slow.text);
@@ -328,22 +311,15 @@ function main() {
     const { html, text } = renderSurface({
       providers: ok(providersResponse([])),
       freshness: ok(freshnessResponse([])),
-      alerts: ok({ destination: null, lastEvaluatedAt: null, rules: [], history: [] }),
+      alerts: ok({ destinationConfigured: false, lastEvaluatedAt: null, rules: [], history: [], historyRuns: 0, latest: null }),
       rateLimits: ok(EMPTY_RATE_LIMITS),
       env: ok(ENV_CLEAN),
     });
-
     check("no providers registered", text.includes("No providers registered"), text);
     check("no refreshable resources registered", text.includes("No refreshable resources registered"), text);
     check("no alert rules registered", text.includes("No alert rules registered"), text);
     check("no rate-limit activity in the window", text.includes("No rate-limit activity in the window"), text);
-
-    // "0 of 0 operational" is the reading that turns an empty registry into a
-    // perfect score. It must not appear.
     check("does not render 0 of 0", !/0 of 0/.test(text), text);
-    // Structural: three empty registries produce three Unknowns. Only the
-    // environment report — which genuinely answered — may read Nominal. An
-    // empty registry scoring "1 of 1 operational" is the failure mode here.
     check("empty registries render Unknown, never Nominal",
       verdicts(html).join(",") === "Unknown,Unknown,Unknown,Nominal", verdicts(html).join(","));
     check("does not read as reassuring", !REASSURING.test(text), text);
@@ -352,17 +328,15 @@ function main() {
   // ── 6. Never evaluated is unknown, not "no firings" ───────────────────────
   console.log("6. an evaluator that never ran is unknown, not quiet");
   {
-    const { text } = renderSurface({ alerts: ok(alerts([], null)) });
+    const { text } = renderSurface({ alerts: ok(alerts([], false)) });
     check("states the destination is not configured",
       text.includes("Not configured — deliveries have nowhere to go"), text);
   }
   {
-    // Rules exist, evaluator has never run.
     const neverRun: PlatformAlertsResponse = {
-      destination: "ops@example.test",
-      lastEvaluatedAt: null,
+      destinationConfigured: true, lastEvaluatedAt: null,
       rules: deriveAlertRuleViews(ALERT_RULES, () => true, []),
-      history: [],
+      history: [], historyRuns: 0, latest: null,
     };
     const { text } = renderSurface({ alerts: ok(neverRun) });
     check("headline is Never evaluated", text.includes("Never evaluated"), text);
@@ -373,27 +347,19 @@ function main() {
   // ── 7. All four groups render populated, and Configuration is complete ────
   console.log("7. four groups, and Configuration keeps both otherwise-unreachable reads");
   {
-    const { text } = renderSurface();
+    const { html, text } = renderSurface();
     for (const g of GROUPS) check(`group "${g}" renders`, text.includes(g));
-
-    // ops_rate_limits and ops_env_status are composed ONLY into the Overview
-    // workspace. If this surface did not represent them, consolidating would
-    // delete two operator reads from the product.
     check("rate-limit buckets are represented", text.includes("ip:pre-login") && text.includes("47 hits"), text);
-    check("the environment report is represented", text.includes(ENV.nodeEnv), text);
-    check("both Configuration captions render",
-      text.includes("Environment") && text.includes("Rate limits"), text);
-
-    // The provenance of every source is named — an unattributed number on a
-    // four-authority surface cannot be followed up.
+    check("the environment report is represented", text.includes(ENV.deploymentEnv), text);
+    check("both Configuration captions render", text.includes("Environment") && text.includes("Rate limits"), text);
+    // Provenance is still named — inside the disclosure (section 10 pins the placement).
     for (const src of ["lib/alerts", "lib/platform/provider-health", "lib/platform/resource-freshness", "lib/env", "RateLimit table"]) {
       check(`provenance names ${src}`, text.includes(src), text);
     }
-
-    // The surface never promotes itself to a verdict about the platform.
-    check("footnote refuses a platform-wide claim",
-      text.includes("it is not a verdict on the platform"), text);
+    check("footnote refuses a platform-wide claim", text.includes("it is not a verdict on the platform"), text);
     check("does not read as reassuring", !REASSURING.test(text), text);
+    check("the nominal verdict carries the ok tone (word + colour, never colour alone)",
+      /style="color:var\(--emerald-400\)"><span aria-hidden="true"[^>]*><\/span><span class="text-xs font-medium">Nominal<\/span>/.test(html), html.slice(0, 600));
   }
 
   // ── 8. Rate-limit pressure is reported, not judged ────────────────────────
@@ -401,7 +367,6 @@ function main() {
   {
     const { text } = renderSurface();
     check("says so in words", text.includes("No threshold authority exists for rate-limit pressure"), text);
-    // It must not borrow a verdict it has no basis for.
     check("no verdict is attached to the rate-limit headline",
       !/(Nominal|Caution|Action needed|Unknown)\s+47 hits/.test(text), text);
   }
@@ -422,34 +387,21 @@ function main() {
           trust: { level: "low", caveats: ["archive is empty"] } }),
       ])),
     });
-
-    // The authority's own word, rendered as text.
     check("a failing provider is named Failing", bad.text.includes("Failing"), bad.text);
     check("an empty archive is named Empty", bad.text.includes("Empty"), bad.text);
-    check("a critical alert firing is named", bad.text.includes("critical"), bad.text);
+    check("a rule firing now is named with its title and 'firing now'", /Repeated job failures firing now/.test(bad.text), bad.text);
     check("the group verdict is a word", bad.text.includes("Action needed"), bad.text);
-
-    // …and no coloured element is empty of text, which is what "colour only"
-    // would look like in the markup.
     check("no coloured span without a word",
       !/style="color:var\(--coral-[0-9]{3}\)"[^>]*>\s*<\/span>/.test(bad.html), bad.html.slice(0, 400));
-
-    // Urgency is SATURATION, not darkness: --coral-600 measured 3.28:1 on the
-    // dark surface and fails WCAG AA for small text.
     check("uses the saturated coral for danger", bad.html.includes("var(--coral-400)"));
     check("never uses --coral-600", !bad.html.includes("--coral-600"), bad.html.slice(0, 400));
     check("never uses --coral-500", !bad.html.includes("--coral-500"));
-    check("no raw hex reaches the markup", !/#[0-9a-fA-F]{6}\b/.test(bad.html),
-      bad.html.match(/#[0-9a-fA-F]{6}\b/)?.[0]);
+    check("no raw hex reaches the markup", !/#[0-9a-fA-F]{6}\b/.test(bad.html), bad.html.match(/#[0-9a-fA-F]{6}\b/)?.[0]);
   }
 
   // ── 10. A known-blocked empty archive is not painted as a failure ─────────
   console.log("10. a known-blocked pipeline is unknown, not red");
   {
-    // lib/alerts/evaluate.ts deliberately does NOT alert on an `empty` resource
-    // whose trust level is "unknown" — that is a gated no-op, "honest, not a
-    // false alarm". The surface must agree with the alerting, or the two
-    // disagree about the same resource.
     const { text } = renderSurface({
       freshness: ok(freshnessResponse([
         resource({ resource: "security-prices", label: "Security prices", healthState: "empty",
@@ -463,36 +415,67 @@ function main() {
       text.includes("Unknown") && !/Unknown 1 not fresh[\s\S]{0,40}Action needed/.test(text), text);
   }
 
-  // ── 11. The presentation layer re-derives no authority ────────────────────
-  console.log("11. nothing here computes what an authority already decided");
+  // ── 11. UX-P1 — the Alerts word is FIRING NOW, never the delivery history ──
+  console.log("11. a historical critical with nothing firing now is Nominal, and listed as history");
+  {
+    // ENV_CLEAN so the Configuration group (which reads THIS process's real
+    // environment) cannot contribute an "Action needed" of its own.
+    const { html, text } = renderSurface({ alerts: ok(alerts([HISTORY_ONLY_RUN])), env: ok(ENV_CLEAN) });
+    check("the Alerts verdict is Nominal", verdicts(html)[0] === "Nominal", verdicts(html).join(","));
+    check("the headline says no rule is firing", /No rule firing/.test(text), text);
+    check("'Action needed' is NOT rendered", !text.includes("Action needed"), text);
+    check("the delivered critical is listed, labelled Historical", /Historical · Job &quot;fetch-fx-rates&quot;/.test(text), text);
+    check("…inside the disclosure, not as a lead row", !outsideDetails(html).includes("fetch-fx-rates"));
+    check("the note names the history window", /Recent firings \(historical, last 1 evaluation\): 1 delivered/.test(text), text);
+
+    const view = alertsView(alerts([HISTORY_ONLY_RUN]), NOW);
+    check("the view-model agrees: nominal with the history in details", view.status === "nominal" && view.details.some((l) => l.label.startsWith("Historical")));
+    const firing = alertsView(alerts([FIRING_RUN]), NOW);
+    check("…and a latest-run breach is critical with the rule as a lead row", firing.status === "critical" && firing.lines[0]?.label === "Repeated job failures");
+    const olderFiring = alertsView(alerts([HISTORY_ONLY_RUN, FIRING_RUN]), NOW);
+    check("an older firing run does not outrank the newest quiet one", olderFiring.status === "nominal");
+  }
+
+  // ── 12. UX-P1 — compact: ≤2 lead rows; provenance and notes in <details> ──
+  console.log("12. each group leads with at most two rows; the rest is disclosed");
+  {
+    const many = renderSurface({
+      providers: ok(providersResponse([
+        provider({ key: "A", label: "Provider A" }), provider({ key: "B", label: "Provider B" }),
+        provider({ key: "C", label: "Provider C" }), provider({ key: "D", label: "Provider D", trust: "DEGRADED" }),
+      ])),
+    });
+    const visible = outsideDetails(many.html);
+    check("LEAD_ROWS is two", LEAD_ROWS === 2);
+    check("the degraded provider leads", visible.includes("Provider D"));
+    check("at most two provider rows outside the disclosure",
+      ["Provider A", "Provider B", "Provider C", "Provider D"].filter((p) => visible.includes(p)).length === 2, visible.replace(/<[^>]+>/g, " ").slice(0, 400));
+    check("the remaining rows are inside the disclosure", ["Provider A", "Provider B", "Provider C", "Provider D"].every((p) => many.html.includes(p)));
+    check("the disclosure summary counts what it holds", /Details \(2 more\)/.test(many.text), many.text);
+    for (const src of ["lib/alerts", "lib/platform/provider-health", "lib/platform/resource-freshness", "lib/env", "RateLimit table"]) {
+      check(`provenance "${src}" is NOT visible by default`, !visible.includes(src));
+    }
+    check("notes are not visible by default", !visible.includes("Trust is the provider authority"));
+    check("one details disclosure per source (five)", (many.html.match(/<details/g) ?? []).length === 5);
+  }
+
+  // ── 13. The presentation layer re-derives no authority ────────────────────
+  console.log("13. nothing here computes what an authority already decided");
   {
     const widget = strip("components/platform/widgets/OpsPlatformHealthWidget.tsx");
     const view = strip("components/platform/widgets/platform-health-view.ts");
-
-    // GROWTH-1's guard idiom: a view module that grows a function computing a
-    // rate, a severity or a trust has forked the authority.
     const names = [...view.matchAll(/function (\w+)/g)].map((m) => m[1]);
-    check("no view function computes a rate/severity/trust",
-      !names.some((n) => /(Rate|Severity|Trust|Health)$/.test(n)), names.join(","));
-
-    // The widget renders; the view module shapes. No counting or filtering of a
-    // response may live in the component.
-    check("the widget does not filter or reduce a response",
-      !/\.filter\(|\.reduce\(|\.sort\(/.test(widget), widget);
-
-    // Freshness maths, availability ratios and staleness thresholds all belong
-    // to the authorities that already ship them.
+    check("no view function computes a rate/severity/trust", !names.some((n) => /(Rate|Severity|Trust|Health)$/.test(n)), names.join(","));
+    check("the widget does not filter or reduce a response", !/\.filter\(|\.reduce\(|\.sort\(/.test(widget), widget);
     check("no staleness or ratio arithmetic in the view module",
       !/Date\.now\(\)|\* 100|\/ 1000 \/ 60 \/ 60|staleAfterHours\s*[<>]/.test(view), view);
-
+    check("the view reads firing from the LATEST outcomes, never from history", /d\.latest\b/.test(view) && !/history\.some\(\s*\(h\)\s*=>\s*h\.severity/.test(view));
     for (const [name, src] of [["widget", widget], ["view", view]] as const) {
       check(`${name}: no raw hex colour`, !/#[0-9a-fA-F]{3,8}\b/.test(src), src.match(/#[0-9a-fA-F]{3,8}\b/)?.[0]);
       check(`${name}: no tailwind palette class`,
         !/\b(?:bg|text|border)-(?:gray|blue|red|emerald|green|violet|yellow|amber|purple)-\d{2,3}\b/.test(src));
       check(`${name}: never uses --coral-600`, !src.includes("--coral-600"));
     }
-
-    // Consolidation means five reads, not a new aggregate endpoint.
     for (const route of [
       "/api/platform/platform-ops/alerts",
       "/api/platform/platform-ops/provider-health",
@@ -502,19 +485,13 @@ function main() {
     ]) {
       check(`reads the existing route ${route}`, widget.includes(`useWidgetFetch<`) && widget.includes(`"${route}"`));
     }
-    check("exactly five fetches", (widget.match(/useWidgetFetch</g) ?? []).length === 5,
-      `${(widget.match(/useWidgetFetch</g) ?? []).length}`);
-    check("every fetch url is a string literal",
-      !/useWidgetFetch<[^>]*>\(\s*[^"]/.test(widget), widget);
+    check("exactly five fetches", (widget.match(/useWidgetFetch</g) ?? []).length === 5, `${(widget.match(/useWidgetFetch</g) ?? []).length}`);
+    check("every fetch url is a string literal", !/useWidgetFetch<[^>]*>\(\s*[^"]/.test(widget), widget);
   }
 
-  // ── 12. Each group is a DOORWAY onto the workspace that owns its detail ───
-  console.log("12. every group names the workspace carrying its full read");
+  // ── 14. Each group is a DOORWAY onto the workspace that owns its detail ───
+  console.log("14. every group names the workspace carrying its full read");
   {
-    // The prototype's doorways: Alerts → Providers → Providers → Operations.
-    // Two groups deliberately share a target — resource freshness lives in the
-    // Providers workspace — so the pairs are asserted by TARGET, not by count
-    // of distinct labels.
     const wired = renderSurface({ onOpenWorkspace: () => {} });
     const doorways = [
       ...wired.html.matchAll(/<button type="button" aria-label="([^"]*)"[^>]*>([^<]*)<svg/g),
@@ -522,45 +499,19 @@ function main() {
 
     check("one doorway per group", doorways.length === 4, JSON.stringify(doorways));
 
-    // ── Touch target (PLATFORM-OPS-UI-POLISH-1) ──────────────────────────────
-    //
-    // The doorways are the surface's only interactive elements, and the
-    // prototype's 11px text link lays out a ~21px hit area — under the 44px
-    // minimum. The target is enlarged by an OVERLAY, never by padding or
-    // min-height: those change the box the grid measures and would push every
-    // group taller, a spacing regression against the prototype at exactly the
-    // widths parity was verified at.
-    //
-    // Asserted on the doorway's own class list, so the guard fails if the
-    // overlay is dropped OR if someone "simplifies" it into layout-affecting
-    // spacing.
-    const doorwayClass = (wired.html.match(/<button[^>]*aria-label="Alerts[^"]*"[^>]*class="([^"]*)"/) ??
-                          wired.html.match(/<button[^>]*class="([^"]*)"[^>]*aria-label="Alerts[^"]*"/))?.[1] ?? "";
-    check("the doorway carries a 44px overlay hit area",
-      /before:h-11/.test(doorwayClass) && /before:absolute/.test(doorwayClass), doorwayClass);
+    const doorwayClass = (wired.html.match(/<button[^>]*aria-label="[^"]*behind Alerts"[^>]*class="([^"]*)"/) ??
+                          wired.html.match(/<button[^>]*class="([^"]*)"[^>]*aria-label="[^"]*behind Alerts"/))?.[1] ?? "";
+    check("the doorway carries a 44px overlay hit area", /before:h-11/.test(doorwayClass) && /before:absolute/.test(doorwayClass), doorwayClass);
     check("…at least 44px wide too", /before:min-w-\[44px\]/.test(doorwayClass), doorwayClass);
-    check("…positioned relative to the button, so the overlay is centred on it",
-      /(^|\s)relative(\s|$)/.test(doorwayClass), doorwayClass);
-    // The overlay's OWN utilities are `before:`-prefixed and affect nothing but
-    // the pseudo-element, so the layout assertions read the class list with those
-    // stripped — otherwise `before:h-11` would read as a height on the button.
-    const layoutClasses = doorwayClass
-      .split(/\s+/)
-      .filter((c) => !c.startsWith("before:"))
-      .join(" ");
-    check("the LAYOUT box is untouched — no padding/min-height that would move the grid",
-      !/min-h-|\bpy-\d|\bh-\d/.test(layoutClasses), layoutClasses);
-    check("no negative margin (it would steal the group's last line)",
-      !/(^|\s)-m[trbl]?-\d/.test(layoutClasses), layoutClasses);
-    check("no breakpoint scoping — the overlay is layout-neutral at every width",
-      !/(sm|md|lg|xl):/.test(doorwayClass), doorwayClass);
-    check("the doorway labels are the prototype's",
-      doorways.map((d) => d.visible).join(",") === "Alerts,Providers,Providers,Operations",
+    check("…positioned relative to the button", /(^|\s)relative(\s|$)/.test(doorwayClass), doorwayClass);
+    const layoutClasses = doorwayClass.split(/\s+/).filter((c) => !c.startsWith("before:")).join(" ");
+    check("the LAYOUT box is untouched", !/min-h-|\bpy-\d|\bh-\d/.test(layoutClasses), layoutClasses);
+    check("no negative margin", !/(^|\s)-m[trbl]?-\d/.test(layoutClasses), layoutClasses);
+    check("no breakpoint scoping on the overlay", !/(sm|md|lg|xl):/.test(doorwayClass), doorwayClass);
+    check("the doorway labels are the registry's workspace labels",
+      doorways.map((d) => d.visible).join(",") === "Policies,Providers,Providers,Policies",
       doorways.map((d) => d.visible).join(","));
 
-    // Every target resolves to a REAL rail workspace, and its label is the
-    // registry's — a renamed or removed workspace fails here rather than
-    // shipping a doorway onto nothing.
     for (const group of ["alerts", "providers", "freshness", "configuration"] as const) {
       const def = getPlatformWorkspace(GROUP_DOORWAY[group]);
       check(`${group} opens a real workspace (${GROUP_DOORWAY[group]})`, def != null);
@@ -568,28 +519,17 @@ function main() {
         def != null && doorways.some((d) => d.visible === def.label && d.aria.includes(GROUP_LABEL[group])),
         JSON.stringify(doorways));
     }
-
-    // Every target is one the Overview workspace actually composes as a doorway,
-    // so this surface can never point somewhere the rail does not offer.
     const overview = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS.find((w) => w.workspaceId === "platform-overview");
     for (const group of ["alerts", "providers", "freshness", "configuration"] as const) {
       check(`${group}'s target is a composed Overview doorway`,
         (overview?.doorways ?? []).includes(GROUP_DOORWAY[group]), (overview?.doorways ?? []).join(","));
     }
-
-    // WCAG 2.5.3 — the accessible name begins with the visible text, so voice
-    // control still matches what the operator can read.
     for (const d of doorways) {
       check(`accessible name starts with the visible label (${d.visible})`, d.aria.startsWith(d.visible), d.aria);
     }
-
-    // The footnote states the relationship the doorways make good on.
     check("the footnote says each group summarises a workspace",
-      wired.text.includes("Each group summarises a workspace on the rail. Open one for its full read."),
-      wired.text);
+      wired.text.includes("Each group summarises a workspace on the rail. Open one for its full read."), wired.text);
 
-    // Doorways survive every fetch state — a failed group still tells the
-    // operator where the full read lives.
     const brokenWired = renderSurface({
       onOpenWorkspace: () => {},
       alerts: failed(), providers: failed(), freshness: failed(), rateLimits: failed(), env: failed(),
@@ -597,15 +537,28 @@ function main() {
     check("doorways still render when every source failed",
       (brokenWired.html.match(/<button type="button" aria-label=/g) ?? []).length === 4);
 
-    // UNWIRED HOST — the rail is local state in PlatformSpaceDashboard and its
-    // only summary→detail affordance is the `onOpen(workspaceId)` callback it
-    // threads to WorkspaceDoorway. Without it there is nothing to open, so the
-    // doorway renders NOTHING rather than a button that does nothing.
     const unwired = renderSurface();
     check("no doorway is rendered when the host wired no handler",
       !unwired.html.includes('<button type="button" aria-label='), unwired.html.slice(0, 400));
-    check("and no dead button of any kind is left behind",
-      !unwired.html.includes("<button"), unwired.html.slice(0, 400));
+    check("and no dead button of any kind is left behind", !unwired.html.includes("<button"), unwired.html.slice(0, 400));
+  }
+
+  // OPENAI ENVIRONMENT SEPARATION — ops_env_status is absorbed by this host, so the
+  // value-free OpenAI project pin must surface HERE: credential kind, proj_… in full,
+  // guard state; a refusal leads the list; the key itself never appears.
+  {
+    const e = envView(ENV_CLEAN);
+    const allLines = [...e.lines, ...e.details];
+    const pin = allLines.find((l) => l.label === "OpenAI · Project pin");
+    const key = allLines.find((l) => l.label === "OpenAI · OpenAI key");
+    const guard = allLines.find((l) => l.label === "OpenAI · Environment guard");
+    check("env view carries the three OpenAI fact lines", !!pin && !!key && !!guard);
+    check("the project pin shows proj_… in full and the key line names the kind, never a value", !!pin && pin.detail.includes("proj_cleanFixture") && !!key && /project key/.test(key.detail) && !/sk-/.test(JSON.stringify(allLines)));
+    const refused = envView({ ...ENV_CLEAN, openAi: { ...ENV_CLEAN.openAi, expectedEnvironment: { state: "mismatch", expected: "production", actual: "development" }, refused: true } });
+    const lead = refused.lines.find((l) => l.label === "OpenAI · Environment guard");
+    check("a mismatched guard leads the env lines as a bad-toned row", !!lead && lead.tone === "bad" && /mismatch/.test(lead.detail));
+    const svc = envView({ ...ENV_CLEAN, openAi: { ...ENV_CLEAN.openAi, keyKind: "service-account" } });
+    check("a service-account key reads as project-scoped, never legacy", /service-account key \(project-scoped\)/.test([...svc.lines, ...svc.details].find((l) => l.label === "OpenAI · OpenAI key")?.detail ?? ""));
   }
 
   if (failures > 0) { console.error(`\nplatform-health.test: ${failures} failure(s).`); process.exit(1); }

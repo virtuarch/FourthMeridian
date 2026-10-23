@@ -16,7 +16,7 @@
  *   - DataCard (Atlas Glass) fallback otherwise — same card family.
  *
  * Connections is a provider-management surface, NOT the Accounts page:
- *   - Provider is part of identity ("Synced via Plaid"), via providerName().
+ *   - Provider is part of identity ("Synced via Plaid").
  *   - Account NAMES only — never dollar balances (those live on
  *     Accounts/Spaces/Dashboard).
  *
@@ -24,6 +24,8 @@
  * Presentational; live state comes from the parent ConnectionsList poller.
  */
 
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   CheckCircle2,
   Circle,
@@ -32,14 +34,18 @@ import {
   AlertTriangle,
   Info,
 } from "lucide-react";
+import { sourceStatusText } from "@/lib/connections/source-health-copy";
 import { DataCard } from "@/components/atlas/DataCard";
 import { AtlasLiquidCard } from "@/components/atlas/AtlasLiquidCard";
 import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import { ReconnectAccountButton } from "@/components/dashboard/ReconnectAccountButton";
 import { EnableInvestmentsButton } from "@/components/dashboard/EnableInvestmentsButton";
 import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
+// W-M2b — the provider sub-line is a CLAIM ABOUT WHAT HAPPENED, not decoration.
+// It lives in lib/sync so it can be tested; see connection-copy.ts.
+import { providerLine } from "@/lib/sync/connection-copy";
 import { ImportHistoryButton } from "@/components/connections/import/ImportHistoryButton";
-import { providerName, type SyncConnection } from "@/lib/sync/status";
+import { type SyncConnection } from "@/lib/sync/status";
 import { deriveConnectionLifecycle } from "@/lib/sync/lifecycle";
 import {
   formatAvailableHistory,
@@ -196,29 +202,6 @@ function InvestmentsCapability({ connection }: { connection: SyncConnection }) {
 
 // ── Shared content fragments (identical across Liquid + Glass) ─────────────────
 
-/**
- * Provider-aware sub-line. Provider is part of the connection's identity.
- *   importing → "Connected via Plaid"
- *   ready     → "Synced via Plaid"
- *   needs_reauth / error → "Previously synced via Plaid"
- */
-function providerLine(connection: SyncConnection): string {
-  const name = providerName(connection.provider);
-  switch (connection.state) {
-    case "importing":
-      return `Connected via ${name}`;
-    case "sync_deferred":
-      // The connection is real and healthy — say so. The reason it has no data
-      // yet is a platform condition, covered by the card body below.
-      return `Connected via ${name}`;
-    case "ready":
-      return `Synced via ${name}`;
-    case "needs_reauth":
-    case "error":
-      return `Previously synced via ${name}`;
-  }
-}
-
 function fmtSyncedAt(iso: string): string {
   const d = new Date(iso);
   const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -251,6 +234,13 @@ function WalletActions({ connection, accounts }: { connection: SyncConnection; a
   if (connection.provider !== "WALLET") return null;
   const acct = accounts[0];
   if (!acct) return null;
+  // W-M2a — DO NOT OFFER A RETRY THAT CANNOT SUCCEED. A missing provider
+  // endpoint, an unsupported network and a malformed address are all terminal
+  // until something outside this page changes; a Refresh button beside them
+  // manufactures a retry loop and implies the failure is the user's to clear by
+  // clicking. The card's copy already says what would actually change it.
+  const failure = describeWalletFailure(connection.errorCode);
+  if (connection.state === "error" && failure && !failure.retryable) return null;
   const syncStatus: "synced" | "pending" | "error" =
     connection.state === "ready" ? "synced" : connection.state === "error" ? "error" : "pending";
   return (
@@ -466,6 +456,103 @@ function BuildingProfileContent({
   );
 }
 
+// ── Import paused (unfinished, nothing running) ──────────────────────────────
+// The first-run import stopped before it finished and the refresh ledger shows
+// nothing running for it. Not a spinner and not "keeps running in the
+// background": that is what this card used to say for an Item stranded at
+// "100 imported" (Preview Sandbox, 2026-10-06). It continues on the next resume
+// (the Connections poller, the server's stale-import job) or a refresh — the ⋯
+// menu is available in this state because nothing is in flight.
+function ImportPausedContent({
+  connection,
+  accounts,
+}: {
+  connection: SyncConnection;
+  accounts:   AccountLite[];
+}) {
+  const imported = connection.importedCount ?? 0;
+  const stages: Stage[] = [
+    { label: "Institution connected", status: "done" },
+    { label: "Accounts discovered", value: String(accounts.length), status: "done" },
+    {
+      label: "Transaction history paused",
+      value: imported > 0 ? `${imported.toLocaleString()} imported so far` : undefined,
+      status: "pending",
+    },
+    { label: "Ready", status: "pending" },
+  ];
+  return (
+    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+      <EyebrowHeading eyebrow="Import paused" institution={connection.institution} />
+      <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
+        The import stopped before it finished, and nothing is running for it right now.
+        It is retried automatically, or you can refresh this connection from its menu to continue now.
+      </p>
+      <StageStepper stages={stages} />
+      <AccountNames accounts={accounts} />
+    </div>
+  );
+}
+
+// ── Timeline not built (transactions ready, nothing building it) ─────────────
+// Transactions are complete but no reconstruction is recorded and nothing is
+// running to produce one. Saying "this finishes in the background" here was the
+// lie; the honest card offers the rebuild — the same action as the ⋯ menu's
+// "Restore financial intelligence" (POST /api/connections/build-intelligence).
+function TimelineNotBuiltContent({
+  connection,
+  accounts,
+  intelligence,
+}: {
+  connection:   SyncConnection;
+  accounts:     AccountLite[];
+  intelligence: ConnectionIntelligenceStatus;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const stages: Stage[] = [
+    { label: "Transactions available", value: String(accounts.length) + (accounts.length === 1 ? " account" : " accounts"), status: "done" },
+    { label: "Accounts connected", status: "done" },
+    { label: "Financial timeline not built yet", status: "pending" },
+  ];
+  const available = formatAvailableHistory(intelligence.availableHistory);
+  async function build() {
+    setBusy(true); setFailed(false);
+    const res = await fetch("/api/connections/build-intelligence", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connectionIds: [connection.id] }),
+    }).catch(() => null);
+    setBusy(false);
+    if (!res || !res.ok) { setFailed(true); return; }
+    router.refresh();
+  }
+  return (
+    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+      <EyebrowHeading eyebrow="Timeline not built" institution={connection.institution} />
+      <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
+        Your transactions are available, but your financial timeline hasn’t been built and nothing is building it right now.
+      </p>
+      <StageStepper stages={stages} />
+      {available !== "No historical data yet" && (
+        <p className="mt-2 text-xs text-[var(--text-muted)]">{available} of history available</p>
+      )}
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={build}
+          disabled={busy}
+          className="rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 py-1.5 text-sm text-[var(--text-primary)] disabled:opacity-60"
+        >
+          {busy ? "Building your timeline…" : "Build timeline"}
+        </button>
+        {failed && <span className="text-xs text-[var(--text-muted)]">Couldn’t start the build — try again.</span>}
+      </div>
+      <AccountNames accounts={accounts} />
+    </div>
+  );
+}
+
 /**
  * CONN-3 — three UNAMBIGUOUS freshness lines. The card must never just say
  * "Synced" (which conflates data, intelligence, and balance). Each line is a
@@ -480,12 +567,63 @@ function fmtFreshnessRelative(iso: string): string {
   return `on ${new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
 }
 
+const fmtShortDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+/**
+ * Slice 4.1 — the source's health, by the same rule and in the same words as the
+ * Daily Brief's "Financial data" disclosure. Shown only when it needs attention;
+ * a current source is already described by the freshness rows.
+ */
+function SourceHealthLine({ intelligence }: { intelligence?: ConnectionIntelligenceStatus }) {
+  const h = intelligence?.sourceHealth;
+  if (!h || !h.needsAttention) return null;
+  return (
+    <p className="mt-0.5 text-sm text-[var(--accent-warning,#f59e0b)]">
+      {sourceStatusText(h.state, h.lastUpdatedAt, { date: fmtShortDate, recent: fmtFreshnessRelative })}
+    </p>
+  );
+}
+
+/**
+ * CRYPTO-FRESHNESS-1 — EVERY LINE READS ITS OWN AUTHORITY.
+ *
+ * On 2026-10-01 this component rendered "Transactions: Updated today" for a BTC
+ * refresh whose transaction import had ABORTED at its 10 s budget, and
+ * "Financial profile: Built today" for a reconstruction that never ran — because
+ * three lines were reading one clock (`Connection.lastSyncedAt`, which for a
+ * wallet means "the balance was read"). Meanwhile the position spine already
+ * carried a fresh observation that no line read at all.
+ *
+ * Each row below now reads the clock for the fact it names, and a row whose fact
+ * has no durable success clock is NOT RENDERED. Silence is the honest answer to
+ * "when did this last work?" when the answer is "never" — and it is strictly
+ * better than borrowing a neighbouring fact's timestamp.
+ *
+ * `Position` is listed first on a wallet, deliberately: it is the authoritative
+ * current fact, it survives a valuation or history outage, and it was the one
+ * thing the card could not say during the incident.
+ */
 function FreshnessRows({ intelligence }: { intelligence: ConnectionIntelligenceStatus }) {
-  const rows: Array<{ label: string; verb: string; iso: string | null }> = [
-    { label: "Transactions",      verb: "Updated",  iso: intelligence.lastSyncedAt },
-    { label: "Financial profile", verb: "Built",    iso: intelligence.lastReconstructedAt },
-    { label: "Balance",           verb: "Verified", iso: intelligence.balanceVerifiedAt },
-  ];
+  const isWallet = intelligence.valuationIsReadTime || intelligence.positionObservedAt !== null;
+  const rows: Array<{ label: string; verb: string; iso: string | null }> = isWallet
+    ? [
+        // The quantity actually observed on-chain — independent of pricing.
+        { label: "Position",           verb: "Updated", iso: intelligence.positionObservedAt },
+        // Advanced ONLY by a completed import. A failed import leaves the last
+        // truthful success date, or nothing at all.
+        { label: "Transaction history", verb: "Updated", iso: intelligence.transactionsSyncedAt },
+        // Advanced ONLY by a reconstruction that actually refreshed.
+        { label: "Financial profile",  verb: "Built",   iso: intelligence.lastReconstructedAt },
+        // Only where a value is STORED. A read-time-valued chain has no
+        // valuation clock, so it shows none rather than inventing one.
+        { label: "USD valuation",      verb: "Updated", iso: intelligence.valuationUpdatedAt },
+      ]
+    : [
+        // PLAID — `lastSyncedAt` IS the transaction sync here, not a proxy for it.
+        { label: "Transactions",      verb: "Updated", iso: intelligence.lastSyncedAt },
+        { label: "Financial profile", verb: "Built",   iso: intelligence.lastReconstructedAt },
+        { label: "Balances",          verb: "Updated", iso: intelligence.balancesUpdatedAt },
+      ];
   const shown = rows.filter((r) => r.iso);
   if (shown.length === 0) return null;
   return (
@@ -522,6 +660,7 @@ function ReadyContent({
         institution={connection.institution}
       />
       <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
+      <SourceHealthLine intelligence={intelligence} />
       {/* CONN-3 — three unambiguous freshness lines when intelligence data is
           present; otherwise the pre-CONN-3 single "Last synced" fallback. */}
       {intelligence ? (
@@ -563,10 +702,13 @@ function ReadyContent({
 function NeedsReauthContent({
   connection,
   accounts,
+  intelligence,
 }: {
   connection: SyncConnection;
   accounts:   AccountLite[];
+  intelligence?: ConnectionIntelligenceStatus;
 }) {
+  const lastUpdated = intelligence?.sourceHealth?.lastUpdatedAt ?? null;
   return (
     <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
       <div className="flex items-start justify-between gap-3">
@@ -577,9 +719,74 @@ function NeedsReauthContent({
       </div>
       <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
       <p className="mt-0.5 text-sm text-[var(--accent-warning,#f59e0b)]">Reconnect required</p>
+      {lastUpdated && (
+        <p className="mt-0.5 text-xs text-[var(--text-muted)]">Last successful update {fmtShortDate(lastUpdated)}</p>
+      )}
       <AccountNames accounts={accounts} />
     </div>
   );
+}
+
+/**
+ * W-M2a — truthful copy for a GENERIC wallet sync failure.
+ *
+ * Keyed on the chain-agnostic code the dispatcher records, never on the chain,
+ * so a new network inherits correct wording without a visual branch of its own.
+ * Returns null for codes that already have their own arm (BTC's xpub family) or
+ * for an unrecognised code, both of which fall through to the existing text.
+ *
+ * `retryable` is honest about whether pressing Refresh can change anything.
+ */
+function describeWalletFailure(
+  errorCode: string | null,
+): { eyebrow: string; detail: string; retryable: boolean } | null {
+  switch (errorCode) {
+    case "PROVIDER_NOT_CONFIGURED":
+      return {
+        eyebrow: "Sync unavailable",
+        detail:
+          "This deployment has no connection to this wallet’s blockchain network, so its balance " +
+          "cannot be read. Nothing is wrong with your wallet — the platform needs configuring.",
+        retryable: false,
+      };
+    case "CHAIN_UNSUPPORTED":
+      return {
+        eyebrow: "Network not supported",
+        detail:
+          "Fourth Meridian cannot read this wallet’s network yet. The wallet stays recorded here; " +
+          "only its balance is unavailable.",
+        retryable: false,
+      };
+    case "INVALID_WALLET_ADDRESS":
+      return {
+        eyebrow: "Address not recognised",
+        detail:
+          "This address isn’t in the expected format for its network. Check it against your wallet " +
+          "and re-add it — retrying won’t change the result.",
+        retryable: false,
+      };
+    case "BALANCE_UNAVAILABLE":
+      return {
+        eyebrow: "Couldn’t reach the network",
+        detail: "We couldn’t read this wallet’s balance from the blockchain. Press Refresh to try again.",
+        retryable: true,
+      };
+    case "POSITION_CAPTURE_UNAVAILABLE":
+      return {
+        eyebrow: "Balance not recorded",
+        detail:
+          "We read this wallet’s balance but couldn’t record it. Press Refresh to try again.",
+        retryable: true,
+      };
+    case "ADAPTER_ERROR":
+      return {
+        eyebrow: "Sync error",
+        detail: "Something went wrong reading this wallet. Press Refresh to try again.",
+        retryable: true,
+      };
+    default:
+      return null;
+  }
 }
 
 function ErrorContent({
@@ -621,10 +828,50 @@ function ErrorContent({
     );
   }
 
+  // ── W-M2a — WALLET FAILURES ARE NOT ALL "ADDRESS DISCOVERY" ────────────────
+  //
+  // Every wallet error arm below used to say "We couldn't complete address
+  // discovery for this wallet. Press Refresh to retry discovery." That is BTC
+  // xpub wording, and it was shown for chains that have no address discovery at
+  // all — including a Solana wallet whose deployment had no RPC endpoint, where
+  // it also invited a Refresh that could not possibly succeed.
+  //
+  // The copy is now keyed on the GENERIC failure code the chain dispatcher
+  // records (lib/crypto/wallet-sync-dispatch.ts), so every chain — Ethereum,
+  // Solana and every network after them — gets truthful wording from one place.
+  // The BTC-specific codes keep their own, more precise text.
+  //
+  // `retryable` decides whether we offer a Refresh at all: manufacturing a retry
+  // loop against a known-missing configuration wastes the user's time and
+  // implies the problem is theirs to fix by clicking.
+  const walletFailure = describeWalletFailure(errorCode);
+  if (isWallet && walletFailure) {
+    return (
+      <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+        <EyebrowHeading eyebrow={walletFailure.eyebrow} institution={connection.institution} />
+        <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
+        <div className="mt-1.5 flex items-start gap-2 text-sm text-[var(--accent-warning,#f59e0b)]">
+          <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+          <span>{walletFailure.detail}</span>
+        </div>
+        <p className="mt-1.5 text-xs text-[var(--text-muted)]">
+          This wallet has not been synced. No balance, value or history has been recorded for it.
+        </p>
+        <AccountNames accounts={accounts} />
+      </div>
+    );
+  }
+
+  // UI-C1 — chain-specific wording ONLY where the OPERATION is chain-specific.
+  // An xpub is a Bitcoin descriptor concept and address derivation is a Bitcoin
+  // operation, so those keep their precise wording. Everything else describes
+  // what happened rather than who it happened to.
   const walletDetail =
-    errorCode === "RATE_LIMITED"       ? "the Bitcoin explorer is rate-limiting requests"
-    : errorCode === "DISCOVERY_FAILED" ? "the explorer was temporarily unavailable or timed out"
-    : errorCode === "INVALID_XPUB"     ? "this doesn’t look like a valid extended public key (xpub/ypub/zpub)"
+    errorCode === "INVALID_XPUB"       ? "this doesn’t look like a valid extended public key (xpub/ypub/zpub)"
+    : errorCode === "DISCOVERY_FAILED" ? "address discovery could not be completed"
+    : errorCode === "RATE_LIMITED"     ? "the provider is rate-limiting requests"
+    : errorCode === "NO_PROVIDER_CONFIGURED" ? "no provider endpoint is configured for this chain"
+    : errorCode === "POSITION_CAPTURE_UNAVAILABLE" ? "the balance was read but could not be recorded"
     : errorCode;
   return (
     <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
@@ -634,7 +881,23 @@ function ErrorContent({
         <AlertTriangle size={15} className="shrink-0 mt-0.5" />
         <span>
           {isWallet
-            ? "We couldn’t complete address discovery for this wallet. Press Refresh to retry discovery."
+            // UI-C1 — DO NOT DESCRIBE A FAILURE BY ITS PROVIDER.
+            //
+            // This said "we couldn't complete address discovery" for EVERY
+            // wallet, because the only wallet chain that existed when it was
+            // written derived addresses from an xpub. Ethereum, Solana, BNB and
+            // Avalanche have no address discovery at all, so a failed sync on
+            // any of them told the user to retry an operation their wallet never
+            // performs — and W-M2a had already fixed exactly this once, in the
+            // typed arm above, leaving this untyped fallback behind.
+            //
+            // The copy now comes from the ERROR, and the generic sentence names
+            // no operation: a wallet that failed for a reason we have not coded
+            // is one we cannot describe, and saying so is honest where borrowing
+            // Bitcoin's vocabulary is not.
+            ? (walletDetail
+                ? `We hit a problem syncing this wallet — ${walletDetail}.`
+                : "We couldn’t sync this wallet. Press Refresh to try again.")
             : errorCode === "ITEM_NOT_FOUND"
               // Terminal and unambiguous: the Item no longer exists at Plaid
               // (removed here, or access withdrawn at the institution). No amount
@@ -667,6 +930,9 @@ export function ConnectionCard({ connection, accounts, intelligence, slow, allow
     case "sync_deferred":
       content = <SyncDeferredContent connection={connection} accounts={accounts} />;
       break;
+    case "import_paused":
+      content = <ImportPausedContent connection={connection} accounts={accounts} />;
+      break;
     case "ready":
       // CONN-2G — "ready" transactions ≠ "Fourth Meridian ready". While derived
       // intelligence is still building (BUILDING_INTELLIGENCE), show the
@@ -674,10 +940,12 @@ export function ConnectionCard({ connection, accounts, intelligence, slow, allow
       // intelligence (or no intelligence data — pre-CONN-2 fallback) shows ReadyContent.
       content = intelligence && intelligence.phase === "BUILDING_INTELLIGENCE"
         ? <BuildingProfileContent connection={connection} accounts={accounts} intelligence={intelligence} />
-        : <ReadyContent connection={connection} accounts={accounts} intelligence={intelligence} />;
+        : intelligence && intelligence.phase === "INTELLIGENCE_NOT_BUILT"
+          ? <TimelineNotBuiltContent connection={connection} accounts={accounts} intelligence={intelligence} />
+          : <ReadyContent connection={connection} accounts={accounts} intelligence={intelligence} />;
       break;
     case "needs_reauth":
-      content = <NeedsReauthContent connection={connection} accounts={accounts} />;
+      content = <NeedsReauthContent connection={connection} accounts={accounts} intelligence={intelligence} />;
       break;
     case "error":
       content = <ErrorContent connection={connection} accounts={accounts} />;

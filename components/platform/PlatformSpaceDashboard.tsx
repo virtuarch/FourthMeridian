@@ -17,9 +17,16 @@
  *     `PLATFORM_AREA_WORKSPACES` (lib/platform/workspaces.ts).
  *   • Frame — SpaceShell owns chrome + the rail (Atlas SegmentedControl); this
  *     host only supplies title/subtitle/toolbar/rail + the active workspace body.
- *   • Sidebar — identity AND the active workspace's SECTION anchors are published
- *     up through the ONE SpaceChrome bridge customer workspaces use, so the
- *     ContextualNavbar's Sections block serves both domains from one model.
+ *   • Sidebar — identity, the area's WORKSPACE destinations (UX-P1 Change B:
+ *     the same `workspaceNav` channel a customer Space publishes Net Worth ·
+ *     Cash Flow through, so at lg+ the sidebar is the primary switcher and the
+ *     rail serves smaller screens) AND the active workspace's SECTION anchors
+ *     are published up through the ONE SpaceChrome bridge customer workspaces
+ *     use, so the ContextualNavbar serves both domains from one model.
+ *   • URL — the open workspace is URL state (`?workspace=`), owned by
+ *     lib/space/use-platform-workspace-navigation (the Platform counterpart of
+ *     useSpaceNavigation): deep links, Back/Forward and reload all resolve the
+ *     same workspace; the default writes no param (UX-P1 Change A).
  *   • Data — Platform widgets SELF-FETCH (OPS-5 S6 dataNeeds decision A); this
  *     host passes each its enabled DB `SpaceDashboardSection` row and nothing more.
  *
@@ -33,16 +40,20 @@
  * simply skipped), so the placeholder branch was dead (OPS-5 integration gate §12).
  */
 
-import { useEffect, useMemo, useState, type ComponentType } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, type ComponentType } from "react";
 import {
   useSpaceChromePublisher,
   useSpaceSectionsPublisher,
+  useSpaceWorkspaceNavPublisher,
   type SpaceChromeSection,
 } from "@/lib/space/space-chrome-context";
-import type { SpaceMountContext } from "@/lib/space/mount-context";
+import {
+  platformWorkspaceHref,
+  usePlatformWorkspaceNavigation,
+} from "@/lib/space/use-platform-workspace-navigation";
+import type { SpaceMountContext, SpaceMountAccess } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, ArrowRight } from "lucide-react";
+import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, ArrowRight } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
 import { getPlatformAreaWorkspaces, getPlatformWorkspace } from "@/lib/platform/workspaces";
@@ -53,12 +64,16 @@ import { SecOperatorActionsWidget } from "./widgets/SecOperatorActionsWidget";
 import { SecAuthPostureWidget } from "./widgets/SecAuthPostureWidget";
 import { SecSessionsWidget } from "./widgets/SecSessionsWidget";
 import { SecAnomaliesWidget } from "./widgets/SecAnomaliesWidget";
+import { CsCustomersWidget } from "./widgets/CsCustomersWidget";
+import { GrowthPolicyGroupsWidget } from "./widgets/GrowthPolicyGroupsWidget";
+import { GrowthProductAnalyticsWidget } from "./widgets/GrowthProductAnalyticsWidget";
 import { OpsJobHealthWidget } from "./widgets/OpsJobHealthWidget";
 import { OpsRateLimitsWidget } from "./widgets/OpsRateLimitsWidget";
 import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
 import { OpsApiUsageWidget } from "./widgets/OpsApiUsageWidget";
 import { OpsConnectionHealthWidget } from "./widgets/OpsConnectionHealthWidget";
 import { OpsConnectionDiagnosticsWidget } from "./widgets/OpsConnectionDiagnosticsWidget";
+import { OpsProviderCleanupWidget } from "./widgets/OpsProviderCleanupWidget";
 import { OpsEmailDeliveryWidget } from "./widgets/OpsEmailDeliveryWidget";
 import { OpsResourceFreshnessWidget } from "./widgets/OpsResourceFreshnessWidget";
 import { OpsManualOperationsWidget } from "./widgets/OpsManualOperationsWidget";
@@ -74,7 +89,13 @@ import { OpsRefreshExecutionsWidget } from "./widgets/OpsRefreshExecutionsWidget
 import { OpsRefreshCoverageWidget } from "./widgets/OpsRefreshCoverageWidget";
 import { OpsProviderOperationsWidget } from "./widgets/OpsProviderOperationsWidget";
 import { OpsSchedulerWidget } from "./widgets/OpsSchedulerWidget";
+import { OpsPoliciesWidget } from "./widgets/OpsPoliciesWidget";
 import { OpsPlatformHealthWidget } from "./widgets/OpsPlatformHealthWidget";
+import { OpsOverviewWidget } from "./widgets/OpsOverviewWidget";
+import { OpsAiInvocationsWidget } from "./widgets/OpsAiInvocationsWidget";
+import { OpsBriefOpsWidget } from "./widgets/OpsBriefOpsWidget";
+import { OpsPlaidUsageWidget } from "./widgets/OpsPlaidUsageWidget";
+import { OpsAiBudgetWidget } from "./widgets/OpsAiBudgetWidget";
 import { WorkspaceSessionProvider } from "./workspace-session";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
 import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
@@ -82,6 +103,7 @@ import { OpsUsersWidget } from "./widgets/OpsUsersWidget";
 import { OpsActivityWidget } from "./widgets/OpsActivityWidget";
 import { OpsGrowthWidget } from "./widgets/OpsGrowthWidget";
 import { CsSyncIssuesWidget } from "./widgets/CsSyncIssuesWidget";
+import { MerchantReviewWidget } from "./widgets/MerchantReviewWidget";
 
 type Section = PlatformSection;
 
@@ -100,9 +122,12 @@ type Section = PlatformSection;
  * existing widget stays assignable to this registry unchanged; a widget that does
  * not take it simply never moves the rail.
  */
+/** The fail-safe access a workspace body renders with when none is supplied. */
+const READ_ONLY_ACCESS: SpaceMountAccess = { canRead: true, canWrite: false, canControl: false, level: "READ" };
+
 const PLATFORM_WIDGET_REGISTRY: Record<
   string,
-  ComponentType<{ section: Section; onOpenWorkspace?: (id: string) => void }>
+  ComponentType<{ section: Section; onOpenWorkspace?: (id: string) => void; access?: SpaceMountAccess }>
 > = {
   // Security Operations
   sec_audit_feed:       SecAuditFeedWidget,
@@ -117,6 +142,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   ops_api_usage:          OpsApiUsageWidget,
   ops_connection_health:  OpsConnectionHealthWidget,
   ops_connection_diagnostics: OpsConnectionDiagnosticsWidget,
+  ops_provider_cleanup:       OpsProviderCleanupWidget,
   ops_email_delivery:     OpsEmailDeliveryWidget,
   ops_resource_freshness: OpsResourceFreshnessWidget,
   ops_manual_operations:  OpsManualOperationsWidget,
@@ -134,14 +160,28 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   ops_provider_operations: OpsProviderOperationsWidget,
   ops_scheduler:          OpsSchedulerWidget,
   ops_platform_health:    OpsPlatformHealthWidget,
+  // PLATFORM OPS POLICIES (Slice 1) — read-only financial refresh policy.
+  ops_policies:           OpsPoliciesWidget,
+  // PLATFORM OPS OBSERVABILITY — the cockpit and the new authority readers.
+  ops_overview:           OpsOverviewWidget,
+  ops_ai_invocations:     OpsAiInvocationsWidget,
+  ops_brief_ops:          OpsBriefOpsWidget,
+  ops_plaid_usage:        OpsPlaidUsageWidget,
+  // AI COST CONTROLS — budget utilization on Economics (Agent B replaces the stub).
+  ops_ai_budget:          OpsAiBudgetWidget,
   // Growth & Revenue
   growth_signups:       GrowthSignupsWidget,
   growth_beta_requests: GrowthBetaRequestsWidget,
   growth_users:         OpsUsersWidget,
   growth_activity:      OpsActivityWidget,
   growth_funnel:        OpsGrowthWidget,
+  growth_policy_groups: GrowthPolicyGroupsWidget,
+  growth_product_analytics: GrowthProductAnalyticsWidget,
   // Customer Success
+  cs_customers:   CsCustomersWidget,
   cs_sync_issues: CsSyncIssuesWidget,
+  // Merchant Operations — a doorway to the merge review (/merchant-ops).
+  merchant_review: MerchantReviewWidget,
 };
 
 /**
@@ -197,7 +237,7 @@ const NO_SECTION_KEYS: readonly string[] = [];
 
 /** Lucide icon-name → component, for the Platform workspace identities. */
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
-  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw,
+  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal,
 };
 
 interface Props {
@@ -219,27 +259,27 @@ interface Props {
 }
 
 
-/** A summary→detail doorway button (Overview only). */
+/** A summary→detail doorway (Overview only).
+ *
+ * UX-P1 (D11) — a quiet text link in one "Explore" row, no longer a card. Every
+ * Overview block now ends in its own doorway into the workspace that holds its
+ * detail, so this row is the generic fallback the composition still declares
+ * (workspaces.test.ts pins ≥1 doorway), not a second card grid competing with
+ * the blocks. Same `onOpen` mechanism as every block — one navigation path. */
 function WorkspaceDoorway({ targetId, onOpen }: { targetId: string; onOpen: (id: string) => void }) {
   const def = getPlatformWorkspace(targetId);
   if (!def) return null;
   const Icon = WORKSPACE_ICONS[def.icon] ?? ArrowRight;
   return (
     <button
+      type="button"
       onClick={() => onOpen(targetId)}
-      className="flex items-center justify-between gap-2 rounded-[var(--radius-lg)] border p-4 text-left transition-colors hover:bg-[var(--glass-ultrathin)]"
-      style={{ background: "var(--surface-muted)", borderColor: "var(--border-hairline)" }}
+      className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] hover:bg-[var(--glass-ultrathin)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]"
+      style={{ borderColor: "var(--border-hairline)" }}
+      aria-label={`Open ${def.label}`}
     >
-      <span className="flex items-center gap-2">
-        <span
-          className="w-7 h-7 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0"
-          style={{ background: "var(--glass-ultrathin)", color: "var(--text-muted)" }}
-        >
-          <Icon size={14} />
-        </span>
-        <span className="text-sm font-semibold text-[var(--text-primary)]">Open {def.label}</span>
-      </span>
-      <ArrowRight size={14} className="text-[var(--text-muted)]" />
+      <Icon size={12} aria-hidden className="text-[var(--text-muted)]" />
+      {def.label}
     </button>
   );
 }
@@ -260,11 +300,16 @@ export function PlatformWorkspaceBody({
   doorways,
   dbByKey,
   onOpen,
+  access = READ_ONLY_ACCESS,
 }: {
   sectionKeys: readonly string[];
   doorways?:   readonly string[];
   dbByKey:     Map<string, Section>;
   onOpen:      (id: string) => void;
+  /** The operator's resolved access (descriptive). Widgets that RENDER a control
+   *  read it; the server gate decides. Optional and FAIL-SAFE: an absent value
+   *  renders every widget as READ-only. */
+  access?:     SpaceMountAccess;
 }) {
   const rows = resolveWorkspaceRows(sectionKeys, dbByKey);
 
@@ -289,7 +334,7 @@ export function PlatformWorkspaceBody({
                  the row is still one child of the same editorial stack. */
               return (
                 <div key={row.id} id={platformSectionAnchor(row.key)} className="scroll-mt-20">
-                  <Widget section={row} onOpenWorkspace={onOpen} />
+                  <Widget section={row} onOpenWorkspace={onOpen} access={access} />
                 </div>
               );
             })}
@@ -298,13 +343,11 @@ export function PlatformWorkspaceBody({
       )}
 
       {doorways && doorways.length > 0 && (
-        <section aria-label="Explore">
-          <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] mb-3">Explore</p>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(220px,100%),1fr))] gap-3">
-            {doorways.map((id) => (
-              <WorkspaceDoorway key={id} targetId={id} onOpen={onOpen} />
-            ))}
-          </div>
+        <section aria-label="Explore" className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] mr-1">Explore</span>
+          {doorways.map((id) => (
+            <WorkspaceDoorway key={id} targetId={id} onOpen={onOpen} />
+          ))}
         </section>
       )}
     </div>
@@ -319,7 +362,11 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
   const accessLevel = mountContext.access.level;
   const { available, selectedKey } = mountContext.workspaces;
 
-  const [activeTab, setActiveTab] = useState<string>(selectedKey);
+  // UX-P1 Change A — the open workspace is URL state (`?workspace=`), through
+  // the ONE navigation authority for Platform Spaces. `setActiveTab` is the ONE
+  // user-navigation setter: the rail, the sidebar rows and the Overview
+  // doorways all call it, so every entry point declares the same PUSH intent.
+  const { activeTab, setActiveTab } = usePlatformWorkspaceNavigation({ available, selectedKey });
 
   // Operational COMPOSITION (which section keys + doorways each workspace renders)
   // stays Platform-owned — it is data-needs metadata, NOT mount context, and is
@@ -342,17 +389,15 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
   // mode (the same transforming sidebar customer Spaces use; platform Spaces are
   // count-based, so no FX and no Manage). The operator's access level, formerly a
   // toolbar badge, folds into the subtitle so no information is lost.
-  const router = useRouter();
   const { publishSpace, publishCurrencyControl } = useSpaceChromePublisher();
   const chromeSubtitle = `Platform · ${areaLabel} · ${accessLevel}`;
   useEffect(() => {
     publishCurrencyControl(null);
     publishSpace({
       identity: { name: spaceName, subtitle: chromeSubtitle },
-      onLeave: () => router.push("/dashboard/spaces"),
     });
     return () => publishSpace(null);
-  }, [publishSpace, publishCurrencyControl, spaceName, chromeSubtitle, router]);
+  }, [publishSpace, publishCurrencyControl, spaceName, chromeSubtitle]);
 
   // SECTIONS — the ACTIVE workspace's "what's inside" list, published UP to the
   // same ContextualNavbar block customer workspaces feed (SpaceChrome sections
@@ -369,12 +414,37 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
     return () => publishSections([]);
   }, [publishSections, chromeSections]);
 
+  // WORKSPACES — UX-P1 Change B: the area's workspace destinations, published
+  // to the SAME `workspaceNav` channel SpaceDashboard feeds (Net Worth · Cash
+  // Flow), so the ContextualNavbar's Space block is the desktop switcher here
+  // too — one sidebar model, not a second Platform nav. Each row carries its
+  // canonical deep link (open-in-new-tab / copy-link) and selects IN PLACE
+  // through the same setter the rail uses; the icon is the contract's icon
+  // NAME (client-safe string data), resolved by the sidebar. Cleared on
+  // unmount exactly like identity and sections.
+  const publishWorkspaceNav = useSpaceWorkspaceNavPublisher();
+  const workspaceItems = useMemo(
+    () => available.map((w) => ({ id: w.key, label: w.label, href: platformWorkspaceHref(area, w.key), icon: w.icon })),
+    [available, area],
+  );
+  const openWorkspaceId = active?.workspaceId ?? activeTab;
+  useEffect(() => {
+    publishWorkspaceNav({ items: workspaceItems, activeId: openWorkspaceId, onSelect: setActiveTab });
+  }, [publishWorkspaceNav, workspaceItems, openWorkspaceId, setActiveTab]);
+  useEffect(() => () => publishWorkspaceNav(null), [publishWorkspaceNav]);
+
   return (
     <SpaceShell
+      // Phone-sized rail targets (the rail is the <lg switcher now).
+      mobileOptimized
+      // UX-P1 D1 — at lg+ the sidebar's workspace rows are THE switcher; the
+      // rail shows only below lg (the exact complement of the sidebar's
+      // `hidden … lg:block`), so exactly one switcher shows at any width.
+      railVisibility="belowLg"
       title={spaceName}
       subtitle={chromeSubtitle}
       railOptions={railOptions}
-      activeTab={active?.workspaceId ?? activeTab}
+      activeTab={openWorkspaceId}
       onSelectTab={setActiveTab}
       // Shell frame variant from the contract (platform resolves to "space" — it
       // delegates identity to the ContextualNavbar exactly like finance; see
@@ -398,6 +468,7 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
             sectionKeys={active.sections}
             doorways={active.doorways}
             dbByKey={dbByKey}
+            access={mountContext.access}
             onOpen={setActiveTab}
           />
         </div>

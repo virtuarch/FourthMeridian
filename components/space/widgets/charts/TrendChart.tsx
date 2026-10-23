@@ -12,10 +12,23 @@
  *   - MEASURED width (ResizeObserver) + fixed pixel height — never a stretched
  *     viewBox, so markers stay circular;
  *   - the line BREAKS at real gaps AND at a basis change (observed↔reconstructed);
+ *   - the break at a basis change is DRAWN, as a seam rule (see below);
  *   - reconstructed runs are dashed + faint with HOLLOW markers;
  *   - the unknown is a hatched "NO DATA" band, not an absence;
  *   - y-scale from real points ONLY (no interpolation across the hole);
  *   - three axis labels; an HTML tooltip that won't snap across a gap; honest legend.
+ *
+ * V26-INVESTMENTS-HISTORY — the basis break was already unbridged, but INVISIBLE:
+ * between two points one day apart the dashed line stopped low and the solid line
+ * resumed high ~10px later, with nothing to say why, so the eye read the step as
+ * market movement anyway. Each basis change now carries a seam rule, and the legend
+ * names it. Deliberately unlabelled per-seam: a series whose provider syncs on some
+ * days and not others flips basis repeatedly (five times in a typical two-month
+ * window), and five inline labels would be a picket fence. The rule is the mark; the
+ * legend is the meaning.
+ *
+ * Geometry splitting lives in trend-runs.core.ts (pure, React-free, unit-tested).
+ * This file owns pixels; that file owns what a run, a gap and a seam MEAN.
  *
  * This core is domain-free: it takes points `{date,value,estimated}`, a currency, and
  * presentation slots (title / subtitle / headerRight). The consumer owns what the
@@ -23,7 +36,12 @@
  */
 
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { formatCompactCurrency } from "@/lib/format";
+import { formatCompactCurrency } from "@/lib/currency";
+import {
+  medianSpacingDays, toRuns, toDateGaps, toBasisSeams,
+  basisOf,
+  type TrendGeomPoint, type TrendRun, type TrendBasis,
+} from "./trend-runs.core";
 
 export interface TrendPoint {
   /** YYYY-MM-DD. */
@@ -31,6 +49,19 @@ export interface TrendPoint {
   value:     number;
   /** True when reconstructed / display-estimated (drawn as a different KIND of fact). */
   estimated: boolean;
+  /**
+   * V26-INVESTMENTS-HISTORY — the caller's ALREADY-CLASSIFIED confidence. When
+   * present it wins over `estimated` (see basisOf). This component never decides
+   * what makes a point unreliable: it receives a state and draws it. Optional,
+   * so callers with no confidence data are unchanged.
+   */
+  basis?:    TrendBasis;
+  /**
+   * Ready-to-render disclosure for the tooltip, e.g. "1 of 19 positions valued".
+   * Passed as TEXT, deliberately: handing this component the counts instead
+   * would invite it to compute a ratio and decide something from it.
+   */
+  coverageLabel?: string | null;
 }
 
 const H = 264;
@@ -48,41 +79,43 @@ function ts(date: string): number {
   return Date.parse(`${date}T00:00:00.000Z`);
 }
 
-/** Median day-spacing across consecutive points — a robust gap scale. */
-function medianSpacingDays(times: number[]): number {
-  if (times.length < 2) return 1;
-  const diffs = times.slice(1).map((t, i) => (t - times[i]) / 86_400_000).sort((a, b) => a - b);
-  const mid = Math.floor(diffs.length / 2);
-  return diffs.length % 2 ? diffs[mid] : (diffs[mid - 1] + diffs[mid]) / 2;
-}
-
-interface Pt { date: string; t: number; value: number; estimated: boolean }
-interface Run { points: Pt[]; basis: "observed" | "reconstructed" }
+type Pt = TrendGeomPoint;
+type Run = TrendRun;
 
 /**
- * Split into contiguous runs, breaking on (a) a real date hole and (b) a change of
- * basis. Adjacent runs SHARE the boundary point across a basis change (the line stays
- * connected where knowledge is, only its character changes) but NEVER across a hole.
+ * How each basis is DRAWN. A lookup table, not a decision: the caller has
+ * already classified the point, and this only says what that class looks like.
+ *
+ * `unreliable` gets NO area fill on purpose. A filled area reads as substance
+ * beneath the line, and the whole claim of an unreliable run is that most of it
+ * could not be valued — so the line is drawn and nothing is asserted under it.
+ * The dotted stroke and the lowest opacity put it visibly below a reconstructed
+ * estimate rather than beside it.
  */
-function toRuns(pts: Pt[], gapDays: number): Run[] {
-  const runs: Run[] = [];
-  let cur: Run | null = null;
-  for (let i = 0; i < pts.length; i++) {
-    const p = pts[i];
-    const prev = pts[i - 1];
-    const hole = prev ? (p.t - prev.t) / 86_400_000 > gapDays : false;
-    const basis: Run["basis"] = p.estimated ? "reconstructed" : "observed";
-    const basisChanged = prev ? (prev.estimated ? "reconstructed" : "observed") !== basis : false;
-    if (!cur || hole || basisChanged) {
-      cur = { points: [p], basis };
-      runs.push(cur);
-      if (basisChanged && !hole && prev) cur.points.unshift(prev);
-    } else {
-      cur.points.push(p);
-    }
-  }
-  return runs.filter((r) => r.points.length > 0);
-}
+const RUN_STYLE: Record<TrendBasis, { fill: string | null; opacity: number; dash?: string }> = {
+  observed:      { fill: "url(#tc-fill)",       opacity: 1 },
+  reconstructed: { fill: "url(#tc-fill-recon)", opacity: 0.6,  dash: "4 3" },
+  unreliable:    { fill: null,                  opacity: 0.34, dash: "1 4" },
+  // RWA-2A — a manual asset's estimates. Recorded is the solid line between two
+  // same-day anchors only; a modeled run is dashed like a reconstruction; a
+  // carried-forward run is a long dash with no fill (nothing new is asserted).
+  recorded:      { fill: "url(#tc-fill)",       opacity: 1 },
+  modeled:       { fill: "url(#tc-fill-recon)", opacity: 0.6,  dash: "4 3" },
+  carried:       { fill: null,                  opacity: 0.6,  dash: "8 4" },
+};
+
+/** The tooltip's one-word provenance suffix. Text, not logic. */
+const BASIS_SUFFIX: Record<TrendBasis, string | null> = {
+  observed:      null,
+  reconstructed: "rebuilt",
+  unreliable:    "low confidence",
+  recorded:      "your estimate",
+  modeled:       "modeled — not a market price",
+  carried:       "latest estimate, carried forward",
+};
+
+/** RWA-2A — the user-estimate bases (a manual asset's chart). */
+const ESTIMATE_BASES: ReadonlySet<TrendBasis> = new Set<TrendBasis>(["recorded", "modeled", "carried"]);
 
 export function TrendChart({
   points,
@@ -93,6 +126,7 @@ export function TrendChart({
   emptyMessage = "No history in this range yet. Widen the range or connect accounts to build history.",
   ariaLabel,
   formatDate = defaultFormatDate,
+  onSelectPoint,
 }: {
   points:       TrendPoint[];
   currency:     string;
@@ -103,6 +137,13 @@ export function TrendChart({
   emptyMessage?: string;
   ariaLabel?:   string;
   formatDate?:  (iso: string) => string;
+  /**
+   * V26-S3-DETAIL — OPTIONAL. When supplied, a point becomes selectable and the
+   * chart reports WHICH DATE was chosen — nothing more. It computes no
+   * composition, no total and no completeness; the consumer asks the canonical
+   * historical authority for those. Omitted ⇒ the chart is exactly as it was.
+   */
+  onSelectPoint?: (dateISO: string) => void;
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
@@ -120,7 +161,9 @@ export function TrendChart({
   }, []);
 
   const geom = useMemo(() => {
-    const pts: Pt[] = points.map((p) => ({ date: p.date, t: ts(p.date), value: p.value, estimated: p.estimated }));
+    const pts: Pt[] = points.map((p) => ({
+      date: p.date, t: ts(p.date), value: p.value, estimated: p.estimated, basis: p.basis,
+    }));
     if (pts.length === 0) return null;
 
     const times = pts.map((p) => p.t);
@@ -150,19 +193,28 @@ export function TrendChart({
       return `${line(run)} L${x(last.t).toFixed(1)},${H - PAD_B} L${x(first.t).toFixed(1)},${H - PAD_B} Z`;
     };
 
-    const gaps: Array<{ x0: number; x1: number }> = [];
-    for (let i = 1; i < pts.length; i++) {
-      if ((pts[i].t - pts[i - 1].t) / 86_400_000 > gapDays) gaps.push({ x0: x(pts[i - 1].t), x1: x(pts[i].t) });
-    }
+    const gaps = toDateGaps(pts, gapDays).map((g) => ({
+      x0: x(pts[g.fromIndex].t), x1: x(pts[g.toIndex].t),
+    }));
 
-    return { pts, x, y, runs, line, area, gaps, last: pts[pts.length - 1] };
+    // A change of evidence basis, drawn at the MIDPOINT between the two values it
+    // separates — the boundary belongs to neither measurement, so it is anchored to
+    // neither point. Values and positions are untouched; this only marks the break
+    // the runs already make.
+    const seams = toBasisSeams(pts, gapDays).map((s) => ({
+      key: `${s.fromDate}|${s.toDate}`,
+      x:   (x(pts[s.fromIndex].t) + x(pts[s.toIndex].t)) / 2,
+    }));
+
+    return { pts, x, y, runs, line, area, gaps, seams, last: pts[pts.length - 1] };
   }, [points, w]);
 
-  function onMove(e: React.PointerEvent) {
-    if (!geom) return;
+  /** The point nearest an x offset, or null inside a gap. */
+  function nearestIndex(clientX: number): number | null {
+    if (!geom) return null;
     const rect = wrap.current?.getBoundingClientRect();
-    if (!rect) return;
-    const px = e.clientX - rect.left;
+    if (!rect) return null;
+    const px = clientX - rect.left;
     let best: number | null = null;
     let bestD = Infinity;
     geom.pts.forEach((p, i) => {
@@ -170,7 +222,50 @@ export function TrendChart({
       if (d < bestD) { bestD = d; best = i; }
     });
     // Don't snap across the hole — inside a gap the honest answer is "nothing".
-    setHover(bestD < 20 ? best : null);
+    return bestD < 20 ? best : null;
+  }
+
+  function onMove(e: React.PointerEvent) {
+    setHover(nearestIndex(e.clientX));
+  }
+
+  /**
+   * V26-S4 — A CLICK SELECTS WITHOUT NEEDING A HOVER FIRST.
+   *
+   * Selection used to read the `hover` state, so the first click on a chart did
+   * nothing: on touch, and for keyboard and assistive-technology users, no
+   * pointer-move precedes the click, and a control that requires one is a
+   * control those users cannot operate. The click now resolves the point from
+   * its OWN coordinates and falls back to the hovered point only when it lands
+   * in a gap.
+   */
+  function onSelect(e: React.MouseEvent) {
+    if (!onSelectPoint || !geom) return;
+    const i = nearestIndex(e.clientX) ?? hover;
+    if (i === null) return;
+    setHover(i);
+    onSelectPoint(geom.pts[i].date);
+  }
+
+  /** Keyboard: arrows move the selection, Enter/Space opens it. */
+  function onKeys(e: React.KeyboardEvent) {
+    if (!onSelectPoint || !geom) return;
+    const last = geom.pts.length - 1;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      const from = hover ?? last;
+      setHover(Math.max(0, Math.min(last, from + (e.key === "ArrowRight" ? 1 : -1))));
+      return;
+    }
+    if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      setHover(e.key === "Home" ? 0 : last);
+      return;
+    }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onSelectPoint(geom.pts[hover ?? last].date);
+    }
   }
 
   const header = (
@@ -201,7 +296,18 @@ export function TrendChart({
       {header}
 
       <div className="relative">
-        <div ref={wrap} className="relative touch-pan-y" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+        <div
+          ref={wrap}
+          className={`relative touch-pan-y${onSelectPoint ? " cursor-pointer" : ""}`}
+          onPointerMove={onMove}
+          onPointerLeave={() => setHover(null)}
+          onClick={onSelect}
+          onKeyDown={onKeys}
+          onFocus={() => { if (onSelectPoint && hover === null && geom) setHover(geom.pts.length - 1); }}
+          role={onSelectPoint ? "button" : undefined}
+          tabIndex={onSelectPoint ? 0 : undefined}
+          aria-label={onSelectPoint ? `${label} — arrow keys move between dates, Enter opens the selected date` : undefined}
+        >
           <svg width="100%" height={H} className="block overflow-visible" role="img" aria-label={label}>
             <defs>
               <linearGradient id="tc-fill" x1="0" y1="0" x2="0" y2="1">
@@ -234,8 +340,8 @@ export function TrendChart({
 
             {geom.runs.map((run, i) => (
               <g key={i}>
-                {run.points.length > 1 && (
-                  <path d={geom.area(run)} fill={run.basis === "observed" ? "url(#tc-fill)" : "url(#tc-fill-recon)"} />
+                {run.points.length > 1 && RUN_STYLE[run.basis].fill && (
+                  <path d={geom.area(run)} fill={RUN_STYLE[run.basis].fill!} />
                 )}
                 <path
                   d={geom.line(run)}
@@ -244,16 +350,42 @@ export function TrendChart({
                   strokeWidth="2"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  strokeOpacity={run.basis === "observed" ? 1 : 0.6}
-                  strokeDasharray={run.basis === "reconstructed" ? "4 3" : undefined}
+                  strokeOpacity={RUN_STYLE[run.basis].opacity}
+                  strokeDasharray={RUN_STYLE[run.basis].dash}
                   vectorEffect="non-scaling-stroke"
                 />
               </g>
             ))}
 
-            {/* Reconstructed points get hollow markers. */}
-            {geom.pts.filter((p) => p.estimated).map((p) => (
-              <circle key={p.date} cx={geom.x(p.t)} cy={geom.y(p.value)} r="2.5" fill="var(--bg-base)" stroke="var(--meridian-400)" strokeWidth="1.25" strokeOpacity="0.7" />
+            {/*
+              Evidence-basis seam. The runs on either side are already disjoint;
+              this draws that break so the step between a reconstructed value and
+              an observed one reads as a change of BASIS rather than as a gain or
+              a loss. Not the hatched band — that vocabulary means "never
+              observed", and here we have values on both sides.
+            */}
+            {geom.seams.map((s) => (
+              <line
+                key={s.key}
+                x1={s.x} y1={PAD_T - 4} x2={s.x} y2={H - PAD_B}
+                stroke="var(--border-hairline-strong)" strokeWidth="1" strokeDasharray="2 3"
+              />
+            ))}
+
+            {/* Every reconstructed / unreliable point gets a hollow marker, faded by
+                its basis. (RWA-2A: a modeled or carried estimate is shown by its run's
+                stroke alone — a marker per sampled day would read as many entries.) */}
+            {geom.pts.filter((p) => basisOf(p) === "reconstructed" || basisOf(p) === "unreliable").map((p) => (
+              <circle
+                key={p.date} cx={geom.x(p.t)} cy={geom.y(p.value)} r="2.5"
+                fill="var(--bg-base)" stroke="var(--meridian-400)" strokeWidth="1.25"
+                strokeOpacity={basisOf(p) === "unreliable" ? 0.4 : 0.7}
+              />
+            ))}
+
+            {/* RWA-2A — each value the user RECORDED is a solid dot: the anchors. */}
+            {geom.pts.filter((p) => basisOf(p) === "recorded").map((p) => (
+              <circle key={`rec-${p.date}`} cx={geom.x(p.t)} cy={geom.y(p.value)} r="3" fill="var(--meridian-400)" />
             ))}
 
             {/* The last point — the always-on marker. */}
@@ -263,7 +395,7 @@ export function TrendChart({
             {hover !== null && hoverPt && (
               <g pointerEvents="none">
                 <line x1={geom.x(hoverPt.t)} y1={PAD_T - 4} x2={geom.x(hoverPt.t)} y2={H - PAD_B} stroke="var(--border-hairline-strong)" strokeWidth="1" />
-                <circle cx={geom.x(hoverPt.t)} cy={geom.y(hoverPt.value)} r="4" fill={hoverPt.estimated ? "var(--bg-base)" : "var(--meridian-400)"} stroke="var(--meridian-400)" strokeWidth="1.5" />
+                <circle cx={geom.x(hoverPt.t)} cy={geom.y(hoverPt.value)} r="4" fill={basisOf(hoverPt) === "observed" || basisOf(hoverPt) === "recorded" ? "var(--meridian-400)" : "var(--bg-base)"} stroke="var(--meridian-400)" strokeWidth="1.5" />
               </g>
             )}
           </svg>
@@ -277,8 +409,14 @@ export function TrendChart({
                 </p>
                 <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
                   {formatDate(hoverPt.date)}
-                  {hoverPt.estimated && <span className="text-[var(--text-secondary)]">· rebuilt</span>}
+                  {BASIS_SUFFIX[basisOf(hoverPt)] && (
+                    <span className="text-[var(--text-secondary)]">· {BASIS_SUFFIX[basisOf(hoverPt)]}</span>
+                  )}
                 </p>
+                {/* Disclosure the CALLER wrote. Rendered verbatim, never composed here. */}
+                {hover !== null && points[hover]?.coverageLabel && (
+                  <p className="mt-0.5 text-[11px] text-[var(--text-faint)]">{points[hover].coverageLabel}</p>
+                )}
               </div>
             </div>
           )}
@@ -293,14 +431,50 @@ export function TrendChart({
 
         {/* Legend — honest markers only (Observed / Reconstructed / Never observed). */}
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--text-muted)]">
-          <span className="inline-flex items-center gap-1.5">
-            <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" /></svg>
-            Observed
-          </span>
-          {geom.pts.some((p) => p.estimated) && (
+          {/* RWA-2A — a chart of user estimates has no observed values, so it never
+              claims an "Observed" line; every other chart is unchanged. */}
+          {!geom.pts.every((p) => ESTIMATE_BASES.has(basisOf(p))) && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" /></svg>
+              Observed
+            </span>
+          )}
+          {geom.pts.some((p) => basisOf(p) === "recorded") && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><circle cx="8" cy="3" r="3" fill="var(--meridian-400)" /></svg>
+              Your estimate
+            </span>
+          )}
+          {geom.pts.some((p) => basisOf(p) === "modeled") && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="4 3" /></svg>
+              Modeled between estimates
+            </span>
+          )}
+          {geom.pts.some((p) => basisOf(p) === "carried") && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="8 4" /></svg>
+              Latest estimate carried forward
+            </span>
+          )}
+          {geom.pts.some((p) => basisOf(p) === "reconstructed") && (
             <span className="inline-flex items-center gap-1.5">
               <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="4 3" /></svg>
               Reconstructed
+            </span>
+          )}
+          {geom.pts.some((p) => basisOf(p) === "unreliable") && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.34" strokeDasharray="1 4" /></svg>
+              Mostly unvalued
+            </span>
+          )}
+          {geom.seams.length > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="8" aria-hidden>
+                <line x1="8" y1="0" x2="8" y2="8" stroke="var(--border-hairline-strong)" strokeWidth="1" strokeDasharray="2 3" />
+              </svg>
+              Evidence changes — not a market move
             </span>
           )}
           {geom.gaps.length > 0 && (

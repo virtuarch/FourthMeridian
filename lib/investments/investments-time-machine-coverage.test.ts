@@ -191,7 +191,7 @@ function main(): void {
   // ── 7. RETURN INTEGRITY — a % is a return only when flows are zero ────────────
   console.log("7. change interpretation (return vs value-change vs incomparable)");
   const ev = (type: InvestmentEventType, amount: number | null, hasQuantity = false): FlowEvent =>
-    ({ type, date: "2026-05-15", amount, fxEstimated: false, hasQuantity });
+    ({ type, date: "2026-05-15", amount, fxEstimated: false, hasQuantity, accountId: "acc-1", instrumentId: null, symbol: null, name: null, quantity: null });
   const flowsOf = (events: FlowEvent[]) => summarizePeriodFlows(events, "2026-03-31", "2026-06-30", "USD");
   const recon = (opening: InvestmentValuationView, closing: InvestmentValuationView, flows: ReturnType<typeof flowsOf> | null) =>
     assembleInvestmentsTimeMachine({

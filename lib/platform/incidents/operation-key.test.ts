@@ -129,9 +129,72 @@ async function main() {
       for (const m of code(f).matchAll(/\bstage:\s*"([a-z][a-z-]*)"/g)) stages.add(m[1]);
     }
     const unregistered = [...stages].filter((s) => !isRegisteredOperation(s));
-    // "load" is btc-sync's own result-shape field and never reaches SyncIssue.
-    const realUnregistered = unregistered.filter((s) => s !== "load" && s !== "unit-test" && s !== "s");
-    check(`every production incident stage is registered (${stages.size} found)`,
+    // RESULT-SHAPE STAGES, which never reach SyncIssue and so are not operations.
+    //   "load"              btc-sync's own "this is not a syncable wallet" result.
+    //   "unsupported-chain" W-M1d — the chain dispatcher's answer for a wallet on
+    //                       a chain with no adapter. Returned to the caller and
+    //                       refused by the route with a 400; no incident is
+    //                       recorded, because nothing failed — the platform simply
+    //                       cannot read that chain yet.
+    //   "adapter-error"     W-M1d — the dispatcher's backstop for an adapter that
+    //                       throws despite its never-throw contract. Logged, not
+    //                       recorded: the adapter that violated the contract is
+    //                       where the incident belongs, not the dispatcher.
+    const RESULT_SHAPE_ONLY = new Set(["load", "unsupported-chain", "adapter-error", "unit-test", "s"]);
+
+    /**
+     * ⚠️ RLS-P-2 — A STAGE THAT REACHES SyncIssue AND CANNOT YET BE REGISTERED.
+     *
+     * This is NOT the exception list above. `event-identity-persist` really does
+     * reach SyncIssue (lib/plaid/syncTransactions.ts, the
+     * `EventWriteIntegrityFailure` branch), so it genuinely owes the registry an
+     * entry. It cannot have one yet, and the reason is mechanical rather than a
+     * matter of taste:
+     *
+     *   `OperationKey` is derived from `OPERATION_KEYS`, and `OPERATION_PHRASE`
+     *   in lib/platform/sync-issue-semantics.ts is `Record<OperationKey, string>`.
+     *   Adding a key here therefore makes THAT file fail to compile until it
+     *   gains the matching phrase — and that file belongs to neither this slice
+     *   nor the agent working beside it.
+     *
+     * THE EXACT PENDING EDIT, so this entry can be deleted rather than aged:
+     *   lib/platform/incidents/operation-key.ts  OPERATION_KEYS +=
+     *       "event-identity-persist": "event-identity-persist",
+     *   lib/platform/sync-issue-semantics.ts     OPERATION_PHRASE +=
+     *       "event-identity-persist": "linking a transaction to its logical event",
+     *   lib/platform/sync-issue-semantics.ts     STAGE_DOMAIN +=
+     *       "event-identity-persist": "transactions",
+     *
+     * ⚠️ AND THE SET IS PINNED AT EXACTLY ONE MEMBER, so it cannot become a
+     * parking lot. The unregistered path is safe in the meantime — the key
+     * namespaces to `unregistered:event-identity-persist`, which stays distinct
+     * from every other stage and from the event writer's three internal phases
+     * (lib/plaid/event-identity-incident.test.ts §3 proves both) — but "safe"
+     * is not "registered", and conflating the two is how a registry becomes
+     * decorative.
+     */
+    // ✅ REGISTERED, AND THE LIST IS EMPTY AGAIN. `event-identity-persist` was
+    // landed in OPERATION_KEYS / OPERATION_PHRASE / STAGE_DOMAIN by the parent
+    // (the three files are outside the slice that needed the key, and adding the
+    // key alone makes sync-issue-semantics.ts fail to compile, which is why it
+    // was requested rather than smuggled). The second check below went RED the
+    // moment it landed, exactly as designed, and the entry was deleted rather
+    // than aged — so the mechanism that keeps this list from becoming a parking
+    // lot has now been exercised once, for real.
+    const PENDING_REGISTRATION = new Set<string>();
+    check(`the pending-registration list is EMPTY — nothing is awaiting a key (${PENDING_REGISTRATION.size})`,
+      PENDING_REGISTRATION.size === 0, [...PENDING_REGISTRATION].join(", "));
+    // Still asserted, and now vacuously true: a pending entry is only honest
+    // while its stage is genuinely unregistered. Kept so the next pending entry
+    // inherits the guard rather than re-inventing it.
+    check("no pending entry has outlived its reason",
+      [...PENDING_REGISTRATION].every((s) => !isRegisteredOperation(s)),
+      [...PENDING_REGISTRATION].filter((s) => isRegisteredOperation(s)).join(", "));
+
+    const realUnregistered = unregistered
+      .filter((s) => !RESULT_SHAPE_ONLY.has(s))
+      .filter((s) => !PENDING_REGISTRATION.has(s));
+    check(`every production incident stage is registered (${stages.size} found, ${PENDING_REGISTRATION.size} pending)`,
       realUnregistered.length === 0, realUnregistered.join(", "));
   }
 

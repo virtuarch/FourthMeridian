@@ -9,8 +9,25 @@
  * transaction, snapshot, or sync result.
  */
 
-import { db } from "@/lib/db";
-import { redactedErrorForLog } from "@/lib/plaid/errors";
+// ⚠️ RLS-P-3a — fm_system IS THE DEFAULT AUTHORITY FOR THE INCIDENT PAIR.
+//
+// `SyncIssue` and `SyncIssueOccurrence` are REVOKED FROM fm_app outright
+// (…_rls_roles_and_policies §4), so the tenant role cannot write either one and
+// the migration principal wrote them only because that is what this module
+// happened to import. There is no tenant arm to preserve: an incident is
+// operator-facing forensic evidence that deliberately survives deletion of what
+// it observed, which is exactly the case a tenant-keyed policy would break.
+//
+// ⚠️ AND THE FLIP IS TWO PLACES FOR THESE TWO TABLES, NOT ONE. The client stays
+// a PARAMETER, because the injection seam is what keeps a unit test from writing
+// a real row — the eight `stage: "opening-position-repair"` rows in the local dev
+// database are the documented cost of this function once resolving `db` from
+// module scope unconditionally. So the default below covers every producer that
+// does not thread a client, and the producers that DO thread one (three sites in
+// syncTransactions.ts and five under lib/investments/) still decide for
+// themselves. That residue is named in the P-3a report rather than hidden.
+import { systemDb } from "@/lib/db";
+import type { LedgerWriteObserver } from "@/lib/monitoring/capture";
 import type { SyncIssueKind, Prisma } from "@prisma/client";
 import { recordIncidentObservation, resolveByAutomaticRecovery, type IncidentClient } from "@/lib/platform/incidents/lifecycle";
 
@@ -29,8 +46,9 @@ export interface SyncIssueInput {
  * Records a SyncIssue. Never throws.
  *
  * @param client PRE-V26-PLAID-CLOSE Phase 2 — the Prisma client to write
- * through, defaulting to the real `db`. Callers that already thread an injected
- * client through their operation MUST pass it here.
+ * through, defaulting to `systemDb` (RLS-P-3a — it was the migration principal
+ * until then). Callers that already thread an injected client through their
+ * operation MUST pass it here.
  *
  * Why this parameter exists: this function used to resolve `db` from module
  * scope unconditionally, so it escaped every caller's injected client. A unit
@@ -85,7 +103,7 @@ export interface SyncIssueInput {
  */
 export async function resolveCursorBlockingIssues(
   plaidItemId: string,
-  client: IncidentClient = db,
+  client: IncidentClient = systemDb,
   /**
    * OPS-2D-5A-1 — the run that proved recovery. Threaded by callers that have
    * one; null stays null and is stored honestly rather than fabricated.
@@ -102,6 +120,9 @@ export async function resolveCursorBlockingIssues(
     { plaidItemId, domain: "transactions", runId: runId ?? null },
     client,
     deps.getExecutionIdByRunId,
+    // RLS-P-2 — forwarded, never interpreted here. The facade does not decide
+    // what a failed resolution means; it only makes sure somebody can hear it.
+    { onWriteFailure: deps.onWriteFailure },
   );
   return resolved;
 }
@@ -121,11 +142,33 @@ export async function resolveCursorBlockingIssues(
  */
 export interface SyncIssueDeps {
   getExecutionIdByRunId?: (runId: string) => Promise<string | null>;
+  /**
+   * RLS-P-2 — THE FACADE STILL NEVER THROWS, BUT IT NO LONGER STAYS SILENT.
+   *
+   * Both functions here swallow everything, because fourteen producers call them
+   * from inside their own catch blocks and a telemetry failure must never become
+   * a second, louder failure (OPS-2D-TX-1). That contract is unchanged. What it
+   * cost was that a REFUSED lifecycle write — and under the authority flip these
+   * two tables are revoked from `fm_app` outright, so a refusal is a real
+   * possibility — was indistinguishable from a successful one at every call
+   * site. The refresh ledger's `degradations` list reported a complete ledger
+   * while the episode had not been recorded.
+   *
+   * This is the listen-only channel that closes it. It carries a table and a
+   * phase and nothing else: no row, no message, no error object. It is forwarded
+   * straight to the lifecycle authority, which is the only code that knows which
+   * of its statements failed.
+   *
+   * ⚠️ A LISTENER, NOT A RESULT. It cannot change what either function returns
+   * or what the producer does next — observation must never control the observed
+   * operation.
+   */
+  onWriteFailure?: LedgerWriteObserver;
 }
 
 export async function recordSyncIssue(
   input: SyncIssueInput,
-  client: IncidentClient = db,
+  client: IncidentClient = systemDb,
   deps: SyncIssueDeps = {},
 ): Promise<void> {
   // OPS-2D-5A-1 — FACADE. The name and signature stay (14 call sites depend on
@@ -152,5 +195,6 @@ export async function recordSyncIssue(
     },
     client,
     deps.getExecutionIdByRunId,
+    { onWriteFailure: deps.onWriteFailure },
   );
 }

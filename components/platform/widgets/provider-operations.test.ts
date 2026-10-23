@@ -141,6 +141,11 @@ function main() {
           "ops_provider_operations",
           "ops_connection_health",
           "ops_connection_diagnostics",
+          // Provider cleanup follows per-connection diagnostics deliberately:
+          // these items are REVOKED and therefore appear in NONE of the health
+          // surfaces above, which is exactly how a failed itemRemove stayed
+          // invisible while the Item kept billing at Plaid.
+          "ops_provider_cleanup",
           "ops_api_usage",
           "ops_resource_freshness",
           "ops_email_delivery",

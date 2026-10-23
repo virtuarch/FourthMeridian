@@ -48,6 +48,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { getClientIp as extractClientIp } from "@/lib/security/client-ip";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -240,17 +241,15 @@ export function checkKeyLimitStrict(key: string, name: string, cfg: RateLimitCon
 // ── Key helpers ───────────────────────────────────────────────────────────────
 
 /**
- * Extract the client IP from a request. Trusts the platform-set forwarding
- * headers (Vercel populates x-forwarded-for); falls back to "unknown" so a
- * missing header degrades to a single shared bucket rather than throwing.
+ * Extract the client IP from a request — ARCH-003: through THE one extractor
+ * (lib/security/client-ip.ts), so the limiter keys on the same address the
+ * audit trail and authorize() record. This used to take the FIRST
+ * `x-forwarded-for` entry, i.e. a client-chosen value: rotating the header
+ * rotated the bucket (runtime-confirmed). A missing header still degrades to
+ * the single shared "unknown" bucket rather than throwing.
  */
 export function getClientIp(req: Request): string {
-  const fwd = req.headers.get("x-forwarded-for");
-  if (fwd) {
-    const first = fwd.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  return req.headers.get("x-real-ip")?.trim() || "unknown";
+  return extractClientIp(req.headers);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

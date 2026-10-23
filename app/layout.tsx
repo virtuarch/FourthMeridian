@@ -5,7 +5,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
   title: "Fourth Meridian",
-  description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
+  description: "Fourth Meridian is an AI-native wealth management platform: one continuously updated understanding of your cash, spending, income, debt and investments.",
   manifest: "/manifest.json",
   // Favicon/browser-tab icon is wired via the Next.js App Router file
   // convention (app/favicon.ico + app/icon.png — the new black 4M mark),
@@ -28,22 +28,20 @@ export const metadata: Metadata = {
   // a branded social-preview image is left as a follow-up.
   openGraph: {
     title: "Fourth Meridian",
-    description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
+    description: "Fourth Meridian is an AI-native wealth management platform: one continuously updated understanding of your cash, spending, income, debt and investments.",
     siteName: "Fourth Meridian",
     type: "website",
   },
   twitter: {
     card: "summary",
     title: "Fourth Meridian",
-    description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
+    description: "Fourth Meridian is an AI-native wealth management platform: one continuously updated understanding of your cash, spending, income, debt and investments.",
   },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
   themeColor: "#0a0f1e",
 };
 

@@ -1,513 +1,374 @@
 /**
  * POST /api/ai/chat
  *
- * Space-scoped AI chat endpoint — D4 Slice 1 (Backend).
+ * THE CONVERSATION, IN PRODUCTION. The runtime measured under arm A2 — thin
+ * orientation, coverage envelope, memory line, the sixteen tools, the
+ * active-scenario envelope, Clip 6 — answering a real user through a real
+ * session, on the model every gate was run on.
  *
- * ── Request ───────────────────────────────────────────────────────────────────
- * {
- *   spaceId:  string | "master",
- *   messages: [{ role: "user" | "assistant", content: string }]
- * }
+ * ── What this route owns, and it is the only thing it owns ──────────────────
+ * TRUST. Who is asking (`requireUser`), how often they may ask (`limitByUser`),
+ * which Space they are entitled to (`resolveSpaceContext`, re-derived here and
+ * never taken on the client's word), what of their transcript may re-enter the
+ * model (user and assistant prose, nothing else), and what may leave (one
+ * sentence). Everything about the conversation itself belongs to
+ * lib/ai/conversation — the same code the harness runs.
  *
- * ── Behaviour ─────────────────────────────────────────────────────────────────
- * Specific Space:
- *   - Verifies the user is OWNER, ADMIN, or MEMBER. Rejects VIEWER with 403.
- *   - Calls buildContext(spaceId, userId, { scopeHint: "full" }).
- *   - Serializes context + signals into a grounded system prompt.
- *   - Calls generateChatReply() from lib/ai/provider.ts.
+ * ── What the browser may and may not say ────────────────────────────────────
+ * MAY: a Space id, and a list of user/assistant turns. Both are checked, and
+ * the Space id is checked hard: a caller who names a Space they cannot reach
+ * gets 403, not a quiet fallback to their own money under someone else's label.
+ * MAY NOT: a system message, a tool message, a tool result, an owner id, an
+ * as-of date, a model, an agent id, the memory line, the evidence, the active
+ * scenario, or a knowledge gap. Every one of those is built here from
+ * authorities; a gap posted by a client is stripped with every other unknown
+ * property and is never read back as context.
  *
- * Master ("master"):
- *   - Enumerates all OWNER/ADMIN/MEMBER Spaces (VIEWER excluded).
- *   - Calls buildContext for each via Promise.allSettled.
- *   - Aggregates all contexts into one prompt with per-Space boundaries.
- *   - Calls generateChatReply() with the merged prompt.
+ * ── Continuity without persistence ──────────────────────────────────────────
+ * Nothing about a conversation is stored. The hypothetical under discussion
+ * crosses the gap in a sealed cookie the browser cannot read or alter
+ * (lib/ai/conversation/runtime-state.ts); everything else is rebuilt from the
+ * ledger on every turn. A conversation that ends is gone.
  *
- * ── Response ──────────────────────────────────────────────────────────────────
- * { "message": "...", "knowledgeGaps": [...], "knowledgeGapMode": "clarification" | "form" }
- * knowledgeGaps mirrors the KnowledgeGap[] assembled at context time so the
- * client can render structured input cards without parsing the assistant text.
- * knowledgeGapMode signals how the client should render gaps:
- *   "form"          — user explicitly asked to update a field; render full card immediately.
- *   "clarification" — context has gaps; render lightweight clarification card first.
- *
- * ── Architecture (AI-ARCH) ────────────────────────────────────────────────────
- * This handler ORCHESTRATES; it does not own domain intelligence or prompt
- * detail. The flow is:
- *   canonical facts (assemblers via buildContext)
- *     → deterministic intelligence (computeAssessment, fetchPerLiabilityDebtPayments)
- *       → context assembler (SpaceContext_AI)
- *         → prompt serializer (lib/ai/prompts/*)
- *           → LLM execution (lib/ai/provider)
- *             → response
- * Message-analysis heuristics live in lib/ai/chat/message-analysis; prompt
- * serialization in lib/ai/prompts; the per-liability debt rollup in
- * lib/ai/intelligence/debt-payments. The route performs NO raw financial-table
- * query — only membership/authorization reads and audit writes.
- *
- * ── Not implemented in this slice ────────────────────────────────────────────
- * Streaming, conversation persistence, memory, actions, background jobs.
- *
- * Security notes:
- *   - Permission check is always server-side (db query), never client-asserted.
- *   - The OpenAI SDK is never imported here — all LLM calls go through
- *     lib/ai/provider.ts, the permanent AI provider boundary.
- *   - buildContext() carries its own membership guard (resolveSpaceContext
- *     fallback check) as a second layer of defence.
+ * ── Telemetry identity (OPERATIONALIZATION P0, 2026-10-07) ──────────────────
+ * The same sealed carrier holds a random `conversationId`, minted on the first
+ * turn, so the AI cost ledger (AiInvocation) can group a conversation's
+ * invocations under a key two conversations never share. It replaced a digest
+ * of (userId + opening message), which gave every chat that opened with the
+ * same words the same key. Together with the signed-in user id and the Space
+ * id it is operator-only attribution (owner ruling 2026-10-07): written by
+ * fm_system, never read by the model, never a Conversations tool input.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { db }                        from '@/lib/db';
+import { randomUUID }                from 'crypto';
 import { requireUser }               from '@/lib/session';
-import { limitByUser }               from '@/lib/rate-limit';
-import { SpaceMemberRole }           from '@prisma/client';
-import { buildContext }              from '@/lib/ai/context-builder';
-import { generateChatReply }         from '@/lib/ai/provider';
-import type { ChatMessage }          from '@/lib/ai/provider';
-import type { SpaceContext_AI, KnowledgeGap } from '@/lib/ai/types';
-import { computeAssessment }         from '@/lib/ai/intelligence';
-import type { FinancialAssessment }  from '@/lib/ai/intelligence';
-import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-payments';
-import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
-import type { IntentRoute }          from '@/lib/ai/intent';
-import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
-import { buildSpaceSystemPrompt, buildMasterSystemPrompt } from '@/lib/ai/prompts/system-prompt';
-import { extractKnowledgeGaps } from '@/lib/ai/prompts/context-serializer';
+import { paceAiRequest }             from '@/lib/ai/pacing';
+import { entitlementsForUser, refuseIfDisabled, countLimit } from '@/lib/entitlements/consume';
+import { dailyAiAllowanceFor, allowanceRefusal } from '@/lib/ai/allowance';
+import { readPaidRequestsAdmission, paidRequestsPausedResponse } from '@/lib/platform/ai/paid-requests-admission';
+import { UnpricedModelError, AiPausedError, isUnpricedModelFailure, isAiPausedFailure } from '@/lib/ai/provider';
+import { openTurnDeadline, isTurnTimeoutFailure, CHAT_TURN_BUDGET_MS } from '@/lib/ai/turn-deadline';
+import { resolveSpaceContext }       from '@/lib/space';
+import { db }                        from '@/lib/db';
+import { aiPhaseRunner }             from '@/lib/ai/tenant-phase';
+import { applyPossessiveConvention } from '@/lib/format';
+import { todayUTCISO }               from '@/lib/time/clock';
+import '@/lib/ai/assemblers';
+import { runStatelessTurn } from '@/lib/ai/conversation/engine';
+import { readChatRequest, type ChatRequestRefusal } from '@/lib/ai/conversation/request';
+import type { AiChatResponse } from '@/types';
 import {
-  routeForMessages,
-  resolveTransactionWindow,
-  resolveDrilldown,
-  isAmbiguousBreakdownFollowUp,
-  hasPriorFinancialContext,
-  buildBreakdownClarification,
-  filterGapsByIntent,
-} from '@/lib/ai/chat/message-analysis';
-import { validateOutput, applyEnforcement } from '@/lib/ai/output-validator';
-import type { ValidationResult, EnforcementMode } from '@/lib/ai/output-validator';
-import { AuditAction }               from '@/lib/audit-actions';
-import type { Prisma }               from '@prisma/client';
+  sealRuntimeStateWithReport, openRuntimeState, conversationTail, RUNTIME_STATE_TTL_MS,
+} from '@/lib/ai/conversation/runtime-state';
 
 export const preferredRegion = 'sin1';
 export const runtime         = 'nodejs';
-
-// ── Permission constants ─────────────────────────────────────────────────────
-// VIEWER is explicitly excluded from AI chat — same rule as the Daily Brief.
-
-const ELIGIBLE_ROLES: SpaceMemberRole[] = [
-  SpaceMemberRole.OWNER,
-  SpaceMemberRole.ADMIN,
-  SpaceMemberRole.MEMBER,
-];
-
-// ── Shadow-mode context selection logging (D6.3D-1) ──────────────────────────
-//
-// Computes a deterministic SelectionPlan for each assembled context and writes
-// it to the AuditLog as AI_CONTEXT_SELECTION_PLANNED. This is OBSERVATIONAL
-// ONLY: the plan is never consulted when building the system prompt, so prompt
-// output is byte-for-byte unchanged. Any failure here is swallowed so shadow
-// logging can never affect the chat response.
-//
-// The existing AI_CONTEXT_ASSEMBLED row is written inside buildContext(), before
-// the intent route and assessment exist, so it cannot carry the plan. A separate
-// row is the low-risk, additive way to capture it.
-async function logShadowSelectionPlans(
-  userId:      string,
-  contexts:    SpaceContext_AI[],
-  assessments: FinancialAssessment[],
-  intentRoute: IntentRoute,
-): Promise<void> {
-  try {
-    await Promise.all(
-      contexts.map((context, i) => {
-        const assessment = assessments[i];
-        if (!assessment) return Promise.resolve(null);
-
-        const plan = planContextSelection({
-          intentRoute,
-          context,
-          assessment,
-          budgetTokens: DEFAULT_CONTEXT_BUDGET_TOKENS,
-        });
-
-        return db.auditLog.create({
-          data: {
-            action:   AuditAction.AI_CONTEXT_SELECTION_PLANNED,
-            userId,
-            spaceId:  context.spaceId,
-            metadata: plan as unknown as Prisma.InputJsonValue,
-          },
-          select: { id: true },
-        });
-      }),
-    );
-  } catch (err) {
-    // Non-fatal: shadow logging must never break the chat response.
-    console.error('[api/ai/chat] shadow selection-plan logging failed (non-fatal):', err);
-  }
-}
-
-// ── Output validation + live enforcement (AI-4 / KD-2) ───────────────────────
-//
-// Deterministically checks that every numeric claim in the LLM reply reconciles
-// to a number present in the grounded system prompt (membership-with-tolerance,
-// lib/ai/output-validator.ts), then returns the result so the caller can apply
-// the configured enforcement behavior (applyEnforcement + AI_OUTPUT_VALIDATION_MODE).
-//
-// Logging is preserved from shadow mode: an AuditLog row is written ONLY when
-// unreconciled numbers exist, so this still adds no per-message write
-// amplification (KD-12). All errors are swallowed and yield a CLEAN result, so a
-// validator failure deterministically means "no enforcement" — never a broken or
-// delayed chat response.
-const CLEAN_VALIDATION: ValidationResult = { unreconciled: [], checkedCount: 0, sourceCount: 0 };
-
 /**
- * Enforcement mode from the environment. Defaults to live 'annotate' (KD-2
- * promotion); an unset or unrecognized value falls back to 'annotate'. Set
- * AI_OUTPUT_VALIDATION_MODE=shadow to revert to observational (kill switch), or
- * =block to suppress unreconciled replies.
+ * A tool loop is several model calls; the dogfood's slowest turn ran ~70s.
+ * SEC-AI-003 — a LITERAL (Next.js reads it statically), mirrored by
+ * `CHAT_ROUTE_MAX_DURATION_S` in lib/ai/turn-deadline.ts; a test pins the two
+ * equal. The turn runs inside this minus a safety margin, so the reservation's
+ * `finally` below runs before the platform can kill the lambda.
  */
-function outputEnforcementMode(): EnforcementMode {
-  const raw = (process.env.AI_OUTPUT_VALIDATION_MODE ?? 'annotate').toLowerCase();
-  return raw === 'shadow' || raw === 'block' ? raw : 'annotate';
-}
+export const maxDuration     = 300;
 
-async function runOutputValidation(
-  userId:       string,
-  spaceId:      string,
-  reply:        string,
-  systemPrompt: string,
-  messages:     ChatMessage[],
-  mode:         EnforcementMode,
-): Promise<ValidationResult> {
-  try {
-    const userMessages = messages.filter((m) => m.role === 'user').map((m) => m.content);
-    const result = validateOutput(reply, systemPrompt, userMessages);
-    if (result.unreconciled.length === 0) return result; // clean — write nothing.
+/** The sealed continuity carrier. HttpOnly: the page has no business reading it. */
+const STATE_COOKIE = 'fm_ai_state';
 
-    await db.auditLog.create({
-      data: {
-        action:   AuditAction.AI_OUTPUT_VALIDATION_FLAGGED,
-        userId,
-        // Master mode has no single Space — spaceId is nullable on AuditLog.
-        spaceId:  spaceId === 'master' ? null : spaceId,
-        metadata: {
-          mode:         spaceId === 'master' ? 'master' : 'space',
-          enforcement:  mode,
-          unreconciled: result.unreconciled,
-          checkedCount: result.checkedCount,
-          sourceCount:  result.sourceCount,
-        } as unknown as Prisma.InputJsonValue,
-      },
-      select: { id: true },
-    });
-    return result;
-  } catch (err) {
-    // Non-fatal: validation must never break the chat response. A swallowed
-    // error yields a clean result, so enforcement deterministically no-ops.
-    console.error('[api/ai/chat] output validation failed (non-fatal):', err);
-    return CLEAN_VALIDATION;
-  }
-}
+/** Sentences the user sees. Plain, specific, and never a stack trace. */
+const SAY = {
+  malformed: 'That request didn’t arrive in a form I could read. Try asking again.',
+  empty:     'I didn’t catch a question there — what would you like to know?',
+  tooLong:   'This conversation has grown longer than I can carry in one piece. '
+    + 'Start a new one and I’ll pick the thread back up.',
+  forbidden: 'You don’t have access to that Space.',
+  failed:    'Something went wrong while I was working on that. Nothing was changed. '
+    + 'Please try again.',
+  silent:    'I wasn’t able to put an answer together for that one. Try rephrasing it, '
+    + 'or ask me something narrower.',
+  unpriced:  'Conversations are paused: the model in use can’t be priced yet, so your '
+    + 'daily AI allowance can’t be checked. Nothing was changed. Please try again later.',
+  timedOut:  'That took longer than I can spend on one question, so I stopped. Nothing was '
+    + 'changed. Try asking something narrower, or try again in a moment.',
+} as const;
 
-// ── Knowledge-gap gating heuristics (KD-11) ───────────────────────────────────
-// detectsPayoffIntent / detectsExplicitUpdateIntent live in lib/ai/intent; the
-// message-analysis heuristics (routing, window carry-forward, drilldown,
-// ambiguity, gap filtering) live in lib/ai/chat/message-analysis. Both are
-// imported above and used unchanged in the handler below.
+const refuse = (message: string, status: number) =>
+  NextResponse.json({ error: message }, { status });
 
-// ── Request validation ────────────────────────────────────────────────────────
-
-interface ChatRequestBody {
-  spaceId:  string;
-  messages: ChatMessage[];
-}
-
-function parseBody(raw: unknown): ChatRequestBody | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const b = raw as Record<string, unknown>;
-
-  if (typeof b.spaceId !== 'string' || !b.spaceId.trim()) return null;
-
-  if (!Array.isArray(b.messages)) return null;
-  for (const m of b.messages) {
-    if (
-      !m ||
-      typeof m !== 'object' ||
-      !('role' in m) ||
-      !('content' in m) ||
-      (m.role !== 'user' && m.role !== 'assistant') ||
-      typeof m.content !== 'string'
-    ) {
-      return null;
-    }
-  }
-
-  return {
-    spaceId:  b.spaceId.trim(),
-    messages: b.messages as ChatMessage[],
-  };
-}
-
-// ── Route handler ─────────────────────────────────────────────────────────────
+/** What each refusal says and answers with. One place, so no path invents a status. */
+const REFUSAL: Record<ChatRequestRefusal, { say: string; status: number }> = {
+  MALFORMED: { say: SAY.malformed, status: 400 },
+  EMPTY:     { say: SAY.empty,     status: 400 },
+  TOO_LONG:  { say: SAY.tooLong,   status: 413 },
+};
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // ── Auth ──────────────────────────────────────────────────────────────────
+  // SEC-AI-003 — the turn's clock starts when the request arrives, not when the
+  // model is first called; what the gates below spend comes out of the budget.
+  const arrivedAt = Date.now();
   const [user, authErr] = await requireUser();
   if (authErr) return authErr;
 
-  // ── Rate limit (KD-3) ───────────────────────────────────────────────────────
-  // Per-user cap to contain LLM cost abuse. SYSTEM_ADMIN is exempt.
-  if (user.role !== 'SYSTEM_ADMIN') {
-    const limited = await limitByUser(user.id, 'ai-chat', { limit: 30, windowSec: 60 });
+  // ⚠️ HARDENING — TWO WINDOWS, AND NOBODY IS EXEMPT FROM THE SECOND. A turn costs up
+  // to MAX_TOOL_ROUNDTRIPS model calls over a prompt of up to MAX_TRANSCRIPT_BYTES,
+  // plus up to MAX_TOOL_CALLS_PER_TURN tool phases and one guidance label. The
+  // surface sends one question at a time and a turn takes 5–70 s, so a person
+  // cannot approach 10 a minute; the hour window bounds a script — or a stolen
+  // admin session — that can.
+  //
+  // P1 — BOTH WINDOWS ARE THE CUSTOMER'S EFFECTIVE ENTITLEMENT, NOT A LITERAL AND
+  // NOT A ROLE. `aiTurnsPerMinute` is the plan's pacing (the founder overlay
+  // raises it, to its ceiling); `aiTurnsPerHour` is resolved under a platform
+  // CEILING of 60 that no Policy Group or overlay can exceed, so this window
+  // still bounds a stolen session exactly as before. The old
+  // `role !== 'SYSTEM_ADMIN'` exemption exempted nobody who can reach this
+  // route (the proxy keeps SYSTEM_ADMIN off /dashboard) and is gone. Whether the
+  // surface is available at all is the `conversations` dimension — a refusal
+  // here costs no model call.
+  //
+  // SEC-AI-004 — BOTH WINDOWS FAIL CLOSED (lib/ai/pacing.ts): a limiter store the
+  // route cannot consult refuses with a retryable 503, as the allowance below
+  // does, rather than silently waving a paid call through.
+  const entitlements = await entitlementsForUser(user.id);
+  const disabled = refuseIfDisabled(entitlements, 'conversations', 'Conversations');
+  if (disabled) return disabled;
+  {
+    const limited = await paceAiRequest(user.id, 'ai-chat', { limit: countLimit(entitlements, 'aiTurnsPerMinute'), windowSec: 60 }, 'Conversations');
     if (limited) return limited;
   }
-
-  // ── Parse body ────────────────────────────────────────────────────────────
-  let rawBody: unknown;
+  {
+    const limited = await paceAiRequest(user.id, 'ai-chat-hour', { limit: countLimit(entitlements, 'aiTurnsPerHour'), windowSec: 3600 }, 'Conversations');
+    if (limited) return limited;
+  }
+  // AI COST CONTROLS — THE KILL SWITCH, BEFORE THE ALLOWANCE. One PlatformSetting
+  // row (`ai_paid_requests_paused`; absent ⇒ off, unreadable ⇒ paused) judged
+  // after authentication, entitlement and pacing so a paused platform costs no
+  // lock and no ledger read. 503 `{ error, code: "AI_PAUSED" }`, no-store. No
+  // override lifts it; the provider chokepoint judges it again for harness
+  // traffic and for a pause that lands mid-turn.
+  {
+    const admission = await readPaidRequestsAdmission();
+    if (admission.paused) return paidRequestsPausedResponse();
+  }
+  // BETA C7 — THE DAILY ALLOWANCE, AFTER THE PACING WINDOWS AND BEFORE ANY MODEL
+  // WORK. `aiDailyUsdAllowance` is the customer's estimated-dollar bound per UTC
+  // day across Conversations and the Daily Brief, priced by the rate card over
+  // the invocation ledger (read on fm_system — the ledger is revoked from the
+  // tenant role). Refused at or over the line with `{ error, code: "AI_ALLOWANCE",
+  // spentUsd, allowanceUsd }`; refused outright (fail closed) when any of today's
+  // invocations could not be priced, because an unknown spend is never "under".
+  // AI COST CONTROLS — the decision is taken under a per-customer lock together
+  // with the in-flight count and RESERVES this turn; the reservation is released
+  // in the `finally` below whatever the turn did (lib/platform/ai/allowance-reservation.ts).
+  const allowance = await dailyAiAllowanceFor(user.id, entitlements);
+  {
+    const refused = allowanceRefusal(allowance, 'Conversations');
+    if (refused) return refused;
+  }
+  // SEC-AI-003 — THE TURN'S DEADLINE: route `maxDuration` minus a safety margin,
+  // less what the gates above already spent. Every provider call this turn makes
+  // (the answer hops and the guidance label) carries its signal; no retry is
+  // taken past it; it is released in the `finally` with the reservation.
+  const deadline = openTurnDeadline({ budgetMs: CHAT_TURN_BUDGET_MS - (Date.now() - arrivedAt) });
   try {
-    rawBody = await req.json();
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
-  }
-
-  const body = parseBody(rawBody);
-  if (!body) {
-    return NextResponse.json(
-      { error: 'Invalid request. Required: spaceId (string), messages (array of {role, content}).' },
-      { status: 400 },
-    );
-  }
-
-  const { spaceId, messages } = body;
-
-  // ── Body guard (KD-3) ───────────────────────────────────────────────────────
-  // Cheap ceilings that bound prompt size independent of the rate limiter:
-  // reject oversized conversations before any context build or LLM call.
-  const MAX_MESSAGES            = 50;
-  const MAX_TOTAL_CONTENT_CHARS = 24_000;
-  if (messages.length > MAX_MESSAGES) {
-    return NextResponse.json(
-      {
-        error: `This conversation is too long to send at once. Please start a new conversation or shorten it to ${MAX_MESSAGES} messages or fewer, then try again.`,
-      },
-      { status: 400 },
-    );
-  }
-  const totalContentChars = messages.reduce((sum, m) => sum + m.content.length, 0);
-  if (totalContentChars > MAX_TOTAL_CONTENT_CHARS) {
-    return NextResponse.json(
-      { error: `Message content too large (max ${MAX_TOTAL_CONTENT_CHARS} characters).` },
-      { status: 400 },
-    );
-  }
-
-  // Must have at least one user message
-  if (!messages.some((m) => m.role === 'user')) {
-    return NextResponse.json(
-      { error: 'messages must contain at least one user turn.' },
-      { status: 400 },
-    );
-  }
-
-  let systemPrompt: string;
-  // Knowledge gaps assembled at context time — returned alongside the reply so
-  // the client can render structured input UI without parsing assistant text.
-  let gapsForResponse: KnowledgeGap[] = [];
-
-  // Layer 0 (D4): classify the latest user message into routing metadata.
-  // Injected into the system prompt as === QUESTION ROUTING ===.
-  const intentRoute = routeForMessages(messages);
-
-  // D6 dynamic windows (with carry-forward): an optional explicit transaction
-  // window derived from the user's wording ("this year", "last 6 months", …).
-  // The latest message's own window wins; a follow-up ("month by month",
-  // "what about January") inherits the most recent explicit window instead of
-  // resetting to the default. Undefined for unrelated general prompts, which
-  // keeps the assembler's default 30/90-day window.
-  const transactionWindow = resolveTransactionWindow(messages, new Date());
-
-  // D6 transaction drilldown (evidence retrieval): present ONLY for an explicit
-  // drilldown follow-up ("what is this Other category made up of?", "show me the
-  // largest transactions"). Undefined otherwise — no raw rows on ordinary prompts.
-  const drilldown = resolveDrilldown(messages, new Date());
-
-  // ── Ambiguity guard ────────────────────────────────────────────────────────
-  // An antecedent-less breakdown follow-up ("break it down", "month by month",
-  // "what about January") with no window of its own and no prior financial topic
-  // is genuinely ambiguous — there is no subject for "it". Ask what to break down
-  // rather than guessing (which previously produced a default-90-day Apr–Jun
-  // table). The clarification is space-agnostic and exposes no financial data.
-  const latestUser = [...messages].reverse().find((m) => m.role === 'user');
-  if (
-    latestUser &&
-    transactionWindow === undefined &&
-    isAmbiguousBreakdownFollowUp(latestUser.content) &&
-    !hasPriorFinancialContext(messages, new Date())
-  ) {
-    return NextResponse.json({
-      message:          buildBreakdownClarification(latestUser.content),
-      knowledgeGaps:    [],
-      knowledgeGapMode: 'clarification',
-    });
-  }
-
-  if (spaceId === 'master') {
-    // ── Master mode: aggregate all eligible Spaces ─────────────────────────
-    // Enumerate OWNER/ADMIN/MEMBER memberships only. VIEWER excluded.
-
-    const memberships = await db.spaceMember.findMany({
-      where: {
-        userId: user.id,
-        status: 'ACTIVE',
-        role:   { in: ELIGIBLE_ROLES },
-        space:  { archivedAt: null, deletedAt: null },
-      },
-      select: { spaceId: true },
-    });
-
-    if (memberships.length === 0) {
-      return NextResponse.json(
-        { error: 'No eligible spaces found.' },
-        { status: 403 },
-      );
-    }
-
-    const contextResults = await Promise.allSettled(
-      memberships.map((m) =>
-        buildContext(m.spaceId, user.id, { scopeHint: 'full', transactionWindow, drilldown }),
-      ),
-    );
-
-    const contexts: SpaceContext_AI[] = contextResults
-      .filter(
-        (r): r is PromiseFulfilledResult<SpaceContext_AI> =>
-          r.status === 'fulfilled',
-      )
-      .map((r) => r.value);
-
-    // Log failures without crashing
-    contextResults.forEach((r, i) => {
-      if (r.status === 'rejected') {
-        console.error(
-          `[api/ai/chat] buildContext failed for Space ${memberships[i]?.spaceId}:`,
-          r.reason,
-        );
-      }
-    });
-
-    if (contexts.length === 0) {
-      return NextResponse.json(
-        { error: 'Could not assemble context for any eligible space.' },
-        { status: 500 },
-      );
-    }
-
-    const masterAssessments = contexts.map(computeAssessment);
-    // Slice 6: per-liability debt-payment rollups (one Space-scoped query each,
-    // in parallel; [] on failure — serializer falls back to disclosure-only).
-    const masterDebtPayments = await Promise.all(
-      contexts.map((c) => fetchPerLiabilityDebtPayments(c)),
-    );
-    systemPrompt = buildMasterSystemPrompt(contexts, masterAssessments, intentRoute, masterDebtPayments);
-    // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
-    await logShadowSelectionPlans(user.id, contexts, masterAssessments, intentRoute);
-    gapsForResponse = filterGapsByIntent(
-      contexts.flatMap(extractKnowledgeGaps),
-      detectsPayoffIntent(messages),
-    );
-
-  } else {
-    // ── Specific Space: verify membership, reject VIEWER ──────────────────
-    const membership = await db.spaceMember.findUnique({
-      where:  { spaceId_userId: { spaceId, userId: user.id } },
-      select: { role: true, status: true, space: { select: { archivedAt: true, deletedAt: true } } },
-    });
-
-    if (
-      !membership ||
-      membership.status !== 'ACTIVE' ||
-      membership.space.archivedAt !== null ||
-      membership.space.deletedAt !== null
-    ) {
-      return NextResponse.json({ error: 'Space not found.' }, { status: 404 });
-    }
-
-    if (!ELIGIBLE_ROLES.includes(membership.role)) {
-      // VIEWER — explicitly excluded from AI chat
-      return NextResponse.json(
-        { error: 'AI chat is not available for viewer-role members.' },
-        { status: 403 },
-      );
-    }
-
-    // buildContext carries a second membership guard internally.
-    let ctx: SpaceContext_AI;
+    // ── The request ────────────────────────────────────────────────────────────
+    let body: unknown;
     try {
-      ctx = await buildContext(spaceId, user.id, { scopeHint: 'full', transactionWindow, drilldown });
+      body = await req.json();
+    } catch {
+      return refuse(SAY.malformed, 400);
+    }
+
+    const parsed = readChatRequest(body);
+    if (!parsed.ok) {
+      const { say, status } = REFUSAL[parsed.refusal];
+      return refuse(say, status);
+    }
+    const { asked, history } = parsed;
+
+    // ── The Space ──────────────────────────────────────────────────────────────
+    // ⚠️ RE-RESOLVED, NEVER ACCEPTED. `resolveSpaceContext` falls back to the
+    // user's own Space when the requested one is unreachable, which is right for
+    // a stale cookie and WRONG here: answering about a different Space than the
+    // one the user picked would attribute their own figures to someone else's
+    // name. So a named Space that does not come back as itself is a refusal, and
+    // only the selector's "all my Spaces" sentinel is allowed to fall back.
+    let spaceCtx;
+    try {
+      spaceCtx = await resolveSpaceContext(user.id, parsed.spaceId);
+    } catch {
+      return refuse(SAY.failed, 503);
+    }
+    if (parsed.spaceId !== null && spaceCtx.spaceId !== parsed.spaceId) {
+      return refuse(SAY.forbidden, 403);
+    }
+
+    // ── The turn ───────────────────────────────────────────────────────────────
+    try {
+      // ⚠️ RLS-AI-S11 — THE FLIP. One runner, bound to the authenticated session's
+      // user id and nothing else: `requireUser()` produced it, and there is no tool
+      // argument, JSON-schema field, header, request body or cookie through which a
+      // model or a browser could reach this parameter.
+      const phase = aiPhaseRunner(user.id);
+
+      // The agent id is a Space-granular read (`AiAgent`), so it belongs inside the
+      // tenant authority like everything else this route reads. It is its OWN short
+      // phase rather than part of the prologue because it is an INPUT to opening the
+      // transcript — the prologue needs it before it starts.
+      const agent = await phase.run('ai_agent', (tx) => tx.aiAgent.findUnique({
+        where: { spaceId: spaceCtx.spaceId }, select: { id: true } }));
+
+      // ⚠️ THE SEAL IS OPENED AGAINST THIS REQUEST, NOT MERELY DECRYPTED. User,
+      // Space and the tail of the transcript that was actually posted all have to
+      // match the seal, so a cookie from another Space or another conversation is
+      // simply absent state.
+      const binding = { userId: user.id, spaceId: spaceCtx.spaceId,
+        tail: conversationTail(history) };
+      const carried = openRuntimeState(req.cookies.get(STATE_COOKIE)?.value, binding);
+      // A seal that did not open — a new chat, another Space, an older version —
+      // means a new conversation, and a new conversation gets a new identity.
+      const conversationId = carried?.conversationId ?? randomUUID();
+
+      const turn = await runStatelessTurn({
+        spaceCtx,
+        agentId: agent?.id ?? 'ai-chat',
+        user: asked,
+        history,
+        scenario: carried?.scenario ?? null,
+        // What was stated earlier in THIS conversation and has not run. Bound by the
+        // same seal, so a new chat, another Space or another user carries none.
+        pending: carried?.pending ?? null,
+        // FM-AUDIT-018 — a plan the previous turn could not carry; this turn is told.
+        continuity: carried?.continuity ?? null,
+        // HARDENING — what the previous answer rested on, for "how did you calculate that?".
+        provenance: carried?.provenance ?? null,
+        asOfISO: todayUTCISO(),
+        // ⚠️ RLS-AI-S11 — THE AUTHORITY HAS MOVED, AND THESE TWO FIELDS ARE NOW THE
+        // FALLBACK RATHER THAN THE ANSWER.
+        //
+        // `phase` below is what this surface's reads actually run under: ONE short
+        // tenant transaction for the prologue, ONE per tool call, ONE for a durable
+        // checkpoint write, each opened with the authenticated user's identity bound
+        // by `SET LOCAL`. These two clients remain on the context because
+        // `ToolContext` requires them and because a phase client is a TRANSACTION —
+        // it cannot be stored on a context that outlives it. With `phase` present,
+        // nothing reads them: the dispatcher replaces both per call.
+        //
+        // ⚠️ WHAT HAD TO BE TRUE BEFORE THIS LINE COULD CHANGE, since the previous
+        // slice refused it for a reason that was correct:
+        //   · `AssemblerFn` takes a REQUIRED leading `ReadClient` (S6), so the four
+        //     context assemblers can no longer hold `db`, and a turn cannot be
+        //     SPLIT-AUTHORITY between its orientation and its tools;
+        //   · every financial leaf on that graph receives it — including the two
+        //     investment seams that defaulted `client ?? db` invisibly (S7) and the
+        //     transfer resolver, which had no client parameter at all;
+        //   · the absence contract reaches the ENVELOPE OBJECT the model actually
+        //     reads, not just the renderer nothing in production called (S8);
+        //   · an assembler FAILURE is a distinct, stated evidence state (S9);
+        //   · the Space-probe theorem is pinned by a test that re-derives the real
+        //     policies from the migration — and that test FALSIFIED the old `Space`
+        //     probe on its first run (S10).
+        memoryClient: db,
+        readClient: db,
+        phase,
+        correlationId: conversationId,
+        surface: 'chat',
+        // Operator-only attribution for the AI cost ledger — see the header.
+        attribution: { userId: user.id, spaceId: spaceCtx.spaceId, conversationId },
+        // FM-AUDIT-019 — the product route is where durable memory is a feature: the
+        // signed-in user's own memory, in their own Space. Every other caller of the
+        // turn loop (the dogfood / evaluation harnesses) is read-only unless opted in.
+        memoryWrites: true,
+        deadline,
+      });
+
+      if (!turn.answer) {
+        // BETA C7 — THE CHOKEPOINT'S REFUSAL ARRIVES HERE, NOT IN THE CATCH BELOW.
+        // The turn loop records a provider throw as the turn's error rather than
+        // rethrowing it (a provider failure is a result, not a crash), so an
+        // unpriceable model surfaces as a turn with no text. It gets its own
+        // sentence and status: the customer is not told to rephrase against a gap
+        // only the operator can close. The FAILED / UNPRICED_MODEL fact was already
+        // written by the chokepoint, attributed to this conversation.
+        if (isUnpricedModelFailure(turn.record.error)) {
+          console.error('[ai/chat] turn refused (unpriceable model) —', turn.record.error);
+          return refuse(SAY.unpriced, 503);
+        }
+        // AI COST CONTROLS — the kill switch landed mid-turn (the route judged it
+        // before the turn; the chokepoint judges it per model call). Same body as
+        // the route's own refusal.
+        if (isAiPausedFailure(turn.record.error)) {
+          console.error('[ai/chat] turn refused (paid AI requests paused) —', turn.record.error);
+          return paidRequestsPausedResponse();
+        }
+        // SEC-AI-003 — the turn ran out of its budget. The provider was abandoned
+        // (a zero-token TIMEOUT fact is on the ledger) and the reservation is
+        // released below; the user is told to narrow the question.
+        if (isTurnTimeoutFailure(turn.record.error)) {
+          console.error('[ai/chat] turn abandoned at its deadline —', turn.record.error);
+          return refuse(SAY.timedOut, 504);
+        }
+        // The turn record holds why (budget exhausted, finish_reason, round-trip
+        // ceiling). That reason is for the server's log; the user gets a sentence.
+        console.error('[ai/chat] turn produced no text:', turn.record.error);
+        return refuse(SAY.silent, 502);
+      }
+
+      // ⚠️ BOTH HALVES OF THE ANSWER, ON A 200. A knowledge gap is not an error
+      // and must never become one: the prose renders normally and the missing
+      // evidence renders beside it. The key is omitted entirely when there is
+      // none, so an ordinary answer is the same single-field body it was.
+      // ⚠️ RE-SEALED EVERY TURN, AGAINST THE ANSWER JUST GIVEN. The next request's
+      // transcript will end with this reply, so this reply's digest is the tail
+      // the seal must be bound to. When the hypothetical is gone — cleared by a
+      // failed recomputation, or never established — the carrier is cleared too,
+      // rather than left holding a scenario the conversation has moved past.
+      // FM-AUDIT-018 — state too large to carry is replaced by a sealed continuity
+      // marker (never silently dropped), and the response SAYS so.
+      // The product's possessive convention ("Chris'", lib/format.ts), applied to
+      // the model's prose once, here — the seal's tail and the body must carry the
+      // SAME text, because the client echoes this reply back as history.
+      const answer = applyPossessiveConvention(turn.answer);
+      const seal = sealRuntimeStateWithReport(
+        { scenario: turn.scenario, pending: turn.pending, continuity: turn.continuity, provenance: turn.provenance,
+          conversationId }, {
+        ...binding, tail: conversationTail([...history, { role: 'assistant', content: answer }]),
+      });
+      const sealed = seal.sealed;
+      const body: AiChatResponse = {
+        message: answer,
+        // The answer's guidance label (lib/ai/conversation/guidance.ts). Omitted
+        // when it could not be produced; the surface inherits rather than drops.
+        ...(turn.guidance ? { guidance: turn.guidance } : {}),
+        ...(turn.knowledgeGaps.length ? { knowledgeGaps: turn.knowledgeGaps } : {}),
+        ...(seal.carried === 'LOST' && seal.fresh && seal.loss ? { continuity: { carried: false, reason: seal.loss.reason,
+          droppedScenario: seal.loss.droppedScenario, droppedPendingClauses: seal.loss.droppedPendingClauses } } : {}),
+      };
+      const res = NextResponse.json(body);
+      res.cookies.set(STATE_COOKIE, sealed ?? '', {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        path: '/api/ai/chat',
+        maxAge: sealed ? Math.floor(RUNTIME_STATE_TTL_MS / 1000) : 0,
+      });
+      return res;
     } catch (err) {
-      console.error('[api/ai/chat] buildContext error:', err);
-      return NextResponse.json(
-        { error: 'Failed to assemble space context.' },
-        { status: 500 },
-      );
+      // ⚠️ THE DETAIL STAYS ON THIS SIDE. A provider error carries model names and
+      // sometimes prompt fragments; a Prisma error carries SQL. The user gets a
+      // sentence and the truth that nothing was changed — this route writes no
+      // financial data on any path.
+      console.error('[ai/chat] turn failed:', err);
+      // BETA C7 — a chokepoint refusal thrown OUTSIDE the turn loop (the loop
+      // itself records one as the turn's error — handled above). Same sentence.
+      if (err instanceof UnpricedModelError) return refuse(SAY.unpriced, 503);
+      if (err instanceof AiPausedError) return paidRequestsPausedResponse();
+      return refuse(SAY.failed, 503);
     }
-
-    const assessment = computeAssessment(ctx);
-    // Slice 6: per-liability debt-payment rollup ([] on failure → disclosure-only).
-    const debtPayments = await fetchPerLiabilityDebtPayments(ctx);
-    systemPrompt = buildSpaceSystemPrompt(ctx, assessment, intentRoute, debtPayments);
-    // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
-    await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
-    gapsForResponse = filterGapsByIntent(
-      extractKnowledgeGaps(ctx),
-      detectsPayoffIntent(messages),
-    );
+  } finally {
+    // SEC-AI-003 — the clock is released with the reservation, on every path.
+    deadline.dispose();
+    await allowance.release();
   }
-
-  // ── Gap mode ─────────────────────────────────────────────────────────────
-  // "form"          — user explicitly asked to update a field; render full card immediately.
-  // "clarification" — context has gaps but user didn't ask to update; render lightweight prompt.
-  const gapMode: 'clarification' | 'form' =
-    detectsExplicitUpdateIntent(messages) ? 'form' : 'clarification';
-
-  // ── LLM call ──────────────────────────────────────────────────────────────
-  // generateChatReply is the only sanctioned path to the OpenAI SDK.
-  // If OPENAI_API_KEY is not set it throws a clear error caught below.
-
-  let reply: string;
-  try {
-    reply = await generateChatReply(systemPrompt, messages);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error.';
-    console.error('[api/ai/chat] generateChatReply error:', message);
-
-    // Surface key-not-configured errors as 503 so the client can distinguish
-    // from transient errors.
-    if (message.includes('OPENAI_API_KEY')) {
-      return NextResponse.json(
-        { error: 'AI provider is not configured. Set OPENAI_API_KEY.' },
-        { status: 503 },
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'AI provider error. Please try again.' },
-      { status: 502 },
-    );
-  }
-
-  // Output validation + live enforcement (AI-4 / KD-2). Validation runs after
-  // the reply exists; enforcement then deterministically annotates (or, if
-  // configured, blocks) a reply containing a figure that could not be reconciled
-  // to context. Pure string work — no extra I/O, negligible latency.
-  const enforcementMode = outputEnforcementMode();
-  const validation = await runOutputValidation(
-    user.id, spaceId, reply, systemPrompt, messages, enforcementMode,
-  );
-  reply = applyEnforcement(reply, validation, enforcementMode);
-
-  return NextResponse.json({
-    message:          reply,
-    knowledgeGaps:    gapsForResponse,
-    knowledgeGapMode: gapMode,
-  });
 }

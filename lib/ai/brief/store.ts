@@ -1,0 +1,244 @@
+/**
+ * lib/ai/brief/store.ts
+ *
+ * THE DAILY BRIEF ARTIFACT STORE — read, claim, complete, fail, refresh.
+ *
+ * ⚠️ THE CLAIM IS ONE CONDITIONAL UPDATE. `generationStartedAt` is set only where
+ * it is null or older than the lease, in a single UPDATE; Postgres re-checks that
+ * predicate under the row lock, so of any number of concurrent callers exactly one
+ * matches. The first row for a day is created WITH the claim set by an insert that
+ * does nothing on conflict (`createMany … skipDuplicates`, i.e. ON CONFLICT DO
+ * NOTHING); a caller whose insert inserted nothing retries the conditional update
+ * once — against a row another caller just claimed, so it loses. The unique key
+ * decides the first-row race without an exception: a thrown P2002 was the first
+ * design, and Prisma logged every handled race as an error.
+ * No advisory lock, no job table, no cleanup worker.
+ *
+ * ⚠️ THE CLAIM TIMESTAMP IS THE FENCING TOKEN. Completion and failure apply only
+ * where `generationStartedAt` still equals the token the caller was given. A
+ * caller whose lease expired while it was still working cannot overwrite the
+ * Brief or the claim of whoever took over; its write simply matches nothing.
+ * (Tokens are millisecond timestamps: two claims on one row in the same
+ * millisecond after an expiry are not a real-world case.)
+ *
+ * ⚠️ FAILURE NEVER TOUCHES CONTENT. It releases the claim and stamps
+ * `lastFailedAt`; whatever Brief the row held survives, and the next caller may
+ * retry immediately. A process that dies mid-generation writes nothing; its claim
+ * expires after GENERATION_LEASE_MS and the next caller takes it.
+ *
+ * ⚠️ REFRESHING THE WATERMARK IS CONDITIONAL ON THE DIGEST. It records "sources
+ * moved, nothing material" only onto the Brief whose digest was compared — never
+ * onto one a concurrent generation has just replaced.
+ */
+
+import type { Prisma, PrismaClient } from '@prisma/client';
+import type { ReadClient } from '@/lib/db/tenant-context';
+import { GENERATION_LEASE_MS } from './policy';
+import type { BriefRow } from './state';
+
+export interface BriefScope { spaceId: string; ownerUserId: string }
+export interface BriefKey extends BriefScope { briefDay: string }
+
+export interface BriefCompletion {
+  content: unknown;
+  generatedAt: Date;
+  balancesAsOf: Date | null;
+  historyThrough: string | null;
+  sourceWatermark: string;
+  materialDigest: string;
+  model: string;
+  promptVersion: string;
+  correlationId: string | null;
+}
+
+export type ClaimResult = { won: true; token: Date } | { won: false };
+
+// ── HOW THE BRIEF REACHES THE DATABASE (RLS slice A) ─────────────────────────
+//
+// The Brief's lifecycle is not one database operation: it reads a row, reads a
+// watermark, claims, CALLS A MODEL, then writes. A single transaction around all
+// of that would hold a Postgres transaction open across an LLM request, which is
+// exactly what `withTenantDb` must never be used for. So the authority arrives as
+// a RUNNER rather than as a client: the caller decides what one phase runs as, and
+// each phase is one short operation.
+
+/** The models and the one raw-SQL seam the Brief's own phases touch. */
+export type BriefDbClient =
+  // `platformSetting` joined this list in RLS-12. The watermark and the data-
+  // health read both hash the refresh-cadence rows, and until fm_app was
+  // granted SELECT on that table they had to run on a deployment-wide client —
+  // an authority escape inside an otherwise converted surface. The Pick is the
+  // invariant: these five are everything a Brief phase can reach.
+  Pick<PrismaClient, 'dailyBrief' | 'spaceAccountLink' | 'spaceMemory' | 'platformSetting'> & {
+    $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
+  };
+
+/**
+ * ONE short database operation, run under whatever authority the caller supplies.
+ *
+ * In the product that is `withTenantDb(ownerUserId, fn)` — a transaction per
+ * phase, carrying the identity the policies read. In the inspect-only path the
+ * whole inspection is already inside one tenant transaction, so the phase runs
+ * inline against that `tx`. A test supplies its own and asserts what ran.
+ */
+export type BriefDbPhase = <T>(fn: (client: BriefDbClient) => Promise<T>) => Promise<T>;
+
+/**
+ * ⚠️ THE PHASES fm_app CANNOT SERVE — a deployment-wide authority, named.
+ *
+ * The source watermark and the per-source health read both hash
+ * `PlatformSetting`'s refresh-cadence rows, and the RLS migration REVOKES ALL on
+ * `PlatformSetting`, which the first RLS migration had swept into the
+ * operational revoke. RLS-12 granted fm_app SELECT on it — it is deployment
+ * CONFIGURATION with no tenant dimension, so there was nothing for a tenant to
+ * learn from it — and both reads became ordinary tenant phases. The structural
+ * type survives because a transaction client satisfies it; the deployment-wide
+ * FIELD does not, because nothing needs it any more.
+ */
+export type BriefPlatformClient =
+  Pick<PrismaClient, 'spaceAccountLink' | 'platformSetting'> & {
+    $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
+  };
+
+/**
+ * ONE short READ, run under whatever authority the caller supplies.
+ *
+ * ⚠️ A SECOND RUNNER, NOT A WIDER `BriefDbClient` (RLS-C-S3). The `Pick` above is
+ * an invariant — those five members are everything a Brief PHASE can reach, and
+ * widening it would delete that statement. But the Brief also composes three
+ * CANONICAL READ LEAVES it does not own (the snapshot boundary, the banking
+ * population and the recent-activity pager), and those take a full `ReadClient`
+ * because they query tables a Brief phase has no business naming directly. So the
+ * authority arrives as a second, separately-named runner rather than by relaxing
+ * the first one.
+ *
+ * Same shape, same rule: ONE short operation per call. Never a model call inside.
+ */
+export type BriefReadPhase = <T>(fn: (client: ReadClient) => Promise<T>) => Promise<T>;
+
+/** Everything the Brief needs in order to reach a database, and nothing more. */
+export interface BriefRuntime {
+  /** One short operation as the Brief's owner. */
+  asOwner: BriefDbPhase;
+  /**
+   * RLS-C-S3 — one short read as the Brief's owner, through a canonical read leaf.
+   * Separate from `asOwner` so the narrow `BriefDbClient` stays narrow.
+   */
+  asOwnerReading: BriefReadPhase;
+}
+
+export interface BriefStore {
+  /** Today's row (with or without content) and the newest earlier successful Brief. */
+  read(scope: BriefScope, today: string): Promise<{ todayRow: BriefRow | null; latestPrior: BriefRow | null }>;
+  claim(key: BriefKey, now: Date): Promise<ClaimResult>;
+  complete(key: BriefKey, token: Date, data: BriefCompletion): Promise<boolean>;
+  fail(key: BriefKey, token: Date, reason: string, at: Date): Promise<boolean>;
+  refreshWatermark(key: BriefKey, expectedDigest: string, watermark: string): Promise<boolean>;
+}
+
+/**
+ * The artifact store, with every method as its own phase.
+ *
+ * ⚠️ EACH METHOD IS ALREADY ONE COHERENT OPERATION, which is why this wrapping is
+ * safe: `read` is two finds, `complete`, `fail` and `refreshWatermark` are one
+ * conditional update each, and `claim` is the update/insert/update sequence whose
+ * atomicity Postgres provides per statement. Nothing here spans the model call,
+ * and nothing that was previously atomic has been split.
+ */
+export function phaseBriefStore(phase: BriefDbPhase): BriefStore {
+  return {
+    read:  (scope, today)      => phase((c) => prismaBriefStore(c).read(scope, today)),
+    claim: (key, now)          => phase((c) => prismaBriefStore(c).claim(key, now)),
+    complete: (key, token, d)  => phase((c) => prismaBriefStore(c).complete(key, token, d)),
+    fail: (key, token, why, at) => phase((c) => prismaBriefStore(c).fail(key, token, why, at)),
+    refreshWatermark: (k, digest, mark) => phase((c) => prismaBriefStore(c).refreshWatermark(k, digest, mark)),
+  };
+}
+
+const dayDate = (day: string) => new Date(`${day}T00:00:00.000Z`);
+const dayOf = (d: Date) => d.toISOString().slice(0, 10);
+
+type DailyBriefRecord = Prisma.DailyBriefGetPayload<Record<string, never>>;
+
+export function toBriefRow(r: DailyBriefRecord): BriefRow {
+  return {
+    id: r.id, spaceId: r.spaceId, ownerUserId: r.ownerUserId, briefDay: dayOf(r.briefDay),
+    content: r.content ?? null, generatedAt: r.generatedAt, balancesAsOf: r.balancesAsOf,
+    historyThrough: r.historyThrough ? dayOf(r.historyThrough) : null,
+    sourceWatermark: r.sourceWatermark, materialDigest: r.materialDigest,
+    model: r.model, promptVersion: r.promptVersion, correlationId: r.correlationId,
+    generationStartedAt: r.generationStartedAt, lastFailedAt: r.lastFailedAt,
+    lastFailureReason: r.lastFailureReason,
+  };
+}
+
+export function prismaBriefStore(client: Pick<PrismaClient, 'dailyBrief'>): BriefStore {
+  const fields = (k: BriefKey) => ({ spaceId: k.spaceId, ownerUserId: k.ownerUserId, briefDay: dayDate(k.briefDay) });
+
+  return {
+    async read(scope, today) {
+      const [todayRow, latestPrior] = await Promise.all([
+        client.dailyBrief.findUnique({ where: { spaceId_ownerUserId_briefDay: fields({ ...scope, briefDay: today }) } }),
+        client.dailyBrief.findFirst({
+          where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
+            briefDay: { lt: dayDate(today) }, generatedAt: { not: null } },
+          orderBy: { briefDay: 'desc' },
+        }),
+      ]);
+      return { todayRow: todayRow ? toBriefRow(todayRow) : null, latestPrior: latestPrior ? toBriefRow(latestPrior) : null };
+    },
+
+    async claim(key, now) {
+      const token = new Date(now.getTime());
+      const expiredBefore = new Date(now.getTime() - GENERATION_LEASE_MS);
+      const take = async () => (await client.dailyBrief.updateMany({
+        where: { ...fields(key), OR: [{ generationStartedAt: null }, { generationStartedAt: { lte: expiredBefore } }] },
+        data: { generationStartedAt: token },
+      })).count === 1;
+
+      if (await take()) return { won: true, token };
+      const { count } = await client.dailyBrief.createMany({
+        data: [{ ...fields(key), generationStartedAt: token }], skipDuplicates: true,
+      });
+      if (count === 1) return { won: true, token };
+      // Someone created the row between our update and our insert. It is claimed
+      // (or was just released) — one more conditional update decides, atomically.
+      return (await take()) ? { won: true, token } : { won: false };
+    },
+
+    async complete(key, token, d) {
+      const { count } = await client.dailyBrief.updateMany({
+        where: { ...fields(key), generationStartedAt: token },
+        data: {
+          content: d.content as Prisma.InputJsonValue,
+          generatedAt: d.generatedAt,
+          balancesAsOf: d.balancesAsOf,
+          historyThrough: d.historyThrough ? dayDate(d.historyThrough) : null,
+          sourceWatermark: d.sourceWatermark,
+          materialDigest: d.materialDigest,
+          model: d.model,
+          promptVersion: d.promptVersion,
+          correlationId: d.correlationId,
+          generationStartedAt: null,
+        },
+      });
+      return count === 1;
+    },
+
+    async fail(key, token, reason, at) {
+      const { count } = await client.dailyBrief.updateMany({
+        where: { ...fields(key), generationStartedAt: token },
+        data: { generationStartedAt: null, lastFailedAt: at, lastFailureReason: reason },
+      });
+      return count === 1;
+    },
+
+    async refreshWatermark(key, expectedDigest, watermark) {
+      const { count } = await client.dailyBrief.updateMany({
+        where: { ...fields(key), materialDigest: expectedDigest, generatedAt: { not: null } },
+        data: { sourceWatermark: watermark },
+      });
+      return count === 1;
+    },
+  };
+}

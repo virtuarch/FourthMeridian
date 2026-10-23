@@ -5,13 +5,9 @@
  * phases so a producer can persist inside a transaction while its side-effect
  * handlers run only after that transaction commits.
  *
- *   emitDomainEvent(event, ctx?)  — PERSIST phase.
- *     Writes the canonical AuditLog row (tx-aware). No schema change — the
- *     envelope + payload map onto existing AuditLog columns.
- *       • ctx.tx provided  → persist ONLY (in the caller's transaction). The
- *         caller must call dispatchDomainEvent(event) after the tx commits.
- *       • ctx.tx absent    → persist, then dispatch inline (post-persist ==
- *         post-commit when there is no surrounding transaction).
+ *   emitDomainEvent(client, event)  — PERSIST phase.
+ *     Writes the canonical AuditLog row on the client it is handed. No schema
+ *     change — the envelope + payload map onto existing AuditLog columns.
  *
  *   dispatchDomainEvent(event)    — DISPATCH phase.
  *     Runs the registered in-process handlers for event.type. Each handler is
@@ -23,12 +19,37 @@
  * sourcing/replay. Dispatch is a synchronous, in-process await through a typed
  * map.
  *
+ * ── RLS SLICE B: THE CLIENT IS A PARAMETER, NOT AN IMPORT ────────────────────
+ * This file imports no Prisma client. `emitDomainEvent` takes the client it
+ * writes through as its FIRST, REQUIRED argument, so the authority an audit row
+ * is written under is decided — visibly — by the caller that knows who the user
+ * is, and TypeScript fails at any call site that forgets to say. It was
+ * previously `ctx?.tx ?? db`: an optional parameter whose DEFAULT was the
+ * migration principal, which is the exact shape this programme is removing —
+ * every caller that said nothing silently got BYPASSRLS.
+ *
+ * ⚠️ AND WHETHER TO DISPATCH IS NOW A CAPABILITY TEST, NOT A FLAG. A
+ * `Prisma.TransactionClient` has no `$transaction` method; a `PrismaClient`
+ * does. So `'$transaction' in client` decides whether the persist is already
+ * inside somebody's transaction — in which case the handlers must NOT run until
+ * it commits, and the caller dispatches — or stands alone, in which case
+ * post-persist IS post-commit and dispatching inline is safe. That is exactly
+ * what the old `ctx?.tx` flag meant, read off the client instead of asserted
+ * beside it, so the two can no longer disagree.
+ *
+ * ⚠️ WHY A HANDLER MUST NEVER RUN INSIDE withTenantDb. The registry below
+ * regenerates snapshots and writes notifications — long, multi-table work, and
+ * `regenerateSnapshotOnShareChange` reaches rows the acting user may not be able
+ * to see. A boundary that wrapped persist AND dispatch would hold one Postgres
+ * transaction open across all of it. So a tenant-scoped producer enters the
+ * boundary for the persist alone and calls `dispatchDomainEvent` after it
+ * returns, which is what the capability test above makes it do.
+ *
  * See docs/investigations/EV-1_TYPED_DOMAIN_EVENT_SEAM_INVESTIGATION.md and
  * docs/initiatives/ev1/implementation/EV-1_SLICE2_IMPLEMENTATION_CHECKLIST.md.
  */
 
-import { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { AuditAction, type AuditActionType } from "@/lib/audit-actions";
 import type { DomainEvent, DomainEventType } from "@/lib/events/types";
 import { regenerateSnapshotOnShareChange } from "@/lib/events/handlers/snapshot";
@@ -39,8 +60,20 @@ import {
   notifySpaceInviteAccepted,
 } from "@/lib/events/handlers/space-member-notifications";
 
-/** Either the shared Prisma client or an active transaction client. */
-type DbClient = Prisma.TransactionClient | typeof db;
+/**
+ * What this file may be handed: ONE Prisma model, plus the ABILITY to open a
+ * transaction when — and only when — the caller is not already inside one.
+ *
+ * ⚠️ `auditLog` AND NOTHING ELSE. A `Pick` is the invariant in the type system:
+ * no caller can pass something through which the event seam could reach
+ * `financialAccount`, `spaceMember` or any other model. Persisting an event is
+ * one INSERT; the type says so.
+ *
+ * ⚠️ `$transaction` IS OPTIONAL BY CONSTRUCTION. A transaction-scoped client does
+ * not have it, and that absence is the signal that a transaction is already open.
+ */
+export type DomainEventClient =
+  Pick<Prisma.TransactionClient, "auditLog"> & Partial<Pick<PrismaClient, "$transaction">>;
 
 /**
  * Maps each emitted DomainEvent type to its canonical AuditAction string.
@@ -120,19 +153,22 @@ export async function dispatchDomainEvent(event: DomainEvent): Promise<void> {
 }
 
 /**
- * PERSIST phase — write the canonical AuditLog row for a typed domain event.
+ * PERSIST phase — write the canonical AuditLog row for a typed domain event,
+ * under the authority the caller supplies.
  *
- * Pass ctx.tx to persist inside an existing transaction (preserves atomicity
- * for producers that emit within db.$transaction); in that case handlers are
- * NOT dispatched here — call dispatchDomainEvent(event) after the tx commits.
- * Without ctx.tx, the row is persisted on the shared client and handlers are
- * dispatched inline.
+ * A transaction-scoped client (the tenant boundary's `tx`, or a producer's own
+ * `db.$transaction` callback) persists inside that transaction and does NOT
+ * dispatch — the caller must call dispatchDomainEvent(event) after it commits.
+ * A full client stands alone, so post-persist is post-commit and the handlers
+ * run inline, exactly as the no-ctx form always did.
  */
 export async function emitDomainEvent(
+  client: DomainEventClient,
   event: DomainEvent,
-  ctx?: { tx?: Prisma.TransactionClient },
 ): Promise<void> {
-  const client: DbClient = ctx?.tx ?? db;
+  // See the header: the client's SHAPE says whether a transaction is already
+  // open, so nothing has to be asserted beside it and then kept in step.
+  const standalone = "$transaction" in client && typeof client.$transaction === "function";
 
   const action = DOMAIN_EVENT_ACTION[event.type];
   if (!action) {
@@ -153,8 +189,8 @@ export async function emitDomainEvent(
   });
 
   // No surrounding transaction → persist is already committed, so it is safe to
-  // dispatch handlers inline. With a tx, the caller dispatches post-commit.
-  if (!ctx?.tx) {
+  // dispatch handlers inline. Inside one, the caller dispatches post-commit.
+  if (standalone) {
     await dispatchDomainEvent(event);
   }
 }

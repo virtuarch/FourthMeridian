@@ -7,7 +7,7 @@
  * current freshness (L3) — without touching customer financial data.
  *
  * BOUNDARY (binding): operational METADATA only — status, health, counts,
- * timestamps, institution label, and the owner's email (the support identifier).
+ * timestamps, institution label, and an opaque owner reference (never the email).
  * NO balances, NO transaction amounts, NO SpaceSnapshot value columns (only its
  * `date` is read, as a FRESHNESS signal). This is NOT a new financial authority —
  * it reuses the same pure derivations the customer surface uses:
@@ -22,17 +22,19 @@ import { db } from "@/lib/db";
 import { ProviderType, ShareStatus, PlaidItemStatus, ConnectionStatus } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
 import { deriveConnectionState, deriveWalletConnectionState } from "@/lib/sync/status";
+import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
 import { deriveConnectionIntelligence, formatAvailableHistory } from "@/lib/connections/intelligence";
-import {
-  deriveConnectionHealthState,
-  PLAID_STALE_MS_EXPORT,
-  WALLET_STALE_MS_EXPORT,
-  type HealthState,
-} from "@/lib/connections/health";
+import { deriveConnectionHealthState, staleWindowMs, type HealthState } from "@/lib/connections/health";
+import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
+import { getIngestionEvidence } from "@/lib/platform/refresh/projections";
 
 export interface ConnectionDiagnostic {
   id:          string;   // the operator handle (already used by resync/reauth)
-  owner:       string;   // owner email — the support identifier (grant-gated)
+  /** PLATFORM OPS PRIVACY — an OPAQUE owner reference (last 6 of the user id),
+   *  enough to correlate two connections of one owner and to hand to Customer
+   *  Success, which holds the directory. The email no longer crosses this
+   *  boundary: a monitoring grant is not a customer directory. */
+  ownerRef:    string;
   source:      string;   // institution / wallet label
   provider:    "PLAID" | "WALLET";
   status:      string;   // raw provider status (ACTIVE/NEEDS_REAUTH/ERROR)
@@ -47,12 +49,12 @@ export interface ConnectionDiagnostic {
      * it needs the pause lifted. Folding it into IMPORTING would hide how many
      * connections a pause is actually holding.
      */
-    syncStatus:            "IMPORTING" | "SYNC_DEFERRED" | "READY" | "ACTION_REQUIRED";
+    syncStatus:            "IMPORTING" | "IMPORT_PAUSED" | "SYNC_DEFERRED" | "READY" | "ACTION_REQUIRED";
     errorCode:             string | null;
   };
   intelligence: {
     lastBuiltAt:      string | null;
-    status:           "READY" | "REBUILDING" | "NOT_READY";
+    status:           "READY" | "REBUILDING" | "NOT_BUILT" | "NOT_READY";
     accountsCovered:  number;
     availableHistory: string; // formatted "~N" / "No historical data yet"
   };
@@ -63,6 +65,11 @@ export interface ConnectionDiagnostic {
 
 const DEFAULT_CAP = 50;
 
+/** Opaque owner reference: correlates, never identifies. */
+function ownerRefOf(userId: string | null | undefined): string {
+  return userId ? `user …${userId.slice(-6)}` : "—";
+}
+
 function walletLabel(externalConnectionId: string | null): string {
   if (!externalConnectionId) return "Self-custody wallet";
   return `Self-custody wallet …${externalConnectionId.slice(-6)}`;
@@ -72,14 +79,16 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
   const now = new Date();
   const nowMs = now.getTime();
 
-  // 1. Connections across all owners (operator view) + owner email + account links.
-  const [plaidItems, wallets] = await Promise.all([
+  // 1. Connections across all owners (operator view) + owner email + account links,
+  //    and the refresh policy that decides what "stale" means for each kind.
+  const [plaidItems, wallets, policies] = await Promise.all([
     db.plaidItem.findMany({
       where:   { status: { not: PlaidItemStatus.REVOKED } },
       select:  {
         id: true, institutionName: true, status: true, errorCode: true,
         lastSyncedAt: true, syncIncompleteAt: true, createdAt: true,
-        user: { select: { email: true } },
+        syncLockedAt: true, historyBuildStartedAt: true,
+        user: { select: { id: true } },
         connections: { where: { deletedAt: null }, select: { financialAccountId: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -90,19 +99,31 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
       select:  {
         id: true, externalConnectionId: true, status: true, errorCode: true,
         lastSyncedAt: true, createdAt: true,
-        user: { select: { email: true } },
+        user: { select: { id: true } },
         accountConnections: { where: { deletedAt: null }, select: { financialAccountId: true } },
       },
       orderBy: { createdAt: "desc" },
       take:    cap,
     }),
+    loadRefreshPolicies(db),
   ]);
+  const plaidStaleMs = staleWindowMs(policies.BANK);
+  const walletStaleMs = staleWindowMs(policies.WALLET);
 
   // 2. fa ids per connection.
   const faByConn = new Map<string, string[]>();
   for (const p of plaidItems) faByConn.set(p.id, p.connections.map((c) => c.financialAccountId));
   for (const w of wallets)    faByConn.set(w.id, w.accountConnections.map((c) => c.financialAccountId));
   const uniqFa = [...new Set([...faByConn.values()].flat())];
+
+  // UI-C1 — the chain each wallet account denominates, so the history-metadata
+  // authority can ask the capability question per account rather than per card.
+  const walletChainByAccount = new Map<string, string | null>(
+    (await db.financialAccount.findMany({
+      where:  { id: { in: uniqFa } },
+      select: { id: true, walletChain: true },
+    })).map((a) => [a.id, a.walletChain]),
+  );
 
   // 3. tx aggregates per account (count + earliest + latest) — counts/dates only.
   const txAgg = uniqFa.length
@@ -175,20 +196,30 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
     return max;
   };
 
+  const evidence = await getIngestionEvidence(
+    plaidItems.map((p) => ({ id: p.id, syncLockedAt: p.syncLockedAt })), now,
+  );
+
   const out: ConnectionDiagnostic[] = [];
 
   for (const p of plaidItems) {
     const faIds = faByConn.get(p.id) ?? [];
     const tx = txForConn(faIds);
-    const state = deriveConnectionState({ status: p.status, syncIncompleteAt: p.syncIncompleteAt }) ?? "error";
+    // The same ledger evidence the customer card uses: "importing" and
+    // "rebuilding" only when work is actually running.
+    const activity = evidence.activity.get(p.id) ?? "UNKNOWN";
+    const state = deriveConnectionState(
+      { status: p.status, syncIncompleteAt: p.syncIncompleteAt, historyBuildStartedAt: p.historyBuildStartedAt },
+      evidence.deferrals.get(p.id) ?? null, activity, now,
+    ) ?? "error";
     const intel = deriveConnectionIntelligence(
-      { provider: "PLAID", state, historySyncedAt: anchorByConn.get(p.id) ?? null, earliestTxDate: tx.min, connectedAt: p.createdAt, lastSyncedAt: p.lastSyncedAt , balanceVerifiedAt: null },
+      { provider: "PLAID", state, historySyncedAt: anchorByConn.get(p.id) ?? null, earliestTxDate: tx.min, connectedAt: p.createdAt, lastSyncedAt: p.lastSyncedAt , balancesUpdatedAt: null, ingestionActivity: activity },
       now,
     );
     out.push({
-      id: p.id, owner: p.user?.email ?? "—", source: p.institutionName, provider: "PLAID",
+      id: p.id, ownerRef: ownerRefOf(p.user?.id), source: p.institutionName, provider: "PLAID",
       status: p.status,
-      healthState: deriveConnectionHealthState(p.status, p.errorCode, p.lastSyncedAt, PLAID_STALE_MS_EXPORT, nowMs),
+      healthState: deriveConnectionHealthState(p.status, p.errorCode, p.lastSyncedAt, plaidStaleMs, nowMs),
       acquisition: {
         lastAcquiredAt: p.lastSyncedAt?.toISOString() ?? null,
         transactionCount: tx.count,
@@ -196,7 +227,8 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
         // OPS-2D-4A — a policy-held connection is not IMPORTING (nothing is running)
         // and not ACTION_REQUIRED (there is nothing for anyone to fix on it).
         syncStatus: state === "sync_deferred" ? "SYNC_DEFERRED"
-          : state === "importing" ? "IMPORTING" : state === "ready" ? "READY" : "ACTION_REQUIRED",
+          : state === "importing" ? "IMPORTING" : state === "import_paused" ? "IMPORT_PAUSED"
+          : state === "ready" ? "READY" : "ACTION_REQUIRED",
         errorCode: p.errorCode ?? null,
       },
       intelligence: {
@@ -209,18 +241,38 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
     });
   }
 
+  // UI-C1 — a wallet's history span comes from its persisted COVERAGE LICENCE,
+  // never from its transaction count. Bitcoin writes movements to `Transaction`
+  // and so had a figure by accident; Solana and Ethereum write none, and showed
+  // nothing while holding four and nine years of proven quantity history.
+  const walletHistory = await loadWalletHistoryMetadata(
+    [...faByConn.values()].flat().map((id) => ({ id, walletChain: walletChainByAccount.get(id) ?? null })),
+  );
+
   for (const w of wallets) {
     const faIds = faByConn.get(w.id) ?? [];
     const tx = txForConn(faIds);
+    // UI-C2 — the earliest ACTIVITY start across this connection's accounts, not
+    // the proof floor: a licence reaching back through a proven-zero interval is
+    // coverage, not wallet history. Null when nothing is evidenced — rendered as
+    // silence, never as "no history".
+    const licensedFrom = faIds
+      .map((id) => walletActivityStart(walletHistory.get(id)))
+      .filter((d): d is Date => d !== null)
+      .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
     const state = deriveWalletConnectionState({ status: w.status, lastSyncedAt: w.lastSyncedAt, errorCode: w.errorCode }) ?? "error";
     const intel = deriveConnectionIntelligence(
-      { provider: "WALLET", state, historySyncedAt: anchorByConn.get(w.id) ?? (state === "ready" ? w.lastSyncedAt : null), earliestTxDate: tx.min, connectedAt: w.createdAt, lastSyncedAt: w.lastSyncedAt , balanceVerifiedAt: null },
+      // `earliestTxDate` is the field the intelligence layer measures history
+      // from. For a wallet it is fed the COVERAGE start, falling back to the
+      // transaction ledger only where no licence exists — which keeps Bitcoin's
+      // long-standing number intact while giving Solana and Ethereum theirs.
+      { provider: "WALLET", state, historySyncedAt: anchorByConn.get(w.id) ?? (state === "ready" ? w.lastSyncedAt : null), earliestTxDate: licensedFrom ?? tx.min, connectedAt: w.createdAt, lastSyncedAt: w.lastSyncedAt , balancesUpdatedAt: null },
       now,
     );
     out.push({
-      id: w.id, owner: w.user?.email ?? "—", source: walletLabel(w.externalConnectionId), provider: "WALLET",
+      id: w.id, ownerRef: ownerRefOf(w.user?.id), source: walletLabel(w.externalConnectionId), provider: "WALLET",
       status: w.status,
-      healthState: deriveConnectionHealthState(w.status, w.errorCode, w.lastSyncedAt, WALLET_STALE_MS_EXPORT, nowMs),
+      healthState: deriveConnectionHealthState(w.status, w.errorCode, w.lastSyncedAt, walletStaleMs, nowMs),
       acquisition: {
         lastAcquiredAt: w.lastSyncedAt?.toISOString() ?? null,
         transactionCount: tx.count,
@@ -228,7 +280,8 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
         // OPS-2D-4A — a policy-held connection is not IMPORTING (nothing is running)
         // and not ACTION_REQUIRED (there is nothing for anyone to fix on it).
         syncStatus: state === "sync_deferred" ? "SYNC_DEFERRED"
-          : state === "importing" ? "IMPORTING" : state === "ready" ? "READY" : "ACTION_REQUIRED",
+          : state === "importing" ? "IMPORTING" : state === "import_paused" ? "IMPORT_PAUSED"
+          : state === "ready" ? "READY" : "ACTION_REQUIRED",
         errorCode: w.errorCode ?? null,
       },
       intelligence: {

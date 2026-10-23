@@ -30,7 +30,7 @@
  *
  * Gated behind INVESTMENT_OBSERVATIONS_ENABLED (reused from position-capture) —
  * absent/false ⇒ zero spine writes, byte-identical legacy sync. Best-effort/
- * non-fatal by contract: callers wrap this in try/catch (the writeBtcHolding
+ * non-fatal by contract: callers wrap this in try/catch (the retired writeBtcHolding's
  * precedent).
  */
 

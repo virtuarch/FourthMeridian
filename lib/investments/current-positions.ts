@@ -23,10 +23,11 @@
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { valuePortfolioAsOf } from "./valuation-core";
 import {
   POSITION_VALUATION_SELECT,
+  RECONSTRUCTION_VALUATION_SELECT,
   resolveInvestmentScopeAndCurrency,
   valuePositionRows,
   type ObservationValuationRow,
@@ -44,10 +45,9 @@ function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Today (UTC), YYYY-MM-DD. The seam's default clock. */
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+// REVIEW-3 B-6 — the seam's default clock is THE clock (lib/time/clock.ts);
+// this module no longer carries a private "today" implementation.
+import { todayUTCISO } from "@/lib/time/clock";
 
 /** The scope of a current-position read. userId/owner scope is intentionally NOT
  *  offered — Personal is itself a Space, and no named consumer reads position
@@ -60,7 +60,7 @@ export interface CurrentPositionsOptions {
   /**
    * The seam's injected "today" clock (YYYY-MM-DD) — for determinism / tests, and
    * so a caller can value CURRENT positions and an all-visibility aggregate at the
-   * exact same instant (the AI holdings assembler's use; always todayIso() in
+   * exact same instant (the AI holdings assembler's use; always todayUTCISO() in
    * production). It is NOT a historical portal: this seam has no compare/flows/
    * reconciliation, and a genuine as-of / historical read is an A10 caller
    * (loadInvestmentsHistory / getInvestmentsTimeMachine), never this. PCS-1B pins
@@ -69,14 +69,18 @@ export interface CurrentPositionsOptions {
    * latest observation ≤ it (A10-at-`asOf` without compare/flows).
    */
   asOf?:  string;
-  client?: Client;
 }
 
-/** The reconstruction-conflict rows the valuation path consumes. */
+/**
+ * The reconstruction rows the valuation path consumes — conflict flags plus the
+ * reconciliation verdict the residue guard reads (V26-INVESTMENTS-HISTORY). The
+ * select is the shared constant, so this seam and the historical window can
+ * never disagree about what the reconstruction said.
+ */
 async function readConflicts(client: Client, accountIds: string[]) {
   return client.positionReconstruction.findMany({
     where:  { financialAccountId: { in: accountIds } },
-    select: { financialAccountId: true, instrumentId: true, conflicted: true },
+    select: RECONSTRUCTION_VALUATION_SELECT,
   });
 }
 
@@ -85,11 +89,21 @@ async function readConflicts(client: Client, accountIds: string[]) {
  * "today" (or an injected `asOf`) through the A10 valuation path.
  */
 export async function getCurrentPositions(
+/**
+ * ⚠️ RLS-AI-S7 — THE AUTHORITY IS A REQUIRED, LEADING PARAMETER AND HAS NO DEFAULT.
+ *
+ * It used to be `options?.client ?? db`. That default was the quietest escape in
+ * the whole AI read graph: `lib/ai/assemblers/holdings.ts` imports no `@/lib/db`
+ * at all, so every scan for a held client said it was clean — while both of its
+ * seams silently fell back to the migration principal, the role that owns every
+ * table, carries BYPASSRLS and is exempt from every policy. An optional authority
+ * is an ambient one; a DEFAULTED one is an ambient one that looks converted.
+ */
+  client:   ReadClient,
   scope:    CurrentPositionsScope,
   options?: CurrentPositionsOptions,
 ): Promise<CurrentPositions> {
-  const client = options?.client ?? db;
-  const asOf = options?.asOf ?? todayIso();
+  const asOf = options?.asOf ?? todayUTCISO();
   const asOfDate = new Date(`${asOf}T00:00:00.000Z`);
   const scopeArgs = "spaceId" in scope
     ? { spaceId: scope.spaceId }
@@ -165,10 +179,12 @@ export async function getCurrentPositions(
  * the legacy positionCount semantics Connections replaced.
  */
 export async function countCurrentPositionsByAccount(
+  /** RLS-AI-S7 — required, leading, no default. See getCurrentPositions. */
+  client:   ReadClient,
   scope:    CurrentPositionsScope,
   options?: CurrentPositionsOptions,
 ): Promise<Record<string, number>> {
-  const { rows } = await getCurrentPositions(scope, options);
+  const { rows } = await getCurrentPositions(client, scope, options);
   const counts: Record<string, number> = {};
   for (const r of rows) {
     if (r.isCash) continue;

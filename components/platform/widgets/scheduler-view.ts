@@ -44,7 +44,7 @@ import type { SchedulerObservationResponse } from "@/app/api/platform/platform-o
  */
 export const OBSERVED_HINT = "Read from the JobRun ledger. These are recorded facts.";
 export const EXPECTED_HINT =
-  "Derived from the job registry in code. These are predictions, not measurements.";
+  "Derived from each job's last run and its execution cadence. These are predictions, not measurements.";
 
 // ── The four figures ──────────────────────────────────────────────────────────
 
@@ -57,15 +57,15 @@ export const EXTERNAL_CRON_HINT =
   "Jobs the ledger recorded but the registry does not declare, so they have no health report and no alert coverage.";
 
 export const EXTERNAL_CRON_DERIVATION = "Observed in the ledger, not declared by the registry";
-export const NEXT_SLOT_DERIVATION = "Derived from the schedules declared in the job registry";
-export const JOBS_IN_SLOT_DERIVATION = "Declared configuration, not evidence that anything ran";
+export const NEXT_SLOT_DERIVATION = "Last run plus execution cadence (the arithmetic the dispatcher uses)";
+export const JOBS_IN_SLOT_DERIVATION = "Derived configuration, not evidence that anything ran";
 
 /**
  * The reasons an absent figure gives for being absent. Each names the observation
  * that was not made, never the value that would have been reassuring.
  */
 export const NO_EXECUTION_REASON = "no execution recorded in the window";
-export const NO_SLOT_REASON = "no slot declared by the registry";
+export const NO_SLOT_REASON = "no job registered";
 export const UNREADABLE_TIME_REASON = "recorded timestamp unreadable";
 
 /** The subject named in the failure sentence when the route could not be asked. */
@@ -142,7 +142,7 @@ export function registeredJobsNote(registeredJobs: number): string {
 
 /** The module that actually answers for every EXPECTED figure on this surface. */
 export const EXPECTED_PROVENANCE = "lib/jobs/registry";
-export const EXPECTED_PROVENANCE_DETAIL = "declared slots";
+export const EXPECTED_PROVENANCE_DETAIL = "execution cadence policy";
 
 /**
  * The prototype prints the literal cron expression from `vercel.json` here.
@@ -151,4 +151,4 @@ export const EXPECTED_PROVENANCE_DETAIL = "declared slots";
  * its reason instead of being transcribed from a file the route never opened.
  */
 export const CRON_CADENCE_REASON =
-  "dispatch cadence lives in vercel.json, which this platform does not read";
+  "the wake cadence lives in vercel.json, which this platform does not read; execution cadence is shown in the Policies workspace";

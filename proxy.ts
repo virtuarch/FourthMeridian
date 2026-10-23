@@ -18,15 +18,22 @@
  *     redirect to the appropriate setup page for their role:
  *       SYSTEM_ADMIN → /admin/security?setup2fa=true
  *       USER         → /dashboard/settings/security?setup2fa=true
+ *   - Domain split: with NEXT_PUBLIC_SITE_URL set, "/" → /dashboard (307) and
+ *     the marketing/legal pages → the same path on the public site (308).
  *
  * (UserRole has exactly two members — USER and SYSTEM_ADMIN. Earlier revisions
  * of this comment referred to an "ADMIN" role that does not exist.)
  *
  * SCOPE (PO-1A) — this file picks the enrolment SURFACE for page navigations.
- * It is NOT the authorization boundary and cannot be: the matcher below is
- * ["/dashboard/:path*", "/admin/:path*"], so this never executes for a single
- * /api/* request. API authorization lives in lib/session.ts, which denies every
- * pending session independently. Both must agree — a surface this file routes a
+ * It is NOT the authorization boundary and cannot be: no session, role or TOTP
+ * rule below is applied to /api/*. API authorization lives in lib/session.ts,
+ * which denies every pending session independently.
+ *
+ * /api/* (STAGE-A3) — the matcher includes /api/:path* for ONE purpose: the
+ * browser-write Origin boundary (lib/security/write-origin.ts). A state-changing
+ * /api request from any origin other than this deployment's own is refused with
+ * 403 before a handler runs. Nothing else here executes for /api — no token is
+ * read, no redirect is issued. Both must agree — a surface this file routes a
  * pending session TO must compose only data lib/session.ts will serve a pending
  * session, i.e. /api/user/totp/* and nothing else.
  *
@@ -38,11 +45,83 @@
 import { getToken } from "next-auth/jwt";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import {
+  authCookiesSecure,
+  sessionCookieName,
+  isLegacyAuthCookie,
+} from "./lib/auth/session-cookie";
+import { evaluateWriteOrigin, selfOriginOf, WRITE_ORIGIN_REFUSED_ERROR } from "./lib/security/write-origin";
+import { RETURN_TO_HEADER } from "./lib/auth/return-to";
+import { PUBLIC_SITE_ORIGIN, routePublicSiteRequest } from "./lib/marketing/public-site";
+
+/**
+ * Expire any pre-`__Host-` auth cookie the browser still sends. After the
+ * rename it is never read, but it is a signed, unrevoked JWT — a live
+ * credential nobody uses, which a rollback would silently revive. Deleting a
+ * `__Secure-` cookie requires the Secure flag; it was host-only, so no Domain.
+ */
+function expireLegacyAuthCookies(req: NextRequest, res: NextResponse): NextResponse {
+  for (const { name } of req.cookies.getAll()) {
+    if (isLegacyAuthCookie(name)) {
+      res.cookies.set(name, "", { maxAge: 0, path: "/", secure: true, httpOnly: true, sameSite: "lax" });
+    }
+  }
+  return res;
+}
 
 export default async function middleware(req: NextRequest) {
+  return expireLegacyAuthCookies(req, await route(req));
+}
+
+async function route(req: NextRequest): Promise<NextResponse> {
+  // ── /api: the browser-write Origin boundary, and nothing else ───────────
+  if (req.nextUrl.pathname.startsWith("/api/")) {
+    const verdict = evaluateWriteOrigin({
+      method:       req.method,
+      pathname:     req.nextUrl.pathname,
+      selfOrigin:   selfOriginOf(req.headers, req.nextUrl.protocol),
+      origin:       req.headers.get("origin"),
+      secFetchSite: req.headers.get("sec-fetch-site"),
+    });
+    if (!verdict.allowed) {
+      return NextResponse.json(
+        { error: WRITE_ORIGIN_REFUSED_ERROR, reason: verdict.reason },
+        { status: 403 },
+      );
+    }
+    return NextResponse.next();
+  }
+
+  // ── Public-site paths (domain split) ────────────────────────────────────
+  // Once NEXT_PUBLIC_SITE_URL names a separate public site, "/" on the
+  // application enters the application and the marketing/legal pages move to
+  // the public site (lib/marketing/public-site.ts). Unset ⇒ inert: the application still
+  // serves its own app/(public) pages (Production on the apex, local dev).
+  const publicSite = routePublicSiteRequest({
+    pathname:   req.nextUrl.pathname,
+    search:     req.nextUrl.search,
+    siteOrigin: PUBLIC_SITE_ORIGIN,
+    selfOrigin: selfOriginOf(req.headers, req.nextUrl.protocol),
+  });
+  if (publicSite.kind === "app-root") {
+    return NextResponse.redirect(new URL(publicSite.location, req.url), 307);
+  }
+  if (publicSite.kind === "public-site") {
+    return NextResponse.redirect(publicSite.location, 308);
+  }
+  if (!isProtectedPagePath(req.nextUrl.pathname)) {
+    // A public-site path on the deployment that still serves it.
+    return NextResponse.next();
+  }
+
+  // The cookie name and Secure decision come from the same module lib/auth.ts
+  // configures NextAuth with — see lib/auth/session-cookie.ts.
+  const secureCookie = authCookiesSecure();
   const token = await getToken({
     req,
     secret: process.env.NEXTAUTH_SECRET,
+    secureCookie,
+    cookieName: sessionCookieName(secureCookie),
   });
 
   const { pathname } = req.nextUrl;
@@ -109,12 +188,34 @@ export default async function middleware(req: NextRequest) {
     return NextResponse.redirect(new URL(setupPath, req.url));
   }
 
-  return NextResponse.next();
+  // ── Deep-link carrier ───────────────────────────────────────────────────
+  // A Server Component cannot see its own URL. If the page then finds the
+  // session REVOKED (a check this file cannot make — it has no DB), it sends
+  // the user to /login via lib/auth/login-redirect.ts, which reads this header
+  // so the deep link survives. Always overwritten: a client-sent value is
+  // discarded here, and the reader re-validates whatever it finds.
+  const forwarded = new Headers(req.headers);
+  forwarded.set(RETURN_TO_HEADER, pathname + req.nextUrl.search);
+  return NextResponse.next({ request: { headers: forwarded } });
+}
+
+function isProtectedPagePath(pathname: string): boolean {
+  return pathname === "/dashboard" || pathname.startsWith("/dashboard/")
+      || pathname === "/admin"     || pathname.startsWith("/admin/");
 }
 
 export const config = {
   matcher: [
     "/dashboard/:path*",
     "/admin/:path*",
+    "/api/:path*",   // Origin boundary only — see the /api branch in route()
+    // Public-site paths only — see routePublicSiteRequest above. Must list the
+    // same pages as PUBLIC_SITE_PATHS in lib/marketing/public-site.ts (pinned by its test).
+    "/",
+    "/about",
+    "/legal/:path*",
+    "/privacy",
+    "/security",
+    "/terms",
   ],
 };

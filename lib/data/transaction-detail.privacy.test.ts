@@ -105,6 +105,29 @@ check(
   `actual: [${TRANSACTION_DETAIL_VISIBILITY.join(', ')}]`,
 );
 
+// REVIEW-3 (matrix row 36) — population alignment: the detail WHERE carries
+// the SAME event-projection + banking-population fragments as every list read,
+// AND-composed (both fragments carry an OR; a spread would drop one).
+{
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const and = (where as any).AND as unknown[];
+  check(
+    'WHERE ANDs exactly two population fragments (event projection + banking population)',
+    Array.isArray(and) && and.length === 2,
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [projection, population] = (and ?? []) as any[];
+  check(
+    'fragment 1 is the event projection (one row per logical event — superseded row → 404)',
+    Array.isArray(projection?.OR) &&
+      JSON.stringify(projection.OR[0]) === JSON.stringify({ transactionEventId: null }),
+  );
+  check(
+    'fragment 2 is the banking population (crypto-ledger / investment row → 404)',
+    Array.isArray(population?.AND),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 2. Source tripwires — the builder is actually used, end to end
 // ---------------------------------------------------------------------------

@@ -28,13 +28,15 @@ import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
 import { buildVerifyUrl } from "@/lib/email/verify-url";
 import { possessive } from "@/lib/format";
-import { EmploymentStatus, UseCase, SpaceMemberRole, BetaAccessRequestStatus, Prisma } from "@prisma/client";
+import { EmploymentStatus, UseCase, SpaceMemberRole, Prisma } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
 import { getRequestMeta } from "@/lib/api";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { AuditAction } from "@/lib/audit-actions";
+import { auditEmailHash } from "@/lib/audit";
 import { getMinPasswordLength, getRegistrationMode } from "@/lib/platform-settings";
-import { validateInvite } from "@/lib/registration-policy";
+import { validateInvite, redeemBetaInvite, InviteNotConsumedError } from "@/lib/registration-policy";
+import { DEFAULT_POLICY_GROUP, INVITE_COHORT } from "@/lib/entitlements/catalogue";
 import { getTemplateForCategory } from "@/lib/space-templates/registry";
 import { planTemplateApplication } from "@/lib/space-templates/apply";
 
@@ -46,7 +48,7 @@ const VERIFICATION_TTL_MS = 60 * 60 * 1000;
 
 // PO-5A — the Terms/Privacy policy version recorded on consent. Bump when the
 // legal documents materially change (so re-consent can be required later).
-const TERMS_VERSION = "2026-07-19";
+const TERMS_VERSION = "2026-10-07";
 
 export async function POST(req: NextRequest) {
   try {
@@ -82,9 +84,11 @@ export async function POST(req: NextRequest) {
 
     // ── Registration gate (Wave 1 S2) ─────────────────────────────────────────
     // Read the platform-wide mode BEFORE any field validation so `closed` short-
-    // circuits without leaking which fields would have failed. `open` is the
-    // ship default (behavior unchanged); `invite_only` requires a valid beta
-    // invite (validated below, after the email is normalized).
+    // circuits without leaking which fields would have failed. SEC-008 — an
+    // absent/unrecognised row resolves to `invite_only` (DEFAULT_REGISTRATION_MODE
+    // in lib/platform-settings.ts), so a fresh database never accepts an
+    // uninvited sign-up; `open` is an explicit operator act. `invite_only`
+    // requires a valid beta invite (validated below, after the email is normalized).
     const registrationMode = await getRegistrationMode();
     if (registrationMode === "closed") {
       return NextResponse.json(
@@ -291,28 +295,46 @@ export async function POST(req: NextRequest) {
           userId:      newUser.id,
           spaceId: space.id,
           action:      AuditAction.REGISTER,
-          metadata:    { email: normalizedEmail, username: normalizedUsername, invited: invitedFlow },
+          // BETA A7 — the address is referenced by digest, never stored (lib/audit.ts auditEmailHash).
+          metadata:    { emailHash: auditEmailHash(normalizedEmail), username: normalizedUsername, invited: invitedFlow },
         },
       });
 
       // Consume the beta invite single-use, inside the same transaction so the
-      // account and the redemption commit together (or not at all). The
-      // status: APPROVED guard makes a concurrent second redemption a no-op.
+      // account and the redemption commit together (or not at all).
+      //
+      // ⚠️ RLS-C-S6 — THE COUNT IS NOW READ, AND A ZERO ABORTS THIS TRANSACTION.
+      // This used to be an inline updateMany whose count was discarded, on the
+      // reasoning that "the status: APPROVED guard makes a concurrent second
+      // redemption a no-op". It is a no-op for the ROW and not for the account:
+      // the registration completed regardless, leaving `inviteTokenHash`
+      // non-null and the single-use invite reusable for ever. Under a tenant or
+      // pre-identity role a policy refusal produces the identical silent zero.
+      // redeemBetaInvite() raises instead; see lib/registration-policy.ts.
+      // P1 HUMAN OPERABILITY — the customer's Policy Group and cohort are set
+      // AT BIRTH, in this same transaction. Every new account is placed on the
+      // catalogue default (BETA_FULL_ACCESS_V1); only an account that entered by
+      // redeeming a beta invitation joins the CLOSED_BETA_2026 cohort — an
+      // open-mode signup did not come through that door, so it gets no cohort
+      // (cohort ≠ policy: the cohort is historical identity, the policy is what
+      // they may use). Existing users are never backfilled here: an operator
+      // assigns them from Customer Success, which is audited.
+      await tx.customerPolicyAssignment.create({
+        data: { userId: newUser.id, policyGroup: DEFAULT_POLICY_GROUP },
+      });
       if (betaRequestId) {
-        await tx.betaAccessRequest.updateMany({
-          where: { id: betaRequestId, status: BetaAccessRequestStatus.APPROVED },
-          data:  {
-            status:          BetaAccessRequestStatus.REDEEMED,
-            redeemedAt:      new Date(),
-            redeemedUserId:  newUser.id,
-            inviteTokenHash: null, // single-use — the token can never resolve again
-          },
+        await tx.customerCohort.create({
+          data: { userId: newUser.id, cohort: INVITE_COHORT, source: "INVITE" },
         });
+      }
+
+      if (betaRequestId) {
+        await redeemBetaInvite(tx, { requestId: betaRequestId, redeemedUserId: newUser.id });
         await tx.auditLog.create({
           data: {
             userId:   newUser.id,
             action:   AuditAction.BETA_ACCESS_REDEEMED,
-            metadata: { email: normalizedEmail, betaRequestId },
+            metadata: { emailHash: auditEmailHash(normalizedEmail), betaRequestId },
           },
         });
       }
@@ -346,6 +368,23 @@ export async function POST(req: NextRequest) {
       { status: 201 },
     );
   } catch (err) {
+    // RLS-C-S6 — an unconsumed invite is reported, never swallowed. The whole
+    // transaction (user, Space, membership, agent) has already rolled back, so
+    // no account exists against an invite that is still outstanding. 409, not
+    // 500: the honest meaning is "that invite is no longer yours to redeem".
+    if (err instanceof InviteNotConsumedError) {
+      console.error(`[register] invite NOT consumed (${err.requestId}, matched ${err.matched}) — registration aborted:`, err.message);
+      return NextResponse.json(
+        { error: "This invite could not be redeemed. It may already have been used — please request access again." },
+        { status: 409 },
+      );
+    }
+    // IDEMP-011: the email/username checks above are reads; a concurrent
+    // registration of the same identity loses at the unique index. Same answer
+    // the read path gives (409), not a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return NextResponse.json({ error: "An account with that email or username already exists." }, { status: 409 });
+    }
     console.error("[register] error:", err);
     return NextResponse.json({ error: "Registration failed. Please try again." }, { status: 500 });
   }

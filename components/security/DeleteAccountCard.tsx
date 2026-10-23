@@ -20,6 +20,7 @@
 
 import { useState } from "react";
 import { signOut } from "next-auth/react";
+import { clearAllTranscripts } from "@/components/ai/transcript-cache";
 import { downloadDataExport } from "@/components/security/downloadDataExport";
 import { Loader2, Trash2, Download } from "lucide-react";
 
@@ -67,6 +68,7 @@ export function DeleteAccountCard() {
       // All sessions (including this one) are already revoked server-side —
       // signOut clears the local cookie and returns the user to /login, where
       // they can still cancel by signing back in during the grace window.
+      clearAllTranscripts();
       await signOut({ callbackUrl: "/login" });
     } catch {
       setError("Something went wrong. Please try again.");

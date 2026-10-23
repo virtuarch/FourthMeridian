@@ -25,11 +25,11 @@
  * getClientIp() is a thin wrapper around getRequestMeta() for the common
  * case where only the IP is needed.
  *
- * Header priority for IP:
- *   1. cf-connecting-ip  — Cloudflare sets this; cannot be spoofed by client
- *   2. x-forwarded-for   — first entry in the comma-separated chain
- *   3. x-real-ip         — set by some reverse proxies (nginx)
- *   4. "unknown"         — local dev or unproxied direct connection
+ * IP trust model: lib/security/client-ip.ts (ARCH-003) — the ONE extractor,
+ * shared with the rate limiter and authorize(). Platform headers first
+ * (x-vercel-forwarded-for, x-real-ip; cf-connecting-ip only when
+ * CLIENT_IP_TRUST_CLOUDFLARE=true), then the LAST x-forwarded-for entry,
+ * then "unknown".
  *
  * ─── Response helpers ────────────────────────────────────────────────────────
  * ok(), created(), badRequest(), notFound()
@@ -42,6 +42,8 @@
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
+import { getClientIp as extractClientIp, FORWARDED_FOR_HEADER } from "@/lib/security/client-ip";
+import { captureApiHandlerFailure } from "@/lib/monitoring/capture";
 
 // ── Request metadata ──────────────────────────────────────────────────────────
 
@@ -70,23 +72,17 @@ export interface RequestMeta {
 export function getRequestMeta(req: NextRequest | Request): RequestMeta {
   const h = req.headers;
 
-  const cf          = h.get("cf-connecting-ip");
-  const forwardedFor = h.get("x-forwarded-for");
-  const realIp      = h.get("x-real-ip");
-
-  const ip =
-    cf?.trim() ??
-    forwardedFor?.split(",")[0]?.trim() ??
-    realIp?.trim() ??
-    "unknown";
-
   return {
-    ip,
+    // ARCH-003 — THE one extractor (lib/security/client-ip.ts): the same
+    // address the limiter keys on and authorize() audits. This used to prefer
+    // cf-connecting-ip, a client-writable header when no Cloudflare fronts
+    // the deployment.
+    ip:           extractClientIp(h),
     userAgent:    h.get("user-agent"),
     cfRay:        h.get("cf-ray"),
     country:      h.get("cf-ipcountry"),
     colo:         h.get("x-vercel-id")?.split(":")[0] ?? h.get("cf-ipcola") ?? null,
-    forwardedFor,
+    forwardedFor: h.get(FORWARDED_FOR_HEADER),
     protocol:     h.get("x-forwarded-proto") ?? "https",
   };
 }
@@ -117,15 +113,29 @@ type RouteHandler<T extends unknown[] = []> = (
  * @param handler  The route handler function
  * @param context  A short label for the server log (e.g. "GET /api/spaces/goals")
  */
+export interface ApiHandlerDeps {
+  /**
+   * ARCH-004 / OPS-003 — the monitoring seam a wrapped 500 is reported
+   * through. Defaults to lib/monitoring/capture.ts captureApiHandlerFailure
+   * (Sentry.captureException tagged with the static route label); tests inject
+   * a spy. Before this, the catch only console.error'd, so a Prisma outage
+   * behind any wrapped route was a generic 500 nobody was told about.
+   */
+  capture?: (context: string, error: unknown) => void;
+}
+
 export function withApiHandler<T extends unknown[]>(
   handler: RouteHandler<T>,
   context: string,
+  deps: ApiHandlerDeps = {},
 ): RouteHandler<T> {
+  const capture = deps.capture ?? captureApiHandlerFailure;
   return async (req: NextRequest, ...args: T): Promise<NextResponse> => {
     try {
       return await handler(req, ...args);
     } catch (err) {
       console.error(`[api] ${context} unhandled error:`, err);
+      try { capture(context, err); } catch { /* monitoring never turns one 500 into another */ }
       return NextResponse.json(
         { error: "Internal server error" },
         { status: 500 },

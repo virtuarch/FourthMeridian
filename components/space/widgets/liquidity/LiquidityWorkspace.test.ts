@@ -44,6 +44,7 @@ const ROUTEC = strip(ROUTE);
 const DASH  = strip(read("components/dashboard/SpaceDashboard.tsx"));
 // SD-2 closeout — perspective render impls live in the component-layer renderer map.
 const REND  = strip(read("components/space/workspaces/workspaceRenderers.tsx"));
+const WEALTH = strip(read("components/space/widgets/wealth/WealthWorkspace.tsx"));
 // Editorial redesign — the extracted surface components (present-day anchor + shared chart).
 const HERO    = strip(read(`${DIR}/LiquidityHero.tsx`));
 const HISTORY = strip(read(`${DIR}/LiquidityBalanceHistory.tsx`));
@@ -167,11 +168,17 @@ console.log("7. FX correctness — historical values CONVERTED (no symbol-only r
 
 console.log("8. Envelope bridge — emitted up, consumed by the host");
 {
-  check("workspace emits the envelope via onEnvelopeChange", CODE.includes("onEnvelopeChange("));
+  // OVERVIEW-CONSOLIDATION — the workspace still resolves + emits its envelope
+  // (optional callback: as the embedded Cash section it emits nothing upward,
+  // the Assets page owns the ONE shell slot, and the section keeps its own
+  // per-figure TrustIndicator).
+  check("workspace emits the envelope via onEnvelopeChange (optional when embedded)", CODE.includes("onEnvelopeChange?.("));
   check("workspace reuses the canonical resolver", CODE.includes("resolvePerspectiveEnvelope("));
   check("host consumes the consolidated envelope in the shell chip", DASH.includes("activeEnvelope"));
-  check("renderer wires envelope up + host relays it (consolidated)",
-    REND.includes("<LiquidityWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && DASH.includes("useActiveEnvelope"));
+  check("embedded in Assets, the Cash section does NOT emit to the shell (no onEnvelopeChange wired)",
+    WEALTH.includes("<LiquidityWorkspace") && !/<LiquidityWorkspace[\s\S]*?onEnvelopeChange=/.test(WEALTH.slice(WEALTH.indexOf("<LiquidityWorkspace"), WEALTH.indexOf("<InvestmentsWorkspace"))));
+  check("the Cash section keeps its own per-figure trust (LiquidityHero TrustIndicator)", strip(read(`${DIR}/LiquidityHero.tsx`)).includes("<TrustIndicator"));
+  check("host relays the ONE envelope via useActiveEnvelope", DASH.includes("useActiveEnvelope"));
 }
 
 console.log("9. Route serves the WHOLE contract via loadLiquiditySpaceData (authz-gated single authority)");
@@ -184,9 +191,14 @@ console.log("9. Route serves the WHOLE contract via loadLiquiditySpaceData (auth
     !ROUTEC.includes("assembleLiquiditySpaceData") && !ROUTEC.includes("spliceLiquidityRows") && !ROUTEC.includes("computeLiquidity"));
 }
 
-console.log("10. Host RELAYS — the renderer map mounts <LiquidityWorkspace>, dropped <LiquidityPerspective>");
+console.log("10. Host RELAYS — Liquidity renders as the CASH SECTION of Net Worth → Assets (OVERVIEW-CONSOLIDATION)");
 {
-  check("renderer map mounts LiquidityWorkspace (the liquidity destination's renderer)", REND.includes("<LiquidityWorkspace"));
+  check("liquidity is no longer a peer renderer entry", !REND.includes("liquidity: (ctx)") && !REND.includes("<LiquidityWorkspace"));
+  check("the Net Worth workspace embeds LiquidityWorkspace (embedded) as the Cash section",
+    WEALTH.includes("<LiquidityWorkspace") && /<LiquidityWorkspace\s+embedded/.test(WEALTH) && WEALTH.includes('id="wealth-cash"'));
+  check("embedded, the workspace publishes no sidebar sections of its own", CODE.includes("if (embedded) return;"));
+  check("embedded, the workspace draws no second balance-history chart (the Assets chart slices to cashNow)",
+    /\{!embedded && \([\s\S]*?<LiquidityBalanceHistory/.test(SRC));
   check("neither host nor renderer mounts LiquidityPerspective", !DASH.includes("<LiquidityPerspective") && !REND.includes("<LiquidityPerspective"));
   check("host dispatches via WORKSPACE_RENDERERS", DASH.includes("WORKSPACE_RENDERERS["));
 }
@@ -206,8 +218,25 @@ console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Sources ledger 
 {
   // ① Hero — present-day cashNow figure of record (from the accounts array, NOT the lens);
   //    the window delta rides the cashNow snapshot basis and is DROPPED when historical.
-  check("workspace derives the cashNow figure of record from classifyAccounts (not the lens)",
-    CODE.includes("classifyAccounts(") && CODE.includes("classification.totalLiquid"));
+  // v2.6-L3 — the INTENT of this guard is "the figure of record comes from the
+  // accounts array, not from the lens result", so the headline and the Sources
+  // ledger below it can never disagree. That intent is unchanged; the figure is
+  // now REACHABLE cash rather than the ledger sum, through the one canonical
+  // authority both surfaces call. Asserting on `classification.totalLiquid`
+  // pinned an implementation, not the invariant.
+  check("workspace derives the cashNow figure of record from the ACCOUNTS array (not the lens)",
+    CODE.includes("reachableNow(accounts") && CODE.includes("const cashNow = reach.total"));
+  check("...through the canonical reachable authority, shared with the Sources ledger",
+    CODE.includes('from "@/components/space/widgets/liquidity-adapters"'));
+  // `classification.totalLiquid` survives in ONE place only: the basis-divergence
+  // check that decides whether the window delta may be shown beside the headline.
+  // It is a comparison, never the headline's value.
+  check("the headline value is never the raw ledger sum",
+    !CODE.includes("const cashNow = classification.totalLiquid") &&
+    !CODE.includes("cashNow={classification.totalLiquid}"));
+  check("the ledger sum survives only as the delta-basis comparison",
+    (CODE.match(/classification\.totalLiquid/g) ?? []).length === 1 &&
+    CODE.includes("deltaBasisDiffers"));
   check("Hero headline is passed in (presentation only — no sum in the Hero)",
     HERO.includes("cashNow") && !HERO.includes("classifyAccounts") && !HERO.includes("reduce("));
   check("Hero drops the window delta in a historical view (Debt precedent)",
@@ -216,10 +245,39 @@ console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Sources ledger 
     HERO.includes("Balances are current"));
 
   // TEMPORAL HONESTY — coverage is NEVER fabricated: it needs a real monthly-expense baseline.
-  check("coverage is conditional on monthlyExpenses (no fabricated runway)",
-    CODE.includes("monthlyExpenses == null") && CODE.includes("cashNow / monthlyExpenses"));
-  check("host threads the monthly-expense baseline from emergency_fund_progress config",
-    DASH.includes("emergency_fund_progress") && DASH.includes("liquidityMonthlyExpenses"));
+  // v2.6-ASSESS-2 — this pinned the inline `monthlyExpenses == null` /
+  // `cashNow / monthlyExpenses` spelling. The positive-or-refuse rule now belongs
+  // to `resolveExpenseBaseline`, which also owns the precedence between a
+  // DECLARED and a MEASURED baseline — the divergence that had the product and
+  // the assessment engine dividing by different numbers. The invariant is
+  // unchanged and is what is asserted now: no coverage without a resolved
+  // baseline, and the divide uses what the authority returned.
+  // v2.6-ASSESS-3 — the baseline now arrives ALREADY RESOLVED from the server.
+  // The invariants are stronger than the ones these checks used to pin: coverage
+  // still refuses without a baseline, and additionally NOTHING about which figure
+  // wins — nor the measured average itself — may be computed in React.
+  check("coverage is conditional on a RESOLVED baseline (no fabricated runway)",
+    CODE.includes("if (!expenseBaseline || cashNow <= 0) return null;") &&
+    CODE.includes("cashNow / expenseBaseline.amount"));
+  check("the coverage assumption names WHICH baseline it used",
+    HERO.includes("describeExpenseBaseline") && CODE.includes("basis:           expenseBaseline.basis"));
+
+  // The workspace RENDERS a baseline; it never decides or derives one. A
+  // `resolveExpenseBaseline` call here would mean the precedence is being applied
+  // in two places, and `computeAverageMonthlySpending` would mean the measured
+  // figure is being recomputed client-side from a population React cannot see.
+  check("the workspace neither resolves nor derives the baseline",
+    !CODE.includes("resolveExpenseBaseline(") &&
+    !CODE.includes("computeAverageMonthlySpending") &&
+    !CODE.includes("emergency_fund_progress"));
+
+  // The host FETCHES the server-resolved baseline instead of reading the config
+  // and calling it the only honest source — which is how the product came to show
+  // no coverage at all on a corpus where nobody had declared a figure.
+  check("host fetches the server-resolved baseline, lazily, and derives nothing",
+    DASH.includes("liquidity/expense-baseline") &&
+    DASH.includes("liquidityExpenseBaseline") &&
+    !DASH.includes("config?.monthlyExpenses"));
 
   // ② Balance History — the SHARED TrendChart over the cashNow series, no liquidity look-alike.
   check("Balance History renders the shared TrendChart", HISTORY.includes("TrendChart"));

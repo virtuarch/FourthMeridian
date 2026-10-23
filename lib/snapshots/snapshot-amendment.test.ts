@@ -15,7 +15,7 @@
 
 import { previewAmendment, applyAmendment, SharedSpaceAmendmentError, type AmendmentRequest } from "./snapshot-amendment";
 
-type FakeClient = AmendmentRequest["client"];
+type FakeClient = NonNullable<AmendmentRequest["engine"]>;
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -38,7 +38,11 @@ function fakeClient(opts: { spaceType?: "PERSONAL" | "SHARED" | null; hasLink: b
 
 const req = (client: FakeClient) => ({
   spaceId: "s1", financialAccountId: "a1", kind: "ACCOUNT_ADDED_RETROACTIVE" as const,
-  fromDate: "2026-06-01", toDate: "2026-06-07", requestedByUserId: "u1", client,
+  fromDate: "2026-06-01", toDate: "2026-06-07", requestedByUserId: "u1",
+  // RLS-PREP-C — the gate runs in the caller's TENANT phase; the engine is a
+  // separate authority. The fake serves both so neither reaches a database.
+  tenant: (<T,>(fn: (tx: never) => Promise<T>) => fn(client as never)) as AmendmentRequest["tenant"],
+  engine: client,
 });
 
 async function main(): Promise<void> {
@@ -81,6 +85,28 @@ async function main(): Promise<void> {
       !/spaceSnapshot\.(findMany|findUnique|findFirst)/.test(code));
     check("the derived reconstruction is written by regen's upsert, not copied here",
       !/spaceSnapshot\.(create|createMany|update)\b/.test(code));
+
+    // RLS-PREP-C — the authority split is structural, so it is pinned structurally.
+    check("this module no longer reaches the migration principal",
+      !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*["']@\/lib\/db["']/.test(code) && !/\?\?\s*db\b/.test(code));
+    check("the engine's authority is fm_system, named, and only a test can replace it",
+      (code.match(/req\.engine \?\? systemDb/g) ?? []).length === 2);
+    check("the gate runs in the TENANT phase in both entry points, before the engine is reached",
+      (code.match(/assertAmendable\(tx, req\)/g) ?? []).length === 2
+      && code.indexOf("req.tenant(") < code.indexOf("regenerateWealthHistory("));
+    check("the amendment's own records are written in the tenant phase (no root $transaction left)",
+      !/\$transaction/.test(code));
+  }
+
+  console.log("5. The engine is unreachable when the tenant gate refuses");
+  {
+    let engineTouched = false;
+    const spy = new Proxy({}, { get: () => { engineTouched = true; return () => { throw new Error("engine reached"); }; } }) as unknown as FakeClient;
+    const refused = { ...req(fakeClient({ spaceType: null, hasLink: true })), engine: spy };
+    check("apply: a Space the caller cannot see throws 'not found'",
+      await expectThrow(() => applyAmendment(refused), (e) => e instanceof Error && /not found/i.test((e as Error).message)));
+    check("preview: same", await expectThrow(() => previewAmendment(refused), (e) => e instanceof Error && /not found/i.test((e as Error).message)));
+    check("…and the fm_system engine was never touched", !engineTouched);
   }
 
   if (failures > 0) { console.error(`\n${failures} check(s) FAILED`); process.exit(1); }

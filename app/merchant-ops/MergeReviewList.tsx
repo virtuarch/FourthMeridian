@@ -14,7 +14,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { PendingMergeCandidate } from "@/lib/transactions/merchant-merge-review";
 
-export function MergeReviewList({ candidates }: { candidates: PendingMergeCandidate[] }) {
+export function MergeReviewList({ candidates, canDecide }: { candidates: PendingMergeCandidate[]; canDecide: boolean }) {
   const router = useRouter();
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,14 +73,14 @@ export function MergeReviewList({ candidates }: { candidates: PendingMergeCandid
             </div>
             <div className="mt-3 flex gap-2">
               <button
-                disabled={busy}
+                disabled={busy || !canDecide}
                 onClick={() => decide(c, "MERGED")}
                 className="rounded bg-gray-900 px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
               >
                 {busy ? "Working…" : "Merge"}
               </button>
               <button
-                disabled={busy}
+                disabled={busy || !canDecide}
                 onClick={() => decide(c, "DISMISSED")}
                 className="rounded border border-gray-300 px-3 py-1 text-xs font-medium text-gray-700 disabled:opacity-50"
               >

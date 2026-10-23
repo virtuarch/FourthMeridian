@@ -52,8 +52,9 @@
  * without a consumer.
  */
 
+import { createHash, randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
-import type { AuditActionType } from "@/lib/audit-actions";
+import { AuditAction, type AuditActionType } from "@/lib/audit-actions";
 
 /** Who acted. Kept deliberately small; extend only when a real new actor class exists. */
 export type AuditActorType = "USER" | "SYSTEM_ADMIN" | "PLATFORM_OPERATOR" | "SYSTEM";
@@ -81,6 +82,14 @@ export interface AuditEventInput {
   userAgent?: string | null;
   /** Set when a SYSTEM_ADMIN performs this on behalf of another account. */
   performedByAdminId?: string | null;
+  /**
+   * BETA A2 — the Space the event happened in, for Space-scoped product events
+   * (SPACE_VIEWED, BRIEF_VIEWED, TRANSACTIONS_VIEWED). Additive: every existing
+   * caller omits it and gets the shape it always got. Product events pass
+   * `ipAddress: null, userAgent: null` explicitly — presence and engagement
+   * facts carry no request forensics.
+   */
+  spaceId?: string | null;
 }
 
 /**
@@ -90,7 +99,7 @@ export interface AuditEventInput {
 export function buildAuditData(input: AuditEventInput): Prisma.AuditLogUncheckedCreateInput {
   const {
     actorId, actorType, action, result, target,
-    metadata, ipAddress, userAgent, performedByAdminId,
+    metadata, ipAddress, userAgent, performedByAdminId, spaceId,
   } = input;
 
   // metadata is genuinely dynamic JSON (the AuditLog.metadata Json? column), so
@@ -105,10 +114,209 @@ export function buildAuditData(input: AuditEventInput): Prisma.AuditLogUnchecked
 
   return {
     ...(actorId ? { userId: actorId } : {}),
+    ...(spaceId ? { spaceId } : {}),
     action,
     ipAddress: ipAddress ?? null,
     userAgent: userAgent ?? null,
     ...(performedByAdminId ? { performedByAdminId } : {}),
     metadata: mergedMetadata as unknown as Prisma.InputJsonValue,
   };
+}
+
+/**
+ * BETA A7 — the one way an email address may be referenced from audit metadata.
+ *
+ * REGISTER, EMAIL_VERIFIED and BETA_ACCESS_REQUESTED used to store the raw
+ * address, against this module's own contract ("counts/ids/kinds only"). They now
+ * store this digest instead: the same convention lib/account-deletion/purge.ts
+ * uses for the post-deletion record, so a support question ("did this address
+ * ever register?") is still answerable by hashing the address, while a leaked
+ * audit row names nobody. Lower-cased and trimmed before hashing so the digest
+ * matches the normalised `User.email`.
+ */
+export function auditEmailHash(email: string): string {
+  return createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
+}
+
+/**
+ * Insert one AuditLog row with NO `RETURNING`, and hand back its id.
+ *
+ * WHY. Prisma's `auditLog.create()` is `INSERT … RETURNING`, and RETURNING needs
+ * SELECT on the table plus a SELECT policy the new row passes. The pre-identity
+ * role `fm_auth` holds INSERT ONLY on AuditLog (FORCE RLS, no fm_auth SELECT
+ * policy) — deliberately: the role that reads credentials must not read the
+ * audit trail. So every `create()` through `authDb` failed with 42501, and
+ * because authorize() writes the LOGIN row in the same transaction as the
+ * session row, no login could succeed on a strict deployment (Preview,
+ * 2026-10-06; the UI reported it as an invalid password). `createMany` is a
+ * plain INSERT, which the grant allows.
+ *
+ * `write` is the un-awaited PrismaPromise, so it can sit inside an array
+ * `$transaction([...])` or be awaited inside an interactive one. The id is
+ * generated here because nothing comes back from the INSERT; callers that link
+ * a notification to the row use it.
+ *
+ * Use this for every AuditLog write made through `authDb`.
+ */
+export function auditInsert(
+  client: { auditLog: Prisma.TransactionClient["auditLog"] },
+  data: Prisma.AuditLogUncheckedCreateInput,
+): { id: string; write: Prisma.PrismaPromise<Prisma.BatchPayload> } {
+  const id = data.id ?? randomUUID();
+  return { id, write: client.auditLog.createMany({ data: [{ ...data, id }] }) };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P1 HUMAN OPERABILITY — THE OPERATOR-ACTION CHOKEPOINT.
+//
+// Zero operator writes carried a reason before P1, `userId` meant "operator" in
+// some routes and "customer" in others, connection actions had no subject at
+// all, and no audit row referenced the JobRun or RefreshExecution it caused.
+// `recordOperatorAction` extends AuditLog — no new table, no new column — with a
+// DETERMINISTIC envelope:
+//
+//   performedByAdminId  → the operator, always
+//   userId              → the CUSTOMER when the target is a USER (so the row is
+//                         visible to that customer under the tenant SELECT policy
+//                         as "who acted on my account", and indexed for the
+//                         Customer Success per-customer panel)
+//   spaceId             → the Space when the target is a SPACE
+//   metadata            → { actorType, result, actor:{via,area}, target:{kind,id},
+//                           reason?, change?, execution? } — fixed keys only
+//
+// REASON IS REQUIRED BY TYPE for consequential actions (REASON_REQUIRED_ACTIONS):
+// policy / overlay / cohort assignment, cadence changes, customer deactivation. A Run Now, a resync or a beta-queue decision needs none — the
+// action IS the reason. A reason is a CODE plus an optional ≤280-char note the
+// scrubber refuses when it looks like an address, a long digit run or a secret.
+//
+// NO FINANCIAL PAYLOAD, NO PII: `change` carries ids, enum values and counts.
+// Callers write INSIDE the transaction that changes state (the policies
+// mutate.ts pattern) so the audit and the change commit together.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type OperatorTargetKind =
+  | "USER" | "BETA_REQUEST" | "PLAID_ITEM" | "CONNECTION" | "SPACE" | "PLATFORM_SETTING" | "JOB" | "POLICY_GROUP";
+
+export const OPERATOR_REASON_CODES = [
+  "BETA_ONBOARDING", "SUPPORT_REQUEST", "DOGFOOD", "TESTING", "POLICY_ROLLOUT", "INCIDENT", "ABUSE", "OTHER",
+] as const;
+export type OperatorReasonCode = (typeof OPERATOR_REASON_CODES)[number];
+
+export interface OperatorReason {
+  code: OperatorReasonCode;
+  /** Free text, ≤ 280 chars, scrubbed by assertOperatorNoteSafe. */
+  note?: string;
+}
+
+export const OPERATOR_NOTE_MAX = 280;
+
+/** Actions that MUST carry a structured reason. Everything else may. */
+export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<AuditActionType>([
+  AuditAction.CUSTOMER_POLICY_ASSIGNED,
+  AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
+  AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,
+  AuditAction.CUSTOMER_COHORT_ASSIGNED,
+  AuditAction.JOB_CADENCE_CHANGED,
+  AuditAction.JOB_CADENCE_RESET,
+  // UX-P1 D7 — the financial-refresh cadence (bank / wallet) is the same class
+  // of consequential platform policy as a job cadence; it now carries a reason.
+  AuditAction.PLATFORM_POLICY_CHANGED,
+  AuditAction.PLATFORM_POLICY_RESET,
+  AuditAction.ACCOUNT_DEACTIVATED,
+  AuditAction.ACCOUNT_REACTIVATED,
+  // Break-glass /admin actions (grants, 2FA reset) stay on their existing audit
+  // shape in P1; adding a reason there is P2 (the surface is SYSTEM_ADMIN-only).
+]);
+
+export interface OperatorActionInput {
+  actor: { userId: string; via: "PLATFORM_GRANT" | "SYSTEM_ADMIN"; area?: string };
+  action: AuditActionType;
+  target: { kind: OperatorTargetKind; id: string };
+  reason?: OperatorReason;
+  /** Facts/ids/enum values/counts only — never balances, amounts, prompts or credentials. */
+  change?: { before: Record<string, unknown> | null; after: Record<string, unknown> | null };
+  execution?: { jobRunId?: string | null; refreshExecutionId?: string | null; commandId?: string | null };
+  result: "SUCCESS" | "FAILURE" | "REFUSED";
+  /** Extra non-sensitive detail (counts, outcome words). Fixed envelope keys win on collision. */
+  detail?: Record<string, unknown>;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+}
+
+export class OperatorActionValidationError extends Error {
+  constructor(message: string) { super(message); this.name = "OperatorActionValidationError"; }
+}
+
+const LOOKS_LIKE_EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+const LONG_DIGIT_RUN   = /\d{4,}/;
+const SECRET_WORDS     = /\b(password|passwd|secret|token|api[_-]?key|bearer|private key)\b/i;
+
+/** Returns the note trimmed, or throws when it is too long or looks like PII / a secret. */
+export function assertOperatorNoteSafe(note: string): string {
+  const trimmed = note.trim();
+  if (trimmed.length > OPERATOR_NOTE_MAX) throw new OperatorActionValidationError(`Reason note exceeds ${OPERATOR_NOTE_MAX} characters.`);
+  if (LOOKS_LIKE_EMAIL.test(trimmed)) throw new OperatorActionValidationError("Reason note must not contain an email address.");
+  if (LONG_DIGIT_RUN.test(trimmed))   throw new OperatorActionValidationError("Reason note must not contain long digit runs (account or card numbers).");
+  if (SECRET_WORDS.test(trimmed))     throw new OperatorActionValidationError("Reason note must not contain credential material.");
+  return trimmed;
+}
+
+export function isOperatorReasonCode(v: unknown): v is OperatorReasonCode {
+  return typeof v === "string" && (OPERATOR_REASON_CODES as readonly string[]).includes(v);
+}
+
+/** Parse an untrusted reason object from a request body. Throws on an invalid shape. */
+export function parseOperatorReason(raw: unknown): OperatorReason {
+  if (typeof raw !== "object" || raw === null) throw new OperatorActionValidationError("A reason { code, note? } is required.");
+  const { code, note } = raw as { code?: unknown; note?: unknown };
+  if (!isOperatorReasonCode(code)) throw new OperatorActionValidationError(`Reason code must be one of ${OPERATOR_REASON_CODES.join(", ")}.`);
+  if (note !== undefined && typeof note !== "string") throw new OperatorActionValidationError("Reason note must be a string.");
+  const safe = typeof note === "string" && note.trim() !== "" ? assertOperatorNoteSafe(note) : undefined;
+  return safe ? { code, note: safe } : { code };
+}
+
+/**
+ * PURE — the AuditLog create shape for one operator action. Throws when a
+ * reason-required action has none or the note is unsafe, so a consequential
+ * action can never commit without its audit.
+ */
+export function buildOperatorActionData(input: OperatorActionInput): Prisma.AuditLogUncheckedCreateInput {
+  if (REASON_REQUIRED_ACTIONS.has(input.action) && !input.reason) {
+    throw new OperatorActionValidationError(`${input.action} requires a structured reason.`);
+  }
+  const reason = input.reason
+    ? { code: input.reason.code, ...(input.reason.note ? { note: assertOperatorNoteSafe(input.reason.note) } : {}) }
+    : undefined;
+  const metadata: Record<string, unknown> = {
+    ...(input.detail ?? {}),
+    actorType: input.actor.via === "SYSTEM_ADMIN" ? "SYSTEM_ADMIN" : "PLATFORM_OPERATOR",
+    result: input.result,
+    actor: { via: input.actor.via, ...(input.actor.area ? { area: input.actor.area } : {}) },
+    target: { kind: input.target.kind, id: input.target.id },
+    ...(reason ? { reason } : {}),
+    ...(input.change ? { change: input.change } : {}),
+    ...(input.execution ? { execution: input.execution } : {}),
+  };
+  return {
+    ...(input.target.kind === "USER" ? { userId: input.target.id } : {}),
+    ...(input.target.kind === "SPACE" ? { spaceId: input.target.id } : {}),
+    performedByAdminId: input.actor.userId,
+    action: input.action,
+    ipAddress: input.ipAddress ?? null,
+    userAgent: input.userAgent ?? null,
+    metadata: metadata as unknown as Prisma.InputJsonValue,
+  };
+}
+
+/** The narrowest client the recorder needs — a transaction, systemDb, or a fake. */
+export interface OperatorActionWriteClient {
+  auditLog: { create(args: { data: Prisma.AuditLogUncheckedCreateInput }): Promise<unknown> };
+}
+
+/**
+ * Record one operator action. THROWS on validation (a consequential action must
+ * not proceed un-audited) — write it inside the same transaction as the change.
+ */
+export async function recordOperatorAction(client: OperatorActionWriteClient, input: OperatorActionInput): Promise<void> {
+  await client.auditLog.create({ data: buildOperatorActionData(input) });
 }

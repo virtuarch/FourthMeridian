@@ -14,16 +14,21 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import {
   getPreferenceMatrix,
   setNotificationPreference,
+  type PreferenceClient,
 } from "@/lib/notifications/preferences";
 
 export async function GET() {
   const [user, err] = await requireUser();
   if (err) return err;
 
-  const matrix = await getPreferenceMatrix(user.id);
+  // RLS slice A — the preference module already took its client as an argument; the
+  // route now SAYS which one instead of letting it fall back to the global.
+  const matrix = await withTenantDb(user.id, (tx) =>
+    getPreferenceMatrix(user.id, { client: tx as unknown as PreferenceClient }));
   return NextResponse.json({ matrix });
 }
 
@@ -47,12 +52,16 @@ export async function PATCH(req: NextRequest) {
     );
   }
 
-  const result = await setNotificationPreference(
+  // Narrowed OUT of the closure: TypeScript's narrowing of `body.*` does not reach
+  // inside a callback, and widening the call signature to take it would be worse.
+  const { category, channel, enabled } = body;
+  const result = await withTenantDb(user.id, (tx) => setNotificationPreference(
     user.id,
-    body.category,
-    body.channel,
-    body.enabled,
-  );
+    category,
+    channel,
+    enabled,
+    { client: tx as unknown as PreferenceClient },
+  ));
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 400 });
   }

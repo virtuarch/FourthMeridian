@@ -11,8 +11,10 @@
  *     copy-once default for new Spaces. No retroactive inheritance.
  *   - Allowed values = FX_BASE + SUPPORTED_QUOTES (lib/fx/config.ts) —
  *     enforced here at the API boundary, not by a DB constraint.
- *   - Input is normalized to upper case (house precedent: the manual-account
- *     route upcases its currency param).
+ *   - Input is normalized to upper case. REVIEW-3 B-5: the manual-account
+ *     route (app/api/accounts/manual) now enforces the SAME allowlist via
+ *     isSupportedCurrency — an account currency outside it would be
+ *     permanently FX-unavailable and can crash Intl formatters at render.
  */
 
 import { isSupportedCurrency } from "@/lib/fx/config";

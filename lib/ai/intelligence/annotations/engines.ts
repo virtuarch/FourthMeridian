@@ -1,8 +1,9 @@
 /**
  * lib/ai/intelligence/annotations/engines.ts
  *
- * Domain section engines: goal alignment, investment readiness, capital
- * allocation, and risk/opportunity aggregation. Each consumes Section inputs.
+ * Domain section engines: investment readiness, capital allocation, and
+ * risk/opportunity aggregation. Each consumes Section inputs.
+ * (W2 — the goal-alignment engine was deleted with the Goals retirement.)
  *
  * AI-ARCH Part 5: extracted from the former lib/ai/intelligence/annotations.ts
  * god-module (byte-identical bodies). Public surface re-exported via ./index.
@@ -20,215 +21,35 @@ import type {
   AllocationEvidenceDomain,
   CapitalAllocationEvidence,
   SpendingOpportunitySection,
-  GoalAlignmentStatus,
-  GoalAlignmentItem,
-  GoalAlignmentSection,
   InvestmentReadinessClassification,
   InvestmentReadinessSection,
   OpportunityImpact,
   AssessmentRisk,
   AssessmentOpportunity,
   RiskOpportunitySection,
+  SpendingTrendsSection,
+  SpendingTrendMetric,
+  TrendDirection,
+  TrajectoryClassification,
+  TrajectorySection,
+  TrajectorySignal,
 } from './types';
 import {
   MARKET_RETURN_THRESHOLD,
   LIQUIDITY_WARNING_MONTHS,
-  HABIT_STALE_DAYS,
   OPP_DISCRETIONARY_HIGH_MONTHLY,
   OPP_DISCRETIONARY_MED_MONTHLY,
   SEVERITY_RANK,
   IMPACT_RANK,
   CONFIDENCE_RANK,
 } from './constants';
-import type { SpaceContext_AI, TransactionsSummaryData, SnapshotSectionData, GoalsSectionData } from '@/lib/ai/types';
+import type { SpaceContext_AI, TransactionsSummaryData } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
+import { fmtMoney } from '@/lib/ai/format';
 
-export function computeGoalAlignment(
-  goals:    GoalsSectionData | null,
-  cashFlow: CashFlowSection,
-  debt:     DebtSection,
-  txn:      TransactionsSummaryData | null,
-  snap:     SnapshotSectionData | null,
-): GoalAlignmentSection {
-  const noGoals: GoalAlignmentSection = {
-    confidence:      'LOW',
-    overallStatus:   'INSUFFICIENT_DATA',
-    alignedCount:    0,
-    misalignedCount: 0,
-    blockedCount:    0,
-    goalAlignments:  [],
-    hasGoalsDomain:  goals !== null,
-    activeGoalCount: 0,
-  };
-
-  if (!goals) return noGoals;
-
-  const activeGoals = goals.goals.filter((g) => g.status === 'ACTIVE');
-  if (activeGoals.length === 0) return { ...noGoals, hasGoalsDomain: true };
-
-  const goalAlignments: GoalAlignmentItem[] = [];
-  const isLiabilitiesDeclining =
-    (snap?.history?.length ?? 0) >= 2 &&
-    snap!.history[snap!.history.length - 1].liabilities < snap!.history[0].liabilities;
-
-  for (const goal of activeGoals) {
-    let status:  GoalAlignmentStatus;
-    let evidence: string;
-    let blocker: string | undefined;
-
-    switch (goal.goalType) {
-      case 'DEBT_REDUCTION': {
-        const hasDebt       = debt.totalLiabilities > 0;
-        const makingPayments = (txn?.debtPaymentTotal ?? 0) > 0;
-
-        if (!hasDebt) {
-          status   = 'ALIGNED';
-          evidence = 'No outstanding liabilities — debt reduction goal may already be met';
-        } else if (makingPayments && isLiabilitiesDeclining) {
-          status   = 'ALIGNED';
-          evidence = 'Debt payments detected and total liabilities are declining';
-        } else if (makingPayments) {
-          status   = 'LIKELY_ALIGNED';
-          evidence = 'Debt payments detected in the current transaction window';
-          blocker  = 'Insufficient snapshot history to confirm a declining balance trend';
-        } else if (!txn) {
-          status   = 'INSUFFICIENT_DATA';
-          evidence = 'No transaction data — cannot assess debt payment behavior';
-          blocker  = 'Connect bank accounts and allow transaction history to accumulate';
-        } else {
-          status   = 'MISALIGNED';
-          evidence = 'No debt payments visible in the current transaction window';
-        }
-        break;
-      }
-
-      case 'FINANCIAL': {
-        const progressPct   = goal.progressPct   ?? null;
-        const targetAmount  = goal.targetAmount  ?? null;
-        const currentAmount = goal.currentAmount ?? null;
-
-        if (progressPct !== null) {
-          if (progressPct >= 80) {
-            status   = 'ALIGNED';
-            evidence = `Goal is ${progressPct}% funded`;
-          } else if (progressPct >= 40) {
-            status   = 'LIKELY_ALIGNED';
-            evidence = `Goal is ${progressPct}% funded — progress is active`;
-          } else if (goal.targetDate) {
-            status   = 'MISALIGNED';
-            evidence = `Goal is only ${progressPct}% funded with a target date set`;
-          } else {
-            status   = 'LIKELY_ALIGNED';
-            evidence = `Goal is ${progressPct}% funded`;
-          }
-        } else if (currentAmount !== null && targetAmount !== null) {
-          if (currentAmount >= targetAmount) {
-            status   = 'ALIGNED';
-            evidence = `Current amount meets target`;
-          } else {
-            status   = 'LIKELY_ALIGNED';
-            evidence = `Tracking toward target amount`;
-          }
-        } else {
-          status   = 'INSUFFICIENT_DATA';
-          evidence = 'No progress data available for this goal';
-          blocker  = 'Set a target amount or link a savings account to track progress';
-        }
-        break;
-      }
-
-      case 'SPENDING_LIMIT': {
-        const progressPct   = goal.progressPct   ?? null;
-        const targetAmount  = goal.targetAmount  ?? null;
-        const currentAmount = goal.currentAmount ?? null;
-
-        if (progressPct !== null) {
-          if (progressPct > 100) {
-            status   = 'MISALIGNED';
-            evidence = `Spending limit exceeded (${progressPct}% of limit used)`;
-          } else if (progressPct >= 80) {
-            status   = 'LIKELY_ALIGNED';
-            evidence = `Approaching spending limit (${progressPct}% used)`;
-          } else {
-            status   = 'ALIGNED';
-            evidence = `Within spending limit (${progressPct}% used)`;
-          }
-        } else if (currentAmount !== null && targetAmount !== null) {
-          status   = currentAmount > targetAmount ? 'MISALIGNED' : 'ALIGNED';
-          evidence = currentAmount > targetAmount ? 'Spend exceeds limit' : 'Spend is within limit';
-        } else {
-          status   = 'INSUFFICIENT_DATA';
-          evidence = 'No spending limit data available for comparison';
-          blocker  = 'Allow spending history to accumulate for assessment';
-        }
-        break;
-      }
-
-      case 'HABIT': {
-        const streak      = goal.currentStreak ?? 0;
-        const lastCheckIn = goal.lastCheckIn   ?? null;
-
-        if (!lastCheckIn) {
-          status   = 'INSUFFICIENT_DATA';
-          evidence = 'No check-in recorded for this habit';
-          blocker  = 'Complete the first check-in to start tracking';
-        } else {
-          const daysSince = Math.floor(
-            (Date.now() - new Date(lastCheckIn).getTime()) / (1000 * 60 * 60 * 24),
-          );
-          if (streak > 0 && daysSince <= HABIT_STALE_DAYS) {
-            status   = 'ALIGNED';
-            evidence = `Active streak of ${streak} — last check-in ${daysSince} day(s) ago`;
-          } else if (daysSince > HABIT_STALE_DAYS) {
-            status   = 'MISALIGNED';
-            evidence = `No check-in for ${daysSince} days`;
-          } else {
-            status   = 'LIKELY_ALIGNED';
-            evidence = `Recent check-in (${daysSince} day(s) ago) — streak: ${streak}`;
-          }
-        }
-        break;
-      }
-
-      default: {
-        status   = 'INSUFFICIENT_DATA';
-        evidence = `Goal type not yet assessable deterministically`;
-        break;
-      }
-    }
-
-    const item: GoalAlignmentItem = { goalId: goal.id, goalName: goal.name, goalType: goal.goalType, status, evidence };
-    if (blocker !== undefined) item.blocker = blocker;
-    goalAlignments.push(item);
-  }
-
-  const alignedCount    = goalAlignments.filter((g) => g.status === 'ALIGNED' || g.status === 'LIKELY_ALIGNED').length;
-  const misalignedCount = goalAlignments.filter((g) => g.status === 'MISALIGNED').length;
-  const blockedCount    = goalAlignments.filter((g) => g.status === 'INSUFFICIENT_DATA').length;
-
-  const overallStatus: GoalAlignmentSection['overallStatus'] = (() => {
-    if (blockedCount === goalAlignments.length)  return 'INSUFFICIENT_DATA';
-    if (misalignedCount === 0)                   return 'ALIGNED';
-    if (alignedCount > 0 && misalignedCount > 0) return 'MIXED';
-    return 'MISALIGNED';
-  })();
-
-  const confidence: ConfidenceLevel =
-    blockedCount === goalAlignments.length ? 'LOW' :
-    alignedCount + misalignedCount > blockedCount ? 'MEDIUM' :
-    'LOW';
-
-  return {
-    confidence,
-    overallStatus,
-    alignedCount,
-    misalignedCount,
-    blockedCount,
-    goalAlignments,
-    hasGoalsDomain:  true,
-    activeGoalCount: activeGoals.length,
-  };
-}
+// W2 — computeGoalAlignment (engine 2.4) DELETED with the Goals retirement:
+// with no goal rows and no declaration mechanism there is nothing to align.
+// Its 'MIXED' overall status and per-goal alignment items died with it.
 
 // ── 2.5 Investment Readiness computation ──────────────────────────────────────
 
@@ -430,13 +251,17 @@ export function computeRiskOpportunities(
   liquidity:             LiquiditySection,
   debtStrategy:          DebtStrategySection,
   spendingOpportunities: SpendingOpportunitySection,
-  goalAlignment:         GoalAlignmentSection,
+  // W2 — the goalAlignment parameter was deleted with the goal-alignment engine.
   investmentReadiness:   InvestmentReadinessSection,
   // TI2-W2 — the raw transaction summary, for the amount-based INCOMPLETE_INCOME_DATA
   // wording ("$X of $Y income … has no identified source"). Optional so absent-domain
   // callers still resolve; the evidence falls back to the count-only phrasing.
   txn?:                  TransactionsSummaryData | null,
+  // REVIEW-3 C-6 — the Space's reporting currency for evidence strings that
+  // carry money. USD default keeps fixtures identical; no hard-coded `$`.
+  reportingCurrency?:    string,
 ): RiskOpportunitySection {
+  const money = (n: number) => fmtMoney(n, reportingCurrency);
   const risks:         AssessmentRisk[]        = [];
   const opportunities: AssessmentOpportunity[] = [];
 
@@ -466,7 +291,7 @@ export function computeRiskOpportunities(
     const unknownInflowTotal = txn?.needsClassification?.unknownInflowTotal ?? 0;
     const incomeTotal        = txn?.incomeTotal ?? 0;
     const evidence = unknownInflowTotal > 0 && incomeTotal > 0
-      ? `$${unknownInflowTotal.toFixed(2)} of $${incomeTotal.toFixed(2)} income in-window has no identified source (${dataQuality.incomeTransactionCount} income transaction(s) captured) — income confidence LOW`
+      ? `${money(unknownInflowTotal)} of ${money(incomeTotal)} income in-window has no identified source (${dataQuality.incomeTransactionCount} income transaction(s) captured) — income confidence LOW`
       : `Only ${dataQuality.incomeTransactionCount} income transaction(s) captured — income confidence LOW`;
     risks.push({
       code:             'INCOMPLETE_INCOME_DATA',
@@ -494,7 +319,7 @@ export function computeRiskOpportunities(
       ? `weighted APR ${debtStrategy.weightedAvgApr.toFixed(2)}%`
       : 'elevated APR';
     const burden = debt.monthlyInterestBurden !== null
-      ? `, ~$${debt.monthlyInterestBurden.toFixed(2)}/mo interest`
+      ? `, ~${money(debt.monthlyInterestBurden)}/mo interest`
       : '';
     risks.push({
       code:             'HIGH_INTEREST_DEBT',
@@ -533,16 +358,8 @@ export function computeRiskOpportunities(
     });
   }
 
-  // GOALS_MISALIGNED — one or more active goals conflict with observed behavior.
-  if (goalAlignment.hasGoalsDomain && goalAlignment.misalignedCount > 0) {
-    risks.push({
-      code:             'GOALS_MISALIGNED',
-      severity:         'warning',
-      confidence:       goalAlignment.confidence,
-      evidence:         `${goalAlignment.misalignedCount} goal(s) misaligned with observed behavior (overall ${goalAlignment.overallStatus})`,
-      affectedSections: ['goalAlignment'],
-    });
-  }
+  // W2 — the GOALS_MISALIGNED risk rule was deleted with the goal-alignment
+  // engine (nothing produces the section it aggregated).
 
   // INVESTING_NOT_READY — pre-conditions for investing are not met.
   if (
@@ -565,7 +382,11 @@ export function computeRiskOpportunities(
       code:             'HISTORY_INCOMPLETE',
       severity:         'info',
       confidence:       'HIGH',
-      evidence:         `Transaction history completeness LOW (${dataQuality.snapshotSpanDays}-day span in 90-day window)`,
+      // REVIEW-3 C-8 (KD-16) — the ACTUAL analysis window, never a hard-coded
+      // "90-day" that disagrees with an explicit caller-directed window. (The
+      // scope-varying 30-day brief window this also guarded against was
+      // removed by W4 — the default window is now scope-invariant.)
+      evidence:         `Transaction history completeness LOW (${dataQuality.snapshotSpanDays}-day snapshot span${txn?.windowDays ? ` in ${txn.windowDays}-day analysis window` : ''})`,
       affectedSections: ['dataQuality'],
     });
   }
@@ -583,7 +404,7 @@ export function computeRiskOpportunities(
       code:             'CUT_TOP_DISCRETIONARY_CATEGORY',
       impact,
       confidence:       spendingOpportunities.confidence,
-      evidence:         `Top discretionary category ${top.category} at $${top.monthlyEquivalent.toFixed(2)}/mo`,
+      evidence:         `Top discretionary category ${top.category} at ${money(top.monthlyEquivalent)}/mo`,
       affectedSections: ['spendingOpportunities'],
     });
   }
@@ -654,16 +475,8 @@ export function computeRiskOpportunities(
     }
   }
 
-  // ALIGN_SPENDING_WITH_GOALS — misaligned goals suggest a spending adjustment.
-  if (goalAlignment.hasGoalsDomain && goalAlignment.misalignedCount > 0) {
-    opportunities.push({
-      code:             'ALIGN_SPENDING_WITH_GOALS',
-      impact:           'medium',
-      confidence:       goalAlignment.confidence,
-      evidence:         `${goalAlignment.misalignedCount} goal(s) misaligned — adjusting spending can realign them`,
-      affectedSections: ['goalAlignment', 'spendingOpportunities'],
-    });
-  }
+  // W2 — the ALIGN_SPENDING_WITH_GOALS opportunity rule was deleted with the
+  // goal-alignment engine.
 
   // READY_TO_INVEST — pre-conditions for investing are satisfied.
   if (investmentReadiness.classification === 'READY') {
@@ -718,5 +531,95 @@ export function computeRiskOpportunities(
  * Compute a structured financial assessment for a fully-assembled SpaceContext_AI.
  *
  * Pure function — no DB queries, no side effects, no LLM calls.
- * Call this after buildContext() and before prompt construction.
+ * Call this after the context is assembled (lib/ai/conversation/evidence.ts
+ * `assembleFullContext`; `buildContext()` was deleted in RLS-AI-S1) and before
+ * prompt construction.
  */
+
+
+// ── 2.3C Trajectory Assessment (A2) ──────────────────────────────────────────
+
+/**
+ * Grade the already-computed trend directions into ONE deterministic verdict.
+ *
+ * Aggregation only, per this module's contract: it reads SpendingTrendsSection
+ * and recalculates nothing from raw context. No new threshold is introduced —
+ * "material" means the trend engine did not classify the move as FLAT, which is
+ * already the TREND_FLAT_PCT decision.
+ *
+ * The decision table, in full:
+ *
+ *   net RISING                          -> IMPROVING
+ *   net FALLING                         -> WORSENING
+ *   net FLAT + both components material -> MIXED     (offsetting moves)
+ *   net FLAT + otherwise                -> STABLE
+ *   net INSUFFICIENT_DATA               -> INSUFFICIENT_DATA
+ *
+ * Income and expense never outvote net: net IS their canonical resolution
+ * (metricValue -> REVIEW-3 C-3 economic net). They are recorded as
+ * `divergentSignals` when they run against the headline, so a consumer can say
+ * "your position improved, but on a smaller income" without a second verdict.
+ */
+export function computeTrajectory(trends: SpendingTrendsSection): TrajectorySection {
+  const dirOf = (m: SpendingTrendMetric): TrendDirection =>
+    trends.metricTrends.find((t) => t.metric === m)?.direction ?? 'INSUFFICIENT_DATA';
+
+  const netDirection     = dirOf('net');
+  const incomeDirection  = dirOf('income');
+  const expenseDirection = dirOf('expense');
+
+  const base = {
+    confidence:             trends.confidence,
+    completeMonthsAnalyzed: trends.completeMonthsAnalyzed,
+    netDirection, incomeDirection, expenseDirection,
+  };
+
+  // Refusal. One complete month is not a trajectory, and a partial month is
+  // never substituted to reach two (they are filtered out upstream).
+  if (netDirection === 'INSUFFICIENT_DATA') {
+    return {
+      ...base,
+      classification:   'INSUFFICIENT_DATA',
+      basis:            null,
+      divergentSignals: [],
+    };
+  }
+
+  /** Material = the trend engine did not call it FLAT (i.e. >= TREND_FLAT_PCT). */
+  const material = (d: TrendDirection): boolean => d === 'RISING' || d === 'FALLING';
+
+  const classification: TrajectoryClassification =
+    netDirection === 'RISING'  ? 'IMPROVING' :
+    netDirection === 'FALLING' ? 'WORSENING' :
+    material(incomeDirection) && material(expenseDirection) ? 'MIXED' :
+    'STABLE';
+
+  // Component moves that complicate the headline. For a directional verdict these
+  // are the moves whose OWN favourability opposes it (rising income is good,
+  // rising expense is not). For MIXED they are the two offsetting moves that made
+  // a flat net look steady.
+  const divergentSignals: TrajectorySignal[] = [];
+  const push = (metric: SpendingTrendMetric, direction: TrendDirection, note: string) =>
+    divergentSignals.push({ metric, direction, note });
+
+  if (classification === 'IMPROVING') {
+    if (incomeDirection === 'FALLING') {
+      push('income', 'FALLING', 'net improved while income fell — the gain came from lower spending, on a smaller income base');
+    }
+    if (expenseDirection === 'RISING') {
+      push('expense', 'RISING', 'net improved even though spending rose — income rose faster');
+    }
+  } else if (classification === 'WORSENING') {
+    if (incomeDirection === 'RISING') {
+      push('income', 'RISING', 'net worsened despite income rising — spending outpaced it');
+    }
+    if (expenseDirection === 'FALLING') {
+      push('expense', 'FALLING', 'net worsened even though spending fell — income fell further');
+    }
+  } else if (classification === 'MIXED') {
+    push('income', incomeDirection, 'income moved materially');
+    push('expense', expenseDirection, 'spending moved materially in the offsetting direction');
+  }
+
+  return { ...base, classification, basis: 'MONTH_OVER_MONTH', divergentSignals };
+}

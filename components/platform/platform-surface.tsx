@@ -135,7 +135,7 @@ export function PolicyChip({ label, tone }: { label: string; tone: "hold" | "off
       : { color: "var(--text-secondary)", borderColor: "var(--border-hairline-strong)" };
   return (
     <span
-      className="inline-flex shrink-0 items-center rounded-[var(--radius-sm)] border px-2 text-[11px] font-medium"
+      className="inline-flex min-w-0 max-w-full items-center break-words rounded-[var(--radius-sm)] border px-2 text-[11px] font-medium"
       style={{ ...style, paddingBlock: 2 }}
     >
       {label}
@@ -155,7 +155,7 @@ export function PolicyChip({ label, tone }: { label: string; tone: "hold" | "off
  */
 export function Unavailable({ reason }: { reason: string }) {
   return (
-    <span className="inline-flex items-baseline gap-1.5">
+    <span className="inline-flex min-w-0 flex-wrap items-baseline gap-1.5">
       <span className="text-[var(--text-muted)]">—</span>
       <span className="text-[10px] text-[var(--text-faint)]">{reason}</span>
     </span>
@@ -191,9 +191,9 @@ export const NO_AUTHORITY = "no authority";
 export function Provenance({ source, children }: { source: string; children?: ReactNode }) {
   const unattributed = source === NO_AUTHORITY;
   return (
-    <span className="inline-flex flex-wrap items-center gap-1.5 text-[10px] text-[var(--text-muted)]">
+    <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1.5 break-words text-[10px] text-[var(--text-muted)]">
       <span
-        className="border px-1.5 font-mono text-[10px]"
+        className="min-w-0 max-w-full break-words border px-1.5 font-mono text-[10px]"
         style={{
           borderRadius: "var(--radius-xs)",
           paddingBlock: 1,
@@ -254,9 +254,9 @@ export function SectionSurface({
 }) {
   return (
     <section id={id} className={id ? "scroll-mt-20" : undefined}>
-      <Surface className="px-5 py-5 md:px-6 md:py-6">
+      <Surface className="@container min-w-0 px-4 py-5 sm:px-5 md:px-6 md:py-6">
         <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
+          <div className="flex min-w-0 items-center gap-2.5">
             {Icon && <Icon size={16} strokeWidth={1.75} className="text-[var(--text-muted)]" aria-hidden />}
             <h2 className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
             {count != null && (
@@ -420,9 +420,9 @@ export function TwoLine({
  */
 export function KeyRow({ label, value }: { label: ReactNode; value: ReactNode }) {
   return (
-    <div className="flex items-baseline justify-between gap-4">
-      <span className="shrink-0 text-xs text-[var(--text-secondary)]">{label}</span>
-      <span className="min-w-0 text-right text-xs tabular-nums text-[var(--text-primary)]">{value}</span>
+    <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+      <span className="min-w-0 max-w-full break-words text-xs text-[var(--text-secondary)]">{label}</span>
+      <span className="min-w-0 max-w-full break-words text-right text-xs tabular-nums text-[var(--text-primary)]">{value}</span>
     </div>
   );
 }
@@ -642,6 +642,287 @@ export function RuntimeTrend({
           <span>now</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── UX-P1 · shared vocabulary for the dashboard refinement ───────────────────
+//
+// Five primitives added by the PLATFORM SPACES UX REFINEMENT P1 coordinator so
+// that every parallel workstream renders the same grammar. Each one names its
+// consumers (the census in platform-surface.test.ts refuses an export with none).
+// The rules above apply unchanged: tokens only, `md:` collapse by class, colour
+// never alone, no fetch and no clock.
+
+/**
+ * Dot + WORD for ANY status vocabulary — connection health, provider trust,
+ * incident severity, refresh status — without merging those vocabularies. The
+ * caller's authority maps its word to a `StatusTone`; this only renders the pair.
+ * `StatusBadge` stays the jobs-shaped special case (its signature IS the doctrine).
+ *
+ * CONSUMER: Attention Required rows · Connection health table · Provider health
+ * table · Pipeline execution rows.
+ */
+export function ToneBadge({ word, tone }: { word: string; tone: StatusTone }) {
+  const color = TONE_COLOR[tone];
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5" style={{ color }}>
+      <span aria-hidden className="rounded-full" style={{ width: 6, height: 6, background: color }} />
+      <span className="text-xs font-medium">{word}</span>
+    </span>
+  );
+}
+
+export interface DistributionSegment {
+  /** The status word — always rendered beside its count. */
+  word: string;
+  count: number;
+  /** Only vocabularies that OWN colour pass a tone; a trigger or a profile stays muted. */
+  tone?: StatusTone;
+}
+
+/**
+ * A compact composition over a CLOSED vocabulary with a knowable total: one
+ * proportional bar plus a legend where every segment is word + count. Never
+ * colour-only, never percent-only. A zero total renders the label and a sentence,
+ * not an empty bar; a floor (`scanTruncated`) is announced in the label.
+ *
+ * CONSUMER: Refresh summary strips (Pipeline + Overview) · Attention severity
+ * composition · Status board posture chips.
+ */
+export function DistributionBar({
+  label,
+  segments,
+  caption,
+  floor = false,
+  emptyText = "none in the window",
+}: {
+  label: string;
+  segments: readonly DistributionSegment[];
+  /** Window / determinism / checkedAt line under the bar. */
+  caption?: ReactNode;
+  /** True when the counts are a floor rather than a total. */
+  floor?: boolean;
+  emptyText?: string;
+}) {
+  const total = segments.reduce((n, s) => n + s.count, 0);
+  const summary = segments.map((s) => `${s.count} ${s.word}`).join(", ");
+  return (
+    <div className="flex flex-col gap-2">
+      <GroupLabel>{label}</GroupLabel>
+      {total === 0 ? (
+        <span className="text-xs text-[var(--text-secondary)]">{emptyText}</span>
+      ) : (
+        <div
+          role="img"
+          aria-label={`${label}: ${summary}${floor ? " (at least)" : ""}`}
+          className="flex h-1.5 w-full overflow-hidden rounded-full"
+          style={{ background: "var(--surface-inset)" }}
+        >
+          {segments.filter((s) => s.count > 0).map((s) => (
+            <span
+              key={s.word}
+              title={`${s.count} ${s.word}`}
+              style={{
+                width: `${(s.count / total) * 100}%`,
+                background: `color-mix(in srgb, ${TONE_COLOR[s.tone ?? "muted"]} ${s.tone ? 85 : 45}%, transparent)`,
+              }}
+            />
+          ))}
+        </div>
+      )}
+      <ul className="flex flex-wrap gap-x-4 gap-y-1">
+        {segments.map((s) => (
+          <li key={s.word} className="inline-flex items-center gap-1.5 text-[11px]">
+            <span
+              aria-hidden
+              className="rounded-full"
+              style={{ width: 6, height: 6, background: TONE_COLOR[s.tone ?? "muted"] }}
+            />
+            <span style={{ color: s.tone ? TONE_COLOR[s.tone] : "var(--text-secondary)" }}>{s.word}</span>
+            <span className="tabular-nums text-[var(--text-primary)]">{s.count}</span>
+          </li>
+        ))}
+        {floor && <li className="text-[11px] text-[var(--text-muted)]">floor, not a total</li>}
+      </ul>
+      {caption && <span className="text-[10px] leading-relaxed text-[var(--text-faint)]">{caption}</span>}
+    </div>
+  );
+}
+
+/**
+ * The status board's unit: one domain, one verdict WORD in its tone, one figure
+ * that earns its size, one qualifier, and the doorway into the workspace that
+ * holds the evidence. The tile itself is not a button (its "Open" is), so the
+ * figure and the word stay selectable text and nothing nests interactive
+ * content inside interactive content.
+ *
+ * CONSUMER: the Overview status board (six operational domains).
+ */
+export function StatusTile({
+  label,
+  word,
+  tone,
+  figure,
+  qualifier,
+  hint,
+  onOpen,
+  openLabel,
+}: {
+  label: string;
+  /** The verdict word, from the domain's own authority. */
+  word: string;
+  tone: StatusTone;
+  /** The one figure this domain is judged by ("3 of 7", "21 min ago", "0"). */
+  figure: ReactNode;
+  /** One short line under the figure — never a paragraph. */
+  qualifier?: ReactNode;
+  /** Supplementary explanation, surfaced on the group label. */
+  hint?: string;
+  onOpen?: () => void;
+  /** The workspace name the doorway opens ("Pipeline"). Required when `onOpen` is set. */
+  openLabel?: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <GroupLabel hint={hint}>{label}</GroupLabel>
+      <ToneBadge word={word} tone={tone} />
+      <Figure value={figure} size="figure" />
+      {qualifier && <span className="text-[11px] leading-snug text-[var(--text-secondary)]">{qualifier}</span>}
+      {onOpen && openLabel && (
+        <button
+          type="button"
+          onClick={onOpen}
+          className="mt-1 self-start text-[11px] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]"
+          aria-label={`Open ${openLabel}`}
+        >
+          {openLabel} →
+        </button>
+      )}
+    </div>
+  );
+}
+
+export interface MiniBarPoint {
+  /** Bucket identity — a UTC day ("2026-10-14") or any stable key. */
+  key: string;
+  /** `null` is a GAP (no observation for the bucket), never zero. */
+  value: number | null;
+  tone?: StatusTone;
+  /** Accessible per-bar description; defaults to `${key}: ${format(value)}`. */
+  title?: string;
+}
+
+/**
+ * Equal-width bars over persisted, dated buckets — the one series form the house
+ * allows (observed event-time counts, declared interval, gaps rendered as gaps).
+ * Height is the only encoded variable; colour is optional and carries a status
+ * tone, never decoration. The chart is a `role="img"` whose label states the
+ * bucket count, the total and the peak in words; each bar carries a `title`.
+ *
+ * CONSUMER: AI activity (calls per UTC day) · Refresh activity (executions per
+ * UTC day) · Economics (estimated spend per UTC day).
+ */
+export function MiniBars({
+  label,
+  points,
+  format,
+  caption,
+  height = 40,
+}: {
+  label: string;
+  points: readonly MiniBarPoint[];
+  /** Formats a value for the accessible label and the per-bar title. */
+  format: (value: number) => string;
+  /** Interval + window + tier line under the bars ("UTC days · last 30 · estimated"). */
+  caption?: ReactNode;
+  height?: number;
+}) {
+  if (points.length === 0) return <Unavailable reason={`${label}: no buckets in the window`} />;
+  const observed = points.filter((p): p is MiniBarPoint & { value: number } => p.value != null);
+  const max = observed.reduce((m, p) => Math.max(m, p.value), 0);
+  const total = observed.reduce((n, p) => n + p.value, 0);
+  const peak = observed.reduce<MiniBarPoint | null>((best, p) => (best == null || p.value > (best.value ?? 0) ? p : best), null);
+  const gaps = points.length - observed.length;
+  const summary =
+    `${label}: ${points.length} buckets, ${observed.length} observed` +
+    (gaps > 0 ? `, ${gaps} without observation` : "") +
+    `, total ${format(total)}` +
+    (peak && peak.value != null ? `, peak ${format(peak.value)} on ${peak.key}` : "");
+  return (
+    <div className="flex flex-col gap-2">
+      <GroupLabel>{label}</GroupLabel>
+      <div role="img" aria-label={summary} className="flex w-full items-end gap-px" style={{ height }}>
+        {points.map((p) => {
+          if (p.value == null) {
+            return (
+              <span
+                key={p.key}
+                title={p.title ?? `${p.key}: no observation`}
+                className="flex-1 self-end border-b border-dashed"
+                style={{ borderColor: "var(--border-hairline)", height: 1 }}
+              />
+            );
+          }
+          const h = max > 0 ? Math.max(2, Math.round((p.value / max) * height)) : 2;
+          return (
+            <span
+              key={p.key}
+              title={p.title ?? `${p.key}: ${format(p.value)}`}
+              className="flex-1 rounded-[1px]"
+              style={{
+                height: h,
+                background: p.tone ? TONE_COLOR[p.tone] : "color-mix(in srgb, var(--meridian-400) 70%, transparent)",
+              }}
+            />
+          );
+        })}
+      </div>
+      {caption && <span className="text-[10px] leading-relaxed text-[var(--text-faint)]">{caption}</span>}
+    </div>
+  );
+}
+
+/**
+ * The filter pill group the Pipeline toolbar shipped locally, promoted so every
+ * table toolbar reads the same: `role="group"` + `aria-pressed`, counts in the
+ * option label when the caller has them, never a hidden option.
+ *
+ * CONSUMER: Pipeline execution filters · Attention Required severity filter ·
+ * Connection health state filter.
+ */
+export function PillGroup<V extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: V;
+  options: readonly { value: V; label: string }[];
+  onChange: (v: V) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1" role="group" aria-label={label}>
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button
+            key={o.value || "all"}
+            type="button"
+            onClick={() => onChange(o.value)}
+            aria-pressed={active}
+            className="rounded-[var(--radius-sm)] border px-2 py-0.5 text-[11px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]"
+            style={{
+              borderColor: active ? "var(--meridian-400)" : "var(--border-hairline)",
+              color: active ? "var(--text-primary)" : "var(--text-secondary)",
+              background: active ? "color-mix(in srgb, var(--meridian-500) 10%, transparent)" : "transparent",
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
