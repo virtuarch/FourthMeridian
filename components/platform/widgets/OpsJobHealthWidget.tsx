@@ -386,10 +386,9 @@ function Toolbar({
         />
       </label>
 
-      {/* Maintenance mode holds every scheduled job at once. It is the single
-          largest write on this surface and there is no authority behind it, so
-          it ships inert with the reason in its accessible name — removing it
-          would hide the gap; wiring it would invent one. */}
+      {/* Maintenance mode is written in ONE place — Policies → Operational
+          Controls (audited, reason required). This button stays inert and
+          points there, rather than becoming a second writer. */}
       <button
         type="button"
         disabled
