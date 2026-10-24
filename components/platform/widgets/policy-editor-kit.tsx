@@ -28,7 +28,7 @@ import { Check, Loader2, RotateCcw, X } from "lucide-react";
 import { OPERATOR_REASON_CODES, type OperatorReasonCode } from "@/lib/audit";
 import { TONE_COLOR } from "../platform-surface";
 import {
-  CONFLICT_TEXT, NOTE_PLACEHOLDER, REASON_PLACEHOLDER, RESET_TEXT, formatUtc, resolveMutationOutcome, type MutationOutcome, type PolicyNotice,
+  CONFLICT_TEXT, NOTE_PLACEHOLDER, NOTE_REQUIRED_PLACEHOLDER, REASON_PLACEHOLDER, RESET_TEXT, formatUtc, resolveMutationOutcome, type MutationOutcome, type PolicyNotice,
 } from "./policies-view";
 
 export { formatUtc };
@@ -74,7 +74,7 @@ export function Notice({ notice }: { notice: PolicyNotice | null }) {
  */
 export function CadenceForm({
   ariaLabel, intent, control, consequences, busy, notice, canSave, canReset, onSave, onReset, onCancel, dirty,
-  saveLabel = "Save", resetLabel = "Reset to default", confirmResetLabel = "Confirm reset", resetText = RESET_TEXT, warning = null,
+  saveLabel = "Save", resetLabel = "Reset to default", confirmResetLabel = "Confirm reset", resetText = RESET_TEXT, warning = null, noteRequired = false,
 }: {
   ariaLabel: string;
   intent: "edit" | "reset";
@@ -97,12 +97,14 @@ export function CadenceForm({
   resetText?: string;
   /** A sentence the operator must read before the (armed) Save — rendered as an alert in the caution tone. */
   warning?: ReactNode;
+  /** OPERATIONAL CONTROLS — the note is mandatory too (maintenance mode); the server enforces the same rule. */
+  noteRequired?: boolean;
 }) {
   const [code, setCode] = useState<OperatorReasonCode | "">("");
   const [note, setNote] = useState("");
   const [armed, setArmed] = useState(intent === "reset");
   const reason = (): OperatorReasonInput | null => (code === "" ? null : note.trim() ? { code, note: note.trim() } : { code });
-  const hasReason = code !== "";
+  const hasReason = code !== "" && (!noteRequired || note.trim() !== "");
   return (
     <div className="flex flex-col gap-3 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-3" role="group" aria-label={ariaLabel}>
       {!armed && control}
@@ -120,8 +122,8 @@ export function CadenceForm({
           {OPERATOR_REASON_CODES.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ").toLowerCase()}</option>)}
         </select>
       </label>
-      <input type="text" value={note} onChange={(e) => setNote(e.target.value)} disabled={busy} maxLength={280} placeholder={NOTE_PLACEHOLDER}
-        aria-label="Reason note (optional)" className={FIELD} style={{ borderColor: "var(--border-hairline)" }} />
+      <input type="text" value={note} onChange={(e) => setNote(e.target.value)} disabled={busy} maxLength={280} placeholder={noteRequired ? NOTE_REQUIRED_PLACEHOLDER : NOTE_PLACEHOLDER}
+        aria-label={noteRequired ? "Reason note (required)" : "Reason note (optional)"} required={noteRequired} className={FIELD} style={{ borderColor: "var(--border-hairline)" }} />
       <Notice notice={notice} />
       <div className="flex flex-wrap items-center gap-2">
         {!armed && (

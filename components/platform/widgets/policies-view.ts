@@ -334,4 +334,5 @@ export function resolveMutationOutcome<M>(outcome: MutationOutcome<M>, appliedTe
 }
 export const REASON_PLACEHOLDER = "Choose a reason…";
 export const NOTE_PLACEHOLDER = "Note (optional, no personal data)";
+export const NOTE_REQUIRED_PLACEHOLDER = "Why? (required, no personal data)";
 export const FIXED_GROUP_SUMMARY = (n: number) => `Fixed (${n} maintenance job${n === 1 ? "" : "s"})`;

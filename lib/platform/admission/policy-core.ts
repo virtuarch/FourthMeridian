@@ -61,6 +61,11 @@ const APPLIES_TO: Record<keyof ControlPlaneFacts, readonly OperationalWork[]> = 
   ingestionPaused: ["REFRESH_EXECUTION"],
 };
 
+/** The work classes a fact's ON state denies — read by the operator surface, never restated there. */
+export function workDeniedBy(fact: keyof ControlPlaneFacts): readonly OperationalWork[] {
+  return APPLIES_TO[fact];
+}
+
 function deny(reason: AdmissionReason, evidence: ControlPlaneFact): AdmissionVerdict {
   return {
     decision: "DENY",
