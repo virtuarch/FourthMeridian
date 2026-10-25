@@ -9,6 +9,7 @@
  *   IN_PROGRESS                           → WAITING     GET every 2 s, for at most 40 s
  *   FAILED + a Brief                      → COULD_NOT_UPDATE  (retry after retryAfterMs)
  *   FAILED, nothing                       → FAILED_EMPTY      (retry after retryAfterMs)
+ *   POST refused 503 AI_PAUSED            → PAUSED            (Brief kept; no re-ask for BRIEF_PAUSED_HOLD_MS)
  *   NO_DATA                               → NO_DATA
  *
  * ⚠️ THE SERVER DECIDES; THIS ONLY SEQUENCES. Whether generation is needed, whether a
@@ -33,6 +34,18 @@ export const BRIEF_RECHECK_THROTTLE_MS = 60_000;
 /** A server-rendered state older than this (e.g. restored from history) is re-asked. */
 export const BRIEF_INITIAL_MAX_AGE_MS = 5_000;
 const MAX_POSTS_PER_FLOW = 2;
+/**
+ * PAID AI PAUSED — the kill switch or maintenance mode refused the POST before any
+ * model work (503 `{ error, code: "AI_PAUSED" }`, no claim, no row). That is an
+ * operator's declared state, not a failure: the page says so in a neutral tone,
+ * keeps the Brief it has, and does not ask again — not on a visibility event, not
+ * from the retry control — until this hold has passed.
+ */
+export const BRIEF_PAUSED_HOLD_MS = 5 * 60_000;
+/** The refusal code (lib/platform/ai/paid-requests-admission.ts AI_PAUSED_CODE — server-only, so restated; pinned by test). */
+export const AI_PAUSED_CODE = "AI_PAUSED";
+/** The customer sentence, word for word what Conversations shows (AI_PAUSED_CUSTOMER_MESSAGE; pinned by test). */
+export const BRIEF_PAUSED_MESSAGE = "AI features are paused for maintenance. Nothing was changed. Please try again later.";
 
 export type BriefPhase =
   | "LOADING"
@@ -42,6 +55,7 @@ export type BriefPhase =
   | "WAITING"
   | "COULD_NOT_UPDATE"
   | "FAILED_EMPTY"
+  | "PAUSED"
   | "NO_DATA"
   | "LOAD_ERROR";
 
@@ -84,6 +98,11 @@ export function initialView(initial: BriefResponse | null): BriefView {
 }
 
 class Aborted extends Error {}
+
+/** The POST was refused because paid AI is paused. Carries no server text: the page shows its own sentence. */
+export class BriefPausedError extends Error {
+  constructor() { super("brief generation paused"); this.name = "BriefPausedError"; }
+}
 
 export function createBriefController(opts: {
   spaceId: string;
@@ -178,6 +197,11 @@ export function createBriefController(opts: {
         await settle(await first(controller.signal), controller.signal);
       } catch (err) {
         if (err instanceof Aborted || controller.signal.aborted || disposed) return;
+        if (err instanceof BriefPausedError) {
+          // The Brief on screen (if any) stays — `emit` patches only phase and retryAt.
+          emit({ phase: "PAUSED", retryAt: clock.now() + BRIEF_PAUSED_HOLD_MS });
+          return;
+        }
         emit(view.brief
           ? { phase: "COULD_NOT_UPDATE", retryAt: clock.now() }
           : { phase: view.phase === "NO_DATA" ? "NO_DATA" : "LOAD_ERROR", retryAt: clock.now() });
@@ -198,13 +222,14 @@ export function createBriefController(opts: {
     },
     onVisible() {
       if (disposed || flow) return;
+      if (view.phase === "PAUSED" && view.retryAt !== null && clock.now() < view.retryAt) return;
       if (clock.now() - lastCheckAt < BRIEF_RECHECK_THROTTLE_MS) return;
       run((signal) => transport.get(spaceId, signal));
     },
     retry() {
       if (disposed || flow) return;
       if (view.retryAt !== null && clock.now() < view.retryAt) return;
-      if (view.phase === "FAILED_EMPTY" || view.phase === "COULD_NOT_UPDATE") {
+      if (view.phase === "FAILED_EMPTY" || view.phase === "COULD_NOT_UPDATE" || view.phase === "PAUSED") {
         emit({ phase: view.brief ? "UPDATING" : "GENERATING" });
         run((signal) => transport.generate(spaceId, signal));
       } else {
@@ -234,10 +259,24 @@ export const httpBriefTransport: BriefTransport = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ spaceId }),
     });
-    if (!res.ok) throw new Error(`brief generation request failed: ${res.status}`);
+    if (!res.ok) {
+      if (await isPaidAiPaused(res)) throw new BriefPausedError();
+      throw new Error(`brief generation request failed: ${res.status}`);
+    }
     return (await res.json()) as BriefResponse;
   },
 };
+
+/**
+ * Only a 503 whose body carries `code: "AI_PAUSED"` is a pause. Network errors,
+ * 401/403, 429 pacing, the AI allowance and every other 5xx stay ordinary
+ * failures. Reads the code alone — the body's text is never shown.
+ */
+export async function isPaidAiPaused(res: Pick<Response, "status" | "json">): Promise<boolean> {
+  if (res.status !== 503) return false;
+  const body = await res.json().catch(() => null) as { code?: unknown } | null;
+  return body !== null && typeof body === "object" && body.code === AI_PAUSED_CODE;
+}
 
 export const browserClock: BriefClock = {
   now: () => Date.now(),
