@@ -10,7 +10,10 @@
  * start — the cache tells the model what was being TALKED ABOUT, the tools say
  * what is TRUE.
  *
- * ⚠️ WHAT MAY BE WRITTEN IS EXACTLY WHAT WAS ON SCREEN. Two roles, two strings.
+ * ⚠️ WHAT MAY BE WRITTEN IS EXACTLY WHAT WAS ON SCREEN. Two roles, two strings,
+ * and one label: an assistant line that is a FAILED REQUEST rather than an answer
+ * carries `status: "failed"` (v2), so it is restored as a failure — never as
+ * something the assistant said — and is never posted back as history.
  * No system prompt, no tool call, no tool result, no evidence, no scenario, no
  * memory row, no knowledge gap, no account id, no provider metadata. That is not
  * a policy applied on the way out — `parseTranscript` is the only reader and it
@@ -25,8 +28,13 @@
  * Pure over an injected store, so every rule here is provable without a browser.
  */
 
-/** Bumped when the stored shape changes. An older or newer version is discarded. */
-export const TRANSCRIPT_CACHE_VERSION = 1;
+/**
+ * Bumped when the stored shape changes. Written: 2 (adds the failed label).
+ * Read: 1 and 2 — a v1 transcript is a v2 transcript with no failed lines, so a
+ * cache written before this change restores unchanged. Anything else is discarded.
+ */
+export const TRANSCRIPT_CACHE_VERSION = 2;
+export const READABLE_TRANSCRIPT_VERSIONS: readonly number[] = [1, 2];
 
 /** A day. Long enough to click around the app and come back; short enough to forget. */
 export const TRANSCRIPT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -62,6 +70,8 @@ export const TRANSCRIPT_HINT_COOKIE = 'fm_ai_transcript';
 export interface CachedMessage {
   role: 'user' | 'assistant';
   content: string;
+  /** v2 — this assistant line is a request that did not complete, not an answer. */
+  status?: 'failed';
 }
 
 interface CachedTranscript {
@@ -106,6 +116,8 @@ const isStorable = (v: unknown): v is CachedMessage => {
   if (typeof v !== 'object' || v === null) return false;
   const m = v as Record<string, unknown>;
   if (m.role !== 'user' && m.role !== 'assistant') return false;
+  // Only an assistant line can be a failed request; a user's question is never "failed".
+  if (m.status !== undefined && !(m.status === 'failed' && m.role === 'assistant')) return false;
   return typeof m.content === 'string' && m.content.length > 0;
 };
 
@@ -118,8 +130,13 @@ const isStorable = (v: unknown): v is CachedMessage => {
  * with an extra field was written by something that is not this module, and the
  * safe reading of that is not "keep the parts I recognise" — it is "start clean".
  */
-const isStored = (v: unknown): v is CachedMessage =>
-  isStorable(v) && Object.keys(v as unknown as Record<string, unknown>).length === 2;
+const isStoredAs = (version: number) => (v: unknown): v is CachedMessage => {
+  if (!isStorable(v)) return false;
+  const keys = Object.keys(v as unknown as Record<string, unknown>);
+  // v1 knew two fields. v2 adds exactly one, and only as `status: "failed"`.
+  if (version === 1) return keys.length === 2 && v.status === undefined;
+  return keys.length === 2 || (keys.length === 3 && v.status === 'failed');
+};
 
 /**
  * Read a stored transcript, or refuse it. PURE.
@@ -140,14 +157,14 @@ export function parseTranscript(raw: string | null | undefined, now: number): Ca
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
   const t = parsed as Partial<CachedTranscript>;
-  if (t.version !== TRANSCRIPT_CACHE_VERSION) return null;
+  if (typeof t.version !== 'number' || !READABLE_TRANSCRIPT_VERSIONS.includes(t.version)) return null;
   const expiresAt = typeof t.expiresAt === 'string' ? Date.parse(t.expiresAt) : Number.NaN;
   // ⚠️ THE STORED TIMESTAMP IS THE TTL, not the browser's eviction policy. An
   // expiry we cannot read is an expiry we do not have.
   if (!Number.isFinite(expiresAt) || now >= expiresAt) return null;
   if (!Array.isArray(t.messages)) return null;
   if (t.messages.length === 0 || t.messages.length > MAX_CACHED_MESSAGES) return null;
-  if (!t.messages.every(isStored)) return null;
+  if (!t.messages.every(isStoredAs(t.version))) return null;
   return t.messages as CachedMessage[];
 }
 
@@ -169,7 +186,8 @@ export function parseTranscript(raw: string | null | undefined, now: number): Ca
 export function serializeTranscript(
   messages: readonly CachedMessage[], now: number,
 ): string | null {
-  let kept = messages.filter(isStorable).map((m) => ({ role: m.role, content: m.content }));
+  let kept: CachedMessage[] = messages.filter(isStorable).map((m) =>
+    m.status === 'failed' ? { role: m.role, content: m.content, status: 'failed' as const } : { role: m.role, content: m.content });
   if (kept.length === 0) return null;
 
   const envelope = (list: CachedMessage[]): string => JSON.stringify({

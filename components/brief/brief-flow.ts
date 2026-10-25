@@ -10,6 +10,8 @@
  *   FAILED + a Brief                      → COULD_NOT_UPDATE  (retry after retryAfterMs)
  *   FAILED, nothing                       → FAILED_EMPTY      (retry after retryAfterMs)
  *   POST refused 503 AI_PAUSED            → PAUSED            (Brief kept; no re-ask for BRIEF_PAUSED_HOLD_MS)
+ *   POST refused 503 allowance/pacing
+ *        couldn't be checked (retryable) → UNAVAILABLE       (Brief kept; no re-ask for the unavailable hold)
  *   NO_DATA                               → NO_DATA
  *
  * ⚠️ THE SERVER DECIDES; THIS ONLY SEQUENCES. Whether generation is needed, whether a
@@ -27,6 +29,7 @@
  */
 
 import type { BriefArtifactView, BriefDataHealthView, BriefMetricsView, BriefResponse } from "@/lib/brief-types";
+import { AI_PAUSED_SENTENCE } from "@/lib/ai/conversation/refusal-sentences";
 
 export const BRIEF_POLL_INTERVAL_MS = 2_000;
 export const BRIEF_POLL_MAX_MS = 40_000;
@@ -44,8 +47,25 @@ const MAX_POSTS_PER_FLOW = 2;
 export const BRIEF_PAUSED_HOLD_MS = 5 * 60_000;
 /** The refusal code (lib/platform/ai/paid-requests-admission.ts AI_PAUSED_CODE — server-only, so restated; pinned by test). */
 export const AI_PAUSED_CODE = "AI_PAUSED";
-/** The customer sentence, word for word what Conversations shows (AI_PAUSED_CUSTOMER_MESSAGE; pinned by test). */
-export const BRIEF_PAUSED_MESSAGE = "AI features are paused for maintenance. Nothing was changed. Please try again later.";
+/** The customer sentence, word for word what Conversations shows — one source (refusal-sentences.ts). */
+export const BRIEF_PAUSED_MESSAGE = AI_PAUSED_SENTENCE;
+
+/**
+ * AI RELIABILITY (F4) — the allowance or pacing store COULD NOT BE CHECKED.
+ *
+ * 503 `{ code: "AI_ALLOWANCE" | "PACING_UNAVAILABLE", retryable: true, retryAfterSeconds }`
+ * from the gate before any model work (lib/ai/allowance-core.ts, lib/ai/pacing.ts).
+ * Neither a pause (no operator declared anything) nor a generation failure (no
+ * model ran): a transient platform fault. The page says so neutrally, keeps the
+ * Brief it has, and holds — at least a minute, at most five, whatever the server
+ * suggests — before anything may ask again. No loop: a visibility event during
+ * the hold sends nothing.
+ */
+export const BRIEF_UNAVAILABLE_MESSAGE = "Your Brief is briefly unavailable. Nothing was changed. Please try again in a moment.";
+export const BRIEF_UNAVAILABLE_MIN_HOLD_MS = 60_000;
+export const BRIEF_UNAVAILABLE_MAX_HOLD_MS = 5 * 60_000;
+/** The retryable gate codes (lib/ai/allowance-core.ts ALLOWANCE_CODE, lib/ai/pacing.ts PACING_UNAVAILABLE_CODE — server-only, so restated; pinned by test). */
+export const RETRYABLE_GATE_CODES: readonly string[] = ["AI_ALLOWANCE", "PACING_UNAVAILABLE"];
 
 export type BriefPhase =
   | "LOADING"
@@ -56,6 +76,7 @@ export type BriefPhase =
   | "COULD_NOT_UPDATE"
   | "FAILED_EMPTY"
   | "PAUSED"
+  | "UNAVAILABLE"
   | "NO_DATA"
   | "LOAD_ERROR";
 
@@ -102,6 +123,17 @@ class Aborted extends Error {}
 /** The POST was refused because paid AI is paused. Carries no server text: the page shows its own sentence. */
 export class BriefPausedError extends Error {
   constructor() { super("brief generation paused"); this.name = "BriefPausedError"; }
+}
+
+/** The POST was refused because the allowance/pacing store could not be checked. Carries only the hold. */
+export class BriefUnavailableError extends Error {
+  constructor(readonly holdMs: number) { super("brief generation briefly unavailable"); this.name = "BriefUnavailableError"; }
+}
+
+/** The hold for an unavailable refusal: the server's hint, bounded to [1 min, 5 min]. */
+export function unavailableHoldMs(retryAfterSeconds: unknown): number {
+  const hinted = typeof retryAfterSeconds === "number" && Number.isFinite(retryAfterSeconds) ? retryAfterSeconds * 1000 : 0;
+  return Math.min(BRIEF_UNAVAILABLE_MAX_HOLD_MS, Math.max(BRIEF_UNAVAILABLE_MIN_HOLD_MS, hinted));
 }
 
 export function createBriefController(opts: {
@@ -202,6 +234,10 @@ export function createBriefController(opts: {
           emit({ phase: "PAUSED", retryAt: clock.now() + BRIEF_PAUSED_HOLD_MS });
           return;
         }
+        if (err instanceof BriefUnavailableError) {
+          emit({ phase: "UNAVAILABLE", retryAt: clock.now() + err.holdMs });
+          return;
+        }
         emit(view.brief
           ? { phase: "COULD_NOT_UPDATE", retryAt: clock.now() }
           : { phase: view.phase === "NO_DATA" ? "NO_DATA" : "LOAD_ERROR", retryAt: clock.now() });
@@ -222,14 +258,14 @@ export function createBriefController(opts: {
     },
     onVisible() {
       if (disposed || flow) return;
-      if (view.phase === "PAUSED" && view.retryAt !== null && clock.now() < view.retryAt) return;
+      if ((view.phase === "PAUSED" || view.phase === "UNAVAILABLE") && view.retryAt !== null && clock.now() < view.retryAt) return;
       if (clock.now() - lastCheckAt < BRIEF_RECHECK_THROTTLE_MS) return;
       run((signal) => transport.get(spaceId, signal));
     },
     retry() {
       if (disposed || flow) return;
       if (view.retryAt !== null && clock.now() < view.retryAt) return;
-      if (view.phase === "FAILED_EMPTY" || view.phase === "COULD_NOT_UPDATE" || view.phase === "PAUSED") {
+      if (view.phase === "FAILED_EMPTY" || view.phase === "COULD_NOT_UPDATE" || view.phase === "PAUSED" || view.phase === "UNAVAILABLE") {
         emit({ phase: view.brief ? "UPDATING" : "GENERATING" });
         run((signal) => transport.generate(spaceId, signal));
       } else {
@@ -260,7 +296,9 @@ export const httpBriefTransport: BriefTransport = {
       body: JSON.stringify({ spaceId }),
     });
     if (!res.ok) {
-      if (await isPaidAiPaused(res)) throw new BriefPausedError();
+      const refusal = await classifyBriefRefusal(res);
+      if (refusal?.kind === "PAUSED") throw new BriefPausedError();
+      if (refusal?.kind === "UNAVAILABLE") throw new BriefUnavailableError(refusal.holdMs);
       throw new Error(`brief generation request failed: ${res.status}`);
     }
     return (await res.json()) as BriefResponse;
@@ -273,9 +311,26 @@ export const httpBriefTransport: BriefTransport = {
  * failures. Reads the code alone — the body's text is never shown.
  */
 export async function isPaidAiPaused(res: Pick<Response, "status" | "json">): Promise<boolean> {
-  if (res.status !== 503) return false;
-  const body = await res.json().catch(() => null) as { code?: unknown } | null;
-  return body !== null && typeof body === "object" && body.code === AI_PAUSED_CODE;
+  return (await classifyBriefRefusal(res))?.kind === "PAUSED";
+}
+
+/**
+ * What a refused POST means, from its status and CODE fields alone — the body's
+ * text is never read for display. Only a 503 can be either: 503 + `AI_PAUSED` is
+ * a pause; 503 + a retryable gate code with `retryable: true` is "couldn't be
+ * checked". Everything else (network, 401/403, 429 pacing or allowance used up,
+ * UNPRICED_MODEL, other 5xx) is null — an ordinary failure, unchanged.
+ */
+export async function classifyBriefRefusal(res: Pick<Response, "status" | "json">):
+  Promise<{ kind: "PAUSED" } | { kind: "UNAVAILABLE"; holdMs: number } | null> {
+  if (res.status !== 503) return null;
+  const body = await res.json().catch(() => null) as { code?: unknown; retryable?: unknown; retryAfterSeconds?: unknown } | null;
+  if (body === null || typeof body !== "object") return null;
+  if (body.code === AI_PAUSED_CODE) return { kind: "PAUSED" };
+  if (typeof body.code === "string" && RETRYABLE_GATE_CODES.includes(body.code) && body.retryable === true) {
+    return { kind: "UNAVAILABLE", holdMs: unavailableHoldMs(body.retryAfterSeconds) };
+  }
+  return null;
 }
 
 export const browserClock: BriefClock = {

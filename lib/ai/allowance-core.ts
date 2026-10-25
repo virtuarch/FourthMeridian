@@ -45,6 +45,7 @@
  */
 
 import { AI_RATES, rateAt, priceAiUsage, type AiRate } from "@/lib/usage/pricing";
+import { allowanceExhaustedSentence, allowanceUnavailableSentence, allowanceUnpricedSentence } from "@/lib/ai/conversation/refusal-sentences";
 import { fmtMoney } from "@/lib/ai/format";
 import { priceSpendGroup, type ModelUsageGroup, type SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
 
@@ -245,16 +246,16 @@ const cents = (n: number) => Math.round(n * 100) / 100;
 export function allowanceRefusalBody(v: Extract<AllowanceVerdict, { allowed: false }>, surfaceLabel: string): AllowanceRefusalBody {
   if (isRetryableAllowanceReason(v.reason)) {
     return {
-      error: `${surfaceLabel} is briefly unavailable: your daily AI allowance couldn’t be checked just now. Nothing was changed. Please try again in a moment.`,
+      error: allowanceUnavailableSentence(surfaceLabel),
       code: ALLOWANCE_CODE, reason: v.reason, spentUsd: cents(v.spentUsd), allowanceUsd: v.allowanceUsd,
       retryable: true, retryAfterSeconds: RESERVATION_RETRY_AFTER_SECONDS,
     };
   }
   const error = v.reason === "UNPRICED_MODEL"
-    ? `${surfaceLabel} is paused for today: some of today’s usage can’t be priced yet, so your daily AI allowance can’t be checked. Nothing was changed. It resets at midnight UTC.`
+    ? allowanceUnpricedSentence(surfaceLabel)
     // The allowance is denominated in USD by definition (the rate card is USD);
     // formatted through the currency-aware helper, never a literal symbol (REVIEW-3 C-6).
-    : `You’ve used today’s AI allowance (about ${fmtMoney(v.allowanceUsd, "USD")} of estimated usage). ${surfaceLabel} resets at midnight UTC. Nothing was changed.`;
+    : allowanceExhaustedSentence(surfaceLabel, fmtMoney(v.allowanceUsd, "USD"));
   return { error, code: ALLOWANCE_CODE, reason: v.reason, spentUsd: cents(v.spentUsd), allowanceUsd: v.allowanceUsd };
 }
 

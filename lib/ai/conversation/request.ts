@@ -17,6 +17,7 @@
  */
 
 import type { ConversationMessage } from './engine';
+import { isKnownRefusalSentence } from './refusal-sentences';
 
 /**
  * The Space selector's "all my Spaces" default.
@@ -121,6 +122,24 @@ export function readChatRequest(body: unknown): ChatRequest {
     ok: true,
     spaceId: named === '' || named === ALL_SPACES_SENTINEL ? null : named,
     asked: asked.content,
-    history: turns.slice(0, -1),
+    history: answeredHistory(turns.slice(0, -1)),
   };
+}
+
+/**
+ * AI RELIABILITY (F2) — the conversation as it was ANSWERED.
+ *
+ * ⚠️ A REFUSAL IS NOT SOMETHING THE ASSISTANT SAID. Browsers before the typed
+ * failure state kept a refusal ("…briefly unavailable…", "Network error…") on
+ * screen as an assistant turn and posted it back as history on the next
+ * question, so the model read its own outage notice as a prior answer — and the
+ * conversation tail (the digest of the last assistant turn, which binds the
+ * sealed plan) moved to the refusal, dropping the plan. Such a line is dropped
+ * here: only an `assistant` turn, and only when its WHOLE content is a known
+ * refusal sentence (refusal-sentences.ts — exact, or the one anchored template).
+ * User turns are never touched; a real answer that merely mentions "Nothing was
+ * changed" is kept.
+ */
+export function answeredHistory(history: readonly ConversationMessage[]): ConversationMessage[] {
+  return history.filter((m) => !(m.role === 'assistant' && isKnownRefusalSentence(m.content)));
 }

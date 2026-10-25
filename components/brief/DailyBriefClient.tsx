@@ -37,7 +37,7 @@ import type {
 import { sourceStatusText } from "@/lib/connections/source-health-copy";
 import { BriefNewUser } from "./BriefNewUser";
 import {
-  BRIEF_PAUSED_MESSAGE, browserClock, createBriefController, httpBriefTransport, initialView,
+  BRIEF_PAUSED_MESSAGE, BRIEF_UNAVAILABLE_MESSAGE, browserClock, createBriefController, httpBriefTransport, initialView,
   type BriefController, type BriefView,
 } from "./brief-flow";
 
@@ -89,7 +89,8 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 function PriorBriefNotice({ brief, phase }: { brief: BriefArtifactView; phase: BriefView["phase"] }) {
   const status = phase === "UPDATING" || phase === "WAITING" ? "Updating today’s Brief…"
     : phase === "COULD_NOT_UPDATE" ? "Couldn’t update today’s Brief"
-    : phase === "PAUSED" ? "Today’s Brief is paused for maintenance" : null;
+    : phase === "PAUSED" ? "Today’s Brief is paused for maintenance"
+    : phase === "UNAVAILABLE" ? "Today’s Brief is briefly unavailable" : null;
   return (
     <div role="note" aria-label="Last successful Brief"
       className="mb-4 rounded-md border border-[var(--border-hairline)] px-3 py-2.5 text-xs">
@@ -117,7 +118,8 @@ function PriorBriefNotice({ brief, phase }: { brief: BriefArtifactView; phase: B
 function Provenance({ brief, phase }: { brief: BriefArtifactView; phase: BriefView["phase"] }) {
   const status = phase === "UPDATING" || phase === "WAITING" ? "Updating…"
     : phase === "COULD_NOT_UPDATE" ? "Couldn’t update"
-    : phase === "PAUSED" ? "Paused for maintenance" : null;
+    : phase === "PAUSED" ? "Paused for maintenance"
+    : phase === "UNAVAILABLE" ? "Briefly unavailable" : null;
   return (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]">
       <span suppressHydrationWarning>
@@ -309,6 +311,8 @@ export function BriefBody({ brief, metrics, dataHealth, phase }: {
         )}
         {/* PAID AI PAUSED: the operator's state in Conversations' words; the Brief below stays readable. */}
         {phase === "PAUSED" && <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">{BRIEF_PAUSED_MESSAGE}</p>}
+        {/* F4 — the allowance couldn't be checked: a transient fault, said neutrally; the Brief below stays readable. */}
+        {phase === "UNAVAILABLE" && <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">{BRIEF_UNAVAILABLE_MESSAGE}</p>}
         <p className="mt-3 max-w-[62ch] text-lg font-medium leading-relaxed text-[var(--text-primary)] sm:text-xl">{brief.headline}</p>
       </div>
 
@@ -443,6 +447,8 @@ export function DailyBriefClient({ spaceId, spaceName, firstName, initial }: {
         <BriefBody brief={brief} metrics={metrics} dataHealth={dataHealth} phase={phase} />
       ) : phase === "PAUSED" ? (
         <BriefError message={BRIEF_PAUSED_MESSAGE} onRetry={retry} retryAt={retryAt} role="status" />
+      ) : phase === "UNAVAILABLE" ? (
+        <BriefError message={BRIEF_UNAVAILABLE_MESSAGE} onRetry={retry} retryAt={retryAt} role="status" />
       ) : phase === "FAILED_EMPTY" ? (
         <BriefError message="Your brief couldn’t be prepared right now." onRetry={retry} retryAt={retryAt} />
       ) : phase === "LOAD_ERROR" ? (

@@ -41,6 +41,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { CHAT_REFUSAL_SAY } from '@/lib/ai/conversation/refusal-sentences';
 import { randomUUID }                from 'crypto';
 import { requireUser }               from '@/lib/session';
 import { paceAiRequest }             from '@/lib/ai/pacing';
@@ -76,22 +77,8 @@ export const maxDuration     = 300;
 /** The sealed continuity carrier. HttpOnly: the page has no business reading it. */
 const STATE_COOKIE = 'fm_ai_state';
 
-/** Sentences the user sees. Plain, specific, and never a stack trace. */
-const SAY = {
-  malformed: 'That request didn’t arrive in a form I could read. Try asking again.',
-  empty:     'I didn’t catch a question there — what would you like to know?',
-  tooLong:   'This conversation has grown longer than I can carry in one piece. '
-    + 'Start a new one and I’ll pick the thread back up.',
-  forbidden: 'You don’t have access to that Space.',
-  failed:    'Something went wrong while I was working on that. Nothing was changed. '
-    + 'Please try again.',
-  silent:    'I wasn’t able to put an answer together for that one. Try rephrasing it, '
-    + 'or ask me something narrower.',
-  unpriced:  'Conversations are paused: the model in use can’t be priced yet, so your '
-    + 'daily AI allowance can’t be checked. Nothing was changed. Please try again later.',
-  timedOut:  'That took longer than I can spend on one question, so I stopped. Nothing was '
-    + 'changed. Try asking something narrower, or try again in a moment.',
-} as const;
+/** Sentences the user sees. Plain, specific, and never a stack trace. One list (refusal-sentences.ts), shared with the history safeguard. */
+const SAY = CHAT_REFUSAL_SAY;
 
 const refuse = (message: string, status: number) =>
   NextResponse.json({ error: message }, { status });
