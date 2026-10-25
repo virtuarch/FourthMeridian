@@ -35,7 +35,7 @@ Consequences:
 | Environment | Source of `OPENAI_API_KEY` | Evidence |
 |---|---|---|
 | **Development** (local `next dev`, scripts, tests) | `.env.local` in the checkout (gitignored: `.gitignore:43-46` ignores `.env` and `.env.*`, exempting only `.env.example`). `vercel env pull` with the Development scope writes it there; Vercel marks every variable on this project **Sensitive**, so a pull returns the value **empty** for Preview/Production scopes (`environment-separation.md` §1) — the local key is whatever the owner placed by hand. Tests never need a real key: the three AI test files set `'test-key-never-used'` and inject a fake client; CI's test job has no `OPENAI_*` at all (`.github/workflows/ci.yml`), and `npm run ci` runs the clean copy with only database URLs removed, so a developer's local key would be inherited by a local `npm run ci` test job — harmless because no test calls the provider, but worth knowing. | PROVEN (gitignore, tests, ci contract); the content of the owner's `.env.local` is not read by this lane |
-| **Preview** (`preview.fourthmeridian.com`, the `v2.6` git-branch domain) | The Vercel env record of that name targeted **Preview** — its **own record, dated 2026-07-01**, separate from Production's (`environment-separation.md` §4). Branch-specific overrides for `v2.6` exist for `NEXTAUTH_SECRET` and `CRON_SECRET` (§4); `OPENAI_API_KEY` has no such override, so the generic Preview record serves every Preview branch. | Record structure PROVEN (2026-10-06 inventory); **value equality with Production OWNER-STATED** (2026-10-03) |
+| **Preview** (`preview.fourthmeridian.com`, the `develop` git-branch domain) | The Vercel env record of that name targeted **Preview** — its **own record, dated 2026-07-01**, separate from Production's (`environment-separation.md` §4). Branch-specific overrides for `develop` (and `v2.6` during its soak) exist for `NEXTAUTH_SECRET` and `CRON_SECRET` (§4); `OPENAI_API_KEY` has no such override, so the generic Preview record serves every Preview branch. | Record structure PROVEN (2026-10-06 inventory); **value equality with Production OWNER-STATED** (2026-10-03) |
 | **Production** | The Vercel env record of that name targeted **Production** — its **own record, dated 2026-07-02**. | PROVEN record; value OWNER-STATED equal to Preview's. **Not touched in this milestone.** |
 
 **Does the deployment configuration support separate keys?** Yes — **PROVEN by structure**: the two records already exist, one per target, under the same name; separation is a matter of the *values* the owner pastes into them, which no machine check in this repository can read (Sensitive) or compare. What the code adds is a way to *prove the pasted record belongs to the environment it is on* without reading it (§2, the guard) and a way to *see which project it spends in* without reading it (§4–§5, the pin + the ledger + OpenAI's dashboard).
@@ -73,9 +73,9 @@ The guard is checked before the pin and before the key, so a copied record is re
 
 ## 2. Exact variable names and configuration locations
 
-| Variable | Development (`.env.local`) | Preview (Vercel env, target Preview, branch `v2.6` domain; Sensitive) | Production (Vercel env, target Production; Sensitive — **OWNER ONLY, NOT IN THIS MILESTONE**) | Who sets it |
+| Variable | Development (`.env.local`) | Preview (Vercel env, target Preview, branch `develop` domain; Sensitive) | Production (Vercel env, target Production; Sensitive — **OWNER ONLY, NOT IN THIS MILESTONE**) | Who sets it |
 |---|---|---|---|---|
-| `OPENAI_API_KEY` | the `fm-dev-backend` **service-account key** (project-scoped to `fourth-meridian-dev`) | the `fm-preview-backend` **service-account key** (project-scoped to `fourth-meridian-preview`; on the `v2.6` Preview record, §2.1) | the `fm-prod-backend` **service-account key** (project-scoped to `fourth-meridian-prod`; owner only, later) | owner, by hand, in the Vercel dashboard — never through chat, a file in git, or a shell history |
+| `OPENAI_API_KEY` | the `fm-dev-backend` **service-account key** (project-scoped to `fourth-meridian-dev`) | the `fm-preview-backend` **service-account key** (project-scoped to `fourth-meridian-preview`; on the `develop` Preview record, §2.1) | the `fm-prod-backend` **service-account key** (project-scoped to `fourth-meridian-prod`; owner only, later) | owner, by hand, in the Vercel dashboard — never through chat, a file in git, or a shell history |
 | `OPENAI_PROJECT_ID` | `proj_…` of `fourth-meridian-dev` | `proj_…` of `fourth-meridian-preview` | `proj_…` of `fourth-meridian-prod` | owner; **not secret** — may be pasted in chat, appears in full in the widget |
 | `OPENAI_EXPECTED_ENVIRONMENT` | `development` (optional locally; recommended so a copied Preview record fails on a laptop too) | `preview` | `production` | owner; not secret |
 
@@ -97,21 +97,21 @@ If the owner instead keeps Development values on Vercel and uses `vercel env pul
 
 | Record | Environment | Branch | Sensitive | Value |
 |---|---|---|---|---|
-| `OPENAI_API_KEY` | Preview | `v2.6` | yes | the `fm-preview-backend` key (this is a NEW branch-scoped record beside the existing generic Preview record of 2026-07-01 — or edit that record's value if the owner prefers one Preview record; either way the `v2.6` deployment must receive the preview project's key) |
-| `OPENAI_PROJECT_ID` | Preview | `v2.6` | optional (not secret) | `proj_…` of `fourth-meridian-preview` (project → Settings → General) |
-| `OPENAI_EXPECTED_ENVIRONMENT` | Preview | `v2.6` | no | `preview` |
+| `OPENAI_API_KEY` | Preview | `develop` | yes | the `fm-preview-backend` key (this is a NEW branch-scoped record beside the existing generic Preview record of 2026-07-01 — or edit that record's value if the owner prefers one Preview record; either way the `develop` deployment must receive the preview project's key) |
+| `OPENAI_PROJECT_ID` | Preview | `develop` | optional (not secret) | `proj_…` of `fourth-meridian-preview` (project → Settings → General) |
+| `OPENAI_EXPECTED_ENVIRONMENT` | Preview | `develop` | no | `preview` |
 
 Vercel CLI alternative (run from the main checkout, linked to `fintracker1`; the CLI **prompts** for the value — the owner types it, nothing is passed on the command line, nothing lands in shell history):
 
 ```
-vercel env add OPENAI_API_KEY preview v2.6 --sensitive
-vercel env add OPENAI_PROJECT_ID preview v2.6
-vercel env add OPENAI_EXPECTED_ENVIRONMENT preview v2.6
+vercel env add OPENAI_API_KEY preview develop --sensitive
+vercel env add OPENAI_PROJECT_ID preview develop
+vercel env add OPENAI_EXPECTED_ENVIRONMENT preview develop
 ```
 
-(`vercel env ls preview v2.6` lists names and targets only — Sensitive values are never printed. If a record of the same name and scope already exists, `vercel env rm OPENAI_API_KEY preview v2.6` first, or edit it in the dashboard.)
+(`vercel env ls preview develop` lists names and targets only — Sensitive values are never printed. If a record of the same name and scope already exists, `vercel env rm OPENAI_API_KEY preview develop` first, or edit it in the dashboard.)
 
-**After any Preview env change a redeploy is required** — running deployments keep the env they were built with (`environment-separation.md` §2). Push a commit to `v2.6` or use Vercel → Deployments → Redeploy on the latest `v2.6` deployment.
+**After any Preview env change a redeploy is required** — running deployments keep the env they were built with (`environment-separation.md` §2). Push a commit to `develop` or use Vercel → Deployments → Redeploy on the latest `v2.6` deployment.
 
 **Production** — Vercel `fintracker1` → Environment Variables → **Production**, Sensitive — **OWNER ONLY, NOT AUTHORIZED NOW.** Same three names; the `fm-prod-backend` key; `proj_…` of `fourth-meridian-prod`; `production`. Documented for completeness; nothing is to be changed there in this milestone.
 
@@ -124,7 +124,7 @@ Never type a key anywhere but the OpenAI dashboard (create) and the Vercel dashb
 1. **Collect the three project ids** — platform.openai.com → each project → Settings → General: `proj_…` for `fourth-meridian-dev`, `fourth-meridian-preview`, `fourth-meridian-prod`. These are not secrets and may be shared in chat.
 2. **Budget and alert per project** — in each project: Settings → Limits → Spend: **Edit spend limit** (the hard monthly limit) and a **spend alert** below it, per §6. Also set an organization-level alert as a backstop (Settings → Organization → Limits). (Production's limits may be set now — they are OpenAI-side settings, not a Production deployment change — but its key placement is not.)
 3. **Development — enter, in `/Users/chrstn/dev/FourthMeridian/.env.local`** (§2.1): `OPENAI_API_KEY=` the `fm-dev-backend` key · `OPENAI_PROJECT_ID=` the dev `proj_…` · `OPENAI_EXPECTED_ENVIRONMENT=development`. Restart `next dev`. Confirm with §4 step 1 and the Development check in §4 step 7.
-4. **Preview — enter, in Vercel `fintracker1` → Environment Variables → Preview, branch `v2.6`, Sensitive** (§2.1 table, or the three `vercel env add … preview v2.6` commands): `OPENAI_API_KEY` = the `fm-preview-backend` key · `OPENAI_PROJECT_ID` = the preview `proj_…` · `OPENAI_EXPECTED_ENVIRONMENT` = `preview`. **Redeploy `v2.6`.** Verify per §4 and reconcile per §5.
+4. **Preview — enter, in Vercel `fintracker1` → Environment Variables → Preview, branch `develop`, Sensitive** (§2.1 table, or the three `vercel env add … preview develop` commands): `OPENAI_API_KEY` = the `fm-preview-backend` key · `OPENAI_PROJECT_ID` = the preview `proj_…` · `OPENAI_EXPECTED_ENVIRONMENT` = `preview`. **Redeploy `develop`.** Verify per §4 and reconcile per §5.
 5. **Production — OWNER ONLY, NOT AUTHORIZED NOW.** Later, when the owner authorizes it (`production-cutover-plan.md` item 9): the same three names on the **Production** record with the `fm-prod-backend` key, the prod `proj_…`, `production`; redeploy Production; verify per §4; reconcile per §5. Only after that step does §5.1 permit revoking the legacy key.
 6. **Legacy keys — see §5.1 for the ordering.** Nothing is revoked in this milestone.
 7. **Afterwards**, delete any old key value from local files that still hold it, and record the rotation in the incident log if it was exposure-driven (`key-rotation.md` "After ANY rotation").
