@@ -205,7 +205,14 @@ console.log("\n1b. lib/platform/directory.server.ts — the platform reads' one 
       const raw = read(LAYOUT);
       const guard = raw.indexOf("if (!session?.user?.id) return redirectToLogin();");
       const flag = raw.indexOf("await hasActivePlatformGrants(session.user.id)");
-      return guard > -1 && flag > guard && /<DashboardChrome hasPlatformGrants=\{hasPlatformGrants\}>/.test(raw);
+      return guard > -1 && flag > guard && /<DashboardChrome hasPlatformGrants=\{hasPlatformGrants\}[ >]/.test(raw);
+    })());
+  check("layout: the notice status (UNIFIED NOTICES) is also read AFTER the session guard, through its helper, as a prop",
+    (() => {
+      const raw = read(LAYOUT);
+      const guard = raw.indexOf("if (!session?.user?.id) return redirectToLogin();");
+      const status = raw.indexOf("await readAppNoticeStatus(session.user.id)");
+      return guard > -1 && status > guard && /noticeStatus=\{noticeStatus\}/.test(raw);
     })());
   check("directory page: zero grants ⇒ redirect to the launcher (never an empty directory, never a 404)",
     /if \(spaces\.length === 0\) redirect\("\/dashboard\/spaces"\)/.test(code(DIRECTORY_PAGE)));

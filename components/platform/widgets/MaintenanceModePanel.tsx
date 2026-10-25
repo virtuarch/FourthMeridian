@@ -32,6 +32,7 @@ import {
   OPERATIONAL_CONTROLS_URL, type MaintenanceAction, type OperationalControlsReadModel,
 } from "@/lib/platform/policies/operational-controls.types";
 import { BTN, BTN_NEUTRAL, BTN_PRIMARY, CadenceForm, Notice, formatUtc, mutate, type OperatorReasonInput, type PolicyNotice } from "./policy-editor-kit";
+import { requestNoticeRevalidation } from "@/components/notices/NoticeRail";
 import {
   ACTION_LABEL, DISTINCTION_LINES, MAINTENANCE_LABEL, OPERATIONAL_CONTROLS_SUBJECT, OPERATIONAL_CONTROLS_TITLE,
   availableActions, confirmLabel, confirmationSentence, environmentBadge, lastChangedText, maintenanceCaption,
@@ -56,6 +57,8 @@ function MaintenanceCard({ model, editable, onModel }: {
     const outcome = await mutate<OperationalControlsReadModel>(OPERATIONAL_CONTROLS_URL, "PATCH", maintenancePatchBody(model, action, reason), "maintenance setting");
     const r = resolveMaintenanceOutcome(outcome, action);
     if (r.model) onModel(r.model);
+    // UNIFIED NOTICES — the customer notice rail re-reads at once (display only; enforcement is server-side).
+    if (r.close) requestNoticeRevalidation();
     if (r.close) setOpen(null);
     setNotice(r.notice);
     setBusy(false);

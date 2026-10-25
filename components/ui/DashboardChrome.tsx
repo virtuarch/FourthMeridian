@@ -38,15 +38,20 @@ import { GlobalHeader } from "@/components/ui/GlobalHeader";
 import { ContextualNavbar } from "@/components/ui/ContextualNavbar";
 import { BottomNav } from "@/components/ui/BottomNav";
 import { CreateSpaceModal } from "@/components/dashboard/CreateSpaceModal";
-import { TotpNudgeBanner } from "@/components/dashboard/TotpNudgeBanner";
+import { NoticeRail } from "@/components/notices/NoticeRail";
+import type { AppNoticeStatus } from "@/components/notices/notice-model";
 import { SpaceChromeProvider } from "@/lib/space/space-chrome-context";
 import { OPEN_CREATE_SPACE_EVENT, isPrimaryDestActive } from "@/lib/space-nav";
 
 export function DashboardChrome({
   children,
   hasPlatformGrants = false,
+  noticeStatus = null,
 }: {
   children: ReactNode;
+  // UNIFIED NOTICES — the rail's first status, read by the layout (no pop-in);
+  // the rail revalidates it client-side. Optional so every other mount is unchanged.
+  noticeStatus?: AppNoticeStatus | null;
   // UX-P2 — a SERVER fact from the layout (the viewer's ACTIVE PlatformGrant
   // count, as the tenant, fail-closed to false): shows the GlobalHeader's
   // Personal/Platform context switch. Optional so every other mount is unchanged.
@@ -59,8 +64,8 @@ export function DashboardChrome({
   // AI-4 — the AI page is a full-height conversation surface: it owns exactly the
   // viewport left between the GlobalHeader and the bottom edge, and scrolls inside
   // itself. Two things in this frame would break that, so on that ONE route:
-  //  • the 2FA nudge is not mounted (not hidden — so it makes no status request
-  //    there); its dismissal, its status and every other page are unchanged;
+  //  • the notice rail shows maintenance only — the 2FA reminder is not shown
+  //    there (AI-4); the rail publishes its height and AiShell subtracts it;
   //  • <main>'s bottom padding is exactly the BottomNav's footprint (h-14 + its
   //    1px border-t + the safe-area inset it pads by) instead of pb-24, and 16px on
   //    lg, so the docked composer sits directly on the bar. AiShell's height
@@ -88,10 +93,10 @@ export function DashboardChrome({
                 : "min-w-0 flex-1 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-6 lg:pb-16"
             }
           >
-            {/* S8 — dismissible 2FA nudge; renders nothing for users with TOTP
-                enabled, for SYSTEM_ADMIN, or once dismissed (per-browser). Not
-                mounted on the AI conversation surface (AI-4). */}
-            {!conversationSurface && <TotpNudgeBanner />}
+            {/* UNIFIED NOTICES — ONE rail for the whole shell: maintenance (highest
+                priority) and the 2FA reminder (not on the AI surface). Renders
+                nothing when no notice applies. Replaces the S8 TotpNudgeBanner. */}
+            <NoticeRail initialStatus={noticeStatus} conversationSurface={conversationSurface} />
             {children}
           </main>
         </div>
