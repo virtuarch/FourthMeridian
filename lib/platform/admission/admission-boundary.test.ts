@@ -111,6 +111,12 @@ const PRODUCERS = [
  * maintenance cannot be gated by maintenance. Closed: a second surface fails.
  */
 const OPERATOR_SURFACE = "lib/platform/policies/operational-controls.ts";
+/**
+ * UNIFIED NOTICES (2026-10-26) — the customer notice read: maintenance as ONE
+ * boolean for the notice rail. Like the operator surface it reaches admission
+ * only to READ a fact's state (resolveControlPlaneFacts) — never to decide.
+ */
+const CUSTOMER_NOTICE_SURFACE = "lib/platform/notices/maintenance-notice.ts";
 const OPERATOR_ROUTE = "app/api/platform/platform-ops/operational-controls/route.ts";
 
 function main() {
@@ -253,12 +259,22 @@ function main() {
       .filter((f) => !/\.test\.tsx?$/.test(f))
       .filter((f) => consumesAdmission(f));
     const listed = new Set<string>(PRODUCERS.filter((p) => p.migrated).map((p) => p.file));
-    const unlisted = consumers.filter((f) => !listed.has(f) && f !== OPERATOR_SURFACE);
+    const unlisted = consumers.filter((f) => !listed.has(f) && f !== OPERATOR_SURFACE && f !== CUSTOMER_NOTICE_SURFACE);
     check("no unlisted module consumes the evaluator", unlisted.length === 0, unlisted.join(", "));
     // The operator surface reaches admission only to READ (state words, key map, work classes) — never to decide.
     check("the operator surface exists and never evaluates admission (no lockout)",
       exists(OPERATOR_SURFACE) && !/admitOperationalWork\(|evaluateAdmission\(|resolveControlPlaneFacts\(/.test(code(OPERATOR_SURFACE))
         && !REACHES_ADMISSION.test(code(OPERATOR_ROUTE)));
+    // The customer notice surface READS one fact's state and returns a boolean: no evaluator, no key, no write, no detail.
+    const notice = exists(CUSTOMER_NOTICE_SURFACE) ? code(CUSTOMER_NOTICE_SURFACE) : "";
+    check("the customer notice surface exists, reads state only, and never evaluates admission",
+      notice !== "" && /resolveControlPlaneFacts\(/.test(notice) && !/admitOperationalWork\(|evaluateAdmission\(/.test(notice));
+    check("…returns only a boolean (or null): no raw value, key, writer or version leaves it",
+      /Promise<boolean \| null>/.test(notice) && !/\.raw\b|updatedAt|updatedBy|\.key\b|ingestionPaused/.test(notice));
+    check("…and writes nothing", !/(createSettingIfAbsent|updateSettingIfVersion|deleteSettingIfVersion|setSetting)\(/.test(notice));
+    const noticeRoute = "app/api/status/notices/route.ts";
+    check("the notice route reaches admission only through that surface",
+      exists(noticeRoute) && !REACHES_ADMISSION.test(code(noticeRoute)) && /requireUser\(/.test(code(noticeRoute)));
   }
 
   // ── 5b. One authority, repo-wide ────────────────────────────────────────────

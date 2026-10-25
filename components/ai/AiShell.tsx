@@ -38,7 +38,7 @@ export function AiShell({ mode, controls, children, composer, lead, aside, conte
     <div
       ref={shellRef}
       data-ai-layout={mode}
-      className="flex min-h-0 min-w-0 flex-col overflow-hidden h-[calc(var(--ai-viewport-height,100dvh)-4.5625rem-3.5rem-1px-env(safe-area-inset-bottom))] lg:h-[calc(var(--ai-viewport-height,100dvh)-5.5625rem)]"
+      className="flex min-h-0 min-w-0 flex-col overflow-hidden h-[calc(var(--ai-viewport-height,100dvh)-4.5625rem-3.5rem-1px-env(safe-area-inset-bottom)-var(--fm-notice-rail-h,0px))] lg:h-[calc(var(--ai-viewport-height,100dvh)-5.5625rem-var(--fm-notice-rail-h,0px))]"
     >
       <header className="shrink-0 flex items-center gap-2.5 pb-3">
         <AiMark />

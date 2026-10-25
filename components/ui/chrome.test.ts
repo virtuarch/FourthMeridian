@@ -23,19 +23,22 @@ const rail = read('components', 'ui', 'ContextualNavbar.tsx');
 const header = read('components', 'ui', 'GlobalHeader.tsx');
 const shell = read('components', 'ai', 'AiShell.tsx');
 const menu = read('components', 'ui', 'UserMenu.tsx');
-const nudge = read('components', 'dashboard', 'TotpNudgeBanner.tsx');
+const noticeRail = read('components', 'notices', 'NoticeRail.tsx');
+const noticeModel = read('components', 'notices', 'notice-model.ts');
 const settingsIndex = read('app', '(shell)', 'dashboard', 'settings', 'page.tsx');
 
-console.log('2FA nudge: not mounted on the AI page, unchanged everywhere else');
+console.log('notice rail: ONE mount for the shell; 2FA reminder not on the AI page');
 {
   check('the route predicate is the existing AI destination rule',
     /const conversationSurface = isPrimaryDestActive\("ai", pathname\);/.test(chrome));
-  check('the nudge is mounted only when NOT on the AI page (not hidden after mounting)',
-    /\{!conversationSurface && <TotpNudgeBanner \/>\}/.test(chrome) && (chrome.match(/<TotpNudgeBanner/g) ?? []).length === 1);
-  check('no CSS suppression of the nudge', !/TotpNudgeBanner[^\n]*(hidden|display)/.test(chrome));
+  check('the rail is mounted exactly once, told whether this is the AI surface',
+    /<NoticeRail initialStatus=\{noticeStatus\} conversationSurface=\{conversationSurface\} \/>/.test(chrome) && (chrome.match(/<NoticeRail/g) ?? []).length === 1);
+  check('the old 2FA card is gone', !/TotpNudgeBanner/.test(chrome.replace(/\{\/\*[\s\S]*?\*\/\}/g, '')));
+  check('no CSS suppression of the rail', !/NoticeRail[^\n]*(hidden|display)/.test(chrome));
   check('other routes reserve the original spacing plus the safe area', chrome.includes('"min-w-0 flex-1 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-6 lg:pb-16"'));
-  check('the nudge itself is untouched: same dismissal key, same status request, still skips SYSTEM_ADMIN',
-    nudge.includes('"fm.totpNudge.dismissed"') && nudge.includes('fetch("/api/user/totp/status")') && /isSystemAdmin\) return null/.test(nudge));
+  check('the 2FA reminder is withheld on the AI surface (AI-4) and still links to the existing enrolment page',
+    /!opts\.conversationSurface/.test(noticeModel) && noticeModel.includes('"/dashboard/settings/security"'));
+  check('the rail reads ONE status url and publishes its height', noticeRail.includes('fetch(NOTICE_STATUS_URL') && noticeRail.includes('"--fm-notice-rail-h"'));
 }
 
 console.log('AI page geometry: the numbers in three files agree');
@@ -49,9 +52,9 @@ console.log('AI page geometry: the numbers in three files agree');
   const reserve = '3.5rem+1px+env(safe-area-inset-bottom)';
   check('AI <main> pads by exactly the BottomNav footprint (mobile) and 16px (lg)',
     chrome.includes(`pb-[calc(${reserve})] lg:pb-4`));
-  check('AiShell subtracts the same chrome from 100dvh (mobile)',
-    shell.includes('h-[calc(var(--ai-viewport-height,100dvh)-4.5625rem-3.5rem-1px-env(safe-area-inset-bottom))]'));
-  check('AiShell desktop height = 100dvh − (49 + 24 + 16)px', shell.includes('lg:h-[calc(var(--ai-viewport-height,100dvh)-5.5625rem)]'));
+  check('AiShell subtracts the same chrome from 100dvh (mobile), and the notice rail when shown',
+    shell.includes('h-[calc(var(--ai-viewport-height,100dvh)-4.5625rem-3.5rem-1px-env(safe-area-inset-bottom)-var(--fm-notice-rail-h,0px))]'));
+  check('AiShell desktop height = 100dvh − (49 + 24 + 16)px − the notice rail', shell.includes('lg:h-[calc(var(--ai-viewport-height,100dvh)-5.5625rem-var(--fm-notice-rail-h,0px))]'));
   check('visual viewport resize updates the height while keeping 100dvh as fallback', shell.includes('window.visualViewport') && shell.includes('viewport.addEventListener("resize", resize)') && shell.includes('viewport.removeEventListener("resize", resize)'));
   const shellCode = shell.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   check('no ResizeObserver / document-offset sizing left in AiShell (code, not comments)',
