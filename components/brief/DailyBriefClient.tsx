@@ -37,7 +37,7 @@ import type {
 import { sourceStatusText } from "@/lib/connections/source-health-copy";
 import { BriefNewUser } from "./BriefNewUser";
 import {
-  browserClock, createBriefController, httpBriefTransport, initialView,
+  BRIEF_PAUSED_MESSAGE, browserClock, createBriefController, httpBriefTransport, initialView,
   type BriefController, type BriefView,
 } from "./brief-flow";
 
@@ -88,7 +88,8 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
  */
 function PriorBriefNotice({ brief, phase }: { brief: BriefArtifactView; phase: BriefView["phase"] }) {
   const status = phase === "UPDATING" || phase === "WAITING" ? "Updating today’s Brief…"
-    : phase === "COULD_NOT_UPDATE" ? "Couldn’t update today’s Brief" : null;
+    : phase === "COULD_NOT_UPDATE" ? "Couldn’t update today’s Brief"
+    : phase === "PAUSED" ? "Today’s Brief is paused for maintenance" : null;
   return (
     <div role="note" aria-label="Last successful Brief"
       className="mb-4 rounded-md border border-[var(--border-hairline)] px-3 py-2.5 text-xs">
@@ -115,7 +116,8 @@ function PriorBriefNotice({ brief, phase }: { brief: BriefArtifactView; phase: B
 /** Clock one: when the Brief was written, and whether it is being reconsidered. */
 function Provenance({ brief, phase }: { brief: BriefArtifactView; phase: BriefView["phase"] }) {
   const status = phase === "UPDATING" || phase === "WAITING" ? "Updating…"
-    : phase === "COULD_NOT_UPDATE" ? "Couldn’t update" : null;
+    : phase === "COULD_NOT_UPDATE" ? "Couldn’t update"
+    : phase === "PAUSED" ? "Paused for maintenance" : null;
   return (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]">
       <span suppressHydrationWarning>
@@ -305,6 +307,8 @@ export function BriefBody({ brief, metrics, dataHealth, phase }: {
             <DataFreshness dataHealth={dataHealth} brief={brief} />
           </>
         )}
+        {/* PAID AI PAUSED: the operator's state in Conversations' words; the Brief below stays readable. */}
+        {phase === "PAUSED" && <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">{BRIEF_PAUSED_MESSAGE}</p>}
         <p className="mt-3 max-w-[62ch] text-lg font-medium leading-relaxed text-[var(--text-primary)] sm:text-xl">{brief.headline}</p>
       </div>
 
@@ -358,7 +362,11 @@ function BriefSkeleton() {
   );
 }
 
-function BriefError({ message, onRetry, retryAt }: { message: string; onRetry: () => void; retryAt: number | null }) {
+function BriefError({ message, onRetry, retryAt, role = "alert" }: {
+  message: string; onRetry: () => void; retryAt: number | null;
+  /** "status" for a declared pause — announced politely, not as an error. */
+  role?: "alert" | "status";
+}) {
   const [now, setNow] = useState(() => Date.now());
   const waitMs = retryAt !== null ? retryAt - now : 0;
   useEffect(() => {
@@ -368,7 +376,7 @@ function BriefError({ message, onRetry, retryAt }: { message: string; onRetry: (
   }, [retryAt]);
   const minutes = Math.ceil(waitMs / 60_000);
   return (
-    <div role="alert" className="flex min-h-[40vh] flex-col items-center justify-center gap-4 text-center">
+    <div role={role} aria-live={role === "status" ? "polite" : undefined} className="flex min-h-[40vh] flex-col items-center justify-center gap-4 text-center">
       <p className="text-sm text-[var(--text-muted)]">{message}</p>
       <button
         type="button"
@@ -433,6 +441,8 @@ export function DailyBriefClient({ spaceId, spaceName, firstName, initial }: {
         <BriefNewUser onAssetAdded={retry} />
       ) : brief ? (
         <BriefBody brief={brief} metrics={metrics} dataHealth={dataHealth} phase={phase} />
+      ) : phase === "PAUSED" ? (
+        <BriefError message={BRIEF_PAUSED_MESSAGE} onRetry={retry} retryAt={retryAt} role="status" />
       ) : phase === "FAILED_EMPTY" ? (
         <BriefError message="Your brief couldn’t be prepared right now." onRetry={retry} retryAt={retryAt} />
       ) : phase === "LOAD_ERROR" ? (
