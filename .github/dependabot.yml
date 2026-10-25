@@ -8,10 +8,14 @@
 #
 # `next` and `eslint-config-next` are pinned exact and must move together
 # (same version); the group keeps them in one PR.
+#
+# target-branch: develop — updates integrate (and reach Preview) before a
+# promotion PR carries them to main. main stays the default branch.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
@@ -23,6 +27,7 @@ updates:
 
   - package-ecosystem: npm
     directory: /site
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
@@ -34,6 +39,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday

@@ -19,6 +19,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { AiMark } from "@/components/ai/AiMark";
 import { MessageCard } from "@/components/ai/MessageCard";
 import { AnswerCard } from "@/components/ai/AnswerCard";
+import { FailedTurn } from "@/components/ai/FailedTurn";
 import type { AiMessage } from "@/components/ai/types";
 
 export interface ConversationViewProps {
@@ -26,6 +27,10 @@ export interface ConversationViewProps {
   busy?: boolean;
   /** Extras (e.g. the knowledge-gap prompt) for the assistant message at `index`. */
   renderExtras?: (index: number) => ReactNode;
+  /** Re-ask the question the newest failure did not answer. Offered on that failure only. */
+  onRetry?: () => void;
+  /** The failure (by index) that happened in this session, announced to assistive tech. */
+  announceFailureIndex?: number | null;
 }
 
 function scrollToTurn(el: HTMLElement | null, align: "start" | "end"): void {
@@ -43,7 +48,7 @@ function scrollToTurn(el: HTMLElement | null, align: "start" | "end"): void {
   container.scrollTo({ top, behavior });
 }
 
-export function ConversationView({ messages, busy, renderExtras }: ConversationViewProps) {
+export function ConversationView({ messages, busy, renderExtras, onRetry, announceFailureIndex = null }: ConversationViewProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const lastUserRef = useRef<HTMLDivElement>(null);
 
@@ -63,7 +68,10 @@ export function ConversationView({ messages, busy, renderExtras }: ConversationV
     <div role="log" aria-label="Conversation" className="max-w-3xl mx-auto w-full space-y-7 px-1 pt-3 pb-10">
       {messages.map((m, i) => (
         <div key={i} ref={i === lastUserIndex ? lastUserRef : undefined} className="ai-turn-enter">
-          {m.role === "assistant" ? (
+          {m.role === "assistant" && m.status === "failed" ? (
+            <FailedTurn message={m.content} busy={busy} announce={i === announceFailureIndex}
+              onRetry={onRetry && i === messages.length - 1 && i > 0 && messages[i - 1].role === "user" ? onRetry : undefined} />
+          ) : m.role === "assistant" ? (
             <AnswerCard message={m.content}>{renderExtras?.(i)}</AnswerCard>
           ) : (
             <MessageCard content={m.content} />

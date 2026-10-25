@@ -102,6 +102,23 @@ const PRODUCERS = [
   { file: "lib/platform/ai/paid-requests-admission.ts",  migrated: true, note: "paid AI gate (PAID_AI_REQUEST) — maintenance stops paid model calls" },
 ] as const;
 
+/**
+ * OPERATIONAL CONTROLS (2026-10-24, owner decision) — the ONE operator surface
+ * for the control-plane facts. It is NOT a producer: it admits no work. It
+ * READS the facts for display (the admission module's own state reader and
+ * key map) and WRITES maintenance_mode through the settings registry's
+ * conditional primitives. It must never EVALUATE admission — the way out of
+ * maintenance cannot be gated by maintenance. Closed: a second surface fails.
+ */
+const OPERATOR_SURFACE = "lib/platform/policies/operational-controls.ts";
+/**
+ * UNIFIED NOTICES (2026-10-26) — the customer notice read: maintenance as ONE
+ * boolean for the notice rail. Like the operator surface it reaches admission
+ * only to READ a fact's state (resolveControlPlaneFacts) — never to decide.
+ */
+const CUSTOMER_NOTICE_SURFACE = "lib/platform/notices/maintenance-notice.ts";
+const OPERATOR_ROUTE = "app/api/platform/platform-ops/operational-controls/route.ts";
+
 function main() {
   // ── 1. Authorization ≠ admission ────────────────────────────────────────────
   console.log("1. admission is not authorization");
@@ -242,8 +259,22 @@ function main() {
       .filter((f) => !/\.test\.tsx?$/.test(f))
       .filter((f) => consumesAdmission(f));
     const listed = new Set<string>(PRODUCERS.filter((p) => p.migrated).map((p) => p.file));
-    const unlisted = consumers.filter((f) => !listed.has(f));
+    const unlisted = consumers.filter((f) => !listed.has(f) && f !== OPERATOR_SURFACE && f !== CUSTOMER_NOTICE_SURFACE);
     check("no unlisted module consumes the evaluator", unlisted.length === 0, unlisted.join(", "));
+    // The operator surface reaches admission only to READ (state words, key map, work classes) — never to decide.
+    check("the operator surface exists and never evaluates admission (no lockout)",
+      exists(OPERATOR_SURFACE) && !/admitOperationalWork\(|evaluateAdmission\(|resolveControlPlaneFacts\(/.test(code(OPERATOR_SURFACE))
+        && !REACHES_ADMISSION.test(code(OPERATOR_ROUTE)));
+    // The customer notice surface READS one fact's state and returns a boolean: no evaluator, no key, no write, no detail.
+    const notice = exists(CUSTOMER_NOTICE_SURFACE) ? code(CUSTOMER_NOTICE_SURFACE) : "";
+    check("the customer notice surface exists, reads state only, and never evaluates admission",
+      notice !== "" && /resolveControlPlaneFacts\(/.test(notice) && !/admitOperationalWork\(|evaluateAdmission\(/.test(notice));
+    check("…returns only a boolean (or null): no raw value, key, writer or version leaves it",
+      /Promise<boolean \| null>/.test(notice) && !/\.raw\b|updatedAt|updatedBy|\.key\b|ingestionPaused/.test(notice));
+    check("…and writes nothing", !/(createSettingIfAbsent|updateSettingIfVersion|deleteSettingIfVersion|setSetting)\(/.test(notice));
+    const noticeRoute = "app/api/status/notices/route.ts";
+    check("the notice route reaches admission only through that surface",
+      exists(noticeRoute) && !REACHES_ADMISSION.test(code(noticeRoute)) && /requireUser\(/.test(code(noticeRoute)));
   }
 
   // ── 5b. One authority, repo-wide ────────────────────────────────────────────
@@ -298,14 +329,25 @@ function main() {
       settingReaders.length === 0, settingReaders.join(", "));
   }
 
-  // ── 6. Scope — no control UI, no broad control plane ────────────────────────
-  console.log("6. no control surface was built");
+  // ── 6. Scope — ONE control surface, no broad control plane ──────────────────
+  //
+  // OPS-2D-3 shipped no control UI at all. On 2026-10-24 the owner ruled that
+  // maintenance mode needs a supported operator control (Release 1 had to use
+  // SQL). It exists at exactly one route + one service; the UI names ACTIONS,
+  // never the keys, and nothing else may write a fact.
+  console.log("6. exactly one control surface exists");
   {
     const controlRoutes = [...walk("app/api")].filter((f) => /\/(control|admission|maintenance|pause)\//.test(f));
-    check("no control or admission endpoint exists", controlRoutes.length === 0, controlRoutes.join(", "));
+    check("no generic control or admission endpoint exists", controlRoutes.length === 0, controlRoutes.join(", "));
+    const operatorRoutes = [...walk("app/api")].filter((f) => /operational-controls/.test(f));
+    check("the operational-controls route is the one operator control endpoint", operatorRoutes.join() === OPERATOR_ROUTE, operatorRoutes.join(", "));
     const ui = [...walk("components"), ...walk("app").filter((f) => /\.tsx$/.test(f))]
       .filter((f) => /maintenance_mode|ingestion_paused|admitOperationalWork/.test(code(f)));
-    check("no UI reads or writes control-plane facts", ui.length === 0, ui.join(", "));
+    check("no UI names a control-plane key or consults admission", ui.length === 0, ui.join(", "));
+    const factWriters = [...walk("app"), ...walk("jobs"), ...walk("lib")]
+      .filter((f) => !/\.test\.tsx?$/.test(f) && f !== "lib/platform-settings.ts")
+      .filter((f) => /CONTROL_PLANE_KEYS/.test(code(f)) && /(createSettingIfAbsent|updateSettingIfVersion|deleteSettingIfVersion|setSetting)\(/.test(code(f)));
+    check("only the operator surface writes a control-plane fact", factWriters.join() === OPERATOR_SURFACE, factWriters.join(", "));
 
     // The facts are settings-shaped, on the EXISTING authority — no second store.
     const settings = code("lib/platform-settings.ts");

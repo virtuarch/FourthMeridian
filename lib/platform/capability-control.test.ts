@@ -186,9 +186,19 @@ function main() {
     const WEBHOOK_ROUTE = "app/api/platform/platform-ops/connections/[id]/webhook/route.ts";
     // Its roster (database only, no provider call) sits at the same rank.
     const WEBHOOK_ROSTER_ROUTE = "app/api/platform/platform-ops/plaid-webhooks/route.ts";
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE].sort();
-    check(`the policies, job-cadence, ai-cost-controls and Plaid-webhook routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // OPERATIONAL CONTROLS (2026-10-24) — the fifth CONTROL consumer: maintenance
+    // mode (closed action body, reason + note required, audited, fresh on PATCH).
+    const OPERATIONAL_ROUTE = "app/api/platform/platform-ops/operational-controls/route.ts";
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE].sort();
+    check(`the policies, job-cadence, ai-cost-controls, operational-controls and Plaid-webhook routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
+    const operational = code(OPERATIONAL_ROUTE);
+    check("maintenance mode MUTATES only under FRESH CONTROL and reads at READ",
+      /export async function PATCH[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/.test(operational)
+        && /export async function GET[\s\S]*requirePlatformAccess\("PLATFORM_OPS", "READ"\)/.test(operational)
+        && !/requirePlatformAccess\([^)]*"CONTROL"/.test(operational));
+    check("maintenance mode requires a structured reason and delegates to its one service",
+      /parseOperatorReason\(/.test(operational) && /from "@\/lib\/platform\/policies\/operational-controls"/.test(operational) && !/platformSetting|auditLog/.test(operational));
     const webhook = code(WEBHOOK_ROUTE);
     check("the webhook repoint MUTATES only under FRESH CONTROL",
       /export async function POST[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/.test(webhook));

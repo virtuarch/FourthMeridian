@@ -66,6 +66,8 @@ import type { RefreshPolicyView } from "@/lib/platform/policies/refresh-policies
 import type { RefreshCadence } from "@/lib/platform/refresh-policy.core";
 import type { AiCostControlsReadModel } from "@/lib/platform/ai/cost-controls.types";
 import { AiCostControlsPanel } from "./AiCostControlsPanel";
+import type { OperationalControlsReadModel } from "@/lib/platform/policies/operational-controls.types";
+import { MaintenanceModePanel } from "./MaintenanceModePanel";
 import { PlaidWebhookPanel } from "./PlaidWebhookPanel";
 import {
   BTN, BTN_NEUTRAL, BTN_PRIMARY, BTN_QUIET, CadenceForm, FIELD, Notice, formatUtc, mutate, useSettle,
@@ -86,6 +88,8 @@ const POLICIES_URL = "/api/platform/platform-ops/policies";
 const JOB_CADENCE_URL = "/api/platform/platform-ops/job-cadence";
 // AI COST CONTROLS — the literal the session hooks need (the static-url contract); AI_COST_CONTROLS_URL in the types file spells the same path and the panel PATCHes it.
 const COST_CONTROLS_URL = "/api/platform/platform-ops/ai-cost-controls";
+// OPERATIONAL CONTROLS — the same static-url contract; OPERATIONAL_CONTROLS_URL in the types file spells the same path and the panel PATCHes it.
+const OPERATIONAL_URL = "/api/platform/platform-ops/operational-controls";
 const JOBS_WORKSPACE = "platform-jobs";
 
 // ── Shared grammar: legend chips, observation line, doorway ───────────────────
@@ -466,7 +470,8 @@ export function JobCadencePanel({ state, canControl, onModel, onOpenWorkspace }:
 
 /** The presentational surface. Prop-driven and fetch-free. */
 export function PoliciesSurface({
-  section, state, canControl = false, onModel = () => {}, cadence, onCadenceModel = () => {}, costControls, onCostControlsModel = () => {}, onOpenWorkspace,
+  section, state, canControl = false, onModel = () => {}, cadence, onCadenceModel = () => {}, costControls, onCostControlsModel = () => {},
+  operational, onOperationalModel = () => {}, onOpenWorkspace,
 }: {
   section: PlatformSection;
   state: SharedFetchState<PlatformPoliciesResponse>;
@@ -478,6 +483,9 @@ export function PoliciesSurface({
   /** AI COST CONTROLS — the read model behind the "AI Cost Controls" group; omitted by callers that do not have it. */
   costControls?: SharedFetchState<AiCostControlsReadModel>;
   onCostControlsModel?: (model: AiCostControlsReadModel) => void;
+  /** OPERATIONAL CONTROLS — maintenance mode's read model; omitted by callers that do not have it. */
+  operational?: SharedFetchState<OperationalControlsReadModel>;
+  onOperationalModel?: (model: OperationalControlsReadModel) => void;
   onOpenWorkspace?: (workspaceId: string) => void;
 }) {
   const data = state.error ? null : state.data;
@@ -510,6 +518,8 @@ export function PoliciesSurface({
       {/* UI-010 — the AI Cost Controls panel (incl. the kill switch) renders from
           ITS OWN fetch state. It used to be gated on the policies read too, so
           a 500/403/slow /policies hid the one control an incident needs. */}
+      {/* Maintenance mode renders from ITS OWN fetch state, like the cost controls (UI-010): the way out of maintenance must never depend on another read. */}
+      {operational && <MaintenanceModePanel state={operational} editable={canControl} onModel={onOperationalModel} />}
       {costControls && <AiCostControlsPanel state={costControls} editable={canControl} onModel={onCostControlsModel} />}
       {canControl && <PlaidWebhookPanel />}
     </div>
@@ -527,8 +537,11 @@ export function OpsPoliciesWidget({ section, access, onOpenWorkspace }: {
   const publishCadence = useSharedWidgetPublish<JobCadenceResponse>(JOB_CADENCE_URL);
   const costControls = useSharedWidgetFetch<AiCostControlsReadModel>(COST_CONTROLS_URL);
   const publishCostControls = useSharedWidgetPublish<AiCostControlsReadModel>(COST_CONTROLS_URL);
+  const operational = useSharedWidgetFetch<OperationalControlsReadModel>(OPERATIONAL_URL);
+  const publishOperational = useSharedWidgetPublish<OperationalControlsReadModel>(OPERATIONAL_URL);
   return (
     <PoliciesSurface section={section} state={state} canControl={access?.canControl ?? false} onModel={publish}
-      cadence={cadence} onCadenceModel={publishCadence} costControls={costControls} onCostControlsModel={publishCostControls} onOpenWorkspace={onOpenWorkspace} />
+      cadence={cadence} onCadenceModel={publishCadence} costControls={costControls} onCostControlsModel={publishCostControls}
+      operational={operational} onOperationalModel={publishOperational} onOpenWorkspace={onOpenWorkspace} />
   );
 }

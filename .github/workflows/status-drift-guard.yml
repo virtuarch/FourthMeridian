@@ -13,7 +13,8 @@ name: STATUS drift guard
 #
 # Two triggers (owner decision 2026-10-14, STATUS.md §13):
 #   - pull_request: the change set is the PR diff against its base branch.
-#   - push to v2.6:  the change set is everything the push brought in, diffed
+#   - push to develop (and v2.6 during its soak): the change set is everything
+#     the push brought in, diffed
 #     against the commit the branch pointed at before the push
 #     (`github.event.before`). This repository has never used pull requests
 #     (direct pushes to v2.6 are the real workflow), so until this trigger
@@ -24,7 +25,7 @@ name: STATUS drift guard
 on:
   pull_request:
   push:
-    branches: ["v2.6"]
+    branches: ["develop", "v2.6"]  # v2.6: soak fallback only, remove at retirement
 
 permissions:
   contents: read

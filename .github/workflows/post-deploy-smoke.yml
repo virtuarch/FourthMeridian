@@ -33,7 +33,7 @@ name: Post-deploy smoke
 # commit SHA, so its branch is GitHub's inference rather than ours to rely on. Protected Previews are therefore UNVERIFIED (red) in
 # this workflow by design; Production is public and is verified for real.
 # Trusted verification through protection: trusted-deployment-health.yml
-# (push to v2.6/main, `vercel-probe` environment).
+# (push to develop/main, `vercel-probe` environment).
 
 # A red run here is an alarm, not a gate: Vercel has already aliased the
 # deployment. The owner's response is the incident runbook

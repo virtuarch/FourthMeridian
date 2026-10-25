@@ -23,6 +23,7 @@
 import 'server-only';
 import { NextResponse } from 'next/server';
 import { checkKeyLimitStrict, type LimitVerdict, type RateLimitConfig } from '@/lib/rate-limit';
+import { PACING_LIMITED_SENTENCE, pacingUnavailableSentence } from '@/lib/ai/conversation/refusal-sentences';
 
 export const PACING_UNAVAILABLE_CODE = 'PACING_UNAVAILABLE' as const;
 /** Seconds a client should wait before retrying a refusal the store could not judge. */
@@ -35,13 +36,13 @@ export function pacingResponse(verdict: LimitVerdict, surfaceLabel: string): Nex
   if (verdict.status === 'ok') return null;
   if (verdict.status === 'limited') {
     return NextResponse.json(
-      { error: 'Too many requests. Please slow down and try again shortly.' },
+      { error: PACING_LIMITED_SENTENCE },
       { status: 429, headers: { ...NO_STORE, 'Retry-After': String(verdict.retryAfterSec) } },
     );
   }
   // FAIL CLOSED — the store could not be consulted, so the window cannot be trusted.
   return NextResponse.json(
-    { error: `${surfaceLabel} is briefly unavailable: your request rate couldn’t be checked just now. Nothing was changed. Please try again in a moment.`,
+    { error: pacingUnavailableSentence(surfaceLabel),
       code: PACING_UNAVAILABLE_CODE, retryable: true, retryAfterSeconds: PACING_RETRY_AFTER_SECONDS },
     { status: 503, headers: { ...NO_STORE, 'Retry-After': String(PACING_RETRY_AFTER_SECONDS) } },
   );

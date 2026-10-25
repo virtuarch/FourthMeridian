@@ -250,8 +250,10 @@ console.log("5. backend contract unchanged");
 {
   const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
   check("posts to /api/ai/chat", /fetch\("\/api\/ai\/chat", \{\s*method: "POST"/.test(client));
-  check("body is {spaceId, messages[{role, content}]}",
-    /spaceId,/.test(client) && /messages: nextMessages\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(client));
+  // AI RELIABILITY (F1): the body is the ANSWERED history — role + content, failed lines dropped.
+  const history = readFileSync("components/dashboard/conversation-history.ts", "utf8");
+  check("body is {spaceId, messages[{role, content}]} — the answered history only",
+    /spaceId,/.test(client) && /messages: historyForRequest\(nextMessages\)/.test(client) && /return messages\.filter\(\(m\) => !isFailedTurn\(m\)\)\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(history));
   check("reads {message, knowledgeGaps, knowledgeGapMode}", /data\.message/.test(client) && /data\.knowledgeGaps/.test(client) && /data\.knowledgeGapMode/.test(client));
   check("still non-streaming (one JSON response)", /await res\.json\(\)/.test(client) && !/getReader\(\)|EventSource/.test(client));
   // ⚠️ ONE DECLARATION OF THE RESPONSE, SHARED WITH THE ROUTE. The client used to
@@ -263,7 +265,7 @@ console.log("5. backend contract unchanged");
     /readKnowledgeGaps\(data\.knowledgeGaps\)/.test(client));
   // A knowledge gap travels with a 200; a refusal is the other branch entirely.
   check("gaps are read on the OK path and never on the error path",
-    client.indexOf("readKnowledgeGaps(") < client.indexOf("data.error ??"));
+    client.indexOf("readKnowledgeGaps(") < client.indexOf("fail(data.error)"));
   check("the request still sends role and content only — a gap cannot be posted back",
     !/knowledgeGaps:[^\n]*JSON\.stringify|body: JSON\.stringify\([^)]*knowledgeGap/.test(client));
 }
@@ -407,11 +409,13 @@ console.log("8. the financial-guidance boundary (advice-boundary slice)");
     /readGuidance\(data\.guidance\) \?\? "UNCLASSIFIED"/.test(client));
   check("…computes ONE plan from every answer, in order", /disclosurePlan\(messages\.map\(/.test(client));
   check("…and renders the note first in the answer's extras", /<>\{note\}\{notice\}\{gaps\}<\/>/.test(client));
+  const historySrc = readFileSync("components/dashboard/conversation-history.ts", "utf8");
   check("the label is never posted back (the body is still role + content only)",
-    /messages: nextMessages\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(client) && !/guidance:[^\n]*JSON\.stringify/.test(client));
-  check("…nor cached (the transcript cache keeps prose only)", /list\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(client));
-  check("a refusal sentence carries no label (outside the boundary)",
-    /\{ role: "assistant", content: data\.error \?\? "Something went wrong\. Please try again\." \}/.test(client));
+    /messages: historyForRequest\(nextMessages\)/.test(client) && /\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(historySrc) && !/guidance:[^\n]*JSON\.stringify/.test(client));
+  check("…nor cached (the transcript cache keeps prose, plus only the failed label)",
+    /list\.map\(\(m\) =>\s*m\.status === "failed" \? \{ role: m\.role, content: m\.content, status: "failed" as const \} : \{ role: m\.role, content: m\.content \}\)/.test(client) && !/guidance/.test(client.slice(client.indexOf("const remember"), client.indexOf("const stopGeneration"))));
+  check("a refusal sentence carries no label (outside the boundary): a failed line has no guidance",
+    /fail\(data\.error\)/.test(client) && /return \{ role: "assistant", content, status: "failed" \};/.test(historySrc) && !/guidance/.test(historySrc));
 }
 
 if (failures > 0) {

@@ -12,11 +12,13 @@ Every variable on the project is a Vercel **Sensitive** variable. `vercel env pu
 - **SEPARATE RECORDS (proven).** Two records, one per target. The values *may* still be equal: the record split says nothing about the value.
 - **OWNER-STATED.** The owner's 2026-10-03 confirmation (§17.0) that `OPENAI_API_KEY` and `CRON_SECRET` held the same value in both environments. No machine check can confirm this without a runtime in each environment.
 
+> **2026-10-26: Preview now follows `develop`.** Both Preview domains and their branch-scoped env records moved from `v2.6` to `develop` (the `v2.6` records are kept for the soak). Current mapping and procedure: [`branching-and-protection.md`](branching-and-protection.md). Where this document says "v2.6" about Preview, read it as the history of the original rollout.
+
 ## 2. Vercel structure facts
 
-- `preview.fourthmeridian.com` is the git-branch domain for `v2.6` and follows the newest `v2.6` deployment.
+- `preview.fourthmeridian.com` and `preview-app.fourthmeridian.com` are the git-branch domains for `develop` (until 2026-10-26: `v2.6`) and follow the newest `develop` deployment.
 - **Vercel deployment protection (SSO) covers Preview.** Unauthenticated requests get a 302 to `vercel.com/sso-api`. Vercel's own cron requests are not affected (Production only).
-- The only remote branches are `main` (Production) and `v2.6`. Any *other* branch pushed later builds with the **generic** Preview scope: everything below marked "generic Preview".
+- `main` (Production) and `develop` (Preview) carry the branch-scoped records below, and `v2.6` keeps its originals for the soak. On `develop`, `NEXTAUTH_SECRET` and `CRON_SECRET` are new values (2026-10-26); the database URLs, `FM_RLS_STRICT` and the URLs match `v2.6`. Any *other* branch pushed later builds with the **generic** Preview scope: everything below marked "generic Preview".
 - **Old Preview deployments keep the env they were built with.** Every Preview deployment before `dpl_2pNvfNQ539juTzLSoouJ4sdPwNqi` still runs with the shared `NEXTAUTH_SECRET` and the old `CRON_SECRET`. They sit behind the same SSO protection.
 
 ## 3. Vercel crons never reach Preview (proven, not assumed)

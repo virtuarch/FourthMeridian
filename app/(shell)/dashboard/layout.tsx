@@ -9,6 +9,7 @@ import { resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { hasActivePlatformGrants } from "@/lib/platform/directory.server";
+import { readAppNoticeStatus } from "@/lib/platform/notices/app-notice-status";
 import { ReactNode } from "react";
 
 // Applies to every page nested under this layout (all /dashboard/* tabs) —
@@ -46,6 +47,11 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   // layout (proxy.ts sends them to /admin), so there is no special case.
   const hasPlatformGrants = await hasActivePlatformGrants(session.user.id);
 
+  // UNIFIED NOTICES — the notice rail's first status (maintenance + this user's
+  // 2FA reminder), so maintenance is on the first paint with no layout shift.
+  // Fail-quiet: a failed read renders no notice and the rail re-reads client-side.
+  const noticeStatus = await readAppNoticeStatus(session.user.id).catch(() => null);
+
   // MC1 Phase 4 Slice 1 (D-1) — resolve the active Space's display currency
   // once for the whole dashboard tree (getSpaceContext() is cache()-deduped,
   // so pages re-resolving it cost nothing extra).
@@ -82,7 +88,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
 
   return (
     <DisplayCurrencyProvider currency={displayCurrency}>
-      <DashboardChrome hasPlatformGrants={hasPlatformGrants}>{children}</DashboardChrome>
+      <DashboardChrome hasPlatformGrants={hasPlatformGrants} noticeStatus={noticeStatus}>{children}</DashboardChrome>
     </DisplayCurrencyProvider>
   );
 }

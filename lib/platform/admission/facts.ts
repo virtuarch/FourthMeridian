@@ -49,6 +49,9 @@ const KEYS = {
   ingestionPaused: PlatformSettingKey.INGESTION_PAUSED,
 } as const;
 
+/** The control-plane keys, named here and in the settings registry only — the operator surface reads them from this map. */
+export const CONTROL_PLANE_KEYS = KEYS;
+
 /**
  * Resolve every control-plane fact in ONE read.
  *
