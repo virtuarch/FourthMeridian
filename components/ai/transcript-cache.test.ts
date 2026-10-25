@@ -239,19 +239,19 @@ console.log("\n9. THE BOUNDARY, IN THE SOURCE");
     /role: 'user' \| 'assistant';\s*content: string;/.test(src));
 
   const client = readFileSync("components/dashboard/AnalyzeClient.tsx", "utf8");
-  check("the client stores role and content only",
-    /writeTranscript\(userId, spaceId, list\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)\)/.test(client));
-  check("restoring drops any historical knowledge-gap card",
-    /cached\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(client));
+  check("the client stores role and content, plus the failed label and nothing else",
+    /writeTranscript\(userId, spaceId, list\.map\(\(m\) =>\s*m\.status === "failed" \? \{ role: m\.role, content: m\.content, status: "failed" as const \} : \{ role: m\.role, content: m\.content \}\)\)/.test(client));
+  check("restoring goes through restoreTurns (labels kept, knowledge-gap cards never rebuilt)",
+    /setMessages\(restoreTurns\(cached\)\)/.test(client) && !/cached\.map\([^)]*knowledgeGaps/.test(client));
   check("New chat clears the stored copy too", /clearTranscript\(userId, spaceId\)/.test(client));
   check("…and does NOT invent a second scenario reset",
     !/fm_ai_state|sealRuntimeState|activeScenario/.test(client));
   check("a restore sends nothing and asks for nothing",
     !/useLayoutEffect\([\s\S]{0,700}(fetch\(|sendMessage\()/.test(client));
   check("the transcript is written at turn boundaries, not per keystroke",
-    !/onChange=\{[^}]*remember/.test(client) && (client.match(/remember\(/g) ?? []).length === 2);
-  check("a failed turn is not remembered",
-    client.indexOf("A REFUSAL IS NOT REMEMBERED") > -1);
+    !/onChange=\{[^}]*remember/.test(client) && (client.match(/remember\(/g) ?? []).length === 4);
+  check("a failed turn IS remembered — with its label (F1), so it survives navigation",
+    client.indexOf("A REFUSAL IS A FAILED REQUEST, NOT A TURN") > -1 && /function fail\([\s\S]{0,200}failureTurn\(sentence\)[\s\S]{0,80}remember\(next\)/.test(client));
 }
 
 if (failures > 0) {

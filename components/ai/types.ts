@@ -10,4 +10,6 @@
 export interface AiMessage {
   role: "user" | "assistant";
   content: string;
+  /** An assistant line that is a request that did not complete — rendered as a failure, never as an answer. */
+  status?: "failed";
 }

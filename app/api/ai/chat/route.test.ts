@@ -24,6 +24,7 @@ function check(name: string, cond: boolean, detail?: string) {
 }
 
 const raw = readFileSync('app/api/ai/chat/route.ts', 'utf8');
+const SENTENCES = readFileSync('lib/ai/conversation/refusal-sentences.ts', 'utf8');
 const src = raw.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
 
 console.log('1. THE ROUTE ANSWERS AGAIN');
@@ -119,8 +120,9 @@ console.log('\n5. WHAT LEAVES THE SERVER');
   check('…and the error itself is logged server-side', /console\.error\(/.test(src));
   check('every refusal is one of the stated sentences',
     (src.match(/refuse\(/g) ?? []).length === (src.match(/refuse\(SAY\.|refuse\(say,/g) ?? []).length);
+  // The sentences live in lib/ai/conversation/refusal-sentences.ts (shared with the F2 history safeguard).
   check('the failure sentence states nothing was changed',
-    /Nothing was changed/.test(raw));
+    /const SAY = CHAT_REFUSAL_SAY;/.test(raw) && /failed:[\s\S]{0,120}Nothing was changed/.test(SENTENCES));
 }
 
 console.log('\n6. CONTINUITY WITHOUT PERSISTENCE');
@@ -161,13 +163,13 @@ console.log('\n7. THE CLIENT CONTRACT IS UNCHANGED');
 {
   const client = readFileSync('components/dashboard/AnalyzeClient.tsx', 'utf8');
   // AI-4: the id is the page's resolved active Space, posted as the `spaceId` prop.
-  check('the client still posts {spaceId, messages}',
-    /body: JSON\.stringify\(\{\s*spaceId,/.test(client) && /messages: nextMessages\.map/.test(client));
+  check('the client still posts {spaceId, messages} — the answered history (F1)',
+    /body: JSON\.stringify\(\{\s*spaceId,/.test(client) && /messages: historyForRequest\(nextMessages\)/.test(client));
   check('…and still reads {message} on success', /data\.message/.test(client));
-  check('…and renders `error` from a refusal as the assistant\'s turn',
-    /data\.error \?\?/.test(client));
+  check('…and renders `error` from a refusal as a FAILED line, not an answer (F1)',
+    /fail\(data\.error\)/.test(client));
   check('the client sends only role and content',
-    /\(\{ role: m\.role, content: m\.content \}\)/.test(client));
+    /\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(readFileSync('components/dashboard/conversation-history.ts', 'utf8')));
 }
 
 console.log('\n8. SEC-AI-003 — THE TURN RUNS INSIDE ONE BOUNDED CLOCK');
@@ -180,7 +182,7 @@ console.log('\n8. SEC-AI-003 — THE TURN RUNS INSIDE ONE BOUNDED CLOCK');
   check('the turn receives it', /deadline,\s*\}\);/.test(posted));
   check('it is disposed in the finally, beside the reservation release', /finally \{[\s\S]*?deadline\.dispose\(\);[\s\S]*?allowance\.release\(\)/.test(posted));
   check('a deadline is a 504 with its own sentence, and the sentence says nothing was changed',
-    /refuse\(SAY\.timedOut, 504\)/.test(posted) && /timedOut:[\s\S]{0,200}Nothing was\s*'?\s*\+?\s*'?\s*changed/.test(raw));
+    /refuse\(SAY\.timedOut, 504\)/.test(posted) && /timedOut:[\s\S]{0,200}Nothing was\s*'?\s*\+?\s*'?\s*changed/.test(SENTENCES));
   check('no literal duration lives in the handler', !/\d{5,}/.test(posted));
 }
 

@@ -162,7 +162,9 @@ async function main() {
   {
     const src = readFileSync(path.join(process.cwd(), "lib/platform/ai/paid-requests-admission.ts"), "utf8");
     check("AI_PAUSED_CODE", src.includes(`AI_PAUSED_CODE = "${AI_PAUSED_CODE}"`));
-    check("the customer sentence", src.includes(`"${BRIEF_PAUSED_MESSAGE}"`));
+    // One source since F1/F2: the server's AI_PAUSED_CUSTOMER_MESSAGE and the Brief both take AI_PAUSED_SENTENCE.
+    const shared = readFileSync(path.join(process.cwd(), "lib/ai/conversation/refusal-sentences.ts"), "utf8");
+    check("the customer sentence", shared.includes(`'${BRIEF_PAUSED_MESSAGE}'`) && /AI_PAUSED_CUSTOMER_MESSAGE = AI_PAUSED_SENTENCE;/.test(src));
     const client = readFileSync(path.join(process.cwd(), "components/brief/DailyBriefClient.tsx"), "utf8");
     check("the empty paused panel is a status, not an alert", /phase === "PAUSED" \? \(\s*<BriefError message=\{BRIEF_PAUSED_MESSAGE\}[^>]*role="status"/.test(client));
   }

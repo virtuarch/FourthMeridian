@@ -10,6 +10,7 @@ export { AiShell, type AiShellProps } from "@/components/ai/AiShell";
 export { ConversationView, type ConversationViewProps } from "@/components/ai/ConversationView";
 export { MessageCard } from "@/components/ai/MessageCard";
 export { AnswerCard, type AnswerCardProps } from "@/components/ai/AnswerCard";
+export { FailedTurn, FAILED_TURN_LABEL } from "@/components/ai/FailedTurn";
 export { Composer, type ComposerProps } from "@/components/ai/Composer";
 export { SuggestedPrompt } from "@/components/ai/SuggestedPrompt";
 export { KnowledgeGapCard } from "@/components/ai/KnowledgeGapCard";

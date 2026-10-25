@@ -58,6 +58,8 @@ import type { GapEntry } from "@/components/dashboard/KnowledgeAcquisitionCard";
 import { readKnowledgeGaps } from "@/lib/ai/conversation/knowledge-gaps";
 import { disclosurePlan, readGuidance, type GuidanceEntry } from "@/lib/ai/conversation/guidance";
 import type { AiAdvice, AiChatResponse } from "@/types";
+import { failureTurn, historyForRequest, restoreTurns, retryPlan } from "@/components/dashboard/conversation-history";
+import { CLIENT_FAILURE_TEXT } from "@/lib/ai/conversation/refusal-sentences";
 
 interface Message {
   role: "user" | "assistant";
@@ -73,6 +75,12 @@ interface Message {
   knowledgeGapMode?: "clarification" | "form";
   /** FM-AUDIT-018 — the plan built so far could not be carried to the next turn. */
   continuityNotice?: string;
+  /**
+   * AI RELIABILITY (F1) — this assistant line is a request that did not complete,
+   * not an answer. Rendered as a failure, kept in the browser cache with its label,
+   * and NEVER posted to the model as history (conversation-history.ts).
+   */
+  status?: "failed";
   /**
    * Advice-boundary slice — this answer's guidance label, or "UNCLASSIFIED" for
    * a real answer that came back without one. Absent on user turns, refusals and
@@ -120,6 +128,8 @@ export function AnalyzeClient({
   const [composerEngaged, setComposerEngaged] = useState(false);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const [loading, setLoading] = useState(false);
+  /** True once a request in THIS session failed: that failure is announced; restored ones are shown, not re-announced. */
+  const [failedThisSession, setFailedThisSession] = useState(false);
   /** Holds the AbortController for the in-flight /api/ai/chat request, if any. */
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -178,14 +188,17 @@ export function AnalyzeClient({
     const cached = readTranscript(userId, spaceId);
     // Knowledge-gap cards are deliberately NOT reconstructed: a gap belonged to
     // the turn that found it, and the answer it sat under is still here to read.
+    // A failed line comes back as a failure; a legacy refusal cached as prose, and a
+    // question left with no answer, come back labelled too (restoreTurns).
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (cached && cached.length > 0) setMessages(cached.map((m) => ({ role: m.role, content: m.content })));
+    if (cached && cached.length > 0) setMessages(restoreTurns(cached));
     setRestoring(false);
   }, [userId, spaceId]);
 
-  /** Keep the browser's copy in step with what is on screen. Prose only. */
+  /** Keep the browser's copy in step with what is on screen. Prose, plus the failed label. */
   const remember = useCallback((list: Message[]) => {
-    writeTranscript(userId, spaceId, list.map((m) => ({ role: m.role, content: m.content })));
+    writeTranscript(userId, spaceId, list.map((m) =>
+      m.status === "failed" ? { role: m.role, content: m.content, status: "failed" as const } : { role: m.role, content: m.content }));
   }, [userId, spaceId]);
 
   const stopGeneration = useCallback(() => {
@@ -206,6 +219,7 @@ export function AnalyzeClient({
   function startNewConversation(): void {
     stopGeneration();
     setMessages([]);
+    setFailedThisSession(false);
     clearTranscript(userId, spaceId);
     setSnoozedGapKeys(new Set());
     setExpandedGapIndices(new Set());
@@ -223,9 +237,29 @@ export function AnalyzeClient({
     // ⚠️ WRITTEN AT TURN BOUNDARIES, NEVER PER KEYSTROKE. `localStorage` is
     // synchronous: a write on every character would cost a frame on every
     // character. A question is remembered as soon as it is asked, so a refresh
-    // mid-answer still shows what was asked.
+    // mid-answer still shows what was asked (and restores as unanswered).
     remember(nextMessages);
+    await runTurn(nextMessages);
+  }
+
+  /**
+   * Re-ask the question the newest failure did not answer. The failure goes and
+   * NOTHING is added: the history already ends with that question, so it is
+   * posted once, exactly as it was asked (conversation-history.ts retryPlan).
+   */
+  async function retryLast() {
+    if (loading) return;
+    const plan = retryPlan(messages);
+    if (!plan) return;
+    setMessages(plan.next as Message[]);
+    remember(plan.next as Message[]);
+    await runTurn(plan.next as Message[]);
+  }
+
+  /** One request for a transcript that ends with the user's question. */
+  async function runTurn(nextMessages: Message[]) {
     setLoading(true);
+    setFailedThisSession(false);
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -237,9 +271,11 @@ export function AnalyzeClient({
         signal: controller.signal,
         body: JSON.stringify({
           spaceId,
-          // Only real user/assistant turns exist in state (no UI greeting), so the
-          // whole list is the conversation history.
-          messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
+          // ⚠️ THE CONVERSATION AS IT WAS ANSWERED. A failed line is on screen but
+          // is not something the assistant said: it is never posted, so the model
+          // never reads an outage notice as a prior answer and the conversation
+          // tail stays on the last real answer (the sealed plan survives).
+          messages: historyForRequest(nextMessages),
         }),
       });
 
@@ -272,27 +308,31 @@ export function AnalyzeClient({
           return next;
         });
       } else {
-        // ⚠️ A REFUSAL IS NOT REMEMBERED. It is a message about this attempt, not a
-        // turn of the conversation — restoring "Something went wrong" tomorrow
-        // would show the user a failure that is no longer happening. It stays on
-        // screen for this session and dies with it.
+        // ⚠️ A REFUSAL IS A FAILED REQUEST, NOT A TURN. It is shown and remembered
+        // WITH ITS LABEL — so leaving the page and coming back still says this
+        // question got no answer — and it is never posted back as history. Only
+        // the server's sentence is shown (as plain text), never a status or body.
         const data = (await res.json().catch(() => ({}))) as { error?: string };
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: data.error ?? "Something went wrong. Please try again." },
-        ]);
+        fail(data.error);
       }
     } catch (err) {
       // AbortError is intentional — user clicked Stop. Do not push an error message.
       if (err instanceof Error && err.name === "AbortError") return;
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "Network error. Please check your connection and try again." },
-      ]);
+      fail(CLIENT_FAILURE_TEXT.network);
     } finally {
       abortControllerRef.current = null;
       setLoading(false);
     }
+  }
+
+  /** Append a labelled failure for the request in flight, remember it, announce it. */
+  function fail(sentence: string | undefined) {
+    setMessages((prev) => {
+      const next: Message[] = [...prev, failureTurn(sentence)];
+      remember(next);
+      return next;
+    });
+    setFailedThisSession(true);
   }
 
   // Per-answer extras: the knowledge-gap prompt for the assistant message at `index`.
@@ -308,6 +348,7 @@ export function AnalyzeClient({
 
   function renderExtras(index: number): ReactNode {
     const m = messages[index];
+    if (m.status === "failed") return null;
     const planned = guidancePlan[index];
     const note = planned ? <GuidanceNote {...planned} /> : null;
     const notice = m.role === "assistant" && m.continuityNotice
@@ -410,7 +451,9 @@ export function AnalyzeClient({
         />
       }
     >
-      <ConversationView messages={messages} busy={loading} renderExtras={renderExtras} />
+      <ConversationView messages={messages} busy={loading} renderExtras={renderExtras}
+        onRetry={() => void retryLast()}
+        announceFailureIndex={failedThisSession && messages.at(-1)?.status === "failed" ? messages.length - 1 : null} />
     </AiShell>
   );
 }

@@ -172,7 +172,10 @@ async function main() {
     check('chat: reads the recorded error back through isUnpricedModelFailure BEFORE the generic no-text sentence',
       noAnswer.length > 0 && /isUnpricedModelFailure\(turn\.record\.error\)/.test(noAnswer) && /SAY\.unpriced/.test(noAnswer) && /503/.test(noAnswer));
     check('chat: the unpriced sentence names the gap and says nothing was changed; it does not say "try rephrasing"',
-      /unpriced:\s*'Conversations are paused: the model in use can’t be priced yet/.test(chat) && !/unpriced:[^;]*rephras/.test(chat));
+      // The sentence lives in the shared refusal list (AI reliability F2); the route binds SAY to it.
+      /const SAY = CHAT_REFUSAL_SAY;/.test(chat)
+        && /unpriced:\s*'Conversations are paused: the model in use can’t be priced yet/.test(read('lib/ai/conversation/refusal-sentences.ts'))
+        && !/unpriced:[^\n]*\n?[^\n]*rephras/.test(read('lib/ai/conversation/refusal-sentences.ts')));
     const brief = strip(read('app/api/brief/generate/route.ts'));
     const pre = brief.indexOf('assertPricedModel(BRIEF_MODEL)');
     check('brief: a pre-flight through the exported chokepoint runs AFTER the allowance check and BEFORE generateBriefResponse (no claim, no cooldown on an unpriceable model)',

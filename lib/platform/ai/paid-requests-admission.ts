@@ -48,6 +48,7 @@
 import "server-only";
 import { NextResponse } from "next/server";
 import { systemDb } from "@/lib/db";
+import { AI_PAUSED_SENTENCE } from "@/lib/ai/conversation/refusal-sentences";
 import { PlatformSettingKey } from "@/lib/platform-settings";
 import { admitOperationalWork, type ControlPlaneReader } from "@/lib/platform/admission/facts";
 import type { AdmissionDecision } from "@/lib/platform/admission/types";
@@ -56,8 +57,7 @@ import type { AdmissionDecision } from "@/lib/platform/admission/types";
 export const AI_PAUSED_CODE = "AI_PAUSED" as const;
 
 /** The sentence customers read while paused (KillSwitchView.customerMessage carries the same words). */
-export const AI_PAUSED_CUSTOMER_MESSAGE =
-  "AI features are paused for maintenance. Nothing was changed. Please try again later.";
+export const AI_PAUSED_CUSTOMER_MESSAGE = AI_PAUSED_SENTENCE;
 
 /** The admission-fact states (the same five words as lib/platform/admission/types.ts; not imported — that module's consumer census is closed). */
 export type PaidRequestsAdmissionState = "ON" | "OFF" | "MISSING" | "INVALID" | "UNAVAILABLE";

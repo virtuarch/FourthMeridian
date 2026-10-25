@@ -144,6 +144,34 @@ scripts still reach live deliberately.
 > the file. Setting up a worktree means **rewriting its `.env.local` to its clone**,
 > not instructing an agent to remember to export something.
 
+## 4b. Pooled connections: never a session-level `SET` (2026-10-25 incident)
+
+**What happened (Preview, 2026-10-25).**
+1. During the `develop` migration, an operator credential check ran `SET default_transaction_read_only=on` as a **standalone statement** through the Supavisor **transaction pooler** (`:6543`), once each as `fm_app`, `fm_auth` and `fm_system`.
+2. In transaction-pooling mode, a session-level `SET` **stays on the server connection** after the client disconnects, and the pooler hands that connection to the next client using the same role: the application.
+3. Read-only traffic (health probes, scheduler reads) kept the `fm_system` connection alive for 37 minutes. The first write transaction on it was the AI allowance reservation's `rateLimit.upsert`, which failed with Postgres `25006 cannot execute INSERT in a read-only transaction`.
+4. Conversations and the Daily Brief returned 503 "allowance couldn't be checked". The gate failed closed, so nothing was written and no provider was called.
+5. The fault cleared when the connection recycled.
+
+Evidence: [`docs/plans/PREVIEW-AI-FAILURE-AND-CONVERSATION-PERSISTENCE-2026-10-26.md`](../plans/PREVIEW-AI-FAILURE-AND-CONVERSATION-PERSISTENCE-2026-10-26.md) §1.
+
+**The rule.** Against any pooled Postgres (Supabase `:6543` *and* `:5432` pooler hosts), and **especially** with an application role:
+
+| Never | Instead |
+|---|---|
+| `SET default_transaction_read_only = on` (or any `SET name = …` / `SET SESSION …`) | `BEGIN READ ONLY;` … `COMMIT;`, or `SET TRANSACTION READ ONLY` as the first statement of an explicit transaction |
+| `SET statement_timeout = …` | `SET LOCAL statement_timeout = …` inside the transaction |
+| `RESET …`, `set_config(name, value, false)` | `set_config(name, value, true)` (transaction-local; this is what `lib/db/tenant-context.ts` does) |
+| `psql -c "SET …" -c "select …"` (each `-c` is its own transaction) | [`scripts/db-readonly-psql.sh`](../../scripts/db-readonly-psql.sh): `psql -1` + `SET TRANSACTION READ ONLY`, and it refuses session-level `SET` / `RESET` / `set_config(…, false)` before connecting |
+
+Use `SHOW name` to read a setting; it changes nothing.
+
+**Guards in the repository.**
+- `scripts/db-session-set-guard.test.ts` fails CI if application code, scripts or jobs issue a session-level `SET`, `RESET` or `set_config(…, false)` through Prisma raw SQL.
+- The same test pins the wrapper's transaction scoping and its refusals.
+
+**If `25006` appears on a primary** (`select pg_is_in_recovery()` is `false`) and no role setting explains it (`pg_db_role_setting`), suspect a leaked session setting. Compare `pg_stat_activity.backend_start` for the role against recent operator activity. Recycled connections clear it. Don't change roles or pooler settings to "fix" it.
+
 ---
 
 ## 5. For agents specifically
@@ -165,4 +193,5 @@ scripts still reach live deliberately.
   so a harness still writes usage rows to whatever database it is pointed at.
 - Never pass `$DATABASE_URL` as `--shadow-database-url`.
 - Take `npm run db:backup` before anything schema-touching.
+- Diagnose pooled databases with `scripts/db-readonly-psql.sh` (or `BEGIN READ ONLY`); never issue a session-level `SET` through a pooler (§4b).
 - If unsure whether an operation is destructive, stop and ask.

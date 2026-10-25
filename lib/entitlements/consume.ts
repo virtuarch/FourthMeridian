@@ -16,6 +16,7 @@
  */
 
 import "server-only";
+import { planUnavailableSentence } from '@/lib/ai/conversation/refusal-sentences';
 import { NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { ENTITLEMENT_DIMENSIONS, type EntitlementDimensionKey } from "./catalogue";
@@ -47,7 +48,7 @@ export function refuseIfDisabled(
   const d = e.dimensions[dimension];
   if (ENTITLEMENT_DIMENSIONS[dimension].kind !== "boolean" || d.value === true) return null;
   return NextResponse.json(
-    { error: `${surfaceLabel} isn’t available on your plan.`, entitlement: dimension },
+    { error: planUnavailableSentence(surfaceLabel), entitlement: dimension },
     { status: 403, headers: NO_STORE },
   );
 }
