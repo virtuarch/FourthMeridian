@@ -20,9 +20,9 @@ What it is and how it fits: [`docs/architecture/FOURTH_MERIDIAN_DOCTRINE.md`](do
 |---|---|
 | **Version** | `2.6.0` — **IN DEVELOPMENT** (`package.json`, the sole version authority; mirrored in `package-lock.json`; pinned by `lib/release-version.test.ts`). |
 | **Last release** | `2.5.0`, tag `v2.5.0`, carried by `main` — [releases/v2.5.md](docs/releases/v2.5.md). |
-| **Development branch** | `v2.6` (branched from the `v2.5.0` tag). `main` = Production. `main` is exactly one content-identical cherry-pick (`87e4df7`) ahead of what `v2.6` contains (VERIFIED by the cutover plan's merge-tree check, 2026-10-06). |
+| **Development branch** | **`develop`** since 2026-10-26 (created at `7435ded`, the `v2.6` HEAD; feature PRs → `develop` → promotion PR → `main`; [branching-and-protection.md](docs/operations/branching-and-protection.md)). `v2.6` is frozen for a 7-day soak (until ≥ 2026-11-02), then retired by the owner. Before 2026-10-26: `v2.6` (branched from the `v2.5.0` tag). `main` = Production. `main` is exactly one content-identical cherry-pick (`87e4df7`) ahead of what `v2.6` contains (VERIFIED by the cutover plan's merge-tree check, 2026-10-06). |
 | **Node** | 24 (`.nvmrc`, `engines`, Vercel, CI). |
-| **Protected branches** | `uxp1/base` + `uxp1/agent-1…5` are Claude 1's live Platform Spaces UX Refinement branches (see §6). Do not touch. |
+| **Protected branches** | Rulesets: `main` 25690163, `develop` 25836806, `v2.6` 25690160 (soak). `uxp1/base` + `uxp1/agent-1…5` are Claude 1's live Platform Spaces UX Refinement branches (see §6). Do not touch. |
 
 ## 3. Latest verified commits
 

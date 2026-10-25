@@ -1,5 +1,5 @@
 // Trusted deployment health (A4b) — run by .github/workflows/trusted-deployment-health.yml
-// on a PUSH to v2.6 or main, inside the `vercel-probe` GitHub Environment,
+// on a PUSH to develop or main (v2.6 during its soak), inside the `vercel-probe` GitHub Environment,
 // which is the only place the two Vercel automation-bypass secrets exist.
 //
 // Why a push and not deployment_status: Vercel creates each GitHub Deployment
@@ -8,7 +8,7 @@
 // 2026-10-22 denial test GitHub resolved such a run to its feature branch and
 // refused it — doc 17 §3 — but the trusted path does not depend on that.) On a
 // push, github.ref IS the branch, and the environment's deployment-branch
-// policy (v2.6, main) decides: a feature branch, a PR, a dispatch from another
+// policy (develop, main; v2.6 during its soak) decides: a feature branch, a PR, a dispatch from another
 // ref, or a deployment_status run of a feature branch cannot obtain the secrets.
 //
 // What it does: waits for every Vercel deployment GitHub records for this
@@ -22,7 +22,7 @@
 import { bypassFor, probeDeployment, targetFor, VERDICT } from "./post-deploy-smoke.mjs";
 
 /**
- * Targets every v2.6 / main commit MUST have a Vercel deployment for. The app
+ * Targets every develop / main commit MUST have a Vercel deployment for. The app
  * (fintracker1) builds on every commit; the site may be cancelled by its
  * Ignored Build Step, which still records a deployment, but it is not required.
  * 2026-10-22, first real run (0773008): the site's deployment was recorded

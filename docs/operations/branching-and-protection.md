@@ -1,173 +1,123 @@
-# Branching model and branch protection (TEST-001 · owner decision 7)
+# Branching model, deployment mapping and branch protection
 
-**Status:** PROPOSED 2026-10-22 by the remediation program (Agent F). Everything under "OWNER ACTION" is a remote change the owner applies; nothing in this document has been applied. Every fact about the remote was read from `docs/audits/pre-beta-2026-10/08-TESTING-DELIVERY.md` §6 (coordinator `gh` reads, 2026-10-21), `docs/operations/environment-separation.md` §2, `docs/operations/domain-split-preview.md`, `docs/operations/production-cutover-plan.md` §1/§5 and `STATUS.md` §2. Where a fact could not be read it is marked UNVERIFIED.
+**Status: LIVE.** Migrated from `v2.6` to `develop` on 2026-10-25/26 (owner-approved, create-and-switch).
+- Audit: [`docs/plans/BRANCHING-DEVELOP-MIGRATION-AUDIT-2026-10-25.md`](../plans/BRANCHING-DEVELOP-MIGRATION-AUDIT-2026-10-25.md).
+- **`v2.6` soak:** started 2026-10-26, minimum 7 days, ends no earlier than **2026-11-02**. During the soak `v2.6` is frozen but kept as a fallback (§6). It must not be deleted or renamed until the owner retires it (§7).
 
-## 1. What exists today (read, not asserted)
+## 1. Branch and deployment map
 
-| Fact | Value | Source |
+```
+feature/*, fix/*, chore/*, sec/*  ──PR, 4 required checks──▶  develop  ──Vercel (auto)──▶  preview-app.fourthmeridian.com  (fintracker1)
+                                                                │                     └─▶  preview.fourthmeridian.com      (fourth-meridian-site)
+                                                                │
+                                              promotion PR develop → main (owner approval; 2 strict checks)
+                                                                ▼
+                                                              main  ──Vercel (auto)──▶  app.fourthmeridian.com          (fintracker1 production)
+                                                                │                   └─▶  fourthmeridian.com              (fourth-meridian-site production)
+                                                                │
+                                              annotated tag vX.Y.Z on the Production commit (immutable)
+                                                                │
+                                              back-sync PR main → develop after each promotion
+```
+
+| Branch | Role | Vercel | GitHub protection |
+|---|---|---|---|
+| `main` | **Production** and the GitHub **default branch** | `productionBranch: main` on both projects; `app.` and the apex have no `gitBranch` | Ruleset `main — production (PR + CI required)` (25690163) |
+| `develop` | **Integration + Preview**. Every feature PR targets it. | Domains `preview-app.` / `preview.` carry `gitBranch: develop`; branch-scoped Preview env records for `develop` (§3) | Ruleset `develop — integration (PR + CI required)` (25836806) |
+| `v2.6` | **Retired integration branch, frozen.** Soak fallback only (§6). | Its branch-scoped env records are kept; its domains moved to `develop` | Ruleset `v2.6 — integration (PR + CI required)` (25690160), kept during the soak |
+| `feature/*`, `fix/*`, `chore/*`, `sec/*` | Short-lived, cut from `develop`, merged by PR | Generic Preview scope: their own `*.vercel.app` URL, SSO-protected, never a custom domain | — |
+| `release/*` (optional) | A frozen candidate, only when `develop` must keep moving during a promotion | Generic Preview scope | Add a ruleset if one is created |
+| `hotfix/*` | Cut from `main` → PR to `main` → back-sync to `develop` | Generic Preview scope | — |
+
+## 2. Rulesets (live, read 2026-10-26)
+
+| Ruleset | Target | Rules |
 |---|---|---|
-| Repository | `virtuarch/FourthMeridian`, visibility **PUBLIC** | 08 §6, SEC-018 |
-| Branch protection | none on `main` or `v2.6` (`…/branches/{main,v2.6}/protection` → 404); rulesets `[]` | 08 §6 |
-| `main` | Production. Serving SHA `87e4df7` (2026-07-27). One content-identical cherry-pick ahead of what `v2.6` contains; 872 commits behind `v2.6`; 38 migrations behind | STATUS §2, cutover plan §1 |
-| `v2.6` | the development/integration branch (from tag `v2.5.0`); direct pushes are the real workflow — the repository has never used pull requests | STATUS §2, status-drift-guard.yml header |
-| CI | `ci.yml` runs on `push` to every branch, `pull_request`, `workflow_dispatch`; three jobs: `test`, `Architecture audits`, `Public site (zero-authority boundary)`; a red run has landed on `main` before (run 30118341969) | ci.yml, 08 §6 |
-| Vercel project `fintracker1` (the app) | Production branch `main` → `fourthmeridian.com` (apex, auto-aliased on push); Preview custom domain `preview-app.fourthmeridian.com` attached with `gitBranch: v2.6`; any other branch builds in the generic Preview scope; crons (`vercel.json`) run against Production only | environment-separation.md §2–3, domain-split-preview.md |
-| Vercel project `fourth-meridian-site` (the public site, `site/`) | production branch `main`; Preview custom domain `preview.fourthmeridian.com` with `gitBranch: v2.6` | domain-split-preview.md |
-| Deployment protection | Vercel SSO covers Preview on both projects; Production custom domains exempt | domain-split-preview.md §2 |
-| Promotion step in the cutover plan | step K: `git push origin <candidate>:main` (fast-forward of the exact tested SHA) after a staged `vercel deploy --prod --skip-domain` + `vercel promote` | cutover plan §5 |
-| Other remote branches | UNVERIFIED from here (STATUS §6 names `uxp1/*` as live and not to be touched); the remediation branches `remediation/{a..g}-*` and `remediation/beta-1` exist locally as worktrees | STATUS §6, `git worktree list` |
+| 25690163 `main — production (PR + CI required)` | `refs/heads/main` | deletion · non_fast_forward · pull_request (0 approvals, dismiss stale) · required checks **`test`, `status-drift-guard`**, **strict** |
+| 25836806 `develop — integration (PR + CI required)` | `refs/heads/develop` | Identical to 25690160: deletion · non_fast_forward · pull_request · required checks **`test`, `Architecture audits`, `Public site (zero-authority boundary)`, `status-drift-guard`**, not strict |
+| 25690160 `v2.6 — integration (PR + CI required)` | `refs/heads/v2.6` | (unchanged; delete at retirement) |
 
-## 2. Target model
+- All three allow the Repository-admin role to bypass in **pull_request mode only**. No direct-push bypass.
+- Verify with: `gh api repos/virtuarch/FourthMeridian/rulesets` and `gh api repos/virtuarch/FourthMeridian/rules/branches/develop`.
 
-```
-main ──────────────────────────────────────────────● Production (fintracker1 + fourth-meridian-site)
-  ▲ fast-forward of a CI-green, Preview-verified SHA only (cutover plan §5 step K)
-v2.6 ───●───●───●───●───●───●───●───●───●───●───●── integration; Preview (preview-app. / preview.)
-          ▲        ▲          ▲
-remediation/f-release-eng, remediation/a-security, … ─ short-lived feature/remediation branches,
-                                                         merged into v2.6 by the orchestrator
-release/beta-1 (optional) ───────────────────────────── a frozen candidate when v2.6 must keep moving
-                                                         during the cutover window
-```
+**Strict `main`:** a `develop → main` PR must contain `main`'s tip. After every promotion (and every hotfix), merge `main` back into `develop` by PR, so the next promotion PR is up to date without a release branch.
 
-Rules of the model:
+## 3. Vercel Preview configuration for `develop`
 
-1. **`main` is Production.** It only ever receives a SHA that is already on `v2.6`, already green on all three CI jobs at that exact SHA, and already verified on Preview (cutover plan §6 gates). It is never pushed directly from a working tree.
-2. **`v2.6` is integration and Preview.** The orchestrator integrates agent branches here; every push runs CI; Preview (`preview-app.` / `preview.`) follows its newest deployment. Direct pushes remain allowed (owner decision — see §4.2), but force-pushes and deletion do not.
-3. **Feature / remediation branches** are short-lived, cut from `v2.6` (or `remediation/beta-1`), named `remediation/<letter>-<area>` during this program and `feat/…` / `fix/…` otherwise. They build in Vercel's generic Preview scope (no custom domain, SSO-protected). They are deleted after integration.
-4. **`release/beta-1` (optional)** exists only if `v2.6` must keep accepting work while a candidate is being rehearsed. It is cut from the candidate SHA, receives cherry-picks only, and is what `main` fast-forwards to. If `v2.6` is frozen for the cutover window instead (cutover plan §5 freezes pushes to `main`/`v2.6` on execution day), it is not needed.
-5. **No history rewriting** on `main` or `v2.6`, ever. A bad commit is reverted forward.
+Both projects keep their Production configuration exactly as before. Preview differs only by branch.
 
-### Why `main` keeps a fast-forward rather than a PR merge
+**Domains:**
+- `fintracker1`: `preview-app.fourthmeridian.com`, `gitBranch: develop`.
+- `fourth-meridian-site`: `preview.fourthmeridian.com`, `gitBranch: develop`.
 
-GitHub's merge button cannot fast-forward: "merge" creates a merge commit and "rebase" rewrites commits, so either way the SHA that lands on `main` is **not the SHA CI and Preview tested** (the cutover plan's §6 gate 1 principle). The ruleset below therefore requires a pull request on `main` for everything **except** the owner's own promotion push, which is the one bypass the model admits, and which the audit log records. If the owner prefers zero bypasses, the alternative is to accept the merge commit, let `ci.yml` run on it (it runs on every push), and rely on `post-deploy-smoke.yml` for identity — documented in §4.3 as the trade-off, not chosen here.
+DNS is unchanged (NameBright → Vercel). Each READY `develop` deployment is attached to its project's domain automatically. The site project's Ignored Build Step cancels builds when `site/` is unchanged, so `preview.` advances only when the site changes.
 
-## 3. Required status checks (exact names)
+**Branch-scoped Preview env records.** These override the generic Preview records for `develop` deployments only. Each has a twin scoped to `v2.6`, kept for the soak.
 
-The contexts GitHub records for the three `ci.yml` jobs are their `name:` (or the job id when there is no name):
+| Project | Key | Type | `develop` value (how it was set, 2026-10-26) |
+|---|---|---|---|
+| fintracker1 | `DATABASE_URL_APP` / `_AUTH` / `_SYSTEM` | sensitive | The Preview pooler role URLs (`fm_app` / `fm_auth` / `fm_system`, project ref `lqagrry…`). Copied from the cutover credentials, verified live as those roles (no RLS bypass) before use. A Postgres role has a single password, so these are the same credentials the `v2.6` records hold. |
+| fintracker1 | `FM_RLS_STRICT` | sensitive | `true` |
+| fintracker1 | `NEXTAUTH_URL`, `NEXT_PUBLIC_APP_URL` | encrypted | `https://preview-app.fourthmeridian.com` (read back equal to `v2.6`) |
+| fintracker1 | `NEXT_PUBLIC_SITE_URL` | encrypted | `https://preview.fourthmeridian.com` (read back equal to `v2.6`) |
+| fintracker1 | `NEXTAUTH_SECRET` | sensitive | **New random value.** The `v2.6` value is write-only and exists nowhere else. Effect: a `v2.6`-era Preview session must sign in again on `develop`. |
+| fintracker1 | `CRON_SECRET` | sensitive | **New random value.** Vercel crons never run on Preview. |
+| fourth-meridian-site | `NEXT_PUBLIC_APP_ORIGIN`, `NEXT_PUBLIC_SITE_ORIGIN` | plain | Identical to `v2.6` |
 
-| Job id | Context string required by the ruleset |
+⚠️ **A branch with no scoped records falls back to the generic Preview scope.** That includes different database URLs and auth secret, and no `NEXT_PUBLIC_SITE_URL`. Never attach a custom Preview domain to a branch before its scoped records exist and a deployment built with them has been verified (§5).
+
+Vercel only accepts a branch-scoped record for a branch that already exists ("Branch not found in the connected Git repository").
+
+## 4. Automation bound to branch names
+
+| Where | Binding |
 |---|---|
-| `test` | `test` |
-| `architecture` | `Architecture audits` |
-| `site` | `Public site (zero-authority boundary)` |
+| `.github/workflows/trusted-deployment-health.yml` | `push: branches: [develop, v2.6, main]`. Runs in GitHub Environment `vercel-probe`. |
+| GitHub Environment `vercel-probe` | Deployment-branch policy: `develop`, `main`, `v2.6`. It is the only holder of `VERCEL_AUTOMATION_BYPASS_SECRET_APP` / `_SITE`. |
+| `.github/workflows/status-drift-guard.yml` | `pull_request` + `push: branches: ["develop", "v2.6"]` |
+| `scripts/ci-local.test.ts` | Pins the trusted-health trigger text exactly. Change both together. |
+| `.github/dependabot.yml` | `target-branch: develop` on all three ecosystems. `main` stays the default branch. |
+| `ci.yml`, `post-deploy-smoke.yml` | Branch-agnostic |
 
-`scripts/ci-local.test.ts` pins that `ci.yml` has exactly these three jobs; renaming one must update the ruleset too.
+Feature PRs **target `develop`**: `gh pr create --base develop`. GitHub's default base is `main`, because `main` is the default branch, so always pass `--base`. A PR into `main` is a **promotion** (from `develop` or a `release/*`) or a **hotfix**, and needs the owner's approval.
 
-## 4. OWNER ACTION — ready-to-apply rulesets
+## 5. Changing a Preview branch: verification sequence
 
-Prerequisites: `gh auth status` shows an account with admin on `virtuarch/FourthMeridian`; `jq` installed. Rulesets need no paid plan on a public repository.
+This is the order used on 2026-10-26. Reuse it for any future branch change.
 
-### 4.1 `main` — protected Production
+1. Create the branch at the verified SHA. Create its ruleset first if it's new.
+2. Create the branch-scoped records (§3). Read back every non-sensitive value. Prove sensitive credentials work against the Preview database read-only, as the expected role.
+3. Create a Git-sourced Preview deployment of the branch for each project. Do **not** touch domains yet.
+4. Through protection (automation bypass, never printed), verify:
+   - `/api/health` → `ok` / `db ok`, with the scheduler record **identical to Preview's** and different from Production's (Preview runs no crons).
+   - `/api/auth/providers` callback host = `preview-app.`.
+   - `/privacy` → **308 to `https://preview.fourthmeridian.com/privacy`**. This proves the branch overrides were applied: there is no generic `NEXT_PUBLIC_SITE_URL`, so a generic build serves `/privacy` itself (200).
+   - The site's links point to `preview-app.` and never to `app.`.
+5. Switch each Preview domain's `gitBranch`. Vercel reattaches it to the newest READY deployment of that branch. Re-run step 4 on the real domains.
+6. Confirm Production: same deployment on `app.` and the apex, `productionBranch: main`, health ok.
 
-Save as `/tmp/ruleset-main.json`:
+## 6. Fallback and rollback (during the soak)
 
-```json
-{
-  "name": "main — production",
-  "target": "branch",
-  "enforcement": "active",
-  "conditions": { "ref_name": { "include": ["refs/heads/main"], "exclude": [] } },
-  "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    { "type": "required_linear_history" },
-    {
-      "type": "pull_request",
-      "parameters": {
-        "required_approving_review_count": 0,
-        "dismiss_stale_reviews_on_push": true,
-        "require_code_owner_review": false,
-        "require_last_push_approval": false,
-        "required_review_thread_resolution": false
-      }
-    },
-    {
-      "type": "required_status_checks",
-      "parameters": {
-        "strict_required_status_checks_policy": true,
-        "do_not_enforce_on_create": false,
-        "required_status_checks": [
-          { "context": "test" },
-          { "context": "Architecture audits" },
-          { "context": "Public site (zero-authority boundary)" }
-        ]
-      }
-    }
-  ],
-  "bypass_actors": [
-    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
-  ]
-}
-```
+`v2.6` is frozen at `7435ded`. Its fallback deployments are:
+- app `dpl_HJVUJuf5wiiVe7hyVdpeCVr3tLNY`;
+- site `dpl_5cC5eW8RBEPua92CzY1AsUJG3Kvi`.
 
-- `actor_id: 5` is the built-in **Repository admin** role. It exists so the cutover's fast-forward push (`git push origin <sha>:main`) by the owner is possible; every bypass is written to the repository audit log. Remove the `bypass_actors` entry to forbid it (then promotion is a PR merge — §4.3).
-- `required_approving_review_count: 0` because the repository has one maintainer; raise it when a second reviewer exists.
-- `strict_required_status_checks_policy: true` means the PR head must be up to date with `main` — for a `v2.6 → main` PR this is always true because `main` is an ancestor.
+| Problem | Rollback (minutes, no DNS change) |
+|---|---|
+| `develop` Preview misbehaves | PATCH each domain back to `gitBranch: v2.6`; if Vercel doesn't reattach, `vercel alias set <fallback deployment> <domain>`. The `v2.6` env records were never changed. |
+| Automation | Revert the migration PR. `vercel-probe` and the drift guard already admit `v2.6`. |
+| Abandon `develop` entirely | Do the two steps above, then delete the `develop`-scoped env records and ruleset 25836806. Remove `develop` from `vercel-probe`. |
 
-Apply:
+## 7. Retiring `v2.6` (owner approval, not before 2026-11-02)
 
-```sh
-gh api --method POST -H "Accept: application/vnd.github+json" \
-  /repos/virtuarch/FourthMeridian/rulesets --input /tmp/ruleset-main.json
-```
+1. Remove `v2.6` from:
+   - the `trusted-deployment-health.yml` and `status-drift-guard.yml` triggers;
+   - the pin in `scripts/ci-local.test.ts`;
+   - the `vercel-probe` policy.
+2. Delete the 11 `v2.6`-scoped Preview env records (9 fintracker1, 2 site).
+3. Delete ruleset 25690160.
+4. Archive: tag `v2.6` HEAD (e.g. `archive/v2.6`), then delete the branch, or keep it read-only. Leave local `v2.6` checkouts alone.
 
-### 4.2 `v2.6` — integration (no force-push, no deletion)
+## 8. Releases
 
-Save as `/tmp/ruleset-v26.json`:
-
-```json
-{
-  "name": "v2.6 — integration",
-  "target": "branch",
-  "enforcement": "active",
-  "conditions": { "ref_name": { "include": ["refs/heads/v2.6"], "exclude": [] } },
-  "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" }
-  ],
-  "bypass_actors": []
-}
-```
-
-Apply:
-
-```sh
-gh api --method POST -H "Accept: application/vnd.github+json" \
-  /repos/virtuarch/FourthMeridian/rulesets --input /tmp/ruleset-v26.json
-```
-
-**Why no required checks on `v2.6`:** a `required_status_checks` rule refuses any push whose commit has not already passed the checks on another ref, which turns every direct push into a PR. The workflow today is direct pushes, and STATUS §2's drift guard was built for that. Adding the checks to `v2.6` is the "move to PRs" decision (§5, item 2); the JSON for it is the `required_status_checks` block from §4.1, unchanged.
-
-### 4.3 Alternative for `main` with no bypass (not chosen)
-
-Delete `bypass_actors` from §4.1. Promotion becomes: open a PR `v2.6 → main`, wait for the three checks on the PR head, merge with **merge commit** (`required_linear_history` must then be removed; or use squash, which also rewrites). `ci.yml` runs on the resulting push to `main`; `post-deploy-smoke.yml` verifies `/api/health` on the immutable per-deployment URL (the route publishes no commit since OPS-014, so identity is by that URL, not by a reported SHA). Cost: the deployed SHA is not the Preview-verified SHA.
-
-### 4.4 Verify
-
-```sh
-gh api /repos/virtuarch/FourthMeridian/rulesets | jq '.[] | {id, name, enforcement}'
-gh api /repos/virtuarch/FourthMeridian/rules/branches/main | jq '.[].type'
-gh api /repos/virtuarch/FourthMeridian/rules/branches/v2.6 | jq '.[].type'
-```
-
-Expected: two active rulesets; `main` lists `deletion`, `non_fast_forward`, `required_linear_history`, `pull_request`, `required_status_checks`; `v2.6` lists `deletion`, `non_fast_forward`. Record the ruleset ids in STATUS §3 (G2 evidence).
-
-### 4.5 Remove (rollback)
-
-```sh
-gh api --method DELETE /repos/virtuarch/FourthMeridian/rulesets/<id>
-```
-
-## 5. Owner decisions this document leaves open
-
-1. **Repository visibility** (SEC-018, G2): PUBLIC today. Rulesets work either way; the decision is recorded separately.
-2. **PRs on `v2.6`**: keep direct pushes (this document) or require PRs + the three checks (§4.2 note).
-3. **Bypass on `main`**: keep the admin bypass for the fast-forward promotion (recommended, §2) or forbid it and accept merge commits (§4.3).
-4. **`release/beta-1`**: cut one only if `v2.6` cannot be frozen for the cutover window.
-
-## 6. What changes in existing documents when the rulesets are live
-
-- `production-cutover-plan.md` §5 step K: unchanged in substance (fast-forward push by the owner, who holds the bypass); add "ruleset bypass recorded in the audit log" to its verify column.
-- `release-checklist.md` §10: add "rulesets present (`gh api …/rulesets` non-empty)" as a GO item.
-- `STATUS.md` §2 "Protected branches": replace the UX-branch note with the two ruleset ids.
+Production releases are identified by **annotated tags** on the commit `main` deployed to Production. `v2.6.0` is `ee95fed` (Production deployment `dpl_Dq2joJaa5tx2vvUtPERuszdG1K8M`, 2026-10-23). Tags are never moved or deleted.

@@ -1,6 +1,6 @@
 name: Trusted deployment health
 
-# A4b — verifies the Vercel deployments of a commit pushed to v2.6 or main,
+# A4b — verifies the Vercel deployments of a commit pushed to develop or main,
 # THROUGH Vercel Deployment Protection, with each project's own
 # automation-bypass secret. Logic: scripts/trusted-deployment-health.mjs
 # (planFromDeployments, unit-tested) + scripts/post-deploy-smoke.mjs (probe and
@@ -9,9 +9,10 @@ name: Trusted deployment health
 # Secret containment — the reason this workflow exists separately from
 # post-deploy-smoke.yml:
 #   - The secrets live ONLY in the GitHub Environment `vercel-probe`, whose
-#     deployment-branch policy admits v2.6 and main and nothing else. GitHub
+#     deployment-branch policy admits develop and main (and v2.6 until its
+#     soak ends — docs/operations/branching-and-protection.md) and nothing else. GitHub
 #     evaluates that policy against the run's ref before the job starts.
-#   - This workflow triggers on push to v2.6/main only, so its ref is one of
+#   - This workflow triggers on push to develop/v2.6/main only, so its ref is one of
 #     those branches. A copy of this file on a feature branch, a pull_request
 #     run, a workflow_dispatch from another ref, or a deployment_status run
 #     of a feature branch is refused by the environment and never receives a
@@ -21,13 +22,13 @@ name: Trusted deployment health
 #   - The secret is sent only as x-vercel-protection-bypass, only over https
 #     to *.vercel.app / *.fourthmeridian.com (mayCarryBypass), and only the
 #     matching project's secret (bypassFor). It is never printed.
-# Residual: anyone who can push to v2.6 or main can change this file there.
+# Residual: anyone who can push to develop or main can change this file there.
 # Branch rulesets (TEST-001, owner) close that; today the repository has one
 # collaborator (the owner).
 
 on:
   push:
-    branches: [v2.6, main]
+    branches: [develop, v2.6, main]  # v2.6: soak fallback only, remove at retirement
 
 permissions:
   contents: read

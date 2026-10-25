@@ -6,6 +6,8 @@
 
 Design reasoning lives in `docs/plans/PUBLIC-APP-DOMAIN-SPLIT-ARCHITECTURE.md` (§9, §11, §12, §16.1, §18.6). This doc is what was actually built and proven.
 
+> **2026-10-26: Preview now follows `develop`.** Both Preview domains and their branch-scoped env records moved from `v2.6` to `develop` (the `v2.6` records are kept for the soak). Current mapping and procedure: [`branching-and-protection.md`](branching-and-protection.md). Where this document says "v2.6" about Preview, read it as the history of the original rollout.
+
 ## 1. Topology
 
 ```
@@ -17,7 +19,7 @@ authenticated app     app.fourthmeridian.com        preview-app.fourthmeridian.c
 ```
 
 - DNS is hosted at **NameBright** (third-party nameservers), not Vercel. `*.fourthmeridian.com` is a NameBright wildcard to a "coming soon" page, so an unconfigured subdomain resolves but does not reach Vercel.
-- Both stable Preview hosts are custom domains attached with `gitBranch: v2.6`. Each follows its project's newest v2.6 deployment.
+- Both stable Preview hosts are custom domains attached with `gitBranch: develop` (was `v2.6` until 2026-10-26). Each follows its project's newest `develop` deployment.
 - **Vercel deployment protection covers both** (`ssoProtection: all_except_custom_domains` exempts only *Production* custom domains). An unauthenticated request gets a 302 to `vercel.com/sso-api`. Live probes therefore run from an owner browser that holds the Vercel SSO cookie. No protection bypass was created or used. fintracker1 already holds one bypass token that predates this lane; it was not used.
 - `vercel.app` is on the Public Suffix List. The stable hosts are **same-site siblings** under `fourthmeridian.com`, as Production will be, so this rehearsal exercises the real same-site threat (Lax cookies travel between siblings; the Origin boundary is what stops writes).
 
@@ -40,7 +42,7 @@ authenticated app     app.fourthmeridian.com        preview-app.fourthmeridian.c
 | fourth-meridian-site | domain `preview.fourthmeridian.com` moved here from fintracker1, `gitBranch: v2.6` (§5), 2026-10-07 ~01:55Z |
 | fintracker1 | `NEXTAUTH_SECRET` (Preview, `gitBranch: v2.6` record only) rotated after the move, then redeployed (§4.4) |
 
-The branch-scoped records override the generic Preview records for v2.6 only. Generic Preview (any other branch) is unchanged.
+The branch-scoped records override the generic Preview records for their branch only: `develop` today, plus the `v2.6` originals kept for the soak. Generic Preview (any other branch) is unchanged.
 
 ### 2.3 Public-site secret inventory (names and scope only)
 

@@ -80,8 +80,8 @@ console.log("CI hygiene (TEST-007 / TEST-012): least privilege, no runaway jobs,
     secretsUsed.length === 0, JSON.stringify(secretsUsed));
   const trusted = readFileSync(".github/workflows/trusted-deployment-health.yml", "utf8");
   const onBlock = trusted.slice(trusted.indexOf("\non:"), trusted.indexOf("\npermissions:"));
-  check("trusted-deployment-health: triggers ONLY on push to v2.6/main",
-    /push:\n\s+branches: \[v2\.6, main\]/.test(onBlock)
+  check("trusted-deployment-health: triggers ONLY on push to develop/v2.6/main",
+    /push:\n\s+branches: \[develop, v2\.6, main\]/.test(onBlock)
       && !/pull_request|workflow_dispatch|deployment_status|workflow_run|schedule/.test(onBlock), onBlock);
   check("trusted-deployment-health: the job runs in the vercel-probe environment",
     /\n    environment: vercel-probe\n/.test(trusted));
