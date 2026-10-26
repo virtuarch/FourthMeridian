@@ -145,18 +145,48 @@ export function WealthHero({
             currency={currency}
             goodDirection={goodDirection}
             compareLabel={compareLabel}
-            className="!text-xs"
+            className="!text-xs max-lg:hidden"
           />
         ) : (
-          <span className="text-[11px] text-[var(--text-muted)]">Add a Compare To date above to see the change.</span>
+          <span className="text-[11px] text-[var(--text-muted)] max-lg:hidden">Add a Compare To date above to see the change.</span>
         )}
       </div>
-      {asOfLabel && <p className="mt-2.5 text-sm text-[var(--text-secondary)]">{asOfLabel}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}</p>}
+      {asOfLabel && <p className="mt-2.5 text-sm text-[var(--text-secondary)] max-lg:hidden">{asOfLabel}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}</p>}
+
+      {/* v2.7 P0 — the COMPACT (<lg) hero: the figure above, then ONLY the change
+          ($ and %), the comparison range and the latest observed date — all read
+          off the same WealthResult. "Latest data" is the date of the snapshot the
+          figure comes from (asOfState.date), never a refresh time, so stale data
+          never reads as current. The stat line below is compact-hidden; those
+          figures stay in their detailed sections. */}
+      <div className="lg:hidden mt-3 space-y-1.5" data-compact-hero-meta>
+        {deltas ? (
+          <DeltaBadge
+            abs={deltas[metric].abs}
+            pct={deltas[metric].pct}
+            currency={currency}
+            goodDirection={goodDirection}
+            className="lg:hidden !text-[15px] font-medium"
+          />
+        ) : (
+          <p className="lg:hidden text-[12px] text-[var(--text-muted)]">Choose a comparison in the date menu to see the change.</p>
+        )}
+        {compareState?.found && compareState.date && asOfState.date && (
+          <p className="lg:hidden text-[13px] tabular-nums text-[var(--text-secondary)]">
+            {formatWealthDate(compareState.date)} → {formatWealthDate(asOfState.date)}
+          </p>
+        )}
+        {asOfState.date && (
+          <p className="lg:hidden text-[12px] text-[var(--text-muted)]">
+            Latest data · {formatWealthDate(asOfState.date)}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}
+          </p>
+        )}
+      </div>
 
       {/* Secondary stats — the subject's dimensions, each a real WealthMetrics
           key off the same as-of snapshot (label · value · signed change). */}
       {secondaryRows.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)]">
+        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)] max-lg:hidden">
           {secondaryRows.map((row) => {
             const d = deltas?.[row.key];
             const good = d ? (row.goodDirection === "up" ? d.abs >= 0 : d.abs <= 0) : true;

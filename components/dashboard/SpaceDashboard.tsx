@@ -837,6 +837,7 @@ export function SpaceDashboard({
         ? <CompactViewSelector items={lensSelectorItems} activeId={activeLensId} onSelect={selectLens} />
         : undefined}
       onLeave={canLeave ? () => setConfirmLeave(true) : undefined}
+      compactTimeSlot={activeTab === "OVERVIEW"}
       activeTab={activeTab}
       // M3: selecting the Overview rail tab always lands on the summary — it
       // clears any engaged lens, so "Overview" is the way back from a Perspective.
@@ -898,6 +899,8 @@ export function SpaceDashboard({
               tabsVisibility="none"
               // COMPACT DASHBOARD — Markets takes no time; below lg its date row is hidden.
               compactHideTime={activePerspectiveId === "markets"}
+              // v2.7 P0 — below lg the time control sits in the header beside Manage.
+              compactTimeInHeader={activePerspectiveId !== "markets"}
             />
           </div>
         )}

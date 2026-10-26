@@ -66,8 +66,10 @@ type _SlotApiKeys = Expect<Equal<
   keyof SpaceShellProps,
   | "overlays" | "title" | "subtitle" | "currencyControl" | "onManage"
   | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "mobileOptimized" | "railVisibility"
-  | "compactViewSelector" | "onLeave" | "children"
+  | "compactViewSelector" | "onLeave" | "compactTimeSlot" | "children"
 >>;
+// v2.7 P0 — `compactTimeSlot`: the <lg header slot the time control portals into (beside Manage).
+type _CompactTimeSlot = Expect<Equal<SpaceShellProps["compactTimeSlot"], boolean | undefined>>;
 type _CompactSlot = Expect<Equal<SpaceShellProps["compactViewSelector"], ReactNode | undefined>>;
 type _RailVisibility = Expect<Equal<SpaceShellProps["railVisibility"], "always" | "belowLg" | undefined>>;
 // The variant discriminator + its optional header-actions slot.
