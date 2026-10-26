@@ -144,6 +144,7 @@ export function WealthWorkspace({
   mode = "total",
   onModeChange,
   modeSelectorVisibility = "always",
+  freshnessLabel = null,
   slice = "all",
   onSliceChange,
   debtSection = "all",
@@ -188,6 +189,8 @@ export function WealthWorkspace({
    * `mode` state; display only — the exact complement of the sidebar's `lg:block`.
    */
   modeSelectorVisibility?: "always" | "belowLg";
+  /** v2.7 P0 — the canonical freshness claim for the compact hero (null ⇒ "As of <snapshot date>"). */
+  freshnessLabel?: string | null;
   /** The Assets balance-history slice (All · Cash · Investments) — URL-synced by the host. */
   slice?:           AssetsSlice;
   onSliceChange?:   (s: AssetsSlice) => void;
@@ -554,7 +557,7 @@ export function WealthWorkspace({
 
         {/* ① Hero — the headline scalar of the page's subject. */}
         <div id="wealth-summary" className="scroll-mt-20">
-          <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric}
+          <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric} freshnessLabel={freshnessLabel}
             cryptoPriceNote={result.asOfState.date === today ? summarizeCryptoPricing((accounts ?? []).map((a) => a.cryptoPrice)) : null} />
         </div>
 
