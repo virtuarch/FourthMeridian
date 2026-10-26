@@ -339,7 +339,7 @@ export function CashFlowWorkspace({
   }
 
   return (
-    <div className="space-y-8 sm:space-y-10 min-w-0">
+    <div className="space-y-8 sm:space-y-10 min-w-0 max-lg:max-sm:space-y-6">
       {transactionsError && (
         <SpaceReadFailure variant="inline" what="cash flow activity" message={transactionsError} onRetry={onRetryTransactions} />
       )}
@@ -356,7 +356,7 @@ export function CashFlowWorkspace({
           asOf={asOf}
           change={change}
         />
-        <div className="mt-5">
+        <div className="mt-5 max-lg:mt-4">
           <CashFlowSummaryWidget
             transactions={transactions}
             period={period}
@@ -373,7 +373,7 @@ export function CashFlowWorkspace({
       </section>
 
       {/* ② Activity — the Cash Flow History widget (Calendar heatmap + Cards), the
-           operational centerpiece. Its whole control cluster lives inside, untouched;
+           operational centerpiece. Its whole control cluster lives inside (compact: one View options disclosure);
            the Block supplies only the editorial header. Fed the contract's windowed
            `rows`, `daily` (calendar) and `buckets` (cards). */}
       <Block

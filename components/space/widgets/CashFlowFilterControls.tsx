@@ -77,16 +77,22 @@ interface Props {
   onChange:    (perspective: CashFlowPerspective, filterId: string) => void;
   /** Compact hides the measure dropdown (perspective toggle only) — for the Summary. */
   compact?:    boolean;
+  /** R5 — below lg the perspective toggle is hidden (`max-lg:hidden`) because the
+   *  Cash Flow hero already hosts the ONE compact perspective control over the same
+   *  shared state. Desktop (≥1024px) is unaffected: max-lg utilities never apply. */
+  hidePerspectiveOnCompact?: boolean;
 }
 
-export function CashFlowFilterControls({ perspective, filterId, onChange, compact }: Props) {
+export function CashFlowFilterControls({ perspective, filterId, onChange, compact, hidePerspectiveOnCompact }: Props) {
   const options = CALENDAR_FILTERS.filter((f) => f.perspective === perspective);
 
   return (
     <div className="inline-flex items-center gap-1.5" onPointerDown={(e) => e.stopPropagation()}>
       {/* Perspective — the primary honest axis toggle. */}
       <div
-        className="inline-flex items-center p-0.5 rounded-[var(--radius-full)] gap-0.5"
+        className={hidePerspectiveOnCompact
+          ? "inline-flex items-center p-0.5 rounded-[var(--radius-full)] gap-0.5 max-lg:hidden"
+          : "inline-flex items-center p-0.5 rounded-[var(--radius-full)] gap-0.5"}
         style={{ background: "var(--glass-ultrathin)", border: "1px solid var(--border-hairline)" }}
         role="tablist"
         aria-label="Cash flow perspective"
@@ -102,7 +108,8 @@ export function CashFlowFilterControls({ perspective, filterId, onChange, compac
               title={p === "liquidity" ? "Spendable cash movement" : "Real spending, incl. credit-card purchases"}
               onClick={() => onChange(p, defaultFilterFor(p).id)}
               className={[
-                "rounded-[var(--radius-full)] px-2.5 py-1 text-[11px] font-semibold transition-colors",
+                "rounded-[var(--radius-full)] px-2.5 py-1 text-[11px] font-semibold transition-colors max-lg:min-h-10 max-lg:px-3.5",
+                "max-lg:focus-visible:outline-none max-lg:focus-visible:ring-2 max-lg:focus-visible:ring-[var(--meridian-400)]",
                 active ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
               ].join(" ")}
               style={active ? { background: "rgba(59,130,246,.14)", border: "1px solid rgba(125,168,255,.32)" } : { border: "1px solid transparent" }}
@@ -126,7 +133,7 @@ export function CashFlowFilterControls({ perspective, filterId, onChange, compac
           value={filterId}
           onChange={(e) => onChange(perspective, e.target.value)}
           className={[
-            "appearance-none cursor-pointer rounded-[var(--radius-full)] px-3 py-1 text-[11px] font-semibold",
+            "appearance-none cursor-pointer rounded-[var(--radius-full)] px-3 py-1 text-[11px] font-semibold max-lg:min-h-10",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] transition-colors",
             "text-[var(--meridian-400)]",
           ].join(" ")}
