@@ -23,8 +23,8 @@
  * future section drag source.
  */
 
-import { useState } from "react";
-import { CalendarDays, LayoutGrid, ChevronLeft, ChevronRight } from "lucide-react";
+import { useId, useState } from "react";
+import { CalendarDays, LayoutGrid, ChevronLeft, ChevronRight, ChevronDown, SlidersHorizontal } from "lucide-react";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
@@ -95,7 +95,8 @@ function ModeToggle({
             title={label}
             onClick={() => onChange(m)}
             className={[
-              "flex items-center gap-1 rounded-[var(--radius-full)] px-2.5 py-1 text-[11px] font-semibold transition-colors",
+              "flex items-center gap-1 rounded-[var(--radius-full)] px-2.5 py-1 text-[11px] font-semibold transition-colors max-lg:min-h-10 max-lg:px-3.5",
+              "max-lg:focus-visible:outline-none max-lg:focus-visible:ring-2 max-lg:focus-visible:ring-[var(--meridian-400)]",
               active ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
             ].join(" ")}
             style={active ? { background: "rgba(59,130,246,.14)", border: "1px solid rgba(125,168,255,.32)" } : { border: "1px solid transparent" }}
@@ -114,14 +115,14 @@ function ModeToggle({
 /** ◀ / ▶ across the data-bearing years (newest-first) for the All Time calendar.
  *  Ends are disabled at the oldest/newest data year — no empty years, no cutoff. */
 function AllTimeYearNav({
-  year, years, onChange,
-}: { year: number; years: number[]; onChange: (y: number) => void }) {
+  year, years, onChange, className,
+}: { year: number; years: number[]; onChange: (y: number) => void; className?: string }) {
   const idx   = years.indexOf(year);
   const older = years[idx + 1];   // newest-first ⇒ the next index is the older year
   const newer = years[idx - 1];
-  const btn = "flex items-center justify-center h-6 w-6 rounded-[var(--radius-full)] text-[var(--text-muted)] enabled:hover:text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-default transition-colors";
+  const btn = "flex items-center justify-center h-6 w-6 rounded-[var(--radius-full)] text-[var(--text-muted)] enabled:hover:text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-default transition-colors max-lg:h-10 max-lg:w-10 max-lg:focus-visible:outline-none max-lg:focus-visible:ring-2 max-lg:focus-visible:ring-[var(--meridian-400)]";
   return (
-    <div className="flex items-center justify-center gap-2" onPointerDown={(e) => e.stopPropagation()}>
+    <div className={className ? `flex items-center justify-center gap-2 ${className}` : "flex items-center justify-center gap-2"} onPointerDown={(e) => e.stopPropagation()}>
       <button type="button" aria-label="Older year" disabled={older == null}
         onClick={() => older != null && onChange(older)} className={btn}
         style={{ background: "var(--glass-ultrathin)", border: "1px solid var(--border-hairline)" }}>
@@ -159,7 +160,7 @@ function HistorySelect({
       }}
       onPointerDown={(e) => e.stopPropagation()}
       className={[
-        "appearance-none cursor-pointer rounded-[var(--radius-full)] px-3 py-1 text-[11px] font-semibold",
+        "appearance-none cursor-pointer rounded-[var(--radius-full)] px-3 py-1 text-[11px] font-semibold max-lg:min-h-10",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] transition-colors",
         active ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
       ].join(" ")}
@@ -324,12 +325,51 @@ export function CashFlowHistoryWidget({ transactions, period, now, asOf, ctx, ac
   const valFor = (group: ExplicitCashFlowPeriod[]) =>
     group.some((o) => periodKey(o) === activeKey) ? activeKey : "";
 
+  // The windowed rows (null while loading) — computed before the controls so the
+  // compact View options panel can host the All Time year navigation.
+  const windowed = transactions == null ? null : (windowRows ?? filterByPeriod(transactions, period, asOfAnchor(asOf)));
+  const showYearNav = windowed != null && windowed.length > 0 && effectiveMode === "calendar"
+    && period === "ALL" && effectiveViewYear != null;
+
+  // R5 — compact (<lg) consolidates this cluster behind ONE "View options"
+  // disclosure. Every control stays available inside it; the perspective toggle is
+  // hidden below lg because the hero hosts the one compact perspective control over
+  // the SAME workspace state. Desktop (≥1024px): the button is lg:hidden and the
+  // cluster's max-lg:hidden never applies, so the cluster renders exactly as before.
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const optionsId = useId();
+  const optionsToggle = (
+    <button
+      type="button"
+      aria-expanded={optionsOpen}
+      aria-controls={optionsId}
+      onClick={() => setOptionsOpen((o) => !o)}
+      onPointerDown={(e) => e.stopPropagation()}
+      className="lg:hidden flex w-full min-h-10 min-w-0 items-center gap-2 rounded-xl px-3 text-left text-xs font-semibold text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
+      style={{ background: "var(--glass-ultrathin)", border: "1px solid var(--border-hairline)" }}
+    >
+      <SlidersHorizontal size={14} className="shrink-0" />
+      <span className="shrink-0">View options</span>
+      <span className="min-w-0 flex-1 truncate text-right font-medium text-[var(--text-muted)]">
+        {activeFilter.label} · {MODE_META[effectiveMode].label}{showYearNav ? ` · ${effectiveViewYear}` : ""}
+      </span>
+      <ChevronDown size={14} className={optionsOpen ? "shrink-0 rotate-180 transition-transform" : "shrink-0 transition-transform"} />
+    </button>
+  );
+
   const controls = (
-    <div className="flex flex-wrap items-center justify-between gap-2">
+    <div
+      id={optionsId}
+      data-compact-view-options=""
+      className={optionsOpen
+        ? "flex flex-wrap items-center justify-between gap-2"
+        : "flex flex-wrap items-center justify-between gap-2 max-lg:hidden"}
+    >
       <CashFlowFilterControls
         perspective={perspective}
         filterId={filterId}
         onChange={changePerspective}
+        hidePerspectiveOnCompact
       />
       <div className="flex flex-wrap items-center gap-1.5">
         {onSelectPeriod && (
@@ -341,18 +381,24 @@ export function CashFlowHistoryWidget({ transactions, period, now, asOf, ctx, ac
         )}
         {modes.length > 1 && <ModeToggle modes={modes} value={effectiveMode} onChange={setMode} />}
       </div>
+      {showYearNav && effectiveViewYear != null && (
+        <div className="lg:hidden w-full">
+          <AllTimeYearNav year={effectiveViewYear} years={dataYears} onChange={setViewYear} />
+        </div>
+      )}
     </div>
   );
 
   if (transactions == null) {
     return (
       <div className="space-y-3">
+        {optionsToggle}
         {controls}
         <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>
       </div>
     );
   }
-  const rows = windowRows ?? filterByPeriod(transactions, period, asOfAnchor(asOf));
+  const rows = windowed ?? [];
   // The calendar grid anchors to the SAME date the rows were windowed against.
   // An explicit clock still wins (the workspace injects one); `asOf` is what the
   // section path has, and without it the grid fell back to today's month.
@@ -377,6 +423,7 @@ export function CashFlowHistoryWidget({ transactions, period, now, asOf, ctx, ac
 
   return (
     <div className="space-y-3">
+      {optionsToggle}
       {controls}
       {rows.length === 0
         ? <EmptyCard sub="Cash-flow history appears as transactions accumulate." />
@@ -384,7 +431,7 @@ export function CashFlowHistoryWidget({ transactions, period, now, asOf, ctx, ac
           ? (
             <div className="space-y-2.5">
               {period === "ALL" && effectiveViewYear != null && (
-                <AllTimeYearNav year={effectiveViewYear} years={dataYears} onChange={setViewYear} />
+                <AllTimeYearNav year={effectiveViewYear} years={dataYears} onChange={setViewYear} className="max-lg:hidden" />
               )}
               <CashFlowCalendar
                 transactions={rows} period={period} now={gridClock} ctx={ctx} accounts={accounts}
