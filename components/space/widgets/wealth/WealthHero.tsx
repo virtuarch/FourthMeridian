@@ -32,6 +32,18 @@ import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import { WealthUnavailable, DeltaBadge } from "./wealth-ui";
 import { investedClassLabel } from "@/lib/wealth/invested-label";
+import { TalkAboutThis } from "@/components/ai/TalkAboutThis";
+import type { TalkSection } from "@/components/ai/talk-about-this";
+
+/** v2.7 R6 — which topic the compact AI entry names for the headline metric. */
+const TALK_SECTION: Record<WealthMetricKey, TalkSection> = {
+  netWorth:         "net-worth",
+  liquidNetWorth:   "net-worth",
+  totalAssets:      "assets",
+  totalLiabilities: "debt",
+  cash:             "cash",
+  invested:         "investments",
+};
 
 /** Hero eyebrow label per metric — mirrors the chart's metric switcher so the
  *  headline reads as whatever series the user selected in Balance history. */
@@ -80,6 +92,7 @@ export function WealthHero({
   metric = "netWorth",
   cryptoPriceNote,
   freshnessLabel = null,
+  timePreset,
 }: {
   result:   WealthResult;
   currency: string;
@@ -102,6 +115,9 @@ export function WealthHero({
    * written from). Absent for a past date or a Space with no priced wallet.
    */
   cryptoPriceNote?: string | null;
+  /** v2.7 R6 — the shell slice id for the compact "Talk with Fourth Meridian
+   *  about this" link (kept there only when allowlisted). */
+  timePreset?: string;
 }) {
   const { asOfState, deltas, compareState } = result;
   // The `invested` figure is named for the classes actually held (canonical
@@ -189,6 +205,12 @@ export function WealthHero({
             {freshnessLabel ?? `As of ${formatWealthDate(asOfState.date!)}`}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}
           </p>
         )}
+      </div>
+
+      {/* v2.7 R6 — compact-only entry to the AI conversation about this view.
+          Navigates with the topic + window ids only; nothing is sent. */}
+      <div className="lg:hidden mt-2" data-compact-talk>
+        <TalkAboutThis section={TALK_SECTION[metric]} period={timePreset} />
       </div>
 
       {/* Secondary stats — the subject's dimensions, each a real WealthMetrics

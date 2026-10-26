@@ -99,6 +99,13 @@ interface Props {
   spaceName: string;
   /** The empty state's headline + chips (personal where memory supports it). */
   starter: StarterModel;
+  /**
+   * v2.7 R6 — the one templated question for the view the user came from
+   * ("Talk with Fourth Meridian about this"), or null. Shown as the FIRST chip,
+   * marked as suggested for that view, and sent only when clicked — through the
+   * same path as every other chip. Never auto-sent, never prefilled.
+   */
+  suggested?: { label: string; prompt: string } | null;
   /** Who this browser is, for the local transcript cache's key. */
   userId: string;
   /**
@@ -114,7 +121,7 @@ interface Props {
 }
 
 export function AnalyzeClient({
-  advice, starterIndex, spaceId, spaceName, starter, userId, expectTranscript,
+  advice, starterIndex, spaceId, spaceName, starter, suggested = null, userId, expectTranscript,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   /**
@@ -397,7 +404,15 @@ export function AnalyzeClient({
 
   const suggestions = (
     <div className="max-w-3xl mx-auto w-full">
-      <div role="group" aria-label="Suggestions" className="mt-4 flex flex-wrap justify-center gap-2">
+      {suggested && (
+        <p id="suggested-for-view" className="mt-4 text-center text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+          Suggested for this view
+        </p>
+      )}
+      <div role="group" aria-label="Suggestions" className={suggested ? "mt-2 flex flex-wrap justify-center gap-2" : "mt-4 flex flex-wrap justify-center gap-2"}>
+        {suggested && (
+          <SuggestedPrompt key="suggested-for-view" label={suggested.label} onSelect={() => sendMessage(suggested.prompt)} variant="chip" describedBy="suggested-for-view" emphasis />
+        )}
         {starter.prompts.map((s) => (
           <SuggestedPrompt key={s.label} label={s.label} onSelect={() => sendMessage(s.prompt)} variant="chip" />
         ))}
