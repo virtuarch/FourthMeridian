@@ -202,7 +202,9 @@ export function SpaceShell({
           /* v2.7 R1 — compact rail (<lg, no Members) + the unchanged full rail at
              lg+. One child slot, so sibling positions below are unchanged. */
           <>
-            <div className="lg:hidden mb-7 flex justify-center" data-compact-rail>
+            {/* v2.7 — four tabs must fit a 375px phone without clipping ("Transactions"
+                was cut off by 21px): tighter tab padding below sm, compact rail only. */}
+            <div className="lg:hidden mb-7 flex justify-center max-sm:[&_button]:px-3" data-compact-rail>
               {railFor(compactRail)}
             </div>
             <div className="max-lg:hidden mb-7 flex justify-center">
