@@ -396,6 +396,7 @@ export function WealthWorkspace({
           targetCurrency={debt?.targetCurrency}
           onEnvelopeChange={onEnvelopeChange}
           timePreset={timePreset}
+          freshnessLabel={freshnessLabel}
           // COMPACT DASHBOARD (P3) — the compact hierarchy inside Debt: Debt hero →
           // Total · Assets · Debt (this lg:hidden selector) → All · Credit · Loans.
           compactModeSelector={modeSelectorVisibility === "belowLg" ? modeSelector : undefined}

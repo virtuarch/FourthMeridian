@@ -63,6 +63,7 @@ export function DebtHero({
   verdictAsOf,
   redactions,
   timePreset,
+  freshnessLabel = null,
 }: {
   kpis:           DebtKpis;
   currency:       string;
@@ -84,6 +85,8 @@ export function DebtHero({
   redactions:     number;
   /** v2.7 R6 — the shell slice id for the compact AI entry link (allowlisted there). */
   timePreset?:    string;
+  /** v2.7 — the Space's canonical freshness claim ("Last checked N ago"), compact label row only. */
+  freshnessLabel?: string | null;
 }) {
   const approx = kpis.estimated ? "≈ " : "";
 
@@ -93,6 +96,10 @@ export function DebtHero({
     <section className={COMPACT_HERO}>
       <div className="flex items-center justify-between gap-3">
         <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Total debt</p>
+        {/* v2.7 — compact: freshness in the label row, the same as Net Worth. */}
+        {freshnessLabel && (
+          <span className="lg:hidden ml-auto truncate text-[11px] text-[var(--text-muted)]" data-compact-hero-freshness>{freshnessLabel}</span>
+        )}
         <TrustIndicator variant="compact" envelope={envelope} />
       </div>
 
@@ -114,15 +121,33 @@ export function DebtHero({
               currency={currency}
               goodDirection="down"
               compareLabel={change.fromLabel}
-              className="!text-xs"
+              className="!text-xs max-lg:hidden"
             />
           ) : (
-            <span className="text-[11px] text-[var(--text-muted)]">Add a Compare To date above to see the change.</span>
+            <span className="text-[11px] text-[var(--text-muted)] max-lg:hidden">Add a Compare To date above to see the change.</span>
           )
         )}
       </div>
 
-      <p className="mt-2.5 text-sm text-[var(--text-secondary)]">
+      {/* v2.7 — COMPACT (<lg): the same lede as Net Worth — change + range on one
+          line. The "across N", interest/utilization and verdict lines are
+          compact-hidden (the figures sit in the compact KPI strip under the
+          balance chart and in the sections below); disclosures stay visible. */}
+      <div className="lg:hidden mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1" data-compact-hero-meta>
+        {!historical && (change != null ? (
+          <>
+            <DeltaBadge abs={change.abs} pct={change.pct} currency={currency} goodDirection="down" className="lg:hidden !text-[14px] font-medium" />
+            <p className="lg:hidden text-[12px] tabular-nums text-[var(--text-muted)]">{change.fromLabel} → {formatDate(asOf < today ? asOf : today)}</p>
+          </>
+        ) : (
+          <p className="lg:hidden text-[12px] text-[var(--text-muted)]">Choose a comparison in the date menu to see the change.</p>
+        ))}
+        {redactions > 0 && (
+          <p className="lg:hidden basis-full text-[11px] text-[var(--text-faint)]">{redactions} account detail{redactions === 1 ? "" : "s"} withheld</p>
+        )}
+      </div>
+
+      <p className="mt-2.5 text-sm text-[var(--text-secondary)] max-lg:hidden">
         across <span className="tabular-nums">{liabilityCount}</span> liabilit{liabilityCount === 1 ? "y" : "ies"}
         <span className="text-[var(--text-muted)]"> · {historical ? "current balances" : `as of ${formatDate(asOf < today ? asOf : today)}`}</span>
       </p>
@@ -138,7 +163,7 @@ export function DebtHero({
       {/* Quiet secondary stats — the retired KPI strip, folded into a single inline
           line rather than a card grid. Each renders only when honestly available. */}
       {kpis.totalDebt > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)]">
+        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)] max-lg:hidden">
           {kpis.ratedCount > 0 && (
             <Stat label="Est. interest">
               <span className="text-[var(--accent-negative)]">{approx}{formatCurrency(kpis.estMonthlyInterest, currency)}</span>/mo
@@ -154,7 +179,7 @@ export function DebtHero({
 
       {/* Lens verdict — the as-of intelligence sentence (prose only, never a figure). */}
       {verdict && (
-        <p className="mt-3 max-w-prose text-[13px] leading-snug text-[var(--text-secondary)]">
+        <p className="mt-3 max-w-prose text-[13px] leading-snug text-[var(--text-secondary)] max-lg:hidden">
           {verdict}
           {(verdictAsOf || redactions > 0) && (
             <span className="text-[var(--text-faint)]">
@@ -166,11 +191,26 @@ export function DebtHero({
       )}
 
       {/* v2.7 R6 — compact-only entry to the AI conversation about this view. */}
-      <div className="lg:hidden mt-2" data-compact-talk>
+      <div className="lg:hidden mt-1" data-compact-talk>
         <TalkAboutThis section="debt" period={timePreset} />
       </div>
     </section>
   );
+}
+
+/**
+ * v2.7 — the hero's secondary stats as compact KPI-strip items (Liabilities ·
+ * Est. interest · Utilization), for the strip under the compact balance chart.
+ * Same kpis values and the same "≈" estimated marker the hero uses — owned here
+ * so the workspace never re-derives a trust marker.
+ */
+export function debtCompactKpiItems(kpis: DebtKpis, currency: string): { key: string; label: string; value: string }[] {
+  const approx = kpis.estimated ? "≈ " : "";
+  return [
+    { key: "liabilities", label: "Liabilities", value: String(kpis.owingCount) },
+    ...(kpis.ratedCount > 0 ? [{ key: "interest", label: "Est. interest", value: `${approx}${formatCurrency(kpis.estMonthlyInterest, currency)}/mo` }] : []),
+    ...(kpis.utilizationPct != null ? [{ key: "utilization", label: "Utilization", value: `${kpis.utilizationPct.toFixed(0)}%` }] : []),
+  ];
 }
 
 function Stat({ label, children }: { label: string; children: ReactNode }) {
