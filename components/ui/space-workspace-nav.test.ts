@@ -355,9 +355,15 @@ console.log("H. One workspace switcher per width; no stale Sections label");
   check("the two breakpoints are exact complements: sidebar `hidden … lg:block` ⇔ row `lg:hidden`",
     /<aside className="hidden w-\[212px\] shrink-0 lg:block">/.test(rail));
   const host = code(read("components", "dashboard", "SpaceDashboard.tsx"));
-  check("the customer host opts in exactly once, on the lens row it already renders (no second switcher, same routing)",
-    (host.match(/tabsVisibility="belowLg"/g) ?? []).length === 1 &&
-      /tabs=\{lensSelectorItems\}[\s\S]{0,120}onSelectTab=\{selectLens\}[\s\S]{0,40}tabsVisibility="belowLg"/.test(host));
+  // COMPACT DASHBOARD (P1) — below lg the switcher is the header's CompactViewSelector,
+  // fed the SAME items + the SAME selectLens the lens row used (same routing, one
+  // switcher); the compact lens row is therefore not rendered for customer Spaces.
+  check("the customer host renders ONE compact switcher: the header selector, on the lens row's items and handler",
+    (host.match(/tabsVisibility="none"/g) ?? []).length === 1 && !/tabsVisibility="belowLg"/.test(host) &&
+      /tabs=\{lensSelectorItems\}[\s\S]{0,120}onSelectTab=\{selectLens\}[\s\S]{0,40}tabsVisibility="none"/.test(host) &&
+      /<CompactViewSelector items=\{lensSelectorItems\} activeId=\{activeLensId\} onSelect=\{selectLens\} \/>/.test(host));
+  check("the compact selector is compact-only (lg:hidden root) and the sidebar stays desktop-only — exact complements",
+    /className="relative lg:hidden"/.test(read("components", "space", "shell", "CompactViewSelector.tsx")));
   check("Net Worth internal modes (Total · Assets · Debt) are not the lens row — untouched by this switch",
     !/tabsVisibility/.test(code(read("components", "space", "widgets", "wealth", "WealthWorkspace.tsx"))));
 

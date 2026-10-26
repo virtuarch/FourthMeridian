@@ -79,7 +79,8 @@ interface Props {
    * leaves no label behind) and its selection
    * logic is untouched.
    */
-  tabsVisibility?: "always" | "belowLg";
+  /** "none" — COMPACT DASHBOARD (P1): the host renders the compact view selector instead. */
+  tabsVisibility?: "always" | "belowLg" | "none";
 }
 
 export function PerspectiveShell(props: Props) {
@@ -163,16 +164,18 @@ export function PerspectiveShell(props: Props) {
           engaged and summary lens rows are visually identical. The former floating
           pill (FloatingNavWrapper) is dropped: the prototype's lens selector is
           in-flow, and loose chips must not float over the content. */}
-      <div
-        data-lens-row
-        className={["flex justify-center px-1", props.tabsVisibility === "belowLg" ? "lg:hidden" : ""].join(" ").trim()}
-      >
-        <PerspectiveTabs
-          items={props.tabs}
-          activeId={props.activeTabId}
-          onSelect={props.onSelectTab}
-        />
-      </div>
+      {props.tabsVisibility !== "none" && (
+        <div
+          data-lens-row
+          className={["flex justify-center px-1", props.tabsVisibility === "belowLg" ? "lg:hidden" : ""].join(" ").trim()}
+        >
+          <PerspectiveTabs
+            items={props.tabs}
+            activeId={props.activeTabId}
+            onSelect={props.onSelectTab}
+          />
+        </div>
+      )}
     </div>
   );
 }
