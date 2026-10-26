@@ -218,6 +218,8 @@ export function SpaceDashboard({
   // inherited from SPACE_TAB_ORDER — never reordered here.
   const railOptions: { id: string; label: string }[] =
     railVisibleTabs().map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
+  // v2.7 R1 (owner D-1) — the compact rail: the same options minus Members.
+  const compactRailOptions = railOptions.filter((o) => o.id !== "MEMBERS");
 
   // "overview" is filtered out here, not in lib/perspectives.ts: it's the
   // OVERVIEW destination's own identity, never an engageable lens. (The former
@@ -840,13 +842,15 @@ export function SpaceDashboard({
       // order across every Space type, centered + stationary on every Workspace
       // and lens (no railStatic left-shift).
       railOptions={railOptions}
-      // COMPACT DASHBOARD (P1) — <lg only: the financial-view selector (Overview)
-      // and Leave Space for members/viewers (the desktop sidebar keeps its own).
-      compactViewSelector={activeTab === "OVERVIEW"
-        ? <CompactViewSelector items={lensSelectorItems} activeId={activeLensId} onSelect={selectLens} />
-        : undefined}
+      // v2.7 R1 (owner D-1) — the compact (<lg) rail omits Members; it stays
+      // reachable via Manage → Members. Desktop keeps the full rail.
+      compactRailOptions={compactRailOptions}
+      // v2.7 R1 — Overview's compact header is the Space name alone; the view
+      // selector + date sit in PerspectiveShell's controls row.
+      compactTitleOnly={activeTab === "OVERVIEW"}
+      // COMPACT DASHBOARD (P1) — <lg only: Leave Space for members/viewers (the
+      // desktop sidebar keeps its own).
       onLeave={canLeave ? () => setConfirmLeave(true) : undefined}
-      compactTimeSlot={activeTab === "OVERVIEW"}
       activeTab={activeTab}
       // M3: selecting the Overview rail tab always lands on the summary — it
       // clears any engaged lens, so "Overview" is the way back from a Perspective.
@@ -906,10 +910,11 @@ export function SpaceDashboard({
               // CompactViewSelector is — same items, same selectLens — so the
               // compact lens row is no longer rendered.
               tabsVisibility="none"
-              // COMPACT DASHBOARD — Markets takes no time; below lg its date row is hidden.
+              // COMPACT DASHBOARD — Markets takes no time; below lg its date trigger is hidden.
               compactHideTime={activePerspectiveId === "markets"}
-              // v2.7 P0 — below lg the time control sits in the header beside Manage.
-              compactTimeInHeader={activePerspectiveId !== "markets"}
+              // v2.7 R1 — below lg the time row is the financial controls row:
+              // this selector left, the date trigger right (one TimelineLens).
+              compactViewSelector={<CompactViewSelector items={lensSelectorItems} activeId={activeLensId} onSelect={selectLens} />}
             />
           </div>
         )}

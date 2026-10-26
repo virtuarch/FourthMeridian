@@ -24,7 +24,6 @@
  */
 
 import type { ReactNode } from "react";
-import { COMPACT_TIME_SLOT_ID } from "./compact-time";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import { SpaceControls } from "@/components/space/shell/SpaceControls";
 
@@ -93,15 +92,22 @@ export interface SpaceShellProps {
    * only: the rail stays mounted and its selection logic is untouched (mirrors
    * PerspectiveShell `tabsVisibility`).
    */
-  /**
-   * COMPACT DASHBOARD (P1) — the financial-view selector shown in the compact
-   * (<lg) header row, upper-left. The host passes it on Overview only.
-   */
-  compactViewSelector?: ReactNode;
   /** COMPACT DASHBOARD (P1) — Leave Space in the compact header controls (member/viewer). */
   onLeave?: () => void;
-  /** v2.7 P0 — render the compact (<lg) header slot the time control portals into (Overview). */
-  compactTimeSlot?: boolean;
+  /**
+   * v2.7 R1 — the rail options shown BELOW lg only (owner D-1: the compact rail
+   * omits Members, which stays reachable via Manage). When passed, the compact
+   * rail (lg:hidden) renders these and the full `railOptions` rail is shown at
+   * lg+ only (max-lg:hidden) — same value, same onSelectTab, no viewport JS. An
+   * active tab absent from this set simply shows no selected segment.
+   */
+  compactRailOptions?: SpaceShellRailOption[];
+  /**
+   * v2.7 R1 — the compact (<lg) header row shows the Space name alone (title
+   * weight, once), no subtitle line. The host sets it on Overview, whose
+   * financial controls row (PerspectiveShell) follows the rail.
+   */
+  compactTitleOnly?: boolean;
   railVisibility?: "always" | "belowLg";
 
   /** The workspace viewport — the active tab's content. Owned by the host. */
@@ -121,9 +127,9 @@ export function SpaceShell({
   headerActions,
   mobileOptimized = false,
   railVisibility = "always",
-  compactViewSelector,
   onLeave,
-  compactTimeSlot = false,
+  compactRailOptions,
+  compactTitleOnly = false,
   children,
 }: SpaceShellProps) {
   const isUtility = variant === "utility";
@@ -133,16 +139,20 @@ export function SpaceShell({
   const showRail = isUtility ? railOptions.length > 1 : true;
   // The Space-level rail control — the ONE fixed Spaces rail (lib/space-nav.ts),
   // TEXT-ONLY labels (the prototype's rail language), every label always visible.
-  const rail = (
+  const railFor = (options: SpaceShellRailOption[]) => (
     <SegmentedControl
       aria-label="Space section"
-      options={railOptions}
+      options={options}
       value={activeTab}
       onChange={onSelectTab}
       labelVisibility="always"
       touchOptimized={mobileOptimized}
     />
   );
+  const rail = railFor(railOptions);
+  // v2.7 R1 — a distinct compact rail only for an always-visible rail (a
+  // belowLg host has no desktop rail to split from).
+  const compactRail = railVisibility === "always" && compactRailOptions ? compactRailOptions : null;
 
   return (
     <>
@@ -164,13 +174,13 @@ export function SpaceShell({
           /* Mobile-only relocation row (<lg) — identity + the canonical
              SpaceControls, because the Space-mode sidebar that normally hosts them
              is hidden on a phone. Hidden on desktop, where the sidebar owns them. */
-          <div className="lg:hidden mb-5 flex items-start justify-between gap-3">
-            {compactViewSelector ? (
-              /* COMPACT DASHBOARD (P1) — on Overview the financial-view selector
-                 leads the header (upper-left); the Space name sits above it. */
+          <div className={compactTitleOnly ? "lg:hidden mb-5 flex items-center justify-between gap-3" : "lg:hidden mb-5 flex items-start justify-between gap-3"}>
+            {compactTitleOnly ? (
+              /* v2.7 R1 — Overview: the Space name once, title weight; the
+                 financial-view selector + date sit in PerspectiveShell's
+                 controls row below the rail. */
               <div className="min-w-0" data-compact-header>
-                <h1 className="lg:hidden truncate text-[13px] font-medium text-[var(--text-muted)]">{title}</h1>
-                {compactViewSelector}
+                <h1 className="lg:hidden truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
               </div>
             ) : (
               <div className="min-w-0">
@@ -179,9 +189,6 @@ export function SpaceShell({
               </div>
             )}
             <div className="lg:hidden flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-              {/* v2.7 P0 — the compact time control mounts here (portalled from
-                  PerspectiveShell, which owns the time intents), beside Manage. */}
-              {compactTimeSlot && <div id={COMPACT_TIME_SLOT_ID} data-compact-time-slot className="lg:hidden" />}
               <SpaceControls currencyControl={currencyControl} onManage={onManage} onLeave={onLeave} />
             </div>
           </div>
@@ -191,7 +198,18 @@ export function SpaceShell({
             in-flow on every Workspace AND every lens: no left-shift when a
             Perspective engages, no scroll-shrink float. Switching pages never
             moves the rail. (Suppressed for a single-workspace utility surface.) */}
-        {showRail && (
+        {showRail && compactRail ? (
+          /* v2.7 R1 — compact rail (<lg, no Members) + the unchanged full rail at
+             lg+. One child slot, so sibling positions below are unchanged. */
+          <>
+            <div className="lg:hidden mb-7 flex justify-center" data-compact-rail>
+              {railFor(compactRail)}
+            </div>
+            <div className="max-lg:hidden mb-7 flex justify-center">
+              {rail}
+            </div>
+          </>
+        ) : showRail && (
           <div className={railVisibility === "belowLg" ? "lg:hidden mb-7 flex justify-center" : "mb-7 flex justify-center"}>
             {rail}
           </div>

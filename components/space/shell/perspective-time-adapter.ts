@@ -31,6 +31,7 @@ import {
 } from "@/lib/perspectives/time-range";
 import { temporalControlVisibility, type TemporalCapability } from "@/lib/perspectives";
 import {
+  CASH_FLOW_PERIODS,
   ROLLING_PERIODS,
   TO_DATE_PERIODS,
   type RelativeCashFlowPeriod,
@@ -166,6 +167,17 @@ export function shellActionForIntent(intent: TimelineIntent, ctx: AdapterContext
  */
 export function deriveActiveOptionId(state: PerspectiveTimeState): string | null {
   return state.preset === "CUSTOM" ? null : state.preset;
+}
+
+/**
+ * Canonical → the SHORT trigger form for narrow screens (D-10): the canonical
+ * compact preset labels (cash-flow.ts — "1M", "3M", "YTD"), "All" for all
+ * history, "Custom" for an explicit range. Presentation only; never parsed back.
+ */
+export function shortPeriodLabel(state: PerspectiveTimeState): string {
+  const id = deriveActiveOptionId(state);
+  if (id === "ALL") return "All";
+  return CASH_FLOW_PERIODS.find((p) => p.id === id)?.label ?? "Custom";
 }
 
 /** Canonical → the boundary field values ("" = no comparison boundary). */
