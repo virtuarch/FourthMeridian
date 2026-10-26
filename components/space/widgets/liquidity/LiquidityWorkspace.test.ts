@@ -132,9 +132,14 @@ console.log("5. Trust PRESENTED via the canonical envelope, not recomputed");
   // lives in the Hero (the lede), over the envelope prop the workspace hands it.
   check("trust caveat is the shared TrustIndicator (inline) over the envelope",
     HERO.includes('<TrustIndicator variant="inline"') && HERO.includes("envelope={envelope}"));
+  // v2.7 visual-first — the embedded Accessible cash tile carries the SAME
+  // classification.estimated "≈" marker the Hero always printed (presentation of
+  // the FX-estimated flag, not a trust tier), beside the shared TrustIndicator.
   check("no bespoke hand-derived trust marker remains (workspace or Hero)",
-    !CODE.includes("trust.reason") && !CODE.includes('estimated ? "≈') &&
-    !HERO.includes("trust.reason"));
+    !CODE.includes("trust.reason") && !HERO.includes("trust.reason")
+      && !/estimated \? "≈/.test(CODE.replace('const approx = classification.estimated ? "≈ " : "";', "")));
+  check("the Accessible cash tile shows the shared TrustIndicator (compact + inline) over the SAME envelope",
+    /data-accessible-cash[\s\S]{0,300}<TrustIndicator variant="compact" envelope=\{envelope\} \/>[\s\S]{0,1400}<TrustIndicator variant="inline" envelope=\{envelope\}/.test(CODE));
 }
 
 console.log("6. Net EXCLUDES credit (liquidity.core doctrine)");

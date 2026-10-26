@@ -10,7 +10,7 @@
  * stat line (NOT cards, NO sparklines):
  *
  *   Total  (netWorth)  → Assets · Liabilities · Liquid NW
- *   Assets (any slice) → Cash · Investments
+ *   Assets (All)       → Cash · Investments   (Cash / Investments slices: none)
  *
  * OVERVIEW-CONSOLIDATION — Liquid Net Worth is no longer a page; it survives
  * here as the derived stat it always was (netLiquid, read off the same
@@ -22,7 +22,7 @@
  */
 
 import type { ReactNode } from "react";
-import { COMPACT_HERO } from "@/components/space/compact/compact-hero";
+import { CompactHeroCard } from "@/components/space/compact/CompactHeroCard";
 import { formatCurrency } from "@/lib/currency";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
@@ -32,7 +32,6 @@ import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import { WealthUnavailable, DeltaBadge } from "./wealth-ui";
 import { investedClassLabel } from "@/lib/wealth/invested-label";
-import { TalkAboutThis } from "@/components/ai/TalkAboutThis";
 import type { TalkSection } from "@/components/ai/talk-about-this";
 
 /** v2.7 R6 — which topic the compact AI entry names for the headline metric. */
@@ -73,14 +72,10 @@ const SECONDARY: Record<WealthMetricKey, { key: WealthMetricKey; label: string; 
     { key: "cash",     label: "Cash",                 goodDirection: "up" },
     { key: "invested", label: "Investments & crypto", goodDirection: "up" },
   ],
-  cash: [
-    { key: "totalAssets", label: "Total assets",         goodDirection: "up" },
-    { key: "invested",    label: "Investments & crypto", goodDirection: "up" },
-  ],
-  invested: [
-    { key: "totalAssets", label: "Total assets", goodDirection: "up" },
-    { key: "cash",        label: "Cash",         goodDirection: "up" },
-  ],
+  // v2.7 visual-first — the Cash and Investments slices state no cross-slice
+  // stats (owner: Total assets / the other slice live on All, one tap away).
+  cash: [],
+  invested: [],
   totalLiabilities: [],
   liquidNetWorth: [],
 };
@@ -140,13 +135,6 @@ export function WealthHero({
   const eyebrow = (
     <div className="flex items-center justify-between gap-3">
       <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{metricLabel}</p>
-      {/* v2.7 — compact: the canonical freshness claim sits in the label row
-          (owner: "next to Net Worth"), so the card loses a line. */}
-      {asOfState.found && (freshnessLabel || asOfState.date) && (
-        <span className="lg:hidden ml-auto truncate text-[11px] text-[var(--text-muted)]" data-compact-hero-freshness>
-          {freshnessLabel ?? `As of ${formatWealthDate(asOfState.date!)}`}
-        </span>
-      )}
       {confidenceChip}
     </div>
   );
@@ -160,75 +148,67 @@ export function WealthHero({
     );
   }
 
+  // v2.7 visual-first — the COMPACT (<lg) hero is the shared five-row card
+  // (CompactHeroCard): title · freshness · trust / figure / change / range / AI
+  // entry. The freshness claim is the canonical "Last checked N ago"
+  // (freshnessLabel) — never the snapshot date labelled as fresh data; the
+  // as-of date is stated on the range row. The crypto price basis is an
+  // exceptional note BELOW the card, never a sixth row.
+  const compactRange = compareState?.found && compareState.date && asOfState.date
+    ? `${formatWealthDate(compareState.date)} → ${formatWealthDate(asOfState.date)}`
+    : (asOfLabel ?? "");
+
   return (
-    // The hero — no card, no border. The most important figure doesn't need a
-    // container to be found (prototype: solid surfaces are for the rows below).
-    <section className={COMPACT_HERO}>
-      {eyebrow}
+    <div>
+      <CompactHeroCard
+        title={metricLabel}
+        freshness={freshnessLabel}
+        trust={<TrustIndicator variant="compact" envelope={envelope} />}
+        value={formatCurrency(asOfState[metric], currency)}
+        change={deltas ? { abs: deltas[metric].abs, pct: deltas[metric].pct, goodDirection } : null}
+        range={compactRange}
+        currency={currency}
+        talkSection={TALK_SECTION[metric]}
+        talkPeriod={timePreset}
+        notes={cryptoPriceNote ? [cryptoPriceNote] : []}
+      />
 
-      <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
-        <Figure value={formatCurrency(asOfState[metric], currency)} size="hero" className="sm:text-5xl leading-none" />
-        {deltas ? (
-          <DeltaBadge
-            abs={deltas[metric].abs}
-            pct={deltas[metric].pct}
-            currency={currency}
-            goodDirection={goodDirection}
-            compareLabel={compareLabel}
-            className="!text-xs max-lg:hidden"
-          />
-        ) : (
-          <span className="text-[11px] text-[var(--text-muted)] max-lg:hidden">Add a Compare To date above to see the change.</span>
-        )}
-      </div>
-      {asOfLabel && <p className="mt-2.5 text-sm text-[var(--text-secondary)] max-lg:hidden">{asOfLabel}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}</p>}
+      {/* DESKTOP (≥lg) — the bare hero, no card, no border. The most important
+          figure doesn't need a container to be found. */}
+      <section className="max-lg:hidden">
+        {eyebrow}
 
-      {/* v2.7 P0 — the COMPACT (<lg) hero: the figure above, then ONLY the change
-          ($ and %), the comparison range, and the freshness claim. The figures
-          come off the same WealthResult; the freshness line is the canonical
-          "Last checked N ago" (freshnessLabel) or "As of <snapshot date>" —
-          never the snapshot date labelled as fresh data (Preview writes a
-          today-dated snapshot from balances observed days earlier). The stat
-          line below is compact-hidden; those figures stay in their sections. */}
-      <div className="lg:hidden mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1" data-compact-hero-meta>
-        {deltas ? (
-          <DeltaBadge
-            abs={deltas[metric].abs}
-            pct={deltas[metric].pct}
-            currency={currency}
-            goodDirection={goodDirection}
-            className="lg:hidden !text-[14px] font-medium"
-          />
-        ) : (
-          <p className="lg:hidden text-[12px] text-[var(--text-muted)]">Choose a comparison in the date menu to see the change.</p>
-        )}
-        {compareState?.found && compareState.date && asOfState.date && (
-          <p className="lg:hidden text-[12px] tabular-nums text-[var(--text-muted)]">
-            {formatWealthDate(compareState.date)} → {formatWealthDate(asOfState.date)}
-          </p>
-        )}
-        {cryptoPriceNote && <p className="lg:hidden basis-full text-[11px] text-[var(--text-muted)]">{cryptoPriceNote}</p>}
-      </div>
-
-      {/* v2.7 R6 — compact-only entry to the AI conversation about this view.
-          Navigates with the topic + window ids only; nothing is sent. */}
-      <div className="lg:hidden mt-1" data-compact-talk>
-        <TalkAboutThis section={TALK_SECTION[metric]} period={timePreset} />
-      </div>
-
-      {/* Secondary stats — the subject's dimensions, each a real WealthMetrics
-          key off the same as-of snapshot (label · value · signed change). */}
-      {secondaryRows.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)] max-lg:hidden">
-          {secondaryRows.map((row) => (
-            <Stat key={row.key} label={row.label}>
-              {formatCurrency(asOfState[row.key], currency)}
-              <SecondaryChange delta={deltas?.[row.key]} goodDirection={row.goodDirection} currency={currency} />
-            </Stat>
-          ))}
+        <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
+          <Figure value={formatCurrency(asOfState[metric], currency)} size="hero" className="sm:text-5xl leading-none" />
+          {deltas ? (
+            <DeltaBadge
+              abs={deltas[metric].abs}
+              pct={deltas[metric].pct}
+              currency={currency}
+              goodDirection={goodDirection}
+              compareLabel={compareLabel}
+              className="!text-xs"
+            />
+          ) : (
+            <span className="text-[11px] text-[var(--text-muted)]">Add a Compare To date above to see the change.</span>
+          )}
         </div>
-      )}
-    </section>
+        {asOfLabel && <p className="mt-2.5 text-sm text-[var(--text-secondary)]">{asOfLabel}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}</p>}
+
+        {/* Secondary stats — the subject's dimensions, each a real WealthMetrics
+            key off the same as-of snapshot (label · value · signed change). */}
+        {secondaryRows.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)]">
+            {secondaryRows.map((row) => (
+              <Stat key={row.key} label={row.label}>
+                {formatCurrency(asOfState[row.key], currency)}
+                <SecondaryChange delta={deltas?.[row.key]} goodDirection={row.goodDirection} currency={currency} />
+              </Stat>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 

@@ -110,15 +110,26 @@ console.log("5. Sidebar — every published anchor renders");
   const liqIds = idsIn(LIQ);
   const invIds = idsIn(INV);
   const debtIds = idsIn(strip(DEBT));
-  check("Total publishes Summary → Balance history → Composition → What moved it → Explanation",
-    WEALTH_TOTAL_SECTIONS.map((s) => s.label).join(" · ") === "Summary · Balance history · Composition · What moved it · Explanation");
+  // v2.7 visual-first — DELIBERATE: the Explanation section is removed (owner).
+  check("Total publishes Summary → Balance history → Composition → What moved it",
+    WEALTH_TOTAL_SECTIONS.map((s) => s.label).join(" · ") === "Summary · Balance history · Composition · What moved it");
   check("every Total anchor is an id in WealthWorkspace", WEALTH_TOTAL_SECTIONS.every((s) => s.anchor && wealthIds.has(s.anchor)));
-  const assets = assetsSections({ hasHistory: true });
-  check("Assets publishes the wealth slots + Cash + Investments + Real assets (RWA-1)",
-    assets.map((s) => s.label).join(" · ") === "Summary · Balance history · Composition · What moved it · Cash · Investments · Real assets");
-  check("every Assets anchor is an id in WealthWorkspace", assets.every((s) => s.anchor && wealthIds.has(s.anchor)));
-  check("with no snapshot history Assets publishes only Cash + Investments + Real assets (the sections that still render)",
-    assetsSections({ hasHistory: false }).map((s) => s.label).join() === "Cash,Investments,Real assets");
+  // v2.7 visual-first — DELIBERATE: the slice is the render rule, so each slice
+  // publishes only the sections it renders.
+  const assets = assetsSections({ hasHistory: true, slice: "all" });
+  const label = (l: { label: string }[]) => l.map((s) => s.label).join(" · ");
+  check("Assets → All publishes the wealth slots only",
+    label(assets) === "Summary · Balance history · Composition · What moved it");
+  check("Assets → Cash publishes Summary · Balance history · Cash",
+    label(assetsSections({ hasHistory: true, slice: "cash" })) === "Summary · Balance history · Cash");
+  check("Assets → Investments publishes Summary · Balance history · Investments · Real assets (RWA-1)",
+    label(assetsSections({ hasHistory: true, slice: "investments" })) === "Summary · Balance history · Investments · Real assets");
+  check("every Assets anchor (any slice) is an id in WealthWorkspace",
+    (["all", "cash", "investments"] as const).every((sl) => assetsSections({ hasHistory: true, slice: sl }).every((s) => s.anchor && wealthIds.has(s.anchor))));
+  check("with no snapshot history a slice publishes only its embedded sections (the ones that still render)",
+    assetsSections({ hasHistory: false, slice: "investments" }).map((s) => s.label).join() === "Investments,Real assets"
+      && assetsSections({ hasHistory: false, slice: "cash" }).map((s) => s.label).join() === "Cash"
+      && assetsSections({ hasHistory: false, slice: "all" }).length === 0);
   check("Explanation is Total-only (not an Assets anchor)", !assets.some((s) => s.label === "Explanation"));
   check("the embedded sections keep their inner ids for deep anchors", liqIds.has("liquidity-sources") && invIds.has("investments-holdings"));
   // Debt — the pre-existing absent-anchor bug is fixed.
@@ -165,7 +176,12 @@ console.log("7. Total stays net-worth scoped; Liquid NW survives as a stat");
   check("Total secondary stats: Assets · Liabilities · Liquid NW", total.includes("Assets") && total.includes("Liabilities") && total.includes("Liquid NW") && total.includes("$24"));
   check("Assets headline is Total assets", assets.includes("Total assets") && assets.includes("$300"));
   check("Assets secondary stats: Cash · Investments (disjoint dimensions)", assets.includes("Cash") && assets.includes("Investments") && assets.includes("$20") && assets.includes("$35"));
-  check("Explanation renders only in Total", /mode === "total" && \([\s\S]*?<WealthExplanationCard/.test(WEALTHC));
+  // v2.7 visual-first — DELIBERATE: the Explanation card is gone at every width;
+  // its evidence doorway moved to the "What moved" header (Total).
+  check("no Explanation card; the evidence doorway is on the Total ledger",
+    !/WealthExplanationCard|wealth-explanation/.test(WEALTHC)
+      && /onViewEvidence=\{mode === "total" && canViewEvidence \? \(\) => setEvidenceOpen\(true\) : undefined\}/.test(WEALTHC)
+      && /<EvidenceDrawer\s+open=\{evidenceOpen\}/.test(WEALTHC));
   check("Total does NOT mount the Cash / Investments sections (mode === \"assets\" gate)", WEALTHC.includes('mode === "assets" ? (') );
   check("the page-level selector is Total | Assets | Debt (Chips, WEALTH_MODES)", WEALTHC.includes("WEALTH_MODES.map") && WEALTHC.includes('ariaLabel="Net worth view"'));
   check("the chart header no longer owns a metric switcher", !CHART.includes("<Chips") && CHART.includes("headerRight={headerRight}"));

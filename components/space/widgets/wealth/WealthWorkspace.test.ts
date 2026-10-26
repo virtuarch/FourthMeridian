@@ -41,10 +41,12 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-console.log("1. Render boundary — the five Wealth surfaces are composed here");
+console.log("1. Render boundary — the Wealth surfaces are composed here");
 {
-  const surfaces = ["<WealthHero", "<WealthTrendChart", "<WealthChangeLedger", "<WealthCompositionCard", "<WealthExplanationCard"];
-  check("all five surfaces are composed here (this IS the render boundary)", surfaces.every((n) => SRC.includes(n)));
+  // v2.7 visual-first — DELIBERATE: the Explanation card is removed (owner); four remain.
+  const surfaces = ["<WealthHero", "<WealthTrendChart", "<WealthChangeLedger", "<WealthCompositionCard"];
+  check("all four surfaces are composed here (this IS the render boundary)", surfaces.every((n) => SRC.includes(n)));
+  check("the Explanation card is gone (deleted, not hidden)", !SRC.includes("WealthExplanationCard"));
 }
 
 console.log("2. WealthResult is canonical — NO WealthSpaceData wrapper introduced");

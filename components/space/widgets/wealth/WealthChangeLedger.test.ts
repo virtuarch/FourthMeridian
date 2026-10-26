@@ -9,15 +9,20 @@
  * Locks the two honesty rules the ledger surface depends on:
  *   1. Reconciliation — the component deltas the ledger lists sum (assets up,
  *      liabilities down) to the Net Change total it prints (deltas.netWorth).
- *   2. Single forward-phrased attribution note — never a reserved source label
- *      (Market Growth / Contributions / Income / Spending / Fees).
+ *   2. Rows never carry a reserved source label (Market Growth / Contributions /
+ *      Income / Spending / Fees). v2.7 visual-first — DELIBERATE: the
+ *      forward-phrased attribution note is removed (narrative, owner-approved);
+ *      the test now proves it is gone from the render, and that the header's
+ *      Evidence doorway renders only when the host wires it.
  * Also checks the driverGood coloring rule (liabilities DOWN is good).
  */
 
 import { computeWealthTimeMachine, WEALTH_EPSILON } from "@/lib/wealth/wealth-time-machine";
 import type { WealthTimeMachineInput } from "@/lib/wealth/wealth-time-machine";
 import type { Snapshot } from "@/types";
-import { ATTRIBUTION_NOTE, driverGood } from "./WealthChangeLedger";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { WealthChangeLedger, driverGood } from "./WealthChangeLedger";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -84,10 +89,16 @@ console.log("driverGood — liabilities DOWN is good, assets UP is good");
   check("investments decreasing is bad", driverGood({ id: "investments", label: "Investments", delta: -20000 }) === false);
 }
 
-console.log("Attribution note — single, forward-phrased; rows never use reserved source labels");
+console.log("No attribution note; rows never use reserved source labels; Evidence doorway");
 {
-  const lc = ATTRIBUTION_NOTE.toLowerCase();
-  check("note is forward-phrased ('arrives with historical valuation')", lc.includes("arrives with historical valuation"));
+  const r0 = computeWealthTimeMachine(input());
+  const html = renderToStaticMarkup(createElement(WealthChangeLedger, { result: r0, currency: "USD" }));
+  check("the attribution note is not rendered (removed, not hidden)", !/Attribution|historical valuation/i.test(html));
+  check("no Evidence doorway unless the host wires one", !/Evidence/.test(html));
+  const wired = renderToStaticMarkup(createElement(WealthChangeLedger, { result: r0, currency: "USD", onViewEvidence: () => {} }));
+  check("with onViewEvidence the header carries an Evidence button", /<header[^>]*>[\s\S]*<button type="button"[^>]*>[\s\S]*Evidence<\/button><\/header>/.test(wired));
+  const noCompare = renderToStaticMarkup(createElement(WealthChangeLedger, { result: computeWealthTimeMachine(input({ compareTo: null })), currency: "USD", onViewEvidence: () => {} }));
+  check("…also on the no-comparison state", /Evidence<\/button>/.test(noCompare));
 
   // The A9 slot contract: driver ROWS must stay generic asset-class labels — never
   // a source-attribution term presented as a current fact.

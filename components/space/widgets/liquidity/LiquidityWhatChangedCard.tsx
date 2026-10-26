@@ -9,27 +9,17 @@
  * liquidity-axis reasons and points to Cash Flow for detail — it NEVER grows
  * drill-down drawers or filters (that is Cash Flow's workspace, by doctrine).
  *
- * v2.7 R4 — COMPACT (<1024px) only: the same rows, largest |amount| first, the
- * top 3 shown and the rest behind "Show all N" (a compact-only list; the desktop
- * grid is max-lg:hidden, so at ≥1024px the card renders exactly as before).
+ * v2.7 visual-first — every driver is visible at every width (the R4 compact
+ * top-3 cut and its "Show all" disclosure are gone): one grid, builder order.
  */
 
-import { useId, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { ArrowRight, Waves } from "lucide-react";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { periodKey, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { buildWhatChangedRows, type WhatChangedRow } from "./liquidity-what-changed";
-import { CompactDisclosureButton } from "@/components/space/compact/CompactDisclosure";
-
-/** v2.7 R4 — how many drivers the compact card shows before "Show all". */
-export const COMPACT_DRIVER_COUNT = 3;
-
-/** The compact order: the SAME rows, largest absolute amount first (stable). A sort, never a new figure. */
-export function compactDriverOrder(rows: readonly WhatChangedRow[]): WhatChangedRow[] {
-  return rows.map((r, i) => ({ r, i })).sort((a, b) => Math.abs(b.r.amount) - Math.abs(a.r.amount) || a.i - b.i).map((x) => x.r);
-}
 
 function fmtSigned(amount: number, ctx?: ConversionContext): string {
   // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
@@ -62,8 +52,6 @@ export function LiquidityWhatChangedCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [transactions, accounts, periodId, ctx, asOf],
   );
-  const [showAll, setShowAll] = useState(false);
-  const listId = `compact-drivers-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
   if (result.state === "loading") {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;
@@ -78,10 +66,10 @@ export function LiquidityWhatChangedCard({
     );
   }
 
-  const renderRow = (r: WhatChangedRow, className = "flex items-center justify-between gap-2") => {
+  const renderRow = (r: WhatChangedRow) => {
     const color = r.direction === "in" ? "var(--flow-in, #22c55e)" : "var(--flow-out, #ef4444)";
     return (
-      <div key={r.id} className={className}>
+      <div key={r.id} className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-2 min-w-0">
           <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
           <span className="text-sm text-[var(--text-secondary)] truncate">{r.label}</span>
@@ -90,24 +78,9 @@ export function LiquidityWhatChangedCard({
       </div>
     );
   };
-  const compactRows = compactDriverOrder(result.rows);
-  const extra = compactRows.length - COMPACT_DRIVER_COUNT;
-
   return (
     <div className="space-y-3">
-      {/* v2.7 R4 — compact-only list (before the desktop grid, so the grid's
-          place among its siblings is unchanged at ≥1024px). */}
-      <div className="lg:hidden" data-compact-drivers>
-        <div id={listId} className="space-y-1.5">
-          {compactRows.map((r, i) => renderRow(r, i < COMPACT_DRIVER_COUNT || showAll ? "flex items-center justify-between gap-2" : "hidden"))}
-        </div>
-        {extra > 0 && (
-          <div className="-ml-2 mt-1">
-            <CompactDisclosureButton open={showAll} onToggle={() => setShowAll((v) => !v)} controls={listId} label={`Show all ${compactRows.length}`} openLabel="Show top 3" />
-          </div>
-        )}
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 max-lg:hidden">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
         {result.rows.map((r) => renderRow(r))}
       </div>
 

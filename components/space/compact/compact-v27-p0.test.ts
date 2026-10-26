@@ -2,11 +2,11 @@
  * components/space/compact/compact-v27-p0.test.ts  (v2.7 P0 — compact visual refinement)
  *
  *   1. the compact Net Worth hero shows ONLY: title, amount, $ change, % change,
- *      comparison range, latest observed date — from the same WealthResult; the
- *      Assets / Liabilities / Liquid NW line is compact-hidden (kept on desktop
- *      and in the detailed sections); the freshness line is the canonical
- *      "Last checked" claim or "As of <snapshot date>", never a snapshot date
- *      presented as fresh data;
+ *      comparison range — from the same WealthResult — now as the shared
+ *      five-row CompactHeroCard (v2.7 visual-first); the Assets / Liabilities /
+ *      Liquid NW line is desktop-only (the compact KPI strip states it); the
+ *      freshness slot is the canonical "Last checked" claim, never a snapshot
+ *      date presented as fresh data (the as-of date sits on the range row);
  *   2. the compact time control is the ONE in-flow TimelineLens (v2.7 R1 — the
  *      P0 header portal is deleted): below lg its row is the controls row
  *      (selector left, period trigger right, range readout hidden); never for
@@ -36,12 +36,14 @@ function check(name: string, cond: boolean, detail?: string) {
 const read = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8");
 const code = (rel: string) => read(rel).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
 const text = (h: string) => h.replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ").trim();
-/** Only the compact meta block (it ends where the desktop stat line begins). */
-const compactPart = (h: string) => {
-  const from = h.slice(h.indexOf("data-compact-hero-meta"));
-  const end = from.indexOf('<div class="mt-3 flex flex-wrap');
-  return end === -1 ? from : from.slice(0, end);
+/** v2.7 visual-first — the compact hero is the shared five-row card. */
+const card = (h: string) => {
+  const at = h.indexOf("data-compact-hero-wrap");
+  if (at === -1) return "";
+  const from = h.slice(h.lastIndexOf("<", at));
+  return from.slice(0, from.indexOf('<section class="max-lg:hidden"'));
 };
+const row = (h: string, n: number) => text((card(h).match(new RegExp(`data-compact-hero-row="${n}"[^>]*>([\\s\\S]*?)</div>(?=<div data-compact-hero-row|</section>)`)) ?? ["", ""])[1]);
 
 const STATE = { found: true, date: "2026-10-16", netWorth: -77164.15, totalAssets: 86541.74, totalLiabilities: 163705.89, liquidNetWorth: -101116.89, cash: 62589, invested: 23952.74, composition: { investments: 23952.74, crypto: 0 } };
 const RESULT = {
@@ -53,35 +55,29 @@ const RESULT = {
 const ENVELOPE = { completeness: "complete", warnings: [] };
 const hero = (extra: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(WealthHero, { result: RESULT, currency: "USD", envelope: ENVELOPE, metric: "netWorth", ...extra } as never));
 
-console.log("1. the compact Net Worth hero");
+console.log("1. the compact Net Worth hero (v2.7 visual-first — DELIBERATE: the five-row CompactHeroCard)");
 {
   const html = hero();
-  const compact = text(compactPart(html));
-  check("title and amount (the one figure, shared with desktop)", /Net worth/.test(text(html)) && /77,164\.15/.test(text(html)));
-  check("compact: the $ change and the % change", /11,521\.88/.test(compact) && /13\.0%/.test(compact));
-  check("compact: the comparison range, compare date → as-of date", /Sep 26, 2026 → Oct 16, 2026/.test(compact), compact);
-  // v2.7 hero-tighten — DELIBERATE: the freshness claim moved into the label row
-  // (owner: "next to Net Worth"); it is read from that element now.
-  const fresh = (h: string) => text((h.match(/<span class="lg:hidden ml-auto[^"]*" data-compact-hero-freshness="true">[\s\S]*?<\/span>/) ?? [""])[0]);
-  check("compact, no freshness claim: \"As of <snapshot date>\" in the label row — the snapshot date is never labelled as fresh data",
-    /As of Oct 16, 2026/.test(fresh(html)) && !/Latest data|updated|refreshed|checked/i.test(fresh(html)) && !/data-compact-hero-freshness/.test(compactPart(html)));
+  check("title and amount (R1 / R2), from the same WealthResult", /^Net worth/.test(row(html, 1)) && row(html, 2) === "-$77,164.15");
+  check("R3: the $ change and the % change", /11,521\.88/.test(row(html, 3)) && /13\.0%/.test(row(html, 3)), row(html, 3));
+  check("R4: the comparison range, compare date → as-of date, alone on its row", row(html, 4) === "Sep 26, 2026 → Oct 16, 2026", row(html, 4));
+  check("R1, no freshness claim: the snapshot date is never labelled as fresh data (the as-of date is on R4)",
+    !/Latest data|updated|refreshed|checked|As of/i.test(row(html, 1)));
   const claimedHtml = hero({ freshnessLabel: "Last checked 3 days ago" });
-  check("compact, with the canonical claim: the label row shows it verbatim, not the snapshot date",
-    /Last checked 3 days ago/.test(fresh(claimedHtml)) && !/As of Oct 16/.test(fresh(claimedHtml)));
-  check("the freshness claim sits in the label row, after the metric label", claimedHtml.indexOf("Net worth") < claimedHtml.indexOf("data-compact-hero-freshness") && claimedHtml.indexOf("data-compact-hero-freshness") < claimedHtml.indexOf("data-compact-hero-meta"));
+  check("R1, with the canonical claim: shown verbatim beside the title", row(claimedHtml, 1) === "Net worth Last checked 3 days ago", row(claimedHtml, 1));
   const host = code("components/dashboard/SpaceDashboard.tsx");
   check("the host passes the SAME chromeUpdated claim the subtitle uses", /wealthFreshnessLabel: chromeUpdated,/.test(host)
     && /freshnessLabel=\{ctx\.wealthFreshnessLabel \?\? null\}/.test(read("components/space/workspaces/workspaceRenderers.tsx"))
     && /metric=\{metric\} freshnessLabel=\{freshnessLabel\}/.test(read("components/space/widgets/wealth/WealthWorkspace.tsx")));
-  check("compact: nothing else — no Assets / Liabilities / Liquid NW stat", !/Assets|Liabilities|Liquid NW/.test(compact));
-  check("the stat line is compact-hidden (max-lg:hidden), so it stays on desktop", /max-lg:hidden"><span class="inline-flex items-baseline gap-1\.5 tabular-nums"><span[^>]*>Assets</.test(html));
+  check("compact card: nothing else — no Assets / Liabilities / Liquid NW stat", !/Assets|Liabilities|Liquid NW/.test(text(card(html))));
+  check("the stat line lives in the desktop section only (max-lg:hidden)", /<section class="max-lg:hidden">[\s\S]*>Assets</.test(html));
   const desk = desktopMarkup(html);
-  check("DESKTOP: the hero keeps its stat line, delta-with-compare and As-of line; no compact meta",
-    /Assets/.test(text(desk)) && /Liabilities/.test(text(desk)) && /vs Sep 26, 2026/.test(text(desk)) && /As of Oct 16, 2026/.test(text(desk)) && !/data-compact-hero-meta/.test(desk) && !/Latest data/.test(desk));
+  check("DESKTOP: the hero keeps its stat line, delta-with-compare and As-of line; no compact card",
+    /Assets/.test(text(desk)) && /Liabilities/.test(text(desk)) && /vs Sep 26, 2026/.test(text(desk)) && /As of Oct 16, 2026/.test(text(desk)) && !/data-compact-hero/.test(desk));
   const noCompare = hero({ result: { ...RESULT, deltas: null, compareState: null } });
-  check("no comparison ⇒ no invented change or range; the compact hint points at the date menu",
-    !/→/.test(text(compactPart(noCompare))) && /Choose a comparison in the date menu/.test(text(compactPart(noCompare))));
-  check("every compact-meta element is lg:hidden", (compactPart(html).match(/<p class="|<span class="/g) ?? []).length > 0 && !/<p class="(?!lg:hidden)/.test(compactPart(html).split("</div>")[0]));
+  check("no comparison ⇒ R3 says so, R4 is \"As of <date>\" — no invented change or range",
+    row(noCompare, 3) === "No comparison selected" && row(noCompare, 4) === "As of Oct 16, 2026" && !/→/.test(text(card(noCompare))));
+  check("the whole compact card is lg:hidden", /^<div class="lg:hidden" data-compact-hero-wrap="true">/.test(card(html)) && desktopMarkup(card(html)) === "");
 }
 
 console.log("\n2. the compact time control");
