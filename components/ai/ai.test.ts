@@ -164,7 +164,7 @@ console.log("1b. one conversation, one active Space");
   check("the client fetches no Space list and keeps no selector state",
     !/api\/spaces|selectedSpaceId|setSelectedSpaceId|ELIGIBLE_ROLES|"master"|<Select/.test(code(client)));
   check("the page resolves the dashboard's ACTIVE Space", /const ctx = await getSpaceContext\(\);/.test(page));
-  check("…and hands the client its id and name", /spaceId=\{ctx\.spaceId\}/.test(page) && /spaceName=\{ctx\.space\.name\}/.test(page));
+  check("…and hands the client its id and name", /spaceId=\{ctx\.spaceId\}/.test(page) && /spaceName=\{displaySpaceName\(ctx\.space\.name\)\}/.test(page));
   check("a different Space remounts the client (new chat)", /key=\{ctx\.spaceId\}/.test(page));
   check("the client posts exactly that id", /body: JSON\.stringify\(\{\s*spaceId,/.test(client));
   // RLS-C-S3 — one leading identifier: the advice read takes its database

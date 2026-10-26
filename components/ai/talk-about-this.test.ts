@@ -123,8 +123,10 @@ check("suggested chip renders before the starter chips",
   group.indexOf("suggested.label") > 0 && group.indexOf("suggested.label") < group.indexOf("starter.prompts.map"));
 check("marked 'Suggested for this view'", code.includes("Suggested for this view"));
 const uses = [...code.matchAll(/suggested\.prompt/g)].length;
-check("suggested.prompt is used exactly once, in the chip onSelect",
-  uses === 1 && /onSelect=\{\(\) => sendMessage\(suggested\.prompt\)\}/.test(code));
+// v2.7 R6.1 — DELIBERATE: two placements (empty state + restored conversation),
+// each sending only from its chip onSelect.
+check("suggested.prompt is used only in the two chip onSelect handlers",
+  uses === 2 && (code.match(/onSelect=\{\(\) => \{ setSuggestionUsed\(true\); sendMessage\(suggested\.prompt\); \}\}/g) ?? []).length === 2);
 check("no useEffect in AnalyzeClient (nothing sends on mount)", !/\buseEffect\b/.test(code));
 check("the layout effect never sends or prefills",
   (() => { const i = code.indexOf("useLayoutEffect(() =>"); const body = code.slice(i, code.indexOf("}, [userId, spaceId]);", i)); return i > 0 && !/sendMessage|setInput|suggested/.test(body); })());
@@ -152,6 +154,20 @@ for (const [file, section] of [
   const m = /<div className="([^"]*)" data-compact-talk>\s*<TalkAboutThis section=\{?([^ }]+)\}? period=/.exec(src);
   check(`${path.basename(file)}: <TalkAboutThis section=${section}> inside an lg:hidden wrapper`,
     !!m && m[1].split(/\s+/).includes("lg:hidden") && m[2] === section, m?.[0]);
+}
+
+// v2.7 R6.1 — a returning user (restored conversation) still sees the view's
+// suggestion, above the composer; click-to-send only, hidden once used.
+{
+  const ac = readFileSync(path.join(process.cwd(), "components/dashboard/AnalyzeClient.tsx"), "utf8");
+  check("R6.1: conversation mode offers the suggestion inline, only until used, never while busy",
+    /mode === "conversation" && suggested && !suggestionUsed && !loading \?/.test(ac) && /data-suggested-for-view-inline/.test(ac));
+  check("R6.1: both placements send only on click and mark it used",
+    (ac.match(/onSelect=\{\(\) => \{ setSuggestionUsed\(true\); sendMessage\(suggested\.prompt\); \}\}/g) ?? []).length === 2);
+  check("R6.1: never auto-sent (no effect sends the suggestion)", !/useEffect\([^)]*suggested[\s\S]{0,200}sendMessage/.test(ac));
+  const page = readFileSync(path.join(process.cwd(), "app/(shell)/dashboard/analyze/page.tsx"), "utf8");
+  check("R6.1: the AI header shows the displayed Space name (displaySpaceName), as every Space surface does",
+    /spaceName=\{displaySpaceName\(ctx\.space\.name\)\}/.test(page));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
