@@ -3,7 +3,7 @@
 /**
  * components/space/manage/FinancesPanel.tsx  (MSM decomposition)
  *
- * The "Add Accounts" (Finances) tab of Manage Space, extracted verbatim from the
+ * The "Accounts" (Finances) tab of Manage Space, extracted verbatim from the
  * former single-file ManageSpaceModal (FinancesTab). Lists the Space's shared
  * accounts, revokes them, and opens the shared ShareExistingAccountsPanel to add
  * more — all against the canonical /api/spaces/[id]/accounts + /accounts/share
@@ -12,10 +12,21 @@
  * UI-003 — revoking a share removes the account from the Space for every member, so
  * the row's X only stages it; handleRevoke is reachable from the ConfirmDialog alone.
  * UI-006 — a failed list read is an error with Retry, never "No accounts shared".
+ *
+ * v2.7 P2 — the tab is "Accounts": the accounts already in this Space come first
+ * as a clean responsive list (same data, same revoke gate; the remove control is
+ * always visible on touch, hover-revealed only at lg), then "Add account"
+ * beneath. When none of the viewer's own accounts are left to add, the action is
+ * replaced by a note that more can be connected in Connections, with a link.
+ * Eligibility = the viewer's /api/accounts minus this Space's accounts — the
+ * same rule ShareExistingAccountsPanel applies; if that read fails the Add
+ * action simply stays (the share route still enforces every gate).
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, X, Landmark, Share2, AlertTriangle } from "lucide-react";
+import Link from "next/link";
+import { Loader2, X, Landmark, Plus, AlertTriangle, ArrowRight } from "lucide-react";
+import { GlassButton } from "@/components/atlas/GlassButton";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { revokeAccountConfirm } from "./destructive-confirm";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
@@ -49,6 +60,8 @@ export function FinancesPanel({
   const [loadError,      setLoadError]      = useState(false);
   const [revokeError,    setRevokeError]    = useState("");
   const [pendingRevoke,  setPendingRevoke]  = useState<SharedAccount | null>(null);
+  // The viewer's own account ids (null = unknown ⇒ keep offering Add account).
+  const [myAccountIds,   setMyAccountIds]   = useState<string[] | null>(null);
 
   const loadAccounts = useCallback(() => {
     setLoading(true);
@@ -59,6 +72,10 @@ export function FinancesPanel({
       })
       .then((data: SharedAccount[]) => { setAccounts(data); setLoadError(false); setLoading(false); })
       .catch(() => { setLoadError(true); setLoading(false); });
+    fetch("/api/accounts")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((mine: { id: string }[] | null) => setMyAccountIds(mine ? mine.map((a) => a.id) : null))
+      .catch(() => setMyAccountIds(null));
   }, [spaceId]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -100,7 +117,7 @@ export function FinancesPanel({
           <button onClick={() => setShowPanel(false)} className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-muted)] transition-colors">
             <X size={15} />
           </button>
-          <p className="text-sm font-semibold text-[var(--text-primary)]">Share an account</p>
+          <p className="text-sm font-semibold text-[var(--text-primary)]">Add an account</p>
         </div>
         <ShareExistingAccountsPanel
           spaceId={spaceId}
@@ -109,6 +126,9 @@ export function FinancesPanel({
       </div>
     );
   }
+
+  const inSpace = new Set(accounts.map((a) => a.id));
+  const noneEligible = myAccountIds !== null && myAccountIds.every((id) => inSpace.has(id));
 
   const grouped = accounts.reduce<Record<string, SharedAccount[]>>((acc, a) => {
     (acc[a.type] ??= []).push(a);
@@ -133,38 +153,42 @@ export function FinancesPanel({
 
   return (
     <div className="space-y-4">
+      <div className="flex items-baseline justify-between">
+        <p className="text-sm font-semibold text-[var(--text-primary)]">In this Space</p>
+        <p className="text-xs text-[var(--text-muted)] tabular-nums">{accounts.length} account{accounts.length === 1 ? "" : "s"}</p>
+      </div>
       {accounts.length === 0 ? (
-        <div className="text-center py-6">
-          <Landmark size={28} className="text-[var(--text-muted)] mx-auto mb-2" />
+        <div className="text-center py-6 rounded-xl border border-[var(--border-hairline)] bg-[var(--surface-muted)]">
+          <Landmark size={28} className="text-[var(--text-muted)] mx-auto mb-2" aria-hidden />
           <p className="text-sm text-[var(--text-muted)]">No accounts shared</p>
-          {canShare && <p className="text-xs text-[var(--text-muted)] mt-1">Share an account to include it in this Space.</p>}
+          {canShare && <p className="text-xs text-[var(--text-muted)] mt-1">Add an account to include it in this Space.</p>}
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-3" data-space-accounts>
           {Object.entries(grouped).map(([type, items]) => (
             <div key={type}>
               <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-1.5">
                 {ACCOUNT_TYPE_LABELS[type] ?? type}
               </p>
-              <div className="space-y-1">
+              <ul className="divide-y divide-[var(--border-hairline)] rounded-xl border border-[var(--border-hairline)] bg-[var(--surface-muted)]">
                 {items.map((a) => (
-                  <div key={a.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-[var(--surface-muted)] group">
+                  <li key={a.id} className="flex min-h-12 items-center gap-3 px-3 py-2 group">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-[var(--text-primary)] truncate">{a.name}</p>
                       <p className="text-xs text-[var(--text-muted)] truncate">{a.institution}</p>
                     </div>
-                    <p className="text-sm font-medium text-[var(--text-primary)] shrink-0">{formatBalance(a.balance, a.currency)}</p>
+                    <p className="text-sm font-medium text-[var(--text-primary)] tabular-nums shrink-0">{formatBalance(a.balance, a.currency)}</p>
                     {canShare && (
                       <button onClick={() => { setRevokeError(""); setPendingRevoke(a); }} disabled={revokingId === a.id}
-                        className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 disabled:opacity-50 transition-all"
+                        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] lg:h-7 lg:w-7 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 disabled:opacity-50 transition-all"
                         title="Remove from Space"
                         aria-label={`Remove ${a.name} from Space`}>
                         {revokingId === a.id ? <Loader2 size={12} className="animate-spin" aria-hidden /> : <X size={12} aria-hidden />}
                       </button>
                     )}
-                  </div>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
           ))}
         </div>
@@ -185,12 +209,19 @@ export function FinancesPanel({
           />
         );
       })()}
-      {canShare && (
-        <button onClick={() => setShowPanel(true)}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-dashed border-[var(--border-hairline)] text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--border-hairline-strong)] transition-colors">
-          <Share2 size={14} /> Share an account
-        </button>
-      )}
+      {canShare && (noneEligible ? (
+        <div className="rounded-xl border border-dashed border-[var(--border-hairline)] px-4 py-3" data-no-eligible-accounts>
+          <p className="text-sm text-[var(--text-secondary)]">All of your accounts are already in this Space.</p>
+          <p className="text-xs text-[var(--text-muted)] mt-0.5">Connect another bank, wallet or asset in Connections, then add it here.</p>
+          <Link href="/dashboard/connections" className="mt-2 inline-flex min-h-10 items-center gap-1.5 text-xs font-medium text-[var(--meridian-400)] hover:underline">
+            Go to Connections <ArrowRight size={12} aria-hidden />
+          </Link>
+        </div>
+      ) : (
+        <GlassButton onClick={() => setShowPanel(true)} tone="meridian" fullWidth>
+          <Plus size={14} aria-hidden /> Add account
+        </GlassButton>
+      ))}
     </div>
   );
 }
