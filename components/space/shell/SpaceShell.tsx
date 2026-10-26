@@ -92,6 +92,13 @@ export interface SpaceShellProps {
    * only: the rail stays mounted and its selection logic is untouched (mirrors
    * PerspectiveShell `tabsVisibility`).
    */
+  /**
+   * COMPACT DASHBOARD (P1) — the financial-view selector shown in the compact
+   * (<lg) header row, upper-left. The host passes it on Overview only.
+   */
+  compactViewSelector?: ReactNode;
+  /** COMPACT DASHBOARD (P1) — Leave Space in the compact header controls (member/viewer). */
+  onLeave?: () => void;
   railVisibility?: "always" | "belowLg";
 
   /** The workspace viewport — the active tab's content. Owned by the host. */
@@ -111,6 +118,8 @@ export function SpaceShell({
   headerActions,
   mobileOptimized = false,
   railVisibility = "always",
+  compactViewSelector,
+  onLeave,
   children,
 }: SpaceShellProps) {
   const isUtility = variant === "utility";
@@ -152,12 +161,21 @@ export function SpaceShell({
              SpaceControls, because the Space-mode sidebar that normally hosts them
              is hidden on a phone. Hidden on desktop, where the sidebar owns them. */
           <div className="lg:hidden mb-5 flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
-              <p className={mobileOptimized ? "line-clamp-2 text-[13px] text-[var(--text-muted)]" : "truncate text-[13px] text-[var(--text-muted)]"}>{subtitle}</p>
-            </div>
+            {compactViewSelector ? (
+              /* COMPACT DASHBOARD (P1) — on Overview the financial-view selector
+                 leads the header (upper-left); the Space name sits above it. */
+              <div className="min-w-0" data-compact-header>
+                <h1 className="lg:hidden truncate text-[13px] font-medium text-[var(--text-muted)]">{title}</h1>
+                {compactViewSelector}
+              </div>
+            ) : (
+              <div className="min-w-0">
+                <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
+                <p className={mobileOptimized ? "line-clamp-2 text-[13px] text-[var(--text-muted)]" : "truncate text-[13px] text-[var(--text-muted)]"}>{subtitle}</p>
+              </div>
+            )}
             <div className="shrink-0">
-              <SpaceControls currencyControl={currencyControl} onManage={onManage} />
+              <SpaceControls currencyControl={currencyControl} onManage={onManage} onLeave={onLeave} />
             </div>
           </div>
         )}

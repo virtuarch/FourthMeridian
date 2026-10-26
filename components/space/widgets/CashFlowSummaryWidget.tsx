@@ -43,6 +43,7 @@ import { aggregateDayFacts, economicSpend, economicSpendByTier, type CashFlowPer
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import { CashFlowFilterControls, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
+import { CompactCashFlowCards } from "@/components/space/compact/CompactCashFlowCards";
 
 function fmt(v: number, ctx?: ConversionContext): string {
   // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
@@ -184,6 +185,9 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
     onPerspectiveChange ? onPerspectiveChange(p, id) : setLocalPerspective(p);
   // Closes on a TimelineLens move — the window the slice described is gone.
   const [slice, setSlice] = useTransactionSlice(periodKey(period));
+  // COMPACT DASHBOARD (P4) — the compact "Moved, not spent" card discloses the
+  // existing per-category rows in place (<lg only; desktop always shows them).
+  const [movedOpen, setMovedOpen] = useState(false);
 
   if (transactions == null) {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;
@@ -322,6 +326,22 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
         </div>
       )}
 
+      {/* COMPACT DASHBOARD (P4) — the compact second row of summary cards (<lg only):
+          Charged on credit (the canonical facts.creditCardSpending, its existing
+          drill-down; liquidity view only, exactly as the row below) and Moved, not
+          spent. The latter has NO total on purpose — the context rows are
+          per-disposition Σ|amount| and are never summed — so the card states how
+          many kinds of movement there are and discloses the existing rows. */}
+      <CompactCashFlowCards
+        economic={economic}
+        charged={facts.creditCardSpending > 0 ? fmt(facts.creditCardSpending, ctx) : null}
+        onOpenCharged={() => setSlice({ title: "Charged on credit", subtitle: "Bought on credit this period", spendLabel: "Charged",
+          rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) })}
+        movedKinds={context.movedNotSpent.length}
+        movedOpen={movedOpen}
+        onToggleMoved={() => setMovedOpen((o) => !o)}
+      />
+
       {/* Credit-card spending is honestly visible in BOTH perspectives: on the
           liquidity axis it is NOT Cash Out (the cash leaves later as a Debt
           payment), so it surfaces here as a context figure that drills into the
@@ -329,7 +349,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
           refunds, fees included), so it says "Charged", never "Spent": the word
           "spending" on this page is the NET figure (Spending tile = Total spending). */}
       {!economic && facts.creditCardSpending > 0 && (
-        <div className="pt-1 border-t border-[var(--border-hairline)]">
+        <div className="pt-1 border-t border-[var(--border-hairline)] max-lg:hidden">
           <ContextRow
             label="Charged on credit (no cash moved at purchase)"
             value={fmt(facts.creditCardSpending, ctx)}
@@ -344,10 +364,13 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
           Populated rows when movements exist; a small explanatory empty state
           (never fake $0 rows) otherwise. Consumes the existing grouped context —
           no projection logic is duplicated here, drill-down preserved. */}
+      {/* COMPACT DASHBOARD (P4) — on compact the "Moved, not spent" rows open from
+          the card above (max-lg:hidden until opened; desktop always shows them).
+          "Needs classification" is NOT behind the card: it stays visible. */}
       {hasContext ? (
         <div className="space-y-2">
           {context.movedNotSpent.length > 0 && (
-            <div className="rounded-xl px-3 py-2 space-y-1.5" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
+            <div className={`rounded-xl px-3 py-2 space-y-1.5 ${movedOpen ? "" : "max-lg:hidden"}`.trim()} style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
               <p className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Moved, not spent</p>
               {context.movedNotSpent.map((r) => (
                 <ContextRow
@@ -374,7 +397,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
           )}
         </div>
       ) : (
-        <div className="rounded-xl px-3 py-2 space-y-1" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
+        <div className={`rounded-xl px-3 py-2 space-y-1 ${movedOpen ? "" : "max-lg:hidden"}`.trim()} style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
           <p className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Moved, not spent</p>
           <p className="text-xs text-[var(--text-secondary)]">
             No account transfers, cash movements, investment funding, or payment-app movements were found for this period.

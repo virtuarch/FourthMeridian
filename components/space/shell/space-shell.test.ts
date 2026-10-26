@@ -59,11 +59,16 @@ type _RailOption = Expect<Equal<keyof SpaceShellRailOption, "id" | "label" | "ic
 // UX-P1 (D1) — `railVisibility` ("always" default | "belowLg") lets a host whose
 // desktop sidebar is the workspace switcher (a Platform Space) show the rail
 // only below lg; the default renders byte-identically for every other host.
+// COMPACT DASHBOARD (P1) — `compactViewSelector` (the <lg financial-view
+// selector, Overview only) + `onLeave` (<lg Leave Space for members/viewers):
+// both render only inside the lg:hidden header row, so desktop is unchanged.
 type _SlotApiKeys = Expect<Equal<
   keyof SpaceShellProps,
   | "overlays" | "title" | "subtitle" | "currencyControl" | "onManage"
-  | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "mobileOptimized" | "railVisibility" | "children"
+  | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "mobileOptimized" | "railVisibility"
+  | "compactViewSelector" | "onLeave" | "children"
 >>;
+type _CompactSlot = Expect<Equal<SpaceShellProps["compactViewSelector"], ReactNode | undefined>>;
 type _RailVisibility = Expect<Equal<SpaceShellProps["railVisibility"], "always" | "belowLg" | undefined>>;
 // The variant discriminator + its optional header-actions slot.
 type _Variant       = Expect<Equal<SpaceShellProps["variant"], "space" | "utility" | undefined>>;

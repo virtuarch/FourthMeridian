@@ -27,7 +27,7 @@ import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowW
 import { MarketsWorkspace } from "@/components/space/widgets/markets/MarketsWorkspace";
 import { WorkspaceComingSoon } from "./WorkspaceComingSoon";
 import { getWorkspaceDefinition, type PerspectiveDef } from "@/lib/perspectives";
-import type { AssetsSlice, WealthMode } from "@/lib/wealth/wealth-mode";
+import type { AssetsSlice, DebtSection, WealthMode } from "@/lib/wealth/wealth-mode";
 import type { MarketsMode } from "@/lib/markets/markets-mode";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { LensResult } from "@/lib/perspective-engine/types";
@@ -108,6 +108,9 @@ export interface WorkspaceRenderCtx {
   onMarketsModeChange:     (m: MarketsMode) => void;
   marketsModeSelectorVisibility?: "always" | "belowLg";
   onSliceChange:           (s: AssetsSlice) => void;
+  /** COMPACT DASHBOARD (P3) — the compact Debt category (All · Credit · Loans). */
+  debtSection:             DebtSection;
+  onDebtSectionChange:     (s: DebtSection) => void;
   onSwitchLens:            (id: string) => void;
   onEnvelopeChange:        (env: PerspectiveEnvelope) => void;
   onSelectCashFlowPeriod:  (p: CashFlowPeriod) => void;
@@ -183,6 +186,8 @@ const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => Reac
       modeSelectorVisibility={ctx.wealthModeSelectorVisibility}
       slice={ctx.assetsSlice}
       onSliceChange={ctx.onSliceChange}
+      debtSection={ctx.debtSection}
+      onDebtSectionChange={ctx.onDebtSectionChange}
       focusSection={ctx.wealthFocus}
       active={ctx.assetsActive || ctx.debtActive}
       cash={{

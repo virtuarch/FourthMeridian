@@ -26,6 +26,7 @@ import { ManageSpaceModal } from "@/components/space/manage/ManageSpaceModal";
 import { DEFAULT_CASH_FLOW_PERIOD, isExplicitPeriod, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiveShellState";
 import { SpaceShell } from "@/components/space/shell/SpaceShell";
+import { CompactViewSelector } from "@/components/space/shell/CompactViewSelector";
 import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
 import { useSpaceData } from "@/lib/space/use-space-data";
 import { SpaceReadFailure } from "@/components/space/SpaceReadFailure";
@@ -186,7 +187,7 @@ export function SpaceDashboard({
     activeTab, setActiveTab,
     setSelectedPerspectiveId,
     activePerspectiveId, activeLensId, selectLens, switchLens,
-    wealthMode, setWealthMode, assetsSlice, setAssetsSlice, wealthFocus,
+    wealthMode, setWealthMode, assetsSlice, setAssetsSlice, debtSection, setDebtSection, wealthFocus,
     marketsMode, setMarketsMode,
     initialAccountFilter,
     applyInitialTab,
@@ -749,6 +750,9 @@ export function SpaceDashboard({
     // Same contract for the Markets views: the sidebar owns them at lg+.
     marketsModeSelectorVisibility: "belowLg",
     onSliceChange: setAssetsSlice,
+    // COMPACT DASHBOARD (P3) — the compact Debt category (?section=, Debt only).
+    debtSection,
+    onDebtSectionChange: setDebtSection,
     onSwitchLens: switchLens,
     onEnvelopeChange,
     onSelectCashFlowPeriod: setCashFlowExplicitPeriod,
@@ -827,6 +831,12 @@ export function SpaceDashboard({
       // order across every Space type, centered + stationary on every Workspace
       // and lens (no railStatic left-shift).
       railOptions={railOptions}
+      // COMPACT DASHBOARD (P1) — <lg only: the financial-view selector (Overview)
+      // and Leave Space for members/viewers (the desktop sidebar keeps its own).
+      compactViewSelector={activeTab === "OVERVIEW"
+        ? <CompactViewSelector items={lensSelectorItems} activeId={activeLensId} onSelect={selectLens} />
+        : undefined}
+      onLeave={canLeave ? () => setConfirmLeave(true) : undefined}
       activeTab={activeTab}
       // M3: selecting the Overview rail tab always lands on the summary — it
       // clears any engaged lens, so "Overview" is the way back from a Perspective.
@@ -882,8 +892,12 @@ export function SpaceDashboard({
               activeTabId={activeLensId}
               onSelectTab={selectLens}
               // lg+ the sidebar's Net Worth · Cash Flow IS the workspace switcher
-              // (published above); below lg there is no sidebar, so this row is.
-              tabsVisibility="belowLg"
+              // (published above). COMPACT DASHBOARD (P1): below lg the header's
+              // CompactViewSelector is — same items, same selectLens — so the
+              // compact lens row is no longer rendered.
+              tabsVisibility="none"
+              // COMPACT DASHBOARD — Markets takes no time; below lg its date row is hidden.
+              compactHideTime={activePerspectiveId === "markets"}
             />
           </div>
         )}

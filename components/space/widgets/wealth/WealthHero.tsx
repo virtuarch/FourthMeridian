@@ -22,6 +22,7 @@
  */
 
 import type { ReactNode } from "react";
+import { COMPACT_HERO } from "@/components/space/compact/compact-hero";
 import { formatCurrency } from "@/lib/currency";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
@@ -132,7 +133,7 @@ export function WealthHero({
   return (
     // The hero — no card, no border. The most important figure doesn't need a
     // container to be found (prototype: solid surfaces are for the rows below).
-    <section>
+    <section className={COMPACT_HERO}>
       {eyebrow}
 
       <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">

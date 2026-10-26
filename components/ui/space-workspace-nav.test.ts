@@ -355,9 +355,15 @@ console.log("H. One workspace switcher per width; no stale Sections label");
   check("the two breakpoints are exact complements: sidebar `hidden … lg:block` ⇔ row `lg:hidden`",
     /<aside className="hidden w-\[212px\] shrink-0 lg:block">/.test(rail));
   const host = code(read("components", "dashboard", "SpaceDashboard.tsx"));
-  check("the customer host opts in exactly once, on the lens row it already renders (no second switcher, same routing)",
-    (host.match(/tabsVisibility="belowLg"/g) ?? []).length === 1 &&
-      /tabs=\{lensSelectorItems\}[\s\S]{0,120}onSelectTab=\{selectLens\}[\s\S]{0,40}tabsVisibility="belowLg"/.test(host));
+  // COMPACT DASHBOARD (P1) — below lg the switcher is the header's CompactViewSelector,
+  // fed the SAME items + the SAME selectLens the lens row used (same routing, one
+  // switcher); the compact lens row is therefore not rendered for customer Spaces.
+  check("the customer host renders ONE compact switcher: the header selector, on the lens row's items and handler",
+    (host.match(/tabsVisibility="none"/g) ?? []).length === 1 && !/tabsVisibility="belowLg"/.test(host) &&
+      /tabs=\{lensSelectorItems\}[\s\S]{0,120}onSelectTab=\{selectLens\}[\s\S]{0,40}tabsVisibility="none"/.test(host) &&
+      /<CompactViewSelector items=\{lensSelectorItems\} activeId=\{activeLensId\} onSelect=\{selectLens\} \/>/.test(host));
+  check("the compact selector is compact-only (lg:hidden root) and the sidebar stays desktop-only — exact complements",
+    /className="relative lg:hidden"/.test(read("components", "space", "shell", "CompactViewSelector.tsx")));
   check("Net Worth internal modes (Total · Assets · Debt) are not the lens row — untouched by this switch",
     !/tabsVisibility/.test(code(read("components", "space", "widgets", "wealth", "WealthWorkspace.tsx"))));
 
@@ -504,7 +510,7 @@ console.log("J. Net Worth is a parent: Total · Assets · Debt nested while open
   // a view refines its workspace's entry (behaviour: space-history.test §4–6).
   const navSrc = read("lib", "space", "use-space-navigation.ts");
   check("mode writes: ?metric= from the ONE URL writer, only for the open Net Worth; the mode setter declares no push",
-    /openWorkspace === NET_WORTH_LENS_ID\s*\? \{ metric: serializeWealthMode\(wealthMode\)/.test(navSrc) &&
+    /openWorkspace === NET_WORTH_LENS_ID\s*\?\s*\{\s*metric: serializeWealthMode\(wealthMode\)/.test(navSrc) &&
       !/historyIntent/.test(navSrc.match(/const handleModeChange = useCallback\([\s\S]*?\}, \[\]\);/)?.[0] ?? "historyIntent"));
 
   // Responsive: ONE Total · Assets · Debt control per width.
@@ -514,8 +520,17 @@ console.log("J. Net Worth is a parent: Total · Assets · Debt nested while open
   check("…default stays visible everywhere, and it is still the SAME Chips over `mode` / onModeChange (mobile keeps all three)",
     /modeSelectorVisibility = "always"/.test(ww) && /options=\{WEALTH_MODES\.map/.test(ww) && /value=\{mode\}/.test(ww) && /onChange=\{\(m\) => onModeChange\?\.\(m\)\}/.test(ww));
   // UI-006 added a fifth path: the snapshot read FAILED with no history loaded.
+  // COMPACT DASHBOARD (P2/P3) — still rendered in every path, never removed. In the
+  // main and Debt paths it moved BELOW the hero for the compact hierarchy (hero →
+  // Total·Assets·Debt → tabs): complementary conditionals keep a desktop-visible
+  // selector (visibility "always") above the hero, and Debt receives it as a slot
+  // rendered under the Debt hero.
   check("…rendered in every mode path (Debt, loading, read-failure, no-history, main) — hidden, never removed",
-    (code(ww).match(/\{modeSelector\}/g) ?? []).length === 5);
+    (code(ww).match(/\{modeSelector\}/g) ?? []).length === 3 &&
+      (code(ww).match(/\{modeSelectorVisibility !== "belowLg" && modeSelector\}/g) ?? []).length === 2 &&
+      (code(ww).match(/\{modeSelectorVisibility === "belowLg" && modeSelector\}/g) ?? []).length === 1 &&
+      /compactModeSelector=\{modeSelectorVisibility === "belowLg" \? modeSelector : undefined\}/.test(code(ww)) &&
+      /\{compactModeSelector\}/.test(code(read("components", "space", "widgets", "debt", "DebtWorkspace.tsx"))));
   check("the customer host opts in once, through the render context",
     (host.match(/wealthModeSelectorVisibility: "belowLg"/g) ?? []).length === 1 &&
       /modeSelectorVisibility=\{ctx\.wealthModeSelectorVisibility\}/.test(read("components", "space", "workspaces", "workspaceRenderers.tsx")));
