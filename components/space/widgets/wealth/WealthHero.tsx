@@ -108,9 +108,7 @@ export function WealthHero({
   // composition) — never "& crypto" for a user with no crypto. Null ⇒ neither.
   const investedLabel = investedClassLabel(asOfState.composition);
   const metricLabel = metric === "invested" ? (investedLabel ?? "Investments") : METRIC_LABEL[metric];
-  const secondaryRows = SECONDARY[metric]
-    .filter((row) => row.key !== "invested" || investedLabel !== null)
-    .map((row) => (row.key === "invested" ? { ...row, label: investedLabel! } : row));
+  const secondaryRows = wealthSecondaryRows(result, metric);
   const compareLabel =
     compareState?.found && compareState.date ? formatWealthDate(compareState.date) : undefined;
   const asOfLabel = asOfState.date ? `As of ${formatWealthDate(asOfState.date)}` : undefined;
@@ -197,23 +195,51 @@ export function WealthHero({
           key off the same as-of snapshot (label · value · signed change). */}
       {secondaryRows.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)] max-lg:hidden">
-          {secondaryRows.map((row) => {
-            const d = deltas?.[row.key];
-            const good = d ? (row.goodDirection === "up" ? d.abs >= 0 : d.abs <= 0) : true;
-            return (
-              <Stat key={row.key} label={row.label}>
-                {formatCurrency(asOfState[row.key], currency)}
-                {d && Math.abs(d.abs) >= 0.5 && (
-                  <span className="ml-1.5" style={{ color: good ? "var(--accent-positive)" : "var(--accent-negative)" }}>
-                    {d.abs >= 0 ? "+" : "−"}{formatCurrency(Math.abs(d.abs), currency)}
-                  </span>
-                )}
-              </Stat>
-            );
-          })}
+          {secondaryRows.map((row) => (
+            <Stat key={row.key} label={row.label}>
+              {formatCurrency(asOfState[row.key], currency)}
+              <SecondaryChange delta={deltas?.[row.key]} goodDirection={row.goodDirection} currency={currency} />
+            </Stat>
+          ))}
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * The secondary stat rows for a headline — each a real WealthMetrics key off the
+ * SAME as-of snapshot, the `invested` row named for the classes actually held (or
+ * omitted). Exported (v2.7 R4) so the compact KPI strip states exactly these rows.
+ */
+export function wealthSecondaryRows(result: WealthResult, metric: WealthMetricKey): { key: WealthMetricKey; label: string; goodDirection: "up" | "down" }[] {
+  const investedLabel = investedClassLabel(result.asOfState.composition);
+  return SECONDARY[metric]
+    .filter((row) => row.key !== "invested" || investedLabel !== null)
+    .map((row) => (row.key === "invested" ? { ...row, label: investedLabel! } : row));
+}
+
+/**
+ * A secondary stat's signed change (hidden under half a unit) — the hero's stat
+ * line formatting, exported (v2.7 R4) for the compact KPI strip.
+ */
+export function SecondaryChange({
+  delta,
+  goodDirection,
+  currency,
+  className,
+}: {
+  delta: { abs: number } | null | undefined;
+  goodDirection: "up" | "down";
+  currency: string;
+  className?: string;
+}) {
+  if (!delta || Math.abs(delta.abs) < 0.5) return null;
+  const good = goodDirection === "up" ? delta.abs >= 0 : delta.abs <= 0;
+  return (
+    <span className={className ?? "ml-1.5"} style={{ color: good ? "var(--accent-positive)" : "var(--accent-negative)" }}>
+      {delta.abs >= 0 ? "+" : "−"}{formatCurrency(Math.abs(delta.abs), currency)}
+    </span>
   );
 }
 
