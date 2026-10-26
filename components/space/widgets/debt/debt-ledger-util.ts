@@ -6,13 +6,20 @@
  * computeDebtKpis over the accounts array (dual-authority, plan §1.4). These helpers
  * only CLASSIFY and LABEL for grouping/rows — they never sum, convert, or value.
  *
- * The liability CLASS is derived from the honest fields the DTO carries: the raw Plaid
- * `debtSubtype` when present, else the revolving signal (a credit limit ⇒ a card-like
- * line). Unknown ⇒ "Other" — we never guess from the name (a claim is a claim).
+ * The liability CLASS is derived from the honest fields the DTO carries
+ * (`presentationDebtClass`, v2.7 R2 — DISPLAY ONLY):
+ *   1. the stored `debtSubtype` when present — it ALWAYS wins;
+ *   2. else the normalized provider `providerSubtype` (Plaid's own account subtype,
+ *      `normalizeProviderSubtype`), mapped through an owner-approved table;
+ *   3. else "Other". A credit limit alone is NOT evidence of a card (owner D-5):
+ *      the old "limit ⇒ card-like" fallback put HELOCs and unknown rows under
+ *      Credit cards, so it is gone. We never guess from the name either.
+ * Nothing here feeds totals, utilization, interest, payoff, or stored data.
  */
 
 import { type LiabilityState } from "@/lib/debt/balance-semantics";
 import { utilizationPercent } from "@/lib/accounts/credit-utilization";
+import { normalizeProviderSubtype } from "@/lib/account-classifier";
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
 
 /**
@@ -56,32 +63,78 @@ export const DEBT_CLASS_LABEL: Record<DebtClass, string> = {
 /** Ordered so a stable group sequence is trivial to iterate. */
 export const DEBT_CLASS_ORDER: DebtClass[] = ["cards", "loans", "other"];
 
-const LOAN_SUBTYPES = new Set([
-  "line_of_credit", "heloc", "auto_loan", "mortgage", "personal_loan", "student_loan",
-]);
+/**
+ * STORED `debtSubtype` → (class, label). Today's grouping is preserved EXCEPT
+ * `line_of_credit`: owner direction is that a revolving line presents under
+ * Credit, so stored "line_of_credit" → cards. Stored "heloc" stays a loan (a
+ * home-equity line is secured borrowing; owner D-4 groups it with Loans).
+ */
+const STORED_SUBTYPE: Record<string, { cls: DebtClass; label: string }> = {
+  credit_card:    { cls: "cards", label: "Credit card" },
+  line_of_credit: { cls: "cards", label: "Line of credit" },
+  heloc:          { cls: "loans", label: "HELOC" },
+  auto_loan:      { cls: "loans", label: "Auto loan" },
+  mortgage:       { cls: "loans", label: "Mortgage" },
+  personal_loan:  { cls: "loans", label: "Personal loan" },
+  student_loan:   { cls: "loans", label: "Student loan" },
+};
+
+/**
+ * Normalized PROVIDER subtype (lowercase, trimmed — `normalizeProviderSubtype`)
+ * → (class, label). Consulted only when no stored `debtSubtype` exists. Anything
+ * not listed (incl. "overdraft", "business", null) ⇒ "other" (owner D-5).
+ */
+const PROVIDER_SUBTYPE: Record<string, { cls: DebtClass; label: string }> = {
+  "credit card":                { cls: "cards", label: "Credit card" },
+  "paypal":                     { cls: "cards", label: "Credit card" },
+  "line of credit":             { cls: "cards", label: "Line of credit" },
+  "home equity":                { cls: "loans", label: "HELOC" },
+  "mortgage":                   { cls: "loans", label: "Mortgage" },
+  "student":                    { cls: "loans", label: "Student loan" },
+  "auto":                       { cls: "loans", label: "Auto loan" },
+  "consumer":                   { cls: "loans", label: "Personal loan" },
+  "loan":                       { cls: "loans", label: "Personal loan" },
+  "personal":                   { cls: "loans", label: "Personal loan" },
+  "installment personal loans": { cls: "loans", label: "Personal loan" },
+};
+
+/** The fields presentation classification reads — nothing else. */
+type DebtClassInput = Pick<DebtPerspectiveAccount, "debtSubtype" | "providerSubtype" | "aggregate">;
+
+function presentationEntry(a: DebtClassInput): { cls: DebtClass; label: string } | null {
+  if (a.debtSubtype) return STORED_SUBTYPE[a.debtSubtype] ?? null;
+  // A privacy-aggregated row merges members WITHOUT keying on providerSubtype
+  // (lib/account-privacy.ts), so the subtype it carries is one member's — it
+  // cannot speak for the group. Such a row presents as "Other".
+  if (a.aggregate) return null;
+  const sub = normalizeProviderSubtype(a.providerSubtype);
+  return sub !== null ? PROVIDER_SUBTYPE[sub] ?? null : null;
+}
+
+/**
+ * v2.7 R2 — the ONE presentation class for a liability (ledger grouping, detail
+ * eyebrow, compact Credit/Loans counts all read this). Stored `debtSubtype`
+ * wins; else the normalized provider subtype; else "other". Never inferred from
+ * a credit limit. DISPLAY ONLY — no total, ratio, or stored value depends on it.
+ */
+export function presentationDebtClass(a: DebtClassInput): DebtClass {
+  return presentationEntry(a)?.cls ?? "other";
+}
+
+/** v2.7 R2 — human label for the liability's specific kind, else its class label. */
+export function presentationDebtLabel(a: DebtClassInput): string {
+  const e = presentationEntry(a);
+  return e ? e.label : DEBT_CLASS_LABEL.other;
+}
 
 /** Human label for a specific subtype (detail panel eyebrow), else the class label. */
 export function debtSubtypeLabel(a: DebtPerspectiveAccount): string {
-  switch (a.debtSubtype) {
-    case "credit_card":    return "Credit card";
-    case "line_of_credit": return "Line of credit";
-    case "heloc":          return "HELOC";
-    case "auto_loan":      return "Auto loan";
-    case "mortgage":       return "Mortgage";
-    case "personal_loan":  return "Personal loan";
-    case "student_loan":   return "Student loan";
-    default:               return DEBT_CLASS_LABEL[classifyDebt(a)];
-  }
+  return presentationDebtLabel(a);
 }
 
 /** Classify a liability into one of the three editorial groups (honest fields only). */
 export function classifyDebt(a: DebtPerspectiveAccount): DebtClass {
-  if (a.debtSubtype === "credit_card") return "cards";
-  if (a.debtSubtype && LOAN_SUBTYPES.has(a.debtSubtype)) return "loans";
-  // No subtype on file — fall back to the revolving signal: a positive credit
-  // limit reads as a card-like line, everything else is "other".
-  if (a.creditLimit != null && a.creditLimit > 0) return "cards";
-  return "other";
+  return presentationDebtClass(a);
 }
 
 /** Utilization % for a revolving line, or null when no usable limit exists.

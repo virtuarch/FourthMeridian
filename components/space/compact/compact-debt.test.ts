@@ -140,8 +140,13 @@ console.log("\n6. Credit / Loans are WITHHELD (owner rule: never guess a classif
     /const debtTabs = DEBT_CATEGORY_TABS_ENABLED && liabilityCount > 0 && onCompactSectionChange \?/.test(dw)
       && /const cv = debtCompactVisibility\(DEBT_CATEGORY_TABS_ENABLED \? compactSection : "all"\);/.test(dw));
   check("…and a ?section= in the URL is ignored (and cleaned by the writer)", /DEBT_CATEGORY_TABS_ENABLED && mode === "debt"/.test(nav));
-  check("the existing classifier is untouched (no providerSubtype mapping was added)",
-    !/providerSubtype/.test(read("components/space/widgets/debt/debt-ledger-util.ts")));
+  // v2.7 R2 — DELIBERATE PIN CHANGE. This pinned that no providerSubtype mapping
+  // existed. R2 adds the owner-approved DISPLAY-ONLY mapping (presentationDebtClass)
+  // while the tabs stay withheld; the pin now asserts the flag is still the gate
+  // and that the classifier no longer infers a card from a credit limit (owner D-5).
+  check("R2: the classifier maps providerSubtype for display only and never infers a card from a limit",
+    /export function presentationDebtClass\(/.test(code("components/space/widgets/debt/debt-ledger-util.ts"))
+      && !/creditLimit/.test(code("components/space/widgets/debt/debt-ledger-util.ts").split("export function accountUtilization")[0]));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
