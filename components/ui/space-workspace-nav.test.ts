@@ -510,7 +510,7 @@ console.log("J. Net Worth is a parent: Total · Assets · Debt nested while open
   // a view refines its workspace's entry (behaviour: space-history.test §4–6).
   const navSrc = read("lib", "space", "use-space-navigation.ts");
   check("mode writes: ?metric= from the ONE URL writer, only for the open Net Worth; the mode setter declares no push",
-    /openWorkspace === NET_WORTH_LENS_ID\s*\? \{ metric: serializeWealthMode\(wealthMode\)/.test(navSrc) &&
+    /openWorkspace === NET_WORTH_LENS_ID\s*\?\s*\{\s*metric: serializeWealthMode\(wealthMode\)/.test(navSrc) &&
       !/historyIntent/.test(navSrc.match(/const handleModeChange = useCallback\([\s\S]*?\}, \[\]\);/)?.[0] ?? "historyIntent"));
 
   // Responsive: ONE Total · Assets · Debt control per width.
@@ -520,8 +520,17 @@ console.log("J. Net Worth is a parent: Total · Assets · Debt nested while open
   check("…default stays visible everywhere, and it is still the SAME Chips over `mode` / onModeChange (mobile keeps all three)",
     /modeSelectorVisibility = "always"/.test(ww) && /options=\{WEALTH_MODES\.map/.test(ww) && /value=\{mode\}/.test(ww) && /onChange=\{\(m\) => onModeChange\?\.\(m\)\}/.test(ww));
   // UI-006 added a fifth path: the snapshot read FAILED with no history loaded.
+  // COMPACT DASHBOARD (P2/P3) — still rendered in every path, never removed. In the
+  // main and Debt paths it moved BELOW the hero for the compact hierarchy (hero →
+  // Total·Assets·Debt → tabs): complementary conditionals keep a desktop-visible
+  // selector (visibility "always") above the hero, and Debt receives it as a slot
+  // rendered under the Debt hero.
   check("…rendered in every mode path (Debt, loading, read-failure, no-history, main) — hidden, never removed",
-    (code(ww).match(/\{modeSelector\}/g) ?? []).length === 5);
+    (code(ww).match(/\{modeSelector\}/g) ?? []).length === 3 &&
+      (code(ww).match(/\{modeSelectorVisibility !== "belowLg" && modeSelector\}/g) ?? []).length === 2 &&
+      (code(ww).match(/\{modeSelectorVisibility === "belowLg" && modeSelector\}/g) ?? []).length === 1 &&
+      /compactModeSelector=\{modeSelectorVisibility === "belowLg" \? modeSelector : undefined\}/.test(code(ww)) &&
+      /\{compactModeSelector\}/.test(code(read("components", "space", "widgets", "debt", "DebtWorkspace.tsx"))));
   check("the customer host opts in once, through the render context",
     (host.match(/wealthModeSelectorVisibility: "belowLg"/g) ?? []).length === 1 &&
       /modeSelectorVisibility=\{ctx\.wealthModeSelectorVisibility\}/.test(read("components", "space", "workspaces", "workspaceRenderers.tsx")));

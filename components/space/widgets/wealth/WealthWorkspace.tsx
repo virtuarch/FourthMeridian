@@ -42,6 +42,8 @@
  */
 
 import { summarizeCryptoPricing } from "@/lib/prices/current-quote.core";
+import { CompactSectionTabs, compactHidden } from "@/components/space/compact/CompactSectionTabs";
+import { assetsCompactVisibility } from "@/components/space/compact/compact-sections";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
@@ -52,6 +54,7 @@ import { convertWealthSnapshots } from "@/lib/wealth/display-conversion";
 import {
   ASSETS_SLICES, ASSETS_SLICE_LABELS, WEALTH_MODES, WEALTH_MODE_LABELS, wealthSeriesKey,
   type AssetsSlice, type WealthMode,
+  type DebtSection,
 } from "@/lib/wealth/wealth-mode";
 import { buildPortfolioValueSeries } from "@/lib/investments/portfolio-series";
 import { classifyAccounts } from "@/lib/account-classifier";
@@ -143,6 +146,8 @@ export function WealthWorkspace({
   modeSelectorVisibility = "always",
   slice = "all",
   onSliceChange,
+  debtSection = "all",
+  onDebtSectionChange,
   focusSection = null,
   active = true,
   cash,
@@ -186,6 +191,9 @@ export function WealthWorkspace({
   /** The Assets balance-history slice (All · Cash · Investments) — URL-synced by the host. */
   slice?:           AssetsSlice;
   onSliceChange?:   (s: AssetsSlice) => void;
+  /** COMPACT DASHBOARD (P3) — the compact Debt category (All · Credit · Loans), host-owned (?section=). */
+  debtSection?:          DebtSection;
+  onDebtSectionChange?:  (s: DebtSection) => void;
   /** A one-shot Assets section to scroll to on arrival (a legacy lens deep link). */
   focusSection?:    "cash" | "investments" | null;
   /** Gate for the embedded historical fetches — true while this is the open lens. */
@@ -341,7 +349,7 @@ export function WealthWorkspace({
   if (mode === "debt") {
     return (
       <div className="space-y-6 min-w-0">
-        {modeSelector}
+        {modeSelectorVisibility !== "belowLg" && modeSelector}
         {snapshotsError && (
           <SpaceReadFailure
             variant={snapshots != null ? "inline" : "card"}
@@ -365,27 +373,60 @@ export function WealthWorkspace({
           presentLens={debt?.presentLens ?? null}
           targetCurrency={debt?.targetCurrency}
           onEnvelopeChange={onEnvelopeChange}
+          // COMPACT DASHBOARD (P3) — the compact hierarchy inside Debt: Debt hero →
+          // Total · Assets · Debt (this lg:hidden selector) → All · Credit · Loans.
+          compactModeSelector={modeSelectorVisibility === "belowLg" ? modeSelector : undefined}
+          compactSection={debtSection}
+          onCompactSectionChange={onDebtSectionChange}
         />
       </div>
     );
   }
 
   // ── The Assets slice control (chart header) ─────────────────────────────────
+  // COMPACT DASHBOARD (P2): below lg the category tabs carry the slice, so the
+  // chart-header chips are compact-hidden (max-lg:hidden — unchanged on desktop).
   const sliceControl = mode === "assets" ? (
     <Chips
       options={ASSETS_SLICES.map((s) => ({ id: s, label: ASSETS_SLICE_LABELS[s] }))}
       value={slice}
       onChange={(s) => onSliceChange?.(s)}
       ariaLabel="Assets series"
+      className="max-lg:hidden"
     />
   ) : undefined;
+
+  // ── COMPACT DASHBOARD (P2) — Assets category tabs (<lg only) ────────────────
+  // All · Cash · Investments ARE the existing slice (?slice=, replace-written),
+  // so the chart series and the visible content can never disagree. A tab shows
+  // its sections on compact; the others are max-lg:hidden (display:none below
+  // lg — not focusable, not exposed). At ≥1024px every section renders as today.
+  //   All         — the complete Assets experience (incl. Real assets)
+  //   Cash        — the Cash/Liquidity section
+  //   Investments — Investments (incl. crypto) + Real assets as a DISTINCT
+  //                 subsection: navigation only, never a reclassification
+  const compact = assetsCompactVisibility(slice);
+  const assetsTabs = mode === "assets" ? (
+    <CompactSectionTabs
+      ariaLabel="Assets category"
+      value={slice}
+      onChange={(s) => onSliceChange?.(s)}
+      tabs={ASSETS_SLICES.map((s) => ({
+        id: s,
+        label: ASSETS_SLICE_LABELS[s],
+        controls: s === "cash" ? ["wealth-cash"]
+          : s === "investments" ? ["wealth-investments", "wealth-real-assets"]
+          : ["wealth-cash", "wealth-investments", "wealth-real-assets"],
+      }))}
+    />
+  ) : null;
 
   // ── The embedded Assets sections (Cash · Investments · Real assets) ─────────
   // Same hooks, same authorities, same surfaces as the former peer lenses; each
   // keeps its own per-figure trust and stays silent toward the shell.
   const assetsSectionsBody = mode === "assets" ? (
     <>
-      <section id="wealth-cash" className="scroll-mt-20 border-t border-[var(--border-hairline)] pt-8">
+      <section id="wealth-cash" className={`scroll-mt-20 border-t border-[var(--border-hairline)] pt-8 ${compactHidden(!compact.cash)}`.trim()}>
         <SectionTitle>Cash</SectionTitle>
         <LiquidityWorkspace
           embedded
@@ -407,7 +448,7 @@ export function WealthWorkspace({
           onOpenCashFlow={cash?.onOpenCashFlow}
         />
       </section>
-      <section id="wealth-investments" className="scroll-mt-20 border-t border-[var(--border-hairline)] pt-8">
+      <section id="wealth-investments" className={`scroll-mt-20 border-t border-[var(--border-hairline)] pt-8 ${compactHidden(!compact.investments)}`.trim()}>
         <SectionTitle>Investments</SectionTitle>
         <InvestmentsWorkspace
           embedded
@@ -420,8 +461,17 @@ export function WealthWorkspace({
           ctx={ctx}
         />
       </section>
-      <section id="wealth-real-assets" className="scroll-mt-20 border-t border-[var(--border-hairline)] pt-8">
+      <section id="wealth-real-assets" className={`scroll-mt-20 border-t border-[var(--border-hairline)] pt-8 ${compactHidden(!compact.realAssets)}`.trim()}>
         <SectionTitle>Real assets</SectionTitle>
+        {/* COMPACT DASHBOARD (P2) — on the Investments tab, say what the grouping is
+            (and is not): navigation only. Real assets keep their own classification,
+            valuation history and details; they are not securities and are not part
+            of the Investments figures or chart above. */}
+        {slice === "investments" && (
+          <p className="lg:hidden -mt-3 mb-5 text-[12px] leading-snug text-[var(--text-muted)]" data-compact-real-assets-note>
+            Grouped here for navigation. Real assets keep their own valuations and are not counted in the Investments figures or chart above.
+          </p>
+        )}
         <RealAssetsSection spaceId={spaceId} spaceType={spaceType} active={active} />
       </section>
     </>
@@ -433,6 +483,7 @@ export function WealthWorkspace({
     return (
       <div className="space-y-6 min-w-0">
         {modeSelector}
+        {assetsTabs}
         <div
           className="rounded-2xl border p-8 flex flex-col items-center justify-center text-center gap-3 min-h-[220px]"
           style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}
@@ -456,6 +507,7 @@ export function WealthWorkspace({
     return (
       <div className="space-y-6 min-w-0">
         {modeSelector}
+        {assetsTabs}
         <SpaceReadFailure what="wealth history" message={snapshotsError} onRetry={onRetrySnapshots} />
         {assetsSectionsBody}
       </div>
@@ -472,6 +524,7 @@ export function WealthWorkspace({
         >
           <WealthUnavailable message="No wealth history yet. Once this Space accrues daily snapshots (or you connect accounts), the historical Wealth perspective builds itself — nothing is fabricated in the meantime." />
         </div>
+        {assetsTabs}
         {assetsSectionsBody}
       </div>
     );
@@ -482,7 +535,7 @@ export function WealthWorkspace({
   return (
     <>
       <div className="space-y-8 sm:space-y-10 min-w-0">
-        {modeSelector}
+        {modeSelectorVisibility !== "belowLg" && modeSelector}
         {staleSnapshotsNotice}
 
         {/* ① Hero — the headline scalar of the page's subject. */}
@@ -490,6 +543,12 @@ export function WealthWorkspace({
           <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric}
             cryptoPriceNote={result.asOfState.date === today ? summarizeCryptoPricing((accounts ?? []).map((a) => a.cryptoPrice)) : null} />
         </div>
+
+        {/* COMPACT DASHBOARD (P2) — the compact hierarchy is hero → Total · Assets ·
+            Debt → category tabs → content. The selector here is lg:hidden
+            (modeSelectorVisibility "belowLg"), so its position is invisible at ≥1024px. */}
+        {modeSelectorVisibility === "belowLg" && modeSelector}
+        {assetsTabs}
 
         {/* ② Trend — the dominant honesty chart; in Assets, sliceable. */}
         <div id="wealth-trend" className="scroll-mt-20">
@@ -504,7 +563,7 @@ export function WealthWorkspace({
         </div>
 
         {/* ③ Composition (7) + ④ Change ledger / what-moved-it (5). */}
-        <div className="grid gap-6 lg:grid-cols-12 lg:gap-8 items-start">
+        <div className={`grid gap-6 lg:grid-cols-12 lg:gap-8 items-start ${compactHidden(mode === "assets" && !compact.composition)}`.trim()}>
           <div id="wealth-composition" className="scroll-mt-20 min-w-0 lg:col-span-7">
             <WealthCompositionCard result={result} currency={displayCurrency} accounts={accounts} ctx={ctx} metric={metric} />
           </div>

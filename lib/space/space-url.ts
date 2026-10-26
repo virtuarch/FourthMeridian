@@ -29,6 +29,8 @@ export const SPACE_URL_PARAMS = [
   "account",
   "transaction",
   "workspace",
+  // COMPACT DASHBOARD (P3) — the compact Debt category (All · Credit · Loans).
+  "section",
 ] as const;
 export type SpaceUrlParam = (typeof SPACE_URL_PARAMS)[number];
 

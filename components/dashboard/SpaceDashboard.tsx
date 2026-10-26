@@ -187,7 +187,7 @@ export function SpaceDashboard({
     activeTab, setActiveTab,
     setSelectedPerspectiveId,
     activePerspectiveId, activeLensId, selectLens, switchLens,
-    wealthMode, setWealthMode, assetsSlice, setAssetsSlice, wealthFocus,
+    wealthMode, setWealthMode, assetsSlice, setAssetsSlice, debtSection, setDebtSection, wealthFocus,
     marketsMode, setMarketsMode,
     initialAccountFilter,
     applyInitialTab,
@@ -750,6 +750,9 @@ export function SpaceDashboard({
     // Same contract for the Markets views: the sidebar owns them at lg+.
     marketsModeSelectorVisibility: "belowLg",
     onSliceChange: setAssetsSlice,
+    // COMPACT DASHBOARD (P3) — the compact Debt category (?section=, Debt only).
+    debtSection,
+    onDebtSectionChange: setDebtSection,
     onSwitchLens: switchLens,
     onEnvelopeChange,
     onSelectCashFlowPeriod: setCashFlowExplicitPeriod,

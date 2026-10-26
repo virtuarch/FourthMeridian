@@ -39,6 +39,8 @@ import {
   legacyPerspectiveTarget, parseAssetsSlice, parseWealthMode,
   serializeAssetsSlice, serializeWealthMode,
   DEFAULT_ASSETS_SLICE, DEFAULT_WEALTH_MODE,
+  DEBT_SECTION_PARAM, DEFAULT_DEBT_SECTION, parseDebtSection, serializeDebtSection,
+  type DebtSection,
   WEALTH_MODES, WEALTH_MODE_LABELS,
   type AssetsSlice, type LegacyPerspectiveTarget, type WealthMode,
 } from "@/lib/wealth/wealth-mode";
@@ -240,6 +242,13 @@ export interface SpaceNavigation {
   assetsSlice: AssetsSlice;
   /** Set the slice + mirror to ?slice= (all clears the param). */
   setAssetsSlice: (s: AssetsSlice) => void;
+  /**
+   * COMPACT DASHBOARD (P3) — the compact Debt category (All · Credit · Loans),
+   * mirrored to ?section= in Debt mode only (replace-written: a view change).
+   * Desktop ignores it.
+   */
+  debtSection: DebtSection;
+  setDebtSection: (s: DebtSection) => void;
   /** One-shot Assets section focus from a legacy peer-lens deep link, else null. */
   wealthFocus: "cash" | "investments" | null;
   /** ?account= deep-link seed for the Transactions tab (read once on mount). */
@@ -263,6 +272,7 @@ export function useSpaceNavigation({
   const [wealthMode, setWealthMode] = useState<WealthMode>(DEFAULT_WEALTH_MODE);
   const [marketsMode, setMarketsMode] = useState<MarketsMode>(DEFAULT_MARKETS_MODE);
   const [assetsSlice, setAssetsSlice] = useState<AssetsSlice>(DEFAULT_ASSETS_SLICE);
+  const [debtSection, setDebtSection] = useState<DebtSection>(DEFAULT_DEBT_SECTION);
   const [wealthFocus, setWealthFocus] = useState<"cash" | "investments" | null>(null);
   const [initialAccountFilter, setInitialAccountFilter] = useState<string | null>(null);
   const initialTabSet = useRef(false);
@@ -351,13 +361,18 @@ export function useSpaceNavigation({
             ? perspectiveIdToSlug(selectedPerspectiveId)
             : null,
         ...(openWorkspace === NET_WORTH_LENS_ID
-          ? { metric: serializeWealthMode(wealthMode), slice: wealthMode === "assets" ? serializeAssetsSlice(assetsSlice) : null }
+          ? {
+              metric: serializeWealthMode(wealthMode),
+              slice: wealthMode === "assets" ? serializeAssetsSlice(assetsSlice) : null,
+              // COMPACT DASHBOARD (P3) — meaningful in Debt only; any other mode clears it.
+              [DEBT_SECTION_PARAM]: wealthMode === "debt" ? serializeDebtSection(debtSection) : null,
+            }
           : {}),
         ...(openWorkspace === MARKETS_LENS_ID ? { [MARKETS_VIEW_PARAM]: serializeMarketsMode(marketsMode) } : {}),
       },
       { history },
     );
-  }, [activeTab, selectedPerspectiveId, openWorkspace, wealthMode, assetsSlice, marketsMode, spaceUrl]);
+  }, [activeTab, selectedPerspectiveId, openWorkspace, wealthMode, assetsSlice, debtSection, marketsMode, spaceUrl]);
 
   /**
    * Open a workspace from its PARENT link, on its DEFAULT view — the place its
@@ -373,6 +388,7 @@ export function useSpaceNavigation({
       if (id === NET_WORTH_LENS_ID) {
         setWealthMode(DEFAULT_WEALTH_MODE);
         setAssetsSlice(DEFAULT_ASSETS_SLICE);
+        setDebtSection(DEFAULT_DEBT_SECTION);
         setWealthFocus(null);
       }
       if (id === MARKETS_LENS_ID) setMarketsMode(DEFAULT_MARKETS_MODE);
@@ -386,6 +402,7 @@ export function useSpaceNavigation({
     if (!legacy) return;
     setWealthMode(legacy.mode);
     setAssetsSlice(legacy.slice);
+    setDebtSection(DEFAULT_DEBT_SECTION);
     setWealthFocus(legacy.focus);
     // Self-heal the URL: the mode + slice become the canonical params (the tab
     // write above drops the retired `perspective` value on the same tick).
@@ -435,8 +452,11 @@ export function useSpaceNavigation({
       setMarketsMode(parseMarketsMode(readSpaceParam(search, MARKETS_VIEW_PARAM)));
       const legacy = readUrlTabState().legacy;
       if (legacy) { applyLegacy(legacy); return; }
-      setWealthMode(parseWealthMode(readSpaceParam(search, "metric")));
+      const mode = parseWealthMode(readSpaceParam(search, "metric"));
+      setWealthMode(mode);
       setAssetsSlice(parseAssetsSlice(readSpaceParam(search, "slice")));
+      // A ?section= outside Debt is not state (the writer then drops it).
+      setDebtSection(mode === "debt" ? parseDebtSection(readSpaceParam(search, DEBT_SECTION_PARAM)) : DEFAULT_DEBT_SECTION);
     };
     syncFromUrl();
     return spaceUrl.subscribe(syncFromUrl);
@@ -449,7 +469,11 @@ export function useSpaceNavigation({
     setWealthMode(m);
     setWealthFocus(null);
     if (m !== "assets") setAssetsSlice(DEFAULT_ASSETS_SLICE);
+    // COMPACT DASHBOARD (P3) — switching mode never leaves a stale Debt category.
+    if (m !== "debt") setDebtSection(DEFAULT_DEBT_SECTION);
   }, []);
+  // The compact Debt category — a view change (REPLACE), like the slice.
+  const handleDebtSectionChange = useCallback((sec: DebtSection) => setDebtSection(sec), []);
   // The Markets view — the same discipline as the Net Worth subject.
   const handleMarketsModeChange = useCallback((m: MarketsMode) => setMarketsMode(m), []);
   const handleSliceChange = useCallback((sl: AssetsSlice) => {
@@ -505,6 +529,8 @@ export function useSpaceNavigation({
     setMarketsMode: handleMarketsModeChange,
     assetsSlice,
     setAssetsSlice: handleSliceChange,
+    debtSection,
+    setDebtSection: handleDebtSectionChange,
     wealthFocus,
     initialAccountFilter,
     applyInitialTab,

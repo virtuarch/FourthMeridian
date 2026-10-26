@@ -135,3 +135,31 @@ export function wealthSeriesKey(mode: WealthMode, slice: AssetsSlice): WealthMet
   if (mode === "debt") return "totalLiabilities";
   return "netWorth";
 }
+
+// ── COMPACT DASHBOARD (P3) — the Debt category (compact navigation only) ──────
+//
+// All · Credit · Loans: which existing Debt content the compact (<1024px) Debt
+// view shows. Carried by ?section= (replace-written, Debt mode only); desktop
+// ignores it — every Debt section renders at ≥1024px whatever it says. Credit and
+// Loans follow the EXISTING liability classification (debt-ledger-util.ts
+// `classifyDebt`: cards → Credit, loans → Loans); nothing is reclassified here.
+export type DebtSection = "all" | "credit" | "loans";
+export const DEBT_SECTIONS: readonly DebtSection[] = ["all", "credit", "loans"];
+export const DEFAULT_DEBT_SECTION: DebtSection = "all";
+export const DEBT_SECTION_PARAM = "section";
+export const DEBT_SECTION_LABELS: Record<DebtSection, string> = {
+  all:    "All",
+  credit: "Credit",
+  loans:  "Loans",
+};
+
+/** An unknown or absent value is All (never an error, never a guess). */
+export function parseDebtSection(raw: string | null | undefined): DebtSection {
+  const k = (raw ?? "").toLowerCase();
+  return (DEBT_SECTIONS as string[]).includes(k) ? (k as DebtSection) : DEFAULT_DEBT_SECTION;
+}
+
+/** All writes no param. */
+export function serializeDebtSection(section: DebtSection): string | null {
+  return section === DEFAULT_DEBT_SECTION ? null : section;
+}

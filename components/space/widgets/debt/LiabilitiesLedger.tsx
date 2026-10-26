@@ -123,10 +123,18 @@ export function LiabilitiesLedger({
   accounts,
   ctx,
   currency,
+  compactClass = null,
 }: {
   accounts: DebtPerspectiveAccount[];
   ctx?:     ConversionContext;
   currency: string;
+  /**
+   * COMPACT DASHBOARD (P3) — the compact (<lg) Debt category. When set, compact
+   * screens show EVERY account of that existing class (classifyDebt) instead of
+   * the top-five inline list; rows, shares (of total debt), detail panel and
+   * figures are the same rows computed once above. Desktop ignores it.
+   */
+  compactClass?: Extract<DebtClass, "cards" | "loans"> | null;
 }) {
   const rows = useMemo(() => buildRows(accounts, ctx), [accounts, ctx]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -146,10 +154,11 @@ export function LiabilitiesLedger({
 
   const inline = rows.slice(0, MAX_INLINE);
   const hidden = rows.length - inline.length;
+  const classRows = compactClass ? rows.filter((r) => r.cls === compactClass) : [];
 
   return (
     <WorkspaceLayout>
-      <Surface className="overflow-hidden">
+      <Surface className={`overflow-hidden ${compactClass ? "max-lg:hidden" : ""}`.trim()}>
         <GroupedRows rows={inline} currency={currency} onOpen={setSelectedId} />
         {hidden > 0 && (
           <button
@@ -162,6 +171,22 @@ export function LiabilitiesLedger({
           </button>
         )}
       </Surface>
+
+      {/* COMPACT DASHBOARD (P3) — the selected category's accounts, all of them
+          (<lg only). Same rows, same detail panel, same figures. */}
+      {compactClass && (
+        <div className="lg:hidden" data-compact-ledger={compactClass}>
+          <Surface className="overflow-hidden">
+            {classRows.length > 0 ? (
+              <GroupedRows rows={classRows} currency={currency} onOpen={setSelectedId} />
+            ) : (
+              <p className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">
+                No {DEBT_CLASS_LABEL[compactClass].toLowerCase()} in this Space.
+              </p>
+            )}
+          </Surface>
+        </div>
+      )}
 
       {/* Full list — the context surface ("what am I operating in"). */}
       <LeftPanel open={allOpen} onClose={() => setAllOpen(false)} ariaLabel="All liabilities">
