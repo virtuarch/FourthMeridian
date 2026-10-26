@@ -215,8 +215,8 @@ export function DebtWorkspace({
   // Credit / Loans = the EXISTING liability classes (classifyDebt: cards / loans).
   // Shared analytics stay in All (compact-sections.ts). Every hide is
   // max-lg:hidden — display:none below lg only; at ≥1024px nothing changes.
-  // Withheld until a reliable debt subtype exists (wealth-mode.ts DEBT_CATEGORY_TABS_ENABLED):
-  // the compact Debt view then shows its complete content, with no category tabs.
+  // Gated by wealth-mode.ts DEBT_CATEGORY_TABS_ENABLED (enabled v2.7 R3 on the
+  // display-only presentationDebtClass); while off the view shows All, no tabs.
   const cv = debtCompactVisibility(DEBT_CATEGORY_TABS_ENABLED ? compactSection : "all");
   const classCounts = debtClassCounts(accounts);
   const classCount = cv.ledgerClass ? classCounts[cv.ledgerClass] : 0;

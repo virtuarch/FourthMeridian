@@ -35,7 +35,7 @@ export function assetsCompactVisibility(slice: AssetsSlice): AssetsCompactVisibi
 /**
  * What the compact Debt categories show. Credit and Loans are the EXISTING
  * liability classes (debt-ledger-util.ts `classifyDebt`: "cards" / "loans");
- * "other" (no subtype, no limit) is listed under All only.
+ * "other" (no recognized subtype — never inferred from a credit limit) is listed under All only.
  *
  * Shared analytics — computed over ALL debts together and not separable without
  * a new calculation — stay in All and are NEVER shown on a category tab:
