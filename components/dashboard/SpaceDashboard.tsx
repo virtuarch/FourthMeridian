@@ -143,7 +143,7 @@ const FLOW_TX_CATEGORIES = ["FAMILY", "BUSINESS", "DEBT_PAYOFF"];
 
 export function SpaceDashboard({
   spaceId,
-  spaceName,
+  spaceName: storedSpaceName,
   spaceType,
   category,
   myRole,
@@ -159,6 +159,11 @@ export function SpaceDashboard({
   const router = useRouter();
 
   const [showManage,    setShowManage]    = useState(false);
+  // v2.7 P1 — a rename in Manage → General shows in the header and the Space
+  // chrome at once (the server prop catches up via router.refresh). The override
+  // applies only while the prop still holds the name it replaced.
+  const [renamed, setRenamed] = useState<{ spaceId: string; from: string; to: string } | null>(null);
+  const spaceName = renamed && renamed.spaceId === spaceId && renamed.from === storedSpaceName ? renamed.to : storedSpaceName;
   const [confirmLeave,  setConfirmLeave]  = useState(false);
   const [leaveBusy,     setLeaveBusy]    = useState(false);
 
@@ -781,6 +786,7 @@ export function SpaceDashboard({
             <ManageSpaceModal
               spaceId={spaceId}
               spaceName={spaceName}
+              onRenamed={(to) => setRenamed({ spaceId, from: storedSpaceName, to })}
               myRole={myRole}
               currentUserId={currentUserId}
               onClose={() => setShowManage(false)}
