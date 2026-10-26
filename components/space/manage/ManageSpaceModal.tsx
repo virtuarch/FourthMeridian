@@ -9,13 +9,14 @@
  * toolbar slot and the tab content is its scrolling body; portal, focus-trap,
  * body-scroll-lock, panel height cap, and named z-scale come from the
  * primitive. Backdrop/Escape close (unchanged, always allowed here).
- * Tabs: General · Members · Add Accounts · Overview · Delete/Leave Space
+ * Tabs: General · Members · Accounts · Delete/Leave Space  (v2.7 P1: the
+ * customer-facing Overview tab was removed; OverviewSectionsPanel is no longer
+ * mounted here)
  *
  * This file is now a THIN SHELL — it owns only: load the Space, the selected
  * tab, the permission-gated tab list, and the FormModal frame. Every tab's own
  * state / fetches / mutations live in its extracted panel under this directory
- * (GeneralSettingsPanel, MembersPanel, FinancesPanel, OverviewSectionsPanel,
- * DangerZonePanel). The former inline GoalsTab was unreachable dead code
+ * (GeneralSettingsPanel, MembersPanel, FinancesPanel, DangerZonePanel). The former inline GoalsTab was unreachable dead code
  * (show:false, never selectable) and was removed, not extracted; the Goals
  * surface itself is retired outright in W2 (no goals affordance anywhere under
  * manage/ — section CONFIG toggling in OverviewSectionsPanel is unaffected).
@@ -30,14 +31,14 @@
  *
  * Permission gating mirrors the server:
  *   OWNER  — all tabs + actions
- *   ADMIN  — Members (invite/remove non-owners), Add Accounts, Overview
- *   MEMBER — Add Accounts (share own accounts only), no management tabs
+ *   ADMIN  — Members (invite/remove non-owners), Accounts
+ *   MEMBER — Accounts (share own accounts only), no management tabs
  *   VIEWER — read only, no management tabs
  */
 
 import { useState, useEffect, useCallback } from "react";
 import {
-  Settings, Users, Landmark, LayoutDashboard, Trash2, LogOut, Loader2,
+  Settings, Users, Landmark, Trash2, LogOut, Loader2,
 } from "lucide-react";
 import { displaySpaceName } from "@/lib/format";
 import { FormModal } from "@/components/atlas/FormModal";
@@ -45,7 +46,6 @@ import { ROLE_LABELS, type SpaceDetail } from "./manage-shared";
 import { GeneralSettingsPanel } from "./GeneralSettingsPanel";
 import { MembersPanel } from "./MembersPanel";
 import { FinancesPanel } from "./FinancesPanel";
-import { OverviewSectionsPanel } from "./OverviewSectionsPanel";
 import { DangerZonePanel } from "./DangerZonePanel";
 
 interface Props {
@@ -56,9 +56,11 @@ interface Props {
   onClose:       () => void;
   onRefresh:     () => void;
   onDeleted?:    () => void;
+  /** The Space was renamed (the new STORED name) — lets the host's header agree at once. */
+  onRenamed?:    (name: string) => void;
 }
 
-type ManageTab = "general" | "members" | "finances" | "dashboard" | "danger";
+type ManageTab = "general" | "members" | "finances" | "danger";
 
 export function ManageSpaceModal({
   spaceId,
@@ -68,9 +70,9 @@ export function ManageSpaceModal({
   onClose,
   onRefresh,
   onDeleted,
+  onRenamed,
 }: Props) {
   const isOwner   = myRole === "OWNER";
-  const canManage = ["OWNER", "ADMIN"].includes(myRole);
   const canEdit   = isOwner;
 
   // "general" is only visible to OWNERs — default to "members" for everyone else
@@ -93,8 +95,10 @@ export function ManageSpaceModal({
   const allTabs: { id: ManageTab; label: string; icon: React.ReactNode; show: boolean }[] = [
     { id: "general",   label: "General",     icon: <Settings    size={14} />, show: canEdit },
     { id: "members",   label: "Members",     icon: <Users       size={14} />, show: true },
-    { id: "finances",  label: "Add Accounts", icon: <Landmark    size={14} />, show: true },
-    { id: "dashboard", label: "Overview",    icon: <LayoutDashboard size={14} />, show: canManage },
+    // v2.7 P1 — "Accounts": the Space's accounts first, Add Account beneath.
+    // (The customer-facing "Overview" tab — SpaceDashboardSection toggles for a
+    // retired render stack — is gone; the sections API and rows are untouched.)
+    { id: "finances",  label: "Accounts",    icon: <Landmark    size={14} />, show: true },
     // A Personal Space can never be deleted, archived, trashed, or left, so the
     // danger tab has no valid action there — hide it entirely. Server routes
     // also fail closed for PERSONAL (defense in depth; not UI-only). Gated on a
@@ -107,7 +111,7 @@ export function ManageSpaceModal({
     <FormModal
       open
       onClose={onClose}
-      title={displaySpaceName(spaceName)}
+      title={displaySpaceName(space?.name ?? spaceName)}
       subtitle={`${ROLE_LABELS[myRole] ?? myRole} · Manage Space`}
       size="md"
       toolbar={
@@ -148,6 +152,7 @@ export function ManageSpaceModal({
               space={space}
               onSaved={(updated) => {
                 setSpace((prev) => prev ? { ...prev, ...updated } : prev);
+                if (updated.name !== undefined) onRenamed?.(updated.name);
                 onRefresh();
               }}
             />
@@ -163,9 +168,6 @@ export function ManageSpaceModal({
           )}
           {activeTab === "finances"             && (
             <FinancesPanel spaceId={spaceId} myRole={myRole} onRefresh={onRefresh} />
-          )}
-          {activeTab === "dashboard" && canManage && (
-            <OverviewSectionsPanel spaceId={spaceId} />
           )}
           {activeTab === "danger" && space?.type !== "PERSONAL" && (
             <DangerZonePanel

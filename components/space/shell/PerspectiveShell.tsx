@@ -25,7 +25,8 @@
  * context and never own time. Presentation only.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { PerspectiveTimeState } from "@/lib/perspectives/time-range";
@@ -40,6 +41,7 @@ import {
   summarize,
 } from "./perspective-time-adapter";
 import { ShellTrustRow } from "./ShellTrustRow";
+import { COMPACT_TIME_SLOT_ID, COMPACT_TIME_WRAPPER } from "./compact-time";
 import { PerspectiveTabs, type PerspectiveTabItem } from "./PerspectiveTabs";
 
 interface Props {
@@ -85,6 +87,12 @@ interface Props {
    * time (temporalCapability none) and must carry no Net Worth / Cash Flow controls.
    */
   compactHideTime?: boolean;
+  /**
+   * v2.7 P0 — below lg the time control lives in the Space header (beside
+   * Manage): the SAME TimelineLens, same props and intents, portalled into the
+   * slot SpaceShell renders; the in-flow row is compact-hidden. Desktop unchanged.
+   */
+  compactTimeInHeader?: boolean;
   /** "none" — COMPACT DASHBOARD (P1): the host renders the compact view selector instead. */
   tabsVisibility?: "always" | "belowLg" | "none";
 }
@@ -105,6 +113,14 @@ export function PerspectiveShell(props: Props) {
    * `onCompareToChange` still re-infers, `onSwap` is untouched. The lens is a
    * pure swap of the UI that expresses the intent.
    */
+  // v2.7 P0 — the compact header slot (client-only: it exists after hydration,
+  // so the server markup never contains a second lens).
+  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mirror a DOM node that only exists after mount
+    setHeaderSlot(props.compactTimeInHeader ? document.getElementById(COMPACT_TIME_SLOT_ID) : null);
+  }, [props.compactTimeInHeader]);
+
   function handleTimelineIntent(intent: TimelineIntent) {
     const result = shellActionForIntent(intent, { today: props.today });
     if (!result.ok) {
@@ -148,7 +164,7 @@ export function PerspectiveShell(props: Props) {
           caveat push the picker sideways; they get their own centred row just
           below it (ShellTrustRow renders nothing — no gap — when there are
           none). */}
-      <div className={props.compactHideTime ? "px-1 max-lg:hidden" : "px-1"}>
+      <div className={props.compactHideTime || props.compactTimeInHeader ? "px-1 max-lg:hidden" : "px-1"}>
         <div className="flex flex-wrap items-center justify-center gap-2">
           <TimelineLens
             activeOptionId={deriveActiveOptionId(props.timeState)}
@@ -162,6 +178,21 @@ export function PerspectiveShell(props: Props) {
           />
         </div>
       </div>
+      {props.compactTimeInHeader && !props.compactHideTime && headerSlot && createPortal(
+        <div className={COMPACT_TIME_WRAPPER} data-compact-time>
+          <TimelineLens
+            activeOptionId={deriveActiveOptionId(props.timeState)}
+            boundaries={deriveBoundaries(props.timeState)}
+            summary={summarize(props.timeState, props.today)}
+            periodOptions={PERIOD_OPTIONS}
+            capability={capabilityForLens(props.temporalCapability)}
+            maxDate={props.today}
+            boundaryError={boundaryError}
+            onIntent={handleTimelineIntent}
+          />
+        </div>,
+        headerSlot,
+      )}
       <ShellTrustRow envelope={props.envelope} className="justify-center px-1" />
 
       {/* Container 2 — the lens. Rendered BELOW time (the date picker must not

@@ -6,14 +6,31 @@
  * The "General" tab of Manage Space, extracted verbatim from the former single-
  * file ManageSpaceModal (GeneralTab). Owns Space name / description / visibility
  * / category / reporting-currency editing and the PATCH /api/spaces/[id] save.
- * OWNER-only tab (gated by the shell). Behavior-preserving: identical markup,
- * state, save handler, and the currency-change broadcast + router.refresh.
+ * OWNER-only tab (gated by the shell).
+ *
+ * v2.7 P1:
+ *   - NAME: the field edits the name customers SEE. Legacy rows still store
+ *     "X's Dashboard" / "Chris's Space", which every customer surface renders
+ *     through displaySpaceName() ("Chris' Space") — the field used to show the
+ *     raw stored string, so General disagreed with the header. The field now
+ *     starts from the displayed name, and `name` is sent ONLY when the customer
+ *     changes it (an untouched legacy row is never silently rewritten). A rename
+ *     broadcasts SPACE_LIST_CHANGED_EVENT (My Spaces, sidebar lists), reports
+ *     the new name to the host (header + chrome, immediately) and refreshes the
+ *     server tree. IDs, membership, routing and permissions are untouched.
+ *   - VISIBILITY: no public publishing from here. `isPublic` is never sent; the
+ *     public-Space schema, data and server authorization are unchanged. A Space
+ *     that is ALREADY public says so and can be made private (narrowing only).
+ *   - CATEGORY: a Personal Space's category is fixed — shown read-only as
+ *     "Personal" and never sent. Other Space types keep the existing picker
+ *     (server allowlist unchanged).
  */
 
 import { useState } from "react";
+import { displaySpaceName } from "@/lib/format";
 import { useRouter } from "next/navigation";
 import {
-  Settings, Loader2, Check, Globe, Lock, ChevronRight, Save,
+  Settings, Loader2, Check, Globe, ChevronRight, Save,
   Users, Landmark, LayoutDashboard, Target, AlertTriangle, Shield,
 } from "lucide-react";
 import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
@@ -45,9 +62,11 @@ export function GeneralSettingsPanel({
   space: SpaceDetail;
   onSaved: (updated: Partial<SpaceDetail>) => void;
 }) {
-  const [name,        setName]        = useState(space.name);
+  const shownName = displaySpaceName(space.name);
+  const isPersonal = space.type === "PERSONAL";
+  const [name,        setName]        = useState(shownName);
   const [description, setDescription] = useState(space.description ?? "");
-  const [isPublic,    setIsPublic]    = useState(space.isPublic);
+  const [makePrivate, setMakePrivate] = useState(false);
   const [category,    setCategory]    = useState(space.category);
   // MC1 Phase 4 Slice 2 (plan D-2) — Space reporting-currency selector.
   const [reportingCurrency, setReportingCurrency] = useState(space.reportingCurrency ?? "USD");
@@ -65,6 +84,9 @@ export function GeneralSettingsPanel({
   // the server rejects writing any category outside the allowlist.
   const allCategories = RECATEGORIZE_CATEGORIES;
 
+  const nameChanged     = name.trim() !== shownName;
+  const categoryChanged = !isPersonal && category !== space.category;
+
   async function handleSave() {
     if (!name.trim()) { setError("Name is required"); return; }
     setBusy(true);
@@ -74,10 +96,10 @@ export function GeneralSettingsPanel({
         method:  "PATCH",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({
-          name:        name.trim(),
+          ...(nameChanged ? { name: name.trim() } : {}),
           description: description.trim() || null,
-          isPublic,
-          category,
+          ...(makePrivate ? { isPublic: false } : {}),
+          ...(categoryChanged ? { category } : {}),
           // MC1 P4 Slice 2 — only sent when changed (audit stays quiet otherwise)
           ...(currencyChanged ? { reportingCurrency } : {}),
         }),
@@ -86,7 +108,14 @@ export function GeneralSettingsPanel({
         const d = await res.json();
         setError(d.error ?? "Failed to save");
       } else {
-        onSaved({ name: name.trim(), description: description.trim() || null, isPublic, category, reportingCurrency });
+        onSaved({
+          ...(nameChanged ? { name: name.trim() } : {}),
+          description: description.trim() || null,
+          ...(makePrivate ? { isPublic: false } : {}),
+          ...(categoryChanged ? { category } : {}),
+          reportingCurrency,
+        });
+        setMakePrivate(false);
         // MC1 P4 Slice 2 — a currency change re-denominates every aggregate
         // at read time; refresh the current view so converted totals and the
         // display-currency provider pick it up immediately.
@@ -97,13 +126,15 @@ export function GeneralSettingsPanel({
         // for the changed Space. The PATCH has already persisted the new
         // currency, so an immediate refetch returns new-currency data — the
         // event and refresh are independent, so ordering between them is safe.
+        // A rename re-runs the server tree too, so server-rendered consumers of
+        // the name (page props, the Space chrome) agree without a reload.
+        if (currencyChanged || nameChanged) settingsRouter.refresh();
         if (currencyChanged) {
           window.dispatchEvent(
             new CustomEvent(SPACE_CURRENCY_CHANGED_EVENT, {
               detail: { spaceId: space.id, currency: reportingCurrency },
             }),
           );
-          settingsRouter.refresh();
         }
         // Sidebar caches its Space list client-side and only refetches on this
         // event — without it, a rename here (e.g. fixing legacy "X's Dashboard"
@@ -118,10 +149,10 @@ export function GeneralSettingsPanel({
   }
 
   const isDirty =
-    name.trim()       !== space.name ||
+    nameChanged ||
     (description.trim() || null) !== space.description ||
-    isPublic          !== space.isPublic ||
-    category          !== space.category ||
+    makePrivate ||
+    categoryChanged ||
     currencyChanged;
 
   return (
@@ -150,41 +181,36 @@ export function GeneralSettingsPanel({
         />
       </div>
 
-      {/* Visibility */}
-      <div>
-        <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1.5">Visibility</label>
-        <div className="grid grid-cols-2 gap-2">
-          {([false, true] as const).map((pub) => (
-            <button
-              key={String(pub)}
-              type="button"
-              onClick={() => setIsPublic(pub)}
-              className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl border text-left transition-colors ${
-                isPublic === pub
-                  ? "border-[rgba(125,168,255,.4)] bg-[rgba(59,130,246,.10)]"
-                  : "border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"
-              }`}
-            >
-              <div className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 transition-colors ${
-                isPublic === pub ? "border-[var(--meridian-400)] bg-[var(--meridian-400)]" : "border-[var(--border-hairline-strong)]"
-              }`} />
-              <div>
-                <p className="text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5">
-                  {pub ? <Globe size={11} /> : <Lock size={11} />}
-                  {pub ? "Public" : "Private"}
-                </p>
-                <p className="text-[10px] text-[var(--text-muted)]">
-                  {pub ? "Anyone can view" : "Invite only"}
-                </p>
-              </div>
-            </button>
-          ))}
+      {/* Visibility — no customer-facing publishing (v2.7 P1). Only a Space that
+          is ALREADY public says so, and may be narrowed to private. */}
+      {space.isPublic && (
+        <div className="px-3 py-2.5 rounded-xl border border-[var(--border-hairline)] bg-[var(--surface-muted)]" data-public-notice>
+          <p className="text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5">
+            <Globe size={11} /> {makePrivate ? "Will be made private when you save" : "This Space is currently public"}
+          </p>
+          <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
+            Public publishing is no longer offered. You can make this Space invite-only.
+          </p>
+          <button
+            type="button"
+            onClick={() => setMakePrivate((v) => !v)}
+            className="mt-2 text-xs font-medium text-[var(--meridian-400)] hover:underline"
+          >
+            {makePrivate ? "Keep it public for now" : "Make private"}
+          </button>
         </div>
-      </div>
+      )}
 
       {/* Category */}
       <div>
         <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1.5">Category</label>
+        {isPersonal ? (
+          <div className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl border border-[var(--border-hairline)] bg-[var(--surface-muted)]" data-category-fixed>
+            <span className="text-[var(--text-muted)]">{ICON_MAP[CATEGORY_ICONS[SpaceCategory.PERSONAL]] ?? <Settings size={16} />}</span>
+            <span className="text-sm text-[var(--text-primary)] flex-1">{CATEGORY_LABELS[SpaceCategory.PERSONAL]}</span>
+            <span className="text-[10px] text-[var(--text-muted)]">Fixed for your Personal Space</span>
+          </div>
+        ) : (<>
         <button
           type="button"
           onClick={() => setShowCatPicker((p) => !p)}
@@ -214,6 +240,7 @@ export function GeneralSettingsPanel({
             ))}
           </div>
         )}
+        </>)}
       </div>
 
       {/* Reporting currency — MC1 Phase 4 Slice 2 (plan D-2) */}

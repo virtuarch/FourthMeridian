@@ -89,7 +89,9 @@ console.log("\n4. Markets on compact: Coming soon, no Net Worth / Cash Flow cont
   const host = code("components/dashboard/SpaceDashboard.tsx");
   const ps = code("components/space/shell/PerspectiveShell.tsx");
   check("below lg the time row is hidden while Markets is open (the selector still mounts; desktop unchanged)",
-    /compactHideTime=\{activePerspectiveId === "markets"\}/.test(host) && /className=\{props\.compactHideTime \? "px-1 max-lg:hidden" : "px-1"\}/.test(ps));
+    /compactHideTime=\{activePerspectiveId === "markets"\}/.test(host) && /className=\{props\.compactHideTime \|\| props\.compactTimeInHeader \? "px-1 max-lg:hidden" : "px-1"\}/.test(ps)
+      && /props\.compactTimeInHeader && !props\.compactHideTime && headerSlot && createPortal\(/.test(ps)
+      && /compactTimeInHeader=\{activePerspectiveId !== "markets"\}/.test(host));
   check("Markets declares no time capability (the reason)", /status:\s*"comingSoon"[\s\S]{0,400}temporalCapability: \{ asOf: "none", compareTo: "none", period: "none" \}|temporalCapability: \{ asOf: "none", compareTo: "none", period: "none" \}/.test(read("lib/perspectives.ts")));
   check("Markets still renders Coming soon (renderer unchanged)", /isComingSoon/.test(read("components/space/workspaces/workspaceRenderers.tsx")));
   check("the Net Worth chips and category tabs are Net Worth-only (never in Markets)",

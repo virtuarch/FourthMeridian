@@ -68,7 +68,6 @@ console.log("2. The shell MOUNTS each panel once, gated by its tab");
     ['activeTab === "general"',   "<GeneralSettingsPanel"],
     ['activeTab === "members"',   "<MembersPanel"],
     ['activeTab === "finances"',  "<FinancesPanel"],
-    ['activeTab === "dashboard"', "<OverviewSectionsPanel"],
     ['activeTab === "danger"',    "<DangerZonePanel"],
   ];
   for (const [gate, mount] of mounts) {
@@ -103,9 +102,11 @@ console.log("4. Permission + destructive gates preserved");
   // Shell tab-visibility gates (mirror the server role model).
   check("General tab is OWNER-only (show: canEdit; canEdit = isOwner)",
     /id:\s*"general"[\s\S]{0,120}?show:\s*canEdit/.test(SHELLCODE) && SHELLCODE.includes("canEdit   = isOwner"));
-  check("Overview tab is OWNER/ADMIN (show: canManage)",
-    /id:\s*"dashboard"[\s\S]{0,160}?show:\s*canManage/.test(SHELLCODE) &&
-    SHELLCODE.includes('canManage = ["OWNER", "ADMIN"].includes(myRole)'));
+  // v2.7 P1 — the customer-facing Overview tab (retired section toggles) is
+  // gone; OverviewSectionsPanel and the sections API remain, unmounted here.
+  check("v2.7: no Overview tab and no OverviewSectionsPanel mount in the shell",
+    !/id:\s*"dashboard"/.test(SHELLCODE) && !SHELLCODE.includes("<OverviewSectionsPanel") && !/label:\s*"Overview"/.test(SHELLCODE));
+  check("v2.7: the accounts tab is labelled \"Accounts\"", /id:\s*"finances",\s*label:\s*"Accounts"/.test(SHELLCODE));
   check("Danger tab gated on a loaded, non-PERSONAL Space",
     /id:\s*"danger"[\s\S]{0,220}?type\s*!==\s*"PERSONAL"/.test(SHELLCODE));
   check("Danger tab BODY gated on non-PERSONAL",

@@ -26,12 +26,19 @@ export interface CompactSectionTab<T extends string> {
   controls: string[];
 }
 
-export function CompactSectionTabs<T extends string>({ tabs, value, onChange, ariaLabel }: {
+export function CompactSectionTabs<T extends string>({ tabs, value, onChange, ariaLabel, variant = "secondary" }: {
   tabs: CompactSectionTab<T>[];
   value: T;
   onChange: (id: T) => void;
   ariaLabel: string;
+  /**
+   * v2.7 P0 — "primary" is the prominent page-level selector (Net Worth:
+   * Total · Assets · Debt); "secondary" the quieter category row beneath it
+   * (Assets: All · Cash · Investments), so the two levels never look alike.
+   */
+  variant?: "primary" | "secondary";
 }) {
+  const primary = variant === "primary";
   const list = useRef<HTMLDivElement>(null);
   const select = (index: number) => {
     const t = tabs[(index + tabs.length) % tabs.length];
@@ -53,7 +60,10 @@ export function CompactSectionTabs<T extends string>({ tabs, value, onChange, ar
       aria-label={ariaLabel}
       onKeyDown={onKey}
       data-compact-section-tabs
-      className="lg:hidden grid gap-1 rounded-[var(--radius-lg)] border border-[var(--border-hairline)] bg-[var(--surface-inset)] p-1"
+      data-variant={variant}
+      className={primary
+        ? "lg:hidden grid gap-1 rounded-[var(--radius-lg)] border border-[var(--border-hairline-strong)] bg-[var(--surface-inset)] p-1 shadow-[var(--shadow-e1)]"
+        : "lg:hidden grid gap-1 rounded-full p-0.5"}
       style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}
     >
       {tabs.map((t) => {
@@ -68,12 +78,14 @@ export function CompactSectionTabs<T extends string>({ tabs, value, onChange, ar
             tabIndex={on ? 0 : -1}
             onClick={() => onChange(t.id)}
             className={[
-              "min-h-10 truncate rounded-[var(--radius-sm)] px-2 text-[13px] font-medium touch-manipulation",
-              "transition-[color,background-color] duration-[120ms] ease-[var(--ease-standard)]",
+              primary
+                ? "min-h-11 truncate rounded-[var(--radius-sm)] px-2 text-[15px] font-semibold touch-manipulation"
+                : "min-h-10 truncate rounded-full border px-2 text-[12px] font-medium touch-manipulation",
+              "transition-[color,background-color,border-color] duration-[120ms] ease-[var(--ease-standard)]",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]",
-              on
-                ? "bg-[rgba(255,255,255,.10)] text-[var(--text-primary)] shadow-[var(--shadow-e1)]"
-                : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
+              primary
+                ? (on ? "bg-[rgba(255,255,255,.12)] text-[var(--text-primary)] shadow-[var(--shadow-e1)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]")
+                : (on ? "border-[rgba(255,255,255,.22)] bg-[rgba(255,255,255,.08)] text-[var(--text-primary)]" : "border-[var(--border-hairline)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]"),
             ].join(" ")}
           >
             {t.label}

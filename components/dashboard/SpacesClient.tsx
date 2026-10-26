@@ -12,7 +12,7 @@
  *   Floating header ("Spaces") — no hero card, visionOS-style
  *   Pending invites banner (only if any)
  *   My Spaces — one unified glass canvas containing the card grid
- *   Explore public Spaces — quiet secondary row (only if any exist)
+ *   (v2.7 P2: the Explore public Spaces row was removed — infrastructure kept)
  *   Create Space — persistent right-side panel (scrolls with the page,
  *   per Phase G — no longer sticky)
  *
@@ -49,19 +49,15 @@ import {
   Sunset, Building2, Shield, ArrowUpRight, AlertTriangle,
 } from "lucide-react";
 import { Surface, Figure } from "@/components/atlas/Surface";
-import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { GlassButton } from "@/components/atlas/GlassButton";
-import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
-import { AtlasLiquidCard } from "@/components/atlas/AtlasLiquidCard";
-import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import {
   CATEGORY_LABELS,
   CATEGORY_ICONS,
   SpaceCategory,
 } from "@/lib/space-presets";
 import { DEFAULT_DISPLAY_CURRENCY, compactCurrencyOptions } from "@/lib/currency";
-import { displaySpaceName, formatDate } from "@/lib/format";
+import { displaySpaceName } from "@/lib/format";
 import { effectiveDefaultSpaceId } from "@/lib/spaces/default-space";
 import {
   SPACE_LIST_CHANGED_EVENT,
@@ -177,31 +173,6 @@ export function CategoryIcon({ name }: { name: string }) {
   return <>{ICON_MAP[name] ?? <LayoutDashboard size={18} />}</>;
 }
 
-// Per-category tinted icon tile — drawn only from existing design tokens
-// (meridian/brass/violet/emerald/coral/ink), no new colors invented. Gives
-// each Space card a distinct, branded swatch instead of one neutral tile
-// repeated for every category.
-const CATEGORY_TILE: Record<string, string> = {
-  PERSONAL:       "linear-gradient(135deg, var(--meridian-400), var(--meridian-700))",
-  FAMILY:         "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
-  BUSINESS:       "linear-gradient(135deg, var(--emerald-400), var(--emerald-700))",
-  PROPERTY:       "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
-  VEHICLE:        "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
-  TRIP:           "linear-gradient(135deg, var(--brass-300), var(--brass-600))",
-  INVESTMENT:     "linear-gradient(135deg, var(--violet-400), var(--violet-700))",
-  EQUIPMENT:      "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
-  GOAL:           "linear-gradient(135deg, var(--meridian-400), var(--meridian-700))",
-  RETIREMENT:     "linear-gradient(135deg, var(--violet-400), var(--violet-700))",
-  DEBT_PAYOFF:    "linear-gradient(135deg, var(--coral-400), var(--coral-700))",
-  EMERGENCY_FUND: "linear-gradient(135deg, var(--emerald-400), var(--emerald-700))",
-  CUSTOM:         "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
-  OTHER:          "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
-};
-
-function categoryTile(category: string): string {
-  return CATEGORY_TILE[category] ?? CATEGORY_TILE.OTHER;
-}
-
 // ── Space identity tint (Liquid cards) ────────────────────────────────────────
 // Per-category IDENTITY colour used to tint the Liquid Space cards (and their
 // Glass fallback). These are identity tints ONLY — they signal what kind of
@@ -221,43 +192,6 @@ const SPACE_IDENTITY_TINT: Record<string, string> = {
 const IDENTITY_TINT_NEUTRAL = "#64748B";
 function spaceIdentityTint(category: string): string {
   return SPACE_IDENTITY_TINT[category] ?? IDENTITY_TINT_NEUTRAL;
-}
-
-// R4-b: the Liquid card's hue comes from the MATERIAL itself. Convert the
-// identity hex into a shader `tintColor` (RGB multiplier), scaled so the
-// brightest channel ≈ 1.05 — this preserves luminance while carrying the hue,
-// so the tint reads as elegant coloured lighting rather than a flat fill.
-function identityTintColor(hex: string): [number, number, number] {
-  const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16) / 255;
-  const g = parseInt(h.slice(2, 4), 16) / 255;
-  const b = parseInt(h.slice(4, 6), 16) / 255;
-  const max = Math.max(r, g, b) || 1;
-  const scale = 1.05 / max;
-  return [r * scale, g * scale, b * scale];
-}
-// Texture the Liquid material refracts for Space cards. The per-Space identity
-// hue still applies on top (see SPACE_CARD_TINT_STRENGTH), so this only changes
-// the refracted backdrop — the tint/hues are unchanged.
-const SPACE_CARD_TEXTURE = "/atlas-card-nebula-v2.png";
-// Raised from the frosted preset's ~0.1 so the identity hue is noticeably more
-// apparent, while staying elegant (lighting/tint, not a solid fill).
-const SPACE_CARD_TINT_STRENGTH = 0.42;
-
-// "Net Worth" is the one real number every space already has (from
-// SpaceSnapshot). The label changes per Space type so the same number
-// reads correctly in context — no new aggregation, just relabeling.
-function metricLabelForCategory(category: string): string {
-  if (category === "INVESTMENT" || category === "RETIREMENT") return "Portfolio Value";
-  if (category === "PROPERTY" || category === "VEHICLE" || category === "EQUIPMENT") return "Equity";
-  if (category === "DEBT_PAYOFF") return "Balance";
-  if (category === "TRIP") return "Budget";
-  if (category === "CUSTOM" || category === "OTHER") return "Value";
-  return "Net Worth";
-}
-
-function formatCurrency(value: number, currency = DEFAULT_DISPLAY_CURRENCY) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
 }
 
 /**
@@ -536,232 +470,10 @@ function RowChip({ children, tone = "neutral" }: { children: React.ReactNode; to
   );
 }
 
-// ─── Public Space card (compact) + detail modal ──────────────────────────────
-//
-// Public Spaces the user hasn't joined get their own compact preview card —
-// visibly smaller than the full SpaceCard above (tighter padding, smaller
-// icon tile and type, no sparkline, no member stack, no hover actions): these
-// are previews, not active spaces, so the card's job is to communicate
-// just enough — name, type, the one financial metric, last activity — to
-// decide whether to look closer. Clicking one opens PublicSpaceDetailModal
-// for the fuller read-only view rather than switching into the Space.
-
-function PublicSpaceCard({ space, onOpen }: { space: SpaceItem; onOpen: () => void }) {
-  const category = space.category as SpaceCategory;
-
-  return (
-    <div
-      className={[
-        "group relative overflow-hidden rounded-[var(--radius-md)] border p-3 flex flex-col gap-2 cursor-pointer",
-        "bg-[var(--surface-muted)] hover:bg-[var(--surface-hover)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]",
-        "transition-[transform,background-color,border-color,box-shadow] duration-[var(--dur-base)] ease-[var(--ease-standard)]",
-        "hover:-translate-y-[2px] hover:shadow-[var(--shadow-e2)]",
-      ].join(" ")}
-      onClick={onOpen}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Enter") onOpen(); }}
-    >
-      <span
-        aria-hidden
-        className="pointer-events-none absolute top-0 left-2.5 right-2.5 h-px opacity-30 group-hover:opacity-100 transition-opacity duration-[var(--dur-base)] ease-[var(--ease-standard)]"
-        style={{ background: "linear-gradient(90deg, transparent, var(--specular-edge), transparent)" }}
-      />
-
-      <div className="flex items-start justify-between gap-2">
-        <div
-          className="w-7 h-7 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0 text-white"
-          style={{ background: categoryTile(category), boxShadow: "inset 0 1px 0 rgba(255,255,255,.2), 0 1px 3px rgba(0,0,0,.25)" }}
-        >
-          <CategoryIcon name={CATEGORY_ICONS[category] ?? "LayoutDashboard"} />
-        </div>
-        <Globe size={10} className="text-[var(--text-muted)] shrink-0 mt-1" />
-      </div>
-
-      <div className="min-w-0 flex-1">
-        <p className="font-semibold text-[var(--text-primary)] text-[13px] leading-snug line-clamp-2 break-words">
-          {displaySpaceName(space.name)}
-        </p>
-        <p className="text-[10px] text-[var(--text-muted)] mt-0.5 truncate">
-          {CATEGORY_LABELS[category] ?? "Space"}
-        </p>
-      </div>
-
-      <div className="pt-2" style={{ borderTop: "1px solid var(--border-hairline)" }}>
-        <p className="text-[8px] uppercase tracking-wide text-[var(--text-muted)] mb-0.5">
-          {metricLabelForCategory(category)}
-        </p>
-        <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums truncate">
-          {space.trend.length > 0 ? `${space.estimated ? "≈" : ""}${formatCurrency(space.netWorth, space.currency)}` : "—"}
-        </p>
-        <p className="text-[9px] text-[var(--text-muted)] mt-0.5 truncate">
-          {formatFreshness(space)}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// Empty state for "Explore Public Spaces" when none exist. Framed by the SAME
-// Atlas Liquid backdrop as the Space cards (same texture + a quiet neutral
-// tint) so it belongs to the same family; falls back to a Glass panel when
-// Liquid isn't supported (useAtlasLiquid). Static — no click affordance.
-function PublicEmptyState() {
-  const liquid = useAtlasLiquid();
-
-  const content = (
-    <div className="relative mx-auto flex max-w-md flex-col items-center gap-3 px-6 py-12 text-center">
-      <div
-        className="flex h-12 w-12 items-center justify-center rounded-full"
-        style={{
-          background: "linear-gradient(140deg, rgba(125,168,255,.18), rgba(125,168,255,.05))",
-          boxShadow: "inset 0 1px 0 rgba(255,255,255,.3), inset 0 0 0 1px rgba(125,168,255,.26)",
-        }}
-      >
-        <Globe size={20} className="text-[var(--meridian-300)]" />
-      </div>
-      <div>
-        <p className="text-sm font-semibold text-[var(--text-primary)]">
-          No public Spaces available yet
-        </p>
-        <p className="mt-1.5 text-xs leading-relaxed text-[var(--text-secondary)]">
-          The community marketplace is just getting started. Check back soon to
-          discover public Spaces, frameworks, and templates.
-        </p>
-      </div>
-    </div>
-  );
-
-  if (liquid) {
-    return (
-      <AtlasLiquidCard
-        ariaLabel="No public Spaces available yet"
-        backgroundImage={SPACE_CARD_TEXTURE}
-        tint={identityTintColor(IDENTITY_TINT_NEUTRAL)}
-        tintStrength={SPACE_CARD_TINT_STRENGTH}
-      >
-        <div className="relative rounded-[20px] overflow-hidden">{content}</div>
-      </AtlasLiquidCard>
-    );
-  }
-
-  return (
-    <GlassPanel depth="thin" elevation="e1" radius="lg">
-      {content}
-    </GlassPanel>
-  );
-}
-
-// Read-only detail view for a public Space the viewer hasn't joined. Mirrors
-// Shared OverlaySurface shell (focus, scrolling and mobile sheet behavior; same
-// header/close-button recipe) so it reads as the same family of surface, but
-// has no tabs and no mutation — just the fuller picture the compact card can't
-// fit. "Join Space" is intentionally inert: public join permissions,
-// viewer-only membership, audit logs, invite rules, and abuse controls are a
-// dedicated backend pass of their own, so this only previews the action.
-function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose: () => void }) {
-  const category = space.category as SpaceCategory;
-  const owner = space.members.find((m) => m.role === "OWNER");
-  const tone: "positive" | "danger" | "neutral" =
-    space.trend.length >= 2
-      ? space.trend[space.trend.length - 1] >= space.trend[0] ? "positive" : "danger"
-      : "neutral";
-
-  return (
-    <OverlaySurface
-      open
-      onClose={onClose}
-      title={displaySpaceName(space.name)}
-      size="sm"
-      zIndex={200}
-      hideHeader
-      toolbar={
-        <div
-            className="flex items-start justify-between gap-3 pb-3"
-            style={{ borderBottom: "1px solid var(--border-hairline)" }}
-          >
-            <div className="flex items-start gap-3 min-w-0">
-              <div
-                className="w-11 h-11 rounded-[var(--radius-md)] flex items-center justify-center shrink-0 text-white"
-                style={{ background: categoryTile(category), boxShadow: "inset 0 1px 0 rgba(255,255,255,.2), 0 1px 3px rgba(0,0,0,.25)" }}
-              >
-                <CategoryIcon name={CATEGORY_ICONS[category] ?? "LayoutDashboard"} />
-              </div>
-              <div className="min-w-0">
-                <p className="text-base font-semibold text-[var(--text-primary)] break-words">{displaySpaceName(space.name)}</p>
-                <p className="text-xs text-[var(--text-muted)] mt-0.5 flex items-center gap-1">
-                  {CATEGORY_LABELS[category] ?? "Space"} · <Globe size={10} className="shrink-0" /> Public
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={onClose}
-              aria-label="Close"
-              className="min-h-11 min-w-11 flex items-center justify-center rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
-            >
-              <X size={16} />
-            </button>
-          </div>
-      }
-      footer={
-        <div className="shrink-0">
-            <GlassButton tone="meridian" fullWidth disabled title="Public Space joining is coming soon">
-              <Users size={13} />
-              Join Space
-            </GlassButton>
-            <p className="text-[11px] text-[var(--text-muted)] text-center mt-2">
-              Public joining is coming soon.
-            </p>
-          </div>
-      }
-    >
-        <div className="space-y-5">
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">
-                  {metricLabelForCategory(category)}
-                </p>
-                <p className="text-2xl font-bold text-[var(--text-primary)] tabular-nums [overflow-wrap:anywhere]">
-                  {space.trend.length > 0 ? `${space.estimated ? "≈" : ""}${formatCurrency(space.netWorth, space.currency)}` : "—"}
-                </p>
-              </div>
-              <Sparkline values={space.trend} tone={tone} />
-            </div>
-
-            {space.description && (
-              <p className="text-sm text-[var(--text-secondary)] leading-relaxed break-words">{space.description}</p>
-            )}
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-[var(--radius-md)] p-3" style={{ background: "var(--surface-muted)" }}>
-                <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Created</p>
-                <p className="text-sm text-[var(--text-primary)]">{formatDate(space.createdAt)}</p>
-              </div>
-              <div className="rounded-[var(--radius-md)] p-3" style={{ background: "var(--surface-muted)" }}>
-                <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Updated</p>
-                <p className="text-sm text-[var(--text-primary)]">
-                  {space.lastUpdated ? formatDate(space.lastUpdated) : "—"}
-                </p>
-              </div>
-              {owner && (
-                <div className="rounded-[var(--radius-md)] p-3" style={{ background: "var(--surface-muted)" }}>
-                  <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Owner</p>
-                  <p className="text-sm text-[var(--text-primary)] break-words">
-                    {owner.user.name ?? `@${owner.user.username}`}
-                  </p>
-                </div>
-              )}
-              <div className="rounded-[var(--radius-md)] p-3" style={{ background: "var(--surface-muted)" }}>
-                <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Members</p>
-                <p className="text-sm text-[var(--text-primary)] flex items-center gap-1.5">
-                  <Users size={12} className="text-[var(--text-muted)]" /> {space.members.length}
-                </p>
-              </div>
-            </div>
-          </div>
-    </OverlaySurface>
-  );
-}
+// ─── (v2.7 P2) Public Space discovery UI removed ─────────────────────────────
+// The Explore Public Spaces row, its cards, empty state and detail modal are
+// gone from My Spaces. Public-Space schema, data, `publicSpaces` loading and
+// server authorization are unchanged (infrastructure kept).
 
 // ─── Pending invite row + banner ──────────────────────────────────────────────
 
@@ -877,12 +589,9 @@ function InviteBanner({ invites, onAction }: { invites: Invite[]; onAction: () =
 // now-more-apparent Atlas Field carry the atmosphere.
 
 function SpacesHeader({ onCreateSpace }: { onCreateSpace: () => void }) {
-  // Phase 1 Liquid pilot — the single Create Space CTA is the one Spaces surface
-  // that opts into the Liquid material; everything else stays Atlas Glass. Falls
-  // back to the original GlassButton when Liquid isn't supported (useAtlasLiquid:
-  // no WebGL / prefers-reduced-transparency / ?atlasLiquid=0). Behavior (opening
-  // CreateSpaceModal via onCreateSpace) is identical on both paths.
-  const liquid = useAtlasLiquid();
+  // v2.7 P2 — the Create Space CTA uses the site's canonical button (Atlas
+  // GlassButton, meridian = primary), not the Liquid WebGL pilot material.
+  // Behavior (opening CreateSpaceModal via onCreateSpace) is unchanged.
   return (
     <div className="pt-2 pb-8 md:pb-10 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-5">
       <div className="min-w-0">
@@ -897,22 +606,10 @@ function SpacesHeader({ onCreateSpace }: { onCreateSpace: () => void }) {
       </div>
       {/* Opens CreateSpaceModal (mounted once from DashboardChrome.tsx) via the
           same "open-create-space" window event the Sidebar's row dispatches. */}
-      {liquid ? (
-        <AtlasLiquidCta
-          onClick={onCreateSpace}
-          ariaLabel="Create Space"
-          fullWidth={false}
-          className="shrink-0 sm:mt-1"
-        >
-          <Plus size={15} />
-          <span>Create Space</span>
-        </AtlasLiquidCta>
-      ) : (
-        <GlassButton onClick={onCreateSpace} tone="meridian" className="shrink-0 sm:mt-1">
-          <Plus size={15} />
-          Create Space
-        </GlassButton>
-      )}
+      <GlassButton onClick={onCreateSpace} tone="meridian" className="shrink-0 sm:mt-1">
+        <Plus size={15} />
+        Create Space
+      </GlassButton>
     </div>
   );
 }
@@ -921,7 +618,6 @@ function SpacesHeader({ onCreateSpace }: { onCreateSpace: () => void }) {
 
 export function SpacesClient({
   mine,
-  publicSpaces,
   pendingInvites,
   currentUserId,
   activeSpaceId: initialActiveId,
@@ -936,7 +632,6 @@ export function SpacesClient({
   const [switchError, setSwitchError]          = useState<string | null>(null);
   const [managingSpace, setManagingSpace]      = useState<SpaceItem | null>(null);
   const [showAllSpaces, setShowAllSpaces]      = useState(false);
-  const [viewingPublicSpace, setViewingPublicSpace] = useState<SpaceItem | null>(null);
   const [leftSpaceToast, setLeftSpaceToast]    = useState<string | null>(null);
 
   // Picks up the "?left=<name>" hint a Leave Space action (ManageSpaceModal
@@ -1024,15 +719,7 @@ export function SpacesClient({
   const visibleSpaces = showAllSpaces ? ordered : ordered.slice(0, CARD_LIMIT);
   const hiddenSpaceCount = ordered.length - visibleSpaces.length;
 
-  // This preview row is intentionally capped, full stop (no "show more" —
-  // that belongs to the future /dashboard/spaces/public page the heading
-  // above links to, not this compact strip on the main Spaces page).
-  const PUBLIC_CARD_LIMIT = 4;
-
   const resolvedActiveId = (activeId && mine.some((w) => w.id === activeId)) ? activeId : personal?.id ?? null;
-
-  const myIds = new Set(mine.map((w) => w.id));
-  const explorePublic = publicSpaces.filter((w) => !myIds.has(w.id));
 
   function handleOpen(space: SpaceItem) {
     if (resolvedActiveId === space.id) {
@@ -1092,44 +779,6 @@ export function SpacesClient({
           </div>
         )}
 
-        {/* Explore Public Spaces — ALWAYS rendered. When public Spaces exist,
-            it shows the compact preview grid; when none exist, it shows an
-            intentional, premium Atlas empty state (glass-framed) rather than
-            hiding the section. Presentation-only — the underlying query/data
-            are unchanged. */}
-        <div className="mt-10">
-          {/* Clickable heading -> /dashboard/spaces/public (the future full
-              public directory). Title-case + text-primary matches the
-              platform's other sub-section headings. */}
-          <button
-            type="button"
-            onClick={() => router.push("/dashboard/spaces/public")}
-            className="group flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)] hover:text-[var(--meridian-400)] transition-colors"
-          >
-            Explore Public Spaces
-            <ChevronRight size={14} className="text-[var(--text-muted)] group-hover:text-[var(--meridian-400)] group-hover:translate-x-0.5 transition-[color,transform]" />
-          </button>
-          <p className="text-xs text-[var(--text-secondary)] mt-1 mb-3">
-            Discover ideas, track creators, and follow what matters.
-          </p>
-
-          {explorePublic.length > 0 ? (
-            /* Roughly half the column width of the "My Spaces" grid above —
-               compact, near-square previews. Capped to PUBLIC_CARD_LIMIT so
-               this stays a quiet preview row, not a second full grid. */
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(min(140px,100%),1fr))] gap-3">
-              {explorePublic.slice(0, PUBLIC_CARD_LIMIT).map((space) => (
-                <PublicSpaceCard key={space.id} space={space} onOpen={() => setViewingPublicSpace(space)} />
-              ))}
-            </div>
-          ) : (
-            /* Premium Atlas empty state — framed by the SAME Liquid backdrop as
-               the Space cards so it reads as part of the same family, not an
-               error or missing data. */
-            <PublicEmptyState />
-          )}
-        </div>
-
         {managingSpace && (
           <ManageSpaceModal
             spaceId={managingSpace.id}
@@ -1142,12 +791,6 @@ export function SpacesClient({
           />
         )}
 
-        {viewingPublicSpace && (
-          <PublicSpaceDetailModal
-            space={viewingPublicSpace}
-            onClose={() => setViewingPublicSpace(null)}
-          />
-        )}
       </div>
     </div>
   );

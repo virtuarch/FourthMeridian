@@ -24,6 +24,7 @@
  */
 
 import type { ReactNode } from "react";
+import { COMPACT_TIME_SLOT_ID } from "./compact-time";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import { SpaceControls } from "@/components/space/shell/SpaceControls";
 
@@ -99,6 +100,8 @@ export interface SpaceShellProps {
   compactViewSelector?: ReactNode;
   /** COMPACT DASHBOARD (P1) — Leave Space in the compact header controls (member/viewer). */
   onLeave?: () => void;
+  /** v2.7 P0 — render the compact (<lg) header slot the time control portals into (Overview). */
+  compactTimeSlot?: boolean;
   railVisibility?: "always" | "belowLg";
 
   /** The workspace viewport — the active tab's content. Owned by the host. */
@@ -120,6 +123,7 @@ export function SpaceShell({
   railVisibility = "always",
   compactViewSelector,
   onLeave,
+  compactTimeSlot = false,
   children,
 }: SpaceShellProps) {
   const isUtility = variant === "utility";
@@ -174,7 +178,10 @@ export function SpaceShell({
                 <p className={mobileOptimized ? "line-clamp-2 text-[13px] text-[var(--text-muted)]" : "truncate text-[13px] text-[var(--text-muted)]"}>{subtitle}</p>
               </div>
             )}
-            <div className="shrink-0">
+            <div className="lg:hidden flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+              {/* v2.7 P0 — the compact time control mounts here (portalled from
+                  PerspectiveShell, which owns the time intents), beside Manage. */}
+              {compactTimeSlot && <div id={COMPACT_TIME_SLOT_ID} data-compact-time-slot className="lg:hidden" />}
               <SpaceControls currencyControl={currencyControl} onManage={onManage} onLeave={onLeave} />
             </div>
           </div>

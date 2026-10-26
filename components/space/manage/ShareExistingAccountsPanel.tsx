@@ -14,7 +14,8 @@
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, ChevronRight, Landmark, Share2 } from "lucide-react";
+import Link from "next/link";
+import { Loader2, ChevronRight, Landmark, Share2, ArrowRight } from "lucide-react";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { formatBalance, type SharedAccount, type UserAccount } from "./manage-shared";
@@ -83,8 +84,13 @@ export function ShareExistingAccountsPanel({
   if (available.length === 0) {
     return (
       <div className="text-center py-8">
-        <Landmark size={26} className="text-[var(--text-muted)] mx-auto mb-2" />
+        <Landmark size={26} className="text-[var(--text-muted)] mx-auto mb-2" aria-hidden />
         <p className="text-sm text-[var(--text-muted)]">No accounts available to add</p>
+        {/* v2.7 P2 — say where more come from, and go there. */}
+        <p className="text-xs text-[var(--text-muted)] mt-1">Connect another bank, wallet or asset in Connections, then add it here.</p>
+        <Link href="/dashboard/connections" className="mt-2 inline-flex min-h-10 items-center gap-1.5 text-xs font-medium text-[var(--meridian-400)] hover:underline">
+          Go to Connections <ArrowRight size={12} aria-hidden />
+        </Link>
       </div>
     );
   }

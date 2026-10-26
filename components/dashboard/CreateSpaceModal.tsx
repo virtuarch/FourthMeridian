@@ -69,7 +69,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Globe, Lock, Loader2, Plus, X, ArrowLeft,
+  Loader2, Plus, X, ArrowLeft,
   Landmark, Package, Wallet, FolderInput, Mail, ArrowRight, CheckCircle2,
 } from "lucide-react";
 import { FormModal } from "@/components/atlas/FormModal";
@@ -234,7 +234,6 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [isPublic, setIsPublic] = useState(false);
   const [templateId, setTemplateId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -272,7 +271,6 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
   function resetForm() {
     setName("");
     setDescription("");
-    setIsPublic(false);
     setTemplateId(null);
     setError("");
     setStep("create");
@@ -303,7 +301,8 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
         body: JSON.stringify({
           name:        name.trim(),
           description: description.trim() || undefined,
-          isPublic,
+          // v2.7 P1 — no customer-facing public publishing: isPublic is never
+          // sent, so the server's default (private) applies.
           // SP-2.2 — send the selected template; when none is selected, omit
           // templateId entirely so the server's legacy fallback (category →
           // OTHER) applies, matching the previous behavior exactly.
@@ -462,29 +461,6 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
           className="w-full rounded-[var(--radius-sm)] px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none transition-colors resize-none"
           style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
         />
-      </div>
-
-      <div>
-        <label className="text-xs font-medium text-[var(--text-secondary)] mb-3 block">Privacy</label>
-        <div className="grid grid-cols-2 gap-2.5">
-          {[false, true].map((pub) => {
-            const selected = isPublic === pub;
-            return (
-              <button
-                key={String(pub)}
-                type="button"
-                onClick={() => setIsPublic(pub)}
-                className={[
-                  "flex items-center justify-center gap-2 px-3 py-2.5 rounded-[var(--radius-sm)] border transition-[transform,background-color,border-color] active:scale-[0.97]",
-                  chipTone(selected),
-                ].join(" ")}
-              >
-                {pub ? <Globe size={13} /> : <Lock size={13} />}
-                <span className="text-xs text-[var(--text-secondary)]">{pub ? "Public" : "Private"}</span>
-              </button>
-            );
-          })}
-        </div>
       </div>
 
       {error && <p className="text-xs text-[var(--coral-400)]">{error}</p>}

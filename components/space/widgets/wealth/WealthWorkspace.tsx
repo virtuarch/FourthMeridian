@@ -330,13 +330,27 @@ export function WealthWorkspace({
       data-wealth-mode-row
       className={["flex justify-center px-1", modeSelectorVisibility === "belowLg" ? "lg:hidden" : ""].join(" ").trim()}
     >
-      <Chips
-        options={WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m] }))}
-        value={mode}
-        onChange={(m) => onModeChange?.(m)}
-        ariaLabel="Net worth view"
-        className="justify-center"
-      />
+      {modeSelectorVisibility === "belowLg" ? (
+        /* v2.7 P0 — compact-only (the row is lg:hidden for this host): the
+           prominent full-width segmented selector over the SAME mode/handler. */
+        <div className="lg:hidden w-full">
+          <CompactSectionTabs
+            ariaLabel="Net worth view"
+            variant="primary"
+            value={mode}
+            onChange={(m) => onModeChange?.(m)}
+            tabs={WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m], controls: [] }))}
+          />
+        </div>
+      ) : (
+        <Chips
+          options={WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m] }))}
+          value={mode}
+          onChange={(m) => onModeChange?.(m)}
+          ariaLabel="Net worth view"
+          className="justify-center"
+        />
+      )}
     </div>
   );
 

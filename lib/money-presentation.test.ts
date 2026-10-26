@@ -153,8 +153,10 @@ console.log("13. the boundary is where the surfaces call it");
   const brief = code("components/brief/DailyBriefClient.tsx");
   check("the cross-Space Brief calls the whole-dollar formatter", /formatCurrencyWhole as formatCurrency/.test(brief));
   const launcher = code("components/dashboard/SpacesClient.tsx");
-  check("the Spaces launcher keeps its own whole-dollar/compact formatters",
-    /maximumFractionDigits: 0/.test(launcher) && !/from "@\/lib\/currency"[\s\S]{0,80}formatCurrency\b/.test(launcher));
+  // v2.7 P2 — the whole-dollar formatter served only the removed public-Space
+  // cards; the launcher's remaining money is the compact formatter.
+  check("the Spaces launcher keeps its own compact formatter (never the cents one)",
+    /compactCurrencyOptions\(currency, 1\)/.test(launcher) && !/from "@\/lib\/currency"[\s\S]{0,80}formatCurrency\b/.test(launcher));
   // A Space surface, picked from each area, still calls the cents formatter.
   // Directly, or through display-money (which delegates to the same formatters).
   for (const f of [
