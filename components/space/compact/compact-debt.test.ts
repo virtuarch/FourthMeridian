@@ -131,15 +131,17 @@ console.log("\n5. hierarchy and compact-only hiding");
   check("no figure authority changed: the same kpis/signals/interest/payoff calls", /computeDebtKpis\(accounts, ctx\)/.test(dw) && /buildDebtSignals\(\{ accounts, ctx, lensResult: lens \}\)/.test(dw) && /renderDebtPayoffCalculator\(accounts, false, undefined, ctx, today, handleAddApr\)/.test(dw));
 }
 
-console.log("\n6. Credit / Loans are WITHHELD (owner rule: never guess a classification)");
+console.log("\n6. Credit / Loans are ENABLED (v2.7 R3) on the display-only classifier");
 {
   const wm = read("lib/wealth/wealth-mode.ts");
-  check("the flag is off, with the verified reason recorded where it lives",
-    /export const DEBT_CATEGORY_TABS_ENABLED = false;/.test(wm) && /debtSubtype` is unpopulated on\s*\*\s*every liability \(0 of 23\)/.test(wm) && /A HELOC lands in Credit and mortgages \/\s*\*\s*student \/ auto loans land in Other/.test(wm));
-  check("while off: no category tabs render and the Debt view shows its complete content (All)",
+  // v2.7 R3 — DELIBERATE PIN CHANGE: the tabs were withheld while no reliable
+  // subtype existed; R2's presentationDebtClass (owner D-4/D-5) is that basis.
+  check("the flag is on, with the basis recorded where it lives",
+    /export const DEBT_CATEGORY_TABS_ENABLED = true;/.test(wm) && /presentationDebtClass/.test(wm) && /never a\s*\*\s*credit-limit inference/.test(wm));
+  check("the flag still gates the tabs and the compact visibility (a single switch)",
     /const debtTabs = DEBT_CATEGORY_TABS_ENABLED && liabilityCount > 0 && onCompactSectionChange \?/.test(dw)
       && /const cv = debtCompactVisibility\(DEBT_CATEGORY_TABS_ENABLED \? compactSection : "all"\);/.test(dw));
-  check("…and a ?section= in the URL is ignored (and cleaned by the writer)", /DEBT_CATEGORY_TABS_ENABLED && mode === "debt"/.test(nav));
+  check("…and ?section= is read only in Debt while enabled", /DEBT_CATEGORY_TABS_ENABLED && mode === "debt"/.test(nav));
   // v2.7 R2 — DELIBERATE PIN CHANGE. This pinned that no providerSubtype mapping
   // existed. R2 adds the owner-approved DISPLAY-ONLY mapping (presentationDebtClass)
   // while the tabs stay withheld; the pin now asserts the flag is still the gate

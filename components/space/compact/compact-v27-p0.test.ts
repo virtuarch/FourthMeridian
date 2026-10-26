@@ -118,7 +118,8 @@ console.log("\n3. Total · Assets · Debt is prominent; category tabs are second
   const ww = code("components/space/widgets/wealth/WealthWorkspace.tsx");
   check("the compact mode selector is the primary variant over the SAME mode/handler; desktop keeps its Chips",
     /variant="primary"\s+value=\{mode\}\s+onChange=\{\(m\) => onModeChange\?\.\(m\)\}/.test(ww) && /modeSelectorVisibility === "belowLg" \? \(/.test(ww) && /<Chips\s+options=\{WEALTH_MODES\.map/.test(ww));
-  check("Debt category tabs remain withheld", /export const DEBT_CATEGORY_TABS_ENABLED = false;/.test(read("lib/wealth/wealth-mode.ts")));
+  // v2.7 R3 — DELIBERATE: the tabs are enabled on the display-only presentationDebtClass (owner D-4/D-5).
+  check("Debt category tabs are enabled (v2.7 R3)", /export const DEBT_CATEGORY_TABS_ENABLED = true;/.test(read("lib/wealth/wealth-mode.ts")));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

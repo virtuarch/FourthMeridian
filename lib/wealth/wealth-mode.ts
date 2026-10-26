@@ -146,21 +146,20 @@ export function wealthSeriesKey(mode: WealthMode, slice: AssetsSlice): WealthMet
 export type DebtSection = "all" | "credit" | "loans";
 
 /**
- * Credit / Loans tabs are WITHHELD — owner rule: never guess a classification.
+ * Credit / Loans tabs — ENABLED (v2.7 R3, owner-approved D-4/D-5).
  *
- * Verified on Preview 2026-10-26 (read-only): `debtSubtype` is unpopulated on
- * every liability (0 of 23), so the existing `classifyDebt` only ever uses its
- * fallback "has a credit limit ⇒ card". A HELOC lands in Credit and mortgages /
- * student / auto loans land in Other — never Loans. The raw Plaid
- * `providerSubtype` is present on some accounts but the existing rule does not
- * read it, and starting to would be a NEW classification (out of scope).
- *
- * While false: the compact Debt view shows its complete content (All), no
- * category tabs render, and a ?section= in the URL is ignored and cleaned.
- * Turning it on needs a reliable debt subtype first (a reviewed classification
- * change), then the truth tables in compact-sections.ts apply unchanged.
+ * History: on 2026-10-26 Preview showed `debtSubtype` unpopulated on every
+ * liability (0 of 23), and the old classifier's "has a credit limit ⇒ card"
+ * fallback put a HELOC in Credit and mortgages / student / auto loans in Other,
+ * so the tabs were withheld. v2.7 R2 replaced that with the DISPLAY-ONLY
+ * `presentationDebtClass` (debt-ledger-util.ts): stored `debtSubtype` wins, else
+ * the provider's `providerSubtype` (credit card / line of credit → Credit; home
+ * equity, mortgage, student, auto, personal → Loans), else Other — never a
+ * credit-limit inference. Nothing stored, ingested, reconciled or totalled reads
+ * it. The compact truth tables in compact-sections.ts apply unchanged; "Other"
+ * liabilities are listed under All only.
  */
-export const DEBT_CATEGORY_TABS_ENABLED = false;
+export const DEBT_CATEGORY_TABS_ENABLED = true;
 export const DEBT_SECTIONS: readonly DebtSection[] = ["all", "credit", "loans"];
 export const DEFAULT_DEBT_SECTION: DebtSection = "all";
 export const DEBT_SECTION_PARAM = "section";
