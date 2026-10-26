@@ -31,6 +31,7 @@ import type { DebtKpis } from "./debt-kpis";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
+import { TalkAboutThis } from "@/components/ai/TalkAboutThis";
 
 /** The balance-history window delta, ready for the badge (snapshot basis). */
 export interface DebtWindowChange {
@@ -61,6 +62,7 @@ export function DebtHero({
   verdict,
   verdictAsOf,
   redactions,
+  timePreset,
 }: {
   kpis:           DebtKpis;
   currency:       string;
@@ -80,6 +82,8 @@ export function DebtHero({
   verdictAsOf:    string | null;
   /** Count of account details the lens withheld, for an honest note. */
   redactions:     number;
+  /** v2.7 R6 — the shell slice id for the compact AI entry link (allowlisted there). */
+  timePreset?:    string;
 }) {
   const approx = kpis.estimated ? "≈ " : "";
 
@@ -160,6 +164,11 @@ export function DebtHero({
           )}
         </p>
       )}
+
+      {/* v2.7 R6 — compact-only entry to the AI conversation about this view. */}
+      <div className="lg:hidden mt-2" data-compact-talk>
+        <TalkAboutThis section="debt" period={timePreset} />
+      </div>
     </section>
   );
 }

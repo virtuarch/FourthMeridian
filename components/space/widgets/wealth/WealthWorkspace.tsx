@@ -147,6 +147,7 @@ export function WealthWorkspace({
   onModeChange,
   modeSelectorVisibility = "always",
   freshnessLabel = null,
+  timePreset,
   slice = "all",
   onSliceChange,
   debtSection = "all",
@@ -193,6 +194,8 @@ export function WealthWorkspace({
   modeSelectorVisibility?: "always" | "belowLg";
   /** v2.7 P0 — the canonical freshness claim for the compact hero (null ⇒ "As of <snapshot date>"). */
   freshnessLabel?: string | null;
+  /** v2.7 R6 — the shell slice id, for the compact AI entry link only (allowlisted there). */
+  timePreset?: string;
   /** The Assets balance-history slice (All · Cash · Investments) — URL-synced by the host. */
   slice?:           AssetsSlice;
   onSliceChange?:   (s: AssetsSlice) => void;
@@ -392,6 +395,7 @@ export function WealthWorkspace({
           presentLens={debt?.presentLens ?? null}
           targetCurrency={debt?.targetCurrency}
           onEnvelopeChange={onEnvelopeChange}
+          timePreset={timePreset}
           // COMPACT DASHBOARD (P3) — the compact hierarchy inside Debt: Debt hero →
           // Total · Assets · Debt (this lg:hidden selector) → All · Credit · Loans.
           compactModeSelector={modeSelectorVisibility === "belowLg" ? modeSelector : undefined}
@@ -572,7 +576,7 @@ export function WealthWorkspace({
 
         {/* ① Hero — the headline scalar of the page's subject. */}
         <div id="wealth-summary" className="scroll-mt-20">
-          <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric} freshnessLabel={freshnessLabel}
+          <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric} freshnessLabel={freshnessLabel} timePreset={timePreset}
             cryptoPriceNote={result.asOfState.date === today ? summarizeCryptoPricing((accounts ?? []).map((a) => a.cryptoPrice)) : null} />
         </div>
 

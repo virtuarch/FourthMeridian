@@ -94,6 +94,9 @@ export interface WorkspaceRenderCtx {
 
   // Cash Flow period + the Net Worth page subject / Assets slice (URL-synced)
   cashFlowPeriod:          CashFlowPeriod;
+  /** v2.7 R6 — the canonical shell slice (a preset id or "CUSTOM"), only for the
+   *  compact "Talk with Fourth Meridian about this" link; never a figure. */
+  timePreset?:             string;
   wealthMode:              WealthMode;
   assetsSlice:             AssetsSlice;
   /** One-shot Assets section focus from a legacy lens deep link. */
@@ -187,6 +190,7 @@ const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => Reac
       onModeChange={ctx.onModeChange}
       modeSelectorVisibility={ctx.wealthModeSelectorVisibility}
       freshnessLabel={ctx.wealthFreshnessLabel ?? null}
+      timePreset={ctx.timePreset}
       slice={ctx.assetsSlice}
       onSliceChange={ctx.onSliceChange}
       debtSection={ctx.debtSection}

@@ -745,6 +745,7 @@ export function SpaceDashboard({
     assetsActive,
     lensResults,
     cashFlowPeriod,
+    timePreset,
     wealthMode,
     assetsSlice,
     wealthFocus,

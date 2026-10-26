@@ -13,10 +13,16 @@ export function SuggestedPrompt({
   label,
   onSelect,
   variant = "chip",
+  describedBy,
+  emphasis = false,
 }: {
   label: string;
   onSelect: () => void;
   variant?: "chip" | "row";
+  /** id of a caption that describes this chip (e.g. "Suggested for this view"). */
+  describedBy?: string;
+  /** A slightly stronger border — the suggested-for-this-view chip (v2.7 R6). */
+  emphasis?: boolean;
 }) {
   if (variant === "row") {
     return (
@@ -34,7 +40,8 @@ export function SuggestedPrompt({
     <button
       type="button"
       onClick={onSelect}
-      className="rounded-full border border-[var(--border-hairline)] px-3.5 py-1.5 text-[13px] transition-colors text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]"
+      aria-describedby={describedBy}
+      className={`rounded-full border ${emphasis ? "border-[var(--border-hairline-strong)] font-medium" : "border-[var(--border-hairline)]"} px-3.5 py-1.5 text-[13px] transition-colors text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]`}
     >
       {label}
     </button>

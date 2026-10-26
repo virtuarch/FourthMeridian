@@ -105,6 +105,7 @@ export function DebtWorkspace({
   compactModeSelector,
   compactSection = "all",
   onCompactSectionChange,
+  timePreset,
 }: {
   spaceId: string;
   asOf: string;
@@ -125,6 +126,8 @@ export function DebtWorkspace({
   /** COMPACT DASHBOARD (P3) — the compact Debt category (?section=); desktop ignores it. */
   compactSection?: DebtSection;
   onCompactSectionChange?: (s: DebtSection) => void;
+  /** v2.7 R6 — the shell slice id, for the compact AI entry link only (allowlisted there). */
+  timePreset?: string;
 }) {
   const { data, loading, error, reload } = useDebtSpaceData({
     spaceId,
@@ -285,6 +288,7 @@ export function DebtWorkspace({
           verdict={verdict}
           verdictAsOf={verdictAsOf}
           redactions={redactions}
+          timePreset={timePreset}
         />
       </div>
 

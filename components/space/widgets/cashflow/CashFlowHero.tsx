@@ -37,6 +37,7 @@ import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { economicSpend, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
 import { CashFlowFilterControls, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
+import { TalkAboutThis } from "@/components/ai/TalkAboutThis";
 
 /** The comparison-window delta, ready for the badge (now − then over the shared
  *  projection; see compareCashFlow). Null when no honest comparison exists. */
@@ -132,6 +133,13 @@ export function CashFlowHero({
           onChange={onPerspectiveChange}
           compact
         />
+      </div>
+
+      {/* v2.7 R6 — compact-only entry to the AI conversation about this view. The
+          window is the hero's own period (an explicit calendar period or ALL/WTD
+          is dropped by the link's allowlist). */}
+      <div className="lg:hidden mt-2" data-compact-talk>
+        <TalkAboutThis section="cash-flow" period={period} />
       </div>
     </section>
   );
