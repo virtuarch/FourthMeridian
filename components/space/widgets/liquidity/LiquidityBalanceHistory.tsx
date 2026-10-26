@@ -17,15 +17,12 @@
  */
 
 import { useMemo } from "react";
-import { formatDate } from "@/lib/format";
 import type { CashHistorySlice } from "@/lib/liquidity/cash-history";
 import { TrendChart, type TrendPoint } from "@/components/space/widgets/charts/TrendChart";
 
 export function LiquidityBalanceHistory({
   history,
   currency,
-  asOf,
-  compareTo,
   onSelectPoint,
 }: {
   /** The window-clipped, FX-converted accessible-cash slice. null ⇒ no in-window history. */
@@ -43,15 +40,12 @@ export function LiquidityBalanceHistory({
     [history],
   );
 
-  const subtitle = compareTo ? `${formatDate(asOf)} vs ${formatDate(compareTo)}` : `As of ${formatDate(asOf)}`;
 
   return (
     <TrendChart
       onSelectPoint={onSelectPoint}
       points={trendPoints}
       currency={currency}
-      title="Balance history"
-      subtitle={subtitle}
       ariaLabel="Accessible cash over time"
       emptyMessage="No cash history in this range yet. Widen the range or connect accounts to build history."
     />

@@ -19,6 +19,8 @@ import type { TimelineEvent } from "@/lib/timeline-types";
 import { ACTIVITY_FILTER_GROUPS } from "@/lib/timeline-types";
 import { formatDateTime } from "@/lib/format";
 import { formatCurrency } from "@/lib/currency";
+import { convertMoney } from "@/lib/money/convert";
+import type { ConversionContext } from "@/lib/money/types";
 import { EventIcon, toneColor, isColoredTone, timeAgo } from "./event-visuals";
 
 /** Member-facing label for a category id ("connection" → "Connections"). */
@@ -27,7 +29,26 @@ function categoryLabel(category: TimelineEvent["category"]): string | null {
   return ACTIVITY_FILTER_GROUPS.find((g) => g.id === category)?.label ?? null;
 }
 
-export function ActivityEventDetail({ event, now }: { event: TimelineEvent; now: Date }) {
+/**
+ * v2.7 currency toggle — the event's amount in the Space display currency,
+ * converted at the EVENT's date (convertMoney marks a walked-back rate
+ * estimated ⇒ "≈"). The native figure stays as a quiet subline when foreign.
+ * No context, or an unavailable rate ⇒ the native figure alone.
+ */
+export function eventAmountDisplay(
+  amount: number,
+  currency: string,
+  dateISO: string,
+  ctx?: ConversionContext,
+): { primary: string; native: string | null } {
+  const nativeLabel = formatCurrency(amount, currency);
+  if (!ctx || currency === ctx.target) return { primary: nativeLabel, native: null };
+  const c = convertMoney({ amount, currency }, dateISO.slice(0, 10), ctx);
+  if (c.amount === null) return { primary: nativeLabel, native: null };
+  return { primary: `${c.estimated ? "≈ " : ""}${formatCurrency(c.amount, ctx.target)}`, native: nativeLabel };
+}
+
+export function ActivityEventDetail({ event, now, ctx }: { event: TimelineEvent; now: Date; ctx?: ConversionContext }) {
   const color   = toneColor(event.tone);
   const colored = isColoredTone(event.tone);
   const catLabel = categoryLabel(event.category);
@@ -69,7 +90,15 @@ export function ActivityEventDetail({ event, now }: { event: TimelineEvent; now:
         {catLabel && <Fact label="Category">{catLabel}</Fact>}
         {typeof event.amount === "number" && event.currency && (
           <Fact label="Amount">
-            <span className="tabular-nums text-[var(--text-primary)]">{formatCurrency(event.amount, event.currency)}</span>
+            {(() => {
+              const d = eventAmountDisplay(event.amount, event.currency, event.date, ctx);
+              return (
+                <>
+                  <span className="tabular-nums text-[var(--text-primary)]">{d.primary}</span>
+                  {d.native && <span className="block tabular-nums text-[11px] text-[var(--text-faint)]">{d.native}</span>}
+                </>
+              );
+            })()}
           </Fact>
         )}
       </dl>

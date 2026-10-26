@@ -52,16 +52,11 @@ export function InvestmentsBalanceHistory({
     [points, asOf, compareTo],
   );
 
-  const subtitle = compareTo
-    ? `${formatWealthDate(asOf)} vs ${formatWealthDate(compareTo)}`
-    : `As of ${formatWealthDate(asOf)}`;
 
   return (
     <TrendChart
       points={trendPoints}
       currency={currency}
-      title="Balance history"
-      subtitle={subtitle}
       ariaLabel="Invested value over time"
       emptyMessage="No portfolio history in this range yet. Widen the range or connect accounts to build history."
       formatDate={formatWealthDate}

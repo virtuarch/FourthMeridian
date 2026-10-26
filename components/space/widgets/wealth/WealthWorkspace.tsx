@@ -47,6 +47,7 @@
  * slice (URL-synced in useSpaceNavigation — the evolved `?metric=` mechanism).
  */
 
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { summarizeCryptoPricing } from "@/lib/prices/current-quote.core";
 import { CompactSectionTabs } from "@/components/space/compact/CompactSectionTabs";
 import { assetsCompactVisibility } from "@/components/space/compact/compact-sections";
@@ -234,7 +235,9 @@ export function WealthWorkspace({
 
   // ── Effective display currency + per-date FX (display-currency ACTIVATION) ──
   const canConvert = !!(ctx && snapshotCurrency);
-  const displayCurrency = canConvert ? ctx!.target : (snapshotCurrency ?? ctx?.target ?? "USD");
+  // v2.7 — the last fallback is the display-currency authority, never a USD literal.
+  const aggregateCurrency = useAggregateCurrency(ctx);
+  const displayCurrency = canConvert ? ctx!.target : (snapshotCurrency ?? aggregateCurrency);
   const convertedSnapshots = useMemo(
     () => (canConvert ? convertWealthSnapshots(snapshots ?? [], snapshotCurrency!, ctx!) : (snapshots ?? [])),
     [snapshots, snapshotCurrency, ctx, canConvert],
@@ -507,7 +510,7 @@ export function WealthWorkspace({
           <SectionTitle>Real assets</SectionTitle>
           <span className="text-[11px] text-[var(--text-muted)]" data-real-assets-note>Not counted in Investments</span>
         </div>
-        <RealAssetsSection spaceId={spaceId} spaceType={spaceType} active={active} />
+        <RealAssetsSection spaceId={spaceId} spaceType={spaceType} active={active} ctx={ctx} />
       </section>
       )}
     </>

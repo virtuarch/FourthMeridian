@@ -140,8 +140,18 @@ export function PerspectiveShell(props: Props) {
     }
   }
 
+  // v2.7 (owner) — STICKY COMPACT CONTROLS ROW (<lg only). The row pins under the
+  // GlobalHeader (sticky top-0, h-12 + 1px border-b ⇒ 3rem+1px) while the page
+  // scrolls. A sticky box is confined to its PARENT's box, so this root becomes
+  // `display: contents` below lg (and the host's wrapper does the same — see
+  // SpaceDashboard), making the tall page column the row's containing block.
+  // z-20: above content (whose highest layer is z-10) and below the header (z-40);
+  // the selector's menu (z-30) opens inside the row's own stacking context, the
+  // period panel portals to <body>. Solid page background + hairline, bled to the
+  // page gutters (px-4, sm:px-5) so content never shows at the sides. At lg+ none of
+  // these utilities apply — desktop markup is byte-identical.
   return (
-    <div className="space-y-3">
+    <div className={compactRow ? "space-y-3 max-lg:contents" : "space-y-3"}>
       {/* Container 1 — time. ONE canonical time selector, unconditionally, as two
           compact controls (period trigger + resolved range) — see TimelineLens.
           temporalCapability still gates the lens's explicit boundary fields
@@ -163,7 +173,7 @@ export function PerspectiveShell(props: Props) {
       <div
         data-compact-controls={compactRow ? "" : undefined}
         className={compactRow
-          ? "px-1 max-lg:flex max-lg:flex-nowrap max-lg:items-center max-lg:justify-between max-lg:gap-3"
+          ? "px-1 max-lg:flex max-lg:flex-nowrap max-lg:items-center max-lg:justify-between max-lg:gap-3 max-lg:sticky max-lg:top-[calc(3rem+1px)] max-lg:z-20 max-lg:-mx-5 max-lg:px-6 max-lg:max-sm:-mx-4 max-lg:max-sm:px-5 max-lg:py-2 max-lg:bg-[var(--bg-base)] max-lg:border-b max-lg:border-[var(--border-hairline)]"
           : props.compactHideTime ? "px-1 max-lg:hidden" : "px-1"}
       >
         {/* v2.7 R1 — compact controls row, LEFT: the financial-view selector

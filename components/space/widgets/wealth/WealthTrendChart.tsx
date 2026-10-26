@@ -59,20 +59,12 @@ export function WealthTrendChart({
   const title = WEALTH_SERIES_TITLE[metric];
   const points = projectWealthTrendPoints(result, metric, investedSeries);
 
-  const subtitle =
-    result.chart.compareDate
-      ? `${formatWealthDate(result.chart.asOfDate ?? result.asOf)} vs ${formatWealthDate(result.chart.compareDate)}`
-      : result.chart.asOfDate
-        ? `As of ${formatWealthDate(result.chart.asOfDate)}`
-        : `${title} over time`;
 
   return (
     <TrendChart
       onSelectPoint={onSelectPoint}
       points={points}
       currency={currency}
-      title="Balance history"
-      subtitle={subtitle}
       ariaLabel={`${title} over time`}
       emptyMessage="No snapshot history in this range yet. Widen the range or connect accounts to build history."
       formatDate={formatWealthDate}

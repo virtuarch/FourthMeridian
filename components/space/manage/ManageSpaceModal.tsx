@@ -46,6 +46,7 @@ import { ROLE_LABELS, type SpaceDetail } from "./manage-shared";
 import { GeneralSettingsPanel } from "./GeneralSettingsPanel";
 import { MembersPanel } from "./MembersPanel";
 import { FinancesPanel } from "./FinancesPanel";
+import type { ConversionContext } from "@/lib/money/types";
 import { DangerZonePanel } from "./DangerZonePanel";
 
 interface Props {
@@ -58,6 +59,10 @@ interface Props {
   onDeleted?:    () => void;
   /** The Space was renamed (the new STORED name) — lets the host's header agree at once. */
   onRenamed?:    (name: string) => void;
+  /** v2.7 currency toggle — the Space conversion context, so the Accounts tab's
+   *  balances render in the display currency. Absent (e.g. the Spaces list host)
+   *  ⇒ balances stay native, labelled in their own currency. */
+  ctx?:          ConversionContext;
 }
 
 type ManageTab = "general" | "members" | "finances" | "danger";
@@ -71,6 +76,7 @@ export function ManageSpaceModal({
   onRefresh,
   onDeleted,
   onRenamed,
+  ctx,
 }: Props) {
   const isOwner   = myRole === "OWNER";
   const canEdit   = isOwner;
@@ -167,7 +173,7 @@ export function ManageSpaceModal({
             />
           )}
           {activeTab === "finances"             && (
-            <FinancesPanel spaceId={spaceId} myRole={myRole} onRefresh={onRefresh} />
+            <FinancesPanel spaceId={spaceId} myRole={myRole} onRefresh={onRefresh} ctx={ctx} />
           )}
           {activeTab === "danger" && space?.type !== "PERSONAL" && (
             <DangerZonePanel

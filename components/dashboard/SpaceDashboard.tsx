@@ -795,6 +795,7 @@ export function SpaceDashboard({
               onRenamed={(to) => setRenamed({ spaceId, from: storedSpaceName, to })}
               myRole={myRole}
               currentUserId={currentUserId}
+              ctx={widgetCtx}
               onClose={() => setShowManage(false)}
               onRefresh={() => {
                 setShowManage(false);
@@ -874,7 +875,10 @@ export function SpaceDashboard({
         )}
 
         {activeTab === "OVERVIEW" && activePerspective != null && (
-          <div className="mb-4">
+          // v2.7 — `max-lg:contents` lets PerspectiveShell's sticky compact controls
+          // row stay pinned across the whole page column (a sticky box is confined
+          // to its parent); the lg:hidden spacer below restores the mb-4 gap.
+          <div className="mb-4 max-lg:contents">
             {/* ── Perspective shell — two framed containers (§2) ────────────────
                 Container 1 (time) FIRST: the date picker, then any caveat chips.
                 Container 2 (the lens) BELOW it: Net Worth · Cash Flow · Markets.
@@ -917,6 +921,7 @@ export function SpaceDashboard({
               // this selector left, the date trigger right (one TimelineLens).
               compactViewSelector={<CompactViewSelector items={lensSelectorItems} activeId={activeLensId} onSelect={selectLens} />}
             />
+            <div aria-hidden className="lg:hidden h-4" />
           </div>
         )}
 
@@ -1023,6 +1028,8 @@ export function SpaceDashboard({
             accounts={accounts}
             // Banking→Transactions retarget — deep-link account pre-filter.
             initialAccountFilter={initialAccountFilter}
+            // v2.7 currency toggle — rows convert at their own date.
+            ctx={txConversionCtx}
           />
         )}
 
@@ -1065,7 +1072,7 @@ export function SpaceDashboard({
             (hero + date-banded feed → RightPanel detail), reading the canonical
             activity feed. Presentation-only convergence; never reorders. */}
         {activeTab === "ACTIVITY" && (
-          <ActivityWorkspace spaceId={spaceId} />
+          <ActivityWorkspace spaceId={spaceId} ctx={widgetCtx} />
         )}
         </div>
 

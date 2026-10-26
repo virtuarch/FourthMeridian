@@ -428,7 +428,7 @@ export function DebtWorkspace({
           </Surface>
           <Surface className="p-4 min-w-0">
             <SubHeading>Credit limits</SubHeading>
-            <CreditLimitInputs accounts={accounts} />
+            <CreditLimitInputs accounts={accounts} ctx={ctx} />
           </Surface>
         </div>
       </Block>

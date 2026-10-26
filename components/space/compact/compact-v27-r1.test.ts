@@ -104,7 +104,7 @@ console.log("\n3. the financial controls row");
 {
   const html = ps();
   check("one controls row: selector LEFT, date trigger RIGHT, justify-between, never wraps",
-    /<div data-compact-controls="" class="px-1 max-lg:flex max-lg:flex-nowrap max-lg:items-center max-lg:justify-between max-lg:gap-3">/.test(html)
+    /<div data-compact-controls="" class="px-1 max-lg:flex max-lg:flex-nowrap max-lg:items-center max-lg:justify-between max-lg:gap-3 max-lg:sticky [^"]*">/.test(html) // v2.7: + the sticky contract (§6)
       && html.indexOf("data-compact-view-selector") < html.indexOf("data-timeline-period"));
   check("the trigger side keeps its size and does not wrap below lg", /class="flex flex-wrap items-center justify-center gap-2 max-lg:shrink-0 max-lg:flex-nowrap max-lg:\[&amp;_\[data-timeline-period\]~span\]:hidden"/.test(html));
   check("exactly ONE TimelineLens in the server markup", (html.match(/data-timeline-period="true"/g) ?? []).length === 1 && (html.match(/aria-label="Change time period"/g) ?? []).length === 1);
@@ -143,6 +143,32 @@ console.log("\n5. desktop is unchanged");
   check("Overview: ≥1024px markup with the controls row equals the plain centred time row", ids(desktopMarkup(ps())) === plain);
   check("…no selector, no short label, no compact marker survives", !/data-compact|data-timeline-period-short|max-lg:/.test(desktopMarkup(ps())));
   check("Markets: ≥1024px markup unchanged", ids(desktopMarkup(ps({ compactHideTime: true }))) === ids(desktopMarkup(ps({ compactHideTime: true, compactViewSelector: undefined }))));
+}
+
+console.log("\n6. v2.7 — the compact controls row is STICKY below lg (desktop untouched)");
+{
+  const rowCls = (h: string) => /<div data-compact-controls="" class="([^"]*)"/.exec(h)?.[1].split(/\s+/) ?? [];
+  const STICKY = ["max-lg:sticky", "max-lg:top-[calc(3rem+1px)]", "max-lg:z-20", "max-lg:bg-[var(--bg-base)]",
+    "max-lg:border-b", "max-lg:border-[var(--border-hairline)]", "max-lg:-mx-5", "max-lg:px-6", "max-lg:max-sm:-mx-4", "max-lg:max-sm:px-5"];
+  for (const [name, html] of [["Overview", ps()], ["Markets (selector only)", ps({ compactHideTime: true })]] as const) {
+    const cls = rowCls(html);
+    check(`${name}: row carries the full sticky contract`, STICKY.every((t) => cls.includes(t)), cls.join(" "));
+    check(`${name}: every sticky utility is max-lg-scoped (no desktop token)`, cls.filter((t) => /sticky|top-|z-20|bg-|border|-mx-/.test(t)).every((t) => t.startsWith("max-lg:")));
+    check(`${name}: the shell root is display:contents below lg only (sticky spans the page column)`, /^<div class="space-y-3 max-lg:contents">/.test(html));
+  }
+  check("offset = GlobalHeader footprint (sticky top-0, h-12 + border-b)",
+    /sticky top-0 z-40[^"]*border-b/.test(read("components/ui/GlobalHeader.tsx")) && read("components/ui/GlobalHeader.tsx").includes("flex h-12"));
+  check("z-20 sits below the header (z-40) and the selector menu is z-30 inside the row",
+    read("components/space/shell/CompactViewSelector.tsx").includes("z-30"));
+  check("no compact row ⇒ no sticky, no contents (other hosts unchanged)",
+    !/max-lg:sticky|max-lg:contents/.test(ps({ compactViewSelector: undefined })));
+  const host = code("components/dashboard/SpaceDashboard.tsx");
+  check("host wrapper is display:contents below lg + a compact-only spacer restores mb-4",
+    host.includes('<div className="mb-4 max-lg:contents">') && host.includes('<div aria-hidden className="lg:hidden h-4" />'));
+  const shellAt = host.indexOf("<PerspectiveShell"), enterAt = host.indexOf('className="fm-view-enter"');
+  check("the page-turn animation (transform) does NOT wrap the shell", shellAt > 0 && enterAt > shellAt);
+  check("desktop markup still equals the plain row (sticky utilities stripped at ≥1024px)",
+    ids(desktopMarkup(ps())) === ids(desktopMarkup(ps({ compactViewSelector: undefined }))));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

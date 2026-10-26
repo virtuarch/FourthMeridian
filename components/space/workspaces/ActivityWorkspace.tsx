@@ -38,8 +38,9 @@ import { groupActivityEvents } from "@/components/space/widgets/activity/activit
 import { ActivityHero, type ActivityFilter } from "@/components/space/widgets/activity/ActivityHero";
 import { ActivityTimeline } from "@/components/space/widgets/activity/ActivityTimeline";
 import { ActivityEventDetail } from "@/components/space/widgets/activity/ActivityEventDetail";
+import type { ConversionContext } from "@/lib/money/types";
 
-export function ActivityWorkspace({ spaceId }: { spaceId: string }) {
+export function ActivityWorkspace({ spaceId, ctx }: { spaceId: string; ctx?: ConversionContext }) {
   const { events, loading, error, reload } = useActivityFeed(spaceId);
 
   const [filter, setFilter]     = useState<ActivityFilter>("all");
@@ -119,7 +120,7 @@ export function ActivityWorkspace({ spaceId }: { spaceId: string }) {
           <>
             <PanelHeader eyebrow={eyebrowFor(selected)} title={selected.title} />
             <PanelContent>
-              <ActivityEventDetail event={selected} now={now} />
+              <ActivityEventDetail event={selected} now={now} ctx={ctx} />
             </PanelContent>
           </>
         )}

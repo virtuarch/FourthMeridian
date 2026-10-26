@@ -65,7 +65,7 @@ console.log("\n2. the truth table");
 console.log("\n3. Real assets keep their own identity");
 {
   check("their own section, title and component — unchanged",
-    /<section id="wealth-real-assets"[\s\S]{0,200}<SectionTitle>Real assets<\/SectionTitle>[\s\S]{0,400}<RealAssetsSection spaceId=\{spaceId\} spaceType=\{spaceType\} active=\{active\} \/>/.test(ww));
+    /<section id="wealth-real-assets"[\s\S]{0,200}<SectionTitle>Real assets<\/SectionTitle>[\s\S]{0,400}<RealAssetsSection spaceId=\{spaceId\} spaceType=\{spaceType\} active=\{active\} ctx=\{ctx\} \/>/.test(ww)); // v2.7 currency toggle — ctx threaded (DELIBERATE)
   check("the Investments figure/chart is stocks + crypto only (no real assets)", /SpaceSnapshot stocks \+ crypto/.test(read("lib/wealth/invested-label.ts")));
   // v2.7 visual-first — DELIBERATE: the sentence is a short label beside the title, every width.
   check("beside the title, a short label says they are not counted in Investments",
