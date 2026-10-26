@@ -3,13 +3,15 @@
  *
  *   1. Assets tabs are exactly All · Cash · Investments and ARE the existing slice
  *      (?slice=, replace-written) — the chart series and the content agree;
- *   2. the truth table: All = everything (incl. Real assets); Cash = the Cash
- *      section; Investments = Investments + Real assets as a distinct subsection;
+ *   2. the truth table — v2.7 visual-first: the RENDER RULE at every width (a
+ *      section outside the slice is not rendered, not CSS-hidden): All =
+ *      composition + what moved; Cash = the Cash section; Investments =
+ *      Investments + Real assets as a distinct section;
  *   3. Real assets are never reclassified: their own section/title/component,
  *      not in the Investments figures or chart (the invested series is stocks +
- *      crypto only), and the compact note says so;
+ *      crypto only), and a short label says so;
  *   4. accessible tabs (tablist/tab, aria-selected, roving tabindex, aria-controls,
- *      arrow keys) and compact-only hiding (max-lg:hidden ⇒ display:none <lg);
+ *      arrow keys); the desktop slice chips stay the ≥lg slice navigation;
  *   5. the compact hierarchy (hero → Total·Assets·Debt → tabs → content), with
  *      desktop unchanged.
  *
@@ -46,24 +48,29 @@ check("on compact the chart-header slice chips give way to the tabs (max-lg:hidd
 console.log("\n2. the truth table");
 {
   const t = (s: "all" | "cash" | "investments") => JSON.stringify(assetsCompactVisibility(s));
-  check("All shows everything, Real assets included", t("all") === JSON.stringify({ composition: true, cash: true, investments: true, realAssets: true }));
+  // v2.7 visual-first — DELIBERATE: All no longer embeds Cash, Investments or
+  // Real assets (owner D-B); each lives on its own slice.
+  check("All shows composition + what moved only", t("all") === JSON.stringify({ composition: true, cash: false, investments: false, realAssets: false }));
   check("Cash shows the Cash section only", t("cash") === JSON.stringify({ composition: false, cash: true, investments: false, realAssets: false }));
   check("Investments shows Investments + Real assets", t("investments") === JSON.stringify({ composition: false, cash: false, investments: true, realAssets: true }));
-  check("each section applies its rule as compact-only hiding",
-    /id="wealth-cash" className=\{`[^`]*\$\{compactHidden\(!compact\.cash\)\}`/.test(ww)
-      && /id="wealth-investments" className=\{`[^`]*\$\{compactHidden\(!compact\.investments\)\}`/.test(ww)
-      && /id="wealth-real-assets" className=\{`[^`]*\$\{compactHidden\(!compact\.realAssets\)\}`/.test(ww)
-      && /\$\{compactHidden\(mode === "assets" && !compact\.composition\)\}/.test(ww));
-  check("the hiding class never applies at ≥1024px", compactHidden(true) === "max-lg:hidden" && compactHidden(false) === "");
+  check("each section is RENDERED by its rule (conditional rendering, no CSS hiding)",
+    /\{show\.cash && \(\s*<section id="wealth-cash" className="scroll-mt-20">/.test(ww)
+      && /\{show\.investments && \(\s*<section id="wealth-investments" className="scroll-mt-20">/.test(ww)
+      && /\{show\.realAssets && \(\s*<section id="wealth-real-assets" className="scroll-mt-20 border-t/.test(ww)
+      && /\{\(mode !== "assets" \|\| show\.composition\) && \(/.test(ww)
+      && !/compactHidden/.test(ww));
+  check("compactHidden itself is unchanged (still a compact-only utility for Debt)", compactHidden(true) === "max-lg:hidden" && compactHidden(false) === "");
 }
 
 console.log("\n3. Real assets keep their own identity");
 {
   check("their own section, title and component — unchanged",
-    /<section id="wealth-real-assets"[\s\S]{0,200}<SectionTitle>Real assets<\/SectionTitle>[\s\S]{0,900}<RealAssetsSection spaceId=\{spaceId\} spaceType=\{spaceType\} active=\{active\} \/>/.test(ww));
+    /<section id="wealth-real-assets"[\s\S]{0,200}<SectionTitle>Real assets<\/SectionTitle>[\s\S]{0,400}<RealAssetsSection spaceId=\{spaceId\} spaceType=\{spaceType\} active=\{active\} \/>/.test(ww));
   check("the Investments figure/chart is stocks + crypto only (no real assets)", /SpaceSnapshot stocks \+ crypto/.test(read("lib/wealth/invested-label.ts")));
-  check("on the Investments tab a compact note says the grouping is navigation only",
-    /slice === "investments" && \(\s*<p className="lg:hidden[^"]*" data-compact-real-assets-note>\s*Grouped here for navigation\. Real assets keep their own valuations and are not counted in the Investments figures or chart above\./.test(ww));
+  // v2.7 visual-first — DELIBERATE: the sentence is a short label beside the title, every width.
+  check("beside the title, a short label says they are not counted in Investments",
+    /<SectionTitle>Real assets<\/SectionTitle>\s*<span className="text-\[11px\] text-\[var\(--text-muted\)\]" data-real-assets-note>Not counted in Investments<\/span>/.test(ww)
+      && !/Grouped here for navigation/.test(ww));
   check("RealAssetsSection itself is untouched (no compact or tab logic inside it)", !/compact|slice/i.test(code("components/space/widgets/wealth/RealAssetsSection.tsx")));
 }
 
@@ -92,6 +99,10 @@ console.log("\n5. hierarchy and desktop");
   check("a host that shows the mode selector on desktop keeps it above the hero", /\{modeSelectorVisibility !== "belowLg" && modeSelector\}/.test(ww));
   check("the selector being moved is compact-only for this host", /wealthModeSelectorVisibility: "belowLg"/.test(read("components/dashboard/SpaceDashboard.tsx")));
   check("legacy deep links still land: the one-shot section scroll is intact", /document\.getElementById\(`wealth-\$\{focusSection\}`\)\?\.scrollIntoView/.test(ww));
+  check("…and a legacy link selects the slice whose section it scrolls to (so the target is rendered)",
+    /liquidity:\s+\{ mode: "assets", slice: "cash",\s+focus: "cash" \}/.test(read("lib/wealth/wealth-mode.ts"))
+      && /investments: \{ mode: "assets", slice: "investments", focus: "investments" \}/.test(read("lib/wealth/wealth-mode.ts")));
+  check("only the selected tab names controlled sections (the others are not in the DOM)", /controls: s !== slice \? \[\]/.test(ww));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

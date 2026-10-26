@@ -1,13 +1,15 @@
 /**
- * components/space/compact/compact-v27-hero.test.ts  (v2.7 — compact hero tightening, owner feedback)
+ * components/space/compact/compact-v27-hero.test.ts  (v2.7 — compact hero, owner feedback)
  *
- *   1. the compact Debt hero follows the Net Worth pattern: label row with the
- *      canonical freshness claim, figure, change + range on ONE line, AI entry;
+ *   1. the compact Debt hero is the shared five-row CompactHeroCard (v2.7
+ *      visual-first — DELIBERATE: replaces the hero-tighten label row + meta
+ *      line): title · freshness · trust / figure / change / range / AI entry;
  *      the "across N", interest/utilization stats and verdict prose are
- *      compact-hidden (desktop keeps them); disclosures stay visible;
- *   2. those stats reappear once, in a compact KPI strip under the balance
- *      chart, from the SAME kpis values (debtCompactKpiItems, owned by the hero);
- *   3. the compact card is shorter (py-4).
+ *      desktop-only; disclosures (withheld, historical) render visibly BELOW
+ *      the card, never as extra rows;
+ *   2. those stats appear once, in a compact KPI strip under the balance chart,
+ *      from the SAME kpis values (debtCompactKpiItems, owned by the hero);
+ *   3. the compact card is short (py-4).
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/space/compact/compact-v27-hero.test.ts
  */
@@ -39,27 +41,30 @@ const render = (extra: Record<string, unknown> = {}) => renderToStaticMarkup(cre
   verdictAsOf: "Jun 9, 2026", redactions: 0, freshnessLabel: "Last checked 4 months ago", ...extra,
 } as never));
 
-console.log("1. the compact Debt hero follows the Net Worth pattern");
+console.log("1. the compact Debt hero is the shared five-row card");
 {
+  const card = (h: string) => { const f = h.slice(h.lastIndexOf("<", h.indexOf("data-compact-hero-wrap"))); return f.slice(0, f.indexOf('<section class="max-lg:hidden"')); };
+  const row = (h: string, n: number) => text((card(h).match(new RegExp(`data-compact-hero-row="${n}"[^>]*>([\\s\\S]*?)</div>(?=<div data-compact-hero-row|</section>)`)) ?? ["", ""])[1]);
+  const notes = (h: string) => text((card(h).match(/data-compact-hero-notes="true">([\s\S]*?)<\/div><\/div>$/) ?? ["", ""])[1]);
   const html = render();
-  const meta = html.slice(html.indexOf("data-compact-hero-meta"));
-  check("label row: Total debt, then the canonical freshness claim (lg:hidden)",
-    /Total debt<\/p><span class="lg:hidden ml-auto[^"]*" data-compact-hero-freshness="true">Last checked 4 months ago<\/span>/.test(html));
-  check("change + range on one compact line", /data-compact-hero-meta/.test(html) && /Sep 26, 2026 → Oct 26, 2026/.test(text(meta)) && /class="lg:hidden mt-2\.5 flex flex-wrap/.test(html));
-  check("the wordy lines are compact-hidden: across N, stats row, verdict",
-    /<p class="mt-2\.5 text-sm text-\[var\(--text-secondary\)\] max-lg:hidden">\s*across/.test(html)
-      && /text-\[var\(--text-muted\)\] max-lg:hidden"><span class="inline-flex items-baseline gap-1\.5 tabular-nums"><span[^>]*>Est\. interest/.test(html)
-      && /leading-snug text-\[var\(--text-secondary\)\] max-lg:hidden">You carry/.test(html));
+  check("R1: Total debt, then the canonical freshness claim", row(html, 1) === "Total debt Last checked 4 months ago", row(html, 1));
+  check("R2: the figure, in the negative accent", row(html, 2) === "$3,200.00" && /color:var\(--accent-negative\)/.test(card(html)));
+  check("R3 change and R4 range on SEPARATE rows", /61/.test(row(html, 3)) && /2\.0%/.test(row(html, 3)) && row(html, 4) === "Sep 26, 2026 → Oct 26, 2026", `${row(html, 3)} | ${row(html, 4)}`);
+  check("R5: the AI entry", /Talk with Fourth Meridian about this/.test(row(html, 5)));
+  check("the wordy lines are not in the compact card: across N, stats, verdict", !/across|Est\. interest|Utilization|You carry/.test(text(card(html))));
   const desk = desktopMarkup(html);
-  check("DESKTOP keeps across N, Est. interest, Utilization, verdict and the vs-date delta; no compact meta/freshness",
+  check("DESKTOP keeps across N, Est. interest, Utilization, verdict and the vs-date delta; no compact card",
     /across/.test(text(desk)) && /Est\. interest/.test(text(desk)) && /Utilization/.test(text(desk)) && /You carry/.test(text(desk))
-      && /vs Sep 26, 2026/.test(text(desk)) && !/data-compact-hero-meta|data-compact-hero-freshness/.test(desk));
+      && /vs Sep 26, 2026/.test(text(desk)) && !/data-compact-hero/.test(desk));
   const redacted = render({ redactions: 2 });
-  check("a withheld-details disclosure stays visible on compact", /<p class="lg:hidden basis-full[^"]*">2 account details withheld<\/p>/.test(redacted));
+  check("a withheld-details disclosure is a visible note BELOW the card (not a row)",
+    notes(redacted) === "2 account details withheld" && !/withheld/.test(row(redacted, 1) + row(redacted, 3) + row(redacted, 4)));
   const hist = render({ historical: true });
-  check("historical: the 'balances are current' disclosure stays visible (not compact-hidden)",
-    /<p class="mt-1 text-\[11px\] text-\[var\(--text-faint\)\]">\s*Balances are current/.test(hist));
-  check("no comparison ⇒ the date-menu hint, no invented change", /Choose a comparison in the date menu/.test(text(render({ change: null }).slice(render({ change: null }).indexOf("data-compact-hero-meta")))));
+  check("historical: no change beside a present-day figure; R4 'Current balances'; the 'balances are current' note below",
+    row(hist, 3) === "Change shown in the chart" && row(hist, 4) === "Current balances" && /^Balances are current — the trend reflects Oct 26, 2026\.$/.test(notes(hist)), `${row(hist, 3)} | ${row(hist, 4)} | ${notes(hist)}`);
+  const none = render({ change: null });
+  check("no comparison ⇒ 'No comparison selected' and 'As of <date>', no invented change", row(none, 3) === "No comparison selected" && row(none, 4) === "As of Oct 26, 2026");
+  check("no notes ⇒ no notes block", !/data-compact-hero-notes/.test(html));
 }
 
 console.log("\n2. the stats move to a compact KPI strip — same values");

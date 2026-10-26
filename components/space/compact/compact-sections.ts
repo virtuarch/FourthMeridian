@@ -2,9 +2,10 @@
  * components/space/compact/compact-sections.ts  (COMPACT DASHBOARD — pure rules)
  *
  * Which existing sections each compact (<1024px) category tab shows. Pure, so
- * the truth tables are provable without rendering a workspace. The workspaces
- * apply them as `max-lg:hidden` (display:none below lg only); at ≥1024px every
- * section renders exactly as before, whatever the tab.
+ * the truth tables are provable without rendering a workspace. Debt applies its
+ * table as `max-lg:hidden` (display:none below lg only). v2.7 visual-first: the
+ * ASSETS table is the render rule at EVERY width — WealthWorkspace renders only
+ * the selected slice's sections (owner-approved desktop content cleanup).
  */
 
 import type { AssetsSlice } from "@/lib/wealth/wealth-mode";
@@ -20,13 +21,18 @@ export interface AssetsCompactVisibility {
   realAssets: boolean;
 }
 
-/** Assets tabs = the existing slice: All · Cash · Investments. */
+/**
+ * Assets tabs = the existing slice: All · Cash · Investments. All is the
+ * whole-Assets analytics only (composition + what moved); the Cash and
+ * Investments sections — and Real assets, grouped under Investments for
+ * navigation — live on their own slice.
+ */
 export function assetsCompactVisibility(slice: AssetsSlice): AssetsCompactVisibility {
   return {
     composition: slice === "all",
-    cash: slice === "all" || slice === "cash",
-    investments: slice === "all" || slice === "investments",
-    realAssets: slice === "all" || slice === "investments",
+    cash: slice === "cash",
+    investments: slice === "investments",
+    realAssets: slice === "investments",
   };
 }
 

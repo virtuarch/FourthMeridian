@@ -145,15 +145,28 @@ check("the page derives the chip only via suggestedStarter(searchParams)",
 
 // ── 7. heroes ────────────────────────────────────────────────────────────────
 console.log("7. hero entry points are compact-only");
-for (const [file, section] of [
-  ["components/space/widgets/wealth/WealthHero.tsx", "TALK_SECTION[metric]"],
-  ["components/space/widgets/debt/DebtHero.tsx", '"debt"'],
-  ["components/space/widgets/cashflow/CashFlowHero.tsx", '"cash-flow"'],
-] as const) {
-  const src = read(file);
+{
+  // Cash Flow keeps its own compact wrapper.
+  const src = read("components/space/widgets/cashflow/CashFlowHero.tsx");
   const m = /<div className="([^"]*)" data-compact-talk>\s*<TalkAboutThis section=\{?([^ }]+)\}? period=/.exec(src);
-  check(`${path.basename(file)}: <TalkAboutThis section=${section}> inside an lg:hidden wrapper`,
-    !!m && m[1].split(/\s+/).includes("lg:hidden") && m[2] === section, m?.[0]);
+  check(`CashFlowHero.tsx: <TalkAboutThis section="cash-flow"> inside an lg:hidden wrapper`,
+    !!m && m[1].split(/\s+/).includes("lg:hidden") && m[2] === '"cash-flow"', m?.[0]);
+}
+// v2.7 visual-first — DELIBERATE: Net Worth / Assets / Debt mount the link as
+// R5 of the shared five-row CompactHeroCard, whose root is lg:hidden.
+{
+  const card = read("components/space/compact/CompactHeroCard.tsx");
+  check("CompactHeroCard: R5 is <TalkAboutThis section={talkSection} period={talkPeriod} />, inside the lg:hidden card",
+    /<div className="lg:hidden" data-compact-hero-wrap>/.test(card)
+      && /data-compact-hero-row="5"[^>]*>\s*<TalkAboutThis section=\{talkSection\} period=\{talkPeriod\} \/>/.test(card));
+  for (const [file, section] of [
+    ["components/space/widgets/wealth/WealthHero.tsx", "{TALK_SECTION[metric]}"],
+    ["components/space/widgets/debt/DebtHero.tsx", '"debt"'],
+  ] as const) {
+    const src = read(file);
+    check(`${path.basename(file)}: the card gets talkSection=${section} and the shell slice as talkPeriod`,
+      src.includes(`talkSection=${section}`) && /talkPeriod=\{timePreset\}/.test(src) && !/<TalkAboutThis\b/.test(src));
+  }
 }
 
 // v2.7 R6.1 — a returning user (restored conversation) still sees the view's
