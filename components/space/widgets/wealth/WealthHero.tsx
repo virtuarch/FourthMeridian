@@ -140,6 +140,13 @@ export function WealthHero({
   const eyebrow = (
     <div className="flex items-center justify-between gap-3">
       <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{metricLabel}</p>
+      {/* v2.7 — compact: the canonical freshness claim sits in the label row
+          (owner: "next to Net Worth"), so the card loses a line. */}
+      {asOfState.found && (freshnessLabel || asOfState.date) && (
+        <span className="lg:hidden ml-auto truncate text-[11px] text-[var(--text-muted)]" data-compact-hero-freshness>
+          {freshnessLabel ?? `As of ${formatWealthDate(asOfState.date!)}`}
+        </span>
+      )}
       {confidenceChip}
     </div>
   );
@@ -183,33 +190,29 @@ export function WealthHero({
           never the snapshot date labelled as fresh data (Preview writes a
           today-dated snapshot from balances observed days earlier). The stat
           line below is compact-hidden; those figures stay in their sections. */}
-      <div className="lg:hidden mt-3 space-y-1.5" data-compact-hero-meta>
+      <div className="lg:hidden mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1" data-compact-hero-meta>
         {deltas ? (
           <DeltaBadge
             abs={deltas[metric].abs}
             pct={deltas[metric].pct}
             currency={currency}
             goodDirection={goodDirection}
-            className="lg:hidden !text-[15px] font-medium"
+            className="lg:hidden !text-[14px] font-medium"
           />
         ) : (
           <p className="lg:hidden text-[12px] text-[var(--text-muted)]">Choose a comparison in the date menu to see the change.</p>
         )}
         {compareState?.found && compareState.date && asOfState.date && (
-          <p className="lg:hidden text-[13px] tabular-nums text-[var(--text-secondary)]">
+          <p className="lg:hidden text-[12px] tabular-nums text-[var(--text-muted)]">
             {formatWealthDate(compareState.date)} → {formatWealthDate(asOfState.date)}
           </p>
         )}
-        {(freshnessLabel || asOfState.date) && (
-          <p className="lg:hidden text-[12px] text-[var(--text-muted)]" data-compact-hero-freshness>
-            {freshnessLabel ?? `As of ${formatWealthDate(asOfState.date!)}`}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}
-          </p>
-        )}
+        {cryptoPriceNote && <p className="lg:hidden basis-full text-[11px] text-[var(--text-muted)]">{cryptoPriceNote}</p>}
       </div>
 
       {/* v2.7 R6 — compact-only entry to the AI conversation about this view.
           Navigates with the topic + window ids only; nothing is sent. */}
-      <div className="lg:hidden mt-2" data-compact-talk>
+      <div className="lg:hidden mt-1" data-compact-talk>
         <TalkAboutThis section={TALK_SECTION[metric]} period={timePreset} />
       </div>
 

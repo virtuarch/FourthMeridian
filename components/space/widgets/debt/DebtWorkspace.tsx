@@ -53,7 +53,8 @@ import { renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adap
 import { computeDebtKpis } from "./debt-kpis";
 import { buildDebtSignals } from "./debt-signals";
 import { useDebtSpaceData } from "./useDebtSpaceData";
-import { DebtHero, type DebtWindowChange } from "./DebtHero";
+import { DebtHero, debtCompactKpiItems, type DebtWindowChange } from "./DebtHero";
+import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
 import { DebtBalanceHistory } from "./DebtBalanceHistory";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { LiabilitiesLedger } from "./LiabilitiesLedger";
@@ -106,6 +107,7 @@ export function DebtWorkspace({
   compactSection = "all",
   onCompactSectionChange,
   timePreset,
+  freshnessLabel = null,
 }: {
   spaceId: string;
   asOf: string;
@@ -128,6 +130,8 @@ export function DebtWorkspace({
   onCompactSectionChange?: (s: DebtSection) => void;
   /** v2.7 R6 — the shell slice id, for the compact AI entry link only (allowlisted there). */
   timePreset?: string;
+  /** v2.7 — the canonical freshness claim for the compact hero label row. */
+  freshnessLabel?: string | null;
 }) {
   const { data, loading, error, reload } = useDebtSpaceData({
     spaceId,
@@ -289,6 +293,7 @@ export function DebtWorkspace({
           verdictAsOf={verdictAsOf}
           redactions={redactions}
           timePreset={timePreset}
+          freshnessLabel={freshnessLabel}
         />
       </div>
 
@@ -323,6 +328,16 @@ export function DebtWorkspace({
           >
             Couldn&rsquo;t load as-of history — retry
           </button>
+        )}
+        {/* v2.7 — compact KPI strip (the hero's secondary stats, moved out of the
+            card as on Net Worth): the SAME kpis values, nothing recomputed. */}
+        {kpis.totalDebt > 0 && (
+          <div className="lg:hidden mt-4">
+            <CompactKpiStrip
+              ariaLabel="Debt summary"
+              items={debtCompactKpiItems(kpis, displayCurrency)}
+            />
+          </div>
         )}
       </div>
 

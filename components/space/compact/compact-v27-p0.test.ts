@@ -60,11 +60,15 @@ console.log("1. the compact Net Worth hero");
   check("title and amount (the one figure, shared with desktop)", /Net worth/.test(text(html)) && /77,164\.15/.test(text(html)));
   check("compact: the $ change and the % change", /11,521\.88/.test(compact) && /13\.0%/.test(compact));
   check("compact: the comparison range, compare date → as-of date", /Sep 26, 2026 → Oct 16, 2026/.test(compact), compact);
-  check("compact, no freshness claim: \"As of <snapshot date>\" — the snapshot date is never labelled as fresh data",
-    /As of Oct 16, 2026/.test(compact) && !/Latest data|updated|refreshed|checked/i.test(compact));
-  const claimed = text(compactPart(hero({ freshnessLabel: "Last checked 3 days ago" })));
-  check("compact, with the canonical claim: it shows that claim verbatim (the chrome subtitle's source), not the snapshot date",
-    /Last checked 3 days ago/.test(claimed) && !/As of Oct 16/.test(claimed));
+  // v2.7 hero-tighten — DELIBERATE: the freshness claim moved into the label row
+  // (owner: "next to Net Worth"); it is read from that element now.
+  const fresh = (h: string) => text((h.match(/<span class="lg:hidden ml-auto[^"]*" data-compact-hero-freshness="true">[\s\S]*?<\/span>/) ?? [""])[0]);
+  check("compact, no freshness claim: \"As of <snapshot date>\" in the label row — the snapshot date is never labelled as fresh data",
+    /As of Oct 16, 2026/.test(fresh(html)) && !/Latest data|updated|refreshed|checked/i.test(fresh(html)) && !/data-compact-hero-freshness/.test(compactPart(html)));
+  const claimedHtml = hero({ freshnessLabel: "Last checked 3 days ago" });
+  check("compact, with the canonical claim: the label row shows it verbatim, not the snapshot date",
+    /Last checked 3 days ago/.test(fresh(claimedHtml)) && !/As of Oct 16/.test(fresh(claimedHtml)));
+  check("the freshness claim sits in the label row, after the metric label", claimedHtml.indexOf("Net worth") < claimedHtml.indexOf("data-compact-hero-freshness") && claimedHtml.indexOf("data-compact-hero-freshness") < claimedHtml.indexOf("data-compact-hero-meta"));
   const host = code("components/dashboard/SpaceDashboard.tsx");
   check("the host passes the SAME chromeUpdated claim the subtitle uses", /wealthFreshnessLabel: chromeUpdated,/.test(host)
     && /freshnessLabel=\{ctx\.wealthFreshnessLabel \?\? null\}/.test(read("components/space/workspaces/workspaceRenderers.tsx"))
