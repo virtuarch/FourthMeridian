@@ -57,6 +57,11 @@ export interface DebtPerspectiveAccount {
   // (types/index.ts). Widened here so the editorial ledger can GROUP liabilities
   // by kind — no data-layer / authority change.
   debtSubtype?:               string;   // credit_card | line_of_credit | heloc | auto_loan | mortgage | personal_loan | student_loan
+  /** v2.7 R2 — FinancialAccount.providerSubtype (provider evidence, e.g. "credit card",
+   *  "mortgage", "home equity"), already on the mount payload (SpaceAccount). Read
+   *  ONLY by the display classifier `presentationDebtClass` when `debtSubtype` is
+   *  empty; never by totals, utilization, interest, or payoff. null/absent = unknown. */
+  providerSubtype?: string | null;
   /** Present ONLY on a privacy-aggregated row (synthetic id, several accounts
    *  behind it) — such a row has no single liability to attach a rate or limit to. */
   aggregate?: { memberAccountIds: string[]; memberCount: number };
