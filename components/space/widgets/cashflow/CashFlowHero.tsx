@@ -30,6 +30,7 @@
  */
 
 import { formatDate } from "@/lib/format";
+import { COMPACT_HERO } from "@/components/space/compact/compact-hero";
 import { formatCurrency } from "@/lib/currency";
 import { Figure } from "@/components/atlas/Surface";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
@@ -87,7 +88,7 @@ export function CashFlowHero({
   return (
     // Bare hero — no card, no border. The Net headline is the point; the breakdown
     // tiles and read surfaces sit below.
-    <section>
+    <section className={COMPACT_HERO}>
       <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
         Net cash flow · {periodLabel(period)}
       </p>

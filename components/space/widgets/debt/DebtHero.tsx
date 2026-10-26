@@ -23,6 +23,7 @@
  */
 
 import type { ReactNode } from "react";
+import { COMPACT_HERO } from "@/components/space/compact/compact-hero";
 import { formatDate } from "@/lib/format";
 import { formatCurrency } from "@/lib/currency";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
@@ -85,7 +86,7 @@ export function DebtHero({
   return (
     // Bare hero — no card, no border. The headline is the point; the read surfaces
     // (chart, ledger) sit below.
-    <section>
+    <section className={COMPACT_HERO}>
       <div className="flex items-center justify-between gap-3">
         <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Total debt</p>
         <TrustIndicator variant="compact" envelope={envelope} />
