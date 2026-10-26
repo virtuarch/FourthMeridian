@@ -79,6 +79,12 @@ interface Props {
    * leaves no label behind) and its selection
    * logic is untouched.
    */
+  /**
+   * COMPACT DASHBOARD — hide the time row below lg only (the selector still
+   * mounts; desktop unchanged). The host sets it for Markets, which consumes no
+   * time (temporalCapability none) and must carry no Net Worth / Cash Flow controls.
+   */
+  compactHideTime?: boolean;
   /** "none" — COMPACT DASHBOARD (P1): the host renders the compact view selector instead. */
   tabsVisibility?: "always" | "belowLg" | "none";
 }
@@ -142,7 +148,7 @@ export function PerspectiveShell(props: Props) {
           caveat push the picker sideways; they get their own centred row just
           below it (ShellTrustRow renders nothing — no gap — when there are
           none). */}
-      <div className="px-1">
+      <div className={props.compactHideTime ? "px-1 max-lg:hidden" : "px-1"}>
         <div className="flex flex-wrap items-center justify-center gap-2">
           <TimelineLens
             activeOptionId={deriveActiveOptionId(props.timeState)}

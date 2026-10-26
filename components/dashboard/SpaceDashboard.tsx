@@ -896,6 +896,8 @@ export function SpaceDashboard({
               // CompactViewSelector is — same items, same selectLens — so the
               // compact lens row is no longer rendered.
               tabsVisibility="none"
+              // COMPACT DASHBOARD — Markets takes no time; below lg its date row is hidden.
+              compactHideTime={activePerspectiveId === "markets"}
             />
           </div>
         )}

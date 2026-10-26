@@ -84,5 +84,17 @@ console.log("\n3. the host wiring");
   check("the desktop sidebar keeps its own Leave Space", /onLeaveSpace && \(/.test(read("components/ui/ContextualNavbar.tsx")));
 }
 
+console.log("\n4. Markets on compact: Coming soon, no Net Worth / Cash Flow controls");
+{
+  const host = code("components/dashboard/SpaceDashboard.tsx");
+  const ps = code("components/space/shell/PerspectiveShell.tsx");
+  check("below lg the time row is hidden while Markets is open (the selector still mounts; desktop unchanged)",
+    /compactHideTime=\{activePerspectiveId === "markets"\}/.test(host) && /className=\{props\.compactHideTime \? "px-1 max-lg:hidden" : "px-1"\}/.test(ps));
+  check("Markets declares no time capability (the reason)", /status:\s*"comingSoon"[\s\S]{0,400}temporalCapability: \{ asOf: "none", compareTo: "none", period: "none" \}|temporalCapability: \{ asOf: "none", compareTo: "none", period: "none" \}/.test(read("lib/perspectives.ts")));
+  check("Markets still renders Coming soon (renderer unchanged)", /isComingSoon/.test(read("components/space/workspaces/workspaceRenderers.tsx")));
+  check("the Net Worth chips and category tabs are Net Worth-only (never in Markets)",
+    !/CompactSectionTabs|WEALTH_MODES|DEBT_SECTIONS|ASSETS_SLICES/.test(code("components/space/widgets/markets/MarketsWorkspace.tsx")));
+}
+
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
