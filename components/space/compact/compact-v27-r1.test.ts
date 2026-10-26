@@ -85,7 +85,9 @@ console.log("\n2. the compact rail");
   const compactRail = html.slice(html.indexOf("data-compact-rail"), html.indexOf('class="max-lg:hidden mb-7'));
   const tabs = [...compactRail.matchAll(/role="tab"[^>]*>([^<]+)</g)].map((m) => m[1]);
   check("compact rail: exactly Overview · Activity · Accounts · Transactions", tabs.join(",") === "Overview,Activity,Accounts,Transactions", tabs.join(","));
-  check("the compact rail is compact-only (lg:hidden)", /<div class="lg:hidden mb-7 flex justify-center" data-compact-rail="true">/.test(html));
+  check("the compact rail is compact-only (lg:hidden)", /<div class="lg:hidden mb-7 flex justify-center[^"]*" data-compact-rail="true">/.test(html));
+  // v2.7 rail-fit — DELIBERATE: four tabs fit 375px (Transactions was clipped by 21px).
+  check("below sm the compact rail tightens tab padding (compact wrapper only)", /<div class="lg:hidden mb-7 flex justify-center max-sm:\[&amp;_button\]:px-3" data-compact-rail="true">/.test(html));
   const desk = desktopMarkup(html);
   check("desktop rail still includes Members", /role="tab"[^>]*>Members</.test(desk) && !/data-compact-rail/.test(desk));
   check("DESKTOP: the ≥1024px SpaceShell markup equals the P0 baseline", desk === baseline.renders["SpaceShell (customer, Overview)"]);
