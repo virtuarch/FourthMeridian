@@ -135,6 +135,9 @@ export function AnalyzeClient({
   const [composerEngaged, setComposerEngaged] = useState(false);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const [loading, setLoading] = useState(false);
+  // v2.7 R6.1 — the view's suggested question is offered once; after it is
+  // sent (from either placement) it is not offered again this visit.
+  const [suggestionUsed, setSuggestionUsed] = useState(false);
   /** True once a request in THIS session failed: that failure is announced; restored ones are shown, not re-announced. */
   const [failedThisSession, setFailedThisSession] = useState(false);
   /** Holds the AbortController for the in-flight /api/ai/chat request, if any. */
@@ -411,7 +414,7 @@ export function AnalyzeClient({
       )}
       <div role="group" aria-label="Suggestions" className={suggested ? "mt-2 flex flex-wrap justify-center gap-2" : "mt-4 flex flex-wrap justify-center gap-2"}>
         {suggested && (
-          <SuggestedPrompt key="suggested-for-view" label={suggested.label} onSelect={() => sendMessage(suggested.prompt)} variant="chip" describedBy="suggested-for-view" emphasis />
+          <SuggestedPrompt key="suggested-for-view" label={suggested.label} onSelect={() => { setSuggestionUsed(true); sendMessage(suggested.prompt); }} variant="chip" describedBy="suggested-for-view" emphasis />
         )}
         {starter.prompts.map((s) => (
           <SuggestedPrompt key={s.label} label={s.label} onSelect={() => sendMessage(s.prompt)} variant="chip" />
@@ -454,7 +457,17 @@ export function AnalyzeClient({
         />
       }
       aside={suggestions}
-      composer={
+      composer={<>
+        {/* v2.7 R6.1 — a returning user lands in their restored conversation,
+            where the empty-state chips never paint; the view's suggested
+            question is offered here instead. Click-to-send only, never
+            auto-sent or prefilled; hidden once used. */}
+        {mode === "conversation" && suggested && !suggestionUsed && !loading ? (
+          <div className="mx-auto mb-2 flex w-full max-w-3xl flex-wrap items-center gap-2 px-1" data-suggested-for-view-inline>
+            <span id="suggested-for-view-inline" className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Suggested for this view</span>
+            <SuggestedPrompt label={suggested.label} onSelect={() => { setSuggestionUsed(true); sendMessage(suggested.prompt); }} variant="chip" describedBy="suggested-for-view-inline" emphasis />
+          </div>
+        ) : null}
         <Composer
           value={input}
           onChange={(v) => { setInput(v); setComposerEngaged(true); }}
@@ -464,7 +477,7 @@ export function AnalyzeClient({
           busy={loading}
           textareaRef={composerInputRef}
         />
-      }
+      </>}
     >
       <ConversationView messages={messages} busy={loading} renderExtras={renderExtras}
         onRetry={() => void retryLast()}

@@ -9,6 +9,7 @@ import { AnalyzeClient } from "@/components/dashboard/AnalyzeClient";
 import { composeStarters, starterIndexFrom } from "@/components/ai/conversation-surface";
 import { TRANSCRIPT_HINT_COOKIE } from "@/components/ai/transcript-cache";
 import { suggestedStarter } from "@/components/ai/talk-about-this";
+import { displaySpaceName } from "@/lib/format";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
@@ -69,7 +70,7 @@ export default async function AnalyzePage({
       advice={advice}
       starterIndex={starterIndex}
       spaceId={ctx.spaceId}
-      spaceName={ctx.space.name}
+      spaceName={displaySpaceName(ctx.space.name)}
       starter={composeStarters(personal)}
       suggested={suggested}
       userId={ctx.userId}
