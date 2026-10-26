@@ -795,6 +795,7 @@ export function SpaceDashboard({
               onRenamed={(to) => setRenamed({ spaceId, from: storedSpaceName, to })}
               myRole={myRole}
               currentUserId={currentUserId}
+              ctx={widgetCtx}
               onClose={() => setShowManage(false)}
               onRefresh={() => {
                 setShowManage(false);
@@ -1027,6 +1028,8 @@ export function SpaceDashboard({
             accounts={accounts}
             // Banking→Transactions retarget — deep-link account pre-filter.
             initialAccountFilter={initialAccountFilter}
+            // v2.7 currency toggle — rows convert at their own date.
+            ctx={txConversionCtx}
           />
         )}
 
@@ -1069,7 +1072,7 @@ export function SpaceDashboard({
             (hero + date-banded feed → RightPanel detail), reading the canonical
             activity feed. Presentation-only convergence; never reorders. */}
         {activeTab === "ACTIVITY" && (
-          <ActivityWorkspace spaceId={spaceId} />
+          <ActivityWorkspace spaceId={spaceId} ctx={widgetCtx} />
         )}
         </div>
 

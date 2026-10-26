@@ -157,6 +157,7 @@ export function CreditUtilizationWidget({
   ctx?:     ConversionContext;
 }): React.ReactElement {
   const { rows, missingLimit } = creditUtilization(accounts);
+  const byId = new Map(accounts.map((a) => [a.id, a] as const));
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -195,7 +196,10 @@ export function CreditUtilizationWidget({
             <div className="h-full rounded-full" style={{ width: `${r.barPct}%`, backgroundColor: UTIL_COLOR[r.level] }} />
           </div>
           <p className="text-[10px] text-[var(--text-faint)]">
-            {fmtMoney(r.balance, ctx)} of {fmtMoney(r.limit, ctx)}
+            {/* v2.7 currency toggle — balance and limit are NATIVE to the account;
+                convert both into the display currency (debt-kpis.ts pattern). The
+                % above stays the native, unitless ratio. */}
+            {fmtMoney(inDisp(amountOwed(r.balance), byId.get(r.id)?.currency, ctx), ctx)} of {fmtMoney(inDisp(r.limit, byId.get(r.id)?.currency, ctx), ctx)}
             {r.level === "over" ? " · over limit" : ""}
           </p>
         </div>
@@ -215,7 +219,8 @@ export function CreditUtilizationWidget({
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") saveLimit(m.id); if (e.key === "Escape") setEditingId(null); }}
-                    placeholder="Limit"
+                    placeholder={`Limit (${byId.get(m.id)?.currency ?? "native"})`}
+                    aria-label={`Credit limit in ${byId.get(m.id)?.currency ?? "the account's currency"}`}
                     className="w-24 bg-[var(--surface-inset)] border border-[var(--border-hairline-strong)] rounded-lg px-2 py-1 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-info)]"
                   />
                   <button onClick={() => saveLimit(m.id)} disabled={savingId === m.id} className="p-1 rounded text-[var(--accent-info)] disabled:opacity-50">

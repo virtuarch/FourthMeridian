@@ -80,7 +80,10 @@ function main(): void {
   check("panel renders the server count, not rows.length, as the answer size",
     /count\.toLocaleString\(\)/.test(panel));
   check("panel derives no money totals of its own (analytics are not the explorer's authority)",
-    !panel.includes("sumByFlowType") && !/convertMoney/.test(panel));
+    // v2.7 currency toggle — DELIBERATE: convertMoney is allowed for exactly ONE
+    // per-row PRESENTATION conversion (TxRow, at the row's date); still no totals.
+    !panel.includes("sumByFlowType") && (panel.match(/convertMoney\(/g) ?? []).length === 1
+      && /convertMoney\(\{ amount: tx\.amount, currency: tx\.currency \}, tx\.date, ctx\)/.test(panel));
 
   console.log("\nREMOVED BY DESIGN — client-derived analytics and unsupported sorts");
   // NB: `groupByDay` (presentation — bucketing the server's ALREADY-ORDERED rows
