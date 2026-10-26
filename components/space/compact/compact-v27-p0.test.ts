@@ -7,9 +7,10 @@
  *      and in the detailed sections); the freshness line is the canonical
  *      "Last checked" claim or "As of <snapshot date>", never a snapshot date
  *      presented as fresh data;
- *   2. the compact time control is the SAME TimelineLens, portalled into the
- *      header slot beside Manage (client-only), the in-flow row compact-hidden;
- *      never for Markets; desktop unchanged;
+ *   2. the compact time control is the ONE in-flow TimelineLens (v2.7 R1 — the
+ *      P0 header portal is deleted): below lg its row is the controls row
+ *      (selector left, period trigger right, range readout hidden); never for
+ *      Markets; desktop unchanged;
  *   3. Total · Assets · Debt is a prominent primary segmented control on compact,
  *      the category tabs a quieter secondary row.
  *
@@ -23,8 +24,9 @@ import path from "node:path";
 import { desktopMarkup } from "./desktop-markup";
 import { CompactSectionTabs } from "./CompactSectionTabs";
 import { WealthHero } from "@/components/space/widgets/wealth/WealthHero";
+import { existsSync } from "node:fs";
 import { SpaceShell } from "@/components/space/shell/SpaceShell";
-import { COMPACT_TIME_SLOT_ID, COMPACT_TIME_WRAPPER } from "@/components/space/shell/compact-time";
+import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -82,19 +84,29 @@ console.log("\n2. the compact time control");
 {
   const ps = code("components/space/shell/PerspectiveShell.tsx");
   const host = code("components/dashboard/SpaceDashboard.tsx");
-  check("the SAME TimelineLens (same props, same intent handler) is portalled into the header slot",
-    /createPortal\(\s*<div className=\{COMPACT_TIME_WRAPPER\} data-compact-time>\s*<TimelineLens[\s\S]{0,500}onIntent=\{handleTimelineIntent\}/.test(ps));
-  check("client-only (the slot is read after mount) — the server markup holds one lens", /setHeaderSlot\(props\.compactTimeInHeader \? document\.getElementById\(COMPACT_TIME_SLOT_ID\) : null\)/.test(ps));
-  check("the in-flow time row is compact-hidden when the header copy is active", /props\.compactHideTime \|\| props\.compactTimeInHeader \? "px-1 max-lg:hidden" : "px-1"/.test(ps));
-  check("never for Markets (no time controls there)", /compactTimeInHeader=\{activePerspectiveId !== "markets"\}/.test(host) && /props\.compactTimeInHeader && !props\.compactHideTime/.test(ps));
-  check("the header copy shows only the trigger, and only below lg", COMPACT_TIME_WRAPPER.split(" ").every((t) => t === "lg:hidden" || t.startsWith("[&_")));
+  check("v2.7 R1: the header portal is gone — no createPortal, no slot module, no slot prop",
+    !/createPortal|headerSlot|COMPACT_TIME/.test(ps) && !existsSync(path.join(process.cwd(), "components/space/shell/compact-time.ts"))
+      && !/compactTimeSlot|COMPACT_TIME/.test(code("components/space/shell/SpaceShell.tsx")) && !/compactTimeSlot|compactTimeInHeader/.test(host));
+  check("exactly ONE TimelineLens in PerspectiveShell, wired to the same intent handler", (ps.match(/<TimelineLens\b/g) ?? []).length === 1 && /onIntent=\{handleTimelineIntent\}/.test(ps));
+  check("compact-only: the range readout is hidden beside the trigger (max-lg)", /max-lg:\[&_\[data-timeline-period\]~span\]:hidden/.test(ps));
+  check("never for Markets (no date trigger below lg)", /compactHideTime=\{activePerspectiveId === "markets"\}/.test(host)
+    && /"flex flex-wrap items-center justify-center gap-2 max-lg:hidden"/.test(ps));
+  const noop = () => {};
+  const render = (extra: Record<string, unknown>) => renderToStaticMarkup(createElement(PerspectiveShell as never, {
+    today: "2026-10-16", onAsOfChange: noop, onCompareToChange: noop, onSwap: noop, onSelectPreset: noop, envelope: {},
+    temporalCapability: { asOf: "full", compareTo: "full", period: "none" }, timeState: { preset: "MTD", asOf: "2026-10-16", compareTo: "2026-10-01" },
+    tabs: [], activeTabId: null, onSelectTab: noop, tabsVisibility: "none", compactViewSelector: createElement("div", { className: "relative lg:hidden" }, "Net Worth"), ...extra,
+  } as never));
+  const html = render({});
+  check("server markup holds exactly one lens trigger", (html.match(/data-timeline-period="true"/g) ?? []).length === 1);
   const shellHtml = renderToStaticMarkup(createElement(SpaceShell, {
-    title: "Chris's Space", subtitle: "Personal", currencyControl: null, onManage: () => {}, compactTimeSlot: true,
+    title: "Chris's Space", subtitle: "Personal", currencyControl: null, onManage: () => {}, compactTitleOnly: true,
     railOptions: [{ id: "OVERVIEW", label: "Overview" }], activeTab: "OVERVIEW", onSelectTab: () => {}, children: createElement("p", null, "x"),
   } as never));
-  check("the slot sits beside Manage in the compact header", new RegExp(`<div id="${COMPACT_TIME_SLOT_ID}" data-compact-time-slot="true" class="lg:hidden"></div>[\\s\\S]{0,400}Manage`).test(shellHtml));
-  check("Overview only", /compactTimeSlot=\{activeTab === "OVERVIEW"\}/.test(host));
-  check("DESKTOP: the slot never renders at ≥1024px", !desktopMarkup(shellHtml).includes(COMPACT_TIME_SLOT_ID));
+  check("the compact header carries no time control any more", !/data-timeline-period|fm-compact-time-slot/.test(shellHtml));
+  const ns = (h: string) => h.replace(/_R_\w+_/g, "ID");
+  check("DESKTOP: the controls-row markup is the plain centred time row at ≥1024px",
+    ns(desktopMarkup(html)) === ns(desktopMarkup(render({ compactViewSelector: undefined }))));
 }
 
 console.log("\n3. Total · Assets · Debt is prominent; category tabs are secondary");

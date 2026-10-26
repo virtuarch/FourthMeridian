@@ -3,8 +3,9 @@
  *
  *   1. the compact financial-view selector: a menu button, compact-only, showing
  *      the active view; WAI-ARIA menu semantics and keyboard handling in source;
- *   2. it lives in SpaceShell's compact header row (upper-left), and passing it —
- *      and the compact Leave control — changes NOTHING a ≥1024px viewport renders;
+ *   2. it lives in PerspectiveShell's compact controls row (left of the date
+ *      trigger; v2.7 R1 — formerly SpaceShell's header), and passing it — and the
+ *      compact Leave control — changes NOTHING a ≥1024px viewport renders;
  *   3. the host feeds it the lens row's items and handler (same routing), on
  *      Overview only, and offers compact Leave only to roles that can leave.
  *
@@ -18,6 +19,7 @@ import path from "node:path";
 import { desktopMarkup } from "./desktop-markup";
 import { CompactViewSelector, COMPACT_VIEW_MENU_LABEL } from "@/components/space/shell/CompactViewSelector";
 import { SpaceShell } from "@/components/space/shell/SpaceShell";
+import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -57,25 +59,37 @@ console.log("1. the selector");
   check("presentation only: no fetch, no URL access", !/fetch\(|history\.|location\.|useSearchParams/.test(src));
 }
 
-console.log("\n2. in the compact header — and invisible to desktop");
+console.log("\n2. in the compact controls row — and invisible to desktop");
 {
   const selector = createElement(CompactViewSelector, { items: ITEMS, activeId: "networth", onSelect: () => {} });
-  const html = shell({ compactViewSelector: selector, onLeave: () => {} });
-  check("the selector renders inside the compact header row, under the Space name",
-    /<div class="lg:hidden mb-5[^"]*"><div class="min-w-0" data-compact-header="true"><h1 class="lg:hidden truncate text-\[13px\][^"]*">Chris&#x27;s Space<\/h1><div class="relative lg:hidden" data-compact-view-selector="true"/.test(html), html.slice(0, 400));
-  check("Leave is offered in the compact controls when the host passes it", />Leave<\/button>/.test(html) && /<button type="button" class="lg:hidden min-h-9/.test(html));
+  const noop = () => {};
+  const ps = (extra: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(PerspectiveShell as never, {
+    today: "2026-07-19", onAsOfChange: noop, onCompareToChange: noop, onSwap: noop, onSelectPreset: noop, envelope: {},
+    temporalCapability: { asOf: "full", compareTo: "full", period: "none" }, timeState: { preset: "MTD", asOf: "2026-07-19", compareTo: "2026-07-01" },
+    tabs: [], activeTabId: null, onSelectTab: noop, tabsVisibility: "none", ...extra,
+  } as never));
+  const html = ps({ compactViewSelector: selector });
+  check("the selector leads the compact controls row, before the date trigger",
+    /<div data-compact-controls="" class="px-1 max-lg:flex[^"]*"><div class="lg:hidden min-w-0"><div class="relative lg:hidden" data-compact-view-selector="true"/.test(html)
+      && html.indexOf("data-compact-view-selector") < html.indexOf("data-timeline-period"), html.slice(0, 400));
+  const ns = (h: string) => h.replace(/_R_\w+_/g, "ID");
+  check("DESKTOP: passing the selector leaves the ≥1024px PerspectiveShell markup unchanged (React ids aside)",
+    ns(desktopMarkup(html)) === ns(desktopMarkup(ps())));
+  const shellHtml = shell({ onLeave: () => {}, compactTitleOnly: true, compactRailOptions: RAIL.slice(0, 4) });
+  check("Leave is offered in the compact controls when the host passes it", />Leave<\/button>/.test(shellHtml) && /<button type="button" class="lg:hidden min-h-9/.test(shellHtml));
   check("…and not otherwise", !/>Leave</.test(shell()));
-  check("without a selector the compact header is exactly as before (title + subtitle)",
+  check("without compactTitleOnly the compact header is exactly as before (title + subtitle)",
     /<h1 class="truncate text-lg font-semibold[^"]*">Chris&#x27;s Space<\/h1><p/.test(shell()));
-  check("DESKTOP: with the selector and Leave passed, the ≥1024px markup equals the P0 baseline",
-    desktopMarkup(html) === baseline.renders["SpaceShell (customer, Overview)"]);
+  check("DESKTOP: with Leave, title-only and the compact rail passed, the ≥1024px markup equals the P0 baseline",
+    desktopMarkup(shellHtml) === baseline.renders["SpaceShell (customer, Overview)"]);
 }
 
 console.log("\n3. the host wiring");
 {
   const host = code("components/dashboard/SpaceDashboard.tsx");
-  check("the selector gets the lens row's items + handler, on Overview only",
-    /compactViewSelector=\{activeTab === "OVERVIEW"\s*\?\s*<CompactViewSelector items=\{lensSelectorItems\} activeId=\{activeLensId\} onSelect=\{selectLens\} \/>\s*:\s*undefined\}/.test(host));
+  check("the selector gets the lens row's items + handler, in PerspectiveShell (rendered on Overview only)",
+    /compactViewSelector=\{<CompactViewSelector items=\{lensSelectorItems\} activeId=\{activeLensId\} onSelect=\{selectLens\} \/>\}/.test(host)
+      && /activeTab === "OVERVIEW" && activePerspective != null && \(/.test(host));
   check("compact Leave only for roles that can leave (member/viewer), via the existing confirmation",
     /onLeave=\{canLeave \? \(\) => setConfirmLeave\(true\) : undefined\}/.test(host) && /const canLeave\s+= !canManage/.test(host));
   check("the compact lens row is not rendered for customer Spaces (one compact switcher)", /tabsVisibility="none"/.test(host));
@@ -89,9 +103,10 @@ console.log("\n4. Markets on compact: Coming soon, no Net Worth / Cash Flow cont
   const host = code("components/dashboard/SpaceDashboard.tsx");
   const ps = code("components/space/shell/PerspectiveShell.tsx");
   check("below lg the time row is hidden while Markets is open (the selector still mounts; desktop unchanged)",
-    /compactHideTime=\{activePerspectiveId === "markets"\}/.test(host) && /className=\{props\.compactHideTime \|\| props\.compactTimeInHeader \? "px-1 max-lg:hidden" : "px-1"\}/.test(ps)
-      && /props\.compactTimeInHeader && !props\.compactHideTime && headerSlot && createPortal\(/.test(ps)
-      && /compactTimeInHeader=\{activePerspectiveId !== "markets"\}/.test(host));
+    /compactHideTime=\{activePerspectiveId === "markets"\}/.test(host)
+      && /: props\.compactHideTime\s*\?\s*"flex flex-wrap items-center justify-center gap-2 max-lg:hidden"/.test(ps)
+      && /: props\.compactHideTime \? "px-1 max-lg:hidden" : "px-1"/.test(ps)
+      && !/createPortal/.test(ps));
   check("Markets declares no time capability (the reason)", /status:\s*"comingSoon"[\s\S]{0,400}temporalCapability: \{ asOf: "none", compareTo: "none", period: "none" \}|temporalCapability: \{ asOf: "none", compareTo: "none", period: "none" \}/.test(read("lib/perspectives.ts")));
   check("Markets still renders Coming soon (renderer unchanged)", /isComingSoon/.test(read("components/space/workspaces/workspaceRenderers.tsx")));
   check("the Net Worth chips and category tabs are Net Worth-only (never in Markets)",

@@ -123,4 +123,10 @@ export interface TimelineLensProps {
   disabled?: boolean;
   ariaLabel?: string;
   className?: string;
+  /**
+   * Optional short period form ("1M", "YTD") shown INSTEAD of the full label
+   * below the `sm` breakpoint only (compact hosts). Absent ⇒ markup unchanged.
+   * The full label stays in the DOM as the trigger's description target.
+   */
+  shortPeriodLabel?: string;
 }
