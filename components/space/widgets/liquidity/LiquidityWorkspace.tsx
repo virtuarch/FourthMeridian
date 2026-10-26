@@ -51,7 +51,7 @@
  * evidence is never flattened into page-wide certainty.
  */
 
-import { useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { reachableNow, accessTotals } from "@/components/space/widgets/liquidity-adapters";
@@ -76,6 +76,8 @@ import { SourcesLedger } from "./SourcesLedger";
 import { buildSourceRows } from "./liquidity-sources-util";
 import { LiquidityWhatChangedCard } from "./LiquidityWhatChangedCard";
 import { useLiquiditySpaceData } from "./useLiquiditySpaceData";
+import { CompactDisclosureButton } from "@/components/space/compact/CompactDisclosure";
+import { compactHidden } from "@/components/space/compact/CompactSectionTabs";
 import type { LiquidityAdapterAccount } from "@/components/space/widgets/liquidity-adapters";
 
 function fmtMoney(v: number, ctx?: ConversionContext): string {
@@ -161,6 +163,12 @@ export function LiquidityWorkspace({
   // v2.6 — the LIQUIDITY root. Its children are TIERS, not buckets: liquidity
   // classifies by how fast an asset converts, and has no liability side at all.
   const exploration = useHistoryExploration();
+
+  // v2.7 R4 — COMPACT (<1024px) disclosures: Resilience & risk and What changed
+  // start collapsed below lg (balances first). Desktop ignores both: the hidden
+  // state is a max-lg:hidden utility, never applied at ≥1024px.
+  const [resilienceOpen, setResilienceOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
 
   // Activate the canonical contract: fetch the whole historical envelope when a past
   // date / comparison is requested; synthesize the current-only contract from the
@@ -308,7 +316,7 @@ export function LiquidityWorkspace({
   );
 
   return (
-    <div className="space-y-8 sm:space-y-10 min-w-0">
+    <div className="space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!">
       {loading && (
         <div className="flex items-center gap-1.5 px-1 text-xs text-[var(--text-faint)]">
           <RefreshCw size={12} className="animate-spin" aria-label="Refreshing" /> Updating…
@@ -381,8 +389,12 @@ export function LiquidityWorkspace({
       </Block>
 
       {/* ④ Resilience & Risk — coverage, cash concentration, reachability mix (present-day anchor). */}
-      <Block id="liquidity-resilience" label="Resilience & risk">
-        <div className="grid gap-4 lg:grid-cols-3 items-start min-w-0">
+      <Block
+        id="liquidity-resilience"
+        label="Resilience & risk"
+        action={<CompactDisclosureButton open={resilienceOpen} onToggle={() => setResilienceOpen((v) => !v)} controls="liquidity-resilience" label="Show" />}
+      >
+        <div className={`grid gap-4 lg:grid-cols-3 items-start min-w-0 ${compactHidden(!resilienceOpen)}`.trim()}>
           {/* Emergency coverage — conditional on a monthly-expense baseline. */}
           <Surface className="p-4 min-w-0">
             <SubHeading>Emergency coverage</SubHeading>
@@ -444,11 +456,19 @@ export function LiquidityWorkspace({
       {/* ⑤ What changed — top liquidity drivers for the shell-bridged window, with a
            doorway to the Cash Flow workspace. CURRENT ANCHOR (window relative to today). */}
       {period && (
-        <Block id="liquidity-activity" label={`What changed · ${periodLabel(period)}`}>
-          <Surface className="p-4 min-w-0">
+        <Block
+          id="liquidity-activity"
+          label={`What changed · ${periodLabel(period)}`}
+          action={<CompactDisclosureButton open={activityOpen} onToggle={() => setActivityOpen((v) => !v)} controls="liquidity-activity" label="Show" />}
+        >
+          {/* v2.7 R4 — on compact the coverage caveat stays VISIBLE above the
+              collapsible drivers (an uncertainty note is never behind a
+              disclosure); this copy is compact-only, the in-card one desktop-only. */}
+          <TransactionCoverageNote coverage={transactionsMeta} variant="history" className="lg:hidden mb-3" />
+          <Surface className={`p-4 min-w-0 ${compactHidden(!activityOpen)}`.trim()}>
             {/* TX-2A — honest caveat for the transaction-derived drivers when the
                 shared read was capped (TX-2). Nothing when complete; no fold change. */}
-            <TransactionCoverageNote coverage={transactionsMeta} variant="history" className="mb-3" />
+            <TransactionCoverageNote coverage={transactionsMeta} variant="history" className="mb-3 max-lg:hidden" />
             <LiquidityWhatChangedCard
               transactions={transactions}
               accounts={accounts}

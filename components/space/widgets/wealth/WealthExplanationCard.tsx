@@ -11,10 +11,20 @@
  * "View explanation and evidence" opens the shell's Evidence drawer today (the
  * A12 conversation entry later — same slot). It carries NO attribution note: the
  * ledger owns the single note.
+ *
+ * v2.7 R4 (owner D-3) — COMPACT (<1024px) only: up to three number-first
+ * one-liners re-stating figures already in this card's inputs (the net-worth,
+ * assets and liabilities deltas, and the dominant driver this card already
+ * names), then a "Details" disclosure holding the full paragraph verbatim. The
+ * desktop paragraph is `max-lg:hidden`; every compact element is `lg:hidden`, so
+ * at ≥1024px the card renders exactly as before.
  */
 
 import { FileSearch } from "lucide-react";
+import type { ReactNode } from "react";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
+import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
+import { CompactInsights } from "@/components/space/compact/CompactInsights";
 import { Surface, Block } from "@/components/atlas/Surface";
 import { WealthUnavailable, formatSigned } from "./wealth-ui";
 
@@ -50,10 +60,15 @@ export function WealthExplanationCard({
     }
   }
 
+  // COMPACT one-liners — the SAME deltas and driver the paragraph states, number
+  // first. Formatting only; no new figure is derived.
+  const compactLines = explanationOneLiners(result, currency, dominant !== "");
+
   return (
     <Block label="Explanation">
       <Surface tone="sunken" className="px-4 py-4">
-        <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
+        <CompactInsights lines={compactLines} details={<>{explanation}{dominant}</>} />
+        <p className="text-sm text-[var(--text-secondary)] leading-relaxed max-lg:hidden">
           {explanation}{dominant}
         </p>
         {onViewEvidence && (
@@ -68,4 +83,25 @@ export function WealthExplanationCard({
       </Surface>
     </Block>
   );
+}
+
+/**
+ * v2.7 R4 — the compact one-liners: net-worth change since the compare date,
+ * the assets / liabilities change, and (when the card names one) the dominant
+ * driver. Each value is read straight off the WealthResult the paragraph is
+ * built from; at most three lines.
+ */
+export function explanationOneLiners(result: WealthResult, currency: string, hasDominant: boolean): ReactNode[] {
+  const { deltas, drivers, compareState } = result;
+  if (!deltas) return [];
+  const lines: ReactNode[] = [];
+  const since = compareState?.found && compareState.date ? ` since ${formatWealthDate(compareState.date)}` : "";
+  lines.push(<><span className="font-semibold tabular-nums text-[var(--text-primary)]">{formatSigned(deltas.netWorth.abs, currency)}</span> net worth{since}</>);
+  if (deltas.totalAssets.abs !== 0 || deltas.totalLiabilities.abs !== 0) {
+    lines.push(<><span className="font-semibold tabular-nums text-[var(--text-primary)]">{formatSigned(deltas.totalAssets.abs, currency)}</span> assets · <span className="font-semibold tabular-nums text-[var(--text-primary)]">{formatSigned(deltas.totalLiabilities.abs, currency)}</span> liabilities</>);
+  }
+  if (hasDominant && drivers && drivers.length > 0) {
+    lines.push(<><span className="font-semibold tabular-nums text-[var(--text-primary)]">{formatSigned(drivers[0].delta, currency)}</span> {drivers[0].label} — the main driver</>);
+  }
+  return lines;
 }

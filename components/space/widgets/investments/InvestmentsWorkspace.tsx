@@ -36,7 +36,7 @@
  * section keeps its own per-figure TrustIndicator.
  */
 
-import { useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Info, Loader2, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
@@ -58,6 +58,8 @@ import { InvestmentsBalanceHistory } from "./InvestmentsBalanceHistory";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { HoldingsLedger } from "./HoldingsLedger";
 import { HoldingsConcentration } from "./HoldingsConcentration";
+import { CompactDisclosureButton } from "@/components/space/compact/CompactDisclosure";
+import { compactHidden } from "@/components/space/compact/CompactSectionTabs";
 
 /** The Investments workspace's own section anchors — what the sidebar shows as
  *  "what's inside" this workspace (each maps to a scroll-target id below). */
@@ -94,6 +96,9 @@ export function InvestmentsWorkspace({
   // per-lens drawer is retired: two drawers meant two answers to the same
   // question, which is what this arc exists to remove.
   const exploration = useHistoryExploration();
+  // v2.7 R4 — COMPACT (<1024px): Activity starts collapsed below lg. Desktop
+  // ignores it (the hidden state is a max-lg:hidden utility).
+  const [activityOpen, setActivityOpen] = useState(false);
   const handleSelectPoint = useCallback(
     (dateISO: string) => {
       const pts = rawSeries ?? [];
@@ -194,7 +199,7 @@ export function InvestmentsWorkspace({
   }
 
   return (
-    <div className="space-y-8 sm:space-y-10 min-w-0">
+    <div className="space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!">
       {loading && (
         <div className="flex items-center gap-1.5 px-1 text-xs text-[var(--text-faint)]">
           <Loader2 size={12} className="animate-spin" aria-label="Refreshing" /> Updating…
@@ -275,8 +280,11 @@ export function InvestmentsWorkspace({
 
       {/* ⑧ Activity — the period's money-in / money-out narrative. */}
       <div id="investments-activity" className="scroll-mt-20">
-        <Block label="Activity">
-          <Surface className="p-4"><InvestmentsActivityCard flows={flows} /></Surface>
+        <Block
+          label="Activity"
+          action={<CompactDisclosureButton open={activityOpen} onToggle={() => setActivityOpen((v) => !v)} controls="investments-activity" label="Show" />}
+        >
+          <Surface className={`p-4 ${compactHidden(!activityOpen)}`.trim()}><InvestmentsActivityCard flows={flows} /></Surface>
         </Block>
       </div>
 

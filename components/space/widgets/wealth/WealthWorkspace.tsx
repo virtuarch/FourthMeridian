@@ -74,7 +74,9 @@ import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/Liquidi
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
 import { RealAssetsSection } from "./RealAssetsSection";
-import { WealthHero } from "./WealthHero";
+import { WealthHero, wealthSecondaryRows, SecondaryChange } from "./WealthHero";
+import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
+import { formatCurrency } from "@/lib/currency";
 import { WealthTrendChart } from "./WealthTrendChart";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import type { LensRoot } from "@/lib/history/lens-root-node";
@@ -549,9 +551,22 @@ export function WealthWorkspace({
 
   const canViewEvidence = !!envelope.evidence?.rows?.length;
 
+  // v2.7 R4 — the compact KPI strip under the chart: the hero's OWN secondary
+  // stat rows (Total: Assets · Liabilities · Liquid NW; Assets: Cash ·
+  // Investments), which the compact hero hides. Same rows, same as-of figures,
+  // same change formatting — stated once on compact, never on desktop.
+  const kpiItems = result.asOfState.found
+    ? wealthSecondaryRows(result, metric).map((row) => ({
+        key: row.key,
+        label: row.label,
+        value: formatCurrency(result.asOfState[row.key], displayCurrency),
+        change: <SecondaryChange delta={result.deltas?.[row.key]} goodDirection={row.goodDirection} currency={displayCurrency} className="" />,
+      }))
+    : [];
+
   return (
     <>
-      <div className="space-y-8 sm:space-y-10 min-w-0">
+      <div className="space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!">
         {modeSelectorVisibility !== "belowLg" && modeSelector}
         {staleSnapshotsNotice}
 
@@ -568,7 +583,9 @@ export function WealthWorkspace({
         {assetsTabs}
 
         {/* ② Trend — the dominant honesty chart; in Assets, sliceable. */}
-        <div id="wealth-trend" className="scroll-mt-20">
+        {/* v2.7 R4 — compact-only (max-lg:*) tightening of the chart header and
+            legend; at ≥1024px these utilities never apply. */}
+        <div id="wealth-trend" className="scroll-mt-20 max-lg:[&>section>div:first-child]:mb-3 max-lg:[&>section>div:last-child>div:last-child]:mt-2 max-lg:[&>section>div:last-child>div:last-child]:gap-x-3 max-lg:[&>section>div:last-child>div:last-child]:text-[10px]">
           <WealthTrendChart
             result={result}
             currency={displayCurrency}
@@ -578,6 +595,8 @@ export function WealthWorkspace({
             onSelectPoint={handleSelectPoint}
           />
         </div>
+
+        <CompactKpiStrip ariaLabel={`${mode === "assets" ? "Assets" : "Net worth"} breakdown`} items={kpiItems} />
 
         {/* ③ Composition (7) + ④ Change ledger / what-moved-it (5). */}
         <div className={`grid gap-6 lg:grid-cols-12 lg:gap-8 items-start ${compactHidden(mode === "assets" && !compact.composition)}`.trim()}>

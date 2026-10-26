@@ -15,9 +15,13 @@
  *
  * Presentation only — every figure is the InvestmentsSpaceData contract's, already
  * display-converted by the Workspace. Ranking/order is the DTO's, unchanged.
+ *
+ * v2.7 R4 — COMPACT (<1024px) only: a compact-only list shows the top 5 rows
+ * (same order) and "Show all N" expands it in place; the desktop Surface and
+ * its "View all" panel doorway are max-lg:hidden, so ≥1024px is unchanged.
  */
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { AlertTriangle, Search } from "lucide-react";
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
 import { formatCurrency } from "@/lib/currency";
@@ -25,8 +29,11 @@ import { Surface } from "@/components/atlas/Surface";
 import { LeftPanel, RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import { rowKey, rowLabel, tierDotColor } from "./holdings-util";
 import { HoldingDetail } from "./HoldingDetail";
+import { CompactDisclosureButton } from "@/components/space/compact/CompactDisclosure";
 
 const DEFAULT_TOP_N = 4;
+/** v2.7 R4 — rows the compact list shows before "Show all N". */
+export const COMPACT_HOLDINGS_TOP_N = 5;
 
 export function HoldingsLedger({
   holdings,
@@ -42,6 +49,8 @@ export function HoldingsLedger({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [compactAll, setCompactAll] = useState(false);
+  const compactListId = `compact-holdings-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
   const selected = selectedId ? holdings.find((r) => rowKey(r) === selectedId) ?? null : null;
   const accountName = (id: string): string => accounts.find((a) => a.id === id)?.name ?? "Unknown account";
@@ -65,9 +74,33 @@ export function HoldingsLedger({
   // From the browser: pick → close the browser and open the detail (one panel at a time).
   const openFromBrowser = (id: string) => { setSelectedId(id); setBrowserOpen(false); };
 
+  const compactRows = compactAll ? holdings : holdings.slice(0, COMPACT_HOLDINGS_TOP_N);
+
   return (
     <>
-      <Surface className="divide-y divide-[var(--border-hairline)] overflow-hidden">
+      {/* v2.7 R4 — compact-only list: top 5, then every row in place. */}
+      <div className="lg:hidden" data-compact-holdings>
+        <div id={compactListId}>
+          <Surface className="divide-y divide-[var(--border-hairline)] overflow-hidden">
+            {compactRows.map((row) => (
+              <HoldingLedgerRow key={rowKey(row)} row={row} reportingCurrency={reportingCurrency} onOpen={() => open(rowKey(row))} />
+            ))}
+          </Surface>
+        </div>
+        {holdings.length > COMPACT_HOLDINGS_TOP_N && (
+          <div className="mt-1 -ml-2">
+            <CompactDisclosureButton
+              open={compactAll}
+              onToggle={() => setCompactAll((v) => !v)}
+              controls={compactListId}
+              label={`Show all ${holdings.length}`}
+              openLabel={`Show top ${COMPACT_HOLDINGS_TOP_N}`}
+            />
+          </div>
+        )}
+      </div>
+
+      <Surface className="divide-y divide-[var(--border-hairline)] overflow-hidden max-lg:hidden">
         {top.map((row) => (
           <HoldingLedgerRow key={rowKey(row)} row={row} reportingCurrency={reportingCurrency} onOpen={() => open(rowKey(row))} />
         ))}
@@ -77,7 +110,7 @@ export function HoldingsLedger({
         <button
           type="button"
           onClick={() => { setQuery(""); setBrowserOpen(true); }}
-          className="mt-2 min-h-11 text-xs font-medium text-[var(--meridian-400)] hover:underline"
+          className="mt-2 min-h-11 text-xs font-medium text-[var(--meridian-400)] hover:underline max-lg:hidden"
         >
           View all {holdings.length} holdings →
         </button>
