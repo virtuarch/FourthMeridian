@@ -39,7 +39,7 @@ import {
   legacyPerspectiveTarget, parseAssetsSlice, parseWealthMode,
   serializeAssetsSlice, serializeWealthMode,
   DEFAULT_ASSETS_SLICE, DEFAULT_WEALTH_MODE,
-  DEBT_SECTION_PARAM, DEFAULT_DEBT_SECTION, parseDebtSection, serializeDebtSection,
+  DEBT_CATEGORY_TABS_ENABLED, DEBT_SECTION_PARAM, DEFAULT_DEBT_SECTION, parseDebtSection, serializeDebtSection,
   type DebtSection,
   WEALTH_MODES, WEALTH_MODE_LABELS,
   type AssetsSlice, type LegacyPerspectiveTarget, type WealthMode,
@@ -455,8 +455,9 @@ export function useSpaceNavigation({
       const mode = parseWealthMode(readSpaceParam(search, "metric"));
       setWealthMode(mode);
       setAssetsSlice(parseAssetsSlice(readSpaceParam(search, "slice")));
-      // A ?section= outside Debt is not state (the writer then drops it).
-      setDebtSection(mode === "debt" ? parseDebtSection(readSpaceParam(search, DEBT_SECTION_PARAM)) : DEFAULT_DEBT_SECTION);
+      // A ?section= outside Debt — or while the category tabs are withheld — is not
+      // state (the writer then drops it from the URL).
+      setDebtSection(DEBT_CATEGORY_TABS_ENABLED && mode === "debt" ? parseDebtSection(readSpaceParam(search, DEBT_SECTION_PARAM)) : DEFAULT_DEBT_SECTION);
     };
     syncFromUrl();
     return spaceUrl.subscribe(syncFromUrl);

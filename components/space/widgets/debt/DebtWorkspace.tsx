@@ -62,7 +62,7 @@ import { CreditScoreInput, CreditLimitInputs } from "./CreditHealthInputs";
 import { DEBT_CLASS_LABEL } from "./debt-ledger-util";
 import { CompactSectionTabs, compactHidden } from "@/components/space/compact/CompactSectionTabs";
 import { DEBT_SHARED_NOTE, debtClassCounts, debtCompactVisibility } from "@/components/space/compact/compact-sections";
-import { DEBT_SECTIONS, DEBT_SECTION_LABELS, type DebtSection } from "@/lib/wealth/wealth-mode";
+import { DEBT_CATEGORY_TABS_ENABLED, DEBT_SECTIONS, DEBT_SECTION_LABELS, type DebtSection } from "@/lib/wealth/wealth-mode";
 
 /**
  * The Debt workspace's section anchors — what the sidebar shows as "what's inside".
@@ -215,11 +215,13 @@ export function DebtWorkspace({
   // Credit / Loans = the EXISTING liability classes (classifyDebt: cards / loans).
   // Shared analytics stay in All (compact-sections.ts). Every hide is
   // max-lg:hidden — display:none below lg only; at ≥1024px nothing changes.
-  const cv = debtCompactVisibility(compactSection);
+  // Withheld until a reliable debt subtype exists (wealth-mode.ts DEBT_CATEGORY_TABS_ENABLED):
+  // the compact Debt view then shows its complete content, with no category tabs.
+  const cv = debtCompactVisibility(DEBT_CATEGORY_TABS_ENABLED ? compactSection : "all");
   const classCounts = debtClassCounts(accounts);
   const classCount = cv.ledgerClass ? classCounts[cv.ledgerClass] : 0;
   const otherCount = classCounts.other;
-  const debtTabs = liabilityCount > 0 && onCompactSectionChange ? (
+  const debtTabs = DEBT_CATEGORY_TABS_ENABLED && liabilityCount > 0 && onCompactSectionChange ? (
     <CompactSectionTabs
       ariaLabel="Debt category"
       value={compactSection}

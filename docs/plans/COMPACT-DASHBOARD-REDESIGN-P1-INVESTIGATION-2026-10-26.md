@@ -250,3 +250,20 @@ Markets needs no implementation beyond P1 (the selector entry).
 5. **Cash Flow:** a compact hero and 2×2 summary cards (Cash In · Cash Out · Charged on credit · Moved, not spent) over the existing facts and handlers. The calendar heatmap and every lower section are unchanged.
 6. **Markets:** Coming soon, reachable from the dropdown, with no other controls.
 7. **P6 (lazy loading)** is not in this effort.
+
+## 12. P3 stop condition: Credit/Loans withheld (2026-10-26)
+
+**Live verification on Preview** (`dpl_2Sc3Ue9v`, after #39) showed the Credit tab listing a *Home Equity Line of Credit* under "Credit cards", and the Loans tab empty, while 3 liabilities sat in "Other".
+
+**Read-only data check.**
+- `FinancialAccount.debtSubtype` is unpopulated on **every** liability (0 of 23).
+- So the existing `classifyDebt` only ever uses its fallback, "credit limit ⇒ card": HELOCs become Credit, and mortgages, student and auto loans become Other, never Loans.
+- The raw Plaid `providerSubtype` is present on some accounts, but the existing rule doesn't read it. Mapping it would be a new classification.
+
+**Action, per the owner's rule ("if existing debt classification cannot reliably distinguish Credit from Loans, STOP that portion"):**
+- `DEBT_CATEGORY_TABS_ENABLED = false` (`lib/wealth/wealth-mode.ts`).
+- The compact Debt view shows its complete content (All), with no category tabs.
+- `?section=` is ignored and cleaned.
+- Everything else (the compact hierarchy, Assets, Cash Flow, Markets, the selector, Leave) is preserved.
+
+**To enable later:** a reviewed debt-subtype classification (e.g. a mapping from `providerSubtype`, populated server-side), then flip the flag. The truth tables and tests in `components/space/compact/` already cover the tabs.
