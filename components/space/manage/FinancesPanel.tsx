@@ -32,6 +32,31 @@ import { revokeAccountConfirm } from "./destructive-confirm";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { ShareExistingAccountsPanel } from "./ShareExistingAccountsPanel";
 import { formatBalance, type SharedAccount } from "./manage-shared";
+import { convertMoney } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
+
+/**
+ * v2.7 currency toggle — a shared account's balance in the Space display
+ * currency (convertMoney at the yesterday rate, the AccountsLedger `toDisplay`
+ * convention), with the native figure as a quiet subline when foreign. An
+ * unavailable conversion, or no context (the /dashboard/spaces host), keeps the
+ * native figure alone — never a relabel.
+ */
+export function accountBalanceDisplay(
+  balance: number,
+  currency: string | null | undefined,
+  ctx?: ConversionContext,
+): { primary: string; native: string | null } {
+  const nativeLabel = formatBalance(balance, currency ?? undefined);
+  if (!ctx || !currency || currency === ctx.target) {
+    return { primary: ctx && !currency ? formatAggregateMoney(balance, ctx) : nativeLabel, native: null };
+  }
+  const c = convertMoney({ amount: balance, currency }, yesterdayUTCISO(), ctx);
+  if (c.amount === null) return { primary: nativeLabel, native: null };
+  return { primary: `${c.estimated ? "≈ " : ""}${formatAggregateMoney(c.amount, ctx)}`, native: nativeLabel };
+}
 
 const ACCOUNT_TYPE_LABELS: Record<string, string> = {
   checking: "Checking", savings: "Savings", investment: "Investment",
@@ -42,8 +67,11 @@ export function FinancesPanel({
   spaceId,
   myRole,
   onRefresh,
+  ctx,
 }: {
   spaceId: string;
+  /** Space conversion context (absent ⇒ native balances). */
+  ctx?:        ConversionContext;
   myRole:      string;
   // The real top-level ManageSpaceModal.onRefresh — previously never
   // threaded into this tab at all, which is why sharing/revoking an asset
@@ -177,7 +205,15 @@ export function FinancesPanel({
                       <p className="text-sm text-[var(--text-primary)] truncate">{a.name}</p>
                       <p className="text-xs text-[var(--text-muted)] truncate">{a.institution}</p>
                     </div>
-                    <p className="text-sm font-medium text-[var(--text-primary)] tabular-nums shrink-0">{formatBalance(a.balance, a.currency)}</p>
+                    {(() => {
+                      const d = accountBalanceDisplay(a.balance, a.currency, ctx);
+                      return (
+                        <div className="shrink-0 text-right">
+                          <p className="text-sm font-medium text-[var(--text-primary)] tabular-nums">{d.primary}</p>
+                          {d.native && <p className="text-[11px] text-[var(--text-faint)] tabular-nums">{d.native}</p>}
+                        </div>
+                      );
+                    })()}
                     {canShare && (
                       <button onClick={() => { setRevokeError(""); setPendingRevoke(a); }} disabled={revokingId === a.id}
                         className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] lg:h-7 lg:w-7 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 disabled:opacity-50 transition-all"

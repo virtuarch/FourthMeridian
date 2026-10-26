@@ -602,8 +602,25 @@ export function DebtPayoffSection({
                           <p className="text-sm font-medium truncate" style={{ color: on ? "var(--text-primary)" : "var(--text-muted)" }}>{a.name}</p>
                           <p className="text-[10px] truncate" style={{ color: "var(--text-faint)" }}>{a.institution}</p>
                           <div className="flex flex-wrap gap-x-2 mt-0.5">
-                            {/* Itemized rows stay native — label follows the row's own currency (MC1 QA Q4). */}
-                            <span className="text-xs font-semibold" style={{ color: debtColorFor(a.id) }}>{formatBalance(a.balance, a.currency)}</span>
+                            {/* v2.7 currency toggle — the row is presented in the display
+                                currency via `inDisp`; the native figure stays as a quiet
+                                secondary when foreign. An unavailable conversion (0 + estimated
+                                for a non-zero balance) shows the native figure alone. */}
+                            {(() => {
+                              const r = inDisp(a.balance, a.currency);
+                              const foreign = !!ctx && a.currency !== disp;
+                              const unavailable = foreign && r.estimated && r.amount === 0 && a.balance !== 0;
+                              return (
+                                <>
+                                  <span className="text-xs font-semibold" style={{ color: debtColorFor(a.id) }}>
+                                    {unavailable ? formatBalance(a.balance, a.currency) : `${r.estimated && foreign ? "≈ " : ""}${formatBalance(r.amount, disp)}`}
+                                  </span>
+                                  {foreign && !unavailable && (
+                                    <span className="text-[10px] tabular-nums" style={{ color: "var(--text-faint)" }}>{formatBalance(a.balance, a.currency)}</span>
+                                  )}
+                                </>
+                              );
+                            })()}
                             {a.interestRate != null && (
                               <span className="text-[10px]" style={{ color: `${debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length)}cc` }}>{a.interestRate.toFixed(2)}% APR</span>
                             )}

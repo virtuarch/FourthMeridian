@@ -39,6 +39,10 @@ import {
 } from "@/lib/debt/user-terms";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { formatBalance } from "@/lib/currency";
+import { convertMoney } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import { formatDate } from "@/lib/format";
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
 
@@ -150,11 +154,35 @@ function canCarryLimit(a: DebtPerspectiveAccount): boolean {
     && (a.debtSubtype == null || REVOLVING_DEBT_SUBTYPES.has(a.debtSubtype));
 }
 
+/**
+ * v2.7 currency toggle — a stored limit is NATIVE to its account. The read-only
+ * figure is presented in the Space display currency (convertMoney at the
+ * yesterday rate, the Debt widgets' `inDisp` convention); the native figure
+ * survives as a quiet subline when the two differ. An UNAVAILABLE conversion
+ * (known foreign currency, no rate) shows the native figure only — never a
+ * relabel. No context ⇒ native, as before.
+ */
+export function displayLimit(
+  limit: number,
+  currency: string | null | undefined,
+  ctx?: ConversionContext,
+): { primary: string; native: string | null } {
+  const nativeLabel = formatBalance(limit, currency ?? undefined);
+  if (!ctx || currency === ctx.target) return { primary: nativeLabel, native: null };
+  const c = convertMoney({ amount: limit, currency: currency ?? null }, yesterdayUTCISO(), ctx);
+  if (c.amount === null) return { primary: nativeLabel, native: null };
+  const approx = c.estimated ? "≈ " : "";
+  return { primary: `${approx}${formatAggregateMoney(c.amount, ctx)}`, native: currency ? nativeLabel : null };
+}
+
 export function CreditLimitInputs({
   accounts,
   onSaved,
+  ctx,
 }: {
   accounts: DebtPerspectiveAccount[];
+  /** Space conversion context — the read-only limit renders in its target. */
+  ctx?: ConversionContext;
   /** Test seam / host override. Default: broadcast the accounts-changed refresh. */
   onSaved?: () => void;
 }) {
@@ -210,14 +238,14 @@ export function CreditLimitInputs({
                     <input
                       autoFocus
                       inputMode="decimal"
-                      aria-label={`Credit limit for ${a.name}`}
+                      aria-label={`Credit limit for ${a.name} in ${a.currency ?? "the account's currency"}`}
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") save(a.id);
                         if (e.key === "Escape") { setEditingId(null); setError(null); }
                       }}
-                      placeholder="Limit"
+                      placeholder={`Limit (${a.currency ?? "native"})`}
                       className={`w-24 ${INPUT_CLS}`}
                     />
                     <button type="button" onClick={() => save(a.id)} disabled={saving} aria-label="Save credit limit" className="p-1 rounded text-[var(--accent-info)] disabled:opacity-50">
@@ -234,7 +262,15 @@ export function CreditLimitInputs({
                     aria-label={`Edit credit limit for ${a.name}`}
                     className="group flex items-center gap-1.5 shrink-0 text-[12px] font-semibold tabular-nums text-[var(--text-primary)]"
                   >
-                    {formatBalance(a.creditLimit, a.currency)} limit
+                    {(() => {
+                      const d = displayLimit(a.creditLimit, a.currency, ctx);
+                      return (
+                        <span className="text-right">
+                          <span className="block">{d.primary} limit</span>
+                          {d.native && <span className="block text-[10px] font-normal text-[var(--text-faint)]">{d.native}</span>}
+                        </span>
+                      );
+                    })()}
                     <Pencil size={11} className="text-[var(--text-faint)] group-hover:text-[var(--accent-info)]" />
                   </button>
                 ) : (

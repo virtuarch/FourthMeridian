@@ -12,6 +12,7 @@
  * deltas render as signed bars. Holds no state beyond the disclosure toggle.
  */
 
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { InvestmentsReconciliation } from "@/lib/investments/investments-time-machine-core";
@@ -32,13 +33,15 @@ export function InvestmentsBridgeCard({
 }) {
   const [open, setOpen] = useState(false);
   const model = buildBridgeRows(reconciliation, flows, attribution ?? null);
+  // v2.7 — fallback label is the display-currency authority, never a USD literal.
+  const displayCurrency = useDisplayCurrency();
 
   // V26-INVESTMENTS-HISTORY-FIX — a period that cannot be attributed renders no
   // waterfall at all. The current value and any observed flows still show; the
   // causal decomposition does not, because it is the decomposition that was the
   // false claim, not the numbers inside it.
   if (model.state === "partial" || model.state === "not-attributable") {
-    const cur = model.reportingCurrency ?? "USD";
+    const cur = model.reportingCurrency ?? displayCurrency;
     return (
       <div className="flex flex-col gap-3 py-1">
         <p className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>{model.headline}</p>

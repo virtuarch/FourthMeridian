@@ -40,6 +40,7 @@ import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels
 import { formatCurrency } from "@/lib/currency";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
+import { convertMoney } from "@/lib/money/convert";
 import type { Transaction } from "@/types";
 import {
   describeRowNature, DIRECTION_SIGN, ROW_NATURE_ORDER, ROW_NATURE_GROUP_LABEL, type RowNature,
@@ -82,14 +83,34 @@ function money(v: number, ctx?: ConversionContext): string {
 }
 
 // REVIEW-3 C-5 — a row with NO recorded denomination renders in the DISPLAY
-// currency (the null-residue doctrine: never a hard-coded label). Rows with a
-// recorded currency keep their native label — itemized rows are never relabelled.
-function rowMoney(t: Transaction, displayCurrency: string): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: t.currency ?? displayCurrency, maximumFractionDigits: 2 }).format(Math.abs(t.amount));
+// currency (the null-residue doctrine: never a hard-coded label).
+function rowMoney(amount: number, currency: string): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(Math.abs(amount));
 }
 
-function TxRow({ t }: { t: Transaction }) {
+/**
+ * v2.7 currency toggle — an itemized row in the Space display currency,
+ * converted at the ROW's own date (convertMoney; an inexact rate ⇒ "≈"); the
+ * native figure stays as a quiet subline when foreign. No context, or an
+ * unavailable rate ⇒ the native figure alone, never a relabel.
+ */
+export function sliceRowMoney(
+  t: Pick<Transaction, "amount" | "currency" | "date">,
+  displayCurrency: string,
+  ctx?: ConversionContext,
+): { primary: string; approx: string; native: string | null } {
+  const nativeCur = t.currency ?? displayCurrency;
+  if (!ctx || !t.currency || t.currency === ctx.target) {
+    return { primary: rowMoney(t.amount, ctx && !t.currency ? ctx.target : nativeCur), approx: "", native: null };
+  }
+  const c = convertMoney({ amount: t.amount, currency: t.currency }, t.date, ctx);
+  if (c.amount === null) return { primary: rowMoney(t.amount, nativeCur), approx: "", native: null };
+  return { primary: rowMoney(c.amount, ctx.target), approx: c.estimated ? "≈ " : "", native: rowMoney(t.amount, t.currency) };
+}
+
+function TxRow({ t, ctx }: { t: Transaction; ctx?: ConversionContext }) {
   const displayCurrency = useDisplayCurrency();
+  const m = sliceRowMoney(t, displayCurrency, ctx);
   // v2.6-TRUTH-8 — the chip is the canonical row NATURE, matching the group
   // heading above it. It rendered `t.category`, the raw provider string, so a row
   // the Debt Payments card counted showed "Transfer" — the drawer contradicting
@@ -107,10 +128,13 @@ function TxRow({ t }: { t: Transaction }) {
           {t.pending && <span className="text-xs text-[var(--text-faint)]">Pending</span>}
         </div>
       </div>
-      <p className="text-sm font-bold tabular-nums shrink-0" style={{ color: credit ? "var(--accent-positive)" : "var(--text-primary)" }}>
-        {/* v2.6-DIR-1 — sign from the canonical direction, colour from the tone. */}
-        {DIRECTION_SIGN[nature.direction]}{rowMoney(t, displayCurrency)}
-      </p>
+      <div className="shrink-0 text-right">
+        <p className="text-sm font-bold tabular-nums" style={{ color: credit ? "var(--accent-positive)" : "var(--text-primary)" }}>
+          {/* v2.6-DIR-1 — sign from the canonical direction, colour from the tone. */}
+          {m.approx}{DIRECTION_SIGN[nature.direction]}{m.primary}
+        </p>
+        {m.native && <p className="text-[11px] tabular-nums text-[var(--text-faint)]">{m.native}</p>}
+      </div>
     </div>
   );
 }
@@ -298,7 +322,7 @@ export function TransactionSliceDrawer({
                 {g.label} · {g.rows.length}
               </p>
               <div className="divide-y divide-[var(--border-hairline)]">
-                {g.rows.map((t) => <TxRow key={t.id} t={t} />)}
+                {g.rows.map((t) => <TxRow key={t.id} t={t} ctx={ctx} />)}
               </div>
             </div>
           ))}
@@ -306,7 +330,7 @@ export function TransactionSliceDrawer({
       ) : (
         <div className="rounded-xl overflow-hidden border border-[var(--border-hairline)]">
           <div className="divide-y divide-[var(--border-hairline)]">
-            {displayRows.map((t) => <TxRow key={t.id} t={t} />)}
+            {displayRows.map((t) => <TxRow key={t.id} t={t} ctx={ctx} />)}
           </div>
         </div>
       )}
