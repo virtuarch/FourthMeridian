@@ -109,8 +109,8 @@ check("a category change is a view change: no push declared (REPLACE)",
 check("leaving Debt never leaves a stale category", /if \(m !== "debt"\) setDebtSection\(DEFAULT_DEBT_SECTION\);/.test(nav));
 check("re-opening Net Worth and legacy links reset it",
   (nav.match(/setDebtSection\(DEFAULT_DEBT_SECTION\);/g) ?? []).length >= 3);
-check("read back on load and Back/Forward — only in Debt",
-  /setDebtSection\(mode === "debt" \? parseDebtSection\(readSpaceParam\(search, DEBT_SECTION_PARAM\)\) : DEFAULT_DEBT_SECTION\);/.test(nav));
+check("read back on load and Back/Forward — only in Debt, and only while the tabs are enabled",
+  /setDebtSection\(DEBT_CATEGORY_TABS_ENABLED && mode === "debt" \? parseDebtSection\(readSpaceParam\(search, DEBT_SECTION_PARAM\)\) : DEFAULT_DEBT_SECTION\);/.test(nav));
 
 console.log("\n5. hierarchy and compact-only hiding");
 {
@@ -129,6 +129,19 @@ console.log("\n5. hierarchy and compact-only hiding");
   check("the Liabilities header counts the category on compact, all liabilities on desktop",
     /\{DEBT_CLASS_LABEL\[cv\.ledgerClass\]\} · \{classCount\}/.test(dw) && /\$\{compactHidden\(!!cv\.ledgerClass\)\}/.test(dw));
   check("no figure authority changed: the same kpis/signals/interest/payoff calls", /computeDebtKpis\(accounts, ctx\)/.test(dw) && /buildDebtSignals\(\{ accounts, ctx, lensResult: lens \}\)/.test(dw) && /renderDebtPayoffCalculator\(accounts, false, undefined, ctx, today, handleAddApr\)/.test(dw));
+}
+
+console.log("\n6. Credit / Loans are WITHHELD (owner rule: never guess a classification)");
+{
+  const wm = read("lib/wealth/wealth-mode.ts");
+  check("the flag is off, with the verified reason recorded where it lives",
+    /export const DEBT_CATEGORY_TABS_ENABLED = false;/.test(wm) && /debtSubtype` is unpopulated on\s*\*\s*every liability \(0 of 23\)/.test(wm) && /A HELOC lands in Credit and mortgages \/\s*\*\s*student \/ auto loans land in Other/.test(wm));
+  check("while off: no category tabs render and the Debt view shows its complete content (All)",
+    /const debtTabs = DEBT_CATEGORY_TABS_ENABLED && liabilityCount > 0 && onCompactSectionChange \?/.test(dw)
+      && /const cv = debtCompactVisibility\(DEBT_CATEGORY_TABS_ENABLED \? compactSection : "all"\);/.test(dw));
+  check("…and a ?section= in the URL is ignored (and cleaned by the writer)", /DEBT_CATEGORY_TABS_ENABLED && mode === "debt"/.test(nav));
+  check("the existing classifier is untouched (no providerSubtype mapping was added)",
+    !/providerSubtype/.test(read("components/space/widgets/debt/debt-ledger-util.ts")));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
