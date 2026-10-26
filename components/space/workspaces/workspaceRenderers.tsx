@@ -103,6 +103,8 @@ export interface WorkspaceRenderCtx {
   onModeChange:            (m: WealthMode) => void;
   /** Net Worth's Total · Assets · Debt selector presentation (see WealthWorkspace). */
   wealthModeSelectorVisibility?: "always" | "belowLg";
+  /** The Space's canonical freshness claim (e.g. "Last checked 2 hr ago"), for the compact hero. */
+  wealthFreshnessLabel?: string | null;
   /** The Markets view (?view=) + its setter + selector presentation (skeleton). */
   marketsMode:             MarketsMode;
   onMarketsModeChange:     (m: MarketsMode) => void;
@@ -184,6 +186,7 @@ const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => Reac
       mode={ctx.wealthMode}
       onModeChange={ctx.onModeChange}
       modeSelectorVisibility={ctx.wealthModeSelectorVisibility}
+      freshnessLabel={ctx.wealthFreshnessLabel ?? null}
       slice={ctx.assetsSlice}
       onSliceChange={ctx.onSliceChange}
       debtSection={ctx.debtSection}

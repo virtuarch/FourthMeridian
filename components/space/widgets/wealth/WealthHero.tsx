@@ -79,6 +79,7 @@ export function WealthHero({
   envelope,
   metric = "netWorth",
   cryptoPriceNote,
+  freshnessLabel = null,
 }: {
   result:   WealthResult;
   currency: string;
@@ -87,6 +88,14 @@ export function WealthHero({
   /** The page's resolved series — the hero reflects the SAME metric the chart
    *  plots, so Total / Assets / a slice change the headline too. */
   metric?:  WealthMetricKey;
+  /**
+   * v2.7 P0 — the Space's canonical freshness claim ("Last checked 2 hr ago",
+   * from resolveSpaceFreshness — the chrome subtitle's source). A snapshot can
+   * be dated today while its balances were observed days ago, so the compact
+   * line never labels the snapshot date as freshness; without a claim it says
+   * "As of <snapshot date>", the desktop wording.
+   */
+  freshnessLabel?: string | null;
   /**
    * 2026-09-21 — the price basis of the crypto inside TODAY's figure
    * (summarizeCryptoPricing over the same wallet values the snapshot was
@@ -154,11 +163,12 @@ export function WealthHero({
       {asOfLabel && <p className="mt-2.5 text-sm text-[var(--text-secondary)] max-lg:hidden">{asOfLabel}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}</p>}
 
       {/* v2.7 P0 — the COMPACT (<lg) hero: the figure above, then ONLY the change
-          ($ and %), the comparison range and the latest observed date — all read
-          off the same WealthResult. "Latest data" is the date of the snapshot the
-          figure comes from (asOfState.date), never a refresh time, so stale data
-          never reads as current. The stat line below is compact-hidden; those
-          figures stay in their detailed sections. */}
+          ($ and %), the comparison range, and the freshness claim. The figures
+          come off the same WealthResult; the freshness line is the canonical
+          "Last checked N ago" (freshnessLabel) or "As of <snapshot date>" —
+          never the snapshot date labelled as fresh data (Preview writes a
+          today-dated snapshot from balances observed days earlier). The stat
+          line below is compact-hidden; those figures stay in their sections. */}
       <div className="lg:hidden mt-3 space-y-1.5" data-compact-hero-meta>
         {deltas ? (
           <DeltaBadge
@@ -176,9 +186,9 @@ export function WealthHero({
             {formatWealthDate(compareState.date)} → {formatWealthDate(asOfState.date)}
           </p>
         )}
-        {asOfState.date && (
-          <p className="lg:hidden text-[12px] text-[var(--text-muted)]">
-            Latest data · {formatWealthDate(asOfState.date)}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}
+        {(freshnessLabel || asOfState.date) && (
+          <p className="lg:hidden text-[12px] text-[var(--text-muted)]" data-compact-hero-freshness>
+            {freshnessLabel ?? `As of ${formatWealthDate(asOfState.date!)}`}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}
           </p>
         )}
       </div>

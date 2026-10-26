@@ -750,6 +750,9 @@ export function SpaceDashboard({
     // lg+ the sidebar carries Total · Assets · Debt under Net Worth (published
     // above); below lg there is no sidebar, so the in-content selector does.
     wealthModeSelectorVisibility: "belowLg",
+    // v2.7 P0 — the compact hero's freshness line is the SAME canonical claim
+    // as the chrome subtitle ("Last checked N ago"), never a snapshot date.
+    wealthFreshnessLabel: chromeUpdated,
     marketsMode,
     onMarketsModeChange: setMarketsMode,
     // Same contract for the Markets views: the sidebar owns them at lg+.

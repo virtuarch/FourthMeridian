@@ -4,8 +4,9 @@
  *   1. the compact Net Worth hero shows ONLY: title, amount, $ change, % change,
  *      comparison range, latest observed date — from the same WealthResult; the
  *      Assets / Liabilities / Liquid NW line is compact-hidden (kept on desktop
- *      and in the detailed sections); "Latest data" is the snapshot date, never
- *      a refresh time;
+ *      and in the detailed sections); the freshness line is the canonical
+ *      "Last checked" claim or "As of <snapshot date>", never a snapshot date
+ *      presented as fresh data;
  *   2. the compact time control is the SAME TimelineLens, portalled into the
  *      header slot beside Manage (client-only), the in-flow row compact-hidden;
  *      never for Markets; desktop unchanged;
@@ -57,7 +58,15 @@ console.log("1. the compact Net Worth hero");
   check("title and amount (the one figure, shared with desktop)", /Net worth/.test(text(html)) && /77,164\.15/.test(text(html)));
   check("compact: the $ change and the % change", /11,521\.88/.test(compact) && /13\.0%/.test(compact));
   check("compact: the comparison range, compare date → as-of date", /Sep 26, 2026 → Oct 16, 2026/.test(compact), compact);
-  check("compact: the latest observed date, labelled as data (the snapshot date), not a refresh", /Latest data · Oct 16, 2026/.test(compact) && !/updated|refreshed|checked/i.test(compact));
+  check("compact, no freshness claim: \"As of <snapshot date>\" — the snapshot date is never labelled as fresh data",
+    /As of Oct 16, 2026/.test(compact) && !/Latest data|updated|refreshed|checked/i.test(compact));
+  const claimed = text(compactPart(hero({ freshnessLabel: "Last checked 3 days ago" })));
+  check("compact, with the canonical claim: it shows that claim verbatim (the chrome subtitle's source), not the snapshot date",
+    /Last checked 3 days ago/.test(claimed) && !/As of Oct 16/.test(claimed));
+  const host = code("components/dashboard/SpaceDashboard.tsx");
+  check("the host passes the SAME chromeUpdated claim the subtitle uses", /wealthFreshnessLabel: chromeUpdated,/.test(host)
+    && /freshnessLabel=\{ctx\.wealthFreshnessLabel \?\? null\}/.test(read("components/space/workspaces/workspaceRenderers.tsx"))
+    && /metric=\{metric\} freshnessLabel=\{freshnessLabel\}/.test(read("components/space/widgets/wealth/WealthWorkspace.tsx")));
   check("compact: nothing else — no Assets / Liabilities / Liquid NW stat", !/Assets|Liabilities|Liquid NW/.test(compact));
   check("the stat line is compact-hidden (max-lg:hidden), so it stays on desktop", /max-lg:hidden"><span class="inline-flex items-baseline gap-1\.5 tabular-nums"><span[^>]*>Assets</.test(html));
   const desk = desktopMarkup(html);
