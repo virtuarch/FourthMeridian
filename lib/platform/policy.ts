@@ -36,6 +36,8 @@ export interface PlatformAreaMeta {
   key: PlatformArea;
   /** Human label, e.g. "Security Operations". */
   label: string;
+  /** P-1 — the short label for compact navigation (the mobile Platform bar). */
+  navLabel: string;
   /** Space.name at seed. */
   spaceName: string;
   /** Space.description at seed. */
@@ -58,6 +60,7 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
   PLATFORM_OPS: {
     key: "PLATFORM_OPS",
     label: "Platform Operations",
+    navLabel: "Operations",
     spaceName: "Platform Operations",
     spaceDescription:
       "Job health, rate-limit posture, and environment status for Fourth Meridian itself.",
@@ -149,6 +152,7 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
   SECURITY_OPS: {
     key: "SECURITY_OPS",
     label: "Security Operations",
+    navLabel: "Security",
     spaceName: "Security Operations",
     spaceDescription:
       "Audit feed, authentication posture, and session activity across the platform.",
@@ -169,6 +173,7 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
   GROWTH_REVENUE: {
     key: "GROWTH_REVENUE",
     label: "Growth & Revenue",
+    navLabel: "Growth",
     spaceName: "Growth & Revenue",
     spaceDescription:
       "Signup and activation signals. Revenue has no data source until billing (v3.0).",
@@ -197,6 +202,7 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
   CUSTOMER_SUCCESS: {
     key: "CUSTOMER_SUCCESS",
     label: "Customer Success",
+    navLabel: "Customers",
     spaceName: "Customer Success",
     spaceDescription:
       "The customer spine: who each customer is, what they are entitled to and why, their beta lifecycle, Spaces, connections, incidents and AI usage — and the safe actions available.",
@@ -218,6 +224,7 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
   MERCHANT_OPS: {
     key: "MERCHANT_OPS",
     label: "Merchant Operations",
+    navLabel: "Merchants",
     spaceName: "Merchant Operations",
     spaceDescription:
       "Merchant identity review across the platform. Merges are irreversible and audited.",

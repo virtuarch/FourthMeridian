@@ -144,7 +144,10 @@ console.log("D. Active states — one rule, both modes, never two at once");
   const hq = spaceMode("/dashboard/platform/PLATFORM_OPS");
   check("a platform HQ Space lights NO site destination (it is none of the five)", activeIn(hq, "Global").length === 0,
     activeIn(hq, "Global").join());
-  check("…but still offers all five", SITE_HREFS.every((h) => hrefs(hq).includes(h)));
+  // P-1 (owner-approved separate Platform shell) — the Platform context carries
+  // no personal site nav; the exit row (and the header switch) lead back.
+  check("…and offers none of the five (P-1: the Platform shell has its own navigation)",
+    SITE_HREFS.every((h) => h === "/dashboard/spaces" || !hrefs(hq).includes(h)) && !hq.includes('aria-label="Global"'));
 
   for (const p of ["/dashboard", "/dashboard/spaces", "/dashboard/spaces/invites", "/dashboard/analyze", "/dashboard/brief", "/dashboard/connections", "/dashboard/settings/account"]) {
     const n = activeIn(renderToStaticMarkup(createElement(PrimaryNav, { pathname: p })), "Global").length;
@@ -191,7 +194,7 @@ console.log("F. Responsive contract untouched");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("G. UX-P2 Phase B — the Platform context: granted areas lead, one exit, site nav demoted");
+console.log("G. Platform context (UX-P2 Phase B → P-1): granted areas lead, one exit, no personal site nav");
 {
   const globalMode = (pathname: string | null) =>
     renderToStaticMarkup(createElement(GlobalMode, { pathname, pendingInvites: 0 }));
@@ -203,14 +206,13 @@ console.log("G. UX-P2 Phase B — the Platform context: granted areas lead, one 
   const iExit = dir.indexOf('aria-label="Exit"');
   const iSite = dir.indexOf('data-nav-context="site"');
   const iGlobal = dir.indexOf('aria-label="Global"');
-  check("directory: exit row → demoted site nav, in document order, the site nav under a hairline",
-    iExit > -1 && iSite > iExit && iGlobal > iSite &&
-      /data-nav-context="site" class="border-t border-\[var\(--border-hairline\)\] pt-5"/.test(dir), `${iExit} ${iSite} ${iGlobal}`);
+  check("directory: the exit row, and NO personal site nav after it (P-1)",
+    iExit > -1 && iSite === -1 && iGlobal === -1, `${iExit} ${iSite} ${iGlobal}`);
   check("directory: the exit is ONE real link to the launcher — the Spaces destination's own route",
     /<nav aria-label="Exit"[^>]*><a [^>]*href="\/dashboard\/spaces"/.test(dir) &&
       (dir.match(/<nav aria-label="Exit"/g) ?? []).length === 1 && text(dir).includes("Personal Spaces"));
-  check("directory: all five site destinations still offered, in PRIMARY_NAV order, once",
-    hrefs(dir).slice(-5).join() === SITE_HREFS.join() && (dir.match(/<nav aria-label="Global"/g) ?? []).length === 1, hrefs(dir).join());
+  check("directory: no site destination is offered (P-1) — only the way back to Personal Spaces",
+    hrefs(dir).join() === "/dashboard/spaces", hrefs(dir).join());
   check("directory: no site destination is lit (the directory is none of the five)", activeIn(dir, "Global").length === 0);
   check("directory: the site eyebrow no longer leads the rail", !text(dir).startsWith("Fourth Meridian"));
 
@@ -224,13 +226,13 @@ console.log("G. UX-P2 Phase B — the Platform context: granted areas lead, one 
 
   // 3. Inside a PLATFORM Space: Space block → Sections → exit → demoted site nav → Leave.
   const hq = spaceMode("/dashboard/platform/PLATFORM_OPS");
-  const order = ['data-nav-context="space"', 'aria-label="Sections"', 'aria-label="Exit"', 'data-nav-context="site"', 'aria-label="Global"']
+  const order = ['data-nav-context="space"', 'aria-label="Sections"', 'aria-label="Exit"']
     .map((k) => hq.indexOf(k));
-  check("Platform Space: Space block → Sections → exit → demoted site nav, in document order",
-    order.every((i) => i > -1) && order.every((v, i, a) => i === 0 || v > a[i - 1]), order.join());
-  check("Platform Space: the site nav is RETAINED — all five, in order, under the hairline, ONCE",
-    hrefs(hq).slice(-5).join() === SITE_HREFS.join() && (hq.match(/<nav aria-label="Global"/g) ?? []).length === 1 &&
-      hq.indexOf('aria-label="Global"') > hq.indexOf('data-nav-context="space"'));
+  check("Platform Space: Space block → Sections → exit, in document order, and no site nav (P-1)",
+    order.every((i) => i > -1) && order.every((v, i, a) => i === 0 || v > a[i - 1])
+      && !hq.includes('data-nav-context="site"') && !hq.includes('aria-label="Global"'), order.join());
+  check("Platform Space: the personal site nav is NOT rendered (P-1 separate Platform shell)",
+    !hq.includes('aria-label="Global"') && SITE_HREFS.filter((h) => h !== "/dashboard/spaces").every((h) => !hrefs(hq).includes(h)));
   check("Platform Space: nothing lit in the site nav; the Space's workspace lit independently",
     activeIn(hq, "Global").length === 0 && activeIn(hq, "Space").join() === "Net Worth");
   check("Platform Space: Leave Space is still last", text(hq).endsWith("Leave Space"));
@@ -247,11 +249,11 @@ console.log("G. UX-P2 Phase B — the Platform context: granted areas lead, one 
   check("SpaceMode source: the Platform list is the FIRST block on the platform axis (before the Space block)",
     sm.indexOf("<PlatformNav") > -1 && sm.indexOf("<PlatformNav") < sm.indexOf('data-nav-context="space"'));
   const gm = rail.slice(rail.indexOf("export function GlobalMode"), rail.indexOf("export function SpaceMode"));
-  check("GlobalMode source: on the platform context the Platform element precedes the exit, the exit the demoted site nav",
-    /\{hq\}\s*<PersonalSpacesExit \/>\s*<DemotedSiteNav>\{site\}<\/DemotedSiteNav>/.test(gm));
+  check("GlobalMode source: on the platform context the Platform element precedes the exit, and nothing follows it (P-1)",
+    /\{hq\}\s*<PersonalSpacesExit \/>\s*<\/>/.test(gm));
   check("the exit row is ONE component, rendered by both modes, linking through primaryHref (no route literal)",
     (rail.match(/<PersonalSpacesExit \/>/g) ?? []).length === 2 && /href=\{primaryHref\("spaces"\)\}/.test(rail));
-  check("the demotion wrapper is ONE component, used by both modes", (rail.match(/<DemotedSiteNav>/g) ?? []).length === 2);
+  check("the Phase B demotion wrapper is gone (P-1)", !/DemotedSiteNav/.test(rail));
   check("the context predicate is the shared navContext (global mode) and isPlatformSpaceRoute (space mode)",
     /navContext\(pathname\) === "platform"/.test(rail) && /onPlatformAxis = isPlatformSpaceRoute\(pathname\)/.test(rail));
   check("still exactly two PrimaryNav mounts and two PlatformNav mounts — reordered, not duplicated",
