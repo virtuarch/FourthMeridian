@@ -37,6 +37,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { buildSpaceUrl, readSpaceParam } from "@/lib/space/space-url";
 import { resolveSelectedWorkspaceKey, type MountWorkspaceSummary } from "@/lib/space/mount-context";
+import { canonicalPlatformWorkspaceId } from "@/lib/platform/workspaces";
 
 /** The Space-scoped param carrying the open Platform workspace. */
 export const PLATFORM_WORKSPACE_PARAM = "workspace";
@@ -103,7 +104,7 @@ export function usePlatformWorkspaceNavigation({
     () =>
       resolveSelectedWorkspaceKey(
         available,
-        readSpaceParam(spaceUrl.getSearch(), PLATFORM_WORKSPACE_PARAM),
+        canonicalPlatformWorkspaceId(readSpaceParam(spaceUrl.getSearch(), PLATFORM_WORKSPACE_PARAM)),
         PLATFORM_DEFAULT_WORKSPACE_ID,
       ),
     [available, spaceUrl],

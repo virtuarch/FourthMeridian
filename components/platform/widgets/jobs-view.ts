@@ -244,9 +244,9 @@ export const NO_CONTROL_AUTHORITY_NOTE =
   "No job control authority exists. Nothing in Fourth Meridian can pause, resume, skip, disable, or manually trigger a scheduled job, and no operator decision about a job is recorded anywhere — so there is nothing to offer here and nothing to list.";
 
 // Maintenance mode is a platform-wide admission fact, not a job command: it is
-// set in Policies → Operational Controls. This button stays inert and says so.
+// set in Controls → Operational Controls (P-10). This button stays inert and says so.
 export const NO_MAINTENANCE_AUTHORITY_REASON =
-  "Maintenance mode is set in Policies → Operational Controls";
+  "Maintenance mode is set in Controls → Operational Controls";
 
 export const NO_COMMANDS_REASON = "no job control authority";
 

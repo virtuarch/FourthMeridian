@@ -299,7 +299,7 @@ export function derivePlaid(p: PlaidOverviewInput): DomainStatus {
   const figure: DomainFigure =
     state === "UNKNOWN" ? { value: "0 billable Items", qualifier: "no Item is billable this cycle" }
     : { value: `${p.billableItems} billable Item${p.billableItems === 1 ? "" : "s"}`, qualifier: `${needsReauth + error} need attention · ${p.priceConfigured ? `${usd(c.usd)} estimated this cycle` : "cost authority not configured"}` };
-  return { key: "plaid", title: "Plaid", state, headline, figure, facts, basis: "PlaidItem census × invoice-derived Item-month rates", workspace: "platform-costs" };
+  return { key: "plaid", title: "Plaid", state, headline, figure, facts, basis: "PlaidItem census × invoice-derived Item-month rates", workspace: "platform-ai" };
 }
 
 // ── UX-P1 · Posture (the four Platform Health groups, folded into the board) ──

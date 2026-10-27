@@ -139,7 +139,7 @@ function main() {
         [
           "ops_provider_health",
           "ops_provider_operations",
-          "ops_connection_health",
+          // P-10 — connection health renders once, in Pipeline.
           "ops_connection_diagnostics",
           // Provider cleanup follows per-connection diagnostics deliberately:
           // these items are REVOKED and therefore appear in NONE of the health
