@@ -43,7 +43,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import { convertMoney } from "@/lib/money/convert";
 import type { Transaction } from "@/types";
 import {
-  describeRowNature, DIRECTION_SIGN, ROW_NATURE_ORDER, ROW_NATURE_GROUP_LABEL, type RowNature,
+  describeRowNature, isHumanCategorySource, DIRECTION_SIGN, ROW_NATURE_ORDER, ROW_NATURE_GROUP_LABEL, type RowNature,
 } from "@/lib/transactions/flow-presentation";
 import { economicTotals } from "@/lib/transactions/cash-flow";
 import { TransactionDate } from "@/components/ui/TransactionDate";
@@ -167,6 +167,7 @@ function natureOf(t: Transaction) {
     transferMaturity: t.transferMaturity ?? null,
     amount:        t.amount,
     hasOwnedCounterparty: t.counterpartyAccountId != null,
+    humanCategorized: isHumanCategorySource(t.categorySource),
   });
 }
 

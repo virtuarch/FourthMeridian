@@ -243,7 +243,11 @@ function make(
 /** Economic (non-movement) flows: the stored flowType, refined by the income taxonomy. */
 function economicNature(e: NatureEvidence, stored: string | null, basis: NatureBasis): ResolvedTransactionNature | null {
   switch (stored) {
-    case "SPENDING": case "FEE": case "INTEREST": return make("SPENDING", basis, stored);
+    case "SPENDING": case "FEE": case "INTEREST":
+      // v2.7-B — a cost flow with money IN (a fee rebate, an interest reversal) is a
+      // reversal of spending: the economic fold nets it as a credit and liquidity
+      // calls it REFUND (FM-AUDIT-006). Narrating it as "Spending" contradicted both.
+      return make(e.amount > 0 ? "REFUND" : "SPENDING", basis, stored);
     case "REFUND":     return make("REFUND", basis, stored);
     case "INVESTMENT": return make("INVESTMENT_ACTIVITY", basis, stored);
     case "ADJUSTMENT": return make("ADJUSTMENT", basis, stored);

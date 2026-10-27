@@ -25,7 +25,7 @@ import Papa from "papaparse";
 function unparse(rows: Record<string, unknown>[]): string {
   return Papa.unparse(rows, { escapeFormulae: true });
 }
-import { describeRowNature } from "@/lib/transactions/flow-presentation";
+import { describeRowNature, isHumanCategorySource } from "@/lib/transactions/flow-presentation";
 import type {
   ExportAccount,
   ExportHolding,
@@ -79,6 +79,7 @@ export function toTransactionsCsv(rows: ExportTransaction[]): string {
     transferMaturity: r.transferMaturity ?? null,
         amount:        r.amount,
         hasOwnedCounterparty: r.counterpartyAccountId != null,
+        humanCategorized: isHumanCategorySource(r.categorySource),
       }).nature,
       // The owned account on the other side of a transfer, where the transfer
       // authority established one. Empty when it did not — never a guess, and

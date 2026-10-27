@@ -39,7 +39,7 @@ import type { TransactionDetail } from "@/types";
 import { useTransactionDrawer } from "./useTransactionDrawer";
 import { TransactionDetailContent } from "./TransactionDetailContent";
 import { TransactionCorrection } from "./TransactionCorrection";
-import { describeRowNature, DIRECTION_SIGN } from "@/lib/transactions/flow-presentation";
+import { describeRowNature, isHumanCategorySource, DIRECTION_SIGN } from "@/lib/transactions/flow-presentation";
 
 type LoadState =
   | { status: "loading" }
@@ -126,6 +126,7 @@ function TransactionDetailFetcher({ id }: { id: string }) {
     transferMaturity: detail.transferMaturity ?? null,
           amount:        detail.amount,
           hasOwnedCounterparty: detail.counterpartyAccountId != null,
+          humanCategorized: isHumanCategorySource(detail.categorySource),
         }).label : undefined}
         title={detail ? (detail.merchantDisplayName ?? detail.merchant) : "Transaction"}
       />
@@ -170,6 +171,7 @@ function TransactionHeadline({ detail }: { detail: TransactionDetail }) {
     transferMaturity: detail.transferMaturity ?? null,
     amount:        detail.amount,
     hasOwnedCounterparty: detail.counterpartyAccountId != null,
+    humanCategorized: isHumanCategorySource(detail.categorySource),
   });
   // v2.6-DIR-1 — the canonical direction. This read the TONE twice: once to
   // decide whether to show a sign at all, and once to decide which sign — so it
