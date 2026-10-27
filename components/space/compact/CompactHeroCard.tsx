@@ -17,8 +17,9 @@
  *   R5  the existing "Talk with Fourth Meridian about this" link (navigates only)
  *
  * Exceptional disclosures (withheld details, "Balances are current…", the crypto
- * price basis) are NOT rows: they render as a visible compact note directly
- * BELOW the card, so the five rows never change. The whole subtree is
+ * price basis) are NOT part of the card at all: v2.7 header parity moved them
+ * UNDER EACH PAGE'S CHART (HeroNotes), so neither the card nor the page skeleton
+ * below it can change height on one perspective only. The whole subtree is
  * `lg:hidden` — at ≥1024px the callers render their desktop hero instead.
  *
  * Presentation only: every figure and label arrives formatted from the caller.
@@ -59,7 +60,6 @@ export function CompactHeroCard({
   currency,
   talkSection,
   talkPeriod,
-  notes = [],
 }: {
   title: string;
   /** The canonical freshness claim ("Last checked 2 hr ago"), or null. */
@@ -79,10 +79,7 @@ export function CompactHeroCard({
   currency: string;
   talkSection: TalkSection;
   talkPeriod?: unknown;
-  /** Exceptional disclosures — rendered below the card, never inside it. */
-  notes?: ReactNode[];
 }) {
-  const shownNotes = notes.filter(Boolean);
   return (
     <div className="lg:hidden" data-compact-hero-wrap>
       <section
@@ -126,11 +123,6 @@ export function CompactHeroCard({
           <TalkAboutThis section={talkSection} period={talkPeriod} />
         </div>
       </section>
-      {shownNotes.length > 0 && (
-        <div className="lg:hidden mt-2 space-y-0.5 px-1 text-[11px] leading-snug text-[var(--text-muted)]" data-compact-hero-notes>
-          {shownNotes.map((n, i) => <p key={i}>{n}</p>)}
-        </div>
-      )}
     </div>
   );
 }

@@ -29,6 +29,7 @@ import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
+import { HeroEyebrow } from "@/components/space/hero/HeroParts";
 import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import { WealthUnavailable, DeltaBadge } from "./wealth-ui";
 import { investedClassLabel } from "@/lib/wealth/invested-label";
@@ -132,12 +133,7 @@ export function WealthHero({
   const confidenceChip = <TrustIndicator variant="compact" envelope={envelope} />;
 
   // Eyebrow + confidence — the quiet label above the figure (prototype hero).
-  const eyebrow = (
-    <div className="flex items-center justify-between gap-3">
-      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{metricLabel}</p>
-      {confidenceChip}
-    </div>
-  );
+  const eyebrow = <HeroEyebrow label={metricLabel} trust={confidenceChip} />;
 
   if (!asOfState.found) {
     return (
@@ -153,7 +149,8 @@ export function WealthHero({
   // entry. The freshness claim is the canonical "Last checked N ago"
   // (freshnessLabel) — never the snapshot date labelled as fresh data; the
   // as-of date is stated on the range row. The crypto price basis is an
-  // exceptional note BELOW the card, never a sixth row.
+  // exceptional note the WORKSPACE renders under the chart on compact (desktop
+  // keeps it inline on the as-of line) — never a sixth row, never below the card.
   const compactRange = compareState?.found && compareState.date && asOfState.date
     ? `${formatWealthDate(compareState.date)} → ${formatWealthDate(asOfState.date)}`
     : (asOfLabel ?? "");
@@ -170,7 +167,6 @@ export function WealthHero({
         currency={currency}
         talkSection={TALK_SECTION[metric]}
         talkPeriod={timePreset}
-        notes={cryptoPriceNote ? [cryptoPriceNote] : []}
       />
 
       {/* DESKTOP (≥lg) — the bare hero, no card, no border. The most important

@@ -173,12 +173,14 @@ const notesOf = (h: string) => text((cardOf(h).match(/data-compact-hero-notes="t
     text(rowsOf(fixtures["Net worth (+)"])[3].html) === "Sep 26, 2026 → Oct 16, 2026" && text(rowsOf(fixtures["Net worth (no comparison)"])[3].html) === "As of Oct 16, 2026");
   check("R1 truncates the freshness claim beside the title", /<span class="ml-auto min-w-0 truncate[^"]*" title="Last checked 2 hr ago" data-compact-hero-freshness="true">Last checked 2 hr ago<\/span>/.test(rowsOf(fixtures["Debt (+)"])[0].html));
 
-  // Exceptional disclosures — visible, directly BELOW the card, never a sixth row.
+  // DELIBERATE (owner, v2.7 header parity): exceptional disclosures are no
+  // longer below the card — they render under each page's chart (HeroNotes),
+  // so the card AND the skeleton beneath it are identical across perspectives.
   const crypto = wealth("netWorth", RESULT(1), { cryptoPriceNote: "Crypto at 2:00 PM prices" });
-  check("crypto price note: below the card, 5 rows kept", notesOf(crypto) === "Crypto at 2:00 PM prices" && rowsOf(crypto).length === 5);
+  check("crypto price note: not in / below the compact card, 5 rows kept", notesOf(crypto) === "" && !/Crypto at 2:00 PM/.test(cardOf(crypto)) && rowsOf(crypto).length === 5);
   const withheld = debt({ redactions: 3, historical: true, asOf: "2026-09-01" });
-  check("Debt withheld + historical: both notes below the card, 5 rows kept",
-    /Balances are current — the trend reflects Sep 1, 2026\./.test(notesOf(withheld)) && /3 account details withheld/.test(notesOf(withheld)) && rowsOf(withheld).length === 5);
+  check("Debt withheld + historical: no notes in / below the card, 5 rows kept",
+    notesOf(withheld) === "" && !/withheld|Balances are current/.test(cardOf(withheld)) && rowsOf(withheld).length === 5);
   check("no disclosure ⇒ no notes block", !/data-compact-hero-notes/.test(fixtures["Net worth (+)"]));
   check("no per-card heights or spacer hacks in the callers",
     !/\bh-\[|min-h-\[|style=\{\{\s*height/.test(read("components/space/widgets/wealth/WealthHero.tsx") + read("components/space/widgets/debt/DebtHero.tsx")));

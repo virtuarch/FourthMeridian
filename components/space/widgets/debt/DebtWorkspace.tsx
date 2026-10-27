@@ -53,7 +53,8 @@ import { renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adap
 import { computeDebtKpis } from "./debt-kpis";
 import { buildDebtSignals } from "./debt-signals";
 import { useDebtSpaceData } from "./useDebtSpaceData";
-import { DebtHero, debtCompactKpiItems, type DebtWindowChange } from "./DebtHero";
+import { DebtHero, debtCompactKpiItems, debtHeroNotes, type DebtWindowChange } from "./DebtHero";
+import { HeroNotes } from "@/components/space/hero/HeroParts";
 import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
 import { DebtBalanceHistory } from "./DebtBalanceHistory";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
@@ -324,6 +325,9 @@ export function DebtWorkspace({
           compareTo={compareTo}
           onSelectPoint={handleSelectPoint}
         />
+        {/* v2.7 header parity — the headline's qualifying disclosures live UNDER
+            THE CHART (every width), never in / below the header. */}
+        <HeroNotes notes={debtHeroNotes({ historical, asOf, redactions })} />
         {error && (
           <button
             type="button"

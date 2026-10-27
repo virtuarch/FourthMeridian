@@ -30,6 +30,7 @@ import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { DebtKpis } from "./debt-kpis";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
+import { HeroEyebrow } from "@/components/space/hero/HeroParts";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
 
 /** The balance-history window delta, ready for the badge (snapshot basis). */
@@ -96,8 +97,9 @@ export function DebtHero({
       {/* v2.7 visual-first — COMPACT (<lg): the shared five-row card, the same
           as Net Worth. In a HISTORICAL view the headline is present-day while the
           trend is as-of, so no change is printed beside it (different bases);
-          the "Balances are current" and withheld-details disclosures render as
-          visible notes BELOW the card, never as extra rows. */}
+          the "Balances are current" and withheld-details disclosures are
+          debtHeroNotes(), rendered under the balance-history chart (HeroNotes)
+          so they never change the header skeleton. */}
       <CompactHeroCard
         title="Total debt"
         freshness={freshnessLabel}
@@ -110,19 +112,12 @@ export function DebtHero({
         currency={currency}
         talkSection="debt"
         talkPeriod={timePreset}
-        notes={[
-          historical ? `Balances are current — the trend reflects ${formatDate(asOf)}.` : null,
-          withheld,
-        ]}
       />
 
       {/* DESKTOP (≥lg) — bare hero, no card, no border. The headline is the
           point; the read surfaces (chart, ledger) sit below. */}
       <section className="max-lg:hidden">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Total debt</p>
-          <TrustIndicator variant="compact" envelope={envelope} />
-        </div>
+        <HeroEyebrow label="Total debt" trust={<TrustIndicator variant="compact" envelope={envelope} />} />
 
         <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
           <Figure
@@ -155,13 +150,6 @@ export function DebtHero({
           <span className="text-[var(--text-muted)]"> · {historical ? "current balances" : `as of ${asOfShown}`}{withheld ? ` · ${withheld}` : ""}</span>
         </p>
 
-        {/* PARTIAL-capability honesty: in a historical view the balances are still
-            present-day; only the trend, verdict, and trust honour the selected date. */}
-        {historical && (
-          <p className="mt-1 text-[11px] text-[var(--text-faint)]">
-            Balances are current — the trend below reflects {formatDate(asOf)}.
-          </p>
-        )}
 
         {/* Quiet secondary stats — the retired KPI strip, folded into a single inline
             line rather than a card grid. Each renders only when honestly available. */}
@@ -183,6 +171,21 @@ export function DebtHero({
       </section>
     </div>
   );
+}
+
+/**
+ * v2.7 header parity — the disclosures that QUALIFY the headline, owned here
+ * (the hero's wording) but rendered by the workspace under the balance-history
+ * chart. In a past As-Of the total owed is present-day (computeDebtKpis over
+ * today's accounts — Debt is temporalCapability PARTIAL) while the chart is
+ * as-of, so the reader must be told; withheld details likewise. Never in the
+ * header, where they made Debt's skeleton taller than Net Worth / Assets.
+ */
+export function debtHeroNotes(args: { historical: boolean; asOf: string; redactions: number }): string[] {
+  return [
+    args.historical ? `Total debt above uses current balances — the chart reflects ${formatDate(args.asOf)}.` : null,
+    args.redactions > 0 ? `${args.redactions} account detail${args.redactions === 1 ? "" : "s"} withheld` : null,
+  ].filter((n): n is string => n != null);
 }
 
 /**
