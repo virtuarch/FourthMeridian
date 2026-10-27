@@ -47,7 +47,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 
 console.log("1. Overview exposes only Net Worth + Cash Flow + Markets");
 check("the default lens is Net Worth", NET_WORTH_LENS_ID === "networth");
-check("the other engageable lenses are Cash Flow, then Markets", CORE_LENS_IDS.join() === "cashFlow,markets");
+check("the other engageable lenses are Cash Flow, Spending, then Markets (v2.7 owner: Spending is its own lens)", CORE_LENS_IDS.join() === "cashFlow,spending,markets");
 check("liquidity / investments / debt are not lens-rail ids", !CORE_LENS_IDS.some((id) => ["liquidity", "investments", "debt"].includes(id)));
 check("the host builds the rail from NET_WORTH_LENS_ID + CORE_LENS_IDS only",
   HOST.includes("id: NET_WORTH_LENS_ID") && HOST.includes("CORE_LENS_IDS.map"));
@@ -55,7 +55,7 @@ check("the host builds the rail from NET_WORTH_LENS_ID + CORE_LENS_IDS only",
 console.log("2. Registry ↔ renderer parity");
 {
   const rendererIds = Object.keys(WORKSPACE_RENDERERS).sort();
-  check("renderer map is exactly {cashFlow, markets, wealth}", rendererIds.join() === "cashFlow,markets,wealth");
+  check("renderer map is exactly {cashFlow, markets, spending, wealth}", rendererIds.join() === "cashFlow,markets,spending,wealth");
   // UI-014 — a renderer id may also be `comingSoon`: the renderer map then
   // gates it onto the WorkspaceComingSoon placeholder (workspaces.test.ts §6).
   check("every renderer id is a registered perspective (available, or comingSoon and gated)",
@@ -110,28 +110,42 @@ console.log("5. Sidebar — every published anchor renders");
   const liqIds = idsIn(LIQ);
   const invIds = idsIn(INV);
   const debtIds = idsIn(strip(DEBT));
-  check("Total publishes Summary → Balance history → Composition → What moved it → Explanation",
-    WEALTH_TOTAL_SECTIONS.map((s) => s.label).join(" · ") === "Summary · Balance history · Composition · What moved it · Explanation");
+  // v2.7 visual-first — DELIBERATE: the Explanation section is removed (owner).
+  check("Total publishes Summary → Balance history → Composition → What moved it",
+    WEALTH_TOTAL_SECTIONS.map((s) => s.label).join(" · ") === "Summary · Balance history · Composition · What moved it");
   check("every Total anchor is an id in WealthWorkspace", WEALTH_TOTAL_SECTIONS.every((s) => s.anchor && wealthIds.has(s.anchor)));
-  const assets = assetsSections({ hasHistory: true });
-  check("Assets publishes the wealth slots + Cash + Investments + Real assets (RWA-1)",
-    assets.map((s) => s.label).join(" · ") === "Summary · Balance history · Composition · What moved it · Cash · Investments · Real assets");
-  check("every Assets anchor is an id in WealthWorkspace", assets.every((s) => s.anchor && wealthIds.has(s.anchor)));
-  check("with no snapshot history Assets publishes only Cash + Investments + Real assets (the sections that still render)",
-    assetsSections({ hasHistory: false }).map((s) => s.label).join() === "Cash,Investments,Real assets");
+  // v2.7 visual-first — DELIBERATE: the slice is the render rule, so each slice
+  // publishes only the sections it renders.
+  const assets = assetsSections({ hasHistory: true, slice: "all" });
+  const label = (l: { label: string }[]) => l.map((s) => s.label).join(" · ");
+  check("Assets → All publishes the wealth slots only",
+    label(assets) === "Summary · Balance history · Composition · What moved it");
+  check("Assets → Cash publishes Summary · Balance history · Cash",
+    label(assetsSections({ hasHistory: true, slice: "cash" })) === "Summary · Balance history · Cash");
+  check("Assets → Investments publishes Summary · Balance history · Investments · Real assets (RWA-1)",
+    label(assetsSections({ hasHistory: true, slice: "investments" })) === "Summary · Balance history · Investments · Real assets");
+  check("every Assets anchor (any slice) is an id in WealthWorkspace",
+    (["all", "cash", "investments"] as const).every((sl) => assetsSections({ hasHistory: true, slice: sl }).every((s) => s.anchor && wealthIds.has(s.anchor))));
+  check("with no snapshot history a slice publishes only its embedded sections (the ones that still render)",
+    assetsSections({ hasHistory: false, slice: "investments" }).map((s) => s.label).join() === "Investments,Real assets"
+      && assetsSections({ hasHistory: false, slice: "cash" }).map((s) => s.label).join() === "Cash"
+      && assetsSections({ hasHistory: false, slice: "all" }).length === 0);
   check("Explanation is Total-only (not an Assets anchor)", !assets.some((s) => s.label === "Explanation"));
   check("the embedded sections keep their inner ids for deep anchors", liqIds.has("liquidity-sources") && invIds.has("investments-holdings"));
   // Debt — the pre-existing absent-anchor bug is fixed.
   const full = debtSections({ hasLiabilities: true, hasDebt: true });
   const paidOff = debtSections({ hasLiabilities: true, hasDebt: false });
   const none = debtSections({ hasLiabilities: false, hasDebt: false });
-  check("Debt (owing) publishes all six", full.map((s) => s.label).join(" · ") === "Summary · Balance history · Liabilities · Cost & risk · Payoff · Credit health");
+  check("Debt (owing) publishes all seven (v2.7: + Where it's owed)", full.map((s) => s.label).join(" · ") === "Summary · Balance history · Where it's owed · Liabilities · Cost & risk · Payoff · Credit health");
   check("Debt (all paid off) keeps the STRUCTURAL Liabilities row, drops Cost & risk + Payoff",
     paidOff.map((s) => s.label).join(" · ") === "Summary · Balance history · Liabilities · Credit health");
   check("Debt (no liability accounts) drops Liabilities too", none.map((s) => s.label).join(" · ") === "Summary · Balance history · Credit health");
   check("every Debt anchor is an id in DebtWorkspace", full.every((s) => s.anchor && debtIds.has(s.anchor)));
   check("the liabilities ledger gate matches the anchor gate (liabilityCount > 0)", DEBT.includes("{liabilityCount > 0 && (") && DEBT.includes("hasLiabilities = liabilityCount > 0"));
-  check("the cost/payoff gate matches the anchor gate (hasDebt)", DEBT.includes("{hasDebt && (") && DEBT.includes("debtSections({ hasLiabilities, hasDebt })"));
+  // v2.7 parity — DELIBERATE CONTRACT CHANGE: the publisher now also passes the
+  // selected Debt class view (`view: cv`, All/Credit/Loans at every width) so the
+  // sidebar follows the class; the hasLiabilities / hasDebt gates are unchanged.
+  check("the cost/payoff gate matches the anchor gate (hasDebt)", DEBT.includes("{hasDebt && (") && /debtSections\(\{ hasLiabilities, hasDebt(?:, view: cv)? \}\)/.test(DEBT));
   check("embedded Cash / Investments publish nothing (one publisher per mode)", LIQ.includes("if (embedded) return;") && INV.includes("if (embedded) return;"));
   check("in Debt mode the Net Worth workspace publishes nothing (DebtWorkspace does)", /if \(mode === "debt"\) return;\s*publishSections\(/.test(WEALTHC));
 }
@@ -165,19 +179,27 @@ console.log("7. Total stays net-worth scoped; Liquid NW survives as a stat");
   check("Total secondary stats: Assets · Liabilities · Liquid NW", total.includes("Assets") && total.includes("Liabilities") && total.includes("Liquid NW") && total.includes("$24"));
   check("Assets headline is Total assets", assets.includes("Total assets") && assets.includes("$300"));
   check("Assets secondary stats: Cash · Investments (disjoint dimensions)", assets.includes("Cash") && assets.includes("Investments") && assets.includes("$20") && assets.includes("$35"));
-  check("Explanation renders only in Total", /mode === "total" && \([\s\S]*?<WealthExplanationCard/.test(WEALTHC));
+  // v2.7 visual-first — DELIBERATE: the Explanation card is gone at every width;
+  // v2.7 final UX pass — DELIBERATE: the "What moved" header's evidence doorway
+  // is removed from the customer UI too (snapshot provenance stays internal).
+  check("no Explanation card and no customer-facing evidence doorway",
+    !/WealthExplanationCard|wealth-explanation/.test(WEALTHC)
+      && !/onViewEvidence|setEvidenceOpen|<EvidenceDrawer/.test(WEALTHC));
   check("Total does NOT mount the Cash / Investments sections (mode === \"assets\" gate)", WEALTHC.includes('mode === "assets" ? (') );
   check("the page-level selector is Total | Assets | Debt (Chips, WEALTH_MODES)", WEALTHC.includes("WEALTH_MODES.map") && WEALTHC.includes('ariaLabel="Net worth view"'));
   check("the chart header no longer owns a metric switcher", !CHART.includes("<Chips") && CHART.includes("headerRight={headerRight}"));
 }
 
-console.log("8. Cash Flow is unchanged");
+console.log("8. Cash Flow and Spending pages (v2.7 final perspective UX pass)");
 {
-  check("Cash Flow sections unchanged", /Summary[\s\S]*cashflow-summary[\s\S]*Activity[\s\S]*cashflow-activity[\s\S]*Spending[\s\S]*cashflow-spending[\s\S]*Income[\s\S]*cashflow-income[\s\S]*What changed[\s\S]*cashflow-insights/.test(CASHFLOW));
-  check("Cash Flow still composes hero + summary + history + spending + debt payments + income + insights",
+  check("Cash Flow sections in page order", /Summary[\s\S]*cashflow-summary[\s\S]*Activity[\s\S]*cashflow-activity[\s\S]*Movements[\s\S]*cashflow-movements[\s\S]*Cash in[\s\S]*cashflow-income[\s\S]*What changed[\s\S]*cashflow-insights/.test(CASHFLOW));
+  check("Spending sections in page order", /Summary[\s\S]*spending-summary[\s\S]*Where it went[\s\S]*spending-distribution[\s\S]*Activity[\s\S]*spending-activity[\s\S]*Observations[\s\S]*spending-insights/.test(CASHFLOW));
+  check("Cash Flow still composes hero + summary + history + debt payments + ledger + insights",
     ["<CashFlowHero", "<CashFlowSummaryWidget", "<CashFlowHistoryWidget", "<DebtPaymentsWidget", "<CashFlowCategoryLedger", "<CashFlowInsightsCard"].every((n) => CASHFLOW.includes(n)));
-  check("Cash Flow renderer entry unchanged (period / asOf / compareTo / onSelectPeriod / envelope)",
+  check("Cash Flow renderer entry (period / asOf / compareTo / onSelectPeriod / envelope)",
     /cashFlow: \(ctx\) => \([\s\S]*?period=\{ctx\.cashFlowPeriod\}[\s\S]*?onSelectPeriod=\{ctx\.onSelectCashFlowPeriod\}[\s\S]*?onEnvelopeChange=\{ctx\.onEnvelopeChange\}/.test(read("components/space/workspaces/workspaceRenderers.tsx")));
+  check("Spending renderer entry (same contract inputs, view=spending)",
+    /spending: \(ctx\) => \([\s\S]*?view="spending"[\s\S]*?period=\{ctx\.cashFlowPeriod\}[\s\S]*?onSelectPeriod=\{ctx\.onSelectCashFlowPeriod\}[\s\S]*?onEnvelopeChange=\{ctx\.onEnvelopeChange\}/.test(read("components/space/workspaces/workspaceRenderers.tsx")));
 }
 
 if (failures > 0) { console.error(`\n${failures} overview-lenses check(s) failed`); process.exit(1); }

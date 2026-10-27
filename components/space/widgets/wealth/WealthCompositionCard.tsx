@@ -162,36 +162,25 @@ export function WealthCompositionCard({
     // Reuses the existing debt adapter (per-creditor / per-account bars). Snapshots
     // store only a debt scalar, so there is no historical per-creditor breakdown;
     // this is honestly badged current-only.
-    hint = <span className="text-[11px] text-[var(--text-muted)]">Current classification</span>;
+    hint = <CurrentHint label="Current · today's debts" detail="Current classification — your debts today, by creditor. Per-account debt history isn't tracked, so this reflects now, not the selected As Of date." />;
     content = (
       <Surface className="px-4 py-4">
-        <p className="text-[11px] text-[var(--text-muted)] mb-3 leading-relaxed">
-          Current classification — your debts today, by creditor. Per-account debt
-          history isn&apos;t tracked, so this reflects now, not the selected As Of date.
-        </p>
         {renderDebtByAccount(accounts, ctx)}
       </Surface>
     );
   } else if (regime === "liquid") {
     // ── Liquid — present-day reachability ladder from the liquidity adapter. ──────
-    hint = <span className="text-[11px] text-[var(--text-muted)]">Current classification</span>;
+    hint = <CurrentHint label="Current · today's accounts" detail="Current classification — where your money sits by how quickly you can reach it. Reflects today's accounts, not the selected As Of date." />;
     content = (
       <Surface className="px-4 py-4">
-        <p className="text-[11px] text-[var(--text-muted)] mb-3 leading-relaxed">
-          Current classification — where your money sits by how quickly you can
-          reach it. Reflects today&apos;s accounts, not the selected As Of date.
-        </p>
         {renderLiquidityLadder(accounts, ctx)}
       </Surface>
     );
   } else if (mode !== "class") {
     // ── Live-account modes — "Current classification", never historical. ──────────
-    hint = <span className="text-[11px] text-[var(--text-muted)]">Current classification</span>;
+    hint = <CurrentHint label="Current · today's accounts" detail="Current classification — reflects today's connected accounts, not the selected As Of date." />;
     content = (
       <Surface className="px-4 py-4">
-        <p className="text-[11px] text-[var(--text-muted)] mb-3 leading-relaxed">
-          Current classification — reflects today&apos;s connected accounts, not the selected As Of date.
-        </p>
         {mode === "institution"
           ? renderInstitutionAllocation(accounts, ctx, { onSelect: setSelectedId, selectedId })
           : mode === "account"
@@ -340,5 +329,20 @@ export function WealthCompositionCard({
         )}
       </RightPanel>
     </Block>
+  );
+}
+
+/**
+ * v2.7 visual-first — the live-account regimes' as-of caveat, stated in the
+ * header hint ("Current · today's accounts") instead of a paragraph. The full
+ * sentence stays available as the hint's title and accessible description, so
+ * the caveat (these modes do NOT follow the selected As Of date) is never lost.
+ */
+function CurrentHint({ label, detail }: { label: string; detail: string }) {
+  return (
+    <span className="text-[11px] text-[var(--text-muted)]" title={detail} data-current-classification>
+      {label}
+      <span className="sr-only"> — {detail}</span>
+    </span>
   );
 }

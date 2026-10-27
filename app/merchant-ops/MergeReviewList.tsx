@@ -13,11 +13,16 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { PendingMergeCandidate } from "@/lib/transactions/merchant-merge-review";
+import { EMPTY_OPERATOR_REASON, OperatorReasonField, reasonPayload, type OperatorReasonValue } from "@/components/platform/widgets/OperatorReasonField";
 
 export function MergeReviewList({ candidates, canDecide }: { candidates: PendingMergeCandidate[]; canDecide: boolean }) {
   const router = useRouter();
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // SEC-PLAT-2 — every verdict carries a required, operator-chosen reason
+  // (lib/audit.ts REASON_REQUIRED_ACTIONS); never pre-selected.
+  const [reason, setReason] = useState<OperatorReasonValue>(EMPTY_OPERATOR_REASON);
+  const chosen = reasonPayload(reason);
 
   async function decide(c: PendingMergeCandidate, verdict: "MERGED" | "DISMISSED") {
     const rowKey = `${c.survivorKey}→${c.absorbedKey}`;
@@ -33,6 +38,7 @@ export function MergeReviewList({ candidates, canDecide }: { candidates: Pending
           absorbedKey: c.absorbedKey,
           evidenceTier: c.tier,
           evidenceSignal: c.signal,
+          reason: chosen,
         }),
       });
       if (!res.ok) {
@@ -52,6 +58,10 @@ export function MergeReviewList({ candidates, canDecide }: { candidates: Pending
   return (
     <div className="space-y-3">
       {error && <p className="text-sm text-red-600">{error}</p>}
+      {canDecide && (
+        <OperatorReasonField value={reason} onChange={setReason} disabled={busyKey !== null}
+          label="Reason — recorded with every merge or dismissal" />
+      )}
       {candidates.map((c) => {
         const rowKey = `${c.survivorKey}→${c.absorbedKey}`;
         const busy = busyKey === rowKey;
@@ -73,14 +83,14 @@ export function MergeReviewList({ candidates, canDecide }: { candidates: Pending
             </div>
             <div className="mt-3 flex gap-2">
               <button
-                disabled={busy || !canDecide}
+                disabled={busy || !canDecide || chosen === null}
                 onClick={() => decide(c, "MERGED")}
                 className="rounded bg-gray-900 px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
               >
                 {busy ? "Working…" : "Merge"}
               </button>
               <button
-                disabled={busy || !canDecide}
+                disabled={busy || !canDecide || chosen === null}
                 onClick={() => decide(c, "DISMISSED")}
                 className="rounded border border-gray-300 px-3 py-1 text-xs font-medium text-gray-700 disabled:opacity-50"
               >

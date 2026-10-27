@@ -140,9 +140,9 @@ export function formatDateTimeShort(iso: string | null | undefined): string {
  *   - event handlers
  *   - after-mount state (e.g. useRelativeTime hook)
  */
-export function formatRelativeTime(iso: string | null | undefined): string {
+export function formatRelativeTime(iso: string | null | undefined, nowMs: number = Date.now()): string {
   if (!iso) return "—";
-  const diffMs  = Date.now() - new Date(iso).getTime();
+  const diffMs  = nowMs - new Date(iso).getTime();
   const diffMin = Math.floor(diffMs / 60_000);
   if (diffMin < 1)  return "just now";
   if (diffMin < 60) return `${diffMin} min ago`;
@@ -153,6 +153,44 @@ export function formatRelativeTime(iso: string | null | undefined): string {
   const diffMo = Math.floor(diffDay / 30);
   if (diffMo < 12)  return `${diffMo} month${diffMo !== 1 ? "s" : ""} ago`;
   return `${Math.floor(diffMo / 12)} year${Math.floor(diffMo / 12) !== 1 ? "s" : ""} ago`;
+}
+
+/**
+ * v2.7 — THE "Updated …" freshness phrase for a source's last SUCCESSFUL data
+ * receipt: "just now", "37 min ago", "1 hr ago", "yesterday", "Oct 24".
+ *
+ * Under a day it IS `formatRelativeTime` (same tiers, same words as the dashboard
+ * header's "Last checked N ago") — one convention, not two. Past a day it stops
+ * counting ("3 days ago" reads as precise when the date is what matters):
+ *
+ *   elapsed < 24 h        → formatRelativeTime   ELAPSED, timezone-independent
+ *   24 h ≤ elapsed < 48 h → "yesterday"          ELAPSED, timezone-independent
+ *   elapsed ≥ 48 h        → "Oct 24"             ABSOLUTE date in the VIEWER's
+ *                                                locale and time zone ("Oct 24, 2025"
+ *                                                when the year differs)
+ *
+ * Elapsed time is computed from absolute instants only (`nowMs` − timestamp), so the
+ * same moment reads the same in every time zone; only the absolute-date tier uses
+ * the viewer's calendar. A timestamp slightly in the future (clock skew) reads
+ * "just now". Pure given `nowMs`, so a surface re-renders it on a clock tick.
+ */
+export function formatUpdatedAgo(iso: string | null | undefined, nowMs: number, timeZone?: string): string | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  const elapsed = nowMs - t;
+  if (elapsed < 86_400_000) return formatRelativeTime(iso, nowMs);
+  if (elapsed < 2 * 86_400_000) return "yesterday";
+  const d = new Date(t);
+  const sameYear = d.toLocaleDateString(undefined, { year: "numeric", timeZone })
+    === new Date(nowMs).toLocaleDateString(undefined, { year: "numeric", timeZone });
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }), timeZone });
+}
+
+/** "Updated 37 min ago" — or, with no timestamp, "Update time unavailable". */
+export function formatUpdatedLabel(iso: string | null | undefined, nowMs: number, timeZone?: string): string {
+  const ago = formatUpdatedAgo(iso, nowMs, timeZone);
+  return ago ? `Updated ${ago}` : "Update time unavailable";
 }
 
 // ── Greeting ──────────────────────────────────────────────────────────────────

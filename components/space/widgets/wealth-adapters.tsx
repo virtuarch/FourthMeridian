@@ -26,7 +26,7 @@ import { useState } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { WEALTH_CLASS_COLOR, DEFAULT_CHART_COLOR } from "@/lib/charts/chart-palette";
 import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
-import { classifyAccounts } from "@/lib/account-classifier";
+import { classifyAccounts, countedBalance } from "@/lib/account-classifier";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import { formatCurrency } from "@/lib/currency";
 import { convertMoney } from "@/lib/money/convert";
@@ -44,6 +44,10 @@ export interface WealthAdapterAccount {
   institution: string;
   balance:     number;
   currency:    string;
+  /** v2.7-P0 — the server-resolved ADJUSTED depository balance (SpaceAccount
+   *  .adjustedBalance); every per-account value here reads it through
+   *  countedBalance so composition rows reconcile with classifyAccounts totals. */
+  adjustedBalance?: number;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -101,7 +105,7 @@ export function wealthAccountRows(
       name:        a.name,
       institution: a.institution?.trim() || NO_INSTITUTION_LABEL,
       type:        a.type,
-      value:       inDisp(a.balance, a.currency, ctx),
+      value:       inDisp(countedBalance(a), a.currency, ctx),
     }))
     .filter((a) => a.value > 0)
     .sort((x, y) => y.value - x.value);
@@ -223,7 +227,7 @@ export function renderWealthAccountCards(
       id:          a.id,
       name:        a.name,
       institution: a.institution || "",
-      value:       inDisp(a.balance, a.currency, ctx),
+      value:       inDisp(countedBalance(a), a.currency, ctx),
       color:       accountColor(a.type),
     }))
     .filter((c) => c.value > 0)
@@ -595,7 +599,7 @@ export function renderWealthConcentration(
   ctx?:     ConversionContext,
 ): React.ReactElement {
   const valued = assetAccounts(accounts)
-    .map((a) => ({ a, v: inDisp(a.balance, a.currency, ctx) }))
+    .map((a) => ({ a, v: inDisp(countedBalance(a), a.currency, ctx) }))
     .filter((x) => x.v > 0);
   const total = valued.reduce((s, x) => s + x.v, 0);
 

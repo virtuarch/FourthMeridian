@@ -23,6 +23,7 @@
 import { SpaceTransactionsPanel } from "@/components/dashboard/widgets/SpaceTransactionsPanel";
 import type { Account as PersonalAccount } from "@/types";
 import type { SpaceAccount } from "@/lib/space/dashboard-types";
+import type { ConversionContext } from "@/lib/money/types";
 
 /** The scope caveat shown on the Transactions panel + the Overview doorway preview.
  *  Server-side KD-15 filtering means only fully-shared accounts' rows appear. */
@@ -32,12 +33,15 @@ export function TransactionsWorkspace({
   spaceId,
   accounts,
   initialAccountFilter,
+  ctx,
 }: {
   /** The Space the explorer queries. */
   spaceId: string;
   accounts: SpaceAccount[];
   /** Banking→Transactions retarget — deep-link account pre-filter. */
   initialAccountFilter: string | null;
+  /** v2.7 currency toggle — the Space transactions conversion context. */
+  ctx?: ConversionContext;
 }) {
   return (
     <div className="space-y-3 min-w-0">
@@ -46,6 +50,7 @@ export function TransactionsWorkspace({
         accounts={accounts.map((a) => ({ ...a, type: a.type as PersonalAccount["type"] })) as PersonalAccount[]}
         scopeNote={TX_SCOPE_NOTE}
         initialAccountFilter={initialAccountFilter}
+        ctx={ctx}
       />
     </div>
   );

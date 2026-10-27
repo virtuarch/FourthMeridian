@@ -22,6 +22,7 @@
 import "server-only";
 import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
+import { detailAccountLabel } from "@/lib/platform/incidents/account-label";
 import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
 import { staleWindowMs } from "@/lib/connections/health";
@@ -136,7 +137,9 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
         promptTokens: true, cachedPromptTokens: true, completionTokens: true, latencyMs: true, correlationId: true, turnIndex: true },
     }),
     client.auditLog.findMany({
-      where: { userId, performedByAdminId: { not: null } }, orderBy: { createdAt: "desc" }, take: OPERATOR_ACTIONS,
+      // SEC-PLAT-3 — profile VIEWS are audited but are not changes; they never
+      // crowd the operator-action list off its OPERATOR_ACTIONS window.
+      where: { userId, performedByAdminId: { not: null }, action: { not: AuditAction.CUSTOMER_PROFILE_VIEWED } }, orderBy: { createdAt: "desc" }, take: OPERATOR_ACTIONS,
       select: { id: true, action: true, createdAt: true, performedByAdminId: true, metadata: true },
     }),
     itemIds.length === 0 ? Promise.resolve([]) : client.auditLog.findMany({
@@ -144,6 +147,17 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
       select: { id: true, action: true, createdAt: true, performedByAdminId: true, metadata: true },
     }),
   ]);
+
+  // SEC-PLAT-3 (owner ruling P-4) — this profile is the authorized, AUDITED
+  // detail (the route records CUSTOMER_PROFILE_VIEWED before returning it), so
+  // the customer's own open incidents may name the affected account in full.
+  // Scoped to THIS customer's open-incident accounts only.
+  const incidentAccountIds = [...new Set(issues.map((i) => i.financialAccountId).filter((x): x is string => !!x && accountIds.includes(x)))];
+  const incidentAccounts = incidentAccountIds.length === 0 ? [] : await client.financialAccount.findMany({
+    where: { id: { in: incidentAccountIds } },
+    select: { id: true, name: true, institution: true, type: true, mask: true },
+  });
+  const accountLabels = new Map(incidentAccounts.map((a) => [a.id, detailAccountLabel(a)] as const));
 
   const itemSet = new Set(itemIds);
   const seen = new Set(userActions.map((a) => a.id));
@@ -169,7 +183,7 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     spaces: projectSpaces(memberships),
     activity: projectActivity({ lastSessionActiveAt: sessions._max.lastActiveAt, lastLoginAt: lastLogin?.createdAt ?? null, activeSessions }),
     connections: projectConnections(plaid, wallets, { bank: staleWindowMs(policies.BANK), wallet: staleWindowMs(policies.WALLET) }, now.getTime()),
-    incidents: projectIncidents(issues, executions, webhooks),
+    incidents: projectIncidents(issues, executions, webhooks, accountLabels),
     ai: projectAiUsage(invocations, AI_WINDOW_DAYS),
     rollup: projectRollup({
       invocations30d: invocations.filter((i) => i.surface !== null && ENGAGEMENT_AI_SURFACES.includes(i.surface)),
@@ -184,7 +198,8 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     operatorActions,
     actions: {
       assignPolicy: true, assignCohort: true, refreshAll: user.deactivatedAt === null,
-      deactivate: { url: `/api/platform/growth-revenue/users/${user.id}`, method: "POST", currently: user.deactivatedAt ? "DEACTIVATED" : "ACTIVE" },
+      // SEC-PLAT-4 — account access is a Customer Success action (fresh CS WRITE).
+      deactivate: { url: `/api/platform/customer-success/customers/${user.id}/access`, method: "POST", currently: user.deactivatedAt ? "DEACTIVATED" : "ACTIVE" },
       resendInvite: request && request.status === "APPROVED" ? { url: `/api/platform/growth-revenue/requests/${request.id}/resend`, method: "POST" } : null,
     },
     checkedAt: now.toISOString(),

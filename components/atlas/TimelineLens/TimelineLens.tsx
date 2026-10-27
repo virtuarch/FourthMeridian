@@ -46,6 +46,7 @@ export function TimelineLens({
   disabled = false,
   ariaLabel = "Change time period",
   className = "",
+  shortPeriodLabel,
 }: TimelineLensProps) {
   const [open, setOpen] = useState(false);
   const summaryId = useId();
@@ -81,9 +82,22 @@ export function TimelineLens({
         contentClassName="flex h-full items-center gap-2"
       >
         <CalendarRange size={14} strokeWidth={1.6} className="shrink-0 text-[var(--meridian-400)]" aria-hidden />
-        <strong id={periodId} className="whitespace-nowrap text-[13px] font-medium text-[var(--text-primary)]">
+        <strong
+          id={periodId}
+          className={shortPeriodLabel
+            ? "whitespace-nowrap text-[13px] font-medium text-[var(--text-primary)] max-lg:max-sm:hidden"
+            : "whitespace-nowrap text-[13px] font-medium text-[var(--text-primary)]"}
+        >
           {summary.periodLabel}
         </strong>
+        {/* Narrow screens (<sm) only: the short form ("1M", "YTD"). Hidden from
+            assistive tech — the full label above stays the description target
+            (aria-describedby reads a display:none node it references). */}
+        {shortPeriodLabel && (
+          <span aria-hidden data-timeline-period-short className="lg:hidden hidden max-sm:inline whitespace-nowrap text-[13px] font-medium text-[var(--text-primary)]">
+            {shortPeriodLabel}
+          </span>
+        )}
         <ChevronDown size={14} strokeWidth={1.6} className="shrink-0 text-[var(--text-faint)]" aria-hidden />
       </GlassPanel>
 

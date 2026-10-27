@@ -16,8 +16,9 @@
  *     deterministic contracts, AI, the Daily Brief and diagnostics;
  *   • a completeness tier that CHANGES how a figure should be read still
  *     surfaces beside that figure, via the hero's TrustIndicator;
- *   • CompletenessPopover / EvidenceDrawer remain, used by TrustIndicator and
- *     the Wealth workspace's per-point evidence.
+ *   • CompletenessPopover remains, used by TrustIndicator. The customer-facing
+ *     EvidenceDrawer (snapshot-provenance list) was removed in the v2.7 final
+ *     UX pass; `envelope.evidence` is still resolved for internal use.
  *
  * A caveat is different in kind: "FX rate unavailable" means a displayed total
  * is partial. That is not status chrome, so it stays.

@@ -280,6 +280,12 @@ export interface AccountSummaryItem {
    * consumer can read an unavailable balance as "worth 0" — the true value is the
    * native `balance`/`currency` above. A real number otherwise (equals `balance`
    * for same-currency accounts).
+   *
+   * v2.7-P0 — for a DEPOSITORY account this converts the ADJUSTED balance
+   * (`currentState.adjustedBalance`: C, or C + P when the provider's available
+   * figure proves the ledger lacks exactly the pending P), the same figure the
+   * section totals count, so per-account rows and totals still reconcile. Native
+   * `balance` stays the provider-reported ledger figure.
    */
   reportingBalance: number | null;
   /**
@@ -403,6 +409,17 @@ export interface AccountSummaryItem {
     unexplained?: number;
     /** One deterministic sentence stating what the numbers mean. */
     explanation:  string;
+    /**
+     * v2.7-P0 — depository only, native. The balance every total counts:
+     * `balance` (C), or C + pendingSum only when the provider's available figure
+     * proves the ledger lacks exactly that pending (basis PENDING_EXCLUDED).
+     */
+    adjustedBalance?: number;
+    /** v2.7-P0 — NO_PENDING | PENDING_EXCLUDED | PENDING_INCLUDED | UNPROVEN. */
+    balanceBasis?:    string;
+    /** v2.7-P0 — present (true) when pending exists but could not be reconciled:
+     *  the reported balance is used and may still include unposted pending. */
+    pendingNotReconciled?: true;
   };
   // NOTE: debt exposure is NOT re-declared here. `amountOwed` / `creditBalance` /
   // `liabilityState` already exist below (V25-SIDE-1) from the same authority the

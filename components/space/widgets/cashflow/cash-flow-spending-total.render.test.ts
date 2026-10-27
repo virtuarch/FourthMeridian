@@ -8,7 +8,7 @@
  * "Total spending" under the category list PRINTS the authority's total — the same
  * figure as the Spending tile — never a React sum of its lines, and discloses the
  * refunds no listed category absorbed so the lines on screen add up to it.
- * The Summary's gross card figure says "Charged", never "Spent".
+ * The gross card figure (now in Cash Flow's Transfers & movements) says "Charged", never "Spent".
  */
 
 import { createElement } from "react";
@@ -16,7 +16,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { CashFlowCategoryLedger } from "./CashFlowCategoryLedger";
-import { CashFlowSummaryWidget } from "@/components/space/widgets/CashFlowSummaryWidget";
+import { CashFlowMovements, movementLines } from "./CashFlowMovements";
 import { buildCashFlowSpaceData } from "@/lib/transactions/cash-flow-space-data";
 import { economicSpend } from "@/lib/transactions/cash-flow-projection";
 import type { Transaction } from "@/types";
@@ -76,11 +76,13 @@ console.log("2. nothing to reconcile ⇒ no adjustment line");
 
 console.log("3. the gross card figure says 'Charged', never 'Spent'");
 {
-  const html = text(renderToStaticMarkup(createElement(CashFlowSummaryWidget, {
-    transactions: ROWS, period: "MTD", accounts: ACCOUNTS, perspective: "liquidity",
-    windowRows: data.rows, facts: data.summary, context: data.context, hideHeadline: true,
+  // v2.7 — the gross card figure moved from the summary into Transfers & movements.
+  const chargedRows = data.rows.filter((r) => r.flowType === "SPENDING" && (r as { financialAccountId?: string }).financialAccountId === "cc");
+  const html = text(renderToStaticMarkup(createElement(CashFlowMovements, {
+    lines: movementLines({ context: data.context, charged: data.summary.creditCardSpending, chargedRows }),
+    invalidationKey: "MTD",
   })));
-  check("liquidity context row reads 'Charged on credit'", /Charged on credit \(no cash moved at purchase\)/.test(html), html.slice(0, 300));
+  check("liquidity context row reads 'Charged on credit' with its gross figure", /Charged on credit · 80(\.00)? · 1 purchase no cash moved at purchase/.test(html), html.slice(0, 300));
   check("…and no longer 'Spent on credit'", !/Spent on credit/.test(html));
 }
 
@@ -91,9 +93,10 @@ console.log("4. source guards — no second definition of a spending total in Re
   check("ledger never declares `const total =` (no summed total)", !/const total\s*=/.test(ledger));
   const ws = code(read("components/space/widgets/cashflow/CashFlowWorkspace.tsx"));
   check("workspace feeds Total spending from the contract's spending.net", /total=\{data\.spending\.net\}/.test(ws));
-  const sw = code(read("components/space/widgets/CashFlowSummaryWidget.tsx"));
-  check("summary tile split comes from economicSpendByTier, not min/max in React",
-    /economicSpendByTier\(facts\)/.test(sw) && !/Math\.min\(\s*facts\.creditCardSpending/.test(sw));
+  // v2.7 — the credit / direct split now lives on the Spending page.
+  check("the Spending tier split comes from economicSpendByTier, not min/max in React",
+    /economicSpendByTier\(data\.summary\)/.test(ws) && !/Math\.min\(\s*\w*\.?creditCardSpending/.test(ws)
+      && !/Math\.(min|max)/.test(code(read("components/space/widgets/cashflow/SpendingSections.tsx"))));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

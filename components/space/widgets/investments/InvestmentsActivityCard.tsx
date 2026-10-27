@@ -11,6 +11,7 @@
  * arithmetic; every number and sentence is the model's.
  */
 
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { useState } from "react";
 import { ArrowDownLeft, ArrowUpRight, Repeat, ChevronRight } from "lucide-react";
 import type { PeriodFlows } from "@/lib/investments/investment-flows-core";
@@ -92,7 +93,9 @@ const GROUP_ICON: Record<ActivityGroupKey, typeof ArrowDownLeft> = {
 
 export function InvestmentsActivityCard({ flows }: { flows: PeriodFlows | null }) {
   const model = buildActivityGroups(flows);
-  const currency = flows?.reportingCurrency ?? "USD";
+  // v2.7 — fallback label is the display-currency authority, never a USD literal.
+  const displayCurrencyAuthority = useDisplayCurrency();
+  const currency = flows?.reportingCurrency ?? displayCurrencyAuthority;
 
   if (model.state !== "events") {
     return <p className="text-sm py-4" style={{ color: "var(--text-muted)" }}>{model.message}</p>;

@@ -143,8 +143,14 @@ console.log("3. Intent callbacks preserved — adapters, not legacy plumbing");
   const host = readFileSync(path.join(ROOT, "components/dashboard/SpaceDashboard.tsx"), "utf8");
   check("the host still routes presets through handleSelectSlice",
     /onSelectPreset=\{handleSelectSlice\}/.test(host));
-  check("handleSelectSlice still clears the Cash-Flow override",
-    /isExplicitPeriod\(slice\)[\s\S]{0,400}setCashFlowExplicitPeriod\(null\)/.test(host));
+  // v2.7 — the explicit calendar unit lives IN the flow time group: the host routes
+  // it there, and a relative preset goes through the reducer, which ENDS the unit
+  // (reduceGroupTime returns explicit: null) — the header is the master.
+  check("handleSelectSlice routes an explicit unit to the group and a preset to the reducer",
+    /isExplicitPeriod\(slice\)\) \{ shell\.setExplicitPeriod\(slice\); return; \}[\s\S]{0,200}shell\.actions\.selectPreset\(slice\)/.test(host));
+  const groups = readFileSync(path.join(ROOT, "lib/space/perspective-time-groups.ts"), "utf8");
+  check("…and any header action clears the explicit unit (no stranded drill)",
+    /export function reduceGroupTime[\s\S]{0,500}return \{ time, lastRelative, explicit: null \};/.test(groups));
 }
 
 // ── 3b. The period control still DRIVES the window ───────────────────────────
@@ -221,8 +227,11 @@ console.log("6. Completeness / evidence still RESOLVED — only the header prese
   const envSrc = readFileSync(path.join(ROOT, "lib/perspectives/envelope.ts"), "utf8");
   check("the envelope contract still carries completeness, evidence and warnings",
     /completeness\?:\s*EnvelopeCompleteness/.test(envSrc) && /evidence\?:\s*EnvelopeEvidence/.test(envSrc) && /warnings\?:/.test(envSrc));
-  check("the shared detail surfaces still exist (TrustIndicator + Wealth use them)",
-    existsSync(path.join(ROOT, "components/space/shell/CompletenessPopover.tsx")) && existsSync(path.join(ROOT, "components/space/shell/EvidenceDrawer.tsx")));
+  // v2.7 final UX pass — the customer-facing EvidenceDrawer is deliberately GONE
+  // (its only mounts were TrustIndicator + the Wealth "What moved" header); the
+  // CompletenessPopover (the tier's reason) stays.
+  check("CompletenessPopover still exists; the customer-facing EvidenceDrawer does not",
+    existsSync(path.join(ROOT, "components/space/shell/CompletenessPopover.tsx")) && !existsSync(path.join(ROOT, "components/space/shell/EvidenceDrawer.tsx")));
   const trustRow = readFileSync(path.join(ROOT, "components/space/shell/ShellTrustRow.tsx"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   check("the shell trust row carries no Completeness / Evidence chip and no dead popover/drawer wiring",
     !/label="Completeness"|label="Evidence"|CompletenessPopover|EvidenceDrawer|useState/.test(trustRow));

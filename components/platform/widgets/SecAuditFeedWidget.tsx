@@ -12,8 +12,10 @@
  * the section is absorbed by the surface `sec_auth_posture` hosts.
  */
 
-import type { PlatformSection } from "../widget-kit";
-import { TwoLine } from "../platform-surface";
+import { useState } from "react";
+import { ScrollText } from "lucide-react";
+import { useWidgetFetch, type PlatformSection } from "../widget-kit";
+import { SectionSurface, TwoLine } from "../platform-surface";
 import type { PlatformAuditResponse } from "@/app/api/platform/security-ops/audit/route";
 import { auditRows, feedDepthText, type Fetched } from "./security-posture-view";
 import { SourceGate } from "./SecurityPostureParts";
@@ -45,7 +47,16 @@ export function EndUserAuthGroup({ audit, nowMs }: { audit: Fetched<PlatformAudi
   );
 }
 
-/** Registry export for `sec_audit_feed` — absorbed into the Security posture surface; renders nothing. */
+/** Platform redesign §4.9 — the Audit workspace: the end-user security feed on its own surface. */
+export const AUDIT_SURFACE_TITLE = "End-user security events";
+
+/** Registry export for `sec_audit_feed` — the Security › Audit workspace (no longer absorbed by the posture surface). */
 export function SecAuditFeedWidget(_props: { section: PlatformSection }) {
-  return null;
+  const audit = useWidgetFetch<PlatformAuditResponse>("/api/platform/security-ops/audit");
+  const [nowMs] = useState(() => Date.now());
+  return (
+    <SectionSurface icon={ScrollText} title={AUDIT_SURFACE_TITLE}>
+      <EndUserAuthGroup audit={audit} nowMs={nowMs} />
+    </SectionSurface>
+  );
 }

@@ -28,6 +28,10 @@ import { useCallback, useEffect, useState } from "react";
 import { Archive, ChevronDown, ChevronUp, Loader2, PencilLine, Plus } from "lucide-react";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 import { formatCurrency } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
+import { convertMoney } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
 import { ESTIMATE_DISCLOSURE, estimateCaption } from "@/lib/assets/manual-asset";
 import { SPACE_DATA_REFRESHED_EVENT } from "@/lib/space-nav";
 import { GlassButton } from "@/components/atlas/GlassButton";
@@ -82,14 +86,36 @@ async function fetchValuationHistory(accountId: string): Promise<{ anchors?: { d
   return (await res.json().catch(() => null)) as { anchors?: { date: string }[] } | null;
 }
 
-export function RealAssetsSection({ spaceId, spaceType, active = true }: {
+/**
+ * v2.7 currency toggle — an asset's value in the Space display currency
+ * (convertMoney at the yesterday rate, the AccountsLedger `toDisplay`
+ * convention), with the native figure as a quiet subline when foreign. No
+ * context, or an unavailable rate ⇒ the native figure alone (never a relabel).
+ */
+export function realAssetValueDisplay(
+  balance: number,
+  currency: string,
+  ctx?: ConversionContext,
+): { primary: string; native: string | null } {
+  const nativeLabel = formatCurrency(balance, currency);
+  if (!ctx || currency === ctx.target) return { primary: nativeLabel, native: null };
+  const c = convertMoney({ amount: balance, currency }, yesterdayUTCISO(), ctx);
+  if (c.amount === null) return { primary: nativeLabel, native: null };
+  return { primary: `${c.estimated ? "≈ " : ""}${formatCurrency(c.amount, ctx.target)}`, native: nativeLabel };
+}
+
+export function RealAssetsSection({ spaceId, spaceType, active = true, ctx }: {
   spaceId: string;
+  /** v2.7 — the Space conversion context; values render in its target. */
+  ctx?: ConversionContext;
   /** RWA-2B — "PERSONAL" | "SHARED"; the consent offer is PERSONAL-only (absent ⇒ never). */
   spaceType?: string;
   active?: boolean;
 }) {
   const [rows,  setRows]  = useState<AccountDetailRow[]>([]);
   const [state, setState] = useState<LoadState>("loading");
+  // v2.7 — fallback for a row without a currency: the display-currency authority.
+  const displayCurrency = useDisplayCurrency();
   const [adding,     setAdding]     = useState(false);
   const [revaluing,  setRevaluing]  = useState<AccountDetailRow | null>(null);
   const [archiving,  setArchiving]  = useState<AccountDetailRow | null>(null);
@@ -145,12 +171,12 @@ export function RealAssetsSection({ spaceId, spaceType, active = true }: {
         setPendingOffer({
           accountId: written.accountId,
           name:      written.name ?? rows.find((r) => r.id === written.accountId)?.name ?? "This asset",
-          currency:  written.currency ?? rows.find((r) => r.id === written.accountId)?.currency ?? "USD",
+          currency:  written.currency ?? rows.find((r) => r.id === written.accountId)?.currency ?? displayCurrency,
           offer,
         });
       })
       .catch(() => { /* the offer is optional; the write already succeeded */ });
-  }, [announceChange, spaceType, rows]);
+  }, [announceChange, spaceType, rows, displayCurrency]);
 
   async function confirmArchive() {
     if (!archiving) return;
@@ -218,9 +244,15 @@ export function RealAssetsSection({ spaceId, spaceType, active = true }: {
             >
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-[var(--text-primary)]" title={r.name}>{r.name}</p>
-                <p className="mt-1 text-lg font-semibold tabular-nums text-[var(--text-primary)]">
-                  {formatCurrency(r.balance, r.currency)}
-                </p>
+                {(() => {
+                  const v = realAssetValueDisplay(r.balance, r.currency, ctx);
+                  return (
+                    <>
+                      <p className="mt-1 text-lg font-semibold tabular-nums text-[var(--text-primary)]">{v.primary}</p>
+                      {v.native && <p className="text-[11px] tabular-nums text-[var(--text-faint)]">{v.native}</p>}
+                    </>
+                  );
+                })()}
                 <p className="mt-0.5 text-xs text-[var(--text-muted)]">
                   {estimateCaption(r.freshness?.balance?.ingestedAt ?? null, now)}
                 </p>

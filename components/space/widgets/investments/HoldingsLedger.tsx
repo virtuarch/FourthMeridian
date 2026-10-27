@@ -15,6 +15,12 @@
  *
  * Presentation only — every figure is the InvestmentsSpaceData contract's, already
  * display-converted by the Workspace. Ranking/order is the DTO's, unchanged.
+ *
+ * v2.7 mobile/desktop parity — ONE list for every width. Compact used to have its
+ * own top-5 list with an in-place "Show all N" (no search), desktop a top-4 list
+ * whose "View all" opened the searchable panel. Now both show the same top
+ * HOLDINGS_TOP_N rows and the same "View all N holdings" doorway into the same
+ * searchable panel (a bottom sheet on a phone, the left panel on desktop).
  */
 
 import { useMemo, useState } from "react";
@@ -26,13 +32,14 @@ import { LeftPanel, RightPanel, PanelHeader, PanelContent } from "@/components/a
 import { rowKey, rowLabel, tierDotColor } from "./holdings-util";
 import { HoldingDetail } from "./HoldingDetail";
 
-const DEFAULT_TOP_N = 4;
+/** Rows the ledger shows before "View all N holdings" — every width. */
+export const HOLDINGS_TOP_N = 5;
 
 export function HoldingsLedger({
   holdings,
   reportingCurrency,
   accounts,
-  topN = DEFAULT_TOP_N,
+  topN = HOLDINGS_TOP_N,
 }: {
   holdings:          ValuedHoldingRow[];
   reportingCurrency: string;

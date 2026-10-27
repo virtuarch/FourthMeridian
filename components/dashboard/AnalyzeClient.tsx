@@ -99,6 +99,13 @@ interface Props {
   spaceName: string;
   /** The empty state's headline + chips (personal where memory supports it). */
   starter: StarterModel;
+  /**
+   * v2.7 R6 — the one templated question for the view the user came from
+   * ("Talk with Fourth Meridian about this"), or null. Shown as the FIRST chip,
+   * marked as suggested for that view, and sent only when clicked — through the
+   * same path as every other chip. Never auto-sent, never prefilled.
+   */
+  suggested?: { label: string; prompt: string } | null;
   /** Who this browser is, for the local transcript cache's key. */
   userId: string;
   /**
@@ -114,7 +121,7 @@ interface Props {
 }
 
 export function AnalyzeClient({
-  advice, starterIndex, spaceId, spaceName, starter, userId, expectTranscript,
+  advice, starterIndex, spaceId, spaceName, starter, suggested = null, userId, expectTranscript,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   /**
@@ -128,6 +135,9 @@ export function AnalyzeClient({
   const [composerEngaged, setComposerEngaged] = useState(false);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const [loading, setLoading] = useState(false);
+  // v2.7 R6.1 — the view's suggested question is offered once; after it is
+  // sent (from either placement) it is not offered again this visit.
+  const [suggestionUsed, setSuggestionUsed] = useState(false);
   /** True once a request in THIS session failed: that failure is announced; restored ones are shown, not re-announced. */
   const [failedThisSession, setFailedThisSession] = useState(false);
   /** Holds the AbortController for the in-flight /api/ai/chat request, if any. */
@@ -397,7 +407,15 @@ export function AnalyzeClient({
 
   const suggestions = (
     <div className="max-w-3xl mx-auto w-full">
-      <div role="group" aria-label="Suggestions" className="mt-4 flex flex-wrap justify-center gap-2">
+      {suggested && (
+        <p id="suggested-for-view" className="mt-4 text-center text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+          Suggested for this view
+        </p>
+      )}
+      <div role="group" aria-label="Suggestions" className={suggested ? "mt-2 flex flex-wrap justify-center gap-2" : "mt-4 flex flex-wrap justify-center gap-2"}>
+        {suggested && (
+          <SuggestedPrompt key="suggested-for-view" label={suggested.label} onSelect={() => { setSuggestionUsed(true); sendMessage(suggested.prompt); }} variant="chip" describedBy="suggested-for-view" emphasis />
+        )}
         {starter.prompts.map((s) => (
           <SuggestedPrompt key={s.label} label={s.label} onSelect={() => sendMessage(s.prompt)} variant="chip" />
         ))}
@@ -439,7 +457,17 @@ export function AnalyzeClient({
         />
       }
       aside={suggestions}
-      composer={
+      composer={<>
+        {/* v2.7 R6.1 — a returning user lands in their restored conversation,
+            where the empty-state chips never paint; the view's suggested
+            question is offered here instead. Click-to-send only, never
+            auto-sent or prefilled; hidden once used. */}
+        {mode === "conversation" && suggested && !suggestionUsed && !loading ? (
+          <div className="mx-auto mb-2 flex w-full max-w-3xl flex-wrap items-center gap-2 px-1" data-suggested-for-view-inline>
+            <span id="suggested-for-view-inline" className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Suggested for this view</span>
+            <SuggestedPrompt label={suggested.label} onSelect={() => { setSuggestionUsed(true); sendMessage(suggested.prompt); }} variant="chip" describedBy="suggested-for-view-inline" emphasis />
+          </div>
+        ) : null}
         <Composer
           value={input}
           onChange={(v) => { setInput(v); setComposerEngaged(true); }}
@@ -449,7 +477,7 @@ export function AnalyzeClient({
           busy={loading}
           textareaRef={composerInputRef}
         />
-      }
+      </>}
     >
       <ConversationView messages={messages} busy={loading} renderExtras={renderExtras}
         onRetry={() => void retryLast()}

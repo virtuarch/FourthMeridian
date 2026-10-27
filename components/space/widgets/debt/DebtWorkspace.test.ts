@@ -65,7 +65,12 @@ console.log("1. WORKSPACE BOUNDARY — owns the data, consumes the contract, no 
   // Trust converged onto the editorial hero: the workspace resolves + threads the ONE
   // envelope down, and the shared TrustIndicator lives in the hero (the lede's chip).
   check("Hero presents trust via the shared TrustIndicator (canonical envelope)", HERO.includes("TrustIndicator"));
-  check("Workspace threads the ONE envelope into the hero", CODE.includes("envelope={envelope}"));
+  // v2.7 final UX pass — DELIBERATE: the hero chip qualifies the PRESENT-DAY
+  // headline, so in a past As-Of it reads the present lens's envelope (same
+  // resolver), never the as-of reconstruction tier (Estimated badge confidence).
+  check("Workspace threads the hero envelope (present-day basis in a past As-Of) into the hero",
+    CODE.includes("envelope={heroEnvelope}")
+      && /presentFigureEnvelope\(\{ perspectiveId: "debt", historical: asOf < today, presentLens, onScreen: envelope \}\)/.test(CODE));
   check("Workspace consumes DebtSpaceData.fico", CODE.includes("data.fico"));
   // No LOCAL time model — asOf/compareTo are shell props threaded into the hook.
   check("no usePerspectiveShellState (no duplicate time authority)", !CODE.includes("usePerspectiveShellState"));

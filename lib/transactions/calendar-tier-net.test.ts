@@ -251,7 +251,9 @@ console.log("24. source guards — one authority, no React arithmetic, tiers lab
   const widget = code("components/space/widgets/CashFlowSummaryWidget.tsx");
   check("the Cash Out hint exists, is subordinate copy, and never calls Cash Out spending",
     widget.includes("CASH_OUT_HINT") && /hint=\{CASH_OUT_HINT\}/.test(widget));
-  check("a gross slice is labelled Charged, never Spending", widget.includes('spendLabel: "Charged"'));
+  // v2.7 — the "Charged on credit" drill moved to the Transfers & movements section.
+  check("a gross slice is labelled Charged, never Spending",
+    code("components/space/widgets/cashflow/CashFlowMovements.tsx").includes('spendLabel: "Charged"'));
 }
 
 console.log(failures === 0 ? `\nPASS — ${passed} checks` : `\nFAIL — ${failures} of ${passed + failures} check(s)`);

@@ -7,12 +7,16 @@
  * row per composition component that actually moved (the read model's
  * epsilon-filtered, |Δ|-sorted drivers), colored by whether the move was good
  * (liabilities DOWN is good), closing with a hairline-separated Net Change total.
- * Exactly ONE forward-phrased attribution note — the rows stay generic
- * {id,label,delta} so historical valuation (A9) can swap the source (market
- * growth vs. contributions) without a redesign; we NEVER label a row Market
- * Growth / Contributions / Income / Spending / Fees today. Honest states: no
- * comparison ⇒ the add-a-date prompt; a flat period ⇒ the flat note.
- * Presentation only — every number comes from the WealthResult.
+ * The rows stay generic {id,label,delta} so historical valuation (A9) can swap
+ * the source (market growth vs. contributions) without a redesign; we NEVER
+ * label a row Market Growth / Contributions / Income / Spending / Fees today.
+ * Honest states: no comparison ⇒ the add-a-date prompt; a flat period ⇒ the
+ * flat note. Presentation only — every number comes from the WealthResult.
+ *
+ * v2.7 visual-first — the forward-phrased attribution note is gone (narrative,
+ * owner-approved). v2.7 final UX pass — the header's Evidence doorway (a
+ * snapshot-provenance list) is removed from the customer UI; the provenance
+ * itself is still resolved in the envelope for internal use.
  *
  * V25-CLOSE-4A — the card is METRIC-AWARE. It reconciles with the SELECTED wealth
  * metric, not always net worth: the Net Change total is deltas[metric] and the
@@ -27,14 +31,6 @@ import { Surface, Block, Figure } from "@/components/atlas/Surface";
 import { WealthUnavailable, formatSigned } from "./wealth-ui";
 import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import { METRIC_DRIVER_COMPONENTS, METRIC_POSSESSIVE } from "./wealth-metric-facets";
-
-/**
- * The single forward-phrased attribution note (A9 slot contract). Deliberately
- * free of the reserved source labels — asserting that in the colocated test locks
- * the honesty rule.
- */
-export const ATTRIBUTION_NOTE =
-  "Attribution by market growth vs. contributions arrives with historical valuation.";
 
 /** A move is "good" when net worth rose from it — liabilities are good going DOWN. */
 export function driverGood(d: WealthDriver): boolean {
@@ -114,7 +110,6 @@ export function WealthChangeLedger({
           </div>
         </Surface>
       )}
-      <p className="mt-3 text-[11px] text-[var(--text-muted)] leading-relaxed">{ATTRIBUTION_NOTE}</p>
     </Block>
   );
 }

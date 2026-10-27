@@ -9,14 +9,18 @@
  * trust envelope outward.
  *
  *   ① InvestmentsHero        — portfolio value + period change + valued/total coverage
- *   ② Excluded               — positions that couldn't be valued, stated up front
- *   ③ Balance history        — invested value over time (the SHARED Net Worth chart)
- *   ④ This period            — the opening→in→out→change→closing movement bridge
- *   ⑤ Holdings               — top-few weight-bar ledger; "View all" → LeftPanel browser
+ *                              (standalone only — embedded, the Assets hero states it)
+ *   ② Balance history        — invested value over time (the SHARED Net Worth chart)
+ *      Accuracy status        — "Partial · N of M valued", only when partial
+ *   ③ Allocation             — "what do I own?" (the shared donut breakdown)
+ *   ④ Holdings               — top-few weight-bar ledger; "View all" → LeftPanel browser
  *                              → RightPanel detail (the Atlas panel primitives)
- *   ⑥ Allocation             — "what do I own?" (the shared donut breakdown)
- *   ⑦ Concentration          — "how exposed am I?" (largest / top-5 / sector)
- *   ⑧ Activity               — the period's money-in / money-out narrative
+ *   ⑤ Concentration          — "how exposed am I?" (largest / top-5 / sector)
+ *   ⑥ Accounts               — every investment account at its balance
+ *   ⑦ This period            — the opening→in→out→change→closing movement bridge
+ *
+ * v2.7 visual-first — the Activity narrative and the Excluded banner are gone
+ * (the bridge states the period's money in/out; the accuracy chip states coverage).
  *
  * DATA (never cross-derived — PCS-1): CURRENT portfolio from `data.current`; as-of/
  * compare + period change from `data.historical` (A10). The Balance-history series is
@@ -27,8 +31,9 @@
  * OVERVIEW-CONSOLIDATION — Investments is no longer a peer Overview lens. This
  * workspace now renders EMBEDDED as the INVESTMENTS SECTION of the unified Net
  * Worth → Assets page (`embedded`): the same data hook, the same contract, the
- * same bridge / holdings / allocation / concentration / activity / connections
- * surfaces. Embedded, it (a) renders its hero as a compact section header, (b)
+ * same bridge / holdings / allocation / concentration / accounts surfaces.
+ * Embedded, it (a) draws no hero (the page's Investments hero states the
+ * slice; the accuracy chip states any partial valuation), (b)
  * omits its own balance-history chart — the Assets chart directly above slices to
  * the SAME stocks + crypto series, carrying this lens's three-state confidence and
  * "N of M positions valued" disclosure per point — and (c) publishes neither
@@ -36,7 +41,7 @@
  * section keeps its own per-figure TrustIndicator.
  */
 
-import { useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { Info, Loader2, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
@@ -49,26 +54,27 @@ import { DataCard } from "@/components/atlas/DataCard";
 import { useInvestmentsSpaceData } from "./useInvestmentsSpaceData";
 // B-6 — THE today/history switch (one comparison, shared with the server).
 import { isHistoricalDay } from "@/lib/time/basis";
-import { InvestmentsActivityCard } from "./InvestmentsActivityCard";
 import { InvestmentsBridgeCard } from "./InvestmentsBridgeCard";
 import { InvestmentAccountsLedger } from "./InvestmentAccountsLedger";
-import { InvestmentAllocationPanel } from "./InvestmentAllocationPanel";
+import { InvestmentAllocationPanel, ALLOCATION_GROUPINGS } from "./InvestmentAllocationPanel";
+import { Dropdown } from "@/components/atlas/Dropdown";
+import type { AllocationDimension } from "@/lib/investments/investments-allocation-core";
 import { InvestmentsHero } from "./InvestmentsHero";
 import { InvestmentsBalanceHistory } from "./InvestmentsBalanceHistory";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { HoldingsLedger } from "./HoldingsLedger";
 import { HoldingsConcentration } from "./HoldingsConcentration";
+import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 
 /** The Investments workspace's own section anchors — what the sidebar shows as
  *  "what's inside" this workspace (each maps to a scroll-target id below). */
 const INVESTMENTS_SECTIONS: SpaceChromeSection[] = [
   { label: "Summary",         anchor: "investments-summary" },
   { label: "Balance history", anchor: "investments-history" },
-  { label: "This period",     anchor: "investments-period" },
-  { label: "Holdings",        anchor: "investments-holdings" },
   { label: "Allocation",      anchor: "investments-allocation" },
+  { label: "Holdings",        anchor: "investments-holdings" },
   { label: "Concentration",   anchor: "investments-concentration" },
-  { label: "Activity",        anchor: "investments-activity" },
+  { label: "This period",     anchor: "investments-period" },
 ];
 
 export function InvestmentsWorkspace({
@@ -87,6 +93,9 @@ export function InvestmentsWorkspace({
   embedded?: boolean;
 }) {
   const { data: raw, series: rawSeries, loading, error, reload, serverToday } = useInvestmentsSpaceData(spaceId, asOf, compareTo, active);
+  // v2.7 — the Allocation grouping, owned here so its Dropdown can sit in the
+  // Block header (Net Worth idiom); the panel renders the chosen axis.
+  const [allocationDimension, setAllocationDimension] = useState<AllocationDimension>("assetClass");
   // V26-S3-DETAIL — which historical point the reader asked about. The chart
   // reports a DATE and nothing else; the panel asks the canonical historical
   // authority what that date was made of.
@@ -175,12 +184,13 @@ export function InvestmentsWorkspace({
   if (isEmpty) {
     return (
       <div className="space-y-8 min-w-0">
-        <InvestmentsHero
-          compact={embedded}
-          attribution={data?.historical?.attribution ?? null}
-          portfolio={primary.portfolio} reconciliation={reconciliation}
-          reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
-        />
+        {!embedded && (
+          <InvestmentsHero
+            attribution={data?.historical?.attribution ?? null}
+            portfolio={primary.portfolio} reconciliation={reconciliation}
+            reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
+          />
+        )}
         <Surface className="px-4 py-8 text-center">
           <TrendingUp size={22} className="mx-auto text-[var(--text-faint)]" />
           <p className="mt-2 text-sm font-medium text-[var(--text-secondary)]">No holdings for this date</p>
@@ -193,41 +203,46 @@ export function InvestmentsWorkspace({
     );
   }
 
+  // v2.7 visual-first — valuation accuracy as ONE compact status chip, shown
+  // only when the valuation is partial ("Partial · 3 of 5 valued"); the reason
+  // is the chip's accessible description. Replaces the Excluded banner and the
+  // section hero's "N of M positions valued" line. The section's own trust chip
+  // (the investments envelope) sits beside it, silent on the clean tier.
+  const unvalued = primary.portfolio.unvaluedCount;
+  const statusRow = (
+    <div className="flex flex-wrap items-center gap-2 empty:hidden" data-investments-status>
+      {unvalued > 0 && (
+        <ValuationAccuracyChip
+          valued={primary.portfolio.valuedCount}
+          total={primary.portfolio.valuedCount + unvalued}
+          reason={primary.portfolio.unvalued[0]?.reason}
+        />
+      )}
+      {embedded && <TrustIndicator variant="compact" envelope={envelope} />}
+    </div>
+  );
+
   return (
-    <div className="space-y-8 sm:space-y-10 min-w-0">
+    <div className="space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!">
       {loading && (
         <div className="flex items-center gap-1.5 px-1 text-xs text-[var(--text-faint)]">
           <Loader2 size={12} className="animate-spin" aria-label="Refreshing" /> Updating…
         </div>
       )}
 
-      {/* ① Lede (embedded: the Investments section header). */}
-      <div id="investments-summary" className="scroll-mt-20">
-        <InvestmentsHero
-          compact={embedded}
-          attribution={data?.historical?.attribution ?? null}
-          portfolio={primary.portfolio} reconciliation={reconciliation}
-          reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
-        />
-      </div>
-
-      {/* Accounts — every investment account at its balance; holdings enrich it. */}
-      {accountsLedger}
-
-      {/* ② Excluded — the positions left out of the headline, stated up front. */}
-      {primary.portfolio.unvaluedCount > 0 && (
-        <ExcludedDisclosure count={primary.portfolio.unvaluedCount} reason={primary.portfolio.unvalued[0]?.reason} />
-      )}
-
-      {/* HIST-1D — shared-Space scope disclosure (transparency only; no number changes). */}
-      {scopeDivergence && (
-        <div className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs" style={{ background: "var(--surface-inset)", color: "var(--text-muted)" }} role="note">
-          <Info size={13} className="mt-0.5 shrink-0" aria-hidden />
-          <span><span className="font-medium text-[var(--text-secondary)]">{scopeDivergence.title}.</span> {scopeDivergence.note}</span>
+      {/* ① Lede — standalone only. Embedded (Assets → Investments), the page's
+          own Investments hero states the slice; no second "Valued holdings" card. */}
+      {!embedded && (
+        <div id="investments-summary" className="scroll-mt-20">
+          <InvestmentsHero
+            attribution={data?.historical?.attribution ?? null}
+            portfolio={primary.portfolio} reconciliation={reconciliation}
+            reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
+          />
         </div>
       )}
 
-      {/* ③ Balance history — invested value over time (the SHARED Net Worth chart).
+      {/* ② Balance history — invested value over time (the SHARED Net Worth chart).
            Embedded, the unified Assets chart above already slices to this SAME
            series WITH this lens's per-point confidence + coverage disclosures
            (wealth-trend-points.ts), so a second identical chart is not drawn. */}
@@ -237,14 +252,36 @@ export function InvestmentsWorkspace({
         </div>
       )}
 
-      {/* ④ This period — the opening → in → out → change → closing movement bridge. */}
-      <div id="investments-period" className="scroll-mt-20">
-        <Block label="This period">
-          <Surface className="p-4"><InvestmentsBridgeCard reconciliation={reconciliation} flows={flows} attribution={data?.historical?.attribution ?? null} /></Surface>
+      {/* Valuation accuracy (only when partial) + the section's trust chip. */}
+      {statusRow}
+
+      {/* HIST-1D — shared-Space scope disclosure (transparency only; no number changes). */}
+      {scopeDivergence && (
+        <div className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs" style={{ background: "var(--surface-inset)", color: "var(--text-muted)" }} role="note">
+          <Info size={13} className="mt-0.5 shrink-0" aria-hidden />
+          <span><span className="font-medium text-[var(--text-secondary)]">{scopeDivergence.title}.</span> {scopeDivergence.note}</span>
+        </div>
+      )}
+
+      {/* ③ Allocation — "what do I own?" (the shared donut breakdown).
+          v2.7 final UX pass (owner): Chart → Allocation donut → Holdings table at
+          EVERY width — plain DOM order, no CSS order/grid reordering, so compact
+          and desktop read identically. */}
+      <div id="investments-allocation" className="scroll-mt-20">
+        {/* v2.7 — the grouping Dropdown sits in the Block header, outside and above
+            the donut, exactly as Net Worth's "Where it sits" card does. */}
+        <Block label="Allocation" action={<Dropdown options={ALLOCATION_GROUPINGS} value={allocationDimension} onChange={setAllocationDimension} ariaLabel="Allocation grouping" />}>
+          <DataCard>
+            <InvestmentAllocationPanel
+              holdings={primary.holdings} accounts={accounts}
+              reportingCurrency={reportingCurrency} showConcentrationInsight={false}
+              dimension={allocationDimension}
+            />
+          </DataCard>
         </Block>
       </div>
 
-      {/* ⑤ Holdings — top-few weight-bar ledger; the bar IS the allocation view. */}
+      {/* ④ Holdings — top-few weight-bar ledger, directly under the donut it details. */}
       <Block
         id="investments-holdings"
         label="Holdings"
@@ -254,50 +291,49 @@ export function InvestmentsWorkspace({
         <HoldingsLedger holdings={primary.holdings} reportingCurrency={reportingCurrency} accounts={accounts} />
       </Block>
 
-      {/* ⑥ Allocation — "what do I own?" (the shared donut breakdown). */}
-      <div id="investments-allocation" className="scroll-mt-20">
-        <Block label="Allocation">
-          <DataCard>
-            <InvestmentAllocationPanel
-              holdings={primary.holdings} accounts={accounts}
-              reportingCurrency={reportingCurrency} showConcentrationInsight={false}
-            />
-          </DataCard>
-        </Block>
-      </div>
-
-      {/* ⑦ Concentration — "how exposed am I?" (largest / top-5 / sector). */}
+      {/* ⑤ Concentration — "how exposed am I?" (largest / top-5 / sector). */}
       <div id="investments-concentration" className="scroll-mt-20">
         <Block label="Concentration">
           <HoldingsConcentration holdings={primary.holdings} accounts={accounts} />
         </Block>
       </div>
 
-      {/* ⑧ Activity — the period's money-in / money-out narrative. */}
-      <div id="investments-activity" className="scroll-mt-20">
-        <Block label="Activity">
-          <Surface className="p-4"><InvestmentsActivityCard flows={flows} /></Surface>
+      {/* ⑥ Accounts — every investment account at its balance; holdings enrich it. */}
+      {accountsLedger}
+
+      {/* ⑦ This period — the opening → in → out → change → closing movement bridge. */}
+      <div id="investments-period" className="scroll-mt-20">
+        <Block label="This period">
+          <Surface className="p-4"><InvestmentsBridgeCard reconciliation={reconciliation} flows={flows} attribution={data?.historical?.attribution ?? null} /></Surface>
         </Block>
       </div>
-
     </div>
   );
 }
 
-/** The exclusion, stated up front (prototype thesis): positions that couldn't be
- *  valued are named ABOVE the ledger, not buried below it. We'd rather be short than
- *  wrong — a partial subtotal that admits what it left out beats a false-complete one. */
-function ExcludedDisclosure({ count, reason }: { count: number; reason?: string }): ReactNode {
+/**
+ * v2.7 visual-first — the valuation-accuracy status: a visible chip
+ * ("Partial · 3 of 5 valued") whose reason (which positions, why, and that they
+ * are not counted) is its title AND its accessible description. Never a prose
+ * banner; rendered only when at least one position could not be valued.
+ */
+export function ValuationAccuracyChip({ valued, total, reason }: { valued: number; total: number; reason?: string }): ReactNode {
+  const id = `valuation-accuracy-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const missing = total - valued;
+  const detail = `${missing} position${missing === 1 ? "" : "s"} couldn't be valued for this date${reason ? ` — ${reason}` : ""} — not counted in the figures.`;
   return (
-    <Surface tone="sunken" className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3">
-      <span className="rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide" style={{ background: "var(--glass-ultrathin)", color: "var(--text-secondary)" }}>
-        Excluded
+    <>
+      <span
+        role="note"
+        title={detail}
+        aria-describedby={id}
+        data-valuation-accuracy
+        className="inline-flex items-center gap-1 rounded-full border border-[var(--border-hairline)] px-2 py-0.5 text-[11px] font-medium tabular-nums"
+        style={{ color: "var(--accent-warning)", background: "color-mix(in srgb, var(--accent-warning) 12%, transparent)" }}
+      >
+        Partial · {valued} of {total} valued
       </span>
-      <p className="text-xs text-[var(--text-muted)]">
-        <span className="tabular-nums text-[var(--text-secondary)]">{count}</span> position{count === 1 ? "" : "s"} couldn&rsquo;t be valued for this date
-        {reason ? ` — ${reason}` : ""}<span className="text-[var(--text-secondary)]"> — not counted above.</span>
-      </p>
-      <span className="ml-auto text-[10px] text-[var(--text-faint)]">We&rsquo;d rather be short than wrong.</span>
-    </Surface>
+      <span id={id} className="sr-only">{detail}</span>
+    </>
   );
 }

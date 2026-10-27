@@ -509,7 +509,7 @@ function main() {
     check("no negative margin", !/(^|\s)-m[trbl]?-\d/.test(layoutClasses), layoutClasses);
     check("no breakpoint scoping on the overlay", !/(sm|md|lg|xl):/.test(doorwayClass), doorwayClass);
     check("the doorway labels are the registry's workspace labels",
-      doorways.map((d) => d.visible).join(",") === "Policies,Providers,Providers,Policies",
+      doorways.map((d) => d.visible).join(",") === "Controls,Providers,Providers,Controls", // P-10
       doorways.map((d) => d.visible).join(","));
 
     for (const group of ["alerts", "providers", "freshness", "configuration"] as const) {

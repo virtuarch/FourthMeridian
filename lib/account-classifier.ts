@@ -66,6 +66,29 @@ export interface ClassifiableAccount {
    * net-worth bucket it sits in. Absent/null = unknown.
    */
   providerSubtype?: string | null;
+  /**
+   * v2.7-P0 — the ADJUSTED depository balance (native currency) resolved by
+   * lib/balances/account-balances.ts#adjustedDepositoryBalance: C, or C + P only
+   * when the provider's own available figure proves the ledger lacks exactly the
+   * pending P. Read ONLY through `countedBalance` and ONLY for checking/savings.
+   * Absent/null ⇒ `balance` (historical reconstructions, client fallbacks and
+   * any caller that made no claim keep their exact prior arithmetic).
+   */
+  adjustedBalance?: number | null;
+}
+
+/**
+ * v2.7-P0 — THE balance a TOTAL counts for one account. Depository accounts
+ * (checking / savings, restricted included) count their adjusted balance when
+ * the server resolved one; every other account — and any depository row with no
+ * claim — counts `balance`, byte-for-byte as before. `balance` itself stays the
+ * provider-reported figure for display.
+ */
+export function countedBalance(a: { type: string; balance: number; adjustedBalance?: number | null }): number {
+  if ((a.type === "checking" || a.type === "savings") && typeof a.adjustedBalance === "number") {
+    return a.adjustedBalance;
+  }
+  return a.balance;
 }
 
 // ─── Liquidity tier (Cash Flow liquidity axis) ────────────────────────────────
@@ -294,9 +317,11 @@ function sumBalances(
   valuationDateISO: string | undefined,
   flag: { estimated: boolean; unconverted: boolean },
 ): number {
-  if (!ctx) return accounts.reduce((s, a) => s + a.balance, 0);
+  // v2.7-P0 — `countedBalance`: the adjusted figure for a depository row that
+  // carries one, else `balance` (identical arithmetic for every other row).
+  if (!ctx) return accounts.reduce((s, a) => s + countedBalance(a), 0);
   return accounts.reduce((s, a) => {
-    const c = convertMoney({ amount: a.balance, currency: a.currency ?? null }, valuationDateISO!, ctx);
+    const c = convertMoney({ amount: countedBalance(a), currency: a.currency ?? null }, valuationDateISO!, ctx);
     if (c.estimated) flag.estimated = true; // MC1 P3 Slice 2 — taint propagation (D-7)
     // V25-FINAL-1 — an unavailable member has NO target value (amount null): it is
     // EXCLUDED from the partial total (never a fake 0, never its native magnitude)

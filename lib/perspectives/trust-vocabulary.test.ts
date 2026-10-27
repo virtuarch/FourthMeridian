@@ -83,7 +83,10 @@ console.log("3. TrustIndicator is domain-neutral (no financial-domain imports)")
   }
   // It DOES consume the canonical trust contract + the shell's tier-agnostic surfaces.
   check("consumes the canonical PerspectiveEnvelope contract", src.includes("@/lib/perspectives/envelope"));
-  check("reuses the shell EvidenceDrawer (not a re-implementation)", src.includes("@/components/space/shell/EvidenceDrawer"));
+  // v2.7 final UX pass — the customer-facing Evidence affordance is removed; the
+  // primitive reuses the shell CompletenessPopover and mounts no evidence surface.
+  check("reuses the shell CompletenessPopover and mounts no Evidence drawer",
+    src.includes("@/components/space/shell/CompletenessPopover") && !/EvidenceDrawer|showEvidence/.test(src));
   // It must NOT compute trust — no tier ranking / worst-tier / propagate logic.
   check("does not calculate trust (no worstTier / propagate / buildCompleteness)",
     !/worstTier|propagateCompleteness|buildDebtCompleteness|buildLiquidityCompleteness/.test(src));

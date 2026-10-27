@@ -151,6 +151,15 @@ export function navContext(pathname: string | null | undefined): NavContext {
 }
 
 /**
+ * P-1 — the header's personal Refresh button belongs to the PERSONAL context
+ * only (it refreshes the viewer's own connections). Decided by the ROUTE, never
+ * by grants: a platform operator on any personal page still gets it.
+ */
+export function showsPersonalRefresh(pathname: string | null | undefined): boolean {
+  return navContext(pathname) !== "platform";
+}
+
+/**
  * Is a primary destination active for the given pathname? At most one is, for
  * any pathname. My Space is an exact match on /dashboard (every other dashboard
  * route is some other section's); the rest match by route prefix, so a nested

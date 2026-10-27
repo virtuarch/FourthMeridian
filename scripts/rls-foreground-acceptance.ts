@@ -815,7 +815,7 @@ async function main(): Promise<void> {
 
     // 58 — a real cross-tenant merge: Alice's AND Bob's rows re-pointed, decision and audit committed with it.
     await applyMergeReviewDecision(sys,
-      { verdict: "MERGED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "FORGED" }, "alice");
+      { verdict: "MERGED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "FORGED" }, { actor: { userId: "alice", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } });
     const audit58 = truth(`select metadata::text from "AuditLog" where action='MERCHANT_MERGE_APPLIED' order by "createdAt" desc limit 1`);
     const meta58 = audit58 ? JSON.parse(audit58) as { evidence: { tier: string }; recovery: Array<{ merchant: { id: string; displayName: string }; aliases: Array<{ aliasKey: string; source: string }>; transactionIds: string[] }> } : null;
     const rec = meta58?.recovery?.[0];
@@ -852,7 +852,7 @@ async function main(): Promise<void> {
 
     // 61 — eligibility: a pair the detector does not propose is refused before anything runs.
     const ineligible = await attempt(() => applyMergeReviewDecision(sys,
-      { verdict: "MERGED", survivorKey: "ZEBRA PETS", absorbedKey: "ACME HARDWARE SUPPLY", evidenceTier: "T1" }, "alice"));
+      { verdict: "MERGED", survivorKey: "ZEBRA PETS", absorbedKey: "ACME HARDWARE SUPPLY", evidenceTier: "T1" }, { actor: { userId: "alice", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } }));
     check(61, "[merchant-ops] a pair the detector does not propose cannot be merged — refused as ineligible, both merchants intact",
       !ineligible.ok && /not a pending merge candidate/.test(ineligible.error)
       && truth(`select count(*) from "Merchant" where id in ('m_unrelated','m_roll_s')`) === "2",
@@ -861,7 +861,7 @@ async function main(): Promise<void> {
 
     // 62 — a dismissal is audited in the same transaction as its decision, and changes no merchant.
     const dismissed = await attempt(() => applyMergeReviewDecision(sys,
-      { verdict: "DISMISSED", survivorKey: "ACME HARDWARE SUPPLY", absorbedKey: "ACME HARDWARE SUP", evidenceTier: "T2" }, "alice"));
+      { verdict: "DISMISSED", survivorKey: "ACME HARDWARE SUPPLY", absorbedKey: "ACME HARDWARE SUP", evidenceTier: "T2" }, { actor: { userId: "alice", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } }));
     check(62, "[merchant-ops] a dismissal records its decision AND a MERCHANT_MERGE_DISMISSED audit record, and touches no merchant",
       dismissed.ok && auditCount("MERCHANT_MERGE_DISMISSED") === 1
       && truth(`select count(*) from "Merchant" where id in ('m_roll_s','m_roll_d')`) === "2"

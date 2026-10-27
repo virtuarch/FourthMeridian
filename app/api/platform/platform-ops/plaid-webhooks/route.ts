@@ -13,7 +13,7 @@
 import { NextResponse } from "next/server";
 import { PlaidItemStatus } from "@prisma/client";
 import { systemDb } from "@/lib/db";
-import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { expectedWebhookUrl } from "@/lib/plaid/webhook-migration.core";
 import { env } from "@/lib/env";
 
@@ -25,7 +25,9 @@ export interface PlaidWebhookRosterResponse {
 }
 
 export async function GET() {
-  const [, err] = await requirePlatformAccess("PLATFORM_OPS", "CONTROL");
+  // SEC-PLAT-2 — CONTROL reads take the fresh (live revocation) check, as every
+  // CONTROL mutation does.
+  const [, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
   if (err) return err;
 
   const items = await systemDb.plaidItem.findMany({

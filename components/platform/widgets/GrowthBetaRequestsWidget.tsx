@@ -36,6 +36,7 @@ import {
 import type { SpaceMountAccess } from "@/lib/space/mount-context";
 import { RightPanel, PanelHeader, PanelContent, PanelFooter } from "@/components/atlas/panels";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
+import { EMPTY_OPERATOR_REASON, OperatorReasonField, reasonPayload, type OperatorReasonValue } from "./OperatorReasonField";
 import type {
   BetaRequestsResponse,
   BetaRequestRow,
@@ -113,6 +114,10 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const [inviteOpen, setInviteOpen]                     = useState(false); // direct-invite form
   const [inviteEmail, setInviteEmail]                   = useState("");
   const [inviteDays, setInviteDays]                     = useState("7");
+  // SEC-PLAT-2 — mode / status changes and revocation carry a required reason
+  // (lib/audit.ts REASON_REQUIRED_ACTIONS); one value serves whichever confirm is open.
+  const [reason, setReason]                             = useState<OperatorReasonValue>(EMPTY_OPERATOR_REASON);
+  const closeConfirm = (close: () => void) => () => { close(); setReason(EMPTY_OPERATOR_REASON); };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -160,13 +165,13 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
 
   const changeMode = (mode: Mode) =>
     run("mode", "/api/platform/growth-revenue/registration-mode",
-      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode }) },
-      () => setPendingMode(null));
+      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode, reason: reasonPayload(reason) }) },
+      closeConfirm(() => setPendingMode(null)));
 
   const changeStatus = (status: ProductStatus) =>
     run("status", "/api/platform/growth-revenue/product-status",
-      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ status }) },
-      () => setPendingStatus(null));
+      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ status, reason: reasonPayload(reason) }) },
+      closeConfirm(() => setPendingStatus(null)));
 
   const sendInvite = () =>
     run("invite", "/api/platform/growth-revenue/invitations",
@@ -182,8 +187,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
     run(id, `/api/platform/growth-revenue/requests/${id}/resend`, { method: "POST" });
 
   const revoke = (id: string) =>
-    run(id, `/api/platform/growth-revenue/requests/${id}/revoke`, { method: "POST" },
-      () => { setRevokeId(null); setSelectedInvitationId(null); });
+    run(id, `/api/platform/growth-revenue/requests/${id}/revoke`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: reasonPayload(reason) }) },
+      closeConfirm(() => { setRevokeId(null); setSelectedInvitationId(null); }));
 
   const selectedRequest: BetaRequestRow | null =
     selectedRequestId ? reqs?.pending.find((r) => r.id === selectedRequestId) ?? null : null;
@@ -488,35 +494,38 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
             <ConfirmDialog
               icon={ShieldAlert}
               title={`Change signup mode to ${MODE_META[pendingMode].label}?`}
-              message={MODE_META[pendingMode].detail}
+              message={<>{MODE_META[pendingMode].detail}<OperatorReasonField value={reason} onChange={setReason} disabled={acting === "mode"} /></>}
               confirmLabel="Change mode"
               confirmTone={pendingMode === "open" ? "danger" : "meridian"}
               busy={acting === "mode"}
+              confirmDisabled={reasonPayload(reason) === null}
               onConfirm={() => changeMode(pendingMode)}
-              onClose={() => setPendingMode(null)}
+              onClose={closeConfirm(() => setPendingMode(null))}
             />
           )}
           {canWrite && pendingStatus && (
             <ConfirmDialog
               icon={Rocket}
               title={`Set product status to ${PRODUCT_STATUSES.find((s) => s.value === pendingStatus)?.label}?`}
-              message="This is framing only — it does not change who can sign up (that's the beta mode)."
+              message={<>This is framing only — it does not change who can sign up (that&apos;s the beta mode).<OperatorReasonField value={reason} onChange={setReason} disabled={acting === "status"} /></>}
               confirmLabel="Update status"
               confirmTone="meridian"
               busy={acting === "status"}
+              confirmDisabled={reasonPayload(reason) === null}
               onConfirm={() => changeStatus(pendingStatus)}
-              onClose={() => setPendingStatus(null)}
+              onClose={closeConfirm(() => setPendingStatus(null))}
             />
           )}
           {canWrite && revokeId && (
             <ConfirmDialog
               icon={Ban}
               title="Revoke this invitation?"
-              message="The single-use token will be invalidated and can no longer be redeemed. No users or existing access are removed."
+              message={<>The single-use token will be invalidated and can no longer be redeemed. No users or existing access are removed.<OperatorReasonField value={reason} onChange={setReason} disabled={acting === revokeId} /></>}
               confirmLabel="Revoke invitation"
               busy={acting === revokeId}
+              confirmDisabled={reasonPayload(reason) === null}
               onConfirm={() => revoke(revokeId)}
-              onClose={() => setRevokeId(null)}
+              onClose={closeConfirm(() => setRevokeId(null))}
             />
           )}
         </>

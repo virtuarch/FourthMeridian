@@ -28,7 +28,7 @@
 
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
-import { classifyAccounts, liquidityAccess } from "@/lib/account-classifier";
+import { classifyAccounts, countedBalance, liquidityAccess } from "@/lib/account-classifier";
 import { HORIZON_COLOR, HORIZON_LABEL, HORIZON_META } from "@/components/space/widgets/liquidity/horizons";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import { formatCurrency } from "@/lib/currency";
@@ -48,6 +48,10 @@ export interface LiquidityAdapterAccount {
   currency:    string;
   /** 2026-10-07 — provider subtype evidence; read only through liquidityAccess. */
   providerSubtype?: string | null;
+  /** v2.7-P0 — the server-resolved ADJUSTED depository balance (SpaceAccount
+   *  .adjustedBalance). Totals read it through countedBalance; `balance` stays
+   *  the provider-reported ledger figure. */
+  adjustedBalance?: number;
   /**
    * v2.6-L3 — the server-resolved current-state claim (SpaceAccount.currentState).
    * Present on cash accounts only. These widgets all CLAIM reachability, so they
@@ -60,6 +64,10 @@ export interface LiquidityAdapterAccount {
     unexplained: number | null;
     state:       string;
     pendingCount: number;
+    /** v2.7-P0 — P (Σ signed pending), the adjusted balance, and its case. */
+    pendingSum?:  number;
+    adjusted?:    number;
+    basis?:       string;
   };
 }
 
@@ -168,7 +176,8 @@ export function accessTotals(
   for (const a of accounts) {
     const access = liquidityAccess(a);
     if (access === "marketable" || access === "restricted" || access === "unverified" || access === "illiquid") {
-      out[access] += inDisp(a.balance, a.currency, ctx);
+      // v2.7-P0 — restricted depository cash counts its adjusted balance.
+      out[access] += inDisp(countedBalance(a), a.currency, ctx);
     }
   }
   return out;

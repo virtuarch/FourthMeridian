@@ -17,15 +17,12 @@
  */
 
 import { useMemo } from "react";
-import { formatDate } from "@/lib/format";
 import type { DebtHistorySlice } from "@/lib/debt-space-data";
 import { TrendChart, type TrendPoint } from "@/components/space/widgets/charts/TrendChart";
 
 export function DebtBalanceHistory({
   history,
   currency,
-  asOf,
-  compareTo,
   onSelectPoint,
 }: {
   /** The window-clipped, FX-converted Balance-Over-Time slice. null ⇒ no in-window history. */
@@ -43,15 +40,12 @@ export function DebtBalanceHistory({
     [history],
   );
 
-  const subtitle = compareTo ? `${formatDate(asOf)} vs ${formatDate(compareTo)}` : `As of ${formatDate(asOf)}`;
 
   return (
     <TrendChart
       onSelectPoint={onSelectPoint}
       points={trendPoints}
       currency={currency}
-      title="Balance history"
-      subtitle={subtitle}
       ariaLabel="Total debt over time"
       emptyMessage="No debt history in this range yet. Widen the range or connect accounts to build history."
     />

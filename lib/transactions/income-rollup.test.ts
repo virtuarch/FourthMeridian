@@ -197,10 +197,16 @@ console.log("v2.6-TRUTH-6. Cash Flow consumes the rollup; incomeBySource is reti
     "components/space/widgets/cashflow/CashFlowWorkspace.tsx",
     "components/space/widgets/cashflow/cash-flow-insights.ts",
   ];
-  for (const f of consumers) {
-    const src = stripFile(join(root2, f));
-    check(`${f.split("/").pop()} consumes the canonical rollup`,
-      /rollupIncomeFromTransactions|data\.income\.lines/.test(src));
+  // v2.7 — Cash Flow is the liquidity axis only (its cash-in panel reads the
+  // canonical cashInByReason slice) and Spending shows no income panel, so the
+  // workspace no longer renders economic income at all; the insights still read
+  // the canonical rollup. Neither may reach for a second income authority.
+  {
+    const ws = stripFile(join(root2, consumers[0]));
+    check("CashFlowWorkspace.tsx renders income only from canonical contract slices",
+      /data\.cashInByReason/.test(ws) && !/incomeBySource|incomeSourceLabel/.test(ws));
+    check("cash-flow-insights.ts consumes the canonical rollup",
+      /rollupIncomeFromTransactions/.test(stripFile(join(root2, consumers[1]))));
   }
 
   // (3) No React arithmetic or classification over income.

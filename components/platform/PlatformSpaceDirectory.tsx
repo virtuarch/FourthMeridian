@@ -27,6 +27,9 @@ import { ArrowUpRight } from "lucide-react";
 import { Surface } from "@/components/atlas/Surface";
 import { displaySpaceName } from "@/lib/format";
 import { platformAreaHref, type PlatformDirectoryRow } from "@/lib/platform/directory";
+// Redesign §4.1 — each card carries its area's live pulse (a client island that
+// reads ONE of that area's own routes under the viewer's grant; see the file).
+import { PlatformAreaPulse } from "./PlatformAreaPulse";
 
 export function PlatformSpaceDirectory({ spaces }: { spaces: readonly PlatformDirectoryRow[] }) {
   return (
@@ -70,6 +73,9 @@ export function PlatformSpaceDirectory({ spaces }: { spaces: readonly PlatformDi
                   <div className="min-w-0 flex-1">
                     <h2 className="break-words font-semibold text-[var(--text-primary)]">{displaySpaceName(p.name)}</h2>
                     <p className="mt-1 break-words text-xs text-[var(--text-muted)]">Platform area · {p.access}</p>
+                    <div className="mt-3">
+                      <PlatformAreaPulse area={p.area} />
+                    </div>
                   </div>
                   <ArrowUpRight
                     size={15}

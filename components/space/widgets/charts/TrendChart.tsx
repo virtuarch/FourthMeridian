@@ -11,28 +11,32 @@
  * Plotting, preserved exactly:
  *   - MEASURED width (ResizeObserver) + fixed pixel height — never a stretched
  *     viewBox, so markers stay circular;
- *   - the line BREAKS at real gaps AND at a basis change (observed↔reconstructed);
- *   - the break at a basis change is DRAWN, as a seam rule (see below);
+ *   - the line BREAKS at real gaps; across a basis change (observed↔reconstructed)
+ *     it flows point to point, each run keeping its own stroke style (v2.7);
  *   - reconstructed runs are dashed + faint with HOLLOW markers;
- *   - the unknown is a hatched "NO DATA" band, not an absence;
+ *   - the unknown is a hatched band labelled "no data", not an absence;
  *   - y-scale from real points ONLY (no interpolation across the hole);
- *   - three axis labels; an HTML tooltip that won't snap across a gap; honest legend.
+ *   - three x-axis labels + 3–4 y-axis value ticks (compact, in the caller's
+ *     currency) over subtle gridlines; an HTML tooltip that won't snap across a gap.
  *
- * V26-INVESTMENTS-HISTORY — the basis break was already unbridged, but INVISIBLE:
- * between two points one day apart the dashed line stopped low and the solid line
- * resumed high ~10px later, with nothing to say why, so the eye read the step as
- * market movement anyway. Each basis change now carries a seam rule, and the legend
- * names it. Deliberately unlabelled per-seam: a series whose provider syncs on some
- * days and not others flips basis repeatedly (five times in a typical two-month
- * window), and five inline labels would be a picket fence. The rule is the mark; the
- * legend is the meaning.
+ * v2.7 final UX pass (owner) — NO provenance legend. The technical "Observed /
+ * Reconstructed / Never observed" key was a snapshot-provenance interface, not a
+ * reading aid. What it described is still DRAWN honestly (gaps stay hatched and
+ * labelled "no data", reconstructed runs stay dashed, nothing is interpolated),
+ * and the tooltip still names a point's basis; only the key is gone.
+ *
+ * v2.7 (owner) — no title/subtitle: the hero above already states the range. The
+ * V26 evidence-basis seam rule and its "Evidence changes" legend item are retired;
+ * adjacent runs on different bases are JOINED (the later run's path starts at the
+ * earlier run's last point), so the step is visible as a change of stroke style, not
+ * as a break. True date gaps still break and still draw the hatched band.
  *
  * Geometry splitting lives in trend-runs.core.ts (pure, React-free, unit-tested).
  * This file owns pixels; that file owns what a run, a gap and a seam MEAN.
  *
  * This core is domain-free: it takes points `{date,value,estimated}`, a currency, and
- * presentation slots (title / subtitle / headerRight). The consumer owns what the
- * series MEANS (net worth vs invested value) and any metric switcher (headerRight).
+ * one presentation slot (headerRight). The consumer owns what the series MEANS (net
+ * worth vs invested value) and any switcher (headerRight).
  */
 
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -67,6 +71,30 @@ export interface TrendPoint {
 const H = 264;
 const PAD_T = 16;
 const PAD_B = 26;
+/** Approx. px per character of an 11px tabular y-axis label, + the gap to the plot. */
+const Y_LABEL_CHAR_PX = 6.4;
+const Y_LABEL_GAP = 8;
+
+/**
+ * 3–4 "nice" y-axis tick values inside [lo, hi] — 1/2/2.5/5 × 10ⁿ steps. Pure
+ * presentation: it picks where to draw reference lines, never moves a point.
+ * Exported for the unit test.
+ */
+export function niceTicks(lo: number, hi: number): number[] {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return [lo];
+  let best: number[] = [];
+  for (const target of [3, 4, 2, 5]) {
+    const rough = (hi - lo) / target;
+    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    const norm = rough / mag;
+    const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+    const out: number[] = [];
+    for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(Math.abs(v) < step * 1e-9 ? 0 : v);
+    if (out.length >= 3 && out.length <= 4) return out;
+    if (best.length === 0 || Math.abs(out.length - 3.5) < Math.abs(best.length - 3.5)) best = out;
+  }
+  return best;
+}
 
 /** Default date label — "Jan 1, 2025" (UTC), matching the Net Worth chart exactly. */
 function defaultFormatDate(iso: string): string {
@@ -114,14 +142,9 @@ const BASIS_SUFFIX: Record<TrendBasis, string | null> = {
   carried:       "latest estimate, carried forward",
 };
 
-/** RWA-2A — the user-estimate bases (a manual asset's chart). */
-const ESTIMATE_BASES: ReadonlySet<TrendBasis> = new Set<TrendBasis>(["recorded", "modeled", "carried"]);
-
 export function TrendChart({
   points,
   currency,
-  title = "Balance history",
-  subtitle,
   headerRight,
   emptyMessage = "No history in this range yet. Widen the range or connect accounts to build history.",
   ariaLabel,
@@ -130,9 +153,7 @@ export function TrendChart({
 }: {
   points:       TrendPoint[];
   currency:     string;
-  title?:       ReactNode;
-  subtitle?:    ReactNode;
-  /** Optional control opposite the title (e.g. a metric switcher). */
+  /** Optional control above the plot (e.g. the desktop Assets slice chips). */
   headerRight?: ReactNode;
   emptyMessage?: string;
   ariaLabel?:   string;
@@ -148,7 +169,7 @@ export function TrendChart({
   const wrap = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
   const [hover, setHover] = useState<number | null>(null);
-  const label = ariaLabel ?? (typeof title === "string" ? title : "trend");
+  const label = ariaLabel ?? "Balance history";
 
   // Measure rather than stretch — non-uniform scaling warps markers into ovals.
   useLayoutEffect(() => {
@@ -178,11 +199,30 @@ export function TrendChart({
     const yLo = lo - span * 0.18;
     const yHi = hi + span * 0.14;
 
-    const x = (t: number) => (pts.length === 1 ? w / 2 : ((t - tMin) / tSpan) * w);
     const y = (v: number) => PAD_T + (1 - (v - yLo) / (yHi - yLo)) * (H - PAD_T - PAD_B);
 
+    // y-axis ticks, labelled in the CALLER's display currency. Labels that would
+    // read identically (a flat series) collapse to one. The left gutter is sized
+    // from the longest label so nothing clips, at 375px too.
+    const ticks: { v: number; label: string }[] = [];
+    for (const v of niceTicks(yLo, yHi)) {
+      const lbl = formatCompactCurrency(v, currency);
+      if (!ticks.some((t) => t.label === lbl)) ticks.push({ v, label: lbl });
+    }
+    const padL = Math.ceil(Math.max(0, ...ticks.map((t) => t.label.length)) * Y_LABEL_CHAR_PX) + Y_LABEL_GAP;
+    const plotW = Math.max(1, w - padL);
+
+    const x = (t: number) => padL + (pts.length === 1 ? plotW / 2 : ((t - tMin) / tSpan) * plotW);
+
     const gapDays = Math.max(medianSpacingDays(times) * 3, medianSpacingDays(times) + 2);
-    const runs = toRuns(pts, gapDays);
+    // v2.7 — JOIN across a basis change: a run that begins at a basis seam (adjacent
+    // points, no date hole) starts its path at the previous run's last point, so the
+    // line flows on in the new run's style. Date holes are untouched (no seam there).
+    const joinFrom = new Map<Pt, Pt>(toBasisSeams(pts, gapDays).map((s) => [pts[s.toIndex], pts[s.fromIndex]]));
+    const runs = toRuns(pts, gapDays).map((run) => {
+      const prev = joinFrom.get(run.points[0]);
+      return prev && run.points[0] !== prev ? { ...run, points: [prev, ...run.points] } : run;
+    });
 
     const line = (run: Run) =>
       run.points.map((p, i) => `${i === 0 ? "M" : "L"}${x(p.t).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
@@ -197,17 +237,8 @@ export function TrendChart({
       x0: x(pts[g.fromIndex].t), x1: x(pts[g.toIndex].t),
     }));
 
-    // A change of evidence basis, drawn at the MIDPOINT between the two values it
-    // separates — the boundary belongs to neither measurement, so it is anchored to
-    // neither point. Values and positions are untouched; this only marks the break
-    // the runs already make.
-    const seams = toBasisSeams(pts, gapDays).map((s) => ({
-      key: `${s.fromDate}|${s.toDate}`,
-      x:   (x(pts[s.fromIndex].t) + x(pts[s.toIndex].t)) / 2,
-    }));
-
-    return { pts, x, y, runs, line, area, gaps, seams, last: pts[pts.length - 1] };
-  }, [points, w]);
+    return { pts, x, y, runs, line, area, gaps, ticks, padL, last: pts[pts.length - 1] };
+  }, [points, w, currency]);
 
   /** The point nearest an x offset, or null inside a gap. */
   function nearestIndex(clientX: number): number | null {
@@ -268,15 +299,12 @@ export function TrendChart({
     }
   }
 
-  const header = (
-    <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
-      <div className="min-w-0">
-        <h2 className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">{title}</h2>
-        {subtitle && <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{subtitle}</p>}
-      </div>
+  // v2.7 — no title / subtitle; a header row exists only to hold headerRight.
+  const header = headerRight ? (
+    <div className="mb-4 flex flex-wrap items-baseline justify-end gap-x-4 gap-y-2">
       {headerRight}
     </div>
-  );
+  ) : null;
 
   if (!geom) {
     return (
@@ -335,8 +363,20 @@ export function TrendChart({
               </g>
             ))}
 
+            {/* y-axis — subtle gridlines + compact value labels in the caller's currency. */}
+            <g data-trend-y-axis="">
+              {geom.ticks.map((t) => (
+                <g key={t.v}>
+                  <line x1={geom.padL} y1={geom.y(t.v)} x2={w} y2={geom.y(t.v)} stroke="var(--border-hairline)" strokeWidth="1" strokeOpacity="0.6" />
+                  <text x={geom.padL - Y_LABEL_GAP} y={geom.y(t.v)} dy="0.32em" textAnchor="end" className="fill-[var(--text-muted)] text-[11px] tabular-nums">
+                    {t.label}
+                  </text>
+                </g>
+              ))}
+            </g>
+
             {/* Baseline */}
-            <line x1="0" y1={H - PAD_B} x2={w} y2={H - PAD_B} stroke="var(--border-hairline)" strokeWidth="1" />
+            <line x1={geom.padL} y1={H - PAD_B} x2={w} y2={H - PAD_B} stroke="var(--border-hairline)" strokeWidth="1" />
 
             {geom.runs.map((run, i) => (
               <g key={i}>
@@ -355,21 +395,6 @@ export function TrendChart({
                   vectorEffect="non-scaling-stroke"
                 />
               </g>
-            ))}
-
-            {/*
-              Evidence-basis seam. The runs on either side are already disjoint;
-              this draws that break so the step between a reconstructed value and
-              an observed one reads as a change of BASIS rather than as a gain or
-              a loss. Not the hatched band — that vocabulary means "never
-              observed", and here we have values on both sides.
-            */}
-            {geom.seams.map((s) => (
-              <line
-                key={s.key}
-                x1={s.x} y1={PAD_T - 4} x2={s.x} y2={H - PAD_B}
-                stroke="var(--border-hairline-strong)" strokeWidth="1" strokeDasharray="2 3"
-              />
             ))}
 
             {/* Every reconstructed / unreliable point gets a hollow marker, faded by
@@ -423,66 +448,10 @@ export function TrendChart({
         </div>
 
         {/* Axis — three labels; the shape is the message, dates are orientation. */}
-        <div className="mt-1 flex justify-between text-[11px] text-[var(--text-muted)]">
+        <div className="mt-1 flex justify-between text-[11px] text-[var(--text-muted)]" style={{ paddingLeft: geom.padL }}>
           <span>{formatDate(geom.pts[0].date)}</span>
           <span>{formatDate(geom.pts[Math.floor(geom.pts.length / 2)].date)}</span>
           <span>{formatDate(geom.last.date)}</span>
-        </div>
-
-        {/* Legend — honest markers only (Observed / Reconstructed / Never observed). */}
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--text-muted)]">
-          {/* RWA-2A — a chart of user estimates has no observed values, so it never
-              claims an "Observed" line; every other chart is unchanged. */}
-          {!geom.pts.every((p) => ESTIMATE_BASES.has(basisOf(p))) && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" /></svg>
-              Observed
-            </span>
-          )}
-          {geom.pts.some((p) => basisOf(p) === "recorded") && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="6" aria-hidden><circle cx="8" cy="3" r="3" fill="var(--meridian-400)" /></svg>
-              Your estimate
-            </span>
-          )}
-          {geom.pts.some((p) => basisOf(p) === "modeled") && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="4 3" /></svg>
-              Modeled between estimates
-            </span>
-          )}
-          {geom.pts.some((p) => basisOf(p) === "carried") && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="8 4" /></svg>
-              Latest estimate carried forward
-            </span>
-          )}
-          {geom.pts.some((p) => basisOf(p) === "reconstructed") && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="4 3" /></svg>
-              Reconstructed
-            </span>
-          )}
-          {geom.pts.some((p) => basisOf(p) === "unreliable") && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.34" strokeDasharray="1 4" /></svg>
-              Mostly unvalued
-            </span>
-          )}
-          {geom.seams.length > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="8" aria-hidden>
-                <line x1="8" y1="0" x2="8" y2="8" stroke="var(--border-hairline-strong)" strokeWidth="1" strokeDasharray="2 3" />
-              </svg>
-              Evidence changes — not a market move
-            </span>
-          )}
-          {geom.gaps.length > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="8" aria-hidden><rect width="16" height="8" fill="url(#tc-hatch)" /></svg>
-              Never observed
-            </span>
-          )}
         </div>
       </div>
     </section>

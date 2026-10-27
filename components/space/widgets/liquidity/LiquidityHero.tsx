@@ -33,6 +33,7 @@ import { describeExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
+import { HeroEyebrow } from "@/components/space/hero/HeroParts";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
 
 /** The balance-history window delta, ready for the badge (cashNow snapshot basis). */
@@ -122,10 +123,10 @@ export function LiquidityHero({
     // Bare hero — no card, no border. The headline is the point; the read surfaces
     // (chart, ledger) sit below.
     <section>
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Accessible cash</p>
-        <TrustIndicator variant="compact" envelope={envelope} />
-      </div>
+      {/* v2.7 final UX pass — the SAME fixed-height label row (HeroEyebrow, h-6)
+          as Net Worth / Assets / Debt, so the trust chip sits in one place on
+          every perspective and never changes the header's height. */}
+      <HeroEyebrow label="Accessible cash" trust={<TrustIndicator variant="compact" envelope={envelope} />} />
 
       <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
         <Figure

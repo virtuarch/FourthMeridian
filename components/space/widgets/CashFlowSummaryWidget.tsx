@@ -3,23 +3,19 @@
 /**
  * components/space/widgets/CashFlowSummaryWidget.tsx
  *
- * Cash Flow Perspective headline — now the LIQUIDITY axis (spendable cash),
- * which is the primary user-facing model. Shows Cash In / Cash Out / Net Cash
- * from the shared DayFacts projection (aggregateDayFacts — the SOLE fold; P2-1
- * removed the former second deriveCashFlowAxes pass), each expandable into its
- * reason breakdown (Earned income, Asset liquidation, Debt proceeds, Spending,
- * Debt payments, Asset deployment, …) taken straight from the liquidity engine's
- * per-reason output (groupLiquidityByReason) — no recomputation here.
+ * Cash Flow's Cash In / Cash Out summaries — the LIQUIDITY axis (spendable cash)
+ * from the shared DayFacts projection (aggregateDayFacts — the SOLE fold), each
+ * expandable into its reason breakdown (Earned income, Spending, Debt payments,
+ * Money invested, …) straight from the liquidity engine's per-reason output
+ * (groupLiquidityByReason) — no recomputation here. Every line drills into its
+ * exact rows (the shared slice drawer).
  *
- * The economic axis (earned income vs real cost) is NOT deleted: it's preserved
- * behind a quiet "Economic view" disclosure, and remains the basis of AI facts
- * and every other economic widget. This widget only changes which axis is
- * primary.
- *
- * Runtime note: the client transaction DTO does not yet carry
- * counterpartyAccountId (a separate, privacy-gated plumbing slice), so transfers
- * whose other side is unknown surface honestly as "Unresolved movement" rather
- * than being mislabeled. Income / spending / investment classify fully today.
+ * v2.7 FINAL PERSPECTIVE UX PASS (owner) — this widget is now ONLY the two
+ * tiles. The Cash Flow ⇄ Spending toggle is gone (Spending is its own
+ * perspective, with its own hero and breakdown), and the movement context
+ * (charged on credit, unresolved / internal transfers, needs classification)
+ * moved to its own section further down the page (CashFlowMovements), after
+ * the Activity heatmap.
  */
 
 import { useState } from "react";
@@ -38,10 +34,7 @@ import {
   type LiquidityEffect,
 } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
-import { groupCashFlowContext, type CashFlowContext } from "@/lib/transactions/cash-flow-context";
-import { aggregateDayFacts, economicSpend, economicSpendByTier, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
-import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
-import { CashFlowFilterControls, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
+import { aggregateDayFacts, type DayFacts } from "@/lib/transactions/cash-flow-projection";
 import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 
 function fmt(v: number, ctx?: ConversionContext): string {
@@ -60,32 +53,13 @@ interface Props {
   period:       CashFlowPeriod;
   ctx?:         ConversionContext;
   accounts:     TierAccount[];
-  /** CF-3 — the workspace-shared perspective. When provided the widget is
-   *  controlled (mirrors the History selector); otherwise it self-manages. */
-  perspective?:         CashFlowPerspective;
-  onPerspectiveChange?: (perspective: CashFlowPerspective, filterId: string) => void;
   /** SD-6C — pre-computed slices from CashFlowSpaceData (the workspace composition
    *  boundary). When supplied the widget consumes them instead of re-windowing +
-   *  re-folding from raw rows — byte-identical (same authority, same window). Absent
-   *  ⇒ the standalone/registry path computes them here, exactly as before. */
+   *  re-folding from raw rows — byte-identical (same authority, same window). */
   windowRows?:          Transaction[];
-  /**
-   * The SELECTED as-of date (YYYY-MM-DD) — the anchor for the fallback window.
-   *
-   * The workspace path supplies `windowRows` and never re-windows. The section /
-   * registry path has no pre-computed rows, so it windowed against `new Date()`
-   * and showed TODAY's period while the dashboard displayed a historical date.
-   * The window belongs to the shell, not the widget.
-   */
+  /** The SELECTED as-of date (YYYY-MM-DD) — the anchor for the fallback window. */
   asOf?:                string;
   facts?:               DayFacts;
-  context?:             CashFlowContext;
-  /** CF-1 — when the editorial CashFlowHero owns the lede (headline Net + the
-   *  perspective toggle), this widget renders only its BREAKDOWN body — the Cash
-   *  In / Cash Out (or Income / Spending) tiles, the credit-card context, and the
-   *  moved-not-spent / needs-classification sections. Default false ⇒ the full
-   *  standalone widget (the SectionRegistry `cash_flow_summary` path is unchanged). */
-  hideHeadline?:        boolean;
 }
 
 /** The Cash Out tile's note — exported so a test can pin the exact copy. */
@@ -117,11 +91,13 @@ function AxisTile({
         disabled={!canExpand}
         onClick={() => setOpen((v) => !v)}
         onPointerDown={(e) => e.stopPropagation()}
-        className={`w-full flex items-center justify-between gap-2 min-w-0 ${canExpand ? "cursor-pointer" : "cursor-default"}`}
+        className={`w-full flex items-center justify-between gap-2 min-w-0 max-sm:flex-col max-sm:items-start max-sm:gap-0.5 ${canExpand ? "cursor-pointer" : "cursor-default"}`}
       >
         {/* CF-5 — responsive number discipline: the label may truncate (it never
             carries meaning past its first word) so the figure keeps its full digits;
-            the figure shrinks a step on narrow widths and never wraps or overflows. */}
+            the figure shrinks a step on narrow widths and never wraps or overflows.
+            v2.7 — below sm the label stacks ABOVE the figure, so at phone widths
+            neither is cut ("C…" / "Cas…" at 390px before). Desktop is unchanged. */}
         <span className="flex items-center gap-1 text-xs min-w-0" style={{ color: "var(--text-muted)" }}>
           {canExpand && (open
             ? <ChevronDown size={12} className="shrink-0 text-[var(--text-faint)]" />
@@ -159,29 +135,7 @@ function AxisTile({
   );
 }
 
-/** A drillable context line (not part of Cash In/Out totals). Opens the shared
- *  TransactionSliceDrawer with the exact rows behind it. */
-function ContextRow({ label, value, onOpen }: { label: string; value: string; onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={onOpen}
-      className="w-full flex items-center justify-between gap-2 text-left rounded-lg -mx-1 px-1 py-0.5 hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)]"
-    >
-      <span className="text-xs text-[var(--text-secondary)]">{label}</span>
-      <span className="text-sm font-semibold tabular-nums text-[var(--text-secondary)]">{value}</span>
-    </button>
-  );
-}
-
-export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, perspective: controlledPerspective, onPerspectiveChange, windowRows, asOf, facts: factsProp, context: contextProp, hideHeadline = false }: Props) {
-  // CF-3 — perspective toggle (Cash Flow ⇄ Spending). Controlled by the shared
-  // workspace perspective when provided; otherwise self-managed for standalone use.
-  const [localPerspective, setLocalPerspective] = useState<CashFlowPerspective>("liquidity");
-  const perspective = controlledPerspective ?? localPerspective;
-  const changePerspective = (p: CashFlowPerspective, id: string) =>
-    onPerspectiveChange ? onPerspectiveChange(p, id) : setLocalPerspective(p);
+export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, windowRows, asOf, facts: factsProp }: Props) {
   // Closes on a TimelineLens move — the window the slice described is gone.
   const [slice, setSlice] = useTransactionSlice(periodKey(period));
 
@@ -199,31 +153,12 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   }
 
   const liqCtx = tierResolver(accounts);
-  // CF-3 / P2-1 — the shared DayFacts projection is the SOLE fold: ONE pass over
-  // the rows yields BOTH axes (liquidity cashIn/cashOut + economic income/spend/
-  // subsets). Cash In / Cash Out / Net Cash read straight off `facts` — no second
-  // deriveCashFlowAxes pass (that was the removed production double-fold). SD-6C —
-  // when the workspace supplies the CashFlowSpaceData slice, `facts` IS its
-  // canonical `summary`; else this standalone/registry path folds it here.
+  // The shared DayFacts projection is the SOLE fold; when the workspace supplies
+  // the CashFlowSpaceData slice, `facts` IS its canonical `summary`.
   const facts = factsProp ?? aggregateDayFacts(rows, liqCtx, ctx);
   // Reason breakdown (effect-split) — a PURE PROJECTION over the same `facts`
   // (no second fold); its per-side totals equal facts.cashIn/out by construction.
   const breakdown = groupLiquidityByReason(facts);
-  const econSpendTotal = economicSpend(facts);
-  // CF-RECON-1 — the parts of Spending come from the fold, each net of the refunds
-  // on its OWN tier. This was `min(cardGross, net)` / `net − that` in React, which
-  // credited every card refund to direct spending (a $27.86 direct line printed as
-  // $0 while the card line absorbed it). Floored excess is disclosed, never moved.
-  const econTier = economicSpendByTier(facts);
-  const econNet = facts.income - econSpendTotal;
-  // CF-1 — human context projection (presentation only; never feeds Cash In/Out/Net).
-  const context = contextProp ?? groupCashFlowContext(rows, liqCtx, ctx);
-  // CF-1A — is any context bucket populated? Drives the populated rows vs the
-  // discoverability empty state. Consumes the grouped output; computes nothing new.
-  const hasContext = context.movedNotSpent.length > 0 || context.needsClassification.length > 0;
-
-  const economic = perspective === "economic";
-  const net = economic ? econNet : facts.cashIn - facts.cashOut;
 
   // Drill-down for a Cash In / Cash Out breakdown line — its exact contributing rows
   // (matched by effect + reason), opened in the shared slice drawer. Reuses the same
@@ -242,145 +177,17 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
       }),
     });
 
-  // Economic drill-downs — reconcile with Spending by Category / Income by Source
-  // (same flow-predicates). Card spending = cost flows charged to a liability tier.
-  const isLiabilityRow = (r: LiquidityTx) => liqCtx.tierOf(r.financialAccountId ?? r.accountId ?? null) === "liability";
-  const openEconSlice = (line: TileLine) => {
-    if (line.reason === "INCOME") {
-      // v2.6-TRUTH-5 — was subtitled "Earned income this period" over EVERY
-      // income row, which called 45 rows of deposit interest earned income. The
-      // slice spans the whole canonical breakdown, so it says so, and a row the
-      // authority classes NOT_INCOME is excluded here exactly as it is from the
-      // headline. No classification happens in this component — it reads
-      // `incomeClass` off the DTO.
-      setSlice({
-        title: "Income (bank transactions)",
-        subtitle: "Earned, interest and other income this period",
-        rows: rows.filter((r) => isIncome(r.flowType) && r.incomeClass !== "NOT_INCOME"),
-      });
-    } else if (line.reason === "CARD_SPEND") {
-      // Charges AND refunds on card accounts — the rows the net line folded.
-      setSlice({ title: "Credit-card spending", subtitle: "Spending & refunds on credit this period", total: line.amount, totalLabel: "Net",
-        rows: rows.filter((r) => (isCostFlow(r.flowType) || isRefund(r.flowType)) && isLiabilityRow(r)) });
-    } else if (line.reason === "REFUNDS_UNAPPLIED") {
-      setSlice({ title: "Refunds beyond charges", subtitle: "Refunds larger than the charges on the same accounts this period", total: line.amount, totalLabel: "Total",
-        rows: rows.filter((r) => isRefund(r.flowType)) });
-    } else {
-      setSlice({ title: "Direct & other spending", subtitle: "Spending & refunds this period", total: line.amount, totalLabel: "Net",
-        rows: rows.filter((r) => (isCostFlow(r.flowType) || isRefund(r.flowType)) && !isLiabilityRow(r)) });
-    }
-  };
-
-  const econInLines:  TileLine[] = [{ reason: "INCOME", label: "Income (bank transactions)", amount: facts.income }].filter((l) => l.amount > 0);
-  const econOutLines: TileLine[] = [
-    { reason: "CARD_SPEND",        label: "Credit-card spending",    amount: econTier.creditCard },
-    { reason: "DIRECT_SPEND",      label: "Direct & other spending", amount: econTier.direct },
-    { reason: "REFUNDS_UNAPPLIED", label: "Less refunds beyond charges", amount: econTier.refundsUnapplied },
-  ].filter((l) => l.amount > 0);
-
   return (
     <div className="space-y-3">
-      {/* CF-1 — the lede (perspective toggle + the Net headline) is rendered here
-          ONLY in the standalone (SectionRegistry) path. In the workspace the
-          editorial CashFlowHero owns both, and this widget renders only the
-          breakdown body below (hideHeadline). */}
-      {!hideHeadline && (
-        <>
-          {/* CF-3 — perspective toggle (the small reused control; no measure dropdown here). */}
-          <div className="flex items-center justify-end">
-            <CashFlowFilterControls perspective={perspective} filterId={DEFAULT_FILTER_ID} onChange={(p, id) => changePerspective(p, id)} compact />
-          </div>
-
-          {/* Primary: Net (perspective-dependent) */}
-          <div className="min-w-0">
-            <p className="text-3xl font-bold tabular-nums" style={{ color: net >= 0 ? "var(--accent-positive)" : "var(--accent-negative)" }}>
-              {net >= 0 ? "+" : "−"}{fmt(Math.abs(net), ctx)}
-            </p>
-            <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-              {economic ? "net spending this period (incl. credit-card purchases)" : "net cash this period"}
-            </p>
-          </div>
-        </>
-      )}
-
-      {economic ? (
-        /* Economic: Income vs All spending — includes credit-card purchases. */
-        <div className="grid grid-cols-2 gap-3">
-          <AxisTile label="Income"   total={facts.income}    accent="green" sign="+" lines={econInLines}  ctx={ctx} onOpenLine={openEconSlice} />
-          <AxisTile label="Spending" total={econSpendTotal}  accent="red"   sign="−" lines={econOutLines} ctx={ctx} onOpenLine={openEconSlice} />
-        </div>
-      ) : (
-        /* Liquidity: Cash In / Cash Out — expandable into reason breakdown. */
-        <div className="grid grid-cols-2 gap-3">
-          <AxisTile label="Cash In"  total={facts.cashIn}  accent="green" sign="+" lines={breakdown.cashIn}  ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_IN", l)} />
-          {/* CF-TIER-NET — Cash Out is a CASH measure, not spending: a card purchase
-              moves no cash until the card is paid, so it enters here as a debt
-              payment, possibly in another period. One line says the timing; it
-              claims no matching between payments and purchases. */}
-          <AxisTile label="Cash Out" total={facts.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_OUT", l)}
-            hint={CASH_OUT_HINT} />
-        </div>
-      )}
-
-      {/* Credit-card spending is honestly visible in BOTH perspectives: on the
-          liquidity axis it is NOT Cash Out (the cash leaves later as a Debt
-          payment), so it surfaces here as a context figure that drills into the
-          card cost-flow rows. CF-RECON-1 — it is GROSS (what was charged, before
-          refunds, fees included), so it says "Charged", never "Spent": the word
-          "spending" on this page is the NET figure (Spending tile = Total spending). */}
-      {!economic && facts.creditCardSpending > 0 && (
-        <div className="pt-1 border-t border-[var(--border-hairline)]">
-          <ContextRow
-            label="Charged on credit (no cash moved at purchase)"
-            value={fmt(facts.creditCardSpending, ctx)}
-            onOpen={() => setSlice({ title: "Charged on credit", subtitle: "Bought on credit this period", spendLabel: "Charged",
-              rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) })}
-          />
-        </div>
-      )}
-
-      {/* CF-1A — Cash Flow context projection, kept BELOW the Economic View so the
-          populated rows and the empty state share one consistent location.
-          Populated rows when movements exist; a small explanatory empty state
-          (never fake $0 rows) otherwise. Consumes the existing grouped context —
-          no projection logic is duplicated here, drill-down preserved. */}
-      {hasContext ? (
-        <div className="space-y-2">
-          {context.movedNotSpent.length > 0 && (
-            <div className="rounded-xl px-3 py-2 space-y-1.5" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
-              <p className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Moved, not spent</p>
-              {context.movedNotSpent.map((r) => (
-                <ContextRow
-                  key={r.key}
-                  label={r.label}
-                  value={fmt(r.amount, ctx)}
-                  onOpen={() => setSlice({ title: r.label, subtitle: "Money that moved, not spent", rows: r.rows, total: r.amount, totalLabel: "Total" })}
-                />
-              ))}
-            </div>
-          )}
-          {context.needsClassification.length > 0 && (
-            <div className="rounded-xl px-3 py-2 space-y-1.5" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
-              <p className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Needs classification</p>
-              {context.needsClassification.map((r) => (
-                <ContextRow
-                  key={r.key}
-                  label={r.label}
-                  value={`${r.count} ${r.count === 1 ? "transaction" : "transactions"}`}
-                  onOpen={() => setSlice({ title: r.label, subtitle: "We can see this moved, but not yet why", rows: r.rows })}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="rounded-xl px-3 py-2 space-y-1" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
-          <p className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Moved, not spent</p>
-          <p className="text-xs text-[var(--text-secondary)]">
-            No account transfers, cash movements, investment funding, or payment-app movements were found for this period.
-          </p>
-        </div>
-      )}
+      <div className="grid grid-cols-2 gap-3">
+        <AxisTile label="Cash In"  total={facts.cashIn}  accent="green" sign="+" lines={breakdown.cashIn}  ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_IN", l)} />
+        {/* CF-TIER-NET — Cash Out is a CASH measure, not spending: a card purchase
+            moves no cash until the card is paid, so it enters here as a debt
+            payment, possibly in another period. One line says the timing; it
+            claims no matching between payments and purchases. */}
+        <AxisTile label="Cash Out" total={facts.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_OUT", l)}
+          hint={CASH_OUT_HINT} />
+      </div>
 
       <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />
     </div>

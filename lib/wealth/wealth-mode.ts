@@ -135,3 +135,47 @@ export function wealthSeriesKey(mode: WealthMode, slice: AssetsSlice): WealthMet
   if (mode === "debt") return "totalLiabilities";
   return "netWorth";
 }
+
+// ── COMPACT DASHBOARD (P3) — the Debt category (compact navigation only) ──────
+//
+// All · Credit · Loans: which existing Debt content the compact (<1024px) Debt
+// view shows. Carried by ?section= (replace-written, Debt mode only); desktop
+// ignores it — every Debt section renders at ≥1024px whatever it says. Credit and
+// Loans follow the EXISTING liability classification (debt-ledger-util.ts
+// `classifyDebt`: cards → Credit, loans → Loans); nothing is reclassified here.
+export type DebtSection = "all" | "credit" | "loans";
+
+/**
+ * Credit / Loans tabs — ENABLED (v2.7 R3, owner-approved D-4/D-5).
+ *
+ * History: on 2026-10-26 Preview showed `debtSubtype` unpopulated on every
+ * liability (0 of 23), and the old classifier's "has a credit limit ⇒ card"
+ * fallback put a HELOC in Credit and mortgages / student / auto loans in Other,
+ * so the tabs were withheld. v2.7 R2 replaced that with the DISPLAY-ONLY
+ * `presentationDebtClass` (debt-ledger-util.ts): stored `debtSubtype` wins, else
+ * the provider's `providerSubtype` (credit card / line of credit → Credit; home
+ * equity, mortgage, student, auto, personal → Loans), else Other — never a
+ * credit-limit inference. Nothing stored, ingested, reconciled or totalled reads
+ * it. The compact truth tables in compact-sections.ts apply unchanged; "Other"
+ * liabilities are listed under All only.
+ */
+export const DEBT_CATEGORY_TABS_ENABLED = true;
+export const DEBT_SECTIONS: readonly DebtSection[] = ["all", "credit", "loans"];
+export const DEFAULT_DEBT_SECTION: DebtSection = "all";
+export const DEBT_SECTION_PARAM = "section";
+export const DEBT_SECTION_LABELS: Record<DebtSection, string> = {
+  all:    "All",
+  credit: "Credit",
+  loans:  "Loans",
+};
+
+/** An unknown or absent value is All (never an error, never a guess). */
+export function parseDebtSection(raw: string | null | undefined): DebtSection {
+  const k = (raw ?? "").toLowerCase();
+  return (DEBT_SECTIONS as string[]).includes(k) ? (k as DebtSection) : DEFAULT_DEBT_SECTION;
+}
+
+/** All writes no param. */
+export function serializeDebtSection(section: DebtSection): string | null {
+  return section === DEFAULT_DEBT_SECTION ? null : section;
+}

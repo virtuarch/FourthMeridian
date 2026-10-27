@@ -48,8 +48,27 @@ export interface BriefActivityRow {
   date:     string;
   /** Positive = money in, negative = money out. Reporting-currency agnostic (row currency). */
   amount:   number;
-  /** The canonical FlowType, or UNCLASSIFIED. */
+  /**
+   * The RESOLVED FlowType (lib/transactions/resolved-nature.ts), or UNCLASSIFIED.
+   * DEBT_PAYMENT only for a liability payment; any other movement is TRANSFER.
+   */
   flow:     string;
+  /**
+   * v2.7-P0 — the resolved nature: LIABILITY_PAYMENT (the only one that lowers
+   * what is owed), INTERNAL_SAVINGS_TRANSFER / INTERNAL_CHECKING_TRANSFER /
+   * BROKERAGE_TRANSFER / INTERNAL_TRANSFER (between the user's own accounts),
+   * EXTERNAL_TRANSFER, CASH_MOVEMENT, UNCLASSIFIED_MOVEMENT (purpose unknown), or
+   * an economic kind (SPENDING, INCOME, REFUND, …).
+   */
+  nature?:  string;
+  /**
+   * v2.7-P0 — DIGEST-ONLY. The flow value the material digest saw before the
+   * resolved-nature contract (develop ff62cb7: `resolvedFlowType(flowType, maturity)`),
+   * present only when it differs from `flow`. Keeps the digest's inputs identical to
+   * before so the code change alone never regenerates a stored Brief. Never sent to
+   * the model (prompt.ts modelView strips it).
+   */
+  digestFlow?: string;
   merchant?: string;
   category: string;
   pending?: true;
@@ -64,6 +83,14 @@ export interface BriefActivityRow {
    * the account's class is not known — then no connection is established.
    */
   account?: BriefAccountClass;
+  /**
+   * v2.7-P1 — the CLASS of account on the OTHER side, where the transfer
+   * authority's maturity names it (a savings/cash transfer: LIQUID; an investment
+   * transfer: ASSET). Absent when not named. Lets the contract guard keep a
+   * savings transfer out of LIABILITY instead of treating an own-accounts leg as
+   * touching every class.
+   */
+  otherLegAccount?: BriefAccountClass;
 }
 
 export type BriefAccountClass = 'LIQUID' | 'LIABILITY' | 'ASSET';

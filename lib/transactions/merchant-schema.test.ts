@@ -159,6 +159,15 @@ check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test
     // a stamp: this module has no db handle at all and cannot write. Same category
     // as the three above.
     "lib/data/transaction-query-core.ts",
+    // v2.7-P1 — the transfer authority's writer SELECTs categorySource and puts
+    // it in its write GUARD (`categorySource: null` / `notIn USER_*`) so a human's
+    // category always wins. It never stamps the column (its write data carries no
+    // MI field) — a read and a WHERE fragment, the same class as the above.
+    "lib/transactions/transfer-debt-payment-correction-write.ts",
+    // v2.7-P0 — the resolved-nature contract is PURE (no db handle, no I/O). Its
+    // `categorySource:` occurrences are an evidence-shape field it READS from a DTO
+    // so a human's category outranks transfer evidence; it cannot write anything.
+    "lib/transactions/resolved-nature.ts",
   ]);
   // The shared writer + the designated write sites that stamp MI onto a
   // Transaction (live paths + the M5 correction workflow). Any OTHER module

@@ -47,6 +47,7 @@ import { requirePlatformAccess, requireFreshPlatformAccess } from "@/lib/platfor
 import { limitByUser } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/api";
 import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit";
+import { recordControlRefusal } from "@/lib/platform/control-refusal";
 import { loadRefreshPoliciesReadModel, type RefreshPoliciesReadModel } from "@/lib/platform/policies/refresh-policies";
 import {
   isEditableSourceKind, resetRefreshCadence, updateRefreshCadence, type PolicyMutationResult,
@@ -84,34 +85,49 @@ async function readBody(req: NextRequest): Promise<Record<string, unknown> | nul
   return body && typeof body === "object" ? (body as Record<string, unknown>) : null;
 }
 
+/** SEC-PLAT-2 — the reason CODE a body carried, for the refusal record (never the note). */
+function reasonCodeOf(body: Record<string, unknown> | null): unknown {
+  const r = body?.reason;
+  return r && typeof r === "object" ? (r as { code?: unknown }).code : undefined;
+}
+
 export async function PATCH(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
   if (err) return err;
   const limited = await limitByUser(auth.user.id, "platform-policy", { limit: 30, windowSec: 60 });
   if (limited) return limited;
 
+  const meta = { ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") };
   const body = await readBody(req);
-  if (!body || !isEditableSourceKind(body.sourceKind)) {
-    return NextResponse.json({ error: "sourceKind must be BANK or WALLET." }, { status: 400 });
+  const sourceKind = body && isEditableSourceKind(body.sourceKind) ? body.sourceKind : null;
+  // SEC-PLAT-2 — every refusal past the grant check is recorded (control, verb,
+  // closed-vocabulary target, refusal code, reason code; never a submitted value).
+  const refuse = async (res: NextResponse, code: "VALIDATION" | "CONFLICT" | "NOT_FOUND") => {
+    await recordControlRefusal(auth, { control: "refresh-cadence", verb: "change", code, targetKey: sourceKind, reasonCode: reasonCodeOf(body) }, meta);
+    return res;
+  };
+
+  if (!body || !sourceKind) {
+    return refuse(NextResponse.json({ error: "sourceKind must be BANK or WALLET." }, { status: 400 }), "VALIDATION");
   }
   if (typeof body.cadence !== "string") {
-    return NextResponse.json({ error: "cadence is required." }, { status: 400 });
+    return refuse(NextResponse.json({ error: "cadence is required." }, { status: 400 }), "VALIDATION");
   }
   if (!("expectedUpdatedAt" in body) || (body.expectedUpdatedAt !== null && typeof body.expectedUpdatedAt !== "string")) {
-    return NextResponse.json({ error: "expectedUpdatedAt must be the observed override version (ISO) or null." }, { status: 400 });
+    return refuse(NextResponse.json({ error: "expectedUpdatedAt must be the observed override version (ISO) or null." }, { status: 400 }), "VALIDATION");
   }
   let reason;
   try { reason = parseOperatorReason(body.reason); }
-  catch (e) { return NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400 }); }
+  catch (e) { return refuse(NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400 }), "VALIDATION"); }
 
   const result = await updateRefreshCadence({
-    sourceKind: body.sourceKind,
+    sourceKind,
     cadence: body.cadence,
     expectedUpdatedAt: body.expectedUpdatedAt as string | null,
     reason,
-    actor: { id: auth.user.id, ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") },
+    actor: { id: auth.user.id, ...meta },
   });
-  return respond(result);
+  return result.ok ? respond(result) : refuse(respond(result), result.code);
 }
 
 export async function DELETE(req: NextRequest) {
@@ -120,22 +136,29 @@ export async function DELETE(req: NextRequest) {
   const limited = await limitByUser(auth.user.id, "platform-policy", { limit: 30, windowSec: 60 });
   if (limited) return limited;
 
+  const meta = { ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") };
   const body = await readBody(req);
-  if (!body || !isEditableSourceKind(body.sourceKind)) {
-    return NextResponse.json({ error: "sourceKind must be BANK or WALLET." }, { status: 400 });
+  const sourceKind = body && isEditableSourceKind(body.sourceKind) ? body.sourceKind : null;
+  const refuse = async (res: NextResponse, code: "VALIDATION" | "CONFLICT" | "NOT_FOUND") => {
+    await recordControlRefusal(auth, { control: "refresh-cadence", verb: "reset", code, targetKey: sourceKind, reasonCode: reasonCodeOf(body) }, meta);
+    return res;
+  };
+
+  if (!body || !sourceKind) {
+    return refuse(NextResponse.json({ error: "sourceKind must be BANK or WALLET." }, { status: 400 }), "VALIDATION");
   }
   if (typeof body.expectedUpdatedAt !== "string") {
-    return NextResponse.json({ error: "expectedUpdatedAt (the observed override version, ISO) is required to reset." }, { status: 400 });
+    return refuse(NextResponse.json({ error: "expectedUpdatedAt (the observed override version, ISO) is required to reset." }, { status: 400 }), "VALIDATION");
   }
   let reason;
   try { reason = parseOperatorReason(body.reason); }
-  catch (e) { return NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400 }); }
+  catch (e) { return refuse(NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400 }), "VALIDATION"); }
 
   const result = await resetRefreshCadence({
-    sourceKind: body.sourceKind,
+    sourceKind,
     expectedUpdatedAt: body.expectedUpdatedAt,
     reason,
-    actor: { id: auth.user.id, ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") },
+    actor: { id: auth.user.id, ...meta },
   });
-  return respond(result);
+  return result.ok ? respond(result) : refuse(respond(result), result.code);
 }

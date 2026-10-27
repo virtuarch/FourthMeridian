@@ -20,7 +20,7 @@
 
 import type { ElementType } from "react";
 import {
-  Gem, Waves, TrendingUp, CreditCard, PiggyBank, Target, FileText, Home,
+  Gem, Waves, Receipt, TrendingUp, CreditCard, PiggyBank, Target, FileText, Home,
   Briefcase, Compass, Droplets, Sparkles, ChartCandlestick,
 } from "lucide-react";
 
@@ -30,7 +30,7 @@ import {
 // rendered as a card/tab. Keeping it mapped avoids a silent Sparkles fallback
 // if a caller ever forgets that filter.
 export const PERSPECTIVE_ICON_MAP: Record<string, ElementType> = {
-  Gem, Waves, TrendingUp, CreditCard, PiggyBank, Target, FileText, Home, Briefcase, Compass, Droplets,
+  Gem, Waves, Receipt, TrendingUp, CreditCard, PiggyBank, Target, FileText, Home, Briefcase, Compass, Droplets,
   ChartCandlestick,
 };
 

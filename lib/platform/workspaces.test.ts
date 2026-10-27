@@ -16,6 +16,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   PLATFORM_WORKSPACES,
+  PLATFORM_AREA_WORKSPACES,
+  PLATFORM_WORKSPACE_ALIASES,
+  canonicalPlatformWorkspaceId,
   PLATFORM_SECTION_REPRESENTATION,
   getPlatformAreaWorkspaces,
   getPlatformWorkspace,
@@ -243,9 +246,10 @@ console.log("PLATFORM_OPS decomposition shape");
   check("Manual Operations lives in the Jobs workspace", byId.get("platform-jobs")?.sections.includes("ops_manual_operations") === true);
   check("Rich Job Health lives in the Jobs workspace", byId.get("platform-jobs")?.sections.includes("ops_job_health") === true);
   check("Alerts detail lives in the Policies workspace", byId.get("platform-policies")?.sections.includes("ops_alerts") === true);
-  check("Providers workspace groups provider + connection + freshness + api", (() => {
+  check("Providers workspace groups provider + freshness + api; connection health renders once, in Pipeline (P-10)", (() => {
     const p = byId.get("platform-providers")?.sections ?? [];
-    return ["ops_provider_health", "ops_connection_health", "ops_resource_freshness", "ops_api_usage"].every((k) => p.includes(k));
+    return ["ops_provider_health", "ops_resource_freshness", "ops_api_usage"].every((k) => p.includes(k)) && !p.includes("ops_connection_health")
+      && byId.get("platform-refresh")?.sections.includes("ops_connection_health") === true;
   })());
 
   // Every doorway target is a real sibling workspace in the same area.
@@ -295,6 +299,64 @@ console.log("architecture reuse + authority preservation");
   const customerAuthz = /@\/lib\/spaces\/(policy|authorize|session)/;
   check("dashboard imports no customer space-authz module", !customerAuthz.test(dash));
   check("composition owner imports no customer space-authz module", !customerAuthz.test(ws));
+}
+
+// ── P-10 (owner-approved 2026-10-27) — 8 → 6 Operations workspaces, no capability removed ──
+console.log("P-10 · six Operations workspaces, every capability kept");
+{
+  const ops = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS;
+  check("exactly six, in the approved order",
+    ops.map((w) => w.workspaceId).join(",") === "platform-overview,platform-jobs,platform-refresh,platform-providers,platform-ai,platform-policies",
+    ops.map((w) => w.workspaceId).join(","));
+  // Every section key the eight-workspace composition rendered (develop 78b7558).
+  const BEFORE = [
+    "ops_overview", "ops_platform_health", "ops_scheduler", "ops_job_health", "ops_manual_operations", "ops_policies", "ops_alerts",
+    "ops_refresh_executions", "ops_refresh_summary", "ops_connection_health", "ops_refresh_coverage", "ops_provider_health",
+    "ops_provider_operations", "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_resource_freshness",
+    "ops_email_delivery", "ops_history", "ops_convergence", "ops_timeline", "ops_ai_invocations", "ops_brief_ops", "ops_ai_trend",
+    "ops_ai_budget", "ops_plaid_usage", "ops_cost",
+  ];
+  const composed = new Set(ops.flatMap((w) => w.sections));
+  const lost = BEFORE.filter((k) => !composed.has(k));
+  check("no section that was composed before is lost", lost.length === 0, lost.join(", "));
+  const all = ops.flatMap((w) => w.sections);
+  check("no section renders twice across Operations (one home per fact)", all.length === new Set(all).size,
+    all.filter((k, i) => all.indexOf(k) !== i).join(", "));
+  check("retired ids resolve to their new home",
+    canonicalPlatformWorkspaceId("platform-trends") === "platform-overview" && canonicalPlatformWorkspaceId("platform-costs") === "platform-ai"
+      && canonicalPlatformWorkspaceId("platform-jobs") === "platform-jobs" && canonicalPlatformWorkspaceId(null) === null);
+  check("every alias target is a live workspace", Object.values(PLATFORM_WORKSPACE_ALIASES).every((id) => ops.some((w) => w.workspaceId === id)));
+  check("no retired id is still a workspace identity", Object.keys(PLATFORM_WORKSPACE_ALIASES).every((id) => !getPlatformWorkspace(id)));
+  check("the Overview's doorways all point at live workspaces", (ops[0].doorways ?? []).every((id) => ops.some((w) => w.workspaceId === id)));
+}
+
+// ── Redesign §4.3 — Customer Success: Customers · Incidents ──
+console.log("Customer Success · Customers + Incidents");
+{
+  const cs = getPlatformAreaWorkspaces("CUSTOMER_SUCCESS");
+  check("two workspaces: Overview (customers) then Incidents",
+    cs.map((w) => w.workspaceId).join(",") === "platform-overview,platform-incidents", cs.map((w) => w.workspaceId).join(","));
+  check("customers on the first, sync incidents on the second; nothing else moved",
+    cs[0].sections.join() === "cs_customers" && cs[1]?.sections.join() === "cs_sync_issues");
+  check("Incidents is a registered Platform identity with a nav-resolvable icon",
+    getPlatformWorkspace("platform-incidents")?.label === "Incidents"
+      && /WORKSPACE_ICONS_BY_NAME[^{]*\{[^}]*\bTriangleAlert,/.test(readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8")));
+}
+
+// ── Redesign §4.9 — Security: Posture · Audit · Operator actions ──
+console.log("Security · Posture + Audit + Operator actions");
+{
+  const sec = getPlatformAreaWorkspaces("SECURITY_OPS");
+  check("three workspaces in order", sec.map((w) => w.workspaceId).join(",") === "platform-overview,platform-audit,platform-operator-actions", sec.map((w) => w.workspaceId).join(","));
+  check("the two feeds are composed directly, no longer absorbed",
+    sec[1]?.sections.join() === "sec_audit_feed" && sec[2]?.sections.join() === "sec_operator_actions"
+      && !("sec_audit_feed" in PLATFORM_SECTION_REPRESENTATION) && !("sec_operator_actions" in PLATFORM_SECTION_REPRESENTATION));
+  check("anomalies and sessions stay absorbed by the posture host",
+    PLATFORM_SECTION_REPRESENTATION.sec_anomalies === "sec_auth_posture" && PLATFORM_SECTION_REPRESENTATION.sec_sessions === "sec_auth_posture");
+  const nav = readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8");
+  check("both identities are registered with nav-resolvable icons",
+    getPlatformWorkspace("platform-audit")?.icon === "ScrollText" && getPlatformWorkspace("platform-operator-actions")?.icon === "UserCog"
+      && /ScrollText, UserCog,\n\};/.test(nav));
 }
 
 if (failures > 0) {

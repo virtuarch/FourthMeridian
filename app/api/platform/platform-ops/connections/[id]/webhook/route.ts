@@ -28,7 +28,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { systemDb } from "@/lib/db";
-import { requirePlatformAccess, requireFreshPlatformAccess } from "@/lib/platform/authorize";
+import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
 import { OperatorActionValidationError, parseOperatorReason, recordOperatorAction } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
@@ -43,13 +43,27 @@ export const runtime = "nodejs";
 
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const [, err] = await requirePlatformAccess("PLATFORM_OPS", "CONTROL");
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  // SEC-PLAT-2 — a CONTROL read that calls the provider: fresh (live revocation)
+  // like every other CONTROL entry point, and recorded below.
+  const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
   if (err) return err;
   const { id } = await ctx.params;
 
   const r = await inspectItemWebhook(id, defaultWebhookMigrationDeps());
   if (!r.ok && r.code === "NOT_FOUND") return NextResponse.json({ error: "Connection not found." }, { status: 404, headers: NO_STORE });
+  // The dry run read a real Item from Plaid: record it (target + outcome word
+  // only; never the provider payload or webhook URL). Best-effort — a failed
+  // audit write never fails the read.
+  await recordOperatorAction(systemDb, {
+    actor: operatorActorFrom(auth, "PLATFORM_OPS"),
+    action: AuditAction.PLAID_ITEM_WEBHOOK_DRY_RUN,
+    target: { kind: "PLAID_ITEM", id },
+    result: r.ok ? "SUCCESS" : "FAILURE",
+    detail: { outcome: r.ok ? "inspected" : "provider-error" },
+    ipAddress: getClientIp(req),
+    userAgent: req.headers.get("user-agent"),
+  }).catch((e) => console.error("[webhook-dry-run] audit write failed:", e instanceof Error ? e.message : "unknown error"));
   if (!r.ok) return NextResponse.json({ error: "provider-error", providerError: r.providerError }, { status: 502, headers: NO_STORE });
   return NextResponse.json(r.view, { headers: NO_STORE });
 }

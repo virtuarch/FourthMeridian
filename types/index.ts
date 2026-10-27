@@ -70,7 +70,18 @@ export interface Account {
     state:        string;
     /** Provider-observed pending rows behind the prediction. */
     pendingCount: number;
+    /** v2.7-P0 — P (Σ signed pending), native. */
+    pendingSum?:  number;
+    /** v2.7-P0 — the adjusted balance every total counts (C, or C + P), native. */
+    adjusted?:    number;
+    /** v2.7-P0 — NO_PENDING | PENDING_EXCLUDED | PENDING_INCLUDED | UNPROVEN. */
+    basis?:       string;
   };
+  /**
+   * v2.7-P0 — mirrored from `currentState.adjusted` so classifyAccounts totals
+   * the adjusted depository balance (countedBalance). `balance` stays reported.
+   */
+  adjustedBalance?: number;
   // Display-name metadata (Plaid values are never overwritten after import).
   plaidName?:    string;  // raw value Plaid returned for this account, frozen at import
   officialName?: string;  // Plaid's official_name, if provided, frozen at import
@@ -424,6 +435,14 @@ export interface Transaction {
    * — the id is never leaked across Spaces, and no name/detail is carried.
    */
   counterpartyAccountId?: string | null;
+  /**
+   * v2.7-P0 — provenance for the resolved-nature contract
+   * (lib/transactions/resolved-nature.ts): WHO wrote `flowType`
+   * (CLASSIFIER | TRANSFER_AUTHORITY | CRYPTO_LEDGER) and whether the category is
+   * a human's (USER_OVERRIDE | USER_RULE). Absent when the read did not select them.
+   */
+  flowAuthority?: string | null;
+  categorySource?: string | null;
 
   // CF-1 — read-time canonical projection for the Cash Flow context section.
   // Additive/optional (existing callers untouched): derived server-side from

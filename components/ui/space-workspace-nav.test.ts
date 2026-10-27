@@ -128,7 +128,8 @@ console.log("A. Exactly Net Worth · Cash Flow — and no Sections");
   const nav = navHtml(html, "Space");
   check("renders Net Worth", text(nav).includes("Net Worth"));
   check("renders Cash Flow", text(nav).includes("Cash Flow"));
-  check("exactly three WORKSPACE destinations, in that order", text(topLevel(nav)) === "Net Worth Cash Flow Markets", text(topLevel(nav)));
+  // v2.7 (owner) — Spending is its own workspace beside Cash Flow.
+  check("exactly four WORKSPACE destinations, in that order", text(topLevel(nav)) === "Net Worth Cash Flow Spending Markets", text(topLevel(nav)));
   check('no "Sections" label anywhere in the Space sidebar', !/\bSections\b/.test(text(html)) && !html.includes('aria-label="Sections"'));
   check("no published section anchor surfaces (Summary row, anchor ids); Assets / Debt appear ONLY as Net Worth's views",
     !/\bSummary\b/.test(text(html)) && !html.includes("wealth-summary") && !html.includes("cf-calendar") &&
@@ -137,9 +138,9 @@ console.log("A. Exactly Net Worth · Cash Flow — and no Sections");
     (text(html).match(/Cash Flow/g) ?? []).length === 1);
   const top = topLevel(nav);
   check("peers, not subsections: same row class as the site nav (pl-3, 13px, 14px icon), no indentation",
-    (top.match(/py-1\.5 pl-3 pr-2 text-left text-\[13px\]/g) ?? []).length === 3 &&
-      (top.match(/<svg[^>]*width="14"/g) ?? []).length === 3 && !/\bml-\d|pl-[4-9]/.test(top));
-  check("semantic links (no clickable divs / buttons)", (topLevel(nav).match(/<a /g) ?? []).length === 3 && !/<button/.test(nav));
+    (top.match(/py-1\.5 pl-3 pr-2 text-left text-\[13px\]/g) ?? []).length === 4 &&
+      (top.match(/<svg[^>]*width="14"/g) ?? []).length === 4 && !/\bml-\d|pl-[4-9]/.test(top));
+  check("semantic links (no clickable divs / buttons)", (topLevel(nav).match(/<a /g) ?? []).length === 4 && !/<button/.test(nav));
   check("a Space that publishes no workspaces renders no empty block", renderToStaticMarkup(createElement(SpaceWorkspaceNav, { nav: null })) === ""
     && renderToStaticMarkup(createElement(SpaceWorkspaceNav, { nav: { items: [], activeId: null, onSelect: () => {} } })) === "");
 }
@@ -215,7 +216,9 @@ console.log("D. Selection — in place for a plain click, the browser's for a mo
       /if \(id === NET_WORTH_LENS_ID\) \{\s*setWealthMode\(DEFAULT_WEALTH_MODE\);/.test(open) &&
       /if \(id === MARKETS_LENS_ID\) setMarketsMode\(DEFAULT_MARKETS_MODE\);/.test(open), open);
   check("host publishes the SAME lens set the in-page lens row uses (one list, no second definition)",
-    /items: lensSelectorItems\.map\(\(\{ id, label \}\) => \{\s*const children = workspaceChildren\(id\);\s*return \{ id, label, href: lensHref\(id\), \.\.\.\(children \? \{ children \} : \{\}\) \};/.test(host));
+    // v2.7 mobile/desktop parity — publishedWorkspaceChildren: workspaceChildren
+    // minus the views of a comingSoon workspace (pinned in mobile-desktop-parity.test.ts).
+    /items: lensSelectorItems\.map\(\(\{ id, label \}\) => \{\s*const children = publishedWorkspaceChildren\(id\);\s*return \{ id, label, href: lensHref\(id\), \.\.\.\(children \? \{ children \} : \{\}\) \};/.test(host));
   check("host clears the channel on unmount", /useEffect\(\(\) => \(\) => publishWorkspaceNav\(null\), \[publishWorkspaceNav\]\)/.test(host));
 }
 
@@ -261,7 +264,7 @@ console.log("F. Platform axis — the SAME workspace block; mobile; duplicates")
       hqLinks[0] === "/dashboard/platform/PLATFORM_OPS" && platAvailable[0].key === PLATFORM_DEFAULT_WORKSPACE_ID &&
       hqLinks.slice(1).every((h) => /^\/dashboard\/platform\/PLATFORM_OPS\?workspace=platform-[a-z]+$/.test(h)), hqLinks.join());
   check("the open workspace is lit, and only it (the host's activeId, never text)",
-    activeIn(hq, "Space").join() === "Policies" && activeIn(spaceMode("/dashboard/platform/PLATFORM_OPS", platNav(PLATFORM_DEFAULT_WORKSPACE_ID)), "Space").join() === "Overview");
+    activeIn(hq, "Space").join() === "Controls" /* P-10 */ && activeIn(spaceMode("/dashboard/platform/PLATFORM_OPS", platNav(PLATFORM_DEFAULT_WORKSPACE_ID)), "Space").join() === "Overview");
   check("every platform row renders its icon, resolved from the PUBLISHED icon name (the finance id map has no entry for it)",
     (topLevel(hqNav).match(/<svg[^>]*width="14"/g) ?? []).length === platAvailable.length && hqNav.includes("lucide-sliders-horizontal") && hqNav.includes("lucide-layout-dashboard"));
   check("Sections survive on the platform axis, BELOW the workspace list (which workspace, then what's inside)",
@@ -271,7 +274,7 @@ console.log("F. Platform axis — the SAME workspace block; mobile; duplicates")
   check("the sidebar hardcodes no platform workspace id or label (the host publishes them from the contract)",
     !/platform-overview|platform-jobs|platform-policies|>Policies<|>Jobs</.test(code(read("components", "ui", "ContextualNavbar.tsx"))));
   check("a customer Space is unaffected: its items carry no icon name and still resolve from the id map",
-    (topLevel(navHtml(spaceMode("/dashboard", publishedNav("OVERVIEW", "wealth")), "Space")).match(/<svg[^>]*width="14"/g) ?? []).length === 3);
+    (topLevel(navHtml(spaceMode("/dashboard", publishedNav("OVERVIEW", "wealth")), "Space")).match(/<svg[^>]*width="14"/g) ?? []).length === 4);
 
   // Host wiring — the SAME channel, hrefs, setter and lifecycle SpaceDashboard uses.
   const plat = code(read("components", "platform", "PlatformSpaceDashboard.tsx"));
@@ -355,9 +358,15 @@ console.log("H. One workspace switcher per width; no stale Sections label");
   check("the two breakpoints are exact complements: sidebar `hidden … lg:block` ⇔ row `lg:hidden`",
     /<aside className="hidden w-\[212px\] shrink-0 lg:block">/.test(rail));
   const host = code(read("components", "dashboard", "SpaceDashboard.tsx"));
-  check("the customer host opts in exactly once, on the lens row it already renders (no second switcher, same routing)",
-    (host.match(/tabsVisibility="belowLg"/g) ?? []).length === 1 &&
-      /tabs=\{lensSelectorItems\}[\s\S]{0,120}onSelectTab=\{selectLens\}[\s\S]{0,40}tabsVisibility="belowLg"/.test(host));
+  // COMPACT DASHBOARD (P1) — below lg the switcher is the header's CompactViewSelector,
+  // fed the SAME items + the SAME selectLens the lens row used (same routing, one
+  // switcher); the compact lens row is therefore not rendered for customer Spaces.
+  check("the customer host renders ONE compact switcher: the header selector, on the lens row's items and handler",
+    (host.match(/tabsVisibility="none"/g) ?? []).length === 1 && !/tabsVisibility="belowLg"/.test(host) &&
+      /tabs=\{lensSelectorItems\}[\s\S]{0,120}onSelectTab=\{selectLens\}[\s\S]{0,40}tabsVisibility="none"/.test(host) &&
+      /<CompactViewSelector items=\{lensSelectorItems\} activeId=\{activeLensId\} onSelect=\{selectLens\} \/>/.test(host));
+  check("the compact selector is compact-only (lg:hidden root) and the sidebar stays desktop-only — exact complements",
+    /className="relative lg:hidden"/.test(read("components", "space", "shell", "CompactViewSelector.tsx")));
   check("Net Worth internal modes (Total · Assets · Debt) are not the lens row — untouched by this switch",
     !/tabsVisibility/.test(code(read("components", "space", "widgets", "wealth", "WealthWorkspace.tsx"))));
 
@@ -393,7 +402,7 @@ console.log("I. The workspace region's accessible name");
   check("the content panel is a named region: aria-label from the open workspace's label",
     /aria-label=\{openWorkspaceLabel\}/.test(panel), panel);
   check("…derived from the SAME lens list both switchers render + the open mode's label (no second label source)",
-    /lensSelectorItems\.find\(\(l\) => l\.id === openWorkspace\)\?\.label,\s*openWorkspace \? workspaceChildren\(openWorkspace\)\?\.find\(\(c\) => c\.id === openChild\)\?\.label : null,/.test(host) &&
+    /lensSelectorItems\.find\(\(l\) => l\.id === openWorkspace\)\?\.label,\s*openWorkspace \? publishedWorkspaceChildren\(openWorkspace\)\?\.find\(\(c\) => c\.id === openChild\)\?\.label : null,/.test(host) &&
       /const openChild = openChildId\(openWorkspace, \{ wealthMode, marketsMode \}\);/.test(host));
   const nameFor = (tab: string, p: string | null, m: WealthMode = "total") => {
     const ws = openWorkspaceId(tab, p);
@@ -504,7 +513,7 @@ console.log("J. Net Worth is a parent: Total · Assets · Debt nested while open
   // a view refines its workspace's entry (behaviour: space-history.test §4–6).
   const navSrc = read("lib", "space", "use-space-navigation.ts");
   check("mode writes: ?metric= from the ONE URL writer, only for the open Net Worth; the mode setter declares no push",
-    /openWorkspace === NET_WORTH_LENS_ID\s*\? \{ metric: serializeWealthMode\(wealthMode\)/.test(navSrc) &&
+    /openWorkspace === NET_WORTH_LENS_ID\s*\?\s*\{\s*metric: serializeWealthMode\(wealthMode\)/.test(navSrc) &&
       !/historyIntent/.test(navSrc.match(/const handleModeChange = useCallback\([\s\S]*?\}, \[\]\);/)?.[0] ?? "historyIntent"));
 
   // Responsive: ONE Total · Assets · Debt control per width.
@@ -514,8 +523,17 @@ console.log("J. Net Worth is a parent: Total · Assets · Debt nested while open
   check("…default stays visible everywhere, and it is still the SAME Chips over `mode` / onModeChange (mobile keeps all three)",
     /modeSelectorVisibility = "always"/.test(ww) && /options=\{WEALTH_MODES\.map/.test(ww) && /value=\{mode\}/.test(ww) && /onChange=\{\(m\) => onModeChange\?\.\(m\)\}/.test(ww));
   // UI-006 added a fifth path: the snapshot read FAILED with no history loaded.
+  // COMPACT DASHBOARD (P2/P3) — still rendered in every path, never removed. In the
+  // main and Debt paths it moved BELOW the hero for the compact hierarchy (hero →
+  // Total·Assets·Debt → tabs): complementary conditionals keep a desktop-visible
+  // selector (visibility "always") above the hero, and Debt receives it as a slot
+  // rendered under the Debt hero.
   check("…rendered in every mode path (Debt, loading, read-failure, no-history, main) — hidden, never removed",
-    (code(ww).match(/\{modeSelector\}/g) ?? []).length === 5);
+    (code(ww).match(/\{modeSelector\}/g) ?? []).length === 3 &&
+      (code(ww).match(/\{modeSelectorVisibility !== "belowLg" && modeSelector\}/g) ?? []).length === 2 &&
+      (code(ww).match(/\{modeSelectorVisibility === "belowLg" && modeSelector\}/g) ?? []).length === 1 &&
+      /compactModeSelector=\{modeSelectorVisibility === "belowLg" \? modeSelector : undefined\}/.test(code(ww)) &&
+      /\{compactModeSelector\}/.test(code(read("components", "space", "widgets", "debt", "DebtWorkspace.tsx"))));
   check("the customer host opts in once, through the render context",
     (host.match(/wealthModeSelectorVisibility: "belowLg"/g) ?? []).length === 1 &&
       /modeSelectorVisibility=\{ctx\.wealthModeSelectorVisibility\}/.test(read("components", "space", "workspaces", "workspaceRenderers.tsx")));

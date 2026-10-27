@@ -92,7 +92,7 @@ console.log('one primary nav, two presentations: rail and bar read the SAME mode
   check('rail is desktop-only, bar is mobile-only (no duplicate presentation at one width)',
     /<aside className="hidden w-\[212px\] shrink-0 lg:block">/.test(rail) && /lg:hidden/.test(bottomNav));
   check('both presentations keep aria-current for the active destination',
-    (bottomNav.match(/aria-current=\{on \? "true" : undefined\}/g) ?? []).length === 1 && /aria-current=\{on \? "true" : undefined\}/.test(rail));
+    (bottomNav.match(/aria-current=\{on \? "true" : undefined\}/g) ?? []).length === 2 /* personal bar + P-1 Platform bar */ && /aria-current=\{on \? "true" : undefined\}/.test(rail));
 }
 
 if (failures > 0) {

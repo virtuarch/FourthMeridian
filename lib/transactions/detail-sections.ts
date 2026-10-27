@@ -22,7 +22,8 @@
  */
 
 import type { TransactionDetail } from "@/types";
-import { describeRowNature, flowTypeLabel, DIRECTION_SIGN, type RowDirection } from "@/lib/transactions/flow-presentation";
+import { describeRowNature, isHumanCategorySource, flowTypeLabel, DIRECTION_SIGN, type RowDirection } from "@/lib/transactions/flow-presentation";
+import { resolvedCategory } from "@/lib/transactions/transfer-debt-payment-correction";
 
 export interface DetailRow {
   label: string;
@@ -80,6 +81,7 @@ function summary(d: TransactionDetail): DetailSection {
     transferMaturity: d.transferMaturity ?? null,
     amount:        d.amount,
     hasOwnedCounterparty: d.counterpartyAccountId != null,
+    humanCategorized: isHumanCategorySource(d.categorySource),
   });
   pushIf(rows, "Merchant", d.merchantDisplayName ?? d.merchant);
   pushIf(rows, "Amount", signedMoney(nature.direction, d.amount, d.currency ?? null));
@@ -87,7 +89,9 @@ function summary(d: TransactionDetail): DetailSection {
   // posting date rides beside it as provenance, never instead of it.
   pushIf(rows, "Date", d.date);
   if (d.postingDate && d.postingDate !== d.date) pushIf(rows, "Posted", d.postingDate);
-  pushIf(rows, "Category", d.category);
+  // v2.7-P1 — the provider's `Payment` label on a row the transfer authority
+  // resolved to a transfer reads `Transfer`, matching the "What" row beneath it.
+  pushIf(rows, "Category", resolvedCategory(d.category, d.flowType ?? null, d.transferMaturity ?? null));
   // v2.6-TRUTH-7 — "What" is the canonical row NATURE, from the one presentation
   // authority. This row read `humanize(flowType)`, so a Microsoft issuer credit
   // said "Income · Inflow" while the taxonomy had already called it an issuer
@@ -242,6 +246,7 @@ function relationshipIntelligence(d: TransactionDetail): DetailSection {
         transferMaturity: d.transferMaturity ?? null,
         amount:        d.amount,
         hasOwnedCounterparty: d.counterpartyAccountId != null,
+        humanCategorized: isHumanCategorySource(d.categorySource),
       }).direction;
       const preposition = direction === "OUT" ? "to" : direction === "IN" ? "from" : "with";
       notes.push(`Appears to match a transfer ${preposition} ${named}.`);

@@ -53,28 +53,33 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
     id: "platform-jobs", kind: "standard", domain: "platform",
     label: "Jobs", icon: "Timer",
   },
+  // Customer Success (redesign §4.3) — the open sync incidents get their own
+  // workspace beside the customer list: "which incidents are open, recurring,
+  // slow to resolve?" is a different question from "which customers need help?".
+  "platform-incidents": {
+    id: "platform-incidents", kind: "standard", domain: "platform",
+    label: "Incidents", icon: "TriangleAlert",
+  },
+  // Security Operations (redesign §4.9) — the end-user security feed and the
+  // operator-action feed each get a workspace beside Posture.
+  "platform-audit": {
+    id: "platform-audit", kind: "standard", domain: "platform",
+    label: "Audit", icon: "ScrollText",
+  },
+  "platform-operator-actions": {
+    id: "platform-operator-actions", kind: "standard", domain: "platform",
+    label: "Operator actions", icon: "UserCog",
+  },
   "platform-providers": {
     id: "platform-providers", kind: "standard", domain: "platform",
     label: "Providers", icon: "PlugZap",
   },
-  // OPS-5 Wave B — the operational INTELLIGENCE workspace: history (S7),
-  // convergence (S9), and cost/latency (S10) are Workspace CONTENT here, not a new
-  // dashboard. Still a standard Workspace (no fabricated Perspective); the
-  // as-of/compare-to time model is the finance shell contract, mirrored.
-  "platform-trends": {
-    id: "platform-trends", kind: "standard", domain: "platform",
-    label: "History", icon: "History",
-  },
   // OPS-6D — the AI operations console (usage volume + trend + estimated cost).
   "platform-ai": {
     id: "platform-ai", kind: "standard", domain: "platform",
-    label: "AI", icon: "Sparkles",
-  },
-  // OPS-6G — the unified cost console: operational cost (S10) + AI cost (6D).
-  // Composition only — no second spend engine; each metric keeps its truth tier.
-  "platform-costs": {
-    id: "platform-costs", kind: "standard", domain: "platform",
-    label: "Economics", icon: "Gauge",
+    // P-10 (owner-approved "AI & costs", 2026-10-27; spelled "and" so the label never needs HTML escaping) — AI usage AND the economics console in
+    // one workspace (the former "Economics" tab, platform-costs, merged here).
+    label: "AI and costs", icon: "Sparkles",
   },
   // OPS-2C-2 — the Refresh workspace. It answers a question no existing
   // workspace does ("what did this refresh do, to which accounts, and did it
@@ -91,7 +96,8 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
   // to do, and can it?"); Jobs answers whether work ran, Refresh what it did.
   "platform-policies": {
     id: "platform-policies", kind: "standard", domain: "platform",
-    label: "Policies", icon: "SlidersHorizontal",
+    // P-10 — "what is configured, what is in force, who changed it".
+    label: "Controls", icon: "SlidersHorizontal",
   },
 };
 
@@ -115,6 +121,27 @@ export interface PlatformWorkspaceComposition {
  * other areas expose one Overview workspace that renders all their sections (the
  * pre-S6 single grid, behavior-preserving) so the shared render path is uniform.
  */
+/**
+ * P-10 (owner-approved, 2026-10-27) — Platform Operations goes from eight
+ * workspaces to six WITHOUT removing a capability: every section key composed
+ * before is still composed (pinned by workspaces.test.ts). History dissolved
+ * into its owners (convergence + timeline → Overview, the history series →
+ * Jobs); Economics merged into "AI & costs" (so ops_ai_trend renders once);
+ * connection health renders once, in Pipeline.
+ *
+ * Retired workspace ids still resolve: PLATFORM_WORKSPACE_ALIASES maps them to
+ * their new home, so existing `?workspace=` deep links keep working.
+ */
+export const PLATFORM_WORKSPACE_ALIASES: Readonly<Record<string, string>> = {
+  "platform-trends": "platform-overview",
+  "platform-costs":  "platform-ai",
+};
+
+/** A requested workspace id, with retired ids mapped to their new home. */
+export function canonicalPlatformWorkspaceId(id: string | null | undefined): string | null | undefined {
+  return id && PLATFORM_WORKSPACE_ALIASES[id] ? PLATFORM_WORKSPACE_ALIASES[id] : id;
+}
+
 export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWorkspaceComposition[]> = {
   PLATFORM_OPS: [
     {
@@ -126,16 +153,17 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       // see PLATFORM_SECTION_REPRESENTATION). Every domain has a doorway into
       // the workspace that holds its detail, so "something is wrong" is two
       // clicks from "this exact execution failed".
-      sections: ["ops_overview", "ops_platform_health"],
-      doorways: ["platform-refresh", "platform-jobs", "platform-providers", "platform-ai", "platform-costs", "platform-policies", "platform-trends"],
+      // P-10 — the incident timeline (convergence) and the event timeline
+      // answer "what changed, and why?" for the cockpit, so they live here.
+      sections: ["ops_overview", "ops_platform_health", "ops_convergence", "ops_timeline"],
+      doorways: ["platform-jobs", "platform-refresh", "platform-providers", "platform-ai", "platform-policies"],
     },
     // Jobs — the scheduler observation, the per-job health table, and the
     // manual Run Now / Dry Run controls (formerly their own Operations workspace:
     // "are scheduled jobs working? are manual runs working?" is one question).
-    { workspaceId: "platform-jobs", sections: ["ops_scheduler", "ops_job_health", "ops_manual_operations"] },
-    // Policies & controls — the financial refresh policy (with its CONTROL
-    // editor) and the alert rules, which are declared policy too.
-    { workspaceId: "platform-policies", sections: ["ops_policies", "ops_alerts"] },
+    // P-10 — the operational history series (job runtime per run, manual runs,
+    // alert firings) is job history, so it closes the Jobs workspace.
+    { workspaceId: "platform-jobs", sections: ["ops_scheduler", "ops_job_health", "ops_manual_operations", "ops_history"] },
     // Pipeline — the execution ROWS first (every source kind, filterable, each
     // opening its inspection), then outcomes, the operator's source health,
     // and per-account coverage.
@@ -146,27 +174,32 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     // operator reading connection state should meet "and these removals were
     // never confirmed upstream" in the same breath, since those items are
     // REVOKED and appear in none of the health surfaces above.
-    { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_provider_operations", "ops_connection_health", "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_resource_freshness", "ops_email_delivery"] },
-    // History — the OPS-5 Wave B intelligence layer.
-    { workspaceId: "platform-trends", sections: ["ops_history", "ops_convergence", "ops_timeline"] },
-    // AI — per-invocation operations + economics, Daily Brief operations, and
-    // the day-grain usage trend.
-    { workspaceId: "platform-ai", sections: ["ops_ai_invocations", "ops_brief_ops", "ops_ai_trend"] },
-    // Economics — Plaid Item-months and their estimated cost, the operational
-    // cost & latency intelligence, and the AI spend trend. Composition only.
-    { workspaceId: "platform-costs", sections: ["ops_ai_budget", "ops_plaid_usage", "ops_cost", "ops_ai_trend"] },
+    // P-10 — connection health renders once, in Pipeline (above).
+    { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_provider_operations", "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_resource_freshness", "ops_email_delivery"] },
+    // AI & costs (P-10) — usage first (invocations + the day-grain trend, once),
+    // then spend against controls, provider economics, operational cost, and
+    // Daily Brief operations. Composition only — no second spend engine.
+    { workspaceId: "platform-ai", sections: ["ops_ai_invocations", "ops_ai_trend", "ops_ai_budget", "ops_plaid_usage", "ops_cost", "ops_brief_ops"] },
+    // Controls (P-10; formerly "Policies") — the financial refresh policy (with
+    // its CONTROL editor) and the alert rules, which are declared policy too.
+    { workspaceId: "platform-policies", sections: ["ops_policies", "ops_alerts"] },
   ],
   SECURITY_OPS: [
     // BETA V2 — one "Security posture" surface (hosted by the first composed key,
     // sec_auth_posture; SecurityPostureWidget) absorbs the four former card-grain
     // widgets, which stay registered and are REPRESENTED by the host below.
     { workspaceId: "platform-overview", sections: ["sec_auth_posture"] },
+    // Redesign §4.9 — Audit and Operator actions as their own workspaces.
+    { workspaceId: "platform-audit", sections: ["sec_audit_feed"] },
+    { workspaceId: "platform-operator-actions", sections: ["sec_operator_actions"] },
   ],
   GROWTH_REVENUE: [
     { workspaceId: "platform-overview", sections: ["growth_signups", "growth_product_analytics", "growth_beta_requests", "growth_users", "growth_activity", "growth_funnel", "growth_policy_groups"] },
   ],
+  // Redesign §4.3 — Customers (the list + audited profile) and Incidents.
   CUSTOMER_SUCCESS: [
-    { workspaceId: "platform-overview", sections: ["cs_customers", "cs_sync_issues"] },
+    { workspaceId: "platform-overview", sections: ["cs_customers"] },
+    { workspaceId: "platform-incidents", sections: ["cs_sync_issues"] },
   ],
   MERCHANT_OPS: [
     { workspaceId: "platform-overview", sections: ["merchant_review"] },
@@ -209,8 +242,6 @@ export const PLATFORM_SECTION_REPRESENTATION: Readonly<Record<string, string>> =
   ops_rate_limits:        "ops_platform_health",
   ops_env_status:         "ops_platform_health",
   // BETA V2 — absorbed by the Security posture surface (components/platform/widgets/SecurityPostureWidget.tsx).
-  sec_operator_actions:   "sec_auth_posture",
-  sec_audit_feed:         "sec_auth_posture",
   sec_sessions:           "sec_auth_posture",
   sec_anomalies:          "sec_auth_posture",
 };

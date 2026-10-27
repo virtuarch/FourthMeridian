@@ -328,6 +328,28 @@ export const AuditAction = {
   REFRESH_ALL_REQUESTED:           "REFRESH_ALL_REQUESTED",
   OPERATOR_REFRESH_ALL:            "OPERATOR_REFRESH_ALL",
 
+  // SEC-PLAT-2 — a refused CONTROL mutation (refresh cadence, job cadence, AI
+  // cost controls). The attempt is a fact: recorded REFUSED through
+  // recordOperatorAction with the control, the verb, the target and the refusal
+  // CODE — never the submitted value (lib/platform/control-refusal.ts). Not
+  // reason-required: a refusal for a missing reason must still be recordable.
+  // (Maintenance mode keeps its own REFUSED rows on PLATFORM_POLICY_*.)
+  PLATFORM_CONTROL_REFUSED:        "PLATFORM_CONTROL_REFUSED",
+  // SEC-PLAT-2 — a CONTROL holder ran the Plaid webhook DRY RUN for one Item
+  // (GET /api/platform/platform-ops/connections/[id]/webhook). It reads the Item
+  // from Plaid, so it is recorded; it changes nothing (the apply is
+  // PLAID_ITEM_WEBHOOK_UPDATED). Facts only: target Item id + outcome word.
+  PLAID_ITEM_WEBHOOK_DRY_RUN:      "PLAID_ITEM_WEBHOOK_DRY_RUN",
+  // SEC-PLAT-3 — owner ruling P-4: Customer Success may resolve customer
+  // identity under explicit authorization, and every such resolution is
+  // audited. One row per customer-profile open (GET
+  // /api/platform/customer-success/customers/[userId]), written BEFORE the
+  // profile is returned — no audit, no profile. Target = the customer (USER);
+  // performedByAdminId = the operator. Not shown in the customer's own security
+  // history (not in USER_SECURITY_HISTORY_ACTIONS) and excluded from the
+  // profile's own operator-action list so views never crowd out changes.
+  CUSTOMER_PROFILE_VIEWED:         "CUSTOMER_PROFILE_VIEWED",
+
   // ── Security Ops anomalies (Wave 3 ⑧) ────────────────────────────────────
   // Written once per open anomaly window by lib/security/anomaly-alerts.ts when
   // a threshold trips (failed-login burst per identifier/IP, recovery-code
@@ -481,6 +503,15 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.OPERATOR_REFRESH_ALL,
   // Pre-existing operator action that was never listed (the provider-cleanup retry).
   AuditAction.PLAID_ITEM_REVOCATION_RETRY_REQUESTED,
+  // SEC-PLAT-2 — operator actions that were written but never listed: merchant
+  // merge decisions (now through the operator-action envelope), refused CONTROL
+  // mutations, and the Plaid webhook dry run.
+  AuditAction.MERCHANT_MERGE_APPLIED,
+  AuditAction.MERCHANT_MERGE_DISMISSED,
+  AuditAction.PLATFORM_CONTROL_REFUSED,
+  AuditAction.PLAID_ITEM_WEBHOOK_DRY_RUN,
+  // SEC-PLAT-3 — authorized customer-identity reads.
+  AuditAction.CUSTOMER_PROFILE_VIEWED,
 ];
 
 /** Actions counted by the admin audit "security only" quick-filter. */
@@ -523,6 +554,8 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
     actions: [
       AuditAction.PLATFORM_POLICY_CHANGED,
       AuditAction.PLATFORM_POLICY_RESET,
+      AuditAction.PLATFORM_CONTROL_REFUSED,
+      AuditAction.PLAID_ITEM_WEBHOOK_DRY_RUN,
     ],
   },
   {

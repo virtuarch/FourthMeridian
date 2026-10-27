@@ -74,7 +74,8 @@ function check(name: string, cond: boolean, detail?: string): void {
   // The canonical id→need reductions the host now relies on.
   const REDUCTIONS: { need: string; ids: string[] }[] = [
     { need: "snapshots",          ids: ["wealth", "debt"] },
-    { need: "transactions",       ids: ["cashFlow", "liquidity"] },
+    // v2.7 (owner) — Spending is its own perspective and reads the same transactions.
+    { need: "transactions",       ids: ["cashFlow", "liquidity", "spending"] },
     // W2 — the "goals" need row was deleted with the goals perspective (Goals retired).
     { need: "investmentsHistory", ids: ["investments"] },
   ];

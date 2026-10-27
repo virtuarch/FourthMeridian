@@ -465,7 +465,7 @@ function main() {
     check("the icon-only row menu has an accessible name", /aria-label="Commands for [^"]+"/.test(html));
     check("row expansion carries aria-expanded", html.includes("aria-expanded"));
     const s = surface();
-    check("the maintenance button is inert and points to the one writer (Policies → Operational Controls)", s.includes("Maintenance mode is set in Policies → Operational Controls") && /disabled=""[^>]*aria-label="Maintenance mode is set/.test(s));
+    check("the maintenance button is inert and points to the one writer (Controls → Operational Controls, P-10)", s.includes("Maintenance mode is set in Controls → Operational Controls") && /disabled=""[^>]*aria-label="Maintenance mode is set/.test(s));
     check("the search input has an accessible name", s.includes("Search jobs"));
     check("the filter pills expose their pressed state", s.includes('aria-pressed="true"'));
   }

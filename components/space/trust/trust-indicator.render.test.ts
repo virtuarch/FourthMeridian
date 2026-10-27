@@ -67,5 +67,19 @@ for (const f of [
 check("CashFlowHero.tsx mounts no TrustIndicator",
   !/<TrustIndicator\b/.test(readFileSync(path.join(process.cwd(), "components/space/widgets/cashflow/CashFlowHero.tsx"), "utf8")));
 
+console.log("Evidence affordance is gone from the customer UI (v2.7 final UX pass)");
+{
+  const withRows: PerspectiveEnvelope = {
+    completeness: tier("derived"),
+    evidence: { label: "37 snapshots", rows: [{ date: "2026-09-20", label: "$1", tier: "reconstructed" }] },
+  };
+  for (const v of ["compact", "inline", "expanded"] as const) {
+    const h = render(withRows, v);
+    check(`${v} + evidence rows ⇒ no Evidence button / count chip`, !/Evidence|37 snapshots/.test(h), h);
+  }
+  const src = readFileSync(path.join(process.cwd(), "components/space/trust/TrustIndicator.tsx"), "utf8");
+  check("TrustIndicator has no showEvidence prop and imports no EvidenceDrawer", !/showEvidence|EvidenceDrawer/.test(src));
+}
+
 if (failures > 0) { console.error(`\ntrust-indicator: ${failures} failure(s).`); process.exit(1); }
 console.log("\ntrust-indicator: all passed.");

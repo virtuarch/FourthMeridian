@@ -25,6 +25,7 @@ import type { InvestmentsPortfolio, InvestmentsReconciliation } from "@/lib/inve
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
+import { HeroEyebrow } from "@/components/space/hero/HeroParts";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
 import { heroComparison, type PeriodAttribution } from "@/lib/investments/period-attribution.core";
 
@@ -71,10 +72,10 @@ export function InvestmentsHero({
     // Bare hero — no card, no border. The most important figure doesn't need a
     // container to be found (the read surfaces are the rows below).
     <section>
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{figureLabel}</p>
-        <TrustIndicator variant="compact" envelope={envelope} />
-      </div>
+      {/* v2.7 final UX pass — the SAME fixed-height label row (HeroEyebrow, h-6)
+          as Net Worth / Assets / Debt, so the trust chip sits in one place on
+          every perspective and never changes the header's height. */}
+      <HeroEyebrow label={figureLabel} trust={<TrustIndicator variant="compact" envelope={envelope} />} />
 
       <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
         <Figure

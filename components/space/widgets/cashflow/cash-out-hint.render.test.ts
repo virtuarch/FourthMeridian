@@ -16,6 +16,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { CashFlowSummaryWidget, CASH_OUT_HINT } from "@/components/space/widgets/CashFlowSummaryWidget";
+import { SpendingTierBreakdown } from "@/components/space/widgets/cashflow/SpendingSections";
+import { CashFlowMovements, movementLines } from "@/components/space/widgets/cashflow/CashFlowMovements";
+import { aggregateDayFacts, economicSpend, economicSpendByTier } from "@/lib/transactions/cash-flow-projection";
+import { groupCashFlowContext } from "@/lib/transactions/cash-flow-context";
+import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 
 let failures = 0, passed = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -37,14 +42,21 @@ const ROWS = [
   tx({ amount: -60,  date: "2026-07-04", category: "Groceries" }),
 ];
 const ACCOUNTS = [{ id: "chk", type: "checking" }, { id: "card", type: "debt" }];
-const render = (perspective: "liquidity" | "economic") =>
-  renderToStaticMarkup(createElement(CashFlowSummaryWidget, {
-    transactions: ROWS, period: { kind: "month", year: 2026, month: 7 }, accounts: ACCOUNTS,
-    perspective, asOf: "2026-07-31", hideHeadline: true,
-  } as never));
-
-const liquidity = render("liquidity");
-const spending = render("economic");
+const liquidity = renderToStaticMarkup(createElement(CashFlowSummaryWidget, {
+  transactions: ROWS, period: { kind: "month", year: 2026, month: 7 }, accounts: ACCOUNTS, asOf: "2026-07-31",
+} as never));
+// v2.7 — Spending is its own perspective: its breakdown is SpendingTierBreakdown over
+// the SAME DayFacts fold (economicSpendByTier), not an economic mode of this widget.
+const liqCtx = tierResolver(ACCOUNTS);
+const facts = aggregateDayFacts(ROWS as unknown as LiquidityTx[], liqCtx);
+const spending = renderToStaticMarkup(createElement(SpendingTierBreakdown, {
+  tier: economicSpendByTier(facts), total: economicSpend(facts), fmt: (v: number) => String(v),
+}));
+const cardRows = (ROWS as unknown as LiquidityTx[]).filter((r) => r.flowType === "SPENDING" && liqCtx.tierOf(r.financialAccountId ?? null) === "liability");
+const movements = renderToStaticMarkup(createElement(CashFlowMovements, {
+  lines: movementLines({ context: groupCashFlowContext(ROWS as unknown as LiquidityTx[], liqCtx), charged: facts.creditCardSpending, chargedRows: cardRows as never }),
+  invalidationKey: "k",
+}));
 
 console.log("1. the hint is on the Cash Out tile");
 check("the exact copy renders", text(liquidity).includes(CASH_OUT_HINT), CASH_OUT_HINT);
@@ -62,17 +74,18 @@ check("it claims no matching between a payment and the purchases in this period"
 check("it is one short line, not a paragraph", CASH_OUT_HINT.length <= 70 && CASH_OUT_HINT.split(". ").length === 1);
 
 console.log("3. it belongs to the cash view only");
-check("the Spending view does not carry it", !text(spending).includes(CASH_OUT_HINT));
-check("…and the Spending view still shows the Spending tile", text(spending).includes("Spending"));
+check("the Spending page does not carry it", !text(spending).includes(CASH_OUT_HINT));
+check("…and the Spending page states Total spending", text(spending).includes("Total spending"));
 
 console.log("4. the figures it explains are the honest ones");
 // Cash Out = the 300 card payment + the 60 direct debit = 360. Spending = 400 + 60 = 460.
 // No ConversionContext is passed, so the figures carry no currency symbol (the
 // display-money doctrine: never relabel an unknown denomination as dollars).
 check("Cash Out is 360 — the card purchase is not in it", /Cash Out −360\b/.test(text(liquidity)), text(liquidity).slice(0, 80));
-check("Spending is 460 — the card purchase IS in it, the payment is not", /Spending −460\b/.test(text(spending)), text(spending).slice(0, 80));
-check("the gross card context row says 'Charged', never 'Spent'",
-  text(liquidity).includes("Charged on credit") && !/spent on credit/i.test(text(liquidity)));
+check("Spending is 460 — the card purchase IS in it, the payment is not",
+  /Credit-card spending [^0-9]*400\b/.test(text(spending)) && /Direct &(amp;)? other spending [^0-9]*60\b/.test(text(spending)) && /Total spending 460\b/.test(text(spending)), text(spending));
+check("the gross card context row says 'Charged', never 'Spent' (Transfers & movements)",
+  text(movements).includes("Charged on credit · 400") && !/spent on credit/i.test(text(movements)), text(movements));
 
 console.log(failures === 0 ? `\nPASS — ${passed} checks` : `\nFAIL — ${failures} of ${passed + failures} check(s)`);
 process.exit(failures === 0 ? 0 : 1);

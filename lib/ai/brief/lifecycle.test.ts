@@ -21,11 +21,15 @@ import { basePackage } from './fixtures';
 import { materialDigest } from './digest';
 import { BriefScopeError } from './errors';
 import type { BriefGenerationResult } from './generate';
-import { BRIEF_PROMPT_HASH, BRIEF_PROMPT_VERSION, ensureDailyBrief, inspectDailyBrief, type EnsureResult, type LifecycleDeps } from './lifecycle';
-import { BRIEF_GENERATION_VERSION, GENERATION_FAILURE_COOLDOWN_MS, GENERATION_LEASE_MS } from './policy';
+import { BRIEF_PROMPT_HASH, BRIEF_PROMPT_VERSION, promptRevisionOf, ensureDailyBrief, inspectDailyBrief, type EnsureResult, type LifecycleDeps } from './lifecycle';
+import { BRIEF_GENERATION_VERSION, BRIEF_PROMPT_REVISION, GENERATION_FAILURE_COOLDOWN_MS, GENERATION_LEASE_MS, generationVersionOf } from './policy';
 import type { BriefRow } from './state';
 import type { BriefCompletion, BriefKey, BriefScope, BriefStore, ClaimResult } from './store';
 import type { BriefPackage } from './types';
+import type { Transaction } from '@/types';
+import { projectRecentActivity, recentActivityWindow } from './recent-activity';
+import { serializePackage } from './prompt';
+import { staleSourcesForBrief } from '@/lib/connections/space-data-health.core';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -141,7 +145,7 @@ async function main() {
     check('persisted with its provenance',
       !!row.generatedAt && row.content !== null && row.sourceWatermark === 'wm-1'
         && row.materialDigest === materialDigest({ ...basePackage(), identity: { ...basePackage().identity } })
-        && row.promptVersion === BRIEF_PROMPT_VERSION && /^brief-generation-\d+\+prompt-[0-9a-f]{12}$/.test(BRIEF_PROMPT_VERSION)
+        && row.promptVersion === BRIEF_PROMPT_VERSION && /^brief-generation-\d+\+prompt-[0-9a-f]{12}\+rev-[a-z0-9-]+$/.test(BRIEF_PROMPT_VERSION)
         && row.model === 'gpt-5.1' && row.correlationId === 'brief_1' && row.historyThrough === '2026-09-12'
         && row.balancesAsOf?.toISOString() === basePackage().freshness!.oldestBalanceObservedAt
         && row.generationStartedAt === null);
@@ -394,11 +398,16 @@ async function main() {
   console.log('\n12. the generation contract — valid evidence, outdated rules');
   {
     // If this fails, the prompt or output schema changed. Decide whether what a Brief
-    // may say changed meaningfully: if so bump BRIEF_GENERATION_VERSION (policy.ts);
-    // either way, update the pin. The version, not this hash, decides validity.
+    // may say changed meaningfully: if so bump BRIEF_GENERATION_VERSION (policy.ts) —
+    // which REGENERATES today's stored Briefs — or, when stored Briefs must be
+    // preserved (owner policy 2026-10-27), move BRIEF_PROMPT_REVISION only. Either way,
+    // update the pin. The version, not this hash, decides validity.
+    // v2.7-P0: 08fbac9b9cb7 → dfb26bf3e8ae (debt-semantics-1; generation NOT bumped).
+    // v2.7 owner ruling (PR #63): → 5bb1d55b1cf8 (debt-semantics-2: TRANSFER_DESTINATION_UNCONFIRMED; generation NOT bumped).
     check('the prompt/schema hash is pinned (review BRIEF_GENERATION_VERSION when it moves)',
-      BRIEF_PROMPT_HASH === '08fbac9b9cb7', BRIEF_PROMPT_HASH);
-    check('what a row stores is the intentional version plus the hash', BRIEF_PROMPT_VERSION === `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}`);
+      BRIEF_PROMPT_HASH === '5bb1d55b1cf8', BRIEF_PROMPT_HASH);
+    check('what a row stores is the intentional version plus the hash plus the revision',
+      BRIEF_PROMPT_VERSION === `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}+rev-${BRIEF_PROMPT_REVISION}`);
 
     const r = harness();
     const t = (m: number) => new Date(T0.getTime() + m * 60_000);
@@ -475,6 +484,101 @@ async function main() {
     r.state.delayMs = 0;
     check('C/D. the policy made a source overdue → exactly one regeneration across two tabs, reason change',
       r.state.generations === 2 && [x.status, y.status].sort().join(',') === 'GENERATED,IN_PROGRESS' && r.state.lastReason === 'change');
+  }
+
+  console.log('\n14. v2.7-P0 — a prompt REVISION is recorded, never a regeneration');
+  {
+    check('the generation version was NOT bumped by the debt-semantics prompt fix', BRIEF_GENERATION_VERSION === 'brief-generation-5');
+    check('the stored version parses to the generation alone', generationVersionOf(BRIEF_PROMPT_VERSION) === BRIEF_GENERATION_VERSION);
+    check('the revision is readable back', promptRevisionOf(BRIEF_PROMPT_VERSION) === BRIEF_PROMPT_REVISION
+      && BRIEF_PROMPT_REVISION === 'debt-semantics-2');
+    check('a pre-revision row records no revision', promptRevisionOf('brief-generation-5+prompt-08fbac9b9cb7') === null
+      && promptRevisionOf(null) === null);
+
+    const r = harness();
+    const t = (m: number) => new Date(T0.getTime() + m * 60_000);
+    const today = key('2026-09-13');
+    await r.ensure(t(0));
+    check('a NEW generation records the new revision and the new prompt hash',
+      r.store.get(today)!.promptVersion === `brief-generation-5+prompt-${BRIEF_PROMPT_HASH}+rev-debt-semantics-2`,
+      String(r.store.get(today)!.promptVersion));
+    // The row exactly as the previous deploy wrote it: same generation, old prompt hash, no revision.
+    r.store.get(today)!.promptVersion = 'brief-generation-5+prompt-08fbac9b9cb7';
+    const before = JSON.stringify(r.store.get(today));
+    const reused = await r.ensure(t(1));
+    check('a cached Brief from BEFORE the change is still reused — FRESH CACHED, no model call',
+      reused.status === 'FRESH' && reused.path === 'CACHED' && r.state.generations === 1);
+    check('…and its stored row (content and promptVersion) is untouched', JSON.stringify(r.store.get(today)) === before);
+    const inspected = await r.inspect(t(2));
+    check('…inspection agrees: FRESH, generation current', inspected.decision.state.kind === 'FRESH');
+  }
+
+  console.log('\n15. v2.7-P0 — the resolved-nature change cannot, by itself, regenerate a stored Brief');
+  {
+    const DP = 'DEBT_PAYMENT' as Transaction['flowType'];
+    const types: Record<string, string> = { chk: 'checking', hysa: 'savings', amexChk: 'checking' };
+    const txRow = (id: string, date: string, amount: number, over: Partial<Transaction>): Transaction => ({
+      id, accountId: 'chk', date, amount, merchant: 'RAW', category: 'Payment' as Transaction['category'], pending: false,
+      flowAuthority: 'CLASSIFIER', ...over } as Transaction);
+    // The window holds mislabelled depository → depository legs (provider DEBT_PAYMENT, unrepaired).
+    const rows: Transaction[] = [
+      // No transfer evidence: before this PR it reached the package as DEBT_PAYMENT (a
+      // material SIGNAL flow); the contract now resolves it to an unclassified movement.
+      txRow('a', '2026-09-11', -1500, { flowType: DP }),
+      // Matured to Amex checking: TRANSFER before and after.
+      txRow('b', '2026-09-12', -747.26, { flowType: DP, transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'amexChk' }),
+      txRow('c', '2026-09-10', 4812.66, { flowType: 'INCOME' as Transaction['flowType'], category: 'Income' as Transaction['category'] }),
+    ];
+    const window = recentActivityWindow('2026-09-13');
+    const post = projectRecentActivity(rows, window, true, (id) => types[id]);
+    // The package exactly as the PRE-change code built it: flow = the old expression, no `nature`.
+    const preTop = post.top.map(({ nature: _n, digestFlow, ...r }) => { void _n; return { ...r, flow: digestFlow ?? r.flow }; });
+    const pkgPre: BriefPackage = { ...basePackage(), recentActivity: { ...post, top: preTop } };
+    const pkgPost: BriefPackage = { ...basePackage(), recentActivity: post };
+
+    const unattested = post.top.find((r) => r.amount === -1500)!;
+    check('the content changed: the model now reads TRANSFER / UNCLASSIFIED_MOVEMENT for the mislabelled leg',
+      unattested.flow === 'TRANSFER' && unattested.nature === 'UNCLASSIFIED_MOVEMENT' && unattested.digestFlow === 'DEBT_PAYMENT');
+    check('…the model never sees digestFlow', !serializePackage(pkgPost).includes('digestFlow'));
+    check('identical underlying data ⇒ IDENTICAL material digest before vs after the change',
+      materialDigest(pkgPre) === materialDigest(pkgPost), `${materialDigest(pkgPre)} vs ${materialDigest(pkgPost)}`);
+    const naive: BriefPackage = { ...pkgPost, recentActivity: { ...post, top: post.top.map(({ digestFlow: _d, ...r }) => { void _d; return r; }) } };
+    check('(control) keying the digest on the resolved flow WOULD have moved it — the test is not vacuous',
+      materialDigest(naive) !== materialDigest(pkgPre));
+
+    const r = harness();
+    const t = (m: number) => new Date(T0.getTime() + m * 60_000);
+    const today = key('2026-09-13');
+    r.state.pkg = pkgPre;
+    await r.ensure(t(0));
+    // The row exactly as the previous deploy stored it.
+    r.store.get(today)!.promptVersion = 'brief-generation-5+prompt-08fbac9b9cb7';
+    const storedBefore = JSON.stringify(r.store.get(today)!.content);
+    // Deploy: the package is now built by the new code; a sync tick moved the watermark, no data changed.
+    r.state.pkg = pkgPost;
+    r.state.watermark = 'wm-deploy';
+    const afterDeploy = await r.ensure(t(1));
+    check('cached pre-change Brief + identical data ⇒ no regeneration (watermark refreshed, digest equal, no model call)',
+      afterDeploy.status === 'FRESH' && afterDeploy.path === 'WATERMARK_REFRESHED' && r.state.generations === 1,
+      `${afterDeploy.status}/${(afterDeploy as { path?: string }).path} gens=${r.state.generations}`);
+    check('…its stored content is untouched', JSON.stringify(r.store.get(today)!.content) === storedBefore);
+
+    // A genuine new material transaction still regenerates, exactly as before.
+    const withNew = projectRecentActivity([...rows, txRow('d', '2026-09-13', -2600, { flowType: 'SPENDING' as Transaction['flowType'], category: 'Travel' as Transaction['category'] })],
+      window, true, (id) => types[id]);
+    r.state.pkg = { ...basePackage(), recentActivity: withNew };
+    r.state.watermark = 'wm-new-row';
+    const changed = await r.ensure(t(2));
+    check('a real new material transaction ⇒ digest changes ⇒ regenerated (reason change)',
+      changed.status === 'GENERATED' && r.state.generations === 2 && r.state.lastReason === 'change',
+      `${changed.status} gens=${r.state.generations} reason=${r.state.lastReason}`);
+
+    // The freshness addendum's response fields are not package inputs at all.
+    const stale = staleSourcesForBrief({ attention: 1, groups: [], sources: [{ kind: 'BANK', label: 'Bank A', state: 'OUT_OF_DATE',
+      lastUpdatedAt: '2026-09-01T00:00:00.000Z', newestUpdatedAt: '2026-09-12T00:00:00.000Z', undatedAccounts: 2,
+      accountCount: 3, needsAttention: true, actionable: true }] });
+    check('newestUpdatedAt / undatedAccounts never reach the package (staleSources carries label, state, day only)',
+      JSON.stringify(stale) === JSON.stringify([{ label: 'Bank A', state: 'OUT_OF_DATE', lastUpdated: '2026-09-01' }]));
   }
 
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

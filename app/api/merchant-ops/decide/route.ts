@@ -24,6 +24,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { systemDb as db } from "@/lib/db";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { applyMergeReviewDecision, MergeReviewIneligibleError } from "@/lib/transactions/merchant-merge-review";
+import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit";
+import { operatorActorFrom } from "@/lib/platform/operator-actor";
+import { getClientIp } from "@/lib/api";
 
 export async function POST(req: NextRequest) {
   // Fresh: both verdicts change platform-wide merchant identity state (a merge
@@ -31,7 +34,6 @@ export async function POST(req: NextRequest) {
   // re-read live and a just-revoked operator cannot act inside the session cache.
   const [auth, err] = await requireFreshPlatformAccess("MERCHANT_OPS", "WRITE");
   if (err) return err;
-  const user = auth.user;
 
   let body: Record<string, unknown>;
   try {
@@ -52,6 +54,14 @@ export async function POST(req: NextRequest) {
   if (typeof survivorKey !== "string" || typeof absorbedKey !== "string" || typeof evidenceTier !== "string") {
     return NextResponse.json({ error: "survivorKey, absorbedKey, evidenceTier are required strings" }, { status: 400 });
   }
+  // SEC-PLAT-2 — both verdicts are consequential, deployment-wide decisions:
+  // a structured reason is required before anything is decided.
+  let reason;
+  try { reason = parseOperatorReason(body.reason); }
+  catch (e) {
+    if (e instanceof OperatorActionValidationError) return NextResponse.json({ error: e.message }, { status: 400 });
+    throw e;
+  }
 
   try {
     const result = await applyMergeReviewDecision(
@@ -63,7 +73,12 @@ export async function POST(req: NextRequest) {
         evidenceTier,
         evidenceSignal: typeof evidenceSignal === "string" ? evidenceSignal : null,
       },
-      user.id,
+      {
+        actor: operatorActorFrom(auth, "MERCHANT_OPS"),
+        reason,
+        ipAddress: getClientIp(req),
+        userAgent: req.headers.get("user-agent"),
+      },
     );
     return NextResponse.json(result);
   } catch (e) {

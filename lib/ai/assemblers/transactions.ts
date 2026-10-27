@@ -116,6 +116,7 @@ import { computeDebtService, netAfterDebtPaydown } from '@/lib/transactions/debt
 import { tierResolver, type LiquidityTx } from '@/lib/transactions/liquidity';
 import { resolveTransferAssessments } from '@/lib/transactions/transfer-resolution';
 import { dispositionForMaturity } from '@/lib/transactions/transfer-evidence';
+import { resolveTransactionNature } from '@/lib/transactions/resolved-nature';
 // REVIEW-3 B-6 — the one clock (lib/time). This file carried two of the three
 // recorded lib/ai inline day derivations; the clock-authority guard now scans
 // lib/ai like everything else.
@@ -808,6 +809,34 @@ async function assembleTransactions(
   const settledLiquidityRows = settled.map(asLiquidityTx);
   const debtSelection  = selectDebtPaymentCashLegs(settledLiquidityRows, liqCtx);
   const debtCountedIds = new Set(debtSelection.counted.map((t) => t.id));
+  // v2.7-P1 — DEBT_PAYMENT-typed rows the debt-payment authority REFUSED and the
+  // transfer authority matured to an owned non-liability destination (savings,
+  // checking, investment, internal). They are transfers — a depository leg the
+  // provider filed as LOAN_PAYMENTS — and were silently dropped from
+  // `transferTotal` because the refusal branch below discarded every uncounted
+  // DEBT_PAYMENT row. The liability-side leg of a counted payment matures to
+  // DEBT_PAYMENT, never a transfer leaf, so it can never enter this set.
+  // v2.7-P0 — membership is THE resolved-nature contract
+  // (lib/transactions/resolved-nature.ts): a stored DEBT_PAYMENT the contract
+  // resolves to an ESTABLISHED non-payment movement (internal / brokerage /
+  // external / cash). An unclassified movement stays out, exactly as before.
+  const transferResolvedIds = new Set(
+    settled
+      .filter((r) => {
+        if (!isDebtPayment(r.flowType) || debtCountedIds.has(r.id)) return false;
+        const a = assessments.get(r.id);
+        const cpId = r.counterpartyAccountId ?? a?.counterpartyAccountId ?? null;
+        const n = resolveTransactionNature({
+          flowType: r.flowType, amount: r.amount, flowAuthority: r.flowAuthority,
+          transferMaturity: a?.maturity ?? null,
+          ownAccountType: r.financialAccountId ? accountTypeById.get(r.financialAccountId) ?? null : null,
+          counterpartyAccountType: cpId ? accountTypeById.get(cpId) ?? null : null,
+          hasOwnedCounterparty: cpId != null,
+        });
+        return n.flow === 'TRANSFER' && n.nature !== 'UNCLASSIFIED_MOVEMENT';
+      })
+      .map((r) => r.id),
+  );
 
   // MC1 P3 Slice 4 (D-7) — window-level taint, mirrors the monthly buckets.
   let windowEstimated = false;
@@ -897,6 +926,9 @@ async function assembleTransactions(
       // leg of a counted payment (counting both legs would double-count) or an
       // unattested row it refused. Neither is economic; neither is disclosed as
       // a payment. This replaces the old `amt < 0` proxy.
+      // v2.7-P1 — unless the transfer authority resolved it to a transfer: then
+      // it is disclosed as one, exactly like a TRANSFER-typed leg.
+      if (transferResolvedIds.has(txn.id)) transferTotal += mag;
       continue;
     }
     if (isTransfer(txn.flowType)) {
@@ -1097,6 +1129,7 @@ async function assembleTransactions(
     // Σ(monthly figures) reconciles with the window figures by construction.
     {
       debtCountedIds,
+      transferResolvedIds,
       incomeClassOf: (id) => incomeAttrById.get(id)?.incomeClass ?? null,
     },
     effectiveEndIso >= todayUTCISO(),
@@ -1467,6 +1500,8 @@ export function buildMonthlyBreakdown(
   // income-class exclusion), preserving fixture behaviour byte-for-byte.
   authority?: {
     debtCountedIds: ReadonlySet<string>;
+    /** v2.7-P1 — refused DEBT_PAYMENT rows the transfer authority resolved to a transfer. */
+    transferResolvedIds?: ReadonlySet<string>;
     incomeClassOf?: (id: string) => string | null;
   },
   // B2 — the read's end is TODAY (or later), so the end month is still in
@@ -1543,6 +1578,10 @@ export function buildMonthlyBreakdown(
       b.debtPaymentTotal += mag;
     } else if (isDebtPayment(txn.flowType)) {
       // Uncounted leg / refused row — not a payment, not economic (see window loop).
+      // v2.7-P1 — a refused row the transfer authority resolved IS a transfer.
+      if (authority?.transferResolvedIds && txn.id !== undefined && authority.transferResolvedIds.has(txn.id)) {
+        b.transferTotal += mag;
+      }
     } else if (isTransfer(txn.flowType)) {
       b.transferTotal += mag;
     } else if (isIncome(txn.flowType) && !authority && amt <= 0) {

@@ -53,14 +53,16 @@ console.log("1. Render boundary — composes its EDITORIAL research surfaces (v2
 {
   const BALANCE = strip(read(`${DIR}/InvestmentsBalanceHistory.tsx`));
   const WEALTHCHART = strip(read("components/space/widgets/wealth/WealthTrendChart.tsx"));
-  // v2 research surfaces: hero → balance history → this period → holdings → allocation
-  // → concentration → activity.
+  // v2 research surfaces: hero → balance history → holdings → allocation →
+  // concentration → accounts → this period. v2.7 visual-first — DELIBERATE: the
+  // Activity narrative is removed (the bridge carries the period's money in/out).
   for (const surface of [
     "<InvestmentsHero", "<InvestmentsBalanceHistory", "<InvestmentsBridgeCard",
-    "<HoldingsLedger", "<InvestmentAllocationPanel", "<HoldingsConcentration", "<InvestmentsActivityCard",
+    "<HoldingsLedger", "<InvestmentAllocationPanel", "<HoldingsConcentration",
   ]) {
     check(`composes ${surface}`, SRC.includes(surface));
   }
+  check("no longer composes <InvestmentsActivityCard (removed, not hidden)", !SRC.includes("<InvestmentsActivityCard"));
   // The dense KPI strip, the card grid, and the OLD chart are retired from the
   // composition (value/coverage → hero; grid → ledger; chart → shared TrendChart).
   for (const gone of ["<InvestmentKpiStrip", "<HoldingsSection", "<PortfolioValueChart"]) {

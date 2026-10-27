@@ -89,11 +89,20 @@ async function liquidityLens(
     // these stay absent there — a present-tense "reachable" claim over a
     // reconstructed past balance would be a category error, and the core
     // distinguishes absent (use the ledger figure) from null (unknown).
-    ...(account.currentState
+    // v2.7-P3 — gated on the LIVE path. getAccountsAsOf spreads the live Account
+    // (currentState included) under the reconstructed balance, so without this
+    // gate a past as-of carried TODAY's reachable claim into the headline.
+    ...(!options.asOf && account.currentState
       ? {
           reachableCash:   account.currentState.reachable,
           unexplainedHold: account.currentState.unexplained,
         }
+      : {}),
+    // v2.7-P3 — the present-day adjusted depository balance, LIVE path only. The
+    // as-of path spreads the live Account (currentState/adjustedBalance ride
+    // along) under a reconstructed `balance`, so it must never carry this.
+    ...(!options.asOf && typeof account.adjustedBalance === "number"
+      ? { adjustedBalance: account.adjustedBalance }
       : {}),
     visibilityLevel,
   }));

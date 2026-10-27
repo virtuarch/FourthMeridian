@@ -1,0 +1,21 @@
+{
+ "GlobalMode /dashboard": "a18bc199e25b98c72340332f7445e6dc60447399d35e56f0c2aa9fb1e45ca766",
+ "GlobalMode /dashboard (2 invites)": "193d0254224e21e9fd38a4bc14f380fa36d88979242f946057cfa3e898545b33",
+ "GlobalMode /dashboard/spaces": "2cabedd3750c0669c52c18b81898906c18245e94084c3c8f8f76e4f023ec3c99",
+ "GlobalMode /dashboard/spaces (2 invites)": "a57c3cb64cb9363b5474ad4432171d96bedf0a18fb2e15c87019c8d1c9a77dc3",
+ "GlobalMode /dashboard/brief": "fb6b2bf295d7ea737fb7811f036268c4b843f82c6a1dab191ce27f6f8abac2cf",
+ "GlobalMode /dashboard/brief (2 invites)": "a0f9651ff7c78fc72c2d5bb7c219353456ca5ed3d8b353049a9d1e3dcc30fc7c",
+ "GlobalMode /dashboard/analyze": "5c16fe8e329c69f2b9594fe9cab1700f44287be4271d09777dc5398dad713025",
+ "GlobalMode /dashboard/analyze (2 invites)": "12ba4d6e2b0ea2f74f0a21c93178ffa754c5101365fb69da7d3326a96fd8fe0d",
+ "GlobalMode /dashboard/connections": "e508f50b30474ef8be1167bc7cb8e1a82128ea0daab03031a6efb28ebbc2fefc",
+ "GlobalMode /dashboard/connections (2 invites)": "0549d7d4c68729b3c755b0f8d1f828a16bdc797e37146103dc50122b428b9891",
+ "GlobalMode /dashboard/settings/account": "23f74b3db41598f3bbf3ee61aa2f39554572a48eb613eaf83fb9a60366f7d8d5",
+ "GlobalMode /dashboard/settings/account (2 invites)": "9060ab43cc952affba91b01e1eba12a2a2e546507a13b8d7cdf7bce6c14d6fec",
+ "SpaceMode personal Space /dashboard": "8a3e4b55ce0d95c237e406d1b0a2368fb8544efd1c7b79e635b1387bfbd87336",
+ "BottomNavBar /dashboard": "b3c7f0c4ae4f28905ae92a4c08d2684649052339810c0389806e503b18a1fece",
+ "BottomNavBar /dashboard/spaces": "35faa28acc05d4f0737c45235b46d67e1bb31346eb9db10bf38b78ac1433ccba",
+ "BottomNavBar /dashboard/brief": "b97707372ffb8d072e57c6fb4c333fc3e8659f6a1fb3539ab5f46442702dc3a7",
+ "BottomNavBar /dashboard/analyze": "3d4eda4ba9f2b75778dfd692d26573cf42931451394a54c75b4ff6a70589b158",
+ "BottomNavBar /dashboard/connections": "7b722e9b7963cc200afaf74ab6e0fac9bce461be2cd6dffc748ca54fd803655a",
+ "BottomNavBar /dashboard/settings/account": "4b63e0def7dce830962de5a51ef9a4e0c4aa855a374b0fe3ec4a347b57fd094b"
+}

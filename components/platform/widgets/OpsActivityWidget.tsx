@@ -4,9 +4,10 @@
  * components/platform/widgets/OpsActivityWidget.tsx  (OPS-6C · growth_activity)
  *
  * User activity intelligence, over GET /api/platform/growth-revenue/activity
- * (GROWTH_REVENUE READ). Presentation-only: DAU/WAU/MAU, new users, activation,
- * and most-active Spaces arrive precomputed from the activity projection — the
- * widget derives nothing.
+ * (GROWTH_REVENUE READ). Presentation-only: sign-ins, new users, activation and
+ * Space-open counts arrive precomputed from the activity projection — the
+ * widget derives nothing. SEC-PLAT-2: Growth is identity-minimized, so Space
+ * opens are counts — no Space name or id is rendered here.
  */
 
 import { LineChart } from "lucide-react";
@@ -38,19 +39,10 @@ export function OpsActivityWidget({ section }: { section: PlatformSection }) {
             <WidgetStat value={data.activatedEver} label="Activated" />
             <WidgetStat value={data.totalUsers} label="Total" />
           </div>
-          {data.topSpaces.length > 0 ? (
-            <div className="mt-1 border-t pt-2" style={{ borderColor: "var(--border-hairline)" }}>
-              <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Most active Spaces (30d)</p>
-              <ul className="flex flex-col gap-1">
-                {data.topSpaces.slice(0, 5).map((s) => (
-                  <li key={s.spaceId} className="flex items-center justify-between gap-2 text-xs">
-                    <span className="text-[var(--text-primary)] truncate">{s.spaceName || s.spaceId}</span>
-                    <span className="shrink-0 text-[var(--text-secondary)] tabular-nums">{s.opens} opens</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
+          <div className="grid grid-cols-2 gap-3 mt-1">
+            <WidgetStat value={data.spaceOpens30.distinctSpaces} label="Spaces opened · 30d" />
+            <WidgetStat value={data.spaceOpens30.opens} label="Space opens · 30d" />
+          </div>
         </>
       )}
     </PlatformWidgetCard>

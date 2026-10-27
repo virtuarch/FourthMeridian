@@ -34,6 +34,7 @@ import {
   type IncidentSubject,
 } from "./preview-core";
 import type { IncidentView } from "./projections";
+import { minimizedAccountPart } from "./account-label";
 
 /**
  * How many active incidents the canonical projection is asked for. The preview
@@ -61,7 +62,10 @@ async function resolveSubjects(views: IncidentView[]): Promise<Map<string, Incid
     acctIds.length
       ? db.financialAccount.findMany({
           where: { id: { in: acctIds } },
-          select: { id: true, name: true, institution: true },
+          // SEC-PLAT-3 (owner ruling P-4) — operator LISTS are minimized: the
+          // customer-chosen account name is never selected here; the subject is
+          // institution · type · masked last digits (account-label.ts).
+          select: { id: true, institution: true, type: true, mask: true },
         })
       : Promise.resolve([]),
   ]);
@@ -75,7 +79,7 @@ async function resolveSubjects(views: IncidentView[]): Promise<Map<string, Incid
     // both, which the surface renders as "affected account unavailable".
     const acct = v.financialAccountId ? acctById.get(v.financialAccountId) : undefined;
     if (acct) {
-      out.set(v.id, { primary: acct.institution || null, secondary: acct.name || null });
+      out.set(v.id, { primary: acct.institution || null, secondary: minimizedAccountPart(acct) });
       continue;
     }
     const item = v.plaidItemId ? itemById.get(v.plaidItemId) : undefined;

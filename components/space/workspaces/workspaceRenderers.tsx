@@ -27,7 +27,7 @@ import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowW
 import { MarketsWorkspace } from "@/components/space/widgets/markets/MarketsWorkspace";
 import { WorkspaceComingSoon } from "./WorkspaceComingSoon";
 import { getWorkspaceDefinition, type PerspectiveDef } from "@/lib/perspectives";
-import type { AssetsSlice, WealthMode } from "@/lib/wealth/wealth-mode";
+import type { AssetsSlice, DebtSection, WealthMode } from "@/lib/wealth/wealth-mode";
 import type { MarketsMode } from "@/lib/markets/markets-mode";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { LensResult } from "@/lib/perspective-engine/types";
@@ -94,6 +94,9 @@ export interface WorkspaceRenderCtx {
 
   // Cash Flow period + the Net Worth page subject / Assets slice (URL-synced)
   cashFlowPeriod:          CashFlowPeriod;
+  /** v2.7 R6 — the canonical shell slice (a preset id or "CUSTOM"), only for the
+   *  compact "Talk with Fourth Meridian about this" link; never a figure. */
+  timePreset?:             string;
   wealthMode:              WealthMode;
   assetsSlice:             AssetsSlice;
   /** One-shot Assets section focus from a legacy lens deep link. */
@@ -103,14 +106,21 @@ export interface WorkspaceRenderCtx {
   onModeChange:            (m: WealthMode) => void;
   /** Net Worth's Total · Assets · Debt selector presentation (see WealthWorkspace). */
   wealthModeSelectorVisibility?: "always" | "belowLg";
+  /** The Space's canonical freshness claim (e.g. "Last checked 2 hr ago"), for the compact hero. */
+  wealthFreshnessLabel?: string | null;
   /** The Markets view (?view=) + its setter + selector presentation (skeleton). */
   marketsMode:             MarketsMode;
   onMarketsModeChange:     (m: MarketsMode) => void;
   marketsModeSelectorVisibility?: "always" | "belowLg";
   onSliceChange:           (s: AssetsSlice) => void;
+  /** COMPACT DASHBOARD (P3) — the compact Debt category (All · Credit · Loans). */
+  debtSection:             DebtSection;
+  onDebtSectionChange:     (s: DebtSection) => void;
   onSwitchLens:            (id: string) => void;
   onEnvelopeChange:        (env: PerspectiveEnvelope) => void;
   onSelectCashFlowPeriod:  (p: CashFlowPeriod) => void;
+  /** The heatmap's Reset — the flow group back to its rolling 1M default (clears ?fperiod). */
+  onResetCashFlowPeriod:   () => void;
   onOpenCashFlow:          () => void;
 }
 
@@ -118,7 +128,7 @@ export interface WorkspaceRenderCtx {
  * id → render implementation. Keys are exactly the financial Perspective ids that
  * are OVERVIEW LENS DESTINATIONS with an inline workspace (registry `kind:
  * "perspective"`, `status: "available"`). Since the Overview consolidation that
- * is Net Worth (`wealth`) and Cash Flow; the registry↔renderer parity test
+ * is Net Worth (`wealth`), Cash Flow and (v2.7) Spending; the registry↔renderer parity test
  * (lib/perspectives/overview-lenses.test.ts) enforces this set.
  */
 /**
@@ -181,8 +191,12 @@ const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => Reac
       mode={ctx.wealthMode}
       onModeChange={ctx.onModeChange}
       modeSelectorVisibility={ctx.wealthModeSelectorVisibility}
+      freshnessLabel={ctx.wealthFreshnessLabel ?? null}
+      timePreset={ctx.timePreset}
       slice={ctx.assetsSlice}
       onSliceChange={ctx.onSliceChange}
+      debtSection={ctx.debtSection}
+      onDebtSectionChange={ctx.onDebtSectionChange}
       focusSection={ctx.wealthFocus}
       active={ctx.assetsActive || ctx.debtActive}
       cash={{
@@ -209,14 +223,38 @@ const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => Reac
   ),
   cashFlow: (ctx) => (
     <CashFlowWorkspace
+      view="cashFlow"
       transactions={ctx.transactions}
       transactionsMeta={ctx.transactionsMeta}
       txCtx={ctx.txCtx}
       accounts={ctx.accounts}
       period={ctx.cashFlowPeriod}
       asOf={ctx.asOf}
+      today={ctx.today}
       compareTo={ctx.historicalCompareTo}
       onSelectPeriod={ctx.onSelectCashFlowPeriod}
+      onResetPeriod={ctx.onResetCashFlowPeriod}
+      onOpenSpending={() => ctx.onSwitchLens("spending")}
+      onEnvelopeChange={ctx.onEnvelopeChange}
+      transactionsError={ctx.readErrors?.transactions?.message ?? null}
+      onRetryTransactions={ctx.onRetryRead ? () => ctx.onRetryRead?.("transactions") : undefined}
+    />
+  ),
+  // v2.7 (owner) — Spending is its OWN perspective: the same workspace component and
+  // composition contract, the economic page. Shares the flow time group with Cash Flow.
+  spending: (ctx) => (
+    <CashFlowWorkspace
+      view="spending"
+      transactions={ctx.transactions}
+      transactionsMeta={ctx.transactionsMeta}
+      txCtx={ctx.txCtx}
+      accounts={ctx.accounts}
+      period={ctx.cashFlowPeriod}
+      asOf={ctx.asOf}
+      today={ctx.today}
+      compareTo={ctx.historicalCompareTo}
+      onSelectPeriod={ctx.onSelectCashFlowPeriod}
+      onResetPeriod={ctx.onResetCashFlowPeriod}
       onEnvelopeChange={ctx.onEnvelopeChange}
       transactionsError={ctx.readErrors?.transactions?.message ?? null}
       onRetryTransactions={ctx.onRetryRead ? () => ctx.onRetryRead?.("transactions") : undefined}

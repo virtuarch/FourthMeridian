@@ -90,9 +90,14 @@ check("drawer opener serializes through the shared core (buildSpaceUrl)",
 
 // ── SD-0B: no second mutable cashFlowPeriod state; it is derived ────────────────
 check("cashFlowPeriod is not a useState cell (no [cashFlowPeriod, setter])", !/\[\s*cashFlowPeriod\s*,/.test(dashCode));
-check("no setCashFlowPeriod bridge writer remains", !/setCashFlowPeriod\b/.test(dashCode));
+// v2.7 — whole-identifier match: the reset wire `onResetCashFlowPeriod` contains
+// the letters "setCashFlowPeriod" but is not a setter; the guard is about the
+// removed `setCashFlowPeriod` state setter only.
+check("no setCashFlowPeriod bridge writer remains", !/(?<![A-Za-z0-9_])setCashFlowPeriod\b/.test(dashCode));
+// v2.7 — derived by the shell hook from the ACTIVE time group (shell.period: the
+// explicit calendar unit, else the preset, else the group's last relative preset).
 check("cashFlowPeriod is a const derived from the canonical shell slice",
-  /const cashFlowPeriod: CashFlowPeriod\s*=/.test(dashCode) && /shell\.derived\.cashFlowPeriod/.test(dashCode));
+  /const cashFlowPeriod: CashFlowPeriod\s*=\s*shell\.period;/.test(dashCode));
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed.`);

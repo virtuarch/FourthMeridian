@@ -10,7 +10,7 @@
  *    numeric confidence. It must NEVER be equivalent to `confidence <= 0.5`: the
  *    ~1,520 sign-default grocery/restaurant/fuel purchases are known facts (a
  *    resolved merchant + a spend category) and must stay invisible here.
- *  - It surfaces only the two earned clusters:
+ *  - It surfaces only the earned clusters (C, v2.7-P1, is documented at its rule):
  *      A. Payment-app movement whose PURPOSE is unknown (Venmo/Zelle/Cash App/…):
  *         Fourth Meridian knows money moved over a payment-app rail but cannot tell
  *         whether it was a purchase, a repayment, a gift, or received income.
@@ -28,8 +28,9 @@
 
 /** Why a transaction needs classification — drives the user-facing wording. */
 export type NeedsClassificationReason =
-  | "UNKNOWN_PAYMENT_APP_PURPOSE" // A — payment-app rail, purpose unresolved
-  | "UNKNOWN_INFLOW_SOURCE";      // B — inflow, no identifiable source
+  | "UNKNOWN_PAYMENT_APP_PURPOSE"  // A — payment-app rail, purpose unresolved
+  | "UNKNOWN_INFLOW_SOURCE"        // B — inflow, no identifiable source
+  | "UNKNOWN_TRANSFER_DESTINATION"; // C — transfer authority could not settle the destination
 
 /**
  * The minimal canonical facts the predicate reads. All provider-neutral: the raw
@@ -78,6 +79,20 @@ export function shouldSurfaceAsNeedsClassification(tx: NeedsClassificationInput)
     !tx.hasResolvedMerchant
   ) {
     return { needsClassification: true, reason: "UNKNOWN_INFLOW_SOURCE" };
+  }
+
+  // C — v2.7-P1. The TRANSFER AUTHORITY declined to say where the money went: it
+  // refused the provider's debt-payment claim (no liability evidence, or owned
+  // candidates of more than one type) and wrote TRANSFER at its low-confidence
+  // signature (AMBIGUOUS_UNKNOWN). The classifier never emits TRANSFER with that
+  // reason, so the pair identifies the authority's refusal exactly. Self-healing
+  // like A: once an owned counterparty resolves, the row drops out.
+  if (
+    tx.flowType === "TRANSFER" &&
+    tx.classificationReason === "AMBIGUOUS_UNKNOWN" &&
+    !tx.hasResolvedCounterparty
+  ) {
+    return { needsClassification: true, reason: "UNKNOWN_TRANSFER_DESTINATION" };
   }
 
   return NOT_NEEDED;

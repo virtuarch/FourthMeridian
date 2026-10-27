@@ -20,6 +20,11 @@ import type { TransactionQuery } from '@/lib/data/transaction-query-core';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { scrubDescriptor } from '@/lib/ai/privacy/scrub';
 import { FlowType } from '@prisma/client';
+import {
+  categoryForNature, natureEvidenceFromRow, resolveTransactionNature, NATURE_DESCRIPTION,
+  type ResolvedTransactionNature,
+} from '@/lib/transactions/resolved-nature';
+import type { Transaction } from '@/types';
 import type { ToolDefinition } from './types';
 import { obj, str, num } from './shared/schema';
 import { clampToCeiling } from './shared/values';
@@ -51,18 +56,57 @@ const COMPLETABLE_SEARCH_ROWS = 100;
 const FLOW_SETS: Record<string, FlowType[] | null> = {
   spending:      [FlowType.SPENDING, FlowType.FEE, FlowType.INTEREST],
   income:        [FlowType.INCOME],
-  transfers:     [FlowType.TRANSFER],
-  card_payments: [FlowType.DEBT_PAYMENT],
+  // v2.7-P0 — "transfers" and "card_payments" are decided by the RESOLVED NATURE
+  // (lib/transactions/resolved-nature.ts), not the persisted column: a depository
+  // leg Plaid filed as LOAN_PAYMENTS is stored DEBT_PAYMENT until the transfer
+  // authority's write (or the historical repair) reaches it, and it is a transfer.
+  // These two sets are only the READ population (both movement flows); membership
+  // is `RESOLVED_FLOW_MEMBERSHIP` below, applied to the whole window — so the count
+  // and the list come from ONE predicate over ONE population (count === list).
+  transfers:     [FlowType.TRANSFER, FlowType.DEBT_PAYMENT],
+  card_payments: [FlowType.TRANSFER, FlowType.DEBT_PAYMENT],
   refunds:       [FlowType.REFUND],
   all:           null,
 };
+
+/**
+ * v2.7-P0 — membership for the flows whose answer depends on cross-row evidence.
+ * card_payments = a liability payment (the only nature that reduces debt);
+ * transfers = every other movement of a stored DEBT_PAYMENT/TRANSFER row (internal,
+ * brokerage, external, cash, unclassified).
+ */
+export const RESOLVED_FLOW_MEMBERSHIP: Record<string, (n: ResolvedTransactionNature) => boolean> = {
+  card_payments: (n) => n.nature === 'LIABILITY_PAYMENT',
+  transfers:     (n) => n.flow === 'TRANSFER',
+};
+
+/** Account id → type over the accounts this viewer may see (aggregate members included). */
+export function accountTypeLookupOf(accounts: AccountsSectionData['accounts'] | undefined) {
+  const types = new Map<string, string>();
+  for (const a of accounts ?? []) {
+    types.set(a.id, a.type);
+    for (const member of a.aggregate?.memberAccountIds ?? []) types.set(member, a.type);
+  }
+  return (id: string): string | undefined => types.get(id);
+}
+
+/** Resolve, filter and order a fully-read window by the resolved predicate. Pure. */
+export function filterByResolvedFlow(
+  rows: readonly Transaction[], flowKey: string,
+  accountTypeOf: (id: string) => string | undefined,
+): Transaction[] {
+  const member = RESOLVED_FLOW_MEMBERSHIP[flowKey];
+  if (!member) return [...rows];
+  return rows.filter((r) => member(resolveTransactionNature(natureEvidenceFromRow(r, accountTypeOf))));
+}
 
 export const getTransactions: ToolDefinition = {
   name: 'get_transactions',
   description:
     'Individual transactions, filtered and ranked. Set `flow` to say what KIND of movement ' +
     'you mean — "spending" for purchases, "income" for deposits, "transfers" for movements ' +
-    'between the user\'s own accounts, "card_payments" for paying a card off. Use ' +
+    'between accounts (never a debt payment), "card_payments" for paying a card or loan. ' +
+    'Each row carries `nature` and `natureNote`: describe a row only as its natureNote says. Use ' +
     'flow:"spending" with sort:"largest" for "my biggest purchase".',
   parameters: obj({
     from:     str('YYYY-MM-DD inclusive.'),
@@ -110,7 +154,20 @@ export const getTransactions: ToolDefinition = {
     // a browse. Exhaustion is still what `sort: 'largest'` does, because ranking
     // needs the ROWS; this needs only the SIZE, and stays truthful above the
     // ceiling where exhaustion cannot.
-    const [firstRead, matchedInWindow] = await Promise.all([
+    // v2.7-P0 — a resolved-nature flow needs the whole window: membership is a
+    // cross-row verdict no WHERE can express. Read it to exhaustion (the same bounded
+    // pager `largest` uses), resolve every row once, and take the count AND the list
+    // from that one filtered set.
+    const resolvedFlow = RESOLVED_FLOW_MEMBERSHIP[flowKey] !== undefined;
+    const acc = await assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx);
+    const accountTypeOf = accountTypeLookupOf(acc?.accounts);
+    const [firstRead, matchedInWindow] = resolvedFlow
+      ? await (async () => {
+          const all = await readWindowToExhaustion(ctx.readClient, ctx.spaceId, filters);
+          const kept = filterByResolvedFlow(all.rows, flowKey, accountTypeOf);
+          return [{ rows: kept, complete: all.complete, pages: all.pages }, wantLargest ? null : kept.length] as const;
+        })()
+      : await Promise.all([
       wantLargest
         ? readWindowToExhaustion(ctx.readClient, ctx.spaceId, filters)
         : (async () => {
@@ -119,6 +176,7 @@ export const getTransactions: ToolDefinition = {
           })(),
       wantLargest ? Promise.resolve(null) : countTransactions(ctx.readClient, { spaceId: ctx.spaceId, query: filters }),
     ]);
+
 
     // ⚠️ FINISH THE SEARCH WHEN FINISHING IT IS CHEAP. Reporting "you saw 50 of
     // 80" is truthful and was NOT enough: measured after the count landed, 3 of 5
@@ -129,7 +187,7 @@ export const getTransactions: ToolDefinition = {
     // ⚠️ THE CEILING IS WHAT MAKES THIS SAFE. Above it nothing changes: a 449-row
     // browse stays one page and says so. This only ever converts an almost-
     // complete search into a complete one, never a browse into a dump.
-    const completable = !wantLargest && matchedInWindow !== null
+    const completable = !resolvedFlow && !wantLargest && matchedInWindow !== null
       && matchedInWindow > limit && matchedInWindow <= COMPLETABLE_SEARCH_ROWS;
     const { rows: population, complete, pages } = completable
       ? await (async () => {
@@ -141,7 +199,11 @@ export const getTransactions: ToolDefinition = {
 
     const rows = wantLargest
       ? [...population].sort((x, y) => Math.abs(y.amount) - Math.abs(x.amount)).slice(0, limit)
-      : population;   // completable ⇒ this IS the whole matching set
+      : resolvedFlow
+        ? population.slice(0, limit)   // the exhausted read is already ordered by `sort`
+        : population;   // completable ⇒ this IS the whole matching set
+    // A resolved-flow search is complete only when the window was exhausted AND every match is shown.
+    const searchComplete = resolvedFlow ? complete && rows.length === population.length : complete;
 
     // ⚠️ NAMES FROM THE ASSEMBLER THAT ALREADY DECIDES WHO MAY SEE THEM. The row
     // DTOs carry account IDs — the counterparty's already privacy-gated by the
@@ -149,7 +211,6 @@ export const getTransactions: ToolDefinition = {
     // the ids this page uses onto the names the accounts surface already
     // discloses, so an account the viewer cannot see simply has no name here and
     // the leg stays honestly anonymous.
-    const acc = await assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx);
     const names = new Map((acc?.accounts ?? []).map((x) => [x.id, x.name]));
     const accountName = (id: string | null | undefined) => (id ? names.get(id) : undefined);
 
@@ -178,14 +239,24 @@ export const getTransactions: ToolDefinition = {
       // this to the matching rows would erase the very thing it exists to qualify.
       coverage,
       flow: flowKey,
-      rows: rows.map((r) => ({
+      rows: rows.map((r) => {
+        // v2.7-P0 — THE resolved nature (lib/transactions/resolved-nature.ts). The
+        // model describes a row only by it: an internal transfer is never a payment.
+        const evidence = natureEvidenceFromRow(r, accountTypeOf);
+        const resolved = resolveTransactionNature(evidence);
+        return {
         // SEC-AI-005 — the merchant is SCRUBBED (lib/ai/privacy/scrub.ts: the Brief's
         // rule — digit runs of 4+, reference symbols) and the raw `description` is
         // NOT sent: a provider descriptor carries cheque, reference and partial card
         // numbers, and the `text` filter already searched it server-side.
         date: r.date, merchant: scrubDescriptor(r.merchantDisplayName ?? r.merchant),
         amount: r.amount,
-        category: r.category, pending: r.pending,
+        // v2.7-P1 — the category that goes with the transfer authority's verdict:
+        // a provider `Payment` label on a row it resolved to a transfer (stored
+        // DEBT_PAYMENT until its write reaches the row) reads `Transfer`.
+        category: categoryForNature(r.category, evidence, resolved), pending: r.pending,
+        nature: resolved.nature,
+        natureNote: NATURE_DESCRIPTION[resolved.nature],
         // ⚠️ WHICH SIDE OF THE MOVEMENT THIS ROW IS. A card payment posts TWICE —
         // once on the checking account it left and once on the card it landed on —
         // and the two rows used to arrive as `-5,000 Payment to Chase card` and
@@ -203,7 +274,8 @@ export const getTransactions: ToolDefinition = {
         // The transfer authority's own verdict about where the money went.
         // Absent when it did not assess the row.
         ...(r.transferMaturity ? { movementKind: r.transferMaturity } : {}),
-      })),
+        };
+      }),
       shown: rows.length,
       // ⚠️ THE EVIDENCE CEILING FOR THE PAGE, BESIDE THE ONE FOR THE WINDOW.
       // `coverage` above says how much of the RECORD the window covered; this
@@ -216,8 +288,8 @@ export const getTransactions: ToolDefinition = {
       // that something was missing, this says how much.
       ...(wantLargest ? {} : {
         matchedInWindow,
-        searchIsComplete: complete,
-        ...(complete ? {} : { searchCaveat:
+        searchIsComplete: searchComplete,
+        ...(searchComplete ? {} : { searchCaveat:
           `Showed the ${rows.length} ${String(a.sort ?? 'newest')} of ${matchedInWindow} `
           + 'transactions matching this search in the window. The rest were not read: '
           + 'absence from these rows is NOT absence from the window. Narrow with `text`, '

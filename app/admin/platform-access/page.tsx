@@ -86,6 +86,12 @@ export default function PlatformAccessPage() {
   const [search,  setSearch]  = useState("");
   const [busy,    setBusy]    = useState<string | null>(null); // `${userId}:${area}`
   const [error,   setError]   = useState<string | null>(null);
+  // SEC-PLAT-2 (S-8) — /api/admin/users is bounded (UI-022). When the bound is
+  // hit, the matrix says so and searches on the SERVER instead of filtering a
+  // truncated page, and every current grant holder is always listed (from the
+  // grants feed) so nobody with access can fall off the end of the list.
+  const [truncated,     setTruncated]     = useState(false);
+  const [serverMatches, setServerMatches] = useState<User[] | null>(null);
 
   const loadGrants = useCallback(async () => {
     const r = await fetch("/api/admin/platform-grants");
@@ -94,12 +100,13 @@ export default function PlatformAccessPage() {
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/admin/users").then((r) => (r.ok ? r.json() : { users: [] })),
+      fetch("/api/admin/users?role=USER").then((r) => (r.ok ? r.json() : { users: [] })),
       fetch("/api/admin/platform-grants").then((r) => (r.ok ? r.json() : { grants: [] })),
     ])
       .then(([u, g]) => {
         // Grants are issued to USER-role accounts only.
         setUsers((u.users ?? []).filter((x: User) => x.role === "USER"));
+        setTruncated(u.truncated === true);
         setGrants(g.grants ?? []);
       })
       .finally(() => setLoading(false));
@@ -114,15 +121,42 @@ export default function PlatformAccessPage() {
     return m;
   }, [grants]);
 
+  // Server-side search, only when the first page was truncated (debounced).
+  const serverQuery = search.trim();
+  const serverSearchActive = truncated && serverQuery.length >= 2;
+  useEffect(() => {
+    if (!serverSearchActive) return;
+    const q = serverQuery;
+    let alive = true;
+    const t = setTimeout(() => {
+      fetch(`/api/admin/users?role=USER&search=${encodeURIComponent(q)}`)
+        .then((r) => (r.ok ? r.json() : { users: [] }))
+        .then((u) => { if (alive) setServerMatches((u.users ?? []).filter((x: User) => x.role === "USER")); });
+    }, 300);
+    return () => { alive = false; clearTimeout(t); };
+  }, [serverQuery, serverSearchActive]);
+
+  // Grant holders are always present, even past the list bound.
+  const roster = useMemo(() => {
+    const byId = new Map<string, User>();
+    // Server matches count only while a server search is active (derived, so the
+    // effect never has to clear state synchronously).
+    for (const u of (serverSearchActive && serverMatches) || users) byId.set(u.id, u);
+    for (const g of grants) {
+      if (g.status === "ACTIVE" && !byId.has(g.user.id)) byId.set(g.user.id, { ...g.user, role: "USER" });
+    }
+    return [...byId.values()];
+  }, [users, serverMatches, serverSearchActive, grants]);
+
   const filteredUsers = useMemo(() => {
-    if (!search) return users;
+    if (!search) return roster;
     const q = search.toLowerCase();
-    return users.filter((u) =>
+    return roster.filter((u) =>
       u.email.toLowerCase().includes(q) ||
       (u.username ?? "").toLowerCase().includes(q) ||
       (u.name ?? "").toLowerCase().includes(q),
     );
-  }, [users, search]);
+  }, [roster, search]);
 
   async function setLevel(userId: string, area: string, level: PlatformAccessLevel) {
     // Structural, not cosmetic: a reserved level never reaches the network, even
@@ -238,6 +272,12 @@ export default function PlatformAccessPage() {
           </button>
         )}
       </div>
+
+      {truncated && (
+        <p className="text-xs text-[var(--text-muted)]">
+          Showing the first page of accounts plus every current grant holder. Search to find any other account.
+        </p>
+      )}
 
       {/* Matrix */}
       <div className="rounded-2xl border border-gray-800 bg-gray-900/60 overflow-hidden">

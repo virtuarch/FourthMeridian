@@ -123,10 +123,19 @@ export function LiabilitiesLedger({
   accounts,
   ctx,
   currency,
+  compactClass = null,
 }: {
   accounts: DebtPerspectiveAccount[];
   ctx?:     ConversionContext;
   currency: string;
+  /**
+   * The selected Debt category (Credit / Loans). When set, EVERY account of that
+   * existing class (classifyDebt) is listed instead of the top-five inline list;
+   * rows, shares (of total debt), detail panel and figures are the same rows
+   * computed once above. v2.7 mobile/desktop parity — applies at every width
+   * (it was compact-only; desktop ignored it).
+   */
+  compactClass?: Extract<DebtClass, "cards" | "loans"> | null;
 }) {
   const rows = useMemo(() => buildRows(accounts, ctx), [accounts, ctx]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -146,10 +155,11 @@ export function LiabilitiesLedger({
 
   const inline = rows.slice(0, MAX_INLINE);
   const hidden = rows.length - inline.length;
+  const classRows = compactClass ? rows.filter((r) => r.cls === compactClass) : [];
 
   return (
     <WorkspaceLayout>
-      <Surface className="overflow-hidden">
+      <Surface className={`overflow-hidden ${compactClass ? "hidden" : ""}`.trim()}>
         <GroupedRows rows={inline} currency={currency} onOpen={setSelectedId} />
         {hidden > 0 && (
           <button
@@ -162,6 +172,23 @@ export function LiabilitiesLedger({
           </button>
         )}
       </Surface>
+
+      {/* The selected category's accounts, all of them. Same rows, same detail
+          panel, same figures. v2.7 mobile/desktop parity — every width (was
+          <lg only), replacing the combined top-five list while a class is set. */}
+      {compactClass && (
+        <div data-debt-class-ledger={compactClass}>
+          <Surface className="overflow-hidden">
+            {classRows.length > 0 ? (
+              <GroupedRows rows={classRows} currency={currency} onOpen={setSelectedId} />
+            ) : (
+              <p className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">
+                No {DEBT_CLASS_LABEL[compactClass].toLowerCase()} in this Space.
+              </p>
+            )}
+          </Surface>
+        </div>
+      )}
 
       {/* Full list — the context surface ("what am I operating in"). */}
       <LeftPanel open={allOpen} onClose={() => setAllOpen(false)} ariaLabel="All liabilities">

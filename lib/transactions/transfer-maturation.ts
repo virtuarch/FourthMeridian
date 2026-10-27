@@ -1474,7 +1474,10 @@ const LEAF_REASON: Record<TransferMaturity, string> = {
   ISSUER_CREDIT:       "The provider attests a non-payment family on a liability inflow, so this is an issuer-originated credit, not a payment",
   UNRESOLVED_LIABILITY_INFLOW: "No family evidence and no owned funding leg, so this cannot be asserted as a debt payment",
   EXTERNAL_PERSON_TRANSFER:     "Moved over a payment-app rail with no owned account on the other side, so the counterparty is a person",
-  EXTERNAL_DEPOSITORY_TRANSFER: "Reached a bank account that is not one of yours",
+  // v2.7 owner ruling (PR #63): this leaf is DERIVED from the provider's generic
+  // bank-transfer venue, never stamped — it does not prove the destination is
+  // someone else's account. Neutral wording; it stays free to become internal.
+  EXTERNAL_DEPOSITORY_TRANSFER: "Moved to a bank account that is not connected here — destination not yet confirmed",
   EXTERNAL_VENUE_TRANSFER:      "Reached a brokerage or exchange that is not connected here",
   EXTERNAL_UNKNOWN_TRANSFER:    "The provider attests a counterparty that cannot be one of your accounts",
 };
@@ -1497,7 +1500,7 @@ export const MATURITY_LABEL: Record<TransferMaturity, string> = {
   ISSUER_CREDIT:       "Issuer credit",
   UNRESOLVED_LIABILITY_INFLOW: "Unconfirmed card credit",
   EXTERNAL_PERSON_TRANSFER:     "Sent to someone else",
-  EXTERNAL_DEPOSITORY_TRANSFER: "External bank transfer",
+  EXTERNAL_DEPOSITORY_TRANSFER: "Destination not yet confirmed",
   EXTERNAL_VENUE_TRANSFER:      "External investment transfer",
   EXTERNAL_UNKNOWN_TRANSFER:    "External transfer",
 };

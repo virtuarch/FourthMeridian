@@ -8,11 +8,17 @@ import { todayUTCISO } from "@/lib/time/clock";
 import { AnalyzeClient } from "@/components/dashboard/AnalyzeClient";
 import { composeStarters, starterIndexFrom } from "@/components/ai/conversation-surface";
 import { TRANSCRIPT_HINT_COOKIE } from "@/components/ai/transcript-cache";
+import { suggestedStarter } from "@/components/ai/talk-about-this";
+import { displaySpaceName } from "@/lib/format";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
 
-export default async function AnalyzePage() {
+export default async function AnalyzePage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   // AI-4: ONE CONVERSATION, ONE SPACE — the dashboard's active Space. The same
   // resolution every dashboard page uses (cookie → preferred Space → personal),
   // cache()-shared with the layout, so the advice, the starters and the chat all
@@ -50,6 +56,12 @@ export default async function AnalyzePage() {
   const hint = (await cookies()).get(TRANSCRIPT_HINT_COOKIE)?.value;
   const expectTranscript = hint === ctx.spaceId;
 
+  // v2.7 R6 — "Talk with Fourth Meridian about this". `about` / `period` are
+  // validated against closed allowlists and turned into ONE templated,
+  // figure-free question (anything else is ignored). It is offered as the first
+  // starter chip only: never auto-sent, never posted beside the conversation.
+  const suggested = suggestedStarter(await searchParams);
+
   // key: a render under a different active Space is a different conversation — the
   // transcript, and the scenario sealed against it, never cross Spaces.
   return (
@@ -58,8 +70,9 @@ export default async function AnalyzePage() {
       advice={advice}
       starterIndex={starterIndex}
       spaceId={ctx.spaceId}
-      spaceName={ctx.space.name}
+      spaceName={displaySpaceName(ctx.space.name)}
       starter={composeStarters(personal)}
+      suggested={suggested}
       userId={ctx.userId}
       expectTranscript={expectTranscript}
     />

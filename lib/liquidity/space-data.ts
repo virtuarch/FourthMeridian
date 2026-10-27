@@ -143,7 +143,26 @@ async function evaluateHistorical(
     overallTier: c.overallTier,
   }));
 
-  const { rows, stamps } = spliceLiquidityRows(asOfRows, components, valuation.reportingCurrency);
+  const spliced = spliceLiquidityRows(asOfRows, components, valuation.reportingCurrency);
+  const stamps = spliced.stamps;
+  // v2.7-P3 — the same present-tense rule as `reachableCash`, for the ADJUSTED
+  // depository balance: only when the as-of date IS today, only on checking /
+  // savings rows (the splice never touches those — it replaces marketable rows),
+  // so the restricted tier (an HSA with pending) counts the figure the Cash
+  // donut / ledger count. A past date never carries it. Attached after the
+  // splice so historical-splice.ts stays byte-identical.
+  const adjustedById = new Map(
+    isToday
+      ? asOfAccounts
+          .filter((r) => typeof r.account.adjustedBalance === "number")
+          .map((r) => [r.account.id, r.account.adjustedBalance as number] as const)
+      : [],
+  );
+  const rows = spliced.rows.map((r) =>
+    (r.type === "checking" || r.type === "savings") && adjustedById.has(r.id)
+      ? { ...r, adjustedBalance: adjustedById.get(r.id) }
+      : r,
+  );
 
   // Same conversion context the lens builds (target = Space reporting currency,
   // valued at yesterday relative to the injected clock). Spliced investment rows

@@ -16,7 +16,7 @@
 
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { liquidityAccess } from "@/lib/account-classifier";
+import { countedBalance, liquidityAccess } from "@/lib/account-classifier";
 import type { ConversionContext } from "@/lib/money/types";
 import { reachableForAccount, type LiquidityAdapterAccount } from "@/components/space/widgets/liquidity-adapters";
 
@@ -74,7 +74,9 @@ export function buildSourceRows(
     .map((a) => ({ a, horizon: classifySource(a) }))
     .filter((x): x is { a: LiquidityAdapterAccount; horizon: SourceHorizon } => x.horizon !== null)
     .map(({ a, horizon }) => {
-      const bal = conv(a.balance, a.currency);
+      // v2.7-P0 — non-cash horizons show the COUNTED balance (adjusted for a
+      // restricted depository row), the figure the totals use.
+      const bal = conv(countedBalance(a), a.currency);
       // v2.6-L3 — a row under the "Available now" heading shows the REACHABLE
       // figure, through the same authority the headline totals, so a row and the
       // headline above it can never disagree. Non-cash horizons are unchanged.

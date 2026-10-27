@@ -19,6 +19,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
+import { OperatorActionValidationError, parseOperatorReason, recordOperatorAction } from "@/lib/audit";
+import { operatorActorFrom } from "@/lib/platform/operator-actor";
+import { getClientIp } from "@/lib/api";
 import {
   getRegistrationMode,
   setSetting,
@@ -37,8 +40,8 @@ export async function PUT(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
 
-  const body = await req.json().catch(() => ({}));
-  const next = (body as { mode?: unknown }).mode;
+  const body = (await req.json().catch(() => ({}))) as { mode?: unknown; reason?: unknown };
+  const next = body.mode;
   if (!isRegistrationMode(next)) {
     return NextResponse.json(
       { error: `mode must be one of: ${REGISTRATION_MODES.join(", ")}.` },
@@ -46,16 +49,30 @@ export async function PUT(req: NextRequest) {
     );
   }
 
+  // SEC-PLAT-2 — a platform-wide switch: the structured reason is required and
+  // parsed before anything is written.
+  let reason;
+  try { reason = parseOperatorReason(body.reason); }
+  catch (e) {
+    if (e instanceof OperatorActionValidationError) return NextResponse.json({ error: e.message }, { status: 400 });
+    throw e;
+  }
+
   const previous = await getRegistrationMode();
   await setSetting(PlatformSettingKey.REGISTRATION_MODE, next, auth.user.id);
 
-  await db.auditLog.create({
-    data: {
-      userId:             auth.user.id,
-      performedByAdminId: auth.user.id,
-      action:             AuditAction.BETA_MODE_CHANGED,
-      metadata:           { previous, new: next },
-    },
+  // SEC-PLAT-2 — through the operator-action envelope (actor, target, result, reason);
+  // the legacy metadata keys ride in `detail` so existing readers keep working.
+  await recordOperatorAction(db, {
+    actor:  operatorActorFrom(auth, "GROWTH_REVENUE"),
+    action: AuditAction.BETA_MODE_CHANGED,
+    target: { kind: "PLATFORM_SETTING", id: PlatformSettingKey.REGISTRATION_MODE },
+    reason,
+    change: { before: { value: previous }, after: { value: next } },
+    result: "SUCCESS",
+    detail: { previous, new: next },
+    ipAddress: getClientIp(req),
+    userAgent: req.headers.get("user-agent"),
   });
 
   return NextResponse.json({ success: true, previous, mode: next });

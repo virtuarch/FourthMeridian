@@ -95,6 +95,7 @@ const { createRoot } = await import("react-dom/client");
 const { useSpaceNavigation, openWorkspaceId, openChildId, lensHref, marketsModeHref, wealthModeHref, NET_WORTH_LENS_ID } =
   await import("@/lib/space/use-space-navigation");
 const { usePerspectiveShellState } = await import("@/components/space/shell/usePerspectiveShellState");
+const { timeGroupFor } = await import("@/lib/space/perspective-time-groups");
 
 type Nav = ReturnType<typeof useSpaceNavigation>;
 type Shell = ReturnType<typeof usePerspectiveShellState>;
@@ -102,7 +103,8 @@ let nav!: Nav; let shell!: Shell;
 const PERSONAL = getPerspectivesForCategory("PERSONAL").map((p) => p.id);
 function Harness() {
   nav = useSpaceNavigation({ category: "PERSONAL", availablePerspectives: PERSONAL });
-  shell = usePerspectiveShellState({ spaceId: "space-1", today: "2026-09-21", earliestDefensibleDate: "2024-01-01" });
+  // v2.7 — the host passes the rendered destination's time group.
+  shell = usePerspectiveShellState({ spaceId: "space-1", today: "2026-09-21", earliestDefensibleDate: "2024-01-01", group: timeGroupFor(nav.activeTab, nav.activePerspectiveId) });
   const { applyInitialTab } = nav;
   useEffect(() => { applyInitialTab([]); }, [applyInitialTab]); // the host calls this when data lands
   return null;
@@ -322,6 +324,46 @@ console.log("Time (SD-0A, unchanged): a user time change pushes, a system re-der
   writes.length = 0;
   await step(() => shell.actions.selectPreset("PAST_MONTH"));
   check("re-selecting the current slice writes nothing", writes.length === 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("Time groups (v2.7): Net Worth and the flow lenses keep independent periods — real hooks");
+{
+  const q = () => cur().searchParams;
+  await load("/dashboard?tab=overview");
+  await step(() => shell.actions.selectPreset("YTD"));
+  check("Net Worth → YTD writes the position params only", q().get("preset") === "YTD" && q().get("fpreset") === "PAST_MONTH", cur().search);
+  await parent("cashFlow");
+  check("Cash Flow opens on ITS OWN period (1M), not Net Worth's YTD", shell.group === "flow" && shell.state.preset === "PAST_MONTH" && shell.period === "PAST_MONTH");
+  await step(() => shell.actions.selectPreset("PAST_QUARTER"));
+  check("changing Cash Flow's period leaves Net Worth's untouched (URL)", q().get("fpreset") === "PAST_QUARTER" && q().get("preset") === "YTD", cur().search);
+  await lensChip("spending");
+  check("Spending shares the flow period", where() === "spending" && shell.group === "flow" && shell.state.preset === "PAST_QUARTER");
+  await parent(NET_WORTH_LENS_ID);
+  check("back on Net Worth: still YTD (no leakage from the flow group)", shell.group === "position" && shell.state.preset === "YTD");
+  await back();
+  check("Back → Spending restores the flow period", where() === "spending" && shell.state.preset === "PAST_QUARTER");
+  await back(); await back();
+  check("Back past the flow change → Cash Flow at 1M (each entry carries both groups)", where() === "Cash Flow" && shell.state.preset === "PAST_MONTH");
+  await forward();
+  check("Forward → the flow change again", shell.state.preset === "PAST_QUARTER");
+  const shared = cur().pathname + cur().search;
+  await load(shared);
+  check("reload / shared link restores the flow period on Cash Flow", where() === "Cash Flow" && shell.state.preset === "PAST_QUARTER");
+  await parent(NET_WORTH_LENS_ID);
+  check("…and Net Worth's YTD from the same URL", shell.state.preset === "YTD");
+  await parent("cashFlow");
+  writes.length = 0;
+  await step(() => shell.setExplicitPeriod({ kind: "month", year: 2026, month: 8 }));
+  check("a heatmap Month pick is a user change (PUSH) into ?fperiod, the header follows",
+    pushes() === 1 && q().get("fperiod") === "month:2026-08" && shell.explicitPeriod?.kind === "month" && typeof shell.period === "object");
+  await step(() => shell.actions.selectPreset("PAST_MONTH"));
+  check("a header preset ends the calendar unit", !q().has("fperiod") && shell.explicitPeriod === null && shell.period === "PAST_MONTH");
+  await back();
+  check("Back restores the calendar unit (pinned in the entry)", q().get("fperiod") === "month:2026-08" && shell.explicitPeriod !== null);
+  await load("/dashboard?tab=overview&perspective=cash-flow&preset=PAST_YEAR");
+  check("a legacy Cash Flow link's period goes to Cash Flow, canonicalized in place (REPLACE)",
+    shell.state.preset === "PAST_YEAR" && q().get("fpreset") === "PAST_YEAR" && q().get("preset") === "PAST_MONTH" && history.length === 2, cur().search);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

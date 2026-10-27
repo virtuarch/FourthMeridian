@@ -58,7 +58,7 @@ export function EconomicsSurface({ plaid, trend, spend, nowMs, onOpenWorkspace }
     <SectionSurface
       icon={Coins}
       title="Economics"
-      actions={<BlockDoorway label="Economics" workspaceId="platform-costs" onOpenWorkspace={onOpenWorkspace} />}
+      actions={<BlockDoorway label="AI and costs" workspaceId="platform-ai" onOpenWorkspace={onOpenWorkspace} />}
       footnote={`${NO_LEDGER_NOTE} Plaid: Item-months × the invoice-derived rate, per billing cycle, both invoice readings shown; no daily allocation is invented. AI: the code-owned rate card over observed tokens, per UTC day. ${CUSTOMER_SPEND_NOTE}`}
     >
       <div className="flex flex-col gap-6">

@@ -11,9 +11,9 @@
  *
  * Reads: GET /customer-success/customers, GET /customer-success/customers/[id].
  * Writes (fresh CUSTOMER_SUCCESS WRITE, every one audited with a structured
- * reason where consequential): POST …/policy, …/cohort, …/refresh. Deactivate /
- * reactivate and invite resend stay on their existing GROWTH_REVENUE routes and
- * are offered as links through their own gates (a 403 is shown, not hidden).
+ * reason where consequential): POST …/policy, …/cohort, …/refresh, …/access
+ * (deactivate / reactivate — SEC-PLAT-4 moved it here from GROWTH_REVENUE).
+ * Invite resend stays on its GROWTH_REVENUE route.
  *
  * AI COST CONTROLS — beside the overlay select, "Daily AI allowance override
  * (USD)": a whole-dollar input + Set override / Remove override, posting ONLY
@@ -25,8 +25,8 @@
  *
  * UI-001 — the editors (policy, allowance override, cohort) and Refresh all are
  * rendered only for a CUSTOMER_SUCCESS WRITE holder (`access.canWrite`); a READ
- * holder sees one explanatory line instead of buttons that 403. Deactivate /
- * reactivate stays visible: it is a GROWTH_REVENUE route with its own gate.
+ * holder sees one explanatory line instead of buttons that 403. SEC-PLAT-4 —
+ * deactivate / reactivate follows the same CUSTOMER_SUCCESS WRITE rule.
  * UI-002 — no fabricated audit reason: deactivate / reactivate posts the reason
  * the operator CHOSE and is disabled until one is chosen (the route refuses a
  * missing reason with a 400; the client no longer substitutes SUPPORT_REQUEST).
@@ -367,7 +367,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
 
                   <Section title="Incidents">
                     <Row label="Open incidents" value={String(detail.incidents.open.length)} />
-                    {detail.incidents.open.slice(0, 5).map((i) => <Row key={i.id} label={i.kind.toLowerCase().replace(/_/g, " ")} value={`last ${ago(i.lastOccurredAt)}`} />)}
+                    {detail.incidents.open.slice(0, 5).map((i) => <Row key={i.id} label={i.kind.toLowerCase().replace(/_/g, " ")} value={i.account ? `${i.account} · last ${ago(i.lastOccurredAt)}` : `last ${ago(i.lastOccurredAt)}`} />)}
                     <Row label="Recent refreshes" value={detail.incidents.recentExecutions.slice(0, 5).map((e) => `${e.trigger.toLowerCase()} ${e.overallStatus.toLowerCase()} ${timeAgo(e.startedAt)}`).join(", ") || "none"} />
                     <Row label="Recent webhooks" value={detail.incidents.recentWebhooks.slice(0, 5).map((w) => `${w.webhookCode} → ${w.handling.toLowerCase()}`).join(", ") || "none"} />
                   </Section>
@@ -389,10 +389,10 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                   </Section>
 
                   {/* UI-002 — deactivate / reactivate carries the reason the operator chose. */}
-                  {detail.actions.deactivate && (
+                  {detail.actions.deactivate && canWrite && (
                     <Section title="Account access">
                       <p className="text-[11px] leading-snug text-[var(--text-muted)]">
-                        {detail.actions.deactivate.currently === "ACTIVE" ? "Deactivate" : "Reactivate"} is recorded in the audit log with the reason you choose here. It runs through Growth &amp; Revenue&rsquo;s own WRITE gate.
+                        {detail.actions.deactivate.currently === "ACTIVE" ? "Deactivate" : "Reactivate"} is recorded in the audit log with the reason you choose here. It needs Customer Success WRITE access.
                       </p>
                       <ReasonFields code={reasonCode} note={reasonNote} setCode={setReasonCode} setNote={setReasonNote} />
                     </Section>
@@ -429,7 +429,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                   {acting === "refresh" ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <RefreshCw size={13} aria-hidden />} Refresh all
                 </button>
               )}
-              {detail?.actions.deactivate && (
+              {detail?.actions.deactivate && canWrite && (
                 <button type="button" onClick={toggleActive} disabled={acting !== null || !reason}
                   className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                   style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>

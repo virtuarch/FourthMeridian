@@ -9,27 +9,36 @@
  * as a stacked, generously-spaced read surface rather than a 12-col KPI card grid:
  *
  *   ① Summary        LiquidityHero          — accessible cash + coverage + window delta + trust
+ *                                             (standalone only — see OVERVIEW-CONSOLIDATION)
  *   ② Balance history LiquidityBalanceHistory — the cashNow tier over time (shared TrendChart)
- *   ③ Sources        SourcesLedger / tiers   — grouped weight-bar ledger → Left/Right panels
- *   ④ Resilience     coverage · concentration · reachability mix
+ *   ③ Cash distribution — ONE section under the chart (like every page's
+ *                     composition): grouping Dropdown (default By account) → donut
+ *                     (CashDistribution) → accounts ledger (CashAccountsLedger, rows →
+ *                     AccountDetail) → its reconciliation footer
+ *   ④ Resilience     coverage · concentration · reachability mix (+ accessible cash, embedded)
  *   ⑤ What changed   the shell-bridged driver window → Cash Flow doorway
  *
+ * v2.7 Cash accounts — the former Sources ledger (reachable-only rows by horizon) is
+ * REPLACED by ④ + ⑤. They state TOTAL CASH (every checking + savings ADJUSTED balance —
+ * v2.7-P0 — restricted included: classifyAccounts' totalLiquid + totalRestrictedCash, the
+ * net-worth "Cash" figure), and the ledger footer reconciles it to the Resilience
+ * tile's ACCESSIBLE CASH (reachableNow) by pure subtraction of per-account figures.
+ * The two are labelled distinctly and never conflated.
+ *
  * ── The live anchor + the time machine (unchanged) ──────────────────────────────────────
- * The account-array surfaces (the Hero headline, Sources ledger, Resilience) are the LIVE
+ * The account-array surfaces (the Hero headline, Cash accounts, Resilience) are the LIVE
  * CURRENT ANCHOR — per-account readings of money you can reach RIGHT NOW, sourced from the
  * visibility-filtered `accounts` array (they cannot be reconstructed per-account historically,
- * and are never faked into the past). The TEMPORAL layer rides ONE surface — the Sources block:
- *   • present day  → the current lens verdict (Hero) + the per-account SourcesLedger.
- *   • historical   → the atAsOf lens verdict (Hero) + a reconstructed ladder from the canonical
- *                    atAsOf tier metrics (cashNow / marketable / illiquid), with per-tier delta
- *                    chips (compareTo → asOf) and the honest as-of trust envelope.
+ * and are never faked into the past). The TEMPORAL layer is the hero + trend (and the lens
+ * verdict / trust envelope, read from the atAsOf lens):
+ *   • present day  → the current lens verdict + the per-account Cash distribution/ledger.
+ *   • historical   → the atAsOf lens verdict + trust; the distribution + ledger stay, labelled
+ *                    "Current balances". (v2.7 — the former reconstructed-tiers section, with
+ *                    its per-tier delta chips and "Net accessible change" row, was REMOVED at
+ *                    the owner's request; the historical contract/route is untouched.)
  *
  * The Hero SAYS this in a historical view (the headline is present-day; only the trend, verdict,
  * and trust honour the selected date) rather than letting a present-day figure pass as as-of.
- *
- * The Ladder RE-SURFACES computeLiquidity's tier metrics — it never re-partitions accounts or
- * recomputes a liquidity sum. Crypto is counted exactly once by the engine (the splice REPLACES
- * a wallet's held-flat estimate with its A8 value); this workspace inherits that and adds nothing.
  *
  * FX posture (no new authority): the current-anchor surfaces convert live balances through the
  * existing ConversionContext seam. The historical endpoints pass through the pure
@@ -43,25 +52,27 @@
  * OVERVIEW-CONSOLIDATION — Liquidity is no longer a peer Overview lens. This
  * workspace now renders EMBEDDED as the CASH SECTION of the unified Net Worth →
  * Assets page (`embedded`): the same data hook, the same figure authorities, the
- * same Sources / Resilience / What-changed surfaces. Embedded, it (a) renders its
- * hero as a compact section header, (b) omits its own balance-history chart —
+ * same Sources / Resilience / What-changed surfaces. Embedded, it (a) draws no
+ * hero — v2.7 visual-first moves the accessible-cash figure, its ≈ marker, its
+ * trust chip and its present-day / withheld disclosures into a fourth Resilience
+ * tile (the page's own Cash hero states the slice), (b) omits its own balance-history chart —
  * the Assets chart directly above slices to the SAME cashNow series — and (c)
  * publishes neither sidebar sections nor the shell envelope: the Assets page owns
  * both, while the Cash section keeps its own per-figure TrustIndicator so mixed
  * evidence is never flattened into page-wide certainty.
  */
 
-import { useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { reachableNow, accessTotals } from "@/components/space/widgets/liquidity-adapters";
-import { HORIZON_COLOR, HORIZON_LABEL, HORIZON_META } from "./horizons";
 import { formatAggregateMoney, useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { presentFigureEnvelope } from "@/components/space/trust/figure-envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { convertLiquiditySpaceData } from "@/lib/liquidity/display-conversion";
 import { clipCashHistory, convertCashHistory } from "@/lib/liquidity/cash-history";
@@ -72,29 +83,23 @@ import { TransactionCoverageNote } from "@/components/space/trust/TransactionCov
 import { LiquidityHero, type LiquidityWindowChange, type LiquidityCoverage } from "./LiquidityHero";
 import { LiquidityBalanceHistory } from "./LiquidityBalanceHistory";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
-import { SourcesLedger } from "./SourcesLedger";
+import { CashDistribution } from "./CashDistribution";
+import { CashAccountsLedger } from "./CashAccountsLedger";
+import { Dropdown } from "@/components/atlas/Dropdown";
+import {
+  buildCashAccounts, CASH_GROUPINGS, DEFAULT_CASH_GROUPING, type CashGrouping, type CashLedgerAccount,
+} from "./cash-accounts";
+import { reachableDisclosure } from "@/lib/balances/reachable";
 import { buildSourceRows } from "./liquidity-sources-util";
 import { LiquidityWhatChangedCard } from "./LiquidityWhatChangedCard";
 import { useLiquiditySpaceData } from "./useLiquiditySpaceData";
-import type { LiquidityAdapterAccount } from "@/components/space/widgets/liquidity-adapters";
+import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
+import { formatCurrency, formatCurrencyWhole } from "@/lib/currency";
+import { describeExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 
 function fmtMoney(v: number, ctx?: ConversionContext): string {
   // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
   return formatAggregateMoney(v, ctx);
-}
-
-function fmtSigned(v: number, ctx?: ConversionContext): string {
-  const abs = fmtMoney(Math.abs(v), ctx);
-  return `${v >= 0 ? "+" : "−"}${abs}`;
-}
-
-/** Read one liquidity tier value out of a LensResult by metric id. A missing metric
- *  is a true zero for that tier (computeLiquidity omits availableCredit when no known
- *  limit exists); a non-ok endpoint contributes nothing. NEVER recomputes a sum. */
-function metricValue(lens: LensResult | null, id: string): number {
-  if (!lens || lens.status !== "ok") return 0;
-  const m = lens.metrics.find((x) => x.id === id);
-  return m && typeof m.value === "number" ? m.value : 0;
 }
 
 export function LiquidityWorkspace({
@@ -128,7 +133,9 @@ export function LiquidityWorkspace({
   today: string;
   /** Gate — only fetch the historical contract while the Liquidity workspace is open. */
   active: boolean;
-  accounts: LiquidityAdapterAccount[];
+  /** The host's SpaceAccount rows (structurally): the liquidity fields plus the
+   *  freshness / aggregate fields the Cash accounts ledger reads. */
+  accounts: CashLedgerAccount[];
   ctx?: ConversionContext;
   /** The host's already-read Balance-Over-Time snapshots (the SAME array Wealth/Debt read) —
    *  the cashNow series is clipped from it. No new fetch (L0 — Debt precedent). */
@@ -182,12 +189,8 @@ export function LiquidityWorkspace({
     [rawData, ctx],
   );
 
-  // Whether an FX conversion actually happened (display target ≠ reporting currency).
-  const fxConverted = !!(ctx && rawData && rawData.reportingCurrency !== ctx.target);
-
   const atAsOf = data?.atAsOf ?? null;
   const showAsOf = atAsOf != null && atAsOf.status === "ok";
-  const delta = data?.delta ?? null;
   // The lens the lede reads: the reconstructed as-of lens when historical, else the live
   // current lens (data.current === the host present lens present-day).
   const ledeLens: LensResult | null = showAsOf ? atAsOf : (data?.current ?? null);
@@ -200,8 +203,18 @@ export function LiquidityWorkspace({
   );
   useEffect(() => { onEnvelopeChange?.(envelope); }, [envelope, onEnvelopeChange]);
 
+  // v2.7 final UX pass — the chip beside ACCESSIBLE CASH (the hero, and the
+  // embedded tile) qualifies that figure, which is PRESENT-DAY in every view
+  // (reachableNow over today's accounts). It reads the present-day lens's
+  // envelope, never the as-of lens's reconstruction tier — the same rule as the
+  // Debt hero. The shell still receives the on-screen envelope above.
+  const figureEnvelope = useMemo(
+    () => presentFigureEnvelope({ perspectiveId: "liquidity", historical: showAsOf, presentLens: data?.current ?? presentLens, onScreen: envelope }),
+    [showAsOf, data, presentLens, envelope],
+  );
+
   // FIGURES OF RECORD — present-day, from the accounts array (never the lens). The Hero
-  // headline (cashNow tier) is the SAME figure the SourcesLedger sums, so they agree.
+  // headline (cashNow tier) is the SAME figure the Cash accounts ledger's Available sums.
   const classification = useMemo(() => classifyAccounts(accounts, ctx), [accounts, ctx]);
   // v2.6-L3 — the headline is REACHABLE cash, not the ledger sum. The copy under
   // it has always read "reachable right now"; on the live corpus the ledger sum
@@ -217,6 +230,14 @@ export function LiquidityWorkspace({
   // whose reachable figure is unknown is excluded from the total, so counting it
   // as a source would describe money the figure does not include.
   const nowSourceCount = reach.coveredCount;
+  // v2.7 Cash accounts — the per-account TOTAL CASH rows + the reconciliation to
+  // `reach` (pure helper; the classifier's conversion + reachableForAccount).
+  const cashAccounts = useMemo(() => buildCashAccounts(accounts, ctx), [accounts, ctx]);
+  // The Cash distribution grouping — its control is a Dropdown in the Block
+  // header (the Net Worth "Where it sits · By class ▾" idiom). Default By account.
+  const [cashGrouping, setCashGrouping] = useState<CashGrouping>(DEFAULT_CASH_GROUPING);
+  // The existing reachable disclosure, shown under the Accessible cash tile.
+  const reachDisclosure = reachableDisclosure(reach, (n) => fmtMoney(n, ctx));
 
   // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
   // build-time USD literal (display-money.ts).
@@ -289,7 +310,7 @@ export function LiquidityWorkspace({
     const sections: SpaceChromeSection[] = [
       { label: "Summary",         anchor: "liquidity-summary" },
       { label: "Balance history", anchor: "liquidity-history" },
-      { label: "Sources",         anchor: "liquidity-sources" },
+      { label: "Cash accounts",   anchor: "liquidity-sources" },
       { label: "Resilience",      anchor: "liquidity-resilience" },
       ...(period ? [{ label: "Activity", anchor: "liquidity-activity" }] : []),
     ];
@@ -307,115 +328,139 @@ export function LiquidityWorkspace({
     [liquidityPoints, exploration],
   );
 
+  const approx = classification.estimated ? "≈ " : "";
+
   return (
-    <div className="space-y-8 sm:space-y-10 min-w-0">
+    <div className="space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!">
       {loading && (
         <div className="flex items-center gap-1.5 px-1 text-xs text-[var(--text-faint)]">
           <RefreshCw size={12} className="animate-spin" aria-label="Refreshing" /> Updating…
         </div>
       )}
 
-      {/* ① Summary — the editorial lede (embedded: the Cash section header). */}
-      <div id="liquidity-summary" className="scroll-mt-20">
-        <LiquidityHero
-          compact={embedded}
-          cashNow={cashNow}
-          reachableSoon={reachableSoon}
-          sharePctNow={sharePctNow}
-          sourceCount={nowSourceCount}
-          coverage={coverage}
-          estimated={classification.estimated}
-          currency={displayCurrency}
-          asOf={asOf}
-          today={today}
-          historical={historical}
-          change={change}
-          // The headline uses reachable cash whenever ANY account supplied a
-          // current-state claim; the window delta is computed from the ledger
-          // snapshot series, so the two bases diverge exactly then.
-          deltaBasisDiffers={reach.coveredCount > 0 && cashNow !== classification.totalLiquid}
-          envelope={envelope}
-          verdict={verdict}
-          verdictAsOf={verdictAsOf}
-          redactions={redactions}
-        />
-      </div>
+      {/* ① Summary — the editorial lede. Embedded (Assets → Cash), the page's
+          own Cash hero states the slice and its accessible-cash figure moves into
+          the Resilience grid below, so no second hero card is drawn. */}
+      {!embedded && (
+        <div id="liquidity-summary" className="scroll-mt-20">
+          <LiquidityHero
+            cashNow={cashNow}
+            reachableSoon={reachableSoon}
+            sharePctNow={sharePctNow}
+            sourceCount={nowSourceCount}
+            coverage={coverage}
+            estimated={classification.estimated}
+            currency={displayCurrency}
+            asOf={asOf}
+            today={today}
+            historical={historical}
+            change={change}
+            // The headline uses reachable cash whenever ANY account supplied a
+            // current-state claim; the window delta is computed from the ledger
+            // snapshot series, so the two bases diverge exactly then.
+            deltaBasisDiffers={reach.coveredCount > 0 && cashNow !== classification.totalLiquid}
+            envelope={figureEnvelope}
+            verdict={verdict}
+            verdictAsOf={verdictAsOf}
+            redactions={redactions}
+          />
+        </div>
+      )}
 
       {/* ② Balance history — accessible cash over time, the SHARED TrendChart.
            Embedded, the unified Assets chart above already slices to this SAME
            series (WealthChartPoint.cash === totalCash + totalSavings), so a second
            identical chart is not drawn; the as-of retry affordance stays. */}
-      <div id="liquidity-history" className="scroll-mt-20">
-        {!embedded && (
-          <LiquidityBalanceHistory
-            history={cashHistory}
-            currency={displayCurrency}
-            asOf={asOf}
-            compareTo={compareTo}
-            onSelectPoint={handleSelectPoint}
-          />
-        )}
-        {error && (
-          <button
-            type="button"
-            onClick={reload}
-            className="mt-2 inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-          >
-            <RefreshCw size={11} /> Couldn&rsquo;t load as-of history — retry
-          </button>
-        )}
+      {(!embedded || error) && (
+        <div id="liquidity-history" className="scroll-mt-20">
+          {!embedded && (
+            <LiquidityBalanceHistory
+              history={cashHistory}
+              currency={displayCurrency}
+              asOf={asOf}
+              compareTo={compareTo}
+              onSelectPoint={handleSelectPoint}
+            />
+          )}
+          {error && (
+            <button
+              type="button"
+              onClick={reload}
+              className="mt-2 inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+            >
+              <RefreshCw size={11} /> Couldn&rsquo;t load as-of history — retry
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ③ Cash distribution (v2.7) — ONE section directly under the chart, like
+          every other page's composition: the grouping Dropdown in the header,
+          the donut, the accounts ledger immediately beneath it, and the ledger's
+          reconciliation footer. Present-day TOTAL CASH; in a historical As-Of
+          both say "Current balances", never as-of. Nothing sits between the
+          donut and the ledger. */}
+      <div id="liquidity-sources" className="scroll-mt-20 min-w-0">
+        <Block
+          id="liquidity-distribution"
+          label="Cash distribution"
+          hint={<span className="text-[11px] text-[var(--text-faint)]">{historical ? "Current balances" : "Total cash"}</span>}
+          action={<Dropdown options={CASH_GROUPINGS} value={cashGrouping} onChange={setCashGrouping} ariaLabel="Cash distribution grouping" />}
+        >
+          <CashDistribution summary={cashAccounts} currency={displayCurrency} grouping={cashGrouping} />
+          <div id="liquidity-accounts" className="mt-4 scroll-mt-20 min-w-0" aria-label={`Cash accounts, ${cashAccounts.accountCount}`}>
+            <CashAccountsLedger
+              spaceId={spaceId}
+              accounts={accounts}
+              summary={cashAccounts}
+              ctx={ctx}
+              currency={displayCurrency}
+            />
+          </div>
+        </Block>
       </div>
 
-      {/* ③ Sources — present-day per-account ledger, or the reconstructed as-of tiers. */}
-      <Block
-        id="liquidity-sources"
-        label="Sources"
-        hint={!showAsOf && <span className="text-[11px] tabular-nums text-[var(--text-faint)]">{nowSourceCount}</span>}
-        action={
-          <span className="text-[11px] text-[var(--text-faint)]">
-            {showAsOf ? `Reconstructed as of ${formatDate(asOf)}` : "Bar shows share of assets"}
-          </span>
-        }
-      >
-        {showAsOf ? renderHistoricalTiers() : <SourcesLedger accounts={accounts} ctx={ctx} currency={displayCurrency} />}
-      </Block>
-
-      {/* ④ Resilience & Risk — coverage, cash concentration, reachability mix (present-day anchor). */}
+      {/* ④ Resilience & Risk — directly under the chart, always visible (v2.7
+          visual-first): coverage, cash concentration, reachability mix and,
+          embedded, the accessible-cash figure (present-day anchor). */}
       <Block id="liquidity-resilience" label="Resilience & risk">
-        <div className="grid gap-4 lg:grid-cols-3 items-start min-w-0">
+        <div className={`grid grid-cols-2 gap-3 sm:gap-4 items-stretch min-w-0 ${embedded ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
           {/* Emergency coverage — conditional on a monthly-expense baseline. */}
-          <Surface className="p-4 min-w-0">
+          <Surface className="p-3 sm:p-4 min-w-0">
             <SubHeading>Emergency coverage</SubHeading>
             {coverage ? (
               <>
-                <p className="text-2xl font-semibold tabular-nums" style={{ color: coverage.months >= 6 ? "var(--accent-positive)" : coverage.months >= 3 ? "#f59e0b" : "var(--accent-negative)" }}>
+                <p className="text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: coverage.months >= 6 ? "var(--accent-positive)" : coverage.months >= 3 ? "#f59e0b" : "var(--accent-negative)" }}>
                   {coverage.months.toFixed(1)} months
                 </p>
-                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
-                  {fmtMoney(cashNow, ctx)} reachable · at {fmtMoney(coverage.monthlyExpenses, ctx)}/mo
+                <p className="mt-1 text-[11px] text-[var(--text-muted)] [overflow-wrap:anywhere]">
+                  {/* v2.6-ASSESS-2 — name the baseline (declared vs measured). MONEY-PRECISION-2:
+                      a clause, so whole dollars. */}
+                  {describeExpenseBaseline(
+                    { amount: coverage.monthlyExpenses, basis: coverage.basis, ...(coverage.measuredOver ? { measuredOver: coverage.measuredOver } : {}) },
+                    (n: number) => formatCurrencyWhole(n, displayCurrency),
+                  )}
                 </p>
               </>
             ) : (
               <>
-                <p className="text-2xl font-semibold tabular-nums text-[var(--text-primary)]">{fmtMoney(cashNow, ctx)}</p>
-                <p className="mt-1 text-[11px] text-[var(--text-faint)]">
-                  in reachable cash · set a monthly expense target to see months of coverage
-                </p>
+                <p className="text-xl sm:text-2xl font-semibold tabular-nums text-[var(--text-faint)]">—</p>
+                <p className="mt-1 text-[11px] text-[var(--text-faint)]">Set a monthly expense target</p>
               </>
             )}
           </Surface>
 
           {/* Cash concentration — is reachable cash spread out or in one account? */}
-          <Surface className="p-4 min-w-0">
+          <Surface className="p-3 sm:p-4 min-w-0">
             <SubHeading>Cash concentration</SubHeading>
             {concentration ? (
               <>
-                <p className="text-2xl font-semibold tabular-nums" style={{ color: concentration.topShare >= 0.7 ? "#f59e0b" : "var(--text-primary)" }}>
+                <p className="text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: concentration.topShare >= 0.7 ? "#f59e0b" : "var(--text-primary)" }}>
                   {(concentration.topShare * 100).toFixed(0)}%
                 </p>
                 <p className="mt-1 truncate text-[11px] text-[var(--text-muted)]">
                   in <span className="text-[var(--text-secondary)]">{concentration.topName}</span>
-                  {concentration.count > 1 ? ` · across ${concentration.count} accounts` : " · your only cash account"}
+                  {concentration.count > 1 ? ` · ${concentration.count} accounts` : ""}
                 </p>
               </>
             ) : (
@@ -423,8 +468,9 @@ export function LiquidityWorkspace({
             )}
           </Surface>
 
-          {/* Reachability mix — how much is reachable now vs within days. */}
-          <Surface className="p-4 min-w-0">
+          {/* Reachability mix — how much is reachable now vs within days (retirement /
+              HSA and unverified investments are restricted: in neither). */}
+          <Surface className="p-3 sm:p-4 min-w-0">
             <SubHeading>Reachability</SubHeading>
             {cashNow + reachableSoon > 0 ? (
               <>
@@ -438,11 +484,41 @@ export function LiquidityWorkspace({
               <p className="text-[11px] text-[var(--text-faint)]">No reachable assets yet.</p>
             )}
           </Surface>
+
+          {/* Accessible cash — embedded only: the figure the former section hero
+              stated (reachable now, the Sources ledger's own authority), with its
+              ≈ estimated marker, its own trust chip, and the present-day /
+              withheld disclosures as concise lines. */}
+          {embedded && (
+            <Surface className="p-3 sm:p-4 min-w-0" data-accessible-cash>
+              <div className="flex items-start justify-between gap-2">
+                <SubHeading>Accessible cash</SubHeading>
+                <TrustIndicator variant="compact" envelope={figureEnvelope} />
+              </div>
+              <p className="text-xl sm:text-2xl font-semibold tabular-nums text-[var(--text-primary)] [overflow-wrap:anywhere]">
+                {approx}{formatCurrency(cashNow, displayCurrency)}
+              </p>
+              {sharePctNow != null && (
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">{sharePctNow.toFixed(0)}% of assets</p>
+              )}
+              {historical && (
+                <p className="mt-1 text-[11px] text-[var(--text-faint)]">Balances are current — trend reflects {formatDate(asOf)}</p>
+              )}
+              {reachDisclosure && (
+                <p className="mt-1 text-[11px] text-[var(--text-faint)]" data-reach-disclosure>{reachDisclosure}</p>
+              )}
+              {redactions > 0 && (
+                <p className="mt-1 text-[11px] text-[var(--text-faint)]">{redactions} account detail{redactions === 1 ? "" : "s"} withheld</p>
+              )}
+              <TrustIndicator variant="inline" envelope={figureEnvelope} className="mt-1" />
+            </Surface>
+          )}
         </div>
       </Block>
 
-      {/* ⑤ What changed — top liquidity drivers for the shell-bridged window, with a
-           doorway to the Cash Flow workspace. CURRENT ANCHOR (window relative to today). */}
+      {/* ⑤ What changed — every liquidity driver for the shell-bridged window, with a
+           doorway to the Cash Flow workspace. CURRENT ANCHOR (window relative to today).
+           Fully visible at every width (v2.7 visual-first: no disclosure, no top-N cut). */}
       {period && (
         <Block id="liquidity-activity" label={`What changed · ${periodLabel(period)}`}>
           <Surface className="p-4 min-w-0">
@@ -462,82 +538,6 @@ export function LiquidityWorkspace({
       )}
     </div>
   );
-
-  // ── Historical Sources — reconstructed as-of tiers ─────────────────────────────────────
-  // Re-surface the canonical atAsOf tier metrics (NEVER a re-partition of accounts): cashNow →
-  // Available now, marketable → Available in days, illiquid → Illiquid. Same tier vocabulary +
-  // colors as the live ledger. Per-account historical rows are not carried by the contract, so
-  // the ledger honestly degrades to tier totals + delta chips here (said in the block header).
-  function renderHistoricalTiers(): ReactNode {
-    const tiers = [
-      { id: "now",        label: HORIZON_LABEL.now,        color: HORIZON_COLOR.now,        meta: HORIZON_META.now,        value: metricValue(atAsOf, "cashNow"),    d: delta?.cashNow },
-      { id: "days",       label: HORIZON_LABEL.days,       color: HORIZON_COLOR.days,       meta: HORIZON_META.days,       value: metricValue(atAsOf, "marketable"), d: delta?.marketable },
-      { id: "restricted", label: HORIZON_LABEL.restricted, color: HORIZON_COLOR.restricted, meta: HORIZON_META.restricted, value: metricValue(atAsOf, "restricted"), d: delta?.restricted },
-      { id: "unverified", label: HORIZON_LABEL.unverified, color: HORIZON_COLOR.unverified, meta: HORIZON_META.unverified, value: metricValue(atAsOf, "unverified"), d: delta?.unverified },
-      { id: "illiquid",   label: HORIZON_LABEL.illiquid,   color: HORIZON_COLOR.illiquid,   meta: HORIZON_META.illiquid,   value: metricValue(atAsOf, "illiquid"),   d: delta?.illiquid },
-    ].filter((t) => t.value !== 0 || (t.d != null && t.d !== 0));
-
-    const credit = metricValue(atAsOf, "availableCredit");
-
-    return (
-      <div className="space-y-3">
-        <p className="text-[11px] text-[var(--text-faint)]">
-          Tier totals reconstructed for {formatDate(asOf)}
-          {delta && <> · change since {formatDate(delta.from)}</>}
-          {fxConverted && ctx && (
-            <> · shown in {ctx.target}{atAsOf?.estimated ? " (some rates estimated)" : ""}</>
-          )}
-          {" · "}per-account detail is current only.
-        </p>
-        {tiers.map((tier) => (
-          <Surface key={tier.id} className="p-3">
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="flex items-center gap-2 min-w-0">
-                <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: tier.color }} />
-                <span className="text-sm font-medium text-[var(--text-primary)] truncate">{tier.label}</span>
-              </span>
-              <span className="flex items-baseline gap-2 shrink-0">
-                {tier.d != null && tier.d !== 0 && (
-                  <span className="text-[11px] tabular-nums" style={{ color: tier.d >= 0 ? "var(--accent-positive, #22c55e)" : "#ef4444" }}>
-                    {fmtSigned(tier.d, ctx)}
-                  </span>
-                )}
-                <span className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">{fmtMoney(tier.value, ctx)}</span>
-              </span>
-            </div>
-            <p className="text-[10px] text-[var(--text-faint)] mt-0.5">{tier.meta}</p>
-          </Surface>
-        ))}
-
-        {/* Net accessible change — Δcash + Δmarketable + Δilliquid (credit EXCLUDED). */}
-        {delta && (
-          <Surface tone="sunken" className="px-3 py-2 flex items-center justify-between gap-2">
-            <span className="text-[11px] uppercase tracking-wide text-[var(--text-faint)]">Net accessible change</span>
-            <span className="text-sm font-semibold tabular-nums" style={{ color: delta.net >= 0 ? "var(--accent-positive, #22c55e)" : "#ef4444" }}>
-              {fmtSigned(delta.net, ctx)}
-            </span>
-          </Surface>
-        )}
-
-        {/* Unused credit — borrowing capacity, NEVER counted as liquidity (doctrine). */}
-        {credit > 0 && (
-          <p className="text-[10px] text-[var(--text-faint)]">
-            Unused credit (borrowing capacity, not liquidity): {fmtMoney(credit, ctx)}
-          </p>
-        )}
-
-        {error && (
-          <button
-            type="button"
-            onClick={reload}
-            className="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-          >
-            <RefreshCw size={11} /> Couldn&rsquo;t load as-of liquidity — retry
-          </button>
-        )}
-      </div>
-    );
-  }
 }
 
 /** The quiet in-Surface heading (Block owns the section label; this labels a sub-panel). */

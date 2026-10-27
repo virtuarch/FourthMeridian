@@ -59,11 +59,20 @@ type _RailOption = Expect<Equal<keyof SpaceShellRailOption, "id" | "label" | "ic
 // UX-P1 (D1) — `railVisibility` ("always" default | "belowLg") lets a host whose
 // desktop sidebar is the workspace switcher (a Platform Space) show the rail
 // only below lg; the default renders byte-identically for every other host.
+// COMPACT DASHBOARD (P1) — `onLeave` (<lg Leave Space for members/viewers)
+// renders only inside the lg:hidden header row, so desktop is unchanged.
 type _SlotApiKeys = Expect<Equal<
   keyof SpaceShellProps,
   | "overlays" | "title" | "subtitle" | "currencyControl" | "onManage"
-  | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "mobileOptimized" | "railVisibility" | "children"
+  | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "mobileOptimized" | "railVisibility"
+  | "onLeave" | "compactRailOptions" | "compactTitleOnly" | "children"
 >>;
+// v2.7 R1 — `compactViewSelector` moved to PerspectiveShell's controls row and the
+// v2.7 P0 `compactTimeSlot` portal slot is deleted (one TimelineLens, in flow).
+// `compactRailOptions`: the <lg-only rail set (no Members, owner D-1);
+// `compactTitleOnly`: the <lg header row shows the Space name alone (Overview).
+type _CompactRail = Expect<Equal<SpaceShellProps["compactRailOptions"], SpaceShellRailOption[] | undefined>>;
+type _CompactTitleOnly = Expect<Equal<SpaceShellProps["compactTitleOnly"], boolean | undefined>>;
 type _RailVisibility = Expect<Equal<SpaceShellProps["railVisibility"], "always" | "belowLg" | undefined>>;
 // The variant discriminator + its optional header-actions slot.
 type _Variant       = Expect<Equal<SpaceShellProps["variant"], "space" | "utility" | undefined>>;

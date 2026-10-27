@@ -1,104 +1,70 @@
 /**
- * GET /api/platform/growth-revenue/users  (OPS-6B Beta Operations)
+ * GET /api/platform/growth-revenue/users  (OPS-6B Beta Operations · SEC-PLAT-4)
  *
- * Operator user search/list for Beta Operations — the platform-grant equivalent
- * of the SYSTEM_ADMIN user list. Consumes existing data only (User + the AuditLog
- * LOGIN ledger + UserSession) — no new telemetry. Returns per-user operational
- * profile (identity + lifecycle + last-login + active sessions), never financial
- * content. Paginated + substring search on name/email/username.
+ * Customer-account AGGREGATES for Growth. Consumes existing data only (User +
+ * the AuditLog LOGIN ledger + UserSession) — no new telemetry, never financial
+ * content.
+ *
+ * SEC-PLAT-4 (owner ruling P-4, 2026-10-27): Growth is identity-minimized. This
+ * route used to return a searchable per-user list (id, email, name, username,
+ * role, last login, sessions) and its sibling route deactivated accounts. Both
+ * were customer-identity work on a Growth grant. The per-customer view and the
+ * deactivate / reactivate action now live in Customer Success
+ * (GET /api/platform/customer-success/customers[/:id], POST …/[userId]/access),
+ * and this route returns COUNTS ONLY — no id, email, name or username, and no
+ * search (a search box is an identity oracle).
+ *
+ * Population: customer accounts (role USER); SYSTEM_ADMIN accounts are not
+ * customers and are not counted.
  *
  * AUTHORIZATION: requirePlatformAccess("GROWTH_REVENUE", "READ").
  */
 
 import { NextResponse } from "next/server";
+import { UserRole } from "@prisma/client";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 
 export const runtime = "nodejs";
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 100;
 
-export interface PlatformUserRow {
-  id: string;
-  email: string;
-  name: string | null;
-  username: string | null;
-  role: string;
-  createdAt: string;
-  emailVerifiedAt: string | null;
-  deactivatedAt: string | null;
-  lastLoginAt: string | null;
-  activeSessions: number;
-}
-export interface PlatformUsersResponse {
+export interface GrowthUsersSummary {
+  /** Customer accounts (role USER). */
   total: number;
-  users: PlatformUserRow[];
+  /** …with a verified email address. */
+  emailVerified: number;
+  /** …currently deactivated. */
+  deactivated: number;
+  /** …with an account deletion scheduled. */
+  deletionScheduled: number;
+  /** …holding at least one session that is not revoked. */
+  withLiveSession: number;
+  /** …with no recorded sign-in at all (AuditLog LOGIN, which is never pruned). */
+  neverSignedIn: number;
+  checkedAt: string;
 }
 
-export async function GET(req: Request): Promise<Response> {
+export async function GET(): Promise<Response> {
   const [, err] = await requirePlatformAccess("GROWTH_REVENUE", "READ");
   if (err) return err;
 
-  const url = new URL(req.url);
-  const search = (url.searchParams.get("search") ?? "").trim();
-  const limitRaw = Number(url.searchParams.get("limit") ?? DEFAULT_LIMIT);
-  const limit = Number.isFinite(limitRaw) ? Math.min(MAX_LIMIT, Math.max(1, Math.floor(limitRaw))) : DEFAULT_LIMIT;
-
-  const where = search
-    ? {
-        OR: [
-          { email: { contains: search, mode: "insensitive" as const } },
-          { name: { contains: search, mode: "insensitive" as const } },
-          { username: { contains: search, mode: "insensitive" as const } },
-        ],
-      }
-    : {};
-
-  const [total, users] = await Promise.all([
-    db.user.count({ where }),
-    db.user.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      take: limit,
-      select: { id: true, email: true, name: true, username: true, role: true, createdAt: true, emailVerifiedAt: true, deactivatedAt: true },
-    }),
+  const customer = { role: UserRole.USER };
+  const [total, emailVerified, deactivated, deletionScheduled, liveSessionUsers, signedInUsers] = await Promise.all([
+    db.user.count({ where: customer }),
+    db.user.count({ where: { ...customer, emailVerifiedAt: { not: null } } }),
+    db.user.count({ where: { ...customer, deactivatedAt: { not: null } } }),
+    db.user.count({ where: { ...customer, deletionScheduledAt: { not: null } } }),
+    db.userSession.groupBy({ by: ["userId"], where: { revokedAt: null, user: { is: customer } }, _count: { _all: true } }),
+    db.auditLog.groupBy({ by: ["userId"], where: { action: AuditAction.LOGIN, user: { is: customer } }, _count: { _all: true } }),
   ]);
-
-  const userIds = users.map((u) => u.id);
-  // Last login + active sessions from EXISTING ledgers (AuditLog LOGIN, UserSession).
-  const [lastLogins, activeSessions] = await Promise.all([
-    userIds.length
-      ? db.auditLog.groupBy({
-          by: ["userId"],
-          where: { userId: { in: userIds }, action: AuditAction.LOGIN },
-          _max: { createdAt: true },
-        })
-      : Promise.resolve([] as { userId: string | null; _max: { createdAt: Date | null } }[]),
-    userIds.length
-      ? db.userSession.groupBy({
-          by: ["userId"],
-          where: { userId: { in: userIds }, revokedAt: null },
-          _count: { _all: true },
-        })
-      : Promise.resolve([] as { userId: string; _count: { _all: number } }[]),
-  ]);
-  const lastLoginByUser = new Map(lastLogins.map((r) => [r.userId, r._max.createdAt] as const));
-  const sessionsByUser = new Map(activeSessions.map((r) => [r.userId, r._count._all] as const));
 
   return NextResponse.json({
     total,
-    users: users.map((u) => ({
-      id: u.id,
-      email: u.email,
-      name: u.name,
-      username: u.username,
-      role: u.role,
-      createdAt: u.createdAt.toISOString(),
-      emailVerifiedAt: u.emailVerifiedAt?.toISOString() ?? null,
-      deactivatedAt: u.deactivatedAt?.toISOString() ?? null,
-      lastLoginAt: lastLoginByUser.get(u.id)?.toISOString() ?? null,
-      activeSessions: sessionsByUser.get(u.id) ?? 0,
-    })),
-  } satisfies PlatformUsersResponse);
+    emailVerified,
+    deactivated,
+    deletionScheduled,
+    withLiveSession: liveSessionUsers.length,
+    neverSignedIn: Math.max(0, total - signedInUsers.length),
+    checkedAt: new Date().toISOString(),
+  } satisfies GrowthUsersSummary);
 }

@@ -142,10 +142,14 @@ console.log("D. Decision N1 — one home; the sidebar's feed and the area page's
     /platform,\s*\}\);/.test(api) && /ALL_PLATFORM_AREAS/.test(api));
 
   const area = code(read("app", "(shell)", "dashboard", "platform", "[area]", "page.tsx"));
+  // SEC-PLAT-2 — the grant check moved into the shared guard (requirePlatformAccess):
+  // unknown area, a 403 from the guard, a missing grant row and a missing Space all
+  // still land on the DIRECTORY.
   check("[area]/page.tsx: an unknown / ungranted / missing area redirects to the DIRECTORY (which itself redirects at zero grants)",
-    (area.match(/redirect\("\/dashboard\/platform"\)/g) ?? []).length === 3 && !/redirect\("\/dashboard\/spaces"\)/.test(area));
-  check("[area]/page.tsx: its authority is untouched (grant check + sections read on db, as RLS-T3 classified)",
-    /hasPlatformAccess\(area, "READ", \[grant\]\)/.test(area) && /db\.platformGrant\.findUnique/.test(area) && /db\.space\.findUnique/.test(area));
+    (area.match(/redirect\("\/dashboard\/platform"\)/g) ?? []).length === 4 && /err\.status === 403\) redirect\("\/dashboard\/platform"\)/.test(area)
+      && !/redirect\("\/dashboard\/spaces"\)/.test(area));
+  check("[area]/page.tsx: authority = the shared platform guard + the sections read on db (RLS-T3)",
+    /requirePlatformAccess\(area, "READ"\)/.test(area) && !/platformGrant/.test(area) && /db\.space\.findUnique/.test(area));
 }
 
 if (failures > 0) { console.error(`\nplatform-directory: ${failures} failure(s).`); process.exit(1); }

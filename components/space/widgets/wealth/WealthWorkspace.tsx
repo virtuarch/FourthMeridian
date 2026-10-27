@@ -8,15 +8,21 @@
  * of the three page-level MODES the Net Worth page is read through:
  *
  *   Total   — the net-worth experience (default): hero → balance history →
- *             composition + what-moved-it → explanation / evidence.
+ *             KPIs → composition + what-moved-it.
  *   Assets  — total assets, with the SAME instruments re-aimed at assets, the
- *             balance history SLICEABLE (All · Cash · Investments), and Cash +
- *             Investments living INSIDE the page as sections (the former
- *             Liquidity and Investments workspaces, embedded — same hooks, same
- *             authorities, same surfaces; only their duplicate hero/chart
- *             wrappers are folded into the page's own). RWA-1 adds a third
- *             section, Real assets — the user's manual estimates (homes,
- *             vehicles, valuables) with Add asset / Update value / Archive.
+ *             balance history SLICEABLE (All · Cash · Investments). v2.7
+ *             visual-first: the slice is the RENDER RULE at every width
+ *             (assetsCompactVisibility) —
+ *               All         → hero, chart, Cash · Investments KPIs, Where it
+ *                             sits, What moved;
+ *               Cash        → hero, chart, the embedded Cash section (the
+ *                             former Liquidity workspace);
+ *               Investments → hero, chart, the embedded Investments section,
+ *                             then Real assets (RWA-1 — the user's manual
+ *                             estimates) as its own distinct section.
+ *             The embedded sections keep the same hooks, authorities and
+ *             surfaces; only their duplicate hero/chart wrappers are folded
+ *             into the page's own.
  *   Debt    — the complete Debt workspace, rendered as a mode.
  *
  * Cash and Investments are NOT navigation. Navigation represents concepts;
@@ -41,17 +47,22 @@
  * slice (URL-synced in useSpaceNavigation — the evolved `?metric=` mechanism).
  */
 
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { summarizeCryptoPricing } from "@/lib/prices/current-quote.core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CompactSectionTabs } from "@/components/space/compact/CompactSectionTabs";
+import { assetsCompactVisibility } from "@/components/space/compact/compact-sections";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import {
   computeWealthTimeMachine,
   type WealthResult,
 } from "@/lib/wealth/wealth-time-machine";
 import { convertWealthSnapshots } from "@/lib/wealth/display-conversion";
+import { wealthChipTier, asOfSnapshotTier } from "@/components/space/trust/wealth-chip-tier";
 import {
   ASSETS_SLICES, ASSETS_SLICE_LABELS, WEALTH_MODES, WEALTH_MODE_LABELS, wealthSeriesKey,
   type AssetsSlice, type WealthMode,
+  type DebtSection,
 } from "@/lib/wealth/wealth-mode";
 import { buildPortfolioValueSeries } from "@/lib/investments/portfolio-series";
 import { classifyAccounts } from "@/lib/account-classifier";
@@ -66,18 +77,20 @@ import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import type { SpaceAccount } from "@/lib/space/dashboard-types";
 import { Chips } from "@/components/atlas/Chips";
-import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/LiquidityWorkspace";
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
 import { RealAssetsSection } from "./RealAssetsSection";
-import { WealthHero } from "./WealthHero";
+import { WealthHero, wealthSecondaryRows, SecondaryChange } from "./WealthHero";
+import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
+import { formatCurrency } from "@/lib/currency";
 import { WealthTrendChart } from "./WealthTrendChart";
+import { AdjustedBasisNote } from "./AdjustedBasisNote";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import type { LensRoot } from "@/lib/history/lens-root-node";
 import { WealthChangeLedger } from "./WealthChangeLedger";
 import { WealthCompositionCard } from "./WealthCompositionCard";
-import { WealthExplanationCard } from "./WealthExplanationCard";
+import { HeroNotes } from "@/components/space/hero/HeroParts";
 import { WealthUnavailable } from "./wealth-ui";
 
 /** The Total mode's section anchors — the sidebar's "what's inside". */
@@ -86,26 +99,29 @@ export const WEALTH_TOTAL_SECTIONS: SpaceChromeSection[] = [
   { label: "Balance history", anchor: "wealth-trend" },
   { label: "Composition",     anchor: "wealth-composition" },
   { label: "What moved it",   anchor: "wealth-ledger" },
-  { label: "Explanation",     anchor: "wealth-explanation" },
 ];
 
 /**
- * The Assets mode's section anchors. Summary → Balance history → Composition →
- * What moved it are the wealth instruments (they need snapshot history); Cash and
- * Investments are the embedded sections (they carry their own data and render
+ * The Assets mode's section anchors, per slice. Summary → Balance history are
+ * the wealth instruments (they need snapshot history); Composition → What moved
+ * it render on All only; Cash / Investments + Real assets are the embedded
+ * sections of their own slice (they carry their own data and render
  * regardless). Built per render so every published row has an element.
  */
-export function assetsSections(args: { hasHistory: boolean }): SpaceChromeSection[] {
+export function assetsSections(args: { hasHistory: boolean; slice?: AssetsSlice }): SpaceChromeSection[] {
+  const show = assetsCompactVisibility(args.slice ?? "all");
   return [
     ...(args.hasHistory ? [
       { label: "Summary",         anchor: "wealth-summary" },
       { label: "Balance history", anchor: "wealth-trend" },
-      { label: "Composition",     anchor: "wealth-composition" },
-      { label: "What moved it",   anchor: "wealth-ledger" },
+      ...(show.composition ? [
+        { label: "Composition",   anchor: "wealth-composition" },
+        { label: "What moved it", anchor: "wealth-ledger" },
+      ] : []),
     ] : []),
-    { label: "Cash",        anchor: "wealth-cash" },
-    { label: "Investments", anchor: "wealth-investments" },
-    { label: "Real assets", anchor: "wealth-real-assets" },
+    ...(show.cash ? [{ label: "Cash", anchor: "wealth-cash" }] : []),
+    ...(show.investments ? [{ label: "Investments", anchor: "wealth-investments" }] : []),
+    ...(show.realAssets ? [{ label: "Real assets", anchor: "wealth-real-assets" }] : []),
   ];
 }
 
@@ -141,8 +157,12 @@ export function WealthWorkspace({
   mode = "total",
   onModeChange,
   modeSelectorVisibility = "always",
+  freshnessLabel = null,
+  timePreset,
   slice = "all",
   onSliceChange,
+  debtSection = "all",
+  onDebtSectionChange,
   focusSection = null,
   active = true,
   cash,
@@ -183,9 +203,16 @@ export function WealthWorkspace({
    * `mode` state; display only — the exact complement of the sidebar's `lg:block`.
    */
   modeSelectorVisibility?: "always" | "belowLg";
+  /** v2.7 P0 — the canonical freshness claim for the compact hero (null ⇒ "As of <snapshot date>"). */
+  freshnessLabel?: string | null;
+  /** v2.7 R6 — the shell slice id, for the compact AI entry link only (allowlisted there). */
+  timePreset?: string;
   /** The Assets balance-history slice (All · Cash · Investments) — URL-synced by the host. */
   slice?:           AssetsSlice;
   onSliceChange?:   (s: AssetsSlice) => void;
+  /** COMPACT DASHBOARD (P3) — the compact Debt category (All · Credit · Loans), host-owned (?section=). */
+  debtSection?:          DebtSection;
+  onDebtSectionChange?:  (s: DebtSection) => void;
   /** A one-shot Assets section to scroll to on arrival (a legacy lens deep link). */
   focusSection?:    "cash" | "investments" | null;
   /** Gate for the embedded historical fetches — true while this is the open lens. */
@@ -210,7 +237,9 @@ export function WealthWorkspace({
 
   // ── Effective display currency + per-date FX (display-currency ACTIVATION) ──
   const canConvert = !!(ctx && snapshotCurrency);
-  const displayCurrency = canConvert ? ctx!.target : (snapshotCurrency ?? ctx?.target ?? "USD");
+  // v2.7 — the last fallback is the display-currency authority, never a USD literal.
+  const aggregateCurrency = useAggregateCurrency(ctx);
+  const displayCurrency = canConvert ? ctx!.target : (snapshotCurrency ?? aggregateCurrency);
   const convertedSnapshots = useMemo(
     () => (canConvert ? convertWealthSnapshots(snapshots ?? [], snapshotCurrency!, ctx!) : (snapshots ?? [])),
     [snapshots, snapshotCurrency, ctx, canConvert],
@@ -267,9 +296,21 @@ export function WealthWorkspace({
 
   // Trust envelope — resolved from THIS workspace's own result, emitted up to the
   // shell chip in Total / Assets. In Debt the Debt workspace owns the slot.
+  // v2.7 final UX pass (owner-authorized) — the chip states the as-of snapshot's
+  // RESOLVED confidence tier (Estimated / Incomplete included), mapped
+  // presentation-side; WealthResult itself is untouched (AI / Brief unaffected).
+  const chipTier = useMemo(
+    () => wealthChipTier({
+      found: result.asOfState.found,
+      isEstimated: result.asOfState.isEstimated,
+      completenessTier: asOfSnapshotTier(convertedSnapshots, result.asOfState.date),
+      metric,
+    }),
+    [result, convertedSnapshots, metric],
+  );
   const envelope = useMemo(
-    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted }),
-    [result, displayCurrency, fxUnconverted],
+    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted, wealthChipTier: chipTier }),
+    [result, displayCurrency, fxUnconverted, chipTier],
   );
   useEffect(() => {
     if (mode === "debt") return; // DebtWorkspace emits its own
@@ -285,11 +326,11 @@ export function WealthWorkspace({
     if (mode === "debt") return;
     publishSections(
       mode === "assets"
-        ? assetsSections({ hasHistory: hasWealthSlots })
+        ? assetsSections({ hasHistory: hasWealthSlots, slice })
         : hasWealthSlots ? WEALTH_TOTAL_SECTIONS : [],
     );
     return () => publishSections([]);
-  }, [publishSections, hasWealthSlots, mode]);
+  }, [publishSections, hasWealthSlots, mode, slice]);
 
   // Legacy-link arrival (?perspective=liquidity | investments): scroll ONCE to
   // the section the old lens was, and light its sidebar row. Deferred until the
@@ -311,9 +352,6 @@ export function WealthWorkspace({
     return () => window.clearTimeout(t);
   }, [focusSection, mode, snapshotsLoaded, setActiveSection]);
 
-  // Evidence drawer — workspace-owned. Opened from the Explanation card.
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
-
   // ── The page-level subject selector (Total · Assets · Debt) ─────────────────
   // The evolved WealthMetric switcher, promoted out of the chart header: it
   // represents the SUBJECT of the page, so it sits under the shell, above the hero.
@@ -322,13 +360,27 @@ export function WealthWorkspace({
       data-wealth-mode-row
       className={["flex justify-center px-1", modeSelectorVisibility === "belowLg" ? "lg:hidden" : ""].join(" ").trim()}
     >
-      <Chips
-        options={WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m] }))}
-        value={mode}
-        onChange={(m) => onModeChange?.(m)}
-        ariaLabel="Net worth view"
-        className="justify-center"
-      />
+      {modeSelectorVisibility === "belowLg" ? (
+        /* v2.7 P0 — compact-only (the row is lg:hidden for this host): the
+           prominent full-width segmented selector over the SAME mode/handler. */
+        <div className="lg:hidden w-full">
+          <CompactSectionTabs
+            ariaLabel="Net worth view"
+            variant="primary"
+            value={mode}
+            onChange={(m) => onModeChange?.(m)}
+            tabs={WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m], controls: [] }))}
+          />
+        </div>
+      ) : (
+        <Chips
+          options={WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m] }))}
+          value={mode}
+          onChange={(m) => onModeChange?.(m)}
+          ariaLabel="Net worth view"
+          className="justify-center"
+        />
+      )}
     </div>
   );
 
@@ -341,7 +393,7 @@ export function WealthWorkspace({
   if (mode === "debt") {
     return (
       <div className="space-y-6 min-w-0">
-        {modeSelector}
+        {modeSelectorVisibility !== "belowLg" && modeSelector}
         {snapshotsError && (
           <SpaceReadFailure
             variant={snapshots != null ? "inline" : "card"}
@@ -365,28 +417,60 @@ export function WealthWorkspace({
           presentLens={debt?.presentLens ?? null}
           targetCurrency={debt?.targetCurrency}
           onEnvelopeChange={onEnvelopeChange}
+          timePreset={timePreset}
+          freshnessLabel={freshnessLabel}
+          // COMPACT DASHBOARD (P3) — the compact hierarchy inside Debt: Debt hero →
+          // Total · Assets · Debt (this lg:hidden selector) → All · Credit · Loans.
+          compactModeSelector={modeSelectorVisibility === "belowLg" ? modeSelector : undefined}
+          compactSection={debtSection}
+          onCompactSectionChange={onDebtSectionChange}
         />
       </div>
     );
   }
 
-  // ── The Assets slice control (chart header) ─────────────────────────────────
-  const sliceControl = mode === "assets" ? (
-    <Chips
-      options={ASSETS_SLICES.map((s) => ({ id: s, label: ASSETS_SLICE_LABELS[s] }))}
+  // ── Assets category tabs (EVERY width) + THE render rule (every width) ────
+  // v2.7 mobile/desktop parity — ONE slice control for both layouts. Desktop
+  // used to carry the slice as chips in the CHART HEADER (max-lg:hidden) while
+  // compact had these tabs; the chart header does not exist while a backfill
+  // runs, with no history or after a snapshot read failure, so desktop could
+  // not reach Cash / Investments / Real assets in exactly those states. The
+  // tabs now render at every width, under the hero, and the chart-header chips
+  // are gone (no second control for the same state).
+  // All · Cash · Investments ARE the existing slice (?slice=, replace-written),
+  // so the chart series and the visible content can never disagree. v2.7
+  // visual-first: the truth table is the render rule at EVERY width — a section
+  // that is not the slice's is not rendered at all (not CSS-hidden).
+  //   All         — composition + what moved (the whole-Assets analytics)
+  //   Cash        — the Cash/Liquidity section
+  //   Investments — Investments (incl. crypto) + Real assets as a DISTINCT
+  //                 section: navigation only, never a reclassification
+  const show = assetsCompactVisibility(slice);
+  const assetsTabs = mode === "assets" ? (
+    <CompactSectionTabs
+      ariaLabel="Assets category"
       value={slice}
       onChange={(s) => onSliceChange?.(s)}
-      ariaLabel="Assets series"
+      widths="all"
+      tabs={ASSETS_SLICES.map((s) => ({
+        id: s,
+        label: ASSETS_SLICE_LABELS[s],
+        // Only the selected tab's sections exist in the DOM.
+        controls: s !== slice ? []
+          : s === "cash" ? ["wealth-cash"]
+          : s === "investments" ? ["wealth-investments", "wealth-real-assets"]
+          : ["wealth-composition", "wealth-ledger"],
+      }))}
     />
-  ) : undefined;
+  ) : null;
 
   // ── The embedded Assets sections (Cash · Investments · Real assets) ─────────
   // Same hooks, same authorities, same surfaces as the former peer lenses; each
   // keeps its own per-figure trust and stays silent toward the shell.
   const assetsSectionsBody = mode === "assets" ? (
     <>
-      <section id="wealth-cash" className="scroll-mt-20 border-t border-[var(--border-hairline)] pt-8">
-        <SectionTitle>Cash</SectionTitle>
+      {show.cash && (
+      <section id="wealth-cash" className="scroll-mt-20">
         <LiquidityWorkspace
           embedded
           spaceId={spaceId}
@@ -407,8 +491,9 @@ export function WealthWorkspace({
           onOpenCashFlow={cash?.onOpenCashFlow}
         />
       </section>
-      <section id="wealth-investments" className="scroll-mt-20 border-t border-[var(--border-hairline)] pt-8">
-        <SectionTitle>Investments</SectionTitle>
+      )}
+      {show.investments && (
+      <section id="wealth-investments" className="scroll-mt-20">
         <InvestmentsWorkspace
           embedded
           spaceId={spaceId}
@@ -420,10 +505,19 @@ export function WealthWorkspace({
           ctx={ctx}
         />
       </section>
+      )}
+      {show.realAssets && (
       <section id="wealth-real-assets" className="scroll-mt-20 border-t border-[var(--border-hairline)] pt-8">
-        <SectionTitle>Real assets</SectionTitle>
-        <RealAssetsSection spaceId={spaceId} spaceType={spaceType} active={active} />
+        {/* Real assets keep their own section, title, valuations and details;
+            grouped under Investments for navigation only — they are not part of
+            the Investments figures or chart above (the label says so). */}
+        <div className="mb-5 flex flex-wrap items-baseline gap-x-2">
+          <SectionTitle>Real assets</SectionTitle>
+          <span className="text-[11px] text-[var(--text-muted)]" data-real-assets-note>Not counted in Investments</span>
+        </div>
+        <RealAssetsSection spaceId={spaceId} spaceType={spaceType} active={active} ctx={ctx} />
       </section>
+      )}
     </>
   ) : null;
 
@@ -433,6 +527,7 @@ export function WealthWorkspace({
     return (
       <div className="space-y-6 min-w-0">
         {modeSelector}
+        {assetsTabs}
         <div
           className="rounded-2xl border p-8 flex flex-col items-center justify-center text-center gap-3 min-h-[220px]"
           style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}
@@ -456,6 +551,7 @@ export function WealthWorkspace({
     return (
       <div className="space-y-6 min-w-0">
         {modeSelector}
+        {assetsTabs}
         <SpaceReadFailure what="wealth history" message={snapshotsError} onRetry={onRetrySnapshots} />
         {assetsSectionsBody}
       </div>
@@ -472,73 +568,103 @@ export function WealthWorkspace({
         >
           <WealthUnavailable message="No wealth history yet. Once this Space accrues daily snapshots (or you connect accounts), the historical Wealth perspective builds itself — nothing is fabricated in the meantime." />
         </div>
+        {assetsTabs}
         {assetsSectionsBody}
       </div>
     );
   }
 
-  const canViewEvidence = !!envelope.evidence?.rows?.length;
+  // v2.7 R4 — the compact KPI strip under the chart: the hero's OWN secondary
+  // stat rows (Total: Assets · Liabilities · Liquid NW; Assets → All: Cash ·
+  // Investments; the Cash / Investments slices have none, so no strip), which
+  // the compact hero card omits. Same rows, same as-of figures, same change
+  // formatting — stated once on compact, never on desktop.
+  const kpiItems = result.asOfState.found
+    ? wealthSecondaryRows(result, metric).map((row) => ({
+        key: row.key,
+        label: row.label,
+        value: formatCurrency(result.asOfState[row.key], displayCurrency),
+        change: <SecondaryChange delta={result.deltas?.[row.key]} goodDirection={row.goodDirection} currency={displayCurrency} className="" />,
+      }))
+    : [];
+
+  // The crypto price basis qualifying today's headline (desktop: inline on the
+  // hero's as-of line; compact: a HeroNotes line under the chart).
+  const cryptoPriceNote = result.asOfState.date === today ? summarizeCryptoPricing((accounts ?? []).map((a) => a.cryptoPrice)) : null;
 
   return (
     <>
-      <div className="space-y-8 sm:space-y-10 min-w-0">
-        {modeSelector}
+      <div className="space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!">
+        {modeSelectorVisibility !== "belowLg" && modeSelector}
         {staleSnapshotsNotice}
 
         {/* ① Hero — the headline scalar of the page's subject. */}
         <div id="wealth-summary" className="scroll-mt-20">
-          <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric}
-            cryptoPriceNote={result.asOfState.date === today ? summarizeCryptoPricing((accounts ?? []).map((a) => a.cryptoPrice)) : null} />
+          <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric} freshnessLabel={freshnessLabel} timePreset={timePreset}
+            cryptoPriceNote={cryptoPriceNote} />
         </div>
 
+        {/* COMPACT DASHBOARD (P2) — the compact hierarchy is hero → Total · Assets ·
+            Debt → category tabs → content. The selector here is lg:hidden
+            (modeSelectorVisibility "belowLg"), so its position is invisible at ≥1024px. */}
+        {modeSelectorVisibility === "belowLg" && modeSelector}
+        {assetsTabs}
+
         {/* ② Trend — the dominant honesty chart; in Assets, sliceable. */}
-        <div id="wealth-trend" className="scroll-mt-20">
+        {/* v2.7 R4 — compact-only (max-lg:*) tightening of the chart header
+            (the provenance legend it also tightened is gone — v2.7 final UX
+            pass); at ≥1024px this utility never applies. */}
+        <div id="wealth-trend" className="scroll-mt-20 max-lg:[&>section>div:first-child]:mb-3">
           <WealthTrendChart
             result={result}
             currency={displayCurrency}
             metric={metric}
             investedSeries={investedSeries}
-            headerRight={sliceControl}
             onSelectPoint={handleSelectPoint}
           />
-        </div>
-
-        {/* ③ Composition (7) + ④ Change ledger / what-moved-it (5). */}
-        <div className="grid gap-6 lg:grid-cols-12 lg:gap-8 items-start">
-          <div id="wealth-composition" className="scroll-mt-20 min-w-0 lg:col-span-7">
-            <WealthCompositionCard result={result} currency={displayCurrency} accounts={accounts} ctx={ctx} metric={metric} />
-          </div>
-          <div id="wealth-ledger" className="scroll-mt-20 min-w-0 lg:col-span-5">
-            <WealthChangeLedger result={result} currency={displayCurrency} metric={metric} />
-          </div>
-        </div>
-
-        {/* ⑤ Total: Explanation. Assets: the Cash + Investments sections. */}
-        {mode === "total" && (
-          <div id="wealth-explanation" className="scroll-mt-20">
-            <WealthExplanationCard
-              result={result}
-              currency={displayCurrency}
-              onViewEvidence={canViewEvidence ? () => setEvidenceOpen(true) : undefined}
+          {/* v2.7-P0 — forward-only basis change: rows before the release stay on
+              the reported-ledger basis (never rewritten), so a window spanning
+              it says so. Cash-bearing metrics only. */}
+          {metric !== "totalLiabilities" && metric !== "invested" && (
+            <AdjustedBasisNote
+              from={result.chart.points[0]?.date ?? null}
+              to={result.chart.points[result.chart.points.length - 1]?.date ?? null}
             />
+          )}
+          {/* v2.7 header parity — compact disclosures live under the chart, never below the card. */}
+          <HeroNotes notes={[cryptoPriceNote]} className="lg:hidden" />
+        </div>
+
+        <CompactKpiStrip ariaLabel={`${mode === "assets" ? "Assets" : "Net worth"} breakdown`} items={kpiItems} />
+
+        {/* ③ Composition (7) + ④ Change ledger / what-moved-it (5) — Total, and
+            Assets → All only. v2.7 final UX pass: no customer-facing Evidence
+            doorway (snapshot provenance stays internal, in the envelope). */}
+        {(mode !== "assets" || show.composition) && (
+          <div className="grid gap-6 lg:grid-cols-12 lg:gap-8 items-start">
+            <div id="wealth-composition" className="scroll-mt-20 min-w-0 lg:col-span-7">
+              <WealthCompositionCard result={result} currency={displayCurrency} accounts={accounts} ctx={ctx} metric={metric} />
+            </div>
+            <div id="wealth-ledger" className="scroll-mt-20 min-w-0 lg:col-span-5">
+              <WealthChangeLedger
+                result={result}
+                currency={displayCurrency}
+                metric={metric}
+              />
+            </div>
           </div>
         )}
+
+        {/* ⑤ Assets → Cash / Investments: the slice's embedded section(s). */}
         {assetsSectionsBody}
       </div>
-      {envelope.evidence && (
-        <EvidenceDrawer
-          open={evidenceOpen}
-          onClose={() => setEvidenceOpen(false)}
-          evidence={envelope.evidence}
-        />
-      )}
     </>
   );
 }
 
-/** The embedded section's title row — the page's section register (a Block label). */
+/** The Real assets section's title — the page's section register (a Block label). */
 function SectionTitle({ children }: { children: string }) {
   return (
-    <h2 className="mb-5 text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">{children}</h2>
+    <h2 className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">{children}</h2>
   );
 }

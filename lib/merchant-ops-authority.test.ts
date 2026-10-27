@@ -62,9 +62,11 @@ check("merge and dismissal each have a typed audit action",
 
 const review = code("lib/transactions/merchant-merge-review.ts");
 check("the decision and the audit record are written through the merge engine's in-transaction hook",
-  /withinTransaction:\s*async \(tx, applied\)/.test(review) && /recordMergeDecision\(tx,/.test(review) && /tx\.auditLog\.create\(/.test(review));
+  // SEC-PLAT-2 — the audit record goes through the operator-action envelope
+  // (recordOperatorAction), still on the in-transaction client.
+  /withinTransaction:\s*async \(tx, applied\)/.test(review) && /recordMergeDecision\(tx,/.test(review) && /recordOperatorAction\(tx,/.test(review));
 check("no decision or audit write happens outside a transaction",
-  !/recordMergeDecision\(client,/.test(review) && !/client\.auditLog\.create\(/.test(review));
+  !/recordMergeDecision\(client,/.test(review) && !/client\.auditLog\.create\(/.test(review) && !/recordOperatorAction\(client,/.test(review) && !/auditLog\.create\(/.test(review));
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed.`); process.exit(1); }
 console.log("\nAll Merchant Ops authority checks passed.");

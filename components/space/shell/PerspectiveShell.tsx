@@ -25,8 +25,8 @@
  * context and never own time. Presentation only.
  */
 
-import { useState } from "react";
-import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import { useState, type ReactNode } from "react";
+import type { CashFlowPeriod, ExplicitCashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { PerspectiveTimeState } from "@/lib/perspectives/time-range";
 import type { TemporalCapability } from "@/lib/perspectives";
@@ -37,7 +37,10 @@ import {
   deriveActiveOptionId,
   deriveBoundaries,
   shellActionForIntent,
+  shortExplicitPeriodLabel,
+  shortPeriodLabel,
   summarize,
+  summarizeExplicitPeriod,
 } from "./perspective-time-adapter";
 import { ShellTrustRow } from "./ShellTrustRow";
 import { PerspectiveTabs, type PerspectiveTabItem } from "./PerspectiveTabs";
@@ -79,7 +82,35 @@ interface Props {
    * leaves no label behind) and its selection
    * logic is untouched.
    */
-  tabsVisibility?: "always" | "belowLg";
+  /**
+   * COMPACT DASHBOARD — hide the time row below lg only (the selector still
+   * mounts; desktop unchanged). The host sets it for Markets, which consumes no
+   * time (temporalCapability none) and must carry no Net Worth / Cash Flow controls.
+   */
+  compactHideTime?: boolean;
+  /**
+   * v2.7 (owner) — NO reporting-period picker at ANY width (Markets: it consumes
+   * no Space time, so the global picker must not appear there). The compact
+   * view selector still mounts.
+   */
+  hideTime?: boolean;
+  /**
+   * v2.7 — the active group's EXPLICIT calendar period (the heatmap's Month ·
+   * Quarter · Year on Cash Flow / Spending), or null. When set, the trigger and
+   * readout name that window and no preset reads as active — the header and the
+   * heatmap always describe the same window.
+   */
+  explicitPeriod?: ExplicitCashFlowPeriod | null;
+  /**
+   * v2.7 R1 — the compact (<lg) financial-view selector (Net Worth ▾). When
+   * passed, the ONE in-flow time row becomes the compact controls row below lg:
+   * selector left, the period trigger right (range readout hidden, short label
+   * below sm), one non-wrapping row. At lg+ the selector is absent (lg:hidden)
+   * and the row is exactly the centred time row. Desktop unchanged.
+   */
+  compactViewSelector?: ReactNode;
+  /** "none" — COMPACT DASHBOARD (P1): the host renders the compact view selector instead. */
+  tabsVisibility?: "always" | "belowLg" | "none";
 }
 
 export function PerspectiveShell(props: Props) {
@@ -98,6 +129,9 @@ export function PerspectiveShell(props: Props) {
    * `onCompareToChange` still re-infers, `onSwap` is untouched. The lens is a
    * pure swap of the UI that expresses the intent.
    */
+  // v2.7 R1 — the in-flow time row doubles as the compact controls row.
+  const compactRow = props.compactViewSelector != null;
+
   function handleTimelineIntent(intent: TimelineIntent) {
     const result = shellActionForIntent(intent, { today: props.today });
     if (!result.ok) {
@@ -121,8 +155,18 @@ export function PerspectiveShell(props: Props) {
     }
   }
 
+  // v2.7 (owner) — STICKY COMPACT CONTROLS ROW (<lg only). The row pins under the
+  // GlobalHeader (sticky top-0, h-12 + 1px border-b ⇒ 3rem+1px) while the page
+  // scrolls. A sticky box is confined to its PARENT's box, so this root becomes
+  // `display: contents` below lg (and the host's wrapper does the same — see
+  // SpaceDashboard), making the tall page column the row's containing block.
+  // z-20: above content (whose highest layer is z-10) and below the header (z-40);
+  // the selector's menu (z-30) opens inside the row's own stacking context, the
+  // period panel portals to <body>. Solid page background + hairline, bled to the
+  // page gutters (px-4, sm:px-5) so content never shows at the sides. At lg+ none of
+  // these utilities apply — desktop markup is byte-identical.
   return (
-    <div className="space-y-3">
+    <div className={compactRow ? "space-y-3 max-lg:contents" : "space-y-3"}>
       {/* Container 1 — time. ONE canonical time selector, unconditionally, as two
           compact controls (period trigger + resolved range) — see TimelineLens.
           temporalCapability still gates the lens's explicit boundary fields
@@ -141,20 +185,41 @@ export function PerspectiveShell(props: Props) {
           caveat push the picker sideways; they get their own centred row just
           below it (ShellTrustRow renders nothing — no gap — when there are
           none). */}
-      <div className="px-1">
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <TimelineLens
-            activeOptionId={deriveActiveOptionId(props.timeState)}
-            boundaries={deriveBoundaries(props.timeState)}
-            summary={summarize(props.timeState, props.today)}
-            periodOptions={PERIOD_OPTIONS}
-            capability={capabilityForLens(props.temporalCapability)}
-            maxDate={props.today}
-            boundaryError={boundaryError}
-            onIntent={handleTimelineIntent}
-          />
+      {(compactRow || !props.hideTime) && (
+      <div
+        data-compact-controls={compactRow ? "" : undefined}
+        className={compactRow
+          ? "px-1 max-lg:flex max-lg:flex-nowrap max-lg:items-center max-lg:justify-between max-lg:gap-3 max-lg:sticky max-lg:top-[calc(3rem+1px)] max-lg:z-20 max-lg:-mx-5 max-lg:px-6 max-lg:max-sm:-mx-4 max-lg:max-sm:px-5 max-lg:py-2 max-lg:bg-[var(--bg-base)] max-lg:border-b max-lg:border-[var(--border-hairline)]"
+          : props.compactHideTime ? "px-1 max-lg:hidden" : "px-1"}
+      >
+        {/* v2.7 R1 — compact controls row, LEFT: the financial-view selector
+            (compact-only; never renders at lg+). */}
+        {compactRow && <div className="lg:hidden min-w-0">{props.compactViewSelector}</div>}
+        <div
+          className={!compactRow
+            ? "flex flex-wrap items-center justify-center gap-2"
+            : props.compactHideTime
+              ? "flex flex-wrap items-center justify-center gap-2 max-lg:hidden"
+              : "flex flex-wrap items-center justify-center gap-2 max-lg:shrink-0 max-lg:flex-nowrap max-lg:[&_[data-timeline-period]~span]:hidden"}
+        >
+          {!props.hideTime && (
+            <TimelineLens
+              activeOptionId={props.explicitPeriod ? null : deriveActiveOptionId(props.timeState)}
+              boundaries={deriveBoundaries(props.timeState)}
+              summary={props.explicitPeriod ? summarizeExplicitPeriod(props.explicitPeriod, props.today) : summarize(props.timeState, props.today)}
+              periodOptions={PERIOD_OPTIONS}
+              capability={capabilityForLens(props.temporalCapability)}
+              maxDate={props.today}
+              boundaryError={boundaryError}
+              onIntent={handleTimelineIntent}
+              shortPeriodLabel={compactRow && !props.compactHideTime
+                ? (props.explicitPeriod ? shortExplicitPeriodLabel(props.explicitPeriod) : shortPeriodLabel(props.timeState))
+                : undefined}
+            />
+          )}
         </div>
       </div>
+      )}
       <ShellTrustRow envelope={props.envelope} className="justify-center px-1" />
 
       {/* Container 2 — the lens. Rendered BELOW time (the date picker must not
@@ -163,16 +228,18 @@ export function PerspectiveShell(props: Props) {
           engaged and summary lens rows are visually identical. The former floating
           pill (FloatingNavWrapper) is dropped: the prototype's lens selector is
           in-flow, and loose chips must not float over the content. */}
-      <div
-        data-lens-row
-        className={["flex justify-center px-1", props.tabsVisibility === "belowLg" ? "lg:hidden" : ""].join(" ").trim()}
-      >
-        <PerspectiveTabs
-          items={props.tabs}
-          activeId={props.activeTabId}
-          onSelect={props.onSelectTab}
-        />
-      </div>
+      {props.tabsVisibility !== "none" && (
+        <div
+          data-lens-row
+          className={["flex justify-center px-1", props.tabsVisibility === "belowLg" ? "lg:hidden" : ""].join(" ").trim()}
+        >
+          <PerspectiveTabs
+            items={props.tabs}
+            activeId={props.activeTabId}
+            onSelect={props.onSelectTab}
+          />
+        </div>
+      )}
     </div>
   );
 }

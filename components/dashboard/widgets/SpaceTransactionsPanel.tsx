@@ -43,12 +43,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Account, Transaction, TransactionCategory } from "@/types";
-import { describeRowNature, DIRECTION_SIGN } from "@/lib/transactions/flow-presentation";
+import { describeRowNature, isHumanCategorySource, DIRECTION_SIGN } from "@/lib/transactions/flow-presentation";
 import { DataCard } from "@/components/atlas/DataCard";
 import { Search, X, SlidersHorizontal, CalendarDays, ChevronRight, ArrowDownUp, ArrowLeftRight, Loader2 } from "lucide-react";
 import { ToolbarMenuButton } from "@/components/dashboard/widgets/transactions/ToolbarMenuButton";
 import { QuickFlowPills } from "@/components/dashboard/widgets/transactions/QuickFlowPills";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
+import { convertMoney } from "@/lib/money/convert";
+import type { ConversionContext } from "@/lib/money/types";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 import { TransactionDate } from "@/components/ui/TransactionDate";
@@ -69,9 +71,13 @@ import {
 } from "@/components/dashboard/widgets/transactions/useTransactionExplorer";
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
-// MC1 QA Q3 — itemized transaction rows pass the ROW's own currency. Explorer rows
-// render NATIVE (unchanged); converted money figures are the analytics layer's job.
-const fmt = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+// MC1 QA Q3 — itemized transaction rows pass the ROW's own currency.
+// v2.7 currency toggle — with the Space conversion context, a row renders in the
+// DISPLAY currency, converted at its own date (convertMoney; an inexact rate is
+// marked "≈"), and the native amount stays as a quiet subline when foreign. No
+// context, or an unavailable rate ⇒ native. A row with no recorded currency
+// falls back to the display-currency authority, never a USD literal.
+const fmt = (n: number, cur: string) =>
   new Intl.NumberFormat("en-US", {
     style:                 "currency",
     currency:              cur,
@@ -147,15 +153,19 @@ export function SpaceTransactionsPanel({
   accounts,
   scopeNote,
   initialAccountFilter,
+  ctx,
 }: {
   /** The Space whose transactions this explorer queries. */
   spaceId: string;
+  /** v2.7 — the Space transactions conversion context (rows convert at their date). */
+  ctx?: ConversionContext;
   accounts: Account[];
   scopeNote?: string;
   /** Banking→Transactions retarget — deep-link account pre-filter. */
   initialAccountFilter?: string | null;
 }) {
   const openTransaction = useOpenTransaction();
+  const displayCurrency = useDisplayCurrency();
 
   // ── The question ─────────────────────────────────────────────────────────
   const [searchInput, setSearchInput] = useState("");
@@ -470,6 +480,8 @@ export function SpaceTransactionsPanel({
                       acctName={acctName(tx.accountId)}
                       acctInst={acctInst(tx.accountId)}
                       showDate={false}
+                      ctx={ctx}
+                      displayCurrency={displayCurrency}
                       onOpen={() => openTransaction(tx.id)}
                       onPivotMerchant={pivotToMerchant}
                     />
@@ -516,8 +528,13 @@ function TxRow({
   showDate = true,
   onOpen,
   onPivotMerchant,
+  ctx,
+  displayCurrency,
 }: {
   tx:        Transaction;
+  ctx?:      ConversionContext;
+  /** Fallback label for a row with no recorded currency (display-currency authority). */
+  displayCurrency: string;
   acctName:  string;
   acctInst:  string;
   showDate?: boolean;
@@ -536,7 +553,17 @@ function TxRow({
     transferMaturity: tx.transferMaturity ?? null,
     amount:        tx.amount,
     hasOwnedCounterparty: tx.counterpartyAccountId != null,
+    humanCategorized: isHumanCategorySource(tx.categorySource),
   });
+  const nativeCur = tx.currency ?? displayCurrency;
+  const money = (() => {
+    if (!ctx || !tx.currency || tx.currency === ctx.target) {
+      return { amount: tx.amount, currency: ctx && !tx.currency ? ctx.target : nativeCur, approx: "", native: null as string | null };
+    }
+    const c = convertMoney({ amount: tx.amount, currency: tx.currency }, tx.date, ctx);
+    if (c.amount === null) return { amount: tx.amount, currency: nativeCur, approx: "", native: null as string | null };
+    return { amount: c.amount, currency: ctx.target, approx: c.estimated ? "≈ " : "", native: fmt(tx.amount, tx.currency) };
+  })();
   const isTransfer = nature.nature === "TRANSFER_IN" || nature.nature === "TRANSFER_OUT"
                   || nature.nature === "INTERNAL_TRANSFER";
   const isCredit   = nature.tone === "positive";
@@ -614,8 +641,11 @@ function TxRow({
               from the tone. This was `tone === "neutral" ? "" : …`, which let a
               neutral tone erase the direction: a −$650 outflow and its +$650
               counterpart both rendered "$650.00". React derives nothing here. */}
-          {DIRECTION_SIGN[nature.direction]}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
+          {money.approx}{DIRECTION_SIGN[nature.direction]}{fmt(money.amount, money.currency)}
         </p>
+        {money.native && (
+          <p className="text-[11px] tabular-nums" style={{ color: "var(--text-faint)" }}>{money.native}</p>
+        )}
       </div>
 
       <ChevronRight
