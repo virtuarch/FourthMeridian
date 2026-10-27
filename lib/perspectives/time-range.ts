@@ -321,13 +321,27 @@ export function shellTimeReducer(
 // ── URL serialization ──────────────────────────────────────────────────────────
 
 export interface SerializedShellTime {
-  asOf:      string;
+  /** null ⇒ "today" (rolling): omitted from the URL so a reload or a tab left
+   *  open past UTC midnight follows the new day instead of pinning yesterday. */
+  asOf:      string | null;
   compareTo: string | null;
   preset:    string; // preset id, or "custom"
 }
 
-export function serializeShellTimeState(state: PerspectiveTimeState): SerializedShellTime {
-  return { asOf: state.asOf, compareTo: state.compareTo, preset: state.preset === "CUSTOM" ? "custom" : state.preset };
+export function serializeShellTimeState(state: PerspectiveTimeState, today?: string): SerializedShellTime {
+  // v2.7 — an As Of equal to today is the ROLLING default, not a chosen date:
+  // writing it pinned every later reload to that calendar day (a tab opened on
+  // the 27th and reloaded after UTC midnight silently showed the 27th as a past
+  // date). Omit it; a derivable preset then also omits its derived boundary,
+  // which hydrate re-derives from the (new) today anyway. A chosen past date,
+  // and a CUSTOM Compare To, are still written verbatim.
+  const rolling = today !== undefined && state.asOf === today;
+  const derivable = state.preset !== "CUSTOM" && (DERIVABLE_PRESETS as string[]).includes(state.preset);
+  return {
+    asOf:      rolling ? null : state.asOf,
+    compareTo: rolling && derivable ? null : state.compareTo,
+    preset:    state.preset === "CUSTOM" ? "custom" : state.preset,
+  };
 }
 
 /**
@@ -354,4 +368,24 @@ export function hydrateShellTimeState(
     return { preset, asOf, compareTo };
   }
   return resolvePerspectiveTimeRange({ preset: DEFAULT_TIME_PRESET, asOf, coverageFrom });
+}
+
+/**
+ * v2.7 — roll a ROLLING shell state onto a new "today" (UTC midnight passed
+ * while the page stayed open). Rolling = its As Of was the previous today; an
+ * explicitly chosen past date (or a shared link's fixed date) is never moved.
+ * A derivable preset re-derives its boundary from the new anchor; a CUSTOM
+ * range keeps its Compare To and moves only the rolling end. Pure; identity
+ * when nothing rolls (so a caller's setState is a no-op ⇒ no URL/state loop).
+ */
+export function rollShellTimeStateToToday(
+  state: PerspectiveTimeState,
+  prevToday: string,
+  ctx: ShellTimeContext,
+): PerspectiveTimeState {
+  if (ctx.today === prevToday || state.asOf !== prevToday) return state;
+  if (state.preset !== "CUSTOM" && (DERIVABLE_PRESETS as string[]).includes(state.preset)) {
+    return resolvePerspectiveTimeRange({ preset: state.preset, asOf: ctx.today, coverageFrom: ctx.coverageFrom });
+  }
+  return { ...state, asOf: ctx.today };
 }

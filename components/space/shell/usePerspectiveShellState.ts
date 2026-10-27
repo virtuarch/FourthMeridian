@@ -31,6 +31,7 @@ import {
   historicalCompareTo,
   hydrateShellTimeState,
   serializeShellTimeState,
+  rollShellTimeStateToToday,
   shellTimeReducer,
   type PerspectiveTimeState,
   type ShellTimeAction,
@@ -95,6 +96,7 @@ export function usePerspectiveShellState(args: {
 
   const [state, setState] = useState<PerspectiveTimeState>(() => defaultPerspectiveTimeState(today));
 
+
   // HISTORY INTENT (the Space contract — see useSpaceNavigation): a time change
   // the USER makes is a navigation step (PUSH, so Back undoes it — the SD-0A
   // behaviour); everything the SYSTEM does — URL hydration, popstate re-sync,
@@ -115,6 +117,19 @@ export function usePerspectiveShellState(args: {
       }),
     [],
   );
+
+  // v2.7 — UTC midnight passed with the page open: roll a ROLLING state (As Of
+  // was the previous today) onto the new day; an explicit past date stays. A
+  // system change ⇒ REPLACE. rollShellTimeStateToToday is identity otherwise,
+  // and the rolling As Of is never written to the URL, so this cannot loop.
+  const prevToday = useRef(today);
+  useEffect(() => {
+    const prev = prevToday.current;
+    if (prev === today) return;
+    prevToday.current = today;
+    historyIntent.current = "replace";
+    setState((s) => rollShellTimeStateToToday(s, prev, { today, coverageFrom: earliestDefensibleDate }));
+  }, [today, earliestDefensibleDate]);
 
   const actions = useMemo<ShellTimeActions>(() => ({
     selectPreset:   (preset) => dispatch({ type: "selectPreset", preset }),
@@ -152,7 +167,7 @@ export function usePerspectiveShellState(args: {
   // commits), with the DECLARED intent above; it preserves every unrelated param.
   useEffect(() => {
     if (!hydrated) return;
-    const ser = serializeShellTimeState(state);
+    const ser = serializeShellTimeState(state, ctxRef.current.today);
     const history = historyIntent.current;
     historyIntent.current = "replace";
     spaceUrl.commit({ asof: ser.asOf, compareto: ser.compareTo, preset: ser.preset }, { history });

@@ -1,5 +1,4 @@
 "use client";
-import { todayUTCISO } from "@/lib/time/clock";
 
 /**
  * SpaceDashboard
@@ -15,6 +14,7 @@ import { todayUTCISO } from "@/lib/time/clock";
  */
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { useUtcToday } from "@/components/space/shell/useUtcToday";
 import type { ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import { useRouter } from "next/navigation";
 import { Loader2, LogOut } from "lucide-react";
@@ -454,7 +454,8 @@ export function SpaceDashboard({
   // B-6 — the client's UTC day, from THE clock seam (lib/time/clock.ts). It
   // gates fetches and seeds time-range defaults; where a server read answers
   // an as-of question, the server's classification wins (lib/time/basis.ts).
-  const shellToday = useMemo(() => todayUTCISO(), []);
+  // v2.7 — LIVE: advances at UTC midnight while the page is open (useUtcToday).
+  const shellToday = useUtcToday();
   const earliestDefensibleDate = useMemo(
     () => snapshots?.find((s) => !s.fxMiss)?.date ?? null,
     [snapshots],

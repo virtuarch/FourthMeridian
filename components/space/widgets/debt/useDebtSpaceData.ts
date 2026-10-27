@@ -34,6 +34,39 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Snapshot } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { assembleDebtSpaceData, type DebtSpaceData } from "@/lib/debt-space-data";
+import { SPACE_ACCOUNTS_CHANGED_EVENT, SPACE_CURRENCY_CHANGED_EVENT, SPACE_DATA_REFRESHED_EVENT } from "@/lib/space-nav";
+
+/**
+ * v2.7 — the as-of lens per (Space, date, view currency), kept for the session.
+ * The Net Worth / Assets workspaces read the host's already-loaded snapshot
+ * array, so switching to them never refetches; this hook's state lived in the
+ * Debt workspace and died with it, so every return to Debt refetched and showed
+ * "Updating…". A past date's lens is a pure function of that key, so a cached
+ * one is shown at once and revalidated quietly. Bounded; never persisted.
+ */
+const AS_OF_LENS_CACHE = new Map<string, LensResult | null>();
+const AS_OF_LENS_CACHE_MAX = 24;
+// Key = every input the as-of route's answer depends on: the Space, the date,
+// the view currency, and the host's data REVISION (the present lens's
+// computedAt — it changes whenever the host refetches after a sync or an edit,
+// so a cached past-date lens can never outlive the data it was computed from).
+const lensKey = (spaceId: string, asOf: string, target: string | undefined, revision: string) =>
+  `${spaceId}|${asOf}|${target ?? ""}|${revision}`;
+// Belt and braces: any account mutation / completed refresh empties the cache.
+if (typeof window !== "undefined") {
+  const clear = () => AS_OF_LENS_CACHE.clear();
+  window.addEventListener(SPACE_ACCOUNTS_CHANGED_EVENT, clear);
+  window.addEventListener(SPACE_DATA_REFRESHED_EVENT, clear);
+  window.addEventListener(SPACE_CURRENCY_CHANGED_EVENT, clear);
+}
+function rememberLens(key: string, lens: LensResult | null): void {
+  AS_OF_LENS_CACHE.delete(key);
+  AS_OF_LENS_CACHE.set(key, lens);
+  if (AS_OF_LENS_CACHE.size > AS_OF_LENS_CACHE_MAX) AS_OF_LENS_CACHE.delete(AS_OF_LENS_CACHE.keys().next().value!);
+}
+/** Test seams — the cache is module state. */
+export function __resetDebtAsOfLensCache(): void { AS_OF_LENS_CACHE.clear(); }
+export const __debtAsOfLensCache = { key: (s: string, a: string, t: string | undefined, r: string) => lensKey(s, a, t, r), remember: (k: string, l: LensResult | null) => rememberLens(k, l), peek: (k: string) => AS_OF_LENS_CACHE.get(k), size: () => AS_OF_LENS_CACHE.size, max: AS_OF_LENS_CACHE_MAX };
 
 export interface UseDebtSpaceData {
   /** The composed contract — always present (pure assembly of the resolved lens + host inputs). */
@@ -79,7 +112,16 @@ export function useDebtSpaceData(args: {
   // Historical only when the shell window closes strictly before today.
   const historical = active && asOf < today;
 
-  const [asOfLens, setAsOfLens] = useState<LensResult | null>(null);
+  const revision = presentLens?.computedAt ?? "";
+  const key = lensKey(spaceId, asOf, targetCurrency, revision);
+  const [asOfLens, setAsOfLens] = useState<LensResult | null>(() => AS_OF_LENS_CACHE.get(key) ?? null);
+  // A different key (date / currency) must not keep showing the previous date's
+  // lens: adopt that key's cached lens (or none) during render — no flash.
+  const [prevKey, setPrevKey] = useState(key);
+  if (key !== prevKey) {
+    setPrevKey(key);
+    setAsOfLens(AS_OF_LENS_CACHE.get(key) ?? null);
+  }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [nonce, setNonce] = useState(0);
@@ -107,6 +149,8 @@ export function useDebtSpaceData(args: {
     fetch(`/api/spaces/${spaceId}/debt/space-data?${params.toString()}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d: { lens: LensResult | null }) => {
+        // Only a SUCCESSFUL answer is cached (the catch below never writes).
+        rememberLens(key, d.lens ?? null);
         if (!alive) return;
         setAsOfLens(d.lens ?? null);
         setError(false);
@@ -120,7 +164,7 @@ export function useDebtSpaceData(args: {
       });
 
     return () => { alive = false; };
-  }, [spaceId, asOf, historical, targetCurrency, nonce]);
+  }, [spaceId, asOf, historical, targetCurrency, nonce, key]);
 
   // The resolved lens: present-day host batch, or the as-of fetch when historical.
   const lens = historical ? asOfLens : presentLens;
