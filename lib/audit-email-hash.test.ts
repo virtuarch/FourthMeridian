@@ -46,8 +46,10 @@ const PATHS = [
 ];
 for (const rel of PATHS) {
   const src = code(rel);
-  check(`${rel} imports auditEmailHash`, src.includes('import { auditEmailHash } from "@/lib/audit"'));
-  check(`${rel} writes an emailHash into its audit metadata`, /metadata:\s*\{[^}]*[eE]mailHash:\s*auditEmailHash\(/.test(src));
+  check(`${rel} imports auditEmailHash`, /import \{[^}]*\bauditEmailHash\b[^}]*\} from "@\/lib\/audit"/.test(src));
+  // SEC-PLAT-2 — the Growth beta routes write through recordOperatorAction, whose
+  // `detail` is spread into AuditLog.metadata (lib/audit.ts buildOperatorActionData).
+  check(`${rel} writes an emailHash into its audit metadata`, /(metadata|detail):\s*\{[^}]*[eE]mailHash:\s*auditEmailHash\(/.test(src));
   check(`${rel} writes NO raw email into audit metadata`, !/metadata:\s*\{[^}]*\b(email|targetEmail):\s*(?!auditEmailHash)/.test(src));
 }
 

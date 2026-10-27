@@ -270,7 +270,7 @@ export default function PlatformAccessPage() {
       </div>
 
       {truncated && (
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-[var(--text-muted)]">
           Showing the first page of accounts plus every current grant holder. Search to find any other account.
         </p>
       )}
