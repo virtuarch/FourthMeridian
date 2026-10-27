@@ -10,10 +10,8 @@
  * content evolves (Building → Connected → Synced → Needs Attention). The card
  * feels like it matures over time rather than being replaced.
  *
- * Shell:
- *   - AtlasLiquidCard (Daily-Brief Liquid material) when Liquid is allowed —
- *     useAtlasLiquid() capability gate AND within the list's Liquid cap.
- *   - DataCard (Atlas Glass) fallback otherwise — same card family.
+ * Shell: rendered flat inside the Connections drawer (ConnectionDetail). The
+ * list itself is compact rows (ConnectionRow); the Liquid/Glass card shell is gone.
  *
  * Connections is a provider-management surface, NOT the Accounts page:
  *   - Provider is part of identity ("Synced via Plaid").
@@ -24,7 +22,7 @@
  * Presentational; live state comes from the parent ConnectionsList poller.
  */
 
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   CheckCircle2,
@@ -35,9 +33,6 @@ import {
   Info,
 } from "lucide-react";
 import { sourceStatusText } from "@/lib/connections/source-health-copy";
-import { DataCard } from "@/components/atlas/DataCard";
-import { AtlasLiquidCard } from "@/components/atlas/AtlasLiquidCard";
-import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import { ReconnectAccountButton } from "@/components/dashboard/ReconnectAccountButton";
 import { EnableInvestmentsButton } from "@/components/dashboard/EnableInvestmentsButton";
 import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
@@ -52,7 +47,6 @@ import {
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
 import { ConnectionTimeline } from "@/components/connections/ConnectionTimeline";
-import { ConnectionMenu } from "@/components/connections/ConnectionMenu";
 
 /** Account inventory item — NAMES ONLY on Connections (no balances). */
 export interface AccountLite {
@@ -69,12 +63,6 @@ interface Props {
   intelligence?: ConnectionIntelligenceStatus;
   /** True after the poll safety cap: importing is taking longer than usual. */
   slow?:      boolean;
-  /**
-   * Whether this card is permitted to use the Liquid material (the list caps
-   * the number of Liquid cards for WebGL-context safety). Combined with the
-   * useAtlasLiquid() capability gate below. Default true.
-   */
-  allowLiquid?: boolean;
 }
 
 // ── Honest stage stepper (importing) ──────────────────────────────────────────
@@ -209,7 +197,19 @@ function fmtSyncedAt(iso: string): string {
   return `${date} • ${time}`;
 }
 
+/** True inside the Connections drawer, whose header already names the institution. */
+const InDrawer = createContext(false);
+
 function EyebrowHeading({ eyebrow, institution }: { eyebrow: string; institution: string }) {
+  const inDrawer = useContext(InDrawer);
+  if (inDrawer) {
+    return (
+      <div className="flex items-center gap-2 mb-1">
+        <Building2 className="w-4 h-4 text-[var(--meridian-400)]/90" />
+        <p className="text-[10px] font-bold tracking-[0.18em] uppercase text-[var(--meridian-400)]/90">{eyebrow}</p>
+      </div>
+    );
+  }
   return (
     <>
       <div className="flex items-center gap-2 mb-4">
@@ -284,7 +284,7 @@ function SyncDeferredContent({
   accounts:   AccountLite[];
 }) {
   return (
-    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+    <div className="flex flex-col">
       <EyebrowHeading eyebrow="Sync pending" institution={connection.institution} />
       <p className="mt-1.5 mb-4 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
         Your account is connected. Financial data will begin syncing when platform
@@ -313,7 +313,7 @@ function ImportingContent({
   // continues it. Honest, not the Plaid stepper.
   if (connection.provider === "WALLET") {
     return (
-      <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+      <div className="flex flex-col">
         <EyebrowHeading eyebrow="Discovering addresses" institution={connection.institution} />
         <p className="mt-1.5 mb-4 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
           Finding your wallet’s addresses on-chain and importing balances. A large wallet can take several passes — press Refresh to continue discovery.
@@ -384,7 +384,7 @@ function ImportingContent({
   });
 
   return (
-    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+    <div className="flex flex-col">
       <EyebrowHeading eyebrow="Building your profile" institution={connection.institution} />
       <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
         Building your financial profile — {providerLine(connection).toLowerCase()}.
@@ -439,7 +439,7 @@ function BuildingProfileContent({
   ];
   const available = formatAvailableHistory(intelligence.availableHistory);
   return (
-    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+    <div className="flex flex-col">
       <EyebrowHeading eyebrow="Building your financial profile" institution={connection.institution} />
       <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
         Your transactions are already available. Fourth Meridian is building your financial timeline and insights from them.
@@ -482,7 +482,7 @@ function ImportPausedContent({
     { label: "Ready", status: "pending" },
   ];
   return (
-    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+    <div className="flex flex-col">
       <EyebrowHeading eyebrow="Import paused" institution={connection.institution} />
       <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
         The import stopped before it finished, and nothing is running for it right now.
@@ -528,7 +528,7 @@ function TimelineNotBuiltContent({
     router.refresh();
   }
   return (
-    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+    <div className="flex flex-col">
       <EyebrowHeading eyebrow="Timeline not built" institution={connection.institution} />
       <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
         Your transactions are available, but your financial timeline hasn’t been built and nothing is building it right now.
@@ -654,7 +654,7 @@ function ReadyContent({
   const profileReady = intelligence?.intelligenceReady === true;
   const available = intelligence ? formatAvailableHistory(intelligence.availableHistory) : null;
   return (
-    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+    <div className="flex flex-col">
       <EyebrowHeading
         eyebrow={profileReady ? "Financial profile ready" : "Connected"}
         institution={connection.institution}
@@ -710,7 +710,7 @@ function NeedsReauthContent({
 }) {
   const lastUpdated = intelligence?.sourceHealth?.lastUpdatedAt ?? null;
   return (
-    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+    <div className="flex flex-col">
       <div className="flex items-start justify-between gap-3">
         <div>
           <EyebrowHeading eyebrow="Needs reauthentication" institution={connection.institution} />
@@ -813,7 +813,7 @@ function ErrorContent({
   // guidance rather than the red "Sync error" framing.
   if (isWallet && errorCode === "NO_USED_ADDRESSES") {
     return (
-      <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+      <div className="flex flex-col">
         <EyebrowHeading eyebrow="No activity found" institution={connection.institution} />
         <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
         <div className="mt-1.5 flex items-start gap-2 text-sm text-[var(--text-secondary)]">
@@ -847,7 +847,7 @@ function ErrorContent({
   const walletFailure = describeWalletFailure(errorCode);
   if (isWallet && walletFailure) {
     return (
-      <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+      <div className="flex flex-col">
         <EyebrowHeading eyebrow={walletFailure.eyebrow} institution={connection.institution} />
         <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
         <div className="mt-1.5 flex items-start gap-2 text-sm text-[var(--accent-warning,#f59e0b)]">
@@ -872,9 +872,10 @@ function ErrorContent({
     : errorCode === "RATE_LIMITED"     ? "the provider is rate-limiting requests"
     : errorCode === "NO_PROVIDER_CONFIGURED" ? "no provider endpoint is configured for this chain"
     : errorCode === "POSITION_CAPTURE_UNAVAILABLE" ? "the balance was read but could not be recorded"
-    : errorCode;
+    // An uncoded failure is described generically below — never by its raw code.
+    : null;
   return (
-    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+    <div className="flex flex-col">
       <EyebrowHeading eyebrow="Sync error" institution={connection.institution} />
       <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
       <div className="mt-1.5 flex items-start gap-2 text-sm text-[var(--accent-warning,#f59e0b)]">
@@ -904,23 +905,25 @@ function ErrorContent({
               // of retrying can find it — reconnecting is the only route back, so
               // say that instead of implying patience will fix it.
               ? "This connection no longer exists at your provider. Reconnect to restore it."
-              : `We hit a problem syncing this connection${errorCode ? ` (${errorCode})` : ""}. Automatic syncing has stopped — reconnect to resume it.`}
+              : "We hit a problem syncing this connection. Automatic syncing has stopped — reconnect to resume it."}
         </span>
       </div>
-      {isWallet && errorCode && (
-        <p className="mt-1.5 text-xs text-[var(--text-muted)]">Address discovery failed: {walletDetail}.</p>
-      )}
       <AccountNames accounts={accounts} />
     </div>
   );
 }
 
-// ── Canonical card ────────────────────────────────────────────────────────────
+// ── Connection detail (the drawer body) ───────────────────────────────────────
 
-export function ConnectionCard({ connection, accounts, intelligence, slow, allowLiquid = true }: Props) {
-  const { state, institution } = connection;
-  const capable = useAtlasLiquid();
-  const canLiquid = capable && allowLiquid;
+/**
+ * Connections redesign — the detail a row opens. The same honest state content
+ * the card used to carry (stepper, freshness facets, health line, account
+ * names, recovery actions), now rendered flat inside the Connections drawer
+ * (RightPanel: docked right on desktop, bottom sheet on mobile). The ⋯ menu
+ * lives on the row and in the drawer header, so it is not drawn here.
+ */
+export function ConnectionDetail({ connection, accounts, intelligence, slow }: Props) {
+  const { state } = connection;
 
   let content: React.ReactNode;
   switch (state) {
@@ -952,32 +955,17 @@ export function ConnectionCard({ connection, accounts, intelligence, slow, allow
       break;
   }
 
-  // Unified shell — same card family for every state. Liquid when allowed
-  // (capability gate AND within the list's cap), else the Glass DataCard
-  // fallback. AtlasLiquidCard zeroes its own content padding and uses the
-  // default frosted preset + Brief content geometry (relative z-10 +
-  // px-6 md:px-8 py-6 md:py-7) so the glass has real area to refract.
-  // Wallet cards get a reuse of SyncWalletButton (recovery/freshness) — rendered
-  // once, in every wallet state; returns null for Plaid so those are unchanged.
-  // CONN-4A — per-connection ⋯ menu (Refresh / Restore intelligence / Disconnect).
-  // Shown once the connection has resolved (not mid-import).
-  const menu = state !== "importing"
-    ? <div className="absolute right-3 top-3 z-30"><ConnectionMenu connection={connection} /></div>
-    : null;
-
+  // Wallet recovery reuses SyncWalletButton (recovery/freshness) — rendered once,
+  // in every wallet state; returns null for Plaid so those are unchanged.
   const walletActions = <WalletActions connection={connection} accounts={accounts} />;
   // A7-6 — capability-aware historical-import affordance. Renders nothing unless
   // this is a Plaid connection (past first import) with an investment account, so
   // banking-only and wallet cards are unchanged.
   const importAction = <ImportHistoryButton connection={connection} accounts={accounts} />;
 
-  return canLiquid ? (
-    <AtlasLiquidCard ariaLabel={`${institution} — ${state}`}>
-      <div className="relative z-10 px-6 md:px-8 py-6 md:py-7">{menu}{content}{walletActions}{importAction}</div>
-    </AtlasLiquidCard>
-  ) : (
-    <DataCard accent={state === "error" ? "negative" : "none"}>
-      <div className="relative">{menu}{content}{walletActions}{importAction}</div>
-    </DataCard>
+  return (
+    <InDrawer.Provider value={true}>
+      <div data-connection-detail={state}>{content}{walletActions}{importAction}</div>
+    </InDrawer.Provider>
   );
 }

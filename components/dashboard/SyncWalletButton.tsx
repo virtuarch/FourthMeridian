@@ -20,6 +20,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { connectionActionError } from "@/lib/connections/action-errors";
 import { RefreshCw, Loader2 } from "lucide-react";
 
 interface Props {
@@ -54,7 +55,7 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
         // There is no client-side timeout on this request; the browser was fine.
         // `reason` stays as the last resort so an unclassified failure still
         // says something concrete rather than nothing.
-        setError(data?.error ?? data?.userMessage ?? data?.reason ?? "Sync failed. Please try again.");
+        setError(connectionActionError(data?.error) ?? data?.userMessage ?? data?.reason ?? "Sync failed. Please try again.");
         return;
       }
       // The historical import is best-effort: when it failed, the balance and

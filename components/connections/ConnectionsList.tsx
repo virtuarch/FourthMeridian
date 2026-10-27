@@ -7,7 +7,7 @@
  *
  * Seeded with server-rendered status + grouped accounts so first paint is
  * correct with no flicker. While any connection is "importing" (building), it
- * polls GET /api/sync/status every 4s to drive each ConnectionCard from
+ * polls GET /api/sync/status every 4s to drive each connection row and drawer from
  * importing → ready. Stops when building clears or after a safety cap; pauses
  * while the tab is hidden. On the building→false transition it calls
  * router.refresh() once so the server page repulls now-complete data.
@@ -20,13 +20,18 @@
  * real anti-collision guard (a min-age gate on the item's incomplete marker);
  * these client timings are deliberately conservative so the first attempt only
  * fires well after the 60s connect budget could have completed on its own.
- * Reconnect is still handled inside ConnectionCard via ReconnectAccountButton.
+ * Reconnect is still handled inside the drawer (ConnectionDetail) via ReconnectAccountButton.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ConnectionCard, type AccountLite } from "@/components/connections/ConnectionCard";
+import { ConnectionDetail, type AccountLite } from "@/components/connections/ConnectionCard";
+import { ConnectionRow } from "@/components/connections/ConnectionRow";
+import { ConnectionMenu } from "@/components/connections/ConnectionMenu";
+import { Surface } from "@/components/atlas/Surface";
+import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
+import { providerName } from "@/lib/sync/status";
 import { BuildIntelligencePanel } from "@/components/connections/BuildIntelligencePanel";
 import type { SyncStatus } from "@/lib/sync/status";
 import {
@@ -38,7 +43,7 @@ import type { ConnectionsSyncView } from "@/lib/connections/space-data";
 const POLL_INTERVAL_MS = 4000;
 // Must outlast ONE server-side sync budget (maxDuration = 300s) plus margin,
 // or the poller gives up in the middle of a pass that is still running and the
-// card freezes on a stale count. 120 × 4s = ~8 min.
+// row freezes on a stale count. 120 × 4s = ~8 min.
 const MAX_POLLS = 120;
 
 // D2.x resume tuning. Grace is comfortably past the 60s connect/background
@@ -58,13 +63,6 @@ interface ResumeEntry {
   lastResumeAt: number;
   attempts: number;
 }
-
-// Max cards that may mount the Liquid material at once. Each AtlasLiquidCard
-// holds a dedicated WebGL context (browsers cap active contexts ~16); capping
-// keeps a large institution list safe. Importing cards are prioritized, then
-// ready/other cards by order. Cards beyond the cap use the DataCard (Glass)
-// fallback — same card family.
-const LIQUID_CAP = 6;
 
 interface Props {
   initialStatus: SyncStatus;
@@ -87,6 +85,9 @@ export function ConnectionsList({
   const [intelligence, setIntelligence] =
     useState<Record<string, ConnectionIntelligenceStatus>>(initialIntelligence);
   const [slow, setSlow] = useState(false);
+  // The connection whose drawer is open. Looked up in the LIVE status below, so
+  // an open drawer follows the poller (importing → ready) without reopening.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   // CONN-2 — poll while ACQUIRING (status.building) OR BUILDING intelligence.
   // Intelligence-building runs AFTER syncIncompleteAt clears, so status.building alone
@@ -273,7 +274,7 @@ export function ConnectionsList({
 
   // CONN-2 — a connection is still "in progress" while acquiring (importing) OR
   // reconstructing intelligence (state ready, but derived intelligence still
-  // building). Both belong in the in-progress queue and are Liquid-prioritized.
+  // building). Both belong in the in-progress queue and sort first.
   const inProgressPhase = (id: string) =>
     intelligence[id]?.phase === "IMPORTING" || intelligence[id]?.phase === "BUILDING_INTELLIGENCE";
   const isInProgress = (c: SyncStatus["connections"][number]) =>
@@ -283,63 +284,56 @@ export function ConnectionsList({
 
   const anyReady = status.connections.some((c) => intelligence[c.id]?.phase === "READY");
 
-  // Cap Liquid usage for WebGL-context safety: in-progress cards first, then the
-  // rest by order, up to LIQUID_CAP. Cards beyond the cap use the DataCard
-  // (Glass) fallback — same card family.
-  const liquidOrder = [...status.connections].sort(
+  // One list. Work in progress (importing OR reconstructing) sorts first so a
+  // just-added connection is the row the user sees; the rest keep server order.
+  const ordered = [...status.connections].sort(
     (a, b) => (isInProgress(a) ? 0 : 1) - (isInProgress(b) ? 0 : 1),
   );
-  const liquidAllowed = new Set(liquidOrder.slice(0, LIQUID_CAP).map((c) => c.id));
-
-  // Part-4 / CONN-2 — split the in-progress queue (importing OR reconstructing)
-  // from everything resolved (ready-with-intelligence / needs_reauth / error).
-  // The queue renders as a full-width vertical stack ABOVE the grid.
-  const inProgress = status.connections.filter(isInProgress);
-  const resolved   = status.connections.filter((c) => !isInProgress(c));
-
-  const renderCard = (c: SyncStatus["connections"][number]) => (
-    <ConnectionCard
-      key={c.id}
-      connection={c}
-      // One id space for every provider — Plaid and wallet accounts both look up
-      // by connection id (PCS-2). No more institution-string grouping.
-      accounts={accountsByConnectionId[c.id] ?? []}
-      intelligence={intelligence[c.id]}
-      slow={slow}
-      allowLiquid={liquidAllowed.has(c.id)}
-    />
-  );
+  // A disconnected connection leaves the status; its drawer simply closes.
+  const selected = selectedId ? status.connections.find((c) => c.id === selectedId) ?? null : null;
 
   return (
     // Centered flagship column (max-w-[1400px] mx-auto) — same design language
     // as the Daily Brief content area.
     <div className="max-w-[1400px] mx-auto space-y-4">
-      {/* In-progress queue — full-width vertical stack, ABOVE the grid. Only
-          rendered when something is genuinely importing (no empty container /
-          heading otherwise). Each card is the SAME ConnectionCard (same
-          AtlasLiquidCard/DataCard + ImportingContent), just in a stacking flex
-          container instead of a grid cell, so it takes the list's full width.
-          When a card finishes it leaves this stack and appears in the grid
-          below on the next status poll — that cross-container move remounts it
-          (keys are stable within a container, but React can't preserve identity
-          across parents), which here coincides exactly with the card's own
-          importing→ready content switch, so it reads as the intended "snaps
-          down into the grid" transition rather than a gratuitous re-mount. */}
-      {inProgress.length > 0 && (
-        <div className="flex flex-col gap-4">
-          {inProgress.map(renderCard)}
-        </div>
-      )}
+      <Surface className="overflow-hidden">
+        <ul aria-label="Connections" className="divide-y divide-[var(--border-hairline)]">
+          {ordered.map((c) => (
+            <ConnectionRow
+              key={c.id}
+              connection={c}
+              // One id space for every provider — Plaid and wallet accounts both
+              // look up by connection id (PCS-2).
+              accountCount={(accountsByConnectionId[c.id] ?? []).length}
+              intelligence={intelligence[c.id]}
+              onOpen={() => setSelectedId(c.id)}
+            />
+          ))}
+        </ul>
+      </Surface>
 
-      {/* Resolved connections — the existing responsive grid (1/2/3-up).
-          `items-stretch` (grid default) keeps a row visually aligned; card
-          internals already use a min-height + flex-col. Rendered only when
-          there's at least one resolved connection. */}
-      {resolved.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {resolved.map(renderCard)}
-        </div>
-      )}
+      {/* The connection's detail — docked right on desktop, a bottom sheet on
+          mobile (RightPanel). Overview, accounts, health, history coverage, last
+          sync, work in progress and recovery actions, all from the same state. */}
+      <RightPanel open={selected != null} onClose={() => setSelectedId(null)} ariaLabel="Connection detail">
+        {selected && (
+          <>
+            <PanelHeader
+              eyebrow={providerName(selected.provider)}
+              title={selected.institution}
+              actions={selected.state !== "importing" ? <ConnectionMenu connection={selected} /> : undefined}
+            />
+            <PanelContent>
+              <ConnectionDetail
+                connection={selected}
+                accounts={accountsByConnectionId[selected.id] ?? []}
+                intelligence={intelligence[selected.id]}
+                slow={slow}
+              />
+            </PanelContent>
+          </>
+        )}
+      </RightPanel>
 
       {/* CONN-2B — master multi-account intelligence rebuild. Renders itself only
           when ≥2 connections have transactions to rebuild from. */}
@@ -355,7 +349,7 @@ export function ConnectionsList({
             href="/dashboard"
             className="inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--meridian-400)] hover:underline"
           >
-            Go to Dashboard →
+            Explore My Space →
           </Link>
         </div>
       )}
