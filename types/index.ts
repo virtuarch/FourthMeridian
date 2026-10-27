@@ -435,6 +435,14 @@ export interface Transaction {
    * — the id is never leaked across Spaces, and no name/detail is carried.
    */
   counterpartyAccountId?: string | null;
+  /**
+   * v2.7-P0 — provenance for the resolved-nature contract
+   * (lib/transactions/resolved-nature.ts): WHO wrote `flowType`
+   * (CLASSIFIER | TRANSFER_AUTHORITY | CRYPTO_LEDGER) and whether the category is
+   * a human's (USER_OVERRIDE | USER_RULE). Absent when the read did not select them.
+   */
+  flowAuthority?: string | null;
+  categorySource?: string | null;
 
   // CF-1 — read-time canonical projection for the Cash Flow context section.
   // Additive/optional (existing callers untouched): derived server-side from

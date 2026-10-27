@@ -16,6 +16,7 @@
  * history) cannot resolve, so it cannot be cited.
  */
 
+import { INTERNAL_NATURES, MOVEMENT_NATURES, type TransactionNature } from '@/lib/transactions/resolved-nature';
 import {
   IMPORTANCE, OBSERVATION_KINDS,
   type BriefAccountClass, type BriefNarration, type BriefObservation, type BriefPackage,
@@ -179,6 +180,17 @@ function classesTouched(row: NonNullable<BriefPackage['recentActivity']>['top'][
   // v2.7-P1 — when the transfer authority NAMED the other side's class, both
   // sides are stated, so the row touches exactly those two (a savings transfer:
   // LIQUID only — never LIABILITY). Otherwise an own-accounts leg is unstated.
+  // v2.7-P0 — a transfer between the user's OWN accounts (resolved nature) never
+  // touches what is owed through its destination: it touches the class it posted
+  // on and the class the contract named on the other side — and, when neither is
+  // known, cash or assets, never LIABILITY by default.
+  if (row.nature && INTERNAL_NATURES.has(row.nature as TransactionNature)) {
+    const t = new Set<BriefAccountClass>();
+    if (row.account) t.add(row.account);
+    if (row.otherLegAccount) t.add(row.otherLegAccount);
+    if (t.size === 0) { t.add('LIQUID'); t.add('ASSET'); }
+    return t;
+  }
   if (row.betweenOwnAccounts === true && !(row.account && row.otherLegAccount)) return null;
   const touched = new Set<BriefAccountClass>(row.account ? [row.account] : []);
   if (row.otherLegAccount) touched.add(row.otherLegAccount);
@@ -233,4 +245,39 @@ export function associatesUnconnectedMovement(ob: BriefObservation, pkg: BriefPa
     const windows = mine.map((b) => b.window).filter((w): w is { from: string; to: string } => w !== null);
     return windows.length > 0 && !windows.some((w) => row.date >= w.from && row.date <= w.to);
   });
+}
+
+/**
+ * v2.7-P0 — debt-reduction wording. Deliberately narrow: it names paying down,
+ * paying toward or reducing a debt/card/loan, and nothing else.
+ */
+const DEBT_REDUCTION_WORDING = new RegExp(
+  '\\b(paid (down|off)|pay(ing|s)? (down|off)|paydown|debt payments?|card payments?|loan payments?'
+  + '|payments? (toward|towards|to|on) (your |the |a )?(card|loan|debt|balance)'
+  + '|(toward|towards) (your |the |a )?(debt|card|loan)'
+  + '|(reduc|lower|cut)\\w* (your |the )?(debt|card balance|loan balance|balance owed|what you owe))\\b', 'i');
+
+/**
+ * True when an observation describes a movement that is NOT a liability payment as
+ * reducing debt.
+ *
+ * ⚠️ STRUCTURE FIRST, WORDS SECOND. It fires only when the observation cites at
+ * least one recent-activity row AND EVERY cited row is a movement the resolved-
+ * nature contract established is not a payment (an internal transfer, an external
+ * or cash movement, an unclassified movement) posted on a non-LIABILITY account —
+ * and only then is the prose consulted, for debt-reduction wording. An
+ * observation that also cites a genuine payment, or a row on a card, is never
+ * touched: the contract cannot tell which sentence rests on which row.
+ */
+export function describesTransferAsDebtReduction(ob: BriefObservation, pkg: BriefPackage): boolean {
+  const rows = ob.evidence
+    .map((p) => /^recentActivity\.top(?:\.|\[)(\d+)/.exec(p.trim()))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map((m) => pkg.recentActivity?.top[Number(m[1])]);
+  if (rows.length === 0 || rows.some((r) => !r)) return false;
+  const allNonPaymentMovements = rows.every((r) => !!r && !!r.nature
+    && MOVEMENT_NATURES.has(r.nature as TransactionNature) && r.nature !== 'LIABILITY_PAYMENT'
+    && r.flow !== 'DEBT_PAYMENT' && r.account !== 'LIABILITY');
+  if (!allNonPaymentMovements) return false;
+  return DEBT_REDUCTION_WORDING.test(`${ob.title} ${ob.body}`);
 }

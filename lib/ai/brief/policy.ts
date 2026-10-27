@@ -106,6 +106,26 @@ export const RELEVANCE_PRIOR_MAX_DAYS = 30;
 export const BRIEF_GENERATION_VERSION = 'brief-generation-5';
 
 /**
+ * v2.7-P0 — THE PROMPT REVISION, recorded but NEVER a validity key.
+ *
+ * Owner policy (2026-10-27): stored Briefs are preserved — a prompt correction must
+ * not regenerate or overwrite today's or any earlier Brief. So a prompt change that
+ * should apply only to FUTURE generations moves THIS constant, not
+ * BRIEF_GENERATION_VERSION. It is folded into the `promptVersion` a completed row
+ * stores (`<generation>+prompt-<hash>+rev-<revision>`, lifecycle.ts), so every new
+ * Brief says which instruction wrote it, while `generationVersionOf` (below) reads
+ * only the part before the first `+` — the reuse gate (state.ts) is unchanged and an
+ * existing Brief stays FRESH. No schema change: the column is the existing string.
+ *
+ * History — debt-semantics-1: recent-activity rows carry the resolved `nature`;
+ * an internal transfer between the user's own accounts is "moved between your
+ * accounts", never a payment or a debt reduction; an unclassified movement is
+ * described only as money that moved (docs/plans/RESOLVED-TRANSACTION-NATURE-
+ * CONTRACT-2026-10-27.md).
+ */
+export const BRIEF_PROMPT_REVISION = 'debt-semantics-1';
+
+/**
  * The generation version a stored `promptVersion` was written under. Stored as
  * `<version>+prompt-<hash>`; rows from before versioning (`brief-prompt-<hash>`)
  * parse as their whole value, which no current version equals.
