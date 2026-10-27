@@ -58,8 +58,6 @@ export function DebtHero({
   historical,
   change,
   envelope,
-  verdict,
-  verdictAsOf,
   redactions,
   timePreset,
   freshnessLabel = null,
@@ -76,7 +74,8 @@ export function DebtHero({
   change:         DebtWindowChange | null;
   /** The workspace's canonical trust envelope — drives the confidence chip. */
   envelope:       PerspectiveEnvelope;
-  /** The lens verdict SENTENCE (prose only), or null. */
+  /** The lens verdict SENTENCE (prose only), or null. v2.7 parity: no longer
+   *  rendered — the hero states figures only, like Net Worth / Assets. */
   verdict:        string | null;
   /** The lens data freshness date (formatted upstream), or null. */
   verdictAsOf:    string | null;
@@ -153,14 +152,14 @@ export function DebtHero({
 
         <p className="mt-2.5 text-sm text-[var(--text-secondary)]">
           across <span className="tabular-nums">{liabilityCount}</span> liabilit{liabilityCount === 1 ? "y" : "ies"}
-          <span className="text-[var(--text-muted)]"> · {historical ? "current balances" : `as of ${asOfShown}`}</span>
+          <span className="text-[var(--text-muted)]"> · {historical ? "current balances" : `as of ${asOfShown}`}{withheld ? ` · ${withheld}` : ""}</span>
         </p>
 
         {/* PARTIAL-capability honesty: in a historical view the balances are still
             present-day; only the trend, verdict, and trust honour the selected date. */}
         {historical && (
           <p className="mt-1 text-[11px] text-[var(--text-faint)]">
-            Balances are current — the trend and verdict below reflect {formatDate(asOf)}.
+            Balances are current — the trend below reflects {formatDate(asOf)}.
           </p>
         )}
 
@@ -181,18 +180,6 @@ export function DebtHero({
           </div>
         )}
 
-        {/* Lens verdict — the as-of intelligence sentence (prose only, never a figure). */}
-        {verdict && (
-          <p className="mt-3 max-w-prose text-[13px] leading-snug text-[var(--text-secondary)]">
-            {verdict}
-            {(verdictAsOf || redactions > 0) && (
-              <span className="text-[var(--text-faint)]">
-                {verdictAsOf ? ` · as of ${verdictAsOf}` : ""}
-                {withheld ? ` · ${withheld}` : ""}
-              </span>
-            )}
-          </p>
-        )}
       </section>
     </div>
   );

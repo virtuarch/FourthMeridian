@@ -41,7 +41,7 @@
  * section keeps its own per-figure TrustIndicator.
  */
 
-import { useCallback, useEffect, useId, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { Info, Loader2, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
@@ -56,7 +56,9 @@ import { useInvestmentsSpaceData } from "./useInvestmentsSpaceData";
 import { isHistoricalDay } from "@/lib/time/basis";
 import { InvestmentsBridgeCard } from "./InvestmentsBridgeCard";
 import { InvestmentAccountsLedger } from "./InvestmentAccountsLedger";
-import { InvestmentAllocationPanel } from "./InvestmentAllocationPanel";
+import { InvestmentAllocationPanel, ALLOCATION_GROUPINGS } from "./InvestmentAllocationPanel";
+import { Dropdown } from "@/components/atlas/Dropdown";
+import type { AllocationDimension } from "@/lib/investments/investments-allocation-core";
 import { InvestmentsHero } from "./InvestmentsHero";
 import { InvestmentsBalanceHistory } from "./InvestmentsBalanceHistory";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
@@ -91,6 +93,9 @@ export function InvestmentsWorkspace({
   embedded?: boolean;
 }) {
   const { data: raw, series: rawSeries, loading, error, reload, serverToday } = useInvestmentsSpaceData(spaceId, asOf, compareTo, active);
+  // v2.7 — the Allocation grouping, owned here so its Dropdown can sit in the
+  // Block header (Net Worth idiom); the panel renders the chosen axis.
+  const [allocationDimension, setAllocationDimension] = useState<AllocationDimension>("assetClass");
   // V26-S3-DETAIL — which historical point the reader asked about. The chart
   // reports a DATE and nothing else; the panel asks the canonical historical
   // authority what that date was made of.
@@ -270,11 +275,14 @@ export function InvestmentsWorkspace({
 
       {/* ④ Allocation — "what do I own?" (the shared donut breakdown). */}
       <div id="investments-allocation" className="scroll-mt-20">
-        <Block label="Allocation">
+        {/* v2.7 — the grouping Dropdown sits in the Block header, outside and above
+            the donut, exactly as Net Worth's "Where it sits" card does. */}
+        <Block label="Allocation" action={<Dropdown options={ALLOCATION_GROUPINGS} value={allocationDimension} onChange={setAllocationDimension} ariaLabel="Allocation grouping" />}>
           <DataCard>
             <InvestmentAllocationPanel
               holdings={primary.holdings} accounts={accounts}
               reportingCurrency={reportingCurrency} showConcentrationInsight={false}
+              dimension={allocationDimension}
             />
           </DataCard>
         </Block>
