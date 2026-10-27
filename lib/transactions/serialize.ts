@@ -83,6 +83,9 @@ export interface TransactionRowLike {
   /** v2.6-CRYPTO-1 — WHO wrote the flow facts. The income taxonomy refuses a
    *  row the on-chain ledger owns; without this it cannot tell. */
   flowAuthority?:            FlowAuthorityName | null;
+  /** v2.7-P0 — the persisted category provenance (USER_OVERRIDE / USER_RULE = a
+   *  human's choice). Read by the resolved-nature contract's USER rung. */
+  categorySource?:           string | null;
   // Cash Flow liquidity axis — the counterparty's owned-account id. MUST be
   // PRE-GATED by the data layer (KD-15: only set when the counterparty is
   // visible to the reading Space). This pure serializer emits whatever it is
@@ -165,6 +168,12 @@ export function serializeTransactionRow(r: TransactionRowLike): Transaction {
     // Cash Flow liquidity axis — pre-gated by the data layer (KD-15). Null when
     // absent or the counterparty is not visible to the reading Space.
     counterpartyAccountId:    r.counterpartyAccountId ?? null,
+    // v2.7-P0 — provenance the resolved-nature contract (lib/transactions/
+    // resolved-nature.ts) needs for its USER and TRANSFER_AUTHORITY rungs. Emitted
+    // only when the read selected the column, so a hand-built row (golden
+    // fixtures) is byte-identical to before.
+    ...(r.flowAuthority !== undefined ? { flowAuthority: r.flowAuthority } : {}),
+    ...(r.categorySource !== undefined ? { categorySource: r.categorySource } : {}),
     // ── v2.6-L4 derived read-model (never persisted) ────────────────────────
     //
     // ⚠️ v2.6-CHRON-1 — this comment USED to read: "`date` above is UNCHANGED —

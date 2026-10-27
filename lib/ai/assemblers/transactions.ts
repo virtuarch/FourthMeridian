@@ -116,7 +116,7 @@ import { computeDebtService, netAfterDebtPaydown } from '@/lib/transactions/debt
 import { tierResolver, type LiquidityTx } from '@/lib/transactions/liquidity';
 import { resolveTransferAssessments } from '@/lib/transactions/transfer-resolution';
 import { dispositionForMaturity } from '@/lib/transactions/transfer-evidence';
-import { isTransferLeafMaturity } from '@/lib/transactions/transfer-debt-payment-correction';
+import { resolveTransactionNature } from '@/lib/transactions/resolved-nature';
 // REVIEW-3 B-6 — the one clock (lib/time). This file carried two of the three
 // recorded lib/ai inline day derivations; the clock-authority guard now scans
 // lib/ai like everything else.
@@ -816,10 +816,25 @@ async function assembleTransactions(
   // `transferTotal` because the refusal branch below discarded every uncounted
   // DEBT_PAYMENT row. The liability-side leg of a counted payment matures to
   // DEBT_PAYMENT, never a transfer leaf, so it can never enter this set.
+  // v2.7-P0 — membership is THE resolved-nature contract
+  // (lib/transactions/resolved-nature.ts): a stored DEBT_PAYMENT the contract
+  // resolves to an ESTABLISHED non-payment movement (internal / brokerage /
+  // external / cash). An unclassified movement stays out, exactly as before.
   const transferResolvedIds = new Set(
     settled
-      .filter((r) => isDebtPayment(r.flowType) && !debtCountedIds.has(r.id)
-        && isTransferLeafMaturity(assessments.get(r.id)?.maturity))
+      .filter((r) => {
+        if (!isDebtPayment(r.flowType) || debtCountedIds.has(r.id)) return false;
+        const a = assessments.get(r.id);
+        const cpId = r.counterpartyAccountId ?? a?.counterpartyAccountId ?? null;
+        const n = resolveTransactionNature({
+          flowType: r.flowType, amount: r.amount, flowAuthority: r.flowAuthority,
+          transferMaturity: a?.maturity ?? null,
+          ownAccountType: r.financialAccountId ? accountTypeById.get(r.financialAccountId) ?? null : null,
+          counterpartyAccountType: cpId ? accountTypeById.get(cpId) ?? null : null,
+          hasOwnedCounterparty: cpId != null,
+        });
+        return n.flow === 'TRANSFER' && n.nature !== 'UNCLASSIFIED_MOVEMENT';
+      })
       .map((r) => r.id),
   );
 

@@ -34,7 +34,8 @@ import type {
   BriefArtifactView, BriefDataHealthView, BriefMetricsView, BriefObservationView, BriefResponse,
   DataGroupView, DataSourceKind, DataSourceView,
 } from "@/lib/brief-types";
-import { sourceStatusText } from "@/lib/connections/source-health-copy";
+import { groupFreshnessText, sourceFreshnessText, undatedAccountsNote } from "./data-freshness-copy";
+import { useNowTick } from "./use-now-tick";
 import { BriefNewUser } from "./BriefNewUser";
 import {
   BRIEF_PAUSED_MESSAGE, BRIEF_UNAVAILABLE_MESSAGE, browserClock, createBriefController, httpBriefTransport, initialView,
@@ -53,14 +54,6 @@ const utcDay = (day: string) => new Date(`${day}T00:00:00Z`).toLocaleDateString(
   weekday: "long", month: "short", day: "numeric", timeZone: "UTC",
 });
 
-/** "today" / "yesterday" / "Sep 10", in the browser's calendar. */
-const relDay = (iso: string) => {
-  const d = new Date(iso);
-  const n = new Date();
-  const days = Math.round((new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime()
-    - new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 86_400_000);
-  return days <= 0 ? "today" : days === 1 ? "yesterday" : shortDate(iso);
-};
 
 function greeting(firstName: string | null): string {
   const h = new Date().getHours();
@@ -140,15 +133,20 @@ function Provenance({ brief, phase }: { brief: BriefArtifactView; phase: BriefVi
 
 const GROUP_NAME: Record<DataSourceKind, string> = { BANK: "Banks", WALLET: "Crypto", MANUAL: "Manual" };
 
-/** A provider group never reads better than its worst source: attention first, then its OLDEST update. */
-function groupPhrase(g: DataGroupView): string {
-  if (g.attention > 0) {
-    return g.sources === 1 ? "needs attention" : `${g.attention} of ${g.sources} ${g.attention === 1 ? "needs" : "need"} attention`;
-  }
-  return g.oldestUpdatedAt ? `updated ${relDay(g.oldestUpdatedAt)}` : "not updated yet";
-}
+/**
+ * v2.7 — a provider group never reads better than its worst source: attention
+ * first, then a conservative range of its sources' last SUCCESSFUL updates
+ * ("updated 2 hr ago – yesterday"), in THE shared relative format (lib/format.ts
+ * `formatUpdatedAgo`, via ./data-freshness-copy). `nowMs` is the ticking clock, so
+ * the phrase ages without a new Brief or a request; null before mount.
+ */
+const groupPhrase = (g: DataGroupView, nowMs: number | null): string =>
+  nowMs === null
+    ? (g.attention > 0 ? groupFreshnessText(g, 0) : "")
+    : groupFreshnessText(g, nowMs);
 
-const sourceStatus = (s: DataSourceView) => sourceStatusText(s.state, s.lastUpdatedAt, { date: shortDate, recent: relDay });
+const sourceStatus = (s: DataSourceView, nowMs: number | null) =>
+  nowMs === null ? "" : sourceFreshnessText(s, nowMs);
 
 /** One sentence naming the source — never a reason the data does not contain. */
 function attentionSentence(s: DataSourceView): string {
@@ -177,6 +175,7 @@ function sourceHint(s: DataSourceView): string | null {
 function DataFreshness({ dataHealth, brief }: { dataHealth: BriefDataHealthView | null; brief: BriefArtifactView }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
+  const nowMs = useNowTick();
   if (!dataHealth || dataHealth.sources.length === 0) {
     // No per-source detail could be read: only then is the generic line all that can be said.
     if (brief.balancesMayBeStale) return <p className="mt-1 text-xs text-[var(--accent-warning)]">Some balances may be out of date</p>;
@@ -200,7 +199,7 @@ function DataFreshness({ dataHealth, brief }: { dataHealth: BriefDataHealthView 
         {dataHealth.groups.map((g) => (
           <span key={g.kind} className="inline-flex items-center gap-1.5" suppressHydrationWarning>
             <span aria-hidden>·</span>
-            <span className={g.attention > 0 ? "text-[var(--accent-warning)]" : undefined}>{GROUP_NAME[g.kind]} {groupPhrase(g)}</span>
+            <span className={g.attention > 0 ? "text-[var(--accent-warning)]" : undefined}>{GROUP_NAME[g.kind]} {groupPhrase(g, nowMs)}</span>
           </span>
         ))}
         <ChevronDown size={12} aria-hidden className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
@@ -217,6 +216,7 @@ function DataFreshness({ dataHealth, brief }: { dataHealth: BriefDataHealthView 
         <ul className="mt-2 divide-y divide-[var(--border-hairline)] rounded-[var(--radius-md)] border border-[var(--border-hairline)]">
           {dataHealth.sources.map((s, i) => {
             const hint = sourceHint(s);
+            const undated = undatedAccountsNote(s);
             return (
               <li key={`${s.kind}-${i}`} className="px-3 py-2">
                 <div className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-3">
@@ -225,16 +225,19 @@ function DataFreshness({ dataHealth, brief }: { dataHealth: BriefDataHealthView 
                     <span className="text-[var(--text-muted)]"> · {s.accountCount} {s.accountCount === 1 ? "account" : "accounts"}</span>
                   </span>
                   <span className={s.needsAttention ? "text-[var(--accent-warning)]" : "text-[var(--text-secondary)]"} suppressHydrationWarning>
-                    {sourceStatus(s)}
+                    {sourceStatus(s, nowMs)}
                   </span>
                 </div>
+                {undated && <p className="mt-0.5 text-[var(--text-muted)]">{undated}</p>}
                 {hint && <p className="mt-0.5 text-[var(--text-muted)]">{hint}</p>}
               </li>
             );
           })}
         </ul>
         <p className="mt-2 text-[var(--text-muted)]">
-          Dates show when Fourth Meridian last received data from each source, not when your Brief was written.{" "}
+          Times show when Fourth Meridian last successfully received data from each source, not when your Brief
+          was written. Investment holdings arrive with their bank or brokerage connection; crypto prices update
+          separately and are not shown here.{" "}
           <Link href="/dashboard/connections" className={link}>Manage connections</Link>
         </p>
       </div>

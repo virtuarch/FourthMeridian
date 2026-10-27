@@ -763,6 +763,9 @@ const COUNTERPARTY_REFERENCES: Readonly<Record<string, CpRole>> = {
   // correction's updateMany payload is flowType/category/flowAuthority only).
   "lib/transactions/transfer-debt-payment-correction-write.ts": "READ",
   "lib/transactions/serialize.ts":                       "READ",
+  // v2.7-P0 — the resolved-nature contract reads a DTO's (already KD-15-gated)
+  // counterparty id as EVIDENCE that the other side is owned; it never writes it.
+  "lib/transactions/resolved-nature.ts":                 "AUTHORITY",
   "lib/transactions/liquidity.ts":                       "READ",
   "lib/plaid/syncTransactions.ts":                       "WRITE_NULL",
   "lib/data/transactions.ts":                            "READ",

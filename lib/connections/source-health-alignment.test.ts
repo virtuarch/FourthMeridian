@@ -93,7 +93,11 @@ console.log("\n10. no reader relies on an unwritten error state or the newest ch
   check("neither page's health code tests syncStatus 'error'", !/syncStatus\s*===?\s*['"]error/.test(
     SPACE_DATA + code("lib/connections/space-data-health.core.ts") + code("lib/connections/space-data-health.ts") + PACKAGE));
   check("one wording for states, used by both pages",
-    /sourceStatusText\(/.test(code("components/brief/DailyBriefClient.tsx")) && /sourceStatusText\(/.test(code("components/connections/ConnectionCard.tsx")));
+    // v2.7 — the Brief reaches it through its pure copy module (data-freshness-copy.ts),
+    // which the page imports; the states' wording is still the one shared mapping.
+    /sourceStatusText\(/.test(code("components/brief/data-freshness-copy.ts"))
+      && /from "\.\/data-freshness-copy"/.test(code("components/brief/DailyBriefClient.tsx"))
+      && /sourceStatusText\(/.test(code("components/connections/ConnectionCard.tsx")));
 }
 
 console.log("\nJ. the same refresh policy on both pages");

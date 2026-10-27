@@ -52,7 +52,7 @@ import { canonicalJson, materialDigest } from './digest';
 import { BriefScopeError } from './errors';
 import type { BriefGenerationResult } from './generate';
 import type { LoadedBriefPackage } from './load';
-import { BRIEF_GENERATION_VERSION, GENERATION_FAILURE_COOLDOWN_MS } from './policy';
+import { BRIEF_GENERATION_VERSION, BRIEF_PROMPT_REVISION, GENERATION_FAILURE_COOLDOWN_MS } from './policy';
 import { BRIEF_SYSTEM_PROMPT } from './prompt';
 import { applyRelevance, readStandingFacts, standingFactsOf } from './relevance';
 import { decideArtifactState, type ArtifactDecision, type BriefFallback, type BriefRow } from './state';
@@ -67,9 +67,18 @@ export const BRIEF_PROMPT_HASH = createHash('sha256')
 
 /**
  * What a completed row stores in `promptVersion`: the intentional generation
- * version (the validity key) plus the prompt hash (for diagnosis only).
+ * version (the validity key), the prompt hash (diagnosis), and — v2.7-P0 — the
+ * named prompt revision (policy.ts BRIEF_PROMPT_REVISION). Only the part before
+ * the first `+` is ever compared (`generationVersionOf`), so moving the hash or the
+ * revision never invalidates a stored Brief.
  */
-export const BRIEF_PROMPT_VERSION = `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}`;
+export const BRIEF_PROMPT_VERSION = `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}+rev-${BRIEF_PROMPT_REVISION}`;
+
+/** The prompt revision a stored `promptVersion` records, or null when it predates revisions. */
+export const promptRevisionOf = (stored: string | null): string | null => {
+  const m = stored ? /\+rev-([^+]+)/.exec(stored) : null;
+  return m ? m[1] : null;
+};
 
 export interface LifecycleDeps {
   store: BriefStore;
