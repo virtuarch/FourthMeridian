@@ -194,7 +194,7 @@ console.log("H · the grant matrix survives the admin list bound");
 {
   const s = code("app/admin/platform-access/page.tsx");
   check("loads USER accounts server-filtered and reads `truncated`", s.includes("/api/admin/users?role=USER") && s.includes("u.truncated === true"));
-  check("searches on the server when truncated", /if \(!truncated \|\| q\.length < 2\)/.test(s) && s.includes("&search=${encodeURIComponent(q)}"));
+  check("searches on the server when truncated", /const serverSearchActive = truncated && serverQuery\.length >= 2;/.test(s) && /if \(!serverSearchActive\) return;/.test(s) && s.includes("&search=${encodeURIComponent(q)}"));
   check("every ACTIVE grant holder is always listed", /for \(const g of grants\)[\s\S]{0,120}g\.status === "ACTIVE"/.test(s));
 }
 

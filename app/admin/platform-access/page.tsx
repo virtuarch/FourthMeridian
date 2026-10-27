@@ -122,9 +122,11 @@ export default function PlatformAccessPage() {
   }, [grants]);
 
   // Server-side search, only when the first page was truncated (debounced).
+  const serverQuery = search.trim();
+  const serverSearchActive = truncated && serverQuery.length >= 2;
   useEffect(() => {
-    const q = search.trim();
-    if (!truncated || q.length < 2) { setServerMatches(null); return; }
+    if (!serverSearchActive) return;
+    const q = serverQuery;
     let alive = true;
     const t = setTimeout(() => {
       fetch(`/api/admin/users?role=USER&search=${encodeURIComponent(q)}`)
@@ -132,17 +134,19 @@ export default function PlatformAccessPage() {
         .then((u) => { if (alive) setServerMatches((u.users ?? []).filter((x: User) => x.role === "USER")); });
     }, 300);
     return () => { alive = false; clearTimeout(t); };
-  }, [search, truncated]);
+  }, [serverQuery, serverSearchActive]);
 
   // Grant holders are always present, even past the list bound.
   const roster = useMemo(() => {
     const byId = new Map<string, User>();
-    for (const u of serverMatches ?? users) byId.set(u.id, u);
+    // Server matches count only while a server search is active (derived, so the
+    // effect never has to clear state synchronously).
+    for (const u of (serverSearchActive && serverMatches) || users) byId.set(u.id, u);
     for (const g of grants) {
       if (g.status === "ACTIVE" && !byId.has(g.user.id)) byId.set(g.user.id, { ...g.user, role: "USER" });
     }
     return [...byId.values()];
-  }, [users, serverMatches, grants]);
+  }, [users, serverMatches, serverSearchActive, grants]);
 
   const filteredUsers = useMemo(() => {
     if (!search) return roster;
