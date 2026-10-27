@@ -340,6 +340,15 @@ export const AuditAction = {
   // from Plaid, so it is recorded; it changes nothing (the apply is
   // PLAID_ITEM_WEBHOOK_UPDATED). Facts only: target Item id + outcome word.
   PLAID_ITEM_WEBHOOK_DRY_RUN:      "PLAID_ITEM_WEBHOOK_DRY_RUN",
+  // SEC-PLAT-3 — owner ruling P-4: Customer Success may resolve customer
+  // identity under explicit authorization, and every such resolution is
+  // audited. One row per customer-profile open (GET
+  // /api/platform/customer-success/customers/[userId]), written BEFORE the
+  // profile is returned — no audit, no profile. Target = the customer (USER);
+  // performedByAdminId = the operator. Not shown in the customer's own security
+  // history (not in USER_SECURITY_HISTORY_ACTIONS) and excluded from the
+  // profile's own operator-action list so views never crowd out changes.
+  CUSTOMER_PROFILE_VIEWED:         "CUSTOMER_PROFILE_VIEWED",
 
   // ── Security Ops anomalies (Wave 3 ⑧) ────────────────────────────────────
   // Written once per open anomaly window by lib/security/anomaly-alerts.ts when
@@ -501,6 +510,8 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.MERCHANT_MERGE_DISMISSED,
   AuditAction.PLATFORM_CONTROL_REFUSED,
   AuditAction.PLAID_ITEM_WEBHOOK_DRY_RUN,
+  // SEC-PLAT-3 — authorized customer-identity reads.
+  AuditAction.CUSTOMER_PROFILE_VIEWED,
 ];
 
 /** Actions counted by the admin audit "security only" quick-filter. */

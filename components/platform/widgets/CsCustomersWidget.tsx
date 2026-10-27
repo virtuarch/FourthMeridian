@@ -367,7 +367,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
 
                   <Section title="Incidents">
                     <Row label="Open incidents" value={String(detail.incidents.open.length)} />
-                    {detail.incidents.open.slice(0, 5).map((i) => <Row key={i.id} label={i.kind.toLowerCase().replace(/_/g, " ")} value={`last ${ago(i.lastOccurredAt)}`} />)}
+                    {detail.incidents.open.slice(0, 5).map((i) => <Row key={i.id} label={i.kind.toLowerCase().replace(/_/g, " ")} value={i.account ? `${i.account} · last ${ago(i.lastOccurredAt)}` : `last ${ago(i.lastOccurredAt)}`} />)}
                     <Row label="Recent refreshes" value={detail.incidents.recentExecutions.slice(0, 5).map((e) => `${e.trigger.toLowerCase()} ${e.overallStatus.toLowerCase()} ${timeAgo(e.startedAt)}`).join(", ") || "none"} />
                     <Row label="Recent webhooks" value={detail.incidents.recentWebhooks.slice(0, 5).map((w) => `${w.webhookCode} → ${w.handling.toLowerCase()}`).join(", ") || "none"} />
                   </Section>

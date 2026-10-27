@@ -26,8 +26,9 @@
  * `SyncIssue.detail` is not reachable from here. `IncidentView` does not carry
  * it, so unlike the previous implementation — which selected `detail` to derive
  * semantics and relied on remembering not to echo it — the invariant is now
- * STRUCTURAL. Subject names (institution / account) are operator-appropriate and
- * are the only customer-adjacent strings returned.
+ * STRUCTURAL. The subject is MINIMIZED (SEC-PLAT-3, owner ruling P-4):
+ * institution · account type · masked last digits — never the customer-chosen
+ * account name, which only the audited customer profile may show.
  */
 
 import { NextResponse } from "next/server";

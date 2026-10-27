@@ -237,16 +237,22 @@ export interface ExecutionFacts { id: string; sourceKind: string; plaidItemId: s
 export interface WebhookFacts { receivedAt: Date; webhookType: string; webhookCode: string; handling: string; plaidItemId: string | null; errorCode: string | null }
 
 export interface IncidentsView {
-  open: { id: string; provider: string; kind: string; plaidItemId: string | null; financialAccountId: string | null; firstOccurredAt: string | null; lastOccurredAt: string | null }[];
+  open: { id: string; provider: string; kind: string; plaidItemId: string | null; financialAccountId: string | null; firstOccurredAt: string | null; lastOccurredAt: string | null;
+    /** SEC-PLAT-3 — the affected account, named in full (audited profile only); null when the incident has no account or it is unresolved. */
+    account: string | null }[];
   recentExecutions: { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: string; durationMs: number | null; failureCategory: string | null }[];
   recentWebhooks: { receivedAt: string; webhookType: string; webhookCode: string; handling: string; plaidItemId: string | null; errorCode: string | null }[];
 }
 
-export function projectIncidents(issues: readonly SyncIssueFacts[], executions: readonly ExecutionFacts[], webhooks: readonly WebhookFacts[]): IncidentsView {
+export function projectIncidents(
+  issues: readonly SyncIssueFacts[], executions: readonly ExecutionFacts[], webhooks: readonly WebhookFacts[],
+  accountLabels: ReadonlyMap<string, string> = new Map(),
+): IncidentsView {
   return {
     open: issues.filter((i) => !i.resolved).map((i) => ({
       id: i.id, provider: i.provider, kind: i.kind, plaidItemId: i.plaidItemId, financialAccountId: i.financialAccountId,
       firstOccurredAt: iso(i.firstOccurredAt ?? i.createdAt), lastOccurredAt: iso(i.lastOccurredAt ?? i.createdAt),
+      account: (i.financialAccountId && accountLabels.get(i.financialAccountId)) || null,
     })),
     recentExecutions: executions.map((e) => ({
       id: e.id, sourceKind: e.sourceKind, plaidItemId: e.plaidItemId, sourceRef: e.sourceRef, trigger: e.trigger, profile: e.profile,
