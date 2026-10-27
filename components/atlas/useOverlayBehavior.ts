@@ -113,7 +113,12 @@ export function useAutoFocus(
     const raf = requestAnimationFrame(() => {
       const node = ref.current;
       if (!node) return;
-      const first = node.querySelector<HTMLElement>(selector);
+      // The first VISIBLE focusable — the same rule the focus trap uses. A
+      // display:none control (the panel's mobile-only resize handle on desktop)
+      // matches the selector but cannot take focus, and focusing it fails
+      // silently: every desktop RightPanel used to open with focus left behind
+      // on the page, invisible to keyboard and screen-reader users.
+      const first = Array.from(node.querySelectorAll<HTMLElement>(selector)).find((el) => el.offsetParent !== null);
       (first ?? node).focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(raf);
