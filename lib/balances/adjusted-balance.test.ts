@@ -285,11 +285,11 @@ async function main() {
   // ── 4. Forward-only basis disclosure ────────────────────────────────────────
   console.log("\n4. forward-only basis disclosure (no schema)");
   {
-    check("ADJUSTED_CASH_BASIS_SINCE is the release placeholder 2026-10-27", ADJUSTED_CASH_BASIS_SINCE === "2026-10-27");
-    check("a window spanning the release discloses", spansAdjustedCashBasis("2026-09-27", "2026-10-27") && adjustedCashBasisNote("2026-09-27", "2026-10-30") !== null);
-    check("a window entirely after the release does not", adjustedCashBasisNote("2026-10-27", "2026-11-30") === null);
+    check("ADJUSTED_CASH_BASIS_SINCE is the develop release date 2026-10-28", ADJUSTED_CASH_BASIS_SINCE === "2026-10-28");
+    check("a window spanning the release discloses", spansAdjustedCashBasis("2026-09-28", "2026-10-28") && adjustedCashBasisNote("2026-09-28", "2026-10-30") !== null);
+    check("a window entirely after the release does not", adjustedCashBasisNote("2026-10-28", "2026-11-30") === null);
     check("a window entirely before the release does not", adjustedCashBasisNote("2026-09-01", "2026-10-26") === null);
-    check("the note names the date and both bases", /Oct 27, 2026/.test(adjustedCashBasisNote("2026-10-01", "2026-10-28") ?? "")
+    check("the note names the date and both bases", /Oct 28, 2026/.test(adjustedCashBasisNote("2026-10-01", "2026-10-28") ?? "")
       && /bank-reported/.test(adjustedCashBasisNote("2026-10-01", "2026-10-28") ?? ""));
     const { readFileSync } = await import("node:fs");
     const src = (f: string) => readFileSync(f, "utf8");

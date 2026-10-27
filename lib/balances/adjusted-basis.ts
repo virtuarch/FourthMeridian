@@ -15,10 +15,11 @@
 
 /**
  * The first UTC calendar day whose live snapshot row is written on the ADJUSTED
- * basis. Marks the RELEASE of the basis — set to the merge date (2026-10-27,
- * the owner-approval date; adjust in the merge commit if it lands later).
+ * basis. Marks the RELEASE of the basis — set to the develop merge date
+ * (2026-10-28 UTC). Production adopts the basis on its own promotion date —
+ * update this constant in the promotion PR so the note marks the real change.
  */
-export const ADJUSTED_CASH_BASIS_SINCE = "2026-10-27";
+export const ADJUSTED_CASH_BASIS_SINCE = "2026-10-28";
 
 /** True when [fromISO, toISO] contains days on BOTH sides of the basis change. */
 export function spansAdjustedCashBasis(fromISO: string | null | undefined, toISO: string | null | undefined): boolean {
