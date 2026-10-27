@@ -37,7 +37,12 @@ export type { SettingDescriptor, SettingValidation, SettingWriteSurface, PolicyC
 
 export const PlatformSettingKey = {
   REQUIRE_TOTP_SYSTEM_ADMIN: "require_totp_system_admin",
-  REQUIRE_TOTP_ADMINS:       "require_totp_admins",
+  // SEC-PLAT-1 — `require_totp_admins` ("Require 2FA for Space admins") was
+  // REMOVED: since v2.0 (639e9a5) it was a key, a seed row and an admin toggle
+  // with no enforcement consumer anywhere (pinned by the discovery-branch
+  // characterization test). Operator MFA is now mandatory in code
+  // (lib/auth-totp-policy.ts operatorTotpMissing), not a setting. A stale row
+  // may remain in PlatformSetting; nothing reads it.
   REQUIRE_TOTP_ALL_USERS:    "require_totp_all_users",
   RECOVERY_CODES_ENABLED:    "recovery_codes_enabled",
   MIN_PASSWORD_LENGTH:       "min_password_length",
@@ -144,7 +149,6 @@ export type ProductStatus = typeof PRODUCT_STATUSES[number];
 /** Defaults if the row doesn't exist yet (migration seeds these, but be safe). */
 const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   require_totp_system_admin: "false",
-  require_totp_admins:       "false",
   require_totp_all_users:    "false",
   recovery_codes_enabled:    "true",
   min_password_length:       "8",
@@ -273,9 +277,6 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
     "require_totp_system_admin", "Require 2FA for system administrators",
     "Locked on. A SYSTEM_ADMIN session always requires TOTP.",
     { constraint: (v) => (v === "true" ? null : "require_totp_system_admin cannot be disabled. SYSTEM_ADMIN accounts must always use 2FA.") },
-  ),
-  require_totp_admins: security(
-    "require_totp_admins", "Require 2FA for Space admins", "Any ADMIN Space role must have 2FA enabled.",
   ),
   require_totp_all_users: security(
     "require_totp_all_users", "Require 2FA for all users", "All users must set up 2FA before accessing the dashboard.",
