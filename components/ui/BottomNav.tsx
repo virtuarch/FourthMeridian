@@ -38,6 +38,11 @@ const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
 
 export function BottomNav() {
   const pathname = usePathname();
+  return <BottomNavBar pathname={pathname} />;
+}
+
+/** The bar itself, pathname-driven (no router) — rendered by BottomNav; testable standalone. */
+export function BottomNavBar({ pathname }: { pathname: string | null }) {
   return (
     <nav
       aria-label="Global"
