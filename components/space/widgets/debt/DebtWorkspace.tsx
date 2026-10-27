@@ -255,9 +255,9 @@ export function DebtWorkspace({
         id: sec,
         label: DEBT_SECTION_LABELS[sec],
         controls: sec === "credit"
-          ? ["debt-liabilities", ...(hasDebt ? ["debt-costrisk"] : []), "debt-credit"]
+          ? ["debt-credit-composition", "debt-liabilities", ...(hasDebt ? ["debt-costrisk"] : []), "debt-credit"]
           : sec === "loans"
-            ? ["debt-liabilities"]
+            ? ["debt-loans-composition", "debt-liabilities"]
             : ["debt-history", "debt-liabilities", ...(hasDebt ? ["debt-costrisk", "debt-payoff"] : []), "debt-credit"],
       }))}
     />
@@ -370,6 +370,17 @@ export function DebtWorkspace({
       {hasDebt && (
         <div id="debt-composition" className={`scroll-mt-20 ${compactHidden(!cv.history)}`.trim()}>
           <DebtCompositionCard accounts={accounts} ctx={ctx} currency={displayCurrency} />
+        </div>
+      )}
+
+      {/* ②c v2.7 final UX pass — the compact Credit / Loans views get their own
+          donut: the SAME DebtCompositionCard scoped to the selected class
+          (presentationDebtClass, as the class ledger below), reconciling
+          exactly to that class's owed total, with an honest empty state.
+          lg:hidden — the tabs exist below lg only; desktop keeps All. */}
+      {debtTabs && cv.ledgerClass && (
+        <div className="lg:hidden" data-compact-debt-donut={cv.ledgerClass}>
+          <DebtCompositionCard key={cv.ledgerClass} accounts={accounts} ctx={ctx} currency={displayCurrency} scope={cv.ledgerClass} />
         </div>
       )}
 
