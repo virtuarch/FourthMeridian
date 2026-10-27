@@ -258,10 +258,12 @@ export async function reconstructSolHistory(args: SolHistorySyncArgs): Promise<S
   // wallet was connected — and every later run starts from the DERIVED rows the
   // previous run wrote, so the collapse was permanent. The replay window is the
   // UNION: the reconciled licence says how far back the evidence reaches.
+  const licenceFromISO =
+    licensed.kind === "COMPLETE" ? licensed.fromISO
+    : licensed.kind === "PARTIAL" ? licensed.coveredFromISO
+    : null;
   const replayFromISO =
-    licensed.coveredFromISO && licensed.coveredFromISO < args.windowFromISO
-      ? licensed.coveredFromISO
-      : args.windowFromISO;
+    licenceFromISO && licenceFromISO < args.windowFromISO ? licenceFromISO : args.windowFromISO;
   const timeline = replayQuantityTimeline({
     instrumentId, accountId, anchors, events,
     windowFromISO: replayFromISO,

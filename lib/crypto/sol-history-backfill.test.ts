@@ -59,7 +59,8 @@ console.log("2. the replay window follows the licence, not the connection date")
 {
   const s = code("lib/crypto/sol-history-sync.ts");
   check("replay window is the UNION of the licence and the caller's floor",
-    /const replayFromISO =\s*licensed\.coveredFromISO && licensed\.coveredFromISO < args\.windowFromISO/.test(s)
+    /licensed\.kind === "COMPLETE" \? licensed\.fromISO/.test(s) && /licensed\.kind === "PARTIAL" \? licensed\.coveredFromISO/.test(s)
+      && /licenceFromISO && licenceFromISO < args\.windowFromISO \? licenceFromISO : args\.windowFromISO/.test(s)
       && /windowFromISO: replayFromISO/.test(s));
   check("…and the caller's floor no longer reaches the replay directly", !/replayQuantityTimeline\(\{[\s\S]{0,120}windowFromISO: args\.windowFromISO/.test(s));
 }
