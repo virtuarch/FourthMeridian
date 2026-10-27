@@ -23,11 +23,12 @@
  */
 
 import type { ReactNode } from "react";
-import { COMPACT_HERO } from "@/components/space/compact/compact-hero";
 import { formatCurrency } from "@/lib/currency";
 import { Figure, Surface } from "@/components/atlas/Surface";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
 import { HeroEyebrow } from "@/components/space/hero/HeroParts";
+import { CompactHeroCard } from "@/components/space/compact/CompactHeroCard";
+import { compactWindowLabel } from "./hero-window-label";
 import { BreakdownWidget } from "@/components/space/widgets/BreakdownWidget";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { EconomicSpendByTier } from "@/lib/transactions/cash-flow-projection";
@@ -55,19 +56,35 @@ export function SpendingHero({
 }) {
   const value = total == null ? "—" : formatCurrency(total, currency);
   return (
-    <section className={COMPACT_HERO} data-hero="spending">
-      <HeroEyebrow label={`Total spending · ${periodLabel(period)}`} />
-      <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-2">
-        <Figure value={value} size="hero" tone={total == null ? "muted" : "neutral"} className="sm:text-5xl leading-none" />
-        {total != null && change != null && (
-          <DeltaBadge abs={change.abs} pct={change.pct} currency={currency} goodDirection="down" compareLabel={change.fromLabel} className="!text-xs" />
-        )}
-      </div>
-      <p className="mt-2.5 text-sm text-[var(--text-secondary)]">
-        {SPENDING_HERO_SUB}
-        <span className="text-[var(--text-muted)]"> · {windowLabel}</span>
-      </p>
-    </section>
+    <>
+      {/* COMPACT (<lg) — the shared five-row card (one page shell with Net Worth /
+          Assets / Debt / Cash Flow). R5 stays empty: there is no Spending
+          TalkSection yet (adding one changes the AI templates — out of scope). */}
+      <CompactHeroCard
+        title={`Total spending · ${periodLabel(period)}`}
+        freshness={null}
+        trust={null}
+        value={value}
+        change={total != null && change != null ? { abs: change.abs, pct: change.pct, goodDirection: "down" } : null}
+        range={compactWindowLabel(windowLabel)}
+        currency={currency}
+      />
+
+      {/* DESKTOP (≥lg) — bare hero, as Cash Flow. */}
+      <section className="max-lg:hidden" data-hero="spending">
+        <HeroEyebrow label={`Total spending · ${periodLabel(period)}`} />
+        <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-2">
+          <Figure value={value} size="hero" tone={total == null ? "muted" : "neutral"} className="sm:text-5xl leading-none" />
+          {total != null && change != null && (
+            <DeltaBadge abs={change.abs} pct={change.pct} currency={currency} goodDirection="down" compareLabel={change.fromLabel} className="!text-xs" />
+          )}
+        </div>
+        <p className="mt-2.5 text-sm text-[var(--text-secondary)]">
+          {SPENDING_HERO_SUB}
+          <span className="text-[var(--text-muted)]"> · {windowLabel}</span>
+        </p>
+      </section>
+    </>
   );
 }
 

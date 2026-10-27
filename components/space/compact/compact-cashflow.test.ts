@@ -90,11 +90,13 @@ check("dark navy surface (--ink-800) with padding, border and rounding", /var\(-
 // v2.7 visual-first — DELIBERATE: Net Worth / Debt draw their compact hero through
 // the shared five-row CompactHeroCard, whose card root carries COMPACT_HERO.
 check("CompactHeroCard's card root uses it", /className=\{`lg:hidden grid grid-rows-\[auto_auto_auto_auto_auto\] gap-1 \$\{COMPACT_HERO\}`\}/.test(read("components/space/compact/CompactHeroCard.tsx")));
-for (const f of ["components/space/widgets/wealth/WealthHero.tsx", "components/space/widgets/debt/DebtHero.tsx"]) {
+for (const f of ["components/space/widgets/wealth/WealthHero.tsx", "components/space/widgets/debt/DebtHero.tsx", "components/space/widgets/cashflow/CashFlowHero.tsx", "components/space/widgets/cashflow/SpendingSections.tsx"]) {
   check(`${path.basename(f)} renders the shared card`, /<CompactHeroCard\b/.test(read(f)));
 }
-for (const f of ["components/space/widgets/cashflow/CashFlowHero.tsx"]) {
-  check(`${path.basename(f)} root uses it`, /<section className=\{COMPACT_HERO\}>/.test(read(f)));
+// v2.7 final UX pass — Cash Flow / Spending joined the shared card; their desktop
+// hero is a separate max-lg:hidden section (bare, unchanged at ≥1024px).
+for (const f of ["components/space/widgets/cashflow/CashFlowHero.tsx", "components/space/widgets/cashflow/SpendingSections.tsx"]) {
+  check(`${path.basename(f)} desktop hero is max-lg:hidden`, /<section className="max-lg:hidden"/.test(read(f)));
 }
 
 console.log("\n4. unchanged since P0 (byte for byte)");

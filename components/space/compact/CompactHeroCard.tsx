@@ -4,7 +4,8 @@
  * components/space/compact/CompactHeroCard.tsx  (v2.7 visual-first cleanup — five-row contract)
  *
  * THE compact (<1024px) header card for Net Worth, Total Assets, Cash,
- * Investments (WealthHero) and Total Debt (DebtHero). Every caller renders the
+ * Investments (WealthHero), Total Debt (DebtHero), Cash Flow (CashFlowHero) and
+ * Spending (SpendingHero). Every caller renders the
  * SAME five rows with the SAME classes, so identical structure ⇒ identical
  * height — no per-card heights, no spacer hacks:
  *
@@ -14,7 +15,8 @@
  *       +/−/0, or a muted one-line label when there is nothing to compare
  *   R4  the date range alone on its row (nowrap + truncate, full text in title),
  *       or "As of <date>" when there is no comparison
- *   R5  the existing "Talk with Fourth Meridian about this" link (navigates only)
+ *   R5  the existing "Talk with Fourth Meridian about this" link (navigates only);
+ *       kept empty at the same height where a perspective has no TalkSection
  *
  * Exceptional disclosures (withheld details, "Balances are current…", the crypto
  * price basis) are NOT part of the card at all: v2.7 header parity moved them
@@ -77,7 +79,9 @@ export function CompactHeroCard({
   /** R4: "Sep 26, 2026 → Oct 16, 2026", or "As of Oct 16, 2026". */
   range: string;
   currency: string;
-  talkSection: TalkSection;
+  /** R5's conversation link. Absent (no TalkSection for this perspective) ⇒ R5
+   *  stays, empty, at its fixed height so the card never changes size. */
+  talkSection?: TalkSection;
   talkPeriod?: unknown;
 }) {
   return (
@@ -120,7 +124,7 @@ export function CompactHeroCard({
           </p>
         </div>
         <div data-compact-hero-row="5" className={COMPACT_HERO_ROWS[4]}>
-          <TalkAboutThis section={talkSection} period={talkPeriod} />
+          {talkSection && <TalkAboutThis section={talkSection} period={talkPeriod} />}
         </div>
       </section>
     </div>

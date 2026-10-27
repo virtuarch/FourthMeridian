@@ -310,8 +310,8 @@ console.log("\nF. Spending is its own perspective; page orders; removed controls
   const heroSp = renderToStaticMarkup(createElement(SpendingHero, { total: 3774.46, currency: "USD", period: "PAST_MONTH", windowLabel: "as of Oct 27, 2026", change: null }));
   check("Spending hero: 'Total spending' $3,774.46 with the economic sub-line", /Total spending · 1M/.test(text(heroSp)) && /\$3,774\.46/.test(text(heroSp))
     && /purchases across cards and bank accounts, net of refunds — card payments aren.t counted again/.test(text(heroSp)) && SPENDING_HERO_SUB.length > 0);
-  check("both heroes share the HeroEyebrow skeleton and the compact hero surface",
-    [code("components/space/widgets/cashflow/CashFlowHero.tsx"), code("components/space/widgets/cashflow/SpendingSections.tsx")].every((s) => /<HeroEyebrow /.test(s) && /className=\{COMPACT_HERO\}/.test(s)));
+  check("both heroes share the HeroEyebrow skeleton (desktop) and the shared CompactHeroCard (compact)",
+    [code("components/space/widgets/cashflow/CashFlowHero.tsx"), code("components/space/widgets/cashflow/SpendingSections.tsx")].every((s) => /<HeroEyebrow /.test(s) && /<CompactHeroCard\b/.test(s) && /<section className="max-lg:hidden"/.test(s)));
   check("the Cards view and the perspective toggle are gone from the heatmap", !/CardsView|ModeToggle|aria-label="Cash flow perspective"/.test(code("components/space/widgets/CashFlowHistoryWidget.tsx")));
   check("no 'Set a Compare To date above' hint anywhere in the Cash Flow surfaces",
     !/Set a Compare To date/.test(code("components/space/widgets/cashflow/CashFlowHero.tsx") + code("components/space/widgets/cashflow/CashFlowWorkspace.tsx")));

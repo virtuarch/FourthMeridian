@@ -35,7 +35,6 @@
  * The other four Overview heroes keep their compact TrustIndicator.
  */
 
-import { COMPACT_HERO } from "@/components/space/compact/compact-hero";
 import { formatCurrency } from "@/lib/currency";
 import { Figure } from "@/components/atlas/Surface";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
@@ -43,6 +42,8 @@ import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { economicSpend, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
 import { TalkAboutThis } from "@/components/ai/TalkAboutThis";
 import { HeroEyebrow } from "@/components/space/hero/HeroParts";
+import { CompactHeroCard } from "@/components/space/compact/CompactHeroCard";
+import { compactWindowLabel } from "./hero-window-label";
 
 /** The comparison-window delta, ready for the badge (now − then over the shared
  *  projection; see compareCashFlow). Null when no honest comparison exists. */
@@ -87,43 +88,54 @@ export function CashFlowHero({
   const netStr = net == null ? "—" : `${net >= 0 ? "+" : "−"}${formatCurrency(Math.abs(net), currency)}`;
 
   return (
-    // Bare hero — no card, no border. The Net headline is the point; the Cash In /
-    // Cash Out summaries and read surfaces sit below.
-    <section className={COMPACT_HERO}>
-      <HeroEyebrow label={`Net cash flow · ${periodLabel(period)}`} />
+    <>
+      {/* COMPACT (<lg) — the shared five-row card, the SAME skeleton as Net Worth /
+          Assets / Debt (v2.7 final UX pass, one page shell). No trust chip: Cash
+          Flow mounts no provenance badge by design (see the header note). */}
+      <CompactHeroCard
+        title={`Net cash flow · ${periodLabel(period)}`}
+        freshness={null}
+        trust={null}
+        value={netStr}
+        valueTone={net != null && net < 0 ? "negative" : "neutral"}
+        change={net != null && change != null ? { abs: change.abs, pct: change.pct, goodDirection: "up" } : null}
+        range={compactWindowLabel(windowLabel)}
+        currency={currency}
+        talkSection="cash-flow"
+        talkPeriod={period}
+      />
 
-      <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-2">
-        <Figure
-          value={netStr}
-          size="hero"
-          tone={net == null ? "muted" : net >= 0 ? "up" : "down"}
-          className="sm:text-5xl leading-none"
-        />
-        {/* Cash Flow reconstructs historically, so the headline and this delta share
-            ONE basis. No comparison window ⇒ nothing here (no persistent hint). */}
-        {net != null && change != null && (
-          <DeltaBadge
-            abs={change.abs}
-            pct={change.pct}
-            currency={currency}
-            goodDirection="up"
-            compareLabel={change.fromLabel}
-            className="!text-xs"
+      {/* DESKTOP (≥lg) — bare hero, no card, no border. The Net headline is the
+          point; the Cash In / Cash Out summaries and read surfaces sit below. */}
+      <section className="max-lg:hidden">
+        <HeroEyebrow label={`Net cash flow · ${periodLabel(period)}`} />
+
+        <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-2">
+          <Figure
+            value={netStr}
+            size="hero"
+            tone={net == null ? "muted" : net >= 0 ? "up" : "down"}
+            className="sm:text-5xl leading-none"
           />
-        )}
-      </div>
+          {/* Cash Flow reconstructs historically, so the headline and this delta share
+              ONE basis. No comparison window ⇒ nothing here (no persistent hint). */}
+          {net != null && change != null && (
+            <DeltaBadge
+              abs={change.abs}
+              pct={change.pct}
+              currency={currency}
+              goodDirection="up"
+              compareLabel={change.fromLabel}
+              className="!text-xs"
+            />
+          )}
+        </div>
 
-      <p className="mt-2.5 text-sm text-[var(--text-secondary)]">
-        {CASH_FLOW_HERO_SUB}
-        <span className="text-[var(--text-muted)]"> · {windowLabel}</span>
-      </p>
-
-      {/* v2.7 R6 — compact-only entry to the AI conversation about this view. The
-          window is the hero's own period (an explicit calendar period or ALL/WTD
-          is dropped by the link's allowlist). */}
-      <div className="lg:hidden mt-2" data-compact-talk>
-        <TalkAboutThis section="cash-flow" period={period} />
-      </div>
-    </section>
+        <p className="mt-2.5 text-sm text-[var(--text-secondary)]">
+          {CASH_FLOW_HERO_SUB}
+          <span className="text-[var(--text-muted)]"> · {windowLabel}</span>
+        </p>
+      </section>
+    </>
   );
 }

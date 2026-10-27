@@ -146,11 +146,14 @@ check("the page derives the chip only via suggestedStarter(searchParams)",
 // ── 7. heroes ────────────────────────────────────────────────────────────────
 console.log("7. hero entry points are compact-only");
 {
-  // Cash Flow keeps its own compact wrapper.
+  // v2.7 final UX pass — Cash Flow now mounts the link as R5 of the shared
+  // CompactHeroCard too (one page shell); it no longer has its own wrapper.
   const src = read("components/space/widgets/cashflow/CashFlowHero.tsx");
-  const m = /<div className="([^"]*)" data-compact-talk>\s*<TalkAboutThis section=\{?([^ }]+)\}? period=/.exec(src);
-  check(`CashFlowHero.tsx: <TalkAboutThis section="cash-flow"> inside an lg:hidden wrapper`,
-    !!m && m[1].split(/\s+/).includes("lg:hidden") && m[2] === '"cash-flow"', m?.[0]);
+  check(`CashFlowHero.tsx: the card gets talkSection="cash-flow" and the hero's period`,
+    src.includes('talkSection="cash-flow"') && /talkPeriod=\{period\}/.test(src) && !/<TalkAboutThis\b/.test(src));
+  // Spending has no TalkSection (adding one changes the AI templates): no link.
+  const sp = read("components/space/widgets/cashflow/SpendingSections.tsx");
+  check("SpendingSections.tsx: no conversation link (no Spending TalkSection)", !/talkSection=|<TalkAboutThis\b/.test(sp));
 }
 // v2.7 visual-first — DELIBERATE: Net Worth / Assets / Debt mount the link as
 // R5 of the shared five-row CompactHeroCard, whose root is lg:hidden.
@@ -158,7 +161,7 @@ console.log("7. hero entry points are compact-only");
   const card = read("components/space/compact/CompactHeroCard.tsx");
   check("CompactHeroCard: R5 is <TalkAboutThis section={talkSection} period={talkPeriod} />, inside the lg:hidden card",
     /<div className="lg:hidden" data-compact-hero-wrap>/.test(card)
-      && /data-compact-hero-row="5"[^>]*>\s*<TalkAboutThis section=\{talkSection\} period=\{talkPeriod\} \/>/.test(card));
+      && /data-compact-hero-row="5"[^>]*>\s*\{talkSection && <TalkAboutThis section=\{talkSection\} period=\{talkPeriod\} \/>\}/.test(card));
   for (const [file, section] of [
     ["components/space/widgets/wealth/WealthHero.tsx", "{TALK_SECTION[metric]}"],
     ["components/space/widgets/debt/DebtHero.tsx", '"debt"'],

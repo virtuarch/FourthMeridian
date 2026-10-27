@@ -91,11 +91,13 @@ function AxisTile({
         disabled={!canExpand}
         onClick={() => setOpen((v) => !v)}
         onPointerDown={(e) => e.stopPropagation()}
-        className={`w-full flex items-center justify-between gap-2 min-w-0 ${canExpand ? "cursor-pointer" : "cursor-default"}`}
+        className={`w-full flex items-center justify-between gap-2 min-w-0 max-sm:flex-col max-sm:items-start max-sm:gap-0.5 ${canExpand ? "cursor-pointer" : "cursor-default"}`}
       >
         {/* CF-5 — responsive number discipline: the label may truncate (it never
             carries meaning past its first word) so the figure keeps its full digits;
-            the figure shrinks a step on narrow widths and never wraps or overflows. */}
+            the figure shrinks a step on narrow widths and never wraps or overflows.
+            v2.7 — below sm the label stacks ABOVE the figure, so at phone widths
+            neither is cut ("C…" / "Cas…" at 390px before). Desktop is unchanged. */}
         <span className="flex items-center gap-1 text-xs min-w-0" style={{ color: "var(--text-muted)" }}>
           {canExpand && (open
             ? <ChevronDown size={12} className="shrink-0 text-[var(--text-faint)]" />
