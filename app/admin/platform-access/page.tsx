@@ -315,7 +315,7 @@ export default function PlatformAccessPage() {
                           {u.username && <p className="text-xs text-blue-400 mt-0.5">@{u.username}</p>}
                           {/* SEC-PLAT-1 — Platform access is refused until the holder enrols in 2FA. */}
                           {u.totpEnabled === false && (
-                            <p className="text-[10px] text-amber-400 mt-0.5" title="Platform access is refused until this account enrols in two-factor authentication.">2FA off — Platform access waits for enrolment</p>
+                            <p className="text-[10px] text-[var(--accent-warning)] mt-0.5" title="Platform access is refused until this account enrols in two-factor authentication.">2FA off — Platform access waits for enrolment</p>
                           )}
                         </div>
                       </div>
