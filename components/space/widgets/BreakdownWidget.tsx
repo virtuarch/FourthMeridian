@@ -121,6 +121,12 @@ export interface BreakdownWidgetProps {
    * Pass one when the label alone is ambiguous out of context ("Other").
    */
   selectLabel?: (item: BreakdownItem) => string;
+  /**
+   * Donut only — render the hover-synced segment list under the ring (default
+   * true). False when the caller renders its own ledger of the SAME items
+   * directly beneath (the Spending category ledger), so the list isn't shown twice.
+   */
+  segmentList?: boolean;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -320,6 +326,7 @@ function DonutView({
   sel,
   centerTotal,
   centerTone = "series",
+  segmentList = true,
 }: {
   items:       ColoredItem[];
   formatValue: (v: number) => string;
@@ -328,6 +335,7 @@ function DonutView({
   sel:         SelectApi;
   centerTotal?: { value: number; label: string };
   centerTone?: "series" | "neutral";
+  segmentList?: boolean;
 }) {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const interactive = sel.onSelect != null;
@@ -458,7 +466,7 @@ function DonutView({
       </div>
 
       {/* ── Hover-synced segment list ───────────────────────────────────── */}
-      <div className="space-y-2">
+      <div className={segmentList ? "space-y-2" : "hidden"} data-segment-list={segmentList ? undefined : "off"}>
         {segments.map((seg) => {
           const isHov = hoveredIdx === seg.i;
           const isDim = hoveredIdx !== null && !isHov;
@@ -510,6 +518,7 @@ export function BreakdownWidget({
   onSelect,
   selectedId,
   selectLabel,
+  segmentList,
 }: BreakdownWidgetProps) {
   // REVIEW-3 B-5 — when the caller supplies no formatter, label in the
   // display-currency AUTHORITY (the Space's effective reporting currency),
@@ -540,7 +549,7 @@ export function BreakdownWidget({
       {viewMode === "bar"  && <BarView  items={colored} formatValue={formatValue} total={total} sel={sel} />}
       {viewMode === "list" && <ListView items={colored} formatValue={formatValue} total={total} sel={sel} />}
       {viewMode === "donut" && (
-        <DonutView items={colored} formatValue={formatValue} itemNoun={itemNoun} total={total} sel={sel} centerTotal={centerTotal} centerTone={centerTone} />
+        <DonutView items={colored} formatValue={formatValue} itemNoun={itemNoun} total={total} sel={sel} centerTotal={centerTotal} centerTone={centerTone} segmentList={segmentList} />
       )}
       {footer && <div>{footer}</div>}
     </div>

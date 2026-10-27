@@ -54,6 +54,10 @@ import { calendarNavigation, type CalendarScale } from "@/lib/space/perspective-
 
 export type ActivityPage = "cashFlow" | "spending";
 
+/** v2.7 — Spending's heatmap legend. A spending day paints on the negative side
+ *  (money spent); a day whose refunds exceed its purchases paints positive. */
+export const SPENDING_LEGEND = { positive: "Refunds exceeded spending", negative: "Spending", neutral: "No spending" } as const;
+
 const EMPTY_COPY: Record<ActivityPage, { headline: string; sub: string }> = {
   cashFlow: { headline: "No money moved in this period", sub: "Daily cash movement appears as transactions accumulate." },
   spending: { headline: "No spending in this period", sub: "Daily spending appears once you have purchases." },
@@ -238,6 +242,7 @@ export function CashFlowHistoryWidget({ transactions, period, now, asOf, today, 
             measures={measures} onSelectDay={openDay}
             viewYear={period === "ALL" ? effectiveViewYear ?? undefined : undefined}
             daily={daily}
+            legend={page === "spending" ? SPENDING_LEGEND : undefined}
           />
         )}
 
