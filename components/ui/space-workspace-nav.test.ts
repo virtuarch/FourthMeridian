@@ -264,7 +264,7 @@ console.log("F. Platform axis — the SAME workspace block; mobile; duplicates")
       hqLinks[0] === "/dashboard/platform/PLATFORM_OPS" && platAvailable[0].key === PLATFORM_DEFAULT_WORKSPACE_ID &&
       hqLinks.slice(1).every((h) => /^\/dashboard\/platform\/PLATFORM_OPS\?workspace=platform-[a-z]+$/.test(h)), hqLinks.join());
   check("the open workspace is lit, and only it (the host's activeId, never text)",
-    activeIn(hq, "Space").join() === "Policies" && activeIn(spaceMode("/dashboard/platform/PLATFORM_OPS", platNav(PLATFORM_DEFAULT_WORKSPACE_ID)), "Space").join() === "Overview");
+    activeIn(hq, "Space").join() === "Controls" /* P-10 */ && activeIn(spaceMode("/dashboard/platform/PLATFORM_OPS", platNav(PLATFORM_DEFAULT_WORKSPACE_ID)), "Space").join() === "Overview");
   check("every platform row renders its icon, resolved from the PUBLISHED icon name (the finance id map has no entry for it)",
     (topLevel(hqNav).match(/<svg[^>]*width="14"/g) ?? []).length === platAvailable.length && hqNav.includes("lucide-sliders-horizontal") && hqNav.includes("lucide-layout-dashboard"));
   check("Sections survive on the platform axis, BELOW the workspace list (which workspace, then what's inside)",

@@ -38,7 +38,7 @@ import {
   getWorkspaceDefinition,
   workspaceConsumesShellTime,
 } from "@/lib/perspectives";
-import { getPlatformAreaWorkspaces, getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { canonicalPlatformWorkspaceId, getPlatformAreaWorkspaces, getPlatformWorkspace } from "@/lib/platform/workspaces";
 import { LEVEL_RANK } from "@/lib/platform/policy";
 import {
   type SpaceMountContext,
@@ -144,7 +144,8 @@ export function platformMountContext(
     .map((c) => getPlatformWorkspace(c.workspaceId))
     .filter((d): d is NonNullable<typeof d> => Boolean(d))
     .map((d) => ({ key: d.id, label: d.label, icon: d.icon, kind: d.kind }));
-  const selectedKey = resolveSelectedWorkspaceKey(available, opts.selectedKey, PLATFORM_DEFAULT_WORKSPACE);
+  // P-10 — a retired workspace id (old deep link) resolves to its new home.
+  const selectedKey = resolveSelectedWorkspaceKey(available, canonicalPlatformWorkspaceId(opts.selectedKey), PLATFORM_DEFAULT_WORKSPACE);
 
   return {
     ref: {

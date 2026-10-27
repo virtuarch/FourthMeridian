@@ -117,7 +117,7 @@ console.log("4. the surface");
   check("tone words render as text (never colour alone)", html.includes(">Operational<") && html.includes(">Stale data<"));
   check("Resend row names its authority and says no verdict", html.includes(RESEND_AUTHORITY) && html.includes(RESEND_NO_VERDICT));
   check("OpenAI row says no authority", html.includes(OPENAI_NO_AUTHORITY) && html.includes(NO_AUTHORITY));
-  check("doorways name their workspaces", html.includes("Pipeline →") && html.includes("Jobs →") && html.includes("AI →"));
+  check("doorways name their workspaces", html.includes("Pipeline →") && html.includes("Jobs →") && html.includes("AI and costs →")); // P-10
   check("last success is relative over UTC", html.includes("2h 0m ago") && html.includes("14 Oct 10:00 UTC"));
   check("the trust bar is scoped to the provider-health authority", html.includes("provider-health authority only (2 providers)"));
   const noHost = renderToStaticMarkup(createElement(ProviderHealthSurface, { title: "Provider health", providers: ok(providersOk), email: ok(emailOk), nowMs: NOW }));

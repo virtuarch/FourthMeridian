@@ -151,4 +151,4 @@ export const EXPECTED_PROVENANCE_DETAIL = "execution cadence policy";
  * its reason instead of being transcribed from a file the route never opened.
  */
 export const CRON_CADENCE_REASON =
-  "the wake cadence lives in vercel.json, which this platform does not read; execution cadence is shown in the Policies workspace";
+  "the wake cadence lives in vercel.json, which this platform does not read; execution cadence is shown in the Controls workspace";

@@ -103,7 +103,7 @@ function main() {
     check("qualifiers render", text.includes("10 never ran") && text.includes("of 4 sources"));
     const openLabels = [...html.matchAll(/aria-label="Open ([^"]+)"/g)].map((m) => m[1]);
     check("six doorways labelled from the workspace registry",
-      openLabels.join(",") === ["platform-refresh", "platform-providers", "platform-jobs", "platform-ai", "platform-ai", "platform-costs"].map((id) => getPlatformWorkspace(id)!.label).join(","), openLabels.join(","));
+      openLabels.join(",") === ["platform-refresh", "platform-providers", "platform-jobs", "platform-ai", "platform-ai", "platform-ai"].map((id) => getPlatformWorkspace(id)!.label).join(","), openLabels.join(","));
     check("no KeyRow list on the board", !/items-baseline justify-between gap-4/.test(html));
   }
 
@@ -127,7 +127,7 @@ function main() {
     const unavailableBadge = html.match(/style="color:([^"]+)"><span aria-hidden="true" class="rounded-full" style="[^"]*"><\/span><span class="text-xs font-medium">Unavailable<\/span>/);
     check("Unavailable carries the muted token", unavailableBadge?.[1] === TONE_COLOR.muted);
     const postureDoorways = [...html.matchAll(/aria-label="([^"]+) — open the workspace behind (Alerts|Providers|Freshness|Configuration)"/g)].map((m) => `${m[2]}→${m[1]}`);
-    check("each chip has a doorway labelled from the registry", postureDoorways.join(",") === "Alerts→Policies,Providers→Providers,Freshness→Providers,Configuration→Policies", postureDoorways.join(","));
+    check("each chip has a doorway labelled from the registry", postureDoorways.join(",") === "Alerts→Controls,Providers→Providers,Freshness→Providers,Configuration→Controls", postureDoorways.join(","));
   }
 
   console.log("5. basis strings and provenance live only inside Technical details");
@@ -148,7 +148,7 @@ function main() {
     check("footnote is OVERVIEW_FOOTNOTE", text.includes(OVERVIEW_FOOTNOTE));
     check("…and it is one sentence", (OVERVIEW_FOOTNOTE.match(/\.\s/g) ?? []).length === 0 && OVERVIEW_FOOTNOTE.endsWith("."));
     check("the worst word leads the header", /Failed Something has failed checked 12s ago/.test(text), text.slice(0, 200));
-    check("policy strip with a Policies doorway", text.includes("Banks every 24h (default)") && /aria-label="Policies — open the workspace behind the refresh policy"/.test(html));
+    check("policy strip with a Controls doorway (P-10: Policies → Controls)", text.includes("Banks every 24h (default)") && /aria-label="Controls — open the workspace behind the refresh policy"/.test(html));
     const unwired = render(overview(), false);
     check("no doorway renders when the host wired no handler", !unwired.html.includes("aria-label=\"Open ") && !unwired.html.includes("behind the refresh policy"));
   }

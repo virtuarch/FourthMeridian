@@ -81,7 +81,7 @@ export function ActivityFeedSurface({ state, nowMs, onOpenWorkspace, onInspectEx
       icon={UserCog}
       title="Recent operator activity"
       count={data?.items.length}
-      actions={<BlockDoorway label="Trends" workspaceId="platform-trends" onOpenWorkspace={onOpenWorkspace} />}
+      actions={<BlockDoorway label="Jobs" workspaceId="platform-jobs" onOpenWorkspace={onOpenWorkspace} />}
       footnote={data ? data.note : "Last 20 recorded actions on platform objects; security events live in Security Operations."}
     >
       {state.loading || !data ? (
