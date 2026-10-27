@@ -359,6 +359,16 @@ export const AuditAction = {
   // not one per failed attempt).
   SECURITY_ANOMALY_DETECTED:    "SECURITY_ANOMALY_DETECTED",
 
+  // ── First-time onboarding (Connections pass PR 2) ────────────────────────
+  // The welcome view was shown to a first-run user (one row per user, written
+  // by POST /api/onboarding). Its existence is what stops the post-login
+  // redirect from ever firing twice — the Brief is reachable again at once.
+  ONBOARDING_PRESENTED:         "ONBOARDING_PRESENTED",
+  // The user chose "Explore My Space" or dismissed the invitation. Persisted
+  // server-side so it holds across devices. Deliberately NOT a product event
+  // (PRODUCT_EVENT_ACTIONS is purged at 13 months; a dismissal must not expire).
+  ONBOARDING_DISMISSED:         "ONBOARDING_DISMISSED",
+
   // ── AI Context ───────────────────────────────────────────────────────────────
   // ⚠️ NO LIVE WRITER. RLS-AI-S1 deleted `lib/ai/context-builder.ts`, which was
   // this event's ONLY writer and had no importer outside its own barrel. The claim
