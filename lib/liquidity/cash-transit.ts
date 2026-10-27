@@ -1,5 +1,5 @@
 /**
- * lib/balances/cash-transit.ts   (v2.7-P2 — cash in transit, DISCLOSURE ONLY)
+ * lib/liquidity/cash-transit.ts   (v2.7-P2 — cash in transit, DISCLOSURE ONLY)
  *
  * Pure: no DB, no React, no clock (the caller passes `now`). Classifies recent
  * OUTGOING transfer legs on the Space's cash accounts by what the existing
@@ -58,7 +58,7 @@
  *                           the twin carries the event. Never counted twice.
  */
 
-import type { AdjustedBalanceBasis } from "./account-balances";
+import type { AdjustedBalanceBasis } from "@/lib/balances/account-balances";
 
 /** The match window, in whole days — the transfer authority's own bound
  *  (lib/transactions/transfer-maturation.ts TRANSFER_MATCH_WINDOW_DAYS = 5).

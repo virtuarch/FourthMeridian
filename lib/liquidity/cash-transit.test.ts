@@ -1,5 +1,5 @@
 /**
- * lib/balances/cash-transit.test.ts   (v2.7-P2 — cash in transit, disclosure only)
+ * lib/liquidity/cash-transit.test.ts   (v2.7-P2 — cash in transit, disclosure only)
  *
  *   1. classification — source-first / destination-first settlement, partial
  *      match, stale, duplicate pending+posted twin, unknown external, currency,
@@ -10,7 +10,7 @@
  *      are byte-identical with and without it
  *   4. source scans — read-only, scoped, guarded route
  *
- *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/balances/cash-transit.test.ts
+ *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/liquidity/cash-transit.test.ts
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import {
   CASH_TRANSIT_WINDOW_DAYS, classifyCashTransitLeg, summarizeCashTransit, cashTransitDisclosure,
   type CashTransitLeg,
-} from "@/lib/balances/cash-transit";
+} from "@/lib/liquidity/cash-transit";
 import type { AdjustedBalanceBasis } from "@/lib/balances/account-balances";
 import { TRANSFER_MATCH_WINDOW_DAYS } from "@/lib/transactions/transfer-maturation";
 
@@ -124,7 +124,7 @@ async function main() {
 
   console.log("\n2. the real read path (in-memory client)");
   {
-    const { loadCashTransitLegs, projectTransferMatch } = await import("@/lib/balances/cash-transit-read");
+    const { loadCashTransitLegs, projectTransferMatch } = await import("@/lib/liquidity/cash-transit-read");
     const day = (iso: string) => new Date(`${iso}T00:00:00Z`);
     const tx = (o: any) => ({
       deletedAt: null, pending: false, settlementState: "POSTED", currency: "USD", flowType: "TRANSFER",
@@ -234,7 +234,7 @@ async function main() {
 
   console.log("\n4. source scans");
   {
-    const read = readFileSync("lib/balances/cash-transit-read.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    const read = readFileSync("lib/liquidity/cash-transit-read.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
     check("the read is READ-ONLY (no create/update/upsert/delete/$executeRaw)", !/\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(|\$executeRaw/.test(read));
     check("the read is scoped to transaction-detail visibility and the event projection",
       /TRANSACTION_DETAIL_VISIBILITY/.test(read) && /eventProjectionWhere\(\)/.test(read) && /BANKING_POPULATION/.test(read));
@@ -242,7 +242,7 @@ async function main() {
     check("the transfer authority is CALLED, not re-implemented", /resolveTransferAssessments\(/.test(read) && !/matchTransferCandidate/.test(read));
     const route = readFileSync("app/api/spaces/[id]/liquidity/cash-transit/route.ts", "utf8");
     check("the route is membership-guarded and tenant-scoped", /requireSpaceAction\(spaceId, "perspective:read"\)/.test(route) && /withTenantDb\(/.test(route));
-    const pure = readFileSync("lib/balances/cash-transit.ts", "utf8");
+    const pure = readFileSync("lib/liquidity/cash-transit.ts", "utf8");
     check("the pure module imports no DB / server code", !/@prisma|server-only|@\/lib\/db/.test(pure));
   }
 

@@ -277,7 +277,7 @@ console.log("\n9. source guards — reuse, no new authority");
   check("no USD literal in the new components", !/"USD"/.test(ledger) && !/"USD"/.test(src("components/space/widgets/liquidity/CashDistribution.tsx")));
   // v2.7-P2 — exactly TWO reads: the existing detail route (status/freshness) and
   // the cash-transit route, which feeds only the neutral disclosure lines and no
-  // figure on the ledger (lib/balances/cash-transit.test.ts §3 pins that).
+  // figure on the ledger (lib/liquidity/cash-transit.test.ts §3 pins that).
   check("ledger reads only the detail route + the P2 cash-transit disclosure route", (ledger.match(/fetch\(/g) ?? []).length === 2 && ledger.includes("/accounts/detail") && ledger.includes("/liquidity/cash-transit"));
   const ws = src("components/space/widgets/liquidity/LiquidityWorkspace.tsx");
   check("Accessible cash tile renders the existing reachableDisclosure()", ws.includes("reachableDisclosure(reach") && ws.includes("data-reach-disclosure"));

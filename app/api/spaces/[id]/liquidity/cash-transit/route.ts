@@ -4,10 +4,10 @@
  * v2.7-P2 — the read behind the Cash ledger's neutral "not yet matched" /
  * "pending at the destination" lines. Presentation only: it returns recent
  * outgoing transfer legs on the Space's cash accounts with the EXISTING transfer
- * authority's verdict projected onto each (lib/balances/cash-transit-read.ts).
+ * authority's verdict projected onto each (lib/liquidity/cash-transit-read.ts).
  * It computes no balance and changes no total; the client classifies the legs
  * against the same adjusted-balance basis the ledger already holds
- * (lib/balances/cash-transit.ts).
+ * (lib/liquidity/cash-transit.ts).
  *
  * Membership-gated exactly like the Liquidity space-data route (ACTIVE member,
  * perspective:read), and run inside ONE short tenant transaction so the
@@ -19,7 +19,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSpaceAction } from "@/lib/spaces/authorize";
 import { withApiHandler } from "@/lib/api";
 import { withTenantDb } from "@/lib/db/tenant-context";
-import { loadCashTransitLegs } from "@/lib/balances/cash-transit-read";
+import { loadCashTransitLegs } from "@/lib/liquidity/cash-transit-read";
 
 export const GET = withApiHandler(async (
   _req: NextRequest,

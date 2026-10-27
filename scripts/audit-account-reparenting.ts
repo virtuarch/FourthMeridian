@@ -754,6 +754,10 @@ const COUNTERPARTY_REFERENCES: Readonly<Record<string, CpRole>> = {
   "lib/transactions/plaid-flow-input.ts":                "WRITE_NULL",
   "lib/transactions/RelationshipResolver.ts":            "DTO",
   "lib/transactions/detail-sections.ts":                 "READ",
+  // v2.7-P2 — selects the counterparty to tell a matched destination from an
+  // unmatched outgoing transfer for the Cash ledger's neutral transit line;
+  // never writes the FK.
+  "lib/liquidity/cash-transit-read.ts": "READ",
   // v2.7-P1 — selects the persisted counterparty to read its account TYPE as
   // evidence for the transfer-authority correction; never writes the FK (the
   // correction's updateMany payload is flowType/category/flowAuthority only).

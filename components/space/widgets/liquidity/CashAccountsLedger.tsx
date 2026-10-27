@@ -26,7 +26,7 @@
  *
  * TRANSIT (v2.7-P2) — GET /api/spaces/[id]/liquidity/cash-transit supplies recent
  * outgoing transfer legs with the transfer authority's verdict; the pure
- * lib/balances/cash-transit classifies them against the SAME adjusted basis and
+ * lib/liquidity/cash-transit classifies them against the SAME adjusted basis and
  * the footer states only NEUTRAL lines ("not yet matched to a destination",
  * "still pending at the destination"). Never added to total cash, never a figure
  * in any column, nothing on a failed read.
@@ -51,7 +51,7 @@ import { accountDetailDisplay, accountDetailFallbackRows } from "@/components/sp
 import {
   pendingLine, reconcileTerms, type CashBalanceBasis, type CashAccountRow, type CashAccountsSummary, type CashLedgerAccount,
 } from "./cash-accounts";
-import { cashTransitDisclosure, summarizeCashTransit, type CashTransitLeg } from "@/lib/balances/cash-transit";
+import { cashTransitDisclosure, summarizeCashTransit, type CashTransitLeg } from "@/lib/liquidity/cash-transit";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 

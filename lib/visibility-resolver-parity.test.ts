@@ -210,6 +210,11 @@ test("enrolment — every Space-scoped detail reader is a known authority", () =
     // Consumers that inline the gated join rather than calling a resolver. Each
     // was reviewed in V25-CLOSE-2 and carries the constraints its query shape
     // requires; listed so a NEW one cannot appear unnoticed.
+    // v2.7-P2 (reviewed 2026-10-27): the Cash ledger's transit reader — accounts
+    // gated on spaceId + status ACTIVE + TRANSACTION_DETAIL_VISIBILITY +
+    // deletedAt null, transactions deletedAt null; route requireSpaceAction
+    // ("perspective:read") + withTenantDb.
+    "lib/liquidity/cash-transit-read.ts",
     "lib/data/transactions.ts",
     // v2.6-OWN-2 — `bankingTransactionWhere` MOVED here, byte-identical (proved
     // by diff against its prior definition), so that read-only audits could

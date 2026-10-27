@@ -1,5 +1,5 @@
 /**
- * lib/balances/cash-transit-read.ts   (v2.7-P2 — cash in transit, SERVER READ)
+ * lib/liquidity/cash-transit-read.ts   (v2.7-P2 — cash in transit, SERVER READ)
  *
  * READ-ONLY. Gathers the recent outgoing transfer legs on a Space's cash
  * accounts and projects the EXISTING transfer authority's verdict onto each

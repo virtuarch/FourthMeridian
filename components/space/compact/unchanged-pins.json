@@ -94,6 +94,8 @@
  "lib/investments/valuation.fixtures.ts": "fc5cd243a5db035db63fe5e99c28c24e20dae818195264de3619d4ce524a62d8",
  "lib/investments/valuation.ts": "87ab34e4660ff9f760e1b2746a92b38925713da06fb84d5deb323bf89e8dc809",
  "lib/liquidity/cash-history.ts": "21750efcbbb806d52003b4e57db4a47d86b8268bdd064a6879889ec395d002d8",
+ "lib/liquidity/cash-transit-read.ts": "c702b17d7574aa4d484f2d6cb43275d8424c337eb592a3dfc2008b152aabf9b1",
+ "lib/liquidity/cash-transit.ts": "c3149195969ca2312c5660f6c8a1537228dddcf55eddd8a7679b5535fe037c4f",
  "lib/liquidity/display-conversion.ts": "085187febe1498fb3e66f8e237d9932b18a2e5d45004e8cfe9577b280fa1df1c",
  "lib/liquidity/expense-baseline.ts": "fabde7ef968d09096539dfef9c9f36b0c6b401edc139fe7c2755fd51bbc2d1b2",
  "lib/liquidity/historical-splice.ts": "351a4ac39be3fc4932f4e0643daddf9bb7a05b5ba7af4c5fa19958fa20c1498e",
