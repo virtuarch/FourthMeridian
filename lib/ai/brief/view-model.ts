@@ -56,9 +56,14 @@ function dataHealthView(h: BriefDataHealthView | null | undefined): BriefDataHea
   return {
     sources: h.sources.map((s) => ({
       kind: s.kind, label: s.label, state: s.state, lastUpdatedAt: s.lastUpdatedAt,
+      // v2.7 — the spread of account update times, so the page never implies a
+      // source's accounts all updated together.
+      ...(s.newestUpdatedAt ? { newestUpdatedAt: s.newestUpdatedAt } : {}),
+      ...(s.undatedAccounts ? { undatedAccounts: s.undatedAccounts } : {}),
       accountCount: s.accountCount, needsAttention: s.needsAttention, actionable: s.actionable,
     })),
-    groups: h.groups.map((g) => ({ kind: g.kind, sources: g.sources, attention: g.attention, oldestUpdatedAt: g.oldestUpdatedAt })),
+    groups: h.groups.map((g) => ({ kind: g.kind, sources: g.sources, attention: g.attention, oldestUpdatedAt: g.oldestUpdatedAt,
+      ...(g.newestUpdatedAt ? { newestUpdatedAt: g.newestUpdatedAt } : {}) })),
     attention: h.attention,
   };
 }

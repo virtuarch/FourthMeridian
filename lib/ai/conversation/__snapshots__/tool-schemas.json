@@ -243,7 +243,7 @@
       "type": "function",
       "function": {
         "name": "get_transactions",
-        "description": "Individual transactions, filtered and ranked. Set `flow` to say what KIND of movement you mean — \"spending\" for purchases, \"income\" for deposits, \"transfers\" for movements between the user's own accounts, \"card_payments\" for paying a card off. Use flow:\"spending\" with sort:\"largest\" for \"my biggest purchase\".",
+        "description": "Individual transactions, filtered and ranked. Set `flow` to say what KIND of movement you mean — \"spending\" for purchases, \"income\" for deposits, \"transfers\" for movements between accounts (never a debt payment), \"card_payments\" for paying a card or loan. Each row carries `nature` and `natureNote`: describe a row only as its natureNote says. Use flow:\"spending\" with sort:\"largest\" for \"my biggest purchase\".",
         "parameters": {
           "type": "object",
           "properties": {

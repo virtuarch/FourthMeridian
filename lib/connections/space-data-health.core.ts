@@ -87,6 +87,15 @@ export interface DataSourceView {
   state: DataSourceState;
   /** The last successful update Fourth Meridian recorded for this source. ISO-8601, or null. */
   lastUpdatedAt: string | null;
+  /**
+   * v2.7 — the NEWEST successful account update, present only when the source's
+   * accounts were updated at DIFFERENT times (so a surface can say "2 hr ago –
+   * yesterday" instead of implying they all updated together). Never newer than the
+   * source's own last successful sync. `lastUpdatedAt` stays the OLDEST.
+   */
+  newestUpdatedAt?: string;
+  /** v2.7 — accounts of this source with NO recorded successful update, when others have one. */
+  undatedAccounts?: number;
   /** Accounts in this Space that this source feeds. */
   accountCount: number;
   needsAttention: boolean;
@@ -108,6 +117,8 @@ export interface DataGroupView {
   attention: number;
   /** The OLDEST last update among the group's sources — never the newest. */
   oldestUpdatedAt: string | null;
+  /** v2.7 — the NEWEST update among the group's sources, only when it differs from the oldest. */
+  newestUpdatedAt?: string;
 }
 
 export interface SpaceDataHealth {
@@ -235,6 +246,29 @@ function feedsOf(rows: DataHealthAccountInput[]): FedPopulation[] | undefined {
   return feeds;
 }
 
+/**
+ * v2.7 — how spread out a source's successful account updates are. Each account's
+ * clock is capped at the source's own last successful sync (an account can never be
+ * fresher than the connection that wrote it). `newestUpdatedAt` is emitted only when
+ * it differs from the OLDEST (`oldest`, the source's `lastUpdatedAt`), and
+ * `undatedAccounts` only when some accounts are dated and some are not. Failed
+ * attempts never move these: they are successful-write clocks only.
+ */
+function updateSpread(
+  accounts: (Date | null)[], sourceSyncedAt: Date | null, oldest: string | null,
+): { newestUpdatedAt?: string; undatedAccounts?: number } {
+  const capped = accounts.filter((d): d is Date => d instanceof Date)
+    .map((d) => (sourceSyncedAt && sourceSyncedAt < d ? sourceSyncedAt : d));
+  const undated = accounts.length - capped.length;
+  const out: { newestUpdatedAt?: string; undatedAccounts?: number } = {};
+  if (capped.length > 0) {
+    const newest = new Date(Math.max(...capped.map((d) => d.getTime()))).toISOString();
+    if (oldest && newest !== oldest) out.newestUpdatedAt = newest;
+    if (undated > 0) out.undatedAccounts = undated;
+  }
+  return out;
+}
+
 export function deriveSpaceDataHealth(
   rows: DataHealthAccountInput[], viewerUserId: string, now: Date,
   /** Resolved refresh policies by kind (lib/platform/refresh-policy.ts). Manual accounts take none. */
@@ -263,7 +297,9 @@ export function deriveSpaceDataHealth(
     const actionable = kind === "BANK" ? p!.ownerUserId === viewerUserId
       : kind === "WALLET" ? w!.ownerUserId === viewerUserId : false;
     const feeds = feedsOf(rs);
+    const spread = updateSpread(rs.map((r) => r.lastUpdated), (p ?? w)?.lastSyncedAt ?? null, health.lastUpdatedAt);
     sources.push({ kind, label, state: health.state, lastUpdatedAt: health.lastUpdatedAt,
+      ...spread,
       accountCount: rs.length, needsAttention: health.needsAttention, actionable,
       ...(feeds ? { feeds } : {}) });
   }
@@ -276,7 +312,9 @@ export function deriveSpaceDataHealth(
     const g = sources.filter((s) => s.kind === kind);
     if (g.length === 0) return [];
     const dated = g.map((s) => s.lastUpdatedAt).filter((x): x is string => x !== null).sort();
-    return [{ kind, sources: g.length, attention: g.filter((s) => s.needsAttention).length, oldestUpdatedAt: dated[0] ?? null }];
+    const newest = g.map((s) => s.newestUpdatedAt ?? s.lastUpdatedAt).filter((x): x is string => x !== null).sort().at(-1);
+    return [{ kind, sources: g.length, attention: g.filter((s) => s.needsAttention).length, oldestUpdatedAt: dated[0] ?? null,
+      ...(newest && dated[0] && newest !== dated[0] ? { newestUpdatedAt: newest } : {}) }];
   });
 
   return { sources, groups, attention: sources.filter((s) => s.needsAttention).length };

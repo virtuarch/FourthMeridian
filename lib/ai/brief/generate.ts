@@ -18,6 +18,8 @@
  *   an observation states one    → that observation is dropped (UNLICENSED_FIGURE)
  *   an observation cites nothing real → dropped (NO_EVIDENCE); bad paths stripped
  *   SPENDING citing a debt payment or own-account transfer → dropped (MISLABELED_MOVEMENT)
+ *   debt-reduction wording resting only on non-payment movements (an own-accounts
+ *     transfer, an unclassified movement) → dropped (MISLABELED_MOVEMENT, v2.7-P0)
  *   a balance tied to a movement that posted on another class of account, or that is
  *     dated outside the cited window → dropped (UNCONNECTED_MOVEMENT): causality needs
  *     evidence, and the evidence is where and when the row posted
@@ -49,7 +51,7 @@ import { rateAt } from '@/lib/usage/pricing';
 import { todayUTCISO } from '@/lib/time/clock';
 import {
   BRIEF_SCHEMA, MAX_EVIDENCE_PATHS,
-  associatesUnconnectedMovement, citesNonSpendingAsSpending, onlyReportsFreshness,
+  associatesUnconnectedMovement, citesNonSpendingAsSpending, describesTransferAsDebtReduction, onlyReportsFreshness,
   resolveEvidencePath, validateNarration,
 } from './contract';
 import { licenceFromPackage, unlicensedFigures } from './licence';
@@ -126,6 +128,12 @@ export function acceptNarration(pkg: BriefPackage, raw: unknown): AcceptanceResu
     }
     const candidate: BriefObservation = { ...ob, evidence };
     if (citesNonSpendingAsSpending(candidate, pkg)) {
+      validation.droppedObservations.push({ index, kind: ob.kind, reason: 'MISLABELED_MOVEMENT' });
+      return;
+    }
+    // v2.7-P0 — an own-accounts transfer (or any non-payment movement) narrated as
+    // paying down debt is a mislabel whatever the prose says.
+    if (describesTransferAsDebtReduction(candidate, pkg)) {
       validation.droppedObservations.push({ index, kind: ob.kind, reason: 'MISLABELED_MOVEMENT' });
       return;
     }
