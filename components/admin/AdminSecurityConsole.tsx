@@ -40,7 +40,6 @@ import { SessionsList, type SessionRow } from "@/components/security/SessionsLis
 
 type Settings = {
   require_totp_system_admin: string;
-  require_totp_admins:       string;
   require_totp_all_users:    string;
   recovery_codes_enabled:    string;
   min_password_length:       string;
@@ -493,8 +492,21 @@ export function AdminSecurityConsole() {
               </div>
             </div>
 
+            {/* SEC-PLAT-1 — operator MFA is enforced in code, not a setting: locked, like SYSTEM_ADMIN. */}
+            <div className="flex items-start justify-between gap-4 py-3 border-b border-gray-800/40">
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm text-white font-medium">Require TOTP for Platform operators</p>
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">Always on</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-0.5">Anyone holding Platform access must have 2FA on. Without it, Platform pages and routes are refused until they enrol; their own account keeps working.</p>
+              </div>
+              <div className="shrink-0 w-9 h-5 rounded-full bg-emerald-500/30 border border-emerald-500/30 flex items-center px-0.5 cursor-not-allowed" title="Locked — always required">
+                <div className="w-4 h-4 rounded-full bg-emerald-400 ml-auto" />
+              </div>
+            </div>
+
             {([
-              { key: "require_totp_admins"     as const, label: "Require TOTP for all Admins", desc: "Any ADMIN Space role must have 2FA enabled." },
               { key: "require_totp_all_users"  as const, label: "Require TOTP for all users",  desc: "All users must set up 2FA before accessing the dashboard." },
               { key: "recovery_codes_enabled"  as const, label: "Recovery codes enabled",       desc: "Users can generate one-time backup codes as a 2FA fallback." },
             ]).map(({ key, label, desc }) => (

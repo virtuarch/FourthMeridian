@@ -44,7 +44,7 @@ export const ACCESS_DENIED_PROCESS_BUDGET = 50;
 /** Keys the throttle remembers; beyond this the oldest is evicted. */
 export const ACCESS_DENIED_THROTTLE_KEYS = 500;
 
-export type GrantPosture = "none" | "insufficient" | "revoked";
+export type GrantPosture = "none" | "insufficient" | "revoked" | "mfa_required";
 
 export function accessDeniedKey(userId: string, area: PlatformArea): string {
   return `platform-denied:${area}:${userId}`;

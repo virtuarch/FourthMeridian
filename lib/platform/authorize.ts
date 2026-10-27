@@ -45,6 +45,28 @@ import type { SessionUser }         from "@/lib/session";
 import { hasPlatformAccess }        from "./policy";
 import type { PlatformGrantCtx }    from "./policy";
 import { recordPlatformAccessDenied } from "@/lib/platform/ops/access-denied";
+import { operatorTotpMissing } from "@/lib/auth-totp-policy";
+
+/**
+ * SEC-PLAT-1 — the refusal a grant holder WITHOUT TOTP receives. Pages read the
+ * header (never the body) to send the operator to the existing enrolment
+ * screen instead of the Platform directory.
+ */
+export const PLATFORM_DENIAL_HEADER = "x-fm-platform-denial";
+export const OPERATOR_TOTP_REQUIRED = "operator-totp-required";
+export const OPERATOR_TOTP_ENROLMENT_PATH = "/dashboard/settings/security?setup2fa=true";
+
+function operatorTotpRequired(): NextResponse {
+  return NextResponse.json(
+    { error: "Two-factor authentication is required for Platform access. Set it up in Settings → Security.", code: "OPERATOR_TOTP_REQUIRED" },
+    { status: 403, headers: { [PLATFORM_DENIAL_HEADER]: OPERATOR_TOTP_REQUIRED, "Cache-Control": "no-store" } },
+  );
+}
+
+/** True when a page-side refusal from the guard is the operator-TOTP one. */
+export function isOperatorTotpRefusal(res: Response): boolean {
+  return res.headers.get(PLATFORM_DENIAL_HEADER) === OPERATOR_TOTP_REQUIRED;
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -94,9 +116,12 @@ async function resolvePlatformAccess(
     return [{ user, grant: null }, null];
   }
 
+  // SEC-PLAT-1 — the grant AND the holder's second-factor state, read fresh
+  // together (one query): a 2FA reset or disable takes effect on the very next
+  // platform request, whatever the session cache says.
   const row = await db.platformGrant.findUnique({
     where:  { userId_area: { userId: user.id, area } },
-    select: { area: true, level: true, status: true },
+    select: { area: true, level: true, status: true, user: { select: { totpEnabled: true } } },
   });
 
   const grants: PlatformGrantCtx[] = row ? [row] : [];
@@ -111,6 +136,14 @@ async function resolvePlatformAccess(
       { client: db },
     );
     return [null, forbidden()]; // 403 — no / insufficient / revoked grant
+  }
+
+  // SEC-PLAT-1 (owner ruling P-2) — an ACTIVE grant is not enough: the holder
+  // must have TOTP enabled. Decided after the grant (so a caller with no grant
+  // learns nothing about MFA) and recorded like any other refusal.
+  if (operatorTotpMissing({ role: user.role, totpEnabled: row!.user.totpEnabled === true })) {
+    recordPlatformAccessDenied({ userId: user.id, area, needed, grant: "mfa_required" }, { client: db });
+    return [null, operatorTotpRequired()];
   }
 
   // Non-null asserted: a non-admin only passes when an ACTIVE matching grant
