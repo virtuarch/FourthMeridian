@@ -43,7 +43,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Account, Transaction, TransactionCategory } from "@/types";
-import { describeRowNature, DIRECTION_SIGN } from "@/lib/transactions/flow-presentation";
+import { describeRowNature, isHumanCategorySource, DIRECTION_SIGN } from "@/lib/transactions/flow-presentation";
 import { DataCard } from "@/components/atlas/DataCard";
 import { Search, X, SlidersHorizontal, CalendarDays, ChevronRight, ArrowDownUp, ArrowLeftRight, Loader2 } from "lucide-react";
 import { ToolbarMenuButton } from "@/components/dashboard/widgets/transactions/ToolbarMenuButton";
@@ -553,6 +553,7 @@ function TxRow({
     transferMaturity: tx.transferMaturity ?? null,
     amount:        tx.amount,
     hasOwnedCounterparty: tx.counterpartyAccountId != null,
+    humanCategorized: isHumanCategorySource(tx.categorySource),
   });
   const nativeCur = tx.currency ?? displayCurrency;
   const money = (() => {

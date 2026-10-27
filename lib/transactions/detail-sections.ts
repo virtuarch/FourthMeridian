@@ -22,7 +22,7 @@
  */
 
 import type { TransactionDetail } from "@/types";
-import { describeRowNature, flowTypeLabel, DIRECTION_SIGN, type RowDirection } from "@/lib/transactions/flow-presentation";
+import { describeRowNature, isHumanCategorySource, flowTypeLabel, DIRECTION_SIGN, type RowDirection } from "@/lib/transactions/flow-presentation";
 import { resolvedCategory } from "@/lib/transactions/transfer-debt-payment-correction";
 
 export interface DetailRow {
@@ -81,6 +81,7 @@ function summary(d: TransactionDetail): DetailSection {
     transferMaturity: d.transferMaturity ?? null,
     amount:        d.amount,
     hasOwnedCounterparty: d.counterpartyAccountId != null,
+    humanCategorized: isHumanCategorySource(d.categorySource),
   });
   pushIf(rows, "Merchant", d.merchantDisplayName ?? d.merchant);
   pushIf(rows, "Amount", signedMoney(nature.direction, d.amount, d.currency ?? null));
@@ -245,6 +246,7 @@ function relationshipIntelligence(d: TransactionDetail): DetailSection {
         transferMaturity: d.transferMaturity ?? null,
         amount:        d.amount,
         hasOwnedCounterparty: d.counterpartyAccountId != null,
+        humanCategorized: isHumanCategorySource(d.categorySource),
       }).direction;
       const preposition = direction === "OUT" ? "to" : direction === "IN" ? "from" : "with";
       notes.push(`Appears to match a transfer ${preposition} ${named}.`);

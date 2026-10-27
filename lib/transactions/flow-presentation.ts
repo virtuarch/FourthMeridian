@@ -257,13 +257,49 @@ export interface RowNatureEvidence {
   amount: number;
   /** True when the transfer authority established an owned counterparty. */
   hasOwnedCounterparty?: boolean;
+  /**
+   * v2.7-B — true when a human chose this row's category (categorySource
+   * USER_OVERRIDE / USER_RULE — see `isHumanCategorySource`). A human's "Payment"
+   * is never relabelled by rung 3b below; it reads "Debt payment", exactly as the
+   * resolved-nature contract honours it in narration. Optional — a read that did
+   * not select the provenance is treated as a provider row.
+   */
+  humanCategorized?: boolean;
 }
+
+/**
+ * v2.7-B — maturities with which the transfer authority ASSESSED a DEBT_PAYMENT
+ * row's destination and did NOT attest a liability: no owned leg matched
+ * (UNRESOLVED_TRANSFER), an external leaf, or a cash form change. On a cash leg the
+ * money layer refuses such a row as a debt payment (liquidity.ts →
+ * isDebtPaymentAttested ⇒ classifyTransfer ⇒ UNRESOLVED/…), and the resolved-nature
+ * contract calls it a non-payment movement. Absent: the mapped leaves above
+ * (they name the destination) and UNRESOLVED_LIABILITY_INFLOW (money arriving ON a
+ * card — the liability leg, which is a payment by structure).
+ */
+const UNATTESTED_PAYMENT_MATURITIES: ReadonlySet<string> = new Set([
+  "UNRESOLVED_TRANSFER", "CASH_MOVEMENT",
+  "EXTERNAL_PERSON_TRANSFER", "EXTERNAL_DEPOSITORY_TRANSFER",
+  "EXTERNAL_VENUE_TRANSFER", "EXTERNAL_UNKNOWN_TRANSFER",
+]);
+
+/** The provenance values that mean "a human said so" (mirrors FIN-002). */
+const HUMAN_CATEGORY_SOURCES: ReadonlySet<string> = new Set(["USER_OVERRIDE", "USER_RULE"]);
+
+/** v2.7-B — does this persisted provenance value mean a human chose the category? */
+export function isHumanCategorySource(source: string | null | undefined): boolean {
+  return source != null && HUMAN_CATEGORY_SOURCES.has(source);
+}
+
+/** Cost flows: a POSITIVE amount on one is a reversal (FM-AUDIT-006), not a cost. */
+const COST_FLOW_TYPES: ReadonlySet<string> = new Set(["SPENDING", "FEE", "INTEREST"]);
 
 /**
  * What is this row?
  *
- * Precedence: the income taxonomy, then the transfer direction, then the
- * canonical FlowType label. Never a descriptor.
+ * Precedence: the income taxonomy, then the transfer direction (including an
+ * unattested provider DEBT_PAYMENT, rung 3b), then a cost-flow reversal (3c),
+ * then the canonical FlowType label. Never a descriptor.
  */
 export function describeRowNature(e: RowNatureEvidence): RowNatureResult {
   // The direction is settled BEFORE the nature and independently of it. It is the
@@ -296,6 +332,27 @@ export function describeRowNature(e: RowNatureEvidence): RowNatureResult {
   if (e.flowType === "TRANSFER") {
     if (e.hasOwnedCounterparty === true) return mk("INTERNAL_TRANSFER", "TRANSFER_SIGN");
     return mk(e.amount > 0 ? "TRANSFER_IN" : "TRANSFER_OUT", "TRANSFER_SIGN");
+  }
+
+  // 3b — v2.7-B. A provider DEBT_PAYMENT the transfer authority assessed WITHOUT
+  //     attesting a liability destination is a movement whose purpose is not
+  //     established. It rendered "Debt payment" while the money layer left it
+  //     unresolved and the Debt payments panel excluded it (the Plaid Sandbox
+  //     "CREDIT CARD 3333 PAYMENT" −$25 from Saving). It now reads as the transfer
+  //     it structurally is — the same label a TRANSFER row with the same evidence
+  //     gets. A human's "Payment" is left alone.
+  if (e.flowType === "DEBT_PAYMENT" && e.transferMaturity
+      && UNATTESTED_PAYMENT_MATURITIES.has(e.transferMaturity)
+      && e.humanCategorized !== true) {
+    return mk(e.amount > 0 ? "TRANSFER_IN" : "TRANSFER_OUT", "TRANSFER_SIGN");
+  }
+
+  // 3c — v2.7-B. A cost flow with money IN (a fee rebate, an interest reversal) is
+  //     a reversal of spending: the economic fold nets it as a credit and the
+  //     liquidity axis calls it REFUND (FM-AUDIT-006). It rendered "Fee" /
+  //     "Interest charged" in the cost tone. Label it as what every total treats it as.
+  if (e.flowType && COST_FLOW_TYPES.has(e.flowType) && e.amount > 0) {
+    return mk("REFUND", "FLOW_TYPE");
   }
 
   // 4 — the canonical FlowType label.
