@@ -467,6 +467,14 @@ export const AUDITS: readonly AuditEntry[] = [
           "to every database the v4 pipeline wrote",
   },
   {
+    name: "repair-transfer-debt-payment", tier: "OPERATIONAL", needsDb: true,
+    what: "v2.7-P1 historical repair: a depository leg the classifier stored DEBT_PAYMENT from PFC " +
+          "LOAN_PAYMENTS / Payment that the transfer authority resolves to an owned non-liability " +
+          "destination ⇒ TRANSFER/Transfer under TRANSFER_AUTHORITY (the same planner the Plaid sync runs " +
+          "after every sync); dry-run by default, idempotent, --apply needs --env=preview|local and a " +
+          "provably non-Production target. RETAIN UNTIL applied to every database the pre-v2.7 sync wrote",
+  },
+  {
     name: "diagnose-invalid-plaid-tokens", tier: "OPERATIONAL", needsDb: true,
     what: "READ-ONLY diagnostic for PlaidItem rows whose encryptedToken is neither v1 nor v2; " +
           "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",

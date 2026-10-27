@@ -176,8 +176,12 @@ function windowOf(path: string, pkg: BriefPackage): { from: string; to: string }
  * sides is not stated, so no class is foreign to it).
  */
 function classesTouched(row: NonNullable<BriefPackage['recentActivity']>['top'][number]): Set<BriefAccountClass> | null {
-  if (row.betweenOwnAccounts === true) return null;
+  // v2.7-P1 — when the transfer authority NAMED the other side's class, both
+  // sides are stated, so the row touches exactly those two (a savings transfer:
+  // LIQUID only — never LIABILITY). Otherwise an own-accounts leg is unstated.
+  if (row.betweenOwnAccounts === true && !(row.account && row.otherLegAccount)) return null;
   const touched = new Set<BriefAccountClass>(row.account ? [row.account] : []);
+  if (row.otherLegAccount) touched.add(row.otherLegAccount);
   if (row.flow === 'DEBT_PAYMENT') { touched.add('LIQUID'); touched.add('LIABILITY'); }
   return touched;
 }

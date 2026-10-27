@@ -39,6 +39,20 @@ import type { ReadClient } from '@/lib/db/tenant-context';
 import { accountTier } from '@/lib/account-classifier';
 import { scrubDescriptor } from '@/lib/ai/privacy/scrub';
 import type { BriefAccountClass, BriefActivityRow, BriefRecentActivity } from './types';
+import { resolvedCategory, resolvedFlowType } from '@/lib/transactions/transfer-debt-payment-correction';
+
+/**
+ * v2.7-P1 — the CLASS of account on the other side of a movement, where the
+ * transfer authority's maturity names it. A savings or cash transfer stays inside
+ * LIQUID; an investment transfer reaches ASSET. Every other maturity (debt
+ * payment, internal with no named type, external, unresolved) names no class here,
+ * and the row keeps the existing, broader reading.
+ */
+const OTHER_LEG_CLASS_BY_MATURITY: Record<string, BriefAccountClass> = {
+  SAVINGS_TRANSFER:    'LIQUID',
+  CASH_TRANSFER:       'LIQUID',
+  INVESTMENT_TRANSFER: 'ASSET',
+};
 
 /** Account id → `FinancialAccount.type`, for accounts the viewer may see; undefined when unknown. */
 export type AccountTypeLookup = (accountId: string) => string | undefined;
@@ -96,15 +110,22 @@ export function projectRecentActivity(
   const top: BriefActivityRow[] = ranked.slice(0, RECENT_ACTIVITY_ROWS).map((r) => {
     const merchant = safeMerchant(r.merchantDisplayName ?? r.merchant);
     const account = accountTypeOf ? accountClassOf(accountTypeOf(r.accountId)) : undefined;
+    // v2.7-P1 — the RESOLVED nature, not the raw column. A depository leg the
+    // provider filed as a loan payment is stored DEBT_PAYMENT until the transfer
+    // authority's write reaches it; sending that raw value told the model a savings
+    // transfer was "paying down debt" (prompt MEANING) and made the contract guard
+    // count it as touching LIABILITY.
+    const otherLeg = r.transferMaturity ? OTHER_LEG_CLASS_BY_MATURITY[r.transferMaturity] : undefined;
     return {
       date: dayOf(r),
       amount: round2(r.amount),
-      flow: r.flowType ?? 'UNCLASSIFIED',
+      flow: resolvedFlowType(r.flowType ?? null, r.transferMaturity) ?? 'UNCLASSIFIED',
       ...(merchant ? { merchant } : {}),
-      category: String(r.category),
+      category: String(resolvedCategory(r.category, r.flowType ?? null, r.transferMaturity)),
       ...(r.pending ? { pending: true as const } : {}),
       ...(r.counterpartyAccountId ? { betweenOwnAccounts: true as const } : {}),
       ...(account ? { account } : {}),
+      ...(otherLeg ? { otherLegAccount: otherLeg } : {}),
     };
   });
 
