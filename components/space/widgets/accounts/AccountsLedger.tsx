@@ -100,6 +100,40 @@ interface DisplayRow {
   magnitude: number;
 }
 
+/**
+ * The ONE display value a detail row and its panel share — balance, available,
+ * predicted, residual and issuer credit, all through the SAME toDisplay. Exported
+ * (v2.7) so the Cash accounts ledger hands AccountDetail exactly what the Accounts
+ * workspace would, never a second derivation.
+ */
+export function accountDetailDisplay(row: AccountDetailRow, ctx?: ConversionContext): DisplayRow["display"] {
+  const d = toDisplay(row.balance, row.currency, ctx);
+  // v2.6-L2 — the AVAILABLE quantity converts through the SAME toDisplay as
+  // the balance. Null when the authority refused to name one, and null is
+  // carried through as null: it must render as the refusal, never as 0.
+  const av = row.balances.available.status === "AVAILABLE"
+    ? toDisplay(row.balances.available.amount, row.currency, ctx).amount
+    : null;
+  // v2.6-L3 — predicted and the residual convert through the SAME authority
+  // as the balance, and null stays null in both cases.
+  const pred = row.reconciliation.predicted
+    ? toDisplay(row.reconciliation.predicted.amount, row.currency, ctx).amount
+    : null;
+  const unex = row.reconciliation.unexplained === null
+    ? null
+    : toDisplay(row.reconciliation.unexplained, row.currency, ctx).amount;
+  // REVIEW-3 B-1 — issuer credit on a debt row, in the display currency.
+  // A FULL row states it through its signed balance (the canonical
+  // authority); an aggregated row carries it as the disclosed, never
+  // netted `creditTotal` — its balance is Σ owed and is never negative.
+  const credit = row.type === "debt"
+    ? (row.creditTotal != null
+        ? toDisplay(row.creditTotal, row.currency, ctx).amount
+        : creditBalance(d.amount))
+    : 0;
+  return { ...d, available: av, predicted: pred, unexplained: unex, credit };
+}
+
 /** One freshness answer per fallback row, shared by the row and its balance
  *  claim so the two can never disagree. */
 function fallbackFreshness(a: FallbackAccount, now: Date) {
@@ -124,7 +158,9 @@ function fallbackBalances(a: FallbackAccount, now: Date) {
   });
 }
 
-function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[] {
+/** Exported (v2.7 Cash accounts ledger) so the Cash section opens the SAME detail
+ *  panel with the SAME honest interim rows while the enriched read loads. */
+export function accountDetailFallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[] {
   return accounts.map((a) => ({
     id:                 a.id,
     spaceAccountLinkId: null,
@@ -200,42 +236,15 @@ export function AccountsLedger({
 
   // Until the enriched detail arrives (or if it fails), render the host's list so
   // accounts are never absent — strictly no worse than the former card.
-  const source = rows ?? fallbackRows(accounts, new Date());
+  const source = rows ?? accountDetailFallbackRows(accounts, new Date());
 
   // One display value per account (shared by the row and its detail panel). Descending
   // by magnitude so the preview surfaces the LARGEST holdings first.
   const display: DisplayRow[] = useMemo(() => {
     return source
       .map((row) => {
-        const d = toDisplay(row.balance, row.currency, ctx);
-        // v2.6-L2 — the AVAILABLE quantity converts through the SAME toDisplay as
-        // the balance. Null when the authority refused to name one, and null is
-        // carried through as null: it must render as the refusal, never as 0.
-        const av = row.balances.available.status === "AVAILABLE"
-          ? toDisplay(row.balances.available.amount, row.currency, ctx).amount
-          : null;
-        // v2.6-L3 — predicted and the residual convert through the SAME authority
-        // as the balance, and null stays null in both cases.
-        const pred = row.reconciliation.predicted
-          ? toDisplay(row.reconciliation.predicted.amount, row.currency, ctx).amount
-          : null;
-        const unex = row.reconciliation.unexplained === null
-          ? null
-          : toDisplay(row.reconciliation.unexplained, row.currency, ctx).amount;
-        // REVIEW-3 B-1 — issuer credit on a debt row, in the display currency.
-        // A FULL row states it through its signed balance (the canonical
-        // authority); an aggregated row carries it as the disclosed, never
-        // netted `creditTotal` — its balance is Σ owed and is never negative.
-        const credit = row.type === "debt"
-          ? (row.creditTotal != null
-              ? toDisplay(row.creditTotal, row.currency, ctx).amount
-              : creditBalance(d.amount))
-          : 0;
-        return {
-          row,
-          display: { ...d, available: av, predicted: pred, unexplained: unex, credit },
-          magnitude: Math.abs(d.amount),
-        };
+        const display = accountDetailDisplay(row, ctx);
+        return { row, display, magnitude: Math.abs(display.amount) };
       })
       .sort((a, b) => b.magnitude - a.magnitude);
   }, [source, ctx]);

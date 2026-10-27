@@ -48,8 +48,10 @@ const WEALTH = strip(read("components/space/widgets/wealth/WealthWorkspace.tsx")
 // Editorial redesign — the extracted surface components (present-day anchor + shared chart).
 const HERO    = strip(read(`${DIR}/LiquidityHero.tsx`));
 const HISTORY = strip(read(`${DIR}/LiquidityBalanceHistory.tsx`));
-const LEDGER  = strip(read(`${DIR}/SourcesLedger.tsx`));
-const DETAIL  = strip(read(`${DIR}/SourceAccountDetail.tsx`));
+// v2.7 Cash accounts — the Sources ledger + SourceAccountDetail were REPLACED by the
+// Cash distribution + Cash accounts ledger, whose rows open the EXISTING AccountDetail.
+const LEDGER  = strip(read(`${DIR}/CashAccountsLedger.tsx`));
+const DISTRIB = strip(read(`${DIR}/CashDistribution.tsx`));
 const CASHHIST = strip(read("lib/liquidity/cash-history.ts"));
 
 let failures = 0;
@@ -219,7 +221,7 @@ console.log("11. Registry — liquidity stays temporal (temporalCapability PARTI
     workspaceConsumesShellTime(PERSPECTIVE_LIBRARY.liquidity));
 }
 
-console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Sources ledger (presentation only)");
+console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Cash accounts (presentation only)");
 {
   // ① Hero — present-day cashNow figure of record (from the accounts array, NOT the lens);
   //    the window delta rides the cashNow snapshot basis and is DROPPED when historical.
@@ -297,14 +299,23 @@ console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Sources ledger 
   check("no second history fetch — only the one contract hook fetches",
     !CODE.includes("fetch(") && (CODE.match(/useLiquiditySpaceData\(/g) ?? []).length === 1);
 
-  // ③ Sources ledger — GENERIC Atlas panels, not a domain panel primitive.
-  check("Sources ledger composes the generic Atlas LeftPanel/RightPanel", LEDGER.includes("LeftPanel") && LEDGER.includes("RightPanel"));
-  check("Sources ledger imports the generic panel primitives (@/components/atlas/panels)",
-    LEDGER.includes("@/components/atlas/panels"));
+  // ④⑤ Cash distribution + Cash accounts (v2.7 — replaces the Sources ledger).
+  //  DELIBERATE: the Sources ledger's LeftPanel ("View all N sources") is gone on
+  //  purpose — the owner requires the whole ledger visible, never behind a fold.
+  //  The intents kept: generic Atlas panels (no domain panel primitive), and
+  //  per-account detail through an EXISTING surface, present-day only.
+  check("Cash accounts ledger composes the generic Atlas RightPanel",
+    LEDGER.includes("RightPanel") && LEDGER.includes("@/components/atlas/panels"));
+  check("the ledger is never folded behind a 'View all' disclosure",
+    !LEDGER.includes("LeftPanel") && !LEDGER.includes("View all") && !LEDGER.includes("CompactDisclosure"));
+  check("a row opens the EXISTING AccountDetail (no new detail surface, no new route)",
+    LEDGER.includes("<AccountDetail") && LEDGER.includes("/api/spaces/${spaceId}/accounts/detail"));
   check("no domain panel primitive was created (no LiquidityPanel/Ledger/Detail primitive)",
-    !LEDGER.includes("LiquidityPanel") && !LEDGER.includes("function LiquidityLedger") && !DETAIL.includes("function LiquidityDetail"));
-  check("account detail is honest about present-day scope (no fabricated per-account history)",
-    DETAIL.includes("Per-account history isn") || DETAIL.includes("history isn"));
+    !LEDGER.includes("LiquidityPanel") && !LEDGER.includes("function LiquidityLedger") && !LEDGER.includes("function LiquidityDetail"));
+  check("the donut reuses the shared BreakdownWidget, centred on TOTAL CASH",
+    DISTRIB.includes("<BreakdownWidget") && DISTRIB.includes('label: "Total cash"'));
+  check("historical: the distribution + ledger are labelled Current balances (never as-of)",
+    (CODE.match(/Current balances/g) ?? []).length >= 2 && CODE.includes("historical ?"));
   // The historical branch degrades honestly to tier totals (no faked per-account rows).
   check("historical Sources says per-account detail is current only",
     CODE.includes("per-account detail is current only"));
