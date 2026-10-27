@@ -20,6 +20,7 @@ import type { TransactionQuery } from '@/lib/data/transaction-query-core';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { scrubDescriptor } from '@/lib/ai/privacy/scrub';
 import { FlowType } from '@prisma/client';
+import { resolvedCategory } from '@/lib/transactions/transfer-debt-payment-correction';
 import type { ToolDefinition } from './types';
 import { obj, str, num } from './shared/schema';
 import { clampToCeiling } from './shared/values';
@@ -51,6 +52,14 @@ const COMPLETABLE_SEARCH_ROWS = 100;
 const FLOW_SETS: Record<string, FlowType[] | null> = {
   spending:      [FlowType.SPENDING, FlowType.FEE, FlowType.INTEREST],
   income:        [FlowType.INCOME],
+  // v2.7-P1 — membership is the PERSISTED flowType, and the transfer authority
+  // now writes its verdict there (lib/transactions/transfer-debt-payment-
+  // correction.ts: after every Plaid sync, and historically via
+  // scripts/repair-transfer-debt-payment.ts), so a depository leg Plaid filed as
+  // LOAN_PAYMENTS that went to the owner's savings is TRANSFER here, not a card
+  // payment. A read-time re-filter was rejected: the count and the list share one
+  // WHERE by construction (transaction-query-core.ts), and a resolved nature is
+  // cross-row state no WHERE can express.
   transfers:     [FlowType.TRANSFER],
   card_payments: [FlowType.DEBT_PAYMENT],
   refunds:       [FlowType.REFUND],
@@ -185,7 +194,10 @@ export const getTransactions: ToolDefinition = {
         // numbers, and the `text` filter already searched it server-side.
         date: r.date, merchant: scrubDescriptor(r.merchantDisplayName ?? r.merchant),
         amount: r.amount,
-        category: r.category, pending: r.pending,
+        // v2.7-P1 — the category that goes with the transfer authority's verdict:
+        // a provider `Payment` label on a row it resolved to a transfer (stored
+        // DEBT_PAYMENT until its write reaches the row) reads `Transfer`.
+        category: resolvedCategory(r.category, r.flowType ?? null, r.transferMaturity), pending: r.pending,
         // ⚠️ WHICH SIDE OF THE MOVEMENT THIS ROW IS. A card payment posts TWICE —
         // once on the checking account it left and once on the card it landed on —
         // and the two rows used to arrive as `-5,000 Payment to Chase card` and

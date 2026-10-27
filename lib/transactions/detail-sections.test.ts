@@ -372,3 +372,14 @@ test('XFER-3: the note never renders a raw id, named or generic', () => {
     assert.ok(!/\ba2\b|leg2/.test(notes), `an id leaked into the note: ${notes}`);
   }
 });
+
+test('v2.7-P1: the Category row follows the transfer authority — a resolved transfer reads Transfer, a card payment Payment', () => {
+  const cat = (over: Partial<TransactionDetail>) =>
+    find(buildTransactionDetailSections(detail(over)), 'Summary')!.rows!.find((r) => r.label === 'Category')?.value;
+  const leg = { category: 'Payment', flowType: 'DEBT_PAYMENT', flowDirection: 'INTERNAL', amount: -1500 } as Partial<TransactionDetail>;
+  assert.equal(cat({ ...leg, transferMaturity: 'SAVINGS_TRANSFER' } as Partial<TransactionDetail>), 'Transfer');
+  assert.equal(cat({ ...leg, transferMaturity: 'CASH_TRANSFER' } as Partial<TransactionDetail>), 'Transfer');
+  assert.equal(cat({ ...leg, transferMaturity: 'DEBT_PAYMENT' } as Partial<TransactionDetail>), 'Payment');
+  assert.equal(cat({ ...leg, transferMaturity: null } as Partial<TransactionDetail>), 'Payment');
+  assert.equal(cat({}), 'Dining');
+});

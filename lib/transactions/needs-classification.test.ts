@@ -104,3 +104,17 @@ test("payment-app received surfaces; an inflow self-heals once a merchant resolv
   // The unidentified inflow drops out once merchant normalization resolves a source.
   assert.equal(shouldSurfaceAsNeedsClassification(tx({ flowType: "INCOME", classificationReason: "SIGN_DEFAULT_INFLOW", hasResolvedMerchant: true })).needsClassification, false);
 });
+
+// 12 — v2.7-P1 cluster C: the transfer authority's refusal surfaces, and self-heals
+test("a TRANSFER the transfer authority left unresolved (AMBIGUOUS_UNKNOWN) surfaces as UNKNOWN_TRANSFER_DESTINATION", () => {
+  const r = shouldSurfaceAsNeedsClassification(tx({ flowType: "TRANSFER", classificationReason: "AMBIGUOUS_UNKNOWN", transferRail: null, hasResolvedMerchant: false }));
+  assert.equal(r.needsClassification, true);
+  assert.equal(r.reason, "UNKNOWN_TRANSFER_DESTINATION");
+  // Self-heals once an owned counterparty resolves.
+  assert.equal(shouldSurfaceAsNeedsClassification(tx({ flowType: "TRANSFER", classificationReason: "AMBIGUOUS_UNKNOWN", transferRail: null, hasResolvedCounterparty: true })).needsClassification, false);
+  // A certain transfer-authority write does NOT surface; nor does an ordinary classifier transfer.
+  assert.equal(shouldSurfaceAsNeedsClassification(tx({ flowType: "TRANSFER", classificationReason: "ACCOUNT_TYPE_CONTEXT", transferRail: null })).needsClassification, false);
+  assert.equal(shouldSurfaceAsNeedsClassification(tx({ flowType: "TRANSFER", classificationReason: "PLAID_PFC_PRIMARY", transferRail: null })).needsClassification, false);
+  // The classifier's own AMBIGUOUS_UNKNOWN rows are UNKNOWN/ADJUSTMENT, never TRANSFER — not this cluster.
+  assert.equal(shouldSurfaceAsNeedsClassification(tx({ flowType: "UNKNOWN", classificationReason: "AMBIGUOUS_UNKNOWN", transferRail: null })).needsClassification, false);
+});

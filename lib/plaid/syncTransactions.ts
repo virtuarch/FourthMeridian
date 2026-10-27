@@ -119,6 +119,8 @@ import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evid
 // it reverses (or `Other`) BEFORE classifyFlow, like the two rescues above.
 import { needsMerchantCreditEvidence, resolveLiabilityMerchantCreditCategory } from "@/lib/transactions/merchant-credit";
 import { readPriorPurchaseCategories, type MerchantCreditEvidenceClient } from "@/lib/transactions/merchant-credit-evidence";
+// v2.7-P1 — the transfer authority writes its verdict for the rows this sync touched.
+import { correctTransferDebtPaymentsAfterSync, type CorrectionClient } from "@/lib/transactions/transfer-debt-payment-correction-write";
 export { mapPlaidCategory } from "@/lib/transactions/plaid-category";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 // FlowType P2 (import fidelity) — shadow classification only. Nothing below is
@@ -323,6 +325,12 @@ export async function syncTransactionsForItem(
   let fingerprintAmbiguous  = 0;
   let skippedMissingAccount = 0;
   let refusedReparenting    = 0;
+  /**
+   * v2.7-P1 — every row this run created or updated, for the post-sync transfer
+   * authority pass. Ids only; collected at the one observation seam all three
+   * write paths share.
+   */
+  const touchedTransactionIds: string[] = [];
 
   // Live import progress (see PlaidItem.syncImportedCount). A null cursor means
   // this is a FRESH import, so the counter starts at zero; any other value means
@@ -698,8 +706,10 @@ export async function syncTransactionsForItem(
       }, mode: "create" | "update"): Promise<Record<string, unknown>> {
         /**
          * Strip the flow columns from a patch when the CLASSIFIER may not write
-         * this row. Category and merchant columns are NOT stripped: they belong
-         * to the category/MI stack, which the transfer authority never touched.
+         * this row. Merchant columns are NOT stripped here. (v2.7-P1: the
+         * transfer authority now writes category WITH flowType, so the NORMAL
+         * branch below also withholds the provider category on a foreign-owned
+         * row; a USER rule's category still applies.)
          *
          * The classifier declares NO claims — a provider re-sync is routine, not
          * an approved act of correction, so it can only ever refresh its own rows
@@ -749,11 +759,19 @@ export async function syncTransactionsForItem(
           // V26-PRE (B1): withheld on update when classification failed — the
           // "default" would be an un-rescued category + null flow columns.
           if (mode === "update" && !classified) return { ...columns };
+          // v2.7-P1 — a row whose flow another authority owns keeps that
+          // authority's CATEGORY too. The transfer authority writes category and
+          // flowType as one decision (Transfer/TRANSFER for a depository leg Plaid
+          // filed as LOAN_PAYMENTS); refreshing only the category from the provider
+          // would put `Payment` back beside `TRANSFER` on the next modified[] page.
+          // A USER rule (above) and a USER override (preserveExisting) still win.
+          if (!mayWriteFlow(current.flowAuthority, "CLASSIFIER").allowed) return { ...columns };
           return { ...columns, ...ownFlow(defaultCategoryFlow), ...(mi.categorySource ? { categorySource: mi.categorySource } : {}) };
         } catch (e) {
           console.warn(`[merchant-intelligence] resolution skipped for ${txn.transaction_id} — default category/flow on create, existing facts preserved on update; no MI:`, redactedErrorForLog(e));
           // V26-PRE (B1): same preservation rule on the failure path.
           if (mode === "update" && !classified) return {};
+          if (!mayWriteFlow(current.flowAuthority, "CLASSIFIER").allowed) return {};
           return { ...ownFlow(defaultCategoryFlow) };
         }
       }
@@ -767,6 +785,7 @@ export async function syncTransactionsForItem(
       // reads it yet; a failure here must never cost the transaction write or
       // advance the cursor past an unpersisted page.
       const recordObservation = async (transactionId: string) => {
+        touchedTransactionIds.push(transactionId);
         try {
           await recordTransactionObservation(database, {
             transactionId,
@@ -1303,6 +1322,27 @@ export async function syncTransactionsForItem(
   // SYNC_FAILED condition (releases the :open dedupe key + archives the stale
   // "needs attention" row) so a FUTURE outage notifies afresh. Best-effort.
   await retireItemSyncFailure(plaidItemDbId, { itemClient: database });
+
+  // v2.7-P1 — THE TRANSFER AUTHORITY'S WRITE. A depository leg Plaid filed as
+  // LOAN_PAYMENTS is DEBT_PAYMENT out of the context-free classifier; the transfer
+  // authority, which can see the other leg, writes TRANSFER where the destination
+  // is an owned non-liability account (lib/transactions/transfer-debt-payment-
+  // correction.ts). Runs after every page persisted, so both legs of a movement
+  // synced together are visible to it. Stamps TRANSFER_AUTHORITY, which `ownFlow`
+  // above refuses to overwrite on the next re-delivery.
+  //
+  // ⚠️ BEST-EFFORT, like every derived layer here: a failure leaves the rows as
+  // classifier output (money totals already correct via the debt-payment
+  // attestation) and never fails a sync that persisted everything.
+  try {
+    const corrected = await correctTransferDebtPaymentsAfterSync(database as unknown as CorrectionClient, touchedTransactionIds);
+    if (corrected.written > 0 || corrected.conflicts > 0) {
+      console.log(`[plaid sync] item ${plaidItemDbId} — transfer authority corrected ${corrected.written} row(s)` +
+        (corrected.conflicts > 0 ? `, ${corrected.conflicts} changed concurrently and left alone` : ""));
+    }
+  } catch (e) {
+    console.warn(`[plaid sync] item ${plaidItemDbId} — transfer-authority correction skipped:`, redactedErrorForLog(e));
+  }
 
   console.log(
     `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, fingerprintAmbiguous ${fingerprintAmbiguous}, skippedMissingAccount ${skippedMissingAccount}, refusedReparenting ${refusedReparenting}, removed ${removed}`

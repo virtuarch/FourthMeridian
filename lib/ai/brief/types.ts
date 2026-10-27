@@ -64,6 +64,14 @@ export interface BriefActivityRow {
    * the account's class is not known — then no connection is established.
    */
   account?: BriefAccountClass;
+  /**
+   * v2.7-P1 — the CLASS of account on the OTHER side, where the transfer
+   * authority's maturity names it (a savings/cash transfer: LIQUID; an investment
+   * transfer: ASSET). Absent when not named. Lets the contract guard keep a
+   * savings transfer out of LIABILITY instead of treating an own-accounts leg as
+   * touching every class.
+   */
+  otherLegAccount?: BriefAccountClass;
 }
 
 export type BriefAccountClass = 'LIQUID' | 'LIABILITY' | 'ASSET';

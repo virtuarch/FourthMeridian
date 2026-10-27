@@ -65,6 +65,14 @@ const APPROVED_EXCEPTIONS: { file: string; sentinel: string }[] = [
     file: "lib/crypto/btc-sync.ts",
     sentinel: "FLOW-CLASSIFIER-EXCEPTION (btc-sync)",
   },
+  // v2.7-P1 — the TRANSFER AUTHORITY's writer. It records the verdict of the
+  // cross-row transfer authority (which the context-free classifier cannot reach)
+  // under flowAuthority = TRANSFER_AUTHORITY; the same off-classifier class as
+  // the deleted scripts/repair-transfer-*.ts writers, now in lib/.
+  {
+    file: "lib/transactions/transfer-debt-payment-correction-write.ts",
+    sentinel: "FLOW-CLASSIFIER-EXCEPTION (transfer-authority)",
+  },
 ];
 const APPROVED_FILES = new Set(APPROVED_EXCEPTIONS.map((e) => e.file));
 
