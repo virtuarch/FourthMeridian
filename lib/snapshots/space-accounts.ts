@@ -100,6 +100,8 @@
 
 import { PlaidInvestmentsConsent, ShareStatus, type Prisma } from "@prisma/client";
 import { grantsBalanceDisclosure } from "@/lib/account-privacy";
+import { loadPendingEvidence, NO_PENDING, type PendingEvidenceClient } from "@/lib/balances/pending-evidence";
+import { resolveRowBalances, adjustedDepositoryBalance } from "@/lib/balances/account-balances";
 
 /**
  * The minimum account shape snapshot computation needs. Structurally
@@ -121,6 +123,16 @@ export interface SnapshotAccount {
    * provenance instead of publishing a stale reading as today's observed wealth.
    */
   cryptoStale?: boolean;
+  /**
+   * v2.7-P0 — the ADJUSTED depository balance (lib/balances/account-balances.ts
+   * #adjustedDepositoryBalance): C, or C + P only when the provider's available
+   * figure proves the ledger lacks exactly the pending P. classifyAccounts
+   * totals it through `countedBalance`, so TODAY's row (and every row written
+   * after the basis release, ADJUSTED_CASH_BASIS_SINCE) is on the adjusted
+   * basis. Present on checking/savings rows only; `balance` stays C. Historical
+   * writers never read this module, so no prior row is touched.
+   */
+  adjustedBalance?: number;
 }
 
 /**
@@ -139,10 +151,18 @@ export interface SnapshotAccountsClient {
   spaceAccountLink: {
     findMany(args: {
       where:    Prisma.SpaceAccountLinkWhereInput;
-      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true; walletChain: true; lastUpdated: true } } };
+      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true; walletChain: true; lastUpdated: true; availableBalance: true } } };
       orderBy:  Prisma.SpaceAccountLinkOrderByWithRelationInput[];
-    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string; walletChain: string | null; lastUpdated: Date } }>>;
+    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string; walletChain: string | null; lastUpdated: Date; availableBalance?: number | null } }>>;
   };
+  /**
+   * v2.7-P0 — the pending-evidence read (lib/balances/pending-evidence.ts, the
+   * ONE pending reader). Optional ONLY so in-memory fakes that predate P0 keep
+   * compiling: a client without it supplies NO pending evidence, so every
+   * depository row resolves NO_PENDING ⇒ adjusted = reported (the prior basis).
+   * The production clients (systemDb / db) always carry it.
+   */
+  transaction?: PendingEvidenceClient["transaction"];
 }
 
 /**
@@ -175,7 +195,9 @@ export async function readSpaceAccountsForSnapshot(
     select: {
       visibilityLevel: true, // read for the W1-D3 disclosure tripwire below
       financialAccount: {
-        select: { id: true, type: true, balance: true, currency: true, walletChain: true, lastUpdated: true },
+        // v2.7-P0 — availableBalance forwarded RAW into lib/balances (the only
+        // interpreter) for the adjusted-balance identity; never read as a value.
+        select: { id: true, type: true, balance: true, currency: true, walletChain: true, lastUpdated: true, availableBalance: true },
       },
     },
     // Mirrors getAccountsWithVisibility so summation order — and therefore the
@@ -232,8 +254,31 @@ export async function readSpaceAccountsForSnapshot(
     { client: prisma as never, contextSpaceId: spaceId },
   );
 
+  // v2.7-P0 — provider-observed pending for the DEPOSITORY rows, through the
+  // ONE pending reader (lifecycle-filtered, event-identity-deduplicated) — the
+  // same set the Space mount's reconciliation reads, so today's stored row and
+  // the live surfaces resolve the same adjusted figure.
+  const cashIds = links
+    .filter((l) => l.financialAccount.type === "checking" || l.financialAccount.type === "savings")
+    .map((l) => l.financialAccount.id);
+  const pendingByAccount = prisma.transaction && cashIds.length > 0
+    ? await loadPendingEvidence({ transaction: prisma.transaction } as PendingEvidenceClient, cashIds)
+    : new Map();
+  const now = new Date();
+
   return links.map((l) => {
     const v = walletValueByAccount.get(l.financialAccount.id);
+    const fa = l.financialAccount;
+    const adj = fa.type === "checking" || fa.type === "savings"
+      ? adjustedDepositoryBalance(
+          resolveRowBalances({
+            id: fa.id, type: fa.type, currency: fa.currency, balance: fa.balance,
+            availableBalance: fa.availableBalance ?? null,
+            lastUpdated: fa.lastUpdated,
+          }, now),
+          pendingByAccount.get(fa.id) ?? NO_PENDING,
+        )
+      : null;
     return {
       id:       l.financialAccount.id,
       type:     l.financialAccount.type as string,
@@ -255,6 +300,9 @@ export async function readSpaceAccountsForSnapshot(
        * identity argued in the header stays a fact, not an aspiration.
        */
       ...(hasKnownValue(v) && !isFreshCurrentValue(v) ? { cryptoStale: true } : {}),
+      // v2.7-P0 — depository rows only; OMITTED elsewhere so non-cash rows stay
+      // byte-identical to what this read has always returned.
+      ...(adj ? { adjustedBalance: adj.adjusted } : {}),
     };
   });
 }

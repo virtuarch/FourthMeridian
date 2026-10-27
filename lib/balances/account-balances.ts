@@ -506,3 +506,105 @@ function noIdentityExplanation(accountType: string): string {
       return "This kind of account carries no reachable figure to reconcile.";
   }
 }
+
+
+// ── Adjusted cash balance (v2.7-P0 — owner-approved 2026-10-27) ───────────────
+
+/**
+ * Which case of the adjusted-balance contract selected the figure. Evaluated in
+ * this order; the first match wins.
+ *
+ *   NO_PENDING        the account has no provider-observed pending rows → C
+ *   PENDING_EXCLUDED  A ≠ null and |C + P − A| ≤ ε: the provider's OWN available
+ *                     figure proves C lacks exactly P                     → C + P
+ *   PENDING_INCLUDED  A ≠ null and |C − A| ≤ ε and P ≠ 0: the institution
+ *                     already folded pending into its ledger              → C
+ *   UNPROVEN          anything else, A = null included                    → C
+ *                     (flagged "pending not reconciled")
+ */
+export type AdjustedBalanceBasis = "NO_PENDING" | "PENDING_EXCLUDED" | "PENDING_INCLUDED" | "UNPROVEN";
+
+/** One depository account's adjusted balance, NATIVE currency. */
+export interface AdjustedDepositoryBalance {
+  /** C — the provider's ledger (current) balance, exactly as stored. */
+  reported:     number;
+  /** The figure every TOTAL counts: C, or C + P under PENDING_EXCLUDED only. */
+  adjusted:     number;
+  basis:        AdjustedBalanceBasis;
+  /** P — Σ signed provider-observed pending (negative = money out). */
+  pendingSum:   number;
+  pendingCount: number;
+  /** True only for UNPROVEN with pending rows: "pending not reconciled". */
+  flagged:      boolean;
+}
+
+/** ε — one cent, in the account's native currency (RECONCILIATION_TOLERANCE). */
+export const ADJUSTED_BALANCE_EPSILON = RECONCILIATION_TOLERANCE;
+/**
+ * Float slack ON TOP of ε, so an exact one-cent difference stored as binary
+ * floating point (e.g. 0.010000000000218) is still "≤ ε". Far below a cent; it
+ * can never admit a real difference.
+ */
+const FLOAT_SLACK = 1e-9;
+const withinEpsilon = (x: number) => Math.abs(x) <= ADJUSTED_BALANCE_EPSILON + FLOAT_SLACK;
+
+/** The basis release date — owned by lib/balances/adjusted-basis.ts (pure, client-safe). */
+export { ADJUSTED_CASH_BASIS_SINCE } from "./adjusted-basis";
+
+/**
+ * Pure selection over the three provider numbers. Exported for the property
+ * test; product code calls `adjustedDepositoryBalance`.
+ *
+ * It never "subtracts pending": it PICKS between two provider-backed figures,
+ * C or C + P, and picks C + P only when the provider's own available figure
+ * proves C lacks exactly P. A double deduction would need A = C + 2P, which
+ * contradicts the identity that selects the case, so it is unreachable.
+ */
+export function selectAdjustedBalance(input: {
+  current:      number;
+  available:    number | null;
+  pendingSum:   number;
+  pendingCount: number;
+}): AdjustedDepositoryBalance {
+  const { current: C, available: A, pendingSum: P, pendingCount } = input;
+  const base = { reported: C, pendingSum: P, pendingCount };
+  if (pendingCount === 0) {
+    return { ...base, adjusted: C, basis: "NO_PENDING", flagged: false };
+  }
+  if (A !== null && withinEpsilon(C + P - A)) {
+    return { ...base, adjusted: C + P, basis: "PENDING_EXCLUDED", flagged: false };
+  }
+  if (A !== null && withinEpsilon(C - A) && P !== 0) {
+    return { ...base, adjusted: C, basis: "PENDING_INCLUDED", flagged: false };
+  }
+  return { ...base, adjusted: C, basis: "UNPROVEN", flagged: true };
+}
+
+/**
+ * THE adjusted-balance authority for one account. Null for every non-depository
+ * account (investment, crypto, debt, manual): only checking / savings —
+ * restricted included — are adjusted.
+ *
+ * Inputs are the SAME ones reconcileAccount reads: `b.observed` (C), the
+ * AVAILABLE_CASH claim (A; any other claim or a refusal is A = null), and the
+ * lifecycle-filtered, event-identity-deduplicated pending set from
+ * loadPendingEvidence (P). No new pending reader exists or is needed.
+ *
+ * Currency: everything here is NATIVE. Callers convert `adjusted` once, through
+ * the same convertMoney / inDisp path the ledger balance used, so FX rounding can
+ * never break the identity.
+ */
+export function adjustedDepositoryBalance(
+  b: AccountBalances,
+  pending: PendingContribution = NO_PENDING,
+): AdjustedDepositoryBalance | null {
+  if (b.accountType !== "checking" && b.accountType !== "savings") return null;
+  const avail = b.available;
+  const A = avail.status === "AVAILABLE" && avail.quantity === "AVAILABLE_CASH" ? avail.amount : null;
+  return selectAdjustedBalance({
+    current:      b.observed.amount,
+    available:    A,
+    pendingSum:   pending.sum,
+    pendingCount: pending.count,
+  });
+}

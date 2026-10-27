@@ -81,7 +81,7 @@ import { normalizeSharedAccounts, type ShareRow } from "@/lib/account-privacy";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { deriveConnectionState, type SyncConnectionState } from "@/lib/sync/status";
 import { resolveAccountFreshness, type AccountFreshness } from "@/lib/freshness/observation";
-import { resolveAccountBalances, reconcileAccount, type AccountBalances, type Reconciliation } from "@/lib/balances/account-balances";
+import { resolveAccountBalances, reconcileAccount, adjustedDepositoryBalance, type AccountBalances, type Reconciliation } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
 import { loadWalletCurrentValues, hasKnownValue } from "@/lib/crypto/wallet-current-value";
 
@@ -159,6 +159,12 @@ export interface AccountDetailRow {
    * $4,000 is reported, never smoothed into a prediction.
    */
   reconciliation:     Reconciliation;
+  /**
+   * v2.7-P0 — the ADJUSTED depository balance (native; adjustedDepositoryBalance
+   * over the same balances + pending as `reconciliation`). Present on FULL
+   * checking/savings rows only. Totals count it; `balance` stays reported.
+   */
+  adjustedBalance?:   number;
 }
 
 /** v2.6-L1/L2 — one freshness answer for an aggregated BALANCE_ONLY row, so the
@@ -488,6 +494,10 @@ export async function GET(
       freshness:          fullFreshness,
       balances:           fullBalances,
       reconciliation:     fullReconciliation,
+      ...((): { adjustedBalance?: number } => {
+        const adj = adjustedDepositoryBalance(fullBalances, pending.get(a.id) ?? NO_PENDING);
+        return adj ? { adjustedBalance: adj.adjusted } : {};
+      })(),
       ...(walletValue?.price ? { cryptoPrice: walletValue.price } : {}),
     });
   }

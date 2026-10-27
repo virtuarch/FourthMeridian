@@ -77,7 +77,7 @@ import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { amountOwed, creditBalance, liabilityState, type LiabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
 import { resolveAccountFreshness, ESTIMATE_STALE_AFTER_DAYS } from '@/lib/freshness/observation';
-import { resolveAccountBalances, reconcileAccount } from '@/lib/balances/account-balances';
+import { resolveAccountBalances, reconcileAccount, adjustedDepositoryBalance } from '@/lib/balances/account-balances';
 import { loadPendingEvidence, NO_PENDING } from '@/lib/balances/pending-evidence';
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
@@ -332,7 +332,10 @@ async function assembleAccounts(
         providerBalanceAt: fa.balanceLastUpdatedAt,
       }, at),
     });
-    const rec = reconcileAccount(b, pendingByAccount.get(fa.id) ?? NO_PENDING, fa.creditLimit);
+    const accountPending = pendingByAccount.get(fa.id) ?? NO_PENDING;
+    const rec = reconcileAccount(b, accountPending, fa.creditLimit);
+    // v2.7-P0 — the adjusted-balance claim from the SAME balances + pending set.
+    const adj = adjustedDepositoryBalance(b, accountPending);
     return {
       availableQuantity: b.available.status === "AVAILABLE"
         ? { quantity: b.available.quantity, amount: b.available.amount, label: b.available.label }
@@ -346,9 +349,24 @@ async function assembleAccounts(
         ...(rec.reachable   ? { reachable:   rec.reachable.amount } : {}),
         ...(rec.unexplained !== null ? { unexplained: rec.unexplained } : {}),
         explanation:  rec.explanation,
+        ...(adj
+          ? {
+              adjustedBalance: adj.adjusted,
+              balanceBasis:    adj.basis,
+              ...(adj.flagged ? { pendingNotReconciled: true as const } : {}),
+            }
+          : {}),
       },
     };
   };
+
+  /**
+   * v2.7-P0 — the balance a TOTAL counts for one account (native): the adjusted
+   * depository balance, else `balance`. Read from balanceFacts so the totals,
+   * the per-account reportingBalance and the currentState block are one answer.
+   */
+  const countedNative = (fa: Parameters<typeof balanceFacts>[0], at: Date): number =>
+    balanceFacts(fa, at).currentState.adjustedBalance ?? fa.balance;
 
   const freshnessFact = (
     fa: { id: string; lastUpdated: Date; balanceLastUpdatedAt: Date | null; syncStatus: string | null },
@@ -382,6 +400,9 @@ async function assembleAccounts(
   const classifiableAll: ClassifiableAccount[] = disclosingLinks.map((l) => ({
     type:       l.financialAccount.type,
     balance:    l.financialAccount.balance,
+    // v2.7-P0 — the adjusted depository balance; classifyAccounts totals it
+    // through countedBalance (non-depository rows are unaffected).
+    adjustedBalance: balanceFacts(l.financialAccount, now).currentState.adjustedBalance ?? null,
     currency:   l.financialAccount.currency,
     syncStatus: l.financialAccount.syncStatus ?? undefined,
     providerSubtype: l.financialAccount.providerSubtype,
@@ -562,7 +583,9 @@ async function assembleAccounts(
             c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH,
         );
 
-        const rep = toReporting(fa);
+        // v2.7-P0 — reporting value of the COUNTED balance (adjusted for a
+        // depository row), so this row and the section totals reconcile.
+        const rep = toReporting({ balance: countedNative(fa, now), currency: fa.currency });
 
         // V25-SIDE-1 — derived liability semantics, so the model never has to
         // infer what a negative credit-card balance means. Native currency (same
@@ -663,6 +686,9 @@ async function assembleAccounts(
         unexplained:  bf.currentState.unexplained ?? null,
         state:        bf.currentState.state,
         pendingCount: bf.currentState.pendingCount,
+        ...(bf.currentState.adjustedBalance !== undefined
+          ? { adjusted: bf.currentState.adjustedBalance, pendingSum: bf.currentState.pendingSum, basis: bf.currentState.balanceBasis }
+          : {}),
       });
       memberPendingSumById.set(fa.id, bf.currentState.pendingSum);
     }
@@ -671,8 +697,7 @@ async function assembleAccounts(
     const aggregatedItems = normalized.accounts.map((row: NormalizedAccount): AccountSummaryItem => {
       const agg = row.aggregate; // present on every privacy-aggregated row
       const memberIds = agg?.memberAccountIds ?? [];
-      const rep = toReporting({ balance: row.balance, currency: row.currency });
-
+      // v2.7-P0 — computed below once aggState is known (adjusted when claimed).
       const needsReauth = memberIds.some((id) =>
         faById.get(id)?.connections.some(
           (c) => c.connectedByUserId === userId && c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH,
@@ -683,6 +708,9 @@ async function assembleAccounts(
       // any member made no claim — honest absence, never a partial sum.
       const aggState = aggregateCurrentCashState(memberIds.map((id) => memberClaimById.get(id)));
       const pendingSum = memberIds.reduce((s, id) => s + (memberPendingSumById.get(id) ?? 0), 0);
+      // v2.7-P0 — an aggregate's counted balance is Σ its members' adjusted
+      // figures when every member made the claim; otherwise its reported sum.
+      const rep = toReporting({ balance: aggState?.adjusted ?? row.balance, currency: row.currency });
 
       // Liability semantics come from the aggregate's OWN separated quantities —
       // never re-derived from a signed sum (there is none to re-derive from).
@@ -722,6 +750,13 @@ async function assembleAccounts(
                 pendingSum,
                 ...(aggState.reachable   !== null ? { reachable:   aggState.reachable }   : {}),
                 ...(aggState.unexplained !== null ? { unexplained: aggState.unexplained } : {}),
+                ...(aggState.adjusted !== undefined
+                  ? {
+                      adjustedBalance: aggState.adjusted,
+                      ...(aggState.basis ? { balanceBasis: aggState.basis } : {}),
+                      ...(aggState.basis === 'UNPROVEN' ? { pendingNotReconciled: true as const } : {}),
+                    }
+                  : {}),
                 explanation:
                   `Aggregated privacy-reduced row composed from ${memberIds.length} member account(s); ` +
                   'state and reachability are never more certain than the weakest member.',
