@@ -183,8 +183,37 @@ const WEALTH_DETAIL: Record<CompletenessTier, string> = {
   unknown:    "Trust for this date could not be determined.",
 };
 
-function wealthEnvelope(r: WealthResult, currency: string, fxUnconverted?: boolean): PerspectiveEnvelope {
+/**
+ * v2.7 final UX pass (owner-authorized) — reason lines for the chip tier mapped
+ * from the as-of snapshot's RESOLVED completenessTier (wealth-chip-tier.ts). Only
+ * reached when a snapshot exists for the figure, so `incomplete` here means a
+ * PARTIAL row, not a missing one.
+ */
+const WEALTH_CHIP_DETAIL: Record<CompletenessTier, string> = {
+  observed:   "Your balances were recorded on this date.",
+  derived:    "Reconstructed from your history — some values are held at recent prices.",
+  estimated:  "Estimated — part of this day's value could only be estimated (for example, holdings without a price for that date).",
+  incomplete: "A partial total — part of this day's value could not be valued or converted, so it is not included.",
+  unknown:    "Trust for this date could not be determined.",
+};
+
+function wealthEnvelope(r: WealthResult, currency: string, fxUnconverted?: boolean, chipTier?: CompletenessTier): PerspectiveEnvelope {
   const c = r.completeness;
+  // v2.7 final UX pass (owner-authorized §6) — when the host supplies the chip
+  // tier mapped from the as-of snapshot's resolved completenessTier, the chip
+  // states THAT (Estimated / Incomplete included). PRESENTATION ONLY: the
+  // WealthResult (and so every AI / Brief reader) is untouched, and without the
+  // input this function is byte-identical to before. A missing snapshot keeps
+  // the read model's own "No history before …" wording.
+  if (chipTier && r.asOfState.found) {
+    const preset = COMPLETENESS_PRESENTATION[chipTier];
+    const date = r.asOfState.date ? ` Figure from the ${formatWealthDate(r.asOfState.date)} snapshot.` : "";
+    return {
+      completeness: { tier: chipTier, label: preset.label, tone: preset.tone, detail: `${WEALTH_CHIP_DETAIL[chipTier]}${date}` },
+      evidence: wealthEvidence(r, currency),
+      warnings: fxWarnings(false, fxUnconverted),
+    };
+  }
   const completeness: EnvelopeCompleteness = {
     tier:   c.tier,
     label:  c.label,
@@ -199,7 +228,15 @@ function wealthEnvelope(r: WealthResult, currency: string, fxUnconverted?: boole
         ? `${WEALTH_DETAIL[c.tier]} Figure from the ${formatWealthDate(r.asOfState.date)} snapshot.`
         : WEALTH_DETAIL[c.tier],
   };
-  const evidence: EnvelopeEvidence | undefined = r.evidence
+  const evidence = wealthEvidence(r, currency);
+  // V25-FINAL-1 — when the current composition excludes an account that could not
+  // be converted to the display currency, the net-worth total is a partial: surface
+  // it as an orthogonal FX warning (never folded into the completeness tier).
+  return { completeness, evidence, warnings: fxWarnings(false, fxUnconverted) };
+}
+
+function wealthEvidence(r: WealthResult, currency: string): EnvelopeEvidence | undefined {
+  return r.evidence
     ? {
         label: r.evidence.label,
         rows: r.chart.points.map((p) => ({
@@ -209,10 +246,6 @@ function wealthEnvelope(r: WealthResult, currency: string, fxUnconverted?: boole
         })),
       }
     : undefined;
-  // V25-FINAL-1 — when the current composition excludes an account that could not
-  // be converted to the display currency, the net-worth total is a partial: surface
-  // it as an orthogonal FX warning (never folded into the completeness tier).
-  return { completeness, evidence, warnings: fxWarnings(false, fxUnconverted) };
 }
 
 /** The static honest boundary the Cash Flow chip shows when no stamp is supplied
@@ -375,6 +408,13 @@ export function resolvePerspectiveEnvelope(args: {
    * warnings[] channel the shell already renders. No second trust framework.
    */
   syncIncomplete?: boolean;
+  /**
+   * v2.7 final UX pass (owner-authorized) — the Net Worth / Assets CHIP tier,
+   * mapped from the as-of snapshot's resolved completenessTier
+   * (components/space/trust/wealth-chip-tier.ts). Additive + optional:
+   * consumed only by the wealth branch; absent ⇒ byte-identical envelope.
+   */
+  wealthChipTier?: CompletenessTier;
 }): PerspectiveEnvelope {
   const env = resolveBase(args);
   // Applied uniformly AFTER the per-perspective resolution: partial convergence
@@ -392,10 +432,11 @@ function resolveBase(args: {
   cashFlowStamp?: CashFlowStamp | null;
   investmentsResult?: InvestmentsTimeMachineResult | null;
   fxUnconverted?: boolean;
+  wealthChipTier?: CompletenessTier;
 }): PerspectiveEnvelope {
   switch (args.perspectiveId) {
     case "wealth":
-      return args.wealthResult ? wealthEnvelope(args.wealthResult, args.currency ?? "USD", args.fxUnconverted) : {};
+      return args.wealthResult ? wealthEnvelope(args.wealthResult, args.currency ?? "USD", args.fxUnconverted, args.wealthChipTier) : {};
     case "cashFlow":
       return args.cashFlowStamp
         ? cashFlowEnvelope(args.cashFlowStamp, args.fxUnconverted)

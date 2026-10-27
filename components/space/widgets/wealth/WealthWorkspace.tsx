@@ -58,6 +58,7 @@ import {
   type WealthResult,
 } from "@/lib/wealth/wealth-time-machine";
 import { convertWealthSnapshots } from "@/lib/wealth/display-conversion";
+import { wealthChipTier, asOfSnapshotTier } from "@/components/space/trust/wealth-chip-tier";
 import {
   ASSETS_SLICES, ASSETS_SLICE_LABELS, WEALTH_MODES, WEALTH_MODE_LABELS, wealthSeriesKey,
   type AssetsSlice, type WealthMode,
@@ -295,9 +296,21 @@ export function WealthWorkspace({
 
   // Trust envelope — resolved from THIS workspace's own result, emitted up to the
   // shell chip in Total / Assets. In Debt the Debt workspace owns the slot.
+  // v2.7 final UX pass (owner-authorized) — the chip states the as-of snapshot's
+  // RESOLVED confidence tier (Estimated / Incomplete included), mapped
+  // presentation-side; WealthResult itself is untouched (AI / Brief unaffected).
+  const chipTier = useMemo(
+    () => wealthChipTier({
+      found: result.asOfState.found,
+      isEstimated: result.asOfState.isEstimated,
+      completenessTier: asOfSnapshotTier(convertedSnapshots, result.asOfState.date),
+      metric,
+    }),
+    [result, convertedSnapshots, metric],
+  );
   const envelope = useMemo(
-    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted }),
-    [result, displayCurrency, fxUnconverted],
+    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted, wealthChipTier: chipTier }),
+    [result, displayCurrency, fxUnconverted, chipTier],
   );
   useEffect(() => {
     if (mode === "debt") return; // DebtWorkspace emits its own
