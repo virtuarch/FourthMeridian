@@ -4,7 +4,9 @@
  * Proves, with real child processes and a short deadline: a child that never
  * exits is killed and reported FAILED under its own name with "TIMED OUT"; a
  * child that exits 0 in time passes; a child that exits 1 fails without being
- * called a timeout; and scripts/run-tests.ts actually routes every file
+ * called a timeout; a wrapper whose grandchild wedges (the tsx shape) is killed
+ * as a whole process group without leaving an orphan holding the pipe (the
+ * CI-LOCAL completion defect); and scripts/run-tests.ts actually routes every file
  * through that function with a default deadline of 180 s. Hermetic apart from
  * spawning `node -e`.
  */
@@ -27,6 +29,27 @@ async function main(): Promise<void> {
     check("flagged timedOut", r.timedOut);
     check("output names the file and says TIMED OUT", /fixture\/wedged\.test\.ts TIMED OUT after/.test(r.output), r.output.slice(-200));
     check("returned shortly after the deadline, not after the child's own lifetime", ms >= 350 && ms < 5_000, `${ms} ms`);
+  }
+
+  console.log("the watchdog kills the whole process group (tsx wrapper + node grandchild)");
+  {
+    // The real shape: a wrapper (like tsx) whose GRANDCHILD runs the test, wedges,
+    // and inherits the wrapper's stdout. Killing only the wrapper left the
+    // grandchild holding the pipe, so "close" never fired and the run hung.
+    const grand = "require('fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)";
+    const pidFile = `${process.env.TMPDIR ?? "/tmp"}/run-tests-grandchild-${process.pid}.pid`;
+    const wrapper = `const { spawn } = require('child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(grand)}, ${JSON.stringify(pidFile)}], { stdio: 'inherit' }); setInterval(() => {}, 1000)`;
+    const t0 = Date.now();
+    const r = await runChild({ bin: process.execPath, args: ["-e", wrapper], cwd: process.cwd(), file: "fixture/wrapped.test.ts", timeoutMs: 600 });
+    const ms = Date.now() - t0;
+    check("wrapped wedge: reported failed + timedOut", !r.ok && r.timedOut);
+    check("wrapped wedge: returns shortly after the deadline (does not hang on the grandchild's pipe)", ms >= 550 && ms < 5_000, `${ms} ms`);
+    let grandPid = NaN;
+    try { grandPid = Number(readFileSync(pidFile, "utf8")); } catch { /* not written */ }
+    let alive = false;
+    try { process.kill(grandPid, 0); alive = true; } catch { alive = false; }
+    check("wrapped wedge: the grandchild is dead (no orphan left behind)", Number.isFinite(grandPid) && !alive, `pid ${grandPid}`);
+    if (alive) { try { process.kill(grandPid, "SIGKILL"); } catch { /* ignore */ } }
   }
 
   console.log("a healthy child is unaffected");
