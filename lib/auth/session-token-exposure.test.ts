@@ -242,7 +242,7 @@ console.log("\n5. every deactivation revokes every session");
 const deactivators = [...walk("app"), ...walk("lib"), ...walk("jobs")].filter((f) => DEACTIVATES.test(strip(read(f))));
 check(`deactivation writes found (${deactivators.length}): exactly the three known paths`,
   JSON.stringify([...deactivators].sort()) === JSON.stringify([
-    "app/api/platform/growth-revenue/users/[userId]/route.ts",
+    "app/api/platform/customer-success/customers/[userId]/access/route.ts",
     "app/api/user/deactivate/route.ts",
     "app/api/user/delete/route.ts",
   ]), deactivators.join(", "));

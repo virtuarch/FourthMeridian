@@ -1,5 +1,6 @@
 /**
- * POST /api/platform/growth-revenue/users/[userId]  (OPS-6B Beta Operations)
+ * POST /api/platform/customer-success/customers/[userId]/access  (OPS-6B Beta Operations;
+ *   moved from POST /api/platform/growth-revenue/users/[userId] by SEC-PLAT-4)
  *
  * Operator deactivate / reactivate of a user account. REUSES the existing account-
  * deactivation mechanism (`User.deactivatedAt` + `revokeAllUserSessions`) — no new
@@ -19,13 +20,19 @@
  * shows "an operator deactivated this account" and the Customer Success panel
  * finds it by subject.
  *
- * AUTHORIZATION: requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE") — fresh
- * re-auth. GUARDS: cannot target a SYSTEM_ADMIN, cannot target yourself.
+ * AUTHORIZATION: requireFreshPlatformAccess("CUSTOMER_SUCCESS", "WRITE") — fresh
+ * re-auth. SEC-PLAT-4 (owner ruling, 2026-10-27): acting on ONE identified
+ * customer's account belongs to Customer Success, the area allowed to resolve
+ * customer identity — not to Growth, which stays identity-minimized. A
+ * GROWTH_REVENUE grant no longer confers this action.
+ * GUARDS: cannot target a SYSTEM_ADMIN, cannot target yourself.
  */
 import { NextResponse } from "next/server";
 import { UserRole } from "@prisma/client";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
-import { db } from "@/lib/db";
+// SEC-PLAT-4 — an operator surface: fm_system, like every Customer Success
+// writer (the RLS-4 ratchet forbids a new migration-principal reader).
+import { systemDb } from "@/lib/db";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { AuditAction } from "@/lib/audit-actions";
 import { OperatorActionValidationError, parseOperatorReason, recordOperatorAction } from "@/lib/audit";
@@ -34,7 +41,7 @@ import { operatorActorFrom } from "@/lib/platform/operator-actor";
 export const runtime = "nodejs";
 
 export async function POST(req: Request, ctx: { params: Promise<{ userId: string }> }): Promise<Response> {
-  const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
+  const [auth, err] = await requireFreshPlatformAccess("CUSTOMER_SUCCESS", "WRITE");
   if (err) return err;
   const { userId } = await ctx.params;
   const body = (await req.json().catch(() => ({}))) as { action?: string; reason?: unknown };
@@ -52,19 +59,19 @@ export async function POST(req: Request, ctx: { params: Promise<{ userId: string
     throw e;
   }
 
-  const target = await db.user.findUnique({ where: { id: userId }, select: { id: true, role: true, deactivatedAt: true } });
+  const target = await systemDb.user.findUnique({ where: { id: userId }, select: { id: true, role: true, deactivatedAt: true } });
   if (!target) return NextResponse.json({ error: "user not found" }, { status: 404 });
   // Guards: never lock out a SYSTEM_ADMIN or yourself through the ops surface.
   if (target.role === UserRole.SYSTEM_ADMIN) return NextResponse.json({ error: "cannot deactivate a system admin" }, { status: 403 });
   if (target.id === auth.user.id) return NextResponse.json({ error: "cannot deactivate your own account here" }, { status: 403 });
 
-  const actor = operatorActorFrom(auth, "GROWTH_REVENUE");
+  const actor = operatorActorFrom(auth, "CUSTOMER_SUCCESS");
   const before = { deactivatedAt: target.deactivatedAt?.toISOString() ?? null };
 
   if (action === "deactivate") {
     if (target.deactivatedAt) return NextResponse.json({ ok: true, deactivatedAt: target.deactivatedAt.toISOString(), alreadyDeactivated: true });
     const now = new Date();
-    await db.$transaction(async (tx) => {
+    await systemDb.$transaction(async (tx) => {
       await tx.user.update({ where: { id: userId }, data: { deactivatedAt: now } });
       await recordOperatorAction(tx, {
         actor,
@@ -86,7 +93,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ userId: string
 
   // reactivate
   if (!target.deactivatedAt) return NextResponse.json({ ok: true, alreadyActive: true });
-  await db.$transaction(async (tx) => {
+  await systemDb.$transaction(async (tx) => {
     await tx.user.update({ where: { id: userId }, data: { deactivatedAt: null } });
     await recordOperatorAction(tx, {
       actor,

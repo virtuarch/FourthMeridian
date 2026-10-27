@@ -168,7 +168,7 @@ export const MUTATION_FAMILIES: readonly MutationFamily[] = [
       "syncs and is served exactly as before. Note this is deliberately NOT the " +
       "same family as 'lifecycle changes' in the control-plane sense: the axis is " +
       "whose lifecycle, not the word.",
-    routes: ["app/api/platform/growth-revenue/users/[userId]/route.ts"],
+    routes: ["app/api/platform/customer-success/customers/[userId]/access/route.ts"], // SEC-PLAT-4: moved from Growth to Customer Success
   },
 
   // ── CONTROL (one SHIPPED — control-plane-policy; the rest PLANNED) ──────────

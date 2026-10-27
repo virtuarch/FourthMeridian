@@ -30,11 +30,14 @@ console.log("username first on operator lists");
   const users = strip("components/platform/widgets/OpsUsersWidget.tsx");
   check("Customer Success list row renders operatorDisplayName, not the email", /operatorDisplayName\(c\)/.test(cs) && !/\{c\.email\}/.test(cs));
   check("Customer Success detail shows Username AND Email rows", /label="Username"/.test(cs) && /label="Email" value=\{detail\.identity\.email\}/.test(cs));
-  check("Growth users row renders operatorDisplayName, not the email", /operatorDisplayName\(u\)/.test(users) && !/\{u\.email\}/.test(users));
-  check("search still matches email (the capability is kept)", /email/.test(strip("lib/platform/customer/customers.ts")) && /email: \{ contains: search/.test(strip("app/api/platform/growth-revenue/users/route.ts")));
+  // SEC-PLAT-4 (owner ruling P-4) — Growth is identity-minimized: no per-user rows at all.
+  const growthUsers = strip("app/api/platform/growth-revenue/users/route.ts");
+  check("Growth users widget renders no username, email or name", !/operatorDisplayName|\.username\b|\.email\b|\.name\b/.test(users));
+  check("Growth users route returns counts only — no identity field selected, no search",
+    !/(email|name|username|id)\s*:\s*true/.test(growthUsers) && !/searchParams|contains:/.test(growthUsers));
+  check("customer search (with email) is Customer Success's", /email/.test(strip("lib/platform/customer/customers.ts")));
   check("client widgets import the pure identity-label module, never customer-core (server-only chain)",
-    /from "@\/lib\/platform\/customer\/identity-label"/.test(cs) && /from "@\/lib\/platform\/customer\/identity-label"/.test(users)
-    && !/platform\/customer\/customer-core"/.test(cs) && !/platform\/customer\/customer-core"/.test(users));
+    /from "@\/lib\/platform\/customer\/identity-label"/.test(cs) && !/platform\/customer\/customer-core"/.test(cs) && !/platform\/customer\/customer-core"/.test(users));
   check("beta requests keep the address (pre-user)", /\.email/.test(strip("components/platform/widgets/GrowthBetaRequestsWidget.tsx")));
 }
 
