@@ -26,12 +26,24 @@ import { recordOperatorAction } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { limitByKey, limitByUser } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
+
+/** SEC-PLAT-2 — notification bounds (see the POST body). */
+const REAUTH_PER_OPERATOR_PER_HOUR = 20;
+const REAUTH_PER_ITEM_PER_DAY = 3;
 
 export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "WRITE");
   if (err) return err;
+
+  // SEC-PLAT-2 — every accepted call NOTIFIES A CUSTOMER, so it is bounded twice:
+  // per operator (a stuck button or a compromised WRITE session cannot fan out
+  // notifications across the fleet) and, below, per connection (one customer is
+  // never nagged more than a few times a day).
+  const limitedOperator = await limitByUser(auth.user.id, "platform-reauth-request", { limit: REAUTH_PER_OPERATOR_PER_HOUR, windowSec: 3600 });
+  if (limitedOperator) return limitedOperator;
 
   const { id } = await ctx.params;
 
@@ -49,6 +61,9 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       { status: 409 },
     );
   }
+
+  const limitedItem = await limitByKey(item.id, "platform-reauth-item", { limit: REAUTH_PER_ITEM_PER_DAY, windowSec: 86_400 });
+  if (limitedItem) return limitedItem;
 
   // Mark NEEDS_REAUTH (the single chokepoint; records the transition on change) —
   // this lights the existing owner reconnect prompt. NEVER itemRemove.

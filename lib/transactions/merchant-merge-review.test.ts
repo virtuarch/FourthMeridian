@@ -192,7 +192,7 @@ async function main() {
     const res = await applyMergeReviewDecision(
       client,
       { verdict: "MERGED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "T2", evidenceSignal: "CANONICAL_CONTAINMENT" },
-      "u1",
+      { actor: { userId: "u1", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } },
     );
     eq("merge: reported merged", res.merged, true);
     eq("merge: engine ran — duplicate deleted", merchants.has("D"), false);
@@ -214,7 +214,7 @@ async function main() {
     const res = await applyMergeReviewDecision(
       client,
       { verdict: "DISMISSED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "T2" },
-      "u1",
+      { actor: { userId: "u1", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } },
     );
     eq("dismiss: not merged", res.merged, false);
     eq("dismiss: both merchants untouched", merchants.size, 2);
@@ -232,7 +232,7 @@ async function main() {
       await applyMergeReviewDecision(
         client,
         { verdict: "MERGED", survivorKey: "REAL MERCHANT", absorbedKey: "GHOST KEY", evidenceTier: "T2" },
-        "u1",
+        { actor: { userId: "u1", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } },
       );
     } catch { threw = true; }
     eq("unresolved: threw", threw, true);
@@ -250,7 +250,7 @@ async function main() {
       client,
       // The request LIES about the evidence; the detector's tier must be recorded.
       { verdict: "MERGED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "T9-FORGED", evidenceSignal: "FORGED" },
-      "op1",
+      { actor: { userId: "op1", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } },
     );
     const a = audits[0];
     const recovery = (a?.metadata?.recovery ?? []) as Array<{ merchant: { id?: string }; aliases: unknown[]; transactionIds: string[] }>;
@@ -265,7 +265,7 @@ async function main() {
   }
   {
     const { client, audits, decisions, writesOutsideTx } = makeFake({ merchants: WGU }, /* guardMutations */ true);
-    await applyMergeReviewDecision(client, { verdict: "DISMISSED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "T2" }, "op1");
+    await applyMergeReviewDecision(client, { verdict: "DISMISSED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "T2" }, { actor: { userId: "op1", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } });
     eq("dismiss: audited as MERCHANT_MERGE_DISMISSED", audits.length === 1 && audits[0].action === "MERCHANT_MERGE_DISMISSED", true);
     eq("dismiss: decision + audit written inside one transaction", writesOutsideTx.join(), "");
     eq("dismiss: one decision", decisions.length, 1);
@@ -278,28 +278,28 @@ async function main() {
     ] });
     let err: unknown = null;
     try {
-      await applyMergeReviewDecision(client, { verdict: "MERGED", survivorKey: "STARBUCKS", absorbedKey: "HOME DEPOT", evidenceTier: "T1" }, "op1");
+      await applyMergeReviewDecision(client, { verdict: "MERGED", survivorKey: "STARBUCKS", absorbedKey: "HOME DEPOT", evidenceTier: "T1" }, { actor: { userId: "op1", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } });
     } catch (e) { err = e; }
     eq("eligibility: an arbitrary pair is REFUSED", err instanceof MergeReviewIneligibleError, true);
     eq("eligibility: nothing merged, decided or audited", merchants.size === 2 && decisions.length === 0 && audits.length === 0, true);
     let err2: unknown = null;
     try {
-      await applyMergeReviewDecision(client, { verdict: "DISMISSED", survivorKey: "STARBUCKS", absorbedKey: "HOME DEPOT", evidenceTier: "T1" }, "op1");
+      await applyMergeReviewDecision(client, { verdict: "DISMISSED", survivorKey: "STARBUCKS", absorbedKey: "HOME DEPOT", evidenceTier: "T1" }, { actor: { userId: "op1", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } });
     } catch (e) { err2 = e; }
     eq("eligibility: an arbitrary pair cannot be DISMISSED either", err2 instanceof MergeReviewIneligibleError, true);
   }
   {
     // The operator may flip which side survives: the same unordered pair stays eligible.
     const { client, merchants } = makeFake({ merchants: WGU });
-    await applyMergeReviewDecision(client, { verdict: "MERGED", survivorKey: "WESTERN GOVERNORS UN", absorbedKey: "WESTERN GOVERNORS UNIVERSITY", evidenceTier: "T2" }, "op1");
+    await applyMergeReviewDecision(client, { verdict: "MERGED", survivorKey: "WESTERN GOVERNORS UN", absorbedKey: "WESTERN GOVERNORS UNIVERSITY", evidenceTier: "T2" }, { actor: { userId: "op1", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } });
     eq("flip: the operator-chosen survivor survives", merchants.has("D") && !merchants.has("S"), true);
   }
   {
     // A pair already decided is no longer pending, so it cannot be re-decided.
     const { client } = makeFake({ merchants: WGU });
-    await applyMergeReviewDecision(client, { verdict: "DISMISSED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "T2" }, "op1");
+    await applyMergeReviewDecision(client, { verdict: "DISMISSED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "T2" }, { actor: { userId: "op1", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } });
     let err: unknown = null;
-    try { await applyMergeReviewDecision(client, { verdict: "MERGED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "T2" }, "op2"); }
+    try { await applyMergeReviewDecision(client, { verdict: "MERGED", survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN", evidenceTier: "T2" }, { actor: { userId: "op2", via: "PLATFORM_GRANT", area: "MERCHANT_OPS" }, reason: { code: "TESTING" } }); }
     catch (e) { err = e; }
     eq("decided: a dismissed pair cannot later be merged through the review", err instanceof MergeReviewIneligibleError, true);
   }

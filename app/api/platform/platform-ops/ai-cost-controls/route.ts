@@ -34,7 +34,8 @@ import { limitByUser } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/api";
 import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit";
 import { applyAiCostControlChanges, loadAiCostControlsReadModel, type AiCostControlsMutationResult } from "@/lib/platform/ai/cost-controls";
-import type { AiCostControlsReadModel, AiCostControlsRefusal } from "@/lib/platform/ai/cost-controls.types";
+import { AI_COST_CONTROL_KEYS, type AiCostControlsReadModel, type AiCostControlsRefusal } from "@/lib/platform/ai/cost-controls.types";
+import { recordControlRefusal } from "@/lib/platform/control-refusal";
 
 export const runtime = "nodejs";
 
@@ -62,18 +63,34 @@ export async function PATCH(req: NextRequest) {
   const limited = await limitByUser(auth.user.id, "platform-policy-ai-cost-controls", { limit: 30, windowSec: 60 });
   if (limited) return limited;
 
+  const meta = { ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") };
   const body = await req.json().catch(() => null) as { changes?: unknown; reason?: unknown } | null;
+  const reasonCode = body?.reason && typeof body.reason === "object" ? (body.reason as { code?: unknown }).code : undefined;
+  // SEC-PLAT-2 — every refusal past the grant check is recorded. The target is a
+  // known control id only (the refusal's own `control`, else the first change's
+  // when it names a known control); never a submitted value.
+  const firstControl = Array.isArray(body?.changes) ? (body!.changes[0] as { control?: unknown } | undefined)?.control : undefined;
+  const knownControl = (c: unknown): string | null =>
+    typeof c === "string" && (AI_COST_CONTROL_KEYS as readonly string[]).includes(c) ? c : null;
+  const refuse = async (res: NextResponse, code: "VALIDATION" | "CONFLICT" | "NOT_FOUND", control?: unknown) => {
+    await recordControlRefusal(auth, {
+      control: "ai-cost-controls", verb: "change", code,
+      targetKey: knownControl(control) ?? knownControl(firstControl), reasonCode,
+    }, meta);
+    return res;
+  };
+
   if (!body || typeof body !== "object" || !Array.isArray(body.changes)) {
-    return NextResponse.json({ error: "changes must be an array of { control, value, expectedUpdatedAt }." }, { status: 400, headers: NO_STORE });
+    return refuse(NextResponse.json({ error: "changes must be an array of { control, value, expectedUpdatedAt }." }, { status: 400, headers: NO_STORE }), "VALIDATION");
   }
   let reason;
   try { reason = parseOperatorReason(body.reason); }
-  catch (e) { return NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400, headers: NO_STORE }); }
+  catch (e) { return refuse(NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400, headers: NO_STORE }), "VALIDATION"); }
 
   const result = await applyAiCostControlChanges({
     changes: body.changes,
     reason,
-    actor: { id: auth.user.id, ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") },
+    actor: { id: auth.user.id, ...meta },
   });
-  return respond(result);
+  return result.ok ? respond(result) : refuse(respond(result), result.code, result.control);
 }

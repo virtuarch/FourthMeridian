@@ -200,14 +200,19 @@ async function route(req: NextRequest): Promise<NextResponse> {
 }
 
 function isProtectedPagePath(pathname: string): boolean {
-  return pathname === "/dashboard" || pathname.startsWith("/dashboard/")
-      || pathname === "/admin"     || pathname.startsWith("/admin/");
+  return pathname === "/dashboard"    || pathname.startsWith("/dashboard/")
+      || pathname === "/admin"        || pathname.startsWith("/admin/")
+      // SEC-PLAT-2 — the Merchant Operations review page is an operator
+      // surface: it gets the same session / pending-TOTP / return-to handling as
+      // every other protected page. Its own MERCHANT_OPS grant gate is unchanged.
+      || pathname === "/merchant-ops" || pathname.startsWith("/merchant-ops/");
 }
 
 export const config = {
   matcher: [
     "/dashboard/:path*",
     "/admin/:path*",
+    "/merchant-ops/:path*", // SEC-PLAT-2 — operator page; see isProtectedPagePath
     "/api/:path*",   // Origin boundary only — see the /api branch in route()
     // Public-site paths only — see routePublicSiteRequest above. Must list the
     // same pages as PUBLIC_SITE_PATHS in lib/marketing/public-site.ts (pinned by its test).

@@ -250,9 +250,12 @@ console.log("\n3. dashboard/platform/[area]/page.tsx — an operator surface, no
   const src   = code(PLATFORM_PAGE);
   const audit = read(AUDIT_SCRIPT);
 
-  const EXPECTED_DB = ["platformGrant.findUnique", "space.findUnique"].sort();
+  // SEC-PLAT-2 — the grant read moved into the shared guard
+  // (requirePlatformAccess, lib/platform/authorize.ts); the page's only direct
+  // read is the Space + its sections.
+  const EXPECTED_DB = ["space.findUnique"];
   const dbSites = callSites(src, DB_CALL);
-  check(`the two operator reads are enumerated`,
+  check(`the page's one operator read is enumerated (the grant is read by the shared guard)`,
     JSON.stringify(dbSites) === JSON.stringify(EXPECTED_DB),
     `found [${dbSites.join(", ")}]`);
 

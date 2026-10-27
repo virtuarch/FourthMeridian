@@ -9,7 +9,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { getUserActivity, rankSpaces, type ActivityReaders } from "@/lib/platform/activity/activity";
+import { getUserActivity, countSpaceOpens, type ActivityReaders } from "@/lib/platform/activity/activity";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -25,16 +25,13 @@ const NOW = new Date("2026-07-17T12:00:00Z");
 const DAY = 86_400_000;
 
 async function main() {
-  // ── rankSpaces (pure) ──────────────────────────────────────────────────────────
-  console.log("rankSpaces");
+  // ── countSpaceOpens (pure; SEC-PLAT-2 — counts only) ───────────────────────────
+  console.log("countSpaceOpens");
   {
-    const ranked = rankSpaces([
-      { spaceId: "a", spaceName: "Alpha" }, { spaceId: "b", spaceName: "Beta" },
-      { spaceId: "a", spaceName: "Alpha" }, { spaceId: "a", spaceName: "Alpha" },
-    ]);
-    check("aggregates opens per Space", ranked.length === 2 && ranked[0].spaceId === "a" && ranked[0].opens === 3);
-    check("sorted most-active first", ranked[0].opens >= ranked[1].opens);
-    check("empty ⇒ no spaces", rankSpaces([]).length === 0);
+    const c = countSpaceOpens([{ spaceId: "a" }, { spaceId: "b" }, { spaceId: "a" }, { spaceId: "a" }]);
+    check("distinct Spaces and total opens", c.distinctSpaces === 2 && c.opens === 4);
+    check("empty ⇒ zero", countSpaceOpens([]).distinctSpaces === 0 && countSpaceOpens([]).opens === 0);
+    check("the result carries no id or name", Object.keys(c).sort().join(",") === "distinctSpaces,opens");
   }
 
   // ── DAU/WAU/MAU project over the LOGIN ledger ───────────────────────────────────
@@ -52,7 +49,7 @@ async function main() {
       newUsersSince: async (since) => (Math.round((NOW.getTime() - since.getTime()) / DAY) <= 7 ? 5 : 20),
       activatedEver: async () => 60,
       spaceOpensSince: async () => [
-        { spaceId: "s1", spaceName: "Personal" }, { spaceId: "s1", spaceName: "Personal" }, { spaceId: "s2", spaceName: "Household" },
+        { spaceId: "s1" }, { spaceId: "s1" }, { spaceId: "s2" },
       ],
       // BETA A3 — day-grain facts: u1 present + engaged today; u2 present
       // (sign-in day) a week ago, never engaged; u3 engaged via chat 20 days
@@ -94,7 +91,8 @@ async function main() {
     check("the basis is stated on the payload", /SESSION_ACTIVE_DAY/.test(m.activeBasis) && /never cron/.test(m.activeBasis));
     check("new users 7d / 30d", m.newUsers7 === 5 && m.newUsers30 === 20);
     check("totalUsers / activatedEver passed through", m.totalUsers === 100 && m.activatedEver === 60);
-    check("most-active Space from SPACE_SWITCH", m.topSpaces[0].spaceId === "s1" && m.topSpaces[0].opens === 2);
+    check("Space opens from SPACE_SWITCH, as counts only", m.spaceOpens30.distinctSpaces === 2 && m.spaceOpens30.opens === 3);
+    check("SEC-PLAT-2 — the payload carries no Space list, name or id", !("topSpaces" in m) && !/spaceName|spaceId/.test(JSON.stringify(m)));
   }
 
   // ── doctrine: pure projection, no writes ────────────────────────────────────────
@@ -102,6 +100,8 @@ async function main() {
   {
     const src = readFileSync(path.join(process.cwd(), "lib/platform/activity/activity.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     check("reads the AuditLog LOGIN + SPACE_SWITCH ledger", /AuditAction\.LOGIN/.test(src) && /SPACE_SWITCH/.test(src));
+    check("SEC-PLAT-2 — SPACE_SWITCH is read as spaceId only (no metadata, so no customer-chosen name)",
+      /action: AuditAction\.SPACE_SWITCH[\s\S]{0,200}select: \{ spaceId: true \}/.test(src) && !/spaceName/.test(src));
     check("writes nothing (no create/update/delete)", !/\.(create|update|updateMany|delete|deleteMany|upsert)\(/.test(src));
     check("no new telemetry emission (no recordApiUsage/emit)", !/recordApiUsage|\bemit\(/.test(src));
     check("BETA A3 — present/engaged come from the ONE shared predicate (core fold + shared loader), restated nowhere here",

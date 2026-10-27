@@ -37,6 +37,8 @@ export interface ConfirmDialogProps {
   confirmTone?: GlassButtonTone;
   /** Blocks dismissal (Escape/backdrop) and disables actions while an async commit runs. */
   busy?: boolean;
+  /** Disables ONLY the confirm action (e.g. until a required reason is chosen). Defaults to false. */
+  confirmDisabled?: boolean;
 }
 
 export function ConfirmDialog({
@@ -51,6 +53,7 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   confirmTone = "danger",
   busy = false,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   return (
     <Dialog
@@ -66,7 +69,7 @@ export function ConfirmDialog({
           <GlassButton tone="neutral" fullWidth onClick={onClose} disabled={busy}>
             {cancelLabel}
           </GlassButton>
-          <GlassButton tone={confirmTone} fullWidth onClick={onConfirm} disabled={busy}>
+          <GlassButton tone={confirmTone} fullWidth onClick={onConfirm} disabled={busy || confirmDisabled}>
             {busy ? <Loader2 size={14} className="animate-spin" /> : confirmIcon}
             {confirmLabel}
           </GlassButton>
@@ -80,9 +83,12 @@ export function ConfirmDialog({
           </div>
         )}
         <h2 className="text-base font-semibold text-[var(--text-primary)] mb-1">{title}</h2>
-        {message && (
+        {message && (typeof message === "string" ? (
           <p className="text-sm text-[var(--text-secondary)] leading-relaxed">{message}</p>
-        )}
+        ) : (
+          // Rich content (e.g. an embedded reason field) cannot live inside a <p>.
+          <div className="text-sm text-[var(--text-secondary)] leading-relaxed">{message}</div>
+        ))}
       </div>
     </Dialog>
   );

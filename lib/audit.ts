@@ -185,8 +185,10 @@ export function auditInsert(
 //                           reason?, change?, execution? } — fixed keys only
 //
 // REASON IS REQUIRED BY TYPE for consequential actions (REASON_REQUIRED_ACTIONS):
-// policy / overlay / cohort assignment, cadence changes, customer deactivation. A Run Now, a resync or a beta-queue decision needs none — the
-// action IS the reason. A reason is a CODE plus an optional ≤280-char note the
+// policy / overlay / cohort assignment, cadence changes, customer deactivation,
+// signup-mode / product-status changes, invitation revocation and merchant merge
+// decisions (SEC-PLAT-2). A Run Now, a resync or a beta-queue decision
+// (approve / deny / resend / invite) needs none — the action IS the reason. A reason is a CODE plus an optional ≤280-char note the
 // scrubber refuses when it looks like an address, a long digit run or a secret.
 //
 // NO FINANCIAL PAYLOAD, NO PII: `change` carries ids, enum values and counts.
@@ -195,7 +197,10 @@ export function auditInsert(
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type OperatorTargetKind =
-  | "USER" | "BETA_REQUEST" | "PLAID_ITEM" | "CONNECTION" | "SPACE" | "PLATFORM_SETTING" | "JOB" | "POLICY_GROUP";
+  | "USER" | "BETA_REQUEST" | "PLAID_ITEM" | "CONNECTION" | "SPACE" | "PLATFORM_SETTING" | "JOB" | "POLICY_GROUP"
+  // SEC-PLAT-2 — a merchant merge candidate, identified by its global pairKey
+  // (merchant keys are deployment-wide, not a customer's).
+  | "MERCHANT_PAIR";
 
 export const OPERATOR_REASON_CODES = [
   "BETA_ONBOARDING", "SUPPORT_REQUEST", "DOGFOOD", "TESTING", "POLICY_ROLLOUT", "INCIDENT", "ABUSE", "OTHER",
@@ -227,6 +232,15 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   // Release 2 — repointing a customer Item's webhook changes where the provider
   // delivers; it is consequential infrastructure work and carries a reason.
   AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
+  // SEC-PLAT-2 — platform-wide signup / product switches, revoking a sent
+  // invitation, and cross-tenant merchant merge decisions are consequential and
+  // now carry a reason. Approve / deny / resend / direct invite stay
+  // reason-optional: there the action IS the reason (the P1 ruling above).
+  AuditAction.BETA_MODE_CHANGED,
+  AuditAction.PRODUCT_STATUS_CHANGED,
+  AuditAction.BETA_INVITATION_REVOKED,
+  AuditAction.MERCHANT_MERGE_APPLIED,
+  AuditAction.MERCHANT_MERGE_DISMISSED,
   // Break-glass /admin actions (grants, 2FA reset) stay on their existing audit
   // shape in P1; adding a reason there is P2 (the surface is SYSTEM_ADMIN-only).
 ]);

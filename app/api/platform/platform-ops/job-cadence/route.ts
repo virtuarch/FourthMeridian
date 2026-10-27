@@ -29,8 +29,9 @@ import { requirePlatformAccess, requireFreshPlatformAccess } from "@/lib/platfor
 import { limitByUser } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/api";
 import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit";
+import { recordControlRefusal } from "@/lib/platform/control-refusal";
 import {
-  loadJobCadenceReadModel, resetJobCadence, updateJobCadence,
+  editableJob, loadJobCadenceReadModel, resetJobCadence, updateJobCadence,
   type JobCadenceMutationResult, type JobCadenceReadModel,
 } from "@/lib/platform/policies/job-cadence";
 
@@ -61,26 +62,44 @@ async function readBody(req: NextRequest): Promise<Record<string, unknown> | nul
   return body && typeof body === "object" ? (body as Record<string, unknown>) : null;
 }
 
+/** SEC-PLAT-2 — the reason CODE a body carried, for the refusal record (never the note). */
+function reasonCodeOf(body: Record<string, unknown> | null): unknown {
+  const r = body?.reason;
+  return r && typeof r === "object" ? (r as { code?: unknown }).code : undefined;
+}
+
+type Refusal = "VALIDATION" | "CONFLICT" | "NOT_EDITABLE";
+
 export async function PATCH(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
   if (err) return err;
   const limited = await limitByUser(auth.user.id, "platform-policy", { limit: 30, windowSec: 60 });
   if (limited) return limited;
 
+  const meta = { ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") };
   const body = await readBody(req);
-  if (!body || typeof body.job !== "string") return NextResponse.json({ error: "job is required." }, { status: 400 });
-  if (typeof body.hours !== "number" && typeof body.hours !== "string") return NextResponse.json({ error: "hours is required." }, { status: 400 });
+  // SEC-PLAT-2 — the job is recorded only when it is a registered, editable job
+  // (closed vocabulary); anything else is recorded as "unknown".
+  const jobKey = editableJob(body?.job)?.name ?? null;
+  const refuse = async (res: NextResponse, code: Refusal) => {
+    await recordControlRefusal(auth, { control: "job-cadence", verb: "change", code, targetKey: jobKey, reasonCode: reasonCodeOf(body) }, meta);
+    return res;
+  };
+
+  if (!body || typeof body.job !== "string") return refuse(NextResponse.json({ error: "job is required." }, { status: 400 }), "VALIDATION");
+  if (typeof body.hours !== "number" && typeof body.hours !== "string") return refuse(NextResponse.json({ error: "hours is required." }, { status: 400 }), "VALIDATION");
   if (!("expectedUpdatedAt" in body) || (body.expectedUpdatedAt !== null && typeof body.expectedUpdatedAt !== "string")) {
-    return NextResponse.json({ error: "expectedUpdatedAt must be the observed override version (ISO) or null." }, { status: 400 });
+    return refuse(NextResponse.json({ error: "expectedUpdatedAt must be the observed override version (ISO) or null." }, { status: 400 }), "VALIDATION");
   }
   let reason;
   try { reason = parseOperatorReason(body.reason); }
-  catch (e) { return NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400 }); }
+  catch (e) { return refuse(NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400 }), "VALIDATION"); }
 
-  return respond(await updateJobCadence({
+  const result = await updateJobCadence({
     job: body.job, hours: body.hours, expectedUpdatedAt: body.expectedUpdatedAt as string | null, reason,
-    actor: { id: auth.user.id, ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") },
-  }));
+    actor: { id: auth.user.id, ...meta },
+  });
+  return result.ok ? respond(result) : refuse(respond(result), result.code);
 }
 
 export async function DELETE(req: NextRequest) {
@@ -89,17 +108,25 @@ export async function DELETE(req: NextRequest) {
   const limited = await limitByUser(auth.user.id, "platform-policy", { limit: 30, windowSec: 60 });
   if (limited) return limited;
 
+  const meta = { ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") };
   const body = await readBody(req);
-  if (!body || typeof body.job !== "string") return NextResponse.json({ error: "job is required." }, { status: 400 });
+  const jobKey = editableJob(body?.job)?.name ?? null;
+  const refuse = async (res: NextResponse, code: Refusal) => {
+    await recordControlRefusal(auth, { control: "job-cadence", verb: "reset", code, targetKey: jobKey, reasonCode: reasonCodeOf(body) }, meta);
+    return res;
+  };
+
+  if (!body || typeof body.job !== "string") return refuse(NextResponse.json({ error: "job is required." }, { status: 400 }), "VALIDATION");
   if (typeof body.expectedUpdatedAt !== "string") {
-    return NextResponse.json({ error: "expectedUpdatedAt (the observed override version, ISO) is required to reset." }, { status: 400 });
+    return refuse(NextResponse.json({ error: "expectedUpdatedAt (the observed override version, ISO) is required to reset." }, { status: 400 }), "VALIDATION");
   }
   let reason;
   try { reason = parseOperatorReason(body.reason); }
-  catch (e) { return NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400 }); }
+  catch (e) { return refuse(NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400 }), "VALIDATION"); }
 
-  return respond(await resetJobCadence({
+  const result = await resetJobCadence({
     job: body.job, expectedUpdatedAt: body.expectedUpdatedAt, reason,
-    actor: { id: auth.user.id, ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") },
-  }));
+    actor: { id: auth.user.id, ...meta },
+  });
+  return result.ok ? respond(result) : refuse(respond(result), result.code);
 }

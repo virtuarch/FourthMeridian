@@ -54,6 +54,12 @@ export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   JOB_CADENCE_RESET:               "Reset a job cadence",
   OPERATOR_REFRESH_ALL:            "Refreshed a customer's authorities",
   PLAID_ITEM_REVOCATION_RETRY_REQUESTED: "Retried provider cleanup",
+  // SEC-PLAT-2
+  MERCHANT_MERGE_APPLIED:          "Merged two merchants",
+  MERCHANT_MERGE_DISMISSED:        "Dismissed a merchant merge",
+  PLATFORM_CONTROL_REFUSED:        "A control change was refused",
+  PLAID_ITEM_WEBHOOK_DRY_RUN:      "Dry-ran a webhook repoint",
+  PLAID_ITEM_WEBHOOK_UPDATED:      "Repointed a provider webhook",
 };
 
 /** Reason codes, humanised. Unknown → the raw code. */

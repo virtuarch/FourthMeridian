@@ -33,17 +33,22 @@ Fourth Meridian
 | Axis | Model | Enum(s) | Controls | Gated by |
 |---|---|---|---|---|
 | **Customer** | `SpaceMember` (per user × Space) | `SpaceMemberRole {OWNER, ADMIN, MEMBER, VIEWER}`, status `ACTIVE\|REMOVED\|LEFT` | Access to a **customer Space's** balances, transactions, goals, AI, sharing | `requireSpaceRole(spaceId, minRole)` → `spaceMember` lookup (`lib/session.ts`, `lib/spaces/policy.ts`) |
-| **Operator** | `PlatformGrant` (per user × area) | `PlatformArea {PLATFORM_OPS, SECURITY_OPS, GROWTH_REVENUE, CUSTOMER_SUCCESS}` × `PlatformAccessLevel {READ, WRITE, CONTROL}`, status `ACTIVE\|REVOKED` | Access to a **Fourth Meridian HQ** area at `/dashboard/platform/[area]` and its `/api/platform/*` routes | `requirePlatformAccess(area, level)` → `hasPlatformAccess` pure policy (`lib/platform/authorize.ts`, `lib/platform/policy.ts`) |
+| **Operator** | `PlatformGrant` (per user × area) | `PlatformArea {PLATFORM_OPS, SECURITY_OPS, GROWTH_REVENUE, CUSTOMER_SUCCESS, MERCHANT_OPS}` × `PlatformAccessLevel {READ, WRITE, CONTROL}`, status `ACTIVE\|REVOKED` | Access to a **Fourth Meridian HQ** area at `/dashboard/platform/[area]` and its `/api/platform/*` routes (MERCHANT_OPS: `/merchant-ops` + `/api/merchant-ops/*`) | `requirePlatformAccess(area, level)` → `hasPlatformAccess` pure policy (`lib/platform/authorize.ts`, `lib/platform/policy.ts`) |
 | **Emergency** | `User.role` | `UserRole {USER, SYSTEM_ADMIN}` | Break-glass administration at `/admin/*`: issue/revoke grants, user & space oversight, security settings, audit | `requireSystemAdmin` / `requireFreshSystemAdmin` (`lib/session.ts`) |
 
 ### Why they are separate — and must stay so
 
 - **A `PlatformGrant` never creates a `SpaceMember` row, and vice-versa** (schema comment on `PlatformGrant`; enforced by the `spaceMember.create` tripwire in `lib/platform-surface.test.ts`). Holding operator access to `SECURITY_OPS` gives an employee **no** ability to read any customer's money; being a customer Space OWNER gives **no** platform power.
-- **The platform surface reads only operational ledgers** (`AuditLog`, `JobRun`, `ApiUsageCounter`, `UserSession`, `FxRate`, `BetaAccessRequest`, `SyncIssue`, `PlatformGrant`) — **never** `Transaction`/`Holding`/`Position`/balance tables. Locked by source-scan (`lib/platform-surface.test.ts`).
+- **The platform surface reads only operational ledgers** (`AuditLog`, `JobRun`, `ApiUsageCounter`, `UserSession`, `FxRate`, `BetaAccessRequest`, `SyncIssue`, `PlatformGrant`) — **never** `Transaction`/`Holding`/`Position`/balance tables. Locked by source-scan (`lib/platform-surface.test.ts`). **One documented exception (owner ruling P-6, 2026-10-27):** Merchant Operations' merge review reads per-merchant transaction **counts** across tenants (`lib/transactions/merchant-merge-review.ts`) — counts only, never an amount, date, account or row.
+- **Identity is area-scoped (owner ruling P-4, 2026-10-27).** Customer Success may resolve customer identity under its own grant; Platform Operations and Growth are identity-minimized (no customer names, emails or customer-chosen Space names on their surfaces — SEC-PLAT-2 removed the last Space-name list from Growth).
 - **Escalation is closed:** only `SYSTEM_ADMIN` can mint `PlatformGrant` rows, and only onto `role === USER` accounts. No platform capability can mint platform capabilities.
 - **`SYSTEM_ADMIN` is break-glass, not a daily role.** It carries an unconditional bypass over every platform area (`decidePlatformAccess`), so it is the highest-value credential in the system and is treated accordingly (mandatory MFA below; kill switch `DISABLE_SYSTEM_ADMIN`; every admin action audited with `performedByAdminId`).
 
-The employee/operator tier is expressed **today** as a normal `USER` account + one or more per-area `PlatformGrant`s — least-privilege, with zero customer-data reach and no new role enum required.
+The employee/operator tier is expressed **today** as a normal `USER` account + one or more per-area `PlatformGrant`s — least-privilege, with no customer financial-data reach and no new role enum required.
+
+**Every operator page and route goes through the one guard.** `requirePlatformAccess` / `requireFreshPlatformAccess` (`lib/platform/authorize.ts`) is the only grant check — including the `/dashboard/platform/[area]` page (SEC-PLAT-2; it previously read the grant itself and so skipped denial recording and the pending-enrolment gate). Every refusal is recorded (OBS-009, rate-limited). Every CONTROL check — reads included — is the fresh (live-revocation) variant. `/merchant-ops` is covered by `proxy.ts` like `/dashboard` and `/admin`.
+
+**Operator MFA — known gap, fix pending (SEC-PLAT-1).** Today only `SYSTEM_ADMIN` has mandatory TOTP. A grant holder (a `USER`) is forced to enrol only when `require_totp_all_users` is on (default off), and may disable 2FA while keeping every grant; the `require_totp_admins` setting has no enforcement consumer. Pinned as current behaviour by `lib/platform/operator-mfa-gap.characterization.test.ts` (discovery branch). Owner ruling P-2 (2026-10-27): mandatory TOTP for every ACTIVE grant holder — shipped only with explicit rollout approval.
 
 ---
 
@@ -60,17 +65,18 @@ The Operator axis ranks **`CONTROL > WRITE > READ`** (`LEVEL_RANK`, `lib/platfor
 
 **Why a rank above WRITE, and not a flag or a fold-in.** The ranking cuts one way only: `CONTROL` satisfies `WRITE` and `READ`; **`WRITE` does not satisfy `CONTROL`.** Had control-plane mutations been folded into WRITE, every operator holding WRITE today would silently acquire control-plane power the day the first control endpoint shipped. Because CONTROL ranks *above* WRITE, every existing grant keeps exactly the reach it has, and CONTROL has to be granted deliberately.
 
-**As of OPS-2D-2, CONTROL exists and nothing consumes it.** This is the intended terminal state of that slice, not an unfinished edge:
+**Current state (2026-10-27).** CONTROL is issued and consumed:
 
 | | Status |
 |---|---|
 | Declared in `PlatformAccessLevel` + migrated | ✅ |
 | Ranked, exhaustive, distinct from WRITE | ✅ |
-| Required by any route | ❌ — all 11 platform mutations still require `WRITE` |
-| Checked by any UI | ❌ |
-| **Issuable** | ❌ — `ISSUABLE_LEVELS = [READ, WRITE]` |
+| Required by routes | ✅ — refresh cadence (`policies`), job cadence, AI cost controls, operational controls (maintenance mode), Plaid webhook roster / dry run / repoint — the exact set is pinned by `lib/platform/capability-control.test.ts` |
+| Checked by UI | ✅ — `canControl` on the platform mount access |
+| **Issuable** | ✅ — `ISSUABLE_LEVELS = ALL_ACCESS_LEVELS`; the admin matrix renders R / W / C per area |
+| Refusals audited | ✅ — maintenance mode on `PLATFORM_POLICY_*` (REFUSED); the other CONTROL mutations on `PLATFORM_CONTROL_REFUSED` (SEC-PLAT-2: control, verb, closed-vocabulary target, refusal code, reason code — never a submitted value) |
 
-Issuance is closed on purpose. Nothing asks for CONTROL, and the admin matrix (`/admin/platform-access`) renders exactly two cells per area — so a CONTROL grant would confer no capability anyone requests while displaying as *no grant at all* in the operator's own UI. An unrenderable grant is worse than an absent one. **Whoever makes CONTROL issuable owes the admin matrix a third cell in the same change.**
+*History (OPS-2D-2):* CONTROL was first introduced unconsumed and un-issuable, on the rule below. Nothing asks for CONTROL, and the admin matrix (`/admin/platform-access`) renders exactly two cells per area — so a CONTROL grant would confer no capability anyone requests while displaying as *no grant at all* in the operator's own UI. An unrenderable grant is worse than an absent one. **Whoever makes CONTROL issuable owes the admin matrix a third cell in the same change.**
 
 **Escalation stays closed.** CONTROL does not, and must never, permit minting grants — a CONTROL holder who could issue grants would be a `SYSTEM_ADMIN` by another name. Grant administration remains `SYSTEM_ADMIN`-only.
 

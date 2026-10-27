@@ -6,8 +6,15 @@
  * Gate order (never discloses existence — an unknown/ungranted area redirects,
  * it does not 404):
  *   1. [area] must be a known PlatformArea            → else /dashboard/platform
- *   2. a session must exist                            → else /login
- *   3. an ACTIVE PlatformGrant on this area must exist → else /dashboard/platform
+ *   2. requirePlatformAccess(area, "READ") — the SAME shared guard every
+ *      /api/platform route uses (SEC-PLAT-2):
+ *        401 no / revoked session                     → /login (deep link kept)
+ *        403 no / insufficient / revoked grant, or a
+ *            session still pending TOTP enrolment     → /dashboard/platform
+ *            (the refusal is RECORDED by the guard — OBS-009 — which the old
+ *             page-local grant read never did)
+ *        503 session authority unavailable            → thrown to error.tsx
+ *                                                        (fail closed, honestly)
  * SYSTEM_ADMIN never reaches this page — proxy.ts redirects them off
  * /dashboard/* to /admin; they administer grants from there.
  *
@@ -70,13 +77,12 @@
  * change, not a page change, and belongs to whoever owns the policies.
  */
 
-import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { redirectToLogin } from "@/lib/auth/login-redirect";
-import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { PlatformArea } from "@prisma/client";
-import { PLATFORM_AREAS, hasPlatformAccess } from "@/lib/platform/policy";
+import { PLATFORM_AREAS } from "@/lib/platform/policy";
+import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { PlatformSpaceDashboard } from "@/components/platform/PlatformSpaceDashboard";
 import { platformMountContext } from "@/lib/space/mount-context.server";
 
@@ -104,22 +110,20 @@ export default async function PlatformSpacePage({
   }
   const area = areaParam as PlatformArea;
 
-  // 2. Session (same pattern as app/(shell)/dashboard/spaces/page.tsx).
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return redirectToLogin();
-
-  // 3. ACTIVE grant on this area — access-derived, no SpaceMember lookup.
-  // RLS-T3 — on `db` explicitly; see the header. fm_app could serve this one
-  // read, but splitting a single gate across two authorities buys nothing: the
-  // lookup is keyed on the session's OWN userId, so it cannot return anybody
-  // else's grant whatever principal asks.
-  const grant = await db.platformGrant.findUnique({
-    where:  { userId_area: { userId: session.user.id, area } },
-    select: { area: true, level: true, status: true },
-  });
-  if (!grant || !hasPlatformAccess(area, "READ", [grant])) {
-    redirect("/dashboard/platform");
+  // 2. SEC-PLAT-2 — the shared platform guard, not a page-local grant read: the
+  //    session (with its revocation + pending-TOTP checks), the ACTIVE grant
+  //    and the denial record all come from lib/platform/authorize.ts, exactly
+  //    as for every /api/platform route.
+  const [auth, err] = await requirePlatformAccess(area, "READ");
+  if (err) {
+    if (err.status === 401) return redirectToLogin();
+    if (err.status === 403) redirect("/dashboard/platform");
+    throw new Error("Platform access could not be verified right now.");
   }
+  // SYSTEM_ADMIN (grant === null, break-glass) never reaches this page —
+  // proxy.ts sends them to /admin. Fail closed if one somehow does.
+  const grant = auth.grant;
+  if (!grant) redirect("/dashboard/platform");
 
   // 4. The platform Space + its enabled sections (same section model customer
   //    dashboards use, ordered by `order`).
@@ -155,7 +159,7 @@ export default async function PlatformSpacePage({
       area,
       areaLabel:   PLATFORM_AREAS[area].label,
       accessLevel: grant.level,
-      userId:      session.user.id,
+      userId:      auth.user.id,
     },
     { selectedKey: requestedWorkspace },
   );

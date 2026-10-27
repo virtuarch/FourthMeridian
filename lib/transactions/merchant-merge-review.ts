@@ -35,6 +35,7 @@ import {
   mergePairKey,
 } from "@/lib/transactions/merchant-merge-decisions";
 import { AuditAction } from "@/lib/audit-actions";
+import { recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
 
 /** Per-merchant review counts shown beside a candidate. */
 export interface MerchantReviewFacts {
@@ -150,11 +151,26 @@ export class MergeReviewIneligibleError extends Error {
  *   DISMISSED → record the decision and its AuditLog record in one transaction;
  *               no merchant record is touched.
  */
+/**
+ * SEC-PLAT-2 — who decided, and why. Both verdicts are consequential,
+ * deployment-wide merchant-identity decisions, so the reason is REQUIRED (lib/audit.ts
+ * REASON_REQUIRED_ACTIONS) and the audit row goes through the operator-action
+ * envelope (performedByAdminId, actor, target, reason, result), which also puts
+ * it on the Security Ops operator feed.
+ */
+export interface MergeReviewActor {
+  actor: OperatorActionInput["actor"];
+  reason: OperatorReason;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+}
+
 export async function applyMergeReviewDecision(
   client: PrismaClient,
   decision: MergeReviewDecision,
-  decidedByUserId: string,
+  decidedBy: MergeReviewActor,
 ): Promise<{ pairKey: string; merged: boolean }> {
+  const decidedByUserId = decidedBy.actor.userId;
   const pending = await getPendingMergeCandidates(client);
   const candidate = pending.find((c) =>
     (c.survivorKey === decision.survivorKey && c.absorbedKey === decision.absorbedKey) ||
@@ -178,12 +194,15 @@ export async function applyMergeReviewDecision(
         evidenceSignal,
         decidedByUserId,
       });
-      await tx.auditLog.create({
-        data: {
-          userId: decidedByUserId,
-          action: AuditAction.MERCHANT_MERGE_DISMISSED,
-          metadata: { pairKey, survivorKey: decision.survivorKey, absorbedKey: decision.absorbedKey, evidenceTier, evidenceSignal },
-        },
+      await recordOperatorAction(tx, {
+        actor: decidedBy.actor,
+        action: AuditAction.MERCHANT_MERGE_DISMISSED,
+        target: { kind: "MERCHANT_PAIR", id: pairKey },
+        reason: decidedBy.reason,
+        result: "SUCCESS",
+        detail: { pairKey, survivorKey: decision.survivorKey, absorbedKey: decision.absorbedKey, evidenceTier, evidenceSignal },
+        ipAddress: decidedBy.ipAddress ?? null,
+        userAgent: decidedBy.userAgent ?? null,
       });
     });
     return { pairKey, merged: false };
@@ -214,18 +233,22 @@ export async function applyMergeReviewDecision(
         evidenceSignal,
         decidedByUserId,
       });
-      await tx.auditLog.create({
-        data: {
-          userId: decidedByUserId,
-          action: AuditAction.MERCHANT_MERGE_APPLIED,
-          metadata: JSON.parse(JSON.stringify({
-            pairKey,
-            evidence: { tier: evidenceTier, signal: evidenceSignal },
-            survivor: applied.survivor,
-            perDuplicate: applied.perDuplicate,
-            recovery: applied.snapshots,
-          })),
-        },
+      await recordOperatorAction(tx, {
+        actor: decidedBy.actor,
+        action: AuditAction.MERCHANT_MERGE_APPLIED,
+        target: { kind: "MERCHANT_PAIR", id: pairKey },
+        reason: decidedBy.reason,
+        result: "SUCCESS",
+        // The recovery payload (unchanged keys) rides in `detail`.
+        detail: JSON.parse(JSON.stringify({
+          pairKey,
+          evidence: { tier: evidenceTier, signal: evidenceSignal },
+          survivor: applied.survivor,
+          perDuplicate: applied.perDuplicate,
+          recovery: applied.snapshots,
+        })),
+        ipAddress: decidedBy.ipAddress ?? null,
+        userAgent: decidedBy.userAgent ?? null,
       });
     },
   });

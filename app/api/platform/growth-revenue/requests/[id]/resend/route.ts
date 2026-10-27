@@ -22,14 +22,16 @@ import { sendEmail } from "@/lib/email/send";
 import { buildBetaInviteUrl } from "@/lib/email/beta-invite-url";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
-import { auditEmailHash } from "@/lib/audit";
+import { auditEmailHash, recordOperatorAction } from "@/lib/audit";
+import { operatorActorFrom } from "@/lib/platform/operator-actor";
+import { getClientIp } from "@/lib/api";
 import { BetaAccessRequestStatus } from "@prisma/client";
 
 export const runtime = "nodejs";
 
 const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
-export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
 
@@ -67,13 +69,16 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     console.error("[beta-resend] invite email failed to send:", emailResult.error);
   }
 
-  await db.auditLog.create({
-    data: {
-      userId:             auth.user.id,
-      performedByAdminId: auth.user.id,
-      action:             AuditAction.BETA_INVITATION_RESENT,
-      metadata:           { betaRequestId: id, emailHash: auditEmailHash(request.email), emailStatus: emailResult.status },
-    },
+  // SEC-PLAT-2 — through the operator-action envelope (actor, target, result);
+  // the legacy metadata keys ride in `detail` so existing readers keep working.
+  await recordOperatorAction(db, {
+    actor:  operatorActorFrom(auth, "GROWTH_REVENUE"),
+    action: AuditAction.BETA_INVITATION_RESENT,
+    target: { kind: "BETA_REQUEST", id },
+    result: "SUCCESS",
+    detail: { betaRequestId: id, emailHash: auditEmailHash(request.email), emailStatus: emailResult.status },
+    ipAddress: getClientIp(req),
+    userAgent: req.headers.get("user-agent"),
   });
 
   return NextResponse.json({ success: true, emailStatus: emailResult.status });
