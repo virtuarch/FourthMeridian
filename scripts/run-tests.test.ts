@@ -46,8 +46,15 @@ async function main(): Promise<void> {
     check("wrapped wedge: returns shortly after the deadline (does not hang on the grandchild's pipe)", ms >= 550 && ms < 5_000, `${ms} ms`);
     let grandPid = NaN;
     try { grandPid = Number(readFileSync(pidFile, "utf8")); } catch { /* not written */ }
-    let alive = false;
-    try { process.kill(grandPid, 0); alive = true; } catch { alive = false; }
+    // SIGKILL is asynchronous: a killed-but-not-yet-reaped process still answers
+    // kill(pid, 0) for a moment (seen on a GitHub runner). Poll up to 3 s for it to
+    // disappear rather than sampling once.
+    const isAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    let alive = Number.isFinite(grandPid) && isAlive(grandPid);
+    for (let i = 0; alive && i < 30; i++) {
+      await new Promise((res) => setTimeout(res, 100));
+      alive = isAlive(grandPid);
+    }
     check("wrapped wedge: the grandchild is dead (no orphan left behind)", Number.isFinite(grandPid) && !alive, `pid ${grandPid}`);
     if (alive) { try { process.kill(grandPid, "SIGKILL"); } catch { /* ignore */ } }
   }
