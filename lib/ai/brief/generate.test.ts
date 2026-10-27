@@ -235,13 +235,23 @@ async function main() {
         && /only when the entry covering its figures has a tier other than observed/.test(BRIEF_SYSTEM_PROMPT));
     check('a movement joins a balance only through the account it posted on',
       /Connect a movement to a change in debt only when its account is LIABILITY/.test(BRIEF_SYSTEM_PROMPT));
-    check('…a debt payment belongs to both sides, and a movement only to a window that contains it',
-      /A DEBT_PAYMENT row, and any row marked betweenOwnAccounts, belongs to both sides/.test(BRIEF_SYSTEM_PROMPT)
+    // v2.7-P0 — only a LIABILITY_PAYMENT lowers what is owed; the old sentence said
+    // ANY betweenOwnAccounts row did, which licensed "a savings transfer paid down debt".
+    check('…a liability payment belongs to both sides, an own-accounts transfer never changes what is owed, and a movement only to a window that contains it',
+      /A LIABILITY_PAYMENT row belongs to both sides: it lowers cash and lowers what is owed/.test(BRIEF_SYSTEM_PROMPT)
+        && /A transfer between the user's own accounts never changes what is owed/.test(BRIEF_SYSTEM_PROMPT)
+        && !/any row marked betweenOwnAccounts, belongs to both sides/.test(BRIEF_SYSTEM_PROMPT)
         && /only over a window whose from and to contain its date/.test(BRIEF_SYSTEM_PROMPT));
     check('a withheld percentage is never replaced by a multiple', /pct is null[^.]*: state the amounts, never a percentage or a multiple/.test(BRIEF_SYSTEM_PROMPT));
     check('stale data must be named', /STALE, VERY_STALE or UNKNOWN/.test(BRIEF_SYSTEM_PROMPT) && /out of date/.test(BRIEF_SYSTEM_PROMPT));
     check('absent windows are not measured', /absent was not measured/.test(BRIEF_SYSTEM_PROMPT));
-    check('debt payments are not spending', /DEBT_PAYMENT is paying down debt, not spending/.test(BRIEF_SYSTEM_PROMPT));
+    check('debt payments are not spending', /Only nature LIABILITY_PAYMENT \(flow DEBT_PAYMENT\) is a payment toward a card or loan: it lowers what is owed, and it is not spending/.test(BRIEF_SYSTEM_PROMPT));
+    check('v2.7-P0: an internal transfer is "moved between their accounts", never a payment or debt reduction',
+      /INTERNAL_SAVINGS_TRANSFER, INTERNAL_CHECKING_TRANSFER, BROKERAGE_TRANSFER and INTERNAL_TRANSFER moved money between the user's own accounts: say it was moved between their accounts, and never call it a payment, paying down or reducing debt/.test(BRIEF_SYSTEM_PROMPT));
+    check('v2.7-P0: an unclassified movement is described only as money that moved',
+      /UNCLASSIFIED_MOVEMENT is a movement whose purpose is not known: say only that money moved, never why/.test(BRIEF_SYSTEM_PROMPT));
+    check('v2.7-P0: the prompt no longer equates DEBT_PAYMENT with paying down debt by itself',
+      !/DEBT_PAYMENT is paying down debt/.test(BRIEF_SYSTEM_PROMPT));
     check('no market attribution', /no market or price data/.test(BRIEF_SYSTEM_PROMPT));
     check('quiet is defined by importance', /quiet: true exactly when no observation is NOTABLE/.test(BRIEF_SYSTEM_PROMPT));
     const src = readFileSync('lib/ai/brief/generate.ts', 'utf8');

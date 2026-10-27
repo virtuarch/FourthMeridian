@@ -74,7 +74,7 @@ async function main() {
     check('no description, logo or raw reference numbers', !/REF|ACCT|99887766|logo|description/i.test(json));
     check('no run of four or more digits survives in a merchant', !a.top.some((r) => /\d{4,}/.test(r.merchant ?? '')));
     check('keys are the allowlist only', a.top.every((r) => Object.keys(r).every((k) =>
-      ['date', 'amount', 'flow', 'merchant', 'category', 'pending', 'betweenOwnAccounts', 'account'].includes(k))));
+      ['date', 'amount', 'flow', 'nature', 'merchant', 'category', 'pending', 'betweenOwnAccounts', 'account'].includes(k))));
     check('safeMerchant strips digit runs and symbols', safeMerchant('AMZN Mktp US*2K4 #1234567') === 'AMZN Mktp US 2K4');
     check('safeMerchant drops an all-digit name', safeMerchant('123456789') === undefined);
     // SEC-AI-005 — the Brief's rule IS the shared rule now; the Conversations tools apply the same function.

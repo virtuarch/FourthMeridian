@@ -21,8 +21,8 @@ import { basePackage } from './fixtures';
 import { materialDigest } from './digest';
 import { BriefScopeError } from './errors';
 import type { BriefGenerationResult } from './generate';
-import { BRIEF_PROMPT_HASH, BRIEF_PROMPT_VERSION, ensureDailyBrief, inspectDailyBrief, type EnsureResult, type LifecycleDeps } from './lifecycle';
-import { BRIEF_GENERATION_VERSION, GENERATION_FAILURE_COOLDOWN_MS, GENERATION_LEASE_MS } from './policy';
+import { BRIEF_PROMPT_HASH, BRIEF_PROMPT_VERSION, promptRevisionOf, ensureDailyBrief, inspectDailyBrief, type EnsureResult, type LifecycleDeps } from './lifecycle';
+import { BRIEF_GENERATION_VERSION, BRIEF_PROMPT_REVISION, GENERATION_FAILURE_COOLDOWN_MS, GENERATION_LEASE_MS, generationVersionOf } from './policy';
 import type { BriefRow } from './state';
 import type { BriefCompletion, BriefKey, BriefScope, BriefStore, ClaimResult } from './store';
 import type { BriefPackage } from './types';
@@ -141,7 +141,7 @@ async function main() {
     check('persisted with its provenance',
       !!row.generatedAt && row.content !== null && row.sourceWatermark === 'wm-1'
         && row.materialDigest === materialDigest({ ...basePackage(), identity: { ...basePackage().identity } })
-        && row.promptVersion === BRIEF_PROMPT_VERSION && /^brief-generation-\d+\+prompt-[0-9a-f]{12}$/.test(BRIEF_PROMPT_VERSION)
+        && row.promptVersion === BRIEF_PROMPT_VERSION && /^brief-generation-\d+\+prompt-[0-9a-f]{12}\+rev-[a-z0-9-]+$/.test(BRIEF_PROMPT_VERSION)
         && row.model === 'gpt-5.1' && row.correlationId === 'brief_1' && row.historyThrough === '2026-09-12'
         && row.balancesAsOf?.toISOString() === basePackage().freshness!.oldestBalanceObservedAt
         && row.generationStartedAt === null);
@@ -394,11 +394,15 @@ async function main() {
   console.log('\n12. the generation contract — valid evidence, outdated rules');
   {
     // If this fails, the prompt or output schema changed. Decide whether what a Brief
-    // may say changed meaningfully: if so bump BRIEF_GENERATION_VERSION (policy.ts);
-    // either way, update the pin. The version, not this hash, decides validity.
+    // may say changed meaningfully: if so bump BRIEF_GENERATION_VERSION (policy.ts) —
+    // which REGENERATES today's stored Briefs — or, when stored Briefs must be
+    // preserved (owner policy 2026-10-27), move BRIEF_PROMPT_REVISION only. Either way,
+    // update the pin. The version, not this hash, decides validity.
+    // v2.7-P0: 08fbac9b9cb7 → dfb26bf3e8ae (debt-semantics-1; generation NOT bumped).
     check('the prompt/schema hash is pinned (review BRIEF_GENERATION_VERSION when it moves)',
-      BRIEF_PROMPT_HASH === '08fbac9b9cb7', BRIEF_PROMPT_HASH);
-    check('what a row stores is the intentional version plus the hash', BRIEF_PROMPT_VERSION === `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}`);
+      BRIEF_PROMPT_HASH === 'dfb26bf3e8ae', BRIEF_PROMPT_HASH);
+    check('what a row stores is the intentional version plus the hash plus the revision',
+      BRIEF_PROMPT_VERSION === `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}+rev-${BRIEF_PROMPT_REVISION}`);
 
     const r = harness();
     const t = (m: number) => new Date(T0.getTime() + m * 60_000);
@@ -475,6 +479,33 @@ async function main() {
     r.state.delayMs = 0;
     check('C/D. the policy made a source overdue → exactly one regeneration across two tabs, reason change',
       r.state.generations === 2 && [x.status, y.status].sort().join(',') === 'GENERATED,IN_PROGRESS' && r.state.lastReason === 'change');
+  }
+
+  console.log('\n14. v2.7-P0 — a prompt REVISION is recorded, never a regeneration');
+  {
+    check('the generation version was NOT bumped by the debt-semantics prompt fix', BRIEF_GENERATION_VERSION === 'brief-generation-5');
+    check('the stored version parses to the generation alone', generationVersionOf(BRIEF_PROMPT_VERSION) === BRIEF_GENERATION_VERSION);
+    check('the revision is readable back', promptRevisionOf(BRIEF_PROMPT_VERSION) === BRIEF_PROMPT_REVISION
+      && BRIEF_PROMPT_REVISION === 'debt-semantics-1');
+    check('a pre-revision row records no revision', promptRevisionOf('brief-generation-5+prompt-08fbac9b9cb7') === null
+      && promptRevisionOf(null) === null);
+
+    const r = harness();
+    const t = (m: number) => new Date(T0.getTime() + m * 60_000);
+    const today = key('2026-09-13');
+    await r.ensure(t(0));
+    check('a NEW generation records the new revision and the new prompt hash',
+      r.store.get(today)!.promptVersion === `brief-generation-5+prompt-${BRIEF_PROMPT_HASH}+rev-debt-semantics-1`,
+      String(r.store.get(today)!.promptVersion));
+    // The row exactly as the previous deploy wrote it: same generation, old prompt hash, no revision.
+    r.store.get(today)!.promptVersion = 'brief-generation-5+prompt-08fbac9b9cb7';
+    const before = JSON.stringify(r.store.get(today));
+    const reused = await r.ensure(t(1));
+    check('a cached Brief from BEFORE the change is still reused — FRESH CACHED, no model call',
+      reused.status === 'FRESH' && reused.path === 'CACHED' && r.state.generations === 1);
+    check('…and its stored row (content and promptVersion) is untouched', JSON.stringify(r.store.get(today)) === before);
+    const inspected = await r.inspect(t(2));
+    check('…inspection agrees: FRESH, generation current', inspected.decision.state.kind === 'FRESH');
   }
 
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

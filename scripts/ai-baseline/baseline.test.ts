@@ -764,7 +764,10 @@ console.log('13g. corpus span — the result declares the boundary of its own au
   // only thing it changes is `limit`.
   check('the window is never widened, and any re-read keeps the same filters',
     !/widen|retry|reQuery|secondPass/i.test(gt)
-    && (gt.match(/queryTransactions\(|readWindowToExhaustion\(/g) ?? []).length === 3
+    // v2.7-P0 — 4: the resolved-nature flows (transfers / card_payments) read the
+    // window to exhaustion with the SAME `filters` (one predicate for count and list).
+    && (gt.match(/queryTransactions\(|readWindowToExhaustion\(/g) ?? []).length === 4
+    && /readWindowToExhaustion\(ctx\.readClient, ctx\.spaceId, filters\);\s*\n\s*const kept = filterByResolvedFlow/.test(gt)
     && (gt.match(/query: \{ \.\.\.filters, limit/g) ?? []).length === 2
     && !/\.\.\.filters,\s*(dateFrom|dateTo)/.test(gt));
   check('…and the completion is bounded by a stated ceiling, not unbounded',
@@ -773,7 +776,8 @@ console.log('13g. corpus span — the result declares the boundary of its own au
   check('the corpus read returns no rows to merge into the answer',
     !/corpus[\s\S]{0,80}rows/.test(gt));
   check('rows are still the rows the ranking produced',
-    /rows: rows\.map\(\(r\) => \(\{/.test(gt));
+    // v2.7-P0 — the map body resolves each row's nature first, then returns the row.
+    /rows: rows\.map\(\(r\) => \{/.test(gt) && /\.\.\.\(r\.transferMaturity \? \{ movementKind: r\.transferMaturity \} : \{\}\),\s*\n\s*\};\s*\n\s*\}\),/.test(gt));
 
   // rankingIsComplete keeps its own, narrower meaning.
   check('`rankingIsComplete` still reports the searched population, unchanged',
@@ -915,13 +919,16 @@ console.log('13j. page coverage — a page is not the population');
         q.indexOf('export async function transactionCorpusSpan'))));
 
   check('the result reports the matched size and whether the rows covered it',
-    /matchedInWindow,\s*searchIsComplete: complete,/.test(gt));
+    // v2.7-P0 — `searchComplete` = `complete` for every column-filtered flow; for a
+    // resolved-nature flow it also requires every match to be shown.
+    /matchedInWindow,\s*searchIsComplete: searchComplete,/.test(gt)
+    && /const searchComplete = resolvedFlow \? complete && rows\.length === population\.length : complete;/.test(gt));
   check('`moreAvailable` is retired, not left alongside',
     !/moreAvailable/.test(gt.replace(/\/\/[^\n]*/g, '')));
   check('the caveat says what absence from the rows does NOT mean',
     /absence from these rows is NOT absence from the window/.test(gt));
   check('…and appears only when the page was short',
-    /\.\.\.\(complete \? \{\} : \{ searchCaveat:/.test(gt));
+    /\.\.\.\(searchComplete \? \{\} : \{ searchCaveat:/.test(gt));
   check('page coverage and WINDOW coverage stay separate blocks',
     /coverage,/.test(gt) && /matchedInWindow,/.test(gt)
     && !/windowCoversAvailableRecord[\s\S]{0,60}matchedInWindow/.test(gt));
@@ -1069,7 +1076,8 @@ console.log('14. complete-window ranking');
   check('ranking uses the exhaustive read; a plain page does not',
     /wantLargest\s*\n?\s*\? readWindowToExhaustion\(ctx\.readClient, ctx\.spaceId, filters\)/.test(src)
     && /queryTransactions\(ctx\.readClient, \{ spaceId: ctx\.spaceId, query: \{ \.\.\.filters, limit \} \}\)/.test(src)
-    && (src.match(/readWindowToExhaustion\(ctx\.readClient, ctx\.spaceId/g) ?? []).length === 1);
+    // v2.7-P0 — 2: the second is the resolved-nature flows' whole-window read.
+    && (src.match(/readWindowToExhaustion\(ctx\.readClient, ctx\.spaceId/g) ?? []).length === 2);
   check('…and the population size and completeness are always reported',
     /rankedOver: population\.length/.test(src) && /rankingIsComplete: complete/.test(src));
   check('…with a caveat only when it is genuinely incomplete',
