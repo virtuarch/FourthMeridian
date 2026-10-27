@@ -39,15 +39,18 @@ console.log("pure segments");
 console.log("one existing route per area, under the area's own grant");
 {
   const urls = [...src.matchAll(/useWidgetFetch<[\s\S]*?>\("([^"]+)"\)/g)].map((m) => m[1]);
-  check("exactly five static reads", urls.length === 5 && (src.match(/useWidgetFetch</g) ?? []).length === 5, urls.join(","));
+  check("exactly seven static reads", urls.length === 7 && (src.match(/useWidgetFetch</g) ?? []).length === 7, urls.join(","));
   const expected: Record<string, string> = {
     "/api/platform/platform-ops/attention": "platform-ops",
     "/api/platform/platform-ops/refresh/daily": "platform-ops",
     "/api/platform/customer-success/sync-issues": "customer-success",
     "/api/platform/growth-revenue/product-analytics": "growth-revenue",
     "/api/platform/security-ops/anomalies": "security-ops",
+    // V2 — the two counts-only day projections.
+    "/api/platform/customer-success/incidents-daily": "customer-success",
+    "/api/platform/security-ops/daily": "security-ops",
   };
-  check("each read is one of the declared existing routes", urls.every((u) => u in expected) && new Set(urls).size === 5);
+  check("each read is one of the declared existing routes", urls.every((u) => u in expected) && new Set(urls).size === 7);
   // Each pulse component reads only its OWN area's routes.
   const blocks: Record<string, string> = { OpsPulse: "platform-ops", CustomersPulse: "customer-success", GrowthPulse: "growth-revenue", SecurityPulse: "security-ops" };
   for (const [fn, area] of Object.entries(blocks)) {
@@ -56,7 +59,7 @@ console.log("one existing route per area, under the area's own grant");
     check(`${fn} reads only /api/platform/${area}/*`, reads.length > 0 && reads.every((u) => u.startsWith(`/api/platform/${area}/`)), reads.join(","));
   }
   check("each declared route exists", Object.keys(expected).every((u) => existsSync(path.join(ROOT, "app", u, "route.ts"))));
-  check("no new cross-area route was introduced", !existsSync(path.join(ROOT, "app/api/platform/overview")) && !existsSync(path.join(ROOT, "app/api/platform/pulse")));
+  check("no new CROSS-area route was introduced (V2 routes live inside their own areas)", !existsSync(path.join(ROOT, "app/api/platform/overview")) && !existsSync(path.join(ROOT, "app/api/platform/pulse")));
   check("pulse areas are the four with a count route", PULSE_AREAS.join(",") === "PLATFORM_OPS,CUSTOMER_SUCCESS,GROWTH_REVENUE,SECURITY_OPS");
 }
 

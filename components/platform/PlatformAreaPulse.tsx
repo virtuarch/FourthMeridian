@@ -18,11 +18,12 @@
  *                     trend     refresh FAILED executions per UTC day (/platform-ops/refresh/daily)
  *                     breakdown attention by severity
  *   CUSTOMER_SUCCESS  headline  open sync incidents, floor-aware (/customer-success/sync-issues)
- *                     breakdown open incidents by severity     (trend: V2 — needs a day projection)
+ *                     trend     incidents opened per UTC day   (/customer-success/incidents-daily, V2)
+ *                     breakdown open incidents by severity
  *   GROWTH_REVENUE    headline  sign-ups in 7 d, with 30 d    (/growth-revenue/product-analytics)
  *                     trend     registrations per UTC day
  *   SECURITY_OPS      headline  failed sign-ins in the detector window, trips 24 h (/security-ops/anomalies)
- *                                                               (trend: V2 — needs a day projection)
+ *                     trend     failed sign-ins per UTC day    (/security-ops/daily, V2)
  *   MERCHANT_OPS      — (no count route; the card stays a doorway)
  * A day series renders only when it has ≥ 1 bucket; a missing day is a gap,
  * never zero (MiniBars). Fetched after mount (the directory stays server HTML).
@@ -93,10 +94,17 @@ function OpsPulse() {
 
 function CustomersPulse() {
   const { data, loading, error } = useWidgetFetch<{ activeTotal: number; truncated: boolean; severityCounts: Record<Severity, number> }>("/api/platform/customer-success/sync-issues");
+  const daily = useWidgetFetch<{ days: readonly { day: string; opened: number; resolved: number }[]; floor: boolean }>("/api/platform/customer-success/incidents-daily");
   if (!data) return <Pending loading={loading} error={error} />;
+  const opened = trailingPoints(daily.data?.days, (d) => d.opened, "warn");
+  const resolvedTotal = (daily.data?.days ?? []).slice(-TREND_DAYS).reduce((n, d) => n + d.resolved, 0);
   return (
     <Body>
-      <Headline value={data.truncated ? `≥${count(data.activeTotal)}` : count(data.activeTotal)} label={data.activeTotal === 1 ? "open sync incident" : "open sync incidents"} />
+      <Headline value={data.truncated ? `≥${count(data.activeTotal)}` : count(data.activeTotal)} label={data.activeTotal === 1 ? "open sync incident" : "open sync incidents"}
+        aside={daily.data ? `${count(resolvedTotal)} resolved in ${Math.min(TREND_DAYS, daily.data.days.length)} d` : undefined} />
+      {daily.data
+        ? opened.length > 0 && <MiniBars label="Incidents opened per day" points={opened} format={count} caption={`UTC days · last ${opened.length} · ${daily.data.floor ? "floor" : "observed"}`} height={36} />
+        : <Pending loading={daily.loading} error={daily.error} />}
       {data.activeTotal > 0 && <DistributionBar label="Open incidents by severity" segments={severitySegments(data.severityCounts)} floor={data.truncated} />}
     </Body>
   );
@@ -117,10 +125,16 @@ function GrowthPulse() {
 
 function SecurityPulse() {
   const { data, loading, error } = useWidgetFetch<{ summary: { failedLoginsWindow: number; windowMinutes: number; tripsLast24h: number } }>("/api/platform/security-ops/anomalies");
+  const daily = useWidgetFetch<{ days: readonly { day: string; failedSignIns: number; accessDenials: number; anomalyTrips: number }[]; floor: boolean }>("/api/platform/security-ops/daily");
   if (!data) return <Pending loading={loading} error={error} />;
+  const failed = trailingPoints(daily.data?.days, (d) => d.failedSignIns);
+  const denials = (daily.data?.days ?? []).slice(-TREND_DAYS).reduce((n, d) => n + d.accessDenials, 0);
   return (
     <Body>
       <Headline value={count(data.summary.failedLoginsWindow)} label={`failed sign-ins · ${data.summary.windowMinutes} m`} aside={`${count(data.summary.tripsLast24h)} anomaly trips · 24 h`} />
+      {daily.data
+        ? failed.length > 0 && <MiniBars label="Failed sign-ins per day" points={failed} format={count} caption={`UTC days · last ${failed.length} · ${daily.data.floor ? "floor" : "observed"} · ${count(denials)} access-denial records`} height={36} />
+        : <Pending loading={daily.loading} error={daily.error} />}
     </Body>
   );
 }
