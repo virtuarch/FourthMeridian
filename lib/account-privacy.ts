@@ -328,6 +328,12 @@ export interface CurrentCashStateClaim {
   state:        string;
   /** Provider-observed pending rows backing the prediction. */
   pendingCount: number;
+  /** v2.7-P0 — P, native (optional: claims predating P0 omit it). */
+  pendingSum?:  number;
+  /** v2.7-P0 — the adjusted balance every total counts, native. */
+  adjusted?:    number;
+  /** v2.7-P0 — the adjusted-balance case (AdjustedBalanceBasis). */
+  basis?:       string;
 }
 
 /**
@@ -375,7 +381,25 @@ export function aggregateCurrentCashState(
     : states.has("PARTIALLY_ATTRIBUTED") ? "PARTIALLY_ATTRIBUTED"
     : "EXACT";
 
-  return { reachable, unexplained, state, pendingCount };
+  // v2.7-P0 — the adjusted balance of an aggregate row is Σ its members'
+  // ALREADY-RESOLVED adjusted figures (the row's `balance` is Σ their reported
+  // ones), so the two stay a matched pair. Absent if any member made no claim.
+  // The basis is the weakest member's: one UNPROVEN member flags the row.
+  const allAdjusted = claims.every((c) => typeof c.adjusted === "number");
+  const adjusted = allAdjusted ? claims.reduce((s, c) => s + (c.adjusted as number), 0) : undefined;
+  const pendingSum = claims.reduce((s, c) => s + (c.pendingSum ?? 0), 0);
+  const bases = new Set(claims.map((c) => c.basis));
+  const basis =
+    bases.has("UNPROVEN") ? "UNPROVEN"
+    : bases.has("PENDING_EXCLUDED") ? "PENDING_EXCLUDED"
+    : bases.has("PENDING_INCLUDED") ? "PENDING_INCLUDED"
+    : bases.has("NO_PENDING") ? "NO_PENDING"
+    : undefined;
+
+  return {
+    reachable, unexplained, state, pendingCount,
+    ...(adjusted !== undefined ? { adjusted, pendingSum, ...(basis ? { basis } : {}) } : {}),
+  };
 }
 
 // ── Aggregating normalizer ────────────────────────────────────────────────────

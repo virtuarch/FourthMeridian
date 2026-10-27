@@ -19,6 +19,7 @@ export type DashboardSection = {
   config:      Record<string, unknown> | null;
 };
 
+import type { AdjustedBalanceBasis } from "@/lib/balances/account-balances";
 import type { PriceProvenance } from "@/lib/prices/current-quote.core";
 
 export type SpaceAccount = {
@@ -61,7 +62,24 @@ export type SpaceAccount = {
     state:       string;
     /** How many provider-observed pending rows backed the prediction. */
     pendingCount: number;
+    /**
+     * v2.7-P0 — the adjusted-balance claim (lib/balances/account-balances.ts
+     * #adjustedDepositoryBalance), NATIVE currency. `adjusted` is what every
+     * total counts (C, or C + P under PENDING_EXCLUDED); `pendingSum` is P;
+     * `basis` names the case. Optional so payloads/fixtures predating P0 still
+     * type-check — an absent claim counts the reported `balance`, as before.
+     */
+    pendingSum?:   number;
+    adjusted?:     number;
+    basis?:        AdjustedBalanceBasis;
   };
+  /**
+   * v2.7-P0 — the ADJUSTED depository balance (native), mirrored from
+   * `currentState.adjusted` so `classifyAccounts` (lib/account-classifier.ts
+   * #countedBalance) totals it. `balance` stays the provider-REPORTED ledger
+   * figure for display. Present on checking/savings rows with a claim only.
+   */
+  adjustedBalance?: number;
   /**
    * 2026-09-21 — a crypto wallet's PRICE provenance, independent of the
    * quantity's clock: CURRENT_QUOTE (provider instant, CURRENT/DELAYED) or

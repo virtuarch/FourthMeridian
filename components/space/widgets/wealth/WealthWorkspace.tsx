@@ -85,6 +85,7 @@ import { WealthHero, wealthSecondaryRows, SecondaryChange } from "./WealthHero";
 import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
 import { formatCurrency } from "@/lib/currency";
 import { WealthTrendChart } from "./WealthTrendChart";
+import { AdjustedBasisNote } from "./AdjustedBasisNote";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import type { LensRoot } from "@/lib/history/lens-root-node";
 import { WealthChangeLedger } from "./WealthChangeLedger";
@@ -615,6 +616,15 @@ export function WealthWorkspace({
             headerRight={sliceControl}
             onSelectPoint={handleSelectPoint}
           />
+          {/* v2.7-P0 — forward-only basis change: rows before the release stay on
+              the reported-ledger basis (never rewritten), so a window spanning
+              it says so. Cash-bearing metrics only. */}
+          {metric !== "totalLiabilities" && metric !== "invested" && (
+            <AdjustedBasisNote
+              from={result.chart.points[0]?.date ?? null}
+              to={result.chart.points[result.chart.points.length - 1]?.date ?? null}
+            />
+          )}
         </div>
 
         <CompactKpiStrip ariaLabel={`${mode === "assets" ? "Assets" : "Net worth"} breakdown`} items={kpiItems} />

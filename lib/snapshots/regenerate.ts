@@ -175,6 +175,11 @@ export async function regenerateSpaceSnapshot(
     currencies: eligible.map((a) => a.currency ?? null),
     dates:      [yesterdayUTCISO()],
   });
+  // v2.7-P0 — `eligible` rows carry the ADJUSTED depository balance
+  // (readSpaceAccountsForSnapshot → adjustedDepositoryBalance), which the
+  // classifier totals through countedBalance. FORWARD-ONLY: this writer only
+  // ever upserts TODAY's row, so rows before ADJUSTED_CASH_BASIS_SINCE keep the
+  // reported-ledger basis they were written with (frozen-row invariant).
   const c = classifyAccounts(eligible, ctx);
 
   // REVIEW-3 B-4 (matrix row 14) — the derived aggregates come from

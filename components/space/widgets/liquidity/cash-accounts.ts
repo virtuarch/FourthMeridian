@@ -3,43 +3,45 @@
  *
  * Pure presentation helpers behind the Cash section's DISTRIBUTION donut and
  * CASH ACCOUNTS ledger. No React, no clock, no fetch — and NO new financial
- * formula. Every figure here is one of two already-owned quantities, read per
- * account through the existing authorities:
+ * formula. Every figure here is an already-owned quantity, read per account
+ * through the existing authorities:
  *
- *   TOTAL CASH     the ledger `balance` of every checking + savings account,
- *                  restricted (HSA) included, converted per row through
- *                  convertMoney at the latest close — the SAME definition and
- *                  the SAME conversion as `classifyAccounts().totalLiquid +
- *                  totalRestrictedCash` (the net-worth "Cash" composition and
- *                  the Cash hero present-day). An FX-unavailable row contributes
- *                  0, exactly as the classifier excludes it.
+ *   REPORTED       the provider's ledger `balance` (C), converted per row.
+ *   TOTAL CASH     Σ ADJUSTED balance of every checking + savings account,
+ *                  restricted (HSA) included — `countedBalance` (the server's
+ *                  adjustedDepositoryBalance claim: C, or C + P only when the
+ *                  provider's available figure proves the ledger lacks exactly
+ *                  the pending P), converted per row through convertMoney at the
+ *                  latest close — the SAME definition and the SAME conversion as
+ *                  `classifyAccounts().totalLiquid + totalRestrictedCash` (the
+ *                  net-worth "Cash" composition and the Cash hero present-day).
+ *                  An FX-unavailable row contributes 0, exactly as the classifier
+ *                  excludes it.
  *   AVAILABLE      `reachableForAccount` (liquidity-adapters) — the three-state
  *                  current-state rule `reachableNow()` sums. Restricted cash is
  *                  never "available" (liquidityAccess "restricted"); a null
  *                  reachable is "Not reported" and is excluded from accessible.
  *
- * The RECONCILIATION is pure subtraction over those already-converted
- * per-account figures, so every dollar between "Total cash" and "Accessible
- * now" is explained:
+ * Two reconciling lines, both pure subtraction over per-account figures:
  *
- *   totalCash − restricted − notReported − pending − holds = accessible
- *                                                       (= reachableNow().total)
+ *   reported + pendingCorrection = totalCash        (pending the bank has not yet
+ *                                                    deducted — PENDING_EXCLUDED
+ *                                                    accounts only)
+ *   totalCash − restricted − notReported − holds − unreconciled − other
+ *                                              = accessible (= reachableNow().total)
  *
- * Per covered unrestricted account, ledger − reachable is split from existing
+ * Per covered unrestricted account, adjusted − reachable is split from existing
  * currentState fields only: hold = max(unexplained, 0) (positive residual, as
- * lib/balances/reachable counts it); pending = the rest, when the provider
- * observed pending rows (pendingCount > 0) — outflows the bank's current
- * balance has not deducted yet (often in-flight transfers to the user's own
- * accounts that already posted at the destination, so they sit in two ledger
- * balances). A remainder with no pending evidence is kept as `other` so the
- * line still sums exactly.
+ * lib/balances/reachable counts it); on an UNPROVEN account (pending exists but
+ * could not be reconciled) the rest is `unreconciled`; anything else is kept as
+ * `other` so the line still sums exactly.
  * Nothing here changes a classification, a balance, a reachable rule or a
  * snapshot — it only groups and labels.
  */
 
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { liquidityAccess, normalizeProviderSubtype } from "@/lib/account-classifier";
+import { countedBalance, liquidityAccess, normalizeProviderSubtype } from "@/lib/account-classifier";
 import { assignStableColors } from "@/lib/charts/chart-palette";
 import type { ConversionContext } from "@/lib/money/types";
 import { reachableForAccount, type LiquidityAdapterAccount } from "@/components/space/widgets/liquidity-adapters";
@@ -63,15 +65,14 @@ export type CashAvailable =
   | {
       kind:  "amount";
       value: number;
-      /** (ledger − reachable) − hold, when the provider observed pending rows
-       *  (currentState.pendingCount > 0): outflows the bank's current balance
-       *  has not deducted yet. 0 when none. */
-      pending: number;
       /** max(currentState.unexplained, 0) — a positive residual nothing explains
        *  (the same positive-only rule as lib/balances/reachable). 0 when none. */
       hold: number;
-      /** Any remaining ledger − reachable difference with no pending evidence
-       *  (kept so the line still sums exactly; normally 0). */
+      /** UNPROVEN accounts only: the adjusted − reachable − hold remainder —
+       *  pending the institution reported but which could not be reconciled. */
+      unreconciled: number;
+      /** Any remaining adjusted − reachable difference (kept so the line still
+       *  sums exactly; normally 0). */
       other: number;
     }
   /** A current-state claim was made and reachable is UNKNOWN — excluded from accessible. */
@@ -79,10 +80,26 @@ export type CashAvailable =
   /** liquidityAccess "restricted" (e.g. an HSA) — owned cash, never accessible. */
   | { kind: "restricted" };
 
+/** The adjusted-balance case, as the server resolved it (absent ⇒ no claim). */
+export type CashBalanceBasis = "NO_PENDING" | "PENDING_EXCLUDED" | "PENDING_INCLUDED" | "UNPROVEN";
+
 export interface CashAccountRow {
   account:     CashLedgerAccount;
-  /** Display-currency ledger balance (0 when the conversion was unavailable). */
+  /** Display-currency ADJUSTED balance — the figure every total sums (0 when the
+   *  conversion was unavailable). */
   value:       number;
+  /** Display-currency provider-REPORTED ledger balance (C). */
+  reported:    number;
+  /** value − reported: pending the bank has not yet deducted (PENDING_EXCLUDED
+   *  only — 0 on every other basis, by construction of the authority). */
+  pendingCorrection: number;
+  /** Display-currency Σ provider-observed pending (P), whatever the basis; null
+   *  when the row carries no claim. */
+  pendingSum:  number | null;
+  /** The adjusted-balance case, or null when no claim was made. */
+  basis:       CashBalanceBasis | null;
+  /** UNPROVEN: pending exists but could not be reconciled — flagged on the row. */
+  unproven:    boolean;
   estimated:   boolean;
   /** FX-unavailable: excluded from every total (classifier parity), disclosed on the row. */
   unconverted: boolean;
@@ -102,7 +119,11 @@ export interface CashAccountRow {
 export interface CashAccountsSummary {
   /** Sorted largest balance first. Every cash account exactly once. */
   rows:        CashAccountRow[];
-  /** Σ row values — equals classifyAccounts total cash for the same accounts + ctx. */
+  /** Σ reported (provider ledger) balances. */
+  reported:    number;
+  /** Σ pendingCorrection — reported + pendingCorrection === totalCash. */
+  pendingCorrection: number;
+  /** Σ row values (ADJUSTED) — equals classifyAccounts total cash for the same accounts + ctx. */
   totalCash:   number;
   /** Σ Available amounts — equals reachableNow().total. */
   accessible:  number;
@@ -110,12 +131,14 @@ export interface CashAccountsSummary {
   restricted:  number;
   /** Σ value of rows whose available figure was not reported. */
   notReported: number;
-  /** Σ pending outflows not yet deducted (covered unrestricted rows). */
-  pending:     number;
   /** Σ positive unexplained holds (covered unrestricted rows). */
   holds:       number;
-  /** Σ any remaining ledger − reachable difference with no pending evidence. */
+  /** Σ unreconciled pending remainders (UNPROVEN covered unrestricted rows). */
+  unreconciled: number;
+  /** Σ any remaining adjusted − reachable difference. */
   other:       number;
+  /** Member-aware count of UNPROVEN rows ("pending not reconciled"). */
+  unprovenCount: number;
   estimated:   boolean;
   unconverted: boolean;
   /** Member-aware account count. */
@@ -124,11 +147,15 @@ export interface CashAccountsSummary {
 
 export type CashGrouping = "institution" | "account" | "type";
 
+/** The grouping dropdown's options, in menu order. The first is the DEFAULT. */
 export const CASH_GROUPINGS: { id: CashGrouping; label: string }[] = [
-  { id: "institution", label: "By institution" },
   { id: "account",     label: "By account" },
+  { id: "institution", label: "By institution" },
   { id: "type",        label: "By account type" },
 ];
+
+/** The default grouping (owner, v2.7): By account. */
+export const DEFAULT_CASH_GROUPING: CashGrouping = "account";
 
 export interface CashGroup {
   id:      string;
@@ -189,17 +216,23 @@ export function buildCashAccounts(
     ctx ? (convertMoney({ amount, currency: currency ?? null }, asOf, ctx).amount ?? 0) : amount;
 
   const rows: CashAccountRow[] = accounts.filter(isCashAccount).map((a) => {
-    // The classifier's per-row conversion (sumBalances): convertMoney at the
-    // latest close; an unavailable amount contributes nothing.
-    let value = a.balance, est = false, miss = false;
+    // The classifier's per-row conversion (sumBalances over countedBalance):
+    // convertMoney at the latest close; an unavailable amount contributes nothing.
+    const counted = countedBalance(a);
+    let value = counted, reported = a.balance, est = false, miss = false;
     if (ctx) {
-      const c = convertMoney({ amount: a.balance, currency: a.currency ?? null }, asOf, ctx);
+      const c = convertMoney({ amount: counted, currency: a.currency ?? null }, asOf, ctx);
       est = c.estimated;
       miss = c.amount === null;
       value = c.amount ?? 0;
+      reported = miss ? 0 : (convertMoney({ amount: a.balance, currency: a.currency ?? null }, asOf, ctx).amount ?? 0);
     }
     estimated ||= est;
     unconverted ||= miss;
+    const cs = a.currentState;
+    const basis = (cs?.basis ?? null) as CashBalanceBasis | null;
+    const rawCorrection = value - reported;
+    const pendingCorrection = Math.abs(rawCorrection) < CENT ? 0 : rawCorrection;
 
     const restricted = liquidityAccess(a) === "restricted";
     let available: CashAvailable;
@@ -208,17 +241,16 @@ export function buildCashAccounts(
       const r = reachableForAccount(a, ctx);
       if (r === null) available = { kind: "not_reported" };
       else {
-        // Split ledger − reachable from the existing current-state fields only:
-        // the positive unexplained residual is a HOLD; with provider-observed
-        // pending rows the rest is PENDING outflows already folded into reachable.
-        const cs = a.currentState;
+        // Split adjusted − reachable from the existing current-state fields only:
+        // the positive unexplained residual is a HOLD; on an UNPROVEN account the
+        // remainder is pending that could not be reconciled.
         const unex = cs?.unexplained == null ? 0 : conv(cs.unexplained, a.currency);
         const hold = Math.max(unex, 0);
         const raw = value - r - hold;
         // Sub-cent float residue (e.g. 17000 − 15374.59 − 1625.41) is not a difference.
         const rest = Math.abs(raw) < CENT ? 0 : raw;
-        const hasPending = (cs?.pendingCount ?? 0) > 0;
-        available = { kind: "amount", value: r, hold, pending: hasPending ? rest : 0, other: hasPending ? 0 : rest };
+        const unproven = basis === "UNPROVEN";
+        available = { kind: "amount", value: r, hold, unreconciled: unproven ? rest : 0, other: unproven ? 0 : rest };
       }
     }
 
@@ -226,9 +258,14 @@ export function buildCashAccounts(
     return {
       account:     a,
       value,
+      reported,
+      pendingCorrection,
+      pendingSum:  typeof cs?.pendingSum === "number" ? conv(cs.pendingSum, a.currency) : null,
+      basis,
+      unproven:    basis === "UNPROVEN",
       estimated:   est,
       unconverted: miss,
-      native:      display && a.currency && a.currency !== display ? { amount: a.balance, currency: a.currency } : null,
+      native:      display && a.currency && a.currency !== display ? { amount: counted, currency: a.currency } : null,
       share:       0,
       typeLabel:   cashTypeLabel(a),
       available,
@@ -237,18 +274,25 @@ export function buildCashAccounts(
     };
   });
 
-  let totalCash = 0, accessible = 0, restricted = 0, notReported = 0, pending = 0, holds = 0, other = 0, accountCount = 0;
+  let totalCash = 0, reportedTotal = 0, pendingCorrection = 0, accessible = 0, restricted = 0, notReported = 0;
+  let holds = 0, unreconciled = 0, other = 0, accountCount = 0, unprovenCount = 0;
   for (const r of rows) {
     totalCash += r.value;
+    reportedTotal += r.reported;
+    pendingCorrection += r.pendingCorrection;
     accountCount += r.memberCount;
+    if (r.unproven) unprovenCount += r.memberCount;
     if (r.available.kind === "restricted") restricted += r.value;
     else if (r.available.kind === "not_reported") notReported += r.value;
-    else { accessible += r.available.value; pending += r.available.pending; holds += r.available.hold; other += r.available.other; }
+    else { accessible += r.available.value; holds += r.available.hold; unreconciled += r.available.unreconciled; other += r.available.other; }
   }
   for (const r of rows) r.share = totalCash !== 0 ? r.value / totalCash : 0;
   rows.sort((x, y) => y.value - x.value || x.account.name.localeCompare(y.account.name));
 
-  return { rows, totalCash, accessible, restricted, notReported, pending, holds, other, estimated, unconverted, accountCount };
+  return {
+    rows, reported: reportedTotal, pendingCorrection, totalCash, accessible, restricted, notReported,
+    holds, unreconciled, other, unprovenCount, estimated, unconverted, accountCount,
+  };
 }
 
 // ── Groups (the distribution donut) ───────────────────────────────────────────
@@ -296,22 +340,39 @@ export function groupCashAccounts(summary: CashAccountsSummary, by: CashGrouping
 // ── The reconciling line ──────────────────────────────────────────────────────
 
 export interface ReconcileTerm {
-  id:     "restricted" | "not_reported" | "pending" | "holds" | "other";
+  id:     "restricted" | "not_reported" | "holds" | "unreconciled" | "other";
   /** Signed contribution to the line: total − … ⇒ negative for a deduction. */
   amount: number;
   label:  string;
 }
 
 /**
- * The non-zero terms between total cash and accessible, in the order the line
- * reads them. Σ terms + totalCash === accessible (to floating precision).
+ * The non-zero terms between total cash (ADJUSTED) and accessible, in the order
+ * the line reads them. Σ terms + totalCash === accessible (to floating precision).
+ * Pending is NOT a term here: on a PENDING_EXCLUDED account it is already the
+ * correction between reported and total cash (see `pendingLine`).
  */
 export function reconcileTerms(s: CashAccountsSummary): ReconcileTerm[] {
   const terms: ReconcileTerm[] = [];
-  if (Math.abs(s.restricted) >= CENT)  terms.push({ id: "restricted",   amount: -s.restricted,  label: "restricted" });
-  if (Math.abs(s.notReported) >= CENT) terms.push({ id: "not_reported", amount: -s.notReported, label: "no available balance reported" });
-  if (Math.abs(s.pending) >= CENT)     terms.push({ id: "pending",      amount: -s.pending,     label: "pending outflows not yet deducted" });
-  if (Math.abs(s.holds) >= CENT)       terms.push({ id: "holds",        amount: -s.holds,       label: "on hold" });
-  if (Math.abs(s.other) >= CENT)       terms.push({ id: "other",        amount: -s.other,       label: s.other > 0 ? "other provider difference" : "available above balance" });
+  if (Math.abs(s.restricted) >= CENT)   terms.push({ id: "restricted",   amount: -s.restricted,   label: "restricted" });
+  if (Math.abs(s.notReported) >= CENT)  terms.push({ id: "not_reported", amount: -s.notReported,  label: "no available balance reported" });
+  if (Math.abs(s.holds) >= CENT)        terms.push({ id: "holds",        amount: -s.holds,        label: "on hold" });
+  if (Math.abs(s.unreconciled) >= CENT) terms.push({ id: "unreconciled", amount: -s.unreconciled, label: "pending not reconciled" });
+  if (Math.abs(s.other) >= CENT)        terms.push({ id: "other",        amount: -s.other,        label: s.other > 0 ? "other provider difference" : "available above balance" });
   return terms;
+}
+
+/**
+ * The reported → total cash line, or null when no pending correction applies.
+ * `reported + correction = totalCash`. A negative correction is pending outflows
+ * the bank has not deducted yet; a positive one, pending inflows not yet credited.
+ */
+export function pendingLine(s: CashAccountsSummary): { reported: number; correction: number; totalCash: number; label: string } | null {
+  if (Math.abs(s.pendingCorrection) < CENT) return null;
+  return {
+    reported:   s.reported,
+    correction: s.pendingCorrection,
+    totalCash:  s.totalCash,
+    label:      s.pendingCorrection < 0 ? "pending not yet deducted" : "pending not yet credited",
+  };
 }

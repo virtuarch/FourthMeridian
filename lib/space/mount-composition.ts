@@ -60,7 +60,7 @@ import { ShareStatus } from "@prisma/client";
 import { normalizeSharedAccounts, aggregateCurrentCashState } from "@/lib/account-privacy";
 import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
-import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
+import { resolveRowBalances, reconcileAccount, adjustedDepositoryBalance } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
 import { loadWalletCurrentValues, hasKnownValue } from "@/lib/crypto/wallet-current-value";
 
@@ -247,15 +247,20 @@ export async function loadSpaceAccounts(
   for (const l of links) {
     const fa = l.financialAccount;
     const balances = resolveRowBalances(fa, now);
-    const rec = reconcileAccount(balances, pending.get(fa.id) ?? NO_PENDING, fa.creditLimit);
+    const accountPending = pending.get(fa.id) ?? NO_PENDING;
+    const rec = reconcileAccount(balances, accountPending, fa.creditLimit);
     // Only cash accounts carry a reachable figure; for the rest the field is
     // omitted entirely rather than populated with a null-that-reads-as-zero.
     if (rec.basis !== "DEPOSITORY") continue;
+    // v2.7-P0 — the adjusted balance, from the SAME balances + pending set the
+    // reconciliation above read (one pending reader, one resolution).
+    const adj = adjustedDepositoryBalance(balances, accountPending);
     currentStateByAccount.set(fa.id, {
       reachable:    rec.reachable?.amount ?? null,
       unexplained:  rec.unexplained,
       state:        rec.state,
       pendingCount: rec.pending.count,
+      ...(adj ? { pendingSum: adj.pendingSum, adjusted: adj.adjusted, basis: adj.basis } : {}),
     });
   }
 
@@ -289,6 +294,9 @@ export async function loadSpaceAccounts(
       ...a,
       earliestTxDate: floorByAccount.get(a.id) ?? null,
       ...(currentState ? { currentState } : {}),
+      // v2.7-P0 — mirrored for classifyAccounts (countedBalance). `balance`
+      // stays the provider-reported ledger figure.
+      ...(typeof currentState?.adjusted === "number" ? { adjustedBalance: currentState.adjusted } : {}),
       ...(cryptoPrice ? { cryptoPrice } : {}),
       ...(!a.aggregate && estimateIds.has(a.id) ? { userEstimate: true as const } : {}),
     };

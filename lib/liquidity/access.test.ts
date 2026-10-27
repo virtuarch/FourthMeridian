@@ -181,7 +181,23 @@ console.log("7. Write path and consumers — one authority, provider evidence on
   check("the lens tiers come from liquidityAccess (no private type sets)", !/MARKETABLE_TYPES|CASH_TYPES/.test(src("lib/perspective-engine/lenses/liquidity.core.ts")));
   check("scenario opening cash conserves value: other assets = totalAssets − totalLiquid − investments",
     /\(accounts\.totalAssets \?\? 0\) - \(accounts\.totalLiquid \?\? 0\) - composition\.combined/.test(readToolsSource())); // CQ-011: the tool layer
+  // v2.7-P0 (owner-approved adjusted-cash contract) — the composition is still
+  // the cash BALANCE with restricted included; the per-account balance it sums
+  // is now the ADJUSTED depository balance (countedBalance), never the raw ledger.
   check("net-worth Cash composition is the cash BALANCE (restricted included)", /c\.totalLiquid \+ c\.totalRestrictedCash/.test(src("components/space/widgets/wealth-adapters.tsx")));
+  check("…and the classifier sums the ADJUSTED depository balance (countedBalance), restricted included",
+    /accounts\.reduce\(\(s, a\) => s \+ countedBalance\(a\), 0\)/.test(src("lib/account-classifier.ts"))
+    && /amount: countedBalance\(a\)/.test(src("lib/account-classifier.ts")));
+  {
+    const c = classifyAccounts([
+      { type: "checking", balance: 5251.68, adjustedBalance: 929.01 },
+      { type: "checking", providerSubtype: "hsa", balance: 1000, adjustedBalance: 900 },
+      { type: "investment", balance: 500, adjustedBalance: 1 },
+    ]);
+    check("adjusted semantics: liquid 929.01 · restricted 900 (adjusted) · investments untouched 500",
+      Math.abs(c.totalLiquid - 929.01) < 1e-9 && c.totalRestrictedCash === 900 && c.totalInvestments === 500
+      && Math.abs(c.totalAssets - (929.01 + 900 + 500)) < 1e-9);
+  }
 }
 
 if (failures > 0) { console.error(`\naccess.test: ${failures} failure(s).`); process.exit(1); }

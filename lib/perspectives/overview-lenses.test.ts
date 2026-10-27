@@ -136,7 +136,7 @@ console.log("5. Sidebar — every published anchor renders");
   const full = debtSections({ hasLiabilities: true, hasDebt: true });
   const paidOff = debtSections({ hasLiabilities: true, hasDebt: false });
   const none = debtSections({ hasLiabilities: false, hasDebt: false });
-  check("Debt (owing) publishes all six", full.map((s) => s.label).join(" · ") === "Summary · Balance history · Liabilities · Cost & risk · Payoff · Credit health");
+  check("Debt (owing) publishes all seven (v2.7: + Where it's owed)", full.map((s) => s.label).join(" · ") === "Summary · Balance history · Where it's owed · Liabilities · Cost & risk · Payoff · Credit health");
   check("Debt (all paid off) keeps the STRUCTURAL Liabilities row, drops Cost & risk + Payoff",
     paidOff.map((s) => s.label).join(" · ") === "Summary · Balance history · Liabilities · Credit health");
   check("Debt (no liability accounts) drops Liabilities too", none.map((s) => s.label).join(" · ") === "Summary · Balance history · Credit health");

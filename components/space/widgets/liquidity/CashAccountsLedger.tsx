@@ -5,14 +5,17 @@
  *
  * Section ⑤ of the Cash slice — every cash account behind TOTAL CASH, always
  * visible (never folded behind a disclosure): Institution · Account · Type ·
- * Balance · % of total cash · Available · Status. A readable table at ≥lg; compact
- * rows below lg (CSS-only, the compact pattern).
+ * Reported · Pending · Total cash (ADJUSTED — the summed column) · % of total
+ * cash · Available · Holds · Status, with a "Pending not reconciled" badge on an
+ * UNPROVEN account. A readable table at ≥lg; compact rows below lg (CSS-only).
  *
  * FIGURES — the pure cash-accounts helper's, from the host's account array (the
- * classifier's per-row conversion and `reachableForAccount`): Σ Balance = total
- * cash, Σ Available = accessible (reachableNow). The footer states both totals
- * and one reconciling line built only from those per-account figures, so every
- * dollar between the two is explained.
+ * classifier's per-row conversion over countedBalance, and `reachableForAccount`):
+ * Σ Total cash = total cash (the Cash hero present-day and the donut centre),
+ * Σ Available = accessible (reachableNow). The footer states both totals and two
+ * reconciling lines built only from those per-account figures — reported →
+ * total cash (pending not yet deducted), and total cash → accessible — so every
+ * dollar is explained.
  *
  * STATUS + DETAIL — the EXISTING authorized Accounts read (GET
  * /api/spaces/[id]/accounts/detail, the one AccountsLedger uses) supplies the
@@ -39,7 +42,7 @@ import { healthChip } from "@/components/space/widgets/accounts/AccountsPerspect
 import { AccountDetail } from "@/components/space/widgets/accounts/AccountDetail";
 import { accountDetailDisplay, accountDetailFallbackRows } from "@/components/space/widgets/accounts/AccountsLedger";
 import {
-  reconcileTerms, type CashAccountRow, type CashAccountsSummary, type CashLedgerAccount,
+  pendingLine, reconcileTerms, type CashAccountRow, type CashAccountsSummary, type CashLedgerAccount,
 } from "./cash-accounts";
 
 export function CashAccountsLedger({
@@ -107,9 +110,12 @@ export function CashAccountsLedger({
                 <th scope="col" className="px-4 py-2.5 font-medium">Institution</th>
                 <th scope="col" className="px-4 py-2.5 font-medium">Account</th>
                 <th scope="col" className="px-4 py-2.5 font-medium">Type</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-medium">Balance</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-medium">Reported</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-medium">Pending</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-medium">Total cash</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-medium">% of cash</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-medium">Available</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-medium">Holds</th>
                 <th scope="col" className="px-4 py-2.5 font-medium">Status</th>
               </tr>
             </thead>
@@ -121,9 +127,12 @@ export function CashAccountsLedger({
                     <AccountName row={r} mask={detailById.get(r.account.id)?.mask ?? null} onOpen={open} />
                   </th>
                   <td className="px-4 py-3 text-[13px] text-[var(--text-secondary)]">{r.typeLabel}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-[13px] text-[var(--text-muted)]">{r.unconverted ? "—" : fmt(r.reported)}</td>
+                  <td className="px-4 py-3 text-right"><Pending row={r} fmt={fmt} /></td>
                   <td className="px-4 py-3 text-right"><Balance row={r} fmt={fmt} /></td>
                   <td className="px-4 py-3 text-right tabular-nums text-[13px] text-[var(--text-muted)]">{pct(r.share)}</td>
                   <td className="px-4 py-3 text-right"><Available row={r} fmt={fmt} /></td>
+                  <td className="px-4 py-3 text-right tabular-nums text-[13px] text-[var(--text-muted)]">{holdText(r, fmt)}</td>
                   <td className="px-4 py-3"><Status detail={detailById.get(r.account.id) ?? null} /></td>
                 </tr>
               ))}
@@ -146,6 +155,13 @@ export function CashAccountsLedger({
                     <p className="mt-0.5 tabular-nums text-[11px] text-[var(--text-faint)]">{pct(r.share)} of cash</p>
                   </div>
                 </div>
+                {(r.pendingCorrection !== 0 || r.unproven) && (
+                  <p className="mt-1 tabular-nums text-[11px] text-[var(--text-faint)]">
+                    Reported {fmt(r.reported)}
+                    {r.pendingCorrection !== 0 && <> · {r.pendingCorrection < 0 ? "−" : "+"} {fmt(Math.abs(r.pendingCorrection))} pending</>}
+                    {r.unproven && <> · <UnprovenBadge /></>}
+                  </p>
+                )}
                 <div className="mt-1.5 flex items-start justify-between gap-3 text-[11px]">
                   <Status detail={detailById.get(r.account.id) ?? null} />
                   <span className="shrink-0 text-right"><span className="text-[var(--text-faint)]">Available </span><Available row={r} fmt={fmt} inline /></span>
@@ -258,9 +274,12 @@ function Available({ row, fmt, inline = false }: { row: CashAccountRow; fmt: (v:
   if (a.kind === "not_reported") {
     return <span className="text-[13px] text-[var(--text-muted)]" title="The institution reported no available balance — excluded from accessible cash">Not reported</span>;
   }
+  // v2.7-P0 — pending is no longer a note here: it is the correction between
+  // Reported and Total cash (its own column). Holds stay beside Available on
+  // compact rows (desktop has a Holds column).
   const notes = [
-    a.pending > 0.005 ? `${fmt(a.pending)} pending` : null,
-    a.hold > 0.005 ? `${fmt(a.hold)} on hold` : null,
+    inline && a.hold > 0.005 ? `${fmt(a.hold)} on hold` : null,
+    inline && a.unreconciled > 0.005 ? `${fmt(a.unreconciled)} pending not reconciled` : null,
   ].filter(Boolean);
   return (
     <span className={inline ? "inline" : "block"}>
@@ -270,6 +289,44 @@ function Available({ row, fmt, inline = false }: { row: CashAccountRow; fmt: (v:
       )}
     </span>
   );
+}
+
+/** The Pending column: P for the account, with how it was treated. */
+function Pending({ row, fmt }: { row: CashAccountRow; fmt: (v: number) => string }) {
+  if (row.pendingSum == null || Math.abs(row.pendingSum) < 0.005) {
+    return <span className="tabular-nums text-[13px] text-[var(--text-faint)]">—</span>;
+  }
+  const note =
+    row.basis === "PENDING_EXCLUDED" ? "deducted here"
+    : row.basis === "PENDING_INCLUDED" ? "already in balance"
+    : null;
+  return (
+    <span className="block">
+      <span className="tabular-nums text-[13px] text-[var(--text-secondary)]">{row.pendingSum < 0 ? "−" : "+"}{fmt(Math.abs(row.pendingSum))}</span>
+      {note && <span className="mt-0.5 block text-[11px] text-[var(--text-faint)]">{note}</span>}
+      {row.unproven && <span className="mt-0.5 block"><UnprovenBadge /></span>}
+    </span>
+  );
+}
+
+/** The flag on an UNPROVEN account: the reported balance is used unchanged. */
+function UnprovenBadge() {
+  return (
+    <span
+      className="inline-flex items-center rounded-[var(--radius-full)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent-warning)]"
+      style={{ background: "var(--surface-inset)" }}
+      title="The institution reported pending activity that could not be reconciled with its available balance, so the bank-reported balance is used unchanged."
+      data-cash-unproven
+    >
+      Pending not reconciled
+    </span>
+  );
+}
+
+function holdText(row: CashAccountRow, fmt: (v: number) => string): string {
+  const a = row.available;
+  if (a.kind !== "amount") return "—";
+  return a.hold > 0.005 ? fmt(a.hold) : "—";
 }
 
 function Status({ detail }: { detail: AccountDetailRow | null }) {
@@ -301,6 +358,7 @@ function Status({ detail }: { detail: AccountDetailRow | null }) {
 
 function LedgerFooter({ summary, fmt, redactedCount }: { summary: CashAccountsSummary; fmt: (v: number) => string; redactedCount: number }) {
   const terms = reconcileTerms(summary);
+  const pending = pendingLine(summary);
   const approx = summary.estimated ? "≈ " : "";
   return (
     <div className="border-t border-[var(--border-hairline)] bg-[var(--surface-inset)] px-4 py-3" data-cash-reconcile>
@@ -312,18 +370,23 @@ function LedgerFooter({ summary, fmt, redactedCount }: { summary: CashAccountsSu
           Accessible now <span className="ml-1 text-sm font-semibold normal-case tracking-normal tabular-nums text-[var(--text-primary)]">{approx}{fmt(summary.accessible)}</span>
         </p>
       </div>
+      {pending && (
+        <p className="mt-1.5 tabular-nums text-[11px] leading-relaxed text-[var(--text-muted)] [overflow-wrap:anywhere]" data-cash-pending-line>
+          Reported {fmt(pending.reported)} {pending.correction < 0 ? "−" : "+"} {pending.label} {fmt(Math.abs(pending.correction))} = Total cash {fmt(pending.totalCash)}
+        </p>
+      )}
       {terms.length > 0 && (
         <p className="mt-1.5 tabular-nums text-[11px] leading-relaxed text-[var(--text-muted)] [overflow-wrap:anywhere]" data-cash-reconcile-line>
-          {fmt(summary.totalCash)} total
+          {fmt(summary.totalCash)} total cash
           {terms.map((t) => (
             <span key={t.id}> {t.amount <= 0 ? "−" : "+"} {fmt(Math.abs(t.amount))} {t.label}</span>
           ))}
           {" "}= {fmt(summary.accessible)} accessible
         </p>
       )}
-      {summary.pending > 0.005 && (
-        <p className="mt-1 text-[11px] text-[var(--text-faint)]" data-cash-pending-note>
-          Total cash uses bank-reported balances, which include pending outflows not yet deducted.
+      {summary.unprovenCount > 0 && (
+        <p className="mt-1 text-[11px] text-[var(--text-faint)]" data-cash-unproven-note>
+          {summary.unprovenCount} account{summary.unprovenCount === 1 ? "" : "s"}: pending not reconciled — the bank-reported balance is counted unchanged.
         </p>
       )}
       {redactedCount > 0 && (
