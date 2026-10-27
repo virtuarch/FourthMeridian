@@ -34,7 +34,7 @@ export const betaRequestTemplate: EmailTemplate<BetaRequestEmailData> = {
         `A new beta access request was submitted.\n\n` +
         `Email: ${data.applicantEmail}\n` +
         (data.note ? `Note:  ${data.note}\n` : "") +
-        `\nReview and approve or deny it in Growth & Revenue → Beta Access:\n${data.queueUrl}\n`,
+        `\nReview and approve or deny it in Growth → Beta Access:\n${data.queueUrl}\n`,
     };
   },
 };
