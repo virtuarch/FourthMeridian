@@ -58,10 +58,13 @@ void (async () => {
       { visibilityLevel: "FULL", financialAccount: acct("fa-2", -250) },
     ]);
     const out = await readSpaceAccountsForSnapshot("space-1", fake as never);
+    // v2.7-P0 — depository rows now also carry the ADJUSTED balance. This fake
+    // supplies no pending evidence, so it resolves NO_PENDING ⇒ adjusted =
+    // reported: the population and every value are otherwise unchanged.
     check("FULL-only population passes through unchanged",
       JSON.stringify(out) === JSON.stringify([
-        { id: "fa-1", type: "checking", balance: 1000, currency: "USD" },
-        { id: "fa-2", type: "checking", balance: -250, currency: "USD" },
+        { id: "fa-1", type: "checking", balance: 1000, currency: "USD", adjustedBalance: 1000 },
+        { id: "fa-2", type: "checking", balance: -250, currency: "USD", adjustedBalance: -250 },
       ]));
   }
 

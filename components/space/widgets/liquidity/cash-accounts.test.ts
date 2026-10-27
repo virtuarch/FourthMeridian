@@ -17,7 +17,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import { reachableNow } from "@/components/space/widgets/liquidity-adapters";
 import { desktopMarkup } from "@/components/space/compact/desktop-markup";
 import {
-  buildCashAccounts, groupCashAccounts, reconcileTerms, cashTypeLabel, isCashAccount,
+  buildCashAccounts, groupCashAccounts, reconcileTerms, pendingLine, cashTypeLabel, isCashAccount,
   type CashLedgerAccount,
 } from "./cash-accounts";
 import { CashDistribution } from "./CashDistribution";
@@ -37,15 +37,28 @@ function acct(id: string, over: Partial<CashLedgerAccount>): CashLedgerAccount {
 function cs(reachable: number | null, unexplained: number | null = null, pendingCount = 0) {
   return { reachable, unexplained, state: "EXACT", pendingCount };
 }
+/** v2.7-P0 — a server claim WITH the adjusted balance (as the Space mount emits it). */
+function adj(balance: number, a: { reachable: number | null; unexplained?: number | null; pendingCount?: number; pendingSum?: number; adjusted?: number; basis: "NO_PENDING" | "PENDING_EXCLUDED" | "PENDING_INCLUDED" | "UNPROVEN" }) {
+  const adjusted = a.adjusted ?? balance;
+  return {
+    balance,
+    adjustedBalance: adjusted,
+    currentState: {
+      reachable: a.reachable, unexplained: a.unexplained ?? null, state: "EXACT",
+      pendingCount: a.pendingCount ?? 0, pendingSum: a.pendingSum ?? 0, adjusted, basis: a.basis,
+    },
+  };
+}
 
-// The brief's fixture: total 62,589 · accessible 55,560 · restricted 6,009 · not reported 1,000 · held 20.
+// The brief's fixture: total 62,589 · accessible 55,560 · restricted 6,009 · not reported 1,000 · held 20
+// (two $10 HOLDS — the sandbox evidence; no pending, so adjusted = reported).
 const FIXTURE: CashLedgerAccount[] = [
   acct("cm",  { name: "Cash Mgmt",    institution: "Wealthfront", providerSubtype: "cash management", balance: 12060, currentState: cs(12060) }),
   acct("hsa", { name: "HSA",          institution: "Fidelity",    providerSubtype: "hsa",             balance: 6009,  currentState: cs(6009) }),
-  acct("chk", { name: "Checking",     institution: "Chase",       providerSubtype: "checking",        balance: 110,   currentState: cs(100, 0, 1) }),
+  acct("chk", { name: "Checking",     institution: "Chase",       providerSubtype: "checking",        balance: 110,   currentState: cs(100, 10) }),
   acct("mm",  { name: "Money Market", institution: "Fidelity",    type: "savings", providerSubtype: "money market", balance: 43200, currentState: cs(43200) }),
   acct("cd",  { name: "12-mo CD",     institution: "Chase",       type: "savings", providerSubtype: "cd",           balance: 1000,  currentState: cs(null) }),
-  acct("sav", { name: "Savings",      institution: "Chase",       type: "savings", providerSubtype: "savings",      balance: 210,   currentState: cs(200, 0, 2) }),
+  acct("sav", { name: "Savings",      institution: "Chase",       type: "savings", providerSubtype: "savings",      balance: 210,   currentState: cs(200, 10) }),
   // Not cash — must never appear.
   acct("inv", { name: "Brokerage", type: "investment", providerSubtype: "brokerage", balance: 90000 }),
   acct("btc", { name: "Wallet",    type: "crypto",     balance: 5000 }),
@@ -67,44 +80,62 @@ console.log("1. totals — donut + ledger = classifyAccounts total cash; Availab
   }
   const reach = reachableNow(FIXTURE);
   check("accessible = reachableNow().total = 55,560", s.accessible === reach.total && s.accessible === 55560, `${s.accessible} / ${reach.total}`);
-  check("restricted 6,009 · not reported 1,000 · held (pending) 20 · holds 0",
-    s.restricted === 6009 && s.notReported === 1000 && near(s.pending, 20) && s.holds === 0 && s.other === 0);
+  check("restricted 6,009 · not reported 1,000 · holds 20 · no pending correction",
+    s.restricted === 6009 && s.notReported === 1000 && near(s.holds, 20) && s.pendingCorrection === 0 && s.other === 0 && s.unreconciled === 0);
+  check("no adjusted claim ⇒ reported === total cash (prior arithmetic)", s.reported === s.totalCash && pendingLine(s) === null);
   const terms = reconcileTerms(s);
   check("the reconciling line sums exactly to reachableNow().total",
     near(s.totalCash + terms.reduce((t, x) => t + x.amount, 0), reach.total));
-  check("only non-zero terms appear (restricted · not reported · pending)", terms.map((t) => t.id).join() === "restricted,not_reported,pending");
+  check("only non-zero terms appear (restricted · not reported · holds)", terms.map((t) => t.id).join() === "restricted,not_reported,holds");
 }
 
-console.log("\n2. production reconciliation — pending outflows vs unexplained holds (coordinator correction)");
+console.log("\n2. production 10-26 — adjusted total cash (owner-approved P0 contract)");
 {
+  // Anonymized Production 10-26 claims, exactly as the Space mount emits them
+  // (the end-to-end derivation from C/A/P lives in lib/balances/adjusted-balance.test.ts).
   const PROD: CashLedgerAccount[] = [
-    acct("chase", { name: "Chase checking", institution: "Chase",  balance: 5251.68, currentState: cs(929.01, 0, 6) }),
-    acct("schwab",{ name: "Schwab checking", institution: "Schwab", balance: 1500,    currentState: cs(0, 1500, 0) }),
-    acct("amex",  { name: "Amex savings",   institution: "Amex",   type: "savings", balance: 17000, currentState: cs(15374.59, 1625.41, 0) }),
-    acct("a3",    { name: "A3", balance: 1000,    currentState: cs(1000) }),
-    acct("a4",    { name: "A4", balance: 5000.08, currentState: cs(5000.08) }),
+    acct("a1", { name: "A1 checking", institution: "Bank 1", ...adj(5251.68, { reachable: 929.01, unexplained: 0, pendingCount: 6, pendingSum: -4322.67, adjusted: 929.01, basis: "PENDING_EXCLUDED" }) }),
+    acct("a2", { name: "A2 checking", institution: "Bank 2", ...adj(1500, { reachable: 0, unexplained: 1500, basis: "NO_PENDING" }) }),
+    acct("a3", { name: "A3 checking", institution: "Bank 3", ...adj(1000, { reachable: 1000, unexplained: 0, basis: "NO_PENDING" }) }),
+    acct("a4", { name: "A4 savings",  institution: "Bank 1", type: "savings", ...adj(5000.08, { reachable: 5000.08, unexplained: 0, basis: "NO_PENDING" }) }),
+    acct("a5", { name: "A5 savings",  institution: "Bank 3", type: "savings", ...adj(17000, { reachable: 15374.59, unexplained: 1625.41, basis: "NO_PENDING" }) }),
   ];
   const s = buildCashAccounts(PROD);
   const reach = reachableNow(PROD);
   const c = classifyAccounts(PROD);
-  check("total cash 29,751.76 (unchanged definition)", near(s.totalCash, 29751.76) && near(s.totalCash, c.totalLiquid + c.totalRestrictedCash));
-  check("accessible 22,303.68 = reachableNow().total", near(s.accessible, 22303.68) && near(s.accessible, reach.total));
-  check("pending outflows not yet deducted 4,322.67", near(s.pending, 4322.67), String(s.pending));
-  check("unexplained holds 3,125.41", near(s.holds, 3125.41), String(s.holds));
-  check("holds agree with reachableNow().unexplainedTotal", near(s.holds, reach.unexplainedTotal));
+  check("reported 29,751.76", near(s.reported, 29751.76), String(s.reported));
+  check("pending correction −4,322.67 (PENDING_EXCLUDED only)", near(s.pendingCorrection, -4322.67), String(s.pendingCorrection));
+  check("total cash 25,429.09 = classifyAccounts cash (adjusted)", near(s.totalCash, 25429.09) && near(s.totalCash, c.totalLiquid + c.totalRestrictedCash));
+  check("reported + correction = total cash (exact)", near(s.reported + s.pendingCorrection, s.totalCash));
+  check("accessible 22,303.68 = reachableNow().total (unchanged)", near(s.accessible, 22303.68) && near(s.accessible, reach.total));
+  check("holds 3,125.41 = reachableNow().unexplainedTotal", near(s.holds, 3125.41) && near(s.holds, reach.unexplainedTotal));
   const terms = reconcileTerms(s);
-  check("line: total − pending − holds = accessible (exact)", terms.map((t) => t.id).join() === "pending,holds"
+  check("line: total cash − holds = accessible (exact; pending is NOT a term)", terms.map((t) => t.id).join() === "holds"
     && near(s.totalCash + terms.reduce((t, x) => t + x.amount, 0), reach.total));
-  const chase = s.rows.find((r) => r.account.id === "chase")!;
-  check("Chase row: Available 929.01, pending 4,322.67, no hold",
-    chase.available.kind === "amount" && near(chase.available.value, 929.01) && near(chase.available.pending, 4322.67) && chase.available.hold === 0);
+  const a1 = s.rows.find((r) => r.account.id === "a1")!;
+  check("A1 row: reported 5,251.68 · total cash 929.01 · Available 929.01 · no hold",
+    near(a1.reported, 5251.68) && near(a1.value, 929.01) && a1.basis === "PENDING_EXCLUDED"
+    && a1.available.kind === "amount" && near(a1.available.value, 929.01) && a1.available.hold === 0);
   const html = renderToStaticMarkup(createElement(CashAccountsLedger, { spaceId: "s1", accounts: PROD, summary: s, currency: "USD" }));
-  check("Available cell sublines: '$4,322.67 pending' and '$1,500.00 on hold'", html.includes("$4,322.67 pending") && html.includes("$1,500.00 on hold"));
-  check("footer reconciling line renders both terms",
-    html.includes("$29,751.76 total") && html.includes("− $4,322.67 pending outflows not yet deducted") && html.includes("− $3,125.41 on hold") && html.includes("= $22,303.68 accessible"));
-  check("pending note shown", html.includes("Total cash uses bank-reported balances, which include pending outflows not yet deducted."));
+  check("footer: Reported $29,751.76 − pending not yet deducted $4,322.67 = Total cash $25,429.09",
+    html.includes("Reported $29,751.76 − pending not yet deducted $4,322.67 = Total cash $25,429.09"));
+  check("footer: $25,429.09 total cash − $3,125.41 on hold = $22,303.68 accessible",
+    html.includes("$25,429.09 total cash") && html.includes("− $3,125.41 on hold") && html.includes("= $22,303.68 accessible"));
+  check("A1 pending cell: −$4,322.67, deducted here", html.includes("−$4,322.67") && html.includes("deducted here"));
+  check("no UNPROVEN account ⇒ no badge, no note", !html.includes("data-cash-unproven"));
   const noPending = renderToStaticMarkup(createElement(CashAccountsLedger, { spaceId: "s1", accounts: PROD.slice(1), summary: buildCashAccounts(PROD.slice(1)), currency: "USD" }));
-  check("no pending ⇒ no pending note", !noPending.includes("data-cash-pending-note"));
+  check("no pending ⇒ no reported → total cash line", !noPending.includes("data-cash-pending-line"));
+
+  // UNPROVEN: pending exists, no available figure ⇒ reported counted, flagged.
+  const UNP: CashLedgerAccount[] = [
+    acct("u", { name: "No avail", ...adj(1000, { reachable: 950, unexplained: null, pendingCount: 1, pendingSum: -50, basis: "UNPROVEN" }) }),
+  ];
+  const su = buildCashAccounts(UNP);
+  check("UNPROVEN: total cash = reported 1,000 (never 950)", su.totalCash === 1000 && su.pendingCorrection === 0);
+  check("UNPROVEN: the 50 is an 'unreconciled' term, line exact", near(su.unreconciled, 50)
+    && near(su.totalCash + reconcileTerms(su).reduce((t, x) => t + x.amount, 0), su.accessible));
+  const hu = renderToStaticMarkup(createElement(CashAccountsLedger, { spaceId: "s1", accounts: UNP, summary: su, currency: "USD" }));
+  check("UNPROVEN: badge + footer note rendered", hu.includes("Pending not reconciled") && hu.includes("data-cash-unproven-note") && hu.includes("− $50.00 pending not reconciled"));
 }
 
 console.log("\n3. inclusion — checking + savings incl. HSA; nothing else; each account once");
@@ -202,11 +233,11 @@ console.log("\n8. markup — desktop table vs compact rows; a11y; detail navigat
   const s = buildCashAccounts(FIXTURE);
   const html = renderToStaticMarkup(createElement(CashAccountsLedger, { spaceId: "s1", accounts: FIXTURE, summary: s, currency: "USD" }));
   const desk = desktopMarkup(html);
-  check("desktop: a real table with caption + column headers (scope=col)", desk.includes("<table") && desk.includes("<caption") && (desk.match(/scope="col"/g) ?? []).length === 7);
+  check("desktop: a real table with caption + column headers (scope=col)", desk.includes("<table") && desk.includes("<caption") && (desk.match(/scope="col"/g) ?? []).length === 10);
   check("desktop: row headers (scope=row) per account", (desk.match(/scope="row"/g) ?? []).length === 6);
   check("desktop: the compact list does not render", !desk.includes("data-compact-cash-accounts"));
-  check("desktop columns: Institution · Account · Type · Balance · % of cash · Available · Status",
-    ["Institution", "Account", "Type", "Balance", "% of cash", "Available", "Status"].every((h) => desk.includes(`>${h}</th>`)));
+  check("desktop columns: Institution · Account · Type · Reported · Pending · Total cash · % of cash · Available · Holds · Status",
+    ["Institution", "Account", "Type", "Reported", "Pending", "Total cash", "% of cash", "Available", "Holds", "Status"].every((h) => desk.includes(`>${h}</th>`)));
   check("compact: list present and NOT behind a disclosure", html.includes('class="lg:hidden divide-y') && !html.includes("aria-expanded"));
   check("compact: every account visible (6 rows)", (html.match(/<li>/g) ?? []).length === 6);
   check("desktop table hidden only below lg (max-lg:hidden)", html.includes("max-lg:hidden overflow-x-auto"));
@@ -214,7 +245,7 @@ console.log("\n8. markup — desktop table vs compact rows; a11y; detail navigat
     (html.match(/<button type="button"[^>]*aria-label="Open details for /g) ?? []).length === 12);
   check("Available states: Restricted · Not reported · amounts", html.includes(">Restricted<") && html.includes(">Not reported<") && html.includes("$43,200.00"));
   check("footer: Total cash and Accessible now, labelled distinctly", html.includes("Total cash") && html.includes("Accessible now") && !html.includes("Accessible cash"));
-  check("footer line (brief fixture)", html.includes("$62,589.00 total") && html.includes("− $6,009.00 restricted") && html.includes("− $1,000.00 no available balance reported") && html.includes("− $20.00 pending outflows not yet deducted") && html.includes("= $55,560.00 accessible"));
+  check("footer line (brief fixture)", html.includes("$62,589.00 total cash") && html.includes("− $6,009.00 restricted") && html.includes("− $1,000.00 no available balance reported") && html.includes("− $20.00 on hold") && html.includes("= $55,560.00 accessible"));
   const donut = renderToStaticMarkup(createElement(CashDistribution, { summary: s, currency: "USD" }));
   check("donut: grouping control is a labelled radiogroup", donut.includes('role="radiogroup" aria-label="Group total cash"') && donut.includes("By institution") && donut.includes("By account type"));
   check("donut: labelled group with the total", donut.includes('aria-label="Total cash by institution: $62,589.00"'));
