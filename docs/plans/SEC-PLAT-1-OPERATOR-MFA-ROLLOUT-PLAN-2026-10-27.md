@@ -1,6 +1,6 @@
 # SEC-PLAT-1: mandatory operator TOTP, rollout and recovery plan
 
-**Status:** PREPARED, NOT ACTIVATED. The branch `sec/platform-operator-mfa` will be a draft PR. Merging it to `develop` activates the policy on Preview, and promotion activates it on Production. **Both need explicit owner rollout approval.**
+**Status:** PREPARED, NOT ACTIVATED (owner, 2026-10-27: request-level enforcement approved; #78 merge/activation NOT yet authorized). The branch `sec/platform-operator-mfa` will be a draft PR. Merging it to `develop` activates the policy on Preview, and promotion activates it on Production. **Both need explicit owner rollout approval.**
 **Date:** 2026-10-27 · **Author:** Claude 2 · **Ruling:** P-2. Every ACTIVE Platform access holder must have TOTP, regardless of level.
 
 ---
@@ -79,6 +79,44 @@ These steps work on Preview **today**, before SEC-PLAT-1 merges: enrolment is an
 | No SYSTEM_ADMIN can sign in | The existing break-glass runbook applies (SYSTEM_ADMIN 2FA is mandatory and unchanged by SEC-PLAT-1). |
 
 ---
+
+## 2b. Preview enrolment + recovery verification (prepared; run after §2a, BEFORE any activation)
+
+**Owner rulings (2026-10-27, later):**
+- Request-level enforcement is approved for the initial rollout.
+- PR #78 is **not** authorized to merge or activate until the owner approves it explicitly, after enrolment.
+- No login-database privilege change (Phase 2 stays separate).
+- Production requires a verified operator count and a separate approval.
+
+**V1. Enrolment took (read-only, aggregate; Claude 2 runs it on request).** The same `psql -1` + `SET TRANSACTION READ ONLY` helper as §1:
+```sql
+SELECT count(DISTINCT g."userId") FILTER (WHERE NOT u."totpEnabled") AS operators_without_totp,
+       count(DISTINCT g."userId") AS operators_total
+FROM "PlatformGrant" g JOIN "User" u ON u.id = g."userId" WHERE g.status = 'ACTIVE';
+-- recovery codes held by enrolled operators (counts only; never a code or hash)
+SELECT count(DISTINCT rc."userId") AS operators_with_unused_codes
+FROM "RecoveryCode" rc JOIN "PlatformGrant" g ON g."userId" = rc."userId" AND g.status = 'ACTIVE'
+WHERE rc."usedAt" IS NULL;
+```
+**Expect:** `operators_without_totp = 0`, and `operators_with_unused_codes = operators_total`.
+
+**V2. Sign-in works with the second factor (owner, in their browser).**
+1. Sign out.
+2. Sign in with your password, then the 6-digit code.
+3. Open `/dashboard/platform`. Every area should load exactly as before; no behaviour changes while #78 is unmerged.
+
+**V3. Recovery path works (owner, optional but recommended before activation).**
+1. Sign out.
+2. Sign in with your password and **one** recovery code instead of the authenticator code. That code is now spent.
+3. Re-run V1. `operators_with_unused_codes` is still `operators_total` because 9 codes remain.
+4. If you'd rather not spend a code, skip V3. The admin Reset-2FA path in §2a covers a lost device and codes.
+
+**V4. Gate for activation (owner decision).** Only when V1 shows `operators_without_totp = 0`:
+1. The owner approves merging #78 to `develop`.
+2. Claude 2 runs the full gate under the shared lock, merges, and verifies on Preview:
+   - the operator still reaches every area;
+   - Settings → Security → **Disable** answers "can't be turned off while you have Platform access";
+   - the grant matrix shows no "2FA off" badge.
 
 ## 3. Rollout sequence (each step needs owner approval)
 
