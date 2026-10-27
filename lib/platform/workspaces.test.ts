@@ -340,7 +340,23 @@ console.log("Customer Success · Customers + Incidents");
     cs[0].sections.join() === "cs_customers" && cs[1]?.sections.join() === "cs_sync_issues");
   check("Incidents is a registered Platform identity with a nav-resolvable icon",
     getPlatformWorkspace("platform-incidents")?.label === "Incidents"
-      && /TriangleAlert,\n\};/.test(readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8")));
+      && /WORKSPACE_ICONS_BY_NAME[^{]*\{[^}]*\bTriangleAlert,/.test(readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8")));
+}
+
+// ── Redesign §4.9 — Security: Posture · Audit · Operator actions ──
+console.log("Security · Posture + Audit + Operator actions");
+{
+  const sec = getPlatformAreaWorkspaces("SECURITY_OPS");
+  check("three workspaces in order", sec.map((w) => w.workspaceId).join(",") === "platform-overview,platform-audit,platform-operator-actions", sec.map((w) => w.workspaceId).join(","));
+  check("the two feeds are composed directly, no longer absorbed",
+    sec[1]?.sections.join() === "sec_audit_feed" && sec[2]?.sections.join() === "sec_operator_actions"
+      && !("sec_audit_feed" in PLATFORM_SECTION_REPRESENTATION) && !("sec_operator_actions" in PLATFORM_SECTION_REPRESENTATION));
+  check("anomalies and sessions stay absorbed by the posture host",
+    PLATFORM_SECTION_REPRESENTATION.sec_anomalies === "sec_auth_posture" && PLATFORM_SECTION_REPRESENTATION.sec_sessions === "sec_auth_posture");
+  const nav = readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8");
+  check("both identities are registered with nav-resolvable icons",
+    getPlatformWorkspace("platform-audit")?.icon === "ScrollText" && getPlatformWorkspace("platform-operator-actions")?.icon === "UserCog"
+      && /ScrollText, UserCog,\n\};/.test(nav));
 }
 
 if (failures > 0) {

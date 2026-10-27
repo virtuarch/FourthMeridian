@@ -27,7 +27,7 @@ const trip = (type: string, over: Partial<AnomalyTrip> = {}): AnomalyTrip => ({
 const anomalies = (trips: AnomalyTrip[]): AnomaliesResponse => ({ trips, summary: { failedLoginsWindow: 0, windowMinutes: 15, tripsLast24h: trips.length } });
 const ok = <T,>(data: T) => ({ data, loading: false, error: null });
 const pending = { data: null, loading: true, error: null };
-const sources = (a: AnomaliesResponse): SecurityPostureSources => ({ anomalies: ok(a), posture: pending, audit: pending, operators: pending, sessions: pending });
+const sources = (a: AnomaliesResponse): SecurityPostureSources => ({ anomalies: ok(a), posture: pending, sessions: pending });
 const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
 console.log("1. the reading");

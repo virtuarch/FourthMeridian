@@ -40,8 +40,6 @@ import { useWidgetFetch, type PlatformSection } from "../widget-kit";
 import { GroupLabel, KeyRow, NO_AUTHORITY, Provenance, SectionSurface, Unavailable, VRule } from "../platform-surface";
 import type { AnomaliesResponse, AnomalyTrip } from "@/app/api/platform/security-ops/anomalies/route";
 import type { PlatformAuthPosture } from "@/app/api/platform/security-ops/auth-posture/route";
-import type { PlatformAuditResponse } from "@/app/api/platform/security-ops/audit/route";
-import type { OperatorActionsResponse } from "@/app/api/platform/security-ops/operator-actions/route";
 import type { PlatformSessionsResponse } from "@/app/api/platform/security-ops/sessions/route";
 import {
   COLUMN,
@@ -59,8 +57,6 @@ import {
 } from "./security-posture-view";
 import { ReadingStat, SourceGate } from "./SecurityPostureParts";
 import { AnomalyTripsGroup } from "./SecAnomaliesWidget";
-import { EndUserAuthGroup } from "./SecAuditFeedWidget";
-import { OperatorActionsGroup } from "./SecOperatorActionsWidget";
 import { SessionsGroup } from "./SecSessionsWidget";
 
 // ── OBS-009 · platform access refusals ───────────────────────────────────────
@@ -109,8 +105,6 @@ function Movement({ label, hint, children }: { label: string; hint?: string; chi
 export interface SecurityPostureSources {
   anomalies: Fetched<AnomaliesResponse>;
   posture: Fetched<PlatformAuthPosture>;
-  audit: Fetched<PlatformAuditResponse>;
-  operators: Fetched<OperatorActionsResponse>;
   sessions: Fetched<PlatformSessionsResponse>;
 }
 
@@ -151,12 +145,8 @@ export function SecurityPostureSurface({ sources, nowMs }: { sources: SecurityPo
       <Movement label="Anomaly trips" hint={DETECTOR_COVERAGE}>
         <AnomalyTripsGroup anomalies={sources.anomalies} nowMs={nowMs} />
       </Movement>
-      <Movement label="End-user auth" hint="Security-relevant end-user audit events (sign-in, password, two-factor, recovery, session) — actor is a username or 'system'.">
-        <EndUserAuthGroup audit={sources.audit} nowMs={nowMs} />
-      </Movement>
-      <Movement label="Operator actions" hint="What platform operators DID — grant, policy, cadence, beta and connection actions with their reason CODE and result; never the note.">
-        <OperatorActionsGroup operators={sources.operators} nowMs={nowMs} />
-      </Movement>
+      {/* Platform redesign §4.9 — End-user security events and Operator actions
+          moved to their own Security workspaces (Audit, Operator actions). */}
       <Movement label="Sessions" hint="Live sessions and the most recently active ones as parsed browser · device · OS — never the user-agent string, an IP or a user.">
         <SessionsGroup sessions={sources.sessions} nowMs={nowMs} />
       </Movement>
@@ -169,9 +159,7 @@ export function SecurityPostureSurface({ sources, nowMs }: { sources: SecurityPo
 export function SecurityPostureWidget(_props: { section: PlatformSection }) {
   const anomalies = useWidgetFetch<AnomaliesResponse>("/api/platform/security-ops/anomalies");
   const posture = useWidgetFetch<PlatformAuthPosture>("/api/platform/security-ops/auth-posture");
-  const audit = useWidgetFetch<PlatformAuditResponse>("/api/platform/security-ops/audit");
-  const operators = useWidgetFetch<OperatorActionsResponse>("/api/platform/security-ops/operator-actions");
   const sessions = useWidgetFetch<PlatformSessionsResponse>("/api/platform/security-ops/sessions");
   const [nowMs] = useState(() => Date.now());
-  return <SecurityPostureSurface sources={{ anomalies, posture, audit, operators, sessions }} nowMs={nowMs} />;
+  return <SecurityPostureSurface sources={{ anomalies, posture, sessions }} nowMs={nowMs} />;
 }
