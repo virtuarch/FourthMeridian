@@ -12,9 +12,9 @@
  *                              (standalone only — embedded, the Assets hero states it)
  *   ② Balance history        — invested value over time (the SHARED Net Worth chart)
  *      Accuracy status        — "Partial · N of M valued", only when partial
- *   ③ Holdings               — top-few weight-bar ledger; "View all" → LeftPanel browser
+ *   ③ Allocation             — "what do I own?" (the shared donut breakdown)
+ *   ④ Holdings               — top-few weight-bar ledger; "View all" → LeftPanel browser
  *                              → RightPanel detail (the Atlas panel primitives)
- *   ④ Allocation             — "what do I own?" (the shared donut breakdown)
  *   ⑤ Concentration          — "how exposed am I?" (largest / top-5 / sector)
  *   ⑥ Accounts               — every investment account at its balance
  *   ⑦ This period            — the opening→in→out→change→closing movement bridge
@@ -71,8 +71,8 @@ import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 const INVESTMENTS_SECTIONS: SpaceChromeSection[] = [
   { label: "Summary",         anchor: "investments-summary" },
   { label: "Balance history", anchor: "investments-history" },
-  { label: "Holdings",        anchor: "investments-holdings" },
   { label: "Allocation",      anchor: "investments-allocation" },
+  { label: "Holdings",        anchor: "investments-holdings" },
   { label: "Concentration",   anchor: "investments-concentration" },
   { label: "This period",     anchor: "investments-period" },
 ];
@@ -263,17 +263,10 @@ export function InvestmentsWorkspace({
         </div>
       )}
 
-      {/* ③ Holdings — top-few weight-bar ledger; the bar IS the allocation view. */}
-      <Block
-        id="investments-holdings"
-        label="Holdings"
-        hint={<span className="text-[11px] tabular-nums text-[var(--text-faint)]">{primary.holdings.length}</span>}
-        action={<span className="text-[11px] text-[var(--text-faint)]">Top by value · bar shows share</span>}
-      >
-        <HoldingsLedger holdings={primary.holdings} reportingCurrency={reportingCurrency} accounts={accounts} />
-      </Block>
-
-      {/* ④ Allocation — "what do I own?" (the shared donut breakdown). */}
+      {/* ③ Allocation — "what do I own?" (the shared donut breakdown).
+          v2.7 final UX pass (owner): Chart → Allocation donut → Holdings table at
+          EVERY width — plain DOM order, no CSS order/grid reordering, so compact
+          and desktop read identically. */}
       <div id="investments-allocation" className="scroll-mt-20">
         {/* v2.7 — the grouping Dropdown sits in the Block header, outside and above
             the donut, exactly as Net Worth's "Where it sits" card does. */}
@@ -287,6 +280,16 @@ export function InvestmentsWorkspace({
           </DataCard>
         </Block>
       </div>
+
+      {/* ④ Holdings — top-few weight-bar ledger, directly under the donut it details. */}
+      <Block
+        id="investments-holdings"
+        label="Holdings"
+        hint={<span className="text-[11px] tabular-nums text-[var(--text-faint)]">{primary.holdings.length}</span>}
+        action={<span className="text-[11px] text-[var(--text-faint)]">Top by value · bar shows share</span>}
+      >
+        <HoldingsLedger holdings={primary.holdings} reportingCurrency={reportingCurrency} accounts={accounts} />
+      </Block>
 
       {/* ⑤ Concentration — "how exposed am I?" (largest / top-5 / sector). */}
       <div id="investments-concentration" className="scroll-mt-20">

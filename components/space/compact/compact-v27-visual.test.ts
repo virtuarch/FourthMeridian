@@ -77,8 +77,9 @@ console.log("1. section order per view");
   check("Cash: the resilience grid is 2-up on compact, 4-up on desktop when embedded",
     /grid grid-cols-2 gap-3 sm:gap-4 items-stretch min-w-0 \$\{embedded \? "lg:grid-cols-4" : "lg:grid-cols-3"\}/.test(LIQ));
   const ret = INV.slice(INV.lastIndexOf("  return (\n    <div className=\"space-y-8 sm:space-y-10"));
-  const inv = inOrder(ret, ["{statusRow}", "{scopeDivergence && (", 'id="investments-holdings"', 'id="investments-allocation"', 'id="investments-concentration"', "{accountsLedger}", 'id="investments-period"']);
-  check("Investments: accuracy status → scope note → Holdings → Allocation → Concentration → Accounts → This period", inv.ok, inv.detail);
+  const inv = inOrder(ret, ["{statusRow}", "{scopeDivergence && (", 'id="investments-allocation"', 'id="investments-holdings"', 'id="investments-concentration"', "{accountsLedger}", 'id="investments-period"']);
+  // v2.7 final UX pass (owner) — DELIBERATE: the Allocation donut now precedes Holdings.
+  check("Investments: accuracy status → scope note → Allocation → Holdings → Concentration → Accounts → This period", inv.ok, inv.detail);
   check("Investments → Real assets comes after the Investments section", WW.indexOf('id="wealth-investments"') < WW.indexOf('id="wealth-real-assets"'));
 }
 

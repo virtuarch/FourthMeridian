@@ -28,7 +28,7 @@
 import { useState } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { debtColor } from "@/components/space/widgets/debt-adapters";
-import { presentationDebtClass, DEBT_CLASS_LABEL } from "@/components/space/widgets/debt/debt-ledger-util";
+import { presentationDebtClass, presentationDebtLabel, DEBT_CLASS_LABEL } from "@/components/space/widgets/debt/debt-ledger-util";
 import { creditUtilization } from "@/lib/accounts/credit-utilization";
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
@@ -138,30 +138,46 @@ export function renderDebtByAccount(
 
 // ─── 2b. Debt composition (v2.7 — the Debt page donut) ───────────────────────
 
-export type DebtCompositionGrouping = "account" | "type" | "institution";
+export type DebtCompositionGrouping = "account" | "type" | "institution" | "kind";
+
+/**
+ * v2.7 final UX pass — the compact Credit / Loans views scope the donut to ONE
+ * presentation class (presentationDebtClass, the SAME classifier the ledger's
+ * class rows use): "cards" (Credit) or "loans" (Loans). Absent ⇒ every debt.
+ */
+export type DebtCompositionScope = "cards" | "loans";
 
 /**
  * v2.7 — what the Debt donut slices: the SAME owed amounts renderDebtByAccount
  * ranks (debtAccounts → inDisp → amountOwed, zero-owed rows absent), grouped by
- * account, by presentation class (presentationDebtClass — display only), or by
- * institution. Nothing is recomputed: Σ items === Σ owed across those accounts.
+ * account, by presentation class (presentationDebtClass — display only), by
+ * institution, or (v2.7 final UX pass) by the liability's stated KIND
+ * (presentationDebtLabel: Mortgage / Auto loan / Student loan / Credit card …,
+ * from the stored debtSubtype or the provider subtype — never inferred).
+ * Nothing is recomputed: Σ items === Σ owed across those accounts. With a
+ * `scope`, only that class's accounts contribute, so Σ items === the class's
+ * owed total — exactly the sum of that class's ledger rows (LiabilitiesLedger
+ * buildRows: the same yesterday-UTC display conversion + amountOwed).
  * Sorted largest-first; colour ranks by that order (deepest red = largest).
  */
 export function debtCompositionItems(
   accounts: DebtPerspectiveAccount[],
   ctx: ConversionContext | undefined,
   grouping: DebtCompositionGrouping,
+  scope?: DebtCompositionScope,
 ): BreakdownItem[] {
-  const debts = debtAccounts(accounts)
+  const debts = scopedDebtAccounts(accounts, scope)
     .map((a) => ({ a, bal: amountOwed(inDisp(a.balance, a.currency, ctx)) }))
     .filter((x) => x.bal > 0);
   const groups = new Map<string, { label: string; value: number; meta?: string }>();
   for (const { a, bal } of debts) {
     const key = grouping === "account" ? a.id
       : grouping === "type" ? presentationDebtClass(a)
+      : grouping === "kind" ? presentationDebtLabel(a)
       : (a.institution || "Other");
     const label = grouping === "account" ? a.name
       : grouping === "type" ? DEBT_CLASS_LABEL[presentationDebtClass(a)]
+      : grouping === "kind" ? presentationDebtLabel(a)
       : (a.institution || "Other");
     const g = groups.get(key) ?? { label, value: 0, meta: grouping === "account" ? a.institution || undefined : undefined };
     g.value += bal;
@@ -169,6 +185,33 @@ export function debtCompositionItems(
   }
   const sorted = [...groups.entries()].sort((x, y) => y[1].value - x[1].value);
   return sorted.map(([id, g], i) => ({ id, label: g.label, value: g.value, color: debtColor(i, sorted.length), meta: g.meta }));
+}
+
+function scopedDebtAccounts(accounts: DebtPerspectiveAccount[], scope?: DebtCompositionScope): DebtPerspectiveAccount[] {
+  const debts = debtAccounts(accounts);
+  return scope ? debts.filter((a) => presentationDebtClass(a) === scope) : debts;
+}
+
+/**
+ * v2.7 final UX pass — the honest frame around a scoped donut: how many accounts
+ * the class holds, how many owe (the slices), how many owe nothing (paid off or
+ * in credit — real accounts, deliberately NOT slices), the owed total the donut
+ * reconciles to, and how many distinct stated kinds the owing accounts carry.
+ */
+export function debtScopeSummary(
+  accounts: DebtPerspectiveAccount[],
+  ctx: ConversionContext | undefined,
+  scope: DebtCompositionScope,
+): { accountCount: number; owedCount: number; notOwedCount: number; total: number; kindCount: number } {
+  const rows = scopedDebtAccounts(accounts, scope).map((a) => ({ a, bal: amountOwed(inDisp(a.balance, a.currency, ctx)) }));
+  const owing = rows.filter((r) => r.bal > 0);
+  return {
+    accountCount: rows.length,
+    owedCount:    owing.length,
+    notOwedCount: rows.length - owing.length,
+    total:        owing.reduce((s, r) => s + r.bal, 0),
+    kindCount:    new Set(owing.map((r) => presentationDebtLabel(r.a))).size,
+  };
 }
 
 // ─── 3. Credit Utilization ────────────────────────────────────────────────────

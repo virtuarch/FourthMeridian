@@ -14,8 +14,9 @@
  * flat note. Presentation only — every number comes from the WealthResult.
  *
  * v2.7 visual-first — the forward-phrased attribution note is gone (narrative,
- * owner-approved), and the header carries the Evidence doorway the retired
- * Explanation card used to hold (`onViewEvidence`, host-owned drawer).
+ * owner-approved). v2.7 final UX pass — the header's Evidence doorway (a
+ * snapshot-provenance list) is removed from the customer UI; the provenance
+ * itself is still resolved in the envelope for internal use.
  *
  * V25-CLOSE-4A — the card is METRIC-AWARE. It reconciles with the SELECTED wealth
  * metric, not always net worth: the Net Change total is deltas[metric] and the
@@ -24,7 +25,6 @@
  * the deltas/drivers WealthResult already carries — no new aggregation.
  */
 
-import { FileSearch } from "lucide-react";
 import type { WealthResult, WealthDriver } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import { Surface, Block, Figure } from "@/components/atlas/Surface";
@@ -41,33 +41,21 @@ export function WealthChangeLedger({
   result,
   currency,
   metric = "netWorth",
-  onViewEvidence,
 }: {
   result:   WealthResult;
   currency: string;
   /** The selected wealth metric — the card reconciles with this, not net worth. */
   metric?:  WealthMetricKey;
-  /** Opens the host-owned Evidence drawer. Hidden when not provided. */
-  onViewEvidence?: () => void;
 }) {
   const { deltas, drivers, compareState } = result;
   const compareLabel =
     compareState?.found && compareState.date ? formatWealthDate(compareState.date) : undefined;
 
   const heading = `What moved ${METRIC_POSSESSIVE[metric]}?`;
-  const evidenceAction = onViewEvidence ? (
-    <button
-      type="button"
-      onClick={onViewEvidence}
-      className="inline-flex min-h-8 items-center gap-1.5 rounded px-1 text-[11px] text-[var(--accent-info)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
-    >
-      <FileSearch size={12} aria-hidden /> Evidence
-    </button>
-  ) : undefined;
 
   if (!deltas) {
     return (
-      <Block label={heading} action={evidenceAction}>
+      <Block label={heading}>
         <WealthUnavailable message={`Add a Compare To date above to break down how ${METRIC_POSSESSIVE[metric]} changed.`} />
       </Block>
     );
@@ -90,7 +78,6 @@ export function WealthChangeLedger({
     <Block
       label={heading}
       hint={compareLabel ? <span className="text-[11px] text-[var(--text-muted)]">Since {compareLabel}</span> : undefined}
-      action={evidenceAction}
     >
       {rows.length === 0 ? (
         <Surface className="px-4 py-3">

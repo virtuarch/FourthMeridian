@@ -221,8 +221,11 @@ console.log("6. Completeness / evidence still RESOLVED — only the header prese
   const envSrc = readFileSync(path.join(ROOT, "lib/perspectives/envelope.ts"), "utf8");
   check("the envelope contract still carries completeness, evidence and warnings",
     /completeness\?:\s*EnvelopeCompleteness/.test(envSrc) && /evidence\?:\s*EnvelopeEvidence/.test(envSrc) && /warnings\?:/.test(envSrc));
-  check("the shared detail surfaces still exist (TrustIndicator + Wealth use them)",
-    existsSync(path.join(ROOT, "components/space/shell/CompletenessPopover.tsx")) && existsSync(path.join(ROOT, "components/space/shell/EvidenceDrawer.tsx")));
+  // v2.7 final UX pass — the customer-facing EvidenceDrawer is deliberately GONE
+  // (its only mounts were TrustIndicator + the Wealth "What moved" header); the
+  // CompletenessPopover (the tier's reason) stays.
+  check("CompletenessPopover still exists; the customer-facing EvidenceDrawer does not",
+    existsSync(path.join(ROOT, "components/space/shell/CompletenessPopover.tsx")) && !existsSync(path.join(ROOT, "components/space/shell/EvidenceDrawer.tsx")));
   const trustRow = readFileSync(path.join(ROOT, "components/space/shell/ShellTrustRow.tsx"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   check("the shell trust row carries no Completeness / Evidence chip and no dead popover/drawer wiring",
     !/label="Completeness"|label="Evidence"|CompletenessPopover|EvidenceDrawer|useState/.test(trustRow));

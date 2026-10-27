@@ -42,6 +42,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { presentFigureEnvelope } from "@/components/space/trust/figure-envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { convertDebtHistory } from "@/lib/debt/display-conversion";
 import { Surface, Block } from "@/components/atlas/Surface";
@@ -164,6 +165,20 @@ export function DebtWorkspace({
   );
   useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
 
+  // v2.7 final UX pass — the HERO chip qualifies the HEADLINE beside it, and the
+  // headline (total owed) is PRESENT-DAY in every view (computeDebtKpis over
+  // today's accounts — temporalCapability PARTIAL). It therefore reads the
+  // present-day lens's envelope, never the as-of lens's reconstruction tier.
+  // Before this, a past As-Of put "Estimated" (installment loans held flat in
+  // the as-of reconstruction) beside a figure that is not reconstructed at all,
+  // and the chip vanished whenever the view returned to today or the as-of lens
+  // was re-keyed by a data refresh. Same resolver, same tiers — only WHICH lens
+  // feeds the hero changed. The shell still receives the on-screen envelope.
+  const heroEnvelope = useMemo(
+    () => presentFigureEnvelope({ perspectiveId: "debt", historical: asOf < today, presentLens, onScreen: envelope }),
+    [asOf, today, presentLens, envelope],
+  );
+
   // FIGURES OF RECORD — present-day, from the accounts array (never the lens).
   const kpis = computeDebtKpis(accounts, ctx);
   const signals = buildDebtSignals({ accounts, ctx, lensResult: lens });
@@ -240,9 +255,9 @@ export function DebtWorkspace({
         id: sec,
         label: DEBT_SECTION_LABELS[sec],
         controls: sec === "credit"
-          ? ["debt-liabilities", ...(hasDebt ? ["debt-costrisk"] : []), "debt-credit"]
+          ? ["debt-credit-composition", "debt-liabilities", ...(hasDebt ? ["debt-costrisk"] : []), "debt-credit"]
           : sec === "loans"
-            ? ["debt-liabilities"]
+            ? ["debt-loans-composition", "debt-liabilities"]
             : ["debt-history", "debt-liabilities", ...(hasDebt ? ["debt-costrisk", "debt-payoff"] : []), "debt-credit"],
       }))}
     />
@@ -293,7 +308,7 @@ export function DebtWorkspace({
           today={today}
           historical={historical}
           change={change}
-          envelope={envelope}
+          envelope={heroEnvelope}
           verdict={verdict}
           verdictAsOf={verdictAsOf}
           redactions={redactions}
@@ -355,6 +370,17 @@ export function DebtWorkspace({
       {hasDebt && (
         <div id="debt-composition" className={`scroll-mt-20 ${compactHidden(!cv.history)}`.trim()}>
           <DebtCompositionCard accounts={accounts} ctx={ctx} currency={displayCurrency} />
+        </div>
+      )}
+
+      {/* ②c v2.7 final UX pass — the compact Credit / Loans views get their own
+          donut: the SAME DebtCompositionCard scoped to the selected class
+          (presentationDebtClass, as the class ledger below), reconciling
+          exactly to that class's owed total, with an honest empty state.
+          lg:hidden — the tabs exist below lg only; desktop keeps All. */}
+      {debtTabs && cv.ledgerClass && (
+        <div className="lg:hidden" data-compact-debt-donut={cv.ledgerClass}>
+          <DebtCompositionCard key={cv.ledgerClass} accounts={accounts} ctx={ctx} currency={displayCurrency} scope={cv.ledgerClass} />
         </div>
       )}
 

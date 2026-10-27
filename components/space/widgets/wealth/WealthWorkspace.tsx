@@ -8,7 +8,7 @@
  * of the three page-level MODES the Net Worth page is read through:
  *
  *   Total   — the net-worth experience (default): hero → balance history →
- *             KPIs → composition + what-moved-it (evidence from its header).
+ *             KPIs → composition + what-moved-it.
  *   Assets  — total assets, with the SAME instruments re-aimed at assets, the
  *             balance history SLICEABLE (All · Cash · Investments). v2.7
  *             visual-first: the slice is the RENDER RULE at every width
@@ -51,13 +51,14 @@ import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { summarizeCryptoPricing } from "@/lib/prices/current-quote.core";
 import { CompactSectionTabs } from "@/components/space/compact/CompactSectionTabs";
 import { assetsCompactVisibility } from "@/components/space/compact/compact-sections";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import {
   computeWealthTimeMachine,
   type WealthResult,
 } from "@/lib/wealth/wealth-time-machine";
 import { convertWealthSnapshots } from "@/lib/wealth/display-conversion";
+import { wealthChipTier, asOfSnapshotTier } from "@/components/space/trust/wealth-chip-tier";
 import {
   ASSETS_SLICES, ASSETS_SLICE_LABELS, WEALTH_MODES, WEALTH_MODE_LABELS, wealthSeriesKey,
   type AssetsSlice, type WealthMode,
@@ -76,7 +77,6 @@ import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import type { SpaceAccount } from "@/lib/space/dashboard-types";
 import { Chips } from "@/components/atlas/Chips";
-import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/LiquidityWorkspace";
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
@@ -296,9 +296,21 @@ export function WealthWorkspace({
 
   // Trust envelope — resolved from THIS workspace's own result, emitted up to the
   // shell chip in Total / Assets. In Debt the Debt workspace owns the slot.
+  // v2.7 final UX pass (owner-authorized) — the chip states the as-of snapshot's
+  // RESOLVED confidence tier (Estimated / Incomplete included), mapped
+  // presentation-side; WealthResult itself is untouched (AI / Brief unaffected).
+  const chipTier = useMemo(
+    () => wealthChipTier({
+      found: result.asOfState.found,
+      isEstimated: result.asOfState.isEstimated,
+      completenessTier: asOfSnapshotTier(convertedSnapshots, result.asOfState.date),
+      metric,
+    }),
+    [result, convertedSnapshots, metric],
+  );
   const envelope = useMemo(
-    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted }),
-    [result, displayCurrency, fxUnconverted],
+    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted, wealthChipTier: chipTier }),
+    [result, displayCurrency, fxUnconverted, chipTier],
   );
   useEffect(() => {
     if (mode === "debt") return; // DebtWorkspace emits its own
@@ -339,10 +351,6 @@ export function WealthWorkspace({
     }, 50);
     return () => window.clearTimeout(t);
   }, [focusSection, mode, snapshotsLoaded, setActiveSection]);
-
-  // Evidence drawer — workspace-owned. Opened from the "What moved" header
-  // (v2.7 visual-first: the Explanation card that used to open it is gone).
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
 
   // ── The page-level subject selector (Total · Assets · Debt) ─────────────────
   // The evolved WealthMetric switcher, promoted out of the chart header: it
@@ -571,8 +579,6 @@ export function WealthWorkspace({
     );
   }
 
-  const canViewEvidence = !!envelope.evidence?.rows?.length;
-
   // v2.7 R4 — the compact KPI strip under the chart: the hero's OWN secondary
   // stat rows (Total: Assets · Liabilities · Liquid NW; Assets → All: Cash ·
   // Investments; the Cash / Investments slices have none, so no strip), which
@@ -610,9 +616,10 @@ export function WealthWorkspace({
         {assetsTabs}
 
         {/* ② Trend — the dominant honesty chart; in Assets, sliceable. */}
-        {/* v2.7 R4 — compact-only (max-lg:*) tightening of the chart header and
-            legend; at ≥1024px these utilities never apply. */}
-        <div id="wealth-trend" className="scroll-mt-20 max-lg:[&>section>div:first-child]:mb-3 max-lg:[&>section>div:last-child>div:last-child]:mt-2 max-lg:[&>section>div:last-child>div:last-child]:gap-x-3 max-lg:[&>section>div:last-child>div:last-child]:text-[10px]">
+        {/* v2.7 R4 — compact-only (max-lg:*) tightening of the chart header
+            (the provenance legend it also tightened is gone — v2.7 final UX
+            pass); at ≥1024px this utility never applies. */}
+        <div id="wealth-trend" className="scroll-mt-20 max-lg:[&>section>div:first-child]:mb-3">
           <WealthTrendChart
             result={result}
             currency={displayCurrency}
@@ -637,7 +644,8 @@ export function WealthWorkspace({
         <CompactKpiStrip ariaLabel={`${mode === "assets" ? "Assets" : "Net worth"} breakdown`} items={kpiItems} />
 
         {/* ③ Composition (7) + ④ Change ledger / what-moved-it (5) — Total, and
-            Assets → All only. The ledger header opens the evidence drawer. */}
+            Assets → All only. v2.7 final UX pass: no customer-facing Evidence
+            doorway (snapshot provenance stays internal, in the envelope). */}
         {(mode !== "assets" || show.composition) && (
           <div className="grid gap-6 lg:grid-cols-12 lg:gap-8 items-start">
             <div id="wealth-composition" className="scroll-mt-20 min-w-0 lg:col-span-7">
@@ -648,7 +656,6 @@ export function WealthWorkspace({
                 result={result}
                 currency={displayCurrency}
                 metric={metric}
-                onViewEvidence={mode === "total" && canViewEvidence ? () => setEvidenceOpen(true) : undefined}
               />
             </div>
           </div>
@@ -657,13 +664,6 @@ export function WealthWorkspace({
         {/* ⑤ Assets → Cash / Investments: the slice's embedded section(s). */}
         {assetsSectionsBody}
       </div>
-      {envelope.evidence && (
-        <EvidenceDrawer
-          open={evidenceOpen}
-          onClose={() => setEvidenceOpen(false)}
-          evidence={envelope.evidence}
-        />
-      )}
     </>
   );
 }
