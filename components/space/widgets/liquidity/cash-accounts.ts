@@ -147,11 +147,15 @@ export interface CashAccountsSummary {
 
 export type CashGrouping = "institution" | "account" | "type";
 
+/** The grouping dropdown's options, in menu order. The first is the DEFAULT. */
 export const CASH_GROUPINGS: { id: CashGrouping; label: string }[] = [
-  { id: "institution", label: "By institution" },
   { id: "account",     label: "By account" },
+  { id: "institution", label: "By institution" },
   { id: "type",        label: "By account type" },
 ];
+
+/** The default grouping (owner, v2.7): By account. */
+export const DEFAULT_CASH_GROUPING: CashGrouping = "account";
 
 export interface CashGroup {
   id:      string;

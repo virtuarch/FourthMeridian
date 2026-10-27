@@ -18,8 +18,9 @@ import { reachableNow } from "@/components/space/widgets/liquidity-adapters";
 import { desktopMarkup } from "@/components/space/compact/desktop-markup";
 import {
   buildCashAccounts, groupCashAccounts, reconcileTerms, pendingLine, cashTypeLabel, isCashAccount,
-  type CashLedgerAccount,
+  CASH_GROUPINGS, DEFAULT_CASH_GROUPING, type CashLedgerAccount,
 } from "./cash-accounts";
+import { Dropdown } from "@/components/atlas/Dropdown";
 import { CashDistribution } from "./CashDistribution";
 import { CashAccountsLedger } from "./CashAccountsLedger";
 
@@ -247,9 +248,23 @@ console.log("\n8. markup — desktop table vs compact rows; a11y; detail navigat
   check("footer: Total cash and Accessible now, labelled distinctly", html.includes("Total cash") && html.includes("Accessible now") && !html.includes("Accessible cash"));
   check("footer line (brief fixture)", html.includes("$62,589.00 total cash") && html.includes("− $6,009.00 restricted") && html.includes("− $1,000.00 no available balance reported") && html.includes("− $20.00 on hold") && html.includes("= $55,560.00 accessible"));
   const donut = renderToStaticMarkup(createElement(CashDistribution, { summary: s, currency: "USD" }));
-  check("donut: grouping control is a labelled radiogroup", donut.includes('role="radiogroup" aria-label="Group total cash"') && donut.includes("By institution") && donut.includes("By account type"));
-  check("donut: labelled group with the total", donut.includes('aria-label="Total cash by institution: $62,589.00"'));
-  check("donut: each group shows name, balance and % (legend)", donut.includes("Fidelity") && donut.includes("$49,209.00") && donut.includes("78.6%"));
+  // DELIBERATE (owner, v2.7-P0 PR): the grouping control moved OUT of the donut
+  // surface into the section's Block header as the shared atlas Dropdown (the Net
+  // Worth "Where it sits · By class ▾" idiom); the default is By account.
+  check("donut: no in-surface grouping control (it lives in the Block header)", !donut.includes('role="radiogroup"'));
+  check("donut: default grouping is By account (labelled group with the total)", donut.includes('aria-label="Total cash by account: $62,589.00"'));
+  check("donut: each account is a legend row with balance and %", donut.includes("Money Market") && donut.includes("$43,200.00") && donut.includes("69.0%"));
+  const byInst = renderToStaticMarkup(createElement(CashDistribution, { summary: s, currency: "USD", grouping: "institution" }));
+  check("donut: controlled grouping By institution groups by institution", byInst.includes('aria-label="Total cash by institution: $62,589.00"') && byInst.includes("Fidelity") && byInst.includes("$49,209.00") && byInst.includes("78.6%"));
+  check("grouping options in menu order: By account · By institution · By account type; default By account",
+    CASH_GROUPINGS.map((g) => g.label).join(" · ") === "By account · By institution · By account type" && DEFAULT_CASH_GROUPING === "account" && CASH_GROUPINGS[0].id === DEFAULT_CASH_GROUPING);
+  const dd = renderToStaticMarkup(createElement(Dropdown, { options: CASH_GROUPINGS, value: DEFAULT_CASH_GROUPING, onChange: () => {}, ariaLabel: "Cash distribution grouping" }));
+  check("the shared Dropdown renders an accessibly-labelled listbox trigger showing 'By account'",
+    dd.includes('aria-label="Cash distribution grouping"') && dd.includes('aria-haspopup="listbox"') && dd.includes("By account"));
+  const wsSrc = readFileSync(path.join(process.cwd(), "components/space/widgets/liquidity/LiquidityWorkspace.tsx"), "utf8");
+  check("workspace: Block header idiom — label left, Dropdown action right (as WealthCompositionCard)",
+    /<Block\s+id="liquidity-distribution"\s+label="Cash distribution"[\s\S]{0,260}action=\{<Dropdown options=\{CASH_GROUPINGS\} value=\{cashGrouping\} onChange=\{setCashGrouping\} ariaLabel="Cash distribution grouping" \/>\}/.test(wsSrc)
+    && wsSrc.includes("useState<CashGrouping>(DEFAULT_CASH_GROUPING)") && wsSrc.includes('import { Dropdown } from "@/components/atlas/Dropdown"'));
 }
 
 console.log("\n9. source guards — reuse, no new authority");

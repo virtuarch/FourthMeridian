@@ -5,7 +5,10 @@
  *
  * Section ④ of the Cash slice — WHERE the cash is held, as a donut in the Net
  * Worth composition idiom (the shared BreakdownWidget donut, the shared derived
- * palette). Grouping control: By institution · By account · By account type.
+ * palette). The grouping is CONTROLLED by the host: its control is the shared
+ * atlas `Dropdown` in the section's Block header (label left, dropdown right —
+ * the Net Worth "Where it sits · By class ▾" idiom), options By account · By
+ * institution · By account type, default By account.
  *
  * Every figure is the pure cash-accounts helper's (one per-account conversion,
  * the classifier's): the ring's centre is TOTAL CASH — the same figure as the
@@ -14,13 +17,12 @@
  * the ledger below reconciles to).
  */
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { formatCurrency } from "@/lib/currency";
 import { Surface } from "@/components/atlas/Surface";
-import { Chips } from "@/components/atlas/Chips";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import {
-  CASH_GROUPINGS, groupCashAccounts, type CashAccountsSummary, type CashGrouping,
+  CASH_GROUPINGS, DEFAULT_CASH_GROUPING, groupCashAccounts, type CashAccountsSummary, type CashGrouping,
 } from "./cash-accounts";
 
 const NOUN: Record<CashGrouping, string> = { institution: "institution", account: "account", type: "account type" };
@@ -28,13 +30,13 @@ const NOUN: Record<CashGrouping, string> = { institution: "institution", account
 export function CashDistribution({
   summary,
   currency,
-  initialGrouping = "institution",
+  grouping: by = DEFAULT_CASH_GROUPING,
 }: {
-  summary:          CashAccountsSummary;
-  currency:         string;
-  initialGrouping?: CashGrouping;
+  summary:   CashAccountsSummary;
+  currency:  string;
+  /** The host's grouping (its Block-header Dropdown). Default By account. */
+  grouping?: CashGrouping;
 }) {
-  const [by, setBy] = useState<CashGrouping>(initialGrouping);
   const groups = useMemo(() => groupCashAccounts(summary, by), [summary, by]);
 
   if (summary.rows.length === 0) {
@@ -62,7 +64,6 @@ export function CashDistribution({
 
   return (
     <Surface className="p-4 min-w-0">
-      <Chips options={CASH_GROUPINGS} value={by} onChange={setBy} ariaLabel="Group total cash" className="mb-4" />
       <div role="group" aria-label={`Total cash ${groupingLabel}: ${fmt(summary.totalCash)}`}>
         <BreakdownWidget
           items={items}

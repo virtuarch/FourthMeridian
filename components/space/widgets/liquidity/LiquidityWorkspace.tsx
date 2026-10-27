@@ -12,7 +12,8 @@
  *                                             (standalone only — see OVERVIEW-CONSOLIDATION)
  *   ② Balance history LiquidityBalanceHistory — the cashNow tier over time (shared TrendChart)
  *   ③ Resilience     coverage · concentration · reachability mix (+ accessible cash, embedded)
- *   ④ Distribution   CashDistribution       — total cash by institution / account / type (donut)
+ *   ④ Distribution   CashDistribution       — total cash by account / institution / type (donut;
+ *                                             grouping Dropdown in the Block header, default account)
  *   ⑤ Cash accounts  CashAccountsLedger     — every cash account, Available, status → AccountDetail
  *   ⑥ What changed   the shell-bridged driver window → Cash Flow doorway
  *
@@ -60,7 +61,7 @@
  * evidence is never flattened into page-wide certainty.
  */
 
-import { useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { reachableNow, accessTotals } from "@/components/space/widgets/liquidity-adapters";
@@ -82,7 +83,10 @@ import { LiquidityBalanceHistory } from "./LiquidityBalanceHistory";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { CashDistribution } from "./CashDistribution";
 import { CashAccountsLedger } from "./CashAccountsLedger";
-import { buildCashAccounts, type CashLedgerAccount } from "./cash-accounts";
+import { Dropdown } from "@/components/atlas/Dropdown";
+import {
+  buildCashAccounts, CASH_GROUPINGS, DEFAULT_CASH_GROUPING, type CashGrouping, type CashLedgerAccount,
+} from "./cash-accounts";
 import { reachableDisclosure } from "@/lib/balances/reachable";
 import { buildSourceRows } from "./liquidity-sources-util";
 import { LiquidityWhatChangedCard } from "./LiquidityWhatChangedCard";
@@ -217,6 +221,9 @@ export function LiquidityWorkspace({
   // v2.7 Cash accounts — the per-account TOTAL CASH rows + the reconciliation to
   // `reach` (pure helper; the classifier's conversion + reachableForAccount).
   const cashAccounts = useMemo(() => buildCashAccounts(accounts, ctx), [accounts, ctx]);
+  // The Cash distribution grouping — its control is a Dropdown in the Block
+  // header (the Net Worth "Where it sits · By class ▾" idiom). Default By account.
+  const [cashGrouping, setCashGrouping] = useState<CashGrouping>(DEFAULT_CASH_GROUPING);
   // The existing reachable disclosure, shown under the Accessible cash tile.
   const reachDisclosure = reachableDisclosure(reach, (n) => fmtMoney(n, ctx));
 
@@ -479,9 +486,10 @@ export function LiquidityWorkspace({
         <Block
           id="liquidity-distribution"
           label="Cash distribution"
-          action={<span className="text-[11px] text-[var(--text-faint)]">{historical ? "Current balances" : "Total cash"}</span>}
+          hint={<span className="text-[11px] text-[var(--text-faint)]">{historical ? "Current balances" : "Total cash"}</span>}
+          action={<Dropdown options={CASH_GROUPINGS} value={cashGrouping} onChange={setCashGrouping} ariaLabel="Cash distribution grouping" />}
         >
-          <CashDistribution summary={cashAccounts} currency={displayCurrency} />
+          <CashDistribution summary={cashAccounts} currency={displayCurrency} grouping={cashGrouping} />
         </Block>
         <Block
           id="liquidity-accounts"
