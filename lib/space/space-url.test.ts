@@ -92,12 +92,12 @@ const absent = (qs: string, k: string) => !params(qs).has(k);
   check("readSpaceParam absent → null", readSpaceParam("tab=overview", "preset") === null);
 }
 
-// ── the documented Space params are exactly the eleven known ones ───────────────
+// ── the documented Space params are exactly the fifteen known ones ──────────────
 {
   check(
-    "SPACE_URL_PARAMS lists the eleven Space-scoped params (Markets added `view`; Platform added `workspace`; compact Debt added `section`)",
+    "SPACE_URL_PARAMS lists the fifteen Space-scoped params (Markets added `view`; Platform added `workspace`; compact Debt added `section`; v2.7 added the flow group's fasof/fcompareto/fpreset/fperiod)",
     JSON.stringify([...SPACE_URL_PARAMS].sort()) ===
-      JSON.stringify(["account", "asof", "compareto", "metric", "perspective", "preset", "section", "tab", "transaction", "view", "workspace"]),
+      JSON.stringify(["account", "asof", "compareto", "fasof", "fcompareto", "fperiod", "fpreset", "metric", "perspective", "preset", "section", "tab", "transaction", "view", "workspace"]),
   );
 }
 

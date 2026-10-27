@@ -85,8 +85,14 @@ console.log("\n3. an open page rolls at UTC midnight");
   check("same day ⇒ identity (setState no-op ⇒ no state/URL loop)", rollShellTimeStateToToday(s, "2026-10-28", { ...ctx, today: "2026-10-28" }) === s
     && rollShellTimeStateToToday(s, "2026-10-27", { ...ctx, today: "2026-10-27" }) === s);
   const hook = code("components/space/shell/usePerspectiveShellState.ts");
-  check("the shell rolls on a today change with REPLACE intent", /rollShellTimeStateToToday\(s, prev,/.test(hook) && /historyIntent\.current = "replace";\s*setState\(\(s\) => rollShellTimeStateToToday/.test(hook));
-  check("the shell serializes with today (rolling As Of never hits the URL)", /serializeShellTimeState\(state, ctxRef\.current\.today\)/.test(hook));
+  // v2.7 — per-group time: the hook rolls BOTH groups through rollGroupedShellTime,
+  // which applies rollShellTimeStateToToday to each group's slice.
+  const groups = code("lib/space/perspective-time-groups.ts");
+  check("the shell rolls on a today change with REPLACE intent",
+    /historyIntent\.current = "replace";\s*setGroups\(\(g\) => rollGroupedShellTime\(g, prev,/.test(hook)
+      && /rollShellTimeStateToToday\(g\.position\.time, prevToday, ctx\)/.test(groups) && /rollShellTimeStateToToday\(g\.flow\.time, prevToday, ctx\)/.test(groups));
+  check("the shell serializes with today (rolling As Of never hits the URL)",
+    /serializeGroupedShellTime\(groups, ctxRef\.current\.today\)/.test(hook) && /serializeShellTimeState\(g\[group\]\.time, today\)/.test(groups));
   check("SpaceDashboard uses the LIVE UTC today (no once-per-mount memo)", /const shellToday = useUtcToday\(\);/.test(code("components/dashboard/SpaceDashboard.tsx")));
   const ut = code("components/space/shell/useUtcToday.ts");
   check("useUtcToday re-arms at each midnight and re-checks on focus/visibility", /arm\(\);/.test(ut) && /visibilitychange/.test(ut) && /"focus"/.test(ut) && /t === prev \? prev : t/.test(ut));

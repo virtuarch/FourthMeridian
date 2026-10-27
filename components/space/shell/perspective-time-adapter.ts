@@ -34,8 +34,11 @@ import {
   CASH_FLOW_PERIODS,
   ROLLING_PERIODS,
   TO_DATE_PERIODS,
+  periodLabel,
+  type ExplicitCashFlowPeriod,
   type RelativeCashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
+import { explicitPeriodBounds } from "@/lib/space/perspective-time-groups";
 
 /* ── Option table ──────────────────────────────────────────────────────────── */
 
@@ -211,6 +214,32 @@ export function summarize(state: PerspectiveTimeState, today: string): TimelineL
       : `As of ${formatDate(state.asOf)}`,
     comparisonLabel: state.compareTo ? null : "Point-in-time · no opening date",
   };
+}
+
+/**
+ * v2.7 — an EXPLICIT calendar period (the heatmap's Month · Quarter · Year on the
+ * flow group) → the readout. The header shows exactly the window the page is
+ * showing ("October 2026", Oct 1 → Oct 31, 2026), so the header and the heatmap
+ * can never disagree. No preset option is active while it holds.
+ */
+export function summarizeExplicitPeriod(p: ExplicitCashFlowPeriod, today: string): TimelineLensSummary {
+  const { start, end } = explicitPeriodBounds(p);
+  const unit = p.kind === "month" ? "Calendar month" : p.kind === "quarter" ? "Calendar quarter" : "Calendar year";
+  return {
+    anchorLabel: unit,
+    anchoredToPresent: end >= today,
+    periodLabel: periodLabel(p),
+    rangeLabel: `${formatDate(start)} → ${formatDate(end)}`,
+    comparisonLabel: null,
+  };
+}
+
+/** The short trigger form of an explicit period: "Oct 2026" · "Q4 2026" · "2026". */
+export function shortExplicitPeriodLabel(p: ExplicitCashFlowPeriod): string {
+  if (p.kind === "month") {
+    return new Intl.DateTimeFormat("en", { month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(p.year, p.month - 1, 15)));
+  }
+  return periodLabel(p);
 }
 
 /**

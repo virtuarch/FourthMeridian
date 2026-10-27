@@ -23,7 +23,7 @@ import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
 // section-backed (net_worth_chart + allocation).
 import { formatRelativeTime, displaySpaceName } from "@/lib/format";
 import { ManageSpaceModal } from "@/components/space/manage/ManageSpaceModal";
-import { DEFAULT_CASH_FLOW_PERIOD, isExplicitPeriod, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import { isExplicitPeriod, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiveShellState";
 import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import { CompactViewSelector } from "@/components/space/shell/CompactViewSelector";
@@ -38,7 +38,7 @@ import type { WealthMode } from "@/lib/wealth/wealth-mode";
 import type { MarketsMode } from "@/lib/markets/markets-mode";
 import { useSpaceLensResults } from "@/lib/space/use-space-lens-results";
 import { useActiveEnvelope } from "@/lib/space/use-active-envelope";
-import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
+import { timeGroupFor } from "@/lib/space/perspective-time-groups";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { WORKSPACE_RENDERERS, WorkspaceExplorationHost, type WorkspaceRenderCtx } from "@/components/space/workspaces/workspaceRenderers";
 import { MembersWorkspace } from "@/components/space/workspaces/MembersWorkspace";
@@ -460,47 +460,31 @@ export function SpaceDashboard({
     () => snapshots?.find((s) => !s.fxMiss)?.date ?? null,
     [snapshots],
   );
-  const shell = usePerspectiveShellState({ spaceId, today: shellToday, earliestDefensibleDate });
+  // v2.7 — PER-GROUP TIME: the rendered destination picks which slice the header
+  // reads and writes (Net Worth / Assets / Debt + every other tab ⇒ "position";
+  // Cash Flow + Spending ⇒ "flow"). Each group keeps its own period, in its own URL
+  // params, so changing one never moves the other (lib/space/perspective-time-groups).
+  const shell = usePerspectiveShellState({
+    spaceId, today: shellToday, earliestDefensibleDate,
+    group: timeGroupFor(activeTab, activePerspectiveId),
+  });
   const { asOf, compareTo, preset: timePreset } = shell.state;
 
-  // ── Cash Flow period (SD-0B) ────────────────────────────────────────────────
-  // Cash Flow's active period is DERIVED from the canonical shell slice — there
-  // is no second mutable time state. The shell already exposes the relative
-  // period its slice implies (shell.derived.cashFlowPeriod: the preset, or null
-  // under CUSTOM). The ONLY independently-mutable piece here is the Cash-Flow-
-  // local drill to an EXPLICIT calendar period (a Month/Quarter/Year the relative
-  // canonical model can't express); that override wins until the user picks a
-  // relative slice again. Under CUSTOM the canonical slice implies no period, so
-  // Cash Flow holds its last relative one (§3.5) — captured in a ref that only
-  // ever mirrors canonical, never an independent authority.
-  const [cashFlowExplicitPeriod, setCashFlowExplicitPeriod] = useState<CashFlowPeriod | null>(null);
-  // Cache of the last relative slice the canonical shell showed — NOT an
-  // independent time authority: it only ever mirrors canonical state, so Cash
-  // Flow can hold its last relative period while the shell sits on CUSTOM (§3.5).
-  // Kept in state (not a ref) so the derived cashFlowPeriod below never reads a
-  // ref during render; the sync only fires when the canonical slice is relative.
-  const [lastRelativePeriod, setLastRelativePeriod] = useState<CashFlowPeriod>(DEFAULT_CASH_FLOW_PERIOD);
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (shell.derived.cashFlowPeriod) setLastRelativePeriod(shell.derived.cashFlowPeriod);
-  }, [shell.derived.cashFlowPeriod]);
-  const cashFlowPeriod: CashFlowPeriod =
-    cashFlowExplicitPeriod ?? shell.derived.cashFlowPeriod ?? lastRelativePeriod;
+  // ── Cash Flow period (SD-0B → v2.7 per-group) ─────────────────────────────
+  // The period is DERIVED by the shell hook from the ACTIVE group: an explicit
+  // calendar Month / Quarter / Year chosen from the heatmap (flow group's ?fperiod),
+  // else the relative preset, else (CUSTOM) the group's last relative preset (§3.5).
+  // There is no host-side shadow copy: the explicit unit lives IN the group, in the
+  // URL, so the header shows it and a reload / Back / shared link restores it.
+  const cashFlowPeriod: CashFlowPeriod = shell.period;
 
-  // Cash Flow follows the shell slice: the canonical reducer is the single master
-  // for the relative slice, so these handlers only clear the Cash-Flow-local
-  // explicit override when a relative slice is (re)established — they never keep
-  // a shadow copy of the shared time state.
+  // The header is the master of the reporting range: any header action ends an
+  // explicit calendar unit (reduceGroupTime), so these handlers keep no override.
   const handleAsOfChange      = (next: string)        => shell.actions.setAsOf(next);
-  const handleCompareToChange = (next: string | null) => {
-    shell.actions.setCompareTo(next);
-    const inferred = inferPerspectiveTimePreset({ asOf, compareTo: next, coverageFrom: earliestDefensibleDate, currentPreset: timePreset });
-    if (inferred !== "CUSTOM") setCashFlowExplicitPeriod(null); // snaps onto a preset ⇒ follow canonical
-  };
+  const handleCompareToChange = (next: string | null) => shell.actions.setCompareTo(next);
   const handleSelectSlice = (slice: CashFlowPeriod) => {
-    if (isExplicitPeriod(slice)) { setCashFlowExplicitPeriod(slice); return; } // explicit drill — CF-local
-    shell.actions.selectPreset(slice);   // relative slice ⇒ canonical is the master
-    setCashFlowExplicitPeriod(null);      // follow canonical
+    if (isExplicitPeriod(slice)) { shell.setExplicitPeriod(slice); return; } // the heatmap's calendar unit
+    shell.actions.selectPreset(slice);   // a relative slice — clears any explicit unit
   };
 
   // SD-5 — the Wealth Time Machine read model + its per-date display-currency FX now
@@ -767,7 +751,7 @@ export function SpaceDashboard({
     onDebtSectionChange: setDebtSection,
     onSwitchLens: switchLens,
     onEnvelopeChange,
-    onSelectCashFlowPeriod: setCashFlowExplicitPeriod,
+    onSelectCashFlowPeriod: handleSelectSlice,
     onOpenCashFlow: () => setSelectedPerspectiveId("cashFlow"),
   };
 
@@ -908,6 +892,9 @@ export function SpaceDashboard({
               // reflected without it knowing they happened. Every intent it emits
               // comes back through the handlers above — same actions, same order.
               timeState={shell.state}
+              // v2.7 — the flow group's explicit calendar unit (heatmap Month ·
+              // Quarter · Year): the header names exactly the window the page shows.
+              explicitPeriod={shell.explicitPeriod}
               tabs={lensSelectorItems}
               activeTabId={activeLensId}
               onSelectTab={selectLens}
@@ -918,6 +905,8 @@ export function SpaceDashboard({
               tabsVisibility="none"
               // COMPACT DASHBOARD — Markets takes no time; below lg its date trigger is hidden.
               compactHideTime={activePerspectiveId === "markets"}
+              // v2.7 (owner) — Markets shows NO global reporting-period picker at any width.
+              hideTime={activePerspectiveId === "markets"}
               // v2.7 R1 — below lg the time row is the financial controls row:
               // this selector left, the date trigger right (one TimelineLens).
               compactViewSelector={<CompactViewSelector items={lensSelectorItems} activeId={activeLensId} onSelect={selectLens} />}
