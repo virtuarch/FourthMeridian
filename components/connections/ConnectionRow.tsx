@@ -52,7 +52,7 @@ export function ConnectionRow({ connection, accountCount, intelligence, onOpen }
         type="button"
         onClick={onOpen}
         aria-label={`${connection.institution} — ${s.status}. Open details`}
-        className="group relative flex min-w-0 flex-1 items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]"
+        className="group relative flex min-w-0 flex-1 items-center gap-3 rounded-[var(--radius-md)] px-3.5 py-3 text-left transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]"
       >
         {/* Hover accent rail — the affordance that this row opens a detail. */}
         <span

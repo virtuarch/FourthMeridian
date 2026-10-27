@@ -70,7 +70,7 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
   );
 
   return (
-    <div className={centered ? "flex flex-col items-stretch gap-2.5 sm:flex-row sm:justify-center" : "flex flex-col items-stretch gap-2.5 sm:flex-row sm:justify-end"}>
+    <div data-connections-actions className={centered ? "flex flex-col items-stretch gap-2.5 sm:flex-row sm:justify-center" : "flex flex-col items-stretch gap-2.5 sm:flex-row sm:justify-end"}>
       <div className="flex flex-col gap-2.5 sm:flex-row">
         {/* PO-5A — Plaid bank connections gated on availability. When unavailable
             the button is replaced by an honest notice (never a silent dead end);

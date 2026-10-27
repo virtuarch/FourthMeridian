@@ -30,6 +30,8 @@ import { ConnectionDetail, type AccountLite } from "@/components/connections/Con
 import { ConnectionRow } from "@/components/connections/ConnectionRow";
 import { ConnectionMenu } from "@/components/connections/ConnectionMenu";
 import { Surface } from "@/components/atlas/Surface";
+import { GlassButton } from "@/components/atlas/GlassButton";
+import { CheckCircle2 } from "lucide-react";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import { providerName } from "@/lib/sync/status";
 import { BuildIntelligencePanel } from "@/components/connections/BuildIntelligencePanel";
@@ -88,6 +90,10 @@ export function ConnectionsList({
   // The connection whose drawer is open. Looked up in the LIVE status below, so
   // an open drawer follows the poller (importing → ready) without reopening.
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Connections pass PR 3 — set when work THIS VISIT watched finishes (the
+  // poller's true → false transition), so the "ready" moment is shown once, from
+  // persisted state, never from a timer or a guess.
+  const [justCompleted, setJustCompleted] = useState(false);
 
   // CONN-2 — poll while ACQUIRING (status.building) OR BUILDING intelligence.
   // Intelligence-building runs AFTER syncIncompleteAt clears, so status.building alone
@@ -193,6 +199,7 @@ export function ConnectionsList({
           isBuildingIntelligence(Object.values(next.intelligenceByConnectionId));
         if (prevShouldPollRef.current && !nextShouldPoll) {
           router.refresh();
+          setJustCompleted(true);
         }
         prevShouldPollRef.current = nextShouldPoll;
         if (!nextShouldPoll) stop();
@@ -289,6 +296,16 @@ export function ConnectionsList({
   const ordered = [...status.connections].sort(
     (a, b) => (isInProgress(a) ? 0 : 1) - (isInProgress(b) ? 0 : 1),
   );
+  // Genuinely running work only — a paused import waits on resume, not on us.
+  const inFlight = ordered.filter((c) => c.state === "importing" || inProgressPhase(c.id));
+
+  // "Add another connection" — the page's own actions, not a second copy of them.
+  const focusAddConnection = () => {
+    const first = document.querySelector<HTMLButtonElement>("[data-connections-actions] button");
+    first?.scrollIntoView({ behavior: "smooth", block: "center" });
+    first?.focus();
+  };
+
   // A disconnected connection leaves the status; its drawer simply closes.
   const selected = selectedId ? status.connections.find((c) => c.id === selectedId) ?? null : null;
 
@@ -296,7 +313,29 @@ export function ConnectionsList({
     // Centered flagship column (max-w-[1400px] mx-auto) — same design language
     // as the Daily Brief content area.
     <div className="max-w-[1400px] mx-auto space-y-4">
-      <Surface className="overflow-hidden">
+      {/* Connections pass PR 3 — work in progress is said at the top, in the
+          drawer's own words, with a way in. No percentages: the import has no
+          denominator (see SyncConnection.importedCount). */}
+      {inFlight.length > 0 && (
+        <div role="status" aria-live="polite" data-connections-in-progress
+          className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-[rgba(125,168,255,.24)] bg-[rgba(125,168,255,.06)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-[var(--text-secondary)]">
+            <span className="font-medium text-[var(--text-primary)]">
+              {inFlight.length === 1 ? `${inFlight[0].institution} is being set up.` : `${inFlight.length} connections are being set up.`}
+            </span>{" "}
+            {slow
+              ? "This is taking longer than usual — it keeps going on our side."
+              : "This keeps going on our side, even if you leave this page."}
+          </p>
+          <button type="button" onClick={() => setSelectedId(inFlight[0].id)}
+            className="shrink-0 self-start rounded-[var(--radius-sm)] px-2 py-1 text-sm font-medium text-[var(--meridian-400)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:self-auto">
+            View progress
+          </button>
+        </div>
+      )}
+
+      {/* No overflow-hidden: it clipped each row's ⋯ menu (Preview 2026-10-28). */}
+      <Surface>
         <ul aria-label="Connections" className="divide-y divide-[var(--border-hairline)]">
           {ordered.map((c) => (
             <ConnectionRow
@@ -343,7 +382,32 @@ export function ConnectionsList({
         accountsByConnectionId={accountsByConnectionId}
       />
 
-      {!shouldPoll && anyReady && (
+      {/* Connections pass PR 3 — the first usable snapshot. Shown when work this
+          visit watched has finished and at least one connection is READY. */}
+      {!shouldPoll && anyReady && justCompleted && (
+        <Surface className="p-4 sm:p-5">
+          <div role="status" data-connections-ready className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2.5">
+              <CheckCircle2 aria-hidden size={18} className="mt-0.5 shrink-0 text-[var(--accent-positive,#34d399)]" />
+              <div>
+                <p className="text-sm font-semibold text-[var(--text-primary)]">Your financial snapshot is ready</p>
+                <p className="mt-0.5 text-xs text-[var(--text-secondary)]">Net worth, cash flow and history are built from what you connected. More history may keep arriving.</p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:shrink-0">
+              <Link
+                href="/dashboard"
+                className="inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-sm)] bg-[var(--meridian-600)] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[var(--meridian-500,#3b82f6)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
+              >
+                Explore My Space
+              </Link>
+              <GlassButton tone="neutral" onClick={focusAddConnection}>Add another connection</GlassButton>
+            </div>
+          </div>
+        </Surface>
+      )}
+
+      {!shouldPoll && anyReady && !justCompleted && (
         <div className="pt-1">
           <Link
             href="/dashboard"
