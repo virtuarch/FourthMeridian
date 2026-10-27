@@ -154,6 +154,9 @@ export function SpendingDistribution({
             formatValue={fmt}
             centerTotal={{ value: model.centerValue, label: model.centerLabel }}
             centerTone="neutral"
+            // The category ledger directly beneath IS this ring's legend (same items,
+            // drillable) — don't list the categories twice.
+            segmentList={false}
             emptyHeadline="No spending to draw"
           />
           {!model.reconciles && (

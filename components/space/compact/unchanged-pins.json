@@ -1,8 +1,8 @@
 {
- "components/space/widgets/CashFlowCalendar.tsx": "9bcba6f369daeb4e76d91b9d6eb185ae7a1a559203a53bc52c9a07ec7d689e25",
+ "components/space/widgets/CashFlowCalendar.tsx": "866188e9138c3492f3fa9f3d47bf4b69641a33517f187677d8799a93cb0b1cbb",
  "components/space/widgets/CashFlowCategoryBreakdown.tsx": "cdc78adbd305d8f6c30e71a0f95fc2c49e26b8980771914560bc671c2319c20c",
  "components/space/widgets/CashFlowFilterControls.tsx": "974806a7011b5c16f9d31689874be4c417773dfbdf55182de8a3de74921494d9",
- "components/space/widgets/CashFlowHistoryWidget.tsx": "6feda2132d03137f62444a6b30ae4b4fd02980a5730288caefd26fda21dc6b77",
+ "components/space/widgets/CashFlowHistoryWidget.tsx": "895ef660eedeedac8dd2f6fa5f56184270ee148410ad55da61e532db526d2dcc",
  "components/space/widgets/DebtPaymentsWidget.tsx": "adb10e1889d4bbb3286ad86319cf9cef8a49fb5afdb4786763798cda1be3c685",
  "components/space/widgets/TransactionSliceDrawer.tsx": "87b2b792e92f74d9351c03208e666f1ea80a64e6d5c90ff04f2f39f7e9272e44",
  "components/space/widgets/cashflow/CashFlowCategoryDetail.tsx": "76572008d9caa8dc4be162b92d4a25dfb01b3579e38a4362d54bcc739ecf3ef9",

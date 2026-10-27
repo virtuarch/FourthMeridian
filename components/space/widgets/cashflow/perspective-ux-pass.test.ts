@@ -317,5 +317,24 @@ console.log("\nF. Spending is its own perspective; page orders; removed controls
     !/Set a Compare To date/.test(code("components/space/widgets/cashflow/CashFlowHero.tsx") + code("components/space/widgets/cashflow/CashFlowWorkspace.tsx")));
 }
 
+// v2.7 Preview polish — the Spending ring does not list its categories twice
+// (the drillable ledger beneath is its legend), and the Spending heatmap legend
+// speaks about spending, not "net".
+console.log("\nSpending polish");
+{
+  const model = spendingDonutModel(
+    [{ id: "dining", label: "Dining", value: 30, transactionIds: [] }, { id: "travel", label: "Travel", value: 70, transactionIds: [] }] as never,
+    { net: 100, refundsUnapplied: 0 } as never,
+  );
+  const html = renderToStaticMarkup(createElement(SpendingDistribution, { model, fmt: (v: number) => `$${v}`, ledger: createElement("p", null, "LEDGER") }));
+  check("the ring's own segment list is off (data-segment-list=off) and the ledger renders once beneath",
+    /data-segment-list="off"/.test(html) && (html.match(/LEDGER/g) ?? []).length === 1);
+  const hist = code("components/space/widgets/CashFlowHistoryWidget.tsx");
+  check("Spending heatmap passes spending legend wording; Cash Flow keeps the default",
+    /legend=\{page === "spending" \? SPENDING_LEGEND : undefined\}/.test(hist)
+      && /negative: "Spending"/.test(hist) && /neutral: "No spending"/.test(hist));
+  check("the Calendar forwards the legend to the grid unchanged", /legend=\{legend\}/.test(code("components/space/widgets/CashFlowCalendar.tsx")));
+}
+
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

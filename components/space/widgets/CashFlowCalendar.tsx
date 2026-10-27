@@ -68,9 +68,13 @@ interface Props {
    *  (same authority, same rows), so the heatmap is unchanged. Absent ⇒ the
    *  standalone/registry path projects it here, exactly as before. */
   daily?:       Map<string, DayFacts>;
+  /** v2.7 — the grid legend's three labels. Absent ⇒ the grid's default
+   *  ("Net positive / Net negative / No activity"), exactly as before. The
+   *  Spending page passes spending wording; the painted values are unchanged. */
+  legend?:      { positive: string; negative: string; neutral: string };
 }
 
-export function CashFlowCalendar({ transactions, period, now, ctx, accounts, measures, onSelectDay, viewYear, daily: dailyProp }: Props) {
+export function CashFlowCalendar({ transactions, period, now, ctx, accounts, measures, onSelectDay, viewYear, daily: dailyProp, legend }: Props) {
   // When viewYear is set (All Time), the visible span is exactly that one year;
   // otherwise it is the period's own range, ANCHORED at the canonical As-of clock
   // (so a historical As-of paints the historical month, not today's). The sentinel
@@ -138,6 +142,7 @@ export function CashFlowCalendar({ transactions, period, now, ctx, accounts, mea
       max={max}
       fmt={fmt}
       tooltipRowsFor={tooltipRowsFor}
+      legend={legend}
       onSelectDay={onSelectDay}
     />
   );
