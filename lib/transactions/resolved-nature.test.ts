@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   resolveTransactionNature, categoryForNature, natureEvidenceFromRow, NATURE_DESCRIPTION,
-  INTERNAL_NATURES, type NatureEvidence, type TransactionNature,
+  INTERNAL_NATURES, MOVEMENT_NATURES, type NatureEvidence, type TransactionNature,
 } from "./resolved-nature";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "./liquidity";
 import { selectDebtPaymentCashLegs, totalDebtPaid } from "./debt-payment-authority";
@@ -333,4 +333,19 @@ test("17. the contract reads no descriptor, merchant, institution or category st
   // The only category string it knows is the provider's structural "Payment" label, to relabel it.
   const strings = [...src.matchAll(/"(Payment|Transfer)"/g)].map((m) => m[1]);
   assert.ok(strings.every((s) => s === "Payment" || s === "Transfer"));
+});
+
+// ── Owner ruling (PR #63) — an unmatched generic bank transfer is NOT "external" ──
+test("ruling 1: a derived EXTERNAL_DEPOSITORY_TRANSFER leaf is 'destination not yet confirmed', never external", async () => {
+  const { MATURITY_LABEL } = await import("./transfer-maturation");
+  const n = resolveTransactionNature({
+    flowType: "TRANSFER", amount: -1500, flowAuthority: null, categorySource: null,
+    transferMaturity: "EXTERNAL_DEPOSITORY_TRANSFER", transferDisposition: "EXTERNAL_BANK_TRANSFER",
+    ownAccountType: "checking", counterpartyAccountType: null, hasOwnedCounterparty: false,
+  });
+  assert.equal(n.nature, "TRANSFER_DESTINATION_UNCONFIRMED");
+  assert.equal(n.reducesDebt, false);
+  assert.ok(MOVEMENT_NATURES.has(n.nature), "still a movement — never spending or income");
+  assert.equal(MATURITY_LABEL.EXTERNAL_DEPOSITORY_TRANSFER, "Destination not yet confirmed");
+  assert.ok(!/not yours|someone else|external/i.test(NATURE_DESCRIPTION.TRANSFER_DESTINATION_UNCONFIRMED));
 });

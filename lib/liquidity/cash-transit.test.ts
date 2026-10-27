@@ -50,7 +50,8 @@ async function main() {
     check("source-first: posted debit, no destination ⇒ UNMATCHED_OUTGOING", s.states[0] === "UNMATCHED_OUTGOING");
     const lines = cashTransitDisclosure(s, fmt);
     check("source-first: one NEUTRAL line with the amount, never 'in transit' as a fact",
-      lines.length === 1 && lines[0] === "1 outgoing transfer ($1500.00) not yet matched to a destination account — not added to total cash."
+      lines.length === 1 && lines[0] === "1 outgoing transfer ($1500.00) — destination not yet confirmed; not added to total cash."
+      && !/external/i.test(lines[0])
       && !/in transit/i.test(lines[0]), JSON.stringify(lines));
   }
   // Source-first, source debit still PENDING.
@@ -118,8 +119,28 @@ async function main() {
     const s2 = summarizeCashTransit([leg({ currency: "XXX", amount: -100 })], bases({}), NOW, (a, c) => (c === "XXX" ? null : a));
     const l2 = cashTransitDisclosure(s2, fmt);
     check("currency: unconvertible ⇒ count disclosed, no amount claimed",
-      s2.unmatched.total === null && l2[0] === "1 outgoing transfer not yet matched to a destination account — not added to total cash.");
+      s2.unmatched.total === null && l2[0] === "1 outgoing transfer — destination not yet confirmed; not added to total cash.");
   }
+  // ── Owner ruling (PR #63) — possible temporary double counting ────────────
+  {
+    const m = { accountId: "sav", lifecycle: "POSTED" as const };
+    const twice = summarizeCashTransit([leg({ lifecycle: "PENDING", match: "MATCHED", destination: m })], bases({ chk: "UNPROVEN", sav: "NO_PENDING" }), NOW);
+    check("ruling 2: source pending on an UNPROVEN basis + destination credit POSTED ⇒ POSSIBLY_COUNTED_TWICE", twice.states[0] === "POSSIBLY_COUNTED_TWICE");
+    const tl = cashTransitDisclosure(twice, fmt);
+    check("ruling 2: one neutral line, totals explicitly not adjusted, no 'in transit'",
+      tl.length === 1 && tl[0] === "1 transfer ($1500.00) may be counted in both accounts until the sending bank posts it — totals are not adjusted." && !/in transit/i.test(tl[0]), JSON.stringify(tl));
+    check("ruling 2: source pending with NO claim + destination posted ⇒ POSSIBLY_COUNTED_TWICE",
+      classifyCashTransitLeg(leg({ lifecycle: "PENDING", match: "MATCHED", destination: m }), bases({}), NOW) === "POSSIBLY_COUNTED_TWICE");
+    check("ruling 2: destination pending on a basis that COUNTS pending ⇒ POSSIBLY_COUNTED_TWICE",
+      classifyCashTransitLeg(leg({ lifecycle: "PENDING", match: "MATCHED", destination: { accountId: "sav", lifecycle: "PENDING" } }), bases({ chk: "UNPROVEN", sav: "PENDING_EXCLUDED" }), NOW) === "POSSIBLY_COUNTED_TWICE");
+    check("ruling 2: destination pending on an UNPROVEN basis ⇒ not proven double ⇒ NOT_DEDUCTED_AT_SOURCE (nothing shown)",
+      classifyCashTransitLeg(leg({ lifecycle: "PENDING", match: "MATCHED", destination: { accountId: "sav", lifecycle: "PENDING" } }), bases({ chk: "UNPROVEN", sav: "UNPROVEN" }), NOW) === "NOT_DEDUCTED_AT_SOURCE");
+    check("ruling 2: source PENDING_EXCLUDED (deducted) + destination posted ⇒ counted once ⇒ CONFIRMED_INTERNAL",
+      classifyCashTransitLeg(leg({ lifecycle: "PENDING", match: "MATCHED", destination: m }), bases({ chk: "PENDING_EXCLUDED" }), NOW) === "CONFIRMED_INTERNAL");
+    check("ruling 2: destination leg ambiguous ⇒ no double-count claim", classifyCashTransitLeg(leg({ lifecycle: "PENDING", match: "MATCHED", destination: { accountId: "sav", lifecycle: null } }), bases({ chk: "UNPROVEN" }), NOW) === "NOT_DEDUCTED_AT_SOURCE");
+    check("ruling 3: no definitive 'In transit $X' wording anywhere", !/in transit \$/i.test(JSON.stringify(cashTransitDisclosure({ unmatched: { count: 2, total: 10 }, destinationPending: { count: 1, total: 5 }, possiblyCountedTwice: { count: 1, total: 3 }, states: [] }, fmt))));
+  }
+
   check("nothing to disclose ⇒ []", cashTransitDisclosure(summarizeCashTransit([], bases({}), NOW), fmt).length === 0);
 
   console.log("\n2. the real read path (in-memory client)");
@@ -226,7 +247,7 @@ async function main() {
     const without = renderToStaticMarkup(createElement(CashAccountsLedger, { ...props, transitLegs: [] }));
     const withLine = renderToStaticMarkup(createElement(CashAccountsLedger, { ...props, transitLegs: [leg({})] }));
     check("the ledger renders the transit line only when there is one",
-      !without.includes("data-cash-transit-line") && withLine.includes("data-cash-transit-line") && withLine.includes("not yet matched to a destination account"));
+      !without.includes("data-cash-transit-line") && withLine.includes("data-cash-transit-line") && withLine.includes("destination not yet confirmed"));
     const strip = (h: string) => h.replace(/<p[^>]*data-cash-transit-line[^>]*>[\s\S]*?<\/p>/g, "");
     check("everything else — total cash, accessible, every row — is byte-identical", strip(withLine) === without);
     check("total cash is unchanged by a transit leg (5,929.01)", summary.totalCash === 5929.01 && withLine.includes("$5,929.01"));

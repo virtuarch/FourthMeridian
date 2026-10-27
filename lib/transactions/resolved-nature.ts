@@ -69,8 +69,13 @@ export type TransactionNature =
   | "BROKERAGE_TRANSFER"
   /** Moved between owned accounts; the destination's type is not named. */
   | "INTERNAL_TRANSFER"
-  /** Positive evidence the other side is not an owned account (a person, an external bank or venue). */
+  /** Positive evidence the other side is not an owned account (a person, a venue, a provider-attested external counterparty). */
   | "EXTERNAL_TRANSFER"
+  /** v2.7 owner ruling: a transfer to a bank account not connected here, derived
+   *  only from the provider's generic bank-transfer venue — the destination is
+   *  NOT confirmed (it may be the user's own, unconnected or not yet matched).
+   *  Still a transfer (never spending/income/debt), never claimed external. */
+  | "TRANSFER_DESTINATION_UNCONFIRMED"
   /** Money changed form (cash withdrawal / deposit). */
   | "CASH_MOVEMENT"
   /** A movement whose purpose is NOT established. Never narrated as anything more. */
@@ -128,8 +133,8 @@ export interface ResolvedTransactionNature {
 /** Natures that are a movement of the user's money between places (never spending/income). */
 export const MOVEMENT_NATURES: ReadonlySet<TransactionNature> = new Set<TransactionNature>([
   "LIABILITY_PAYMENT", "INTERNAL_SAVINGS_TRANSFER", "INTERNAL_CHECKING_TRANSFER",
-  "BROKERAGE_TRANSFER", "INTERNAL_TRANSFER", "EXTERNAL_TRANSFER", "CASH_MOVEMENT",
-  "UNCLASSIFIED_MOVEMENT",
+  "BROKERAGE_TRANSFER", "INTERNAL_TRANSFER", "EXTERNAL_TRANSFER", "TRANSFER_DESTINATION_UNCONFIRMED",
+  "CASH_MOVEMENT", "UNCLASSIFIED_MOVEMENT",
 ]);
 
 /** Natures established as between the user's own accounts. */
@@ -149,6 +154,7 @@ export const NATURE_DESCRIPTION: Record<TransactionNature, string> = {
   BROKERAGE_TRANSFER:         "Moved between your own accounts (to investments) — not a debt payment, not spending",
   INTERNAL_TRANSFER:          "Moved between your own accounts — not a debt payment, not spending",
   EXTERNAL_TRANSFER:          "Sent to or received from an account that is not yours — purpose not stated",
+  TRANSFER_DESTINATION_UNCONFIRMED: "Moved to or from a bank account not connected here — destination not yet confirmed; not spending, not a debt payment",
   CASH_MOVEMENT:              "Cash withdrawal or deposit",
   UNCLASSIFIED_MOVEMENT:      "Money movement whose purpose is not established — do not call it a debt payment, spending or income",
   SPENDING:                   "Spending",
@@ -192,6 +198,7 @@ function transferKind(e: NatureEvidence): TransactionNature | null {
   if (m) {
     const n = NATURE_OF_MATURITY[m];
     if (n) return n;
+    if (m === "EXTERNAL_DEPOSITORY_TRANSFER") return "TRANSFER_DESTINATION_UNCONFIRMED";
     if (EXTERNAL_MATURITIES.has(m)) return "EXTERNAL_TRANSFER";
   }
   const byType = natureOfCounterpartyType(e.counterpartyAccountType);
@@ -206,7 +213,8 @@ function transferKind(e: NatureEvidence): TransactionNature | null {
   }
   switch (e.transferDisposition) {
     case "INTERNAL_TRANSFER":      return "INTERNAL_TRANSFER";
-    case "EXTERNAL_BANK_TRANSFER": return "EXTERNAL_TRANSFER";
+    // The disposition is the same derived bank-venue evidence ⇒ not confirmed.
+    case "EXTERNAL_BANK_TRANSFER": return "TRANSFER_DESTINATION_UNCONFIRMED";
     case "CASH_MOVEMENT":          return "CASH_MOVEMENT";
     default:                       return null;
   }

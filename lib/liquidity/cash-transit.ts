@@ -51,6 +51,13 @@
  *   NOT_DEDUCTED_AT_SOURCE  the source debit is pending on an account whose
  *                           basis does not deduct it (UNPROVEN / no claim): the
  *                           money is still counted at the source. Nothing shown.
+ *   POSSIBLY_COUNTED_TWICE  owner ruling (PR #63): the source debit is pending on
+ *                           an account whose basis cannot prove it is deducted
+ *                           (UNPROVEN / no claim) AND the matched destination
+ *                           credit is already in total cash (posted, or pending
+ *                           on a destination whose basis counts pending). The
+ *                           same money may be in both balances until the source
+ *                           posts. Neutral line; totals are NOT altered.
  *   STALE                   older than the match window — "not yet matched" no
  *                           longer applies (the authority cannot pair it any
  *                           more). Nothing shown.
@@ -75,6 +82,7 @@ export type CashTransitState =
   | "EXTERNAL"
   | "DESTINATION_AMBIGUOUS"
   | "NOT_DEDUCTED_AT_SOURCE"
+  | "POSSIBLY_COUNTED_TWICE"
   | "STALE"
   | "SUPERSEDED";
 
@@ -129,7 +137,16 @@ export function classifyCashTransitLeg(
   // already includes P). Otherwise the money is still counted at the source.
   if (leg.lifecycle === "PENDING") {
     const b = basisOf(leg.sourceAccountId);
-    if (b === null || !COUNTS_PENDING.has(b)) return "NOT_DEDUCTED_AT_SOURCE";
+    if (b === null || !COUNTS_PENDING.has(b)) {
+      // Still (possibly) counted at the source. If the matched destination has
+      // ALREADY counted the credit, the same money may be in both balances.
+      const d = leg.match === "MATCHED" ? leg.destination : null;
+      if (d && d.lifecycle !== null) {
+        const counted = d.lifecycle === "POSTED" || (() => { const db = basisOf(d.accountId); return db !== null && COUNTS_PENDING.has(db); })();
+        if (counted) return "POSSIBLY_COUNTED_TWICE";
+      }
+      return "NOT_DEDUCTED_AT_SOURCE";
+    }
   }
 
   switch (leg.match) {
@@ -159,6 +176,8 @@ export interface CashTransitSummary {
   unmatched:          { count: number; total: number | null };
   /** Matched transfers whose destination credit is pending and unconfirmed. */
   destinationPending: { count: number; total: number | null };
+  /** Matched transfers that may currently be counted at BOTH ends (see state). */
+  possiblyCountedTwice: { count: number; total: number | null };
   /** Every leg's state, in input order (diagnostics / tests). */
   states: CashTransitState[];
 }
@@ -177,9 +196,13 @@ export function summarizeCashTransit(
 ): CashTransitSummary {
   const unmatched = { count: 0, total: 0 as number | null };
   const destinationPending = { count: 0, total: 0 as number | null };
+  const possiblyCountedTwice = { count: 0, total: 0 as number | null };
   const states = legs.map((leg) => {
     const s = classifyCashTransitLeg(leg, basisOf, now);
-    const bucket = s === "UNMATCHED_OUTGOING" ? unmatched : s === "DESTINATION_PENDING" ? destinationPending : null;
+    const bucket = s === "UNMATCHED_OUTGOING" ? unmatched
+      : s === "DESTINATION_PENDING" ? destinationPending
+      : s === "POSSIBLY_COUNTED_TWICE" ? possiblyCountedTwice
+      : null;
     if (bucket) {
       bucket.count += 1;
       const v = toDisplay(Math.abs(leg.amount), leg.currency);
@@ -187,7 +210,7 @@ export function summarizeCashTransit(
     }
     return s;
   });
-  return { unmatched, destinationPending, states };
+  return { unmatched, destinationPending, possiblyCountedTwice, states };
 }
 
 /**
@@ -201,13 +224,19 @@ export function cashTransitDisclosure(s: CashTransitSummary, fmt: (n: number) =>
   if (s.unmatched.count > 0) {
     const n = s.unmatched.count;
     out.push(
-      `${n} outgoing transfer${n === 1 ? "" : "s"}${amt(s.unmatched.total)} not yet matched to a destination account — not added to total cash.`,
+      `${n} outgoing transfer${n === 1 ? "" : "s"}${amt(s.unmatched.total)} — destination not yet confirmed; not added to total cash.`,
     );
   }
   if (s.destinationPending.count > 0) {
     const n = s.destinationPending.count;
     out.push(
       `${n} transfer${n === 1 ? "" : "s"}${amt(s.destinationPending.total)} still pending at the destination — not yet confirmed in that account's balance.`,
+    );
+  }
+  if (s.possiblyCountedTwice.count > 0) {
+    const n = s.possiblyCountedTwice.count;
+    out.push(
+      `${n} transfer${n === 1 ? "" : "s"}${amt(s.possiblyCountedTwice.total)} may be counted in both accounts until the sending bank posts ${n === 1 ? "it" : "them"} — totals are not adjusted.`,
     );
   }
   return out;
