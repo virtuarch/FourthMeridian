@@ -29,13 +29,13 @@ import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
-import { HeroEyebrow } from "@/components/space/hero/HeroParts";
+import { HeroEyebrow, HeroTalk } from "@/components/space/hero/HeroParts";
 import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import { WealthUnavailable, DeltaBadge } from "./wealth-ui";
 import { investedClassLabel } from "@/lib/wealth/invested-label";
 import type { TalkSection } from "@/components/ai/talk-about-this";
 
-/** v2.7 R6 — which topic the compact AI entry names for the headline metric. */
+/** v2.7 R6 — which topic the AI entry names for the headline metric (both layouts). */
 const TALK_SECTION: Record<WealthMetricKey, TalkSection> = {
   netWorth:         "net-worth",
   liquidNetWorth:   "net-worth",
@@ -203,6 +203,9 @@ export function WealthHero({
             ))}
           </div>
         )}
+
+        {/* v2.7 mobile/desktop parity — the same AI entry as the compact card's row 5. */}
+        <HeroTalk section={TALK_SECTION[metric]} period={timePreset} />
       </section>
     </div>
   );

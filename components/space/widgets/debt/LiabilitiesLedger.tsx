@@ -129,10 +129,11 @@ export function LiabilitiesLedger({
   ctx?:     ConversionContext;
   currency: string;
   /**
-   * COMPACT DASHBOARD (P3) — the compact (<lg) Debt category. When set, compact
-   * screens show EVERY account of that existing class (classifyDebt) instead of
-   * the top-five inline list; rows, shares (of total debt), detail panel and
-   * figures are the same rows computed once above. Desktop ignores it.
+   * The selected Debt category (Credit / Loans). When set, EVERY account of that
+   * existing class (classifyDebt) is listed instead of the top-five inline list;
+   * rows, shares (of total debt), detail panel and figures are the same rows
+   * computed once above. v2.7 mobile/desktop parity — applies at every width
+   * (it was compact-only; desktop ignored it).
    */
   compactClass?: Extract<DebtClass, "cards" | "loans"> | null;
 }) {
@@ -158,7 +159,7 @@ export function LiabilitiesLedger({
 
   return (
     <WorkspaceLayout>
-      <Surface className={`overflow-hidden ${compactClass ? "max-lg:hidden" : ""}`.trim()}>
+      <Surface className={`overflow-hidden ${compactClass ? "hidden" : ""}`.trim()}>
         <GroupedRows rows={inline} currency={currency} onOpen={setSelectedId} />
         {hidden > 0 && (
           <button
@@ -172,10 +173,11 @@ export function LiabilitiesLedger({
         )}
       </Surface>
 
-      {/* COMPACT DASHBOARD (P3) — the selected category's accounts, all of them
-          (<lg only). Same rows, same detail panel, same figures. */}
+      {/* The selected category's accounts, all of them. Same rows, same detail
+          panel, same figures. v2.7 mobile/desktop parity — every width (was
+          <lg only), replacing the combined top-five list while a class is set. */}
       {compactClass && (
-        <div className="lg:hidden" data-compact-ledger={compactClass}>
+        <div data-debt-class-ledger={compactClass}>
           <Surface className="overflow-hidden">
             {classRows.length > 0 ? (
               <GroupedRows rows={classRows} currency={currency} onOpen={setSelectedId} />

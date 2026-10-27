@@ -142,7 +142,10 @@ console.log("5. Sidebar — every published anchor renders");
   check("Debt (no liability accounts) drops Liabilities too", none.map((s) => s.label).join(" · ") === "Summary · Balance history · Credit health");
   check("every Debt anchor is an id in DebtWorkspace", full.every((s) => s.anchor && debtIds.has(s.anchor)));
   check("the liabilities ledger gate matches the anchor gate (liabilityCount > 0)", DEBT.includes("{liabilityCount > 0 && (") && DEBT.includes("hasLiabilities = liabilityCount > 0"));
-  check("the cost/payoff gate matches the anchor gate (hasDebt)", DEBT.includes("{hasDebt && (") && DEBT.includes("debtSections({ hasLiabilities, hasDebt })"));
+  // v2.7 parity — DELIBERATE CONTRACT CHANGE: the publisher now also passes the
+  // selected Debt class view (`view: cv`, All/Credit/Loans at every width) so the
+  // sidebar follows the class; the hasLiabilities / hasDebt gates are unchanged.
+  check("the cost/payoff gate matches the anchor gate (hasDebt)", DEBT.includes("{hasDebt && (") && /debtSections\(\{ hasLiabilities, hasDebt(?:, view: cv)? \}\)/.test(DEBT));
   check("embedded Cash / Investments publish nothing (one publisher per mode)", LIQ.includes("if (embedded) return;") && INV.includes("if (embedded) return;"));
   check("in Debt mode the Net Worth workspace publishes nothing (DebtWorkspace does)", /if \(mode === "debt"\) return;\s*publishSections\(/.test(WEALTHC));
 }

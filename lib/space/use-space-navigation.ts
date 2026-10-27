@@ -191,6 +191,19 @@ export function workspaceChildren(workspaceId: string): WorkspaceChild[] | undef
   return undefined;
 }
 
+/**
+ * The children the host PUBLISHES to navigation. v2.7 mobile/desktop parity — a
+ * workspace whose registry status is `comingSoon` renders one honest placeholder
+ * (workspaceRenderers.tsx), and the compact layout offers no view chips for it,
+ * so the sidebar offers no views either: five Markets links that all opened the
+ * same placeholder implied views that do not exist. workspaceChildren itself is
+ * unchanged — flipping the registry back to "available" restores them.
+ */
+export function publishedWorkspaceChildren(workspaceId: string): WorkspaceChild[] | undefined {
+  if (PERSPECTIVE_LIBRARY[workspaceId]?.status === "comingSoon") return undefined;
+  return workspaceChildren(workspaceId);
+}
+
 /** The OPEN workspace's current view id — its own mode state — or null. */
 export function openChildId(
   openWorkspace: string | null,
@@ -248,7 +261,7 @@ export interface SpaceNavigation {
   /**
    * COMPACT DASHBOARD (P3) — the compact Debt category (All · Credit · Loans),
    * mirrored to ?section= in Debt mode only (replace-written: a view change).
-   * Desktop ignores it.
+   * v2.7 mobile/desktop parity: drives the Debt view at every width.
    */
   debtSection: DebtSection;
   setDebtSection: (s: DebtSection) => void;

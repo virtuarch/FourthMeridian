@@ -40,8 +40,8 @@ import { Figure } from "@/components/atlas/Surface";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { economicSpend, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
-import { TalkAboutThis } from "@/components/ai/TalkAboutThis";
-import { HeroEyebrow } from "@/components/space/hero/HeroParts";
+import { HeroEyebrow, HeroTalk } from "@/components/space/hero/HeroParts";
+import { useSpaceChrome } from "@/lib/space/space-chrome-context";
 import { CompactHeroCard } from "@/components/space/compact/CompactHeroCard";
 import { compactWindowLabel } from "./hero-window-label";
 
@@ -85,6 +85,13 @@ export function CashFlowHero({
   change:       CashFlowHeroChange | null;
 }) {
   const net = facts ? heroNet(facts, "liquidity") : null;
+  // v2.7 mobile/desktop parity — the Space's canonical freshness claim ("Last
+  // checked N ago"), the SAME string the desktop sidebar and the Net Worth /
+  // Debt compact heroes show (SpaceDashboard publishes it to the chrome). The
+  // compact card used to pass null here, so a phone never said how fresh
+  // Cash Flow's data was.
+  const freshness = useSpaceChrome().space?.identity.updatedLabel ?? null;
+  const showChange = net != null && change != null;
   const netStr = net == null ? "—" : `${net >= 0 ? "+" : "−"}${formatCurrency(Math.abs(net), currency)}`;
 
   return (
@@ -94,15 +101,16 @@ export function CashFlowHero({
           Flow mounts no provenance badge by design (see the header note). */}
       <CompactHeroCard
         title={`Net cash flow · ${periodLabel(period)}`}
-        freshness={null}
+        freshness={freshness}
         trust={null}
         value={netStr}
         valueTone={net != null && net < 0 ? "negative" : "neutral"}
-        change={net != null && change != null ? { abs: change.abs, pct: change.pct, goodDirection: "up" } : null}
+        change={showChange ? { abs: change.abs, pct: change.pct, goodDirection: "up" } : null}
         range={compactWindowLabel(windowLabel)}
         currency={currency}
         talkSection="cash-flow"
         talkPeriod={period}
+        note={flowHeroNote(CASH_FLOW_HERO_SUB, showChange ? change.fromLabel : null)}
       />
 
       {/* DESKTOP (≥lg) — bare hero, no card, no border. The Net headline is the
@@ -119,7 +127,7 @@ export function CashFlowHero({
           />
           {/* Cash Flow reconstructs historically, so the headline and this delta share
               ONE basis. No comparison window ⇒ nothing here (no persistent hint). */}
-          {net != null && change != null && (
+          {showChange && (
             <DeltaBadge
               abs={change.abs}
               pct={change.pct}
@@ -135,7 +143,19 @@ export function CashFlowHero({
           {CASH_FLOW_HERO_SUB}
           <span className="text-[var(--text-muted)]"> · {windowLabel}</span>
         </p>
+        <HeroTalk section="cash-flow" period={period} />
       </section>
     </>
   );
+}
+
+/**
+ * v2.7 mobile/desktop parity — the compact card's standing note for the flow
+ * perspectives: the window the change compares against (the desktop badge's
+ * "vs …") and what the figure counts (the desktop sub line). Shared with
+ * SpendingHero so both say it the same way.
+ */
+export function flowHeroNote(sub: string, fromLabel: string | null): string {
+  const what = sub.charAt(0).toUpperCase() + sub.slice(1);
+  return fromLabel ? `Change vs ${fromLabel} · ${what}` : what;
 }

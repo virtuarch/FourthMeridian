@@ -148,13 +148,16 @@ console.log("\n5. default grouping");
   check("the unscoped (All) card is unchanged: 'Where it's owed' + 'total debt'", all.includes("Where it's owed") && all.includes("total debt"));
 }
 
-console.log("\n6. wiring — compact Credit / Loans views only");
+console.log("\n6. wiring — the Credit / Loans views, every width (v2.7 mobile/desktop parity)");
 {
   const dw = readFileSync(path.join(process.cwd(), "components/space/widgets/debt/DebtWorkspace.tsx"), "utf8");
-  check("the scoped card renders under the tabs, lg:hidden, for the selected class",
-    /\{debtTabs && cv\.ledgerClass && \(\s*<div className="lg:hidden" data-compact-debt-donut=\{cv\.ledgerClass\}>\s*<DebtCompositionCard key=\{cv\.ledgerClass\} accounts=\{accounts\} ctx=\{ctx\} currency=\{displayCurrency\} scope=\{cv\.ledgerClass\} \/>/.test(dw));
+  // DELIBERATE CONTRACT CHANGE — this pinned the scoped card as lg:hidden
+  // (compact only), which left desktop with no route to the per-class donuts or
+  // the "By loan type" breakdown. It now renders at every width.
+  check("the scoped card renders under the tabs, at EVERY width (no lg:hidden), for the selected class",
+    /\{debtTabs && cv\.ledgerClass && \(\s*<div data-debt-class-donut=\{cv\.ledgerClass\}>\s*<DebtCompositionCard key=\{cv\.ledgerClass\} accounts=\{accounts\} ctx=\{ctx\} currency=\{displayCurrency\} scope=\{cv\.ledgerClass\} \/>/.test(dw));
   check("the Credit / Loans tabs control their donut", dw.includes('"debt-credit-composition", "debt-liabilities"') && dw.includes('["debt-loans-composition", "debt-liabilities"]'));
-  check("the donut precedes the class ledger", dw.indexOf("data-compact-debt-donut") < dw.indexOf('id="debt-liabilities"'));
+  check("the donut precedes the class ledger", dw.indexOf("data-debt-class-donut={") < dw.indexOf('id="debt-liabilities"'));
 }
 
 if (failures > 0) { console.error(`\ndebt-scope-donuts: ${failures} failure(s).`); process.exit(1); }

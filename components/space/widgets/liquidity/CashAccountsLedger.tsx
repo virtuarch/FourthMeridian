@@ -8,6 +8,9 @@
  * Reported · Pending · Total cash (ADJUSTED — the summed column) · % of total
  * cash · Available · Holds · Status, with a "Pending not reconciled" badge on an
  * UNPROVEN account. A readable table at ≥lg; compact rows below lg (CSS-only).
+ * v2.7 mobile/desktop parity — both layouts read ONE row model (`cashRowFields`):
+ * card mask, the "N accounts combined" note, the pending treatment note and the
+ * per-row "pending not reconciled" amount appear in BOTH, never in one only.
  *
  * FIGURES — the pure cash-accounts helper's, from the host's account array (the
  * classifier's per-row conversion over countedBalance, and `reachableForAccount`):
@@ -184,22 +187,29 @@ export function CashAccountsLedger({
         {/* <lg — compact rows, every account visible; a row opens its detail. */}
         <ul className="lg:hidden divide-y divide-[var(--border-hairline)]" data-compact-cash-accounts>
           {summary.rows.map((r) => {
+            const f = cashRowFields(r);
             const body = (
               <>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-[var(--text-primary)]">{r.account.name}</p>
+                    <p className="truncate"><AccountNameText row={r} mask={detailById.get(r.account.id)?.mask ?? null} /></p>
                     <p className="mt-0.5 truncate text-[11px] text-[var(--text-muted)]">{institutionLabel(r)} · {r.typeLabel}</p>
+                    {f.combinedNote && (
+                      <p className="mt-0.5 truncate text-[11px] text-[var(--text-faint)]">{f.combinedNote}</p>
+                    )}
                   </div>
                   <div className="shrink-0 text-right">
                     <Balance row={r} fmt={fmt} />
                     <p className="mt-0.5 tabular-nums text-[11px] text-[var(--text-faint)]">{pct(r.share)} of cash</p>
                   </div>
                 </div>
-                {(r.pendingCorrection !== 0 || r.unproven) && (
-                  <p className="mt-1 tabular-nums text-[11px] text-[var(--text-faint)]">
+                {(f.pendingNote || r.pendingCorrection !== 0 || r.unproven) && (
+                  <p className="mt-1 tabular-nums text-[11px] text-[var(--text-faint)]" data-cash-row-pending>
                     Reported {fmt(r.reported)}
-                    {r.pendingCorrection !== 0 && <> · {r.pendingCorrection < 0 ? "−" : "+"} {fmt(Math.abs(r.pendingCorrection))} pending</>}
+                    {/* The table's Pending column: the pending sum and how it was treated. */}
+                    {f.pendingNote && r.pendingSum != null
+                      ? <> · {r.pendingSum < 0 ? "−" : "+"} {fmt(Math.abs(r.pendingSum))} pending, {f.pendingNote}</>
+                      : r.pendingCorrection !== 0 && <> · {r.pendingCorrection < 0 ? "−" : "+"} {fmt(Math.abs(r.pendingCorrection))} pending</>}
                     {r.unproven && <> · <UnprovenBadge /></>}
                   </p>
                 )}
@@ -262,18 +272,39 @@ function institutionLabel(r: CashAccountRow): string {
   return r.isAggregate ? "Shared (institution withheld)" : "—";
 }
 
-function AccountName({ row, mask, onOpen }: { row: CashAccountRow; mask: string | null; onOpen: (id: string) => void }) {
-  const name = (
+/**
+ * v2.7 mobile/desktop parity — the per-row facts BOTH layouts state, derived
+ * once from the row (never a figure: only the labels the table already showed).
+ * The compact rows used to drop the combined-account note and the pending
+ * treatment; the table never showed the unreconciled amount (Available below).
+ */
+export function cashRowFields(row: CashAccountRow): { combinedNote: string | null; pendingNote: string | null } {
+  return {
+    combinedNote: row.isAggregate ? `${row.memberCount} accounts combined · details withheld` : null,
+    pendingNote: row.pendingSum == null || Math.abs(row.pendingSum) < 0.005 ? null
+      : row.basis === "PENDING_EXCLUDED" ? "deducted here"
+      : row.basis === "PENDING_INCLUDED" ? "already in balance"
+      : null,
+  };
+}
+
+/** The account name and its card mask — one rendering for both layouts. */
+function AccountNameText({ row, mask }: { row: CashAccountRow; mask: string | null }) {
+  return (
     <>
       <span className="truncate text-sm font-medium text-[var(--text-primary)]">{row.account.name}</span>
       {mask && <span className="ml-1.5 text-[11px] text-[var(--text-faint)]">••••{mask}</span>}
     </>
   );
+}
+
+function AccountName({ row, mask, onOpen }: { row: CashAccountRow; mask: string | null; onOpen: (id: string) => void }) {
+  const name = <AccountNameText row={row} mask={mask} />;
   if (row.isAggregate) {
     return (
       <span className="block min-w-0">
         {name}
-        <span className="mt-0.5 block text-[11px] text-[var(--text-faint)]">{row.memberCount} accounts combined · details withheld</span>
+        <span className="mt-0.5 block text-[11px] text-[var(--text-faint)]">{cashRowFields(row).combinedNote}</span>
       </span>
     );
   }
@@ -317,10 +348,11 @@ function Available({ row, fmt, inline = false }: { row: CashAccountRow; fmt: (v:
   }
   // v2.7-P0 — pending is no longer a note here: it is the correction between
   // Reported and Total cash (its own column). Holds stay beside Available on
-  // compact rows (desktop has a Holds column).
+  // compact rows (desktop has a Holds column). v2.7 mobile/desktop parity — the
+  // unreconciled amount is stated at EVERY width (the table used to omit it).
   const notes = [
     inline && a.hold > 0.005 ? `${fmt(a.hold)} on hold` : null,
-    inline && a.unreconciled > 0.005 ? `${fmt(a.unreconciled)} pending not reconciled` : null,
+    a.unreconciled > 0.005 ? `${fmt(a.unreconciled)} pending not reconciled` : null,
   ].filter(Boolean);
   return (
     <span className={inline ? "inline" : "block"}>
@@ -337,10 +369,7 @@ function Pending({ row, fmt }: { row: CashAccountRow; fmt: (v: number) => string
   if (row.pendingSum == null || Math.abs(row.pendingSum) < 0.005) {
     return <span className="tabular-nums text-[13px] text-[var(--text-faint)]">—</span>;
   }
-  const note =
-    row.basis === "PENDING_EXCLUDED" ? "deducted here"
-    : row.basis === "PENDING_INCLUDED" ? "already in balance"
-    : null;
+  const note = cashRowFields(row).pendingNote;
   return (
     <span className="block">
       <span className="tabular-nums text-[13px] text-[var(--text-secondary)]">{row.pendingSum < 0 ? "−" : "+"}{fmt(Math.abs(row.pendingSum))}</span>

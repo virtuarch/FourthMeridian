@@ -9,11 +9,12 @@
  *   2. SUPERSEDED R4 D-3: the Explanation card (one-liners + "Details") is
  *      deleted at every width; its evidence doorway (later on the "What moved"
  *      header) was removed in the v2.7 final UX pass (no customer EvidenceDrawer);
- *   3. the remaining compact disclosure (Holdings "Show all N") is an
- *      accessible button; NO section is collapsed behind a toggle any more
+ *   3. the compact disclosure button stays accessible (Holdings no longer uses
+ *      it — see 4); NO section is collapsed behind a toggle any more
  *      (Resilience, What changed, Activity) and uncertainty notes are visible;
- *   4. Holdings: top 5 + "Show all N" on compact (owner D-E keep); desktop keeps
- *      its top 4 + panel;
+ *   4. Holdings: the list cut is kept (owner D-E) — v2.7 mobile/desktop parity:
+ *      ONE list at every width, top 5 + "View all N holdings" into the same
+ *      searchable panel (compact had an in-place "Show all N" with no search);
  *   5. SUPERSEDED R4: Liquidity "What changed" shows EVERY driver at every
  *      width (no top-3 cut, no Show all);
  *   6. desktop markup of the statically renderable pieces.
@@ -31,7 +32,7 @@ import { CompactDisclosureButton } from "./CompactDisclosure";
 import { existsSync } from "node:fs";
 import { wealthSecondaryRows, SecondaryChange } from "@/components/space/widgets/wealth/WealthHero";
 import { LiquidityWhatChangedCard } from "@/components/space/widgets/liquidity/LiquidityWhatChangedCard";
-import { HoldingsLedger, COMPACT_HOLDINGS_TOP_N } from "@/components/space/widgets/investments/HoldingsLedger";
+import { HoldingsLedger, HOLDINGS_TOP_N } from "@/components/space/widgets/investments/HoldingsLedger";
 import { formatCurrency } from "@/lib/currency";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 
@@ -141,22 +142,23 @@ console.log("\n3. one accessible disclosure left; nothing collapsed; notes visib
     /className="space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!"/.test(liq) && /className="space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!"/.test(inv));
 }
 
-console.log("\n4. Holdings: top 5 + Show all on compact");
+console.log("\n4. Holdings: one list cut at every width — top 5 + the searchable panel (D-E keep, v2.7 parity)");
 {
+  // DELIBERATE CONTRACT CHANGE (v2.7 mobile/desktop parity). This pinned a
+  // compact-only top-5 list with an in-place "Show all N" (no search) beside a
+  // desktop-only top-4 list whose "View all" opened the SEARCHABLE panel — so a
+  // phone could never search holdings. Owner D-E (keep the list cut) still
+  // holds: the cut is now ONE list and ONE doorway for both layouts.
   const H = (i: number) => ({ instrumentId: `i${i}`, accountId: "a1", symbol: `SYM${i}`, name: `Name ${i}`, quantity: i, reportingValue: 1000 - i * 50, share: 0.1, overallTier: "observed", staleDays: 0, conflicted: false, assetClass: "equity", sector: null, isCash: false });
   const render = (count: number) => renderToStaticMarkup(createElement(HoldingsLedger, { holdings: Array.from({ length: count }, (_, i) => H(i)), reportingCurrency: "USD", accounts: [{ id: "a1", name: "Brokerage" }] } as never));
   const html = render(9);
-  const compact = subtree(html, "data-compact-holdings");
-  check("compact-only list shows the top 5 rows, in DTO order", COMPACT_HOLDINGS_TOP_N === 5
-    && [...compact.matchAll(/>SYM(\d)</g)].map((m) => m[1]).join("") === "01234");
-  const btn = /<button type="button" aria-expanded="false" aria-controls="([^"]+)"[^>]*class="lg:hidden[^"]*"[^>]*>Show all 9/.exec(compact);
-  check("\"Show all 9\" — a compact disclosure controlling the list", !!btn && compact.includes(`id="${btn[1]}"`));
-  check("≤5 holdings ⇒ no compact Show all", !/Show all/.test(subtree(render(5), "data-compact-holdings")));
-  const desk = desktopMarkup(html);
-  check("DESKTOP: the top 4 and the \"View all 9 holdings\" panel doorway, no compact list",
-    [...desk.matchAll(/>SYM(\d)</g)].map((m) => m[1]).join("") === "0123" && /View all 9 holdings/.test(desk) && !/data-compact|Show all/.test(desk));
-  check("on compact the desktop list and its doorway are max-lg:hidden",
-    /<div class="rounded-\[var\(--radius-lg\)\] border border-\[var\(--border-hairline\)\] divide-y divide-\[var\(--border-hairline\)\] overflow-hidden max-lg:hidden"/.test(html) && /hover:underline max-lg:hidden">View all 9 holdings/.test(html));
+  check("the top 5 rows, in DTO order — the same list at every width", HOLDINGS_TOP_N === 5
+    && [...html.matchAll(/>SYM(\d)</g)].map((m) => m[1]).join("") === "01234");
+  check("ONE list: nothing compact-only or desktop-only (no lg:hidden, no max-lg:hidden, no data-compact)",
+    !/lg:hidden|data-compact|Show all/.test(html) && desktopMarkup(html).includes(">SYM4<"));
+  check("\"View all 9 holdings\" — a ≥44px doorway into the searchable panel, every width",
+    /<button type="button" class="mt-2 min-h-11 [^"]*">View all 9 holdings/.test(html));
+  check("≤5 holdings ⇒ no doorway", !/View all/.test(render(5)));
 }
 
 console.log("\n5. Cash: What changed — every driver, every width");

@@ -64,8 +64,8 @@ import { DebtCompositionCard } from "./DebtCompositionCard";
 import { InterestCostWidget } from "./InterestCostWidget";
 import { CreditScoreInput, CreditLimitInputs } from "./CreditHealthInputs";
 import { DEBT_CLASS_LABEL } from "./debt-ledger-util";
-import { CompactSectionTabs, compactHidden } from "@/components/space/compact/CompactSectionTabs";
-import { DEBT_SHARED_NOTE, debtClassCounts, debtCompactVisibility } from "@/components/space/compact/compact-sections";
+import { CompactSectionTabs, sectionHidden } from "@/components/space/compact/CompactSectionTabs";
+import { DEBT_SHARED_NOTE, debtClassCounts, debtCompactVisibility, type DebtCompactVisibility } from "@/components/space/compact/compact-sections";
 import { DEBT_CATEGORY_TABS_ENABLED, DEBT_SECTIONS, DEBT_SECTION_LABELS, type DebtSection } from "@/lib/wealth/wealth-mode";
 
 /**
@@ -78,17 +78,23 @@ import { DEBT_CATEGORY_TABS_ENABLED, DEBT_SECTIONS, DEBT_SECTION_LABELS, type De
 /** DOM id of the Interest cost widget — where the planner's "Add APR" lands. */
 export const INTEREST_COST_ANCHOR = "debt-interest-cost";
 
-export function debtSections(args: { hasLiabilities: boolean; hasDebt: boolean }): SpaceChromeSection[] {
+export function debtSections(args: { hasLiabilities: boolean; hasDebt: boolean; view?: DebtCompactVisibility }): SpaceChromeSection[] {
+  // v2.7 mobile/desktop parity — the selected category (All · Credit · Loans)
+  // applies at every width, so the sidebar lists only what that view shows.
+  // No view ⇒ All (every section), exactly as before.
+  const v = args.view ?? debtCompactVisibility("all");
+  const classDonut = v.ledgerClass
+    ? [{ label: v.ledgerClass === "cards" ? "Where your credit is owed" : "Where your loans are owed", anchor: `debt-${v.ledgerClass === "cards" ? "credit" : "loans"}-composition` }]
+    : [];
   return [
     { label: "Summary",         anchor: "debt-summary" },
-    { label: "Balance history", anchor: "debt-history" },
-    ...(args.hasDebt ? [{ label: "Where it's owed", anchor: "debt-composition" }] : []),
+    ...(v.history ? [{ label: "Balance history", anchor: "debt-history" }] : []),
+    ...(args.hasDebt && v.history ? [{ label: "Where it's owed", anchor: "debt-composition" }] : []),
+    ...(args.hasLiabilities ? classDonut : []),
     ...(args.hasLiabilities ? [{ label: "Liabilities", anchor: "debt-liabilities" }] : []),
-    ...(args.hasDebt ? [
-      { label: "Cost & risk", anchor: "debt-costrisk" },
-      { label: "Payoff",      anchor: "debt-payoff" },
-    ] : []),
-    { label: "Credit health",   anchor: "debt-credit" },
+    ...(args.hasDebt && v.costRisk ? [{ label: "Cost & risk", anchor: "debt-costrisk" }] : []),
+    ...(args.hasDebt && v.payoff ? [{ label: "Payoff", anchor: "debt-payoff" }] : []),
+    ...(v.creditHealth ? [{ label: "Credit health", anchor: "debt-credit" }] : []),
   ];
 }
 
@@ -129,7 +135,8 @@ export function DebtWorkspace({
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
   /** COMPACT DASHBOARD (P3) — the lg:hidden Total · Assets · Debt selector, placed under the Debt hero. */
   compactModeSelector?: ReactNode;
-  /** COMPACT DASHBOARD (P3) — the compact Debt category (?section=); desktop ignores it. */
+  /** The Debt category (?section=: All · Credit · Loans). v2.7 mobile/desktop
+   *  parity — applied at EVERY width (it was compact-only). */
   compactSection?: DebtSection;
   onCompactSectionChange?: (s: DebtSection) => void;
   /** v2.7 R6 — the shell slice id, for the compact AI entry link only (allowlisted there). */
@@ -227,22 +234,27 @@ export function DebtWorkspace({
 
   // Publish section anchors to the sidebar (cleared on unmount) — only the
   // sections that render (see debtSections).
+  // ── All · Credit · Loans — EVERY width (v2.7 mobile/desktop parity) ─────────
+  // Credit / Loans = the EXISTING liability classes (classifyDebt: cards / loans).
+  // Shared analytics stay in All (compact-sections.ts). This was compact-only
+  // (max-lg:hidden hides, an lg:hidden tab row), so a desktop reader could never
+  // reach the per-class donuts — the loan-type breakdown included — or the
+  // class account lists. Now ONE state (?section=) drives both layouts: the tab
+  // row renders at every width and every hide is `sectionHidden` (display:none
+  // at every width). All is unchanged: the combined view, everything shown.
+  // Gated by wealth-mode.ts DEBT_CATEGORY_TABS_ENABLED (enabled v2.7 R3 on the
+  // display-only presentationDebtClass); while off the view shows All, no tabs.
+  const cv = useMemo(() => debtCompactVisibility(DEBT_CATEGORY_TABS_ENABLED ? compactSection : "all"), [compactSection]);
+
   const publishSections = useSpaceSectionsPublisher();
   const hasLiabilities = liabilityCount > 0;
   useEffect(() => {
-    publishSections(debtSections({ hasLiabilities, hasDebt }));
+    publishSections(debtSections({ hasLiabilities, hasDebt, view: cv }));
     return () => publishSections([]);
-  }, [publishSections, hasLiabilities, hasDebt]);
+  }, [publishSections, hasLiabilities, hasDebt, cv]);
 
   const exploration = useHistoryExploration();
 
-  // ── COMPACT DASHBOARD (P3) — All · Credit · Loans (<lg only) ─────────────────
-  // Credit / Loans = the EXISTING liability classes (classifyDebt: cards / loans).
-  // Shared analytics stay in All (compact-sections.ts). Every hide is
-  // max-lg:hidden — display:none below lg only; at ≥1024px nothing changes.
-  // Gated by wealth-mode.ts DEBT_CATEGORY_TABS_ENABLED (enabled v2.7 R3 on the
-  // display-only presentationDebtClass); while off the view shows All, no tabs.
-  const cv = debtCompactVisibility(DEBT_CATEGORY_TABS_ENABLED ? compactSection : "all");
   const classCounts = debtClassCounts(accounts);
   const classCount = cv.ledgerClass ? classCounts[cv.ledgerClass] : 0;
   const otherCount = classCounts.other;
@@ -251,6 +263,7 @@ export function DebtWorkspace({
       ariaLabel="Debt category"
       value={compactSection}
       onChange={onCompactSectionChange}
+      widths="all"
       tabs={DEBT_SECTIONS.map((sec) => ({
         id: sec,
         label: DEBT_SECTION_LABELS[sec],
@@ -317,12 +330,12 @@ export function DebtWorkspace({
         />
       </div>
 
-      {/* COMPACT DASHBOARD (P3) — compact hierarchy: Debt hero → Total · Assets ·
-          Debt → All · Credit · Loans. Both rows are lg:hidden. */}
+      {/* Hierarchy: Debt hero → Total · Assets · Debt (compact only; the sidebar
+          children at ≥lg) → All · Credit · Loans (every width) → its note. */}
       {compactModeSelector}
       {debtTabs}
       {cv.sharedNote && debtTabs && (
-        <div className="lg:hidden -mt-4 space-y-1 px-1 text-[12px] leading-snug text-[var(--text-muted)]" data-compact-debt-note>
+        <div className="-mt-4 space-y-1 px-1 text-[12px] leading-snug text-[var(--text-muted)]" data-debt-shared-note>
           <p>{DEBT_SHARED_NOTE}</p>
           {otherCount > 0 && (
             <p>{otherCount} other {otherCount === 1 ? "liability is" : "liabilities are"} listed under All.</p>
@@ -332,7 +345,7 @@ export function DebtWorkspace({
 
       {/* ② Balance history — total debt over time, the SHARED Net Worth chart (bare,
            like Investments: the chart owns its own title + legend). */}
-      <div id="debt-history" className={`scroll-mt-20 ${compactHidden(!cv.history)}`.trim()}>
+      <div id="debt-history" className={`scroll-mt-20 ${sectionHidden(!cv.history)}`.trim()}>
         <DebtBalanceHistory
           history={history}
           currency={displayCurrency}
@@ -368,18 +381,19 @@ export function DebtWorkspace({
           (grouping dropdown in the header, above the donut). Present-day; All only
           on compact (it covers every debt, like the balance history). */}
       {hasDebt && (
-        <div id="debt-composition" className={`scroll-mt-20 ${compactHidden(!cv.history)}`.trim()}>
+        <div id="debt-composition" className={`scroll-mt-20 ${sectionHidden(!cv.history)}`.trim()}>
           <DebtCompositionCard accounts={accounts} ctx={ctx} currency={displayCurrency} />
         </div>
       )}
 
-      {/* ②c v2.7 final UX pass — the compact Credit / Loans views get their own
-          donut: the SAME DebtCompositionCard scoped to the selected class
+      {/* ②c v2.7 final UX pass — the Credit / Loans views get their own donut:
+          the SAME DebtCompositionCard scoped to the selected class
           (presentationDebtClass, as the class ledger below), reconciling
           exactly to that class's owed total, with an honest empty state.
-          lg:hidden — the tabs exist below lg only; desktop keeps All. */}
+          v2.7 mobile/desktop parity — every width (was lg:hidden): desktop's
+          only route to the "By loan type" breakdown. */}
       {debtTabs && cv.ledgerClass && (
-        <div className="lg:hidden" data-compact-debt-donut={cv.ledgerClass}>
+        <div data-debt-class-donut={cv.ledgerClass}>
           <DebtCompositionCard key={cv.ledgerClass} accounts={accounts} ctx={ctx} currency={displayCurrency} scope={cv.ledgerClass} />
         </div>
       )}
@@ -398,16 +412,16 @@ export function DebtWorkspace({
           label="Liabilities"
           hint={
             <>
-              <span className={`text-[11px] tabular-nums text-[var(--text-faint)] ${compactHidden(!!cv.ledgerClass)}`.trim()}>{liabilityCount}</span>
+              <span className={`text-[11px] tabular-nums text-[var(--text-faint)] ${sectionHidden(!!cv.ledgerClass)}`.trim()}>{liabilityCount}</span>
               {cv.ledgerClass && (
-                <span className="lg:hidden text-[11px] tabular-nums text-[var(--text-faint)]">
+                <span className="text-[11px] tabular-nums text-[var(--text-faint)]">
                   {DEBT_CLASS_LABEL[cv.ledgerClass]} · {classCount}
                 </span>
               )}
             </>
           }
           action={
-            <span className={`text-[11px] text-[var(--text-faint)] ${compactHidden(!!cv.ledgerClass)}`.trim()}>
+            <span className={`text-[11px] text-[var(--text-faint)] ${sectionHidden(!!cv.ledgerClass)}`.trim()}>
               {liabilitySummary}{historical ? " · current" : ""}
             </span>
           }
@@ -420,14 +434,14 @@ export function DebtWorkspace({
         <>
           {/* ④ Cost & risk — utilization + interest cost. Interest cost is THE APR
               surface: view every debt's rate, edit it, and everything below re-reads it. */}
-          <Block id="debt-costrisk" label="Cost & risk" className={compactHidden(!cv.costRisk)}>
+          <Block id="debt-costrisk" label="Cost & risk" className={sectionHidden(!cv.costRisk)}>
             <div className="grid gap-4 lg:grid-cols-2 items-start min-w-0">
               <Surface className="p-4 min-w-0">
                 <SubHeading>Credit utilization</SubHeading>
                 <CreditUtilizationWidget accounts={accounts} ctx={ctx} />
               </Surface>
               {/* The anchor the planner's "Add APR" scrolls to (Surface takes no id). */}
-              <div id={INTEREST_COST_ANCHOR} className={`min-w-0 scroll-mt-20 ${compactHidden(!cv.interestCost)}`.trim()}>
+              <div id={INTEREST_COST_ANCHOR} className={`min-w-0 scroll-mt-20 ${sectionHidden(!cv.interestCost)}`.trim()}>
                 <Surface className="p-4 min-w-0">
                   <SubHeading>Interest cost</SubHeading>
                   <InterestCostWidget accounts={accounts} ctx={ctx} />
@@ -438,7 +452,7 @@ export function DebtWorkspace({
 
           {/* ⑤ Payoff strategy — the interactive planner. The user chooses the
               monthly budget; the engine explains the result. No preset amounts. */}
-          <Block id="debt-payoff" label="Payoff strategy" className={compactHidden(!cv.payoff)}>
+          <Block id="debt-payoff" label="Payoff strategy" className={sectionHidden(!cv.payoff)}>
             <Surface className="p-4 min-w-0">
               {renderDebtPayoffCalculator(accounts, false, undefined, ctx, today, handleAddApr)}
             </Surface>
@@ -448,7 +462,7 @@ export function DebtWorkspace({
 
       {/* ⑥ Credit health — the user's own inputs (score, limits) editable in place;
           the signals are DERIVED and read-only. */}
-      <Block id="debt-credit" label="Credit health" className={compactHidden(!cv.creditHealth)}>
+      <Block id="debt-credit" label="Credit health" className={sectionHidden(!cv.creditHealth)}>
         <div className="grid gap-4 lg:grid-cols-2 items-start min-w-0">
           <Surface className="p-4 min-w-0">
             <CreditScoreInput
@@ -457,7 +471,7 @@ export function DebtWorkspace({
               onSaved={handleScoreSaved}
             />
             {signals.length > 0 && (
-              <ul className={`mt-3 space-y-1.5 border-t border-[var(--border-hairline)] pt-3 ${compactHidden(!cv.creditSignals)}`.trim()}>
+              <ul className={`mt-3 space-y-1.5 border-t border-[var(--border-hairline)] pt-3 ${sectionHidden(!cv.creditSignals)}`.trim()}>
                 {signals.map((s) => (
                   <li key={s.id} className="flex items-start gap-2">
                     {s.tone === "ok"

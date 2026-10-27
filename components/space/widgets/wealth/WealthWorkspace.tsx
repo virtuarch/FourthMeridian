@@ -429,20 +429,14 @@ export function WealthWorkspace({
     );
   }
 
-  // ── The Assets slice control (chart header) ─────────────────────────────────
-  // The DESKTOP slice navigation (All · Cash · Investments). Below lg the
-  // category tabs carry the slice, so these chips are compact-hidden.
-  const sliceControl = mode === "assets" ? (
-    <Chips
-      options={ASSETS_SLICES.map((s) => ({ id: s, label: ASSETS_SLICE_LABELS[s] }))}
-      value={slice}
-      onChange={(s) => onSliceChange?.(s)}
-      ariaLabel="Assets series"
-      className="max-lg:hidden"
-    />
-  ) : undefined;
-
-  // ── Assets category tabs (<lg only) + THE render rule (every width) ────────
+  // ── Assets category tabs (EVERY width) + THE render rule (every width) ────
+  // v2.7 mobile/desktop parity — ONE slice control for both layouts. Desktop
+  // used to carry the slice as chips in the CHART HEADER (max-lg:hidden) while
+  // compact had these tabs; the chart header does not exist while a backfill
+  // runs, with no history or after a snapshot read failure, so desktop could
+  // not reach Cash / Investments / Real assets in exactly those states. The
+  // tabs now render at every width, under the hero, and the chart-header chips
+  // are gone (no second control for the same state).
   // All · Cash · Investments ARE the existing slice (?slice=, replace-written),
   // so the chart series and the visible content can never disagree. v2.7
   // visual-first: the truth table is the render rule at EVERY width — a section
@@ -457,6 +451,7 @@ export function WealthWorkspace({
       ariaLabel="Assets category"
       value={slice}
       onChange={(s) => onSliceChange?.(s)}
+      widths="all"
       tabs={ASSETS_SLICES.map((s) => ({
         id: s,
         label: ASSETS_SLICE_LABELS[s],
@@ -625,7 +620,6 @@ export function WealthWorkspace({
             currency={displayCurrency}
             metric={metric}
             investedSeries={investedSeries}
-            headerRight={sliceControl}
             onSelectPoint={handleSelectPoint}
           />
           {/* v2.7-P0 — forward-only basis change: rows before the release stay on

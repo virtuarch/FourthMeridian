@@ -32,7 +32,7 @@ import { useSpaceData } from "@/lib/space/use-space-data";
 import { SpaceReadFailure } from "@/components/space/SpaceReadFailure";
 import {
   useSpaceNavigation, NET_WORTH_LENS_ID, MARKETS_LENS_ID, CORE_LENS_IDS,
-  lensHref, openWorkspaceId, openChildId, workspaceChildren,
+  lensHref, openWorkspaceId, openChildId, publishedWorkspaceChildren,
 } from "@/lib/space/use-space-navigation";
 import type { WealthMode } from "@/lib/wealth/wealth-mode";
 import type { MarketsMode } from "@/lib/markets/markets-mode";
@@ -419,14 +419,14 @@ export function SpaceDashboard({
   const openWorkspaceLabel =
     [
       lensSelectorItems.find((l) => l.id === openWorkspace)?.label,
-      openWorkspace ? workspaceChildren(openWorkspace)?.find((c) => c.id === openChild)?.label : null,
+      openWorkspace ? publishedWorkspaceChildren(openWorkspace)?.find((c) => c.id === openChild)?.label : null,
     ]
       .filter(Boolean)
       .join(", ") || undefined;
   useEffect(() => {
     publishWorkspaceNav({
       items: lensSelectorItems.map(({ id, label }) => {
-        const children = workspaceChildren(id);
+        const children = publishedWorkspaceChildren(id);
         return { id, label, href: lensHref(id), ...(children ? { children } : {}) };
       }),
       activeId: openWorkspace,
@@ -912,6 +912,24 @@ export function SpaceDashboard({
               // this selector left, the date trigger right (one TimelineLens).
               compactViewSelector={<CompactViewSelector items={lensSelectorItems} activeId={activeLensId} onSelect={selectLens} />}
             />
+            {/* v2.7 mobile/desktop parity — the freshness facts the desktop sidebar
+                states (ContextualNavbar) and the compact layout had no place for:
+                the stale-accounts distribution ("N accounts stale · X% of value",
+                amber when stale/unverified) under the controls row on every
+                perspective, and — on Markets, which has no hero card to carry it —
+                the "Last checked N ago" claim itself. Same strings, same source. */}
+            {(chromeFreshnessNote || (activePerspectiveId === "markets" && chromeUpdated)) && (
+              <p className="lg:hidden mt-2 px-1 text-[11px] leading-snug" data-compact-freshness>
+                {activePerspectiveId === "markets" && chromeUpdated && (
+                  <span className="text-[var(--text-muted)]">{chromeUpdated}{chromeFreshnessNote ? " · " : ""}</span>
+                )}
+                {chromeFreshnessNote && (
+                  <span style={{ color: chromeFreshnessWarn ? "var(--accent-warning)" : "var(--text-faint)" }} data-compact-freshness-warn={chromeFreshnessWarn ? "" : undefined}>
+                    {chromeFreshnessNote}
+                  </span>
+                )}
+              </p>
+            )}
             <div aria-hidden className="lg:hidden h-4" />
           </div>
         )}

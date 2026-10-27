@@ -17,16 +17,30 @@
  *     basis). They render UNDER THE CHART, never below the header card, so a
  *     note can never push the page skeleton down on one perspective only.
  *
+ *   HeroTalk — the desktop hero's last line: "Talk with Fourth Meridian about
+ *     this" (v2.7 mobile/desktop parity). The compact card states the SAME link
+ *     on its row 5; every perspective with a TalkSection offers it at every width.
+ *
  * Presentation only.
  */
 
 import type { ReactNode } from "react";
+import { TalkAboutThis } from "@/components/ai/TalkAboutThis";
+import type { TalkSection } from "@/components/ai/talk-about-this";
 
 export function HeroEyebrow({ label, trust }: { label: ReactNode; trust?: ReactNode }) {
   return (
     <div className="flex h-6 items-center justify-between gap-3" data-hero-eyebrow>
       <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{label}</p>
       {trust}
+    </div>
+  );
+}
+
+export function HeroTalk({ section, period }: { section: TalkSection; period?: unknown }) {
+  return (
+    <div className="mt-3" data-hero-talk={section}>
+      <TalkAboutThis section={section} period={period} />
     </div>
   );
 }

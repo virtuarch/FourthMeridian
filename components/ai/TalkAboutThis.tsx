@@ -6,8 +6,10 @@
  * it never sends. The Analyze page turns the topic into a suggested chip that the
  * user may click — or ignore.
  *
- * Presentation is the caller's: the dashboard heroes mount it inside a compact-only
- * (`lg:hidden`) wrapper so desktop markup is unchanged.
+ * Presentation is the caller's. v2.7 mobile/desktop parity — every dashboard hero
+ * whose perspective has a TalkSection mounts it in BOTH layouts: row 5 of the
+ * compact card (<lg) and the last line of the desktop hero (≥lg). It used to be
+ * compact-only, so desktop had no contextual AI entry at all.
  */
 
 import Link from "next/link";

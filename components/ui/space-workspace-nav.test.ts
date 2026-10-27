@@ -216,7 +216,9 @@ console.log("D. Selection — in place for a plain click, the browser's for a mo
       /if \(id === NET_WORTH_LENS_ID\) \{\s*setWealthMode\(DEFAULT_WEALTH_MODE\);/.test(open) &&
       /if \(id === MARKETS_LENS_ID\) setMarketsMode\(DEFAULT_MARKETS_MODE\);/.test(open), open);
   check("host publishes the SAME lens set the in-page lens row uses (one list, no second definition)",
-    /items: lensSelectorItems\.map\(\(\{ id, label \}\) => \{\s*const children = workspaceChildren\(id\);\s*return \{ id, label, href: lensHref\(id\), \.\.\.\(children \? \{ children \} : \{\}\) \};/.test(host));
+    // v2.7 mobile/desktop parity — publishedWorkspaceChildren: workspaceChildren
+    // minus the views of a comingSoon workspace (pinned in mobile-desktop-parity.test.ts).
+    /items: lensSelectorItems\.map\(\(\{ id, label \}\) => \{\s*const children = publishedWorkspaceChildren\(id\);\s*return \{ id, label, href: lensHref\(id\), \.\.\.\(children \? \{ children \} : \{\}\) \};/.test(host));
   check("host clears the channel on unmount", /useEffect\(\(\) => \(\) => publishWorkspaceNav\(null\), \[publishWorkspaceNav\]\)/.test(host));
 }
 
@@ -400,7 +402,7 @@ console.log("I. The workspace region's accessible name");
   check("the content panel is a named region: aria-label from the open workspace's label",
     /aria-label=\{openWorkspaceLabel\}/.test(panel), panel);
   check("…derived from the SAME lens list both switchers render + the open mode's label (no second label source)",
-    /lensSelectorItems\.find\(\(l\) => l\.id === openWorkspace\)\?\.label,\s*openWorkspace \? workspaceChildren\(openWorkspace\)\?\.find\(\(c\) => c\.id === openChild\)\?\.label : null,/.test(host) &&
+    /lensSelectorItems\.find\(\(l\) => l\.id === openWorkspace\)\?\.label,\s*openWorkspace \? publishedWorkspaceChildren\(openWorkspace\)\?\.find\(\(c\) => c\.id === openChild\)\?\.label : null,/.test(host) &&
       /const openChild = openChildId\(openWorkspace, \{ wealthMode, marketsMode \}\);/.test(host));
   const nameFor = (tab: string, p: string | null, m: WealthMode = "total") => {
     const ws = openWorkspaceId(tab, p);
