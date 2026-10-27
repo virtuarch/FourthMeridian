@@ -190,7 +190,14 @@ function wealthEnvelope(r: WealthResult, currency: string, fxUnconverted?: boole
     label:  c.label,
     tone:   c.tone,
     // "No history before …" is self-explanatory; other tiers get a reason line.
-    detail: c.tier === "incomplete" ? c.label : WEALTH_DETAIL[c.tier],
+    // v2.7 final UX pass — copy only: the reason names the snapshot DATE the
+    // displayed figure comes from, so the chip's tooltip states its basis
+    // (which day, observed vs reconstructed). The tier is unchanged.
+    detail: c.tier === "incomplete"
+      ? c.label
+      : r.asOfState.date
+        ? `${WEALTH_DETAIL[c.tier]} Figure from the ${formatWealthDate(r.asOfState.date)} snapshot.`
+        : WEALTH_DETAIL[c.tier],
   };
   const evidence: EnvelopeEvidence | undefined = r.evidence
     ? {

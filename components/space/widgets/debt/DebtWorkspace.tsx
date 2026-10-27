@@ -42,6 +42,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { presentFigureEnvelope } from "@/components/space/trust/figure-envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { convertDebtHistory } from "@/lib/debt/display-conversion";
 import { Surface, Block } from "@/components/atlas/Surface";
@@ -163,6 +164,20 @@ export function DebtWorkspace({
     [lens],
   );
   useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
+
+  // v2.7 final UX pass — the HERO chip qualifies the HEADLINE beside it, and the
+  // headline (total owed) is PRESENT-DAY in every view (computeDebtKpis over
+  // today's accounts — temporalCapability PARTIAL). It therefore reads the
+  // present-day lens's envelope, never the as-of lens's reconstruction tier.
+  // Before this, a past As-Of put "Estimated" (installment loans held flat in
+  // the as-of reconstruction) beside a figure that is not reconstructed at all,
+  // and the chip vanished whenever the view returned to today or the as-of lens
+  // was re-keyed by a data refresh. Same resolver, same tiers — only WHICH lens
+  // feeds the hero changed. The shell still receives the on-screen envelope.
+  const heroEnvelope = useMemo(
+    () => presentFigureEnvelope({ perspectiveId: "debt", historical: asOf < today, presentLens, onScreen: envelope }),
+    [asOf, today, presentLens, envelope],
+  );
 
   // FIGURES OF RECORD — present-day, from the accounts array (never the lens).
   const kpis = computeDebtKpis(accounts, ctx);
@@ -293,7 +308,7 @@ export function DebtWorkspace({
           today={today}
           historical={historical}
           change={change}
-          envelope={envelope}
+          envelope={heroEnvelope}
           verdict={verdict}
           verdictAsOf={verdictAsOf}
           redactions={redactions}

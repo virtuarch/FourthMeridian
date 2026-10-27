@@ -72,6 +72,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { presentFigureEnvelope } from "@/components/space/trust/figure-envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { convertLiquiditySpaceData } from "@/lib/liquidity/display-conversion";
 import { clipCashHistory, convertCashHistory } from "@/lib/liquidity/cash-history";
@@ -201,6 +202,16 @@ export function LiquidityWorkspace({
     [ledeLens],
   );
   useEffect(() => { onEnvelopeChange?.(envelope); }, [envelope, onEnvelopeChange]);
+
+  // v2.7 final UX pass — the chip beside ACCESSIBLE CASH (the hero, and the
+  // embedded tile) qualifies that figure, which is PRESENT-DAY in every view
+  // (reachableNow over today's accounts). It reads the present-day lens's
+  // envelope, never the as-of lens's reconstruction tier — the same rule as the
+  // Debt hero. The shell still receives the on-screen envelope above.
+  const figureEnvelope = useMemo(
+    () => presentFigureEnvelope({ perspectiveId: "liquidity", historical: showAsOf, presentLens: data?.current ?? presentLens, onScreen: envelope }),
+    [showAsOf, data, presentLens, envelope],
+  );
 
   // FIGURES OF RECORD — present-day, from the accounts array (never the lens). The Hero
   // headline (cashNow tier) is the SAME figure the Cash accounts ledger's Available sums.
@@ -348,7 +359,7 @@ export function LiquidityWorkspace({
             // current-state claim; the window delta is computed from the ledger
             // snapshot series, so the two bases diverge exactly then.
             deltaBasisDiffers={reach.coveredCount > 0 && cashNow !== classification.totalLiquid}
-            envelope={envelope}
+            envelope={figureEnvelope}
             verdict={verdict}
             verdictAsOf={verdictAsOf}
             redactions={redactions}
@@ -482,7 +493,7 @@ export function LiquidityWorkspace({
             <Surface className="p-3 sm:p-4 min-w-0" data-accessible-cash>
               <div className="flex items-start justify-between gap-2">
                 <SubHeading>Accessible cash</SubHeading>
-                <TrustIndicator variant="compact" envelope={envelope} />
+                <TrustIndicator variant="compact" envelope={figureEnvelope} />
               </div>
               <p className="text-xl sm:text-2xl font-semibold tabular-nums text-[var(--text-primary)] [overflow-wrap:anywhere]">
                 {approx}{formatCurrency(cashNow, displayCurrency)}
@@ -499,7 +510,7 @@ export function LiquidityWorkspace({
               {redactions > 0 && (
                 <p className="mt-1 text-[11px] text-[var(--text-faint)]">{redactions} account detail{redactions === 1 ? "" : "s"} withheld</p>
               )}
-              <TrustIndicator variant="inline" envelope={envelope} className="mt-1" />
+              <TrustIndicator variant="inline" envelope={figureEnvelope} className="mt-1" />
             </Surface>
           )}
         </div>

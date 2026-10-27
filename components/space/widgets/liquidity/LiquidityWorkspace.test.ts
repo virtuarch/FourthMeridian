@@ -79,8 +79,10 @@ console.log("1. WORKSPACE BOUNDARY — owns the data, consumes the contract, no 
   // Trust is presented via the shared TrustIndicator over the SAME canonical envelope the
   // workspace resolves — now rendered inside the extracted Hero (the editorial lede), which
   // receives the envelope as a prop (one authority, two consumers can't disagree).
-  check("Workspace resolves the canonical envelope and hands it to the Hero",
-    CODE.includes("resolvePerspectiveEnvelope(") && CODE.includes("envelope={envelope}"));
+  // v2.7 final UX pass — DELIBERATE: the Hero's figure is present-day, so its chip
+  // reads the present lens's envelope in a past As-Of (figureEnvelope, same resolver).
+  check("Workspace resolves the canonical envelope and hands the figure's envelope to the Hero",
+    CODE.includes("resolvePerspectiveEnvelope(") && CODE.includes("envelope={figureEnvelope}"));
   check("Hero presents trust via the shared TrustIndicator", HERO.includes("TrustIndicator"));
   check("no usePerspectiveShellState (no duplicate time authority)", !CODE.includes("usePerspectiveShellState"));
   check("no local as-of loader / valuation import",
@@ -142,8 +144,8 @@ console.log("5. Trust PRESENTED via the canonical envelope, not recomputed");
   check("no bespoke hand-derived trust marker remains (workspace or Hero)",
     !CODE.includes("trust.reason") && !HERO.includes("trust.reason")
       && !/estimated \? "≈/.test(CODE.replace('const approx = classification.estimated ? "≈ " : "";', "")));
-  check("the Accessible cash tile shows the shared TrustIndicator (compact + inline) over the SAME envelope",
-    /data-accessible-cash[\s\S]{0,300}<TrustIndicator variant="compact" envelope=\{envelope\} \/>[\s\S]{0,1400}<TrustIndicator variant="inline" envelope=\{envelope\}/.test(CODE));
+  check("the Accessible cash tile shows the shared TrustIndicator (compact + inline) over the figure's envelope",
+    /data-accessible-cash[\s\S]{0,300}<TrustIndicator variant="compact" envelope=\{figureEnvelope\} \/>[\s\S]{0,1400}<TrustIndicator variant="inline" envelope=\{figureEnvelope\}/.test(CODE));
 }
 
 console.log("6. Net EXCLUDES credit (liquidity.core doctrine)");
