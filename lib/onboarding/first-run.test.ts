@@ -27,6 +27,9 @@ console.log("the rule");
   check("dismissed ⇒ neither, ever", JSON.stringify(decideFirstRun({ ...NEW, dismissed: true })) === JSON.stringify({ redirect: false, invite: false })
     && JSON.stringify(decideFirstRun({ ...NEW, presented: true, dismissed: true })) === JSON.stringify({ redirect: false, invite: false }));
   check("established (any source, even revoked / errored / deleted) ⇒ never redirected", !decideFirstRun({ ...NEW, sourcesEver: 1 }).redirect);
+  // A SPACE-owned account in the user's personal Space reaches sourcesEver through accountsOf (see the reader pins).
+  check("a user whose only source is a SPACE-owned account ⇒ counted, never redirected, never invited",
+    JSON.stringify(decideFirstRun({ ...NEW, sourcesEver: 1, sourcesLive: 1 })) === JSON.stringify({ redirect: false, invite: false }));
   check("…and a disconnected-everything user is only invited", JSON.stringify(decideFirstRun({ ...NEW, sourcesEver: 3, sourcesLive: 0 })) === JSON.stringify({ redirect: false, invite: true }));
   check("a member of someone else's Space ⇒ not redirected (multi-Space respected)", !decideFirstRun({ ...NEW, sharedMemberships: 1 }).redirect);
   check("live sources ⇒ no invitation", !decideFirstRun({ ...NEW, sourcesEver: 1, sourcesLive: 1, presented: true }).invite);
@@ -48,7 +51,12 @@ console.log("the reader");
   check("fails OPEN — a failed read returns NO_ONBOARDING", /catch[\s\S]{0,120}return NO_ONBOARDING;/.test(r));
   check("'ever' counts every Item and wallet regardless of state", /plaidItem\.count\(\{ where: \{ userId \} \}\)/.test(r) && /connection\.count\(\{ where: \{ userId \} \}\)/.test(r));
   check("shared membership = ACTIVE in a non-PERSONAL Space", /status: "ACTIVE", space: \{ type: \{ not: "PERSONAL" \} \}/.test(r));
-  check("marker writes are idempotent", /findFirst\(\{ where: \{ userId, action \}/.test(r) && /if \(already\) return;/.test(r));
+  check("marker writes are one idempotent statement with no read-back (INSERT … WHERE NOT EXISTS)",
+    /INSERT INTO "AuditLog"[\s\S]*WHERE NOT EXISTS \(SELECT 1 FROM "AuditLog" WHERE "userId" = \$\{userId\}::text AND "action" = \$\{action\}::text\)/.test(r) && !/auditLog\.create/.test(r));
+  check("accounts count by EVERY ownership answer (owner, creator, owned Space, connector) — SPACE-owned accounts in a personal Space included",
+    /\{ ownerUserId: userId \}/.test(r) && /\{ createdByUserId: userId \}/.test(r)
+      && /ownerSpace: \{ members: \{ some: \{ userId, role: "OWNER", status: "ACTIVE" \} \} \}/.test(r) && /connectedByUserId: userId/.test(r));
+  check("the invitation uses the same ownership rule", /financialAccount\.findFirst\(\{ where: accountsOf\(userId, true\)/.test(r));
   check("counts and existence only — no names, balances or values selected", !/balance|institutionName|name: true|currentValue/.test(r));
 }
 
@@ -66,7 +74,9 @@ console.log("the wiring");
   const view = code("components/connections/ConnectionsOnboarding.tsx");
   check("three ways in: Plaid, wallet, real asset", /openLink\(\)/.test(view) && /<AddWalletModal/.test(view) && /<AddManualAssetModal/.test(view));
   check("a way out: Explore My Space records the dismissal and goes to My Space", /Explore My Space/.test(view) && /postOnboarding\("dismissed"\)/.test(view) && /router\.push\("\/dashboard"\)/.test(view));
-  check("the welcome records itself as shown (so the redirect never repeats)", /if \(!welcome \|\| presentedRef\.current\) return;/.test(view) && /postOnboarding\("presented"\)/.test(view));
+  const conn = code("app/(shell)/dashboard/connections/page.tsx");
+  check("the welcome records itself as shown SERVER-side (a blocked client call cannot cause repeat redirects)",
+    /if \(welcome && !\(await isRouterPrefetch\(\)\)\) \{\s*await recordOnboardingEvent\(userId, "presented"\)\.catch\(/.test(conn) && !/"presented"/.test(view));
   check("never asks for a seed phrase or key; says connecting is optional", /Never enter a seed phrase or private key/.test(view) && /Connecting is optional/.test(view));
   const dash = code("components/connections/ConnectionsSpaceDashboard.tsx");
   check("Connections' empty state is the onboarding view", /<ConnectionsOnboarding/.test(dash));

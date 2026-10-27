@@ -9,15 +9,15 @@
  * and a way OUT: "Explore My Space", which records the dismissal server-side
  * and goes to My Space. Connecting is never required and nothing here blocks.
  *
- * `welcome` (the one-time post-login redirect, ?welcome=1) adds the greeting
- * and records that the welcome was shown, so the redirect never fires again
- * and the back button returns to a normal Brief.
+ * `welcome` (the one-time post-login redirect, ?welcome=1) adds the greeting.
+ * The page records that the welcome was shown, server-side, so the redirect
+ * never fires again and the back button returns to a normal Brief.
  *
  * Reuses the existing flows only: usePlaid().openLink, AddWalletModal,
  * AddManualAssetModal. No provider logic here.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Building2, Home, Loader2, Wallet } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -27,7 +27,7 @@ import { GlassButton } from "@/components/atlas/GlassButton";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 
-function postOnboarding(event: "presented" | "dismissed"): Promise<void> {
+function postOnboarding(event: "dismissed"): Promise<void> {
   return fetch("/api/onboarding", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -72,14 +72,7 @@ export function ConnectionsOnboarding({ welcome = false, firstName = null, plaid
   // A real asset is not a connection, so the list below never shows it — say it
   // landed, and offer the two ways on.
   const [assetAdded, setAssetAdded] = useState(false);
-  const presentedRef = useRef(false);
 
-  // Shown once ⇒ recorded once. The marker is what stops the post-login redirect.
-  useEffect(() => {
-    if (!welcome || presentedRef.current) return;
-    presentedRef.current = true;
-    void postOnboarding("presented");
-  }, [welcome]);
 
   async function explore() {
     setLeaving(true);

@@ -20,6 +20,8 @@ import { loadConnectionsSpaceData } from "@/lib/connections/space-data";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { ConnectionsSpaceDashboard } from "@/components/connections/ConnectionsSpaceDashboard";
 import { env } from "@/lib/env";
+import { recordOnboardingEvent } from "@/lib/onboarding/first-run";
+import { isRouterPrefetch } from "@/lib/analytics/request-intent";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
@@ -43,6 +45,12 @@ export default async function ConnectionsPage({ searchParams }: { searchParams: 
   // authority it runs under, and this is it. Pure reads, no network.
   const { status, accountsByConnectionId, intelligenceByConnectionId } =
     await withTenantDb(userId, (tx) => loadConnectionsSpaceData(tx, userId), { timeout: CONNECTIONS_PHASE_TIMEOUT_MS });
+  // The welcome records itself as shown HERE, on the server, so the one-time
+  // redirect can never repeat because a client call failed or was blocked.
+  // Idempotent; never on a prefetch; a failed write never breaks the page.
+  if (welcome && !(await isRouterPrefetch())) {
+    await recordOnboardingEvent(userId, "presented").catch((err) => console.error("[onboarding] presented marker failed:", err));
+  }
   const me = welcome
     ? await withTenantDb(userId, (tx) => tx.user.findUnique({ where: { id: userId }, select: { firstName: true, name: true } })).catch(() => null)
     : null;
