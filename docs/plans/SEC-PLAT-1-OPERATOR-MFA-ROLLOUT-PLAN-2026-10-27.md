@@ -49,6 +49,37 @@ ROLLBACK;
 
 ---
 
+## 2a. Exact steps for Preview's one unenrolled CONTROL operator (do these BEFORE activation)
+
+These steps work on Preview **today**, before SEC-PLAT-1 merges: enrolment is an existing feature and needs no deploy. Doing them first means activation changes nothing for this operator.
+
+**Before you start.** Have an authenticator app on your phone (1Password, Authy, Google Authenticator or similar) and a safe place for 10 recovery codes (a password manager entry, not the same phone). Preview custom domains sit behind Vercel SSO, so use the browser that is already signed in to Vercel.
+
+**Enrol (about 2 minutes):**
+1. Sign in to the Preview app (`https://preview-app.fourthmeridian.com`) as the operator account.
+2. Open **Settings → Security** (`/dashboard/settings/security`).
+3. Choose **Enable** in the two-factor section. The **"Set up two-factor authentication"** dialog opens.
+4. Scan the QR code with the authenticator app. If you can't scan it, type the manual key shown under the QR code.
+5. In **"Enter the 6-digit code from your app"**, type the current code and confirm.
+6. The dialog switches to **"Save your recovery codes"**. Copy all ten into your password manager **now**; they are shown once.
+7. Close the dialog. The section should read **"Two-factor authentication is now enabled."**
+
+**Confirm it took (aggregate, read-only):** re-run the §1 count on Preview. Expect `operators_without_totp = 0`.
+
+**Sign-in from now on:** after your password, enter the 6-digit code (or one unused recovery code).
+
+**If something goes wrong on Preview:**
+
+| Problem | What to do |
+|---|---|
+| The QR code won't scan | Use the manual key from step 4. |
+| "Invalid code" in step 5 | Check that the phone's clock is set automatically, wait for the next code, and try again. Verification allows ±1 time step. |
+| Lost the phone, still have recovery codes | Sign in with password + a recovery code. Then Settings → Security → turn 2FA off (Lost device: recovery code + password) and enrol again on the new phone. **Once SEC-PLAT-1 is active, turning 2FA off is refused for operators**, so use the next row instead. |
+| Lost the phone and the codes | A SYSTEM_ADMIN signs in to `/admin/security`, finds the account and chooses **Reset 2FA** (confirm with `RESET` + their own live TOTP code). Your sessions are revoked and you get an email. Sign in with your password and enrol again (steps 2–7). Your grants are untouched. |
+| No SYSTEM_ADMIN can sign in | The existing break-glass runbook applies (SYSTEM_ADMIN 2FA is mandatory and unchanged by SEC-PLAT-1). |
+
+---
+
 ## 3. Rollout sequence (each step needs owner approval)
 
 1. **Pre-enrol** every operator *before* activation:
