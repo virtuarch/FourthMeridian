@@ -14,12 +14,11 @@
  *   ③ Resilience     coverage · concentration · reachability mix (+ accessible cash, embedded)
  *   ④ Distribution   CashDistribution       — total cash by institution / account / type (donut)
  *   ⑤ Cash accounts  CashAccountsLedger     — every cash account, Available, status → AccountDetail
- *                    (+ the reconstructed as-of tiers ABOVE them when a past As-Of is selected)
  *   ⑥ What changed   the shell-bridged driver window → Cash Flow doorway
  *
  * v2.7 Cash accounts — the former Sources ledger (reachable-only rows by horizon) is
- * REPLACED by ④ + ⑤. They state TOTAL CASH (every checking + savings ledger balance,
- * restricted included — classifyAccounts' totalLiquid + totalRestrictedCash, the
+ * REPLACED by ④ + ⑤. They state TOTAL CASH (every checking + savings ADJUSTED balance —
+ * v2.7-P0 — restricted included: classifyAccounts' totalLiquid + totalRestrictedCash, the
  * net-worth "Cash" figure), and the ledger footer reconciles it to the Resilience
  * tile's ACCESSIBLE CASH (reachableNow) by pure subtraction of per-account figures.
  * The two are labelled distinctly and never conflated.
@@ -28,19 +27,16 @@
  * The account-array surfaces (the Hero headline, Cash accounts, Resilience) are the LIVE
  * CURRENT ANCHOR — per-account readings of money you can reach RIGHT NOW, sourced from the
  * visibility-filtered `accounts` array (they cannot be reconstructed per-account historically,
- * and are never faked into the past). The TEMPORAL layer rides ONE surface — the Sources block:
- *   • present day  → the current lens verdict (Hero) + the per-account Cash distribution/ledger.
- *   • historical   → the atAsOf lens verdict (Hero) + a reconstructed ladder from the canonical
- *                    atAsOf tier metrics (cashNow / marketable / illiquid), with per-tier delta
- *                    chips (compareTo → asOf) and the honest as-of trust envelope; the
- *                    distribution + ledger stay below it, labelled "Current balances".
+ * and are never faked into the past). The TEMPORAL layer is the hero + trend (and the lens
+ * verdict / trust envelope, read from the atAsOf lens):
+ *   • present day  → the current lens verdict + the per-account Cash distribution/ledger.
+ *   • historical   → the atAsOf lens verdict + trust; the distribution + ledger stay, labelled
+ *                    "Current balances". (v2.7 — the former reconstructed-tiers section, with
+ *                    its per-tier delta chips and "Net accessible change" row, was REMOVED at
+ *                    the owner's request; the historical contract/route is untouched.)
  *
  * The Hero SAYS this in a historical view (the headline is present-day; only the trend, verdict,
  * and trust honour the selected date) rather than letting a present-day figure pass as as-of.
- *
- * The Ladder RE-SURFACES computeLiquidity's tier metrics — it never re-partitions accounts or
- * recomputes a liquidity sum. Crypto is counted exactly once by the engine (the splice REPLACES
- * a wallet's held-flat estimate with its A8 value); this workspace inherits that and adds nothing.
  *
  * FX posture (no new authority): the current-anchor surfaces convert live balances through the
  * existing ConversionContext seam. The historical endpoints pass through the pure
@@ -68,7 +64,6 @@ import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { reachableNow, accessTotals } from "@/components/space/widgets/liquidity-adapters";
-import { HORIZON_COLOR, HORIZON_LABEL, HORIZON_META } from "./horizons";
 import { formatAggregateMoney, useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
@@ -99,20 +94,6 @@ import { describeExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 function fmtMoney(v: number, ctx?: ConversionContext): string {
   // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
   return formatAggregateMoney(v, ctx);
-}
-
-function fmtSigned(v: number, ctx?: ConversionContext): string {
-  const abs = fmtMoney(Math.abs(v), ctx);
-  return `${v >= 0 ? "+" : "−"}${abs}`;
-}
-
-/** Read one liquidity tier value out of a LensResult by metric id. A missing metric
- *  is a true zero for that tier (computeLiquidity omits availableCredit when no known
- *  limit exists); a non-ok endpoint contributes nothing. NEVER recomputes a sum. */
-function metricValue(lens: LensResult | null, id: string): number {
-  if (!lens || lens.status !== "ok") return 0;
-  const m = lens.metrics.find((x) => x.id === id);
-  return m && typeof m.value === "number" ? m.value : 0;
 }
 
 export function LiquidityWorkspace({
@@ -202,12 +183,8 @@ export function LiquidityWorkspace({
     [rawData, ctx],
   );
 
-  // Whether an FX conversion actually happened (display target ≠ reporting currency).
-  const fxConverted = !!(ctx && rawData && rawData.reportingCurrency !== ctx.target);
-
   const atAsOf = data?.atAsOf ?? null;
   const showAsOf = atAsOf != null && atAsOf.status === "ok";
-  const delta = data?.delta ?? null;
   // The lens the lede reads: the reconstructed as-of lens when historical, else the live
   // current lens (data.current === the host present lens present-day).
   const ledeLens: LensResult | null = showAsOf ? atAsOf : (data?.current ?? null);
@@ -495,19 +472,10 @@ export function LiquidityWorkspace({
       </Block>
 
       {/* ④ Distribution + ⑤ Cash accounts (v2.7) — present-day TOTAL CASH by where
-          it is held. Historical: the reconstructed as-of tiers lead (labelled as
-          reconstructed, as before) and the distribution + ledger below them are
-          labelled "Current balances" — never presented as as-of. */}
+          it is held. Historical As-Of: no reconstructed tier section (removed at
+          the owner's request) — the hero + trend honour the As-Of, and the
+          distribution + ledger are labelled "Current balances", never as-of. */}
       <div id="liquidity-sources" className="scroll-mt-20 space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!">
-        {showAsOf && (
-          <Block
-            id="liquidity-reconstructed"
-            label="Reconstructed tiers"
-            action={<span className="text-[11px] text-[var(--text-faint)]">Reconstructed as of {formatDate(asOf)}</span>}
-          >
-            {renderHistoricalTiers()}
-          </Block>
-        )}
         <Block
           id="liquidity-distribution"
           label="Cash distribution"
@@ -553,82 +521,6 @@ export function LiquidityWorkspace({
       )}
     </div>
   );
-
-  // ── Historical Sources — reconstructed as-of tiers ─────────────────────────────────────
-  // Re-surface the canonical atAsOf tier metrics (NEVER a re-partition of accounts): cashNow →
-  // Available now, marketable → Available in days, illiquid → Illiquid. Same tier vocabulary +
-  // colors as the live ledger. Per-account historical rows are not carried by the contract, so
-  // the ledger honestly degrades to tier totals + delta chips here (said in the block header).
-  function renderHistoricalTiers(): ReactNode {
-    const tiers = [
-      { id: "now",        label: HORIZON_LABEL.now,        color: HORIZON_COLOR.now,        meta: HORIZON_META.now,        value: metricValue(atAsOf, "cashNow"),    d: delta?.cashNow },
-      { id: "days",       label: HORIZON_LABEL.days,       color: HORIZON_COLOR.days,       meta: HORIZON_META.days,       value: metricValue(atAsOf, "marketable"), d: delta?.marketable },
-      { id: "restricted", label: HORIZON_LABEL.restricted, color: HORIZON_COLOR.restricted, meta: HORIZON_META.restricted, value: metricValue(atAsOf, "restricted"), d: delta?.restricted },
-      { id: "unverified", label: HORIZON_LABEL.unverified, color: HORIZON_COLOR.unverified, meta: HORIZON_META.unverified, value: metricValue(atAsOf, "unverified"), d: delta?.unverified },
-      { id: "illiquid",   label: HORIZON_LABEL.illiquid,   color: HORIZON_COLOR.illiquid,   meta: HORIZON_META.illiquid,   value: metricValue(atAsOf, "illiquid"),   d: delta?.illiquid },
-    ].filter((t) => t.value !== 0 || (t.d != null && t.d !== 0));
-
-    const credit = metricValue(atAsOf, "availableCredit");
-
-    return (
-      <div className="space-y-3">
-        <p className="text-[11px] text-[var(--text-faint)]">
-          Tier totals reconstructed for {formatDate(asOf)}
-          {delta && <> · change since {formatDate(delta.from)}</>}
-          {fxConverted && ctx && (
-            <> · shown in {ctx.target}{atAsOf?.estimated ? " (some rates estimated)" : ""}</>
-          )}
-          {" · "}per-account detail is current only.
-        </p>
-        {tiers.map((tier) => (
-          <Surface key={tier.id} className="p-3">
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="flex items-center gap-2 min-w-0">
-                <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: tier.color }} />
-                <span className="text-sm font-medium text-[var(--text-primary)] truncate">{tier.label}</span>
-              </span>
-              <span className="flex items-baseline gap-2 shrink-0">
-                {tier.d != null && tier.d !== 0 && (
-                  <span className="text-[11px] tabular-nums" style={{ color: tier.d >= 0 ? "var(--accent-positive, #22c55e)" : "#ef4444" }}>
-                    {fmtSigned(tier.d, ctx)}
-                  </span>
-                )}
-                <span className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">{fmtMoney(tier.value, ctx)}</span>
-              </span>
-            </div>
-            <p className="text-[10px] text-[var(--text-faint)] mt-0.5">{tier.meta}</p>
-          </Surface>
-        ))}
-
-        {/* Net accessible change — Δcash + Δmarketable + Δilliquid (credit EXCLUDED). */}
-        {delta && (
-          <Surface tone="sunken" className="px-3 py-2 flex items-center justify-between gap-2">
-            <span className="text-[11px] uppercase tracking-wide text-[var(--text-faint)]">Net accessible change</span>
-            <span className="text-sm font-semibold tabular-nums" style={{ color: delta.net >= 0 ? "var(--accent-positive, #22c55e)" : "#ef4444" }}>
-              {fmtSigned(delta.net, ctx)}
-            </span>
-          </Surface>
-        )}
-
-        {/* Unused credit — borrowing capacity, NEVER counted as liquidity (doctrine). */}
-        {credit > 0 && (
-          <p className="text-[10px] text-[var(--text-faint)]">
-            Unused credit (borrowing capacity, not liquidity): {fmtMoney(credit, ctx)}
-          </p>
-        )}
-
-        {error && (
-          <button
-            type="button"
-            onClick={reload}
-            className="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-          >
-            <RefreshCw size={11} /> Couldn&rsquo;t load as-of liquidity — retry
-          </button>
-        )}
-      </div>
-    );
-  }
 }
 
 /** The quiet in-Surface heading (Block owns the section label; this labels a sub-panel). */

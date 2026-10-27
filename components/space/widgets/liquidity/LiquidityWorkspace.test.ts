@@ -73,7 +73,9 @@ console.log("1. WORKSPACE BOUNDARY — owns the data, consumes the contract, no 
   check("Workspace owns the hook (calls useLiquiditySpaceData)", CODE.includes("useLiquiditySpaceData("));
   check("Workspace consumes LiquiditySpaceData.current", CODE.includes("data?.current") || CODE.includes("data.current"));
   check("Workspace consumes LiquiditySpaceData.atAsOf", CODE.includes("data?.atAsOf"));
-  check("Workspace consumes LiquiditySpaceData.delta", CODE.includes("data?.delta"));
+  // DELIBERATE (owner, v2.7-P0 PR): `delta` fed only the removed reconstructed
+  // tiers; the workspace no longer renders it (the contract still carries it).
+  check("Workspace no longer renders LiquiditySpaceData.delta (tiers removed)", !CODE.includes("data?.delta"));
   // Trust is presented via the shared TrustIndicator over the SAME canonical envelope the
   // workspace resolves — now rendered inside the extracted Hero (the editorial lede), which
   // receives the envelope as a prop (one authority, two consumers can't disagree).
@@ -89,14 +91,16 @@ console.log("1. WORKSPACE BOUNDARY — owns the data, consumes the contract, no 
     !CODE.includes("components/space/widgets/investments/"));
 }
 
-console.log("2. TEMPORAL activation — Ladder from atAsOf metrics + delta; hook fetches the contract");
+console.log("2. TEMPORAL activation — hero/trend/verdict honour the As-Of; hook fetches the contract");
 {
-  // The historical Ladder RE-SURFACES the canonical tier metrics (never a sum).
-  check("Ladder reads atAsOf cashNow metric", CODE.includes('metricValue(atAsOf, "cashNow")'));
-  check("Ladder reads atAsOf marketable metric", CODE.includes('metricValue(atAsOf, "marketable")'));
-  check("Ladder reads atAsOf illiquid metric", CODE.includes('metricValue(atAsOf, "illiquid")'));
-  check("Ladder renders a per-tier delta chip", CODE.includes("delta?.cashNow") && CODE.includes("delta?.marketable") && CODE.includes("delta?.illiquid"));
-  check("Ladder renders the net accessible change", CODE.includes("delta.net"));
+  // DELIBERATE (owner, v2.7-P0 PR): the reconstructed-tiers Ladder (atAsOf tier
+  // metrics, per-tier delta chips, "Net accessible change") is REMOVED from the
+  // Cash page. The historical contract is still read for the verdict + trust.
+  check("no reconstructed-tiers section (no renderHistoricalTiers, no liquidity-reconstructed block)",
+    !CODE.includes("renderHistoricalTiers") && !CODE.includes('id="liquidity-reconstructed"') && !CODE.includes("Reconstructed tiers"));
+  check("no per-tier delta chips / net accessible change", !CODE.includes("delta?.cashNow") && !CODE.includes("delta.net") && !CODE.includes("Net accessible change"));
+  check("the atAsOf lens still drives the verdict + trust envelope in a historical view",
+    CODE.includes("showAsOf ? atAsOf : (data?.current ?? null)") && CODE.includes("resolvePerspectiveEnvelope"));
   // The hook composes the WHOLE contract from the route (historical) / host lens (present).
   check("hook fetches the full contract (space-data route)", HOOKC.includes("/liquidity/space-data"));
   check("hook synthesizes present-day via assembleLiquiditySpaceData (no fetch)", HOOKC.includes("assembleLiquiditySpaceData("));
@@ -107,10 +111,8 @@ console.log("2. TEMPORAL activation — Ladder from atAsOf metrics + delta; hook
   check("hook sends compareTo only when strictly earlier", HOOKC.includes("compareTo < asOf"));
 }
 
-console.log("3. CANONICAL TIERS — re-surface, never re-partition or rail-classify on the historical path");
+console.log("3. NO historical re-partition — the workspace computes no tier of its own");
 {
-  // metricValue reads a named metric out of a LensResult; it must NOT sum balances.
-  check("metricValue reads lens.metrics (no re-sum)", CODE.includes("lens.metrics.find"));
   check("no historical liquidity recomputation (no computeLiquidity)", !CODE.includes("computeLiquidity"));
   check("no splice engine in the workspace", !CODE.includes("spliceLiquidityRows") && !CODE.includes("historical-splice"));
   // Payment-app rail is never a liquidity classifier here (doctrine §8).
@@ -146,11 +148,11 @@ console.log("5. Trust PRESENTED via the canonical envelope, not recomputed");
 
 console.log("6. Net EXCLUDES credit (liquidity.core doctrine)");
 {
-  // The workspace never adds availableCredit into net — it re-surfaces delta.net
-  // (which the pure contract computes credit-excluded) and shows credit separately.
-  check("credit shown separately (not in a liquidity sum)", CODE.includes('metricValue(atAsOf, "availableCredit")'));
-  check("net is the contract's delta.net (never recomputed with credit)",
-    CODE.includes("delta.net") && !/delta\.net\s*\+\s*.*credit/i.test(CODE));
+  // DELIBERATE (owner, v2.7-P0 PR): the reconstructed tiers (which showed unused
+  // credit separately and the contract's delta.net) are removed; the workspace now
+  // states no credit figure and no net at all — so credit can never enter one.
+  check("credit never enters a liquidity figure (no availableCredit read at all)", !CODE.includes("availableCredit"));
+  check("no recomputed net (delta.net no longer rendered)", !CODE.includes("delta.net"));
 }
 
 console.log("7. FX correctness — historical values CONVERTED (no symbol-only relabel), no bespoke FX");
@@ -162,7 +164,10 @@ console.log("7. FX correctness — historical values CONVERTED (no symbol-only r
   check("workspace applies convertLiquiditySpaceData over the contract", CODE.includes("convertLiquiditySpaceData("));
   check("workspace performs no bespoke FX (no convertMoney / no second rate source)", !CODE.includes("convertMoney"));
   // Honest provenance when a conversion actually happened (view-as override).
-  check("workspace surfaces an FX-basis note (fxConverted)", CODE.includes("fxConverted"));
+  // DELIBERATE (owner, v2.7-P0 PR): the FX-basis note lived in the removed
+  // reconstructed-tiers section; the converted historical endpoints now feed only
+  // the verdict/trust (the adapter below stays the per-date authority).
+  check("no orphaned FX-basis flag after the tiers removal", !CODE.includes("fxConverted"));
   // The adapter is the per-date authority; the workspace must not relabel by symbol only.
   const ADAPTER = strip(read("lib/liquidity/display-conversion.ts"));
   check("adapter identity when target === reportingCurrency (no relabel path)",
@@ -316,9 +321,12 @@ console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Cash accounts (
     DISTRIB.includes("<BreakdownWidget") && DISTRIB.includes('label: "Total cash"'));
   check("historical: the distribution + ledger are labelled Current balances (never as-of)",
     (CODE.match(/Current balances/g) ?? []).length >= 2 && CODE.includes("historical ?"));
-  // The historical branch degrades honestly to tier totals (no faked per-account rows).
-  check("historical Sources says per-account detail is current only",
-    CODE.includes("per-account detail is current only"));
+  // DELIBERATE (owner): with the reconstructed tiers gone, a historical view shows
+  // NO as-of per-account claim at all — the Current balances labels say so.
+  check("historical: Cash distribution action reads Current balances (else Total cash)",
+    CODE.includes('{historical ? "Current balances" : "Total cash"}'));
+  check("historical: Cash accounts action reads Current balances",
+    CODE.includes('action={historical ? <span className="text-[11px] text-[var(--text-faint)]">Current balances</span> : undefined}'));
 }
 
 if (failures > 0) { console.error(`\n${failures} LiquidityWorkspace check(s) failed`); process.exit(1); }
