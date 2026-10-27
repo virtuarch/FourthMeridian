@@ -39,10 +39,17 @@
  * ── The write ───────────────────────────────────────────────────────────────
  *
  * One `$transaction`, one guarded `updateMany` per row. The guard re-states the
- * row's BEFORE shape (flowType, flowAuthority, classificationReason, category,
- * live, not a human category), so a row that changed between plan and write —
- * a concurrent sync, a user override — is left alone and reported as a
- * conflict, and a second run finds nothing to do.
+ * row's BEFORE shape (flowType, flowAuthority, classificationReason,
+ * classificationConfidence, category, live, not a human category), so a row
+ * that changed between plan and write — a concurrent sync, a user override — is
+ * left alone and reported as a conflict, and a second run finds nothing to do.
+ *
+ * v2.7-P1 repair readiness: `correctionGuardWhere` is exported so the historical
+ * repair's strict applier uses the SAME guard. The repair adds the classifier's
+ * version column to it itself (this file must never name that column — see the
+ * approved-exception check in flow-classifier-authority.test.ts), so its restore
+ * record holds exactly what a successful write overwrote
+ * (scripts/lib/repair-transfer-debt-payment.core.ts).
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
@@ -283,6 +290,25 @@ export function correctionWriteData(p: PlannedCorrection): Prisma.TransactionUpd
 }
 
 /**
+ * The write guard for one planned correction: the row's BEFORE shape (every
+ * written column except the classifier's version, which the repair adds), live,
+ * and not a human's category. Exported so
+ * the historical repair's strict (all-or-nothing) applier uses the SAME guard.
+ */
+export function correctionGuardWhere(p: PlannedCorrection): Prisma.TransactionWhereInput {
+  return {
+    id: p.row.id,
+    deletedAt: null,
+    flowType: p.before.flowType as never,
+    flowAuthority: p.before.flowAuthority as never,
+    classificationReason: p.before.classificationReason as never,
+    classificationConfidence: p.before.classificationConfidence,
+    category: p.before.category as never,
+    OR: [{ categorySource: null }, { categorySource: { notIn: [...USER_CATEGORY_SOURCES] as never } }],
+  } as Prisma.TransactionWhereInput;
+}
+
+/**
  * Apply a plan. ONE database transaction; each row's write is guarded by its own
  * BEFORE shape, so the call is idempotent and never overwrites a concurrent
  * change or a human's category.
@@ -298,15 +324,7 @@ export async function applyTransferDebtPaymentCorrections(
     assertMayWriteFlow(p.before.flowAuthority as FlowAuthorityName | null, WRITER, "transfer-debt-payment-correction", CLAIMS);
   }
   const ops = writes.map((p) => client.transaction.updateMany({
-    where: {
-      id: p.row.id,
-      deletedAt: null,
-      flowType: p.before.flowType as never,
-      flowAuthority: p.before.flowAuthority as never,
-      classificationReason: p.before.classificationReason as never,
-      category: p.before.category as never,
-      OR: [{ categorySource: null }, { categorySource: { notIn: [...USER_CATEGORY_SOURCES] as never } }],
-    },
+    where: correctionGuardWhere(p),
     data: correctionWriteData(p),
   }));
   const results = await client.$transaction(ops as never) as unknown as { count: number }[];
