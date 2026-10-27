@@ -265,5 +265,14 @@ console.log("\n8. Utilization in words · Markets sub-views");
   check("Net Worth's children are unchanged", JSON.stringify(publishedWorkspaceChildren(NET_WORTH_LENS_ID)) === JSON.stringify(workspaceChildren(NET_WORTH_LENS_ID)));
 }
 
+// Browser finding (local build, 375–430px): the flow note gained "Change vs …"
+// once a heatmap period was pinned and wrapped one line longer, moving the
+// Activity controls down 15px. The note box is now a fixed three-line height.
+{
+  const card = readFileSync(path.join(process.cwd(), "components/space/compact/CompactHeroCard.tsx"), "utf8");
+  check("compact hero note box has a fixed height (h-[45px] + line-clamp-3), so a comparison label can't shift the page",
+    /className="[^"]*\bh-\[45px\][^"]*line-clamp-3[^"]*"[\s\S]{0,120}data-compact-hero-note/.test(card));
+}
+
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

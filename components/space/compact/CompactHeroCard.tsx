@@ -138,7 +138,17 @@ export function CompactHeroCard({
         </div>
       </section>
       {note && (
-        <p className="mt-2 px-1 text-[11px] leading-snug text-[var(--text-muted)]" data-compact-hero-note>{note}</p>
+        // FIXED three-line box: the note gains "Change vs <window> · " once a
+        // comparison exists (e.g. a heatmap period is pinned), which wrapped it one
+        // line longer and pushed the Activity controls down 15px on phones. The box
+        // never changes height; overflow clamps (full text in the title).
+        <p
+          className="mt-2 h-[45px] overflow-hidden px-1 text-[11px] leading-[15px] text-[var(--text-muted)] line-clamp-3"
+          title={typeof note === "string" ? note : undefined}
+          data-compact-hero-note
+        >
+          {note}
+        </p>
       )}
     </div>
   );
