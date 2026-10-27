@@ -334,7 +334,8 @@ export function ConnectionsList({
         </div>
       )}
 
-      <Surface className="overflow-hidden">
+      {/* No overflow-hidden: it clipped each row's ⋯ menu (Preview 2026-10-28). */}
+      <Surface>
         <ul aria-label="Connections" className="divide-y divide-[var(--border-hairline)]">
           {ordered.map((c) => (
             <ConnectionRow

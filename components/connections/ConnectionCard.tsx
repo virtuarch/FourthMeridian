@@ -603,8 +603,12 @@ function SourceHealthLine({ intelligence }: { intelligence?: ConnectionIntellige
  * current fact, it survives a valuation or history outage, and it was the one
  * thing the card could not say during the incident.
  */
-function FreshnessRows({ intelligence }: { intelligence: ConnectionIntelligenceStatus }) {
-  const isWallet = intelligence.valuationIsReadTime || intelligence.positionObservedAt !== null;
+function FreshnessRows({ intelligence, provider }: { intelligence: ConnectionIntelligenceStatus; provider: SyncConnection["provider"] }) {
+  // THE PROVIDER DECIDES THE FACETS, not the presence of a clock: a Plaid Item
+  // with Investments also has position observations (holdings), and inferring
+  // "wallet" from that showed a bank "Position" and "USD valuation" rows
+  // (Preview 2026-10-28, Chase sandbox).
+  const isWallet = provider === "WALLET";
   const rows: Array<{ label: string; verb: string; iso: string | null }> = isWallet
     ? [
         // The quantity actually observed on-chain — independent of pricing.
@@ -664,7 +668,7 @@ function ReadyContent({
       {/* CONN-3 — three unambiguous freshness lines when intelligence data is
           present; otherwise the pre-CONN-3 single "Last synced" fallback. */}
       {intelligence ? (
-        <FreshnessRows intelligence={intelligence} />
+        <FreshnessRows intelligence={intelligence} provider={connection.provider} />
       ) : (
         lastSyncedAt && (
           <p className="mt-0.5 mb-4 text-sm text-[var(--text-muted)]">
