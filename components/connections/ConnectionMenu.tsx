@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { MoreHorizontal, RefreshCw, Sparkles, Unplug } from "lucide-react";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
+import { connectionActionError } from "@/lib/connections/action-errors";
 import type { SyncConnection } from "@/lib/sync/status";
 import type { LucideIcon } from "lucide-react";
 
@@ -66,9 +67,12 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
   async function post(url: string, body: unknown): Promise<string | null> {
     try {
       const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await res.json().catch(() => null) as { error?: unknown; enabled?: unknown } | null;
+      // The rebuild route answers 200 {enabled:false} when rebuilding is switched
+      // off. That is a refusal, not a success — say so instead of going quiet.
+      if (res.ok && data?.enabled === false) return "Rebuilding is unavailable right now. Your existing history is unchanged.";
       if (res.ok) return null;
-      const data = await res.json().catch(() => null) as { error?: unknown } | null;
-      return typeof data?.error === "string" && data.error ? data.error : `The request failed (${res.status}).`;
+      return connectionActionError(data?.error) ?? `The request failed (${res.status}).`;
     } catch {
       return "Could not reach Fourth Meridian. Check your connection and try again.";
     }

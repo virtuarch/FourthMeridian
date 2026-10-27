@@ -11,10 +11,9 @@
  *                           vehicle or valuable the user values themselves — a
  *                           first-class asset, not a provider connection)
  *
- * Visual language matches the Daily Brief hero CTAs (BriefHero): useAtlasLiquid()
- * picks the Liquid CTA (AtlasLiquidCta) when supported, else the Atlas Glass
- * fallback (GlassButton). Responsive: on mobile the actions stack full-width so
- * labels never truncate; on sm+ they sit inline at content width.
+ * Connections redesign — the Personal button language (GlassButton), no Liquid
+ * WebGL CTA. Responsive: on mobile the actions stack full-width so labels never
+ * truncate; on sm+ they sit inline at content width.
  *
  * Reuses existing primitives only — no wallet/Plaid logic here, no new material.
  */
@@ -23,8 +22,6 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Building2, Wallet, Loader2, Home } from "lucide-react";
 import { usePlaid } from "@/context/PlaidContext";
-import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
-import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
@@ -42,7 +39,6 @@ interface Props {
 export function ConnectionsActions({ centered = false, plaidEnabled = true }: Props) {
   const router = useRouter();
   const { openLink, isLoading, error } = usePlaid();
-  const liquid = useAtlasLiquid();
   const [walletOpen, setWalletOpen] = useState(false);
   const [assetOpen, setAssetOpen] = useState(false);
 
@@ -84,35 +80,19 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
             <Building2 size={16} className="shrink-0 text-[var(--text-muted)]" />
             <span>Bank connections are being set up — check back soon.</span>
           </div>
-        ) : liquid ? (
-          <AtlasLiquidCta onClick={() => openLink()} ariaLabel="Connect a bank or institution">
-            {connectContent}
-          </AtlasLiquidCta>
         ) : (
           <GlassButton tone="meridian" fullWidth className="sm:w-auto" onClick={() => openLink()} disabled={isLoading}>
             {connectContent}
           </GlassButton>
         )}
 
-        {liquid ? (
-          <AtlasLiquidCta onClick={() => setWalletOpen(true)} ariaLabel="Add a wallet">
-            {walletContent}
-          </AtlasLiquidCta>
-        ) : (
-          <GlassButton tone="neutral" fullWidth className="sm:w-auto" onClick={() => setWalletOpen(true)}>
-            {walletContent}
-          </GlassButton>
-        )}
+        <GlassButton tone="neutral" fullWidth className="sm:w-auto" onClick={() => setWalletOpen(true)}>
+          {walletContent}
+        </GlassButton>
 
-        {liquid ? (
-          <AtlasLiquidCta onClick={() => setAssetOpen(true)} ariaLabel="Add a home, vehicle or other asset">
-            {assetContent}
-          </AtlasLiquidCta>
-        ) : (
-          <GlassButton tone="neutral" fullWidth className="sm:w-auto" onClick={() => setAssetOpen(true)}>
-            {assetContent}
-          </GlassButton>
-        )}
+        <GlassButton tone="neutral" fullWidth className="sm:w-auto" onClick={() => setAssetOpen(true)}>
+          {assetContent}
+        </GlassButton>
       </div>
 
       {error && (
