@@ -11,11 +11,12 @@
  *   ① Summary        LiquidityHero          — accessible cash + coverage + window delta + trust
  *                                             (standalone only — see OVERVIEW-CONSOLIDATION)
  *   ② Balance history LiquidityBalanceHistory — the cashNow tier over time (shared TrendChart)
- *   ③ Resilience     coverage · concentration · reachability mix (+ accessible cash, embedded)
- *   ④ Distribution   CashDistribution       — total cash by account / institution / type (donut;
- *                                             grouping Dropdown in the Block header, default account)
- *   ⑤ Cash accounts  CashAccountsLedger     — every cash account, Available, status → AccountDetail
- *   ⑥ What changed   the shell-bridged driver window → Cash Flow doorway
+ *   ③ Cash distribution — ONE section under the chart (like every page's
+ *                     composition): grouping Dropdown (default By account) → donut
+ *                     (CashDistribution) → accounts ledger (CashAccountsLedger, rows →
+ *                     AccountDetail) → its reconciliation footer
+ *   ④ Resilience     coverage · concentration · reachability mix (+ accessible cash, embedded)
+ *   ⑤ What changed   the shell-bridged driver window → Cash Flow doorway
  *
  * v2.7 Cash accounts — the former Sources ledger (reachable-only rows by horizon) is
  * REPLACED by ④ + ⑤. They state TOTAL CASH (every checking + savings ADJUSTED balance —
@@ -382,7 +383,33 @@ export function LiquidityWorkspace({
         </div>
       )}
 
-      {/* ③ Resilience & Risk — directly under the chart, always visible (v2.7
+      {/* ③ Cash distribution (v2.7) — ONE section directly under the chart, like
+          every other page's composition: the grouping Dropdown in the header,
+          the donut, the accounts ledger immediately beneath it, and the ledger's
+          reconciliation footer. Present-day TOTAL CASH; in a historical As-Of
+          both say "Current balances", never as-of. Nothing sits between the
+          donut and the ledger. */}
+      <div id="liquidity-sources" className="scroll-mt-20 min-w-0">
+        <Block
+          id="liquidity-distribution"
+          label="Cash distribution"
+          hint={<span className="text-[11px] text-[var(--text-faint)]">{historical ? "Current balances" : "Total cash"}</span>}
+          action={<Dropdown options={CASH_GROUPINGS} value={cashGrouping} onChange={setCashGrouping} ariaLabel="Cash distribution grouping" />}
+        >
+          <CashDistribution summary={cashAccounts} currency={displayCurrency} grouping={cashGrouping} />
+          <div id="liquidity-accounts" className="mt-4 scroll-mt-20 min-w-0" aria-label={`Cash accounts, ${cashAccounts.accountCount}`}>
+            <CashAccountsLedger
+              spaceId={spaceId}
+              accounts={accounts}
+              summary={cashAccounts}
+              ctx={ctx}
+              currency={displayCurrency}
+            />
+          </div>
+        </Block>
+      </div>
+
+      {/* ④ Resilience & Risk — directly under the chart, always visible (v2.7
           visual-first): coverage, cash concentration, reachability mix and,
           embedded, the accessible-cash figure (present-day anchor). */}
       <Block id="liquidity-resilience" label="Resilience & risk">
@@ -478,36 +505,7 @@ export function LiquidityWorkspace({
         </div>
       </Block>
 
-      {/* ④ Distribution + ⑤ Cash accounts (v2.7) — present-day TOTAL CASH by where
-          it is held. Historical As-Of: no reconstructed tier section (removed at
-          the owner's request) — the hero + trend honour the As-Of, and the
-          distribution + ledger are labelled "Current balances", never as-of. */}
-      <div id="liquidity-sources" className="scroll-mt-20 space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!">
-        <Block
-          id="liquidity-distribution"
-          label="Cash distribution"
-          hint={<span className="text-[11px] text-[var(--text-faint)]">{historical ? "Current balances" : "Total cash"}</span>}
-          action={<Dropdown options={CASH_GROUPINGS} value={cashGrouping} onChange={setCashGrouping} ariaLabel="Cash distribution grouping" />}
-        >
-          <CashDistribution summary={cashAccounts} currency={displayCurrency} grouping={cashGrouping} />
-        </Block>
-        <Block
-          id="liquidity-accounts"
-          label="Cash accounts"
-          hint={<span className="text-[11px] tabular-nums text-[var(--text-faint)]">{cashAccounts.accountCount}</span>}
-          action={historical ? <span className="text-[11px] text-[var(--text-faint)]">Current balances</span> : undefined}
-        >
-          <CashAccountsLedger
-            spaceId={spaceId}
-            accounts={accounts}
-            summary={cashAccounts}
-            ctx={ctx}
-            currency={displayCurrency}
-          />
-        </Block>
-      </div>
-
-      {/* ⑥ What changed — every liquidity driver for the shell-bridged window, with a
+      {/* ⑤ What changed — every liquidity driver for the shell-bridged window, with a
            doorway to the Cash Flow workspace. CURRENT ANCHOR (window relative to today).
            Fully visible at every width (v2.7 visual-first: no disclosure, no top-N cut). */}
       {period && (

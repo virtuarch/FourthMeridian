@@ -320,13 +320,17 @@ console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Cash accounts (
   check("the donut reuses the shared BreakdownWidget, centred on TOTAL CASH",
     DISTRIB.includes("<BreakdownWidget") && DISTRIB.includes('label: "Total cash"'));
   check("historical: the distribution + ledger are labelled Current balances (never as-of)",
-    (CODE.match(/Current balances/g) ?? []).length >= 2 && CODE.includes("historical ?"));
+    (CODE.match(/Current balances/g) ?? []).length >= 1 && CODE.includes('{historical ? "Current balances" : "Total cash"}'));
   // DELIBERATE (owner): with the reconstructed tiers gone, a historical view shows
   // NO as-of per-account claim at all — the Current balances labels say so.
   check("historical: Cash distribution action reads Current balances (else Total cash)",
     CODE.includes('{historical ? "Current balances" : "Total cash"}'));
-  check("historical: Cash accounts action reads Current balances",
-    CODE.includes('action={historical ? <span className="text-[11px] text-[var(--text-faint)]">Current balances</span> : undefined}'));
+  // DELIBERATE (owner, v2.7 Cash layout): the ledger now lives INSIDE the Cash
+  // distribution section, so that section's one label covers both.
+  check("historical: the ledger sits inside the section whose label reads Current balances",
+    CODE.indexOf('{historical ? "Current balances" : "Total cash"}') < CODE.indexOf("<CashAccountsLedger")
+      && CODE.indexOf('id="liquidity-distribution"') < CODE.indexOf('id="liquidity-accounts"')
+      && CODE.indexOf('id="liquidity-accounts"') < CODE.indexOf('id="liquidity-resilience"'));
 }
 
 if (failures > 0) { console.error(`\n${failures} LiquidityWorkspace check(s) failed`); process.exit(1); }

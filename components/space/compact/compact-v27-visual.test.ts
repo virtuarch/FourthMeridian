@@ -62,12 +62,17 @@ console.log("1. section order per view");
   const body = WW.slice(WW.indexOf("const assetsSectionsBody"));
   const assets = inOrder(body, ['{show.cash && (', 'id="wealth-cash"', '{show.investments && (', 'id="wealth-investments"', '{show.realAssets && (', 'id="wealth-real-assets"']);
   check("Assets sections: Cash · Investments · Real assets, each gated by its slice", assets.ok, assets.detail);
-  const cash = inOrder(LIQ, ['id="liquidity-resilience"', "Emergency coverage", "Cash concentration", "Reachability", "data-accessible-cash", 'id="liquidity-sources"', 'id="liquidity-distribution"', "<CashDistribution", 'id="liquidity-accounts"', "<CashAccountsLedger", 'id="liquidity-activity"', "<TransactionCoverageNote", "<LiquidityWhatChangedCard"]);
+  // DELIBERATE (owner, v2.7 Cash layout): Cash distribution is ONE section
+  // directly under the chart — Dropdown → donut → accounts ledger (+ its
+  // reconciliation footer) — then Resilience, then What changed.
+  const cash = inOrder(LIQ, ['id="liquidity-history"', 'id="liquidity-sources"', 'id="liquidity-distribution"', 'ariaLabel="Cash distribution grouping"', "<CashDistribution", 'id="liquidity-accounts"', "<CashAccountsLedger", 'id="liquidity-resilience"', "Emergency coverage", "Cash concentration", "Reachability", "data-accessible-cash", 'id="liquidity-activity"', "<TransactionCoverageNote", "<LiquidityWhatChangedCard"]);
   // v2.7 Cash accounts — DELIBERATE (owner): the Sources ledger is replaced by
   // Cash distribution → Cash accounts. DELIBERATE (owner, v2.7-P0 PR): the
   // reconstructed as-of tiers section is REMOVED — a historical As-Of shows the
   // same sections, with the per-account ones labelled "Current balances".
-  check("Cash: Resilience (coverage · concentration · reachability · accessible cash) → Cash distribution → Cash accounts → What changed (+ coverage note)", cash.ok, cash.detail);
+  check("Cash: chart → Cash distribution (Dropdown → donut → accounts ledger) → Resilience → What changed (+ coverage note)", cash.ok, cash.detail);
+  const between = LIQ.slice(LIQ.indexOf("<CashDistribution"), LIQ.indexOf("<CashAccountsLedger"));
+  check("Cash: nothing between the donut and the ledger (no Block / Surface / banner)", !/<Block|<Surface|<TrustIndicator|Notice/.test(between), between);
   check("Cash: no reconstructed-tiers section", !LIQ.includes('id="liquidity-reconstructed"') && !LIQ.includes("renderHistoricalTiers"));
   check("Cash: the resilience grid is 2-up on compact, 4-up on desktop when embedded",
     /grid grid-cols-2 gap-3 sm:gap-4 items-stretch min-w-0 \$\{embedded \? "lg:grid-cols-4" : "lg:grid-cols-3"\}/.test(LIQ));
