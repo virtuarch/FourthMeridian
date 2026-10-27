@@ -40,14 +40,16 @@
  *
  *   platform — the granted Platform list (PlatformNav) LEADS; then, inside a
  *              Platform Space, the Space block + its Sections as above; then a
- *              single "Personal Spaces" exit row back to the launcher; then the
- *              site nav RETAINED under a hairline — demoted, never removed.
- *              Desktop has no BottomNav, so Brief / My Space / AI / Connections
- *              must stay one click away even here (the either/or regression
- *              site-nav-in-space.test.ts pins is not reintroduced on this axis).
+ *              single "Personal Spaces" exit row back to the launcher.
+ *              P-1 (owner-approved separate Platform shell, 2026-10-27): the
+ *              personal site nav is NO LONGER rendered in the platform context
+ *              (it was retained, demoted, under Phase B). The way back is one
+ *              click on every width: the exit row here and the header's
+ *              Personal | Platform switch. Personal context is unchanged byte
+ *              for byte (components/ui/personal-nav-baseline.test.ts).
  *
- * It is a REORDERING, not a duplication: PrimaryNav is still mounted exactly
- * twice (once per mode), PlatformNav exactly twice, PRIMARY_NAV mapped once,
+ * PrimaryNav is still mounted exactly twice in source (once per mode, both on
+ * the personal context), PlatformNav exactly twice, PRIMARY_NAV mapped once,
  * /api/spaces fetched once. Inside a PERSONAL Space nothing changes (D2: no
  * operator door in a member's room).
  *
@@ -153,7 +155,7 @@ function workspaceIcon(item: { id: string; icon?: string }): LucideIcon | undefi
   return (item.icon ? WORKSPACE_ICONS_BY_NAME[item.icon] : undefined) ?? WORKSPACE_ICONS[item.id];
 }
 
-type PlatformItem = { id: string; name: string; platformArea: string };
+export type PlatformItem = { id: string; name: string; platformArea: string };
 
 /** The ONLY route that renders a platform HQ Space (app/(shell)/dashboard/platform/[area]). */
 const PLATFORM_ROUTE_PREFIX = "/dashboard/platform/";
@@ -180,7 +182,9 @@ export function isPlatformSpaceRoute(pathname: string | null | undefined): boole
  * `enabled` exists because Space mode only wants this on the platform axis;
  * disabled it performs no network work at all (hooks can't be conditional).
  */
-function usePlatformDestinations(enabled: boolean): PlatformItem[] {
+/** The granted Platform areas (GET /api/spaces → data.platform). Exported for the
+ *  mobile bar's Platform presentation (BottomNav); the ONE fetch site stays here. */
+export function usePlatformDestinations(enabled: boolean): PlatformItem[] {
   const [platform, setPlatform] = useState<PlatformItem[]>([]);
 
   // State is set only from the fetch callback (external-subscription shape), so a
@@ -458,14 +462,6 @@ function PersonalSpacesExit() {
  * position only — same block, same five, same active rule — so the operator
  * never loses Fourth Meridian on desktop, where there is no BottomNav.
  */
-function DemotedSiteNav({ children }: { children: React.ReactNode }) {
-  return (
-    <div data-nav-context="site" className="border-t border-[var(--border-hairline)] pt-5">
-      {children}
-    </div>
-  );
-}
-
 // ── global mode ──────────────────────────────────────────────────────────────
 
 /** Exported so the COMPOSITION (which list leads on which context) renders in a test. */
@@ -475,15 +471,14 @@ export function GlobalMode({ pathname, pendingInvites }: { pathname: string | nu
   const site = <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />;
   const hq = <PlatformNav items={platform} pathname={pathname} />;
 
-  // UX-P2 Phase B — on the Platform Spaces DIRECTORY the operator stands on the
-  // platform axis without being inside a Space: the Platform list leads, one
-  // exit row returns to Personal Spaces, the site nav follows under a hairline.
+  // P-1 — on the Platform Spaces DIRECTORY the operator stands in the platform
+  // context: the Platform list, then one exit row back to Personal Spaces. The
+  // personal site nav is not part of the Platform shell.
   if (navContext(pathname) === "platform") {
     return (
       <>
         {hq}
         <PersonalSpacesExit />
-        <DemotedSiteNav>{site}</DemotedSiteNav>
       </>
     );
   }
@@ -797,10 +792,9 @@ export function SpaceMode({
         />
       )}
 
-      {/* UX-P2 Phase B — the way OUT of the platform context, then the site nav
-          retained beneath a hairline (demoted, not removed). */}
+      {/* The way OUT of the platform context (P-1: the personal site nav is no
+          longer retained here — the exit row and the header switch lead back). */}
       {onPlatformAxis && <PersonalSpacesExit />}
-      {onPlatformAxis && <DemotedSiteNav>{site}</DemotedSiteNav>}
 
       {onLeaveSpace && (
         <button

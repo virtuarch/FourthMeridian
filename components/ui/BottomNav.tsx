@@ -24,9 +24,14 @@ import {
   Newspaper,
   Sparkles,
   Link2,
+  LayoutGrid,
+  Shield,
   type LucideIcon,
 } from "lucide-react";
-import { PRIMARY_NAV, isPrimaryDestActive, type PrimaryDestId } from "@/lib/space-nav";
+import { PRIMARY_NAV, PLATFORM_DIRECTORY_HREF, isPrimaryDestActive, navContext, type PrimaryDestId } from "@/lib/space-nav";
+import { usePlatformDestinations, type PlatformItem } from "@/components/ui/ContextualNavbar";
+import { platformAreaHref } from "@/lib/platform/directory";
+import { PLATFORM_AREAS } from "@/lib/platform/policy";
 
 const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
   brief: Newspaper,
@@ -38,11 +43,72 @@ const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
 
 export function BottomNav() {
   const pathname = usePathname();
-  return <BottomNavBar pathname={pathname} />;
+  // P-1 — the Platform context gets its own bar; the personal bar is unchanged.
+  const platformContext = navContext(pathname) === "platform";
+  const platform = usePlatformDestinations(platformContext);
+  return platformContext
+    ? <PlatformBottomBar pathname={pathname} platform={platform} />
+    : <BottomNavBar pathname={pathname} />;
+}
+
+/** P-1 — at most this many granted areas beside Overview (five slots in all). */
+export const PLATFORM_BAR_AREAS = 4;
+
+/**
+ * P-1 — the mobile bar in the PLATFORM context: Overview (the Platform
+ * directory, /dashboard/platform) + up to four granted areas, in the access-
+ * derived order /api/spaces returns (the sidebar's one source). One Shield
+ * icon for every area, as the sidebar's Platform list does. The way back to
+ * Personal is the header's Personal | Platform switch. Labels come from the
+ * area registry (navLabel), never from a literal here.
+ */
+export function PlatformBottomBar({ pathname, platform }: { pathname: string | null; platform: readonly PlatformItem[] }) {
+  const items: { key: string; label: string; href: string; Icon: LucideIcon; on: boolean }[] = [
+    { key: "platform-overview", label: "Overview", href: PLATFORM_DIRECTORY_HREF, Icon: LayoutGrid, on: pathname === PLATFORM_DIRECTORY_HREF },
+    ...platform.slice(0, PLATFORM_BAR_AREAS).map((p) => {
+      const href = platformAreaHref(p.platformArea);
+      const meta = PLATFORM_AREAS[p.platformArea as keyof typeof PLATFORM_AREAS];
+      return { key: p.id, label: meta?.navLabel ?? p.name, href, Icon: Shield, on: pathname === href || (pathname ?? "").startsWith(`${href}/`) };
+    }),
+  ];
+  return (
+    <nav
+      aria-label="Platform"
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--border-hairline)] lg:hidden"
+      style={{
+        background: "var(--glass-regular)",
+        backdropFilter: "blur(30px) saturate(160%)",
+        WebkitBackdropFilter: "blur(30px) saturate(160%)",
+        paddingBottom: "env(safe-area-inset-bottom)",
+      }}
+    >
+      <div className="flex h-14 items-stretch">
+        {items.map(({ key, label, href, Icon, on }) => (
+          <Link
+            key={key}
+            href={href}
+            prefetch={false}
+            aria-current={on ? "true" : undefined}
+            aria-label={label}
+            className="flex flex-1 flex-col items-center justify-center gap-1"
+          >
+            <span className={["grid size-7 place-items-center rounded-full", "transition-[background-color,color] duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+              on ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"].join(" ")}>
+              <Icon size={16} strokeWidth={on ? 2.25 : 1.75} />
+            </span>
+            <span className={["text-[10px] leading-none transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+              on ? "text-[var(--text-secondary)]" : "text-[var(--text-muted)]"].join(" ")}>
+              {label}
+            </span>
+          </Link>
+        ))}
+      </div>
+    </nav>
+  );
 }
 
 /** The bar itself, pathname-driven (no router) — rendered by BottomNav; testable standalone. */
-export function BottomNavBar({ pathname }: { pathname: string | null }) {
+export function BottomNavBar({ pathname }: { pathname: string }) {
   return (
     <nav
       aria-label="Global"

@@ -14,14 +14,18 @@
  * as the single canonical action cluster, mounted once in the GlobalHeader.
  */
 
+import { usePathname } from "next/navigation";
 import { RefreshButton } from "@/components/dashboard/RefreshButton";
+import { showsPersonalRefresh } from "@/lib/space-nav";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import { UserMenu } from "@/components/ui/UserMenu";
 
 export function GlobalActions() {
+  // P-1 — by route context only (lib/space-nav showsPersonalRefresh), never by grant.
+  const pathname = usePathname();
   return (
     <div className="flex items-center gap-0.5">
-      <RefreshButton bare />
+      {showsPersonalRefresh(pathname) && <RefreshButton bare />}
       <NotificationBell />
       <div className="mx-1.5 h-4 w-px bg-[var(--border-hairline)]" aria-hidden />
       <UserMenu />
