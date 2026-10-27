@@ -19,14 +19,26 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
-import { auditEmailHash } from "@/lib/audit";
+import { OperatorActionValidationError, auditEmailHash, parseOperatorReason, recordOperatorAction } from "@/lib/audit";
+import { operatorActorFrom } from "@/lib/platform/operator-actor";
+import { getClientIp } from "@/lib/api";
 import { BetaAccessRequestStatus } from "@prisma/client";
 
 export const runtime = "nodejs";
 
-export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
+
+  // SEC-PLAT-2 — a consequential action: the structured reason is parsed FIRST,
+  // so a request without one never reaches the database.
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  let reason;
+  try { reason = parseOperatorReason(body.reason); }
+  catch (e) {
+    if (e instanceof OperatorActionValidationError) return NextResponse.json({ error: e.message }, { status: 400 });
+    throw e;
+  }
 
   const { id } = await ctx.params;
 
@@ -44,25 +56,31 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     );
   }
 
-  // Null the token + expiry (kills the invite), flip to DENIED. Users/access untouched.
-  await db.betaAccessRequest.update({
-    where: { id },
-    data: {
-      status:          BetaAccessRequestStatus.DENIED,
-      inviteTokenHash: null,
-      inviteExpiresAt: null,
-      decidedAt:       new Date(),
-      decidedById:     auth.user.id,
-    },
-  });
+  await db.$transaction(async (tx) => {
+    // Null the token + expiry (kills the invite), flip to DENIED. Users/access untouched.
+    await tx.betaAccessRequest.update({
+      where: { id },
+      data: {
+        status:          BetaAccessRequestStatus.DENIED,
+        inviteTokenHash: null,
+        inviteExpiresAt: null,
+        decidedAt:       new Date(),
+        decidedById:     auth.user.id,
+      },
+    });
 
-  await db.auditLog.create({
-    data: {
-      userId:             auth.user.id,
-      performedByAdminId: auth.user.id,
-      action:             AuditAction.BETA_INVITATION_REVOKED,
-      metadata:           { betaRequestId: id, emailHash: auditEmailHash(request.email) },
-    },
+    // SEC-PLAT-2 — through the operator-action envelope (actor, target, result, reason);
+    // the legacy metadata keys ride in `detail` so existing readers keep working.
+    await recordOperatorAction(tx, {
+      actor:  operatorActorFrom(auth, "GROWTH_REVENUE"),
+      action: AuditAction.BETA_INVITATION_REVOKED,
+      target: { kind: "BETA_REQUEST", id },
+      reason,
+      result: "SUCCESS",
+      detail: { betaRequestId: id, emailHash: auditEmailHash(request.email) },
+      ipAddress: getClientIp(req),
+      userAgent: req.headers.get("user-agent"),
+    });
   });
 
   return NextResponse.json({ success: true });

@@ -203,6 +203,14 @@ function main() {
     check("the webhook repoint MUTATES only under FRESH CONTROL",
       /export async function POST[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/.test(webhook));
     check("the webhook repoint requires a structured reason", /parseOperatorReason\(/.test(webhook));
+    // SEC-PLAT-2 — no CONTROL entry point uses the cached check: the roster and
+    // the per-Item dry run (which calls Plaid) are FRESH too, and the dry run is
+    // recorded as an operator action.
+    for (const f of CONTROL_ROUTES) {
+      check(`${f}: every CONTROL check is FRESH (no cached CONTROL read)`, !/requirePlatformAccess\([^)]*"CONTROL"/.test(code(f)));
+    }
+    check("the webhook dry run (GET) is recorded as PLAID_ITEM_WEBHOOK_DRY_RUN",
+      /export async function GET[\s\S]*AuditAction\.PLAID_ITEM_WEBHOOK_DRY_RUN[\s\S]*export async function POST/.test(webhook));
     const control = code(CONTROL_ROUTE);
     check("its mutations require FRESH CONTROL (live revocation check), never cached",
       (control.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 2 && !/requirePlatformAccess\([^)]*"CONTROL"/.test(control));

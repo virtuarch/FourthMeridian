@@ -346,8 +346,8 @@ check(
   !proxy.includes('pathname.startsWith("/api/user/totp') && !proxy.includes('pathname.startsWith("/api/auth'),
 );
 check(
-  "the matcher is pages + the /api Origin boundary + the public-site paths, nothing else",
-  /matcher:\s*\[\s*"\/dashboard\/:path\*",\s*"\/admin\/:path\*",\s*"\/api\/:path\*",?\s*(?:\/\/[^\n]*\s*)*"\/",\s*"\/about",\s*"\/legal\/:path\*",\s*"\/privacy",\s*"\/security",\s*"\/terms",?\s*\]/.test(proxy),
+  "the matcher is pages (incl. the /merchant-ops operator page, SEC-PLAT-2) + the /api Origin boundary + the public-site paths, nothing else",
+  /matcher:\s*\[\s*"\/dashboard\/:path\*",\s*"\/admin\/:path\*",\s*"\/merchant-ops\/:path\*",\s*(?:\/\/[^\n]*\s*)*"\/api\/:path\*",?\s*(?:\/\/[^\n]*\s*)*"\/",\s*"\/about",\s*"\/legal\/:path\*",\s*"\/privacy",\s*"\/security",\s*"\/terms",?\s*\]/.test(proxy),
 );
 // Domain split: the public-site paths are routed (or passed through) BEFORE the
 // token is read, so no TOTP/role rule can ever apply to them.

@@ -155,8 +155,9 @@ check("financial route still resolves via getSpaceContext (cookie→preferred→
 // UX-P2 — an unknown / ungranted area redirects to the Platform Spaces DIRECTORY
 // (/dashboard/platform), which itself sends a zero-grant viewer to the launcher.
 check("platform route still validates PlatformArea", platPage.includes("PlatformArea") && platPage.includes("redirect(\"/dashboard/platform\")"));
-check("platform route still authorizes via PlatformGrant + hasPlatformAccess",
-  platPage.includes("platformGrant.findUnique") && platPage.includes("hasPlatformAccess"));
+check("platform route authorizes via the SHARED guard requirePlatformAccess(area, \"READ\") (SEC-PLAT-2)",
+  platPage.includes("requirePlatformAccess(area, \"READ\")") && !platPage.includes("getServerSession")
+  && !platPage.includes("platformGrant.findUnique"));
 check("platform route loads canonical Space by platformArea (real Space row)",
   platPage.includes("platformArea: area"));
 

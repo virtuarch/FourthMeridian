@@ -21,7 +21,9 @@ import { sendEmail } from "@/lib/email/send";
 import { buildBetaInviteUrl } from "@/lib/email/beta-invite-url";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
-import { auditEmailHash } from "@/lib/audit";
+import { auditEmailHash, recordOperatorAction } from "@/lib/audit";
+import { operatorActorFrom } from "@/lib/platform/operator-actor";
+import { getClientIp } from "@/lib/api";
 import { BetaAccessRequestStatus } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -90,13 +92,16 @@ export async function POST(req: NextRequest) {
     console.error("[beta-invite-direct] invite email failed to send:", emailResult.error);
   }
 
-  await db.auditLog.create({
-    data: {
-      userId:             auth.user.id,
-      performedByAdminId: auth.user.id,
-      action:             AuditAction.BETA_INVITATION_CREATED,
-      metadata:           { betaRequestId: request.id, emailHash: auditEmailHash(email), emailStatus: emailResult.status, expiresDays },
-    },
+  // SEC-PLAT-2 — through the operator-action envelope (actor, target, result);
+  // the legacy metadata keys ride in `detail` so existing readers keep working.
+  await recordOperatorAction(db, {
+    actor:  operatorActorFrom(auth, "GROWTH_REVENUE"),
+    action: AuditAction.BETA_INVITATION_CREATED,
+    target: { kind: "BETA_REQUEST", id: request.id },
+    result: "SUCCESS",
+    detail: { betaRequestId: request.id, emailHash: auditEmailHash(email), emailStatus: emailResult.status, expiresDays },
+    ipAddress: getClientIp(req),
+    userAgent: req.headers.get("user-agent"),
   });
 
   return NextResponse.json({ success: true, emailStatus: emailResult.status });

@@ -36,9 +36,12 @@ for (const m of MUTATIONS) {
   const s = src(m.file);
   check(`${m.action}: fresh GROWTH_REVENUE WRITE gate`,
     /requireFreshPlatformAccess\(\s*["']GROWTH_REVENUE["']\s*,\s*["']WRITE["']\s*\)/.test(s));
-  check(`${m.action}: writes an AuditLog row`, s.includes("auditLog.create"));
+  // SEC-PLAT-2 — through the operator-action envelope (lib/audit.ts
+  // recordOperatorAction), which writes performedByAdminId + actor + target +
+  // result; never a hand-built auditLog.create.
+  check(`${m.action}: audited through recordOperatorAction`, s.includes("recordOperatorAction(") && !s.includes("auditLog.create"));
   check(`${m.action}: audits AuditAction.${m.action}`, s.includes(`AuditAction.${m.action}`));
-  check(`${m.action}: records performedByAdminId (operator)`, s.includes("performedByAdminId"));
+  check(`${m.action}: actor derived from the resolved grant (performedByAdminId = operator)`, s.includes(`operatorActorFrom(auth, "GROWTH_REVENUE")`));
 }
 
 console.log("revoke stays scoped to the invitation (no user deletion / access change)");
