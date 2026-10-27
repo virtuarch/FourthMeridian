@@ -2,9 +2,11 @@
  * components/space/widgets/wealth/AdjustedBasisNote.tsx   (v2.7-P0)
  *
  * The forward-only basis disclosure under the Net Worth / Assets / Cash trend:
- * snapshot rows before ADJUSTED_CASH_BASIS_SINCE stay on the provider-reported
- * ledger basis (never rewritten), so a plotted window that spans the release
- * says so. Renders nothing otherwise. Wording owned by lib/balances/adjusted-basis.
+ * snapshot rows before the per-environment cutover (v2.7-P5:
+ * NEXT_PUBLIC_ADJUSTED_CASH_BASIS_CUTOVER, else the code default) stay on the
+ * provider-reported ledger basis (never rewritten), so a plotted window that
+ * spans it says so, in UTC days. Renders nothing otherwise. Wording and cutover
+ * semantics owned by lib/balances/adjusted-basis.
  */
 
 import { adjustedCashBasisNote } from "@/lib/balances/adjusted-basis";
