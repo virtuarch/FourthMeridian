@@ -62,6 +62,8 @@ export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   PLATFORM_CONTROL_REFUSED:        "A control change was refused",
   PLAID_ITEM_WEBHOOK_DRY_RUN:      "Dry-ran a webhook repoint",
   PLAID_ITEM_WEBHOOK_UPDATED:      "Repointed a provider webhook",
+  // SEC-PLAT-3
+  CUSTOMER_PROFILE_VIEWED:         "Viewed a customer profile",
 };
 
 /** Reason codes, humanised. Unknown → the raw code. */
