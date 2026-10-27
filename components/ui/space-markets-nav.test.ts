@@ -237,8 +237,11 @@ console.log("D. Accessibility");
     [LENSES.find((l) => l.id === ws)?.label, ws ? workspaceChildren(ws)?.find((c) => c.id === child)?.label : null].filter(Boolean).join(", ");
   check("30. region name follows the open view — \"Markets, Portfolio\" … \"Markets, Watchlist\"",
     MARKETS_MODES.every((m) => nameFor("markets", openChildId("markets", { wealthMode: "total", marketsMode: m })) === `Markets, ${MARKETS_MODE_LABELS[m]}`));
-  check("…and the host names the region through that exact derivation (aria-label, workspaceChildren)",
-    /aria-label=\{openWorkspaceLabel\}/.test(host) && /workspaceChildren\(openWorkspace\)\?\.find\(\(c\) => c\.id === openChild\)\?\.label/.test(host));
+  // v2.7 mobile/desktop parity — the host derives through publishedWorkspaceChildren
+  // (= workspaceChildren, minus a comingSoon workspace's views), so the region
+  // never names a view the placeholder does not have.
+  check("…and the host names the region through that exact derivation (aria-label, publishedWorkspaceChildren)",
+    /aria-label=\{openWorkspaceLabel\}/.test(host) && /publishedWorkspaceChildren\(openWorkspace\)\?\.find\(\(c\) => c\.id === openChild\)\?\.label/.test(host));
   const mk = markets("technicals");
   check("31/32. no aria-labelledby anywhere on the Markets path — the hidden view row is never the name source",
     !/aria-labelledby/.test(mk) && !/aria-labelledby/.test(code(read("components", "space", "widgets", "markets", "MarketsWorkspace.tsx"))) && !/aria-labelledby/.test(host));
