@@ -230,7 +230,6 @@ function main() {
       "app/api/platform/growth-revenue/registration-mode/route.ts",
       "app/api/platform/growth-revenue/product-status/route.ts",
       "app/api/platform/growth-revenue/invitations/route.ts",
-      "app/api/platform/growth-revenue/users/[userId]/route.ts",
       "app/api/platform/growth-revenue/requests/[id]/approve/route.ts",
       "app/api/platform/growth-revenue/requests/[id]/deny/route.ts",
       "app/api/platform/growth-revenue/requests/[id]/resend/route.ts",
@@ -244,6 +243,8 @@ function main() {
       "app/api/platform/customer-success/customers/[userId]/policy/route.ts",
       "app/api/platform/customer-success/customers/[userId]/cohort/route.ts",
       "app/api/platform/customer-success/customers/[userId]/refresh/route.ts",
+      // SEC-PLAT-4 — customer deactivate / reactivate, moved from GROWTH_REVENUE.
+      "app/api/platform/customer-success/customers/[userId]/access/route.ts",
     ];
     for (const f of WRITE_GATED) {
       const src = code(f);

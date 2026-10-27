@@ -8,7 +8,6 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { OPERATOR_REASON_CODES } from "@/lib/audit";
 import { projectOperatorActionEvent } from "@/lib/platform/security/operator-actions-core";
 
 let failures = 0;
@@ -24,8 +23,8 @@ const OPERATIONS = "app/api/platform/platform-ops/operations/route.ts";
 const RESYNC     = "app/api/platform/platform-ops/connections/[id]/resync/route.ts";
 const REAUTH     = "app/api/platform/platform-ops/connections/[id]/request-reauth/route.ts";
 const CLEANUP    = "app/api/platform/platform-ops/provider-cleanup/route.ts";
-const USERS      = "app/api/platform/growth-revenue/users/[userId]/route.ts";
-const WIDGET     = "components/platform/widgets/OpsUsersWidget.tsx";
+const USERS      = "app/api/platform/customer-success/customers/[userId]/access/route.ts"; // SEC-PLAT-4: moved from Growth
+const WIDGET     = "components/platform/widgets/CsCustomersWidget.tsx"; // SEC-PLAT-4: the deactivate control lives in Customer Success
 const FEED_ROUTE = "app/api/platform/security-ops/operator-actions/route.ts";
 const FEED_WIDGET= "components/platform/widgets/SecOperatorActionsWidget.tsx";
 
@@ -61,17 +60,16 @@ console.log("connection actions — PLAID_ITEM target, refresh execution referen
 console.log("deactivate / reactivate — reason REQUIRED, change + audit in ONE transaction");
 {
   const s = strip(USERS);
-  check("parses the reason before any read", s.indexOf("parseOperatorReason(") < s.indexOf("db.user.findUnique("));
+  check("parses the reason before any read", s.indexOf("parseOperatorReason(") > -1 && s.indexOf("parseOperatorReason(") < s.indexOf("user.findUnique("));
   check("an invalid reason is a 400", /OperatorActionValidationError[\s\S]{0,120}status:\s*400/.test(s));
   check("state change and audit share a $transaction", (s.match(/\$transaction\(async \(tx\) =>/g) ?? []).length === 2 && /recordOperatorAction\(tx,/.test(s));
   check("target kind USER (the customer is the row's subject)", /target:\s*\{\s*kind:\s*"USER",\s*id:\s*userId\s*\}/.test(s));
   check("before/after change recorded", /change:\s*\{\s*before,\s*after:/.test(s));
   const w = src(WIDGET);
-  const m = /const REASON_CODES = \[([^\]]+)\]/.exec(w);
-  const widgetCodes = m ? m[1].split(",").map((x) => x.trim().replace(/"/g, "")).filter(Boolean) : [];
-  check("the widget's reason-code list equals OPERATOR_REASON_CODES", JSON.stringify(widgetCodes) === JSON.stringify([...OPERATOR_REASON_CODES]), JSON.stringify(widgetCodes));
-  check("the widget sends the reason with the action", /JSON\.stringify\(\{ action, reason \}\)/.test(w));
-  check("the widget no longer fires the action straight from the row buttons", !/onClick=\{\(\) => act\(u\.id/.test(w));
+  check("the widget's reason codes come from OPERATOR_REASON_CODES itself", /import \{ OPERATOR_REASON_CODES \} from "@\/lib\/audit"/.test(w) && /OPERATOR_REASON_CODES\.map\(/.test(w));
+  check("the widget sends the reason with the action", /json\(\{ action: detail\.actions\.deactivate\.currently === "ACTIVE" \? "deactivate" : "reactivate", reason \}\)/.test(w));
+  check("the action is disabled until a reason is chosen", /onClick=\{toggleActive\} disabled=\{acting !== null \|\| !reason\}/.test(w));
+  check("SEC-PLAT-4: gated on CUSTOMER_SUCCESS WRITE (route + widget)", /requireFreshPlatformAccess\("CUSTOMER_SUCCESS", "WRITE"\)/.test(s) && /detail\?\.actions\.deactivate && canWrite &&/.test(w));
 }
 
 console.log("feed — projects the envelope, never the note, never email");

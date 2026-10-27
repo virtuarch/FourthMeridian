@@ -198,7 +198,8 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     operatorActions,
     actions: {
       assignPolicy: true, assignCohort: true, refreshAll: user.deactivatedAt === null,
-      deactivate: { url: `/api/platform/growth-revenue/users/${user.id}`, method: "POST", currently: user.deactivatedAt ? "DEACTIVATED" : "ACTIVE" },
+      // SEC-PLAT-4 — account access is a Customer Success action (fresh CS WRITE).
+      deactivate: { url: `/api/platform/customer-success/customers/${user.id}/access`, method: "POST", currently: user.deactivatedAt ? "DEACTIVATED" : "ACTIVE" },
       resendInvite: request && request.status === "APPROVED" ? { url: `/api/platform/growth-revenue/requests/${request.id}/resend`, method: "POST" } : null,
     },
     checkedAt: now.toISOString(),

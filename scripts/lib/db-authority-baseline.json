@@ -1,7 +1,7 @@
 {
   "note": "RLS-4 ratchet. Runtime-reachable files still reaching the database through the migration principal (@/lib/db `db`). This set may SHRINK freely as adoption proceeds; it may never GROW. Regenerate with `npx tsx scripts/audit-db-authority.ts --write-baseline`, and say in the commit why anything added is justified.",
   "generatedAt": "2026-10-22",
-  "count": 163,
+  "count": 162,
   "files": [
     "app/(shell)/dashboard/platform/[area]/page.tsx",
     "app/(shell)/dashboard/spaces/page.tsx",
@@ -41,7 +41,6 @@
     "app/api/platform/growth-revenue/requests/[id]/revoke/route.ts",
     "app/api/platform/growth-revenue/requests/route.ts",
     "app/api/platform/growth-revenue/signups/route.ts",
-    "app/api/platform/growth-revenue/users/[userId]/route.ts",
     "app/api/platform/growth-revenue/users/route.ts",
     "app/api/platform/platform-ops/api-usage/route.ts",
     "app/api/platform/platform-ops/connections/[id]/request-reauth/route.ts",
