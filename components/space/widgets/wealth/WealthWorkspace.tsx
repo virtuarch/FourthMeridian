@@ -90,6 +90,7 @@ import { useHistoryExploration } from "@/components/history/useHistoryExploratio
 import type { LensRoot } from "@/lib/history/lens-root-node";
 import { WealthChangeLedger } from "./WealthChangeLedger";
 import { WealthCompositionCard } from "./WealthCompositionCard";
+import { HeroNotes } from "@/components/space/hero/HeroParts";
 import { WealthUnavailable } from "./wealth-ui";
 
 /** The Total mode's section anchors — the sidebar's "what's inside". */
@@ -586,6 +587,10 @@ export function WealthWorkspace({
       }))
     : [];
 
+  // The crypto price basis qualifying today's headline (desktop: inline on the
+  // hero's as-of line; compact: a HeroNotes line under the chart).
+  const cryptoPriceNote = result.asOfState.date === today ? summarizeCryptoPricing((accounts ?? []).map((a) => a.cryptoPrice)) : null;
+
   return (
     <>
       <div className="space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!">
@@ -595,7 +600,7 @@ export function WealthWorkspace({
         {/* ① Hero — the headline scalar of the page's subject. */}
         <div id="wealth-summary" className="scroll-mt-20">
           <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric} freshnessLabel={freshnessLabel} timePreset={timePreset}
-            cryptoPriceNote={result.asOfState.date === today ? summarizeCryptoPricing((accounts ?? []).map((a) => a.cryptoPrice)) : null} />
+            cryptoPriceNote={cryptoPriceNote} />
         </div>
 
         {/* COMPACT DASHBOARD (P2) — the compact hierarchy is hero → Total · Assets ·
@@ -625,6 +630,8 @@ export function WealthWorkspace({
               to={result.chart.points[result.chart.points.length - 1]?.date ?? null}
             />
           )}
+          {/* v2.7 header parity — compact disclosures live under the chart, never below the card. */}
+          <HeroNotes notes={[cryptoPriceNote]} className="lg:hidden" />
         </div>
 
         <CompactKpiStrip ariaLabel={`${mode === "assets" ? "Assets" : "Net worth"} breakdown`} items={kpiItems} />

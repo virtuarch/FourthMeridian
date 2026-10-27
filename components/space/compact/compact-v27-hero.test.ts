@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { desktopMarkup } from "./desktop-markup";
 import { COMPACT_HERO } from "./compact-hero";
-import { DebtHero, debtCompactKpiItems } from "@/components/space/widgets/debt/DebtHero";
+import { DebtHero, debtCompactKpiItems, debtHeroNotes } from "@/components/space/widgets/debt/DebtHero";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -62,11 +62,21 @@ console.log("1. the compact Debt hero is the shared five-row card");
   check("DESKTOP: a withheld-details disclosure rides the as-of line",
     /as of [^<]*· 2 account details withheld/.test(text(desktopMarkup(render({ redactions: 2 })))));
   const redacted = render({ redactions: 2 });
-  check("a withheld-details disclosure is a visible note BELOW the card (not a row)",
-    notes(redacted) === "2 account details withheld" && !/withheld/.test(row(redacted, 1) + row(redacted, 3) + row(redacted, 4)));
+  // DELIBERATE (owner, v2.7 header parity): disclosures left the header card
+  // entirely — debtHeroNotes() is rendered under the balance-history chart.
+  check("a withheld-details disclosure is NOT in or below the card (no row, no notes block)",
+    !/withheld/.test(text(card(redacted))) && !/data-compact-hero-notes/.test(redacted));
+  check("…it is a debtHeroNotes line (rendered under the chart)",
+    debtHeroNotes({ historical: false, asOf: "2026-10-26", redactions: 2 }).join("|") === "2 account details withheld");
   const hist = render({ historical: true });
-  check("historical: no change beside a present-day figure; R4 'Current balances'; the 'balances are current' note below",
-    row(hist, 3) === "Change shown in the chart" && row(hist, 4) === "Current balances" && /^Balances are current — the trend reflects Oct 26, 2026\.$/.test(notes(hist)), `${row(hist, 3)} | ${row(hist, 4)} | ${notes(hist)}`);
+  check("historical: no change beside a present-day figure; R4 'Current balances'; no note in or below the card",
+    row(hist, 3) === "Change shown in the chart" && row(hist, 4) === "Current balances" && !/Balances are current|current balances —/.test(text(card(hist))) && !/data-compact-hero-notes/.test(hist), `${row(hist, 3)} | ${row(hist, 4)}`);
+  check("historical: the disclosure is a debtHeroNotes line (under the chart), naming the as-of date",
+    debtHeroNotes({ historical: true, asOf: "2026-10-26", redactions: 0 }).join("|") === "Total debt above uses current balances — the chart reflects Oct 26, 2026.");
+  check("historical DESKTOP: no extra paragraph under the as-of line", !/Balances are current/.test(text(desktopMarkup(hist))));
+  const dw = readFileSync(path.join(process.cwd(), "components/space/widgets/debt/DebtWorkspace.tsx"), "utf8");
+  check("DebtWorkspace renders the notes directly under the balance-history chart",
+    /<DebtBalanceHistory[\s\S]*?\/>\s*\{\/\*[\s\S]*?\*\/\}\s*<HeroNotes notes=\{debtHeroNotes\(\{ historical, asOf, redactions \}\)\} \/>/.test(dw));
   const none = render({ change: null });
   check("no comparison ⇒ 'No comparison selected' and 'As of <date>', no invented change", row(none, 3) === "No comparison selected" && row(none, 4) === "As of Oct 26, 2026");
   check("no notes ⇒ no notes block", !/data-compact-hero-notes/.test(html));
