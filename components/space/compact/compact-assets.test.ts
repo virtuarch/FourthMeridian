@@ -37,13 +37,20 @@ const ww = code("components/space/widgets/wealth/WealthWorkspace.tsx");
 
 console.log("1. exactly three tabs, and they are the existing slice");
 check("All · Cash · Investments, in that order", ASSETS_SLICES.map((s) => ASSETS_SLICE_LABELS[s]).join(" · ") === "All · Cash · Investments");
-check("the tabs are bound to the slice value and the slice handler (replace-written by the host)",
-  /<CompactSectionTabs\s+ariaLabel="Assets category"\s+value=\{slice\}\s+onChange=\{\(s\) => onSliceChange\?\.\(s\)\}/.test(ww));
+check("the tabs are bound to the slice value and the slice handler (replace-written by the host), at EVERY width",
+  /<CompactSectionTabs\s+ariaLabel="Assets category"\s+value=\{slice\}\s+onChange=\{\(s\) => onSliceChange\?\.\(s\)\}\s+widths="all"/.test(ww));
 check("the chart follows the tab: cash ⇒ cash series, investments ⇒ invested, all ⇒ total assets",
   wealthSeriesKey("assets", "cash") === "cash" && wealthSeriesKey("assets", "investments") === "invested" && wealthSeriesKey("assets", "all") === "totalAssets");
 check("no new series was invented (no real-assets series key)", !/realAssets|real_assets/.test(read("lib/wealth/wealth-mode.ts")));
-check("on compact the chart-header slice chips give way to the tabs (max-lg:hidden only)",
-  /ariaLabel="Assets series"\s+className="max-lg:hidden"/.test(ww));
+// v2.7 mobile/desktop parity — DELIBERATE CONTRACT CHANGE. This pinned the
+// desktop's chart-header slice chips (max-lg:hidden). Those chips did not exist
+// while a backfill ran, with no history or after a snapshot failure, so desktop
+// could not reach Cash / Investments / Real assets then. ONE control now: the
+// tabs at every width; the chips (a second control for the same state) are gone.
+check("ONE slice control: no chart-header slice chips, the tabs reach the chart",
+  !/ariaLabel="Assets series"/.test(ww) && !/sliceControl/.test(ww) && !/headerRight=/.test(ww));
+check("the slice control renders in EVERY Assets state — history, backfill, read failure, no history",
+  (ww.match(/\{assetsTabs\}/g) ?? []).length === 4);
 
 console.log("\n2. the truth table");
 {
