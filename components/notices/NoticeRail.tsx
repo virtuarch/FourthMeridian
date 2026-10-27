@@ -25,9 +25,10 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
-import { ShieldCheck, Wrench, X } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { Link2, ShieldCheck, Wrench, X } from "lucide-react";
 import {
-  LEGACY_TOTP_DISMISS_KEY, MAINTENANCE_COLLAPSED_KEY, NOTICE_FOCUS_THROTTLE_MS, NOTICE_REFRESH_MS, NOTICE_REVALIDATE_EVENT,
+  CONNECT_DISMISSED_KEY, LEGACY_TOTP_DISMISS_KEY, MAINTENANCE_COLLAPSED_KEY, NOTICE_FOCUS_THROTTLE_MS, NOTICE_REFRESH_MS, NOTICE_REVALIDATE_EVENT,
   NOTICE_STATUS_URL, TWO_FACTOR_DISMISSED_KEY, readNoticeStatus, shouldForgetMaintenanceCollapse, visibleNotices,
   type AppNoticeStatus, type NoticeDismissals, type NoticeView,
 } from "./notice-model";
@@ -74,6 +75,21 @@ export function NoticeRailView({ notices, onDismiss, onExpand }: {
             </div>
           );
         }
+        if (n.id === "connect") {
+          return (
+            <div key={n.id} data-notice="connect" className="flex items-center gap-2.5 px-3 py-1.5 text-xs">
+              <Link2 size={14} aria-hidden className="shrink-0 text-[var(--meridian-400)]" />
+              <p className="min-w-0 flex-1 leading-snug text-[var(--text-secondary)]">{n.title}</p>
+              <Link href={n.href}
+                className="shrink-0 rounded-md px-2 py-1.5 font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]">
+                {n.actionLabel}
+              </Link>
+              <button type="button" onClick={() => onDismiss(n.id)} aria-label="Dismiss add-account invitation" className={ICON_BTN}>
+                <X size={14} aria-hidden />
+              </button>
+            </div>
+          );
+        }
         return (
           <div key={n.id} data-notice="two-factor" className="flex items-center gap-2.5 px-3 py-1.5 text-xs">
             <ShieldCheck size={14} aria-hidden className="shrink-0 text-[var(--text-muted)]" />
@@ -114,17 +130,28 @@ function subscribe(cb: () => void): () => void {
   return () => { listeners.delete(cb); };
 }
 /** A string snapshot keeps identity stable between unchanged reads. */
-const snapshot = () => `${readFlag(MAINTENANCE_COLLAPSED_KEY) ? 1 : 0}${readFlag(TWO_FACTOR_DISMISSED_KEY) || legacyTotpDismissed() ? 1 : 0}`;
-/** Server and hydration: maintenance shows in full; 2FA waits (no flash for someone who dismissed it). */
-const serverSnapshot = () => "01";
+const snapshot = () => `${readFlag(MAINTENANCE_COLLAPSED_KEY) ? 1 : 0}${readFlag(TWO_FACTOR_DISMISSED_KEY) || legacyTotpDismissed() ? 1 : 0}${readFlag(CONNECT_DISMISSED_KEY) ? 1 : 0}`;
+/** Server and hydration: maintenance shows in full; 2FA and the invitation wait (no flash for someone who dismissed them). */
+const serverSnapshot = () => "011";
 
 /** The current session dismissals (also used by tests through a stand-in window). */
 export function currentDismissals(): NoticeDismissals {
   const f = snapshot();
-  return { maintenanceCollapsed: f[0] === "1", twoFactorDismissed: f[1] === "1" };
+  return { maintenanceCollapsed: f[0] === "1", twoFactorDismissed: f[1] === "1", connectDismissed: f[2] === "1" };
 }
-/** Dismiss one notice for this browser session. Maintenance collapses; 2FA hides. */
+/** Dismiss one notice for this browser session. Maintenance collapses; 2FA hides.
+ *  The invitation hides at once AND is persisted server-side (POST /api/onboarding),
+ *  so it does not return on another device or a later session. */
 export function dismissNotice(id: NoticeView["id"]): void {
+  if (id === "connect") {
+    writeFlag(CONNECT_DISMISSED_KEY, true);
+    try {
+      void fetch("/api/onboarding", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: "dismissed" }), keepalive: true,
+      }).catch(() => {});
+    } catch { /* no fetch: the session dismissal still holds */ }
+    return;
+  }
   writeFlag(id === "maintenance" ? MAINTENANCE_COLLAPSED_KEY : TWO_FACTOR_DISMISSED_KEY, true);
 }
 /** Re-open a collapsed maintenance notice. */
@@ -149,7 +176,9 @@ export function NoticeRail({ initialStatus, conversationSurface = false }: {
 }) {
   const [status, setStatus] = useState<AppNoticeStatus | null>(initialStatus);
   const flags = useSyncExternalStore(subscribe, snapshot, serverSnapshot);
-  const dismissals: NoticeDismissals = { maintenanceCollapsed: flags[0] === "1", twoFactorDismissed: flags[1] === "1" };
+  const dismissals: NoticeDismissals = { maintenanceCollapsed: flags[0] === "1", twoFactorDismissed: flags[1] === "1", connectDismissed: flags[2] === "1" };
+  // Connections IS the invitation — never show it on top of itself.
+  const connectionsSurface = (usePathname() ?? "").startsWith("/dashboard/connections");
   const lastRead = useRef(0);
   const frame = useRef<HTMLDivElement>(null);
 
@@ -189,7 +218,7 @@ export function NoticeRail({ initialStatus, conversationSurface = false }: {
     if (shouldForgetMaintenanceCollapse(status)) forgetMaintenanceCollapse();
   }, [status]);
 
-  const notices = visibleNotices(status, dismissals, { conversationSurface });
+  const notices = visibleNotices(status, dismissals, { conversationSurface, connectionsSurface });
 
   // Publish the rail's height for full-viewport surfaces (AiShell subtracts it).
   useEffect(() => {

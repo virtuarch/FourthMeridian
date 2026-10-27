@@ -44,7 +44,7 @@ const local = storage();
   sessionStorage: session, localStorage: local, dispatchEvent: () => true, addEventListener: () => {}, removeEventListener: () => {},
 };
 
-const NONE: NoticeDismissals = { maintenanceCollapsed: false, twoFactorDismissed: false };
+const NONE: NoticeDismissals = { maintenanceCollapsed: false, twoFactorDismissed: false, connectDismissed: false };
 const S = (maintenance: boolean | null, twoFactorReminder: boolean): AppNoticeStatus => ({ maintenance, twoFactorReminder });
 const ids = (s: AppNoticeStatus | null, d = NONE, ai = false) => visibleNotices(s, d, { conversationSurface: ai }).map((n) => `${n.id}:${n.mode}`).join(",");
 
@@ -112,6 +112,23 @@ async function main() {
     }
   }
 
+  console.log("\n3b. the add-account invitation (Connections pass PR 2)");
+  {
+    const C: AppNoticeStatus = { maintenance: false, twoFactorReminder: false, connectInvitation: true };
+    check("invitation applies ⇒ the connect notice", ids(C) === "connect:full");
+    check("…after maintenance and 2FA", ids({ ...C, maintenance: true, twoFactorReminder: true }) === "maintenance:full,two-factor:full,connect:full");
+    check("…never on the AI surface", ids(C, NONE, true) === "");
+    check("…never on Connections itself", visibleNotices(C, NONE, { conversationSurface: false, connectionsSurface: true }).length === 0);
+    check("…hidden once dismissed", ids(C, { ...NONE, connectDismissed: true }) === "");
+    check("an untrusted body keeps the invitation only when exactly true",
+      readNoticeStatus({ maintenance: false, twoFactorReminder: false, connectInvitation: true })!.connectInvitation === true
+        && !("connectInvitation" in readNoticeStatus({ maintenance: false, twoFactorReminder: false, connectInvitation: "yes" })!));
+    const html = renderToStaticMarkup(createElement(NoticeRailView, { notices: visibleNotices(C, NONE, { conversationSurface: false }), onDismiss: () => {}, onExpand: () => {} }));
+    check("links to Connections with a named dismiss", html.includes('href="/dashboard/connections"') && html.includes('aria-label="Dismiss add-account invitation"'));
+    const rail = readFileSync(path.join(process.cwd(), "components/notices/NoticeRail.tsx"), "utf8");
+    check("dismissal is persisted server-side, not just for the session", /\/api\/onboarding/.test(rail) && /event: "dismissed"/.test(rail));
+  }
+
   console.log("\n4. the server read, the route, and enforcement");
   {
     const reader = (values: Record<string, string> | Error) => ({ read: async () => { if (values instanceof Error) throw values; return values; } });
@@ -124,7 +141,8 @@ async function main() {
     check("the route is for any signed-in user (requireUser, no platform grant)", /requireUser\(\)/.test(route) && !/requirePlatformAccess|requireFreshPlatformAccess|CONTROL/.test(route));
     check("…never cached", /"Cache-Control": "no-store"/.test(route));
     const status = readFileSync(path.join(process.cwd(), "lib/platform/notices/app-notice-status.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    check("…and returns exactly two fields", /return \{ maintenance, twoFactorReminder: me \? !me\.totpEnabled : false \};/.test(status));
+    // Connections pass PR 2 — a third fact, the add-account invitation, present only when true.
+    check("…and returns exactly three facts", /return \{ maintenance, twoFactorReminder: me \? !me\.totpEnabled : false, \.\.\.\(invite \? \{ connectInvitation: true \} : \{\}\) \};/.test(status));
     const panel = readFileSync(path.join(process.cwd(), "components/platform/widgets/MaintenanceModePanel.tsx"), "utf8");
     check("an operator's applied change revalidates the rail at once", /if \(r\.close\) requestNoticeRevalidation\(\);/.test(panel));
     const facts = readFileSync(path.join(process.cwd(), "lib/platform/admission/facts.ts"), "utf8");

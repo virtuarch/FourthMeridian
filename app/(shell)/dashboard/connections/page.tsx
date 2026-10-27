@@ -28,8 +28,11 @@ export const dynamic = "force-dynamic";
 /** About a dozen grouped reads in one transaction; wider than Prisma's 5 s single-statement default. */
 const CONNECTIONS_PHASE_TIMEOUT_MS = 15_000;
 
-export default async function ConnectionsPage() {
+export default async function ConnectionsPage({ searchParams }: { searchParams: Promise<{ welcome?: string }> }) {
   const { userId } = await getSpaceContext();
+  // Connections pass PR 2 — ?welcome=1 is the one-time post-login redirect
+  // (lib/onboarding). It only changes the greeting; the page is the same page.
+  const welcome = (await searchParams).welcome === "1";
 
   // The single canonical read: sync status + per-connection account inventory
   // (NAMES ONLY), both keyed by connection id. No portfolio read (PCS-2). The
@@ -40,6 +43,9 @@ export default async function ConnectionsPage() {
   // authority it runs under, and this is it. Pure reads, no network.
   const { status, accountsByConnectionId, intelligenceByConnectionId } =
     await withTenantDb(userId, (tx) => loadConnectionsSpaceData(tx, userId), { timeout: CONNECTIONS_PHASE_TIMEOUT_MS });
+  const me = welcome
+    ? await withTenantDb(userId, (tx) => tx.user.findUnique({ where: { id: userId }, select: { firstName: true, name: true } })).catch(() => null)
+    : null;
 
   return (
     <ConnectionsSpaceDashboard
@@ -47,6 +53,8 @@ export default async function ConnectionsPage() {
       accountsByConnectionId={accountsByConnectionId}
       intelligenceByConnectionId={intelligenceByConnectionId}
       plaidEnabled={env.isPlaidEnabled}
+      welcome={welcome}
+      firstName={me?.firstName ?? me?.name?.split(" ")[0] ?? null}
     />
   );
 }

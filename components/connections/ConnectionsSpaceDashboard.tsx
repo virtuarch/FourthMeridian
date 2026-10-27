@@ -23,52 +23,21 @@
  */
 
 import { useState } from "react";
-import { CheckCircle2 } from "lucide-react";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
 import { ConnectionsList } from "@/components/connections/ConnectionsList";
 import { ConnectionsActions } from "@/components/connections/ConnectionsActions";
+import { ConnectionsOnboarding } from "@/components/connections/ConnectionsOnboarding";
 import { CONNECTIONS_WORKSPACE_ORDER, getConnectionsWorkspace } from "@/lib/connections/workspaces";
 import type { ConnectionsSpaceData } from "@/lib/connections/space-data";
-
-/**
- * CONN-2H — the empty state explains the TRANSFORMATION, not just "connect an
- * account." A first-time user should understand that connecting acquires data
- * AND that Fourth Meridian then builds financial intelligence from it — the L1→L2
- * story the whole reconstruction experience is about. Presentation only.
- */
-function ConnectionsEmptyState({ plaidEnabled = true }: { plaidEnabled?: boolean }) {
-  const steps = [
-    "Import your transactions",
-    "Build your financial timeline",
-    "Generate cash-flow insights",
-    "Create your wealth picture",
-  ];
-  return (
-    <div className="mx-auto max-w-md pt-4 text-center">
-      <h2 className="text-lg font-semibold text-[var(--text-primary)]">Connect your first account</h2>
-      <p className="mt-1.5 text-sm text-[var(--text-secondary)]">
-        Your transactions come in first — then Fourth Meridian builds your financial intelligence from them.
-      </p>
-      <ul className="mx-auto mt-5 mb-6 inline-flex flex-col gap-2 text-left">
-        {steps.map((s) => (
-          <li key={s} className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)]">
-            <CheckCircle2 size={16} className="shrink-0 text-[var(--accent-positive,#34d399)]" />
-            <span>{s}</span>
-          </li>
-        ))}
-      </ul>
-      <p className="mb-5 text-xs text-[var(--text-muted)]">Your first build happens automatically.</p>
-      <ConnectionsActions centered plaidEnabled={plaidEnabled} />
-    </div>
-  );
-}
 
 export function ConnectionsSpaceDashboard({
   status,
   accountsByConnectionId,
   intelligenceByConnectionId,
   plaidEnabled = true,
-}: ConnectionsSpaceData & { plaidEnabled?: boolean }) {
+  welcome = false,
+  firstName = null,
+}: ConnectionsSpaceData & { plaidEnabled?: boolean; welcome?: boolean; firstName?: string | null }) {
   const hasConnections = status.connections.length > 0;
 
   // Identity comes from the registry (no hardcoded rail JSX). Single workspace in
@@ -98,7 +67,9 @@ export function ConnectionsSpaceDashboard({
           initialIntelligence={intelligenceByConnectionId}
         />
       ) : (
-        <ConnectionsEmptyState plaidEnabled={plaidEnabled} />
+        // Connections pass PR 2 — the first-time welcome (?welcome=1) and the
+        // empty state are one view: three ways in, and "Explore My Space" out.
+        <ConnectionsOnboarding welcome={welcome} firstName={firstName} plaidEnabled={plaidEnabled} />
       )}
     </SpaceShell>
   );
