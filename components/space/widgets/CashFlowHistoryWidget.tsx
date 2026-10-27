@@ -14,15 +14,17 @@
  *   • the reporting range is the ONE period the sticky header owns (a relative
  *     preset such as 1M, or an explicit calendar Month · Quarter · Year);
  *   • the display granularity is always the DAY (one cell per day).
- * The compact control set here edits the reporting range THROUGH the header's
- * state (`onSelectPeriod` → the flow time group's explicit period), so the header
- * and the heatmap can never show two different windows:
- *   Month · Quarter · Year — selects the calendar unit CONTAINING the current
- *                            window's end (on 1M ending Oct 27: Oct 2026 · Q4 2026 ·
- *                            2026 — three distinct, testable windows);
- *   ◀ label ▶              — steps that unit (never past today, never before the
- *                            first data-bearing date);
- *   measure                — which canonical measures a cell sums (page-scoped).
+ * The control set here edits the reporting range THROUGH the header's state
+ * (`onSelectPeriod` → the flow time group's explicit period), so the header and
+ * the heatmap can never show two different windows. TWO rows (v2.7 final
+ * follow-ups, Workstream A — cashflow/HeatmapPeriodControls.tsx):
+ *   row 1 (always, never displaced) — Month · Quarter · Year (fixed-width
+ *     segments; selects the calendar unit CONTAINING the current window's end:
+ *     on 1M ending Oct 27 ⇒ Oct 2026 · Q4 2026 · 2026) and the page's measure;
+ *   row 2 (only while a unit is active) — ◀ · the unit's label (opens the direct
+ *     month / quarter / year picker) · ▶ · Reset (back to the rolling 1M default
+ *     via `onResetPeriod`; the measure is kept). Arrows and picker share ONE range
+ *     bound: never past today, never before the first data-bearing date.
  * Choosing a header preset clears the explicit unit (the header is the master), and
  * the heatmap then paints that preset's own range with no unit active.
  *
@@ -50,7 +52,8 @@ import {
   type CashFlowPeriod,
   type ExplicitCashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
-import { calendarNavigation, type CalendarScale } from "@/lib/space/perspective-time-groups";
+import { calendarNavigation } from "@/lib/space/perspective-time-groups";
+import { HeatmapPeriodRow, HeatmapPrimaryRow } from "@/components/space/widgets/cashflow/HeatmapPeriodControls";
 
 export type ActivityPage = "cashFlow" | "spending";
 
@@ -72,57 +75,7 @@ function EmptyCard({ page }: { page: ActivityPage }) {
   );
 }
 
-const PILL = "rounded-[var(--radius-full)] px-2.5 py-1 text-[11px] font-semibold transition-colors max-lg:min-h-10 max-lg:px-3.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]";
 const TRACK = { background: "var(--glass-ultrathin)", border: "1px solid var(--border-hairline)" } as const;
-const ACTIVE = { background: "rgba(59,130,246,.14)", border: "1px solid rgba(125,168,255,.32)" } as const;
-const SCALES: { id: CalendarScale; label: string }[] = [
-  { id: "month", label: "Month" },
-  { id: "quarter", label: "Quarter" },
-  { id: "year", label: "Year" },
-];
-
-// ─── Month · Quarter · Year (the reporting unit) ──────────────────────────────
-
-function ScaleControl({ scale, onPick }: { scale: CalendarScale | null; onPick: (s: CalendarScale) => void }) {
-  return (
-    <div className="inline-flex items-center gap-0.5 p-0.5 rounded-[var(--radius-full)]" style={TRACK}
-      role="radiogroup" aria-label="Heatmap period" onPointerDown={(e) => e.stopPropagation()}>
-      {SCALES.map(({ id, label }) => {
-        const active = id === scale;
-        return (
-          <button key={id} type="button" role="radio" aria-checked={active} data-scale={id}
-            onClick={() => { if (!active) onPick(id); }}
-            className={`${PILL} ${active ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}
-            style={active ? ACTIVE : { border: "1px solid transparent" }}>
-            {label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── ◀ unit ▶ (steps the active unit) ─────────────────────────────────────────
-
-function UnitStepper({ label, prev, next, onStep }: {
-  label: string;
-  prev: ExplicitCashFlowPeriod | null;
-  next: ExplicitCashFlowPeriod | null;
-  onStep: (p: ExplicitCashFlowPeriod) => void;
-}) {
-  const btn = "flex items-center justify-center h-6 w-6 rounded-[var(--radius-full)] text-[var(--text-muted)] enabled:hover:text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-default transition-colors max-lg:h-10 max-lg:w-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]";
-  return (
-    <div className="inline-flex items-center gap-1.5" onPointerDown={(e) => e.stopPropagation()} data-heatmap-stepper>
-      <button type="button" aria-label="Previous period" disabled={prev == null} onClick={() => prev && onStep(prev)} className={btn} style={TRACK}>
-        <ChevronLeft size={14} />
-      </button>
-      <span className="text-xs font-semibold tabular-nums text-[var(--text-secondary)] whitespace-nowrap" aria-live="polite">{label}</span>
-      <button type="button" aria-label="Next period" disabled={next == null} onClick={() => next && onStep(next)} className={btn} style={TRACK}>
-        <ChevronRight size={14} />
-      </button>
-    </div>
-  );
-}
 
 // ─── All Time year navigation (bounded single-year calendar) ──────────────────
 
@@ -166,13 +119,15 @@ interface Props {
   page?:          ActivityPage;
   /** Move the page's reporting period to an explicit calendar unit (the header follows). */
   onSelectPeriod?: (period: ExplicitCashFlowPeriod) => void;
+  /** Reset the page's period to the rolling 1M default (clears the explicit unit). */
+  onResetPeriod?: () => void;
   /** Pre-computed slices from CashFlowSpaceData (the workspace composition boundary). */
   windowRows?:    Transaction[];
   daily?:         Map<string, DayFacts>;
 }
 
 /** The Activity heatmap (calendar only) with its compact reporting-unit controls. */
-export function CashFlowHistoryWidget({ transactions, period, now, asOf, today, ctx, accounts, page = "cashFlow", onSelectPeriod, windowRows, daily }: Props) {
+export function CashFlowHistoryWidget({ transactions, period, now, asOf, today, ctx, accounts, page = "cashFlow", onSelectPeriod, onResetPeriod, windowRows, daily }: Props) {
   const key = periodKey(period);
   const options = filtersForPage(page);
   const [filterId, setFilterId] = useState<string>(defaultFilterFor(page === "spending" ? "economic" : "liquidity").id);
@@ -196,17 +151,22 @@ export function CashFlowHistoryWidget({ transactions, period, now, asOf, today, 
   const windowed = transactions == null ? null : (windowRows ?? filterByPeriod(transactions, period, asOfAnchor(asOf)));
   const showYearNav = windowed != null && windowed.length > 0 && period === "ALL" && effectiveViewYear != null;
 
+  // Row 1 never changes shape; row 2 exists only while a unit is active (or, under
+  // the All Time header preset, carries that preset's display-year cursor).
+  const explicit = typeof period === "object" ? period : null;
   const controls = (
-    <div className="flex flex-wrap items-center gap-2" data-heatmap-controls>
-      {onSelectPeriod && nav && <ScaleControl scale={nav.scale} onPick={(s) => onSelectPeriod(nav.choose[s])} />}
-      {onSelectPeriod && nav?.scale
-        ? <UnitStepper label={periodLabel(period)} prev={nav.prev} next={nav.next} onStep={onSelectPeriod} />
+    <div className="space-y-2 min-w-0">
+      <HeatmapPrimaryRow
+        scale={nav?.scale ?? null}
+        onPick={onSelectPeriod && nav ? (s) => onSelectPeriod(nav.choose[s]) : undefined}
+        measure={<CashFlowMeasureSelect options={options} filterId={activeFilter.id} onChange={setFilterId} />}
+      />
+      {onSelectPeriod && nav?.scale && explicit
+        ? <HeatmapPeriodRow period={explicit} label={periodLabel(period)} prev={nav.prev} next={nav.next}
+            earliest={earliest} today={today ?? windowEnd} onSelect={onSelectPeriod} onReset={onResetPeriod} />
         : showYearNav && effectiveViewYear != null
           ? <AllTimeYearNav year={effectiveViewYear} years={dataYears} onChange={setViewYear} />
           : null}
-      <div className="ml-auto max-lg:ml-0">
-        <CashFlowMeasureSelect options={options} filterId={activeFilter.id} onChange={setFilterId} />
-      </div>
     </div>
   );
 

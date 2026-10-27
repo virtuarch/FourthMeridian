@@ -122,6 +122,7 @@ export function CashFlowWorkspace({
   today,
   compareTo,
   onSelectPeriod,
+  onResetPeriod,
   onOpenSpending,
   onEnvelopeChange,
   transactionsError = null,
@@ -145,6 +146,8 @@ export function CashFlowWorkspace({
   compareTo?:      string | null;
   /** Move the page's period to an explicit calendar unit (the heatmap's Month · Quarter · Year). */
   onSelectPeriod:  (period: CashFlowPeriod) => void;
+  /** The heatmap's Reset — back to the rolling 1M default (clears the explicit unit). */
+  onResetPeriod?:  () => void;
   /** Cash Flow only — open the Spending perspective (the category teaser). */
   onOpenSpending?: () => void;
   /** SD-6 gate — the workspace OWNS its completeness stamp (computed below from its
@@ -362,6 +365,7 @@ export function CashFlowWorkspace({
         accounts={accounts}
         page={page}
         onSelectPeriod={onSelectPeriod as (p: ExplicitCashFlowPeriod) => void}
+        onResetPeriod={onResetPeriod}
         windowRows={data?.rows}
         daily={data?.daily}
       />
