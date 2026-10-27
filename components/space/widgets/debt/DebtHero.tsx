@@ -30,8 +30,9 @@ import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { DebtKpis } from "./debt-kpis";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
-import { HeroEyebrow } from "@/components/space/hero/HeroParts";
+import { HeroEyebrow, HeroTalk } from "@/components/space/hero/HeroParts";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
+import type { UtilizationLevel } from "@/lib/accounts/credit-utilization";
 
 /** The balance-history window delta, ready for the badge (snapshot basis). */
 export interface DebtWindowChange {
@@ -42,6 +43,18 @@ export interface DebtWindowChange {
   /** The window's opening date (formatted), for the "vs {date}" label. */
   fromLabel: string;
 }
+
+/**
+ * v2.7 mobile/desktop parity — the utilization LEVEL in words (utilizationLevel's
+ * thresholds), stated beside the % in both layouts. Desktop used to signal it by
+ * colour alone and compact not at all.
+ */
+export const UTILIZATION_LEVEL_LABEL: Record<UtilizationLevel, string> = {
+  low:      "Low",
+  moderate: "Moderate",
+  high:     "High",
+  over:     "Over limit",
+};
 
 const UTIL_COLOR: Record<string, string> = {
   low:      "var(--accent-positive)",
@@ -82,7 +95,7 @@ export function DebtHero({
   verdictAsOf:    string | null;
   /** Count of account details the lens withheld, for an honest note. */
   redactions:     number;
-  /** v2.7 R6 — the shell slice id for the compact AI entry link (allowlisted there). */
+  /** v2.7 R6 — the shell slice id for the AI entry link, both layouts (allowlisted there). */
   timePreset?:    string;
   /** v2.7 — the Space's canonical freshness claim ("Last checked N ago"), compact label row only. */
   freshnessLabel?: string | null;
@@ -162,12 +175,14 @@ export function DebtHero({
             )}
             {kpis.utilizationPct != null && kpis.utilizationLevel != null && (
               <Stat label="Utilization">
-                <span style={{ color: UTIL_COLOR[kpis.utilizationLevel] }}>{kpis.utilizationPct.toFixed(0)}%</span>
+                <span style={{ color: UTIL_COLOR[kpis.utilizationLevel] }}>{kpis.utilizationPct.toFixed(0)}% · {UTILIZATION_LEVEL_LABEL[kpis.utilizationLevel]}</span>
               </Stat>
             )}
           </div>
         )}
 
+        {/* v2.7 mobile/desktop parity — the same AI entry as the compact card's row 5. */}
+        <HeroTalk section="debt" period={timePreset} />
       </section>
     </div>
   );
@@ -199,7 +214,7 @@ export function debtCompactKpiItems(kpis: DebtKpis, currency: string): { key: st
   return [
     { key: "liabilities", label: "Liabilities", value: String(kpis.owingCount) },
     ...(kpis.ratedCount > 0 ? [{ key: "interest", label: "Est. interest", value: `${approx}${formatCurrency(kpis.estMonthlyInterest, currency)}/mo` }] : []),
-    ...(kpis.utilizationPct != null ? [{ key: "utilization", label: "Utilization", value: `${kpis.utilizationPct.toFixed(0)}%` }] : []),
+    ...(kpis.utilizationPct != null ? [{ key: "utilization", label: "Utilization", value: `${kpis.utilizationPct.toFixed(0)}%${kpis.utilizationLevel ? ` · ${UTILIZATION_LEVEL_LABEL[kpis.utilizationLevel]}` : ""}` }] : []),
   ];
 }
 

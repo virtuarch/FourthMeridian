@@ -18,6 +18,13 @@
  *   R5  the existing "Talk with Fourth Meridian about this" link (navigates only);
  *       kept empty at the same height where a perspective has no TalkSection
  *
+ * v2.7 mobile/desktop parity — `note`: a perspective's STANDING explanation (Cash
+ * Flow / Spending: what the figure counts, and the window the change compares
+ * against — both stated beside the desktop headline) renders as one muted line
+ * directly UNDER the card, outside the fixed-height section, so the card itself
+ * never changes size. It is always present on those perspectives (never
+ * conditional on data), so their skeleton is stable too.
+ *
  * Exceptional disclosures (withheld details, "Balances are current…", the crypto
  * price basis) are NOT part of the card at all: v2.7 header parity moved them
  * UNDER EACH PAGE'S CHART (HeroNotes), so neither the card nor the page skeleton
@@ -62,6 +69,7 @@ export function CompactHeroCard({
   currency,
   talkSection,
   talkPeriod,
+  note,
 }: {
   title: string;
   /** The canonical freshness claim ("Last checked 2 hr ago"), or null. */
@@ -83,6 +91,8 @@ export function CompactHeroCard({
    *  stays, empty, at its fixed height so the card never changes size. */
   talkSection?: TalkSection;
   talkPeriod?: unknown;
+  /** A standing explanation line under the card (outside its fixed height). */
+  note?: ReactNode;
 }) {
   return (
     <div className="lg:hidden" data-compact-hero-wrap>
@@ -127,6 +137,9 @@ export function CompactHeroCard({
           {talkSection && <TalkAboutThis section={talkSection} period={talkPeriod} />}
         </div>
       </section>
+      {note && (
+        <p className="mt-2 px-1 text-[11px] leading-snug text-[var(--text-muted)]" data-compact-hero-note>{note}</p>
+      )}
     </div>
   );
 }

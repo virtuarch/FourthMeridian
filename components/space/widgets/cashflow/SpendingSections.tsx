@@ -32,7 +32,8 @@ import { compactWindowLabel } from "./hero-window-label";
 import { BreakdownWidget } from "@/components/space/widgets/BreakdownWidget";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { EconomicSpendByTier } from "@/lib/transactions/cash-flow-projection";
-import type { CashFlowHeroChange } from "./CashFlowHero";
+import { flowHeroNote, type CashFlowHeroChange } from "./CashFlowHero";
+import { useSpaceChrome } from "@/lib/space/space-chrome-context";
 import type { SpendingDonutModel } from "./spending-distribution";
 
 /** The sub line under the Spending headline — exported so a test pins the copy. */
@@ -55,19 +56,24 @@ export function SpendingHero({
   change:      CashFlowHeroChange | null;
 }) {
   const value = total == null ? "—" : formatCurrency(total, currency);
+  // v2.7 mobile/desktop parity — the canonical "Last checked N ago" (as CashFlowHero).
+  const freshness = useSpaceChrome().space?.identity.updatedLabel ?? null;
+  const showChange = total != null && change != null;
   return (
     <>
       {/* COMPACT (<lg) — the shared five-row card (one page shell with Net Worth /
           Assets / Debt / Cash Flow). R5 stays empty: there is no Spending
-          TalkSection yet (adding one changes the AI templates — out of scope). */}
+          TalkSection yet (adding one changes the AI templates — out of scope),
+          and the desktop hero has none either (parity). */}
       <CompactHeroCard
         title={`Total spending · ${periodLabel(period)}`}
-        freshness={null}
+        freshness={freshness}
         trust={null}
         value={value}
-        change={total != null && change != null ? { abs: change.abs, pct: change.pct, goodDirection: "down" } : null}
+        change={showChange ? { abs: change.abs, pct: change.pct, goodDirection: "down" } : null}
         range={compactWindowLabel(windowLabel)}
         currency={currency}
+        note={flowHeroNote(SPENDING_HERO_SUB, showChange ? change.fromLabel : null)}
       />
 
       {/* DESKTOP (≥lg) — bare hero, as Cash Flow. */}
@@ -75,7 +81,7 @@ export function SpendingHero({
         <HeroEyebrow label={`Total spending · ${periodLabel(period)}`} />
         <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-2">
           <Figure value={value} size="hero" tone={total == null ? "muted" : "neutral"} className="sm:text-5xl leading-none" />
-          {total != null && change != null && (
+          {showChange && (
             <DeltaBadge abs={change.abs} pct={change.pct} currency={currency} goodDirection="down" compareLabel={change.fromLabel} className="!text-xs" />
           )}
         </div>

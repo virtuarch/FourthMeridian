@@ -86,7 +86,7 @@ console.log("\n2. the stats move to a compact KPI strip — same values");
 {
   const items = debtCompactKpiItems(KPIS as never, "USD");
   check("Liabilities · Est. interest · Utilization from the same kpis",
-    items.map((i) => `${i.label}=${i.value}`).join("|") === "Liabilities=1|Est. interest=$53.31/mo|Utilization=32%", JSON.stringify(items));
+    items.map((i) => `${i.label}=${i.value}`).join("|") === "Liabilities=1|Est. interest=$53.31/mo|Utilization=32% · Moderate", JSON.stringify(items));
   check("estimated ⇒ the hero's ≈ marker", debtCompactKpiItems({ ...KPIS, estimated: true } as never, "USD")[1].value.startsWith("≈ "));
   check("no rate / no limit ⇒ those items are omitted, never zero", debtCompactKpiItems({ ...KPIS, ratedCount: 0, utilizationPct: null } as never, "USD").length === 1);
   const dw = readFileSync(path.join(process.cwd(), "components/space/widgets/debt/DebtWorkspace.tsx"), "utf8");
