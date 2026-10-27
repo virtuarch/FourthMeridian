@@ -300,12 +300,26 @@ console.log("\nPROBE 13 — the Slice 2 boundary still holds");
 console.log("\nPROBE 14 — current state never enters historical storage");
 {
   const snapshotFiles = FILES.filter((f) => f.startsWith(path.join("lib", "snapshots")));
+  // v2.7-P0 (owner-approved adjusted-cash contract, 2026-10-27) — DELIBERATE
+  // narrowing: TODAY's live row is written on the ADJUSTED depository basis, so
+  // the ONE live-row read (lib/snapshots/space-accounts.ts, single caller
+  // regenerate.ts) may call `adjustedDepositoryBalance` over the pending-evidence
+  // set. It still imports no reconciliation (no reconcileAccount, no PREDICTED_ /
+  // REACHABLE_CASH claim — reachable cash never enters storage), and every OTHER
+  // snapshot file — the historical writers above all — still imports nothing
+  // from lib/balances, so no current-state figure reaches a reconstructed row.
+  const LIVE_ROW_READ = path.join("lib", "snapshots", "space-accounts.ts");
   check(`the snapshot engine (${snapshotFiles.length} files) imports no reconciliation`,
     snapshotFiles.every((f) => {
       const c = code(f);
-      return !c.includes("lib/balances/") && !c.includes("reconcileAccount") &&
+      const balancesOk = f === LIVE_ROW_READ
+        ? [...c.matchAll(/from "@\/lib\/balances\/([\w-]+)"/g)].every((m) => m[1] === "account-balances" || m[1] === "pending-evidence")
+        : !c.includes("lib/balances/");
+      return balancesOk && !c.includes("reconcileAccount") &&
              !c.includes("PREDICTED_") && !c.includes("REACHABLE_CASH");
     }));
+  check("the live-row read uses ONLY the adjusted-balance authority from lib/balances",
+    code(LIVE_ROW_READ).includes("adjustedDepositoryBalance(") && !code(LIVE_ROW_READ).includes("reconcileAccount"));
   const hist = FILES.filter((f) => f.startsWith(path.join("lib", "history")) || f.startsWith(path.join("lib", "wealth")));
   check(`the historical/wealth engines (${hist.length} files) import no reconciliation`,
     hist.every((f) => !code(f).includes("reconcileAccount")));

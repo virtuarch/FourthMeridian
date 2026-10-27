@@ -32,7 +32,7 @@ import { AllocationSliceDetail } from "./AllocationSliceDetail";
 
 type Dimension = AllocationDimension;
 
-const DIMENSIONS: { id: Dimension; label: string; noun: string }[] = [
+export const DIMENSIONS: { id: Dimension; label: string; noun: string }[] = [
   { id: "assetClass", label: "Asset class", noun: "asset class" },
   { id: "sector",     label: "Sector",      noun: "sector" },
   { id: "account",    label: "Account",     noun: "account" },
@@ -50,6 +50,10 @@ const CONCENTRATION_PRESENTATION: Record<
   HIGHLY_CONCENTRATED: { label: "Highly concentrated",   color: "var(--accent-negative)" },
 };
 
+/** v2.7 — the header Dropdown's options (Net Worth "Where it sits" idiom). */
+export const ALLOCATION_GROUPINGS: { id: Dimension; label: string }[] =
+  DIMENSIONS.map((d) => ({ id: d.id, label: `By ${d.label.toLowerCase()}` }));
+
 /** Map canonical allocation slices → the shared BreakdownWidget item contract.
  *  `share` is scale-invariant so the widget re-derives percentages from `value`. */
 function toBreakdownItems(slices: AllocationSlice[]): BreakdownItem[] {
@@ -61,6 +65,7 @@ export function InvestmentAllocationPanel({
   accounts,
   reportingCurrency,
   showConcentrationInsight = true,
+  dimension: controlledDimension,
 }: {
   holdings:          ValuedHoldingRow[];
   accounts:          { id: string; name: string }[];
@@ -68,8 +73,12 @@ export function InvestmentAllocationPanel({
   /** The one-line concentration insight above the dimension toggle. Set false when a
    *  dedicated Concentration surface renders alongside (avoids saying it twice). */
   showConcentrationInsight?: boolean;
+  /** v2.7 — when the host owns the grouping (a Dropdown in its Block header, as on
+   *  Net Worth), it passes the dimension here and the in-panel select is omitted. */
+  dimension?: Dimension;
 }) {
-  const [dimension, setDimension] = useState<Dimension>("assetClass");
+  const [ownDimension, setDimension] = useState<Dimension>("assetClass");
+  const dimension = controlledDimension ?? ownDimension;
   // UX-CLOSE-3 — one selection, local to this card. Same idiom as the ledgers.
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
@@ -88,6 +97,13 @@ export function InvestmentAllocationPanel({
     setSelectedKey(null);
     setDimension(next);
   };
+  // Host-driven axis change: clear the selection during render (no effect, no
+  // flash) — the same adjust-state-during-render idiom WealthCompositionCard uses.
+  const [prevDimension, setPrevDimension] = useState(dimension);
+  if (dimension !== prevDimension) {
+    setPrevDimension(dimension);
+    setSelectedKey(null);
+  }
 
   // Nothing valued to break down (e.g. holdings present but all unvalued).
   if (allocation.valuedTotal <= 0) {
@@ -130,6 +146,7 @@ export function InvestmentAllocationPanel({
 
       {/* Dimension selector — a dropdown (§10). No shared Select primitive exists,
           so this mirrors the app's inline <select> token recipe (ViewCurrencyOverride). */}
+      {controlledDimension === undefined && (<>
       <label className="sr-only" htmlFor="alloc-dim">Allocation dimension</label>
       <select
         id="alloc-dim"
@@ -139,6 +156,7 @@ export function InvestmentAllocationPanel({
       >
         {DIMENSIONS.map((d) => <option key={d.id} value={d.id}>By {d.label.toLowerCase()}</option>)}
       </select>
+      </>)}
 
       {/* Canonical shared donut (BreakdownWidget) — the same primitive wealth +
           liquidity use, so the Investments allocation reads as one system. */}

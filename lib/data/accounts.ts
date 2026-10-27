@@ -38,7 +38,7 @@ import { grantsAccountDetail } from "@/lib/ai/visibility";
 import {
   sanitizeForBalanceOnly, genericAccountName, grantsBalanceDisclosure,
 } from "@/lib/account-privacy";
-import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
+import { resolveRowBalances, reconcileAccount, adjustedDepositoryBalance } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
 import { loadWalletCurrentValues, hasKnownValue, type WalletCurrentValue } from "@/lib/crypto/wallet-current-value";
 
@@ -90,17 +90,18 @@ async function loadCurrentCashState(
   const pending = await loadPendingEvidence(client, rows.map((r) => r.id));
   const now = new Date();
   for (const r of rows) {
-    const rec = reconcileAccount(
-      resolveRowBalances(r, now),
-      pending.get(r.id) ?? NO_PENDING,
-      r.creditLimit,
-    );
+    const balances = resolveRowBalances(r, now);
+    const accountPending = pending.get(r.id) ?? NO_PENDING;
+    const rec = reconcileAccount(balances, accountPending, r.creditLimit);
     if (rec.basis !== "DEPOSITORY") continue;
+    // v2.7-P0 — the adjusted balance from the same balances + pending set.
+    const adj = adjustedDepositoryBalance(balances, accountPending);
     out.set(r.id, {
       reachable:    rec.reachable?.amount ?? null,
       unexplained:  rec.unexplained,
       state:        rec.state,
       pendingCount: rec.pending.count,
+      ...(adj ? { pendingSum: adj.pendingSum, adjusted: adj.adjusted, basis: adj.basis } : {}),
     });
   }
   return out;
@@ -341,7 +342,10 @@ export async function getAccountsWithVisibility(
           // already discloses. Withholding it would make a liquidity total mix
           // reachable figures with ledger balances, which is worse.
           ...(currentStateByAccount.has(r.id)
-            ? { currentState: currentStateByAccount.get(r.id) }
+            ? { currentState: currentStateByAccount.get(r.id),
+                // v2.7-P0 — mirrored for classifyAccounts (countedBalance).
+                ...(typeof currentStateByAccount.get(r.id)!.adjusted === "number"
+                  ? { adjustedBalance: currentStateByAccount.get(r.id)!.adjusted } : {}) }
             : {}),
           // All other fields intentionally omitted (undefined) under the
           // BALANCE_ONLY / SUMMARY_ONLY tier: no institution, no debt metadata,
@@ -397,7 +401,10 @@ export async function getAccountsWithVisibility(
         ? r.balanceLastUpdatedAt.toISOString()
         : null,
       ...(currentStateByAccount.has(r.id)
-        ? { currentState: currentStateByAccount.get(r.id) }
+        ? { currentState: currentStateByAccount.get(r.id),
+            // v2.7-P0 — mirrored for classifyAccounts (countedBalance).
+            ...(typeof currentStateByAccount.get(r.id)!.adjusted === "number"
+              ? { adjustedBalance: currentStateByAccount.get(r.id)!.adjusted } : {}) }
         : {}),
       plaidName:     r.plaidName    ?? undefined,
       officialName:  r.officialName ?? undefined,

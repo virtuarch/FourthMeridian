@@ -62,11 +62,13 @@ console.log("1. section order per view");
   const body = WW.slice(WW.indexOf("const assetsSectionsBody"));
   const assets = inOrder(body, ['{show.cash && (', 'id="wealth-cash"', '{show.investments && (', 'id="wealth-investments"', '{show.realAssets && (', 'id="wealth-real-assets"']);
   check("Assets sections: Cash · Investments · Real assets, each gated by its slice", assets.ok, assets.detail);
-  const cash = inOrder(LIQ, ['id="liquidity-resilience"', "Emergency coverage", "Cash concentration", "Reachability", "data-accessible-cash", 'id="liquidity-sources"', 'id="liquidity-reconstructed"', 'id="liquidity-distribution"', "<CashDistribution", 'id="liquidity-accounts"', "<CashAccountsLedger", 'id="liquidity-activity"', "<TransactionCoverageNote", "<LiquidityWhatChangedCard"]);
+  const cash = inOrder(LIQ, ['id="liquidity-resilience"', "Emergency coverage", "Cash concentration", "Reachability", "data-accessible-cash", 'id="liquidity-sources"', 'id="liquidity-distribution"', "<CashDistribution", 'id="liquidity-accounts"', "<CashAccountsLedger", 'id="liquidity-activity"', "<TransactionCoverageNote", "<LiquidityWhatChangedCard"]);
   // v2.7 Cash accounts — DELIBERATE (owner): the Sources ledger is replaced by
-  // Cash distribution → Cash accounts; the reconstructed as-of tiers lead them
-  // only when a historical As-Of is selected.
-  check("Cash: Resilience (coverage · concentration · reachability · accessible cash) → (reconstructed tiers) → Cash distribution → Cash accounts → What changed (+ coverage note)", cash.ok, cash.detail);
+  // Cash distribution → Cash accounts. DELIBERATE (owner, v2.7-P0 PR): the
+  // reconstructed as-of tiers section is REMOVED — a historical As-Of shows the
+  // same sections, with the per-account ones labelled "Current balances".
+  check("Cash: Resilience (coverage · concentration · reachability · accessible cash) → Cash distribution → Cash accounts → What changed (+ coverage note)", cash.ok, cash.detail);
+  check("Cash: no reconstructed-tiers section", !LIQ.includes('id="liquidity-reconstructed"') && !LIQ.includes("renderHistoricalTiers"));
   check("Cash: the resilience grid is 2-up on compact, 4-up on desktop when embedded",
     /grid grid-cols-2 gap-3 sm:gap-4 items-stretch min-w-0 \$\{embedded \? "lg:grid-cols-4" : "lg:grid-cols-3"\}/.test(LIQ));
   const ret = INV.slice(INV.lastIndexOf("  return (\n    <div className=\"space-y-8 sm:space-y-10"));

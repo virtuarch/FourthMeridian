@@ -70,7 +70,18 @@ export interface Account {
     state:        string;
     /** Provider-observed pending rows behind the prediction. */
     pendingCount: number;
+    /** v2.7-P0 — P (Σ signed pending), native. */
+    pendingSum?:  number;
+    /** v2.7-P0 — the adjusted balance every total counts (C, or C + P), native. */
+    adjusted?:    number;
+    /** v2.7-P0 — NO_PENDING | PENDING_EXCLUDED | PENDING_INCLUDED | UNPROVEN. */
+    basis?:       string;
   };
+  /**
+   * v2.7-P0 — mirrored from `currentState.adjusted` so classifyAccounts totals
+   * the adjusted depository balance (countedBalance). `balance` stays reported.
+   */
+  adjustedBalance?: number;
   // Display-name metadata (Plaid values are never overwritten after import).
   plaidName?:    string;  // raw value Plaid returned for this account, frozen at import
   officialName?: string;  // Plaid's official_name, if provided, frozen at import

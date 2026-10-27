@@ -73,6 +73,8 @@ interface FallbackAccount {
   balanceLastUpdatedAt?: string | null;
   /** RWA-1 — SpaceAccount.userEstimate: a manual asset's value, judged on the estimate horizon. */
   userEstimate?:         true;
+  /** v2.7-P0 — SpaceAccount.adjustedBalance (the figure an asset TOTAL counts). */
+  adjustedBalance?:      number;
   /** REVIEW-3 B-1 — present only on aggregated BALANCE_ONLY rows (SpaceAccount.aggregate). */
   aggregate?: {
     memberAccountIds: string[];
@@ -196,6 +198,7 @@ export function accountDetailFallbackRows(accounts: FallbackAccount[], now: Date
     // is UNAVAILABLE. The fetched read supplies the real claim a moment later;
     // an honest "cannot be established yet" is the right interim answer.
     reconciliation:     reconcileAccount(fallbackBalances(a, now), NO_PENDING, null),
+    ...(typeof a.adjustedBalance === "number" ? { adjustedBalance: a.adjustedBalance } : {}),
   }));
 }
 
@@ -265,12 +268,17 @@ export function AccountsLedger({
       // it read "−$124.04" — the two disagreed on screen about the same account.
       // Both now read the canonical authority, so they cannot diverge.
       if (d.row.type === "debt") { liabilities += amountOwed(d.display.amount); liabEst ||= d.display.estimated; }
-      else { assets += d.display.amount; assetsEst ||= d.display.estimated; }
+      // v2.7-P0 — an asset TOTAL counts the adjusted depository balance (the
+      // row itself still displays the provider-reported balance).
+      else {
+        assets += d.row.adjustedBalance != null ? toDisplay(d.row.adjustedBalance, d.row.currency, ctx).amount : d.display.amount;
+        assetsEst ||= d.display.estimated;
+      }
     }
     const hasDebt = display.some((d) => d.row.type === "debt");
     const hasAsset = display.some((d) => d.row.type !== "debt");
     return { assets, liabilities, assetsEst, liabEst, hasDebt, hasAsset, institutions: institutions.size };
-  }, [display]);
+  }, [display, ctx]);
 
   // Connection-health summary — render-only-when-present, in ConnectionCard's language.
   const health = useMemo(() => {
