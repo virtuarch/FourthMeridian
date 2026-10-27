@@ -150,3 +150,52 @@ The only deliberate divergence: a USER "Payment" is honoured in narration, while
 - **R4. Assembler user overrides.** The AI assembler does not select `categorySource`, so a human "Payment" on a savings-paired row is not counted as a transfer there. That matches the money layer, which also ignores it.
 - **R5. Materiality-driven same-day regeneration** for Spaces whose 7-day window holds a mislabelled row (§4.3). This is ordinary change detection, and limited to today.
 - **R6. Exhaustive read cost.** `get_transactions` flow `transfers` / `card_payments` now reads the window to exhaustion (bounded by the 5,000-row ceiling, which is reported as incomplete when hit).
+
+## 7. Addendum: Daily Brief "Financial data" freshness (display only, separate commit)
+
+**Change.** The expanded "Financial data" list (and its collapsed group summary) used a day-only convention ("updated today"). It now speaks the shared relative format: "Updated just now / 37 min ago / 1 hr ago / yesterday / Oct 24".
+
+**Formatter.** `lib/format.ts`:
+- `formatUpdatedAgo` / `formatUpdatedLabel` wrap the existing `formatRelativeTime`, the same formatter as the dashboard header's "Last checked N ago". It gained an optional `nowMs` argument, so existing callers are unchanged.
+- Tiers:
+  - under 24 h: `formatRelativeTime`, elapsed time;
+  - 24–48 h: "yesterday", elapsed time;
+  - 48 h or more: an absolute date ("Oct 24", or "Oct 24, 2025" across years) in the viewer's locale and time zone.
+- Elapsed tiers compute from absolute instants, so they are timezone-independent. Only the absolute-date tier uses the viewer's calendar.
+
+**Clocks.** Every time shown is a source's last **successful** data receipt from the existing live data health (`deriveSpaceDataHealth` → `deriveSourceHealth`):
+- the account `lastUpdated` written after a successful read;
+- capped at the connection's `lastSyncedAt`.
+
+Consequences:
+- A failed attempt never moves these clocks. Error states keep the shared Connections wording with the last successful date ("Connection error · last updated Oct 24").
+- The Brief's generation time stays its own line ("Brief updated …").
+- Investment holdings arrive with their bank or brokerage connection. Crypto price clocks are not part of data health and are not shown; the footnote says so.
+
+**Mixed timestamps.**
+- `DataSourceView.newestUpdatedAt` and `DataGroupView.newestUpdatedAt` are emitted only when they differ from the oldest. A source or group reads "Updated 2 hr ago – yesterday" (newest – oldest) and never implies everything updated together.
+- `undatedAccounts` is counted: "1 account has no recorded update time".
+- A missing timestamp reads "Update time unavailable".
+
+**Re-rendering.** `components/brief/use-now-tick.ts` is one shared 60 s interval plus a tick on tab return. Phrases age, across midnight too, with no request and no Brief generation. It returns null during SSR and hydration, so the server's clock is never printed.
+
+**Data path.** No new API or schema change. The two new optional fields ride the existing GET `dataHealth`; `view-model.ts` copies them by name. Saved Briefs are untouched.
+
+**Tests.** `components/brief/data-freshness.test.ts`, 13 tests:
+- tiers;
+- parity with `formatRelativeTime`;
+- missing or invalid timestamps;
+- clock skew;
+- timezone independence vs the absolute-date locale;
+- UTC rollover;
+- mixed account freshness through the real derivation;
+- the account clock capped by the connection;
+- uniform freshness;
+- undated accounts;
+- a failed sync named as a problem, never "Updated";
+- a stale source;
+- source wiring.
+
+`source-health-alignment.test.ts` "one wording" pin: it now accepts the Brief reaching `sourceStatusText` through its copy module.
+
+**Verification.** Visual verification on Preview is left to the orchestrator; this agent ran no browser, DB or Preview.
