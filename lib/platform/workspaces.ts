@@ -53,6 +53,13 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
     id: "platform-jobs", kind: "standard", domain: "platform",
     label: "Jobs", icon: "Timer",
   },
+  // Customer Success (redesign §4.3) — the open sync incidents get their own
+  // workspace beside the customer list: "which incidents are open, recurring,
+  // slow to resolve?" is a different question from "which customers need help?".
+  "platform-incidents": {
+    id: "platform-incidents", kind: "standard", domain: "platform",
+    label: "Incidents", icon: "TriangleAlert",
+  },
   "platform-providers": {
     id: "platform-providers", kind: "standard", domain: "platform",
     label: "Providers", icon: "PlugZap",
@@ -176,8 +183,10 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
   GROWTH_REVENUE: [
     { workspaceId: "platform-overview", sections: ["growth_signups", "growth_product_analytics", "growth_beta_requests", "growth_users", "growth_activity", "growth_funnel", "growth_policy_groups"] },
   ],
+  // Redesign §4.3 — Customers (the list + audited profile) and Incidents.
   CUSTOMER_SUCCESS: [
-    { workspaceId: "platform-overview", sections: ["cs_customers", "cs_sync_issues"] },
+    { workspaceId: "platform-overview", sections: ["cs_customers"] },
+    { workspaceId: "platform-incidents", sections: ["cs_sync_issues"] },
   ],
   MERCHANT_OPS: [
     { workspaceId: "platform-overview", sections: ["merchant_review"] },

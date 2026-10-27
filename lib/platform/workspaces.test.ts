@@ -330,6 +330,19 @@ console.log("P-10 · six Operations workspaces, every capability kept");
   check("the Overview's doorways all point at live workspaces", (ops[0].doorways ?? []).every((id) => ops.some((w) => w.workspaceId === id)));
 }
 
+// ── Redesign §4.3 — Customer Success: Customers · Incidents ──
+console.log("Customer Success · Customers + Incidents");
+{
+  const cs = getPlatformAreaWorkspaces("CUSTOMER_SUCCESS");
+  check("two workspaces: Overview (customers) then Incidents",
+    cs.map((w) => w.workspaceId).join(",") === "platform-overview,platform-incidents", cs.map((w) => w.workspaceId).join(","));
+  check("customers on the first, sync incidents on the second; nothing else moved",
+    cs[0].sections.join() === "cs_customers" && cs[1]?.sections.join() === "cs_sync_issues");
+  check("Incidents is a registered Platform identity with a nav-resolvable icon",
+    getPlatformWorkspace("platform-incidents")?.label === "Incidents"
+      && /TriangleAlert,\n\};/.test(readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8")));
+}
+
 if (failures > 0) {
   console.error(`\nworkspaces.test: ${failures} failure(s).`);
   process.exit(1);
