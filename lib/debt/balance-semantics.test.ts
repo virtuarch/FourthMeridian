@@ -441,11 +441,16 @@ console.log("12. Liabilities Block is gated on ACCOUNTS, not on debt");
     /\{liabilityCount > 0 && \(/.test(before) && !/\{hasDebt && \(\s*<>?\s*$/.test(before));
   check("liabilityCount derives from the structural accountCount",
     /const liabilityCount = kpis\.accountCount;/.test(ws));
+  // v2.7 — the "Where it's owed" donut has its own hasDebt gate ABOVE the
+  // ledger (a magnitude surface, so gated on debt by design); the cost/payoff
+  // gate is the one that opens a fragment.
+  const magnitudeGate = ws.search(/\{hasDebt && \(\s*<>/);
   check("hasDebt still gates the debt-MAGNITUDE blocks (cost/payoff)",
-    ws.indexOf("{hasDebt && (") > 0 &&
-    ws.indexOf('id="debt-costrisk"') > ws.indexOf("{hasDebt && ("));
-  check("the Liabilities Block precedes the hasDebt gate",
-    idx < ws.indexOf("{hasDebt && ("), `${idx} vs ${ws.indexOf("{hasDebt && (")}`);
+    magnitudeGate > 0 && ws.indexOf('id="debt-costrisk"') > magnitudeGate);
+  check("the Liabilities Block precedes the cost/payoff hasDebt gate",
+    idx < magnitudeGate, `${idx} vs ${magnitudeGate}`);
+  check("the composition donut is a magnitude surface: gated on hasDebt",
+    /\{hasDebt && \(\s*<div id="debt-composition"/.test(ws));
 }
 
 console.log(failures === 0

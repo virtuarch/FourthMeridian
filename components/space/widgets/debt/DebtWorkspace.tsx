@@ -58,6 +58,7 @@ import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
 import { DebtBalanceHistory } from "./DebtBalanceHistory";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { LiabilitiesLedger } from "./LiabilitiesLedger";
+import { DebtCompositionCard } from "./DebtCompositionCard";
 import { InterestCostWidget } from "./InterestCostWidget";
 import { CreditScoreInput, CreditLimitInputs } from "./CreditHealthInputs";
 import { DEBT_CLASS_LABEL } from "./debt-ledger-util";
@@ -79,6 +80,7 @@ export function debtSections(args: { hasLiabilities: boolean; hasDebt: boolean }
   return [
     { label: "Summary",         anchor: "debt-summary" },
     { label: "Balance history", anchor: "debt-history" },
+    ...(args.hasDebt ? [{ label: "Where it's owed", anchor: "debt-composition" }] : []),
     ...(args.hasLiabilities ? [{ label: "Liabilities", anchor: "debt-liabilities" }] : []),
     ...(args.hasDebt ? [
       { label: "Cost & risk", anchor: "debt-costrisk" },
@@ -271,7 +273,9 @@ export function DebtWorkspace({
   );
 
   return (
-    <div className="space-y-8 sm:space-y-10 min-w-0">
+    // v2.7 parity — the SAME section rhythm as the Net Worth / Assets workspace
+    // root (WealthWorkspace): 24px between sections below lg, 32/40px at ≥lg.
+    <div className="space-y-8 sm:space-y-10 min-w-0 max-lg:space-y-6!">
       {loading && (
         <div className="flex items-center gap-1.5 px-1 text-xs text-[var(--text-faint)]">
           <Loader2 size={12} className="animate-spin" aria-label="Refreshing" /> Updating…
@@ -340,6 +344,15 @@ export function DebtWorkspace({
           </div>
         )}
       </div>
+
+      {/* ②b Where it's owed — the Debt donut, in Net Worth's "Where it sits" idiom
+          (grouping dropdown in the header, above the donut). Present-day; All only
+          on compact (it covers every debt, like the balance history). */}
+      {hasDebt && (
+        <div id="debt-composition" className={`scroll-mt-20 ${compactHidden(!cv.history)}`.trim()}>
+          <DebtCompositionCard accounts={accounts} ctx={ctx} currency={displayCurrency} />
+        </div>
+      )}
 
       {/* ③ Liabilities — the PERSISTENT account browser. V25-SIDE-1: this Block
           used to sit inside the `hasDebt` gate below, so paying every card off

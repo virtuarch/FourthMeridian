@@ -53,9 +53,14 @@ console.log("1. the compact Debt hero is the shared five-row card");
   check("R5: the AI entry", /Talk with Fourth Meridian about this/.test(row(html, 5)));
   check("the wordy lines are not in the compact card: across N, stats, verdict", !/across|Est\. interest|Utilization|You carry/.test(text(card(html))));
   const desk = desktopMarkup(html);
-  check("DESKTOP keeps across N, Est. interest, Utilization, verdict and the vs-date delta; no compact card",
-    /across/.test(text(desk)) && /Est\. interest/.test(text(desk)) && /Utilization/.test(text(desk)) && /You carry/.test(text(desk))
+  check("DESKTOP keeps across N, Est. interest, Utilization and the vs-date delta; no compact card",
+    /across/.test(text(desk)) && /Est\. interest/.test(text(desk)) && /Utilization/.test(text(desk))
       && /vs Sep 26, 2026/.test(text(desk)) && !/data-compact-hero/.test(desk));
+  // v2.7 layout parity — the desktop hero matches Net Worth / Assets (eyebrow ·
+  // figure + change · as-of line · stat row): the verdict paragraph is gone.
+  check("DESKTOP parity: no verdict prose in the Debt hero", !/You carry/.test(text(desk)));
+  check("DESKTOP: a withheld-details disclosure rides the as-of line",
+    /as of [^<]*· 2 account details withheld/.test(text(desktopMarkup(render({ redactions: 2 })))));
   const redacted = render({ redactions: 2 });
   check("a withheld-details disclosure is a visible note BELOW the card (not a row)",
     notes(redacted) === "2 account details withheld" && !/withheld/.test(row(redacted, 1) + row(redacted, 3) + row(redacted, 4)));
