@@ -113,7 +113,11 @@ The only deliberate divergence: a USER "Payment" is honoured in narration, while
      - a row stored as `brief-generation-5+prompt-08fbac9b9cb7` (the exact pre-change shape) is FRESH, CACHED, with no model call, and its row is byte-identical;
      - a new generation records `+rev-debt-semantics-1` and the new hash.
    - The prompt-hash pin moved from `08fbac9b9cb7` to `dfb26bf3e8ae`, deliberately and without a generation bump.
-   - **Side effect:** today's material digest can change for a Space whose 7-day window contains a mislabelled row. Its `flow` changes, so CHECK_MATERIAL may regenerate that Space's Brief for today once on its next visit. This is the ordinary material-change path, not a version bump, and only reachable where the old package actually held a mislabelled row. Earlier days are never touched.
+   - **No same-day regeneration from this change (owner policy).** The material digest keys on each material activity row's `date|flow|amount`. The model now reads the resolved `flow`/`nature`, but the digest reads `digestFlowOf(row)`, which is `row.digestFlow ?? row.flow`:
+     - `digestFlow` is the exact pre-change value, `resolvedFlowType(flowType, maturity)`;
+     - it is carried only when it differs, and `modelView` strips it.
+     
+     So identical underlying data gives an identical digest across the deploy, and genuine data changes move it exactly as before. The other triggers never read activity flows: `sourceWatermark` uses source clocks and counts, and the relevance gate uses standing facts. The addendum's `newestUpdatedAt` / `undatedAccounts` live only in the page response and never enter the package (`staleSourcesForBrief` carries label, state and day). Tested in `lifecycle.test.ts` §15.
 4. **Display-time notice for previously generated Briefs: NOT implemented.** Affectedness cannot be determined reliably:
    - `DailyBrief.content` stores only the narration (headline; observations with kind, title, body, importance and evidence paths such as `recentActivity.top.0`);
    - the package those paths point into is **not stored**, so a stored Brief cannot be resolved back to the row it cited or that row's nature;
@@ -148,7 +152,7 @@ The only deliberate divergence: a USER "Payment" is honoured in narration, while
   - The money totals already refuse it. Changing UI labels needs account types in those components and is out of this PR's scope.
   - The audited Production rows all carry a maturity, so they are not affected.
 - **R4. Assembler user overrides.** The AI assembler does not select `categorySource`, so a human "Payment" on a savings-paired row is not counted as a transfer there. That matches the money layer, which also ignores it.
-- **R5. Materiality-driven same-day regeneration** for Spaces whose 7-day window holds a mislabelled row (§4.3). This is ordinary change detection, and limited to today.
+- **R5.** Closed: the digest keeps its pre-change inputs (§4.3), so the deploy alone regenerates nothing.
 - **R6. Exhaustive read cost.** `get_transactions` flow `transfers` / `card_payments` now reads the window to exhaustion (bounded by the 5,000-row ceiling, which is reported as incomplete when hit).
 
 ## 7. Addendum: Daily Brief "Financial data" freshness (display only, separate commit)

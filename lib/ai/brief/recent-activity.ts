@@ -42,6 +42,7 @@ import type { BriefAccountClass, BriefActivityRow, BriefRecentActivity } from '.
 import {
   categoryForNature, natureEvidenceFromRow, resolveTransactionNature, type TransactionNature,
 } from '@/lib/transactions/resolved-nature';
+import { resolvedFlowType } from '@/lib/transactions/transfer-debt-payment-correction';
 
 /**
  * v2.7-P1/P0 — the CLASS of account on the other side of a movement, where the
@@ -120,10 +121,17 @@ export function projectRecentActivity(
     const evidence = natureEvidenceFromRow(r, accountTypeOf);
     const resolved = resolveTransactionNature(evidence);
     const otherLeg = OTHER_LEG_CLASS_BY_NATURE[resolved.nature];
+    const flow = resolved.flow ?? 'UNCLASSIFIED';
+    // ⚠️ OWNER POLICY — this PR must not, by itself, regenerate a stored Brief. The
+    // material digest keys on each material row's flow; the value it saw before
+    // v2.7-P0 was exactly this expression. Carried only when it differs, read only by
+    // the digest (digest.ts), and stripped from what the model reads (prompt.ts).
+    const digestFlow = resolvedFlowType(r.flowType ?? null, r.transferMaturity) ?? 'UNCLASSIFIED';
     return {
       date: dayOf(r),
       amount: round2(r.amount),
-      flow: resolved.flow ?? 'UNCLASSIFIED',
+      flow,
+      ...(digestFlow !== flow ? { digestFlow } : {}),
       nature: resolved.nature,
       ...(merchant ? { merchant } : {}),
       category: String(categoryForNature(r.category, evidence, resolved)),

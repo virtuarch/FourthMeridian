@@ -50,12 +50,21 @@ export function changeBucket(d: BriefDelta | undefined): string {
   return Math.abs(d.abs) < MATERIALITY.ABSOLUTE_STEP ? '0' : moneyBucket(d.abs);
 }
 
+/**
+ * v2.7-P0 — the flow the digest keys on: the PRE-contract value when the package
+ * carries one (`digestFlow`), else `flow`. The resolved nature changes what the
+ * model is told, never whether a stored Brief is reconsidered: identical underlying
+ * data ⇒ an identical digest, before and after the deploy. Genuine data changes
+ * (a new row, a moved amount or date) move the digest exactly as before.
+ */
+export const digestFlowOf = (row: BriefActivityRow): string => row.digestFlow ?? row.flow;
+
 /** Is this recent movement one a Brief could reasonably mention? */
 export function isMaterialActivity(row: BriefActivityRow, monthlyExpenses: number | null | undefined): boolean {
   const size = Math.abs(row.amount);
   const { LARGE_TRANSACTION_FLOOR, LARGE_TRANSACTION_SHARE, SIGNAL_FLOWS } = MATERIALITY;
   const large = Math.max(LARGE_TRANSACTION_FLOOR, LARGE_TRANSACTION_SHARE * (finite(monthlyExpenses) ? monthlyExpenses : 0));
-  return size >= large || (SIGNAL_FLOWS.includes(row.flow) && size >= LARGE_TRANSACTION_FLOOR);
+  return size >= large || (SIGNAL_FLOWS.includes(digestFlowOf(row)) && size >= LARGE_TRANSACTION_FLOOR);
 }
 
 const sorted = (xs: string[]) => [...xs].sort();
@@ -98,7 +107,7 @@ export function materialProjection(pkg: BriefPackage) {
       complete: activity.complete,
       material: sorted(activity.top
         .filter((r) => isMaterialActivity(r, b?.monthlyExpenses))
-        .map((r) => `${r.date}|${r.flow}|${Math.round(r.amount)}`)),
+        .map((r) => `${r.date}|${digestFlowOf(r)}|${Math.round(r.amount)}`)),
     } : null,
     behavior: b ? {
       income: moneyBucket(b.monthlyIncome), expenses: moneyBucket(b.monthlyExpenses),

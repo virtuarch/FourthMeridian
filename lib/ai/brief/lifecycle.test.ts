@@ -26,6 +26,10 @@ import { BRIEF_GENERATION_VERSION, BRIEF_PROMPT_REVISION, GENERATION_FAILURE_COO
 import type { BriefRow } from './state';
 import type { BriefCompletion, BriefKey, BriefScope, BriefStore, ClaimResult } from './store';
 import type { BriefPackage } from './types';
+import type { Transaction } from '@/types';
+import { projectRecentActivity, recentActivityWindow } from './recent-activity';
+import { serializePackage } from './prompt';
+import { staleSourcesForBrief } from '@/lib/connections/space-data-health.core';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -506,6 +510,74 @@ async function main() {
     check('…and its stored row (content and promptVersion) is untouched', JSON.stringify(r.store.get(today)) === before);
     const inspected = await r.inspect(t(2));
     check('…inspection agrees: FRESH, generation current', inspected.decision.state.kind === 'FRESH');
+  }
+
+  console.log('\n15. v2.7-P0 — the resolved-nature change cannot, by itself, regenerate a stored Brief');
+  {
+    const DP = 'DEBT_PAYMENT' as Transaction['flowType'];
+    const types: Record<string, string> = { chk: 'checking', hysa: 'savings', amexChk: 'checking' };
+    const txRow = (id: string, date: string, amount: number, over: Partial<Transaction>): Transaction => ({
+      id, accountId: 'chk', date, amount, merchant: 'RAW', category: 'Payment' as Transaction['category'], pending: false,
+      flowAuthority: 'CLASSIFIER', ...over } as Transaction);
+    // The window holds mislabelled depository → depository legs (provider DEBT_PAYMENT, unrepaired).
+    const rows: Transaction[] = [
+      // No transfer evidence: before this PR it reached the package as DEBT_PAYMENT (a
+      // material SIGNAL flow); the contract now resolves it to an unclassified movement.
+      txRow('a', '2026-09-11', -1500, { flowType: DP }),
+      // Matured to Amex checking: TRANSFER before and after.
+      txRow('b', '2026-09-12', -747.26, { flowType: DP, transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'amexChk' }),
+      txRow('c', '2026-09-10', 4812.66, { flowType: 'INCOME' as Transaction['flowType'], category: 'Income' as Transaction['category'] }),
+    ];
+    const window = recentActivityWindow('2026-09-13');
+    const post = projectRecentActivity(rows, window, true, (id) => types[id]);
+    // The package exactly as the PRE-change code built it: flow = the old expression, no `nature`.
+    const preTop = post.top.map(({ nature: _n, digestFlow, ...r }) => { void _n; return { ...r, flow: digestFlow ?? r.flow }; });
+    const pkgPre: BriefPackage = { ...basePackage(), recentActivity: { ...post, top: preTop } };
+    const pkgPost: BriefPackage = { ...basePackage(), recentActivity: post };
+
+    const unattested = post.top.find((r) => r.amount === -1500)!;
+    check('the content changed: the model now reads TRANSFER / UNCLASSIFIED_MOVEMENT for the mislabelled leg',
+      unattested.flow === 'TRANSFER' && unattested.nature === 'UNCLASSIFIED_MOVEMENT' && unattested.digestFlow === 'DEBT_PAYMENT');
+    check('…the model never sees digestFlow', !serializePackage(pkgPost).includes('digestFlow'));
+    check('identical underlying data ⇒ IDENTICAL material digest before vs after the change',
+      materialDigest(pkgPre) === materialDigest(pkgPost), `${materialDigest(pkgPre)} vs ${materialDigest(pkgPost)}`);
+    const naive: BriefPackage = { ...pkgPost, recentActivity: { ...post, top: post.top.map(({ digestFlow: _d, ...r }) => { void _d; return r; }) } };
+    check('(control) keying the digest on the resolved flow WOULD have moved it — the test is not vacuous',
+      materialDigest(naive) !== materialDigest(pkgPre));
+
+    const r = harness();
+    const t = (m: number) => new Date(T0.getTime() + m * 60_000);
+    const today = key('2026-09-13');
+    r.state.pkg = pkgPre;
+    await r.ensure(t(0));
+    // The row exactly as the previous deploy stored it.
+    r.store.get(today)!.promptVersion = 'brief-generation-5+prompt-08fbac9b9cb7';
+    const storedBefore = JSON.stringify(r.store.get(today)!.content);
+    // Deploy: the package is now built by the new code; a sync tick moved the watermark, no data changed.
+    r.state.pkg = pkgPost;
+    r.state.watermark = 'wm-deploy';
+    const afterDeploy = await r.ensure(t(1));
+    check('cached pre-change Brief + identical data ⇒ no regeneration (watermark refreshed, digest equal, no model call)',
+      afterDeploy.status === 'FRESH' && afterDeploy.path === 'WATERMARK_REFRESHED' && r.state.generations === 1,
+      `${afterDeploy.status}/${(afterDeploy as { path?: string }).path} gens=${r.state.generations}`);
+    check('…its stored content is untouched', JSON.stringify(r.store.get(today)!.content) === storedBefore);
+
+    // A genuine new material transaction still regenerates, exactly as before.
+    const withNew = projectRecentActivity([...rows, txRow('d', '2026-09-13', -2600, { flowType: 'SPENDING' as Transaction['flowType'], category: 'Travel' as Transaction['category'] })],
+      window, true, (id) => types[id]);
+    r.state.pkg = { ...basePackage(), recentActivity: withNew };
+    r.state.watermark = 'wm-new-row';
+    const changed = await r.ensure(t(2));
+    check('a real new material transaction ⇒ digest changes ⇒ regenerated (reason change)',
+      changed.status === 'GENERATED' && r.state.generations === 2 && r.state.lastReason === 'change',
+      `${changed.status} gens=${r.state.generations} reason=${r.state.lastReason}`);
+
+    // The freshness addendum's response fields are not package inputs at all.
+    const stale = staleSourcesForBrief({ attention: 1, groups: [], sources: [{ kind: 'BANK', label: 'Bank A', state: 'OUT_OF_DATE',
+      lastUpdatedAt: '2026-09-01T00:00:00.000Z', newestUpdatedAt: '2026-09-12T00:00:00.000Z', undatedAccounts: 2,
+      accountCount: 3, needsAttention: true, actionable: true }] });
+    check('newestUpdatedAt / undatedAccounts never reach the package (staleSources carries label, state, day only)',
+      JSON.stringify(stale) === JSON.stringify([{ label: 'Bank A', state: 'OUT_OF_DATE', lastUpdated: '2026-09-01' }]));
   }
 
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

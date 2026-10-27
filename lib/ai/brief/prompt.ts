@@ -75,7 +75,15 @@ TONE
  * attached to claims it does not touch, and the page shows it on its own. The
  * full package (digest, licence, evidence-path resolution) is unchanged.
  */
-export function modelView(pkg: BriefPackage): unknown {
+/** v2.7-P0 — `digestFlow` is digest bookkeeping, never evidence: the model never sees it. */
+function withoutDigestFields(pkg: BriefPackage): BriefPackage {
+  if (!pkg.recentActivity?.top.some((r) => r.digestFlow !== undefined)) return pkg;
+  return { ...pkg, recentActivity: { ...pkg.recentActivity,
+    top: pkg.recentActivity.top.map(({ digestFlow: _d, ...row }) => { void _d; return row; }) } };
+}
+
+export function modelView(input: BriefPackage): unknown {
+  const pkg = withoutDigestFields(input);
   if (!pkg.claimEvidence) return pkg;
   // Each NAME once per claim, from the claim's own per-source components — never a
   // label looked up in the Space-wide list (two "Chase" items are one "Chase").

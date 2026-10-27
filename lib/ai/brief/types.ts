@@ -61,6 +61,14 @@ export interface BriefActivityRow {
    * an economic kind (SPENDING, INCOME, REFUND, …).
    */
   nature?:  string;
+  /**
+   * v2.7-P0 — DIGEST-ONLY. The flow value the material digest saw before the
+   * resolved-nature contract (develop ff62cb7: `resolvedFlowType(flowType, maturity)`),
+   * present only when it differs from `flow`. Keeps the digest's inputs identical to
+   * before so the code change alone never regenerates a stored Brief. Never sent to
+   * the model (prompt.ts modelView strips it).
+   */
+  digestFlow?: string;
   merchant?: string;
   category: string;
   pending?: true;
