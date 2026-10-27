@@ -47,6 +47,7 @@ import {
   hydrateGroupedShellTime,
   reduceGroupTime,
   rederiveAllPreset,
+  resetGroupTime,
   rollGroupedShellTime,
   sameGroupTime,
   serializeGroupedShellTime,
@@ -81,6 +82,13 @@ export interface PerspectiveShellState {
   explicitPeriod: ExplicitCashFlowPeriod | null;
   /** Choose (or clear) an explicit calendar period on the ACTIVE group (a user change ⇒ PUSH). */
   setExplicitPeriod: (p: ExplicitCashFlowPeriod | null) => void;
+  /**
+   * The heatmap's Reset: the ACTIVE group back to its default — no explicit unit
+   * (?fperiod cleared), the default preset (1M) at a rolling As Of. A user change ⇒
+   * PUSH, exactly like the Month · Quarter · Year pick it undoes (Back returns to
+   * the pinned unit). The other group is untouched; nothing else is reset.
+   */
+  resetPeriod: () => void;
   derived: {
     /** Wealth chart window [compareTo ?? coverageFrom, asOf]; read model applies the fallback. */
     chartWindow:    [string | null, string];
@@ -166,6 +174,10 @@ export function usePerspectiveShellState(args: {
     (p: ExplicitCashFlowPeriod | null) => update(group, (s) => setGroupExplicit(s, p)),
     [update, group],
   );
+  const resetPeriod = useCallback(
+    () => update(group, () => resetGroupTime(ctxRef.current)),
+    [update, group],
+  );
 
   // ALL depends on coverage, which loads async — re-derive when it arrives.
   useEffect(() => {
@@ -205,6 +217,7 @@ export function usePerspectiveShellState(args: {
     period: groupPeriod(active),
     explicitPeriod: active.explicit,
     setExplicitPeriod,
+    resetPeriod,
     derived: {
       chartWindow: [state.compareTo, state.asOf],
       cashFlowPeriod: state.preset === "CUSTOM" ? null : state.preset,

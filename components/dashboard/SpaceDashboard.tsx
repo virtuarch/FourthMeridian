@@ -752,6 +752,7 @@ export function SpaceDashboard({
     onSwitchLens: switchLens,
     onEnvelopeChange,
     onSelectCashFlowPeriod: handleSelectSlice,
+    onResetCashFlowPeriod: shell.resetPeriod,
     onOpenCashFlow: () => setSelectedPerspectiveId("cashFlow"),
   };
 

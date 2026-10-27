@@ -181,12 +181,74 @@ export function calendarNavigation(args: {
   if (!explicit) return { scale: null, choose, prev: null, next: null };
   const older = stepExplicitPeriod(explicit, -1);
   const newer = stepExplicitPeriod(explicit, 1);
+  const range = { earliest, today };
   return {
     scale: explicit.kind,
     choose,
-    prev: earliest == null || explicitPeriodBounds(older).end >= earliest ? older : null,
-    next: explicitPeriodBounds(newer).start <= today ? newer : null,
+    prev: isSelectablePeriod(older, range) ? older : null,
+    next: isSelectablePeriod(newer, range) ? newer : null,
   };
+}
+
+// ── The supported range (ONE bound for the arrows AND the direct picker) ──────
+
+/**
+ * The supported date range for an explicit calendar period: never a unit that
+ * starts after today, never one that ends before the earliest data-bearing date
+ * (`earliest` null ⇒ no lower bound). The heatmap's ◀ / ▶ and its direct
+ * period picker both read this one predicate, so they can never disagree.
+ */
+export function isSelectablePeriod(p: ExplicitCashFlowPeriod, range: { earliest: string | null; today: string }): boolean {
+  const b = explicitPeriodBounds(p);
+  return b.start <= range.today && (range.earliest == null || b.end >= range.earliest);
+}
+
+/**
+ * The years the direct picker lists, oldest first: from the earliest data-bearing
+ * year (or, with no known data, the current selection's year — a pinned period is
+ * always listed) through today's year.
+ */
+export function selectablePickerYears(args: { earliest: string | null; today: string; current: ExplicitCashFlowPeriod | null }): number[] {
+  const last = Number(args.today.slice(0, 4));
+  const fromData = args.earliest != null ? Number(args.earliest.slice(0, 4)) : last;
+  const fromCurrent = args.current ? args.current.year : last;
+  const first = Math.min(fromData, fromCurrent, last);
+  return Array.from({ length: last - first + 1 }, (_, i) => first + i);
+}
+
+export interface PeriodPickerOption {
+  period: ExplicitCashFlowPeriod;
+  /** Key form (month:2026-10 …) — stable React key / test handle. */
+  key: string;
+  /** The grid cell's short text (Oct · Q4 · 2026). */
+  short: string;
+  /** False outside the supported range (rendered disabled, never selectable). */
+  selectable: boolean;
+}
+
+const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * The direct picker's options for one unit: the 12 months / 4 quarters of `year`,
+ * or (year unit) every listed year. Out-of-range cells stay in the grid (a stable
+ * layout) but are not selectable.
+ */
+export function periodPickerOptions(
+  scale: CalendarScale,
+  year: number,
+  range: { earliest: string | null; today: string },
+  years: number[],
+): PeriodPickerOption[] {
+  const periods: ExplicitCashFlowPeriod[] =
+    scale === "month"   ? Array.from({ length: 12 }, (_, i) => ({ kind: "month" as const, year, month: i + 1 }))
+    : scale === "quarter" ? Array.from({ length: 4 }, (_, i) => ({ kind: "quarter" as const, year, quarter: i + 1 }))
+    : years.map((y) => ({ kind: "year" as const, year: y }));
+  return periods.map((p) => ({
+    period: p,
+    key: explicitPeriodKey(p),
+    short: p.kind === "month" ? MONTH_SHORT[p.month - 1] : p.kind === "quarter" ? `Q${p.quarter}` : String(p.year),
+    selectable: isSelectablePeriod(p, range),
+  }));
 }
 
 function minIso(a: string, b: string): string {
@@ -238,6 +300,15 @@ export function reduceGroupTime(g: GroupTime, action: ShellTimeAction, ctx: Shel
   const lastRelative = time.preset === "CUSTOM" ? g.lastRelative : time.preset;
   if (time === g.time && g.explicit === null) return g;
   return { time, lastRelative, explicit: null };
+}
+
+/**
+ * RESET (the heatmap's Reset action): the group back to its default — no explicit
+ * calendar unit, the default relative preset (1M) at a ROLLING As Of (today), so
+ * the URL omits the flow As Of / Compare To again. Only this group is touched.
+ */
+export function resetGroupTime(ctx: ShellTimeContext): GroupTime {
+  return groupOf(resolvePerspectiveTimeRange({ preset: DEFAULT_TIME_PRESET, asOf: ctx.today, coverageFrom: ctx.coverageFrom }));
 }
 
 /** Choose (or clear) an explicit calendar period — the heatmap's Month · Quarter · Year. */

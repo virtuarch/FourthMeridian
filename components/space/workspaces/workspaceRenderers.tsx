@@ -119,6 +119,8 @@ export interface WorkspaceRenderCtx {
   onSwitchLens:            (id: string) => void;
   onEnvelopeChange:        (env: PerspectiveEnvelope) => void;
   onSelectCashFlowPeriod:  (p: CashFlowPeriod) => void;
+  /** The heatmap's Reset — the flow group back to its rolling 1M default (clears ?fperiod). */
+  onResetCashFlowPeriod:   () => void;
   onOpenCashFlow:          () => void;
 }
 
@@ -231,6 +233,7 @@ const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => Reac
       today={ctx.today}
       compareTo={ctx.historicalCompareTo}
       onSelectPeriod={ctx.onSelectCashFlowPeriod}
+      onResetPeriod={ctx.onResetCashFlowPeriod}
       onOpenSpending={() => ctx.onSwitchLens("spending")}
       onEnvelopeChange={ctx.onEnvelopeChange}
       transactionsError={ctx.readErrors?.transactions?.message ?? null}
@@ -251,6 +254,7 @@ const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => Reac
       today={ctx.today}
       compareTo={ctx.historicalCompareTo}
       onSelectPeriod={ctx.onSelectCashFlowPeriod}
+      onResetPeriod={ctx.onResetCashFlowPeriod}
       onEnvelopeChange={ctx.onEnvelopeChange}
       transactionsError={ctx.readErrors?.transactions?.message ?? null}
       onRetryTransactions={ctx.onRetryRead ? () => ctx.onRetryRead?.("transactions") : undefined}
