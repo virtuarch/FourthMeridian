@@ -98,7 +98,9 @@ console.log("6. Trust / envelope — resolved in the Workspace, bridged to the s
   // or the ternary, only mounts the hook and relays `activeEnvelope` to the shell.
   check("renderer wires the envelope up + host relays it (useActiveEnvelope → activeEnvelope) to the shell",
     REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && HOSTC.includes("useActiveEnvelope") && HOSTC.includes("activeEnvelope"));
-  check("Evidence drawer is now Workspace-owned (moved off the host)", CODE.includes("<EvidenceDrawer") && !HOSTC.includes("EvidenceDrawer"));
+  // v2.7 final UX pass — the customer-facing Evidence drawer is removed from BOTH
+  // the host and the Workspace (provenance stays in the envelope, internal only).
+  check("no customer-facing Evidence drawer on the Workspace or the host", !CODE.includes("EvidenceDrawer") && !HOSTC.includes("EvidenceDrawer"));
   check("no duplicate trust math (only the canonical resolver, no bespoke tiers)", !CODE.includes("completeness:") && !CODE.includes("tier:"));
 }
 

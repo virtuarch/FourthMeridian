@@ -7,7 +7,7 @@
  *      gridlines and a left gutter that fits the longest label;
  *   3. no evidence-basis seam rule and no "Evidence changes" legend item; adjacent
  *      observed↔reconstructed runs are JOINED (no stroke gap), each keeping its style;
- *   4. legend = Observed / Reconstructed / Never observed only, each only when present.
+ *   4. NO provenance legend (v2.7 final UX pass); gaps stay hatched + "no data", runs stay dashed.
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/space/widgets/charts/TrendChart.test.ts
  */
@@ -96,16 +96,23 @@ console.log("\n3. no seam, runs joined across a basis change");
     hp.length === 2 && hp[0].split(" ").pop()!.slice(1) !== hp[1].split(" ")[0].slice(1) && hh.includes(">no data<"));
 }
 
-console.log("\n4. legend items conditional; only the three");
+console.log("\n4. no provenance legend (v2.7 final UX pass) — the gap stays drawn and labelled");
 {
-  check("observed only ⇒ [Observed]", JSON.stringify(legendText(render({ points: series(6) }))) === '["Observed"]');
-  check("reconstructed only ⇒ [Reconstructed] (no Observed claim)", JSON.stringify(legendText(render({ points: series(6, () => ({ estimated: true })) }))) === '["Reconstructed"]');
   const holed = [...series(5, (i) => ({ estimated: i < 2 })), ...series(5).map((p, i) => ({ ...p, date: day(60 + i) }))];
-  check("mixed + gap ⇒ [Observed, Reconstructed, Never observed]", JSON.stringify(legendText(render({ points: holed }))) === '["Observed","Reconstructed","Never observed"]', JSON.stringify(legendText(render({ points: holed }))));
-  const est = series(6, (i) => ({ basis: i === 0 || i === 5 ? "recorded" : "modeled" }));
-  check("RWA-2A: an estimate-only chart never claims Observed (and adds no other item)", legendText(render({ points: est })).length === 0, JSON.stringify(legendText(render({ points: est }))));
-  const unrel = series(6, (i) => ({ basis: i < 3 ? "unreliable" : "observed" }));
-  check("no other legend items (e.g. 'Mostly unvalued')", JSON.stringify(legendText(render({ points: unrel }))) === '["Observed"]');
+  const cases = [
+    render({ points: series(6) }),
+    render({ points: series(6, () => ({ estimated: true })) }),
+    render({ points: holed }),
+    render({ points: series(6, (i) => ({ basis: i === 0 || i === 5 ? "recorded" : "modeled" })) }),
+    render({ points: series(6, (i) => ({ basis: i < 3 ? "unreliable" : "observed" })) }),
+  ];
+  check("no legend row is rendered for any basis mix", cases.every((h) => legendText(h) === ""));
+  check("no 'Observed' / 'Reconstructed' / 'Never observed' key text",
+    cases.every((h) => !/>\s*(Observed|Reconstructed|Never observed)\s*</.test(h)));
+  const hh = render({ points: holed });
+  check("a true gap is still hatched and labelled 'no data' (honest, never fabricated)",
+    hh.includes('fill="url(#tc-hatch)"') && hh.includes(">no data<"));
+  check("reconstructed runs are still drawn dashed (the series itself is unchanged)", /stroke-dasharray="4 3"/.test(hh));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

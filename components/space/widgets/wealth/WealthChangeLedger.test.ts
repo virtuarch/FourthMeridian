@@ -13,7 +13,7 @@
  *      Income / Spending / Fees). v2.7 visual-first — DELIBERATE: the
  *      forward-phrased attribution note is removed (narrative, owner-approved);
  *      the test now proves it is gone from the render, and that the header's
- *      Evidence doorway renders only when the host wires it.
+ *      Evidence doorway is gone (v2.7 final UX pass).
  * Also checks the driverGood coloring rule (liabilities DOWN is good).
  */
 
@@ -22,6 +22,8 @@ import type { WealthTimeMachineInput } from "@/lib/wealth/wealth-time-machine";
 import type { Snapshot } from "@/types";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { WealthChangeLedger, driverGood } from "./WealthChangeLedger";
 
 let failures = 0;
@@ -89,16 +91,18 @@ console.log("driverGood — liabilities DOWN is good, assets UP is good");
   check("investments decreasing is bad", driverGood({ id: "investments", label: "Investments", delta: -20000 }) === false);
 }
 
-console.log("No attribution note; rows never use reserved source labels; Evidence doorway");
+console.log("No attribution note; rows never use reserved source labels; no Evidence doorway");
 {
   const r0 = computeWealthTimeMachine(input());
   const html = renderToStaticMarkup(createElement(WealthChangeLedger, { result: r0, currency: "USD" }));
   check("the attribution note is not rendered (removed, not hidden)", !/Attribution|historical valuation/i.test(html));
-  check("no Evidence doorway unless the host wires one", !/Evidence/.test(html));
-  const wired = renderToStaticMarkup(createElement(WealthChangeLedger, { result: r0, currency: "USD", onViewEvidence: () => {} }));
-  check("with onViewEvidence the header carries an Evidence button", /<header[^>]*>[\s\S]*<button type="button"[^>]*>[\s\S]*Evidence<\/button><\/header>/.test(wired));
-  const noCompare = renderToStaticMarkup(createElement(WealthChangeLedger, { result: computeWealthTimeMachine(input({ compareTo: null })), currency: "USD", onViewEvidence: () => {} }));
-  check("…also on the no-comparison state", /Evidence<\/button>/.test(noCompare));
+  // v2.7 final UX pass — the customer-facing Evidence doorway is removed outright
+  // (no prop can wire it back); provenance stays internal, in the envelope.
+  check("no Evidence doorway in the header", !/Evidence/.test(html) && !/<header[^>]*>[\s\S]*<button/.test(html));
+  const noCompare = renderToStaticMarkup(createElement(WealthChangeLedger, { result: computeWealthTimeMachine(input({ compareTo: null })), currency: "USD" }));
+  check("…nor on the no-comparison state", !/Evidence/.test(noCompare));
+  check("the component no longer accepts an onViewEvidence prop",
+    !/onViewEvidence/.test(readFileSync(path.join(process.cwd(), "components/space/widgets/wealth/WealthChangeLedger.tsx"), "utf8")));
 
   // The A9 slot contract: driver ROWS must stay generic asset-class labels — never
   // a source-attribution term presented as a current fact.

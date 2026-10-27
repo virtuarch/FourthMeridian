@@ -14,11 +14,16 @@
  *   - the line BREAKS at real gaps; across a basis change (observed↔reconstructed)
  *     it flows point to point, each run keeping its own stroke style (v2.7);
  *   - reconstructed runs are dashed + faint with HOLLOW markers;
- *   - the unknown is a hatched "NO DATA" band, not an absence;
+ *   - the unknown is a hatched band labelled "no data", not an absence;
  *   - y-scale from real points ONLY (no interpolation across the hole);
  *   - three x-axis labels + 3–4 y-axis value ticks (compact, in the caller's
- *     currency) over subtle gridlines; an HTML tooltip that won't snap across a gap;
- *     honest legend (Observed / Reconstructed / Never observed, each only if present).
+ *     currency) over subtle gridlines; an HTML tooltip that won't snap across a gap.
+ *
+ * v2.7 final UX pass (owner) — NO provenance legend. The technical "Observed /
+ * Reconstructed / Never observed" key was a snapshot-provenance interface, not a
+ * reading aid. What it described is still DRAWN honestly (gaps stay hatched and
+ * labelled "no data", reconstructed runs stay dashed, nothing is interpolated),
+ * and the tooltip still names a point's basis; only the key is gone.
  *
  * v2.7 (owner) — no title/subtitle: the hero above already states the range. The
  * V26 evidence-basis seam rule and its "Evidence changes" legend item are retired;
@@ -136,9 +141,6 @@ const BASIS_SUFFIX: Record<TrendBasis, string | null> = {
   modeled:       "modeled — not a market price",
   carried:       "latest estimate, carried forward",
 };
-
-/** RWA-2A — the user-estimate bases (a manual asset's chart). */
-const ESTIMATE_BASES: ReadonlySet<TrendBasis> = new Set<TrendBasis>(["recorded", "modeled", "carried"]);
 
 export function TrendChart({
   points,
@@ -450,31 +452,6 @@ export function TrendChart({
           <span>{formatDate(geom.pts[0].date)}</span>
           <span>{formatDate(geom.pts[Math.floor(geom.pts.length / 2)].date)}</span>
           <span>{formatDate(geom.last.date)}</span>
-        </div>
-
-        {/* Legend — v2.7: ONLY Observed / Reconstructed / Never observed, each only
-            when present. No other legend items. */}
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--text-muted)]">
-          {/* RWA-2A — a chart of user estimates has no observed values, so it never
-              claims an "Observed" line; every other chart is unchanged. */}
-          {geom.pts.some((p) => basisOf(p) === "observed") && !geom.pts.every((p) => ESTIMATE_BASES.has(basisOf(p))) && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" /></svg>
-              Observed
-            </span>
-          )}
-          {geom.pts.some((p) => basisOf(p) === "reconstructed") && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="4 3" /></svg>
-              Reconstructed
-            </span>
-          )}
-          {geom.gaps.length > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <svg width="16" height="8" aria-hidden><rect width="16" height="8" fill="url(#tc-hatch)" /></svg>
-              Never observed
-            </span>
-          )}
         </div>
       </div>
     </section>

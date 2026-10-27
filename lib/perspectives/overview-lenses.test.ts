@@ -177,11 +177,11 @@ console.log("7. Total stays net-worth scoped; Liquid NW survives as a stat");
   check("Assets headline is Total assets", assets.includes("Total assets") && assets.includes("$300"));
   check("Assets secondary stats: Cash · Investments (disjoint dimensions)", assets.includes("Cash") && assets.includes("Investments") && assets.includes("$20") && assets.includes("$35"));
   // v2.7 visual-first — DELIBERATE: the Explanation card is gone at every width;
-  // its evidence doorway moved to the "What moved" header (Total).
-  check("no Explanation card; the evidence doorway is on the Total ledger",
+  // v2.7 final UX pass — DELIBERATE: the "What moved" header's evidence doorway
+  // is removed from the customer UI too (snapshot provenance stays internal).
+  check("no Explanation card and no customer-facing evidence doorway",
     !/WealthExplanationCard|wealth-explanation/.test(WEALTHC)
-      && /onViewEvidence=\{mode === "total" && canViewEvidence \? \(\) => setEvidenceOpen\(true\) : undefined\}/.test(WEALTHC)
-      && /<EvidenceDrawer\s+open=\{evidenceOpen\}/.test(WEALTHC));
+      && !/onViewEvidence|setEvidenceOpen|<EvidenceDrawer/.test(WEALTHC));
   check("Total does NOT mount the Cash / Investments sections (mode === \"assets\" gate)", WEALTHC.includes('mode === "assets" ? (') );
   check("the page-level selector is Total | Assets | Debt (Chips, WEALTH_MODES)", WEALTHC.includes("WEALTH_MODES.map") && WEALTHC.includes('ariaLabel="Net worth view"'));
   check("the chart header no longer owns a metric switcher", !CHART.includes("<Chips") && CHART.includes("headerRight={headerRight}"));

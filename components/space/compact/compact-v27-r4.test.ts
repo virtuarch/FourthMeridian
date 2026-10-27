@@ -7,8 +7,8 @@
  *      Investments; Cash / Investments slices: none) off result.asOfState, with
  *      the hero's change formatting; compact-only (lg:hidden);
  *   2. SUPERSEDED R4 D-3: the Explanation card (one-liners + "Details") is
- *      deleted at every width; its evidence doorway lives on the "What moved"
- *      header, wired to the workspace's EvidenceDrawer;
+ *      deleted at every width; its evidence doorway (later on the "What moved"
+ *      header) was removed in the v2.7 final UX pass (no customer EvidenceDrawer);
  *   3. the remaining compact disclosure (Holdings "Show all N") is an
  *      accessible button; NO section is collapsed behind a toggle any more
  *      (Resilience, What changed, Activity) and uncertainty notes are visible;
@@ -108,15 +108,15 @@ console.log("1. the compact KPI strip (Net Worth Total)");
       && /id="wealth-trend" className="scroll-mt-20 (max-lg:\[[^\]]+\]:[^\s"]+ ?)+"/.test(ww));
 }
 
-console.log("\n2. the Explanation card is gone; evidence stays reachable");
+console.log("\n2. the Explanation card is gone; no customer-facing Evidence doorway (v2.7 final UX pass)");
 {
   const ww = code("components/space/widgets/wealth/WealthWorkspace.tsx");
   check("WealthExplanationCard and CompactInsights are deleted",
     !existsSync(path.join(process.cwd(), "components/space/widgets/wealth/WealthExplanationCard.tsx"))
       && !existsSync(path.join(process.cwd(), "components/space/compact/CompactInsights.tsx")) && !/Explanation/.test(ww));
-  check("the ledger header opens the workspace's EvidenceDrawer (Total)",
-    /<WealthChangeLedger[\s\S]{0,200}onViewEvidence=\{mode === "total" && canViewEvidence \? \(\) => setEvidenceOpen\(true\) : undefined\}/.test(ww)
-      && /\{envelope\.evidence && \(\s*<EvidenceDrawer\s+open=\{evidenceOpen\}/.test(ww));
+  check("the ledger header carries no Evidence doorway and the workspace mounts no EvidenceDrawer",
+    !/onViewEvidence|canViewEvidence|setEvidenceOpen|<EvidenceDrawer/.test(ww)
+      && !existsSync(path.join(process.cwd(), "components/space/shell/EvidenceDrawer.tsx")));
 }
 
 console.log("\n3. one accessible disclosure left; nothing collapsed; notes visible");
