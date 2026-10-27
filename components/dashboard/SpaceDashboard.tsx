@@ -13,6 +13,7 @@
  * still feed the initial-tab pick, but nothing here renders them.
  */
 
+import { SpaceIdProvider } from "@/components/space/space-id-context";
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useUtcToday } from "@/components/space/shell/useUtcToday";
 import type { ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
@@ -763,6 +764,8 @@ export function SpaceDashboard({
     // requested currency so /view-context keeps detecting the failure). No-op when
     // not reverted (effectiveDisplay === displayCurrency).
     <DisplayCurrencyProvider currency={effectiveDisplay}>
+    {/* Connections pass PR 4b — the active Space for shared empty states. */}
+    <SpaceIdProvider spaceId={spaceId}>
     <SpaceShell
       mobileOptimized
       // Global shell overlays — the shell owns WHERE they mount (above the
@@ -1098,6 +1101,7 @@ export function SpaceDashboard({
           }
         `}</style>
     </SpaceShell>
+    </SpaceIdProvider>
     </DisplayCurrencyProvider>
   );
 }

@@ -274,5 +274,25 @@ console.log("\n8. Utilization in words · Markets sub-views");
     /className="[^"]*\bh-\[45px\][^"]*line-clamp-3[^"]*"[\s\S]{0,120}data-compact-hero-note/.test(card));
 }
 
+// Connections pass PR 4b — shared empty states, identical at every width.
+{
+  const comp = read("components/space/PerspectiveEmptyState.tsx");
+  check("the shared empty state has no width-gated classes (one capability, both layouts)", !/lg:hidden|max-lg:|hidden lg:|sm:hidden|md:hidden/.test(comp));
+  const adopted: Array<[string, string]> = [
+    ["components/space/widgets/wealth/WealthWorkspace.tsx", 'perspective="netWorth"'],
+    ["components/space/widgets/debt/LiabilitiesLedger.tsx", 'perspective="debt"'],
+    ["components/space/widgets/liquidity/CashAccountsLedger.tsx", 'perspective="cash"'],
+    ["components/space/widgets/investments/InvestmentsWorkspace.tsx", 'perspective="investments"'],
+    ["components/space/widgets/cashflow/CashFlowWorkspace.tsx", 'perspective={spendingView ? "spending" : "cashFlow"}'],
+  ];
+  for (const [f, key] of adopted) {
+    const src = read(f);
+    const at = src.indexOf("<PerspectiveEmptyState");
+    check(`${path.basename(f)}: adopts the shared empty state (${key}) with the view's own copy as fallback`,
+      at > -1 && src.slice(at, at + 260).includes(key) && /fallback=/.test(src.slice(at, at + 400)));
+  }
+  check("the empty state never enters the fixed compact hero card", !/PerspectiveEmptyState/.test(read("components/space/compact/CompactHeroCard.tsx")));
+}
+
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

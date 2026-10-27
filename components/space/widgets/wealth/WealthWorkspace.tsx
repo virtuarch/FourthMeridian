@@ -92,6 +92,7 @@ import { WealthChangeLedger } from "./WealthChangeLedger";
 import { WealthCompositionCard } from "./WealthCompositionCard";
 import { HeroNotes } from "@/components/space/hero/HeroParts";
 import { WealthUnavailable } from "./wealth-ui";
+import { PerspectiveEmptyState } from "@/components/space/PerspectiveEmptyState";
 
 /** The Total mode's section anchors — the sidebar's "what's inside". */
 export const WEALTH_TOTAL_SECTIONS: SpaceChromeSection[] = [
@@ -566,7 +567,11 @@ export function WealthWorkspace({
           className="rounded-2xl border p-8"
           style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}
         >
-          <WealthUnavailable message="No wealth history yet. Once this Space accrues daily snapshots (or you connect accounts), the historical Wealth perspective builds itself — nothing is fabricated in the meantime." />
+          {/* Connections pass PR 4b — why there is no history (nothing connected /
+              still importing / a broken connection), else this view's own copy. */}
+          <PerspectiveEmptyState perspective="netWorth" hasContent={false} fallback={
+            <WealthUnavailable message="No wealth history yet. Once this Space accrues daily snapshots (or you connect accounts), the historical Wealth perspective builds itself — nothing is fabricated in the meantime." />
+          } />
         </div>
         {assetsTabs}
         {assetsSectionsBody}

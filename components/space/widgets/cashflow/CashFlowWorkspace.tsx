@@ -66,6 +66,7 @@ import { CashFlowMovements, movementLines } from "./CashFlowMovements";
 import { SpendingDistribution, SpendingHero, SpendingTierBreakdown } from "./SpendingSections";
 import { spendingDonutModel } from "./spending-distribution";
 import { previousEquivalentPeriod } from "./cash-flow-insights";
+import { PerspectiveEmptyState } from "@/components/space/PerspectiveEmptyState";
 
 export type FlowView = "cashFlow" | "spending";
 
@@ -284,7 +285,10 @@ export function CashFlowWorkspace({
   function renderSpendingLedger(): ReactNode {
     if (data == null) return <LoadingCard />;
     if (data.rows.length === 0) {
-      return <EmptyCard headline="No money moved in this period" sub="Spending by category appears once you have purchases." />;
+      // Connections pass PR 4b — an empty PERIOD keeps its own copy; only a source
+      // problem (nothing connected / manual only / importing / failed) changes it.
+      return <PerspectiveEmptyState perspective={spendingView ? "spending" : "cashFlow"} hasContent={false}
+        fallback={<EmptyCard headline="No money moved in this period" sub="Spending by category appears once you have purchases." />} />;
     }
     return (
       <CashFlowCategoryLedger

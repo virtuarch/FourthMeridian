@@ -148,7 +148,9 @@ export function LiabilitiesLedger({
         {/* V25-SIDE-1 — reachable ONLY when the Space has no debt-type account at
             all. "Nothing owed" is no longer a reason for absence: a paid-off or
             credit-balance card is a liability account and still renders a row. */}
-        <p className="text-center text-sm text-[var(--text-muted)]">No liability accounts in this Space.</p>
+        <PerspectiveEmptyState perspective="debt" hasContent={false} fallback={
+          <p className="text-center text-sm text-[var(--text-muted)]">No liability accounts in this Space.</p>
+        } />
       </Surface>
     );
   }
@@ -325,3 +327,4 @@ function LedgerRow({ row, currency, onOpen }: { row: LiabilityRow; currency: str
 // Local import kept at the bottom to avoid a circular-looking header block; the detail
 // body is a sibling presentational component.
 import { DebtAccountDetail as DetailBody } from "./DebtAccountDetail";
+import { PerspectiveEmptyState } from "@/components/space/PerspectiveEmptyState";

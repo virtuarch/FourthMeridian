@@ -57,6 +57,7 @@ import {
 import { cashTransitDisclosure, summarizeCashTransit, type CashTransitLeg } from "@/lib/liquidity/cash-transit";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
+import { PerspectiveEmptyState } from "@/components/space/PerspectiveEmptyState";
 
 export function CashAccountsLedger({
   spaceId,
@@ -134,7 +135,9 @@ export function CashAccountsLedger({
   if (summary.rows.length === 0) {
     return (
       <Surface className="px-4 py-8">
-        <p className="text-center text-sm text-[var(--text-muted)]">No cash accounts in this Space yet.</p>
+        <PerspectiveEmptyState perspective="cash" hasContent={false} fallback={
+          <p className="text-center text-sm text-[var(--text-muted)]">No cash accounts in this Space yet.</p>
+        } />
       </Surface>
     );
   }

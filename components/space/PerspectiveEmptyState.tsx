@@ -26,6 +26,7 @@ import Link from "next/link";
 import { AlertTriangle, Clock, Loader2, Link2 } from "lucide-react";
 import { classifyPerspectiveEmpty, EMPTY_COPY, type PerspectiveKey } from "@/lib/space/perspective-empty-state.core";
 import type { DataSourceView } from "@/lib/connections/space-data-health.core";
+import { useSpaceIdContext } from "@/components/space/space-id-context";
 
 const cache = new Map<string, Promise<DataSourceView[] | null>>();
 
@@ -59,14 +60,16 @@ const NOTE_COPY = {
   PROCESSING: { icon: Loader2,       text: "Some accounts behind this view are still importing." },
 } as const;
 
-export function PerspectiveEmptyState({ spaceId, perspective, hasContent, fallback = null, showNote = false }: {
-  spaceId: string | null | undefined;
+export function PerspectiveEmptyState({ spaceId: spaceIdProp, perspective, hasContent, fallback = null, showNote = false }: {
+  /** Defaults to the SpaceIdProvider's value (SpaceDashboard). */
+  spaceId?: string | null;
   perspective: PerspectiveKey;
   hasContent: boolean;
   fallback?: ReactNode;
   showNote?: boolean;
 }) {
-  const sources = useSpaceSources(spaceId);
+  const contextSpaceId = useSpaceIdContext();
+  const sources = useSpaceSources(spaceIdProp ?? contextSpaceId);
   if (sources === null) return hasContent ? null : <>{fallback}</>;
 
   const s = classifyPerspectiveEmpty(perspective, sources, hasContent);
@@ -84,7 +87,9 @@ export function PerspectiveEmptyState({ spaceId, perspective, hasContent, fallba
     );
   }
 
-  if (!s.reason) return <>{fallback}</>;
+  // NOT_FED: the view's own copy already says it best ("No liability accounts
+  // in this Space.") — only the other reasons replace it.
+  if (!s.reason || s.reason === "NOT_FED") return <>{fallback}</>;
   const copy = EMPTY_COPY[s.reason];
   return (
     <div data-perspective-empty={s.reason} className="flex flex-col items-center text-center">
