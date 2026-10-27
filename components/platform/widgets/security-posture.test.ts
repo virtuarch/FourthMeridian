@@ -37,8 +37,8 @@ import { anomalyKeyKind, opaqueKeyRef, projectAnomalyTrip } from "@/lib/platform
 import { SecurityPostureSurface, type SecurityPostureSources } from "./SecurityPostureWidget";
 import { SecAuthPostureWidget } from "./SecAuthPostureWidget";
 import { SecAnomaliesWidget } from "./SecAnomaliesWidget";
-import { SecAuditFeedWidget } from "./SecAuditFeedWidget";
-import { SecOperatorActionsWidget } from "./SecOperatorActionsWidget";
+import { AUDIT_SURFACE_TITLE, EndUserAuthGroup, SecAuditFeedWidget } from "./SecAuditFeedWidget";
+import { OPERATOR_ACTIONS_SURFACE_TITLE, OperatorActionsGroup, SecOperatorActionsWidget } from "./SecOperatorActionsWidget";
 import { SecSessionsWidget } from "./SecSessionsWidget";
 import {
   COVERAGE_DENOMINATOR_NOTE, DETECTOR_COVERAGE, NOTES_ABSENT, POSTURE_FOOTNOTE, POSTURE_TITLE, PULSE_BASIS, SECURITY_POSTURE_HOST_KEY,
@@ -97,8 +97,15 @@ const LOADING: Fetched<never> = { data: null, loading: true, error: null };
 const failed = (error: string): Fetched<never> => ({ data: null, loading: false, error });
 
 const sources = (over: Partial<SecurityPostureSources> = {}): SecurityPostureSources => ({
-  anomalies: ok(anomalies), posture: ok(posture), audit: ok(audit), operators: ok(operators), sessions: ok(sessions), ...over,
+  anomalies: ok(anomalies), posture: ok(posture), sessions: ok(sessions), ...over,
 });
+// Redesign §4.9 — the two feeds moved to their own workspaces; their groups render standalone.
+const feeds = (a: Fetched<PlatformAuditResponse> = ok(audit), o: Fetched<OperatorActionsResponse> = ok(operators)) => {
+  const html = renderToStaticMarkup(createElement("div", null,
+    createElement(EndUserAuthGroup, { audit: a, nowMs: NOW.getTime() }),
+    createElement(OperatorActionsGroup, { operators: o, nowMs: NOW.getTime() })));
+  return { html, text: text(html) };
+};
 const render = (s: SecurityPostureSources) => {
   const html = renderToStaticMarkup(createElement(SecurityPostureSurface, { sources: s, nowMs: NOW.getTime() }));
   return { html, text: text(html) };
@@ -107,15 +114,22 @@ const badgeWords = (html: string) => [...html.matchAll(/<span class="text-xs fon
 const REASSURING = /\bsecure\b|healthy|all clear|all good|no issues|operating normally|no threats/i;
 
 function main() {
-  console.log("1. hosting — one adapter renders the surface, four render nothing");
+  console.log("1. hosting — Posture renders the surface; Audit and Operator actions render their own; two render nothing");
   {
     const host = renderToStaticMarkup(createElement(SecAuthPostureWidget, { section: SECTION }));
     check("host first frame: ONE section titled Security posture", (host.match(/<section/g) ?? []).length === 1 && text(host).includes(POSTURE_TITLE));
-    check("every gated source is loading as a status (two for anomalies: column + trips group)", (host.match(/role="status"/g) ?? []).length === 6, String((host.match(/role="status"/g) ?? []).length));
+    check("every gated source is loading as a status (two for anomalies: column + trips group; posture; sessions)", (host.match(/role="status"/g) ?? []).length === 4, String((host.match(/role="status"/g) ?? []).length));
     check("no figure, no badge in the first frame", badgeWords(host).length === 0 && !/text-2xl/.test(host));
-    for (const [name, C] of [["SecAnomaliesWidget", SecAnomaliesWidget], ["SecAuditFeedWidget", SecAuditFeedWidget], ["SecOperatorActionsWidget", SecOperatorActionsWidget], ["SecSessionsWidget", SecSessionsWidget]] as const) {
+    for (const [name, C] of [["SecAnomaliesWidget", SecAnomaliesWidget], ["SecSessionsWidget", SecSessionsWidget]] as const) {
       check(`${name} renders nothing (absorbed)`, renderToStaticMarkup(createElement(C, { section: SECTION })) === "");
     }
+    for (const [name, C, title] of [["SecAuditFeedWidget", SecAuditFeedWidget, AUDIT_SURFACE_TITLE], ["SecOperatorActionsWidget", SecOperatorActionsWidget, OPERATOR_ACTIONS_SURFACE_TITLE]] as const) {
+      const w = renderToStaticMarkup(createElement(C, { section: SECTION }));
+      check(`${name} renders its own workspace surface (one section, its title, loading as a status)`,
+        (w.match(/<section/g) ?? []).length === 1 && text(w).includes(title) && /role="status"/.test(w));
+    }
+    const hostDone = render(sources());
+    check("the posture surface no longer carries the two moved feeds", !hostDone.text.includes("End-user auth") && !/Operator actions/.test(hostDone.text));
     check("the host key is the first key composed into the SECURITY_OPS Overview", SECURITY_POSTURE_HOST_KEY === "sec_auth_posture", SECURITY_POSTURE_HOST_KEY);
     check("…and the hosting adapter is that key's widget", /SecurityPostureWidget/.test(strip("components/platform/widgets/SecAuthPostureWidget.tsx")));
   }
@@ -195,7 +209,9 @@ function main() {
 
   console.log("7. the three feeds");
   {
-    const { html, text: t } = render(sources());
+    const { html: hostHtml, text: hostText } = render(sources());
+    const f = feeds();
+    const html = f.html + hostHtml, t = f.text + " " + hostText;
     check("end-user auth: action humanised, actor attributed, depth stated", t.includes("Two factor enabled alice") && t.includes("Login failed system") && t.includes(feedDepthText(2, "security events")));
     check("operator actions: P1 label, operator → target · reason code", t.includes("Assigned a policy group chris → bob · support request"), t);
     check("operator actions: an execution handle is opaque", t.includes("Resynced a connection chris → plaid item …abc123 · refresh …zz1234"), t);
@@ -203,7 +219,9 @@ function main() {
     check("operator actions: depth stated; never the note", t.includes(feedDepthText(2, "operator actions")) && !/\.note\b/.test(strip("components/platform/widgets/SecOperatorActionsWidget.tsx")));
     check("sessions: counts with their derivation", t.includes("Active sessions 5") && t.includes("Distinct users with a session 3") && t.includes("UserSession.revokedAt IS NULL"));
     check("sessions: browser · device · OS, depth stated", t.includes("Chrome · Desktop · macOS") && t.includes(feedDepthText(1, "recently active sessions")));
-    const empties = render(sources({ audit: ok({ events: [] }), operators: ok({ events: [] }), sessions: ok({ totalActive: 0, distinctUsers: 0, recent: [] }) }));
+    const emptyFeeds = feeds(ok({ events: [] }), ok({ events: [] }));
+    const emptyHost = render(sources({ sessions: ok({ totalActive: 0, distinctUsers: 0, recent: [] }) }));
+    const empties = { text: emptyFeeds.text + " " + emptyHost.text };
     check("empty feeds say 'no … in the route's newest page' as a status", empties.text.includes("no security events in the route's newest page") && empties.text.includes("no operator actions in the route's newest page") && empties.text.includes("no recently active sessions in the route's newest page"));
   }
 
@@ -219,7 +237,7 @@ function main() {
   {
     const { html, text: t } = render(sources({ anomalies: failed("Request failed (500)") }));
     check("the Detections column and the trips group each say the source could not be read, as alerts", (html.match(/role="alert"/g) ?? []).length === 2 && t.includes("Anomalies could not be read (Request failed (500)) — this group is absent, not empty."), t.slice(0, 500));
-    check("the other four sources still answer", t.includes("MFA adoption 67%") && t.includes("Two factor enabled") && t.includes("Assigned a policy group") && t.includes("Chrome · Desktop · macOS"));
+    check("the other sources on the posture surface still answer", t.includes("MFA adoption 67%") && t.includes("Chrome · Desktop · macOS"));
     const half = render(sources({ posture: LOADING }));
     check("a loading source is a status inside its column, nothing else blocked", /role="status"/.test(half.html) && half.text.includes("7 of ≥5 in 15 m"));
   }
@@ -244,7 +262,12 @@ function main() {
     check("view: imports only types from the routes", !/import \{[^}]*\} from "@\/app\/api/.test(view.replace(/import type[^;]+;/g, "")));
     const w = strip(WIDGET);
     const urls = [...w.matchAll(/useWidgetFetch<[^>]+>\("([^"]+)"\)/g)].map((m) => m[1]);
-    check("widget: exactly five reads, each a string literal, one per route", urls.length === 5 && new Set(urls).size === 5 && urls.every((u) => u.startsWith("/api/platform/security-ops/")) && (w.match(/useWidgetFetch</g) ?? []).length === 5, urls.join(","));
+    // Redesign §4.9 — the audit and operator-action feeds are fetched by their own workspace widgets.
+    check("widget: exactly three reads, each a string literal, one per route", urls.length === 3 && new Set(urls).size === 3 && urls.every((u) => u.startsWith("/api/platform/security-ops/")) && (w.match(/useWidgetFetch</g) ?? []).length === 3, urls.join(","));
+    for (const [f, route] of [["components/platform/widgets/SecAuditFeedWidget.tsx", "/api/platform/security-ops/audit"], ["components/platform/widgets/SecOperatorActionsWidget.tsx", "/api/platform/security-ops/operator-actions"]] as const) {
+      const g = strip(f);
+      check(`${f}: one static-URL read of its own route`, (g.match(/useWidgetFetch</g) ?? []).length === 1 && g.includes(`useWidgetFetch<`) && g.includes(`("${route}")`));
+    }
     check("widget: no sort, no derived metric, one mount clock", !/\.sort\(/.test(w) && !/\/\s*\w+\.totalUsers/.test(w) && /useState\(\(\) => Date\.now\(\)\)/.test(w));
     check("widget + parts + groups: import no reader or server module", ![WIDGET, PARTS, ...ADAPTERS.map((a) => `components/platform/widgets/${a}.tsx`)].some((f) => /@\/lib\/db|server-only|customer-core|@\/lib\/platform\/security\/anomalies-core"/.test(strip(f).replace(/import type[^;]+;/g, ""))));
     for (const f of [WIDGET, PARTS, ...ADAPTERS.map((a) => `components/platform/widgets/${a}.tsx`)]) {

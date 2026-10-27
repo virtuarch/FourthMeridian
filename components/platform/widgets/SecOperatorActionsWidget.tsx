@@ -19,8 +19,10 @@
  * renders nothing: the section is absorbed by the surface `sec_auth_posture` hosts.
  */
 
-import type { PlatformSection } from "../widget-kit";
-import { ToneBadge, TwoLine } from "../platform-surface";
+import { useState } from "react";
+import { UserCog } from "lucide-react";
+import { useWidgetFetch, type PlatformSection } from "../widget-kit";
+import { SectionSurface, ToneBadge, TwoLine } from "../platform-surface";
 import type { OperatorActionsResponse } from "@/app/api/platform/security-ops/operator-actions/route";
 import { OPERATOR_RESULT_TONE, OPERATOR_RESULT_WORD, feedDepthText, operatorLine, type Fetched } from "./security-posture-view";
 import { SourceGate } from "./SecurityPostureParts";
@@ -103,6 +105,16 @@ export function OperatorActionsGroup({ operators, nowMs }: { operators: Fetched<
 }
 
 /** Registry export for `sec_operator_actions` — absorbed into the Security posture surface; renders nothing. */
+/** Platform redesign §4.9 — the Operator actions workspace, the single home of the operator feed. */
+export const OPERATOR_ACTIONS_SURFACE_TITLE = "Operator actions";
+
+/** Registry export for `sec_operator_actions` — the Security › Operator actions workspace. */
 export function SecOperatorActionsWidget(_props: { section: PlatformSection }) {
-  return null;
+  const operators = useWidgetFetch<OperatorActionsResponse>("/api/platform/security-ops/operator-actions");
+  const [nowMs] = useState(() => Date.now());
+  return (
+    <SectionSurface icon={UserCog} title={OPERATOR_ACTIONS_SURFACE_TITLE}>
+      <OperatorActionsGroup operators={operators} nowMs={nowMs} />
+    </SectionSurface>
+  );
 }

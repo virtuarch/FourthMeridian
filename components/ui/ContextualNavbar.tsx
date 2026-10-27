@@ -82,6 +82,8 @@ import {
   Receipt,
   LayoutDashboard,
   TriangleAlert,
+  ScrollText,
+  UserCog,
   Timer,
   PlugZap,
   History,
@@ -142,6 +144,8 @@ const WORKSPACE_ICONS_BY_NAME: Record<string, LucideIcon> = {
   LayoutDashboard, Timer, PlugZap, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal,
   // Platform redesign — Customer Success › Incidents.
   TriangleAlert,
+  // Platform redesign — Security › Audit, Security › Operator actions.
+  ScrollText, UserCog,
 };
 
 /** The row icon: the published icon NAME first, else the id-keyed lens map. */
