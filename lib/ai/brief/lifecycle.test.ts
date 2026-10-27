@@ -403,8 +403,9 @@ async function main() {
     // preserved (owner policy 2026-10-27), move BRIEF_PROMPT_REVISION only. Either way,
     // update the pin. The version, not this hash, decides validity.
     // v2.7-P0: 08fbac9b9cb7 → dfb26bf3e8ae (debt-semantics-1; generation NOT bumped).
+    // v2.7 owner ruling (PR #63): → 5bb1d55b1cf8 (debt-semantics-2: TRANSFER_DESTINATION_UNCONFIRMED; generation NOT bumped).
     check('the prompt/schema hash is pinned (review BRIEF_GENERATION_VERSION when it moves)',
-      BRIEF_PROMPT_HASH === 'dfb26bf3e8ae', BRIEF_PROMPT_HASH);
+      BRIEF_PROMPT_HASH === '5bb1d55b1cf8', BRIEF_PROMPT_HASH);
     check('what a row stores is the intentional version plus the hash plus the revision',
       BRIEF_PROMPT_VERSION === `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}+rev-${BRIEF_PROMPT_REVISION}`);
 
@@ -490,7 +491,7 @@ async function main() {
     check('the generation version was NOT bumped by the debt-semantics prompt fix', BRIEF_GENERATION_VERSION === 'brief-generation-5');
     check('the stored version parses to the generation alone', generationVersionOf(BRIEF_PROMPT_VERSION) === BRIEF_GENERATION_VERSION);
     check('the revision is readable back', promptRevisionOf(BRIEF_PROMPT_VERSION) === BRIEF_PROMPT_REVISION
-      && BRIEF_PROMPT_REVISION === 'debt-semantics-1');
+      && BRIEF_PROMPT_REVISION === 'debt-semantics-2');
     check('a pre-revision row records no revision', promptRevisionOf('brief-generation-5+prompt-08fbac9b9cb7') === null
       && promptRevisionOf(null) === null);
 
@@ -499,7 +500,7 @@ async function main() {
     const today = key('2026-09-13');
     await r.ensure(t(0));
     check('a NEW generation records the new revision and the new prompt hash',
-      r.store.get(today)!.promptVersion === `brief-generation-5+prompt-${BRIEF_PROMPT_HASH}+rev-debt-semantics-1`,
+      r.store.get(today)!.promptVersion === `brief-generation-5+prompt-${BRIEF_PROMPT_HASH}+rev-debt-semantics-2`,
       String(r.store.get(today)!.promptVersion));
     // The row exactly as the previous deploy wrote it: same generation, old prompt hash, no revision.
     r.store.get(today)!.promptVersion = 'brief-generation-5+prompt-08fbac9b9cb7';

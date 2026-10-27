@@ -275,7 +275,10 @@ console.log("\n9. source guards — reuse, no new authority");
   check("helper reads Available through reachableForAccount (no re-derived rule)", helper.includes("reachableForAccount(a, ctx)"));
   check("helper classifies through liquidityAccess", helper.includes("liquidityAccess(a)"));
   check("no USD literal in the new components", !/"USD"/.test(ledger) && !/"USD"/.test(src("components/space/widgets/liquidity/CashDistribution.tsx")));
-  check("ledger uses only the existing detail route (no new API)", (ledger.match(/fetch\(/g) ?? []).length === 1 && ledger.includes("/accounts/detail"));
+  // v2.7-P2 — exactly TWO reads: the existing detail route (status/freshness) and
+  // the cash-transit route, which feeds only the neutral disclosure lines and no
+  // figure on the ledger (lib/liquidity/cash-transit.test.ts §3 pins that).
+  check("ledger reads only the detail route + the P2 cash-transit disclosure route", (ledger.match(/fetch\(/g) ?? []).length === 2 && ledger.includes("/accounts/detail") && ledger.includes("/liquidity/cash-transit"));
   const ws = src("components/space/widgets/liquidity/LiquidityWorkspace.tsx");
   check("Accessible cash tile renders the existing reachableDisclosure()", ws.includes("reachableDisclosure(reach") && ws.includes("data-reach-disclosure"));
 }

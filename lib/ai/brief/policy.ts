@@ -123,7 +123,7 @@ export const BRIEF_GENERATION_VERSION = 'brief-generation-5';
  * described only as money that moved (docs/plans/RESOLVED-TRANSACTION-NATURE-
  * CONTRACT-2026-10-27.md).
  */
-export const BRIEF_PROMPT_REVISION = 'debt-semantics-1';
+export const BRIEF_PROMPT_REVISION = 'debt-semantics-2';
 
 /**
  * The generation version a stored `promptVersion` was written under. Stored as

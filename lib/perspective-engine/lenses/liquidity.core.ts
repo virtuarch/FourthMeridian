@@ -54,7 +54,7 @@
 import type { FreshnessBasis } from "@/lib/freshness/observation";
 import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — a VERDICT is a sentence (see display-money.ts)
 import { amountOwed } from "@/lib/debt/balance-semantics";
-import { liquidityAccess } from "@/lib/account-classifier";
+import { countedBalance, liquidityAccess } from "@/lib/account-classifier";
 import { totalReachableCash, type ReachableInput } from "@/lib/balances/reachable";
 import { convertMoney } from "@/lib/money/convert";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
@@ -70,7 +70,7 @@ import type {
 // ── Version & static copy ─────────────────────────────────────────────────────
 
 /** Bump whenever this lens's math or verdict semantics change. */
-export const LIQUIDITY_LENS_VERSION = 2; // 2 — 2026-10-07: liquidity access (restricted / unverified)
+export const LIQUIDITY_LENS_VERSION = 3; // 2 — 2026-10-07: liquidity access (restricted / unverified); 3 — 2026-10-27 (v2.7-P3): restricted depository counts its adjusted balance
 
 /**
  * Static empty copy — must read identically whether accounts are absent or
@@ -124,6 +124,16 @@ export interface LiquidityAccountRow {
   reachableCash?: number | null;
   /** v2.6-L3 — the positive unexplained hold on this account, or null. */
   unexplainedHold?: number | null;
+  /**
+   * v2.7-P3 — the PRESENT-DAY adjusted depository balance (native), the server's
+   * adjustedDepositoryBalance claim (lib/balances/account-balances.ts). Read ONLY
+   * through `countedBalance` and only where a TOTAL counts an owned depository
+   * balance — today, the restricted tier (an HSA). ABSENT on every historical
+   * path: a present-tense adjustment over a reconstructed past balance would be
+   * a category error, exactly like `reachableCash`. Never consulted for the
+   * reachable (headline) figure, which stays provider-attested.
+   */
+  adjustedBalance?: number | null;
   /** SpaceAccountLink.visibilityLevel string (existing model, no parallel vocabulary). */
   visibilityLevel: string;
 }
@@ -230,7 +240,11 @@ export function computeLiquidity(
       });
     }
     else if (access === "marketable") marketable += inTarget(r.balance, r.currency);
-    else if (access === "restricted") restricted += inTarget(r.balance, r.currency);
+    // v2.7-P3 — restricted depository cash (an HSA) counts its ADJUSTED balance
+    // through the one authority, the same figure the Cash donut, ledger and
+    // footer use; a row with no claim (every historical row) counts `balance`.
+    // Still never reachable, never in the headline.
+    else if (access === "restricted") restricted += inTarget(countedBalance(r), r.currency);
     else if (access === "unverified") unverified += inTarget(r.balance, r.currency);
     else if (access === "illiquid")   illiquid   += inTarget(r.balance, r.currency);
     else if (r.type === "debt" && r.visibilityLevel === "FULL" && typeof r.creditLimit === "number") {
