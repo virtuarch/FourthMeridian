@@ -503,15 +503,16 @@ const C7B: Raw[] = [
   { id: "c7bPayCash", acct: "chk", date: "2026-10-05", amount: -100, name: "CARD AUTOPAY", pfc: CC_PAY },
   { id: "c7bPayCard", acct: "card", date: "2026-10-05", amount: 100, name: "Payment Thank You-Mobile", pfc: CC_PAY },
 ];
-test("debt service · a fee reversal on a card is a credit in every money layer except the debt-service decomposition", () => {
+test("debt service · a fee reversal on a card is a credit in every money layer, debt service included", () => {
   const { dtos } = pipeline(C7B);
   const t = totals(dtos);
   assert.equal(t.spending, 61, "economic fold: 100 − 39");
   assert.equal(t.chargedOnCredit, 100, "DayFacts: the reversal is not a charge");
   assert.equal(t.debtPaid, 100);
-  gap({ id: "GAP-5", case: 7, row: "c7bFeeRev", field: "netPaydown", current: 0, expected: 39,
-    note: "computeDebtService adds a positive cost-flow row on a liability to new CHARGES (139) instead of refunds (charges 100 − 39 = 61; payment 100 ⇒ paydown 39)" }, t.netPaydown);
-  gap({ id: "GAP-5", case: 7, row: "c7bFeeRev", field: "netNewBorrowing", current: 39, expected: 0, note: "same rows" }, t.netNewBorrowing);
+  // v2.7-B GAP-5 (APPROVAL-GATED): debt service now nets it as a credit too —
+  // charges 100 − 39 = 61; payment 100 ⇒ paydown 39 (was: paydown 0, new borrowing 39).
+  assert.equal(t.netPaydown, 39);
+  assert.equal(t.netNewBorrowing, 0);
 });
 
 // Case 8 — external payments / withdrawals / unknown counterparties
@@ -644,7 +645,7 @@ test("matrix totals (printed for the audit doc) and the gap register", () => {
   console.log("MATRIX_TOTALS", JSON.stringify(matrix));
   const ids = [...new Set(KNOWN_GAPS.map((g) => g.id))].sort();
   console.log("KNOWN_GAPS", JSON.stringify(KNOWN_GAPS.map(({ id, row, field, current, expected }) => ({ id, row, field, current, expected }))));
-  assert.deepEqual(ids, ["GAP-3", "GAP-4", "GAP-5"]);
+  assert.deepEqual(ids, ["GAP-3", "GAP-4"]);
 });
 
 test("labels · an unattested provider payment reads as a transfer; a human's 'Payment' is honoured", () => {
