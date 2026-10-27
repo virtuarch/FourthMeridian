@@ -143,8 +143,14 @@ console.log("3. Intent callbacks preserved — adapters, not legacy plumbing");
   const host = readFileSync(path.join(ROOT, "components/dashboard/SpaceDashboard.tsx"), "utf8");
   check("the host still routes presets through handleSelectSlice",
     /onSelectPreset=\{handleSelectSlice\}/.test(host));
-  check("handleSelectSlice still clears the Cash-Flow override",
-    /isExplicitPeriod\(slice\)[\s\S]{0,400}setCashFlowExplicitPeriod\(null\)/.test(host));
+  // v2.7 — the explicit calendar unit lives IN the flow time group: the host routes
+  // it there, and a relative preset goes through the reducer, which ENDS the unit
+  // (reduceGroupTime returns explicit: null) — the header is the master.
+  check("handleSelectSlice routes an explicit unit to the group and a preset to the reducer",
+    /isExplicitPeriod\(slice\)\) \{ shell\.setExplicitPeriod\(slice\); return; \}[\s\S]{0,200}shell\.actions\.selectPreset\(slice\)/.test(host));
+  const groups = readFileSync(path.join(ROOT, "lib/space/perspective-time-groups.ts"), "utf8");
+  check("…and any header action clears the explicit unit (no stranded drill)",
+    /export function reduceGroupTime[\s\S]{0,500}return \{ time, lastRelative, explicit: null \};/.test(groups));
 }
 
 // ── 3b. The period control still DRIVES the window ───────────────────────────

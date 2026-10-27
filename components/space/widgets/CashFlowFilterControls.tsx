@@ -3,10 +3,9 @@
 /**
  * components/space/widgets/CashFlowFilterControls.tsx
  *
- * CF-3 — the ONE small perspective/measure control shared by the Cash Flow
- * Summary and History/Calendar (the prompt's "reuse a small perspective/filter
- * control"). It selects, from the two honest perspectives, WHICH canonical
- * measures a widget shows — it never classifies anything. Each filter maps to a
+ * CF-3 — the heatmap's measure vocabulary + its one small control. It selects,
+ * from the two honest axes, WHICH canonical measures the calendar shows — it
+ * never classifies anything. Each filter maps to a
  * fixed, NON-OVERLAPPING measure set from CALENDAR_MEASURES, so no selection can
  * double-count (a measure is never combined with a measure it is a subset of).
  *
@@ -48,102 +47,60 @@ export const CALENDAR_FILTERS: CalendarFilter[] = [
   { id: "eco-income",     label: "Income",                perspective: "economic",  measures: ["income"] },
 ];
 
-/** User-facing perspective names (NOT the internal "liquidity"/"economic"). */
-export const PERSPECTIVE_LABEL: Record<CashFlowPerspective, string> = {
-  liquidity: "Cash Flow",
-  economic:  "Spending",
-};
-
 export const DEFAULT_FILTER_ID = "liq-net";
 
 export function filterById(id: string): CalendarFilter {
   return CALENDAR_FILTERS.find((f) => f.id === id) ?? CALENDAR_FILTERS[0];
 }
 
-/** The default filter for a perspective. Switching to Spending (economic) lands
- *  directly on the "Spending" measure — the one-tap top-level economic filter —
- *  rather than the combined "Income & spending" net, so the visible, highlighted
- *  control matches the perspective's name. Cash Flow (liquidity) keeps its honest
- *  "Cash in & out" net default. */
+/** The default measure for a page: Cash Flow opens on "Cash in & out"; Spending on
+ *  "Spending" (all purchases, any payment method). */
 export function defaultFilterFor(perspective: CashFlowPerspective): CalendarFilter {
   return perspective === "economic" ? filterById("eco-spend") : filterById("liq-net");
 }
 
-// ─── Control ──────────────────────────────────────────────────────────────────
-
-interface Props {
-  perspective: CashFlowPerspective;
-  filterId:    string;
-  onChange:    (perspective: CashFlowPerspective, filterId: string) => void;
-  /** Compact hides the measure dropdown (perspective toggle only) — for the Summary. */
-  compact?:    boolean;
-  /** R5 — below lg the perspective toggle is hidden (`max-lg:hidden`) because the
-   *  Cash Flow hero already hosts the ONE compact perspective control over the same
-   *  shared state. Desktop (≥1024px) is unaffected: max-lg utilities never apply. */
-  hidePerspectiveOnCompact?: boolean;
+/**
+ * v2.7 (owner) — the measures each PAGE offers in its heatmap. Cash Flow offers
+ * every liquidity measure; Spending's heatmap shows SPENDING by day, so it offers
+ * only the spending measures (all · on credit cards · direct) — never income or a
+ * cash measure. Pure selection over the fixed, non-overlapping table above.
+ */
+export function filtersForPage(page: "cashFlow" | "spending"): CalendarFilter[] {
+  return page === "spending"
+    ? (["eco-spend", "eco-card", "eco-direct"] as const).map(filterById)
+    : CALENDAR_FILTERS.filter((f) => f.perspective === "liquidity");
 }
 
-export function CashFlowFilterControls({ perspective, filterId, onChange, compact, hidePerspectiveOnCompact }: Props) {
-  const options = CALENDAR_FILTERS.filter((f) => f.perspective === perspective);
+// ─── Control ──────────────────────────────────────────────────────────────────
 
+/**
+ * The measure picker — ONE compact native select. v2.7 (owner): the Cash Flow ⇄
+ * Spending perspective toggle that used to sit beside it is GONE — Cash Flow and
+ * Spending are separate perspectives with their own page, so a page never offers
+ * the other page's axis here.
+ */
+export function CashFlowMeasureSelect({ options, filterId, onChange }: {
+  options:  CalendarFilter[];
+  filterId: string;
+  onChange: (filterId: string) => void;
+}) {
+  if (options.length < 2) return null;
   return (
-    <div className="inline-flex items-center gap-1.5" onPointerDown={(e) => e.stopPropagation()}>
-      {/* Perspective — the primary honest axis toggle. */}
-      <div
-        className={hidePerspectiveOnCompact
-          ? "inline-flex items-center p-0.5 rounded-[var(--radius-full)] gap-0.5 max-lg:hidden"
-          : "inline-flex items-center p-0.5 rounded-[var(--radius-full)] gap-0.5"}
-        style={{ background: "var(--glass-ultrathin)", border: "1px solid var(--border-hairline)" }}
-        role="tablist"
-        aria-label="Cash flow perspective"
-      >
-        {(["liquidity", "economic"] as const).map((p) => {
-          const active = p === perspective;
-          return (
-            <button
-              key={p}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              title={p === "liquidity" ? "Spendable cash movement" : "Real spending, incl. credit-card purchases"}
-              onClick={() => onChange(p, defaultFilterFor(p).id)}
-              className={[
-                "rounded-[var(--radius-full)] px-2.5 py-1 text-[11px] font-semibold transition-colors max-lg:min-h-10 max-lg:px-3.5",
-                "max-lg:focus-visible:outline-none max-lg:focus-visible:ring-2 max-lg:focus-visible:ring-[var(--meridian-400)]",
-                active ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
-              ].join(" ")}
-              style={active ? { background: "rgba(59,130,246,.14)", border: "1px solid rgba(125,168,255,.32)" } : { border: "1px solid transparent" }}
-            >
-              {PERSPECTIVE_LABEL[p]}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Measure filter — one compact dropdown scoped to the active perspective's
-          (non-overlapping) measures. A single-tap native <select> instead of a row
-          of chips keeps the control uncluttered on mobile: the perspective toggle
-          stays visible, the specific slice lives here. The active option shows as
-          the collapsed value; switching perspective resets this to that
-          perspective's default measure (defaultFilterFor), so it never carries an
-          invalid cross-perspective measure. */}
-      {!compact && (
-        <select
-          aria-label="Cash flow measure filter"
-          value={filterId}
-          onChange={(e) => onChange(perspective, e.target.value)}
-          className={[
-            "appearance-none cursor-pointer rounded-[var(--radius-full)] px-3 py-1 text-[11px] font-semibold max-lg:min-h-10",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] transition-colors",
-            "text-[var(--meridian-400)]",
-          ].join(" ")}
-          style={{ background: "var(--glass-ultrathin)", border: "1px solid rgba(125,168,255,.32)" }}
-        >
-          {options.map((f) => (
-            <option key={f.id} value={f.id}>{f.label}</option>
-          ))}
-        </select>
-      )}
-    </div>
+    <select
+      aria-label="Heatmap measure"
+      value={filterId}
+      onChange={(e) => onChange(e.target.value)}
+      onPointerDown={(e) => e.stopPropagation()}
+      className={[
+        "appearance-none cursor-pointer rounded-[var(--radius-full)] px-3 py-1 text-[11px] font-semibold max-lg:min-h-10 max-w-full",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] transition-colors",
+        "text-[var(--meridian-400)]",
+      ].join(" ")}
+      style={{ background: "var(--glass-ultrathin)", border: "1px solid rgba(125,168,255,.32)" }}
+    >
+      {options.map((f) => (
+        <option key={f.id} value={f.id}>{f.label}</option>
+      ))}
+    </select>
   );
 }

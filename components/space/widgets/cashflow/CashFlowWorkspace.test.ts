@@ -12,8 +12,10 @@
  *   4. Canonical time is preserved (period as prop; no local date authority; host still
  *      derives cashFlowPeriod).
  *   5. The Calendar Heatmap is retained via the metric-agnostic CalendarHeatmapGrid.
- *   6. Semantic slice controls (perspective/filter) are workspace-owned (relocated).
- *   7. Calendar / Cards modes are workspace-owned (inside the History widget).
+ *   6. v2.7 — each page reads ONE fixed axis (Cash Flow = liquidity, Spending =
+ *      economic); no Cash Flow ⇄ Spending toggle state exists anywhere.
+ *   7. v2.7 — the History widget is calendar-only (the Cards view is removed); its
+ *      measure filter is widget-local.
  *   8. Display currency (FX) is not regressed.
  *   9. The old Cash Flow host composition is retired/reduced.
  *  10. Trust OWNERSHIP: the workspace owns the completeness stamp AND emits its own
@@ -72,15 +74,17 @@ console.log("2. CashFlowSpaceData is the composition boundary");
     WS.includes('from "@/lib/transactions/cash-flow-space-data"') && WS.includes("buildCashFlowSpaceData"));
   check("composes via the contract", WS.includes("buildCashFlowSpaceData("));
   // Every panel is fed from the contract slices — not raw re-projection.
-  check("panels consume the contract's summary/context slices", WS.includes("data?.summary") && WS.includes("data?.context"));
-  check("panels consume the contract's daily/buckets slices", WS.includes("data?.daily") && WS.includes("data?.buckets"));
+  check("panels consume the contract's summary/context slices", WS.includes("data?.summary") && WS.includes("data.context"));
+  check("panels consume the contract's daily slice (the heatmap)", WS.includes("data?.daily") && !WS.includes("data?.buckets"));
   check("windowed rows come from the contract", WS.includes("data?.rows"));
   check("spending consumes data.outflowByCategory", WS.includes("data.outflowByCategory"));
   // v2.6-TRUTH-6 — the economic axis now consumes the CANONICAL income rollup.
   // `data.incomeBySource` was the old presentation authority and admitted rows
   // the taxonomy classes NOT_INCOME, so the card and the headline could disagree.
-  check("income consumes data.cashInByReason / data.income.lines",
-    WS.includes("data.cashInByReason") && WS.includes("data.income.lines"));
+  // v2.7 — Cash Flow's income panel is the liquidity cash-in slice; Spending has none.
+  check("cash in consumes data.cashInByReason (the canonical liquidity slice)", WS.includes("data.cashInByReason"));
+  check("spending consumes data.spending (THE total) and economicSpendByTier(data.summary)",
+    WS.includes("data.spending.net") && WS.includes("economicSpendByTier(data.summary)"));
 }
 
 console.log("3. The workspace duplicates NO canonical projection");
@@ -108,20 +112,22 @@ console.log("5. Calendar Heatmap retained via metric-agnostic CalendarHeatmapGri
   check("Calendar consumes the contract's pre-projected daily (no re-project when supplied)", CAL.includes("dailyProp ?? projectDailyFacts"));
 }
 
-console.log("6. Semantic slice controls are workspace-owned (relocated from host)");
+console.log("6. v2.7 — one fixed axis per page; no perspective toggle state");
 {
-  check("workspace owns the perspective state", WS.includes("useState<CashFlowPerspectiveMode>"));
-  check("workspace owns the filter state", WS.includes("useState<string>(DEFAULT_FILTER_ID)"));
-  check("workspace exposes changePerspective to its widgets", WS.includes("changePerspective"));
+  check("the page's axis is fixed by its view (VIEW_AXIS)", /const perspective = VIEW_AXIS\[view\]/.test(WS)
+    && /VIEW_AXIS: Record<FlowView, CashFlowPerspectiveMode> = \{ cashFlow: "liquidity", spending: "economic" \}/.test(WS));
+  check("no perspective toggle state in the workspace", !WS.includes("useState<CashFlowPerspectiveMode>") && !WS.includes("changePerspective") && !WS.includes("onPerspectiveChange"));
   check("host no longer owns the perspective slice state", !DASH.includes("setCashFlowPerspective") && !DASH.includes("onCashFlowPerspectiveChange"));
+  for (const [f, src] of [["History", HIST], ["Hero", read("components/space/widgets/cashflow/CashFlowHero.tsx")], ["Summary", read("components/space/widgets/CashFlowSummaryWidget.tsx")]] as const) {
+    check(`${f}: no Cash Flow ⇄ Spending toggle`, !/aria-label="Cash flow perspective"|onPerspectiveChange|PERSPECTIVE_LABEL/.test(src));
+  }
 }
 
-console.log("7. Calendar / Cards modes are workspace-owned (inside the History widget)");
+console.log("7. v2.7 — the History widget is calendar-only (Cards removed)");
 {
-  check("workspace mounts the History widget (which hosts the mode toggle)", WS.includes("<CashFlowHistoryWidget"));
-  check("History widget owns the Calendar/Cards mode toggle", HIST.includes("ModeToggle") && HIST.includes("getCashFlowHistoryModes"));
-  check("History renders both Calendar and Cards views", HIST.includes("<CashFlowCalendar") && HIST.includes("CardsView"));
-  check("mode is workspace-local widget state, not host", HIST.includes("useState<CashFlowHistoryMode>") && !DASH.includes("CashFlowHistoryMode"));
+  check("History renders the Calendar and no Cards view", HIST.includes("<CashFlowCalendar") && !/CardsView|ModeToggle|"cards"|getCashFlowHistoryModes/.test(HIST));
+  check("no view-mode state anywhere", !HIST.includes("useState<CashFlowHistoryMode>") && !DASH.includes("CashFlowHistoryMode"));
+  check("the measure filter is widget-local, scoped to the page", HIST.includes("filtersForPage(page)") && /useState<string>\(defaultFilterFor/.test(HIST));
 }
 
 console.log("8. Display currency (FX) is not regressed");
@@ -171,8 +177,8 @@ console.log("11. CF-4 — category exploration via Preview → LeftPanel → Rig
   check("workspace mounts CashFlowCategoryLedger for exploration", WS.includes("<CashFlowCategoryLedger"));
   check("workspace no longer mounts the always-expanded CashFlowCategoryBreakdown", !WS.includes("CashFlowCategoryBreakdown"));
   // Category data still flows from the contract slices (fed as props, not re-derived).
-  check("ledger is fed the contract's outflowByCategory / income.lines / cashInByReason",
-    WS.includes("items={data.outflowByCategory}") && WS.includes("data.income.lines") && WS.includes("data.cashInByReason"));
+  check("ledger is fed the contract's outflowByCategory / cashInByReason",
+    WS.includes("items={data.outflowByCategory}") && WS.includes("data.cashInByReason"));
 
   // The ledger COMPOSES the Atlas panel primitives — it is NOT a bespoke CashFlow panel.
   check("ledger composes Atlas panel primitives (no CashFlowPanel primitive)",

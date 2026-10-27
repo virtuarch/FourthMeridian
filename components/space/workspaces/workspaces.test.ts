@@ -260,7 +260,7 @@ console.log("7. Navigation ownership left the host (SD-8b) — useSpaceNavigatio
   // (e) INTENTIONALLY LEFT BEHIND: cashFlowPeriod is derived from the shell TIME
   // slice (data-derived), so it stays host-side — moving it would cycle nav→data→shell→nav.
   check("cashFlowPeriod stays host-side (shell-time derived; nav hook declares no such state)",
-    DASHCODE.includes("shell.derived.cashFlowPeriod") &&
+    DASHCODE.includes("const cashFlowPeriod: CashFlowPeriod = shell.period;") &&
     !USE_SPACE_NAV.includes("const cashFlowPeriod") && !USE_SPACE_NAV.includes("setCashFlowExplicitPeriod"));
 }
 
@@ -278,7 +278,7 @@ console.log("6. UI-014 — Markets is a comingSoon destination, gated by the ren
   check("the exported map gates EVERY entry on the registry status (no per-workspace branch)",
     /function isComingSoon\(id: string\)/.test(RENDERERS) && /getWorkspaceDefinition\(id\)/.test(RENDERERS)
       && /Object\.entries\(WORKSPACE_RENDERER_IMPLS\)\.map/.test(RENDERERS) && !/id === "markets"/.test(RENDERERS));
-  check("renderer keys are unchanged (parity with the registry holds)", Object.keys(WORKSPACE_RENDERERS).sort().join() === "cashFlow,markets,wealth");
+  check("renderer keys (parity with the registry holds; v2.7 adds Spending)", Object.keys(WORKSPACE_RENDERERS).sort().join() === "cashFlow,markets,spending,wealth");
   // Rendered: the placeholder, not the five-view chip row.
   const envelopes: unknown[] = [];
   const ctx = { onEnvelopeChange: (e: unknown) => envelopes.push(e), marketsMode: "portfolio", onMarketsModeChange: () => {} } as unknown as WorkspaceRenderCtx;

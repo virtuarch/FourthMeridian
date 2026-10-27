@@ -182,6 +182,10 @@ test("INVARIANT: no production surface uses the retired deriveCashFlowAxes doubl
   // Summary / History / Calendar all consume the shared DayFacts projection.
   const history = read(["components", "space", "widgets", "CashFlowHistoryWidget.tsx"]);
   const calendar = read(["components", "space", "widgets", "CashFlowCalendar.tsx"]);
-  assert.ok(history.includes("bucketDayFacts"), "History folds via bucketDayFacts");
+  // v2.7 — the History widget is calendar-only (the Cards view and its bucket fold
+  // were removed): it hands the contract's per-day facts to the Calendar and folds
+  // nothing itself.
+  assert.ok(/daily=\{daily\}/.test(history) && !/bucketDayFacts\(|aggregateDayFacts\(|projectDailyFacts\(/.test(history),
+    "History consumes the contract's daily facts and re-folds nothing");
   assert.ok(calendar.includes("projectDailyFacts"), "Calendar folds via projectDailyFacts");
 });

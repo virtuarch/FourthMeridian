@@ -55,6 +55,8 @@ export function CashFlowInsightsCard({
   perspective,
   txCtx,
   stamp,
+  include,
+  emptyText,
 }: {
   transactions?: Transaction[] | null;
   accounts:      { id: string; type: string }[];
@@ -66,14 +68,28 @@ export function CashFlowInsightsCard({
   perspective:   CashFlowPerspective;
   txCtx?:        ConversionContext;
   stamp?:        CashFlowStamp | null;
+  /**
+   * v2.7 — a PAGE's relevance filter over the builder's output (ids only; the
+   * bullets themselves are never rewritten). Spending keeps the spending
+   * observations, Cash Flow drops the ones another section already states. The
+   * completeness caveat always survives. Absent ⇒ every bullet (unchanged).
+   */
+  include?:      (id: string) => boolean;
+  /** The line shown when the filter leaves nothing to say. */
+  emptyText?:    string;
 }) {
   // A stable primitive key for the period object (React can't compare it by value).
   const periodId = periodKey(period);
   const insights = useMemo(
-    () => buildCashFlowInsights({ transactions, accounts, period, perspective, now, compareTo, moneyCtx: txCtx, stamp }),
+    () => {
+      const all = buildCashFlowInsights({ transactions, accounts, period, perspective, now, compareTo, moneyCtx: txCtx, stamp });
+      if (!include) return all;
+      const kept = all.filter((i) => i.id === "completeness" || (i.id !== "none" && include(i.id)));
+      return kept.length > 0 ? kept : [{ id: "none", text: emptyText ?? all.find((i) => i.id === "none")?.text ?? "Nothing notable to call out for this period yet.", tone: "neutral" as const }];
+    },
     // period is reconstructed from periodId; stamp identity is stable per host memo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [transactions, accounts, periodId, perspective, txCtx, stamp, now, compareTo],
+    [transactions, accounts, periodId, perspective, txCtx, stamp, now, compareTo, include, emptyText],
   );
 
   // R5 — compact disclosure state (inert on desktop: every class it toggles is max-lg).

@@ -54,6 +54,7 @@ const baseProps = {
   currency: "USD",
   period: "PAST_MONTH" as never,
   asOf: "2026-09-20",
+  windowLabel: "as of Sep 20, 2026",
   change: null,
 };
 // `extra` force-feeds props the hero no longer declares (a stale caller passing an
@@ -86,7 +87,10 @@ console.log("1. The hero still renders its figures (the data path is untouched)"
   const t = text(renderHero());
   check("eyebrow", t.includes("Net cash flow"));
   check("Net headline = cashIn − cashOut, signed", t.includes("+$1,800"), t);
-  check("as-of bridge line", t.includes("net cash this period") && t.includes("as of"));
+  // v2.7 (owner) — explicit liquidity copy; no perspective toggle; no Compare To hint.
+  check("as-of bridge line (explicit Cash Flow copy)", t.includes("cash that moved in and out of your bank accounts") && t.includes("as of Sep 20, 2026"));
+  check("no Cash Flow ⇄ Spending toggle in the hero", !/role="tablist"|aria-label="Cash flow perspective"/.test(renderHero()) && !t.includes("Spending"));
+  check("no persistent Compare To hint when there is no comparison", !/Set a Compare To date/.test(t));
   check("loading state renders an em dash, no badge", text(renderHero({ facts: null })).includes("—") && badgeWordsIn(renderHero({ facts: null })).length === 0);
 }
 

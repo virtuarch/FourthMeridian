@@ -140,7 +140,10 @@ export const TAB_ORDER = ["OVERVIEW", "ACCOUNTS", "ACTIVITY"];
 // Technicals · Watchlist, the Markets view (?view=).
 export const NET_WORTH_LENS_ID = "networth";
 export const MARKETS_LENS_ID = "markets";
-export const CORE_LENS_IDS = ["cashFlow", MARKETS_LENS_ID];
+// v2.7 (owner) — Spending is its own lens beside Cash Flow (no more Cash Flow ⇄
+// Spending toggle inside one page). Both are flow lenses with their own period
+// (lib/space/perspective-time-groups.ts).
+export const CORE_LENS_IDS = ["cashFlow", "spending", MARKETS_LENS_ID];
 
 /**
  * The canonical deep link for a lens — the SAME ?tab=/?perspective= the URL

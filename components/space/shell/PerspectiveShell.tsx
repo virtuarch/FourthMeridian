@@ -26,7 +26,7 @@
  */
 
 import { useState, type ReactNode } from "react";
-import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import type { CashFlowPeriod, ExplicitCashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { PerspectiveTimeState } from "@/lib/perspectives/time-range";
 import type { TemporalCapability } from "@/lib/perspectives";
@@ -37,8 +37,10 @@ import {
   deriveActiveOptionId,
   deriveBoundaries,
   shellActionForIntent,
+  shortExplicitPeriodLabel,
   shortPeriodLabel,
   summarize,
+  summarizeExplicitPeriod,
 } from "./perspective-time-adapter";
 import { ShellTrustRow } from "./ShellTrustRow";
 import { PerspectiveTabs, type PerspectiveTabItem } from "./PerspectiveTabs";
@@ -86,6 +88,19 @@ interface Props {
    * time (temporalCapability none) and must carry no Net Worth / Cash Flow controls.
    */
   compactHideTime?: boolean;
+  /**
+   * v2.7 (owner) — NO reporting-period picker at ANY width (Markets: it consumes
+   * no Space time, so the global picker must not appear there). The compact
+   * view selector still mounts.
+   */
+  hideTime?: boolean;
+  /**
+   * v2.7 — the active group's EXPLICIT calendar period (the heatmap's Month ·
+   * Quarter · Year on Cash Flow / Spending), or null. When set, the trigger and
+   * readout name that window and no preset reads as active — the header and the
+   * heatmap always describe the same window.
+   */
+  explicitPeriod?: ExplicitCashFlowPeriod | null;
   /**
    * v2.7 R1 — the compact (<lg) financial-view selector (Net Worth ▾). When
    * passed, the ONE in-flow time row becomes the compact controls row below lg:
@@ -170,6 +185,7 @@ export function PerspectiveShell(props: Props) {
           caveat push the picker sideways; they get their own centred row just
           below it (ShellTrustRow renders nothing — no gap — when there are
           none). */}
+      {(compactRow || !props.hideTime) && (
       <div
         data-compact-controls={compactRow ? "" : undefined}
         className={compactRow
@@ -186,19 +202,24 @@ export function PerspectiveShell(props: Props) {
               ? "flex flex-wrap items-center justify-center gap-2 max-lg:hidden"
               : "flex flex-wrap items-center justify-center gap-2 max-lg:shrink-0 max-lg:flex-nowrap max-lg:[&_[data-timeline-period]~span]:hidden"}
         >
-          <TimelineLens
-            activeOptionId={deriveActiveOptionId(props.timeState)}
-            boundaries={deriveBoundaries(props.timeState)}
-            summary={summarize(props.timeState, props.today)}
-            periodOptions={PERIOD_OPTIONS}
-            capability={capabilityForLens(props.temporalCapability)}
-            maxDate={props.today}
-            boundaryError={boundaryError}
-            onIntent={handleTimelineIntent}
-            shortPeriodLabel={compactRow && !props.compactHideTime ? shortPeriodLabel(props.timeState) : undefined}
-          />
+          {!props.hideTime && (
+            <TimelineLens
+              activeOptionId={props.explicitPeriod ? null : deriveActiveOptionId(props.timeState)}
+              boundaries={deriveBoundaries(props.timeState)}
+              summary={props.explicitPeriod ? summarizeExplicitPeriod(props.explicitPeriod, props.today) : summarize(props.timeState, props.today)}
+              periodOptions={PERIOD_OPTIONS}
+              capability={capabilityForLens(props.temporalCapability)}
+              maxDate={props.today}
+              boundaryError={boundaryError}
+              onIntent={handleTimelineIntent}
+              shortPeriodLabel={compactRow && !props.compactHideTime
+                ? (props.explicitPeriod ? shortExplicitPeriodLabel(props.explicitPeriod) : shortPeriodLabel(props.timeState))
+                : undefined}
+            />
+          )}
         </div>
       </div>
+      )}
       <ShellTrustRow envelope={props.envelope} className="justify-center px-1" />
 
       {/* Container 2 — the lens. Rendered BELOW time (the date picker must not

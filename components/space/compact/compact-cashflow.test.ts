@@ -1,11 +1,10 @@
 /**
  * components/space/compact/compact-cashflow.test.ts  (COMPACT DASHBOARD — P4/P5)
  *
- *   1. compact Cash Flow cards: Cash In · Cash Out (the existing tiles, unchanged)
- *      + Charged on credit · Moved, not spent — values from the existing facts and
- *      context projection, the existing drill-downs, NO invented total;
- *   2. economic view keeps today's semantics (no Charged card: card purchases are
- *      already inside Spending); "Needs classification" is never hidden behind a card;
+ *   1. v2.7 (owner) — the "Moved, not spent — N kinds" card is GONE: Cash Flow's
+ *      Transfers & movements section states each movement as what it is, with its
+ *      amount, count, status and a neutral Review (CashFlowMovements);
+ *   2. the summary is only the Cash In / Cash Out tiles (no toggle, no context);
  *   3. the compact hero treatment is max-lg-only on all three heroes;
  *   4. UNCHANGED, byte for byte, since P0: the calendar heatmap and every lower
  *      Cash Flow section, Markets / Coming soon, Real assets, and every finance
@@ -20,7 +19,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { CashFlowSummaryWidget } from "@/components/space/widgets/CashFlowSummaryWidget";
-import { CompactCashFlowCards } from "./CompactCashFlowCards";
+import { CashFlowMovements, movementLines } from "@/components/space/widgets/cashflow/CashFlowMovements";
+import { buildCashFlowSpaceData } from "@/lib/transactions/cash-flow-space-data";
 import { COMPACT_HERO } from "./compact-hero";
 
 let failures = 0;
@@ -45,40 +45,43 @@ const ROWS = [
   tx({ amount: -60, date: "2026-07-04", category: "Groceries" }),
 ];
 const ACCOUNTS = [{ id: "chk", type: "checking" }, { id: "card", type: "debt" }];
-const widget = (perspective: "liquidity" | "economic") => renderToStaticMarkup(createElement(CashFlowSummaryWidget, {
-  transactions: ROWS, period: { kind: "month", year: 2026, month: 7 }, accounts: ACCOUNTS, perspective, asOf: "2026-07-31", hideHeadline: true,
+const widget = () => renderToStaticMarkup(createElement(CashFlowSummaryWidget, {
+  transactions: ROWS, period: { kind: "month", year: 2026, month: 7 }, accounts: ACCOUNTS, asOf: "2026-07-31",
 } as never));
+// The fixture-reconciliation shape: an unresolved $6,879.22 across 4 transfers.
+const MOVED = [
+  ...ROWS,
+  tx({ amount: -5850, flowType: "TRANSFER", category: "Transfer", transferDisposition: "EXTERNAL_BANK_TRANSFER" }),
+  tx({ amount: -1000, flowType: "TRANSFER", category: "Transfer", transferDisposition: "UNKNOWN_MOVEMENT" }),
+  tx({ amount: -25, flowType: "TRANSFER", category: "Transfer", transferDisposition: "EXTERNAL_BANK_TRANSFER" }),
+  tx({ amount: 4.22, flowType: "TRANSFER", category: "Transfer", transferDisposition: "UNKNOWN_MOVEMENT" }),
+];
+const data = buildCashFlowSpaceData({ transactions: MOVED as never, accounts: ACCOUNTS, period: { kind: "month", year: 2026, month: 7 }, now: () => new Date("2026-07-31T00:00:00") });
+const lines = movementLines({ context: data.context, charged: data.summary.creditCardSpending, chargedRows: data.rows.filter((r) => r.flowType === "SPENDING" && r.accountId === "card") });
 
-console.log("1. the compact cards");
+console.log("1. Transfers & movements — meaningful lines, not 'N kinds'");
 {
-  const html = widget("liquidity");
-  const cards = html.slice(html.indexOf("data-compact-cashflow-cards"));
-  check("a compact-only (lg:hidden) row of cards follows the Cash In / Cash Out tiles",
-    html.indexOf("Cash In") < html.indexOf("data-compact-cashflow-cards") && /class="lg:hidden grid gap-3 grid-cols-2" data-compact-cashflow-cards/.test(html));
-  check("Cash In and Cash Out are the existing tiles, with their labels", /Cash In/.test(text(html)) && /Cash Out/.test(text(html)));
-  check("Charged on credit shows the canonical facts figure (the 400 card purchase)", /Charged on credit\s*400\s*No cash moved at purchase/.test(text(cards)), text(cards).slice(0, 120));
-  check("Moved, not spent shows a count of kinds — never a summed amount", /Moved, not spent\s*(None|\d+ kinds?)\s*Show details/.test(text(cards)));
-  const src = read("components/space/widgets/CashFlowSummaryWidget.tsx");
-  check("the Charged card opens the SAME slice the desktop row opens",
-    (src.match(/setSlice\(\{ title: "Charged on credit", subtitle: "Bought on credit this period", spendLabel: "Charged",\s*rows: rows\.filter\(\(r\) => isCostFlow\(r\.flowType\) && isLiabilityRow\(r\)\) \}\)/g) ?? []).length === 2);
-  check("the card values come straight from facts and the context projection",
-    /charged=\{facts\.creditCardSpending > 0 \? fmt\(facts\.creditCardSpending, ctx\) : null\}/.test(src) && /movedKinds=\{context\.movedNotSpent\.length\}/.test(src));
-  check("no new total was computed for Moved, not spent", !/movedNotSpent\.reduce|movedTotal/.test(src) && !/reduce|amount/.test(read("components/space/compact/CompactCashFlowCards.tsx").replace(/\/\*[\s\S]*?\*\//g, "")));
-  check("the card discloses the existing rows in place (aria-expanded)", /aria-expanded=\{movedOpen\}/.test(read("components/space/compact/CompactCashFlowCards.tsx")));
+  const html = renderToStaticMarkup(createElement(CashFlowMovements, { lines, invalidationKey: "k" }));
+  const t = text(html);
+  check("unresolved transfers: amount · count · status, never asserted internal or spent",
+    /Unresolved transfers · 6,879\.22 · 4 transactions destination not confirmed — not counted as cash in or out/.test(t), t);
+  check("card charges: the canonical gross figure, 'Charged', with what it means", /Charged on credit · 400(\.00)? · 1 purchase no cash moved at purchase/.test(t), t);
+  check("every line has a neutral Review action (opens the existing slice drawer)",
+    (html.match(/>Review</g) ?? []).length === lines.length && /TransactionSliceDrawer/.test(read("components/space/widgets/cashflow/CashFlowMovements.tsx")));
+  check("no 'kinds' count and no 'Moved, not spent' card anywhere", !/kinds?\b|Moved, not spent/i.test(t) && !existsSync(path.join(ROOT, "components/space/compact/CompactCashFlowCards.tsx")));
+  check("no new total: the line amounts are the projection's own per-kind figures",
+    lines.find((l) => l.key === "unresolved-transfers")?.amount === data.context.movedNotSpent.find((r) => r.key === "unresolved-transfers")?.amount
+      && !/reduce\(/.test(read("components/space/widgets/cashflow/CashFlowMovements.tsx").replace(/\/\*[\s\S]*?\*\//g, "")));
+  check("nothing moved ⇒ nothing rendered (no empty card)",
+    renderToStaticMarkup(createElement(CashFlowMovements, { lines: [], invalidationKey: "k" })).indexOf("data-movement") === -1);
+  check("Review targets are ≥40px on compact", /max-lg:min-h-10/.test(html));
 }
 
-console.log("\n2. economic view and the context rows");
+console.log("\n2. the summary is just Cash In / Cash Out");
 {
-  const html = widget("economic");
-  const cards = html.slice(html.indexOf("data-compact-cashflow-cards"));
-  check("economic: Income / Spending tiles; no Charged card (purchases are inside Spending — unchanged)",
-    /Income/.test(text(html)) && /Spending/.test(text(html)) && !/Charged on credit/.test(text(cards)) && /grid-cols-1" data-compact-cashflow-cards/.test(html));
-  const src = read("components/space/widgets/CashFlowSummaryWidget.tsx");
-  check("on compact only the Moved-not-spent block waits behind its card", /rounded-xl px-3 py-2 space-y-1\.5 \$\{movedOpen \? "" : "max-lg:hidden"\}/.test(src));
-  check("Needs classification is never hidden behind it", !/Needs classification[\s\S]{0,40}max-lg:hidden/.test(src) && /<div className="space-y-2">\s*\{context\.movedNotSpent\.length > 0 &&/.test(src));
-  check("the cards render nothing on desktop", /^<div class="lg:hidden/.test(renderToStaticMarkup(createElement(CompactCashFlowCards, {
-    economic: false, charged: "400", onOpenCharged: () => {}, movedKinds: 2, movedOpen: false, onToggleMoved: () => {},
-  }))));
+  const t = text(widget());
+  check("Cash In and Cash Out tiles", /Cash In/.test(t) && /Cash Out/.test(t));
+  check("no toggle, no context rows, no compact cards", !/Charged on credit|Moved, not spent|Needs classification|Spending/.test(t) && !/data-compact-cashflow-cards|role="tablist"/.test(widget()));
 }
 
 console.log("\n3. the compact hero");

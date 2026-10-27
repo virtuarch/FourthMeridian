@@ -128,7 +128,8 @@ console.log("A. Exactly Net Worth · Cash Flow — and no Sections");
   const nav = navHtml(html, "Space");
   check("renders Net Worth", text(nav).includes("Net Worth"));
   check("renders Cash Flow", text(nav).includes("Cash Flow"));
-  check("exactly three WORKSPACE destinations, in that order", text(topLevel(nav)) === "Net Worth Cash Flow Markets", text(topLevel(nav)));
+  // v2.7 (owner) — Spending is its own workspace beside Cash Flow.
+  check("exactly four WORKSPACE destinations, in that order", text(topLevel(nav)) === "Net Worth Cash Flow Spending Markets", text(topLevel(nav)));
   check('no "Sections" label anywhere in the Space sidebar', !/\bSections\b/.test(text(html)) && !html.includes('aria-label="Sections"'));
   check("no published section anchor surfaces (Summary row, anchor ids); Assets / Debt appear ONLY as Net Worth's views",
     !/\bSummary\b/.test(text(html)) && !html.includes("wealth-summary") && !html.includes("cf-calendar") &&
@@ -137,9 +138,9 @@ console.log("A. Exactly Net Worth · Cash Flow — and no Sections");
     (text(html).match(/Cash Flow/g) ?? []).length === 1);
   const top = topLevel(nav);
   check("peers, not subsections: same row class as the site nav (pl-3, 13px, 14px icon), no indentation",
-    (top.match(/py-1\.5 pl-3 pr-2 text-left text-\[13px\]/g) ?? []).length === 3 &&
-      (top.match(/<svg[^>]*width="14"/g) ?? []).length === 3 && !/\bml-\d|pl-[4-9]/.test(top));
-  check("semantic links (no clickable divs / buttons)", (topLevel(nav).match(/<a /g) ?? []).length === 3 && !/<button/.test(nav));
+    (top.match(/py-1\.5 pl-3 pr-2 text-left text-\[13px\]/g) ?? []).length === 4 &&
+      (top.match(/<svg[^>]*width="14"/g) ?? []).length === 4 && !/\bml-\d|pl-[4-9]/.test(top));
+  check("semantic links (no clickable divs / buttons)", (topLevel(nav).match(/<a /g) ?? []).length === 4 && !/<button/.test(nav));
   check("a Space that publishes no workspaces renders no empty block", renderToStaticMarkup(createElement(SpaceWorkspaceNav, { nav: null })) === ""
     && renderToStaticMarkup(createElement(SpaceWorkspaceNav, { nav: { items: [], activeId: null, onSelect: () => {} } })) === "");
 }
@@ -271,7 +272,7 @@ console.log("F. Platform axis — the SAME workspace block; mobile; duplicates")
   check("the sidebar hardcodes no platform workspace id or label (the host publishes them from the contract)",
     !/platform-overview|platform-jobs|platform-policies|>Policies<|>Jobs</.test(code(read("components", "ui", "ContextualNavbar.tsx"))));
   check("a customer Space is unaffected: its items carry no icon name and still resolve from the id map",
-    (topLevel(navHtml(spaceMode("/dashboard", publishedNav("OVERVIEW", "wealth")), "Space")).match(/<svg[^>]*width="14"/g) ?? []).length === 3);
+    (topLevel(navHtml(spaceMode("/dashboard", publishedNav("OVERVIEW", "wealth")), "Space")).match(/<svg[^>]*width="14"/g) ?? []).length === 4);
 
   // Host wiring — the SAME channel, hrefs, setter and lifecycle SpaceDashboard uses.
   const plat = code(read("components", "platform", "PlatformSpaceDashboard.tsx"));

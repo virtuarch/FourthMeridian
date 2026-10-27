@@ -31,6 +31,12 @@ export const SPACE_URL_PARAMS = [
   "workspace",
   // COMPACT DASHBOARD (P3) — the compact Debt category (All · Credit · Loans).
   "section",
+  // v2.7 — the FLOW group's own period (Cash Flow · Spending), independent of
+  // Net Worth's asof/compareto/preset (lib/space/perspective-time-groups.ts).
+  "fasof",
+  "fcompareto",
+  "fpreset",
+  "fperiod",
 ] as const;
 export type SpaceUrlParam = (typeof SPACE_URL_PARAMS)[number];
 

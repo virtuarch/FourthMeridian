@@ -6,7 +6,7 @@
  * Surface ① of the Cash Flow Workspace — the editorial lede, in the Net Worth /
  * prototype idiom (bare, no card): an eyebrow, the Net headline for
  * the selected window, its change vs the comparison window, a quiet "as of" bridge
- * line, and the perspective toggle. Mirrors DebtHero / InvestmentsHero, tuned for
+ * line. Mirrors DebtHero / InvestmentsHero, tuned for
  * an OPERATIONAL surface — the Cash In / Cash Out drilldowns and the movement
  * context render just below (CashFlowSummaryWidget, headless), not inside the lede.
  *
@@ -15,6 +15,12 @@
  * masquerading as as-of and NO "balances are current" caveat. The Net and its
  * delta are on the SAME reconstructed basis, so the delta is shown in a historical
  * view too (never suppressed).
+ *
+ * v2.7 FINAL PERSPECTIVE UX PASS (owner) — Cash Flow is ONE axis now: actual
+ * cash movement (liquidity). The former Cash Flow ⇄ Spending toggle is gone —
+ * Spending is its own perspective (SpendingHero). The "Set a Compare To date
+ * above to see the change." hint is gone too: no comparison ⇒ nothing is shown.
+ * The eyebrow is the shared HeroEyebrow (one header skeleton across perspectives).
  *
  * Presentation only — every figure is passed in, already folded/converted upstream
  * (the contract's DayFacts + the workspace's compareCashFlow window delta). The
@@ -29,26 +35,28 @@
  * The other four Overview heroes keep their compact TrustIndicator.
  */
 
-import { formatDate } from "@/lib/format";
 import { COMPACT_HERO } from "@/components/space/compact/compact-hero";
 import { formatCurrency } from "@/lib/currency";
 import { Figure } from "@/components/atlas/Surface";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { economicSpend, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
-import { CashFlowFilterControls, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { TalkAboutThis } from "@/components/ai/TalkAboutThis";
+import { HeroEyebrow } from "@/components/space/hero/HeroParts";
 
 /** The comparison-window delta, ready for the badge (now − then over the shared
  *  projection; see compareCashFlow). Null when no honest comparison exists. */
 export interface CashFlowHeroChange {
-  /** now.net − then.net for the active perspective (positive = net improved). */
+  /** now − then for the hero's figure (Cash Flow: net; Spending: total spending). */
   abs: number;
-  /** % of the opening (|then.net|), or null when the opening is 0/unknown. */
+  /** % of the opening (|then|), or null when the opening is 0/unknown. */
   pct: number | null;
   /** The comparison window's label, for the "vs {…}" suffix. */
   fromLabel: string;
 }
+
+/** The sub line under the Cash Flow headline — exported so a test pins the copy. */
+export const CASH_FLOW_HERO_SUB = "cash that moved in and out of your bank accounts";
 
 /** The perspective-dependent Net for the window, off the shared facts (no re-fold).
  *  Liquidity: Cash In − Cash Out. Economic: Income − clamped spending. Identical to
@@ -61,38 +69,28 @@ export function heroNet(facts: DayFacts, perspective: CashFlowPerspective): numb
 
 export function CashFlowHero({
   facts,
-  perspective,
-  filterId,
-  onPerspectiveChange,
   currency,
   period,
-  asOf,
+  windowLabel,
   change,
 }: {
   /** The contract's window summary facts, or null while transactions load. */
   facts:        DayFacts | null | undefined;
-  perspective:  CashFlowPerspective;
-  filterId:     string;
-  onPerspectiveChange: (perspective: CashFlowPerspective, filterId: string) => void;
   currency:     string;
   period:       CashFlowPeriod;
-  /** Canonical As-of — the window anchor (Cash Flow is historical, so this is the
-   *  window's real end, not "today"). */
-  asOf:         string;
+  /** Where the window sits ("as of Oct 27, 2026", or an explicit period's range). */
+  windowLabel:  string;
   /** The comparison-window Net delta, or null when no honest comparison exists. */
   change:       CashFlowHeroChange | null;
 }) {
-  const economic = perspective === "economic";
-  const net = facts ? heroNet(facts, perspective) : null;
+  const net = facts ? heroNet(facts, "liquidity") : null;
   const netStr = net == null ? "—" : `${net >= 0 ? "+" : "−"}${formatCurrency(Math.abs(net), currency)}`;
 
   return (
-    // Bare hero — no card, no border. The Net headline is the point; the breakdown
-    // tiles and read surfaces sit below.
+    // Bare hero — no card, no border. The Net headline is the point; the Cash In /
+    // Cash Out summaries and read surfaces sit below.
     <section className={COMPACT_HERO}>
-      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-        Net cash flow · {periodLabel(period)}
-      </p>
+      <HeroEyebrow label={`Net cash flow · ${periodLabel(period)}`} />
 
       <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-2">
         <Figure
@@ -102,38 +100,23 @@ export function CashFlowHero({
           className="sm:text-5xl leading-none"
         />
         {/* Cash Flow reconstructs historically, so the headline and this delta share
-            ONE basis — the delta is coherent in a historical view too and is never
-            deferred (unlike Debt's present-day-vs-as-of split). */}
-        {net != null && (
-          change != null ? (
-            <DeltaBadge
-              abs={change.abs}
-              pct={change.pct}
-              currency={currency}
-              goodDirection="up"
-              compareLabel={change.fromLabel}
-              className="!text-xs"
-            />
-          ) : (
-            <span className="text-[11px] text-[var(--text-muted)]">Set a Compare To date above to see the change.</span>
-          )
+            ONE basis. No comparison window ⇒ nothing here (no persistent hint). */}
+        {net != null && change != null && (
+          <DeltaBadge
+            abs={change.abs}
+            pct={change.pct}
+            currency={currency}
+            goodDirection="up"
+            compareLabel={change.fromLabel}
+            className="!text-xs"
+          />
         )}
       </div>
 
-      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <p className="text-sm text-[var(--text-secondary)]">
-          {economic ? "net after spending (incl. credit-card purchases)" : "net cash this period"}
-          <span className="text-[var(--text-muted)]"> · as of {formatDate(asOf)}</span>
-        </p>
-        {/* Perspective toggle (Cash Flow ⇄ Spending) — relocated here from the
-            Summary panel corner; the workspace still owns the shared state. */}
-        <CashFlowFilterControls
-          perspective={perspective}
-          filterId={filterId || DEFAULT_FILTER_ID}
-          onChange={onPerspectiveChange}
-          compact
-        />
-      </div>
+      <p className="mt-2.5 text-sm text-[var(--text-secondary)]">
+        {CASH_FLOW_HERO_SUB}
+        <span className="text-[var(--text-muted)]"> · {windowLabel}</span>
+      </p>
 
       {/* v2.7 R6 — compact-only entry to the AI conversation about this view. The
           window is the hero's own period (an explicit calendar period or ALL/WTD
