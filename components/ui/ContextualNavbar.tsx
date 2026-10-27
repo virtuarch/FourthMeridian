@@ -79,6 +79,7 @@ import {
   LayoutGrid,
   LogOut,
   Waves,
+  Receipt,
   LayoutDashboard,
   Timer,
   PlugZap,
@@ -125,6 +126,7 @@ const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
   networth: Gem,
   cashFlow: Waves,
+  spending: Receipt,
   markets: ChartCandlestick,
 };
 

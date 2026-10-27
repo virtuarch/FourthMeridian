@@ -107,7 +107,8 @@ async function main() {
       /if \(snapshotsError && !result\.hasHistory\)[\s\S]{0,200}<SpaceReadFailure what="wealth history" message=\{snapshotsError\} onRetry=\{onRetrySnapshots\}/.test(wealth));
     const cf = code("components/space/widgets/cashflow/CashFlowWorkspace.tsx");
     check("CashFlow: a failed read with nothing loaded renders SpaceReadFailure",
-      /if \(transactionsError && transactions == null\)[\s\S]{0,200}<SpaceReadFailure what="cash flow activity"/.test(cf));
+      /const what = spendingView \? "spending" : "cash flow activity";/.test(cf)
+        && /if \(transactionsError && transactions == null\)[\s\S]{0,200}<SpaceReadFailure what=\{what\}/.test(cf));
     const rend = code("components/space/workspaces/workspaceRenderers.tsx");
     check("renderers thread snapshots + transactions errors and retry",
       rend.includes('snapshotsError={ctx.readErrors?.snapshots?.message ?? null}') &&

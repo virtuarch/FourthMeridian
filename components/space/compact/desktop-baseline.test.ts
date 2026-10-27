@@ -69,15 +69,14 @@ const RENDERS: Record<string, () => string> = {
     children: createElement("p", null, "content"),
   } as never)),
   "LiabilitiesLedger (cards, loans, other)": () => renderToStaticMarkup(createElement(LiabilitiesLedger, { accounts: DEBTS, currency: "USD" })),
+  // v2.7 — the summary is only Cash In / Cash Out (the economic view became the
+  // separate Spending perspective), so the former "(economic)" render is retired.
   "CashFlowSummaryWidget (liquidity)": () => renderToStaticMarkup(createElement(CashFlowSummaryWidget, {
-    transactions: ROWS, period: { kind: "month", year: 2026, month: 7 }, accounts: ACCOUNTS, perspective: "liquidity", asOf: "2026-07-31", hideHeadline: true,
-  } as never)),
-  "CashFlowSummaryWidget (economic)": () => renderToStaticMarkup(createElement(CashFlowSummaryWidget, {
-    transactions: ROWS, period: { kind: "month", year: 2026, month: 7 }, accounts: ACCOUNTS, perspective: "economic", asOf: "2026-07-31", hideHeadline: true,
+    transactions: ROWS, period: { kind: "month", year: 2026, month: 7 }, accounts: ACCOUNTS, asOf: "2026-07-31",
   } as never)),
   "CashFlowHero (liquidity)": () => renderToStaticMarkup(createElement(CashFlowHero as ComponentType<Record<string, unknown>>, {
-    facts: { cashIn: 5000, cashOut: 3200 } as unknown as DayFacts, perspective: "liquidity", filterId: "", onPerspectiveChange: () => {},
-    currency: "USD", period: "PAST_MONTH", asOf: "2026-09-20", change: null,
+    facts: { cashIn: 5000, cashOut: 3200 } as unknown as DayFacts,
+    currency: "USD", period: "PAST_MONTH", windowLabel: "as of Sep 20, 2026", change: null,
   })),
 };
 

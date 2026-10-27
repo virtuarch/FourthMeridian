@@ -1,11 +1,11 @@
 /**
  * components/space/compact/compact-v27-r5.test.ts  (v2.7 R5 — compact Cash Flow)
  *
- *   1. ONE perspective control on compact: the hero's toggle stays; the History
- *      widget's copy is max-lg:hidden — and both drive the SAME workspace state;
- *   2. the History widget's secondary options sit behind ONE compact "View options"
- *      disclosure (lg:hidden, aria-expanded/aria-controls) that contains every one
- *      of them (measure filter, Month/Quarter/Year, view switch, All Time year nav);
+ *   1. v2.7 (owner) — NO perspective control at all: Cash Flow and Spending are
+ *      separate perspectives (neither the hero nor the heatmap carries a toggle);
+ *   2. v2.7 (owner) — the nested "View options" disclosure is replaced by ONE compact,
+ *      always-visible control set: Month · Quarter · Year, the unit stepper, and the
+ *      page-scoped measure select (no Calendar/Cards switch — Cards is removed);
  *   3. the calendar heatmap is still rendered, with the existing day-click drill;
  *   4. What changed: the first 3 observations lead, the rest wait behind "Show all
  *      observations"; the list is the builder's output, same objects, same order;
@@ -62,51 +62,37 @@ const JULY = { kind: "month", year: 2026, month: 7 } as const;
 const clock = () => new Date("2026-07-31T00:00:00");
 
 const history = (over: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(CashFlowHistoryWidget as unknown as ComponentType<Record<string, unknown>>, {
-  transactions: ROWS, period: JULY, now: clock, accounts: ACCOUNTS, onSelectPeriod: () => {},
-  perspective: "liquidity", filterId: "liq-net", onPerspectiveChange: () => {}, ...over,
+  transactions: ROWS, period: JULY, now: clock, asOf: "2026-07-31", today: "2026-10-27", accounts: ACCOUNTS, onSelectPeriod: () => {}, ...over,
 }));
 
-console.log("1. one perspective control on compact");
+console.log("1. no perspective control anywhere");
 {
   const hero = renderToStaticMarkup(createElement(CashFlowHero as ComponentType<Record<string, unknown>>, {
-    facts: { cashIn: 5000, cashOut: 3200 } as unknown as DayFacts, perspective: "liquidity", filterId: "", onPerspectiveChange: () => {},
-    currency: "USD", period: "PAST_MONTH", asOf: "2026-09-20", change: null,
+    facts: { cashIn: 5000, cashOut: 3200 } as unknown as DayFacts, currency: "USD", period: "PAST_MONTH", windowLabel: "as of Sep 20, 2026", change: null,
   }));
-  const html = history();
-  const heroTab = tagWith(hero, 'aria-label="Cash flow perspective"');
-  const histTab = tagWith(html, 'aria-label="Cash flow perspective"');
-  check("the hero's perspective toggle is visible on compact (no max-lg:hidden)", heroTab !== "" && !classOf(heroTab).includes("max-lg:hidden"), heroTab);
-  check("the History widget's perspective toggle is max-lg:hidden", classOf(histTab).includes("max-lg:hidden"), histTab);
-  check("…and still renders on desktop (only the max-lg token differs)", desktopMarkup(html).includes('role="tablist" aria-label="Cash flow perspective"'));
-  const ws = read("components/space/widgets/cashflow/CashFlowWorkspace.tsx");
-  const heroCall = ws.slice(ws.indexOf("<CashFlowHero\n"), ws.indexOf("/>", ws.indexOf("<CashFlowHero\n")));
-  const histCall = ws.slice(ws.indexOf("<CashFlowHistoryWidget"), ws.indexOf("/>", ws.indexOf("<CashFlowHistoryWidget")));
-  check("hero and History are driven by the SAME workspace perspective state",
-    [heroCall, histCall].every((c) => /perspective=\{perspective\}/.test(c) && /filterId=\{filterId\}/.test(c) && /onPerspectiveChange=\{changePerspective\}/.test(c)));
-  check("the hero toggle is a ≥40px target on compact", /max-lg:min-h-10/.test(heroTab) || /max-lg:min-h-10/.test(tagWith(hero, 'role="tab"')));
+  for (const [name, html] of [["hero", hero], ["heatmap (Cash Flow)", history()], ["heatmap (Spending)", history({ page: "spending" })]] as const) {
+    check(`${name}: no Cash Flow ⇄ Spending toggle`, !/aria-label="Cash flow perspective"/.test(html) && !/>Spending<\/button>/.test(html));
+  }
 }
 
-console.log("\n2. the View options disclosure");
+console.log("\n2. the compact control set (no View options disclosure)");
 {
   const html = history();
-  const btnTag = tagWith(html, "aria-controls=");
-  const controlsId = /aria-controls="([^"]+)"/.exec(btnTag)?.[1] ?? "";
-  check("exactly one compact-only View options button", (html.match(/View options/g) ?? []).length === 1 && classOf(btnTag).includes("lg:hidden"), btnTag);
-  check("it is collapsed by default and declares what it controls", /aria-expanded="false"/.test(btnTag) && controlsId !== "");
-  check("it is a ≥40px target with a focus ring", classOf(btnTag).includes("min-h-10") && classOf(btnTag).includes("focus-visible:ring-2"));
-  const panelTag = tagWith(html, `id="${controlsId}"`);
-  check("the controlled panel is compact-hidden while collapsed", classOf(panelTag).includes("max-lg:hidden"), panelTag);
-  const fromPanel = html.slice(html.indexOf(panelTag));
-  const panel = fromPanel.slice(0, endOfElement(fromPanel));
-  for (const label of ['aria-label="Cash flow measure filter"', 'aria-label="Cash flow — month"', 'aria-label="Cash flow — quarter"', 'aria-label="Cash flow — year"', 'aria-label="Cash flow history view"']) {
-    check(`the panel contains ${label.slice(12, -1)}`, panel.includes(label));
-  }
-  const src = read("components/space/widgets/CashFlowHistoryWidget.tsx");
-  check("the All Time year nav is hosted in the panel on compact and max-lg:hidden beside the calendar",
-    /<div className="lg:hidden w-full">\s*<AllTimeYearNav /.test(src) && /<AllTimeYearNav [^>]*className="max-lg:hidden" \/>/.test(src));
-  const desk = desktopMarkup(html);
-  check("desktop: no View options button and the cluster renders as before",
-    !/View options/.test(desk) && desk.includes(`<div id="${controlsId}" class="flex flex-wrap items-center justify-between gap-2">`));
+  check("no View options disclosure, no aria-controls panel", !/View options/.test(html) && !/aria-controls=/.test(html));
+  const row = tagWith(html, "data-heatmap-controls");
+  check("one controls row, visible at every width (no max-lg:hidden / lg:hidden)", row !== "" && !classOf(row).includes("max-lg:hidden") && !classOf(row).includes("lg:hidden"), row);
+  check("Month · Quarter · Year as one radiogroup", /role="radiogroup" aria-label="Heatmap period"/.test(html)
+    && ["month", "quarter", "year"].every((k) => html.includes(`data-scale="${k}"`)));
+  check("July 2026 (an explicit month) ⇒ Month is the active unit", /aria-checked="true" data-scale="month"/.test(html));
+  check("the unit stepper shows the window and steps it", /data-heatmap-stepper/.test(html) && /July 2026/.test(html) && /aria-label="Previous period"/.test(html) && /aria-label="Next period"/.test(html));
+  check("Cash Flow measures: the liquidity set", /aria-label="Heatmap measure"/.test(html) && /Cash in &amp; out/.test(html) && !/Credit-card spending/.test(html));
+  const sp = history({ page: "spending" });
+  check("Spending measures: spending only (no income, no cash measures)", /Credit-card spending/.test(sp) && !/>Income</.test(sp) && !/Cash in &amp; out/.test(sp));
+  check("no Calendar / Cards switch", !/aria-label="Cash flow history view"/.test(html) && !/>Cards</.test(html));
+  check("touch targets ≥40px below lg", (html.match(/max-lg:min-h-10|max-lg:h-10/g) ?? []).length >= 4);
+  const rel = history({ period: "PAST_MONTH", asOf: "2026-07-31" });
+  check("a relative preset (1M) ⇒ no unit is active and no stepper (the heatmap paints the preset's range)",
+    !/aria-checked="true"/.test(rel) && !/data-heatmap-stepper/.test(rel));
 }
 
 console.log("\n3. the calendar heatmap stays");
@@ -114,11 +100,8 @@ console.log("\n3. the calendar heatmap stays");
   const src = read("components/space/widgets/CashFlowHistoryWidget.tsx");
   check("CashFlowHistoryWidget still renders CashFlowCalendar with the day-click drill", /<CashFlowCalendar[\s\S]{0,200}onSelectDay=\{openDay\}/.test(src));
   const html = history();
-  const id = /aria-controls="([^"]+)"/.exec(html)?.[1] ?? "";
-  const fromPanel = html.slice(html.indexOf(`id="${id}"`) - 5);
-  const after = fromPanel.slice(endOfElement(fromPanel));
-  check("the calendar renders after (outside) the collapsible panel — visible on compact",
-    after.length > 0 && /July|Jul/.test(after) && !/max-lg:hidden/.test(tagWith(after, "<div")));
+  const after = html.slice(html.indexOf("data-heatmap-controls"));
+  check("the calendar renders after the controls — visible on compact", /July|Jul/.test(after.slice(after.indexOf("</select>"))));
 }
 
 console.log("\n4. What changed — first 3, then Show all");

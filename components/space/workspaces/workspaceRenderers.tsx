@@ -126,7 +126,7 @@ export interface WorkspaceRenderCtx {
  * id → render implementation. Keys are exactly the financial Perspective ids that
  * are OVERVIEW LENS DESTINATIONS with an inline workspace (registry `kind:
  * "perspective"`, `status: "available"`). Since the Overview consolidation that
- * is Net Worth (`wealth`) and Cash Flow; the registry↔renderer parity test
+ * is Net Worth (`wealth`), Cash Flow and (v2.7) Spending; the registry↔renderer parity test
  * (lib/perspectives/overview-lenses.test.ts) enforces this set.
  */
 /**
@@ -221,12 +221,34 @@ const WORKSPACE_RENDERER_IMPLS: Record<string, (ctx: WorkspaceRenderCtx) => Reac
   ),
   cashFlow: (ctx) => (
     <CashFlowWorkspace
+      view="cashFlow"
       transactions={ctx.transactions}
       transactionsMeta={ctx.transactionsMeta}
       txCtx={ctx.txCtx}
       accounts={ctx.accounts}
       period={ctx.cashFlowPeriod}
       asOf={ctx.asOf}
+      today={ctx.today}
+      compareTo={ctx.historicalCompareTo}
+      onSelectPeriod={ctx.onSelectCashFlowPeriod}
+      onOpenSpending={() => ctx.onSwitchLens("spending")}
+      onEnvelopeChange={ctx.onEnvelopeChange}
+      transactionsError={ctx.readErrors?.transactions?.message ?? null}
+      onRetryTransactions={ctx.onRetryRead ? () => ctx.onRetryRead?.("transactions") : undefined}
+    />
+  ),
+  // v2.7 (owner) — Spending is its OWN perspective: the same workspace component and
+  // composition contract, the economic page. Shares the flow time group with Cash Flow.
+  spending: (ctx) => (
+    <CashFlowWorkspace
+      view="spending"
+      transactions={ctx.transactions}
+      transactionsMeta={ctx.transactionsMeta}
+      txCtx={ctx.txCtx}
+      accounts={ctx.accounts}
+      period={ctx.cashFlowPeriod}
+      asOf={ctx.asOf}
+      today={ctx.today}
       compareTo={ctx.historicalCompareTo}
       onSelectPeriod={ctx.onSelectCashFlowPeriod}
       onEnvelopeChange={ctx.onEnvelopeChange}

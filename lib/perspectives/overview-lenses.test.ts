@@ -47,7 +47,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 
 console.log("1. Overview exposes only Net Worth + Cash Flow + Markets");
 check("the default lens is Net Worth", NET_WORTH_LENS_ID === "networth");
-check("the other engageable lenses are Cash Flow, then Markets", CORE_LENS_IDS.join() === "cashFlow,markets");
+check("the other engageable lenses are Cash Flow, Spending, then Markets (v2.7 owner: Spending is its own lens)", CORE_LENS_IDS.join() === "cashFlow,spending,markets");
 check("liquidity / investments / debt are not lens-rail ids", !CORE_LENS_IDS.some((id) => ["liquidity", "investments", "debt"].includes(id)));
 check("the host builds the rail from NET_WORTH_LENS_ID + CORE_LENS_IDS only",
   HOST.includes("id: NET_WORTH_LENS_ID") && HOST.includes("CORE_LENS_IDS.map"));
@@ -55,7 +55,7 @@ check("the host builds the rail from NET_WORTH_LENS_ID + CORE_LENS_IDS only",
 console.log("2. Registry ↔ renderer parity");
 {
   const rendererIds = Object.keys(WORKSPACE_RENDERERS).sort();
-  check("renderer map is exactly {cashFlow, markets, wealth}", rendererIds.join() === "cashFlow,markets,wealth");
+  check("renderer map is exactly {cashFlow, markets, spending, wealth}", rendererIds.join() === "cashFlow,markets,spending,wealth");
   // UI-014 — a renderer id may also be `comingSoon`: the renderer map then
   // gates it onto the WorkspaceComingSoon placeholder (workspaces.test.ts §6).
   check("every renderer id is a registered perspective (available, or comingSoon and gated)",
@@ -187,13 +187,16 @@ console.log("7. Total stays net-worth scoped; Liquid NW survives as a stat");
   check("the chart header no longer owns a metric switcher", !CHART.includes("<Chips") && CHART.includes("headerRight={headerRight}"));
 }
 
-console.log("8. Cash Flow is unchanged");
+console.log("8. Cash Flow and Spending pages (v2.7 final perspective UX pass)");
 {
-  check("Cash Flow sections unchanged", /Summary[\s\S]*cashflow-summary[\s\S]*Activity[\s\S]*cashflow-activity[\s\S]*Spending[\s\S]*cashflow-spending[\s\S]*Income[\s\S]*cashflow-income[\s\S]*What changed[\s\S]*cashflow-insights/.test(CASHFLOW));
-  check("Cash Flow still composes hero + summary + history + spending + debt payments + income + insights",
+  check("Cash Flow sections in page order", /Summary[\s\S]*cashflow-summary[\s\S]*Activity[\s\S]*cashflow-activity[\s\S]*Movements[\s\S]*cashflow-movements[\s\S]*Cash in[\s\S]*cashflow-income[\s\S]*What changed[\s\S]*cashflow-insights/.test(CASHFLOW));
+  check("Spending sections in page order", /Summary[\s\S]*spending-summary[\s\S]*Where it went[\s\S]*spending-distribution[\s\S]*Activity[\s\S]*spending-activity[\s\S]*Observations[\s\S]*spending-insights/.test(CASHFLOW));
+  check("Cash Flow still composes hero + summary + history + debt payments + ledger + insights",
     ["<CashFlowHero", "<CashFlowSummaryWidget", "<CashFlowHistoryWidget", "<DebtPaymentsWidget", "<CashFlowCategoryLedger", "<CashFlowInsightsCard"].every((n) => CASHFLOW.includes(n)));
-  check("Cash Flow renderer entry unchanged (period / asOf / compareTo / onSelectPeriod / envelope)",
+  check("Cash Flow renderer entry (period / asOf / compareTo / onSelectPeriod / envelope)",
     /cashFlow: \(ctx\) => \([\s\S]*?period=\{ctx\.cashFlowPeriod\}[\s\S]*?onSelectPeriod=\{ctx\.onSelectCashFlowPeriod\}[\s\S]*?onEnvelopeChange=\{ctx\.onEnvelopeChange\}/.test(read("components/space/workspaces/workspaceRenderers.tsx")));
+  check("Spending renderer entry (same contract inputs, view=spending)",
+    /spending: \(ctx\) => \([\s\S]*?view="spending"[\s\S]*?period=\{ctx\.cashFlowPeriod\}[\s\S]*?onSelectPeriod=\{ctx\.onSelectCashFlowPeriod\}[\s\S]*?onEnvelopeChange=\{ctx\.onEnvelopeChange\}/.test(read("components/space/workspaces/workspaceRenderers.tsx")));
 }
 
 if (failures > 0) { console.error(`\n${failures} overview-lenses check(s) failed`); process.exit(1); }

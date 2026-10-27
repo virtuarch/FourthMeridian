@@ -98,8 +98,9 @@ console.log("A. Sidebar — three workspaces, contextual children");
 {
   const nw = sidebar(nav("OVERVIEW", "wealth"));
   const cf = sidebar(nav("OVERVIEW", "cashFlow"));
-  check("1. top-level workspaces are exactly Net Worth · Cash Flow · Markets",
-    [nw, cf].every((h) => text(topLevel(navHtml(h, "Space"))) === "Net Worth Cash Flow Markets"));
+  // v2.7 (owner) — Spending is its own workspace beside Cash Flow.
+  check("1. top-level workspaces are exactly Net Worth · Cash Flow · Spending · Markets",
+    [nw, cf].every((h) => text(topLevel(navHtml(h, "Space"))) === "Net Worth Cash Flow Spending Markets"));
   check("2. no customer Sections group (even with anchors published)",
     [nw, cf].every((h) => !/aria-label="Sections"|\bSections\b|Holdings/.test(h)));
   check("3. Markets has no children while inactive (Net Worth / Cash Flow / Accounts)",
@@ -178,7 +179,7 @@ console.log("B. Routing — the canonical ?view= on the Markets lens");
     const n = node as ReactElement<{ children?: unknown }> & { type: unknown };
     return [...(n.type === "a" ? [n as ReactElement<{ onClick: (e: unknown) => void }>] : []), ...anchors(n.props.children)];
   };
-  const kids = anchors(el).slice(3); // Net Worth, Cash Flow, Markets, then Markets' five
+  const kids = anchors(el).slice(4); // Net Worth, Cash Flow, Spending, Markets, then Markets' five
   const ev = (o: Record<string, unknown> = {}) => ({ button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, preventDefault: () => { prevented++; }, ...o });
   kids[2].props.onClick(ev()); kids[4].props.onClick(ev()); kids[3].props.onClick(ev({ ctrlKey: true }));
   check("plain click selects in place through onSelectChild(markets, view); Ctrl-click is the browser's",
@@ -188,8 +189,8 @@ console.log("B. Routing — the canonical ?view= on the Markets lens");
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("C. Mobile / tablet — the content owns both levels below lg");
 {
-  check("20. the lens row (Net Worth · Cash Flow · Markets) — Markets is a CORE lens after Cash Flow",
-    CORE_LENS_IDS.join() === "cashFlow,markets" && /CORE_LENS_IDS\.map/.test(read("components", "dashboard", "SpaceDashboard.tsx")));
+  check("20. the lens row (Net Worth · Cash Flow · Spending · Markets) — Markets is a CORE lens after the flow lenses",
+    CORE_LENS_IDS.join() === "cashFlow,spending,markets" && /CORE_LENS_IDS\.map/.test(read("components", "dashboard", "SpaceDashboard.tsx")));
   const cats = ["PERSONAL", "FAMILY", "RETIREMENT", "INVESTMENT", "PROPERTY", "VEHICLE", "BUSINESS", "DEBT_PAYOFF", "EMERGENCY_FUND", "GOAL", "TRIP", "EQUIPMENT", "CUSTOM", "OTHER", "UNKNOWN_CATEGORY"];
   check("21. Markets is reachable in every customer Space category (incl. the default list)",
     cats.every((c) => getPerspectivesForCategory(c).some((p) => p.id === "markets")));

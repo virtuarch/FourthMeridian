@@ -305,6 +305,23 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     temporalCapability: { asOf: "full", compareTo: "full", period: "full" },
     envelope: "cashFlow",
   },
+  // v2.7 FINAL PERSPECTIVE UX PASS (owner decision, 2026-10-27) — Spending is its
+  // OWN perspective, split out of Cash Flow's former Cash Flow ⇄ Spending toggle.
+  // Cash Flow answers "what cash moved in and out of my bank accounts?" (the
+  // liquidity axis); Spending answers "what did I buy, by any payment method?" —
+  // the economic axis: card purchases count at purchase, card bill payments are
+  // not spending again, owned transfers are excluded, refunds are netted. Both
+  // read the SAME composition contract (buildCashFlowSpaceData) — no new fold —
+  // and share the flow time group (lib/space/perspective-time-groups.ts), so
+  // their period is independent of Net Worth's. Envelope: the Cash Flow stamp
+  // (coverage is a property of the same transaction history).
+  spending: {
+    id: "spending", kind: "perspective", label: "Spending", icon: "Receipt", status: "available", group: "Financial",
+    description: "What you spent across cards and bank accounts, net of refunds.",
+    dataNeeds: ["accounts", "transactions"],
+    temporalCapability: { asOf: "full", compareTo: "full", period: "full" },
+    envelope: "cashFlow",
+  },
   // MARKETS (skeleton) — the third customer workspace: "How are my investments
   // and potential investments behaving?" Read through five views (Portfolio ·
   // Research · Fundamentals · Technicals · Watchlist — lib/markets/markets-mode).
@@ -429,30 +446,30 @@ const PERSPECTIVES_BY_CATEGORY: Record<string, string[]> = {
   // §2.5). Other categories can adopt it later as one-line changes here.
   // W2 — "goals" and "retirement" removed from every list: both lens entries
   // are deleted (surfaces retired outright).
-  PERSONAL:        ["overview", "wealth", "cashFlow", "liquidity", "investments", "debt", "markets"],
-  FAMILY:          ["overview", "wealth", "cashFlow", "liquidity", "debt", "markets"],
-  RETIREMENT:      ["overview", "wealth", "investments", "cashFlow", "markets"],
-  INVESTMENT:      ["overview", "investments", "wealth", "cashFlow", "markets"],
+  PERSONAL:        ["overview", "wealth", "cashFlow", "spending", "liquidity", "investments", "debt", "markets"],
+  FAMILY:          ["overview", "wealth", "cashFlow", "spending", "liquidity", "debt", "markets"],
+  RETIREMENT:      ["overview", "wealth", "investments", "cashFlow", "spending", "markets"],
+  INVESTMENT:      ["overview", "investments", "wealth", "cashFlow", "spending", "markets"],
   // V25-CLOSE-4: `property` / `businessHealth` removed. They are comingSoon
   // lenses with no workspace, so as the 2nd id they led the Perspectives doorway
   // with a non-clickable "Soon" card — a template leading with something the user
   // cannot access. The equity hero (Property) and the cash-position hero +
   // cashFlow/liquidity lenses (Business) already carry each Space's story. Re-add
   // each id here only when its real workspace ships.
-  PROPERTY:        ["overview", "cashFlow", "wealth", "markets"],
-  VEHICLE:         ["overview", "wealth", "cashFlow", "markets"],
-  BUSINESS:        ["overview", "cashFlow", "liquidity", "wealth", "markets"],
-  DEBT_PAYOFF:     ["overview", "debt", "cashFlow", "wealth", "markets"],
+  PROPERTY:        ["overview", "cashFlow", "spending", "wealth", "markets"],
+  VEHICLE:         ["overview", "wealth", "cashFlow", "spending", "markets"],
+  BUSINESS:        ["overview", "cashFlow", "spending", "liquidity", "wealth", "markets"],
+  DEBT_PAYOFF:     ["overview", "debt", "cashFlow", "spending", "wealth", "markets"],
   // Emergency funds exist to BE liquidity — the lens sits right up front.
-  EMERGENCY_FUND:  ["overview", "liquidity", "wealth", "cashFlow", "markets"],
-  GOAL:            ["overview", "wealth", "cashFlow", "markets"],
-  TRIP:            ["overview", "cashFlow", "markets"],
-  EQUIPMENT:       ["overview", "wealth", "cashFlow", "markets"],
-  CUSTOM:          ["overview", "wealth", "cashFlow", "markets"],
-  OTHER:           ["overview", "wealth", "cashFlow", "markets"],
+  EMERGENCY_FUND:  ["overview", "liquidity", "wealth", "cashFlow", "spending", "markets"],
+  GOAL:            ["overview", "wealth", "cashFlow", "spending", "markets"],
+  TRIP:            ["overview", "cashFlow", "spending", "markets"],
+  EQUIPMENT:       ["overview", "wealth", "cashFlow", "spending", "markets"],
+  CUSTOM:          ["overview", "wealth", "cashFlow", "spending", "markets"],
+  OTHER:           ["overview", "wealth", "cashFlow", "spending", "markets"],
 };
 
-const DEFAULT_PERSPECTIVES = ["overview", "wealth", "cashFlow", "markets"];
+const DEFAULT_PERSPECTIVES = ["overview", "wealth", "cashFlow", "spending", "markets"];
 
 /** Returns the ordered Perspective definitions for a Space category. */
 export function getPerspectivesForCategory(category: string): PerspectiveDef[] {
