@@ -172,9 +172,12 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
   },
   GROWTH_REVENUE: {
     key: "GROWTH_REVENUE",
-    label: "Growth & Revenue",
+    // P-3 (owner-approved 2026-10-27): "Growth" until billing exists. The enum
+    // value GROWTH_REVENUE, route paths and grants are unchanged; existing
+    // Space rows are renamed by migration 20261027230000_platform_growth_rename.
+    label: "Growth",
     navLabel: "Growth",
-    spaceName: "Growth & Revenue",
+    spaceName: "Growth",
     spaceDescription:
       "Signup and activation signals. Revenue has no data source until billing (v3.0).",
     sections: [
