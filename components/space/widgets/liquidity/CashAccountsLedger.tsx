@@ -24,6 +24,13 @@
  * Accounts workspace's own honest fallback rows are used — the same interim
  * answer that surface gives. No figure on this ledger comes from that read.
  *
+ * TRANSIT (v2.7-P2) — GET /api/spaces/[id]/liquidity/cash-transit supplies recent
+ * outgoing transfer legs with the transfer authority's verdict; the pure
+ * lib/balances/cash-transit classifies them against the SAME adjusted basis and
+ * the footer states only NEUTRAL lines ("not yet matched to a destination",
+ * "still pending at the destination"). Never added to total cash, never a figure
+ * in any column, nothing on a failed read.
+ *
  * Aggregated privacy rows are shown as-is (no detail — they name no single
  * account); redacted accounts are not in the array and are disclosed by count.
  */
@@ -42,8 +49,11 @@ import { healthChip } from "@/components/space/widgets/accounts/AccountsPerspect
 import { AccountDetail } from "@/components/space/widgets/accounts/AccountDetail";
 import { accountDetailDisplay, accountDetailFallbackRows } from "@/components/space/widgets/accounts/AccountsLedger";
 import {
-  pendingLine, reconcileTerms, type CashAccountRow, type CashAccountsSummary, type CashLedgerAccount,
+  pendingLine, reconcileTerms, type CashBalanceBasis, type CashAccountRow, type CashAccountsSummary, type CashLedgerAccount,
 } from "./cash-accounts";
+import { cashTransitDisclosure, summarizeCashTransit, type CashTransitLeg } from "@/lib/balances/cash-transit";
+import { convertMoney } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
 
 export function CashAccountsLedger({
   spaceId,
@@ -52,6 +62,8 @@ export function CashAccountsLedger({
   ctx,
   currency,
   detailRows: detailRowsProp,
+  transitLegs: transitLegsProp,
+  now: nowProp,
 }: {
   spaceId:  string;
   accounts: CashLedgerAccount[];
@@ -60,6 +72,10 @@ export function CashAccountsLedger({
   currency: string;
   /** Test seam — pre-supplied detail rows (skips the fetch). */
   detailRows?: AccountDetailRow[];
+  /** Test seam — pre-supplied transit legs (skips the fetch). */
+  transitLegs?: CashTransitLeg[];
+  /** Test seam — the clock the transit window is measured against. */
+  now?: Date;
 }) {
   const [fetched, setFetched] = useState<AccountDetailRow[] | null>(null);
   const [redactedCount, setRedactedCount] = useState(0);
@@ -76,6 +92,31 @@ export function CashAccountsLedger({
       .catch(() => { /* honest fallback rows stay in place */ });
   }, [spaceId, detailRowsProp]);
   useEffect(() => { load(); }, [load]);
+
+  // v2.7-P2 — recent outgoing transfers and the transfer authority's verdict on
+  // each (presentation only). A failed read shows nothing — never a guess.
+  const [fetchedLegs, setFetchedLegs] = useState<CashTransitLeg[] | null>(null);
+  useEffect(() => {
+    if (transitLegsProp) return;
+    let alive = true;
+    fetch(`/api/spaces/${spaceId}/liquidity/cash-transit`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("failed"))))
+      .then((data) => { if (alive) setFetchedLegs(Array.isArray(data?.legs) ? data.legs : []); })
+      .catch(() => { /* no disclosure */ });
+    return () => { alive = false; };
+  }, [spaceId, transitLegsProp]);
+
+  const transitLines = useMemo(() => {
+    const legs = transitLegsProp ?? fetchedLegs;
+    if (!legs || legs.length === 0) return [];
+    // The SAME adjusted-balance basis total cash uses, per account.
+    const basis = new Map(accounts.map((a) => [a.id, (a.currentState?.basis ?? null) as CashBalanceBasis | null]));
+    const asOf = yesterdayUTCISO();
+    const toDisplay = (amount: number, cur: string | null) =>
+      ctx ? convertMoney({ amount, currency: cur }, asOf, ctx).amount : amount;
+    const s = summarizeCashTransit(legs, (id) => basis.get(id) ?? null, nowProp ?? new Date(), toDisplay);
+    return cashTransitDisclosure(s, (v) => formatCurrency(v, currency));
+  }, [transitLegsProp, fetchedLegs, accounts, ctx, currency, nowProp]);
 
   const detailById = useMemo(() => {
     const cashIds = new Set(summary.rows.map((r) => r.account.id));
@@ -187,7 +228,7 @@ export function CashAccountsLedger({
           })}
         </ul>
 
-        <LedgerFooter summary={summary} fmt={fmt} redactedCount={redactedCount} />
+        <LedgerFooter summary={summary} fmt={fmt} redactedCount={redactedCount} transitLines={transitLines} />
       </Surface>
 
       <RightPanel open={selectedRow != null && selectedDetail != null} onClose={() => setSelectedId(null)} ariaLabel="Account detail">
@@ -356,7 +397,7 @@ function Status({ detail }: { detail: AccountDetailRow | null }) {
 
 // ── Footer: both totals + the reconciling line ───────────────────────────────
 
-function LedgerFooter({ summary, fmt, redactedCount }: { summary: CashAccountsSummary; fmt: (v: number) => string; redactedCount: number }) {
+function LedgerFooter({ summary, fmt, redactedCount, transitLines = [] }: { summary: CashAccountsSummary; fmt: (v: number) => string; redactedCount: number; transitLines?: string[] }) {
   const terms = reconcileTerms(summary);
   const pending = pendingLine(summary);
   const approx = summary.estimated ? "≈ " : "";
@@ -389,6 +430,11 @@ function LedgerFooter({ summary, fmt, redactedCount }: { summary: CashAccountsSu
           {summary.unprovenCount} account{summary.unprovenCount === 1 ? "" : "s"}: pending not reconciled — the bank-reported balance is counted unchanged.
         </p>
       )}
+      {transitLines.map((line) => (
+        <p key={line} className="mt-1 tabular-nums text-[11px] text-[var(--text-faint)] [overflow-wrap:anywhere]" data-cash-transit-line>
+          {line}
+        </p>
+      ))}
       {redactedCount > 0 && (
         <p className="mt-1 text-[11px] text-[var(--text-faint)]">
           {redactedCount} shared account{redactedCount === 1 ? "" : "s"} without balance disclosure {redactedCount === 1 ? "is" : "are"} excluded.
