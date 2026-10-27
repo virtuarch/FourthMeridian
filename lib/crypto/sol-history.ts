@@ -168,7 +168,18 @@ export function deriveNativeMovements(
 ): ChainMovement[] {
   const meta = tx.meta;
   if (!meta) return [];
-  const keys = tx.transaction?.message?.accountKeys ?? [];
+  // v0 TRANSACTIONS — with encoding "json" the message's static `accountKeys`
+  // omit every address loaded through an Address Lookup Table, while
+  // `pre/postBalances` cover ALL accounts in the RPC's documented order: static
+  // keys, then loaded WRITABLE, then loaded READONLY. Without appending those,
+  // any wallet that ever used a lookup-table transaction (most DEX swaps) threw
+  // here and its whole history was refused as PROVIDER_FAILED.
+  const loaded = meta.loadedAddresses ?? null;
+  const keys = [
+    ...(tx.transaction?.message?.accountKeys ?? []),
+    ...(loaded?.writable ?? []),
+    ...(loaded?.readonly ?? []),
+  ];
   const { preBalances: pre, postBalances: post } = meta;
   if (!Array.isArray(pre) || !Array.isArray(post) || pre.length !== post.length || keys.length < pre.length) {
     throw new SolRpcError("balance", `transaction ${signature}: balance arrays do not align with accountKeys`);
