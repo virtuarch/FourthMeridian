@@ -519,3 +519,22 @@ export function decidePromotion(
 export function usageOn(cp: Pick<SolBackfillCheckpoint, "usage"> | null, dayISO: string): number {
   return cp?.usage && cp.usage.dayISO === dayISO && Number.isFinite(cp.usage.requests) ? cp.usage.requests : 0;
 }
+
+/**
+ * OPERATOR VIEW — the status of a stored SOL checkpoint without the account
+ * match `parseCheckpoint` applies (Platform Ops reads many wallets at once and
+ * shows state only). Null when the cursor is not a SOL checkpoint.
+ */
+export function statusFromCursor(raw: string | null | undefined, todayISO: string): (SolBackfillStatus & {
+  failures: number; mode: "DIRECT" | "STAGING"; requestsToday: number; nextAutomaticRetryISO: string | null;
+}) | null {
+  if (!isSolBackfillCursor(raw)) return null;
+  let cp: SolBackfillCheckpoint;
+  try { cp = JSON.parse(raw as string) as SolBackfillCheckpoint; } catch { return null; }
+  if (cp.kind !== SOL_BACKFILL_CURSOR_KIND || cp.v !== SOL_BACKFILL_CURSOR_VERSION) return null;
+  const st = backfillStatus(cp);
+  const next = st.state === "FAILED" && cp.lastFailure
+    ? new Date(Date.parse(cp.lastFailure.atISO) + FAILED_RETRY_INTERVAL_MS).toISOString() : null;
+  return { ...st, failures: cp.failures ?? 0, mode: cp.mode === "STAGING" ? "STAGING" : "DIRECT",
+    requestsToday: usageOn(cp, todayISO), nextAutomaticRetryISO: next };
+}
