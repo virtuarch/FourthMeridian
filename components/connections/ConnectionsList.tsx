@@ -21,6 +21,12 @@
  * these client timings are deliberately conservative so the first attempt only
  * fires well after the 60s connect budget could have completed on its own.
  * Reconnect is still handled inside the drawer (ConnectionDetail) via ReconnectAccountButton.
+ *
+ * Connections 2.0 — a segmented category bar (All · Banks · Crypto · Real
+ * assets, each with a COUNT — never a money total) filters one list. Banks are
+ * the Plaid institutions; Crypto groups wallets by blockchain; Real assets are
+ * the user's own manual assets (server-read, not polled), each opening the same
+ * drawer with ManualAssetDetail. Categories are pure (lib/connections/real-assets.core).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -41,6 +47,14 @@ import {
 } from "@/lib/connections/intelligence";
 import type { ConnectionsSyncView } from "@/lib/connections/space-data";
 import { takeFirstConnectStarted } from "@/lib/connections/first-connect-handoff";
+import { SegmentedControl } from "@/components/atlas/SegmentedControl";
+import { ManualAssetRow } from "@/components/connections/ManualAssetRow";
+import { ManualAssetDetail } from "@/components/connections/ManualAssetDetail";
+import { ManualAssetMenu } from "@/components/connections/ManualAssetMenu";
+import {
+  CATEGORY_ORDER, categoryCounts, categoryEmptyState, categoryOptionLabel, connectionsInCategory, groupWalletsByChain,
+  type ConnectionsCategory, type ManualAssetLite,
+} from "@/lib/connections/real-assets.core";
 
 const POLL_INTERVAL_MS = 4000;
 // Must outlast ONE server-side sync budget (maxDuration = 300s) plus margin,
@@ -75,12 +89,15 @@ interface Props {
   /** CONN-2A — per-connection intelligence status, keyed by SyncConnection.id.
    *  Drives the BUILDING_INTELLIGENCE lifecycle + keep-polling-through-build. */
   initialIntelligence?: Record<string, ConnectionIntelligenceStatus>;
+  /** Connections 2.0 — the user's own manual assets (server-rendered, refreshed by router.refresh()). */
+  manualAssets?: ManualAssetLite[];
 }
 
 export function ConnectionsList({
   initialStatus,
   accountsByConnectionId = {},
   initialIntelligence = {},
+  manualAssets = [],
 }: Props) {
   const router = useRouter();
   const [status, setStatus] = useState<SyncStatus>(initialStatus);
@@ -94,6 +111,9 @@ export function ConnectionsList({
   // poller's true → false transition), so the "ready" moment is shown once, from
   // persisted state, never from a timer or a guess.
   const [justCompleted, setJustCompleted] = useState(false);
+  // Connections 2.0 — the category shown, and the manual asset whose drawer is open.
+  const [category, setCategory] = useState<ConnectionsCategory>("all");
+  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
 
   // CONN-2 — poll while ACQUIRING (status.building) OR BUILDING intelligence.
   // Intelligence-building runs AFTER syncIncompleteAt clears, so status.building alone
@@ -319,6 +339,26 @@ export function ConnectionsList({
 
   // A disconnected connection leaves the status; its drawer simply closes.
   const selected = selectedId ? status.connections.find((c) => c.id === selectedId) ?? null : null;
+  // A removed asset leaves the list; its drawer closes the same way.
+  const selectedAsset = selectedAssetId ? manualAssets.find((a) => a.id === selectedAssetId) ?? null : null;
+
+  // Connections 2.0 — counts per category (never a total) and what this one shows.
+  const counts = categoryCounts(status.connections, manualAssets);
+  const shownConnections = connectionsInCategory(ordered, category);
+  const shownAssets = category === "all" || category === "real_assets" ? manualAssets : [];
+  const chainGroups = category === "crypto" ? groupWalletsByChain(shownConnections, accountsByConnectionId) : [];
+  const renderConnectionRow = (c: SyncStatus["connections"][number]) => (
+    <ConnectionRow
+      key={c.id}
+      connection={c}
+      // One id space for every provider — Plaid and wallet accounts both
+      // look up by connection id (PCS-2).
+      accountCount={(accountsByConnectionId[c.id] ?? []).length}
+      intelligence={intelligence[c.id]}
+      onOpen={() => { setSelectedAssetId(null); setSelectedId(c.id); }}
+    />
+  );
+  const empty = categoryEmptyState(category);
 
   return (
     // Centered flagship column (max-w-[1400px] mx-auto) — same design language
@@ -338,29 +378,57 @@ export function ConnectionsList({
               ? "This is taking longer than usual — it keeps going on our side."
               : "This keeps going on our side, even if you leave this page."}
           </p>
-          <button type="button" onClick={() => setSelectedId(inFlight[0].id)}
+          <button type="button" onClick={() => { setSelectedAssetId(null); setSelectedId(inFlight[0].id); }}
             className="shrink-0 self-start rounded-[var(--radius-sm)] px-2 py-1 text-sm font-medium text-[var(--meridian-400)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:self-auto">
             View progress
           </button>
         </div>
       )}
 
-      {/* No overflow-hidden: it clipped each row's ⋯ menu (Preview 2026-10-28). */}
-      <Surface>
-        <ul aria-label="Connections" className="divide-y divide-[var(--border-hairline)]">
-          {ordered.map((c) => (
-            <ConnectionRow
-              key={c.id}
-              connection={c}
-              // One id space for every provider — Plaid and wallet accounts both
-              // look up by connection id (PCS-2).
-              accountCount={(accountsByConnectionId[c.id] ?? []).length}
-              intelligence={intelligence[c.id]}
-              onOpen={() => setSelectedId(c.id)}
-            />
+      {/* Connections 2.0 — categories with counts. Scrolls sideways on a phone. */}
+      <SegmentedControl
+        aria-label="Connection categories"
+        touchOptimized
+        options={CATEGORY_ORDER.map((id) => ({ id, label: categoryOptionLabel(id, counts) }))}
+        value={category}
+        onChange={setCategory}
+      />
+
+      {shownConnections.length === 0 && shownAssets.length === 0 ? (
+        <div data-connections-category-empty={category}>
+          <Surface className="px-4 py-6 text-center">
+            <p className="text-sm font-medium text-[var(--text-primary)]">{empty.title}</p>
+            <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-[var(--text-muted)]">{empty.body}</p>
+          </Surface>
+        </div>
+      ) : category === "crypto" ? (
+        // Crypto — one list per blockchain.
+        <div className="space-y-3">
+          {chainGroups.map((g) => (
+            <section key={g.key} aria-label={`${g.label} wallets`} data-chain-group={g.key}>
+              <h3 className="mb-1.5 px-1 text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                {g.label} · {g.connections.length}
+              </h3>
+              <Surface>
+                <ul aria-label={`${g.label} wallets`} className="divide-y divide-[var(--border-hairline)]">
+                  {g.connections.map(renderConnectionRow)}
+                </ul>
+              </Surface>
+            </section>
           ))}
-        </ul>
-      </Surface>
+        </div>
+      ) : (
+        // No overflow-hidden: it clipped each row's ⋯ menu (Preview 2026-10-28).
+        <Surface>
+          <ul aria-label="Connections" className="divide-y divide-[var(--border-hairline)]">
+            {shownConnections.map(renderConnectionRow)}
+            {/* Real assets — the user's own entries, after the synced sources. */}
+            {shownAssets.map((a) => (
+              <ManualAssetRow key={a.id} asset={a} onOpen={() => { setSelectedId(null); setSelectedAssetId(a.id); }} />
+            ))}
+          </ul>
+        </Surface>
+      )}
 
       {/* The connection's detail — docked right on desktop, a bottom sheet on
           mobile (RightPanel). Overview, accounts, health, history coverage, last
@@ -388,6 +456,28 @@ export function ConnectionsList({
                 intelligence={intelligence[selected.id]}
                 slow={slow}
               />
+            </PanelContent>
+          </>
+        )}
+      </RightPanel>
+
+      {/* Connections 2.0 — a manual asset's detail, in the same drawer/sheet. */}
+      <RightPanel open={selectedAsset != null} onClose={() => setSelectedAssetId(null)} ariaLabel="Asset detail" size="lg">
+        {selectedAsset && (
+          <>
+            <PanelHeader
+              leading={
+                <button type="button" onClick={() => setSelectedAssetId(null)}
+                  className="-ml-1 mb-2 inline-flex min-h-11 items-center gap-1 rounded-[var(--radius-sm)] px-1 text-sm text-[var(--meridian-400)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:hidden">
+                  <ChevronLeft aria-hidden size={16} /> Connections
+                </button>
+              }
+              closeClassName="hidden sm:inline-flex sm:items-center sm:justify-center"
+              title={selectedAsset.name}
+              actions={<ManualAssetMenu asset={selectedAsset} />}
+            />
+            <PanelContent>
+              <ManualAssetDetail key={selectedAsset.id} asset={selectedAsset} />
             </PanelContent>
           </>
         )}

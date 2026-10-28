@@ -110,7 +110,8 @@ export function connectionHealth(
       lines.push(!wh.supported
         ? { key: "history", label: "Historical coverage", tone: "neutral", text: "Not available for this network yet" }
         : wh.licensed
-          ? { key: "history", label: "Historical coverage", tone: "ok", text: "Complete" }
+          // NATIVE scope only — token balances are a separate, unreconstructed facet.
+          ? { key: "history", label: "Historical coverage", tone: "ok", text: "Native coin history verified" }
           : { key: "history", label: "Historical coverage", tone: "neutral", text: "Incomplete — current holdings are unaffected" });
     }
     lines.push(i?.valuationIsReadTime
@@ -176,7 +177,18 @@ export interface HistoryView {
   /** When history was last successfully (re)built, when known. */
   lastBuiltISO: string | null;
   limitations: string[];
+  /** WALLETS — the two ranges the History tab states separately (owner requirement 2026-10-28). */
+  blockchain?: { label: string; fromISO: string | null; toISO: string | null } | null;
+  chart?: { fromISO: string; toISO: string; days: number; continuous: boolean } | null;
+  /** One sentence when the ranges differ (older chain activity than chart values). */
+  rangeNote?: string | null;
 }
+
+/** Token scope by chain: what token history would mean there, and that it is not reconstructed. */
+const TOKEN_LIMITATION: Record<string, string> = {
+  SOL: "SPL token balances are not reconstructed yet — only native SOL history is verified.",
+  ETH: "ERC-20 token balances are not reconstructed yet — only native ETH history is verified.",
+};
 
 export function connectionHistory(
   connection: SyncConnection,
@@ -192,14 +204,28 @@ export function connectionHistory(
       return { coverage: "UNAVAILABLE", summary: "Historical coverage isn’t available for this network yet. Current holdings are tracked.",
         fromISO: null, toISO: null, lastBuiltISO, limitations: [] };
     }
+    const chain = accounts.find((a) => a.chain)?.chain?.toUpperCase() ?? null;
+    const sym = nativeAssetSymbol(chain) ?? "native";
+    const tokenNote = chain && TOKEN_LIMITATION[chain] ? [TOKEN_LIMITATION[chain]] : [];
     if (wh.licensed) {
-      return { coverage: "COMPLETE", summary: "Complete — every change to this wallet’s balance in this period is accounted for.",
-        fromISO: wh.activityFromISO ?? wh.licensedFromISO, toISO: wh.licensedToISO, lastBuiltISO, limitations: [] };
+      const fromISO = wh.activityFromISO ?? wh.licensedFromISO;
+      const chart = wh.chart ?? null;
+      const rangeNote = fromISO && (!chart || chart.fromISO > fromISO)
+        ? "Older blockchain activity is preserved. Earlier chart values require historical prices." : null;
+      return {
+        coverage: "COMPLETE",
+        // NATIVE scope, said so — never an unqualified "Complete" for the wallet.
+        summary: `Native ${sym} history verified — every change to this wallet’s ${sym} balance in this period is accounted for.`,
+        fromISO, toISO: wh.licensedToISO, lastBuiltISO, limitations: tokenNote,
+        blockchain: { label: `Native ${sym}`, fromISO, toISO: wh.licensedToISO },
+        chart, rangeNote,
+      };
     }
     return {
       coverage: "PARTIAL",
       summary: "Incomplete — Fourth Meridian hasn’t been able to prove this wallet’s earlier history yet. Current holdings are unaffected.",
       fromISO: null, toISO: null, lastBuiltISO,
+      blockchain: null, chart: null, rangeNote: null,
       limitations: sol
         ? ["Solana history is being moved to an importer that works through large wallets in stages, without the previous 5,000-transaction limit. Earlier days stay unavailable until they are proven — they are never estimated."]
         : ["Earlier days stay unavailable until they are proven — they are never estimated."],
@@ -222,4 +248,24 @@ export function connectionHistory(
   }
   return { coverage: "AVAILABLE", summary: "Available — as far back as your institution provides.",
     fromISO, toISO, lastBuiltISO, limitations: ["How far back history goes is set by your institution."] };
+}
+
+/**
+ * PURE. Chart-ready history: the days that are licensed (balance proven),
+ * priced (a stored daily close exists from `priceFromISO` on) AND persisted as
+ * a snapshot. Counts real snapshot dates — a gap is reported, never bridged.
+ */
+export function chartReadyRange(
+  wh: { licensed: boolean; licensedFromISO: string | null; licensedToISO: string | null; activityFromISO: string | null },
+  priceFromISO: string | null,
+  snapshotDatesAsc: readonly string[],
+): { fromISO: string; toISO: string; days: number; continuous: boolean } | null {
+  const licFrom = wh.activityFromISO ?? wh.licensedFromISO;
+  if (!wh.licensed || !licFrom || !wh.licensedToISO || !priceFromISO) return null;
+  const lo = licFrom > priceFromISO ? licFrom : priceFromISO;
+  const inRange = snapshotDatesAsc.filter((d) => d >= lo && d <= wh.licensedToISO!);
+  if (inRange.length === 0) return null;
+  const fromISO = inRange[0], toISO = inRange[inRange.length - 1];
+  const span = Math.round((Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${fromISO}T00:00:00Z`)) / 86_400_000) + 1;
+  return { fromISO, toISO, days: inRange.length, continuous: inRange.length === span };
 }

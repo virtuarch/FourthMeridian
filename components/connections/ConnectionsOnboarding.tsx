@@ -62,8 +62,8 @@ export function ConnectionsOnboarding({ welcome = false, firstName = null, plaid
   const [walletOpen, setWalletOpen] = useState(false);
   const [assetOpen, setAssetOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  // A real asset is not a connection, so the list below never shows it — say it
-  // landed, and offer the two ways on.
+  // Say the asset landed. Connections 2.0: the refresh that follows swaps this
+  // view for the list, where the asset now appears under Real assets.
   const [assetAdded, setAssetAdded] = useState(false);
 
 

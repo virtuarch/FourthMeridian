@@ -42,6 +42,14 @@
  * SEPARATE bounded context — admin-only, aggregate, no-PII, staleness-aware
  * (STALE/DEGRADED) — and is intentionally NOT merged in here.
  *
+ * CONNECTIONS 2.0 — REAL ASSETS. The user's own manual assets (a home, a car)
+ * join the envelope as `manualAssets` (lib/connections/real-assets.ts), read in
+ * the same tenant phase with the same ownership predicate (`ownerUserId = me`).
+ * They are not connections and never enter `status`. Each carries its VALUE —
+ * the owner-approved carve-out: that figure is the user's own typed estimate,
+ * not a portfolio read, and provider rows stay names-only. They are read for the
+ * page only; the 4 s poller (loadConnectionsSyncStatus) never reads them.
+ *
  * POSITION / HOLDING COUNTS are intentionally OUT OF CONTRACT. Position counts
  * (countCurrentPositionsByAccount) are valuation-derived portfolio data; reading
  * them here would re-make Connections a portfolio consumer, the exact thing PCS-2
@@ -73,9 +81,13 @@ import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refres
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
 import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
+import { chartReadyRange } from "@/lib/connections/connection-detail.core";
+import { getSnapshotDates } from "@/lib/data/snapshots";
 // CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
 // here rather than re-decided, so a valuation clock is only claimed where one exists.
 import { usesLegacyColumnForCurrentValue } from "@/lib/crypto/wallet-sync-dispatch";
+import { loadConnectionsManualAssets } from "@/lib/connections/real-assets";
+import type { ManualAssetLite } from "@/lib/connections/real-assets.core";
 
 /**
  * The canonical Connections view model. `status` is the provider-agnostic
@@ -95,6 +107,8 @@ export interface ConnectionsSpaceData {
    * SyncConnection.id, same id space as accountsByConnectionId.
    */
   intelligenceByConnectionId: Record<string, ConnectionIntelligenceStatus>;
+  /** Connections 2.0 — the user's own manual assets (owner-gated), with their estimate. */
+  manualAssets: ManualAssetLite[];
 }
 
 /**
@@ -331,6 +345,31 @@ async function loadConnectionIntelligence(
     if (r.financialAccountId && r._max.date) positionObservedByAccount.set(r.financialAccountId, r._max.date);
   }
 
+  // CHART-READY COVERAGE (owner requirement 2026-10-28) — what the chart can
+  // show, from persisted facts only: each wallet account's native instrument
+  // (its coverage row), that instrument's stored daily USD closes, and the
+  // owner's Personal Space snapshot dates (the series GET /api/spaces/[id]/
+  // snapshots serves). Dates only — no price, no value.
+  const coverageInstrument = walletAccounts.length
+    ? new Map((await client.positionCoverage.findMany({
+        where: { financialAccountId: { in: walletAccounts.map((a) => a.id) } },
+        select: { financialAccountId: true, instrumentId: true },
+      })).map((r) => [r.financialAccountId, r.instrumentId]))
+    : new Map<string, string>();
+  const priceFloors = coverageInstrument.size
+    ? new Map((await client.priceObservation.groupBy({
+        by: ["instrumentId"], where: { instrumentId: { in: [...new Set(coverageInstrument.values())] }, basis: "RAW_CLOSE" },
+        _min: { date: true },
+      })).map((r) => [r.instrumentId, r._min.date ? r._min.date.toISOString().slice(0, 10) : null]))
+    : new Map<string, string | null>();
+  const personalSpace = coverageInstrument.size
+    ? await client.spaceMember.findFirst({
+        where: { userId, role: "OWNER", status: "ACTIVE", space: { type: "PERSONAL" } }, select: { spaceId: true },
+      })
+    : null;
+  // Through the snapshot read authority (lib/data/snapshots.ts) — dates only.
+  const snapshotDates: string[] = personalSpace ? await getSnapshotDates(client, personalSpace.spaceId) : [];
+
   const out: Record<string, ConnectionIntelligenceStatus> = {};
   for (const c of connections) {
     // Connection availability = the earliest transaction across its accounts;
@@ -434,6 +473,12 @@ async function loadConnectionIntelligence(
         licensedToISO:   maxOf(lic.map((m) => m.licensedToISO)),
         activityFromISO: minOf(lic.map((m) => m.activityFromISO)),
       };
+      const instruments = (accountsByConnectionId[c.id] ?? []).map((a) => coverageInstrument.get(a.id)).filter((x): x is string => !!x);
+      // The LATEST floor across the wallet's assets bounds what is valued for all of them.
+      const floors = instruments.map((id) => priceFloors.get(id) ?? null);
+      const priceFromISO = floors.length && floors.every((f) => f !== null) ? maxOf(floors) : null;
+      walletHistory.priceFromISO = priceFromISO;
+      walletHistory.chart = chartReadyRange(walletHistory, priceFromISO, snapshotDates);
     }
     out[c.id] = { ...derived, walletHistory };
   }
@@ -447,7 +492,7 @@ async function loadConnectionIntelligence(
  * derive state differently.
  */
 export async function loadConnectionsSyncStatus(client: ReadClient, userId: string): Promise<ConnectionsSyncView> {
-  const { status, intelligenceByConnectionId } = await loadConnectionsSpaceData(client, userId);
+  const { status, intelligenceByConnectionId } = await loadProviderConnections(client, userId);
   return { status, intelligenceByConnectionId };
 }
 
@@ -477,6 +522,14 @@ export async function loadConnectionsSyncStatus(client: ReadClient, userId: stri
  * lib/platform/, not a default this module falls into.
  */
 export async function loadConnectionsSpaceData(client: ReadClient, userId: string): Promise<ConnectionsSpaceData> {
+  const providers = await loadProviderConnections(client, userId);
+  // Connections 2.0 — the user's own manual assets, same phase, same owner gate.
+  const manualAssets = await loadConnectionsManualAssets(client, userId);
+  return { ...providers, manualAssets };
+}
+
+/** Provider connections only (Plaid + wallet) — the page and the poller share it. */
+async function loadProviderConnections(client: ReadClient, userId: string): Promise<Omit<ConnectionsSpaceData, "manualAssets">> {
   const [items, wallet] = await Promise.all([
     client.plaidItem.findMany({
       where:   { userId, status: { not: PlaidItemStatus.REVOKED } },
@@ -546,3 +599,4 @@ export async function loadConnectionsSpaceData(client: ReadClient, userId: strin
 
   return { status, accountsByConnectionId, intelligenceByConnectionId };
 }
+

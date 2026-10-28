@@ -126,6 +126,16 @@ export interface ConnectionIntelligenceStatus {
     licensedFromISO: string | null;
     licensedToISO: string | null;
     activityFromISO: string | null;
+    /** Earliest stored daily USD close (RAW_CLOSE) for the wallet's native asset; null when none. */
+    priceFromISO?: string | null;
+    /**
+     * CHART-READY history: days the relevant chart can actually show for this
+     * wallet — the intersection of the licensed balance interval, the stored
+     * daily USD closes and the Space's persisted snapshots. `days` counts real
+     * snapshot dates in [fromISO, toISO]; `continuous` is false when any day in
+     * that span has no snapshot. Null when no such day exists.
+     */
+    chart?: { fromISO: string; toISO: string; days: number; continuous: boolean } | null;
   } | null;
 }
 

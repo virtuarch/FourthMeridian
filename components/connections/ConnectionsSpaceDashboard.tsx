@@ -17,9 +17,15 @@
  *
  * This host is a THIN wrapper: the data contract (loadConnectionsSpaceData), the
  * ConnectionsList poller, ConnectionCard, ConnectionsActions, wallet sync, and the
- * import wizard are ALL untouched. The PCS-2 ownership boundary holds — this surface
- * reads only { status, accountsByConnectionId } (NAMES ONLY), never balances,
- * valuations, positions, or debt.
+ * import wizard are ALL untouched. The PCS-2 ownership boundary holds for provider
+ * connections — { status, accountsByConnectionId } are NAMES ONLY, never balances,
+ * positions, or debt.
+ *
+ * Connections 2.0 — the user's own manual assets (`manualAssets`) are listed too,
+ * with the user's own estimate (owner-approved carve-out; real-assets.core.ts).
+ * The onboarding view is the empty state only when there is NOTHING at all: a
+ * user whose only entries are real assets sees the list (Real assets category),
+ * not "Connect an account" — those assets are theirs and must stay reachable.
  */
 
 import { useState } from "react";
@@ -34,11 +40,13 @@ export function ConnectionsSpaceDashboard({
   status,
   accountsByConnectionId,
   intelligenceByConnectionId,
+  manualAssets = [],
   plaidEnabled = true,
   welcome = false,
   firstName = null,
-}: ConnectionsSpaceData & { plaidEnabled?: boolean; welcome?: boolean; firstName?: string | null }) {
-  const hasConnections = status.connections.length > 0;
+}: Omit<ConnectionsSpaceData, "manualAssets"> & { manualAssets?: ConnectionsSpaceData["manualAssets"]; plaidEnabled?: boolean; welcome?: boolean; firstName?: string | null }) {
+  // Anything at all — a provider connection OR a real asset — shows the list.
+  const hasConnections = status.connections.length > 0 || manualAssets.length > 0;
 
   // Identity comes from the registry (no hardcoded rail JSX). Single workspace in
   // Wave 1 → SpaceShell suppresses the rail; activeTab is still tracked for when the
@@ -54,7 +62,7 @@ export function ConnectionsSpaceDashboard({
       mobileOptimized
       variant="utility"
       title="Connections"
-      subtitle="Manage the institutions and providers connected to Fourth Meridian."
+      subtitle="Manage the institutions, wallets and assets you've brought into Fourth Meridian."
       headerActions={hasConnections ? <ConnectionsActions plaidEnabled={plaidEnabled} /> : undefined}
       railOptions={railOptions}
       activeTab={activeTab}
@@ -65,6 +73,7 @@ export function ConnectionsSpaceDashboard({
           initialStatus={status}
           accountsByConnectionId={accountsByConnectionId}
           initialIntelligence={intelligenceByConnectionId}
+          manualAssets={manualAssets}
         />
       ) : (
         // Connections pass PR 2 — the first-time welcome (?welcome=1) and the

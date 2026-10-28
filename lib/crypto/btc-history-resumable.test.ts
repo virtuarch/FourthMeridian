@@ -794,6 +794,7 @@ async function main() {
     const worlds = { b1: makeWorld(1_500, { seed: 101 }), b2: makeWorld(400, { seed: 102 }) } as Record<string, World>;
     const stores = { b1: new MemoryStore({ addresses: [A], complete: true }, "b1"), b2: new MemoryStore({ addresses: [A], complete: true }, "b2") } as Record<string, MemoryStore>;
     const clk = { get t() { return t; }, set t(v: number) { t = v; } };
+    const esplora: Record<string, number> = {};
     const deps: SolBackfillJobDeps = {
       now: () => t, sleep: async (ms) => { t += ms; },
       wakeStartedAt: async () => null,
@@ -818,6 +819,7 @@ async function main() {
           return { accountId, ok: true, derivedRowsWritten: o.rowsWritten, mode: o.impactedFromISO ? "INCREMENTAL" : "NO_CHANGE", impactedFromISO: o.impactedFromISO, backfill: o };
         },
         store: async (id) => stores[id],
+        recordUsage: async (meter, flushed) => { for (const [k, v] of Object.entries(meter)) { const d = v - (flushed[k] ?? 0); if (d > 0) { esplora[k] = (esplora[k] ?? 0) + d; flushed[k] = v; } } },
       },
     };
     const s = await solHistoryBackfill({ config: cfg, btcConfig: btcCfg, deps });
@@ -829,6 +831,12 @@ async function main() {
     check("…and finished wallets equal their truth", stores.b2.checkpoint() !== null && sameAsTruth(stores.b2, worlds.b2, [A]).ok && sameAsTruth(stores.b1, worlds.b1, [A]).ok,
       `${sameAsTruth(stores.b1, worlds.b1, [A]).detail} ${sameAsTruth(stores.b2, worlds.b2, [A]).detail}`);
     check("the job's deferred count covers both chains (self-continuation)", s.deferred >= 1);
+    check("Bitcoin's requests are recorded on the shared ledger under ESPLORA, exactly once each",
+      Object.values(esplora).reduce((a, b) => a + b, 0) === s.btc?.requests.total && (esplora.txs ?? 0) > 0, `${JSON.stringify(esplora)} vs ${s.btc?.requests.total}`);
+    const capped = await solHistoryBackfill({ config: cfg, btcConfig: btcCfg, deps: { ...deps, wallets: async () => [],
+      btc: { ...deps.btc!, wallets: async () => [{ accountId: "b3", connectionId: "c-b3", cursor: null }], providerUsageToday: async () => ({ solana: 0, other: 20_000 }) } } });
+    check("…and its OWN daily cap reads that ledger: 20,000 ESPLORA calls today ⇒ DAILY_CAP, nothing runs",
+      capped.btc?.stoppedBecause === "DAILY_CAP" && capped.btc.walletsRun === 0 && capped.btc.dailyRequestsUsedBefore === 20_000, JSON.stringify(capped.btc));
     const broken = await solHistoryBackfill({ config: cfg, btcConfig: btcCfg, deps: { ...deps, btc: { ...deps.btc!, wallets: async () => { throw new Error('column "historyCheckpoint" does not exist'); } } } });
     check("a failing BTC listing (e.g. migration not yet applied) never takes the Solana pass down", broken.walletsRun === 1 && broken.btc?.eligible === 0, JSON.stringify({ r: broken.walletsRun, e: broken.btc?.eligible }));
     const s2 = await solHistoryBackfill({ config: cfg, btcConfig: btcCfg, deps: { ...deps, wallets: async () => [] } });
@@ -840,7 +848,9 @@ async function main() {
     const read = (f: string) => readFileSync(path.join(process.cwd(), f), "utf8");
     const refresh = read("lib/crypto/wallet-history-refresh.ts");
     check("the wallet refresh routes BTC to the resumable backfill when it owns the history (head-only with the worker)",
-      /BTC_NATIVE\.chain \? \(a: [^)]*\) => reconstructBtcHistoryOrResumable\(\{ \.\.\.a, client: db, headOnly: btcSyncHeadOnly\(\) \}\)/.test(refresh));
+      /BTC_NATIVE\.chain \? \(a: HistoryWindow\) => meteredEsplora\(\(meter\) => reconstructBtcHistoryOrResumable\(\{ \.\.\.a, client: db, headOnly: btcSyncHeadOnly\(\), meter \}\)\)/.test(refresh));
+    check("…its Esplora requests are recorded on the shared ledger under ESPLORA (never the Alchemy budget)",
+      /recordProviderMeter\(ESPLORA_USAGE_PROVIDER, ESPLORA_USAGE_NETWORK, meter\)/.test(refresh) && /ESPLORA_USAGE_PROVIDER = "ESPLORA"/.test(read("lib/crypto/btc-backfill-worker.core.ts")));
     const storeSrc = read("lib/crypto/btc-history-backfill.store.ts");
     check("…otherwise the wholesale reconstruction, unchanged", /return reconstructBtcHistory\(\{ accountId: args\.accountId, windowFromISO/.test(storeSrc));
     check("the store writes only DERIVED rows of its source (OBSERVED rows are never deleted)",

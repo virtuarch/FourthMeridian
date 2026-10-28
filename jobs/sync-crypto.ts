@@ -22,6 +22,13 @@
  *     this is a fleet fan-out (the manual route is one account).
  * Both best-effort: a regeneration failure never fails the sweep or its JobRun.
  *
+ * PRICE GAPS (2026-10-28) run just AFTER that history regeneration: where the
+ * shared RAW_CLOSE archive does not reach back as far as a synced wallet's
+ * licensed balance history and the provider can serve the older dates, one
+ * bounded acquisition per INSTRUMENT (lib/prices/price-gap.ts); then only the
+ * holders the new floor reaches are revalued, bounded per run and by the wake
+ * (revalueHoldersAfterPriceGaps). Deferred holders stay owed on disk.
+ *
  * CAPABILITY RECONCILIATION (V26-CAP-1) runs on the main slot only, before the
  * sweep: a declared widening of the price provider's reach is noticed where the
  * affected accounts are already being fanned out over.
@@ -52,6 +59,8 @@ import { todayUTCISO } from "@/lib/time/clock";
 import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
 import { reconcileProviderCapability, type CapabilityWideningPlan } from "@/lib/prices/capability-reconciliation";
 import { BTC_PRICE_SOURCE } from "@/lib/crypto/btc-price";
+import type { RevaluationRun } from "@/lib/prices/price-gap";
+import { WAKE_SAFE_MS } from "@/jobs/sol-history-backfill";
 
 export interface SyncCryptoResult extends WalletRefreshResult {
   continuation: boolean;
@@ -64,6 +73,16 @@ export interface SyncCryptoResult extends WalletRefreshResult {
    * the sweep. Empty on a continuation run (the main slot owns it).
    */
   closeCoverage: CryptoCloseCoverage[];
+  /** Price-gap fill + bounded revaluation after the history regeneration (counts only; null when it did not run). */
+  revaluation: {
+    gapInstruments: number; gapRowsInserted: number; owed: number; revalued: number;
+    deferred: number; alreadyRevalued: number; failures: number; skippedForTime: boolean;
+  } | null;
+}
+
+function revaluationSummary(r: RevaluationRun | null): SyncCryptoResult["revaluation"] {
+  return r ? { gapInstruments: r.priceGaps?.acquired ?? 0, gapRowsInserted: r.priceGaps?.inserted ?? 0, owed: r.owed,
+    revalued: r.revalued, deferred: r.deferred, alreadyRevalued: r.alreadyRevalued, failures: r.failures, skippedForTime: r.skippedForTime } : null;
 }
 
 export async function syncCrypto(options: {
@@ -145,6 +164,7 @@ export async function syncCrypto(options: {
   );
 
   let snapshotSpaces = 0;
+  let revaluation: RevaluationRun | null = null;
   let wealthRegenSpaces = 0;
   // TODAY's snapshots follow new valuation evidence AND every changed quote: a
   // quote is shared, so every holder of a re-quoted asset is regenerated, not
@@ -186,9 +206,30 @@ export async function syncCrypto(options: {
         } catch (err) {
           console.warn("[sync-crypto] wealth-history regen failed (non-fatal):", err instanceof Error ? err.message : err);
         }
+        // PRICE GAPS, AFTER the ordinary regeneration — so a gap fill (dated a
+        // year back, created during this run) can never widen the measured
+        // window above for every account in the sweep. Then ONLY the accounts
+        // whose persisted state now owes a revaluation (the holders the new
+        // floor reaches) are rebuilt, over just the missing days, at most
+        // DEFAULT_REVALUATION_MAX_ACCOUNTS and only while the wake has time;
+        // the rest stay owed on disk and are taken by the next sweep.
+        try {
+          const { revalueHoldersAfterPriceGaps, prismaRevaluationDeps } = await import("@/lib/prices/price-gap");
+          const log = (l: string) => console.log(`[sync-crypto] ${l}`);
+          const wake = await db.jobRun.findFirst({ where: { startedAt: { gte: new Date(runStartedAt.getTime() - 300_000) } }, orderBy: { startedAt: "asc" }, select: { startedAt: true } });
+          revaluation = await revalueHoldersAfterPriceGaps({
+            accountIds: historyAccountIds, deps: prismaRevaluationDeps(db, { log }), log,
+            deadlineMs: (wake ? wake.startedAt.getTime() : runStartedAt.getTime()) + WAKE_SAFE_MS,
+          });
+          const g = revaluation.priceGaps;
+          console.log(`[sync-crypto] price gaps: ${g?.acquired ?? 0} instrument(s), +${g?.inserted ?? 0} row(s); revaluation owed ${revaluation.owed}, ` +
+            `revalued ${revaluation.revalued}, deferred ${revaluation.deferred}${revaluation.skippedForTime ? " (skipped: wake time)" : ""}`);
+        } catch (err) {
+          console.warn("[sync-crypto] price-gap revaluation failed (non-fatal):", err instanceof Error ? err.message : err);
+        }
       }
     }
   }
 
-  return { ...result, continuation, snapshotSpaces, wealthRegenSpaces, closeCoverage };
+  return { ...result, continuation, snapshotSpaces, wealthRegenSpaces, closeCoverage, revaluation: revaluationSummary(revaluation) };
 }

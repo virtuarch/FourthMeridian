@@ -169,6 +169,8 @@ export async function reconstructBtcHistoryResumable(
  */
 export async function reconstructBtcHistoryOrResumable(args: {
   accountId: string; windowFromISO: string; windowToISO: string; client: PrismaClient; headOnly: boolean;
+  /** Counts every Esplora request the resumable run sends (the caller records it). */
+  meter?: Record<string, number>;
 }): Promise<BtcHistoryResult | BtcResumableResult> {
   let owned = false;
   try {
@@ -181,6 +183,6 @@ export async function reconstructBtcHistoryOrResumable(args: {
     // must precede this code (btc-history-checkpoint.ts).
     console.warn(`[btc-history] checkpoint read failed for ${args.accountId} (non-fatal — wholesale path):`, e instanceof Error ? e.message : String(e));
   }
-  if (owned) return reconstructBtcHistoryResumable({ accountId: args.accountId, client: args.client, deps: { headOnly: args.headOnly } });
+  if (owned) return reconstructBtcHistoryResumable({ accountId: args.accountId, client: args.client, deps: { headOnly: args.headOnly, ...(args.meter ? { meter: args.meter } : {}) } });
   return reconstructBtcHistory({ accountId: args.accountId, windowFromISO: args.windowFromISO, windowToISO: args.windowToISO, client: args.client });
 }

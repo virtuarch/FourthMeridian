@@ -19,6 +19,15 @@
 import { backfillStatus, shouldRunAutomatically, needsVerificationVisit, type BtcBackfillCheckpoint } from "./btc-history-backfill.core";
 import { btcWorkerEnabled } from "./btc-history-backfill";
 
+/**
+ * The shared provider ledger (ApiUsageCounter, lib/usage/provider-budget.ts)
+ * records Bitcoin history requests under their OWN provider: Esplora is not
+ * Alchemy, so they never count against the Alchemy budget, and the BTC daily
+ * cap below reads this provider only. Metric = "bitcoin:<tip|txs|stats>".
+ */
+export const ESPLORA_USAGE_PROVIDER = "ESPLORA";
+export const ESPLORA_USAGE_NETWORK = "bitcoin";
+
 export interface BtcBackfillWorkerConfig {
   enabled: boolean;
   /** Per-wallet wall clock within a run (fairness). */

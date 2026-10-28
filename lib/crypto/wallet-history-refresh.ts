@@ -38,10 +38,33 @@ import { PositionOrigin } from "@prisma/client";
 import { BTC_NATIVE, ETH_NATIVE, SOL_NATIVE } from "./native-asset";
 import { reconstructBtcHistoryOrResumable } from "./btc-history-backfill.store";
 import { btcSyncHeadOnly } from "./btc-history-backfill";
+import { ESPLORA_USAGE_NETWORK, ESPLORA_USAGE_PROVIDER } from "./btc-backfill-worker.core";
 import { reconstructSolHistoryResumable } from "./sol-history-backfill.store";
 import { syncHeadOnly } from "./sol-history-backfill";
 import { reconstructEthHistory } from "./eth-history-sync";
 import { todayUTCISO } from "@/lib/time/clock";
+import { ALCHEMY_USAGE_NETWORK, ALCHEMY_USAGE_PROVIDER, recordProviderMeter } from "@/lib/usage/provider-budget";
+
+type HistoryWindow = { accountId: string; windowFromISO: string; windowToISO: string };
+
+/**
+ * SHARED PROVIDER BUDGET (2026-10-28) — the SOL and ETH history paths spend the
+ * Alchemy key. Every request a run sends is counted by its transport and
+ * recorded against the provider's daily budget when the run ends, refused or
+ * not. BTC's resumable backfill reads Esplora, not Alchemy: its requests are
+ * recorded under their own provider (ESPLORA), which the BTC worker's own daily
+ * cap reads (the wholesale BTC path makes no history requests).
+ */
+function metered<R>(network: string, run: (meter: Record<string, number>) => Promise<R>): Promise<R> {
+  const meter: Record<string, number> = {};
+  return run(meter).finally(() => recordProviderMeter(ALCHEMY_USAGE_PROVIDER, network, meter));
+}
+
+/** BTC: the same, under its own provider (ESPLORA) — never the Alchemy budget. */
+function meteredEsplora<R>(run: (meter: Record<string, number>) => Promise<R>): Promise<R> {
+  const meter: Record<string, number> = {};
+  return run(meter).finally(() => recordProviderMeter(ESPLORA_USAGE_PROVIDER, ESPLORA_USAGE_NETWORK, meter));
+}
 
 /** What a refresh did, for the log and for the caller's decision to regenerate. */
 export interface WalletHistoryRefresh {
@@ -112,12 +135,13 @@ export async function refreshWalletHistory(
     // handed to the resumable, checkpointed backfill (btc-history-backfill.ts) —
     // which the sync does when the inline import stops at its 1,000-per-address
     // page budget. Head-only while the background worker carries Bitcoin.
-    key === BTC_NATIVE.chain ? (a: { accountId: string; windowFromISO: string; windowToISO: string }) => reconstructBtcHistoryOrResumable({ ...a, client: db, headOnly: btcSyncHeadOnly() })
+    // Its Esplora requests are recorded under ESPLORA (never the Alchemy budget).
+    key === BTC_NATIVE.chain ? (a: HistoryWindow) => meteredEsplora((meter) => reconstructBtcHistoryOrResumable({ ...a, client: db, headOnly: btcSyncHeadOnly(), meter }))
     // SOL: the resumable, checkpointed backfill (sol-history-backfill.ts). The
     // wholesale reconstructSolHistory stopped at 5,000 signatures per run and
     // never resumed; it remains only as the fixture-driven acceptance path.
-    : key === SOL_NATIVE.chain ? (a: { accountId: string; windowFromISO: string; windowToISO: string }) => reconstructSolHistoryResumable({ ...a, client: db, deps: { headOnly: syncHeadOnly() } })
-    : key === ETH_NATIVE.chain ? reconstructEthHistory
+    : key === SOL_NATIVE.chain ? (a: HistoryWindow) => metered(ALCHEMY_USAGE_NETWORK.SOLANA, (meter) => reconstructSolHistoryResumable({ ...a, client: db, deps: { headOnly: syncHeadOnly(), meter } }))
+    : key === ETH_NATIVE.chain ? (a: HistoryWindow) => metered(ALCHEMY_USAGE_NETWORK.ETHEREUM, (meter) => reconstructEthHistory({ ...a, deps: { meter } }))
     : null;
   if (run === null) return { accountId, chain: key, refreshed: false, reason: "chain has no reconstruction" };
 
