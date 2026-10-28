@@ -30,7 +30,8 @@ check("a legacy-staging wallet is flagged", statusFromCursor(serializeCheckpoint
 
 const src = readFileSync(path.join(process.cwd(), "lib/platform/connection-diagnostics.ts"), "utf8");
 check("diagnostics expose only the STATUS (the raw cursor never leaves the module)",
-  /statusFromCursor\(w\.cursor,/.test(src) && !/cursor:\s*w\.cursor/.test(src) && !/historyBackfill:[^\n]*address/.test(src));
+  // 2026-10-28: through the all-chain reader (SOL cursor, BTC/ETH historyCheckpoint).
+  /walletHistoryCheckpointStatus\(w\.cursor, historyCheckpoints\.get\(w\.id\)/.test(src) && !/cursor:\s*w\.cursor/.test(src) && !/historyBackfill:[^\n]*historyCheckpoints/.test(src) && !/historyBackfill:[^\n]*address/.test(src));
 const widget = readFileSync(path.join(process.cwd(), "components/platform/widgets/OpsConnectionDiagnosticsWidget.tsx"), "utf8");
 check("the Ops widget renders the backfill group without addresses or balances", /title="History backfill"/.test(widget) && !/walletAddress|balance/i.test(widget.split('title="History backfill"')[1].split("</Group>")[0]));
 

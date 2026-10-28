@@ -81,3 +81,15 @@ export async function enqueueBtcHistoryBackfill(client: Client, accountId: strin
   if (!link) return false;
   return casHistoryCheckpoint(client, link.connectionId, null, serializeCheckpoint(emptyCheckpoint(accountId, now.toISOString())));
 }
+
+/**
+ * Many connections' checkpoints at once (Connections, Platform Ops) — only the
+ * rows that carry one. Any chain's (BTC, ETH): the reader decides by `kind`.
+ */
+export async function readHistoryCheckpoints(client: Client, connectionIds: readonly string[]): Promise<Map<string, string>> {
+  if (connectionIds.length === 0) return new Map();
+  const rows = await client.$queryRaw<Array<{ id: string; historyCheckpoint: string }>>`
+    SELECT "id", "historyCheckpoint" FROM "Connection"
+    WHERE "id" = ANY(${[...connectionIds]}::text[]) AND "historyCheckpoint" IS NOT NULL`;
+  return new Map(rows.map((r) => [r.id, r.historyCheckpoint]));
+}

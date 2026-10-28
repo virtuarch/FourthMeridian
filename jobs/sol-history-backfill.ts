@@ -57,6 +57,16 @@
  * either chain alone gets all of it. The job name and registration are
  * unchanged.
  *
+ * ETHEREUM (2026-10-28) — and Ethereum wallets whose FULL rebuild a sync
+ * handed over (lib/crypto/eth-history-backfill.ts): only when
+ * ETH_BACKFILL_ENABLED=true (otherwise syncs rebuild inline, as before). Each
+ * step is bounded by a probe budget and resumes at the proof's boundary; rows
+ * are written once, when the whole proof closes and reconciles. Its requests
+ * spend the SAME Alchemy key as Solana, so they count against the SAME daily
+ * cap (SOL_BACKFILL_DAILY_REQUEST_CAP), read from the shared provider ledger.
+ * When Ethereum has work the job budget is shared three ways; without it the
+ * split is unchanged.
+ *
  * SUMMARY: counts, request meter and estimated units only — no ids, no
  * addresses, no balances.
  */
@@ -77,7 +87,12 @@ import {
 } from "@/lib/crypto/btc-backfill-worker.core";
 import type { BtcBackfillStore, BtcBackfillDeps } from "@/lib/crypto/btc-history-backfill";
 import type { BtcResumableResult } from "@/lib/crypto/btc-history-backfill.store";
-import { effectiveDailyUsage } from "@/lib/usage/provider-budget.core";
+import {
+  parseCheckpoint as parseEthCheckpoint, serializeCheckpoint as serializeEthCheckpoint, usageOn as ethUsageOn,
+  ethWorkerConfig, orderEthCandidates, probeBudgetFor, type EthBackfillCheckpoint, type EthBackfillWorkerConfig,
+} from "@/lib/crypto/eth-history-backfill.core";
+import type { EthBackfillStore, EthBackfillDeps, EthBackfillOutcome } from "@/lib/crypto/eth-history-backfill";
+import { effectiveDailyUsage, meterTotal } from "@/lib/usage/provider-budget.core";
 import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS } from "@/lib/prices/price-gap.core";
 import type { PriceGapRun, RevaluationOwed } from "@/lib/prices/price-gap";
 import type { LedgerCalls } from "@/lib/usage/provider-budget.core";
@@ -129,6 +144,38 @@ export interface SolBackfillJobSummary {
   deferred: number;
   /** Bitcoin's pass, when its deps are wired (always in production). */
   btc?: BtcBackfillPassSummary;
+  /** Ethereum's pass, when enabled and wired. */
+  eth?: EthBackfillPassSummary;
+}
+
+export interface EthBackfillPassSummary {
+  enabled: boolean;
+  eligible: number;
+  walletsRun: number;
+  walletsSkippedLocked: number;
+  completed: number;
+  failures: Record<string, number>;
+  rowsWritten: number;
+  regenerated: number;
+  regenerationsDeferred: number;
+  requests: { total: number };
+  /** The shared Alchemy budget already spent today before this pass (every network). */
+  dailyRequestsUsedBefore: number;
+  dailyRequestCap: number;
+  stoppedBecause: "DISABLED" | "NO_WORK" | "JOB_BUDGET" | "DAILY_CAP" | "ALL_RUN";
+  deferred: number;
+}
+
+/** An ETH wallet whose full rebuild the worker owns; `cursor` is its history checkpoint. */
+export interface EthWorkerWallet { accountId: string; connectionId: string; cursor: string | null }
+
+/** Ethereum's half of the job's deps. Locks, regeneration and the Alchemy ledger read are shared with Solana's. */
+export interface EthBackfillJobDeps {
+  wallets(): Promise<EthWorkerWallet[]>;
+  reconstruct(args: { accountId: string; todayISO: string; deps: EthBackfillDeps }): Promise<EthBackfillOutcome>;
+  store(accountId: string): Promise<EthBackfillStore | null>;
+  /** Record `meter` beyond `flushed` on the ledger under ALCHEMY/ethereum; advances `flushed`. */
+  recordUsage?(meter: Readonly<Record<string, number>>, flushed: Record<string, number>): Promise<void>;
 }
 
 export interface BtcBackfillPassSummary {
@@ -193,6 +240,8 @@ export interface SolBackfillJobDeps {
   acquirePriceGaps?(accountIds: string[], opts: { attempted: Map<string, string>; maxInstruments: number }): Promise<PriceGapRun>;
   /** Absent ⇒ the job carries Solana only. */
   btc?: BtcBackfillJobDeps;
+  /** Absent ⇒ no Ethereum pass. */
+  eth?: EthBackfillJobDeps;
 }
 
 async function setPending(store: SolBackfillStore, accountId: string, address: string, mutate: (cp: SolBackfillCheckpoint) => SolBackfillCheckpoint): Promise<boolean> {
@@ -216,7 +265,15 @@ async function setBtcPending(store: BtcBackfillStore, accountId: string, mutate:
   } catch { return false; } // CAS lost: someone advanced it — the marker is re-derived next run
 }
 
-export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfig; btcConfig?: BtcBackfillWorkerConfig; deps?: SolBackfillJobDeps } = {}): Promise<SolBackfillJobSummary> {
+async function setEthPending(store: EthBackfillStore, accountId: string, mutate: (cp: EthBackfillCheckpoint) => EthBackfillCheckpoint): Promise<boolean> {
+  const raw = await store.readCursor();
+  const cp = parseEthCheckpoint(raw, accountId);
+  if (!cp) return false;
+  try { return await store.casCursor(raw, serializeEthCheckpoint(mutate(cp))); }
+  catch { return false; } // the marker is re-derived next run
+}
+
+export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfig; btcConfig?: BtcBackfillWorkerConfig; ethConfig?: EthBackfillWorkerConfig; deps?: SolBackfillJobDeps } = {}): Promise<SolBackfillJobSummary> {
   const cfg = opts.config ?? workerConfig();
   const summary: SolBackfillJobSummary = {
     enabled: cfg.enabled, eligible: 0, walletsRun: 0, walletsSkippedLocked: 0, completed: 0, promoted: 0,
@@ -244,8 +301,12 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const btcCfg = opts.btcConfig ?? btcWorkerConfig();
   const btcPlan = deps.btc && btcCfg.enabled ? await planBtc(deps.btc, start, day) : null;
   const btcHasWork = !!btcPlan && btcPlan.work.length > 0;
-  /** The deadline the CURRENT chain's pass plans to (Solana: half when Bitcoin waits). */
-  let phaseDeadline = btcHasWork ? start + Math.floor((jobDeadline - start) / 2) : jobDeadline;
+  const ethCfg = opts.ethConfig ?? ethWorkerConfig();
+  const ethPlan = deps.eth && ethCfg.enabled ? await planEth(deps.eth, start) : null;
+  const ethHasWork = !!ethPlan && ethPlan.work.length > 0;
+  /** The deadline the CURRENT chain's pass plans to (Solana: its share when Bitcoin / Ethereum wait). */
+  const shares = 1 + (btcHasWork ? 1 : 0) + (ethHasWork ? 1 : 0);
+  let phaseDeadline = shares > 1 ? start + Math.floor((jobDeadline - start) / shares) : jobDeadline;
 
   const wallets = await deps.wallets();
   const parsed = wallets.map((w) => ({ ...w, checkpoint: parseCheckpoint(w.cursor, w.accountId, w.address) }));
@@ -301,9 +362,10 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const candidates = orderCandidates(parsed, start);
   summary.eligible = candidates.length;
   const solHasWork = !(candidates.length === 0 && pending.length === 0);
-  if (!solHasWork && !btcHasWork) {
+  if (!solHasWork && !btcHasWork && !ethHasWork) {
     summary.stoppedBecause = "NO_WORK";
     if (btcPlan) summary.btc = { ...btcPlan.summary, stoppedBecause: "NO_WORK" };
+    if (ethPlan) summary.eth = { ...ethPlan.summary, dailyRequestCap: cfg.dailyRequestCap, stoppedBecause: "NO_WORK" };
     return summary;
   }
 
@@ -415,10 +477,113 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
 
   // ── BITCOIN ────────────────────────────────────────────────────────────────
   if (btcPlan && deps.btc) {
-    phaseDeadline = jobDeadline;
-    summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline, regenerateUnderLock });
+    // Half of what is left when Ethereum waits; all of it otherwise (unchanged).
+    const btcDeadline = ethHasWork ? deps.now() + Math.floor(Math.max(0, jobDeadline - deps.now()) / 2) : jobDeadline;
+    phaseDeadline = btcDeadline;
+    summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline: btcDeadline, regenerateUnderLock });
     summary.deferred += summary.btc.deferred;
   }
+
+  // ── ETHEREUM ───────────────────────────────────────────────────────────────
+  if (ethPlan && deps.eth) {
+    phaseDeadline = jobDeadline;
+    summary.eth = await runEthPass(deps, deps.eth, ethCfg, ethPlan, {
+      jobDeadline, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(), regenerateUnderLock,
+    });
+    summary.deferred += summary.eth.deferred;
+  }
+  return summary;
+}
+
+type EthParsed = EthWorkerWallet & { checkpoint: EthBackfillCheckpoint | null };
+
+async function planEth(eth: EthBackfillJobDeps, start: number) {
+  let listed: EthWorkerWallet[] = [];
+  try { listed = await eth.wallets(); }
+  catch (e) {
+    // Ethereum's listing must never take the other chains' passes down with it.
+    console.warn(`[${SOL_BACKFILL_JOB}] ETH wallet listing failed (non-fatal — Ethereum skipped this run):`, e instanceof Error ? e.message : String(e));
+  }
+  const parsed: EthParsed[] = listed.map((w) => ({ ...w, checkpoint: parseEthCheckpoint(w.cursor, w.accountId) }));
+  const pending = parsed.filter((w) => w.checkpoint?.snapshotPendingFromISO);
+  const candidates = orderEthCandidates(parsed, start);
+  const work: Array<{ w: EthParsed; kind: "PENDING" | "BACKFILL" }> = [
+    ...pending.map((w) => ({ w, kind: "PENDING" as const })),
+    ...candidates.filter((c) => !pending.some((p) => p.accountId === c.accountId)).map((w) => ({ w, kind: "BACKFILL" as const })),
+  ];
+  const summary: EthBackfillPassSummary = {
+    enabled: true, eligible: candidates.length, walletsRun: 0, walletsSkippedLocked: 0, completed: 0, failures: {},
+    rowsWritten: 0, regenerated: 0, regenerationsDeferred: 0, requests: { total: 0 }, dailyRequestsUsedBefore: 0,
+    dailyRequestCap: 0, stoppedBecause: "ALL_RUN", deferred: 0,
+  };
+  return { work, parsed, summary };
+}
+
+/**
+ * Ethereum's pass: Bitcoin's loop with Ethereum's step. Its cap is the SHARED
+ * Alchemy cap: what the ledger says every network spent today (re-read now, so
+ * the Solana pass just flushed is in it), never less than the checkpoints say
+ * — Solana's, this run's unflushed Solana calls, and Ethereum's own.
+ */
+async function runEthPass(
+  deps: SolBackfillJobDeps, eth: EthBackfillJobDeps, cfg: EthBackfillWorkerConfig,
+  plan: Awaited<ReturnType<typeof planEth>>,
+  ctx: {
+    jobDeadline: number; day: string; dailyRequestCap: number; solCheckpointCalls: number; solRunCalls: number;
+    regenerateUnderLock: (w: { accountId: string; connectionId: string }, fromISO: string, lockStamp: number, withPriceGaps?: boolean) => Promise<{ outcome: "DONE" | "DEFERRED"; stamp: number }>;
+  },
+): Promise<EthBackfillPassSummary> {
+  const summary: EthBackfillPassSummary = { ...plan.summary, dailyRequestCap: ctx.dailyRequestCap };
+  const meter: Record<string, number> = {};
+  const flushed: Record<string, number> = {};
+  const flushUsage = async () => { if (eth.recordUsage) { try { await eth.recordUsage(meter, flushed); } catch { /* metering never fails a run */ } } };
+  const ethCheckpointCalls = plan.parsed.reduce((a, w) => a + ethUsageOn(w.checkpoint, ctx.day), 0);
+  const ledger = deps.providerUsageToday ? await deps.providerUsageToday(ctx.day).catch(() => null) : null;
+  summary.dailyRequestsUsedBefore = ledger
+    ? effectiveDailyUsage({ ledger, checkpointCalls: ctx.solCheckpointCalls + ctx.solRunCalls }) + Math.max(0, ethCheckpointCalls - ledger.other)
+    : ctx.solCheckpointCalls + ctx.solRunCalls + ethCheckpointCalls;
+  if (plan.work.length === 0) summary.stoppedBecause = "NO_WORK";
+
+  for (let i = 0; i < plan.work.length; i++) {
+    const { w, kind } = plan.work[i];
+    const left = ctx.jobDeadline - deps.now();
+    if (left < Math.max(cfg.startReserveMs, 2_000)) { summary.stoppedBecause = "JOB_BUDGET"; summary.deferred += plan.work.length - i; break; }
+    const probeBudget = probeBudgetFor(ctx.dailyRequestCap - summary.dailyRequestsUsedBefore - meterTotal(meter), cfg.probeBudget);
+    if (kind === "BACKFILL" && probeBudget <= 0) { summary.stoppedBecause = "DAILY_CAP"; break; } // resumes after UTC midnight, on cadence
+    let stamp = deps.now();
+    if (!(await deps.claimLock(w.connectionId, stamp))) { summary.walletsSkippedLocked++; summary.deferred++; continue; }
+    try {
+      let fromISO = w.checkpoint?.snapshotPendingFromISO ?? null;
+      if (kind === "BACKFILL") {
+        const o = await eth.reconstruct({ accountId: w.accountId, todayISO: ctx.day, deps: { probeBudget, now: deps.now, eth: { meter } } });
+        summary.walletsRun++;
+        await flushUsage();
+        summary.rowsWritten += o.rowsWritten;
+        if (o.stoppedBecause === "COMPLETE") summary.completed++;
+        else if (o.stoppedBecause === "PROBE_BUDGET" || o.stoppedBecause === "CONFLICT") summary.deferred++;
+        if (o.failure) summary.failures[o.failure.code] = (summary.failures[o.failure.code] ?? 0) + 1;
+        if (o.impactedFromISO) fromISO = fromISO && fromISO < o.impactedFromISO ? fromISO : o.impactedFromISO;
+      }
+      if (fromISO) {
+        const regen = await ctx.regenerateUnderLock(w, fromISO, stamp, false); // no SOL price-gap pass for an ETH wallet
+        stamp = regen.stamp; // release below checks ownership against the stamp in force
+        const store = await eth.store(w.accountId);
+        if (regen.outcome === "DONE") {
+          summary.regenerated++;
+          if (store && w.checkpoint?.snapshotPendingFromISO) await setEthPending(store, w.accountId, (cp) => ({ ...cp, snapshotPendingFromISO: null }));
+        } else {
+          summary.regenerationsDeferred++;
+          summary.deferred++;
+          if (store) await setEthPending(store, w.accountId, (cp) => ({ ...cp,
+            snapshotPendingFromISO: cp.snapshotPendingFromISO && cp.snapshotPendingFromISO < fromISO! ? cp.snapshotPendingFromISO : fromISO }));
+        }
+      }
+    } finally {
+      await deps.releaseLock(w.connectionId, stamp);
+    }
+  }
+  await flushUsage();
+  summary.requests = { total: meterTotal(meter) };
   return summary;
 }
 
@@ -588,6 +753,33 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
       await regenerateWealthHistoryForAccounts([accountId], { fromDate: plan.fromDate, toDate: plan.toDate });
     },
     btc: await productionBtcDeps(systemDb),
+    eth: await productionEthDeps(systemDb),
+  };
+}
+
+/** Ethereum's production wiring: wallets whose ETH history checkpoint is on their history link. */
+async function productionEthDeps(systemDb: import("@prisma/client").PrismaClient): Promise<EthBackfillJobDeps> {
+  const { reconstructEthHistoryResumable, prismaEthBackfillStore } = await import("@/lib/crypto/eth-history-backfill.store");
+  const { isEthBackfillCursor } = await import("@/lib/crypto/eth-history-backfill.core");
+  const { recordProviderMeter, ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK } = await import("@/lib/usage/provider-budget");
+  return {
+    async wallets() {
+      // The SAME link btcHistoryLink uses (canonical first, then oldest), one per account.
+      const rows = await systemDb.$queryRaw<Array<{ accountId: string; connectionId: string; cursor: string | null }>>`
+        SELECT DISTINCT ON (ac."financialAccountId")
+               ac."financialAccountId" AS "accountId", ac."connectionId" AS "connectionId", c."historyCheckpoint" AS "cursor"
+        FROM "AccountConnection" ac
+        JOIN "Connection" c ON c."id" = ac."connectionId"
+        JOIN "FinancialAccount" fa ON fa."id" = ac."financialAccountId"
+        WHERE ac."deletedAt" IS NULL AND ac."connectionId" IS NOT NULL
+          AND fa."deletedAt" IS NULL AND UPPER(TRIM(fa."walletChain")) = 'ETH' AND fa."walletAddress" IS NOT NULL
+          AND c."provider" = 'WALLET' AND c."status" = 'ACTIVE'
+        ORDER BY ac."financialAccountId", ac."isCanonical" DESC, ac."createdAt" ASC`;
+      return rows.filter((r) => isEthBackfillCursor(r.cursor));
+    },
+    reconstruct: ({ accountId, todayISO, deps }) => reconstructEthHistoryResumable({ accountId, client: systemDb, todayISO, deps }),
+    store: async (accountId) => (await prismaEthBackfillStore(accountId, systemDb))?.store ?? null,
+    recordUsage: async (meter, flushed) => { await recordProviderMeter(ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK.ETHEREUM, meter, { flushed }); },
   };
 }
 

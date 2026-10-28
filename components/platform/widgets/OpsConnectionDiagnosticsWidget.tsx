@@ -28,6 +28,11 @@ const HEALTH_LABEL: Record<string, string> = {
 const SYNC_LABEL: Record<string, string> = {
   IMPORTING: "Importing", READY: "Ready", ACTION_REQUIRED: "Action required",
 };
+/** Each chain's history is counted in its own unit — never relabelled as another's. */
+const PROCESSED_LABEL: Record<"signatures" | "transactions" | "movements", string> = {
+  signatures: "Signatures processed", transactions: "Transactions processed", movements: "Movements found",
+};
+
 const INTEL_LABEL: Record<string, string> = {
   READY: "Built", REBUILDING: "Building", NOT_READY: "Not started",
 };
@@ -127,7 +132,7 @@ export function OpsConnectionDiagnosticsWidget({ section }: { section: PlatformS
                     <Row label="State" value={`${selected.historyBackfill.state}${selected.historyBackfill.mode === "STAGING" ? " (legacy history in force)" : ""}`} />
                     <Row label="Proven" value={selected.historyBackfill.provenFromISO ? `${selected.historyBackfill.provenFromISO} → ${selected.historyBackfill.provenToISO ?? "—"}` : "—"} />
                     <Row label="Head verified" value={selected.historyBackfill.headVerified ? "Yes" : "No"} />
-                    <Row label="Signatures processed" value={selected.historyBackfill.signaturesProcessed} />
+                    <Row label={PROCESSED_LABEL[selected.historyBackfill.processed.unit]} value={selected.historyBackfill.processed.count} />
                     <Row label="Requests today" value={selected.historyBackfill.requestsToday} />
                     <Row label="Last progress" value={fmt(selected.historyBackfill.lastProgressAtISO)} />
                     {selected.historyBackfill.lastFailureCode && <Row label="Last failure" value={`${selected.historyBackfill.lastFailureCode} (×${selected.historyBackfill.failures})`} />}
