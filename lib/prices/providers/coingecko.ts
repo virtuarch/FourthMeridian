@@ -437,3 +437,87 @@ export async function fetchCoinGeckoCurrentQuotes(
   const parsed = parseSimplePriceQuotes(body, coinIdBySymbol, opts.now ?? new Date());
   return { quotes: parsed.quotes, rejected: [...rejected, ...parsed.rejected], configured: true };
 }
+
+// ── TOKEN current quotes, by CONTRACT (TOKEN HOLDINGS FOUNDATION, PR-A) ───────
+//
+// Tokens are priced by the contract/mint that IS their identity, never by a
+// ticker: `/simple/token_price/{platform}?contract_addresses=…`, the same vendor,
+// key and header as above, with the same instant (`last_updated_at`) and the same
+// pure validation (`parseSimplePriceQuotes`, keyed here by assetKey). A contract
+// the vendor does not list is ABSENT from the response and comes back REJECTED —
+// an unlisted token (spam, airdrop, illiquid) is UNPRICED, never priced at zero.
+//
+// Batch size is configuration (`COINGECKO_TOKEN_PRICE_BATCH`, default 1, clamped
+// 1..50): CoinGecko's public/Demo tier has restricted how many contract
+// addresses one request may carry, and assuming more than the tier allows would
+// turn a whole batch into a refusal. A paid deployment raises it explicitly.
+//
+// HISTORICAL token closes are a NAMED SEAM, not wired here: the vendor serves
+// `/coins/{platform}/contract/{address}/market_chart/range` (Demo: rolling 365
+// days), but the archive backfill routes by `Instrument.tickerSymbol`, which a
+// token deliberately does not have (token-instrument.ts). Routing by assetKey
+// is the follow-up PRs' change — see `TOKEN_HISTORICAL_PRICE_SEAM`.
+
+/** Where historical token closes plug in (ERC-20 / SPL history PRs). Documentation constant. */
+export const TOKEN_HISTORICAL_PRICE_SEAM =
+  "coingecko /coins/{platform}/contract/{address}/market_chart/range — needs assetKey-keyed routing (token tickerSymbol is null)";
+
+export const COINGECKO_TOKEN_PRICE_BATCH_DEFAULT = 1;
+
+export function resolveTokenPriceBatch(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= 50 ? n : COINGECKO_TOKEN_PRICE_BATCH_DEFAULT;
+}
+
+/**
+ * Current USD quotes for token contracts on one CoinGecko platform. Each input
+ * pairs the caller's key (the assetKey) with the contract as the vendor indexes
+ * it. Returns `{configured:false}` without a key (the dark no-op); throws
+ * ProviderFetchError on transport / HTTP failure. `meter` counts requests sent.
+ */
+export async function fetchCoinGeckoTokenQuotes(
+  platform: "solana" | "ethereum",
+  tokens: ReadonlyArray<{ key: string; contract: string }>,
+  opts: CoinGeckoOptions & { now?: Date; batchSize?: number; meter?: Record<string, number> } = {},
+): Promise<{ quotes: CurrentQuote[]; rejected: QuoteRejection[]; configured: boolean }> {
+  const apiKey = opts.apiKey ?? process.env.COINGECKO_API_KEY;
+  if (!apiKey) return { quotes: [], rejected: [], configured: false };
+  const baseUrl = opts.baseUrl ?? COINGECKO_BASE_URL;
+  const doFetch: CoinGeckoFetch =
+    opts.fetchImpl ?? ((url, init) => fetch(url, init) as unknown as Promise<CoinGeckoHttpResponse>);
+  const batch = opts.batchSize ?? resolveTokenPriceBatch(process.env.COINGECKO_TOKEN_PRICE_BATCH);
+  // EVM addresses are case-insensitive and the vendor answers lowercase; a Solana
+  // mint is case-SIGNIFICANT base58 and is matched exactly.
+  const norm = (c: string) => (platform === "ethereum" ? c.toLowerCase() : c);
+
+  const quotes: CurrentQuote[] = [];
+  const rejected: QuoteRejection[] = [];
+  for (let i = 0; i < tokens.length; i += batch) {
+    const chunk = tokens.slice(i, i + batch);
+    const url = `${baseUrl}/simple/token_price/${platform}?contract_addresses=${encodeURIComponent(chunk.map((t) => norm(t.contract)).join(","))}` +
+      "&vs_currencies=usd&include_last_updated_at=true";
+    if (opts.meter) opts.meter[`simple/token_price:${platform}`] = (opts.meter[`simple/token_price:${platform}`] ?? 0) + 1;
+    let res: CoinGeckoHttpResponse;
+    try {
+      res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey }, signal: AbortSignal.timeout(PRICE_PROVIDER_TIMEOUT_MS) });
+    } catch (e) {
+      throw new ProviderFetchError("PROVIDER_ERROR", `coingecko: network error for token quotes — ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (!res.ok) {
+      throw new ProviderFetchError(res.status === 429 ? "THROTTLED" : "PROVIDER_ERROR",
+        `coingecko: ${res.status === 429 ? "rate-limited (429)" : `HTTP ${res.status}`} for token quotes`);
+    }
+    let body: unknown;
+    try { body = await res.json(); }
+    catch { throw new ProviderFetchError("INVALID_DATA", "coingecko: unparseable token-quote response"); }
+    const raw = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+    const byContract: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(raw)) byContract[norm(k)] = v;
+    const keyMap: Record<string, string> = {};
+    for (const t of chunk) keyMap[t.key] = norm(t.contract);
+    const parsed = parseSimplePriceQuotes(byContract, keyMap, opts.now ?? new Date());
+    quotes.push(...parsed.quotes);
+    rejected.push(...parsed.rejected);
+  }
+  return { quotes, rejected, configured: true };
+}

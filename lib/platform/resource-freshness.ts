@@ -56,6 +56,7 @@ import { db } from "@/lib/db";
 import { PriceBasis } from "@prisma/client";
 import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
 import { defaultPriceRegistry } from "@/lib/prices/registry";
+import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -195,7 +196,7 @@ export interface FreshnessReadClient {
   };
   positionObservation: {
     findMany(args: {
-      where: { supersededById: null; deletedAt: null; quantity: { gt: number } };
+      where: { supersededById: null; deletedAt: null; quantity: { gt: number }; instrument?: typeof NOT_TOKEN_INSTRUMENT };
       select: { instrumentId: true };
       distinct: ["instrumentId"];
     }): Promise<InstrumentIdRow[]>;
@@ -418,7 +419,10 @@ async function probeSecurityPrices(client: FreshnessReadClient): Promise<Freshne
   // Held instruments = the universe that SHOULD be priced (fetch-security-prices
   // scope). Zero held ⇒ nothing to track ⇒ `idle`, not `empty`.
   const held = await client.positionObservation.findMany({
-    where: { supersededById: null, deletedAt: null, quantity: { gt: 0 } },
+    // TOKEN HOLDINGS (PR-A) — tokens are priced by CONTRACT (INTRADAY quotes) and
+    // have no RAW_CLOSE route yet (null ticker), so counting them here would
+    // report the close archive as permanently short of units it cannot serve.
+    where: { supersededById: null, deletedAt: null, quantity: { gt: 0 }, instrument: NOT_TOKEN_INSTRUMENT },
     select: { instrumentId: true },
     distinct: ["instrumentId"],
   });

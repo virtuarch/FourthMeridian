@@ -77,7 +77,10 @@ console.log("Health — multidimensional");
   check("native history verified but chart shorter ⇒ 'some history is limited', not green", short.headline === "Current holdings ready; some history is limited" && short.tone === "neutral");
   check("wallet Health has separate lines: monitoring, holdings, native, tokens, prices, value",
     ["connection", "holdings", "history", "tokens", "prices", "valuation"].every((k) => short.lines.some((l) => l.key === k))
-    && short.lines.find((l) => l.key === "tokens")?.text === "Not reconstructed"
+    // TOKEN HOLDINGS (PR-A) — the token line is DATA-DRIVEN from the
+    // per-instrument facets; with none loaded and no chain it says tokens are
+    // not tracked rather than a hardcoded "Not reconstructed".
+    && short.lines.find((l) => l.key === "tokens")?.text === "Tokens aren’t tracked on this network yet"
     && short.lines.find((l) => l.key === "prices")?.text === "Available since Sep 27, 2026");
   check("dates are absolute (no relative 'today' that goes stale)", short.lines.find((l) => l.key === "holdings")?.text === "Updated Oct 28, 2026");
   const importingW = connectionHealth(wallet, intel({ positionObservedAt: "2026-10-28", facts: { destinations: [], bankTransactions: null, onChain: null, historyWorkerEnabled: false },
@@ -106,7 +109,14 @@ console.log("History — never claims what is not proven");
   check("wallet history states NATIVE scope, never an unqualified 'Complete'", /^Native SOL history verified/.test(two.summary) && !/^Complete/.test(two.summary) && two.blockchain?.label === "Native SOL");
   check("…and carries the chart-ready range separately, with the explanatory sentence when they differ",
     two.chart?.fromISO === "2026-09-27" && two.chart.days === 32 && two.rangeNote === "Older blockchain activity is preserved. Earlier chart values require historical prices.");
-  check("…and the SPL token limitation is stated, not implied complete", two.limitations.some((l) => /SPL token balances are not reconstructed/.test(l)));
+  // TOKEN HOLDINGS (PR-A) — the token limitation is derived from the recorded
+  // token facets (was a hardcoded per-chain sentence). No tokens recorded ⇒ said so.
+  const twoNone = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: true, licensedFromISO: "2022-03-26", licensedToISO: "2026-10-28", activityFromISO: "2022-03-26",
+    tokens: [] } }), solAcct);
+  check("…and the SPL token scope is stated, not implied complete", twoNone.limitations.some((l) => /No SPL token balances have been recorded/.test(l)));
+  const twoHeld = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: true, licensedFromISO: "2022-03-26", licensedToISO: "2026-10-28", activityFromISO: "2022-03-26",
+    tokens: [{ label: "USDC", standard: "SPL", quantity: 1, priceStatus: "MARKET_PRICE", historyState: "NOT_RECONSTRUCTED", firstObservedISO: "2026-10-28", lastObservedISO: "2026-10-28" }] } }), solAcct);
+  check("…and a held token's history is its own facet, current balance only", twoHeld.limitations.some((l) => /tracked separately from native SOL history/.test(l)) && twoHeld.tokenFacets?.length === 1);
   const same = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: true, licensedFromISO: "2026-09-27", licensedToISO: "2026-10-28", activityFromISO: "2026-09-27",
     priceFromISO: "2025-01-01", chart: { fromISO: "2026-09-27", toISO: "2026-10-28", days: 32, continuous: true } } }), [{ id: "b", name: "BTC", type: "crypto", chain: "BTC" }]);
   check("no range note when the chart reaches the start of verified history; no token caveat for Bitcoin", same.rangeNote === null && same.limitations.length === 0 && same.blockchain?.label === "Native BTC");

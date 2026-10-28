@@ -19,6 +19,7 @@ import type { SyncConnection } from "@/lib/sync/status";
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { relativeUpdated, type ConnectionTone } from "@/lib/connections/connection-summary";
+import { tokenCaptureSupported } from "@/lib/crypto/token-asset";
 
 // ── Overview: account groups ─────────────────────────────────────────────────
 
@@ -113,7 +114,14 @@ export function connectionHealth(
         : wh.licensed
           ? { key: "history", label: "Native history", tone: "ok", text: `Verified since ${fmtDay(wh.activityFromISO ?? wh.licensedFromISO)}` }
           : { key: "history", label: "Native history", tone: "neutral", text: "Not verified yet" });
-      if (wh.supported) lines.push({ key: "tokens", label: "Token history", tone: "neutral", text: "Not reconstructed" });
+      // TOKEN HOLDINGS (PR-A) — data-driven from the per-instrument facets: each
+      // token is its own history, never folded into the native line above.
+      const chain = wh.chain ?? null;
+      if (wh.supported || wh.tokens?.length) {
+        const t = tokenHistoryLabel(chain, wh.tokens);
+        const allVerified = !!wh.tokens?.length && wh.tokens.every((x) => x.historyState === "RECONSTRUCTED");
+        lines.push({ key: "tokens", label: "Token history", tone: allVerified ? "ok" : "neutral", text: t });
+      }
       lines.push(wh.priceFromISO
         ? { key: "prices", label: "Historical prices", tone: "ok", text: `Available since ${fmtDay(wh.priceFromISO)}` }
         : { key: "prices", label: "Historical prices", tone: "neutral", text: "Not available yet" });
@@ -156,7 +164,11 @@ export function connectionHealth(
   if (connection.provider === "WALLET") {
     const attention = has("attention");
     const importing = lines.some((l) => l.key === "import" && l.tone === "progress");
-    const limited = lines.some((l) => (l.key === "history" || l.key === "prices" || l.key === "import") && l.tone === "neutral")
+    // Held tokens without reconstructed history keep the wallet LIMITED: native
+    // history being verified says nothing about the tokens beside it.
+    const tokensLimited = (i?.walletHistory?.tokens ?? []).some((x) => x.historyState !== "RECONSTRUCTED");
+    const limited = tokensLimited
+      || lines.some((l) => (l.key === "history" || l.key === "prices" || l.key === "import") && l.tone === "neutral")
       || (i?.walletHistory?.licensed === true && (i.walletHistory.chart?.fromISO ?? "9999") > (i.walletHistory.activityFromISO ?? i.walletHistory.licensedFromISO ?? "0000"));
     // Attention is attributed to the facet that has it: stale HOLDINGS are not
     // "ready", and must never be blamed on history (Preview finding 2026-10-28).
@@ -204,13 +216,41 @@ export interface HistoryView {
   chart?: { fromISO: string; toISO: string; days: number; continuous: boolean } | null;
   /** One sentence when the ranges differ (older chain activity than chart values). */
   rangeNote?: string | null;
+  /**
+   * TOKEN HOLDINGS (PR-A) — one history line PER held token, separate from the
+   * native facet. Empty when the wallet holds no recorded tokens.
+   */
+  tokenFacets?: Array<{ key: string; label: string; text: string }>;
 }
 
-/** Token scope by chain: what token history would mean there, and that it is not reconstructed. */
-const TOKEN_LIMITATION: Record<string, string> = {
-  SOL: "SPL token balances are not reconstructed yet — only native SOL history is verified.",
-  ETH: "ERC-20 token balances are not reconstructed yet — only native ETH history is verified.",
-};
+type WalletTokens = NonNullable<NonNullable<ConnectionIntelligenceStatus["walletHistory"]>["tokens"]>;
+
+/** The token standard's customer name on a chain, or null when the chain has none here. */
+function tokenKind(chain: string | null | undefined): string | null {
+  const k = chain?.trim().toUpperCase();
+  return k === "SOL" ? "SPL" : k === "ETH" ? "ERC-20" : null;
+}
+
+/** One token's history facet, in the customer's words — absolute dates only. */
+export function tokenHistoryText(t: WalletTokens[number]): string {
+  if (t.historyState === "RECONSTRUCTED") return "History verified";
+  const since = fmtDay(t.firstObservedISO);
+  return t.historyState === "UNLICENSED"
+    ? `History couldn’t be verified — current balance only, recorded since ${since}`
+    : `History not reconstructed yet — current balance only, recorded since ${since}`;
+}
+
+/** Token limitations for the History tab, derived from the facets (never a per-chain constant). */
+function tokenLimitations(chain: string | null, sym: string, tokens: WalletTokens | undefined): string[] {
+  const kind = tokenKind(chain);
+  if (!kind || !tokenCaptureSupported(chain)) return [];
+  if (!tokens) return [];
+  if (tokens.length === 0) return [`No ${kind} token balances have been recorded for this wallet. Native ${sym} history is shown above.`];
+  const pending = tokens.filter((t) => t.historyState !== "RECONSTRUCTED").length;
+  if (pending === 0) return [];
+  return [`Token history is tracked separately from native ${sym} history. ${pending === tokens.length ? (tokens.length === 1 ? "This wallet’s token shows" : `All ${tokens.length} tokens show`) : `${pending} of ${tokens.length} tokens show`} its current balance only — earlier balances are never estimated.`
+    .replace("tokens show its", "tokens show their")];
+}
 
 export function connectionHistory(
   connection: SyncConnection,
@@ -228,7 +268,8 @@ export function connectionHistory(
     }
     const chain = accounts.find((a) => a.chain)?.chain?.toUpperCase() ?? null;
     const sym = nativeAssetSymbol(chain) ?? "native";
-    const tokenNote = chain && TOKEN_LIMITATION[chain] ? [TOKEN_LIMITATION[chain]] : [];
+    const tokenNote = tokenLimitations(chain, sym, wh.tokens);
+    const tokenFacets = (wh.tokens ?? []).map((t, n) => ({ key: `${t.label}-${n}`, label: `${t.label} history`, text: tokenHistoryText(t) }));
     if (wh.licensed) {
       const fromISO = wh.activityFromISO ?? wh.licensedFromISO;
       const chart = wh.chart ?? null;
@@ -240,7 +281,7 @@ export function connectionHistory(
         summary: `Native ${sym} history verified — every change to this wallet’s ${sym} balance in this period is accounted for.`,
         fromISO, toISO: wh.licensedToISO, lastBuiltISO, limitations: tokenNote,
         blockchain: { label: `Native ${sym}`, fromISO, toISO: wh.licensedToISO },
-        chart, rangeNote,
+        chart, rangeNote, tokenFacets,
       };
     }
     return {
@@ -249,10 +290,13 @@ export function connectionHistory(
       // import is not a failure, and must not read like one.
       summary: unprovenHistorySummary(wh.historyImport?.state, i?.facts?.historyWorkerEnabled === true, wh.historyImport?.provenFromISO ?? null, wh.historyImport?.lastFailureCode ?? null),
       fromISO: null, toISO: null, lastBuiltISO,
-      blockchain: null, chart: null, rangeNote: null,
-      limitations: sol
-        ? ["Large Solana wallets are imported in stages. Earlier days stay unavailable until they are proven — they are never estimated."]
-        : ["Earlier days stay unavailable until they are proven — they are never estimated."],
+      blockchain: null, chart: null, rangeNote: null, tokenFacets,
+      limitations: [
+        ...(sol
+          ? ["Large Solana wallets are imported in stages. Earlier days stay unavailable until they are proven — they are never estimated."]
+          : ["Earlier days stay unavailable until they are proven — they are never estimated."]),
+        ...tokenNote,
+      ],
     };
   }
   // PLAID — the earliest transaction is the evidence; the institution decides how far back it goes.
@@ -353,11 +397,39 @@ export function unprovenHistorySummary(state: string | null | undefined, workerE
   }
 }
 
-/** Token history scope per chain — said plainly; never folded into "complete". */
-export function tokenScopeLabel(chain: string | null | undefined): string {
+/**
+ * Token history scope — DATA-DRIVEN from the per-instrument facets
+ * (lib/crypto/wallet-instrument-history via intelligence.walletHistory.tokens),
+ * never a per-chain constant, and never folded into "complete".
+ */
+export function tokenHistoryLabel(chain: string | null | undefined, tokens: WalletTokens | undefined): string {
   const k = chain?.trim().toUpperCase();
-  if (k === "SOL") return "SPL tokens not reconstructed";
-  if (k === "ETH") return "ERC-20 tokens not reconstructed";
   if (k === "BTC") return "Not applicable (Bitcoin has no tokens here)";
-  return "Not reconstructed";
+  const kind = tokenKind(k);
+  if (!kind || !tokenCaptureSupported(k)) return "Tokens aren’t tracked on this network yet";
+  if (!tokens) return `${kind} tokens not read yet`;
+  if (tokens.length === 0) return `No ${kind} token balances recorded`;
+  const n = tokens.length;
+  const verified = tokens.filter((t) => t.historyState === "RECONSTRUCTED").length;
+  const noun = `${n} ${kind} token${n === 1 ? "" : "s"}`;
+  if (verified === n) return `${noun} · history verified`;
+  if (verified === 0) return `${noun} · current balance only, history not reconstructed yet`;
+  return `${noun} · ${verified} verified, the rest current balance only`;
+}
+
+/** Back-compat name for the scope label when no facets were loaded. */
+export function tokenScopeLabel(chain: string | null | undefined): string {
+  return tokenHistoryLabel(chain, undefined);
+}
+
+/** A token quantity for display — whole units, never rounded to a false zero. */
+export function formatTokenQuantity(q: number): string {
+  if (!Number.isFinite(q)) return "—";
+  if (q > 0 && q < 0.000001) return "< 0.000001";
+  return q.toLocaleString("en-US", { maximumFractionDigits: 6 });
+}
+
+/** Valued / unpriced, in the customer's words. */
+export function tokenPriceText(status: "MARKET_PRICE" | "NO_MARKET_PRICE"): string {
+  return status === "MARKET_PRICE" ? "Valued at market price" : "Not valued — no market price";
 }

@@ -16,7 +16,9 @@
  *   History   the proven interval, import state, limitations, the lifecycle
  *             timeline and the historical-import action
  *
- * Names and dates only — never balances (the Connections PCS-2 boundary).
+ * Names and dates only — never balances (the Connections PCS-2 boundary). The
+ * one quantity shown is a wallet TOKEN's on-chain unit count beside whether a
+ * market price exists — never a money value.
  * Every sentence comes from lib/connections/connection-detail.core.ts.
  */
 
@@ -26,7 +28,7 @@ import type { SyncConnection } from "@/lib/sync/status";
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
 import { summarizeConnection, type ConnectionTone } from "@/lib/connections/connection-summary";
 import {
-  fmtDay, tokenScopeLabel,
+  fmtDay, tokenHistoryLabel, formatTokenQuantity, tokenPriceText,
   groupAccounts, connectionHealth, connectionHistory, abbreviateAddress, networkName, nativeAssetSymbol,
   type HistoryView,
 } from "@/lib/connections/connection-detail.core";
@@ -213,6 +215,8 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
   const history = connectionHistory(connection, intelligence, accounts);
   const wallet = connection.provider === "WALLET";
   const walletAccount = wallet ? accounts[0] : undefined;
+  const tokens = wallet ? intelligence?.walletHistory?.tokens : undefined;
+  const tokenLabel = tokenHistoryLabel(walletAccount?.chain, tokens);
   const Icon = wallet ? Wallet : Building2;
 
   return (
@@ -238,10 +242,11 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
               <Facts rows={wallet ? [
                 ["Network", networkName(walletAccount?.chain)],
                 ["Wallet", walletAccount?.publicAddress ? <span className="font-mono text-xs">{abbreviateAddress(walletAccount.publicAddress)}</span> : null],
-                ["Assets tracked", nativeAssetSymbol(walletAccount?.chain) ? `${nativeAssetSymbol(walletAccount?.chain)} (native)` : null],
+                ["Assets tracked", nativeAssetSymbol(walletAccount?.chain)
+                  ? `${nativeAssetSymbol(walletAccount?.chain)} (native)${tokens?.length ? ` + ${tokens.length} token${tokens.length === 1 ? "" : "s"}` : ""}` : null],
                 ["Current holdings", intelligence?.positionObservedAt ? `Updated ${fmtDay(intelligence.positionObservedAt)}` : "Not read yet"],
                 ["Native history", history.blockchain && history.fromISO ? `Verified since ${fmtDay(history.fromISO)}` : coverageLine(history)],
-                ["Token history", tokenScopeLabel(walletAccount?.chain)],
+                ["Token history", tokenLabel],
                 ["Chart-ready history", history.chart ? `Since ${fmtDay(history.chart.fromISO)}` : "Not available yet"],
               ] : [
                 // Source and account count are in the identity line above.
@@ -249,6 +254,24 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
                 ["History", coverageLine(history)],
                 ["Used in", intelligence?.facts?.destinations.length ? intelligence.facts.destinations.join(", ") : null],
               ]} />
+              {wallet && tokens && tokens.length > 0 && (
+                <>
+                  <SectionLabel>Tokens</SectionLabel>
+                  <ul data-wallet-tokens className="divide-y divide-[var(--border-hairline)] rounded-[var(--radius-md)] border border-[var(--border-hairline)]">
+                    {tokens.map((t, n) => (
+                      <li key={`${t.label}-${n}`} className="flex items-baseline justify-between gap-4 px-3.5 py-2.5">
+                        <span className="min-w-0 truncate text-sm text-[var(--text-primary)]">
+                          {t.label} <span className="text-xs text-[var(--text-muted)]">{t.standard === "SPL" ? "SPL" : "ERC-20"}</span>
+                        </span>
+                        <span className="shrink-0 text-right">
+                          <span className="block text-sm tabular-nums text-[var(--text-primary)]">{formatTokenQuantity(t.quantity)}</span>
+                          <span className={`block text-xs ${t.priceStatus === "MARKET_PRICE" ? "text-[var(--text-muted)]" : WORD.neutral}`}>{tokenPriceText(t.priceStatus)}</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
               {!wallet && (
                 <>
                   <SectionLabel>Accounts</SectionLabel>
@@ -293,7 +316,7 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
                     ? `USD-valued since ${fmtDate(history.chart.fromISO)} (${history.chart.days} day${history.chart.days === 1 ? "" : "s"}${history.chart.continuous ? "" : ", with gaps"})`
                     : "Not available yet"],
                   ["Chart through", history.chart ? fmtDate(history.chart.toISO) : null],
-                  ["Token history", tokenScopeLabel(walletAccount?.chain)],
+                  ["Token history", tokenLabel],
                   ["On-chain transactions", intelligence?.facts?.onChain ? `${intelligence.facts.onChain.processed.toLocaleString("en-US")} processed (${intelligence.facts.onChain.scope})` : null],
                   ["Last history update", (intelligence?.walletHistory?.historyImport?.lastProgressAtISO ?? history.lastBuiltISO) ? fmtDay(intelligence?.walletHistory?.historyImport?.lastProgressAtISO ?? history.lastBuiltISO) : null],
                 ] : [
@@ -303,6 +326,20 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
                   ["Coverage", coverageLine(history)],
                 ]} />
               </div>
+              {history.tokenFacets && history.tokenFacets.length > 0 && (
+                <>
+                  <SectionLabel>Token history</SectionLabel>
+                  {/* Each token is its OWN facet — never folded into the native range above. */}
+                  <ul data-token-history className="divide-y divide-[var(--border-hairline)] rounded-[var(--radius-md)] border border-[var(--border-hairline)]">
+                    {history.tokenFacets.map((f) => (
+                      <li key={f.key} className="flex items-baseline justify-between gap-4 px-3.5 py-2.5">
+                        <span className="shrink-0 text-xs text-[var(--text-muted)]">{f.label}</span>
+                        <span className="min-w-0 text-right text-sm text-[var(--text-primary)]">{f.text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
               {history.rangeNote && <p className="mt-3 text-xs leading-relaxed text-[var(--text-secondary)]">{history.rangeNote}</p>}
               {history.limitations.length > 0 && (
                 <ul className="mt-3 space-y-1.5">

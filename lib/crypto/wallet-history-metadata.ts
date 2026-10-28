@@ -61,6 +61,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
 import { loadPositionCoverage, licensedInterval } from "./position-coverage";
 import { chainSupportsHistory } from "./wallet-sync-dispatch";
+import { NOT_TOKEN_INSTRUMENT } from "./token-asset";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -131,6 +132,8 @@ export async function loadWalletHistoryMetadata(
       financialAccountId: { in: accounts.map((a) => a.id) },
       supersededById: null, deletedAt: null,
       NOT: { quantity: 0 },
+      // Native activity only — the licence this is clamped to is the native one.
+      instrument: NOT_TOKEN_INSTRUMENT,
     },
     _min: { date: true },
   })) {

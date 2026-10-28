@@ -40,6 +40,7 @@
 
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { ChainCoverage, ChainCoverageCaveat } from "./chain-movement";
+import { NOT_TOKEN_INSTRUMENT } from "./token-asset";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -217,34 +218,67 @@ export async function loadPositionCoverage(
   if (financialAccountIds.length === 0) return out;
 
   const rows = await client.positionCoverage.findMany({
-    where:  { financialAccountId: { in: [...financialAccountIds] } },
+    // TOKEN HOLDINGS (PR-A) — this reader answers for the wallet's NATIVE
+    // instrument, keyed by account. A token coverage row (written by the
+    // token-history PRs) must never be read as the native licence, nor
+    // overwrite it in this map. Per-instrument coverage: loadInstrumentCoverage.
+    where:  { financialAccountId: { in: [...financialAccountIds] }, instrument: NOT_TOKEN_INSTRUMENT },
     select: {
       financialAccountId: true, kind: true, coveredFromDate: true,
       coveredToDate: true, caveats: true, source: true,
     },
   });
 
+  for (const r of rows) out.set(r.financialAccountId, coverageFromRow(r));
+  return out;
+}
+
+/** The persisted columns a coverage row is read back from. */
+export interface CoverageRowFields {
+  kind: string; coveredFromDate: Date | null; coveredToDate: Date | null; caveats: string[]; source: string;
+}
+
+/**
+ * One persisted row → the canonical union. UNKNOWN, and anything that failed its
+ * own COMPLETE invariant — a COMPLETE row without both bounds is not a licence,
+ * so it degrades rather than being trusted on the strength of its label.
+ */
+export function coverageFromRow(r: CoverageRowFields): ChainCoverage {
+  const caveats = r.caveats as ChainCoverageCaveat[];
+  if (r.kind === "COMPLETE" && r.coveredFromDate && r.coveredToDate) {
+    return { kind: "COMPLETE", fromISO: isoOf(r.coveredFromDate), toISO: isoOf(r.coveredToDate), source: r.source };
+  }
+  if (r.kind === "PARTIAL") {
+    return {
+      kind: "PARTIAL",
+      coveredFromISO: r.coveredFromDate ? isoOf(r.coveredFromDate) : null,
+      coveredToISO:   r.coveredToDate ? isoOf(r.coveredToDate) : null,
+      caveats, source: r.source,
+    };
+  }
+  return { kind: "UNKNOWN", caveats, source: r.source };
+}
+
+/**
+ * TOKEN HOLDINGS (PR-A) — coverage per (account, instrument), native AND token.
+ * `PositionCoverage` was always keyed that way; only the account-keyed reader
+ * above collapsed it. Outer key account id, inner key instrument id. An absent
+ * inner key is NO_COVERAGE_RECORD — nothing licensed — never "complete".
+ */
+export async function loadInstrumentCoverage(
+  client: Client,
+  financialAccountIds: readonly string[],
+): Promise<Map<string, Map<string, ChainCoverage>>> {
+  const out = new Map<string, Map<string, ChainCoverage>>();
+  if (financialAccountIds.length === 0) return out;
+  const rows = await client.positionCoverage.findMany({
+    where:  { financialAccountId: { in: [...financialAccountIds] } },
+    select: { financialAccountId: true, instrumentId: true, kind: true, coveredFromDate: true, coveredToDate: true, caveats: true, source: true },
+  });
   for (const r of rows) {
-    const caveats = r.caveats as ChainCoverageCaveat[];
-    if (r.kind === "COMPLETE" && r.coveredFromDate && r.coveredToDate) {
-      out.set(r.financialAccountId, {
-        kind: "COMPLETE", fromISO: isoOf(r.coveredFromDate), toISO: isoOf(r.coveredToDate), source: r.source,
-      });
-      continue;
-    }
-    if (r.kind === "PARTIAL") {
-      out.set(r.financialAccountId, {
-        kind: "PARTIAL",
-        coveredFromISO: r.coveredFromDate ? isoOf(r.coveredFromDate) : null,
-        coveredToISO:   r.coveredToDate ? isoOf(r.coveredToDate) : null,
-        caveats, source: r.source,
-      });
-      continue;
-    }
-    // UNKNOWN, and anything that failed its own COMPLETE invariant — a COMPLETE
-    // row without both bounds is not a licence, so it degrades rather than
-    // being trusted on the strength of its label.
-    out.set(r.financialAccountId, { kind: "UNKNOWN", caveats, source: r.source });
+    const inner = out.get(r.financialAccountId) ?? new Map<string, ChainCoverage>();
+    inner.set(r.instrumentId, coverageFromRow(r));
+    out.set(r.financialAccountId, inner);
   }
   return out;
 }

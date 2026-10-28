@@ -30,7 +30,7 @@ import { PriceBasis, type Prisma, type PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
 import { lookupCryptoInstrumentId } from "@/lib/crypto/crypto-price-window";
 import { nativeAssetForChain } from "@/lib/crypto/native-asset";
-import { fetchCoinGeckoCurrentQuotes } from "@/lib/prices/providers/coingecko";
+import { fetchCoinGeckoCurrentQuotes, fetchCoinGeckoTokenQuotes } from "@/lib/prices/providers/coingecko";
 import { quoteDateISO, type CurrentQuote } from "@/lib/prices/current-quote.core";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -51,6 +51,7 @@ export interface StoredQuote {
 export async function writeCurrentQuotes(
   bound: ReadonlyArray<CurrentQuote & { instrumentId: string }>,
   client: Client = db,
+  source: string = CURRENT_QUOTE_SOURCE,
 ): Promise<string[]> {
   const changed: string[] = [];
   for (const q of bound) {
@@ -61,8 +62,8 @@ export async function writeCurrentQuotes(
     if (existing && existing.fetchedAt.getTime() >= q.quotedAt.getTime()) continue;
     await client.priceObservation.upsert({
       where:  key,
-      create: { instrumentId: q.instrumentId, date, basis: PriceBasis.INTRADAY, price: q.priceUsd, currency: "USD", source: CURRENT_QUOTE_SOURCE, fetchedAt: q.quotedAt },
-      update: { price: q.priceUsd, source: CURRENT_QUOTE_SOURCE, fetchedAt: q.quotedAt },
+      create: { instrumentId: q.instrumentId, date, basis: PriceBasis.INTRADAY, price: q.priceUsd, currency: "USD", source, fetchedAt: q.quotedAt },
+      update: { price: q.priceUsd, source, fetchedAt: q.quotedAt },
     });
     if (!existing || existing.price !== q.priceUsd) changed.push(q.instrumentId);
   }
@@ -128,6 +129,68 @@ export async function refreshCurrentQuotesForChains(
     const changedInstrumentIds = await writeCurrentQuotes(bound, client);
     const quotedAt = new Date(Math.min(...bound.map((b) => b.quotedAt.getTime())));
     return done({ status: "REFRESHED" as const, instrumentIds: bound.map((b) => b.instrumentId), changedInstrumentIds, quotedAt });
+  } catch (e) {
+    return done({ status: "UNAVAILABLE" as const, reason: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/** One token instrument to quote, by the contract/mint that is its identity. */
+export interface TokenQuoteTarget {
+  instrumentId: string;
+  assetKey:     string;
+  platform:     "solana" | "ethereum";
+  contract:     string;
+}
+
+/** The PriceObservation.source stamped on contract-addressed token quotes. */
+export const TOKEN_QUOTE_SOURCE = "coingecko:simple_token_price";
+
+/**
+ * TOKEN HOLDINGS FOUNDATION (PR-A) — fetch and persist CURRENT quotes for token
+ * instruments, by contract, through the same INTRADAY writer the native quotes
+ * use (so valuation reads them exactly as it reads native quotes: today only).
+ *
+ * Never throws. A token the vendor does not list is simply not quoted — it stays
+ * UNPRICED, is excluded from wallet totals, and is never valued at zero.
+ * `client` is REQUIRED. `maxTokens` bounds the vendor spend per call.
+ */
+export async function refreshCurrentTokenQuotes(
+  targets: readonly TokenQuoteTarget[],
+  opts: {
+    client: Client;
+    fetchTokenQuotes?: typeof fetchCoinGeckoTokenQuotes;
+    now?: Date;
+    maxTokens?: number;
+    meter?: Record<string, number>;
+  },
+): Promise<QuoteRefreshOutcome & { unpricedAssetKeys?: string[] }> {
+  const startedAt = new Date();
+  const t0 = Date.now();
+  const done = <T extends object>(o: T) => ({ ...o, startedAt, durationMs: Date.now() - t0 });
+  try {
+    const bounded = targets.slice(0, Math.max(0, opts.maxTokens ?? 10));
+    if (bounded.length === 0) return done({ status: "UNAVAILABLE" as const, reason: "no token instruments to quote" });
+    const fetchFn = opts.fetchTokenQuotes ?? fetchCoinGeckoTokenQuotes;
+    const bound: Array<CurrentQuote & { instrumentId: string }> = [];
+    const unpriced: string[] = [];
+    let configured = false;
+    for (const platform of ["solana", "ethereum"] as const) {
+      const group = bounded.filter((t) => t.platform === platform);
+      if (group.length === 0) continue;
+      const fetched = await fetchFn(platform, group.map((t) => ({ key: t.assetKey, contract: t.contract })), { now: opts.now, meter: opts.meter });
+      if (!fetched.configured) continue;
+      configured = true;
+      for (const q of fetched.quotes) {
+        const t = group.find((g) => g.assetKey === q.symbol);
+        if (t) bound.push({ ...q, instrumentId: t.instrumentId });
+      }
+      for (const r of fetched.rejected) unpriced.push(r.symbol);
+    }
+    if (!configured) return done({ status: "NOT_CONFIGURED" as const });
+    if (bound.length === 0) return done({ status: "UNAVAILABLE" as const, reason: "no listed market price for these tokens", unpricedAssetKeys: unpriced });
+    const changedInstrumentIds = await writeCurrentQuotes(bound, opts.client, TOKEN_QUOTE_SOURCE);
+    const quotedAt = new Date(Math.min(...bound.map((b) => b.quotedAt.getTime())));
+    return done({ status: "REFRESHED" as const, instrumentIds: bound.map((b) => b.instrumentId), changedInstrumentIds, quotedAt, unpricedAssetKeys: unpriced });
   } catch (e) {
     return done({ status: "UNAVAILABLE" as const, reason: e instanceof Error ? e.message : String(e) });
   }

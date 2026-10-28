@@ -16,6 +16,7 @@
 
 import { db } from "@/lib/db";
 import { AssetClass, InvestmentCoverageOutcome } from "@prisma/client";
+import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 import {
   earliestImpactedFrom,
   planHistoricalWorkWindow,
@@ -95,7 +96,10 @@ async function resolveBlockingPriceFloor(
   if (financialAccountIds.length === 0) return { floorISO: null, unpricedBlockingInstruments: 0 };
 
   const held = await db.positionObservation.findMany({
-    where:  { financialAccountId: { in: financialAccountIds }, instrument: { assetClass: AssetClass.CRYPTO } },
+    // TOKEN HOLDINGS (PR-A) — a token is not a BLOCKING instrument: historical
+    // composition excludes tokens (regenerate-history), so an unpriced airdrop
+    // must not make "nothing plannable" of a Space's whole history.
+    where:  { financialAccountId: { in: financialAccountIds }, instrument: { assetClass: AssetClass.CRYPTO, ...NOT_TOKEN_INSTRUMENT } },
     select: { instrumentId: true },
     distinct: ["instrumentId"],
   });

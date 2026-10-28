@@ -138,6 +138,24 @@ export interface ConnectionIntelligenceStatus {
     chart?: { fromISO: string; toISO: string; days: number; continuous: boolean } | null;
     /** The resumable history import's persisted state (Solana today); null when the chain has none. */
     historyImport?: { state: string; provenFromISO: string | null; lastProgressAtISO: string | null; signaturesProcessed: number; lastFailureCode: string | null } | null;
+    /**
+     * TOKEN HOLDINGS (PR-A) — the tokens this wallet currently holds, each its
+     * OWN history facet (lib/crypto/wallet-instrument-history). Quantity and
+     * price PRESENCE only — never a value (PCS-2). Undefined when not loaded.
+     */
+    tokens?: Array<{
+      label: string;
+      standard: "SPL" | "ERC20";
+      quantity: number;
+      priceStatus: "MARKET_PRICE" | "NO_MARKET_PRICE";
+      historyState: "RECONSTRUCTED" | "NOT_RECONSTRUCTED" | "UNLICENSED";
+      firstObservedISO: string;
+      lastObservedISO: string;
+    }>;
+    /** The wallet-level answer: native AND every token reconstructed. Never inferred from native alone. */
+    walletComplete?: boolean;
+    /** The wallet's chain token (e.g. "SOL"), for chain-specific token wording. */
+    chain?: string | null;
   } | null;
   /**
    * CONNECTION FACTS (owner requirement "everything should be honest") — each

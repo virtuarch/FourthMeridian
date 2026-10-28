@@ -77,6 +77,7 @@ import { feedsLegacyWealthHistory } from "@/lib/crypto/wallet-sync-dispatch";
 // that keeps an observation ranked above a reconstruction on a shared date.
 import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconstruction-read";
 import { loadPositionCoverage, resolveLicensedQuantityAsOf } from "@/lib/crypto/position-coverage";
+import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
@@ -356,6 +357,14 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         financialAccountId: { in: spineCryptoAccounts.map((a) => a.id) },
         supersededById: null, deletedAt: null,
         date: { lte: fromISO(toDate) },
+        // TOKEN HOLDINGS (PR-A) — this composer values ONE native quantity per
+        // wallet (instrument-blind rows, the account's native price). A token
+        // row on the same account would otherwise be read AS native quantity —
+        // 1,000 USDC valued as 1,000 SOL. Tokens have no reconstructed history
+        // and no licence, so they contribute nothing to historical points until
+        // the token-history PRs give them both. NOT EXISTS ⇒ every non-token
+        // row (all rows before this slice) is kept byte-identically.
+        instrument: NOT_TOKEN_INSTRUMENT,
       },
       select: { financialAccountId: true, date: true, quantity: true, origin: true, completeness: true },
       orderBy: { date: "asc" },

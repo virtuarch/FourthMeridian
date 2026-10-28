@@ -125,7 +125,10 @@ async function main() {
   const chainByAssetKey = new Map(CHAINS.map((c) => [nativeAssetForChain(c)!.assetKey, c]));
   d.instrumentAlias = { findUnique: async (a: { where: { provider_externalId: { externalId: string } } }) => {
     const c = chainByAssetKey.get(a.where.provider_externalId.externalId);
-    return c ? { instrumentId: inst(c) } : null; } };
+    return c ? { instrumentId: inst(c) } : null; },
+    // TOKEN HOLDINGS (PR-A) — loadWalletCurrentValues now asks which valued
+    // instruments are TOKENS (by alias). These fixtures hold native assets only.
+    findMany: async () => [] };
   d.instrument = {
     findFirst: async (a: { where: { tickerSymbol: string } }) => ({ id: inst(a.where.tickerSymbol) }),
     findMany:  async (a: { where: { id: { in: string[] } } }) => a.where.id.in.map((id) => ({ id, currency: "USD", isCashEquivalent: false })),

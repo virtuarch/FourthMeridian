@@ -1,0 +1,211 @@
+/**
+ * lib/crypto/wallet-instrument-history.ts
+ *
+ * TOKEN HOLDINGS FOUNDATION (PR-A) — WALLET HISTORY COMPLETENESS IS PER INSTRUMENT.
+ *
+ * A wallet's native coin being fully reconstructed says nothing about the USDC
+ * beside it. Before tokens were captured that was invisible — the native asset
+ * was the only thing the system knew the wallet held — and every surface read
+ * "native history verified" as if it were "wallet history verified". This
+ * module is the one place that answers the wallet question honestly:
+ *
+ *   native   the native instrument's persisted licence (PositionCoverage)
+ *   tokens   one facet per token instrument ever observed on the account, each
+ *            with ITS OWN licence — absent today (history not reconstructed),
+ *            so each reads NOT_RECONSTRUCTED: current balance only
+ *   complete native RECONSTRUCTED **and** the chain's token history supported
+ *            **and** every token facet RECONSTRUCTED. A chain with tokens whose
+ *            token history is not supported can NEVER read complete — tokens
+ *            held before capture began are unknown, not absent.
+ *
+ * ── FOR THE TOKEN-HISTORY PRs ───────────────────────────────────────────────
+ * Nothing here needs to change when ERC-20 / SPL history lands. Those PRs:
+ *   1. write DERIVED token rows + `persistPositionCoverage(tx, accountId,
+ *      tokenInstrumentId, coverage)` — the facet then reads RECONSTRUCTED;
+ *   2. add the chain to `TOKEN_HISTORY_CHAINS` once acquisition is proven for
+ *      EVERY token on it (not merely the ones captured) — only then can a
+ *      wallet on that chain read complete.
+ *
+ * Pure core (`facetFromCoverage`, `walletHistoryComplete`) + one DB binding that
+ * takes `client` explicitly. Dates, quantities and price PRESENCE only — no
+ * valuation (the Connections PCS-2 surface reads this).
+ */
+
+import { PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
+import { licensedInterval, loadInstrumentCoverage } from "./position-coverage";
+import type { ChainCoverage } from "./chain-movement";
+import { nativeAssetForChain } from "./native-asset";
+import {
+  parseTokenAssetKey, tokenDisplayLabel, TOKEN_ALIAS_PROVIDER, WALLET_TOKEN_POSITION_SOURCE, type TokenStandard,
+} from "./token-asset";
+
+type Client = PrismaClient | Prisma.TransactionClient;
+
+/**
+ * Chains whose TOKEN history acquisition is proven. EMPTY in PR-A: no token
+ * history is reconstructed anywhere. A follow-up adds its chain here, on
+ * evidence, in the same PR that writes the token coverage.
+ */
+export const TOKEN_HISTORY_CHAINS: ReadonlySet<string> = new Set<string>();
+
+/** Chains that carry tokens at all (a BTC wallet's history is native-only by construction). */
+const TOKEN_BEARING_CHAINS: ReadonlySet<string> = new Set(["SOL", "ETH", "BNB", "AVAX", "MATIC"]);
+
+export type InstrumentHistoryState =
+  /** A licensed interval exists for this instrument. */
+  | "RECONSTRUCTED"
+  /** No coverage record at all — history was never reconstructed. Current balance only. */
+  | "NOT_RECONSTRUCTED"
+  /** A coverage record exists but licenses nothing (UNKNOWN / blocking caveat). */
+  | "UNLICENSED";
+
+export interface InstrumentHistoryFacet {
+  instrumentId:    string | null;
+  assetKey:        string | null;
+  label:           string;
+  state:           InstrumentHistoryState;
+  licensedFromISO: string | null;
+  licensedToISO:   string | null;
+}
+
+export interface TokenHistoryFacet extends InstrumentHistoryFacet {
+  instrumentId: string;
+  standard:     TokenStandard;
+  contract:     string;
+  /** Latest observed whole-unit quantity; 0 = closed (no longer held). */
+  quantity:     number;
+  held:         boolean;
+  firstObservedISO: string;
+  lastObservedISO:  string;
+  /**
+   * Whether ANY market price exists for this token on or after its latest
+   * observation. Presence only — the value itself is lib/crypto/wallet-current-value's.
+   * NO_MARKET_PRICE ⇒ "Not valued — no market price": excluded from totals, never zero.
+   */
+  priceStatus:  "MARKET_PRICE" | "NO_MARKET_PRICE";
+}
+
+export interface WalletInstrumentHistory {
+  accountId: string;
+  chain:     string;
+  native:    InstrumentHistoryFacet;
+  /** Every token instrument ever observed, held first, then by label. */
+  tokens:    TokenHistoryFacet[];
+  /** Is token history acquisition supported on this chain at all? */
+  tokenHistorySupported: boolean;
+  /** THE wallet-level answer. Never true because the native facet alone is. */
+  complete:  boolean;
+}
+
+/** Pure: one instrument's coverage → its facet state. */
+export function facetFromCoverage(coverage: ChainCoverage | null | undefined):
+  Pick<InstrumentHistoryFacet, "state" | "licensedFromISO" | "licensedToISO"> {
+  if (!coverage) return { state: "NOT_RECONSTRUCTED", licensedFromISO: null, licensedToISO: null };
+  const i = licensedInterval(coverage);
+  return i ? { state: "RECONSTRUCTED", licensedFromISO: i.fromISO, licensedToISO: i.toISO }
+    : { state: "UNLICENSED", licensedFromISO: null, licensedToISO: null };
+}
+
+/** Pure: the wallet-level completeness rule (see the header). */
+export function walletHistoryComplete(h: Pick<WalletInstrumentHistory, "chain" | "native" | "tokens">): boolean {
+  if (h.native.state !== "RECONSTRUCTED") return false;
+  const chain = h.chain.trim().toUpperCase();
+  if (!TOKEN_BEARING_CHAINS.has(chain)) return true;
+  if (!TOKEN_HISTORY_CHAINS.has(chain)) return false;
+  return h.tokens.every((t) => t.state === "RECONSTRUCTED");
+}
+
+const isoOf = (d: Date) => d.toISOString().slice(0, 10);
+
+/**
+ * Per-instrument history for wallet accounts the caller has ALREADY authorized,
+ * keyed by account id. Every account passed is present in the result.
+ */
+export async function loadWalletInstrumentHistory(
+  client: Client,
+  accounts: readonly { id: string; walletChain: string | null | undefined }[],
+): Promise<Map<string, WalletInstrumentHistory>> {
+  const out = new Map<string, WalletInstrumentHistory>();
+  if (accounts.length === 0) return out;
+  const ids = accounts.map((a) => a.id);
+
+  const [coverage, spans] = await Promise.all([
+    loadInstrumentCoverage(client, ids),
+    client.positionObservation.groupBy({
+      by: ["financialAccountId", "instrumentId"],
+      where: { financialAccountId: { in: ids }, source: WALLET_TOKEN_POSITION_SOURCE, origin: PositionOrigin.OBSERVED, supersededById: null, deletedAt: null },
+      _min: { date: true },
+      _max: { date: true },
+    }),
+  ]);
+
+  const tokenInstrumentIds = [...new Set(spans.map((s) => s.instrumentId))];
+  const coveredInstrumentIds = [...new Set([...coverage.values()].flatMap((m) => [...m.keys()]))];
+  const aliasIds = [...new Set([...tokenInstrumentIds, ...coveredInstrumentIds])];
+
+  const [aliases, latestRows, prices] = await Promise.all([
+    aliasIds.length === 0 ? [] : client.instrumentAlias.findMany({
+      where: { instrumentId: { in: aliasIds }, provider: TOKEN_ALIAS_PROVIDER },
+      select: { instrumentId: true, externalId: true, metadata: true },
+    }),
+    spans.length === 0 ? [] : client.positionObservation.findMany({
+      where: {
+        source: WALLET_TOKEN_POSITION_SOURCE, origin: PositionOrigin.OBSERVED, supersededById: null, deletedAt: null,
+        OR: spans.filter((s) => s._max.date).map((s) => ({ financialAccountId: s.financialAccountId, instrumentId: s.instrumentId, date: s._max.date! })),
+      },
+      select: { financialAccountId: true, instrumentId: true, quantity: true },
+    }),
+    tokenInstrumentIds.length === 0 ? [] : client.priceObservation.groupBy({
+      by: ["instrumentId"], where: { instrumentId: { in: tokenInstrumentIds } }, _max: { date: true },
+    }),
+  ]);
+
+  const aliasByInstrument = new Map<string, { assetKey: string; symbol: string | null }>();
+  for (const a of aliases) {
+    const sym = (a.metadata as { symbol?: unknown } | null)?.symbol;
+    // A native alias shares the namespace; record it too so the native facet can name its key.
+    aliasByInstrument.set(a.instrumentId, { assetKey: a.externalId, symbol: typeof sym === "string" ? sym : null });
+  }
+  const latestQty = new Map(latestRows.map((r) => [`${r.financialAccountId}|${r.instrumentId}`, r.quantity]));
+  const latestPrice = new Map(prices.map((p) => [p.instrumentId, p._max.date ? isoOf(p._max.date) : null]));
+
+  for (const a of accounts) {
+    const chain = (a.walletChain ?? "").trim().toUpperCase();
+    const native = nativeAssetForChain(chain);
+    const cov = coverage.get(a.id) ?? new Map<string, ChainCoverage>();
+
+    // NATIVE: the coverage row whose instrument is NOT a token.
+    const nativeEntry = [...cov.entries()].find(([instrumentId]) => !parseTokenAssetKey(aliasByInstrument.get(instrumentId)?.assetKey));
+    const nativeFacet: InstrumentHistoryFacet = {
+      instrumentId: nativeEntry?.[0] ?? null,
+      assetKey:     native?.assetKey ?? null,
+      label:        native?.symbol ?? chain,
+      ...facetFromCoverage(nativeEntry?.[1] ?? null),
+    };
+
+    const tokens: TokenHistoryFacet[] = [];
+    for (const s of spans) {
+      if (s.financialAccountId !== a.id || !s._min.date || !s._max.date) continue;
+      const alias = aliasByInstrument.get(s.instrumentId);
+      const parsed = parseTokenAssetKey(alias?.assetKey);
+      if (!alias || !parsed) continue; // not a token identity — never guessed into one
+      const quantity = latestQty.get(`${a.id}|${s.instrumentId}`) ?? 0;
+      const lastObservedISO = isoOf(s._max.date);
+      const priceISO = latestPrice.get(s.instrumentId) ?? null;
+      tokens.push({
+        instrumentId: s.instrumentId, assetKey: alias.assetKey,
+        label: tokenDisplayLabel({ symbol: alias.symbol, contract: parsed.contract }),
+        standard: parsed.standard, contract: parsed.contract,
+        quantity, held: quantity > 0,
+        firstObservedISO: isoOf(s._min.date), lastObservedISO,
+        priceStatus: priceISO !== null && priceISO >= lastObservedISO ? "MARKET_PRICE" : "NO_MARKET_PRICE",
+        ...facetFromCoverage(cov.get(s.instrumentId) ?? null),
+      });
+    }
+    tokens.sort((x, y) => (x.held === y.held ? x.label.localeCompare(y.label) : x.held ? -1 : 1));
+
+    const h = { accountId: a.id, chain, native: nativeFacet, tokens, tokenHistorySupported: TOKEN_HISTORY_CHAINS.has(chain) };
+    out.set(a.id, { ...h, complete: walletHistoryComplete(h) });
+  }
+  return out;
+}
