@@ -23,7 +23,8 @@
  *     syncs — at every commit. SHARED PROVIDER BUDGET (2026-10-28): every
  *     Alchemy-backed history path (this worker, SOL sync history, ETH history)
  *     also records its requests in ApiUsageCounter (provider ALCHEMY), which
- *     this worker flushes after each wallet. The cap reads the LARGER of the
+ *     this worker flushes WHILE each pass sends (every 100 calls / 10 s —
+ *     incrementalMeter) and after each wallet. The cap reads the LARGER of the
  *     two (lib/usage/provider-budget.core.ts), so it holds across runs,
  *     overlapping triggers, runs killed mid-flight, and the other chains.
  *   - one global token bucket; per-wallet budget; fair order.
@@ -52,9 +53,7 @@
  * history the resumable backfill owns (lib/crypto/btc-history-backfill.ts),
  * with the same lock, wake, regeneration and pending-marker semantics, its own
  * token bucket and daily cap (a different provider — keyless Esplora), and on
- * unless BTC_BACKFILL_ENABLED=false. When both chains have work, Solana is
- * planned to the first half of the job budget and Bitcoin gets the rest;
- * either chain alone gets all of it. The job name and registration are
+ * unless BTC_BACKFILL_ENABLED=false. The job name and registration are
  * unchanged.
  *
  * ETHEREUM (2026-10-28) — and Ethereum wallets whose FULL rebuild a sync
@@ -64,8 +63,18 @@
  * are written once, when the whole proof closes and reconciles. Its requests
  * spend the SAME Alchemy key as Solana, so they count against the SAME daily
  * cap (SOL_BACKFILL_DAILY_REQUEST_CAP), read from the shared provider ledger.
- * When Ethereum has work the job budget is shared three ways; without it the
- * split is unchanged.
+ *
+ * SHARING THE RUN (2026-10-28, lib/crypto/history-worker-schedule.core.ts):
+ * the chains with work run in a ROTATING order — the leader changes every run
+ * (persisted in this job's summary) — and each phase gets a fair share of what
+ * is left, never less than its chain needs to start a step. Every chain with
+ * eligible work therefore starts a step within 3 runs whatever the others'
+ * backlogs (a fixed SOL → BTC → ETH order starved Ethereum's 75 s step). A
+ * single chain gets the whole budget, as before.
+ *
+ * PRICE GAPS FOR EVERY HOLDER (2026-10-28): each run first plans and acquires
+ * historical price gaps across every licensed crypto holder (not only wallets
+ * whose backfill moved), then revalues the holders the new floor reaches.
  *
  * SUMMARY: counts, request meter and estimated units only — no ids, no
  * addresses, no balances.
@@ -89,12 +98,16 @@ import type { BtcBackfillStore, BtcBackfillDeps } from "@/lib/crypto/btc-history
 import type { BtcResumableResult } from "@/lib/crypto/btc-history-backfill.store";
 import {
   parseCheckpoint as parseEthCheckpoint, serializeCheckpoint as serializeEthCheckpoint, usageOn as ethUsageOn,
-  ethWorkerConfig, orderEthCandidates, probeBudgetFor, type EthBackfillCheckpoint, type EthBackfillWorkerConfig,
+  ethWorkerConfig, orderEthCandidates, probeBudgetFor, stepProbeBudget, type EthBackfillCheckpoint, type EthBackfillWorkerConfig,
 } from "@/lib/crypto/eth-history-backfill.core";
 import type { EthBackfillStore, EthBackfillDeps, EthBackfillOutcome } from "@/lib/crypto/eth-history-backfill";
-import { effectiveDailyUsage, meterTotal } from "@/lib/usage/provider-budget.core";
+import { effectiveDailyUsage, incrementalMeter, meterTotal, type IncrementalMeter, type MeterRecorder } from "@/lib/usage/provider-budget.core";
 import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS } from "@/lib/prices/price-gap.core";
-import type { PriceGapRun, RevaluationOwed } from "@/lib/prices/price-gap";
+import type { PriceGapRun, RevaluationOwed, RevaluationRun } from "@/lib/prices/price-gap";
+import {
+  chainOrder, nextRotation, phaseDeadlineFor, PHASE_SETUP_MS, ROTATION_LOOKBACK_RUNS, ROTATION_SLOT_MS,
+  type HistoryChain, type HistoryWorkerSchedule,
+} from "@/lib/crypto/history-worker-schedule.core";
 import type { LedgerCalls } from "@/lib/usage/provider-budget.core";
 
 export const SOL_BACKFILL_JOB = "sol-history-backfill";
@@ -137,6 +150,12 @@ export interface SolBackfillJobSummary {
   holdersFlagFailed: number;
   /** Wallets flagged this run because PERSISTED state says they are owed a revaluation (self-healing a lost flag). */
   revaluationsRederived: number;
+  /** The all-holder price-gap pass (every licensed crypto holder, every chain), when wired. */
+  priceGapSweep?: { holders: number; skippedForTime: boolean };
+  /** Non-Solana holders revalued after a price gap fill (state-derived, once per floor). */
+  holderRevaluation?: { holders: number; owed: number; revalued: number; deferred: number; alreadyRevalued: number; failures: number; skippedForTime: boolean };
+  /** This run's chain rotation and pass order — persisted, read back by the next run. Absent on a NO_WORK run. */
+  schedule?: HistoryWorkerSchedule;
   dailyRequestCap: number;
   budgetMs: number;
   stoppedBecause: "DISABLED" | "NO_WORK" | "JOB_BUDGET" | "DAILY_CAP" | "ALL_RUN";
@@ -238,6 +257,12 @@ export interface SolBackfillJobDeps {
   recordUsage?(meter: Readonly<Record<string, number>>, flushed: Record<string, number>): Promise<void>;
   /** Detect + acquire historical price gaps for these accounts (lib/prices/price-gap.ts). */
   acquirePriceGaps?(accountIds: string[], opts: { attempted: Map<string, string>; maxInstruments: number }): Promise<PriceGapRun>;
+  /** The job's previous FINISHED runs, newest first (≤ ROTATION_LOOKBACK_RUNS), for the chain rotation. Absent ⇒ rotation 0. */
+  previousRuns?(): Promise<Array<{ summary: unknown }>>;
+  /** Every account holding a licensed CRYPTO balance history (any chain) — the all-holder price-gap pass. */
+  cryptoHolders?(): Promise<string[]>;
+  /** Revalue these holders where persisted state owes it (lib/prices/price-gap.ts revalueHoldersAfterPriceGaps). */
+  revalueHolders?(accountIds: string[], opts: { deadlineMs: number; attempted: Map<string, string>; maxInstruments: number }): Promise<RevaluationRun>;
   /** Absent ⇒ the job carries Solana only. */
   btc?: BtcBackfillJobDeps;
   /** Absent ⇒ no Ethereum pass. */
@@ -279,6 +304,19 @@ export async function setEthPending(store: EthBackfillStore, accountId: string, 
   catch { return false; } // the marker is re-derived next run
 }
 
+/** A pass's meter: crash-safe (flushed while it sends) when a recorder is wired, a plain counter otherwise. */
+function runMeter(recordUsage: MeterRecorder | undefined, now: () => number): IncrementalMeter {
+  if (!recordUsage) return { meter: {}, flushed: {}, flush: async () => {} };
+  return incrementalMeter(recordUsage, { now });
+}
+
+function addPriceGaps(summary: SolBackfillJobSummary, g: PriceGapRun): void {
+  summary.priceGaps.acquired += g.acquired;
+  summary.priceGaps.inserted += g.inserted;
+  summary.priceGaps.failures += g.failures;
+  summary.priceGaps.deferred += g.decisions.filter((d) => d.kind === "DEFERRED_RUN_CAP").length;
+}
+
 export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfig; btcConfig?: BtcBackfillWorkerConfig; ethConfig?: EthBackfillWorkerConfig; deps?: SolBackfillJobDeps } = {}): Promise<SolBackfillJobSummary> {
   const cfg = opts.config ?? workerConfig();
   const summary: SolBackfillJobSummary = {
@@ -291,10 +329,15 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   };
   if (!cfg.enabled) return summary;
   const deps = opts.deps ?? await productionDeps();
-  const meter: Record<string, number> = {};
-  const flushed: Record<string, number> = {};
-  const total = () => Object.values(meter).reduce((a, b) => a + b, 0);
-  const flushUsage = async () => { if (deps.recordUsage) { try { await deps.recordUsage(meter, flushed); } catch { /* metering never fails a run */ } } };
+  // CRASH-SAFE metering: each meter reaches the shared ledger while its pass
+  // sends (every METER_FLUSH_EVERY_CALLS calls / _MS), not only at wallet end —
+  // a run killed mid-pass leaves at most one flush's worth uncounted.
+  const solUsage = runMeter(deps.recordUsage, deps.now);
+  const meter = solUsage.meter;
+  const total = () => meterTotal(meter);
+  const flushUsage = () => solUsage.flush();
+  /** Ethereum spends the SAME Alchemy cap: whichever of the two runs second sees the other's calls. */
+  const ethUsage = runMeter(deps.eth?.recordUsage, deps.now);
   const priceGapAttempted = new Map<string, string>();
 
   const start = deps.now();
@@ -307,12 +350,17 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const btcCfg = opts.btcConfig ?? btcWorkerConfig();
   const btcPlan = deps.btc && btcCfg.enabled ? await planBtc(deps.btc, start, day) : null;
   const btcHasWork = !!btcPlan && btcPlan.work.length > 0;
-  const ethCfg = opts.ethConfig ?? ethWorkerConfig();
+  const ethCfgIn = opts.ethConfig ?? ethWorkerConfig();
+  // A start reserve the job budget can never hold would freeze Ethereum for good:
+  // clamp it (a step's probes are sized to its time, so a shorter step is safe) and say so.
+  const ethCfg = ethCfgIn.enabled && ethCfgIn.startReserveMs > cfg.jobBudgetMs - PHASE_SETUP_MS
+    ? (console.warn(`[${SOL_BACKFILL_JOB}] ETH_BACKFILL_START_RESERVE_MS ${ethCfgIn.startReserveMs} exceeds the job budget ${cfg.jobBudgetMs} — clamped`),
+      { ...ethCfgIn, startReserveMs: Math.max(2_000, cfg.jobBudgetMs - PHASE_SETUP_MS) })
+    : ethCfgIn;
   const ethPlan = deps.eth && ethCfg.enabled ? await planEth(deps.eth, start) : null;
   const ethHasWork = !!ethPlan && ethPlan.work.length > 0;
-  /** The deadline the CURRENT chain's pass plans to (Solana: its share when Bitcoin / Ethereum wait). */
-  const shares = 1 + (btcHasWork ? 1 : 0) + (ethHasWork ? 1 : 0);
-  let phaseDeadline = shares > 1 ? start + Math.floor((jobDeadline - start) / shares) : jobDeadline;
+  /** The deadline the CURRENT chain's pass plans to (lib/crypto/history-worker-schedule.core.ts). */
+  let phaseDeadline = jobDeadline;
 
   const wallets = await deps.wallets();
   const parsed = wallets.map((w) => ({ ...w, checkpoint: parseCheckpoint(w.cursor, w.accountId, w.address) }));
@@ -347,11 +395,35 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     }
   };
 
+  // PRICE GAPS FOR EVERY HOLDER (2026-10-28): the per-wallet acquisition below
+  // runs only inside a regeneration, i.e. after a wallet's backfill moved — a
+  // wallet whose history is already COMPLETE never got its gap planned. So,
+  // each run, while it has PRICE_GAP_RESERVE_MS: plan + acquire across ALL
+  // licensed crypto holders (every chain). Shared per instrument, bounded by
+  // DEFAULT_PRICE_GAP_MAX_INSTRUMENTS, at most once per instrument per floor
+  // per day (the durable attempt marker), covered ranges never requested. It
+  // runs AFTER the leader's phase, so it can never eat the leader's reserve.
+  // The holders the new floor reaches are then owed by PERSISTED state:
+  // Solana's are flagged by the self-heal (and rebuilt under their lock in
+  // this run's Solana pass when it is still to come, else the next); every
+  // other holder is revalued at the end (holderRevaluation).
+  let holderIds: string[] = [];
+  const priceGapSweep = async (): Promise<boolean> => {
+    if (!deps.acquirePriceGaps || !deps.cryptoHolders) return false;
+    if (jobDeadline - deps.now() < PRICE_GAP_RESERVE_MS) { summary.priceGapSweep = { holders: 0, skippedForTime: true }; return false; }
+    holderIds = await deps.cryptoHolders().catch(() => [] as string[]);
+    const g = holderIds.length > 0 ? await deps.acquirePriceGaps(holderIds, { attempted: priceGapAttempted, maxInstruments: DEFAULT_PRICE_GAP_MAX_INSTRUMENTS }) : null;
+    if (g) addPriceGaps(summary, g);
+    summary.priceGapSweep = { holders: holderIds.length, skippedForTime: false };
+    return !!g?.newlyPricedFromISO;
+  };
+
   // SELF-HEAL: a wallet whose PERSISTED state owes a revaluation — valued-from
   // (max of licence start and price floor) earlier than its Spaces' earliest
   // snapshot — is flagged now, at most once per price floor. This is what
   // makes a flag lost to a race (above) temporary rather than permanent.
-  if (deps.revaluationOwed) {
+  const selfHeal = async () => {
+    if (!deps.revaluationOwed) return;
     const licensed = parsed.filter((w) => w.checkpoint?.licensedFromISO && !w.checkpoint.snapshotPendingFromISO);
     const owed = licensed.length ? await deps.revaluationOwed(licensed.map((w) => w.accountId)).catch(() => [] as RevaluationOwed[]) : [];
     for (const o of owed) {
@@ -361,14 +433,44 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
       if (await flagHolder(w, o.fromISO, o.floorISO)) summary.revaluationsRederived++;
       else summary.holdersFlagFailed++;
     }
-  }
+  };
+  await selfHeal();
 
   // Regenerations owed by earlier runs come first — snapshots must catch up with rows.
-  const pending = parsed.filter((w) => w.checkpoint?.snapshotPendingFromISO);
+  // Read when the Solana pass starts: a price-gap fill earlier in the run may have flagged more.
   const candidates = orderCandidates(parsed, start);
   summary.eligible = candidates.length;
-  const solHasWork = !(candidates.length === 0 && pending.length === 0);
+  const solWork = (): Array<{ w: (typeof parsed)[number]; kind: "PENDING" | "BACKFILL" }> => {
+    const pending = parsed.filter((w) => w.checkpoint?.snapshotPendingFromISO);
+    return [
+      ...pending.map((w) => ({ w, kind: "PENDING" as const })),
+      ...candidates.filter((c) => !pending.some((p) => p.accountId === c.accountId)).map((w) => ({ w, kind: "BACKFILL" as const })),
+    ];
+  };
+  const solHasWork = solWork().length > 0;
+  /** Revalue the non-Solana holders a price gap fill reached (state-derived, once per floor, wake-bounded). */
+  const revalueOtherHolders = async () => {
+    if (!deps.revalueHolders || holderIds.length === 0) return;
+    const solIds = new Set(parsed.map((w) => w.accountId));
+    const ids = holderIds.filter((id) => !solIds.has(id));
+    if (ids.length === 0) return;
+    const r = await deps.revalueHolders(ids, { deadlineMs: jobDeadline, attempted: priceGapAttempted,
+      maxInstruments: Math.max(0, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS - summary.priceGaps.acquired) }).catch(() => null);
+    if (!r) return;
+    if (r.priceGaps) addPriceGaps(summary, r.priceGaps);
+    summary.holderRevaluation = { holders: ids.length, owed: r.owed, revalued: r.revalued, deferred: r.deferred,
+      alreadyRevalued: r.alreadyRevalued, failures: r.failures, skippedForTime: r.skippedForTime };
+    summary.deferred += r.deferred; // still owed on disk: the next (self-continued) run takes them
+  };
+
+  let swept = false;
   if (!solHasWork && !btcHasWork && !ethHasWork) {
+    // No leader to protect: the sweep runs now, and a Solana holder it flags is rebuilt in this run.
+    swept = true;
+    if (await priceGapSweep()) await selfHeal();
+  }
+  if (!solHasWork && !btcHasWork && !ethHasWork && solWork().length === 0) {
+    await revalueOtherHolders();
     summary.stoppedBecause = "NO_WORK";
     if (btcPlan) summary.btc = { ...btcPlan.summary, stoppedBecause: "NO_WORK" };
     if (ethPlan) summary.eth = { ...ethPlan.summary, dailyRequestCap: cfg.dailyRequestCap, stoppedBecause: "NO_WORK" };
@@ -376,7 +478,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   }
 
   const take = createRateLimiter(cfg.maxRequestsPerSecond, deps.now, deps.sleep);
-  summary.stoppedBecause = solHasWork ? "ALL_RUN" : "NO_WORK";
+  summary.stoppedBecause = "NO_WORK"; // Solana's verdict, set by its pass when it runs
 
   /** Returns the outcome and the lock stamp now in force (renewed, or unchanged). */
   const regenerateUnderLock = async (w: { accountId: string; connectionId: string }, fromISO: string, lockStamp: number, withPriceGaps = true): Promise<{ outcome: "DONE" | "DEFERRED"; stamp: number }> => {
@@ -424,80 +526,138 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     }
   };
 
-  const work: Array<{ w: (typeof parsed)[number]; kind: "PENDING" | "BACKFILL" }> = solHasWork ? [
-    ...pending.map((w) => ({ w, kind: "PENDING" as const })),
-    ...candidates.filter((c) => !pending.some((p) => p.accountId === c.accountId)).map((w) => ({ w, kind: "BACKFILL" as const })),
-  ] : [];
+  // ── SOLANA ─────────────────────────────────────────────────────────────────
+  const runSolPass = async () => {
+    const work = solWork();
+    if (work.length > 0) summary.stoppedBecause = "ALL_RUN";
+    for (let i = 0; i < work.length; i++) {
+      const { w, kind } = work[i];
+      const left = phaseDeadline - deps.now();
+      if (left < Math.max(cfg.startReserveMs, 2_000)) { summary.stoppedBecause = "JOB_BUDGET"; summary.deferred += work.length - i; break; }
+      const allowance = cfg.dailyRequestCap - summary.dailyRequestsUsedBefore - total() - meterTotal(ethUsage.meter);
+      if (kind === "BACKFILL" && allowance <= 0) { summary.stoppedBecause = "DAILY_CAP"; break; } // resumes after UTC midnight, on cadence
+      let stamp = deps.now();
+      if (!(await deps.claimLock(w.connectionId, stamp))) { summary.walletsSkippedLocked++; summary.deferred++; continue; }
+      try {
+        let fromISO = w.checkpoint?.snapshotPendingFromISO ?? null;
+        if (kind === "BACKFILL") {
+          const r = await deps.reconstruct({ accountId: w.accountId,
+            deps: { budgetMs: Math.max(1_000, Math.min(cfg.walletBudgetMs, left - REGEN_RESERVE_MS / 2)), concurrency: cfg.concurrency,
+              beforeRequest: take, meter, requestBudget: allowance, now: deps.now } });
+          summary.walletsRun++;
+          await flushUsage();
+          const o = r.backfill;
+          if (o) {
+            summary.signaturesProcessed += o.signaturesProcessed;
+            summary.rowsWritten += o.rowsWritten;
+            if (o.promoted) summary.promoted++;
+            if (o.status.state === "COMPLETE") summary.completed++;
+            else if (o.status.state === "IMPORTING" || o.status.state === "QUEUED") summary.deferred++;
+            if (o.failure) summary.failures[o.failure.code] = (summary.failures[o.failure.code] ?? 0) + 1;
+          }
+          if (r.derivedRowsWritten > 0 && r.impactedFromISO) fromISO = fromISO && fromISO < r.impactedFromISO ? fromISO : r.impactedFromISO;
+        }
+        if (fromISO) {
+          const regen = await regenerateUnderLock(w, fromISO, stamp);
+          const outcome = regen.outcome;
+          stamp = regen.stamp; // release below checks ownership against the stamp in force
+          const store = await deps.store(w.accountId);
+          if (outcome === "DONE") {
+            summary.regenerated++;
+            if (store && w.checkpoint?.snapshotPendingFromISO) await setPending(store, w.accountId, w.address, (cp) => ({ ...cp, snapshotPendingFromISO: null }));
+          } else {
+            summary.regenerationsDeferred++;
+            summary.deferred++;
+            if (store) await setPending(store, w.accountId, w.address, (cp) => ({ ...cp,
+              snapshotPendingFromISO: cp.snapshotPendingFromISO && cp.snapshotPendingFromISO < fromISO! ? cp.snapshotPendingFromISO : fromISO }));
+          }
+        }
+      } finally {
+        await deps.releaseLock(w.connectionId, stamp);
+      }
+    }
 
-  for (let i = 0; i < work.length; i++) {
-    const { w, kind } = work[i];
-    const left = phaseDeadline - deps.now();
-    if (left < Math.max(cfg.startReserveMs, 2_000)) { summary.stoppedBecause = "JOB_BUDGET"; summary.deferred += work.length - i; break; }
-    const allowance = cfg.dailyRequestCap - summary.dailyRequestsUsedBefore - total();
-    if (kind === "BACKFILL" && allowance <= 0) { summary.stoppedBecause = "DAILY_CAP"; break; } // resumes after UTC midnight, on cadence
-    let stamp = deps.now();
-    if (!(await deps.claimLock(w.connectionId, stamp))) { summary.walletsSkippedLocked++; summary.deferred++; continue; }
-    try {
-      let fromISO = w.checkpoint?.snapshotPendingFromISO ?? null;
-      if (kind === "BACKFILL") {
-        const r = await deps.reconstruct({ accountId: w.accountId,
-          deps: { budgetMs: Math.max(1_000, Math.min(cfg.walletBudgetMs, left - REGEN_RESERVE_MS / 2)), concurrency: cfg.concurrency,
-            beforeRequest: take, meter, requestBudget: allowance, now: deps.now } });
-        summary.walletsRun++;
-        await flushUsage();
-        const o = r.backfill;
-        if (o) {
-          summary.signaturesProcessed += o.signaturesProcessed;
-          summary.rowsWritten += o.rowsWritten;
-          if (o.promoted) summary.promoted++;
-          if (o.status.state === "COMPLETE") summary.completed++;
-          else if (o.status.state === "IMPORTING" || o.status.state === "QUEUED") summary.deferred++;
-          if (o.failure) summary.failures[o.failure.code] = (summary.failures[o.failure.code] ?? 0) + 1;
-        }
-        if (r.derivedRowsWritten > 0 && r.impactedFromISO) fromISO = fromISO && fromISO < r.impactedFromISO ? fromISO : r.impactedFromISO;
-      }
-      if (fromISO) {
-        const regen = await regenerateUnderLock(w, fromISO, stamp);
-        const outcome = regen.outcome;
-        stamp = regen.stamp; // release below checks ownership against the stamp in force
-        const store = await deps.store(w.accountId);
-        if (outcome === "DONE") {
-          summary.regenerated++;
-          if (store && w.checkpoint?.snapshotPendingFromISO) await setPending(store, w.accountId, w.address, (cp) => ({ ...cp, snapshotPendingFromISO: null }));
-        } else {
-          summary.regenerationsDeferred++;
-          summary.deferred++;
-          if (store) await setPending(store, w.accountId, w.address, (cp) => ({ ...cp,
-            snapshotPendingFromISO: cp.snapshotPendingFromISO && cp.snapshotPendingFromISO < fromISO! ? cp.snapshotPendingFromISO : fromISO }));
-        }
-      }
-    } finally {
-      await deps.releaseLock(w.connectionId, stamp);
+    await flushUsage();
+    summary.requests = { ...meter, total: total() };
+    summary.estimatedUnits = (meter.getTransaction ?? 0) * ALCHEMY_PAYG.unitsPerGetTransaction
+      + (meter.getSignaturesForAddress ?? 0) * ALCHEMY_PAYG.unitsPerGetSignatures;
+  };
+
+  // ── THE PASSES, in this run's rotation (lib/crypto/history-worker-schedule.core.ts) ──
+  // Each chain with work leads once in any 3 consecutive runs in which the
+  // leader could start, and a phase is never shorter than what its chain needs
+  // to start its first item (a step, or a pending regeneration), so no chain's
+  // backlog can starve another's.
+  const rotation = deps.previousRuns
+    ? nextRotation(await deps.previousRuns().catch(() => [] as Array<{ summary: unknown }>), Math.floor(start / ROTATION_SLOT_MS))
+    : 0;
+  const solFirstPending = solWork()[0]?.kind === "PENDING";
+  const withWork = new Set<HistoryChain>([...(solWork().length > 0 ? ["SOL" as const] : []), ...(btcHasWork ? ["BTC" as const] : []), ...(ethHasWork ? ["ETH" as const] : [])]);
+  const order = chainOrder(rotation, withWork);
+  const regenNeed = REGEN_RESERVE_MS + PHASE_SETUP_MS;
+  const needMs: Record<HistoryChain, number> = {
+    SOL: Math.max(Math.max(cfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
+      solFirstPending && deps.regenerationEnabled() ? regenNeed + (deps.acquirePriceGaps ? PRICE_GAP_RESERVE_MS : 0) : 0),
+    BTC: Math.max(Math.max(btcCfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
+      btcPlan?.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0),
+    ETH: Math.max(Math.max(ethCfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
+      ethPlan?.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0),
+  };
+  summary.schedule = { rotation, order: [...order], leaderShort: false };
+  const runPhase = async (chain: HistoryChain, chainsLeft: number, endBy = jobDeadline) => {
+    phaseDeadline = phaseDeadlineFor({ nowMs: deps.now(), jobDeadlineMs: endBy, chainsLeft, needMs: needMs[chain] });
+    if (chain === "SOL") await runSolPass();
+    else if (chain === "BTC" && btcPlan && deps.btc) {
+      summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline: phaseDeadline, regenerateUnderLock });
+      summary.deferred += summary.btc.deferred;
+    } else if (chain === "ETH" && ethPlan && deps.eth) {
+      summary.eth = await runEthPass(deps, deps.eth, ethCfg, ethPlan, {
+        jobDeadline: phaseDeadline, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(),
+        usage: ethUsage, regenerateUnderLock,
+      });
+      summary.deferred += summary.eth.deferred;
+    }
+  };
+  const queue = [...order];
+  if (queue.length > 0) {
+    // A leader whose phase cannot hold its first item (a short wake) keeps the
+    // lead: the next run starts from the same rotation (nextRotation).
+    const leader = queue.shift()!;
+    if (jobDeadline - deps.now() < needMs[leader]) summary.schedule.leaderShort = true;
+    // The sweep after it keeps its PRICE_GAP_RESERVE_MS — or a single-chain
+    // backlog (whose leader phase is the whole budget) would skip it every run.
+    // Never at the cost of the leader's own need.
+    const sweepPending = !swept && !!deps.acquirePriceGaps && !!deps.cryptoHolders;
+    const endBy = sweepPending && jobDeadline - PRICE_GAP_RESERVE_MS - deps.now() >= needMs[leader] ? jobDeadline - PRICE_GAP_RESERVE_MS : jobDeadline;
+    await runPhase(leader, queue.length + 1, endBy);
+  }
+  if (!swept) {
+    // After the leader, never before it: the sweep cannot eat the leader's reserve.
+    if (await priceGapSweep()) {
+      await selfHeal();
+      // A Solana holder flagged now is rebuilt in this run when Solana is still to come — or joins the run.
+      if (!order.includes("SOL") && solWork().length > 0) { queue.push("SOL"); summary.schedule.order.push("SOL"); }
     }
   }
-
-  await flushUsage();
-  summary.requests = { ...meter, total: total() };
-  summary.estimatedUnits = (meter.getTransaction ?? 0) * ALCHEMY_PAYG.unitsPerGetTransaction
-    + (meter.getSignaturesForAddress ?? 0) * ALCHEMY_PAYG.unitsPerGetSignatures;
-
-  // ── BITCOIN ────────────────────────────────────────────────────────────────
-  if (btcPlan && deps.btc) {
-    // Half of what is left when Ethereum waits; all of it otherwise (unchanged).
-    const btcDeadline = ethHasWork ? deps.now() + Math.floor(Math.max(0, jobDeadline - deps.now()) / 2) : jobDeadline;
-    phaseDeadline = btcDeadline;
-    summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline: btcDeadline, regenerateUnderLock });
+  while (queue.length > 0) {
+    const chain = queue.shift()!;
+    await runPhase(chain, queue.length + 1);
+  }
+  // A chain listed but without work still reports its (NO_WORK) pass, as before.
+  if (btcPlan && deps.btc && !summary.btc) {
+    summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline, regenerateUnderLock });
     summary.deferred += summary.btc.deferred;
   }
-
-  // ── ETHEREUM ───────────────────────────────────────────────────────────────
-  if (ethPlan && deps.eth) {
-    phaseDeadline = jobDeadline;
+  if (ethPlan && deps.eth && !summary.eth) {
     summary.eth = await runEthPass(deps, deps.eth, ethCfg, ethPlan, {
-      jobDeadline, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(), regenerateUnderLock,
+      jobDeadline, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(),
+      usage: ethUsage, regenerateUnderLock,
     });
     summary.deferred += summary.eth.deferred;
   }
+  summary.requests = { ...meter, total: total() }; // (Solana's pass set the same when it ran)
+
+  await revalueOtherHolders();
   return summary;
 }
 
@@ -536,13 +696,14 @@ async function runEthPass(
   plan: Awaited<ReturnType<typeof planEth>>,
   ctx: {
     jobDeadline: number; day: string; dailyRequestCap: number; solCheckpointCalls: number; solRunCalls: number;
+    /** The run's Ethereum meter (crash-safe; the Solana pass reads it for the shared cap). */
+    usage: IncrementalMeter;
     regenerateUnderLock: (w: { accountId: string; connectionId: string }, fromISO: string, lockStamp: number, withPriceGaps?: boolean) => Promise<{ outcome: "DONE" | "DEFERRED"; stamp: number }>;
   },
 ): Promise<EthBackfillPassSummary> {
   const summary: EthBackfillPassSummary = { ...plan.summary, dailyRequestCap: ctx.dailyRequestCap };
-  const meter: Record<string, number> = {};
-  const flushed: Record<string, number> = {};
-  const flushUsage = async () => { if (eth.recordUsage) { try { await eth.recordUsage(meter, flushed); } catch { /* metering never fails a run */ } } };
+  const meter = ctx.usage.meter;
+  const flushUsage = () => ctx.usage.flush();
   const ethCheckpointCalls = plan.parsed.reduce((a, w) => a + ethUsageOn(w.checkpoint, ctx.day), 0);
   const ledger = deps.providerUsageToday ? await deps.providerUsageToday(ctx.day).catch(() => null) : null;
   summary.dailyRequestsUsedBefore = ledger
@@ -554,16 +715,24 @@ async function runEthPass(
     const { w, kind } = plan.work[i];
     const left = ctx.jobDeadline - deps.now();
     if (left < Math.max(cfg.startReserveMs, 2_000)) { summary.stoppedBecause = "JOB_BUDGET"; summary.deferred += plan.work.length - i; break; }
-    const probeBudget = probeBudgetFor(ctx.dailyRequestCap - summary.dailyRequestsUsedBefore - meterTotal(meter), cfg.probeBudget);
-    if (kind === "BACKFILL" && probeBudget <= 0) { summary.stoppedBecause = "DAILY_CAP"; break; } // resumes after UTC midnight, on cadence
+    const allowed = probeBudgetFor(ctx.dailyRequestCap - summary.dailyRequestsUsedBefore - meterTotal(meter), cfg.probeBudget);
+    if (kind === "BACKFILL" && allowed <= 0) { summary.stoppedBecause = "DAILY_CAP"; break; } // resumes after UTC midnight, on cadence
+    // The step stops on the clock (the acquisition checks the deadline before
+    // every batch), and a clock stop that closes no chunk HALVES the chunk —
+    // walking a dense wallet toward FAILED at the floor. So the step is given
+    // the whole phase (no regeneration reserve: a backfill step writes rows
+    // only when its proof closes, and a regeneration that then lacks time is
+    // deferred to a pending marker, which leads the chain's next phase), and
+    // plans only the probes that time proves at the assumed rate.
+    const stepDeadline = deps.now() + Math.max(1_000, left - PHASE_SETUP_MS);
+    const probeBudget = Math.max(1, stepProbeBudget(allowed, stepDeadline - deps.now(), cfg.probesPerSecond));
     let stamp = deps.now();
     if (!(await deps.claimLock(w.connectionId, stamp))) { summary.walletsSkippedLocked++; summary.deferred++; continue; }
     try {
       let fromISO = w.checkpoint?.snapshotPendingFromISO ?? null;
       if (kind === "BACKFILL") {
         const o = await eth.reconstruct({ accountId: w.accountId, todayISO: ctx.day, deps: { probeBudget, now: deps.now, eth: { meter },
-          // No new segment once the pass's remaining time (less the regeneration reserve) is spent.
-          deadlineMs: deps.now() + Math.max(1_000, left - REGEN_RESERVE_MS / 2) } });
+          deadlineMs: stepDeadline } });
         summary.walletsRun++;
         await flushUsage();
         summary.rowsWritten += o.rowsWritten;
@@ -639,11 +808,11 @@ async function runBtcPass(
   ctx: { start: number; jobDeadline: number; regenerateUnderLock: (w: { accountId: string; connectionId: string }, fromISO: string, lockStamp: number, withPriceGaps?: boolean) => Promise<{ outcome: "DONE" | "DEFERRED"; stamp: number }> },
 ): Promise<BtcBackfillPassSummary> {
   const summary: BtcBackfillPassSummary = { ...plan.summary, dailyRequestCap: cfg.dailyRequestCap };
-  const meter: Record<string, number> = {};
-  const total = () => Object.values(meter).reduce((a, b) => a + b, 0);
+  const usage = runMeter(btc.recordUsage, deps.now); // crash-safe: flushed while the pass sends
+  const meter = usage.meter;
+  const total = () => meterTotal(meter);
   const take = createRateLimiter(cfg.maxRequestsPerSecond, deps.now, deps.sleep);
-  const flushed: Record<string, number> = {};
-  const flushUsage = async () => { if (btc.recordUsage) { try { await btc.recordUsage(meter, flushed); } catch { /* metering never fails a run */ } } };
+  const flushUsage = () => usage.flush();
   if (plan.work.length === 0) summary.stoppedBecause = "NO_WORK";
 
   for (let i = 0; i < plan.work.length; i++) {
@@ -706,7 +875,7 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
   const { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled } = await import("@/lib/snapshots/regenerate-history");
   const { WALLET_LOCK_TTL_MS } = await import("@/lib/refresh/wallet-lock");
   const { providerCallsOn, recordProviderMeter, ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK } = await import("@/lib/usage/provider-budget");
-  const { acquireHistoricalPriceGaps, prismaPriceGapDeps, revaluationOwed } = await import("@/lib/prices/price-gap");
+  const { acquireHistoricalPriceGaps, prismaPriceGapDeps, revaluationOwed, revalueHoldersAfterPriceGaps, prismaRevaluationDeps } = await import("@/lib/prices/price-gap");
   return {
     now: Date.now,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -748,6 +917,23 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
     reconstruct: ({ accountId, deps }) => reconstructSolHistoryResumable({ accountId, client: systemDb, deps }),
     store: async (accountId) => (await prismaSolBackfillStore(accountId, systemDb))?.store ?? null,
     regenerationEnabled: wealthRegenerationEnabled,
+    async previousRuns() {
+      return systemDb.jobRun.findMany({ where: { jobName: SOL_BACKFILL_JOB, status: { not: "running" } },
+        orderBy: { startedAt: "desc" }, take: ROTATION_LOOKBACK_RUNS, select: { summary: true } });
+    },
+    async cryptoHolders() {
+      const rows = await systemDb.positionCoverage.findMany({
+        where: { instrument: { assetClass: "CRYPTO" }, financialAccount: { deletedAt: null } },
+        distinct: ["financialAccountId"], select: { financialAccountId: true }, orderBy: { financialAccountId: "asc" },
+      });
+      return rows.map((r) => r.financialAccountId);
+    },
+    revalueHolders: (accountIds, { deadlineMs, attempted, maxInstruments }) => {
+      const log = (l: string) => console.log(`[${SOL_BACKFILL_JOB}] ${l}`);
+      return revalueHoldersAfterPriceGaps({ accountIds, deadlineMs, log, deps: { ...prismaRevaluationDeps(systemDb, { log }),
+        // The run's shared dedup: an instrument this run already acquired is not requested again.
+        acquireGaps: (ids) => acquireHistoricalPriceGaps({ accountIds: ids, attempted, maxInstruments, deps: prismaPriceGapDeps(systemDb, { log }), log }) } });
+    },
     providerUsageToday: (dayISO) => providerCallsOn(systemDb, ALCHEMY_USAGE_PROVIDER, dayISO),
     revaluationOwed: (accountIds) => revaluationOwed(systemDb, accountIds),
     recordUsage: async (meter, flushed) => { await recordProviderMeter(ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK.SOLANA, meter, { flushed }); },

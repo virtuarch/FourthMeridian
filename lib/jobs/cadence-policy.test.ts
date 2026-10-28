@@ -86,6 +86,11 @@ console.log("prompt start — sol-history-backfill (2026-10-28)");
   check("deferred work ⇒ SELF_CONTINUATION ~15 min later (unchanged by the hourly cadence)", c16.due && c16.reason === "SELF_CONTINUATION");
   const c10 = decideJobDue(sol, pol, ago(10, { deferred: 3 }), NOW);
   check("…but not before the continuation delay", !c10.due);
+  check("…and NOT_YET_DUE then reports the CONTINUATION time (+15 min), not the cadence (+55 min)",
+    !c10.due && c10.reason === "NOT_YET_DUE" && c10.nextDueAt?.getTime() === NOW.getTime() - 10 * 60_000 + 15 * 60_000, c10.due ? "" : String(c10.nextDueAt?.toISOString()));
+  const c10idle = decideJobDue(sol, pol, ago(10, idle), NOW);
+  check("…while a run without deferred work still reports the cadence time",
+    !c10idle.due && c10idle.nextDueAt?.getTime() === NOW.getTime() - 10 * 60_000 + 3_600_000 - DUE_TOLERANCE_MS);
   const failed = decideJobDue(sol, pol, { ...ago(61), lastStatus: "failed" }, NOW);
   check("a failed run is retried on the hourly cadence", failed.due && failed.reason === "CADENCE_ELAPSED");
 }

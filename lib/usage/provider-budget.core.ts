@@ -103,3 +103,88 @@ export function effectiveDailyUsage(args: { ledger: LedgerCalls | null; checkpoi
 export function usageDayBucket(dayISO: string): Date {
   return new Date(`${dayISO}T00:00:00.000Z`);
 }
+
+// ── Crash-safe metering (2026-10-28) ────────────────────────────────────────
+
+/** Flush a running meter once this many calls are unrecorded… */
+export const METER_FLUSH_EVERY_CALLS = 100;
+/** …or once a call arrives this long after the last flush. */
+export const METER_FLUSH_EVERY_MS = 10_000;
+
+/** Records `meter` beyond `flushed` and advances `flushed` (recordProviderMeter's contract). */
+export type MeterRecorder = (meter: Readonly<RequestMeter>, flushed: RequestMeter) => Promise<void>;
+
+export interface IncrementalMeter {
+  /** The meter to hand to a transport. Counting a call may start a flush in the background. */
+  meter: RequestMeter;
+  /** What the recorder has been handed so far (advanced by it). */
+  flushed: RequestMeter;
+  /** Record everything not yet recorded (after any flush in flight). Never throws. */
+  flush(): Promise<void>;
+}
+
+/**
+ * A meter that reaches the durable ledger WHILE its run is still sending, so
+ * a run killed mid-pass (a platform timeout, SIGKILL) has spent at most one
+ * flush's worth of requests the daily cap never sees — not the whole pass.
+ *
+ * The transport keeps its plain `meter[k] = (meter[k] ?? 0) + 1`; the meter is
+ * a Proxy whose setter starts a flush when METER_FLUSH_EVERY_CALLS calls are
+ * unrecorded, or when a call arrives METER_FLUSH_EVERY_MS after the last flush.
+ * One flush at a time (the recorder's delta against `flushed` is computed and
+ * advanced by one writer only), so nothing is counted twice; a flush that
+ * finishes with the threshold crossed again runs once more. Write overhead is
+ * bounded: one recorder call per ≥ `everyCalls` calls or per ≥ `everyMs`
+ * (defaults 100 / 10 s: an ETH step at ≈ 25 calls/s upserts every ≈ 4 s).
+ *
+ * A kill loses at most the calls since the last COMPLETED flush: fewer than
+ * `everyCalls` (plus those of one `everyMs` window and of a flush in flight).
+ * A recorder that throws, or records nothing, never loops and never fails the
+ * run (metering never fails a run).
+ */
+export function incrementalMeter(
+  record: MeterRecorder,
+  opts: { everyCalls?: number; everyMs?: number; now?: () => number } = {},
+): IncrementalMeter {
+  const everyCalls = Math.max(1, Math.floor(opts.everyCalls ?? METER_FLUSH_EVERY_CALLS));
+  const everyMs = Math.max(0, opts.everyMs ?? METER_FLUSH_EVERY_MS);
+  const now = opts.now ?? Date.now;
+  const raw: RequestMeter = {};
+  const flushed: RequestMeter = {};
+  const unrecorded = () => meterTotal(meterDelta(raw, flushed));
+  let lastAt = now();
+  let force = false;
+  let inFlight: Promise<void> | null = null;
+  const due = () => {
+    const u = unrecorded();
+    return u > 0 && (force || u >= everyCalls || now() - lastAt >= everyMs);
+  };
+  const pump = (): Promise<void> => {
+    if (!inFlight) {
+      inFlight = (async () => {
+        while (due()) {
+          const before = meterTotal(flushed);
+          lastAt = now();
+          try { await record(raw, flushed); } catch { /* metering never fails a run */ }
+          if (meterTotal(flushed) <= before) break; // the recorder recorded nothing: never spin
+        }
+      })().finally(() => { inFlight = null; });
+    }
+    return inFlight;
+  };
+  const meter = new Proxy(raw, {
+    set(target, key, value) {
+      (target as Record<string | symbol, unknown>)[key] = value;
+      if (!inFlight && due()) void pump();
+      return true;
+    },
+  });
+  return {
+    meter, flushed,
+    async flush() {
+      if (inFlight) await inFlight;
+      force = true;
+      try { await pump(); } finally { force = false; }
+    },
+  };
+}
