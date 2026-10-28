@@ -194,6 +194,9 @@ console.log("Wiring and accessibility");
   const h = connectionHistory(wallet, intel({ facts: { destinations: [], bankTransactions: null, onChain: null, historyWorkerEnabled: true },
     walletHistory: { supported: true, licensed: false, licensedFromISO: null, licensedToISO: null, activityFromISO: null, historyImport: { state: "QUEUED", provenFromISO: null, lastProgressAtISO: null, signaturesProcessed: 0, lastFailureCode: null } } }), [{ chain: "ETH" } as never]);
   check("connectionHistory uses the state-aware headline for a queued wallet (Preview finding 2026-10-28)", h.coverage === "PARTIAL" && /^Not verified yet — the history import is queued/.test(h.summary), h.summary);
+  const staleW = connectionHealth(wallet, intel({ positionObservedAt: "2026-10-28", sourceHealth: { state: "OUT_OF_DATE", needsAttention: true } as never,
+    walletHistory: { supported: true, licensed: true, licensedFromISO: "2022-03-26", licensedToISO: "2026-10-28", activityFromISO: "2022-03-26", chart: { fromISO: "2022-03-26", toISO: "2026-10-28", days: 1, continuous: true } } as never }), NOW);
+  check("stale holdings with verified history: the headline blames HOLDINGS, never history (Preview finding)", staleW.headline === "Current holdings are out of date", staleW.headline);
   const menu = readFileSync(path.join(process.cwd(), "components/connections/ConnectionMenu.tsx"), "utf8");
   check("⋯ menu: opening focuses the first enabled item", /useEffect\(\(\) => \{\s*if \(open\) menuRef\.current\?\.querySelector<HTMLButtonElement>\('\[role="menuitem"\]:not\(\[disabled\]\)'\)\?\.focus\(\);/.test(menu));
   check("⋯ menu: arrows / Home / End move focus; Tab closes", /"ArrowDown"/.test(menu) && /"ArrowUp"/.test(menu) && /"Home"/.test(menu) && /"End"/.test(menu) && /e\.key === "Tab"\) setOpen\(false\)/.test(menu));

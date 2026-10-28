@@ -158,8 +158,13 @@ export function connectionHealth(
     const importing = lines.some((l) => l.key === "import" && l.tone === "progress");
     const limited = lines.some((l) => (l.key === "history" || l.key === "prices" || l.key === "import") && l.tone === "neutral")
       || (i?.walletHistory?.licensed === true && (i.walletHistory.chart?.fromISO ?? "9999") > (i.walletHistory.activityFromISO ?? i.walletHistory.licensedFromISO ?? "0000"));
+    // Attention is attributed to the facet that has it: stale HOLDINGS are not
+    // "ready", and must never be blamed on history (Preview finding 2026-10-28).
+    const holdingsStale = lines.some((l) => l.key === "holdings" && l.tone === "attention");
+    const historyAttention = lines.some((l) => l.tone === "attention" && l.key !== "holdings" && l.key !== "connection");
     const headline = lines[0].tone === "attention" ? "This wallet needs attention"
-      : attention ? "Current holdings ready; history needs attention"
+      : holdingsStale ? (historyAttention ? "Current holdings are out of date; history needs attention" : "Current holdings are out of date")
+      : historyAttention ? "Current holdings ready; history needs attention"
       : importing ? "Current holdings ready; history is being imported"
       : limited ? "Current holdings ready; some history is limited"
       : "Current holdings ready";
