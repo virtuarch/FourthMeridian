@@ -26,7 +26,7 @@ Legend — **IMPL** implemented · **TEST** deterministic tests pass · **PREV**
 | #111 | b2f0713 | Connections: in-progress strip for wallet history imports |
 | #112 | 0205cd4 | Price note only when prices bound the plotted start (Preview finding) |
 | #113 | 154fc61 | ETH FULL rebuild off the sync path — resumable worker pass |
-| follow-up | open | ETH RECOVERY_REQUIRED exit + failure-specific copy (reviewer should-fix before enabling ETH) |
+| #114 | 751bb38 | ETH RECOVERY_REQUIRED exit (syncs keep refreshing incrementally; operator `resume`) + failure-specific copy |
 
 ## 3. Features implemented
 
@@ -89,7 +89,7 @@ History backfill group per wallet (SOL/BTC/ETH): state, proven-from, last progre
 
 ## 11. Security and financial-integrity review
 
-Independent adversarial reviews on #107, #108, #113 (two rounds). All should-fixes resolved before merge: unlocked revaluation flag, unbounded regeneration, cap undercount (#107); migration order, stats host, non-monotonic block times, large xpubs (#108); reconcile-restart loop draining the shared cap, double budget per step, forward-gap stall, stale checkpoint badge, uncounted evidence calls (#113). Remaining (follow-up PR, required before enabling ETH): RECOVERY_REQUIRED has no exit while the ETH flag is on; failure-specific copy. Invariants held: no partial history that looks complete; missing price ⇒ unvalued, never zero; wei integer-exact; no financial classification changes; new readers take a client (no global db).
+Independent adversarial reviews on #107, #108, #113 (two rounds). All should-fixes resolved before merge: unlocked revaluation flag, unbounded regeneration, cap undercount (#107); migration order, stats host, non-monotonic block times, large xpubs (#108); reconcile-restart loop draining the shared cap, double budget per step, forward-gap stall, stale checkpoint badge, uncounted evidence calls (#113). Final should-fix (RECOVERY_REQUIRED dead end with the ETH flag on) + failure-specific copy fixed in #114 (751bb38); an audited per-wallet "resume history" Platform Ops action does not exist for any chain yet (library `resume` only) — owner decision. Invariants held: no partial history that looks complete; missing price ⇒ unvalued, never zero; wei integer-exact; no financial classification changes; new readers take a client (no global db).
 
 ## 12. API request / cost measurements
 
@@ -111,7 +111,7 @@ Independent adversarial reviews on #107, #108, #113 (two rounds). All should-fix
 1. Promote develop → main (normal release approval).
 2. **Apply migration `20261028120000_connection_history_checkpoint` to Production before the code** (`ALTER TABLE "Connection" ADD COLUMN "historyCheckpoint" TEXT;` — additive, nullable).
 3. Verify the Alchemy plan of the Production key (Sensitive variable; not readable here).
-4. Optionally enable workers with plan-appropriate caps: `SOL_BACKFILL_ENABLED=true`, `SOL_BACKFILL_MAX_RPS`, `SOL_BACKFILL_DAILY_REQUEST_CAP`; then `BTC_BACKFILL_ENABLED`; `ETH_BACKFILL_ENABLED` **only after the follow-up PR merges**.
+4. Optionally enable workers with plan-appropriate caps: `SOL_BACKFILL_ENABLED=true`, `SOL_BACKFILL_MAX_RPS`, `SOL_BACKFILL_DAILY_REQUEST_CAP`; then `BTC_BACKFILL_ENABLED`; `ETH_BACKFILL_ENABLED` (#114 merged).
 
 ## 15. Rollback
 
@@ -121,7 +121,7 @@ Independent adversarial reviews on #107, #108, #113 (two rounds). All should-fix
 
 ## 16. Exact next release steps
 
-1. Merge the ETH RECOVERY_REQUIRED follow-up after review + CI.
+1. Decide whether to add an audited per-wallet "Resume history" Platform Ops operation (all chains) before enabling workers in Production.
 2. Owner: decide on the Preview test account; optionally a bounded Preview BTC/ETH worker run (Manual Operations Run Now) with a public address.
 3. Owner: confirm Alchemy plan; approve promotion.
 4. Apply the Production migration, then promote develop → main; verify Trusted deployment health on Production.
