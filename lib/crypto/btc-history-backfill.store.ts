@@ -170,8 +170,16 @@ export async function reconstructBtcHistoryResumable(
 export async function reconstructBtcHistoryOrResumable(args: {
   accountId: string; windowFromISO: string; windowToISO: string; client: PrismaClient; headOnly: boolean;
 }): Promise<BtcHistoryResult | BtcResumableResult> {
-  const link = await btcHistoryLink(args.client, args.accountId);
-  const owned = link !== null && (await readHistoryCheckpoint(args.client, link.connectionId)) !== null;
+  let owned = false;
+  try {
+    const link = await btcHistoryLink(args.client, args.accountId);
+    owned = link !== null && (await readHistoryCheckpoint(args.client, link.connectionId)) !== null;
+  } catch (e) {
+    // Unreadable (e.g. the column's migration not applied yet): the wholesale
+    // path, exactly as before — and it refuses by itself where the resumable
+    // licence is already in force (RESUMABLE_HISTORY_IN_FORCE).
+    console.warn(`[btc-history] checkpoint read failed for ${args.accountId} (non-fatal — wholesale path):`, e instanceof Error ? e.message : String(e));
+  }
   if (owned) return reconstructBtcHistoryResumable({ accountId: args.accountId, client: args.client, deps: { headOnly: args.headOnly } });
   return reconstructBtcHistory({ accountId: args.accountId, windowFromISO: args.windowFromISO, windowToISO: args.windowToISO, client: args.client });
 }

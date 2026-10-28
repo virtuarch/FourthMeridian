@@ -713,6 +713,8 @@ async function main() {
     check("…and finished wallets equal their truth", stores.b2.checkpoint() !== null && sameAsTruth(stores.b2, worlds.b2, [A]).ok && sameAsTruth(stores.b1, worlds.b1, [A]).ok,
       `${sameAsTruth(stores.b1, worlds.b1, [A]).detail} ${sameAsTruth(stores.b2, worlds.b2, [A]).detail}`);
     check("the job's deferred count covers both chains (self-continuation)", s.deferred >= 1);
+    const broken = await solHistoryBackfill({ config: cfg, btcConfig: btcCfg, deps: { ...deps, btc: { ...deps.btc!, wallets: async () => { throw new Error('column "historyCheckpoint" does not exist'); } } } });
+    check("a failing BTC listing (e.g. migration not yet applied) never takes the Solana pass down", broken.walletsRun === 1 && broken.btc?.eligible === 0, JSON.stringify({ r: broken.walletsRun, e: broken.btc?.eligible }));
     const s2 = await solHistoryBackfill({ config: cfg, btcConfig: btcCfg, deps: { ...deps, wallets: async () => [] } });
     check("a second wake with no SOL work and COMPLETE BTC wallets is NO_WORK", s2.stoppedBecause === "NO_WORK" && s2.btc?.stoppedBecause === "NO_WORK" && s2.btc.eligible === 0, JSON.stringify({ a: s2.stoppedBecause, b: s2.btc?.stoppedBecause, e: s2.btc?.eligible }));
   }
