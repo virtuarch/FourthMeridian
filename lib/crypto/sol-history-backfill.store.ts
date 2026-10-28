@@ -118,7 +118,11 @@ export async function reconstructSolHistoryResumable(
     mode: (o.rowsWritten > 0 ? "INCREMENTAL" : "NO_CHANGE") as "INCREMENTAL" | "NO_CHANGE", backfill: o };
   // Committed progress is a refresh even when the run then stopped: those days
   // changed, and the snapshot window must hear about them.
-  if (o.progressed) return { ...base, ok: true, ...(o.failure ? { refusal: o.failure.code, reason: o.failure.detail } : {}) };
+  if (o.progressed) {
+    const refusal = o.stoppedBecause === "GAP" ? { refusal: "HISTORY_GAP" as const, reason: "a transaction is missing from the address index; proven history is kept" }
+      : o.failure ? { refusal: o.failure.code, reason: o.failure.detail } : {};
+    return { ...base, ok: true, ...refusal };
+  }
   if (o.stoppedBecause === "GAP") return { ...base, ok: false, refusal: "HISTORY_GAP", reason: "a transaction is missing from the address index; proven history is kept" };
   if (o.stoppedBecause === "SKIPPED") return { ...base, ok: false, refusal: o.status.state === "RECOVERY_REQUIRED" ? "HISTORY_GAP" : "BACKFILL_PAUSED", reason: `history backfill is ${o.status.state}` };
   if (o.failure) return { ...base, ok: false, refusal: o.failure.code, reason: o.failure.detail };

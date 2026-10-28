@@ -441,6 +441,24 @@ async function main() {
     check("a HEAD gap stops the licence BEFORE the newest proven transaction's day", g.stoppedBecause === "GAP" && cp?.licensedToISO === "2026-10-09", `${g.stoppedBecause} ${cp?.licensedToISO}`);
     check("…so no day after the hidden transaction carries an unproven balance", ![...store.rows.keys()].some((d) => d >= "2026-10-10"), [...store.rows.keys()].filter((d) => d >= "2026-10-10").join(","));
 
+    // A licence that ran through today from a midday reading is withdrawn for
+    // today when later, unproven activity shares the day.
+    {
+      const at2 = (iso: string, h: number) => Date.parse(`${iso}T${String(h).padStart(2, "0")}:00:00Z`) / 1000;
+      const mk2 = (sig: string, slot: number, iso: string, h: number, pre: number, post: number): FixtureTx => ({ signature: sig, slot, blockTime: at2(iso, h), pre, post,
+        view: { slot, blockTime: at2(iso, h), transaction: { message: { accountKeys: [OWNER, OTHER] } }, meta: { preBalances: [pre, 1], postBalances: [post, 1] } } });
+      let ch = [mk2("x0", 10, "2026-10-20", 9, 0, 5 * S), mk2("x1", 20, "2026-10-28", 9, 5 * S, 6 * S)];
+      const ck = { t: 0 }; const hid = new Set<string>();
+      const rr = rpc(() => ch, ck, { hidden: hid });
+      const st = new MemoryStore({ dateISO: "2026-10-28", lamports: BigInt(6 * S) });
+      await runToEnd(st, rr.call, ck, 1e9);
+      ch = [...ch, mk2("x2", 30, "2026-10-28", 14, 6 * S, 7 * S), mk2("x3", 40, "2026-10-28", 16, 7 * S, 2 * S), mk2("x4", 50, "2026-10-28", 18, 2 * S, 3 * S)];
+      hid.add("x3");
+      await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store: st }, { call: rr.call, budgetMs: 1e9, now: () => ck.t });
+      const cpx = parseCheckpoint(st.cursor, ACCOUNT, OWNER);
+      check("an unverified head WITHDRAWS a day it had licensed (and its row)", cpx?.licensedToISO === "2026-10-27" && !st.rows.has("2026-10-28"), `${cpx?.licensedToISO} ${st.rows.get("2026-10-28")}`);
+    }
+
     // An unverified head (balance read raced new activity) never blocks the backfill.
     const big = makeChain(4_000, { seed: 71 });
     const c2 = { t: 0 };
@@ -469,7 +487,7 @@ async function main() {
     const pf = await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store: s4 }, { call: r4.call, budgetMs: 1e9, now: () => c4.t, concurrency: 1 });
     check("progress then failure still reports rows written and where history changed", pf.progressed && pf.rowsWritten > 0 && pf.impactedFromISO !== null && pf.failure?.code === "PROVIDER_THROTTLED");
     const store99 = read("lib/crypto/sol-history-backfill.store.ts");
-    check("…and the refresh treats committed progress as a refresh (snapshot window widens)", /if \(o\.progressed\) return \{ \.\.\.base, ok: true/.test(store99));
+    check("…and the refresh treats committed progress as a refresh (snapshot window widens)", /if \(o\.progressed\) \{[\s\S]{0,400}return \{ \.\.\.base, ok: true, \.\.\.refusal \};/.test(store99));
   }
 
   console.log("\nunits");

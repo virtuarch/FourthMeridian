@@ -362,8 +362,11 @@ export async function runSolHistoryBackfill(
       if (headVerified) {
         licensedTo = anchor.dateISO > newTop.dateISO ? anchor.dateISO : newTop.dateISO;
       } else if (ext.points.length > 0) {
+        // May SHRINK: a licence that ran through the day of a midday balance
+        // reading no longer holds for that day once newer, unproven activity
+        // shares it.
         const cap = addDaysISO(newTop.dateISO, -1);
-        if (!licensedTo || cap > licensedTo) licensedTo = cap;
+        licensedTo = working.licensedFromISO && cap < working.licensedFromISO ? working.licensedToISO : cap;
       }
       const changedFrom = ext.points.length ? ext.points[0].dateISO : null;
       const spanFrom = [changedFrom, working.licensedToISO ? addDaysISO(working.licensedToISO, 1) : null]
@@ -380,7 +383,12 @@ export async function runSolHistoryBackfill(
         };
         const writeRows = spanFrom !== null && licensedTo !== null && spanFrom <= licensedTo;
         const rows = writeRows ? dailyClosings([top0, ...ext.points], spanFrom, licensedTo!) : [];
-        await commit(next, rows, writeRows ? { from: spanFrom, to: licensedTo! } : null);
+        // Delete through the OLD edge too, so a withdrawn day loses its row.
+        const oldTo = working.licensedToISO;
+        const shrunk = oldTo !== null && licensedTo !== null && licensedTo < oldTo;
+        const delFrom = shrunk ? [spanFrom, addDaysISO(licensedTo!, 1)].filter((d): d is string => d !== null).sort()[0] : spanFrom;
+        const delTo = shrunk ? oldTo : licensedTo;
+        await commit(next, rows, (writeRows || shrunk) && delFrom && delTo ? { from: delFrom, to: delTo } : null);
         if (ext.points.length > 0 || rows.length > 0) outcome.progressed = true;
       }
       if (ext.kind === "GAP") { outcome.stoppedBecause = "GAP"; return finish(); }
