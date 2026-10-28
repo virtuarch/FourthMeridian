@@ -35,14 +35,24 @@ import { baseUnitsToWhole, type ChainCoverage } from "./chain-movement";
 import {
   emptyCheckpoint, parseCheckpoint, serializeCheckpoint, pointFromTransaction,
   extendBackward, extendForward, dailyClosings, addDaysISO, backfillStatus, shouldRunAutomatically,
-  orderSameSlot, statesAnchor, applyToStaged, decidePromotion,
+  orderSameSlot, statesAnchor, applyToStaged, decidePromotion, usageOn,
   SolProofDataError, SOL_CONTINUITY_SOURCE,
   type SolBackfillCheckpoint, type SolBackfillFailureCode, type SolBackfillStatus,
   type SolTxForProof, type SolTxPoint,
 } from "./sol-history-backfill.core";
 
 export const SIGNATURE_PAGE_SIZE = 1000;           // the RPC's own per-call maximum
-export const DEFAULT_RUN_BUDGET_MS = 45_000;
+/**
+ * Budget for a run inside a WALLET SYNC (manual or scheduled). Short so the
+ * sync stays responsive; the background worker (jobs/sol-history-backfill.ts)
+ * carries large histories with its own, larger, rate-limited budget.
+ */
+export const DEFAULT_RUN_BUDGET_MS = 15_000;
+/** Without the background worker, syncs must carry history alone — the pre-worker 45 s. */
+export const STANDALONE_RUN_BUDGET_MS = 45_000;
+export function syncRunBudgetMs(env: Record<string, string | undefined> = process.env): number {
+  return env.SOL_BACKFILL_ENABLED === "true" ? DEFAULT_RUN_BUDGET_MS : STANDALONE_RUN_BUDGET_MS;
+}
 export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 export const DEFAULT_CONCURRENCY = 4;
 export const DEFAULT_MAX_RETRIES = 4;
@@ -72,6 +82,12 @@ export interface SolBackfillDeps {
   maxRetries?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Awaited before EVERY provider request (incl. retries) — the worker's shared rate limiter. */
+  beforeRequest?: () => Promise<void>;
+  /** Counts every provider request by method (incl. retries) — cost observability. */
+  meter?: Record<string, number>;
+  /** Stop (as for the wall clock) once this many requests were sent in the run. */
+  requestBudget?: number;
 }
 
 function envNumber(name: string, fallback: number): number {
@@ -88,7 +104,15 @@ const isThrottleRpcError = (code: unknown, message: string) =>
  * Retry-After and never sleeps past the run's deadline.
  */
 export function buildRpcCall(deps: SolBackfillDeps, deadlineMs: number): SolRpcCall {
-  if (deps.call) return deps.call;
+  if (deps.call) {
+    // Fixture transport: still metered and rate-limited, so tests see what production would.
+    const c = deps.call;
+    return async (method, params) => {
+      if (deps.beforeRequest) await deps.beforeRequest();
+      if (deps.meter) deps.meter[method] = (deps.meter[method] ?? 0) + 1;
+      return c(method, params);
+    };
+  }
   const url = deps.rpcUrl !== undefined ? deps.rpcUrl : solRpcUrl();
   if (!url) throw new SolTransportError("NO_PROVIDER_CONFIGURED", "no Solana RPC endpoint configured (set SOL_RPC_URL or HELIUS_API_KEY)");
   const doFetch = deps.fetchImpl ?? fetch;
@@ -99,6 +123,8 @@ export function buildRpcCall(deps: SolBackfillDeps, deadlineMs: number): SolRpcC
 
   return async (method, params) => {
     for (let attempt = 0; ; attempt++) {
+      if (deps.beforeRequest) await deps.beforeRequest();
+      if (deps.meter) deps.meter[method] = (deps.meter[method] ?? 0) + 1;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeout);
       let retryAfterMs: number | null = null;
@@ -169,12 +195,12 @@ async function transaction(call: SolRpcCall, signature: string): Promise<SolTxFo
  * Throttling drops the pool to one for the rest of the run.
  */
 async function fetchPoints(
-  call: SolRpcCall, owner: string, sigs: readonly SigRow[], ctx: { concurrency: number; deadlineMs: number; now: () => number },
+  call: SolRpcCall, owner: string, sigs: readonly SigRow[], ctx: { concurrency: number; stop: () => boolean },
 ): Promise<{ points: Array<SolTxPoint | null>; error: SolTransportError | SolProofDataError | null; stoppedForBudget: boolean }> {
   const out: Array<SolTxPoint | null> = [];
   let pool = Math.max(1, ctx.concurrency);
   for (let i = 0; i < sigs.length; ) {
-    if (ctx.now() >= ctx.deadlineMs) return { points: out, error: null, stoppedForBudget: true };
+    if (ctx.stop()) return { points: out, error: null, stoppedForBudget: true };
     const batch = sigs.slice(i, i + pool);
     const settled = await Promise.allSettled(batch.map((s) => transaction(call, s.signature)));
     for (let j = 0; j < settled.length; j++) {
@@ -265,10 +291,28 @@ export async function runSolHistoryBackfill(
 ): Promise<SolBackfillOutcome> {
   const now = deps.now ?? Date.now;
   const startMs = now();
-  const deadlineMs = startMs + (deps.budgetMs ?? envNumber("SOL_HISTORY_RUN_BUDGET_MS", DEFAULT_RUN_BUDGET_MS));
+  const deadlineMs = startMs + (deps.budgetMs ?? envNumber("SOL_HISTORY_RUN_BUDGET_MS", syncRunBudgetMs()));
   const concurrency = deps.concurrency ?? envNumber("SOL_HISTORY_CONCURRENCY", DEFAULT_CONCURRENCY);
   const owner = normalizeSolAddress(args.address);
   const nowISO = () => new Date(now()).toISOString();
+  // Every request is metered (an internal meter when the caller passes none),
+  // so the checkpoint's daily usage is true for syncs as well as the worker.
+  const meter = deps.meter ?? {};
+  deps = { ...deps, meter };
+  const sent = () => Object.values(meter).reduce((a, b) => a + b, 0);
+  const sentAtStart = sent();
+  let recordedThrough = sentAtStart;
+  const todayISO = () => new Date(now()).toISOString().slice(0, 10);
+  /** Fold requests sent since the last commit into the checkpoint's daily usage. */
+  const stamp = (c: SolBackfillCheckpoint): SolBackfillCheckpoint => {
+    const day = todayISO();
+    const delta = sent() - recordedThrough;
+    recordedThrough = sent();
+    return { ...c, usage: { dayISO: day, requests: usageOn(c, day) + delta } };
+  };
+  /** The run's budget: wall clock, and (worker) a request allowance. */
+  const overBudget = (deadline: number) => now() >= deadline
+    || (deps.requestBudget !== undefined && sent() - sentAtStart >= deps.requestBudget);
 
   let raw = await args.store.readCursor();
   let cp = parseCheckpoint(raw, args.accountId, owner);
@@ -309,7 +353,8 @@ export async function runSolHistoryBackfill(
     return legacyRows;
   };
 
-  const commit = async (nextIn: SolBackfillCheckpoint, rows: Array<{ dateISO: string; lamports: bigint }>, span: { from: string; to: string } | null) => {
+  const commit = async (nextUnstamped: SolBackfillCheckpoint, rows: Array<{ dateISO: string; lamports: bigint }>, span: { from: string; to: string } | null) => {
+    const nextIn = stamp(nextUnstamped);
     if (nextIn.mode === "STAGING" && nextIn.legacy) {
       const staged = applyToStaged(nextIn.staged ?? [], span, rows);
       const decision = decidePromotion(nextIn, staged, nextIn.legacy, await loadLegacyRows());
@@ -352,7 +397,7 @@ export async function runSolHistoryBackfill(
   const fail = async (code: SolBackfillFailureCode, detail: string) => {
     outcome.failure = { code, detail };
     outcome.stoppedBecause = "FAILURE";
-    const next: SolBackfillCheckpoint = { ...working, failures: working.failures + 1, lastFailure: { code, atISO: nowISO(), detail: detail.slice(0, 300) } };
+    const next: SolBackfillCheckpoint = stamp({ ...working, failures: working.failures + 1, lastFailure: { code, atISO: nowISO(), detail: detail.slice(0, 300) } });
     try {
       // A failure-only update writes no rows; on a fresh wallet it records the
       // checkpoint (QUEUED with a failure) so the state is visible.
@@ -388,7 +433,7 @@ export async function runSolHistoryBackfill(
       const newer: SigRow[] = [];
       let listed = true;
       for (let before: string | null = null; ; ) {
-        if (now() >= headDeadline) { listed = false; break; }
+        if (overBudget(headDeadline)) { listed = false; break; }
         const page = await signaturePage(call, owner, { before, until: top0.signature });
         outcome.pagesFetched++;
         newer.push(...page);
@@ -397,7 +442,7 @@ export async function runSolHistoryBackfill(
       }
       // Slots at or below the top's are already proven whole.
       const oldestFirst = listed ? newer.reverse().filter((r) => r.slot > top0.slot) : [];
-      const fetched = await fetchPoints(call, owner, oldestFirst, { concurrency, deadlineMs: headDeadline, now });
+      const fetched = await fetchPoints(call, owner, oldestFirst, { concurrency, stop: () => overBudget(headDeadline) });
       const headDeferred = new Set<number>();
       if (fetched.points.length < oldestFirst.length) headDeferred.add(oldestFirst[fetched.points.length].slot);
       const points = orderSameSlot(withoutSlots(fetched.points, oldestFirst, headDeferred).filter((p): p is SolTxPoint => p !== null), top0.postLamports, "forward");
@@ -456,13 +501,13 @@ export async function runSolHistoryBackfill(
     // move this wallet's lamports proves nothing new, but must not be re-read.
     let pageBefore: string | null = working.bottom?.signature ?? null;
     while (!working.reachedBeginning) {
-      if (now() >= deadlineMs) { outcome.stoppedBecause = "BUDGET"; return finish(); }
+      if (overBudget(deadlineMs)) { outcome.stoppedBecause = "BUDGET"; return finish(); }
       const listedPage = await signaturePage(call, owner, { before: pageBefore });
       outcome.pagesFetched++;
       const fullPage = listedPage.length === SIGNATURE_PAGE_SIZE;
       // Slots at or above the bottom's are already proven whole.
       const page = working.bottom ? listedPage.filter((r) => r.slot < working.bottom!.slot) : listedPage;
-      const fetched = await fetchPoints(call, owner, page, { concurrency, deadlineMs, now });
+      const fetched = await fetchPoints(call, owner, page, { concurrency, stop: () => overBudget(deadlineMs) });
       outcome.signaturesProcessed += fetched.points.length;
       // Defer a slot that may continue on the next page, and one cut short by
       // the budget or a failure — unless that would defer the whole page.

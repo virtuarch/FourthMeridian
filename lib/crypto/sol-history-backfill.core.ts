@@ -120,6 +120,19 @@ export interface SolBackfillCheckpoint {
   promotedAtISO?: string | null;
   /** Days on which the proof disagreed with the legacy rows it replaced (disclosed, never hidden). */
   legacyDiscrepancy?: { days: number; firstISO: string; detectedAtISO: string } | null;
+  /**
+   * Provider requests this wallet's backfill has sent on `dayISO` (UTC), by ANY
+   * caller — the background worker AND wallet syncs — persisted with every
+   * commit. The worker's daily cap is the sum of these across wallets, so it
+   * holds across runs, overlapping triggers and runs killed mid-flight (at most
+   * the requests since the last commit go uncounted).
+   */
+  usage?: { dayISO: string; requests: number } | null;
+  /**
+   * The worker wrote rows from this date and has not yet regenerated the wealth
+   * history over them (it ran out of wake time). Done first on its next run.
+   */
+  snapshotPendingFromISO?: string | null;
   failures: number;
   lastFailure: { code: SolBackfillFailureCode; atISO: string; detail?: string } | null;
   signaturesProcessed: number;
@@ -500,4 +513,9 @@ export function decidePromotion(
   if (discrepancy) return { promote: true, reason: "LEGACY_DISPROVED", discrepancy };
   if (covered) return { promote: true, reason: "COVERED", discrepancy: null };
   return { promote: false, reason: null, discrepancy: null };
+}
+
+/** Requests recorded for `dayISO` in a checkpoint (0 when the day differs). */
+export function usageOn(cp: Pick<SolBackfillCheckpoint, "usage"> | null, dayISO: string): number {
+  return cp?.usage && cp.usage.dayISO === dayISO && Number.isFinite(cp.usage.requests) ? cp.usage.requests : 0;
 }

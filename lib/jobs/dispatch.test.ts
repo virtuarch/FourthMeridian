@@ -119,7 +119,13 @@ async function main(): Promise<void> {
     const hours = (n: string) => pol.get(n)?.hours;
     const origin = (n: string) => pol.get(n)?.origin;
     // BETA base (b625d45): + plaid-removal-retry, product-event-retention (daily fixed).
-    check("registry holds thirteen jobs", SCHEDULED_JOBS.length === 13, `got ${SCHEDULED_JOBS.length}`);
+    // + sol-history-backfill (owner decision 2, 2026-10-28).
+    check("registry holds fourteen jobs", SCHEDULED_JOBS.length === 14, `got ${SCHEDULED_JOBS.length}`);
+    const sol = SCHEDULED_JOBS.find((j) => j.name === "sol-history-backfill");
+    check("sol-history-backfill self-continues, refreshes nothing (no wallet attempt-period effect), and runs second to last (before evaluate-alerts)",
+      !!sol?.selfContinues && !sol.refreshes && !sol.continuationOf
+      && SCHEDULED_JOBS.findIndex((j) => j.name === "sol-history-backfill") === SCHEDULED_JOBS.length - 2,
+      `policy ${JSON.stringify(pol.get("sol-history-backfill"))}`);
     check("names unique", byName.size === SCHEDULED_JOBS.length);
     check("sync-banks runs on the BANK refresh policy (24h default)", hours("sync-banks") === 24 && origin("sync-banks") === "REFRESH_POLICY");
     check("sync-crypto runs on the WALLET refresh policy (6h default)", hours("sync-crypto") === 6 && origin("sync-crypto") === "REFRESH_POLICY");
