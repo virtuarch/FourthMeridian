@@ -77,6 +77,7 @@ export const PlatformSettingKey = {
   JOB_CADENCE_FX:            "job_cadence_hours_fetch-fx-rates",
   JOB_CADENCE_PRICES:        "job_cadence_hours_fetch-security-prices",
   JOB_CADENCE_ALERTS:        "job_cadence_hours_evaluate-alerts",
+  JOB_CADENCE_SOL_BACKFILL:  "job_cadence_hours_sol-history-backfill",
   // BETA C7 — the two spend-alert thresholds the `ai-spend-fleet-high` and
   // `ai-spend-user-high` rules judge against (estimated USD over the trailing
   // 24 h, priced by the code-owned rate card). Whole dollars; read only through
@@ -167,6 +168,7 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   "job_cadence_hours_fetch-fx-rates":        String(jobCadenceDefault("fetch-fx-rates")),
   "job_cadence_hours_fetch-security-prices": String(jobCadenceDefault("fetch-security-prices")),
   "job_cadence_hours_evaluate-alerts":       String(jobCadenceDefault("evaluate-alerts")),
+  "job_cadence_hours_sol-history-backfill":  String(jobCadenceDefault("sol-history-backfill")),
   // AI COST CONTROLS — every default is the frozen contract's, never retyped here.
   ai_spend_alert_fleet_usd_24h: String(AI_COST_CONTROL_DEFAULTS["fleetAlert.thresholdUsd"]),
   ai_spend_alert_user_usd_24h:  String(AI_COST_CONTROL_DEFAULTS["userAlert.thresholdUsd"]),
@@ -325,6 +327,10 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
   "job_cadence_hours_evaluate-alerts": jobCadence(
     "job_cadence_hours_evaluate-alerts", "evaluate-alerts", "Alert evaluation cadence (hours)",
     "Hours between alert passes over the health authorities. Re-notification is suppressed for 20 hours, so a tighter cadence costs reads, not mail.",
+  ),
+  "job_cadence_hours_sol-history-backfill": jobCadence(
+    "job_cadence_hours_sol-history-backfill", "sol-history-backfill", "Solana history backfill cadence (hours)",
+    "Hours between background Solana history runs when no work was deferred, so a newly connected wallet starts promptly. While wallets remain the job continues every ~15 minutes regardless. A run with nothing to do is two reads; the daily request cap still bounds provider cost.",
   ),
   ai_spend_alert_fleet_usd_24h: {
     key: "ai_spend_alert_fleet_usd_24h", label: "AI spend alert — fleet (USD / 24 h)",

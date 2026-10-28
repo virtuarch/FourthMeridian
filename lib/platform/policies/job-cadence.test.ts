@@ -108,7 +108,8 @@ async function main(): Promise<void> {
     check("a FIXED job is NOT_EDITABLE", !fixed.ok && fixed.code === "NOT_EDITABLE");
     const refresh = await updateJobCadence({ job: "sync-banks", hours: 12, expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db, NOW);
     check("a refresh job is NOT_EDITABLE here (its knob is the refresh policy)", !refresh.ok && refresh.code === "NOT_EDITABLE");
-    check("editableJob names exactly the three", ["fetch-fx-rates", "fetch-security-prices", "evaluate-alerts"].every((j) => editableJob(j) !== null) && editableJob("sync-crypto") === null && editableJob("nope") === null);
+    // 2026-10-28: + sol-history-backfill (hourly default, editable 1–24 h).
+    check("editableJob names exactly the four", ["fetch-fx-rates", "fetch-security-prices", "evaluate-alerts", "sol-history-backfill"].every((j) => editableJob(j) !== null) && editableJob("sync-crypto") === null && editableJob("nope") === null);
   }
 
   console.log("\n3. reason is required by type and by the recorder; audit failure rolls the change back");

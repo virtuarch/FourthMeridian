@@ -22,6 +22,12 @@
  *     this is a fleet fan-out (the manual route is one account).
  * Both best-effort: a regeneration failure never fails the sweep or its JobRun.
  *
+ * PRICE GAPS (2026-10-28) run just before that history regeneration: where the
+ * shared RAW_CLOSE archive does not reach back as far as a synced wallet's
+ * licensed balance history and the provider can serve the older dates, one
+ * bounded acquisition per INSTRUMENT (lib/prices/price-gap.ts). The planner
+ * below then measures the new closes, so the rebuilt window reaches them.
+ *
  * CAPABILITY RECONCILIATION (V26-CAP-1) runs on the main slot only, before the
  * sweep: a declared widening of the price provider's reach is noticed where the
  * affected accounts are already being fanned out over.
@@ -170,6 +176,10 @@ export async function syncCrypto(options: {
       const historyAccountIds = chains.filter((a) => chainSupportsHistory(a.walletChain)).map((a) => a.id);
       if (historyAccountIds.length > 0) {
         try {
+          const { acquireHistoricalPriceGaps, prismaPriceGapDeps } = await import("@/lib/prices/price-gap");
+          const log = (l: string) => console.log(`[sync-crypto] ${l}`);
+          const gaps = await acquireHistoricalPriceGaps({ accountIds: historyAccountIds, deps: prismaPriceGapDeps(db, { log }), log });
+          if (gaps.acquired > 0) console.log(`[sync-crypto] price gaps: ${gaps.acquired} instrument(s), +${gaps.inserted} row(s), newly priced from ${gaps.newlyPricedFromISO ?? "nothing"}`);
           // A capability widening supersedes the ordinary incremental window: the
           // newly reachable dates have no stored prices yet, so a measured window
           // would not reach them.

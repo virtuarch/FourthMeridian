@@ -347,6 +347,13 @@ export interface EthHistoryDeps {
   throttleRetries?: number;
   /** Injectable sleep, so the retry path is testable without real time. */
   sleepImpl?: (ms: number) => Promise<void>;
+  /**
+   * SHARED PROVIDER BUDGET (2026-10-28) — counts every JSON-RPC call sent, by
+   * method (a batch of n counts n; a retried batch counts again), so the caller
+   * can record it against the provider's daily budget (lib/usage/provider-budget).
+   * Observation only: it changes no request, no order and no decision.
+   */
+  meter?: Record<string, number>;
 }
 
 /**
@@ -370,7 +377,24 @@ export class EthThrottleError extends Error {
 /** JSON-RPC error code the provider uses for its per-second capacity limit. */
 const THROTTLE_CODE = 429;
 
+/** Count each call in a single or batched JSON-RPC body into `meter`, then send it unchanged. */
+function meteredTransport(transport: EthRpcTransport, meter: Record<string, number> | undefined): EthRpcTransport {
+  if (!meter) return transport;
+  return async (body: unknown) => {
+    for (const c of Array.isArray(body) ? body : [body]) {
+      const m = (c as { method?: unknown } | null)?.method;
+      const k = typeof m === "string" ? m : "unknown";
+      meter[k] = (meter[k] ?? 0) + 1;
+    }
+    return transport(body);
+  };
+}
+
 function buildTransport(deps: EthHistoryDeps): EthRpcTransport {
+  return meteredTransport(buildRawTransport(deps), deps.meter);
+}
+
+function buildRawTransport(deps: EthHistoryDeps): EthRpcTransport {
   if (deps.transport) return deps.transport;
   const url = deps.rpcUrl !== undefined ? deps.rpcUrl : ethRpcUrl();
   if (!url) {

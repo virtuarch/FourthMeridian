@@ -320,7 +320,8 @@ async function main() {
       /reconstructionVersion: ETH_RECONSTRUCTION_VERSION/.test(sync));
     check("the incremental path writes the same version, in one transaction with the coverage",
       /reconstructionVersion: ETH_RECONSTRUCTION_VERSION/.test(inc) && /\$transaction\(async \(tx\)[\s\S]*persistPositionCoverage\(tx/.test(inc));
-    check("BNB/AVAX are not reconstructed", /key === ETH_NATIVE\.chain \? reconstructEthHistory/.test(readFileSync("lib/crypto/wallet-history-refresh.ts", "utf8"))
+    check("BNB/AVAX are not reconstructed", // (2026-10-28: the ETH arm now wraps the call in the provider-budget meter.)
+      /key === ETH_NATIVE\.chain \? [^\n]*reconstructEthHistory\(/.test(readFileSync("lib/crypto/wallet-history-refresh.ts", "utf8"))
       && !/BNB|AVAX/.test(inc.replace(/\/\*[\s\S]*?\*\//g, "")));
   }
 
