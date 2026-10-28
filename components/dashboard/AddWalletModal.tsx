@@ -105,7 +105,12 @@ export function AddWalletModal({ onClose, onAdd, zIndex }: Props) {
     >
       <div className="space-y-4">
         <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-          Enter a public Bitcoin address or an <span className="font-medium text-[var(--text-secondary)]">xpub / ypub / zpub</span> to track the whole wallet. Watch-only — Fourth Meridian reads your balance from the blockchain and never needs spend access.
+          {chain === "BTC"
+            ? <>Enter a public Bitcoin address or an <span className="font-medium text-[var(--text-secondary)]">xpub / ypub / zpub</span> to track the whole wallet.</>
+            : chain === "ETH" ? "Enter a public Ethereum address (0x…)."
+            : chain === "SOL" ? "Enter a public Solana address."
+            : "Enter a public wallet address."}{" "}
+          Watch-only — Fourth Meridian reads your balance from the blockchain and never needs spend access.
         </p>
         <p className="text-xs font-semibold text-[var(--brass-400)] leading-relaxed">
           Never enter a seed phrase or private key.

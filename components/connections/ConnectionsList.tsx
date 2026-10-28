@@ -41,6 +41,7 @@ import {
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
 import type { ConnectionsSyncView } from "@/lib/connections/space-data";
+import { takeFirstConnectStarted } from "@/lib/connections/first-connect-handoff";
 
 const POLL_INTERVAL_MS = 4000;
 // Must outlast ONE server-side sync budget (maxDuration = 300s) plus margin,
@@ -199,6 +200,7 @@ export function ConnectionsList({
           isBuildingIntelligence(Object.values(next.intelligenceByConnectionId));
         if (prevShouldPollRef.current && !nextShouldPoll) {
           router.refresh();
+          takeFirstConnectStarted(); // the watched transition consumes the handoff
           setJustCompleted(true);
         }
         prevShouldPollRef.current = nextShouldPoll;
@@ -290,6 +292,16 @@ export function ConnectionsList({
     c.state === "importing" || c.state === "import_paused" || inProgressPhase(c.id);
 
   const anyReady = status.connections.some((c) => intelligence[c.id]?.phase === "READY");
+
+  // A first connection started from the onboarding view in this tab that was
+  // already READY before the poller ever ran (an empty wallet syncs inside the
+  // add request) still gets its ready moment — once, from persisted READY state.
+  useEffect(() => {
+    if (shouldPoll || !anyReady) return;
+    // One-shot handoff read on a settled, server-reported READY list.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (takeFirstConnectStarted()) setJustCompleted(true);
+  }, [shouldPoll, anyReady]);
 
   // One list. Work in progress (importing OR reconstructing) sorts first so a
   // just-added connection is the row the user sees; the rest keep server order.

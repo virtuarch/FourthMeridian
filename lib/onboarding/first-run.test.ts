@@ -73,11 +73,19 @@ console.log("the wiring");
     && /event !== "presented" && event !== "dismissed"/.test(route));
   const view = code("components/connections/ConnectionsOnboarding.tsx");
   check("three ways in: Plaid, wallet, real asset", /openLink\(\)/.test(view) && /<AddWalletModal/.test(view) && /<AddManualAssetModal/.test(view));
-  check("a way out: Explore My Space records the dismissal and goes to My Space", /Explore My Space/.test(view) && /postOnboarding\("dismissed"\)/.test(view) && /router\.push\("\/dashboard"\)/.test(view));
+  check("a way out: Explore My Space records the dismissal and goes to My Space", /Explore My Space/.test(view) && /dismissNotice\("connect"\)/.test(view) && /router\.push\("\/dashboard"\)/.test(view));
   const conn = code("app/(shell)/dashboard/connections/page.tsx");
   check("the welcome records itself as shown SERVER-side (a blocked client call cannot cause repeat redirects)",
     /if \(welcome && !\(await isRouterPrefetch\(\)\)\) \{\s*await recordOnboardingEvent\(userId, "presented"\)\.catch\(/.test(conn) && !/"presented"/.test(view));
+  check("Explore hides the rail invitation in this tab too (the rail outlives the client navigation)",
+    /import \{ dismissNotice \} from "@\/components\/notices\/NoticeRail"/.test(view) && !/fetch\("\/api\/onboarding"/.test(view));
+  check("the empty-state heading holds when only manual assets exist (they are not connections)", !/"Add your first account"/.test(view));
+  check("starting a first connection leaves the one-shot ready handoff", (view.match(/noteFirstConnectStarted\(\)/g) ?? []).length === 2);
   check("never asks for a seed phrase or key; says connecting is optional", /Never enter a seed phrase or private key/.test(view) && /Connecting is optional/.test(view));
+  const wallet = code("components/dashboard/AddWalletModal.tsx");
+  check("wallet dialog intro follows the chosen chain (no 'Bitcoin address' on Solana)",
+    /chain === "BTC"\s*\?\s*<>Enter a public Bitcoin address/.test(wallet) && /Enter a public Solana address\./.test(wallet) && /Enter a public Ethereum address/.test(wallet)
+    && /Never enter a seed phrase or private key\./.test(wallet));
   const dash = code("components/connections/ConnectionsSpaceDashboard.tsx");
   check("Connections' empty state is the onboarding view", /<ConnectionsOnboarding/.test(dash));
 }
