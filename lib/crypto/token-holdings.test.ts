@@ -25,6 +25,7 @@ import { CRYPTO_PROVIDER } from "@/lib/investments/crypto-instrument";
 import { resolveTokenInstrumentId } from "@/lib/crypto/token-instrument";
 import { syncWalletTokens, WALLET_TOKEN_POSITION_SOURCE, tokenCaptureConfig } from "./wallet-token-capture";
 import { composeWalletValue, type WalletCurrentValue } from "./wallet-current-value";
+import { tokenValueOnDay, tokensValueOnDay, tokenPriceServing } from "./token-valuation.core";
 import { facetFromCoverage, walletHistoryComplete } from "./wallet-instrument-history";
 import { fetchCoinGeckoTokenQuotes } from "@/lib/prices/providers/coingecko";
 import { connectionHealth, connectionHistory, tokenHistoryLabel, tokenPriceText } from "@/lib/connections/connection-detail.core";
@@ -324,6 +325,56 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   check("a chain without tokens here is NOT_SUPPORTED", btc.skipReason === "NOT_SUPPORTED");
 }
 
+// ══ EXPLICIT ZERO CLOSES EVEN WHEN THE ENUMERATION IS INCOMPLETE ══════════════
+{
+  const f = fakeClient();
+  const deps = { rpcUrl: "http://fixture", observationsEnabled: true, config: cfg, dailyCap: 1000,
+    usageToday: async () => ({ solana: 0, other: 0 }), recordUsage: async () => {} };
+  await syncWalletTokens({ client: f.client as never, accountId: "z", chain: "SOL", address: OWNER, deps: {
+    ...deps, now: new Date("2026-10-28T00:00:00Z"), fetchImpl: solFetch([splAccount("Ata1", USDC, "5000000", 6)]) } });
+  const out = await syncWalletTokens({ client: f.client as never, accountId: "z", chain: "SOL", address: OWNER, deps: {
+    ...deps, now: new Date("2026-10-29T00:00:00Z"), fetchImpl: solFetch([
+      splAccount("Ata1", USDC, "0", 6),                                                            // provider says EXACTLY zero
+      { pubkey: "bad", account: { data: { parsed: { info: { mint: PYUSD, tokenAmount: { amount: "x", decimals: 6 } } } } } }, // unreadable, other mint
+    ]) } });
+  const closed = f.positions.find((p) => (p.date as Date).toISOString().startsWith("2026-10-29"));
+  check("an EXPLICIT provider zero closes the token even though the enumeration is incomplete",
+    out.complete === false && out.closedInstrumentIds.length === 1 && closed?.quantity === 0);
+  const g = fakeClient();
+  await syncWalletTokens({ client: g.client as never, accountId: "z", chain: "SOL", address: OWNER, deps: {
+    ...deps, now: new Date("2026-10-28T00:00:00Z"), fetchImpl: solFetch([splAccount("Ata1", USDC, "5000000", 6)]) } });
+  const unknown = await syncWalletTokens({ client: g.client as never, accountId: "z", chain: "SOL", address: OWNER, deps: {
+    ...deps, now: new Date("2026-10-29T00:00:00Z"), fetchImpl: solFetch([
+      splAccount("Ata1", USDC, "0", 6),
+      { pubkey: "bad", account: { data: { parsed: { info: { tokenAmount: { amount: "1", decimals: 6 } } } } } },     // mint unknown — could be USDC
+    ]) } });
+  check("…but not when an unreadable entry could belong to that mint", unknown.closedInstrumentIds.length === 0);
+}
+
+// ══ AI / HOLDINGS READERS NEVER SEE TOKENS (they cannot price them) ═══════════
+{
+  const cp = code(read("lib", "investments", "current-positions.ts"));
+  check("getCurrentPositions (Holdings, AI holdings, export) excludes token instruments",
+    /date:\s*\{ lte: asOfDate \},\s*instrument:\s*NOT_TOKEN_INSTRUMENT,/.test(cp));
+  const val = code(read("lib", "investments", "valuation.ts"));
+  check("getInvestmentValueAsOf / ForWindow window reads exclude token instruments", (val.match(/instrument: NOT_TOKEN_INSTRUMENT/g) ?? []).length === 2);
+  const ai = code(read("lib", "ai", "assemblers", "holdings.ts"));
+  check("the AI holdings assembler reads positions ONLY through those two seams",
+    /getCurrentPositions\(/.test(ai) && !/positionObservation/.test(ai));
+  check("no AI assembler reads a wallet token label", !/tokens|WalletTokenValue/.test(code(read("lib", "ai", "assemblers", "accounts.ts"))));
+}
+
+// ══ NET WORTH CHART DISCLOSES WHEN TOKEN TRACKING BEGAN ═══════════════════════
+{
+  const { deriveValuationCoverage, valuationCoverageNote } = await import("@/lib/connections/valuation-coverage.core");
+  const cov = deriveValuationCoverage([], new Map(), "2026-10-28");
+  check("a priced token creates a coverage fact even with no price limits", cov?.tokensTrackedFromISO === "2026-10-28");
+  check("chart starting before tracking ⇒ the token line is shown",
+    valuationCoverageNote(cov, "2025-10-28") === "Token holdings are included from Oct 28, 2026, when tracking began; earlier token balances aren’t reconstructed yet.");
+  check("chart starting on/after tracking ⇒ no token line", valuationCoverageNote(cov, "2026-10-28") === null);
+  check("no priced token ⇒ no fact, no note", deriveValuationCoverage([], new Map(), null) === null);
+}
+
 // ══ NATIVE SYNC IS UNTOUCHED BY THE TOKEN FACET (source pins) ═════════════════
 {
   for (const file of ["sol-sync.ts", "evm-native.ts"]) {
@@ -345,11 +396,40 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   check("token capture takes its client explicitly (no defaulted authority)", !/from "@\/lib\/db"/.test(cap) && !/\?\?\s*db\b/.test(cap));
 }
 
-// ══ VALUATION HONESTY: UNPRICED TOKENS EXCLUDED, NEVER ZERO ═══════════════════
+// ══ VALUATION HONESTY: THE SHARED DAY RULE; UNPRICED EXCLUDED, NEVER ZERO ═════
 {
+  const D = "2026-10-28";
+  const obs = (instrumentId: string, dateISO: string, quantity: number) => ({ instrumentId, dateISO, quantity });
+  const px = (instrumentId: string, dateISO: string, priceUsd: number, basis: "RAW_CLOSE" | "INTRADAY" = "INTRADAY") => ({ instrumentId, dateISO, basis, priceUsd });
+
+  const v = tokenValueOnDay("usdc", [obs("usdc", D, 10)], [px("usdc", D, 1)], D);
+  check("day rule: fresh own observation × a price serving the day ⇒ VALUED", v.state === "VALUED" && v.valueUsd === 10);
+  const yday = tokenValueOnDay("usdc", [obs("usdc", D, 10)], [px("usdc", "2026-10-27", 0.99)], D);
+  check("day rule: yesterday's quote serves today (00:00 → first sync is not dropped)", yday.state === "VALUED" && yday.priceDateISO === "2026-10-27");
+  check("day rule: same-day RAW_CLOSE wins over INTRADAY, deterministically",
+    tokenPriceServing([px("u", D, 2, "INTRADAY"), px("u", D, 3, "RAW_CLOSE"), px("u", "2026-10-27", 4, "RAW_CLOSE")], D)?.priceUsd === 3);
+  check("day rule: a price two days old does not serve", tokenValueOnDay("usdc", [obs("usdc", D, 10)], [px("usdc", "2026-10-26", 1)], D).state === "UNPRICED");
+  const stale = tokenValueOnDay("usdc", [obs("usdc", "2026-10-20", 10)], [px("usdc", D, 1)], D);
+  check("a STALE token quantity is NOT valued by another customer's fresh quote", stale.state === "STALE" && stale.valueUsd === null);
+  check("days before tracking began contribute nothing (NO_OBSERVATION, not 0)", tokenValueOnDay("usdc", [obs("usdc", D, 10)], [px("usdc", "2026-10-26", 1)], "2026-10-26").state === "NO_OBSERVATION");
+  check("a closed token is CLOSED, not a holding", tokenValueOnDay("usdc", [obs("usdc", "2026-10-27", 5), obs("usdc", D, 0)], [px("usdc", D, 1)], D).state === "CLOSED");
+
+  // REGENERATED day == LIVE day: both writers value through tokensValueOnDay on the same rows.
+  const rows = [obs("usdc", "2026-10-25", 10), obs("usdc", "2026-10-27", 12), obs("spam", "2026-10-27", 1e6)];
+  const prices = [px("usdc", "2026-10-26", 1), px("usdc", "2026-10-27", 1.01)];
+  const regenerated = tokensValueOnDay(rows, prices, "2026-10-27");
+  const liveSameDay = tokensValueOnDay(rows, prices, "2026-10-27");
+  check("regenerated-day and live-day token valuation are identical for the same day", JSON.stringify(regenerated) === JSON.stringify(liveSameDay) && regenerated.totalUsd === 12 * 1.01);
+  const regenSrc = code(read("lib", "snapshots", "regenerate-history.ts"));
+  const liveSrc = code(read("lib", "crypto", "wallet-current-value.ts"));
+  check("BOTH writers call the shared rule and the shared loader",
+    /tokensValueOnDay\(obs, tokenRows\.prices, dISO\)/.test(regenSrc) && /loadTokenDayRows\(client,/.test(regenSrc)
+    && /tokensValueOnDay\(obs, tokenRows\.prices, asOf\)/.test(liveSrc) && /loadTokenDayRows\(client, accountIds, asOf, asOf\)/.test(liveSrc));
+  check("regenerated tokens join only where the native crypto is itself valued", /if \(cryptoDayValuation\.licensed\) \{[\s\S]*?tokensValueOnDay/.test(regenSrc));
+
   const seed: WalletCurrentValue = {
     accountId: "w", chain: "SOL", assetKey: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501", symbol: "SOL",
-    quantity: null, value: null, state: "NO_OBSERVATION", asOf: "2026-10-28", priceDate: null, price: null,
+    quantity: null, value: null, state: "NO_OBSERVATION", asOf: D, priceDate: null, price: null,
     observedAt: new Date("2026-10-28T10:00:00Z"), freshness: "LIVE", tokens: [],
   };
   const comp = (instrumentId: string, quantity: number, reportingValue: number | null, priceDate: string | null): InstrumentValuation => ({
@@ -357,60 +437,127 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
     quantityTier: "observed" as never, priceTier: "observed" as never, fxTier: "observed" as never, overallTier: "observed" as never,
     basisUsed: "raw-close", priceDate, staleDays: 0, reason: "", conflicted: false,
   });
-  const tokenBy = new Map([
-    ["inst_usdc", { assetKey: splTokenAssetKey(USDC), label: "USDC" }],
-    ["inst_spam", { assetKey: splTokenAssetKey(SPAM), label: "Spam…1111" }],
-  ]);
-  const args = { seed, tokenByInstrument: tokenBy, servingQuotes: new Map(), asOf: "2026-10-28", now: new Date("2026-10-28T12:00:00Z"),
-    freshness: { observedAt: seed.observedAt, band: "LIVE" as const } };
-  const v = composeWalletValue({ ...args, components: [comp("inst_sol", 2, 300, "2026-10-27"), comp("inst_usdc", 10, 10, "2026-10-28"), comp("inst_spam", 1e6, null, null)] });
-  check("a priced token is ADDED to the wallet total", v.value === 310, String(v.value));
-  const spam = v.tokens.find((t) => t.label.startsWith("Spam"));
-  check("an unpriced token is EXCLUDED from the total and carried as UNPRICED with value null (never 0)",
-    spam?.state === "UNPRICED" && spam.value === null && spam.quantity === 1e6);
-  check("the wallet stays VALUED — an unlisted airdrop does not black out a priced native balance", v.state === "VALUED");
-  check("the native quantity and price date are the NATIVE asset's, untouched by tokens", v.quantity === 2 && v.priceDate === "2026-10-27");
-  const nativeOnly = composeWalletValue({ ...args, components: [comp("inst_sol", 2, 300, "2026-10-27")] });
-  check("no tokens ⇒ byte-identical single-asset result", nativeOnly.value === 300 && nativeOnly.quantity === 2 && nativeOnly.tokens.length === 0);
-  const nativeUnpriced = composeWalletValue({ ...args, components: [comp("inst_sol", 2, null, null), comp("inst_usdc", 10, 10, "2026-10-28")] });
-  check("an unpriced NATIVE asset still makes the wallet NO_PRICE (unchanged rule) — tokens cannot paper over it",
-    nativeUnpriced.state === "NO_PRICE" && nativeUnpriced.value === null);
-  const tokensOnly = composeWalletValue({ ...args, components: [comp("inst_usdc", 10, 10, "2026-10-28")] });
-  check("tokens without a native observation do not become the wallet's value", tokensOnly.value === null && tokensOnly.state === "NO_OBSERVATION" && tokensOnly.tokens.length === 1);
+  const idUsdc = { assetKey: splTokenAssetKey(USDC), contract: USDC, symbol: "USDC" };
+  const idSpam = { assetKey: splTokenAssetKey(SPAM), contract: SPAM, symbol: "FREE-AIRDROP.COM" };
+  const day = tokensValueOnDay([obs("inst_usdc", D, 10), obs("inst_spam", D, 1e6)], [px("inst_usdc", D, 1)], D).tokens
+    .map((t) => ({ ...t, ...(t.instrumentId === "inst_usdc" ? idUsdc : idSpam) }));
+  const args = { seed, servingQuotes: new Map(), asOf: D, now: new Date("2026-10-28T12:00:00Z"),
+    freshness: { observedAt: seed.observedAt, band: "LIVE" as const }, usdToReporting: 1 };
+  const w = composeWalletValue({ ...args, components: [comp("inst_sol", 2, 300, "2026-10-27")], tokenDay: day });
+  check("a priced token is ADDED to the wallet total", w.value === 310, String(w.value));
+  const spam = w.tokens.find((t) => t.instrumentId === "inst_spam");
+  check("an unpriced token is EXCLUDED and carried UNPRICED with value null (never 0)", spam?.state === "UNPRICED" && spam.value === null && spam.quantity === 1e6);
+  check("an unpriced token never shows its attacker-controlled symbol — shortened mint only", spam?.label === "Spam…1111", spam?.label);
+  check("a priced token may show its symbol", w.tokens.find((t) => t.instrumentId === "inst_usdc")?.label === "USDC");
+  check("the wallet stays VALUED — an unlisted airdrop does not black out a priced native balance", w.state === "VALUED");
+  check("the native quantity and price date are the NATIVE asset's, untouched by tokens", w.quantity === 2 && w.priceDate === "2026-10-27");
+  const staleTok = tokensValueOnDay([obs("inst_usdc", "2026-10-15", 10)], [px("inst_usdc", D, 1)], D).tokens.map((t) => ({ ...t, ...idUsdc }));
+  const ws = composeWalletValue({ ...args, components: [comp("inst_sol", 2, 300, "2026-10-27")], tokenDay: staleTok });
+  check("a fresh NATIVE observation never makes a stale token count", ws.value === 300 && ws.tokens[0].state === "STALE" && ws.tokens[0].value === null);
+  const native = composeWalletValue({ ...args, components: [comp("inst_sol", 2, 300, "2026-10-27")], tokenDay: [] });
+  check("no tokens ⇒ byte-identical single-asset result", native.value === 300 && native.quantity === 2 && native.tokens.length === 0);
+  const nativeUnpriced = composeWalletValue({ ...args, components: [comp("inst_sol", 2, null, null)], tokenDay: day });
+  check("an unpriced NATIVE asset still makes the wallet NO_PRICE — tokens cannot paper over it", nativeUnpriced.state === "NO_PRICE" && nativeUnpriced.value === null);
+  const noFx = composeWalletValue({ ...args, usdToReporting: null, components: [comp("inst_sol", 2, 300, "2026-10-27")], tokenDay: day });
+  check("no USD→reporting rate ⇒ tokens are not converted by guess (excluded)", noFx.value === 300 && noFx.tokens.every((t) => t.value === null));
+}
 
-  const closed = composeWalletValue({ ...args, components: [comp("inst_sol", 2, 300, "2026-10-27"), comp("inst_usdc", 0, 0, "2026-10-28")] });
-  check("a CLOSED token (latest observation 0) is not listed as a holding", closed.tokens.length === 0 && closed.value === 300);
-
-  // refreshCurrentTokenQuotes: only listed contracts are written; nothing is written for an unlisted one.
-  {
-    const { refreshCurrentTokenQuotes } = await import("@/lib/prices/current-quotes");
-    const f = fakeClient();
-    const qNow = new Date("2026-10-28T12:00:00Z");
-    const out = await refreshCurrentTokenQuotes([
-      { instrumentId: "inst_usdc", assetKey: splTokenAssetKey(USDC), platform: "solana", contract: USDC },
-      { instrumentId: "inst_spam", assetKey: splTokenAssetKey(SPAM), platform: "solana", contract: SPAM },
-    ], { client: f.client as never, now: qNow, fetchTokenQuotes: async (_p, toks) => ({ configured: true,
-      quotes: [{ symbol: toks[0].key, priceUsd: 1, quotedAt: new Date(qNow.getTime() - 60_000) }],
-      rejected: [{ symbol: toks[1].key, reason: "absent from response" }] }) });
-    check("only the listed token gets an INTRADAY quote row", f.prices.length === 1 && f.prices[0].instrumentId === "inst_usdc" && f.prices[0].basis === "INTRADAY");
-    check("the unlisted token is reported UNPRICED, with no price row (never 0)",
-      out.status === "REFRESHED" && (out.unpricedAssetKeys ?? []).includes(splTokenAssetKey(SPAM)) && !f.prices.some((p) => p.instrumentId === "inst_spam"));
-  }
-
-  // CoinGecko contract quotes: an unlisted contract is REJECTED, a zero price is REJECTED.
+// ══ COINGECKO: SANITY FLOOR, SOLANA CASE, 429 MID-BATCH, BUDGET, ROTATION ════
+{
   const now = new Date("2026-10-28T12:00:00Z");
-  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({
-    [USDC]: { usd: 0.9998, last_updated_at: Math.floor(now.getTime() / 1000) - 60 },
-    [PYUSD]: { usd: 0, last_updated_at: Math.floor(now.getTime() / 1000) - 60 },
-  }) });
+  const ts = Math.floor(now.getTime() / 1000) - 60;
+  const urls: string[] = [];
+  const answer: Record<string, unknown> = {
+    [USDC]:  { usd: 0.9998, usd_market_cap: 7e10, usd_24h_vol: 5e9, last_updated_at: ts },
+    [PYUSD]: { usd: 1.0, usd_market_cap: 5e5, usd_24h_vol: 100, last_updated_at: ts },   // thin
+  };
+  const fetchImpl = async (url: string) => {
+    urls.push(url);
+    const contract = decodeURIComponent(url.split("contract_addresses=")[1].split("&")[0]);
+    return { ok: true, status: 200, json: async () => (answer[contract] ? { [contract]: answer[contract] } : {}) };
+  };
   const meter: Record<string, number> = {};
   const q = await fetchCoinGeckoTokenQuotes("solana", [
     { key: splTokenAssetKey(USDC), contract: USDC }, { key: splTokenAssetKey(PYUSD), contract: PYUSD }, { key: splTokenAssetKey(SPAM), contract: SPAM },
-  ], { apiKey: "fixture", fetchImpl, now, batchSize: 3, meter });
-  check("a listed contract is quoted, keyed by assetKey", q.quotes.length === 1 && q.quotes[0].symbol === splTokenAssetKey(USDC));
-  check("an unlisted contract (spam) is rejected — UNPRICED, never 0", q.rejected.some((r) => r.symbol === splTokenAssetKey(SPAM)));
-  check("a zero price is rejected, not stored", q.rejected.some((r) => r.symbol === splTokenAssetKey(PYUSD)));
-  check("contract quote requests are metered", meter["simple/token_price:solana"] === 1);
+  ], { apiKey: "fixture", fetchImpl, now, batchSize: 1, meter, minVolume24hUsd: 10_000, minMarketCapUsd: 1_000_000 });
+  check("a liquid listed contract is quoted, keyed by assetKey", q.quotes.length === 1 && q.quotes[0].symbol === splTokenAssetKey(USDC));
+  check("below the market floor ⇒ THIN (refused, never stored, never 0)", q.rejected.some((r) => r.symbol === splTokenAssetKey(PYUSD) && r.kind === "THIN"));
+  check("an unlisted contract ⇒ UNLISTED", q.rejected.some((r) => r.symbol === splTokenAssetKey(SPAM) && r.kind === "UNLISTED"));
+  check("market cap and 24h volume are requested", /include_market_cap=true/.test(urls[0]) && /include_24hr_vol=true/.test(urls[0]));
+  check("a Solana mint keeps its CASE through the quote path (base58 is case-significant)", urls[0].includes(`contract_addresses=${USDC}&`) && !urls[0].includes(USDC.toLowerCase()));
+  check("batch=1 ⇒ one metered request per contract", meter["simple/token_price:solana"] === 3);
+
+  let n = 0;
+  const flaky = async () => (++n === 1
+    ? { ok: true, status: 200, json: async () => ({ [USDC]: answer[USDC] }) }
+    : { ok: false, status: 429, json: async () => ({}) });
+  const m2: Record<string, number> = {};
+  const partial = await fetchCoinGeckoTokenQuotes("solana", [
+    { key: splTokenAssetKey(USDC), contract: USDC }, { key: splTokenAssetKey(PYUSD), contract: PYUSD }, { key: splTokenAssetKey(SPAM), contract: SPAM },
+  ], { apiKey: "fixture", fetchImpl: flaky, now, batchSize: 1, meter: m2 });
+  check("a 429 mid-batch KEEPS the quotes already fetched", partial.quotes.length === 1 && partial.stopped?.code === "THROTTLED");
+  check("…and STOPS further calls", n === 2 && m2["simple/token_price:solana"] === 2);
+  let threw = false;
+  try { await fetchCoinGeckoTokenQuotes("solana", [{ key: "k", contract: USDC }], { apiKey: "fixture", now, fetchImpl: async () => ({ ok: false, status: 429, json: async () => ({}) }) }); } catch { threw = true; }
+  check("a failure before any quote still throws (nothing to keep)", threw);
+
+  // Budget: read before spend; unreadable / exhausted ⇒ nothing spent.
+  const { refreshCurrentTokenQuotes, planTokenQuotes } = await import("@/lib/prices/current-quotes");
+  const targets = [
+    { instrumentId: "inst_usdc", assetKey: splTokenAssetKey(USDC), platform: "solana" as const, contract: USDC },
+    { instrumentId: "inst_spam", assetKey: splTokenAssetKey(SPAM), platform: "solana" as const, contract: SPAM },
+  ];
+  let spent = 0;
+  const countingFetch = (async (_p: string, toks: Array<{ key: string }>) => { spent += toks.length; return { configured: true, quotes: [], rejected: [] }; }) as never;
+  const quoteClient = (f: ReturnType<typeof fakeClient>) => ({ ...f.client,
+    instrumentAlias: { ...f.client.instrumentAlias, findMany: async () => f.aliases, update: f.client.instrumentAlias.update },
+    priceObservation: { ...f.client.priceObservation, findMany: async () => [] } });
+  const fq = fakeClient();
+  const noLedger = await refreshCurrentTokenQuotes(targets, { client: quoteClient(fq) as never, now, fetchTokenQuotes: countingFetch,
+    budget: { remaining: async () => null, record: async () => {}, pace: async () => {} } });
+  check("CoinGecko ledger unreadable ⇒ NOTHING spent", spent === 0 && noLedger.status === "UNAVAILABLE" && /unreadable/.test((noLedger as { reason?: string }).reason ?? ""));
+  const exhausted = await refreshCurrentTokenQuotes(targets, { client: quoteClient(fq) as never, now, fetchTokenQuotes: countingFetch,
+    budget: { remaining: async () => 0, record: async () => {}, pace: async () => {} } });
+  check("CoinGecko daily cap reached ⇒ NOTHING spent", spent === 0 && exhausted.status === "UNAVAILABLE");
+
+  // Unlisted memory + fresh dedupe + rotation (pure plan).
+  const markers = new Map([[splTokenAssetKey(SPAM), { attemptedAt: "2026-10-28T06:00:00Z", outcome: "UNLISTED" as const }]]);
+  const plan1 = planTokenQuotes(targets, { markers, freshQuoteAt: new Map() }, now, { freshHours: 6, retryHours: 24, maxTokens: 10 });
+  check("an UNLISTED contract is not re-asked within 24 h (durable marker)", plan1.ask.length === 1 && plan1.skippedUnlisted[0] === splTokenAssetKey(SPAM));
+  const plan2 = planTokenQuotes(targets, { markers: new Map(), freshQuoteAt: new Map([["inst_usdc", new Date("2026-10-28T09:00:00Z")]]) }, now, { freshHours: 6, retryHours: 24, maxTokens: 10 });
+  check("a token quoted < 6 h ago (by ANY customer's sync) is not re-fetched", plan2.ask.every((t) => t.instrumentId !== "inst_usdc") && plan2.skippedFresh.length === 1);
+  const many = Array.from({ length: 5 }, (_, i) => ({ instrumentId: `i${i}`, assetKey: splTokenAssetKey(`Mint${i}`), platform: "solana" as const, contract: `Mint${i}` }));
+  const rot = new Map<string, { attemptedAt: string; outcome: "PRICED" | "UNLISTED" | "THIN" | "INVALID"; pricedAt?: string }>([
+    [many[4].assetKey, { attemptedAt: "2026-10-28T11:00:00Z", outcome: "PRICED", pricedAt: "2026-10-28T11:00:00Z" }],
+    [many[0].assetKey, { attemptedAt: "2026-10-27T01:00:00Z", outcome: "UNLISTED" }],
+    [many[1].assetKey, { attemptedAt: "2026-10-26T01:00:00Z", outcome: "UNLISTED" }],
+  ]);
+  const plan3 = planTokenQuotes(many, { markers: rot, freshQuoteAt: new Map() }, now, { freshHours: 6, retryHours: 24, maxTokens: 3 });
+  check("rotation: previously PRICED first, then never-attempted, then least-recently attempted",
+    JSON.stringify(plan3.ask.map((t) => t.instrumentId)) === JSON.stringify(["i4", "i2", "i3"]), JSON.stringify(plan3.ask.map((t) => t.instrumentId)));
+  const plan4 = planTokenQuotes(many, { markers: new Map([...rot, [many[2].assetKey, { attemptedAt: "2026-10-28T11:30:00Z", outcome: "INVALID" as const }], [many[3].assetKey, { attemptedAt: "2026-10-28T11:30:00Z", outcome: "INVALID" as const }]]), freshQuoteAt: new Map() }, new Date("2026-10-29T12:00:00Z"), { freshHours: 6, retryHours: 24, maxTokens: 3 });
+  check("rotation: once the retry window passes, the starved ones come round (oldest attempt first)", plan4.ask.map((t) => t.instrumentId).includes("i1"));
+
+  // Only the listed token gets a row; markers are written for what the vendor answered.
+  const fw = fakeClient();
+  fw.aliases.push({ instrumentId: "inst_usdc", provider: "crypto", externalId: splTokenAssetKey(USDC), metadata: { token: true, symbol: "USDC" } },
+                  { instrumentId: "inst_spam", provider: "crypto", externalId: splTokenAssetKey(SPAM), metadata: { token: true } });
+  const recorded: Array<Record<string, number>> = [];
+  const out = await refreshCurrentTokenQuotes(targets, { client: quoteClient(fw) as never, now,
+    budget: { remaining: async () => 100, record: async (m) => { recorded.push({ ...m }); }, pace: async () => {} },
+    fetchTokenQuotes: async (_p, toks, o) => { if (o?.meter) o.meter["simple/token_price:solana"] = toks.length;
+      return { configured: true, quotes: [{ symbol: toks[0].key, priceUsd: 1, quotedAt: new Date(now.getTime() - 60_000) }],
+        rejected: [{ symbol: splTokenAssetKey(SPAM), reason: "absent from response", kind: "UNLISTED" as const }] }; } });
+  check("only the listed token gets an INTRADAY quote row", fw.prices.length === 1 && fw.prices[0].instrumentId === "inst_usdc" && fw.prices[0].basis === "INTRADAY");
+  check("the unlisted token is reported UNPRICED, with no price row (never 0)", out.status === "REFRESHED" && (out.unpricedAssetKeys ?? []).includes(splTokenAssetKey(SPAM)));
+  check("the durable UNLISTED marker is written on the shared alias, preserving its metadata",
+    (fw.aliases.find((a) => a.instrumentId === "inst_spam")!.metadata as { token?: boolean; quote?: { outcome?: string } }).quote?.outcome === "UNLISTED"
+    && (fw.aliases.find((a) => a.instrumentId === "inst_spam")!.metadata as { token?: boolean }).token === true);
+  check("token quote calls are recorded into the COINGECKO budget", recorded.length === 1 && recorded[0]["simple/token_price:solana"] === 2);
+  const nativeSrc = code(read("lib", "prices", "current-quotes.ts"));
+  check("NATIVE current quotes spend the SAME budget (read before spend, metered)",
+    /const remaining = await budget\.remaining\(\);\s*if \(remaining === null\)[\s\S]*fetchCoinGeckoCurrentQuotes\)\(assets/.test(nativeSrc)
+    && /meter\["simple\/price"\]/.test(code(read("lib", "prices", "providers", "coingecko.ts"))));
 }
 
 // ══ WALLET HISTORY COMPLETENESS IS PER INSTRUMENT ═════════════════════════════

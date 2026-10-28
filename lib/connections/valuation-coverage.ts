@@ -11,8 +11,9 @@ import 'server-only';
 import type { PrismaClient } from '@prisma/client';
 import { grantsBalanceDisclosure } from '@/lib/account-privacy';
 import { deriveValuationCoverage, type ValuationCoverage } from './valuation-coverage.core';
+import { IS_TOKEN_INSTRUMENT, WALLET_TOKEN_POSITION_SOURCE } from '@/lib/crypto/token-asset';
 
-type Client = Pick<PrismaClient, 'spaceAccountLink' | 'positionCoverage' | 'priceObservation'>;
+type Client = Pick<PrismaClient, 'spaceAccountLink' | 'positionCoverage' | 'priceObservation' | 'positionObservation'>;
 
 const day = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : null);
 
@@ -28,7 +29,8 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
     where: { financialAccountId: { in: accountIds }, kind: { in: ['COMPLETE', 'PARTIAL'] }, coveredFromDate: { not: null } },
     select: { instrumentId: true, coveredFromDate: true, instrument: { select: { tickerSymbol: true } } },
   });
-  if (!coverage.length) return null;
+  const tokensTrackedFromISO = await pricedTokensTrackedFrom(client, accountIds);
+  if (!coverage.length) return deriveValuationCoverage([], new Map(), tokensTrackedFromISO);
 
   const instrumentIds = [...new Set(coverage.map((c) => c.instrumentId))];
   const floors = await client.priceObservation.groupBy({
@@ -40,5 +42,24 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
   return deriveValuationCoverage(
     coverage.map((c) => ({ symbol: c.instrument.tickerSymbol ?? 'Asset', instrumentId: c.instrumentId, balanceFromISO: day(c.coveredFromDate) })),
     priceFloors,
+    tokensTrackedFromISO,
   );
+}
+
+/**
+ * TOKEN HOLDINGS (PR-A) — the first day a token that has EVER been priced was
+ * observed in these accounts. Unpriced tokens never contribute value, so they
+ * never need a disclosure. Dates only.
+ */
+async function pricedTokensTrackedFrom(client: Client, accountIds: string[]): Promise<string | null> {
+  const firsts = await client.positionObservation.groupBy({
+    by: ['instrumentId'],
+    where: { financialAccountId: { in: accountIds }, source: WALLET_TOKEN_POSITION_SOURCE, supersededById: null, deletedAt: null, instrument: IS_TOKEN_INSTRUMENT },
+    _min: { date: true },
+  });
+  if (!firsts.length) return null;
+  const priced = new Set((await client.priceObservation.groupBy({
+    by: ['instrumentId'], where: { instrumentId: { in: firsts.map((f) => f.instrumentId) } }, _min: { date: true },
+  })).map((p) => p.instrumentId));
+  return firsts.filter((f) => priced.has(f.instrumentId)).map((f) => day(f._min.date)).filter((d): d is string => d !== null).sort()[0] ?? null;
 }

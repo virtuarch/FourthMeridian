@@ -36,7 +36,7 @@ import { licensedInterval, loadInstrumentCoverage } from "./position-coverage";
 import type { ChainCoverage } from "./chain-movement";
 import { nativeAssetForChain } from "./native-asset";
 import {
-  parseTokenAssetKey, tokenDisplayLabel, TOKEN_ALIAS_PROVIDER, WALLET_TOKEN_POSITION_SOURCE, type TokenStandard,
+  parseTokenAssetKey, tokenDisplayLabel, shortenTokenAddress, TOKEN_ALIAS_PROVIDER, WALLET_TOKEN_POSITION_SOURCE, type TokenStandard,
 } from "./token-asset";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -80,9 +80,13 @@ export interface TokenHistoryFacet extends InstrumentHistoryFacet {
   /**
    * Whether ANY market price exists for this token on or after its latest
    * observation. Presence only — the value itself is lib/crypto/wallet-current-value's.
-   * NO_MARKET_PRICE ⇒ "Not valued — no market price": excluded from totals, never zero.
+   * NO_MARKET_PRICE ⇒ "Not valued — no market price"; THIN_MARKET ⇒ "Not valued —
+   * thin market" (listed below the liquidity floor). Both excluded from totals, never zero.
+   *
+   * `label`: a PRICED token may show its symbol; any other shows only its
+   * shortened contract/mint — an unpriced token's symbol is attacker-controlled.
    */
-  priceStatus:  "MARKET_PRICE" | "NO_MARKET_PRICE";
+  priceStatus:  "MARKET_PRICE" | "NO_MARKET_PRICE" | "THIN_MARKET";
 }
 
 export interface WalletInstrumentHistory {
@@ -160,11 +164,14 @@ export async function loadWalletInstrumentHistory(
     }),
   ]);
 
-  const aliasByInstrument = new Map<string, { assetKey: string; symbol: string | null }>();
+  const aliasByInstrument = new Map<string, { assetKey: string; symbol: string | null; thin: boolean }>();
   for (const a of aliases) {
-    const sym = (a.metadata as { symbol?: unknown } | null)?.symbol;
+    const meta = a.metadata as { symbol?: unknown; quote?: { outcome?: unknown } } | null;
     // A native alias shares the namespace; record it too so the native facet can name its key.
-    aliasByInstrument.set(a.instrumentId, { assetKey: a.externalId, symbol: typeof sym === "string" ? sym : null });
+    aliasByInstrument.set(a.instrumentId, {
+      assetKey: a.externalId, symbol: typeof meta?.symbol === "string" ? meta.symbol : null,
+      thin: meta?.quote?.outcome === "THIN",
+    });
   }
   const latestQty = new Map(latestRows.map((r) => [`${r.financialAccountId}|${r.instrumentId}`, r.quantity]));
   const latestPrice = new Map(prices.map((p) => [p.instrumentId, p._max.date ? isoOf(p._max.date) : null]));
@@ -192,13 +199,17 @@ export async function loadWalletInstrumentHistory(
       const quantity = latestQty.get(`${a.id}|${s.instrumentId}`) ?? 0;
       const lastObservedISO = isoOf(s._max.date);
       const priceISO = latestPrice.get(s.instrumentId) ?? null;
+      // A price serving the latest observation day — the day rule's d / d−1 window.
+      const servesISO = new Date(Date.parse(`${lastObservedISO}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+      const priceStatus: TokenHistoryFacet["priceStatus"] =
+        priceISO !== null && priceISO >= servesISO ? "MARKET_PRICE" : alias.thin ? "THIN_MARKET" : "NO_MARKET_PRICE";
       tokens.push({
         instrumentId: s.instrumentId, assetKey: alias.assetKey,
-        label: tokenDisplayLabel({ symbol: alias.symbol, contract: parsed.contract }),
+        label: priceStatus === "MARKET_PRICE" ? tokenDisplayLabel({ symbol: alias.symbol, contract: parsed.contract }) : shortenTokenAddress(parsed.contract),
         standard: parsed.standard, contract: parsed.contract,
         quantity, held: quantity > 0,
         firstObservedISO: isoOf(s._min.date), lastObservedISO,
-        priceStatus: priceISO !== null && priceISO >= lastObservedISO ? "MARKET_PRICE" : "NO_MARKET_PRICE",
+        priceStatus,
         ...facetFromCoverage(cov.get(s.instrumentId) ?? null),
       });
     }

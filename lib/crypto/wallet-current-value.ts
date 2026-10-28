@@ -63,7 +63,9 @@ import { usesLegacyColumnForCurrentValue } from "./wallet-sync-dispatch.core";
 import { readQuotesForDate, type StoredQuote } from "@/lib/prices/current-quotes";
 import { quoteServesAsOf, quoteProvenance, closeProvenance, type PriceProvenance } from "@/lib/prices/current-quote.core";
 import { nativeAssetForChain } from "./native-asset";
-import { parseTokenAssetKey, tokenDisplayLabel, TOKEN_ALIAS_PROVIDER } from "./token-asset";
+import { tokenDisplayLabel, shortenTokenAddress, NOT_TOKEN_INSTRUMENT } from "./token-asset";
+import { tokensValueOnDay, type TokenDayValue } from "./token-valuation.core";
+import { loadTokenDayRows } from "./token-valuation";
 import { bandForAge, ageInDays, type FreshnessBand } from "@/lib/freshness/observation";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -139,7 +141,7 @@ export interface WalletCurrentValue {
   observedAt: Date | null;
   freshness:  FreshnessBand;
   /**
-   * TOKEN HOLDINGS (PR-A) — every token position held, VALUED or UNPRICED.
+   * TOKEN HOLDINGS (PR-A) — every token position held, VALUED, UNPRICED or STALE.
    *
    * A priced token's value is INCLUDED in `value` above; an unpriced one (spam,
    * airdrop, unlisted) is EXCLUDED from `value` and carried here with
@@ -156,13 +158,14 @@ export interface WalletTokenValue {
   instrumentId: string;
   /** CAIP-19 identity (eip155:1/erc20:0x… / solana:…/token:<mint>). */
   assetKey:     string | null;
-  /** Display only: sanitised symbol, else the shortened mint/contract. */
+  /** Display only: a PRICED token's sanitised symbol; otherwise the shortened mint/contract. */
   label:        string;
   /** Whole token units. NULL IS UNKNOWN — never 0. */
   quantity:     number | null;
   /** Reporting-currency value; NULL when no market price exists — never 0. */
   value:        number | null;
-  state:        "VALUED" | "UNPRICED";
+  /** VALUED counts in `value`; UNPRICED (no price serving today) and STALE (own observation too old) do not. */
+  state:        "VALUED" | "UNPRICED" | "STALE";
   priceDate:    string | null;
 }
 
@@ -345,6 +348,10 @@ export async function loadWalletCurrentValues(
       supersededById:     null,
       deletedAt:          null,
       date:               { lte: asOfDate },
+      // TOKEN HOLDINGS (PR-A) — the valuation core values the NATIVE position.
+      // Tokens are valued below by the shared day rule (token-valuation.core),
+      // the same rule historical regeneration uses.
+      instrument:         NOT_TOKEN_INSTRUMENT,
     },
     _max: { date: true },
   });
@@ -390,25 +397,11 @@ export async function loadWalletCurrentValues(
     currentQuotes: { dateISO: asOf, byInstrument: new Map([...servingQuotes].map(([id, q]) => [id, { price: q.priceUsd, currency: "USD" }])) },
   });
 
-  // TOKEN HOLDINGS (PR-A) — which components are TOKENS, by the alias that is
-  // their identity (never by ticker). Everything else is the wallet's native
-  // position and is treated EXACTLY as before this slice: with no token rows,
-  // this map is empty and every line below reduces to the single-asset rule.
-  const componentInstrumentIds = [...new Set(view.components.map((c) => c.instrumentId))];
-  const tokenAliasRows = componentInstrumentIds.length === 0 ? [] : await client.instrumentAlias.findMany({
-    where:  { instrumentId: { in: componentInstrumentIds }, provider: TOKEN_ALIAS_PROVIDER },
-    select: { instrumentId: true, externalId: true, metadata: true },
-  });
-  const tokenByInstrument = new Map<string, { assetKey: string; label: string }>();
-  for (const a of tokenAliasRows) {
-    const parsed = parseTokenAssetKey(a.externalId);
-    if (!parsed) continue;
-    const symbol = (a.metadata as { symbol?: unknown } | null)?.symbol;
-    tokenByInstrument.set(a.instrumentId, {
-      assetKey: a.externalId,
-      label: tokenDisplayLabel({ symbol: typeof symbol === "string" ? symbol : null, contract: parsed.contract }),
-    });
-  }
+  // TOKEN HOLDINGS (PR-A) — tokens by THE day rule shared with regeneration:
+  // each token's OWN fresh observation × a USD price serving the day. Identity
+  // (and the display label) comes from the alias, never the ticker.
+  const tokenRows = await loadTokenDayRows(client, accountIds, asOf, asOf);
+  const tokenIdentity = tokenRows.identity;
 
   const componentsByAccount = new Map<string, typeof view.components>();
   for (const c of view.components) {
@@ -417,67 +410,89 @@ export async function loadWalletCurrentValues(
     componentsByAccount.set(c.accountId, list);
   }
 
-  for (const [accountId, all] of componentsByAccount) {
+  for (const [accountId, components] of componentsByAccount) {
     const seed = out.get(accountId);
     if (!seed) continue;
     const f = freshnessByAccount.get(accountId) ?? { observedAt: null, band: "UNKNOWN" as FreshnessBand };
-    out.set(accountId, composeWalletValue({ seed, components: all, tokenByInstrument, servingQuotes, asOf, now, freshness: f }));
+    const obs = tokenRows.observationsByAccount.get(accountId) ?? [];
+    const tokenDay = tokensValueOnDay(obs, tokenRows.prices, asOf).tokens.map((t) => ({ ...t, ...tokenIdentity.get(t.instrumentId)! }));
+    out.set(accountId, composeWalletValue({
+      seed, components, tokenDay, servingQuotes, asOf, now, freshness: f,
+      usdToReporting: usdToReportingRate(options?.reportingCurrency ?? "USD", components),
+    }));
   }
 
   return out;
 }
 
 /**
- * PURE — one wallet's current value from its valued components. The whole of
- * the per-account decision, extracted so it is fixture-testable:
+ * The USD → reporting-currency rate implied by the native valuation (the same
+ * FX authority the valuation core applied), or null when it cannot be read.
+ * USD reporting needs no rate.
+ */
+export function usdToReportingRate(reportingCurrency: string, components: readonly InstrumentValuation[]): number | null {
+  if (reportingCurrency === "USD") return 1;
+  const c = components.find((x) => x.currency === "USD" && x.nativeValue !== null && x.nativeValue > 0 && x.reportingValue !== null);
+  return c ? c.reportingValue! / c.nativeValue! : null;
+}
+
+/** One token as the day rule valued it, with its identity. */
+export type TokenDayInput = TokenDayValue & { assetKey: string; contract: string; symbol: string | null };
+
+/**
+ * PURE — one wallet's current value. The whole per-account decision, extracted
+ * so it is fixture-testable:
  *
  *   · NATIVE components keep the single-asset rules exactly (one component ⇒
  *     its quantity and price provenance; any unpriced native ⇒ NO_PRICE).
- *   · TOKEN components (by alias identity) never touch the native quantity or
- *     price. A priced token's value is ADDED to the wallet total; an unpriced
- *     token is EXCLUDED from it and disclosed in `tokens` with value null —
- *     never valued at zero.
+ *   · TOKENS arrive already valued by the shared day rule (token-valuation.core):
+ *     a VALUED token is ADDED to the wallet total; every other state is
+ *     EXCLUDED and disclosed in `tokens` with value null — never valued at zero.
+ *     A token is never valued because the NATIVE position is fresh: its own
+ *     observation must be. Closed tokens are not listed.
+ *   · Display label: a priced token may show its symbol; an unpriced one shows
+ *     only its shortened contract/mint (its symbol is attacker-controlled).
  */
 export function composeWalletValue(args: {
-  seed:              WalletCurrentValue;
-  components:        readonly InstrumentValuation[];
-  tokenByInstrument: ReadonlyMap<string, { assetKey: string; label: string }>;
-  servingQuotes:     ReadonlyMap<string, StoredQuote>;
-  asOf:              string;
-  now:               Date;
-  freshness:         { observedAt: Date | null; band: FreshnessBand };
+  seed:            WalletCurrentValue;
+  components:      readonly InstrumentValuation[];
+  tokenDay:        readonly TokenDayInput[];
+  usdToReporting:  number | null;
+  servingQuotes:   ReadonlyMap<string, StoredQuote>;
+  asOf:            string;
+  now:             Date;
+  freshness:       { observedAt: Date | null; band: FreshnessBand };
 }): WalletCurrentValue {
-  const { seed, components: all, tokenByInstrument, servingQuotes, asOf, now, freshness } = args;
+  const { seed, components, tokenDay, usdToReporting, servingQuotes, asOf, now, freshness: f } = args;
+  /** A band that may back a CURRENT claim. UNKNOWN is never fresh. */
   const isFresh = (band: FreshnessBand): boolean => band === "LIVE" || band === "RECENT";
 
-  // A closed token (its latest observation is an explicit 0) is not a holding.
-  const tokenComponents = all.filter((c) => tokenByInstrument.has(c.instrumentId) && c.quantity !== null && c.quantity > 0);
-  const tokens: WalletTokenValue[] = tokenComponents.map((c) => ({
-    instrumentId: c.instrumentId,
-    assetKey:     tokenByInstrument.get(c.instrumentId)!.assetKey,
-    label:        tokenByInstrument.get(c.instrumentId)!.label,
-    quantity:     c.quantity,
-    value:        c.reportingValue,
-    state:        c.reportingValue !== null ? "VALUED" : "UNPRICED",
-    priceDate:    c.reportingValue !== null ? c.priceDate ?? null : null,
-  }));
-  // Priced tokens join the total; UNPRICED tokens are excluded from it (and
-  // disclosed in `tokens`) — the owner's rule for tokens, and the only place
-  // a partial subtotal is permitted: an unlisted airdrop must not black out a
-  // wallet whose native balance is known and priced.
+  const tokens: WalletTokenValue[] = tokenDay
+    .filter((t) => t.state !== "CLOSED" && t.state !== "NO_OBSERVATION")
+    .map((t) => {
+      const valued = t.state === "VALUED" && usdToReporting !== null;
+      return {
+        instrumentId: t.instrumentId,
+        assetKey:     t.assetKey,
+        label:        valued ? tokenDisplayLabel({ symbol: t.symbol, contract: t.contract }) : shortenTokenAddress(t.contract),
+        quantity:     t.quantity,
+        value:        valued ? t.valueUsd! * usdToReporting! : null,
+        state:        valued ? "VALUED" : t.state === "STALE" ? "STALE" : "UNPRICED",
+        priceDate:    valued ? t.priceDateISO : null,
+      };
+    });
   const pricedTokenValue = tokens.reduce((s, t) => s + (t.value ?? 0), 0);
 
-  // THE NATIVE POSITION — unchanged rules. A wallet holds ONE native asset, so
-  // one component per account. Should a chain ever carry more, the quantities
-  // are not summable across instruments — only the reporting values are, and
-  // the quantity is then left unknown rather than being invented.
-  const components = all.filter((c) => !tokenByInstrument.has(c.instrumentId));
   if (components.length === 0) {
     // Tokens without a native observation: the native facts stay unknown, and
     // so does the wallet total — a token subtotal is not the wallet's value.
     return { ...seed, tokens };
   }
 
+  // THE NATIVE POSITION — unchanged rules. A wallet holds ONE native asset, so
+  // one component per account. Should a chain ever carry more, the quantities
+  // are not summable across instruments — only the reporting values are, and
+  // the quantity is then left unknown rather than being invented.
   const valued = components.filter((c) => c.reportingValue !== null);
   const quantity = components.length === 1 ? components[0].quantity : null;
   const priceDate = components.length === 1 ? components[0].priceDate ?? null : null;
@@ -499,7 +514,6 @@ export function composeWalletValue(args: {
   // it is asked BEFORE the quantity is looked at. A stale zero is a stale
   // reading, not a fresh confirmation that the wallet is empty; zero is a
   // material claim and needs the same evidence authority as any other number.
-  const f = freshness;
   return {
     accountId: seed.accountId,
     chain:     seed.chain,

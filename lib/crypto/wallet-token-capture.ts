@@ -52,13 +52,13 @@ import {
 } from "@/lib/usage/provider-budget";
 import { refreshCurrentTokenQuotes, type TokenQuoteTarget } from "@/lib/prices/current-quotes";
 import type { fetchCoinGeckoTokenQuotes } from "@/lib/prices/providers/coingecko";
+import type { CoinGeckoBudget } from "@/lib/prices/coingecko-budget";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
 export { WALLET_TOKEN_POSITION_SOURCE };
 
-/** ApiUsageCounter.provider for CoinGecko token quote requests. */
-export const COINGECKO_USAGE_PROVIDER = "COINGECKO";
+export { COINGECKO_USAGE_PROVIDER } from "@/lib/prices/coingecko-budget";
 
 const num = (v: string | undefined, d: number, min: number, max: number) => {
   const n = Number(v);
@@ -111,7 +111,8 @@ export interface WalletTokenSyncOutcome {
   unstated: Array<{ contract: string; reason: string }>;
   /** Alchemy requests this run sent (all metered into the shared budget). */
   providerCalls: number;
-  quote?: { status: string; pricedInstrumentIds: string[]; unpricedAssetKeys: string[]; calls: number; reason?: string };
+  /** CoinGecko token quotes this run (calls metered into the shared COINGECKO budget). */
+  quote?: { status: string; pricedInstrumentIds: string[]; unpricedAssetKeys: string[]; thinAssetKeys: string[]; calls: number; reason?: string };
 }
 
 export interface WalletTokenSyncDeps {
@@ -124,8 +125,8 @@ export interface WalletTokenSyncDeps {
   dailyCap?: number;
   /** Flush the Alchemy meter. Default: recordProviderMeter(ALCHEMY, network, meter). */
   recordUsage?: (network: string, meter: Record<string, number>) => Promise<void>;
-  /** Flush the CoinGecko meter. Default: recordProviderMeter(COINGECKO, "coingecko", meter). */
-  recordQuoteUsage?: (meter: Record<string, number>) => Promise<void>;
+  /** The shared CoinGecko budget (read-before-spend, meter, pace). Default: defaultCoinGeckoBudget(client). */
+  quoteBudget?: CoinGeckoBudget;
   fetchTokenQuotes?: typeof fetchCoinGeckoTokenQuotes;
   observationsEnabled?: boolean;
   config?: ReturnType<typeof tokenCaptureConfig>;
@@ -165,6 +166,8 @@ export async function syncWalletTokens(args: {
   const now = deps.now ?? new Date();
 
   // 1. THE SHARED BUDGET. Unreadable is not "plenty": skip rather than spend blind.
+  //    ETH token calls count against the SAME daily cap as the Solana history
+  //    worker — intended: one Alchemy key, one bill (see token-rpc.ts on calls vs CU).
   let ledger: LedgerCalls | null = null;
   try {
     ledger = deps.usageToday
@@ -190,7 +193,12 @@ export async function syncWalletTokens(args: {
       ? await fetchSolTokenHoldings(address, { rpcUrl, fetchImpl: deps.fetchImpl, meter, callBudget, timeoutMs: cfg.timeoutMs })
       : await fetchErc20TokenHoldings(address,
           { rpcUrl, fetchImpl: deps.fetchImpl, meter, callBudget: Math.min(callBudget, cfg.erc20MaxPages + cfg.erc20MaxMetadata), timeoutMs: cfg.timeoutMs },
-          { maxPages: cfg.erc20MaxPages, knownMetadata: (contracts) => knownErc20Metadata(client, contracts) });
+          { maxPages: cfg.erc20MaxPages, knownMetadata: (contracts) => knownErc20Metadata(client, contracts),
+            recheckRemaining: async () => {
+              const l = deps.usageToday ? await deps.usageToday()
+                : await providerCallsOn(client as unknown as ProviderUsageClient, ALCHEMY_USAGE_PROVIDER, now.toISOString().slice(0, 10));
+              return l ? cap - (l.solana + l.other) : null; // this run is not flushed yet, so the ledger excludes it
+            } });
   } catch (e) {
     await flush(deps, network, meter);
     return empty({ status: "FAILED", reason: redactProviderSecrets(e instanceof Error ? e.message : String(e)), providerCalls: total(meter) });
@@ -219,13 +227,19 @@ export async function syncWalletTokens(args: {
       await writeTokenObservation(client, accountId, instrumentId, date, h.quantity);
       tokens.push({ instrumentId, assetKey: h.assetKey, contract: h.contract, symbol: h.symbol, rawAmount: h.rawAmount, decimals: h.decimals, quantity: h.quantity });
     }
-    if (enumeration.complete) {
-      const held = new Set(tokens.map((t) => t.instrumentId));
-      for (const instrumentId of await previouslyHeldTokenInstruments(client, accountId, date)) {
-        if (held.has(instrumentId)) continue;
-        await writeTokenObservation(client, accountId, instrumentId, date, 0);
-        closedInstrumentIds.push(instrumentId);
-      }
+    // CLOSURE. Two independent licences to write an explicit 0 for a token that
+    // was held: (a) a COMPLETE enumeration that no longer lists it, or (b) the
+    // provider reporting EXPLICITLY zero for it — evidence even when other
+    // pages were unreadable (review fix 4).
+    const held = new Set(tokens.map((t) => t.instrumentId));
+    const previously = await previouslyHeldTokenInstruments(client, accountId, date);
+    const explicitZeroIds = new Set(enumeration.explicitZero.length === 0 ? []
+      : [...(await loadTokenAliasMetadata(client, enumeration.explicitZero)).values()].map((m) => m.instrumentId));
+    for (const instrumentId of previously) {
+      if (held.has(instrumentId)) continue;
+      if (!enumeration.complete && !explicitZeroIds.has(instrumentId)) continue;
+      await writeTokenObservation(client, accountId, instrumentId, date, 0);
+      closedInstrumentIds.push(instrumentId);
     }
   } catch (e) {
     return empty({
@@ -239,17 +253,15 @@ export async function syncWalletTokens(args: {
   if (tokens.length > 0 && cfg.maxQuotedTokens > 0) {
     const platform = coinGeckoPlatformFor(standard);
     const targets: TokenQuoteTarget[] = tokens.map((t) => ({ instrumentId: t.instrumentId, assetKey: t.assetKey, platform, contract: t.contract }));
-    const qMeter: Record<string, number> = {};
     const q = await refreshCurrentTokenQuotes(targets, {
-      client, fetchTokenQuotes: deps.fetchTokenQuotes, now, maxTokens: cfg.maxQuotedTokens, meter: qMeter,
+      client, fetchTokenQuotes: deps.fetchTokenQuotes, now, maxTokens: cfg.maxQuotedTokens, budget: deps.quoteBudget,
     });
-    try { await (deps.recordQuoteUsage ?? ((m) => recordProviderMeter(COINGECKO_USAGE_PROVIDER, "coingecko", m).then(() => undefined)))(qMeter); }
-    catch { /* metering never fails a sync */ }
     quote = {
       status: q.status,
       pricedInstrumentIds: q.status === "REFRESHED" ? q.instrumentIds : [],
       unpricedAssetKeys: q.unpricedAssetKeys ?? [],
-      calls: total(qMeter),
+      thinAssetKeys: q.thinAssetKeys ?? [],
+      calls: q.calls ?? 0,
       ...(q.status === "UNAVAILABLE" ? { reason: q.reason } : {}),
     };
   }

@@ -423,6 +423,8 @@ export function tokenScopeLabel(chain: string | null | undefined): string {
 }
 
 /** Valued / unpriced, in the customer's words. */
-export function tokenPriceText(status: "MARKET_PRICE" | "NO_MARKET_PRICE"): string {
-  return status === "MARKET_PRICE" ? "Valued at market price" : "Not valued — no market price";
+export function tokenPriceText(status: "MARKET_PRICE" | "NO_MARKET_PRICE" | "THIN_MARKET"): string {
+  return status === "MARKET_PRICE" ? "Valued at market price"
+    : status === "THIN_MARKET" ? "Not valued — thin market"
+    : "Not valued — no market price";
 }

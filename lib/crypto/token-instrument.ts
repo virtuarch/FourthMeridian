@@ -100,7 +100,10 @@ export async function resolveTokenInstrumentId(
   if (decision.action === "use") {
     const known = readTokenAliasMetadata(alias?.metadata);
     if (!known || (!known.symbol && token.symbol) || (!known.name && token.name)) {
-      await client.instrumentAlias.update({ where, data: { metadata: tokenAliasMetadata(token) as unknown as Prisma.InputJsonValue } });
+      // Merge, never replace: other keys on the alias (the quote marker —
+      // lib/prices/current-quotes TokenQuoteMarker) must survive a display refresh.
+      const existing = (alias?.metadata && typeof alias.metadata === "object" ? alias.metadata : {}) as Record<string, unknown>;
+      await client.instrumentAlias.update({ where, data: { metadata: { ...existing, ...tokenAliasMetadata(token) } as unknown as Prisma.InputJsonValue } });
     }
     return decision.instrumentId;
   }

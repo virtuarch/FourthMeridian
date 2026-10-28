@@ -234,13 +234,14 @@ export interface SplTokenAccountEntry {
  * never an empty wallet. Individual malformed entries are refused into
  * `rejected` (counted, never guessed).
  */
-export function parseSplTokenAccounts(body: unknown, programId: string): { entries: SplTokenAccountEntry[]; rejected: number } {
+export function parseSplTokenAccounts(body: unknown, programId: string): { entries: SplTokenAccountEntry[]; rejected: number; rejectedMints: string[] } {
   const env = body as { result?: { value?: unknown }; error?: { code?: number; message?: string } } | null;
   if (!env || typeof env !== "object") throw new Error("unparseable getTokenAccountsByOwner response");
   if (env.error) throw new Error(`provider error ${env.error.code ?? "?"}: ${env.error.message ?? "unknown"}`);
   const value = env.result?.value;
   if (!Array.isArray(value)) throw new Error("unexpected getTokenAccountsByOwner response shape (missing result.value)");
   const entries: SplTokenAccountEntry[] = [];
+  const rejectedMints: string[] = [];
   let rejected = 0;
   for (const v of value as Array<Record<string, unknown>>) {
     const pubkey = typeof v?.pubkey === "string" ? v.pubkey : null;
@@ -248,10 +249,14 @@ export function parseSplTokenAccounts(body: unknown, programId: string): { entri
     const mint = typeof info?.mint === "string" ? info.mint : null;
     const ta = info?.tokenAmount as { amount?: unknown; decimals?: unknown } | undefined;
     const amount = parseDecimalAmount(ta?.amount);
-    if (!pubkey || !mint || amount === null || !isValidDecimals(ta?.decimals)) { rejected++; continue; }
+    if (!pubkey || !mint || amount === null || !isValidDecimals(ta?.decimals)) {
+      rejected++;
+      if (mint) rejectedMints.push(mint);
+      continue;
+    }
     entries.push({ tokenAccount: pubkey, mint, program: programId, amount, decimals: ta!.decimals as number });
   }
-  return { entries, rejected };
+  return { entries, rejected, rejectedMints };
 }
 
 /**
@@ -261,11 +266,13 @@ export function parseSplTokenAccounts(body: unknown, programId: string): { entri
  * has exactly one decimals value — disagreement means the data is wrong). Zero
  * sums are not positions and are dropped.
  */
-export function groupSplHoldings(entries: readonly SplTokenAccountEntry[]): { holdings: TokenHolding[]; refusedMints: string[] } {
+export function groupSplHoldings(entries: readonly SplTokenAccountEntry[]): { holdings: TokenHolding[]; refusedMints: string[]; zeroMints: string[] } {
   const byMint = new Map<string, SplTokenAccountEntry[]>();
   for (const e of entries) (byMint.get(e.mint) ?? byMint.set(e.mint, []).get(e.mint)!).push(e);
   const holdings: TokenHolding[] = [];
   const refusedMints: string[] = [];
+  /** Mints whose every token account read cleanly and summed to EXACTLY zero — an explicit provider zero. */
+  const zeroMints: string[] = [];
   for (const [mint, list] of byMint) {
     const decimals = list[0].decimals;
     if (list.some((e) => e.decimals !== decimals) || new Set(list.map((e) => e.program)).size > 1) {
@@ -273,7 +280,7 @@ export function groupSplHoldings(entries: readonly SplTokenAccountEntry[]): { ho
       continue;
     }
     const raw = list.reduce((s, e) => s + e.amount, BigInt(0));
-    if (raw === BigInt(0)) continue;
+    if (raw === BigInt(0)) { zeroMints.push(mint); continue; }
     holdings.push({
       assetKey: splTokenAssetKey(mint), standard: "SPL", contract: mint,
       rawAmount: raw.toString(), decimals, quantity: baseUnitsToWhole(raw, decimals),
@@ -282,7 +289,7 @@ export function groupSplHoldings(entries: readonly SplTokenAccountEntry[]): { ho
     });
   }
   holdings.sort((a, b) => a.contract.localeCompare(b.contract));
-  return { holdings, refusedMints };
+  return { holdings, refusedMints, zeroMints: zeroMints.sort() };
 }
 
 // ── Ethereum: alchemy_getTokenBalances / alchemy_getTokenMetadata ────────────

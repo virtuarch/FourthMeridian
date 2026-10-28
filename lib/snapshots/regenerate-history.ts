@@ -78,6 +78,8 @@ import { feedsLegacyWealthHistory } from "@/lib/crypto/wallet-sync-dispatch";
 import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconstruction-read";
 import { loadPositionCoverage, resolveLicensedQuantityAsOf } from "@/lib/crypto/position-coverage";
 import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
+import { loadTokenDayRows } from "@/lib/crypto/token-valuation";
+import { tokensValueOnDay } from "@/lib/crypto/token-valuation.core";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
@@ -357,13 +359,12 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         financialAccountId: { in: spineCryptoAccounts.map((a) => a.id) },
         supersededById: null, deletedAt: null,
         date: { lte: fromISO(toDate) },
-        // TOKEN HOLDINGS (PR-A) — this composer values ONE native quantity per
-        // wallet (instrument-blind rows, the account's native price). A token
-        // row on the same account would otherwise be read AS native quantity —
-        // 1,000 USDC valued as 1,000 SOL. Tokens have no reconstructed history
-        // and no licence, so they contribute nothing to historical points until
-        // the token-history PRs give them both. NOT EXISTS ⇒ every non-token
-        // row (all rows before this slice) is kept byte-identically.
+        // TOKEN HOLDINGS (PR-A) — this read is the NATIVE quantity per wallet
+        // (instrument-blind rows, the account's native price). A token row on
+        // the same account would otherwise be read AS native quantity — 1,000
+        // USDC valued as 1,000 SOL. Tokens are valued separately below by the
+        // shared day rule. NOT EXISTS ⇒ every non-token row (all rows before
+        // this slice) is kept byte-identically.
         instrument: NOT_TOKEN_INSTRUMENT,
       },
       select: { financialAccountId: true, date: true, quantity: true, origin: true, completeness: true },
@@ -835,6 +836,15 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const progressStep  = Math.max(1, Math.floor(progressTotal / 20));
   const ctx = await buildSpaceConversionContext(space, { currencies: accounts.map((a) => a.currency ?? null), dates: candidateDates });
 
+  // TOKEN HOLDINGS (PR-A) — token rows for the window, read ONCE and valued per
+  // day by THE rule the live read uses (token-valuation.core): each token's own
+  // fresh observation × a USD price serving the day. Days before tracking began
+  // have no observation and contribute nothing (disclosed on the chart, never
+  // filled). Tokens join the day only where the native crypto is itself valued.
+  const tokenRows = spineCryptoAccounts.length > 0 && candidateDates.length > 0
+    ? await loadTokenDayRows(client, spineCryptoAccounts.map((a) => a.id), candidateDates[0], candidateDates[candidateDates.length - 1])
+    : null;
+
   // HIST-1C — value the whole window's investments in ONE position/price/FX read
   // (getInvestmentValueForWindow) instead of an N×date getInvestmentValueAsOf call
   // per day. Each date's view is byte-identical to the former per-day call; this
@@ -1065,6 +1075,14 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         // classifyAccounts still does the FX to the reporting currency — the SAME
         // conversion path every other total uses (no second FX interpretation).
         const cryptoDay = cryptoDayValuation.positions.map((p) => ({ type: "crypto", balance: p.nativeValue, currency: "USD" }));
+        // TOKEN HOLDINGS (PR-A) — VALUED tokens of the same wallets, in USD,
+        // through the SAME conversion path. Unpriced / stale tokens add nothing.
+        if (tokenRows) {
+          for (const obs of tokenRows.observationsByAccount.values()) {
+            const t = tokensValueOnDay(obs, tokenRows.prices, dISO);
+            if (t.totalUsd > 0) cryptoDay.push({ type: "crypto", balance: t.totalUsd, currency: "USD" });
+          }
+        }
         digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;
         hasDigitalAssetEvidence = true;
       }

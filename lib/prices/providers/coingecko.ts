@@ -400,7 +400,7 @@ export function createCoinGeckoPriceProvider(
  */
 export async function fetchCoinGeckoCurrentQuotes(
   symbols: readonly string[],
-  opts: CoinGeckoOptions & { now?: Date } = {},
+  opts: CoinGeckoOptions & { now?: Date; meter?: Record<string, number> } = {},
 ): Promise<{ quotes: CurrentQuote[]; rejected: QuoteRejection[]; configured: boolean }> {
   const apiKey = opts.apiKey ?? process.env.COINGECKO_API_KEY;
   if (!apiKey) return { quotes: [], rejected: [], configured: false };
@@ -419,6 +419,8 @@ export async function fetchCoinGeckoCurrentQuotes(
   const doFetch: CoinGeckoFetch =
     opts.fetchImpl ?? ((url, init) => fetch(url, init) as unknown as Promise<CoinGeckoHttpResponse>);
   const url = `${baseUrl}/simple/price?ids=${encodeURIComponent(ids.join(","))}&vs_currencies=usd&include_last_updated_at=true`;
+  // Review fix 1 — the native quote is metered into the shared COINGECKO budget too.
+  if (opts.meter) opts.meter["simple/price"] = (opts.meter["simple/price"] ?? 0) + 1;
 
   let res: CoinGeckoHttpResponse;
   try {
@@ -469,55 +471,94 @@ export function resolveTokenPriceBatch(raw: string | undefined): number {
   return Number.isInteger(n) && n >= 1 && n <= 50 ? n : COINGECKO_TOKEN_PRICE_BATCH_DEFAULT;
 }
 
+/** Why a token was not quoted: absent from the vendor (unlisted), malformed, or below the sanity floor. */
+export type TokenQuoteMiss = { symbol: string; reason: string; kind: "UNLISTED" | "INVALID" | "THIN" };
+
 /**
  * Current USD quotes for token contracts on one CoinGecko platform. Each input
  * pairs the caller's key (the assetKey) with the contract as the vendor indexes
- * it. Returns `{configured:false}` without a key (the dark no-op); throws
- * ProviderFetchError on transport / HTTP failure. `meter` counts requests sent.
+ * it. Requests `usd_market_cap` and `usd_24h_vol` too: a quote below EITHER
+ * floor is a THIN market — a price nobody could trade at — and is refused, never
+ * stored, never valued (review fix 7).
+ *
+ * PARTIAL ON FAILURE (review fix 3): a 429 or any failure mid-batch STOPS further
+ * requests and returns what was already fetched, with `stopped` saying why.
+ * Only a failure before the first quote throws. `maxCalls` bounds requests; each
+ * request is paced (`pace`) and metered (`meter`) BEFORE it is sent.
+ * Returns `{configured:false}` without a key (the dark no-op).
  */
 export async function fetchCoinGeckoTokenQuotes(
   platform: "solana" | "ethereum",
   tokens: ReadonlyArray<{ key: string; contract: string }>,
-  opts: CoinGeckoOptions & { now?: Date; batchSize?: number; meter?: Record<string, number> } = {},
-): Promise<{ quotes: CurrentQuote[]; rejected: QuoteRejection[]; configured: boolean }> {
+  opts: CoinGeckoOptions & {
+    now?: Date; batchSize?: number; meter?: Record<string, number>;
+    pace?: () => Promise<void>; maxCalls?: number;
+    minVolume24hUsd?: number; minMarketCapUsd?: number;
+  } = {},
+): Promise<{ quotes: CurrentQuote[]; rejected: TokenQuoteMiss[]; configured: boolean; stopped?: { code: string; message: string } }> {
   const apiKey = opts.apiKey ?? process.env.COINGECKO_API_KEY;
   if (!apiKey) return { quotes: [], rejected: [], configured: false };
   const baseUrl = opts.baseUrl ?? COINGECKO_BASE_URL;
   const doFetch: CoinGeckoFetch =
     opts.fetchImpl ?? ((url, init) => fetch(url, init) as unknown as Promise<CoinGeckoHttpResponse>);
   const batch = opts.batchSize ?? resolveTokenPriceBatch(process.env.COINGECKO_TOKEN_PRICE_BATCH);
+  const minVol = opts.minVolume24hUsd ?? 0;
+  const minCap = opts.minMarketCapUsd ?? 0;
   // EVM addresses are case-insensitive and the vendor answers lowercase; a Solana
-  // mint is case-SIGNIFICANT base58 and is matched exactly.
+  // mint is case-SIGNIFICANT base58 and is matched EXACTLY (never lowercased).
   const norm = (c: string) => (platform === "ethereum" ? c.toLowerCase() : c);
+  const metric = `simple/token_price:${platform}`;
 
   const quotes: CurrentQuote[] = [];
-  const rejected: QuoteRejection[] = [];
+  const rejected: TokenQuoteMiss[] = [];
+  let calls = 0;
   for (let i = 0; i < tokens.length; i += batch) {
+    if (opts.maxCalls !== undefined && calls >= opts.maxCalls) {
+      return { quotes, rejected, configured: true, stopped: { code: "BUDGET", message: `call budget of ${opts.maxCalls} reached` } };
+    }
     const chunk = tokens.slice(i, i + batch);
     const url = `${baseUrl}/simple/token_price/${platform}?contract_addresses=${encodeURIComponent(chunk.map((t) => norm(t.contract)).join(","))}` +
-      "&vs_currencies=usd&include_last_updated_at=true";
-    if (opts.meter) opts.meter[`simple/token_price:${platform}`] = (opts.meter[`simple/token_price:${platform}`] ?? 0) + 1;
-    let res: CoinGeckoHttpResponse;
+      "&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true&include_last_updated_at=true";
+    if (opts.pace) await opts.pace();
+    calls++;
+    if (opts.meter) opts.meter[metric] = (opts.meter[metric] ?? 0) + 1;
+    let failure: ProviderFetchError | null = null;
+    let body: unknown = null;
     try {
-      res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey }, signal: AbortSignal.timeout(PRICE_PROVIDER_TIMEOUT_MS) });
+      const res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey }, signal: AbortSignal.timeout(PRICE_PROVIDER_TIMEOUT_MS) });
+      if (!res.ok) {
+        failure = new ProviderFetchError(res.status === 429 ? "THROTTLED" : "PROVIDER_ERROR",
+          `coingecko: ${res.status === 429 ? "rate-limited (429)" : `HTTP ${res.status}`} for token quotes`);
+      } else {
+        try { body = await res.json(); }
+        catch { failure = new ProviderFetchError("INVALID_DATA", "coingecko: unparseable token-quote response"); }
+      }
     } catch (e) {
-      throw new ProviderFetchError("PROVIDER_ERROR", `coingecko: network error for token quotes — ${e instanceof Error ? e.message : String(e)}`);
+      failure = new ProviderFetchError("PROVIDER_ERROR", `coingecko: network error for token quotes — ${e instanceof Error ? e.message : String(e)}`);
     }
-    if (!res.ok) {
-      throw new ProviderFetchError(res.status === 429 ? "THROTTLED" : "PROVIDER_ERROR",
-        `coingecko: ${res.status === 429 ? "rate-limited (429)" : `HTTP ${res.status}`} for token quotes`);
+    if (failure) {
+      // Keep what is already fetched; send nothing more after a refusal.
+      if (quotes.length === 0 && rejected.length === 0) throw failure;
+      return { quotes, rejected, configured: true, stopped: { code: failure.code, message: failure.message } };
     }
-    let body: unknown;
-    try { body = await res.json(); }
-    catch { throw new ProviderFetchError("INVALID_DATA", "coingecko: unparseable token-quote response"); }
     const raw = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
     const byContract: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(raw)) byContract[norm(k)] = v;
     const keyMap: Record<string, string> = {};
     for (const t of chunk) keyMap[t.key] = norm(t.contract);
     const parsed = parseSimplePriceQuotes(byContract, keyMap, opts.now ?? new Date());
-    quotes.push(...parsed.quotes);
-    rejected.push(...parsed.rejected);
+    for (const r of parsed.rejected) rejected.push({ ...r, kind: r.reason === "absent from response" ? "UNLISTED" : "INVALID" });
+    for (const q of parsed.quotes) {
+      const entry = byContract[keyMap[q.symbol]] as { usd_market_cap?: unknown; usd_24h_vol?: unknown } | undefined;
+      const cap = typeof entry?.usd_market_cap === "number" ? entry.usd_market_cap : null;
+      const vol = typeof entry?.usd_24h_vol === "number" ? entry.usd_24h_vol : null;
+      // Missing market data is NOT evidence of liquidity: refused when a floor is set.
+      if ((minCap > 0 && (cap === null || cap < minCap)) || (minVol > 0 && (vol === null || vol < minVol))) {
+        rejected.push({ symbol: q.symbol, kind: "THIN", reason: `thin market (24h volume ${vol ?? "unknown"}, market cap ${cap ?? "unknown"})` });
+        continue;
+      }
+      quotes.push(q);
+    }
   }
   return { quotes, rejected, configured: true };
 }

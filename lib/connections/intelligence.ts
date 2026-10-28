@@ -147,7 +147,7 @@ export interface ConnectionIntelligenceStatus {
     tokens?: Array<{
       label: string;
       standard: "SPL" | "ERC20";
-      priceStatus: "MARKET_PRICE" | "NO_MARKET_PRICE";
+      priceStatus: "MARKET_PRICE" | "NO_MARKET_PRICE" | "THIN_MARKET";
       historyState: "RECONSTRUCTED" | "NOT_RECONSTRUCTED" | "UNLICENSED";
       firstObservedISO: string;
       lastObservedISO: string;

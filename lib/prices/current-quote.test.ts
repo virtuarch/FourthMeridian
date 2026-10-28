@@ -141,6 +141,9 @@ async function main() {
     })),
   };
   d.positionReconstruction = { findMany: async () => [] };
+  // TOKEN HOLDINGS (PR-A, review fix 1) — the native quote now reads the shared
+  // COINGECKO budget before spending; an empty ledger is a full budget.
+  d.apiUsageCounter = { findMany: async () => [] };
   d.priceObservation = {
     findMany: async (a: { where: { instrumentId: { in: string[] }; basis: string; date: Date | { gte: Date; lte: Date } } }) => {
       const w = a.where;

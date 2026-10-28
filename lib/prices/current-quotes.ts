@@ -32,6 +32,7 @@ import { lookupCryptoInstrumentId } from "@/lib/crypto/crypto-price-window";
 import { nativeAssetForChain } from "@/lib/crypto/native-asset";
 import { fetchCoinGeckoCurrentQuotes, fetchCoinGeckoTokenQuotes } from "@/lib/prices/providers/coingecko";
 import { quoteDateISO, type CurrentQuote } from "@/lib/prices/current-quote.core";
+import { coinGeckoBudgetConfig, defaultCoinGeckoBudget, type CoinGeckoBudget } from "@/lib/prices/coingecko-budget";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -102,7 +103,7 @@ export type QuoteRefreshOutcome =
  */
 export async function refreshCurrentQuotesForChains(
   chains: readonly string[],
-  opts: { client?: Client; fetchQuotes?: typeof fetchCoinGeckoCurrentQuotes; now?: Date } = {},
+  opts: { client?: Client; fetchQuotes?: typeof fetchCoinGeckoCurrentQuotes; now?: Date; budget?: CoinGeckoBudget } = {},
 ): Promise<QuoteRefreshOutcome> {
   const startedAt = new Date();
   const t0 = Date.now();
@@ -112,7 +113,18 @@ export async function refreshCurrentQuotesForChains(
     const assets = [...new Map(chains.map((c) => nativeAssetForChain(c)).filter((a): a is NonNullable<typeof a> => a !== null).map((a) => [a.assetKey, a])).values()];
     if (assets.length === 0) return done({ status: "UNAVAILABLE" as const, reason: "no native asset for these chains" });
 
-    const fetched = await (opts.fetchQuotes ?? fetchCoinGeckoCurrentQuotes)(assets.map((a) => a.symbol), { now: opts.now });
+    // Review fix 1 — the native quote spends the SAME shared CoinGecko budget:
+    // read before spend (unreadable ⇒ nothing spent), paced, metered.
+    if (!opts.fetchQuotes && !process.env.COINGECKO_API_KEY?.trim()) return done({ status: "NOT_CONFIGURED" as const });
+    const budget = opts.budget ?? defaultCoinGeckoBudget(client);
+    const remaining = await budget.remaining();
+    if (remaining === null) return done({ status: "UNAVAILABLE" as const, reason: "CoinGecko budget unreadable — nothing spent" });
+    if (remaining < 1) return done({ status: "UNAVAILABLE" as const, reason: "CoinGecko daily budget reached" });
+    const meter: Record<string, number> = {};
+    await budget.pace();
+    let fetched: Awaited<ReturnType<typeof fetchCoinGeckoCurrentQuotes>>;
+    try { fetched = await (opts.fetchQuotes ?? fetchCoinGeckoCurrentQuotes)(assets.map((a) => a.symbol), { now: opts.now, meter }); }
+    finally { await budget.record(meter); }
     if (!fetched.configured) return done({ status: "NOT_CONFIGURED" as const });
 
     const bound: Array<CurrentQuote & { instrumentId: string }> = [];
@@ -146,51 +158,178 @@ export interface TokenQuoteTarget {
 export const TOKEN_QUOTE_SOURCE = "coingecko:simple_token_price";
 
 /**
+ * The durable per-token quote marker, kept on the token's InstrumentAlias
+ * metadata (shared across customers, no migration): when it was last asked for,
+ * what the vendor said, and when it last priced. It drives the unlisted/thin
+ * retry window and the least-recently-attempted rotation.
+ */
+export interface TokenQuoteMarker {
+  attemptedAt: string;
+  outcome:     "PRICED" | "UNLISTED" | "THIN" | "INVALID";
+  pricedAt?:   string;
+}
+
+export function readTokenQuoteMarker(metadata: unknown): TokenQuoteMarker | null {
+  const q = (metadata as { quote?: Partial<TokenQuoteMarker> } | null)?.quote;
+  if (!q || typeof q.attemptedAt !== "string" || !["PRICED", "UNLISTED", "THIN", "INVALID"].includes(q.outcome ?? "")) return null;
+  return { attemptedAt: q.attemptedAt, outcome: q.outcome as TokenQuoteMarker["outcome"], ...(typeof q.pricedAt === "string" ? { pricedAt: q.pricedAt } : {}) };
+}
+
+/**
+ * PURE — which targets to ask for, in what order (review fixes 1b/1c/2):
+ *   · skip a token with a stored INTRADAY quote fresher than `freshHours`
+ *     (another customer's sync already paid for it);
+ *   · skip a token the vendor did not list / listed thin within `retryHours`;
+ *   · previously PRICED tokens first, then the rest by least-recently attempted
+ *     (never attempted first), then assetKey — so a real token rotates in and is
+ *     never permanently starved by a wallet full of spam.
+ */
+export function planTokenQuotes(
+  targets: readonly TokenQuoteTarget[],
+  facts: { markers: ReadonlyMap<string, TokenQuoteMarker>; freshQuoteAt: ReadonlyMap<string, Date> },
+  now: Date,
+  cfg: { freshHours: number; retryHours: number; maxTokens: number },
+): { ask: TokenQuoteTarget[]; skippedFresh: string[]; skippedUnlisted: string[] } {
+  const skippedFresh: string[] = [];
+  const skippedUnlisted: string[] = [];
+  const candidates: TokenQuoteTarget[] = [];
+  for (const t of targets) {
+    const q = facts.freshQuoteAt.get(t.instrumentId);
+    if (q && now.getTime() - q.getTime() < cfg.freshHours * 3_600_000) { skippedFresh.push(t.assetKey); continue; }
+    const m = facts.markers.get(t.assetKey);
+    if (m && m.outcome !== "PRICED" && now.getTime() - Date.parse(m.attemptedAt) < cfg.retryHours * 3_600_000) { skippedUnlisted.push(t.assetKey); continue; }
+    candidates.push(t);
+  }
+  const priced = (t: TokenQuoteTarget) => (facts.markers.get(t.assetKey)?.pricedAt ? 0 : 1);
+  const attempted = (t: TokenQuoteTarget) => facts.markers.get(t.assetKey)?.attemptedAt ?? "";
+  candidates.sort((a, b) => priced(a) - priced(b) || attempted(a).localeCompare(attempted(b)) || a.assetKey.localeCompare(b.assetKey));
+  return { ask: candidates.slice(0, Math.max(0, cfg.maxTokens)), skippedFresh, skippedUnlisted };
+}
+
+export type TokenQuoteOutcome = QuoteRefreshOutcome & {
+  unpricedAssetKeys?: string[];
+  thinAssetKeys?: string[];
+  skippedFresh?: number;
+  skippedUnlisted?: number;
+  calls?: number;
+  stopped?: string;
+};
+
+/**
  * TOKEN HOLDINGS FOUNDATION (PR-A) — fetch and persist CURRENT quotes for token
  * instruments, by contract, through the same INTRADAY writer the native quotes
- * use (so valuation reads them exactly as it reads native quotes: today only).
+ * use. Guarded by the shared COINGECKO budget (read before spend; unreadable ⇒
+ * nothing spent), deduped across customers, unlisted contracts remembered,
+ * rotated fairly, paced, partial on failure, and price-sanity floored.
  *
- * Never throws. A token the vendor does not list is simply not quoted — it stays
- * UNPRICED, is excluded from wallet totals, and is never valued at zero.
- * `client` is REQUIRED. `maxTokens` bounds the vendor spend per call.
+ * Never throws. A token the vendor does not list, or lists thin, is simply not
+ * quoted — it stays UNPRICED, excluded from wallet totals, never valued at zero.
+ * `client` is REQUIRED.
  */
 export async function refreshCurrentTokenQuotes(
   targets: readonly TokenQuoteTarget[],
   opts: {
     client: Client;
+    budget?: CoinGeckoBudget;
     fetchTokenQuotes?: typeof fetchCoinGeckoTokenQuotes;
     now?: Date;
     maxTokens?: number;
-    meter?: Record<string, number>;
+    env?: Record<string, string | undefined>;
   },
-): Promise<QuoteRefreshOutcome & { unpricedAssetKeys?: string[] }> {
+): Promise<TokenQuoteOutcome> {
   const startedAt = new Date();
   const t0 = Date.now();
   const done = <T extends object>(o: T) => ({ ...o, startedAt, durationMs: Date.now() - t0 });
+  const now = opts.now ?? new Date();
+  const cfg = coinGeckoBudgetConfig(opts.env);
   try {
-    const bounded = targets.slice(0, Math.max(0, opts.maxTokens ?? 10));
-    if (bounded.length === 0) return done({ status: "UNAVAILABLE" as const, reason: "no token instruments to quote" });
+    if (targets.length === 0) return done({ status: "UNAVAILABLE" as const, reason: "no token instruments to quote" });
+    if (!opts.fetchTokenQuotes && !process.env.COINGECKO_API_KEY?.trim()) return done({ status: "NOT_CONFIGURED" as const });
+    const client = opts.client;
+
+    // Facts for the plan: the durable markers and any fresh stored quote.
+    const aliasRows = await client.instrumentAlias.findMany({
+      where:  { provider: "crypto", externalId: { in: targets.map((t) => t.assetKey) } },
+      select: { externalId: true, metadata: true },
+    });
+    const metaByKey = new Map(aliasRows.map((a) => [a.externalId, a.metadata]));
+    const markers = new Map<string, TokenQuoteMarker>();
+    for (const [k, m] of metaByKey) { const q = readTokenQuoteMarker(m); if (q) markers.set(k, q); }
+    const recent = await client.priceObservation.findMany({
+      where:  { instrumentId: { in: targets.map((t) => t.instrumentId) }, basis: PriceBasis.INTRADAY,
+                date: { gte: new Date(`${quoteDateISO(new Date(now.getTime() - 86_400_000))}T00:00:00.000Z`) } },
+      select: { instrumentId: true, fetchedAt: true },
+    });
+    const freshQuoteAt = new Map<string, Date>();
+    for (const r of recent) { const p = freshQuoteAt.get(r.instrumentId); if (!p || p < r.fetchedAt) freshQuoteAt.set(r.instrumentId, r.fetchedAt); }
+
+    const plan = planTokenQuotes(targets, { markers, freshQuoteAt }, now,
+      { freshHours: cfg.tokenQuoteFreshHours, retryHours: cfg.unlistedRetryHours, maxTokens: opts.maxTokens ?? 10 });
+    const skipped = { skippedFresh: plan.skippedFresh.length, skippedUnlisted: plan.skippedUnlisted.length };
+    if (plan.ask.length === 0) return done({ status: "UNAVAILABLE" as const, reason: "nothing to quote (fresh or recently unlisted)", ...skipped, calls: 0 });
+
+    // READ BEFORE SPEND. Unreadable ⇒ spend nothing.
+    const budget = opts.budget ?? defaultCoinGeckoBudget(client);
+    const remaining = await budget.remaining();
+    if (remaining === null) return done({ status: "UNAVAILABLE" as const, reason: "CoinGecko budget unreadable — nothing spent", ...skipped, calls: 0 });
+    if (remaining < 1) return done({ status: "UNAVAILABLE" as const, reason: `CoinGecko daily budget reached (${cfg.dailyCallCap} calls)`, ...skipped, calls: 0 });
+
     const fetchFn = opts.fetchTokenQuotes ?? fetchCoinGeckoTokenQuotes;
+    const meter: Record<string, number> = {};
     const bound: Array<CurrentQuote & { instrumentId: string }> = [];
     const unpriced: string[] = [];
+    const thin: string[] = [];
+    const outcomeByKey = new Map<string, TokenQuoteMarker["outcome"]>();
     let configured = false;
-    for (const platform of ["solana", "ethereum"] as const) {
-      const group = bounded.filter((t) => t.platform === platform);
-      if (group.length === 0) continue;
-      const fetched = await fetchFn(platform, group.map((t) => ({ key: t.assetKey, contract: t.contract })), { now: opts.now, meter: opts.meter });
-      if (!fetched.configured) continue;
-      configured = true;
-      for (const q of fetched.quotes) {
-        const t = group.find((g) => g.assetKey === q.symbol);
-        if (t) bound.push({ ...q, instrumentId: t.instrumentId });
+    let stopped: string | undefined;
+    let left = remaining;
+    try {
+      for (const platform of ["solana", "ethereum"] as const) {
+        const group = plan.ask.filter((t) => t.platform === platform);
+        if (group.length === 0 || left < 1 || stopped) continue;
+        const before = Object.values(meter).reduce((a, b) => a + b, 0);
+        const fetched = await fetchFn(platform, group.map((t) => ({ key: t.assetKey, contract: t.contract })), {
+          now, meter, pace: budget.pace, maxCalls: left,
+          minVolume24hUsd: cfg.minVolume24hUsd, minMarketCapUsd: cfg.minMarketCapUsd,
+        });
+        left -= Object.values(meter).reduce((a, b) => a + b, 0) - before;
+        if (!fetched.configured) continue;
+        configured = true;
+        for (const q of fetched.quotes) {
+          const t = group.find((g) => g.assetKey === q.symbol);
+          if (t) { bound.push({ ...q, instrumentId: t.instrumentId }); outcomeByKey.set(t.assetKey, "PRICED"); }
+        }
+        for (const r of fetched.rejected) {
+          outcomeByKey.set(r.symbol, r.kind);
+          (r.kind === "THIN" ? thin : unpriced).push(r.symbol);
+        }
+        if (fetched.stopped) stopped = `${fetched.stopped.code}: ${fetched.stopped.message}`;
       }
-      for (const r of fetched.rejected) unpriced.push(r.symbol);
+    } finally {
+      await budget.record(meter);
     }
+    const calls = Object.values(meter).reduce((a, b) => a + b, 0);
     if (!configured) return done({ status: "NOT_CONFIGURED" as const });
-    if (bound.length === 0) return done({ status: "UNAVAILABLE" as const, reason: "no listed market price for these tokens", unpricedAssetKeys: unpriced });
-    const changedInstrumentIds = await writeCurrentQuotes(bound, opts.client, TOKEN_QUOTE_SOURCE);
+
+    // Durable markers for what the vendor ACTUALLY answered (not for tokens never reached).
+    const at = now.toISOString();
+    for (const [key, outcome] of outcomeByKey) {
+      const prev = markers.get(key);
+      const marker: TokenQuoteMarker = { attemptedAt: at, outcome, ...(outcome === "PRICED" ? { pricedAt: at } : prev?.pricedAt ? { pricedAt: prev.pricedAt } : {}) };
+      const existing = (metaByKey.get(key) ?? {}) as Record<string, unknown>;
+      try {
+        await client.instrumentAlias.update({
+          where: { provider_externalId: { provider: "crypto", externalId: key } },
+          data:  { metadata: { ...existing, quote: marker } as unknown as Prisma.InputJsonValue },
+        });
+      } catch { /* a marker is an optimisation; never fails the refresh */ }
+    }
+
+    const extra = { unpricedAssetKeys: unpriced, thinAssetKeys: thin, ...skipped, calls, ...(stopped ? { stopped } : {}) };
+    if (bound.length === 0) return done({ status: "UNAVAILABLE" as const, reason: stopped ?? "no listed, liquid market price for these tokens", ...extra });
+    const changedInstrumentIds = await writeCurrentQuotes(bound, client, TOKEN_QUOTE_SOURCE);
     const quotedAt = new Date(Math.min(...bound.map((b) => b.quotedAt.getTime())));
-    return done({ status: "REFRESHED" as const, instrumentIds: bound.map((b) => b.instrumentId), changedInstrumentIds, quotedAt, unpricedAssetKeys: unpriced });
+    return done({ status: "REFRESHED" as const, instrumentIds: bound.map((b) => b.instrumentId), changedInstrumentIds, quotedAt, ...extra });
   } catch (e) {
     return done({ status: "UNAVAILABLE" as const, reason: e instanceof Error ? e.message : String(e) });
   }
