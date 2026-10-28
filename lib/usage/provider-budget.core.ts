@@ -107,9 +107,9 @@ export function usageDayBucket(dayISO: string): Date {
 // ── Crash-safe metering (2026-10-28) ────────────────────────────────────────
 
 /** Flush a running meter once this many calls are unrecorded… */
-export const METER_FLUSH_EVERY_CALLS = 50;
+export const METER_FLUSH_EVERY_CALLS = 100;
 /** …or once a call arrives this long after the last flush. */
-export const METER_FLUSH_EVERY_MS = 5_000;
+export const METER_FLUSH_EVERY_MS = 10_000;
 
 /** Records `meter` beyond `flushed` and advances `flushed` (recordProviderMeter's contract). */
 export type MeterRecorder = (meter: Readonly<RequestMeter>, flushed: RequestMeter) => Promise<void>;
@@ -134,7 +134,8 @@ export interface IncrementalMeter {
  * One flush at a time (the recorder's delta against `flushed` is computed and
  * advanced by one writer only), so nothing is counted twice; a flush that
  * finishes with the threshold crossed again runs once more. Write overhead is
- * bounded: one recorder call per ≥ `everyCalls` calls or per ≥ `everyMs`.
+ * bounded: one recorder call per ≥ `everyCalls` calls or per ≥ `everyMs`
+ * (defaults 100 / 10 s: an ETH step at ≈ 25 calls/s upserts every ≈ 4 s).
  *
  * A kill loses at most the calls since the last COMPLETED flush: fewer than
  * `everyCalls` (plus those of one `everyMs` window and of a flush in flight).

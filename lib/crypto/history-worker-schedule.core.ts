@@ -24,18 +24,27 @@
  *      early hands its time on.
  *
  * ── The bound ────────────────────────────────────────────────────────────────
- * Every chain leads once in any 3 consecutive runs (killed runs included), and
- * a leader's phase is ≥ its step need whenever the run's budget is — so with
+ * Every chain leads once in any 3 consecutive runs whose leader could start
+ * (killed runs included), and a leader's phase is ≥ its need — so with
  * the defaults (120 s budget, ETH need 77 s) every chain with eligible work
  * starts ≥ 1 step within 3 runs, whatever the other chains' backlogs. A phase
  * deadline never exceeds the job deadline, which never exceeds the wake's safe
  * point (WAKE_SAFE_MS), and each phase still holds the regeneration and
  * price-gap reserves before starting a regeneration (unchanged).
  *
- * The ETH need is NOT lowered: a backward ETH step spends its whole probe
- * budget (≈ 60 s at the default 1,500 probes) and does not stop at a deadline,
- * so its 75 s start reserve is what keeps a step inside its phase. The
- * scheduler gives it that time on its turn instead.
+ * The ETH need is NOT lowered: an ETH step STOPS on its deadline (the
+ * acquisition checks the clock before every probe batch), and a clock stop
+ * that closes no chunk halves the chunk — so a step must be given the time
+ * its probes need. Its 75 s start reserve covers a full default step (1,500
+ * probes ≈ 60 s); the step gets its whole phase (no regeneration reserve) and
+ * plans only the probes that time proves (stepProbeBudget). The scheduler
+ * gives it that time on its turn.
+ *
+ * A chain whose FIRST item is a pending regeneration needs the regeneration
+ * reserve (60 s; Solana with price gaps 75 s) instead, or the marker could
+ * never clear under backlog. A leader whose phase cannot hold its first item
+ * (a short wake) KEEPS the lead: the run records `leaderShort` and the next
+ * run does not advance the rotation.
  *
  * Single chain: one phase, the whole budget (unchanged). Rotation 0 (no
  * persisted state) is the old order SOL → BTC → ETH with the old shares.
@@ -56,20 +65,25 @@ export interface HistoryWorkerSchedule {
   rotation: number;
   /** The chains with work this run, in the order they ran. */
   order: HistoryChain[];
+  /** The leader's phase could not hold its first item (too little wake left): the next run keeps the lead. */
+  leaderShort?: boolean;
 }
 
 /**
  * This run's rotation: the newest persisted rotation among the job's previous
- * FINISHED runs (newest first), plus one for each run since — so a run killed
- * before its summary was written still advanced the rotation. No run yet ⇒ 0;
+ * FINISHED runs (newest first), plus one — none when that run's leader could
+ * not start (`leaderShort`: it keeps the lead) — plus one for each run since,
+ * so a run killed before its summary was written still advanced the rotation
+ * (it was killed mid-pass, so its leader started). No run yet ⇒ 0;
  * none persisted in the lookback ⇒ `fallback` (the wake slot), which still
  * advances run to run.
  */
 export function nextRotation(previous: ReadonlyArray<{ summary: unknown }>, fallback: number): number {
   if (previous.length === 0) return 0; // the job's first run
   for (let i = 0; i < previous.length; i++) {
-    const r = (previous[i]?.summary as { schedule?: { rotation?: unknown } } | null | undefined)?.schedule?.rotation;
-    if (typeof r === "number" && Number.isSafeInteger(r) && r >= 0) return r + 1 + i;
+    const sch = (previous[i]?.summary as { schedule?: { rotation?: unknown; leaderShort?: unknown } } | null | undefined)?.schedule;
+    const r = sch?.rotation;
+    if (typeof r === "number" && Number.isSafeInteger(r) && r >= 0) return r + (sch?.leaderShort === true ? 0 : 1) + i;
   }
   return Math.max(0, Math.floor(fallback));
 }

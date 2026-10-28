@@ -298,6 +298,13 @@ export interface EthBackfillWorkerConfig {
   probeBudget: number;
   /** Do not START a wallet with less than this left of the pass. */
   startReserveMs: number;
+  /**
+   * Probes a step is assumed to prove per second (measured: 1,500 in ≈ 60 s).
+   * A step's probe budget is sized to the time it has (stepProbeBudget), so a
+   * step bounded by its deadline (the acquisition stops on the clock) spends
+   * its probes instead of clock-stopping with a chunk half-proven.
+   */
+  probesPerSecond: number;
 }
 
 const num = (env: Record<string, string | undefined>, k: string, d: number, min: number, max: number) => {
@@ -311,6 +318,7 @@ export function ethWorkerConfig(env: Record<string, string | undefined> = proces
     enabled:        ethWorkerEnabled(env),
     probeBudget:    num(env, "ETH_BACKFILL_PROBE_BUDGET", 1_500, 100, 4_000),
     startReserveMs: num(env, "ETH_BACKFILL_START_RESERVE_MS", 75_000, 5_000, 200_000),
+    probesPerSecond: num(env, "ETH_BACKFILL_PROBES_PER_SECOND", 25, 1, 200),
   };
 }
 
@@ -330,6 +338,16 @@ export const STEP_CALL_RESERVE = 16;
 export function probeBudgetFor(allowanceCalls: number, configured: number): number {
   const n = Math.floor((allowanceCalls - STEP_CALL_RESERVE) / (CALLS_PER_PROBE + EVIDENCE_CALLS_PER_PROBE));
   return Math.max(0, Math.min(configured, n));
+}
+
+/**
+ * The probes a step may plan with `stepMs` of wall clock: what the allowance
+ * pays for (probeBudgetFor), capped by what the time proves at the assumed
+ * rate. Never more than `allowanceProbes`; 0 when no time.
+ */
+export function stepProbeBudget(allowanceProbes: number, stepMs: number, probesPerSecond: number): number {
+  const byTime = Math.floor((Math.max(0, stepMs) / 1000) * Math.max(0, probesPerSecond));
+  return Math.max(0, Math.min(allowanceProbes, byTime));
 }
 
 export interface EthBackfillCandidate { accountId: string; connectionId: string; cursor: string | null }

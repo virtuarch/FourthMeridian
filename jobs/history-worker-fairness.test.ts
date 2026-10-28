@@ -46,8 +46,15 @@ const ethCfg = ethWorkerConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENAB
 const importingSol = (id: string) => serializeSol({ ...emptySol(id, ADDR, `${DAY}T00:00:00Z`), licensedFromISO: "2024-06-01", licensedToISO: DAY });
 
 /** A fake world: `sol`/`btc`/`eth` wallets with BACKLOG — each pass spends every ms it is given. */
-function world(o: { sol?: number; btc?: number; eth?: number; ethStepMs?: number; persist?: boolean; wakeAgoMs?: number } = {}) {
+function world(o: { sol?: number; btc?: number; eth?: number; persist?: boolean; wakeAgoMs?: number | ((run: number) => number);
+  /** Probes the ETH wallet's current chunk needs to close (dense ⇒ near the step budget). */
+  ethChunkProbes?: number; btcPending?: boolean; regen?: boolean } = {}) {
   let t = T0;
+  let runNo = 0;
+  /** The post-#116 ETH step: probes at the provider's rate, STOPS on its deadline, halves on a stop that closed nothing. */
+  const eth = { need: o.ethChunkProbes ?? 1_000, closed: 0, halvings: 0, clockStops: 0, failed: false, probes: [] as number[] };
+  const regens: string[] = [];
+  const btcCursors = new Map<string, string>();
   const runs: Array<{ summary: unknown }> = []; // newest first, as the JobRun read returns them
   const ledger: Record<string, number> = {};
   const deadlines: Array<{ chain: HistoryChain; endsAt: number; runStart: number }> = [];
@@ -59,7 +66,7 @@ function world(o: { sol?: number; btc?: number; eth?: number; ethStepMs?: number
   const ids = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
   const deps: SolBackfillJobDeps = {
     now: () => t, sleep: async (ms) => { t += ms; },
-    wakeStartedAt: async () => (o.wakeAgoMs !== undefined ? t - o.wakeAgoMs : null),
+    wakeStartedAt: async () => (o.wakeAgoMs === undefined ? null : t - (typeof o.wakeAgoMs === "function" ? o.wakeAgoMs(runNo) : o.wakeAgoMs)),
     wallets: async () => ids("s", o.sol ?? 0).map((id) => ({ accountId: id, connectionId: `c-${id}`, address: ADDR, cursor: importingSol(id) })),
     claimLock: async () => true, renewLock: async () => true, releaseLock: async () => {},
     reconstruct: async ({ accountId, deps: dd }) => {
@@ -71,12 +78,15 @@ function world(o: { sol?: number; btc?: number; eth?: number; ethStepMs?: number
         backfill: { status: { state: "IMPORTING" } as never, progressed: true, rowsWritten: 0, impactedFromISO: null, signaturesProcessed: 10, pagesFetched: 1, stoppedBecause: "BUDGET", failure: null } } as never;
     },
     store: async () => null,
-    regenerationEnabled: () => false,
-    regenerate: async () => {},
+    regenerationEnabled: () => o.regen === true,
+    regenerate: async (id, from) => { regens.push(`${id}:${from}`); t += 20_000; },
     recordUsage: rec("sol"),
     ...(o.persist === false ? {} : { previousRuns: async () => runs.slice(0, 16) }),
     btc: {
-      wallets: async () => ids("b", o.btc ?? 0).map((id) => ({ accountId: id, connectionId: `c-${id}`, cursor: serializeBtc(emptyBtc(id, `${DAY}T00:00:00Z`)) })),
+      wallets: async () => [
+        ...(o.btcPending ? [{ accountId: "bp", connectionId: "c-bp", cursor: btcCursors.get("bp") ?? serializeBtc({ ...emptyBtc("bp", `${DAY}T00:00:00Z`), snapshotPendingFromISO: "2026-10-01" }) }] : []),
+        ...ids("b", o.btc ?? 0).map((id) => ({ accountId: id, connectionId: `c-${id}`, cursor: serializeBtc(emptyBtc(id, `${DAY}T00:00:00Z`)) })),
+      ],
       reconstruct: async ({ accountId, deps: dd }) => {
         const d = { ...dd, budgetMs: dd.budgetMs! };
         ran.push("BTC"); deadlines.push({ chain: "BTC", endsAt: t + d.budgetMs, runStart });
@@ -85,16 +95,29 @@ function world(o: { sol?: number; btc?: number; eth?: number; ethStepMs?: number
         return { accountId, ok: true, derivedRowsWritten: 0, mode: "NO_CHANGE", impactedFromISO: null,
           backfill: { status: { state: "IMPORTING" } as never, progressed: true, rowsWritten: 0, impactedFromISO: null, txsProcessed: 399, pagesFetched: 16, verified: null, stoppedBecause: "BUDGET", failure: null } } as never;
       },
-      store: async () => null,
+      store: async (id) => (id !== "bp" ? null : {
+        readCursor: async () => btcCursors.get("bp") ?? serializeBtc({ ...emptyBtc("bp", `${DAY}T00:00:00Z`), snapshotPendingFromISO: "2026-10-01" }),
+        commit: async (c: { nextCursor: string }) => { btcCursors.set("bp", c.nextCursor); },
+      } as never),
       recordUsage: rec("btc"),
     },
     eth: {
       wallets: async () => ids("e", o.eth ?? 0).map((id) => ({ accountId: id, connectionId: `c-${id}`, cursor: serializeEth(queuedCheckpoint(id, "NO_COVERAGE", `${DAY}T00:00:00Z`)) })),
       reconstruct: async ({ deps: d }) => {
         ran.push("ETH"); deadlines.push({ chain: "ETH", endsAt: d.deadlineMs ?? Infinity, runStart });
-        for (let i = 0; i < 225; i++) d.eth!.meter!.eth_getBalance = (d.eth!.meter!.eth_getBalance ?? 0) + 1;
-        t += o.ethStepMs ?? 60_000; // a backward step spends its whole probe budget
-        return { stoppedBecause: "PROBE_BUDGET", status: null, rowsWritten: 0, impactedFromISO: null, failure: null, requests: 225 };
+        const RATE = 25; // probes/s, as measured (1,500 ≈ 60 s)
+        const byTime = Math.floor((Math.max(0, (d.deadlineMs ?? Infinity) - t) / 1000) * RATE);
+        const spent = Math.min(d.probeBudget, byTime);
+        eth.probes.push(spent);
+        for (let i = 0; i < Math.ceil(spent * 0.15); i++) d.eth!.meter!.eth_getBalance = (d.eth!.meter!.eth_getBalance ?? 0) + 1;
+        t += Math.ceil((spent / RATE) * 1000);
+        if (spent >= eth.need) eth.closed++;
+        else {
+          if (byTime < d.probeBudget) eth.clockStops++;
+          if (eth.need <= 100) { eth.failed = true; return { stoppedBecause: "FAILED", status: null, rowsWritten: 0, impactedFromISO: null, failure: { code: "PROVIDER_FAILED", detail: "floor" }, requests: spent }; }
+          eth.need = Math.ceil(eth.need / 2); eth.halvings++;
+        }
+        return { stoppedBecause: "PROBE_BUDGET", status: null, rowsWritten: 0, impactedFromISO: null, failure: null, requests: spent };
       },
       store: async () => null,
       recordUsage: rec("eth"),
@@ -102,12 +125,13 @@ function world(o: { sol?: number; btc?: number; eth?: number; ethStepMs?: number
   };
   const run = async (): Promise<SolBackfillJobSummary> => {
     runStart = t;
+    runNo++;
     const s = await solHistoryBackfill({ config: solCfg, btcConfig: btcCfg, ethConfig: ethCfg, deps });
     runs.unshift({ summary: JSON.parse(JSON.stringify(s)) });
     t += 15 * 60_000; // the next wake
     return s;
   };
-  return { deps, run, runs, ledger, deadlines, ran, now: () => t, kill: () => { runs.unshift({ summary: null }); t += 15 * 60_000; } };
+  return { deps, run, runs, ledger, deadlines, ran, eth, regens, btcCursors, now: () => t, kill: () => { runs.unshift({ summary: null }); t += 15 * 60_000; } };
 }
 const stepped = (s: SolBackfillJobSummary, c: HistoryChain) =>
   c === "SOL" ? s.walletsRun > 0 : c === "BTC" ? (s.btc?.walletsRun ?? 0) > 0 : (s.eth?.walletsRun ?? 0) > 0;
@@ -187,6 +211,38 @@ async function main() {
     }
   }
 
+  console.log("review fixes: ETH steps stop on the clock (post-#116), short wakes, pending regenerations");
+  {
+    // A DENSE wallet: its chunk needs 1,400 of the 1,500 probes. Under SOL + BTC backlogs, every ETH step
+    // must be given the time its probes need, or it clock-stops, halves, and walks toward FAILED.
+    const w = world({ sol: 20, btc: 20, eth: 1, ethChunkProbes: 1_400 });
+    const out: SolBackfillJobSummary[] = [];
+    for (let i = 0; i < 6; i++) out.push(await w.run());
+    check("dense ETH chunk in shared runs: closes within 3 runs, no clock stop, no halving, never FAILED",
+      w.eth.closed >= 1 && out.slice(0, 3).some((s) => (s.eth?.walletsRun ?? 0) > 0) && w.eth.clockStops === 0 && w.eth.halvings === 0 && !w.eth.failed,
+      JSON.stringify({ ...w.eth, probes: w.eth.probes }));
+    check("…each step plans only the probes its time proves (≤ the configured 1,500)", w.eth.probes.every((p) => p > 0 && p <= ethCfg.probeBudget), w.eth.probes.join());
+    check("…and every ETH step's deadline is inside its run's budget", w.deadlines.filter((d) => d.chain === "ETH").every((d) => d.endsAt <= d.runStart + solCfg.jobBudgetMs));
+
+    // A short wake on ETH's turn: the lead is KEPT, not consumed.
+    // Run 1 (rotation 0, SOL leads) normal; run 2 (rotation 1, BTC) normal; run 3 (rotation 2, ETH) starts with 60 s of wake left.
+    const sw = world({ sol: 20, btc: 20, eth: 1, wakeAgoMs: (n) => (n === 3 ? WAKE_SAFE_MS - 60_000 : 0) });
+    const r: SolBackfillJobSummary[] = [];
+    for (let i = 0; i < 4; i++) r.push(await sw.run());
+    check("a short-wake run whose leader cannot start records leaderShort and does not consume the lead",
+      r[2].schedule?.order[0] === "ETH" && r[2].schedule.leaderShort === true && (r[2].eth?.walletsRun ?? 0) === 0, JSON.stringify(r[2].schedule));
+    check("…the next run keeps ETH in the lead and it steps", r[3].schedule?.rotation === 2 && r[3].schedule.order[0] === "ETH" && (r[3].eth?.walletsRun ?? 0) === 1, JSON.stringify(r[3].schedule));
+    check("…the other chains still used the short run's time", r[2].walletsRun + (r[2].btc?.walletsRun ?? 0) > 0);
+
+    // A chain whose only work is a PENDING regeneration, under SOL + ETH backlogs.
+    const pw = world({ sol: 20, eth: 1, btcPending: true, regen: true });
+    const pr: SolBackfillJobSummary[] = [];
+    for (let i = 0; i < 3 && !pw.regens.some((x) => x.startsWith("bp:")); i++) pr.push(await pw.run());
+    check("a pending-regeneration-only chain gets the regeneration reserve and clears its marker within 3 runs",
+      pw.regens.includes("bp:2026-10-01") && pr.some((s) => (s.btc?.regenerated ?? 0) === 1) && !/"snapshotPendingFromISO":"2026/.test(pw.btcCursors.get("bp") ?? ""),
+      JSON.stringify(pr.map((s) => ({ o: s.schedule?.order, btc: s.btc && { regen: s.btc.regenerated, def: s.btc.regenerationsDeferred } }))));
+  }
+
   console.log("defect 2: crash-safe metering");
   {
     // Unit: a kill after k calls leaves ≥ k − (granularity) on the ledger.
@@ -203,8 +259,8 @@ async function main() {
     let t = 0, timed = 0;
     const tm = incrementalMeter(async (meter, flushed) => { timed += meterTotal(meter) - meterTotal(flushed); Object.assign(flushed, meter); }, { now: () => t });
     tm.meter.x = 1; await ticks(); const early = timed;
-    t = 6_000; tm.meter.x = 2; await ticks();
-    check("a slow pass is flushed on time too (a call 5 s after the last flush)", early === 0 && timed === 2);
+    t = 11_000; tm.meter.x = 2; await ticks();
+    check("a slow pass is flushed on time too (a call 10 s after the last flush)", early === 0 && timed === 2);
 
     let calls = 0;
     const bad = incrementalMeter(async () => { calls++; throw new Error("ledger down"); });
