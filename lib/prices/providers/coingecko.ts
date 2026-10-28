@@ -472,7 +472,7 @@ export function resolveTokenPriceBatch(raw: string | undefined): number {
 }
 
 /** Why a token was not quoted: absent from the vendor (unlisted), malformed, or below the sanity floor. */
-export type TokenQuoteMiss = { symbol: string; reason: string; kind: "UNLISTED" | "INVALID" | "THIN" };
+export type TokenQuoteMiss = { symbol: string; reason: string; kind: "UNLISTED" | "INVALID" | "THIN" | "UNKNOWN" };
 
 /**
  * Current USD quotes for token contracts on one CoinGecko platform. Each input
@@ -492,7 +492,7 @@ export async function fetchCoinGeckoTokenQuotes(
   tokens: ReadonlyArray<{ key: string; contract: string }>,
   opts: CoinGeckoOptions & {
     now?: Date; batchSize?: number; meter?: Record<string, number>;
-    pace?: () => Promise<void>; maxCalls?: number;
+    pace?: () => Promise<void>; maxCalls?: number; deadlineEpochMs?: number;
     minVolume24hUsd?: number; minMarketCapUsd?: number;
   } = {},
 ): Promise<{ quotes: CurrentQuote[]; rejected: TokenQuoteMiss[]; configured: boolean; stopped?: { code: string; message: string } }> {
@@ -516,10 +516,16 @@ export async function fetchCoinGeckoTokenQuotes(
     if (opts.maxCalls !== undefined && calls >= opts.maxCalls) {
       return { quotes, rejected, configured: true, stopped: { code: "BUDGET", message: `call budget of ${opts.maxCalls} reached` } };
     }
+    if (opts.deadlineEpochMs !== undefined && Date.now() >= opts.deadlineEpochMs) {
+      return { quotes, rejected, configured: true, stopped: { code: "DEADLINE", message: "token-quote wall-time bound reached; the rest rotate to later syncs" } };
+    }
     const chunk = tokens.slice(i, i + batch);
     const url = `${baseUrl}/simple/token_price/${platform}?contract_addresses=${encodeURIComponent(chunk.map((t) => norm(t.contract)).join(","))}` +
       "&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true&include_last_updated_at=true";
     if (opts.pace) await opts.pace();
+    if (opts.deadlineEpochMs !== undefined && Date.now() >= opts.deadlineEpochMs) {
+      return { quotes, rejected, configured: true, stopped: { code: "DEADLINE", message: "token-quote wall-time bound reached; the rest rotate to later syncs" } };
+    }
     calls++;
     if (opts.meter) opts.meter[metric] = (opts.meter[metric] ?? 0) + 1;
     let failure: ProviderFetchError | null = null;
@@ -542,6 +548,14 @@ export async function fetchCoinGeckoTokenQuotes(
       return { quotes, rejected, configured: true, stopped: { code: failure.code, message: failure.message } };
     }
     const raw = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+    // Re-review fix 5 — an EMPTY answer to a MULTI-contract request says nothing
+    // about which contract was missing: UNKNOWN for the chunk (retried on a later
+    // sync), never a batch of UNLISTED. For a single-contract request (the Demo
+    // default, batch 1) `{}` is the vendor's way of saying "not listed".
+    if (Object.keys(raw).length === 0 && chunk.length > 1) {
+      for (const t of chunk) rejected.push({ symbol: t.key, kind: "UNKNOWN", reason: "empty response" });
+      continue;
+    }
     const byContract: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(raw)) byContract[norm(k)] = v;
     const keyMap: Record<string, string> = {};
@@ -552,8 +566,12 @@ export async function fetchCoinGeckoTokenQuotes(
       const entry = byContract[keyMap[q.symbol]] as { usd_market_cap?: unknown; usd_24h_vol?: unknown } | undefined;
       const cap = typeof entry?.usd_market_cap === "number" ? entry.usd_market_cap : null;
       const vol = typeof entry?.usd_24h_vol === "number" ? entry.usd_24h_vol : null;
-      // Missing market data is NOT evidence of liquidity: refused when a floor is set.
-      if ((minCap > 0 && (cap === null || cap < minCap)) || (minVol > 0 && (vol === null || vol < minVol))) {
+      // Re-review fix 3 — a market cap of 0 (or none) means the vendor does not
+      // know the supply, NOT that the token is worthless: cap is then UNKNOWN and
+      // the decision rests on volume alone. Missing volume is not evidence of
+      // liquidity and is refused when a floor is set.
+      const capKnown = cap !== null && cap > 0;
+      if ((minCap > 0 && capKnown && cap! < minCap) || (minVol > 0 && (vol === null || vol < minVol))) {
         rejected.push({ symbol: q.symbol, kind: "THIN", reason: `thin market (24h volume ${vol ?? "unknown"}, market cap ${cap ?? "unknown"})` });
         continue;
       }

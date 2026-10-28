@@ -1080,7 +1080,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         if (tokenRows) {
           for (const obs of tokenRows.observationsByAccount.values()) {
             const t = tokensValueOnDay(obs, tokenRows.prices, dISO);
-            if (t.totalUsd > 0) cryptoDay.push({ type: "crypto", balance: t.totalUsd, currency: "USD" });
+            for (const v of t.tokens) if (v.state === "VALUED" && v.valueUsd !== null) cryptoDay.push({ type: "crypto", balance: v.valueUsd, currency: "USD" });
           }
         }
         digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;

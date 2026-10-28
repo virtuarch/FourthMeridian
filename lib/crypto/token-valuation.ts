@@ -10,6 +10,8 @@ import { PositionOrigin, PriceBasis, type Prisma, type PrismaClient } from "@pri
 import { STALE_AFTER_DAYS } from "@/lib/freshness/observation";
 import { IS_TOKEN_INSTRUMENT, WALLET_TOKEN_POSITION_SOURCE, TOKEN_ALIAS_PROVIDER, parseTokenAssetKey } from "./token-asset";
 import { tokenReadWindow, type TokenObservationRow, type TokenPriceRow } from "./token-valuation.core";
+import { classifyAccounts } from "@/lib/account-classifier";
+import type { ConversionContext } from "@/lib/money/types";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -75,4 +77,13 @@ export async function loadTokenDayRows(
     select: { instrumentId: true, date: true, basis: true, price: true },
   })).map((p) => ({ instrumentId: p.instrumentId, dateISO: isoOf(p.date), basis: p.basis as "RAW_CLOSE" | "INTRADAY", priceUsd: p.price }));
   return { observationsByAccount, prices, identity };
+}
+
+/**
+ * USD → reporting currency for a token value, through THE path regenerated days
+ * use (classifyAccounts over a crypto row in USD with the Space conversion
+ * context). One conversion authority for both writers.
+ */
+export function tokenValueInReporting(valueUsd: number, ctx: ConversionContext, dISO: string): number {
+  return classifyAccounts([{ type: "crypto", balance: valueUsd, currency: "USD" }], ctx, dISO).totalDigitalAssets;
 }

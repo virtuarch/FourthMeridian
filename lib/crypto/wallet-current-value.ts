@@ -65,7 +65,9 @@ import { quoteServesAsOf, quoteProvenance, closeProvenance, type PriceProvenance
 import { nativeAssetForChain } from "./native-asset";
 import { tokenDisplayLabel, shortenTokenAddress, NOT_TOKEN_INSTRUMENT } from "./token-asset";
 import { tokensValueOnDay, type TokenDayValue } from "./token-valuation.core";
-import { loadTokenDayRows } from "./token-valuation";
+import { loadTokenDayRows, tokenValueInReporting } from "./token-valuation";
+import { buildSpaceConversionContext } from "@/lib/money/server-context";
+import type { ConversionContext } from "@/lib/money/types";
 import { bandForAge, ageInDays, type FreshnessBand } from "@/lib/freshness/observation";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -402,6 +404,7 @@ export async function loadWalletCurrentValues(
   // (and the display label) comes from the alias, never the ticker.
   const tokenRows = await loadTokenDayRows(client, accountIds, asOf, asOf);
   const tokenIdentity = tokenRows.identity;
+  let tokenCtx: ConversionContext | undefined;
 
   const componentsByAccount = new Map<string, typeof view.components>();
   for (const c of view.components) {
@@ -415,29 +418,31 @@ export async function loadWalletCurrentValues(
     if (!seed) continue;
     const f = freshnessByAccount.get(accountId) ?? { observedAt: null, band: "UNKNOWN" as FreshnessBand };
     const obs = tokenRows.observationsByAccount.get(accountId) ?? [];
-    const tokenDay = tokensValueOnDay(obs, tokenRows.prices, asOf).tokens.map((t) => ({ ...t, ...tokenIdentity.get(t.instrumentId)! }));
-    out.set(accountId, composeWalletValue({
-      seed, components, tokenDay, servingQuotes, asOf, now, freshness: f,
-      usdToReporting: usdToReportingRate(options?.reportingCurrency ?? "USD", components),
-    }));
+    const dayTokens = tokensValueOnDay(obs, tokenRows.prices, asOf).tokens;
+    // Re-review fix 4 — USD → reporting through the SPACE CONVERSION CONTEXT and
+    // the same classifyAccounts path regenerated days use, never a rate implied
+    // by the native component (which a 0-native, token-only wallet does not have).
+    const tokenDay: TokenDayInput[] = [];
+    for (const t of dayTokens) {
+      let valueReporting: number | null = null;
+      if (t.state === "VALUED" && t.valueUsd !== null) {
+        tokenCtx ??= await buildSpaceConversionContext({ reportingCurrency: options?.reportingCurrency ?? "USD" }, { currencies: ["USD"], dates: [asOf] });
+        valueReporting = tokenValueInReporting(t.valueUsd, tokenCtx, asOf);
+      }
+      tokenDay.push({ ...t, ...tokenIdentity.get(t.instrumentId)!, valueReporting });
+    }
+    out.set(accountId, composeWalletValue({ seed, components, tokenDay, servingQuotes, asOf, now, freshness: f }));
   }
 
   return out;
 }
 
-/**
- * The USD → reporting-currency rate implied by the native valuation (the same
- * FX authority the valuation core applied), or null when it cannot be read.
- * USD reporting needs no rate.
- */
-export function usdToReportingRate(reportingCurrency: string, components: readonly InstrumentValuation[]): number | null {
-  if (reportingCurrency === "USD") return 1;
-  const c = components.find((x) => x.currency === "USD" && x.nativeValue !== null && x.nativeValue > 0 && x.reportingValue !== null);
-  return c ? c.reportingValue! / c.nativeValue! : null;
-}
-
 /** One token as the day rule valued it, with its identity. */
-export type TokenDayInput = TokenDayValue & { assetKey: string; contract: string; symbol: string | null };
+export type TokenDayInput = TokenDayValue & {
+  assetKey: string; contract: string; symbol: string | null;
+  /** `valueUsd` converted to the reporting currency (tokenValueInReporting); null ⇒ not counted. */
+  valueReporting: number | null;
+};
 
 /**
  * PURE — one wallet's current value. The whole per-account decision, extracted
@@ -457,26 +462,25 @@ export function composeWalletValue(args: {
   seed:            WalletCurrentValue;
   components:      readonly InstrumentValuation[];
   tokenDay:        readonly TokenDayInput[];
-  usdToReporting:  number | null;
   servingQuotes:   ReadonlyMap<string, StoredQuote>;
   asOf:            string;
   now:             Date;
   freshness:       { observedAt: Date | null; band: FreshnessBand };
 }): WalletCurrentValue {
-  const { seed, components, tokenDay, usdToReporting, servingQuotes, asOf, now, freshness: f } = args;
+  const { seed, components, tokenDay, servingQuotes, asOf, now, freshness: f } = args;
   /** A band that may back a CURRENT claim. UNKNOWN is never fresh. */
   const isFresh = (band: FreshnessBand): boolean => band === "LIVE" || band === "RECENT";
 
   const tokens: WalletTokenValue[] = tokenDay
     .filter((t) => t.state !== "CLOSED" && t.state !== "NO_OBSERVATION")
     .map((t) => {
-      const valued = t.state === "VALUED" && usdToReporting !== null;
+      const valued = t.state === "VALUED" && t.valueReporting !== null;
       return {
         instrumentId: t.instrumentId,
         assetKey:     t.assetKey,
         label:        valued ? tokenDisplayLabel({ symbol: t.symbol, contract: t.contract }) : shortenTokenAddress(t.contract),
         quantity:     t.quantity,
-        value:        valued ? t.valueUsd! * usdToReporting! : null,
+        value:        valued ? t.valueReporting : null,
         state:        valued ? "VALUED" : t.state === "STALE" ? "STALE" : "UNPRICED",
         priceDate:    valued ? t.priceDateISO : null,
       };

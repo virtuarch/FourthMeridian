@@ -137,7 +137,7 @@ export interface SolWalletSyncResult {
    * native sync succeeded and isolated from it: nothing above reads this to
    * decide `ok`, `syncStatus` or any refusal. Absent on a failed native sync.
    */
-  tokenHoldings?: WalletTokenSyncOutcome;
+  tokenHoldings?: Promise<WalletTokenSyncOutcome | null>;
 }
 
 export interface SolSyncDeps {
@@ -305,14 +305,16 @@ export async function syncSolWallet(
   //    `syncWalletTokens` never throws; the guard is belt and braces, because a
   //    token defect must not be able to turn a completed native sync into a
   //    failed one. Its outcome rides along and decides nothing here.
-  let tokenHoldings: WalletTokenSyncOutcome | undefined;
-  if (deps.tokens !== false) {
-    try {
-      tokenHoldings = await syncWalletTokens({ client: db, accountId, chain: SOL_CHAIN, address, deps: deps.tokens ?? {} });
-    } catch (e) {
-      console.warn(`[sol-sync] token capture threw for ${accountId} (contract violation, non-fatal):`, e instanceof Error ? e.message : e);
-    }
-  }
+  //    Re-review fix 2 — STARTED here, NOT awaited: the native result returns
+  //    now, and the dispatcher awaits this beside its other non-gating stages
+  //    (current quote, history refresh). It never throws (caught below), and
+  //    nothing about this sync's outcome reads it.
+  const tokenHoldings: Promise<WalletTokenSyncOutcome | null> | undefined = deps.tokens !== false
+    ? syncWalletTokens({ client: db, accountId, chain: SOL_CHAIN, address, deps: deps.tokens || {} }).catch((e) => {
+        console.warn(`[sol-sync] token capture threw for ${accountId} (contract violation, non-fatal):`, e instanceof Error ? e.message : e);
+        return null;
+      })
+    : undefined;
 
   return {
     accountId,

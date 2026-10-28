@@ -98,7 +98,7 @@ export interface EvmWalletSyncResult {
    * TOKEN HOLDINGS (PR-A) — the ERC-20 facet (Ethereum only), captured after a
    * successful native read and isolated from it. Decides nothing about `ok`.
    */
-  tokenHoldings?: WalletTokenSyncOutcome;
+  tokenHoldings?: Promise<WalletTokenSyncOutcome | null>;
 }
 
 export interface EvmSyncDeps {
@@ -316,14 +316,16 @@ export async function syncEvmWallet(
 
   // TOKEN HOLDINGS — ERC-20, on the networks token capture serves (Ethereum),
   // after the native facts are durable. Never throws; isolated; decides nothing.
-  let tokenHoldings: WalletTokenSyncOutcome | undefined;
-  if (deps.tokens !== false && tokenCaptureSupported(config.chain)) {
-    try {
-      tokenHoldings = await syncWalletTokens({ client: db, accountId, chain: config.chain, address, deps: deps.tokens ?? {} });
-    } catch (e) {
-      console.warn(`[evm-sync] token capture threw for ${accountId} (contract violation, non-fatal):`, e instanceof Error ? e.message : e);
-    }
-  }
+  //    Re-review fix 2 — STARTED here, NOT awaited: the native result returns
+  //    now, and the dispatcher awaits this beside its other non-gating stages
+  //    (current quote, history refresh). It never throws (caught below), and
+  //    nothing about this sync's outcome reads it.
+  const tokenHoldings: Promise<WalletTokenSyncOutcome | null> | undefined = deps.tokens !== false && tokenCaptureSupported(config.chain)
+    ? syncWalletTokens({ client: db, accountId, chain: config.chain, address, deps: deps.tokens || {} }).catch((e) => {
+        console.warn(`[evm-sync] token capture threw for ${accountId} (contract violation, non-fatal):`, e instanceof Error ? e.message : e);
+        return null;
+      })
+    : undefined;
 
   return {
     accountId, ok: true, chain: config.chain, syncStatus: "synced",

@@ -27,7 +27,7 @@
  */
 
 import {
-  providerCallsOn, recordProviderMeter, type ProviderUsageClient, type RequestMeter,
+  recordProviderMeter, USAGE_UNIT_CALLS, usageDayBucket, type ProviderUsageClient, type RequestMeter,
 } from "@/lib/usage/provider-budget";
 import { todayUTCISO } from "@/lib/time/clock";
 
@@ -45,6 +45,16 @@ const num = (v: string | undefined, d: number, min: number, max: number) => {
 export function coinGeckoBudgetConfig(env: Record<string, string | undefined> = process.env) {
   return {
     dailyCallCap:       num(env.COINGECKO_DAILY_CALL_CAP, 250, 0, 100_000),
+    /**
+     * Review fix (re-review 1) — the most of the daily cap TOKEN quotes may
+     * spend. Native quotes always keep the rest: a wallet full of tokens can
+     * never starve BTC/ETH/SOL pricing.
+     */
+    tokenShare:         num(env.COINGECKO_TOKEN_SHARE, 0.6, 0, 1),
+    /** Skip a native /simple/price when every instrument's INTRADAY quote is younger than this. */
+    nativeQuoteFreshMinutes: num(env.COINGECKO_NATIVE_QUOTE_FRESH_MINUTES, 30, 0, 24 * 60),
+    /** Wall-time bound on token quoting inside one sync; the rest rotate to later syncs. */
+    tokenQuoteDeadlineMs: num(env.WALLET_TOKEN_QUOTE_DEADLINE_MS, 8_000, 0, 60_000),
     callsPerMinute:     num(env.COINGECKO_CALLS_PER_MINUTE, 20, 1, 500),
     /** Skip a token whose stored INTRADAY quote is fresher than this (dedupe across customers). */
     tokenQuoteFreshHours: num(env.COINGECKO_TOKEN_QUOTE_FRESH_HOURS, 6, 0, 72),
@@ -58,18 +68,52 @@ export function coinGeckoBudgetConfig(env: Record<string, string | undefined> = 
 
 /** The seam every guarded caller takes; production wires `defaultCoinGeckoBudget(client)`. */
 export interface CoinGeckoBudget {
-  /** Calls still allowed today, or null when the ledger cannot be read (⇒ spend nothing). */
-  remaining(): Promise<number | null>;
+  /**
+   * Calls still allowed today for this kind of quote, or null when the ledger
+   * cannot be read (⇒ spend nothing). `token` is additionally capped at
+   * `tokenShare` of the daily cap; `native` may use whatever remains.
+   */
+  remaining(kind?: "native" | "token"): Promise<number | null>;
   /** Flush a request meter into the durable counter. Never throws. */
   record(meter: Readonly<RequestMeter>): Promise<void>;
   /** Resolve when the next request may be sent. */
   pace(): Promise<void>;
 }
 
-/** Pure: remaining calls given today's ledger total, or null for an unreadable ledger. */
-export function remainingCalls(usedToday: number | null, cap: number): number | null {
-  if (usedToday === null || !Number.isFinite(usedToday)) return null;
-  return Math.max(0, cap - usedToday);
+/** The metric prefix every token-quote request is recorded under. */
+export const TOKEN_QUOTE_METRIC_PREFIX = `${COINGECKO_USAGE_NETWORK}:simple/token_price`;
+
+/**
+ * Pure: remaining calls for a kind, given today's usage, or null for an
+ * unreadable ledger. Tokens: min(cap − all, ⌊cap × share⌋ − tokens). Native:
+ * cap − all — and because tokens can never exceed their share, native always
+ * has at least ⌈cap × (1 − share)⌉ of the day.
+ */
+export function remainingCalls(
+  used: { total: number; tokens: number } | null, cap: number, kind: "native" | "token" = "native", tokenShare = 1,
+): number | null {
+  if (used === null || !Number.isFinite(used.total) || !Number.isFinite(used.tokens)) return null;
+  const all = Math.max(0, cap - used.total);
+  if (kind === "native") return all;
+  return Math.max(0, Math.min(all, Math.floor(cap * tokenShare) - used.tokens));
+}
+
+/** Today's COINGECKO usage, split token vs all. Null when unreadable. */
+export async function coinGeckoUsageToday(client: ProviderUsageClient, dayISO: string): Promise<{ total: number; tokens: number } | null> {
+  try {
+    const rows = await client.apiUsageCounter.findMany({
+      where:  { provider: COINGECKO_USAGE_PROVIDER, unit: USAGE_UNIT_CALLS, day: usageDayBucket(dayISO) },
+      select: { metric: true, count: true },
+    });
+    let total = 0, tokens = 0;
+    for (const r of rows) {
+      const n = Number(r.count);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      total += n;
+      if (r.metric.startsWith(TOKEN_QUOTE_METRIC_PREFIX)) tokens += n;
+    }
+    return { total, tokens };
+  } catch { return null; }
 }
 
 let lastCallAt = 0;
@@ -85,11 +129,9 @@ export async function paceCoinGecko(callsPerMinute = coinGeckoBudgetConfig().cal
 export function defaultCoinGeckoBudget(client: unknown, env: Record<string, string | undefined> = process.env): CoinGeckoBudget {
   const cfg = coinGeckoBudgetConfig(env);
   return {
-    async remaining() {
-      try {
-        const l = await providerCallsOn(client as ProviderUsageClient, COINGECKO_USAGE_PROVIDER, todayUTCISO());
-        return remainingCalls(l ? l.solana + l.other : null, cfg.dailyCallCap);
-      } catch { return null; }
+    async remaining(kind = "native") {
+      const used = await coinGeckoUsageToday(client as ProviderUsageClient, todayUTCISO());
+      return remainingCalls(used, cfg.dailyCallCap, kind, cfg.tokenShare);
     },
     async record(meter) {
       try { await recordProviderMeter(COINGECKO_USAGE_PROVIDER, COINGECKO_USAGE_NETWORK, meter); } catch { /* never fails a sync */ }

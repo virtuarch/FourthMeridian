@@ -50,7 +50,7 @@
  "lib/investments/crypto-instrument.ts": "116dc3ecfec61becc69297980c64d7a59437f6b99a47fbb28c839df088f80032",
  "lib/investments/current-holdings.ts": "4bf28c7fe5b9800892f43620f8fdbc2a11d8f6170d1ae3472bbb60cb99a22927",
  "lib/investments/current-positions-core.ts": "e4a59739e27dc43c99738be973e8e0b30ac81532df01636ee612d90704d46359",
- "lib/investments/current-positions.ts": "2378389cc2c05ac887ddbb7a54f52e7ec41f52067b667af456f0697dfa4294b5",
+ "lib/investments/current-positions.ts": "8626f9486e27f09bc2c9432c85386983db6bc20e67356484aa56f7841eb24e0c",
  "lib/investments/display-conversion.ts": "918f52c212e35151aca2db4bf012e5b62ee1897b1eaf56dff1f49336ef30a265",
  "lib/investments/event-coverage.core.ts": "1a11d8de6c69111626e2a2dfce7cf5762e1417d321235995b3272a2efd2ebfff",
  "lib/investments/event-coverage.ts": "5e6341db2c34a6517d190bebc06f982f3cb47753ac4d417a30143df7e22eef9d",

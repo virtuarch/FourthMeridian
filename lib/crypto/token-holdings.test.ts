@@ -28,6 +28,9 @@ import { composeWalletValue, type WalletCurrentValue } from "./wallet-current-va
 import { tokenValueOnDay, tokensValueOnDay, tokenPriceServing } from "./token-valuation.core";
 import { facetFromCoverage, walletHistoryComplete } from "./wallet-instrument-history";
 import { fetchCoinGeckoTokenQuotes } from "@/lib/prices/providers/coingecko";
+import { planTokenQuotes, type TokenQuoteTarget, type TokenQuoteMarker } from "@/lib/prices/current-quotes";
+const planTokenQuotesFor = (targets: TokenQuoteTarget[], markers: Map<string, TokenQuoteMarker>, now: Date) =>
+  planTokenQuotes(targets, { markers, freshQuoteAt: new Map() }, now, { freshHours: 6, retryHours: 24, maxTokens: 10 }).ask;
 import { connectionHealth, connectionHistory, tokenHistoryLabel, tokenPriceText } from "@/lib/connections/connection-detail.core";
 import type { InstrumentValuation } from "@/lib/investments/valuation-core";
 
@@ -382,8 +385,8 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
     const tokenAt = src.indexOf("syncWalletTokens(");
     check(`${file}: token capture runs only AFTER the lifecycle write and spine alignment`,
       tokenAt > src.indexOf('syncStatus: "synced", lastUpdated: new Date()') && tokenAt > src.indexOf("alignWalletProviderSpine({"));
-    check(`${file}: token capture is wrapped so a defect cannot fail the native sync`,
-      /try \{\s*tokenHoldings = await syncWalletTokens\(/.test(src));
+    check(`${file}: token capture is caught so a defect cannot fail the native sync`,
+      /syncWalletTokens\(\{[^}]*\}[^)]*\)\.catch\(/.test(src.replace(/\s+/g, " ")));
     check(`${file}: the success return is still unconditional ok:true after token capture`,
       src.lastIndexOf("ok: true") > tokenAt || src.lastIndexOf("ok:                    true") > tokenAt);
   }
@@ -439,10 +442,11 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   });
   const idUsdc = { assetKey: splTokenAssetKey(USDC), contract: USDC, symbol: "USDC" };
   const idSpam = { assetKey: splTokenAssetKey(SPAM), contract: SPAM, symbol: "FREE-AIRDROP.COM" };
+  const asInput = (t: ReturnType<typeof tokenValueOnDay>, id: typeof idUsdc) => ({ ...t, ...id, valueReporting: t.valueUsd });
   const day = tokensValueOnDay([obs("inst_usdc", D, 10), obs("inst_spam", D, 1e6)], [px("inst_usdc", D, 1)], D).tokens
-    .map((t) => ({ ...t, ...(t.instrumentId === "inst_usdc" ? idUsdc : idSpam) }));
+    .map((t) => asInput(t, t.instrumentId === "inst_usdc" ? idUsdc : idSpam));
   const args = { seed, servingQuotes: new Map(), asOf: D, now: new Date("2026-10-28T12:00:00Z"),
-    freshness: { observedAt: seed.observedAt, band: "LIVE" as const }, usdToReporting: 1 };
+    freshness: { observedAt: seed.observedAt, band: "LIVE" as const } };
   const w = composeWalletValue({ ...args, components: [comp("inst_sol", 2, 300, "2026-10-27")], tokenDay: day });
   check("a priced token is ADDED to the wallet total", w.value === 310, String(w.value));
   const spam = w.tokens.find((t) => t.instrumentId === "inst_spam");
@@ -451,15 +455,31 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   check("a priced token may show its symbol", w.tokens.find((t) => t.instrumentId === "inst_usdc")?.label === "USDC");
   check("the wallet stays VALUED — an unlisted airdrop does not black out a priced native balance", w.state === "VALUED");
   check("the native quantity and price date are the NATIVE asset's, untouched by tokens", w.quantity === 2 && w.priceDate === "2026-10-27");
-  const staleTok = tokensValueOnDay([obs("inst_usdc", "2026-10-15", 10)], [px("inst_usdc", D, 1)], D).tokens.map((t) => ({ ...t, ...idUsdc }));
+  const staleTok = tokensValueOnDay([obs("inst_usdc", "2026-10-15", 10)], [px("inst_usdc", D, 1)], D).tokens.map((t) => asInput(t, idUsdc));
   const ws = composeWalletValue({ ...args, components: [comp("inst_sol", 2, 300, "2026-10-27")], tokenDay: staleTok });
   check("a fresh NATIVE observation never makes a stale token count", ws.value === 300 && ws.tokens[0].state === "STALE" && ws.tokens[0].value === null);
   const native = composeWalletValue({ ...args, components: [comp("inst_sol", 2, 300, "2026-10-27")], tokenDay: [] });
   check("no tokens ⇒ byte-identical single-asset result", native.value === 300 && native.quantity === 2 && native.tokens.length === 0);
   const nativeUnpriced = composeWalletValue({ ...args, components: [comp("inst_sol", 2, null, null)], tokenDay: day });
   check("an unpriced NATIVE asset still makes the wallet NO_PRICE — tokens cannot paper over it", nativeUnpriced.state === "NO_PRICE" && nativeUnpriced.value === null);
-  const noFx = composeWalletValue({ ...args, usdToReporting: null, components: [comp("inst_sol", 2, 300, "2026-10-27")], tokenDay: day });
-  check("no USD→reporting rate ⇒ tokens are not converted by guess (excluded)", noFx.value === 300 && noFx.tokens.every((t) => t.value === null));
+  const noFx = composeWalletValue({ ...args, components: [comp("inst_sol", 2, 300, "2026-10-27")], tokenDay: day.map((t) => ({ ...t, valueReporting: null })) });
+  check("no conversion into the reporting currency ⇒ tokens are not converted by guess (excluded)", noFx.value === 300 && noFx.tokens.every((t) => t.value === null));
+
+  // Re-review 4 — FX through the SPACE conversion context, identical live vs regenerated,
+  // including a 0-native, USDC-only wallet in a non-USD Space.
+  const { tokenValueInReporting } = await import("./token-valuation");
+  const { classifyAccounts } = await import("@/lib/account-classifier");
+  const EUR = { target: "EUR", resolve: (from: string, dateISO: string) => from === "USD"
+    ? ({ kind: "rate", rate: 0.5, requestedDateISO: dateISO, effectiveDates: { from: dateISO, to: dateISO }, staleness: "exact" } as never)
+    : ({ kind: "miss", quote: from, requestedDateISO: dateISO } as never) };
+  const usdcOnly = tokensValueOnDay([obs("inst_usdc", D, 100)], [px("inst_usdc", D, 1)], D);
+  const liveEur = composeWalletValue({ ...args, components: [comp("inst_sol", 0, 0, "2026-10-27")],
+    tokenDay: usdcOnly.tokens.map((t) => ({ ...t, ...idUsdc, valueReporting: tokenValueInReporting(t.valueUsd!, EUR as never, D) })) });
+  const regenEur = classifyAccounts([{ type: "crypto", balance: 0, currency: "USD" },
+    ...usdcOnly.tokens.map((t) => ({ type: "crypto", balance: t.valueUsd!, currency: "USD" }))], EUR as never, D).totalDigitalAssets;
+  check("0-native USDC-only wallet in a EUR Space: live value == regenerated value (both €50)", liveEur.value === 50 && regenEur === 50, `${liveEur.value} vs ${regenEur}`);
+  check("live token FX goes through the Space conversion context, not a native-implied rate",
+    /buildSpaceConversionContext\(/.test(code(read("lib", "crypto", "wallet-current-value.ts"))) && !/usdToReportingRate/.test(code(read("lib", "crypto", "wallet-current-value.ts"))));
 }
 
 // ══ COINGECKO: SANITY FLOOR, SOLANA CASE, 429 MID-BATCH, BUDGET, ROTATION ════
@@ -487,6 +507,40 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   check("a Solana mint keeps its CASE through the quote path (base58 is case-significant)", urls[0].includes(`contract_addresses=${USDC}&`) && !urls[0].includes(USDC.toLowerCase()));
   check("batch=1 ⇒ one metered request per contract", meter["simple/token_price:solana"] === 3);
 
+  // Re-review 3 — market cap 0 / missing = UNKNOWN supply ⇒ decide on volume alone.
+  const capZero = async (url: string) => {
+    const c = decodeURIComponent(url.split("contract_addresses=")[1].split("&")[0]);
+    return { ok: true, status: 200, json: async () => ({ [c]: c === USDC
+      ? { usd: 1, usd_market_cap: 0, usd_24h_vol: 2e6, last_updated_at: ts }          // liquid, supply unknown
+      : { usd: 1, usd_market_cap: 0, usd_24h_vol: 50, last_updated_at: ts } }) };      // illiquid
+  };
+  const cz = await fetchCoinGeckoTokenQuotes("solana", [{ key: "liquid", contract: USDC }, { key: "illiquid", contract: PYUSD }],
+    { apiKey: "fixture", fetchImpl: capZero, now, batchSize: 1, minVolume24hUsd: 10_000, minMarketCapUsd: 1_000_000 });
+  check("market cap 0 with real volume is NOT thin (cap unknown ⇒ volume decides)", cz.quotes.some((q) => q.symbol === "liquid"));
+  check("market cap 0 with thin volume is THIN", cz.rejected.some((r) => r.symbol === "illiquid" && r.kind === "THIN"));
+  // Re-review 5 — an empty {} answer is UNKNOWN for the chunk, never a batch of UNLISTED.
+  const empty = await fetchCoinGeckoTokenQuotes("solana", [{ key: "a", contract: USDC }, { key: "b", contract: PYUSD }],
+    { apiKey: "fixture", now, batchSize: 2, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) });
+  check("an empty {} 200 response to a MULTI-contract request marks nothing UNLISTED (UNKNOWN, retried later)", empty.rejected.length === 2 && empty.rejected.every((r) => r.kind === "UNKNOWN"));
+  check("UNKNOWN never suppresses a retry (only rotates)",
+    planTokenQuotesFor([{ instrumentId: "x", assetKey: "k", platform: "solana", contract: "c" }],
+      new Map([["k", { attemptedAt: "2026-10-28T11:59:00Z", outcome: "UNKNOWN" as const }]]), now).length === 1);
+  // Re-review 2 — the wall-time bound stops further requests.
+  let dl = 0;
+  const slowPace = async () => { await new Promise((r) => setTimeout(r, 30)); };
+  const bounded = await fetchCoinGeckoTokenQuotes("solana", [{ key: "a", contract: USDC }, { key: "b", contract: PYUSD }, { key: "c", contract: SPAM }],
+    { apiKey: "fixture", now, batchSize: 1, pace: slowPace, deadlineEpochMs: Date.now() + 45,
+      fetchImpl: async (url: string) => { dl++; return capZero(url); } });
+  check("token quoting is wall-time bounded; the rest rotate to later syncs", bounded.stopped?.code === "DEADLINE" && dl < 3, `${dl} calls`);
+  check("token capture is not awaited on the native path (started, awaited beside quote/history)",
+    /const tokenHoldings: Promise<WalletTokenSyncOutcome \| null> \| undefined =/.test(code(read("lib", "crypto", "sol-sync.ts")))
+    && /result\.tokenHoldings \? result\.tokenHoldings\.catch/.test(code(read("lib", "crypto", "wallet-sync-dispatch.ts"))));
+  // Re-review 1 — tokens may spend at most their share; native keeps the rest.
+  const { remainingCalls } = await import("@/lib/prices/coingecko-budget");
+  check("tokens capped at 60% of the day", remainingCalls({ total: 150, tokens: 150 }, 250, "token", 0.6) === 0);
+  check("…while native still has the rest", remainingCalls({ total: 150, tokens: 150 }, 250, "native", 0.6) === 100);
+  check("unreadable ledger ⇒ null for both", remainingCalls(null, 250, "native") === null && remainingCalls(null, 250, "token", 0.6) === null);
+
   let n = 0;
   const flaky = async () => (++n === 1
     ? { ok: true, status: 200, json: async () => ({ [USDC]: answer[USDC] }) }
@@ -502,7 +556,7 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   check("a failure before any quote still throws (nothing to keep)", threw);
 
   // Budget: read before spend; unreadable / exhausted ⇒ nothing spent.
-  const { refreshCurrentTokenQuotes, planTokenQuotes } = await import("@/lib/prices/current-quotes");
+  const { refreshCurrentTokenQuotes } = await import("@/lib/prices/current-quotes");
   const targets = [
     { instrumentId: "inst_usdc", assetKey: splTokenAssetKey(USDC), platform: "solana" as const, contract: USDC },
     { instrumentId: "inst_spam", assetKey: splTokenAssetKey(SPAM), platform: "solana" as const, contract: SPAM },
@@ -554,9 +608,28 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
     (fw.aliases.find((a) => a.instrumentId === "inst_spam")!.metadata as { token?: boolean; quote?: { outcome?: string } }).quote?.outcome === "UNLISTED"
     && (fw.aliases.find((a) => a.instrumentId === "inst_spam")!.metadata as { token?: boolean }).token === true);
   check("token quote calls are recorded into the COINGECKO budget", recorded.length === 1 && recorded[0]["simple/token_price:solana"] === 2);
+  // Re-review 1 — native dedupe: an INTRADAY quote younger than 30 min ⇒ no request.
+  {
+    const { refreshCurrentQuotesForChains } = await import("@/lib/prices/current-quotes");
+    let fetchedNative = 0;
+    const nClient = {
+      instrumentAlias: { findUnique: async () => ({ instrumentId: "inst_sol" }) },
+      priceObservation: { findMany: async () => [{ instrumentId: "inst_sol", fetchedAt: new Date(now.getTime() - 10 * 60_000) }] },
+    };
+    const deduped = await refreshCurrentQuotesForChains(["SOL"], { client: nClient as never, now,
+      fetchQuotes: (async () => { fetchedNative++; return { configured: true, quotes: [], rejected: [] }; }) as never,
+      budget: { remaining: async () => 100, record: async () => {}, pace: async () => {} } });
+    check("a native quote younger than 30 min is NOT re-fetched (deduped across wallets)",
+      fetchedNative === 0 && deduped.status === "REFRESHED" && deduped.changedInstrumentIds.length === 0);
+    const staleClient = { ...nClient, priceObservation: { findMany: async () => [{ instrumentId: "inst_sol", fetchedAt: new Date(now.getTime() - 45 * 60_000) }] } };
+    await refreshCurrentQuotesForChains(["SOL"], { client: staleClient as never, now,
+      fetchQuotes: (async () => { fetchedNative++; return { configured: true, quotes: [], rejected: [] }; }) as never,
+      budget: { remaining: async () => 100, record: async () => {}, pace: async () => {} } });
+    check("…an older one is re-fetched", fetchedNative === 1);
+  }
   const nativeSrc = code(read("lib", "prices", "current-quotes.ts"));
   check("NATIVE current quotes spend the SAME budget (read before spend, metered)",
-    /const remaining = await budget\.remaining\(\);\s*if \(remaining === null\)[\s\S]*fetchCoinGeckoCurrentQuotes\)\(assets/.test(nativeSrc)
+    /const remaining = await budget\.remaining\("native"\);\s*if \(remaining === null\)[\s\S]*fetchCoinGeckoCurrentQuotes\)\(assets/.test(nativeSrc)
     && /meter\["simple\/price"\]/.test(code(read("lib", "prices", "providers", "coingecko.ts"))));
 }
 

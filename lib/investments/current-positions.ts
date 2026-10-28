@@ -133,7 +133,9 @@ export async function getCurrentPositions(
       // (lib/crypto/wallet-current-value, contract-addressed quotes); this engine
       // has no contract price route, and its consumers (Holdings, the AI
       // holdings context, export) must never surface an unpriced token's
-      // attacker-controlled name. NOT EXISTS ⇒ every non-token row unchanged.
+      // attacker-controlled name. A PRICED token's value is included in its
+      // wallet's balance (Accounts / Net Worth / the AI accounts context), not
+      // listed here. NOT EXISTS ⇒ every non-token row unchanged.
       instrument:     NOT_TOKEN_INSTRUMENT,
     },
     _max: { date: true },

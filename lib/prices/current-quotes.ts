@@ -116,14 +116,39 @@ export async function refreshCurrentQuotesForChains(
     // Review fix 1 — the native quote spends the SAME shared CoinGecko budget:
     // read before spend (unreadable ⇒ nothing spent), paced, metered.
     if (!opts.fetchQuotes && !process.env.COINGECKO_API_KEY?.trim()) return done({ status: "NOT_CONFIGURED" as const });
+    // Re-review fix 1 — DEDUPE: when every one of these assets already has an
+    // INTRADAY quote younger than COINGECKO_NATIVE_QUOTE_FRESH_MINUTES (another
+    // wallet's sync just paid for it), nothing is fetched. The stored quote is
+    // the current one; reported as REFRESHED with nothing changed.
+    const now = opts.now ?? new Date();
+    const freshMs = coinGeckoBudgetConfig().nativeQuoteFreshMinutes * 60_000;
+    if (freshMs > 0) {
+      const ids = (await Promise.all(assets.map((a) => lookupCryptoInstrumentId(a, client)))).filter((x): x is string => !!x);
+      if (ids.length === assets.length) {
+        const today = new Date(`${quoteDateISO(now)}T00:00:00.000Z`);
+        const rows = await client.priceObservation.findMany({
+          where: { instrumentId: { in: ids }, basis: PriceBasis.INTRADAY, date: { gte: today, lte: today } },
+          select: { instrumentId: true, fetchedAt: true },
+        });
+        const freshest = new Map<string, Date>();
+        for (const r of rows) { const p = freshest.get(r.instrumentId); if (!p || p < r.fetchedAt) freshest.set(r.instrumentId, r.fetchedAt); }
+        if (ids.every((id) => { const f = freshest.get(id); return f !== undefined && now.getTime() - f.getTime() < freshMs; })) {
+          const quotedAt = new Date(Math.min(...ids.map((id) => freshest.get(id)!.getTime())));
+          return done({ status: "REFRESHED" as const, instrumentIds: ids, changedInstrumentIds: [], quotedAt });
+        }
+      }
+    }
+
     const budget = opts.budget ?? defaultCoinGeckoBudget(client);
-    const remaining = await budget.remaining();
+    // Native may use everything left today; tokens are capped at their share,
+    // so this always has headroom tokens cannot take.
+    const remaining = await budget.remaining("native");
     if (remaining === null) return done({ status: "UNAVAILABLE" as const, reason: "CoinGecko budget unreadable — nothing spent" });
     if (remaining < 1) return done({ status: "UNAVAILABLE" as const, reason: "CoinGecko daily budget reached" });
     const meter: Record<string, number> = {};
     await budget.pace();
     let fetched: Awaited<ReturnType<typeof fetchCoinGeckoCurrentQuotes>>;
-    try { fetched = await (opts.fetchQuotes ?? fetchCoinGeckoCurrentQuotes)(assets.map((a) => a.symbol), { now: opts.now, meter }); }
+    try { fetched = await (opts.fetchQuotes ?? fetchCoinGeckoCurrentQuotes)(assets.map((a) => a.symbol), { now, meter }); }
     finally { await budget.record(meter); }
     if (!fetched.configured) return done({ status: "NOT_CONFIGURED" as const });
 
@@ -165,13 +190,14 @@ export const TOKEN_QUOTE_SOURCE = "coingecko:simple_token_price";
  */
 export interface TokenQuoteMarker {
   attemptedAt: string;
-  outcome:     "PRICED" | "UNLISTED" | "THIN" | "INVALID";
+  /** UNKNOWN = the vendor answered nothing usable (e.g. an empty `{}`): rotates, never suppresses. */
+  outcome:     "PRICED" | "UNLISTED" | "THIN" | "INVALID" | "UNKNOWN";
   pricedAt?:   string;
 }
 
 export function readTokenQuoteMarker(metadata: unknown): TokenQuoteMarker | null {
   const q = (metadata as { quote?: Partial<TokenQuoteMarker> } | null)?.quote;
-  if (!q || typeof q.attemptedAt !== "string" || !["PRICED", "UNLISTED", "THIN", "INVALID"].includes(q.outcome ?? "")) return null;
+  if (!q || typeof q.attemptedAt !== "string" || !["PRICED", "UNLISTED", "THIN", "INVALID", "UNKNOWN"].includes(q.outcome ?? "")) return null;
   return { attemptedAt: q.attemptedAt, outcome: q.outcome as TokenQuoteMarker["outcome"], ...(typeof q.pricedAt === "string" ? { pricedAt: q.pricedAt } : {}) };
 }
 
@@ -197,7 +223,8 @@ export function planTokenQuotes(
     const q = facts.freshQuoteAt.get(t.instrumentId);
     if (q && now.getTime() - q.getTime() < cfg.freshHours * 3_600_000) { skippedFresh.push(t.assetKey); continue; }
     const m = facts.markers.get(t.assetKey);
-    if (m && m.outcome !== "PRICED" && now.getTime() - Date.parse(m.attemptedAt) < cfg.retryHours * 3_600_000) { skippedUnlisted.push(t.assetKey); continue; }
+    if (m && (m.outcome === "UNLISTED" || m.outcome === "THIN" || m.outcome === "INVALID")
+        && now.getTime() - Date.parse(m.attemptedAt) < cfg.retryHours * 3_600_000) { skippedUnlisted.push(t.assetKey); continue; }
     candidates.push(t);
   }
   const priced = (t: TokenQuoteTarget) => (facts.markers.get(t.assetKey)?.pricedAt ? 0 : 1);
@@ -234,6 +261,7 @@ export async function refreshCurrentTokenQuotes(
     fetchTokenQuotes?: typeof fetchCoinGeckoTokenQuotes;
     now?: Date;
     maxTokens?: number;
+    deadlineMs?: number;
     env?: Record<string, string | undefined>;
   },
 ): Promise<TokenQuoteOutcome> {
@@ -270,11 +298,14 @@ export async function refreshCurrentTokenQuotes(
 
     // READ BEFORE SPEND. Unreadable ⇒ spend nothing.
     const budget = opts.budget ?? defaultCoinGeckoBudget(client);
-    const remaining = await budget.remaining();
+    const remaining = await budget.remaining("token");
     if (remaining === null) return done({ status: "UNAVAILABLE" as const, reason: "CoinGecko budget unreadable — nothing spent", ...skipped, calls: 0 });
     if (remaining < 1) return done({ status: "UNAVAILABLE" as const, reason: `CoinGecko daily budget reached (${cfg.dailyCallCap} calls)`, ...skipped, calls: 0 });
 
     const fetchFn = opts.fetchTokenQuotes ?? fetchCoinGeckoTokenQuotes;
+    // Re-review fix 2 — a WALL-TIME bound on token quoting inside one sync
+    // (pacing included); tokens not reached rotate to later syncs.
+    const deadline = Date.now() + (opts.deadlineMs ?? cfg.tokenQuoteDeadlineMs);
     const meter: Record<string, number> = {};
     const bound: Array<CurrentQuote & { instrumentId: string }> = [];
     const unpriced: string[] = [];
@@ -289,7 +320,7 @@ export async function refreshCurrentTokenQuotes(
         if (group.length === 0 || left < 1 || stopped) continue;
         const before = Object.values(meter).reduce((a, b) => a + b, 0);
         const fetched = await fetchFn(platform, group.map((t) => ({ key: t.assetKey, contract: t.contract })), {
-          now, meter, pace: budget.pace, maxCalls: left,
+          now, meter, pace: budget.pace, maxCalls: left, deadlineEpochMs: deadline,
           minVolume24hUsd: cfg.minVolume24hUsd, minMarketCapUsd: cfg.minMarketCapUsd,
         });
         left -= Object.values(meter).reduce((a, b) => a + b, 0) - before;
