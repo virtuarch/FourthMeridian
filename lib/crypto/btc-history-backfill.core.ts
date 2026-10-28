@@ -39,8 +39,20 @@
  * double count offsets. For an xpub wallet the check runs PER DERIVED ADDRESS
  * and requires discovery to have finished (an undiscovered address would be an
  * unlisted one). The wallet's end-of-day quantity is then the running sum of
- * every address's net flow, by UTC day of `block_time` — the same dating the
- * Transaction rows use — from zero at the first transaction.
+ * every address's net flow, from zero at the first transaction, by UTC day of
+ * the MONOTONE block time: each block is dated by the latest `block_time` among
+ * the wallet's blocks at or below its height. Raw `block_time` is not monotone
+ * (consensus only bounds it by the median of the previous eleven blocks), and a
+ * spend stamped before the receipt it spends would otherwise put a negative
+ * balance on a day. The Transaction rows keep their raw dates (unchanged).
+ *
+ * ── Verification persists per address ──────────────────────────────────────
+ * Each address's reconciliation is recorded (`verifiedAtISO`) when its listing
+ * matched chain_stats with no shallow head, and invalidated the moment anything
+ * new is folded for it. A large xpub therefore proves across several runs — a
+ * rotating `verifyCursor` picks where each run starts — and the licence then
+ * runs only to the day BEFORE the oldest verification still relied on (an
+ * address verified at noon says nothing about its afternoon).
  *
  * ── Confirmation depth and tip reorgs ───────────────────────────────────────
  * Only transactions at least `depth` blocks deep (default 6) are SETTLED into
@@ -54,7 +66,9 @@
  * walked across.
  *
  * ── Where the checkpoint lives ──────────────────────────────────────────────
- * `Connection.historyCheckpoint` (migration 20261028120000), NOT
+ * `Connection.historyCheckpoint` (migration 20261028120000 — which must be
+ * applied on every environment BEFORE this code deploys: the column is in the
+ * Prisma schema, so every unselected `connection.*` read names it), NOT
  * `Connection.cursor`: for an xpub wallet the cursor already holds discovery's
  * checkpoint, which discovery overwrites without a compare-and-swap, and every
  * Connections reader treats "has a cursor" as "discovery in progress".
@@ -99,6 +113,14 @@ export interface BtcEdge {
   height: number;
   /** Txids already folded at `height` — the dedupe set for that block. */
   blockTxids: string[];
+  /**
+   * BOTTOM only: the last txid folded in the block ABOVE `height`. A resumed
+   * walk pages after IT, so the whole bottom block is listed again and deduped
+   * by `blockTxids` — the explorer's order WITHIN a block is not a documented
+   * contract, and paging after a mid-block txid could skip a reordered one.
+   * Null until the bottom has crossed one block boundary.
+   */
+  resumeTxid?: string | null;
 }
 
 export interface BtcAddressProgress {
@@ -113,6 +135,13 @@ export interface BtcAddressProgress {
   funded: string;
   spent: string;
   txCount: number;
+  /** Settled net flow per block: [height, block_time (s), signed sats], ascending height. */
+  blocks: Array<[number, number, string]>;
+  /**
+   * When the listing last matched chain_stats exactly with NO shallow head.
+   * Cleared whenever anything new is folded for the address.
+   */
+  verifiedAtISO: string | null;
 }
 
 export interface BtcRecovery {
@@ -128,8 +157,8 @@ export interface BtcBackfillCheckpoint {
   accountId: string;
   /** Sorted by address — deterministic order. */
   addresses: BtcAddressProgress[];
-  /** Settled wallet net flow per UTC day: [dateISO, signed sats], ascending. */
-  days: Array<[string, string]>;
+  /** Index into `addresses` where the next run starts its verification visits (rotation). */
+  verifyCursor: number;
   /** Earliest day of a settled transaction folded since the rows were last written. */
   dirtyFromISO: string | null;
   /** True once THIS checkpoint generation has written rows (the first proof replaces all). */
@@ -169,13 +198,13 @@ export interface BtcBackfillCheckpoint {
 }
 
 export function emptyProgress(address: string): BtcAddressProgress {
-  return { address, top: null, bottom: null, reachedBeginning: false, funded: "0", spent: "0", txCount: 0 };
+  return { address, top: null, bottom: null, reachedBeginning: false, funded: "0", spent: "0", txCount: 0, blocks: [], verifiedAtISO: null };
 }
 
 export function emptyCheckpoint(accountId: string, nowISO: string): BtcBackfillCheckpoint {
   return {
     kind: BTC_BACKFILL_KIND, v: BTC_BACKFILL_VERSION, accountId,
-    addresses: [], days: [], dirtyFromISO: null, provenOnce: false,
+    addresses: [], verifyCursor: 0, dirtyFromISO: null, provenOnce: false,
     licensedFromISO: null, licensedToISO: null, headFromISO: null,
     headVerifiedAtISO: null, headUnverifiedSinceISO: null, mismatchStreak: 0, recovery: null,
     failures: 0, lastFailure: null, txsProcessed: 0,
@@ -183,7 +212,6 @@ export function emptyCheckpoint(accountId: string, nowISO: string): BtcBackfillC
   };
 }
 
-const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 const edgeOk = (e: unknown) => e === null || (typeof e === "object" && e !== null
   && typeof (e as BtcEdge).txid === "string" && Number.isSafeInteger((e as BtcEdge).height)
   && Array.isArray((e as BtcEdge).blockTxids) && (e as BtcEdge).blockTxids.every((t) => typeof t === "string"));
@@ -200,13 +228,15 @@ export function parseCheckpoint(raw: string | null | undefined, accountId: strin
   if (!v || typeof v !== "object") return null;
   const c = v as Partial<BtcBackfillCheckpoint>;
   if (c.kind !== BTC_BACKFILL_KIND || c.v !== BTC_BACKFILL_VERSION || c.accountId !== accountId) return null;
-  if (!Array.isArray(c.addresses) || !Array.isArray(c.days) || typeof c.failures !== "number" || typeof c.provenOnce !== "boolean") return null;
+  if (!Array.isArray(c.addresses) || !Number.isSafeInteger(c.verifyCursor) || typeof c.failures !== "number" || typeof c.provenOnce !== "boolean") return null;
   for (const a of c.addresses) {
     if (!a || typeof a.address !== "string" || typeof a.reachedBeginning !== "boolean" || !edgeOk(a.top ?? null) || !edgeOk(a.bottom ?? null)) return null;
     if ((a.top == null) !== (a.bottom == null)) return null;
     if (!/^\d+$/.test(String(a.funded)) || !/^\d+$/.test(String(a.spent)) || !Number.isSafeInteger(a.txCount)) return null;
+    if (!Array.isArray(a.blocks) || !a.blocks.every((b) => Array.isArray(b) && b.length === 3
+      && Number.isSafeInteger(b[0]) && Number.isFinite(b[1]) && /^-?\d+$/.test(String(b[2])))) return null;
+    if (a.verifiedAtISO !== null && typeof a.verifiedAtISO !== "string") return null;
   }
-  if (!c.days.every((e) => Array.isArray(e) && e.length === 2 && ISO_DAY.test(String(e[0])) && /^-?\d+$/.test(String(e[1])))) return null;
   if (c.mode !== undefined && c.mode !== "DIRECT" && c.mode !== "STAGING") return null;
   return c as BtcBackfillCheckpoint;
 }
@@ -233,6 +263,9 @@ export class BtcProofDataError extends Error {
 export interface BtcTxPoint {
   txid: string;
   height: number;
+  /** Raw `block_time`, seconds. */
+  time: number;
+  /** UTC day of the RAW block time (the Transaction row's date). */
   dateISO: string;
   /** Satoshis paid TO the address by this transaction's outputs. */
   funded: bigint;
@@ -261,7 +294,7 @@ export function pointFromTransaction(tx: EsploraTxForProof, address: string): Bt
   let spent = BigInt(0);
   for (const o of tx.vout) if (o?.scriptpubkey_address === address) funded += sats(o.value, "an output value", txid);
   for (const i of tx.vin) if (i?.prevout?.scriptpubkey_address === address) spent += sats(i.prevout.value, "a spent output value", txid);
-  return { txid, height: st.block_height as number, dateISO: new Date(st.block_time * 1000).toISOString().slice(0, 10), funded, spent };
+  return { txid, height: st.block_height as number, time: st.block_time, dateISO: new Date(st.block_time * 1000).toISOString().slice(0, 10), funded, spent };
 }
 
 /** Is a transaction at `height` settled (at least `depth` blocks deep) under `tipHeight`? */
@@ -276,23 +309,27 @@ export interface ProgressWork {
   p: BtcAddressProgress;
   funded: bigint;
   spent: bigint;
+  blocks: Map<number, { time: number; sats: bigint }>;
 }
 
 export function workOf(p: BtcAddressProgress): ProgressWork {
   return { p: { ...p, top: p.top && { ...p.top, blockTxids: [...p.top.blockTxids] }, bottom: p.bottom && { ...p.bottom, blockTxids: [...p.bottom.blockTxids] } },
-    funded: BigInt(p.funded), spent: BigInt(p.spent) };
+    funded: BigInt(p.funded), spent: BigInt(p.spent), blocks: new Map(p.blocks.map(([h, t, s]) => [h, { time: t, sats: BigInt(s) }])) };
 }
 
 export function progressOf(w: ProgressWork): BtcAddressProgress {
-  return { ...w.p, funded: w.funded.toString(), spent: w.spent.toString() };
+  const blocks: Array<[number, number, string]> = [...w.blocks.entries()].sort((a, b) => a[0] - b[0]).map(([h, b]) => [h, b.time, b.sats.toString()]);
+  return { ...w.p, funded: w.funded.toString(), spent: w.spent.toString(), blocks };
 }
 
-/** Add one settled point's net flow to the day map and the address totals. */
-export function foldPoint(w: ProgressWork, days: Map<string, bigint>, t: BtcTxPoint): void {
+/** Add one settled point's net flow to the address's blocks and totals; its verification no longer holds. */
+export function foldPoint(w: ProgressWork, t: BtcTxPoint): void {
   w.funded += t.funded;
   w.spent += t.spent;
   w.p.txCount += 1;
-  days.set(t.dateISO, (days.get(t.dateISO) ?? BigInt(0)) + t.funded - t.spent);
+  const b = w.blocks.get(t.height);
+  w.blocks.set(t.height, { time: t.time, sats: (b?.sats ?? BigInt(0)) + t.funded - t.spent });
+  w.p.verifiedAtISO = null;
 }
 
 /**
@@ -309,7 +346,8 @@ export function isFoldedBelowCheck(bottom: BtcEdge | null, t: { txid: string; he
 export function lowerBottom(w: ProgressWork, t: { txid: string; height: number }): void {
   const b = w.p.bottom;
   if (b && b.height === t.height) { b.txid = t.txid; b.blockTxids.push(t.txid); }
-  else w.p.bottom = { txid: t.txid, height: t.height, blockTxids: [t.txid] };
+  // Crossing into an older block: resume after the newer block's last txid.
+  else w.p.bottom = { txid: t.txid, height: t.height, blockTxids: [t.txid], resumeTxid: b ? b.txid : null };
   // A point in the top's own block belongs to the top's dedupe set as well.
   const top = w.p.top;
   if (top && top.height === t.height && !top.blockTxids.includes(t.txid)) top.blockTxids.push(t.txid);
@@ -342,12 +380,31 @@ export function addDaysISO(dateISO: string, days: number): string {
   return new Date(Date.parse(`${dateISO}T00:00:00Z`) + days * DAY_MS).toISOString().slice(0, 10);
 }
 
-export function daysToMap(days: ReadonlyArray<[string, string]>): Map<string, bigint> {
-  return new Map(days.map(([d, s]) => [d, BigInt(s)]));
-}
-
-export function mapToDays(m: ReadonlyMap<string, bigint>): Array<[string, string]> {
-  return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([d, s]) => [d, s.toString()]);
+/**
+ * The wallet's net flow per UTC day, from every address's settled blocks plus
+ * this run's shallow points, each block dated by the MONOTONE block time — the
+ * latest `block_time` among the wallet's blocks at or below its height. So the
+ * day sequence follows chain order and every end-of-day sum is a chain-order
+ * prefix (never negative for a correct listing).
+ */
+export function walletDays(
+  progress: ReadonlyArray<Pick<BtcAddressProgress, "blocks">>, extra: ReadonlyArray<Pick<BtcTxPoint, "height" | "time" | "funded" | "spent">> = [],
+): Map<string, bigint> {
+  const byHeight = new Map<number, { time: number; sats: bigint }>();
+  const add = (h: number, time: number, sats: bigint) => {
+    const b = byHeight.get(h);
+    byHeight.set(h, { time: b ? Math.max(b.time, time) : time, sats: (b?.sats ?? BigInt(0)) + sats });
+  };
+  for (const p of progress) for (const [h, t, s] of p.blocks) add(h, t, BigInt(s));
+  for (const t of extra) add(t.height, t.time, t.funded - t.spent);
+  const days = new Map<string, bigint>();
+  let maxTime = Number.NEGATIVE_INFINITY;
+  for (const [, b] of [...byHeight.entries()].sort((a, c) => a[0] - c[0])) {
+    maxTime = Math.max(maxTime, b.time);
+    const d = new Date(maxTime * 1000).toISOString().slice(0, 10);
+    days.set(d, (days.get(d) ?? BigInt(0)) + b.sats);
+  }
+  return days;
 }
 
 /**
@@ -441,7 +498,7 @@ export function backfillStatus(cp: BtcBackfillCheckpoint | null): BtcBackfillSta
   }
   const base = {
     historyFromISO: cp.licensedFromISO, historyToISO: cp.licensedToISO,
-    importedBackToISO: cp.days[0]?.[0] ?? null,
+    importedBackToISO: cp.addresses.flatMap((a) => a.blocks.length ? [new Date(a.blocks[0][1] * 1000).toISOString().slice(0, 10)] : []).sort()[0] ?? null,
     lastFailureCode: cp.lastFailure?.code ?? null, lastProgressAtISO: cp.lastProgressAtISO, txsProcessed: cp.txsProcessed,
     headVerified: cp.provenOnce && !cp.headUnverifiedSinceISO,
     legacyInForce: cp.mode === "STAGING",
@@ -501,6 +558,20 @@ export function legacyDiscrepancy(
     if (Math.abs(Number(r.sats) / 1e8 - q) > 5e-9) { days++; if (!firstISO) firstISO = r.dateISO; }
   }
   return days > 0 ? { days, firstISO: firstISO! } : null;
+}
+
+/** How long a persisted per-address verification is relied on before a worker revisit. */
+export const REVERIFY_AFTER_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Does a wallet need a (rate-limited) worker visit even though it is not
+ * importing? A COMPLETE wallet whose addresses are not all verified, or whose
+ * oldest verification is stale — a large xpub that a 15 s sync cannot
+ * re-verify in one go.
+ */
+export function needsVerificationVisit(cp: BtcBackfillCheckpoint | null, nowMs: number): boolean {
+  if (!cp || cp.addresses.length === 0) return false;
+  return cp.addresses.some((a) => !a.verifiedAtISO || nowMs - Date.parse(a.verifiedAtISO) >= REVERIFY_AFTER_MS);
 }
 
 /** Requests recorded for `dayISO` in a checkpoint (0 when the day differs). */

@@ -175,9 +175,10 @@ export async function reconstructBtcHistoryOrResumable(args: {
     const link = await btcHistoryLink(args.client, args.accountId);
     owned = link !== null && (await readHistoryCheckpoint(args.client, link.connectionId)) !== null;
   } catch (e) {
-    // Unreadable (e.g. the column's migration not applied yet): the wholesale
-    // path, exactly as before — and it refuses by itself where the resumable
-    // licence is already in force (RESUMABLE_HISTORY_IN_FORCE).
+    // A transient read failure: the wholesale path, exactly as before — which
+    // refuses by itself where the resumable licence is in force
+    // (RESUMABLE_HISTORY_IN_FORCE). Not a deploy-order fallback: the migration
+    // must precede this code (btc-history-checkpoint.ts).
     console.warn(`[btc-history] checkpoint read failed for ${args.accountId} (non-fatal — wholesale path):`, e instanceof Error ? e.message : String(e));
   }
   if (owned) return reconstructBtcHistoryResumable({ accountId: args.accountId, client: args.client, deps: { headOnly: args.headOnly } });

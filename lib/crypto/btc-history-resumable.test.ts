@@ -40,6 +40,7 @@ const EXT = "bc1qsomeoneelsexxxxxxxxxxxxxxxxxxxxxxxxxx";
 const ACCOUNT = "acct_btc_fixture";
 const NOW_ISO = "2026-10-28T12:00:00.000Z";
 const TODAY = NOW_ISO.slice(0, 10);
+const YESTERDAY = "2026-10-27";
 
 // ── A deterministic UTXO chain ───────────────────────────────────────────────
 
@@ -126,10 +127,10 @@ function addTx(w: World, addresses: string[], kind?: "receive"): FxTx {
 }
 
 /** Mine `blocks` new blocks of `perBlock` transactions each, dated now-ish. */
-function mine(w: World, addresses: string[], blocks: number, perBlock = 2): void {
+function mine(w: World, addresses: string[], blocks: number, perBlock = 2, nowSec = Date.parse(NOW_ISO) / 1000): void {
   w.nextHeight = Math.max(w.nextHeight, w.tip + 1);
   for (let b = 0; b < blocks; b++) {
-    w.nextTime = Math.min(Date.parse(NOW_ISO) / 1000 - 60, w.nextTime + 600);
+    w.nextTime = Math.min(nowSec - 60, w.nextTime + 600);
     for (let i = 0; i < perBlock; i++) addTx(w, addresses);
     w.tip = w.nextHeight;
     w.nextHeight++;
@@ -138,18 +139,26 @@ function mine(w: World, addresses: string[], blocks: number, perBlock = 2): void
 
 const touches = (t: FxTx, a: string) => t.vout.some((o) => o.scriptpubkey_address === a) || t.vin.some((i) => i.prevout?.scriptpubkey_address === a);
 const confirmed = (w: World) => w.txs.filter((t) => t.height <= w.tip);
-const dateOf = (t: FxTx) => new Date(t.time * 1000).toISOString().slice(0, 10);
 const net = (t: FxTx, addresses: string[]) =>
   t.vout.reduce((s, o) => s + (addresses.includes(o.scriptpubkey_address) ? o.value : 0), 0)
   - t.vin.reduce((s, i) => s + (i.prevout && addresses.includes(i.prevout.scriptpubkey_address) ? i.prevout.value : 0), 0);
 
-/** End-of-day truth for every day from the first confirmed transaction to `toISO`. */
+/**
+ * End-of-day truth for every day from the first confirmed transaction to
+ * `toISO`, each block dated by the latest block time among the wallet's blocks
+ * at or below its height (the chain's own order, never a spend before its coin).
+ */
 function truth(w: World, addresses: string[], toISO = TODAY): Map<string, number> {
   const m = new Map<string, number>();
-  const txs = confirmed(w).filter((t) => addresses.some((a) => touches(t, a)));
+  const txs = confirmed(w).filter((t) => addresses.some((a) => touches(t, a))).sort((x, y) => x.height - y.height);
   if (txs.length === 0) return m;
   const byDay = new Map<string, number>();
-  for (const t of txs) byDay.set(dateOf(t), (byDay.get(dateOf(t)) ?? 0) + net(t, addresses));
+  let maxTime = 0;
+  for (const t of txs) {
+    maxTime = Math.max(maxTime, t.time);
+    const d = new Date(maxTime * 1000).toISOString().slice(0, 10);
+    byDay.set(d, (byDay.get(d) ?? 0) + net(t, addresses));
+  }
   let run = 0;
   for (let d = [...byDay.keys()].sort()[0]; d <= toISO; d = new Date(Date.parse(`${d}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)) {
     run += byDay.get(d) ?? 0;
@@ -169,6 +178,10 @@ interface ExplorerOpts {
   ignoreCursorAt?: number;
   /** Network failure on the Nth request overall, once. */
   failAt?: number;
+  /** Called on every chain_stats read, before answering (a block can land here). */
+  onStats?: () => void;
+  /** Reverse the within-block order of the listing from the Nth paged request on. */
+  reverseBlocksFrom?: number;
 }
 
 function explorer(world: () => World, clock: { t: number }, o: ExplorerOpts = {}) {
@@ -178,8 +191,19 @@ function explorer(world: () => World, clock: { t: number }, o: ExplorerOpts = {}
     headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
     json: async () => body, text: async () => JSON.stringify(body),
   });
-  const listFor = (w: World, a: string) =>
-    confirmed(w).filter((t) => touches(t, a) && !w.hidden.has(t.txid)).reverse(); // newest first
+  const listFor = (w: World, a: string) => {
+    const list = confirmed(w).filter((t) => touches(t, a) && !w.hidden.has(t.txid)).reverse(); // newest first
+    if (!o.reverseBlocksFrom || counts.paged < o.reverseBlocksFrom) return list;
+    // The order WITHIN a block is not a contract: deliver each block reversed.
+    const out: FxTx[] = [];
+    for (let i = 0; i < list.length; ) {
+      let j = i + 1;
+      while (j < list.length && list[j].height === list[i].height) j++;
+      out.push(...list.slice(i, j).reverse());
+      i = j;
+    }
+    return out;
+  };
   const esplora = (t: FxTx) => ({ txid: t.txid, vin: t.vin, vout: t.vout, fee: 0, status: { confirmed: true, block_height: t.height, block_time: t.time } });
   const fetchImpl = (async (url: string) => {
     clock.t += 1;
@@ -188,8 +212,9 @@ function explorer(world: () => World, clock: { t: number }, o: ExplorerOpts = {}
     if (o.throttle && counts.all >= o.throttle.from && counts.all <= o.throttle.to) {
       return respond(429, null, o.throttle.retryAfterS ? { "retry-after": String(o.throttle.retryAfterS) } : {});
     }
-    const w = world();
     const u = new URL(url);
+    if (u.pathname.match(/^\/api\/address\/[^/]+$/)) o.onStats?.();
+    const w = world();
     const p = u.pathname;
     if (p === "/api/blocks/tip/height") { counts.tip++; return respond(200, w.tip); }
     let m = p.match(/^\/api\/address\/([^/]+)\/txs\/chain(?:\/([^/]+))?$/);
@@ -262,8 +287,10 @@ class MemoryStore implements BtcBackfillStore {
   checkpoint(): BtcBackfillCheckpoint | null { return parseCheckpoint(this.cursor, this.accountId); }
 }
 
+/** Stored rows vs the truth, through the licensed edge (rows beyond it are never written). */
 function sameAsTruth(store: MemoryStore, w: World, addresses: string[]): { ok: boolean; detail: string } {
-  const want = truth(w, addresses);
+  const to = (store.coverage as { toISO?: string } | null)?.toISO ?? TODAY;
+  const want = truth(w, addresses, to);
   if (want.size !== store.rows.size) return { ok: false, detail: `rows ${store.rows.size} vs truth ${want.size}` };
   for (const [d, q] of want) {
     const got = store.rows.get(d);
@@ -312,8 +339,8 @@ async function main() {
     check(`${n} txs: every stored day equals the true end-of-day balance`, cmp.ok, cmp.detail);
     check(`${n} txs: each page listed once (${Math.floor(n / 25) + 1} pages, no re-list)`, ex.counts.txs === Math.floor(n / 25) + 1 && [...ex.counts.byCursor.values()].every((c) => c === 1), String(ex.counts.txs));
     check(`${n} txs: every transaction imported as a Transaction row`, importedAll(store, w, [A]).ok, importedAll(store, w, [A]).detail);
-    check(`${n} txs: licensed COMPLETE from the first transaction through today (${BTC_CHAIN_STATS_SOURCE})`,
-      JSON.stringify(store.coverage) === JSON.stringify({ kind: "COMPLETE", fromISO: [...truth(w, [A]).keys()][0], toISO: TODAY, source: BTC_CHAIN_STATS_SOURCE }), JSON.stringify(store.coverage));
+    check(`${n} txs: licensed COMPLETE from the first transaction through YESTERDAY — today's end is not known yet (${BTC_CHAIN_STATS_SOURCE})`,
+      JSON.stringify(store.coverage) === JSON.stringify({ kind: "COMPLETE", fromISO: [...truth(w, [A]).keys()][0], toISO: YESTERDAY, source: BTC_CHAIN_STATS_SOURCE }), JSON.stringify(store.coverage));
     check(`${n} txs: OBSERVED rows untouched, no stale-row overlap`, store.observed.get(TODAY) === 1.2345 && store.violations.length === 0);
   }
 
@@ -482,10 +509,92 @@ async function main() {
       o.verified === false && cov.toISO === dayBefore && store.rows.size === kept.length && kept.every(([d, q]) => Math.abs((store.rows.get(d) ?? NaN) - q) < 5e-9),
       `${cov.toISO} vs ${dayBefore}; rows ${store.rows.size} vs ${kept.length}`);
     check("…reported as impacted from the withdrawn day (snapshot rebuild)", o.impactedFromISO === headFrom);
+    check("…and the disagreeing address is queued for a full re-list (an unstable within-block order heals there, never wedges)",
+      store.checkpoint()!.addresses[0].reachedBeginning === false && store.checkpoint()!.addresses[0].txCount === 0 && store.checkpoint()!.mismatchStreak === 1);
     w.hidden.clear();
-    const back = await runBtcHistoryBackfill({ accountId: ACCOUNT, store }, depsFor(ex, clock, { headOnly: true }));
-    check("…and the next reconciling run restores it to today with rows equal to the truth",
-      back.verified === true && (store.coverage as { toISO: string }).toISO === TODAY && sameAsTruth(store, w, [A]).ok && store.violations.length === 0, sameAsTruth(store, w, [A]).detail);
+    const back = await runBtcHistoryBackfill({ accountId: ACCOUNT, store }, depsFor(ex, clock));
+    check("…and the next reconciling run re-lists it and restores the licence through today (shallow head re-verified)",
+      back.verified === true && (store.coverage as { toISO: string }).toISO === TODAY && sameAsTruth(store, w, [A]).ok && store.violations.length === 0
+      && store.checkpoint()!.mismatchStreak === 0, sameAsTruth(store, w, [A]).detail);
+  }
+
+  console.log("review fixes: non-monotonic block times");
+  {
+    // Block h+1 is stamped EARLIER than block h, across a UTC midnight, and spends h's coin.
+    const w = makeWorld(0);
+    const recv: FxTx = { txid: `r${"0".repeat(63)}`, height: 800_000, time: Date.parse("2026-10-20T00:10:00Z") / 1000,
+      vin: [{ prevout: { scriptpubkey_address: EXT, value: 100_001_000 } }], vout: [{ scriptpubkey_address: A, value: 100_000_000 }] };
+    const spend: FxTx = { txid: `s${"0".repeat(63)}`, height: 800_001, time: Date.parse("2026-10-19T23:50:00Z") / 1000,
+      vin: [{ prevout: { scriptpubkey_address: A, value: 100_000_000 } }], vout: [{ scriptpubkey_address: EXT, value: 60_000_000 }, { scriptpubkey_address: A, value: 39_999_000 }] };
+    w.txs = [recv, spend];
+    w.tip = 800_020;
+    const clock = clockAt();
+    const ex = explorer(() => w, clock);
+    const store = new MemoryStore({ addresses: [A], complete: true });
+    const o = await runBtcHistoryBackfill({ accountId: ACCOUNT, store }, depsFor(ex, clock));
+    check("a spend stamped before the receipt it spends is dated by the monotone block time — no negative day, no refusal",
+      o.status.state === "COMPLETE" && store.rows.get("2026-10-19") === undefined && store.rows.get("2026-10-20") === 0.39999 && sameAsTruth(store, w, [A]).ok,
+      `${o.status.state} ${o.failure?.detail ?? ""} ${store.rows.get("2026-10-20")}`);
+  }
+
+  console.log("review fixes: a block landing between the listing and chain_stats is a race, not evidence");
+  {
+    const w = makeWorld(300, { seed: 35 });
+    const clock = clockAt();
+    let mineOnStats = 1;
+    const ex = explorer(() => w, clock, { onStats: () => { if (mineOnStats-- > 0) mine(w, [A], 1, 1); } });
+    const store = new MemoryStore({ addresses: [A], complete: true });
+    const o = await runBtcHistoryBackfill({ accountId: ACCOUNT, store }, depsFor(ex, clock));
+    check("the tip is re-read after the disagreement, the head re-listed once, and the run proves",
+      o.verified === true && o.status.state === "COMPLETE" && store.checkpoint()!.mismatchStreak === 0 && sameAsTruth(store, w, [A]).ok, `${o.verified} ${o.status.state}`);
+    mineOnStats = 1e9; // a block lands on EVERY stats read
+    let last = o;
+    for (let i = 0; i < MISMATCH_RECOVERY_THRESHOLD + 1; i++) last = await runBtcHistoryBackfill({ accountId: ACCOUNT, store }, depsFor(ex, clock, { headOnly: true }));
+    check(`…a tip that keeps moving is never counted: ${MISMATCH_RECOVERY_THRESHOLD + 1} racing runs, streak 0, no RECOVERY_REQUIRED`,
+      last.verified === false && store.checkpoint()!.mismatchStreak === 0 && last.status.state !== "RECOVERY_REQUIRED", `${last.status.state} ${store.checkpoint()!.mismatchStreak}`);
+    mineOnStats = 0;
+    const calm = await runBtcHistoryBackfill({ accountId: ACCOUNT, store }, depsFor(ex, clock, { headOnly: true }));
+    check("…and the first calm run proves again with rows equal to the truth", calm.verified === true && sameAsTruth(store, w, [A]).ok, sameAsTruth(store, w, [A]).detail);
+    const src = readFileSync(path.join(process.cwd(), "lib/crypto/btc-history-backfill.ts"), "utf8");
+    check("chain_stats are read from the SAME host as the listing (never BTC_BALANCE_API_URL)",
+      !/btcBalanceBaseUrl|balanceBaseUrl/.test(src) && /\$\{explorer\}\/api\/address\/\$\{encodeURIComponent\(address\)\}`, "balance", "stats"/.test(src));
+  }
+
+  console.log("review fixes: the explorer's order within a block is not a contract");
+  {
+    const w = makeWorld(1_200, { seed: 37, perBlock: 9 });
+    const clock = clockAt();
+    const ex = explorer(() => w, clock, { reverseBlocksFrom: 4 });
+    const store = new MemoryStore({ addresses: [A], complete: true });
+    const { last } = await runToEnd(store, () => depsFor(ex, clock, { requestBudget: 6 }));
+    check("resumed walks re-list the whole bottom block, so a reordered block never loses a transaction",
+      last.status.state === "COMPLETE" && store.checkpoint()!.addresses[0].txCount === 1_200 && sameAsTruth(store, w, [A]).ok && store.checkpoint()!.mismatchStreak === 0,
+      `${last.status.state} ${store.checkpoint()!.addresses[0].txCount}`);
+  }
+
+  console.log("review fixes: a large xpub proves across runs");
+  {
+    const many = Array.from({ length: 40 }, (_, i) => `bc1qbigxpub${String(i).padStart(3, "0")}${"q".repeat(26)}`);
+    const w = makeWorld(1_600, { addresses: many, seed: 39 });
+    const clock = clockAt();
+    const ex = explorer(() => w, clock);
+    const store = new MemoryStore({ addresses: many, complete: true });
+    const budget = 25; // far fewer than the 2 requests × 40 addresses one run would need to verify all
+    const { runs, last } = await runToEnd(store, () => depsFor(ex, clock, { requestBudget: budget }), 200);
+    check(`40 addresses at ≤ ${budget} requests per run: verification persists per address and rotates, COMPLETE after ${runs} runs`,
+      last.status.state === "COMPLETE" && runs > 3 && sameAsTruth(store, w, many).ok, `${last.status.state} after ${runs}: ${sameAsTruth(store, w, many).detail}`);
+    const cp = store.checkpoint()!;
+    check("…every address carries its own verification", cp.addresses.every((a) => a.verifiedAtISO !== null));
+    // Two days later, with new blocks stamped yesterday (10-29).
+    clock.t += 2 * 86_400_000;
+    w.nextTime = clock.t / 1000 - 86_400 - 6 * 3600;
+    mine(w, many, 10, 1, clock.t / 1000 - 86_400);
+    const lic = () => (store.coverage as { toISO: string }).toISO;
+    let n = 0;
+    while (lic() !== "2026-10-29" && n < 30) { await runBtcHistoryBackfill({ accountId: ACCOUNT, store }, depsFor(ex, clock, { headOnly: true, requestBudget: budget })); n++; }
+    check(`…the licence stays at the day before the oldest verification relied on until every address is revisited (${n} bounded head runs, least recently verified first)`,
+      lic() === "2026-10-29" && n > 1, `${lic()} after ${n}`);
+    check("…and the rows then equal the truth through it, the new activity included", sameAsTruth(store, w, many).ok, sameAsTruth(store, w, many).detail);
   }
 
   console.log("xpub: per-address proof over several derived addresses");
@@ -543,14 +652,15 @@ async function main() {
     const ex = explorer(() => w, clock);
     const store = new MemoryStore({ addresses: [A], complete: true });
     const o = await runBtcHistoryBackfill({ accountId: ACCOUNT, store }, depsFor(ex, clock));
-    check("no confirmed activity and chain_stats zero ⇒ COMPLETE, licensed today only, no rows (absent, never zero-filled)",
-      o.status.state === "COMPLETE" && store.rows.size === 0 && JSON.stringify(store.coverage) === JSON.stringify({ kind: "COMPLETE", fromISO: TODAY, toISO: TODAY, source: BTC_CHAIN_STATS_SOURCE }), o.status.state);
+    check("no confirmed activity and chain_stats zero ⇒ COMPLETE, licensed through yesterday only, no rows (absent, never zero-filled)",
+      o.status.state === "COMPLETE" && store.rows.size === 0 && JSON.stringify(store.coverage) === JSON.stringify({ kind: "COMPLETE", fromISO: YESTERDAY, toISO: YESTERDAY, source: BTC_CHAIN_STATS_SOURCE }), o.status.state);
     check("…in three requests (tip, one empty page, chain_stats)", ex.counts.all === 3, String(ex.counts.all));
     w.utxo.set(A, []);
+    w.nextTime = Date.parse(NOW_ISO) / 1000 - 30 * 3600; // yesterday
     for (let i = 0; i < 12; i++) { w.nextTime += 60; addTx(w, [A], "receive"); }
     w.tip = w.nextHeight + 10;
     const later = await runBtcHistoryBackfill({ accountId: ACCOUNT, store }, depsFor(ex, clock, { headOnly: true }));
-    check("…later activity on it is picked up by a head-only sync and the rows equal the truth", later.verified === true && sameAsTruth(store, w, [A]).ok, sameAsTruth(store, w, [A]).detail);
+    check("…later activity on it is picked up by a head-only sync and the rows equal the truth", later.verified === true && store.rows.size === 1 && sameAsTruth(store, w, [A]).ok, sameAsTruth(store, w, [A]).detail);
   }
 
   console.log("legacy history preserved until the replacement is proven, then promoted atomically");
@@ -578,7 +688,7 @@ async function main() {
     const cmp = sameAsTruth(store, w, [A]);
     check("the first proof replaces the legacy history in ONE commit (replaceAll) and the rows equal the truth",
       last.status.state === "COMPLETE" && store.replaceAllCommits === commitsBefore + 1 && cmp.ok && store.violations.length === 0, cmp.detail);
-    check("…the licence is now the proven one, from the first transaction", JSON.stringify(store.coverage) === JSON.stringify({ kind: "COMPLETE", fromISO: dates[0], toISO: TODAY, source: BTC_CHAIN_STATS_SOURCE }));
+    check("…the licence is now the proven one, from the first transaction", JSON.stringify(store.coverage) === JSON.stringify({ kind: "COMPLETE", fromISO: dates[0], toISO: YESTERDAY, source: BTC_CHAIN_STATS_SOURCE }));
     check("…and the legacy discrepancy is disclosed (1 day), not hidden", JSON.stringify(last.status.legacyDiscrepancy) === JSON.stringify({ days: 1, firstISO: dates[dates.length - 3] }), JSON.stringify(last.status.legacyDiscrepancy));
     check("…with the replaced legacy interval reported as impacted (snapshot rebuild)", last.impactedFromISO !== null && last.impactedFromISO <= dates[0]);
   }
@@ -659,7 +769,7 @@ async function main() {
       btcCfg.enabled && !btcWorkerConfig({ SOL_BACKFILL_ENABLED: "true", BTC_BACKFILL_ENABLED: "false" }).enabled && !btcWorkerConfig({}).enabled
       && btcCfg.maxRequestsPerSecond === 4 && btcCfg.dailyRequestCap === 20_000);
     const cpOf = (over: Partial<BtcBackfillCheckpoint>) => JSON.stringify({ ...parseCheckpoint(JSON.stringify({
-      kind: "btc-history", v: 1, accountId: "x", addresses: [], days: [], dirtyFromISO: null, provenOnce: false, licensedFromISO: null, licensedToISO: null,
+      kind: "btc-history", v: 1, accountId: "x", addresses: [], verifyCursor: 0, dirtyFromISO: null, provenOnce: false, licensedFromISO: null, licensedToISO: null,
       headFromISO: null, headVerifiedAtISO: null, headUnverifiedSinceISO: null, mismatchStreak: 0, recovery: null, failures: 0, lastFailure: null,
       txsProcessed: 0, startedAtISO: NOW_ISO, lastProgressAtISO: null, completedAtISO: null }), "x"), ...over });
     const ordered = orderBtcCandidates([
@@ -669,6 +779,12 @@ async function main() {
       { accountId: "gap", connectionId: "c4", cursor: null, checkpoint: { ...JSON.parse(cpOf({ recovery: { reason: "BALANCE_MISMATCH", address: A, detail: "", detectedAtISO: NOW_ISO } })), accountId: "gap" } },
     ], Date.parse(NOW_ISO));
     check("fair order: never progressed, then least recently progressed; recovery skipped", ordered.map((r) => r.accountId).join(",") === "new,stale,recent", ordered.map((r) => r.accountId).join(","));
+    const done = (verifiedAtISO: string) => ({ ...JSON.parse(cpOf({ txsProcessed: 5, provenOnce: true, completedAtISO: NOW_ISO, licensedFromISO: "2026-01-01", licensedToISO: YESTERDAY,
+      addresses: [{ address: A, top: null, bottom: null, reachedBeginning: true, funded: "0", spent: "0", txCount: 0, blocks: [], verifiedAtISO }] })), accountId: "d" });
+    const nowMs = Date.parse(NOW_ISO);
+    check("a COMPLETE wallet is a worker candidate (rate-limited) only while a verification is stale or missing",
+      orderBtcCandidates([{ accountId: "d", connectionId: "c", cursor: null, checkpoint: done(new Date(nowMs - 7 * 3600_000).toISOString()) }], nowMs).length === 1
+      && orderBtcCandidates([{ accountId: "d", connectionId: "c", cursor: null, checkpoint: done(new Date(nowMs - 3600_000).toISOString()) }], nowMs).length === 0);
 
     // End to end: one SOL wallet with work, two BTC wallets; real BTC runs against the fake explorer.
     const DAY = TODAY;

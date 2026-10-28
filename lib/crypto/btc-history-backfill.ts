@@ -11,16 +11,23 @@
  *                so the background worker can see it.
  *   1. TIP       one request: the chain tip height, which decides what is
  *                settled (≥ `depth` blocks deep) and what is shallow.
- *   2. HEAD      per address with a settled top: list `/txs/chain` from the
- *                newest down to the top, fold the newly SETTLED transactions,
- *                keep the shallow ones for this run's verification only.
+ *   2. VISITS    per address whose history is imported, least recently
+ *                verified first: list `/txs/chain` from the newest down to the
+ *                settled top (folding what has settled since, keeping the
+ *                shallow rest for this run only), then compare with THAT
+ *                address's chain_stats — re-reading the tip and re-listing once
+ *                when a block landed in between. A match is persisted per
+ *                address, so a large xpub verifies across runs.
  *   3. HISTORY   per address not yet at its beginning: page
- *                `/txs/chain/:bottom` (or from the newest, for a fresh address),
- *                folding every transaction; a short page is the beginning.
- *   4. VERIFY    when every address has reached its beginning, its head was
- *                listed this run, and the address set is complete: read each
- *                address's chain_stats and require settled + shallow to equal
- *                them exactly. Only then are rows written and licensed.
+ *                `/txs/chain/:cursor` (or from the newest, for a fresh address),
+ *                folding every transaction; a short page is the beginning, and
+ *                the address is then visited.
+ *   4. PROOF     when the address set is complete and EVERY address is
+ *                verified (this run, or persisted since nothing new was folded
+ *                for it): rows and a licence through the day before the oldest
+ *                verification relied on.
+ *
+ * Listing, tip and chain_stats come from ONE host (BTC_EXPLORER_BASE_URL).
  *
  * Every commit is ONE transaction: the checkpoint by compare-and-swap on the
  * value this run last read or wrote, the page's movements as Transaction rows
@@ -34,14 +41,14 @@
 
 import { BTC_NATIVE } from "./native-asset";
 import {
-  esploraGetJson, btcExplorerBaseUrl, btcBalanceBaseUrl, BtcSyncError,
+  esploraGetJson, btcExplorerBaseUrl, BtcSyncError,
   type FetchFn, type RawBtcTx, type BtcSyncStage,
 } from "./btc-explorer";
 import { baseUnitsToWhole, type ChainCoverage } from "./chain-movement";
 import {
-  emptyCheckpoint, parseCheckpoint, serializeCheckpoint, pointFromTransaction, isSettled,
+  emptyCheckpoint, emptyProgress, parseCheckpoint, serializeCheckpoint, pointFromTransaction, isSettled,
   workOf, progressOf, foldPoint, isFoldedBelowCheck, lowerBottom, raiseTop, splitHead,
-  daysToMap, mapToDays, dailyClosings, addDaysISO, parseChainStats, statsMismatch,
+  walletDays, dailyClosings, addDaysISO, parseChainStats, statsMismatch,
   backfillStatus, shouldRunAutomatically, mergeAddresses, allReachedBeginning, legacyDiscrepancy, usageOn,
   BtcProofDataError, BTC_CHAIN_STATS_SOURCE, ESPLORA_PAGE_SIZE, DEFAULT_CONFIRMATION_DEPTH, MISMATCH_RECOVERY_THRESHOLD,
   type BtcBackfillCheckpoint, type BtcBackfillFailureCode, type BtcBackfillStatus, type BtcTxPoint,
@@ -112,8 +119,8 @@ export interface BtcBackfillStore {
 
 export interface BtcBackfillDeps {
   fetchImpl?: FetchFn;
+  /** The ONE Esplora host for listing, tip and chain_stats (default BTC_EXPLORER_BASE_URL). */
   explorerBaseUrl?: string;
-  balanceBaseUrl?: string;
   budgetMs?: number;
   /** Stop (as for the wall clock) once this many requests were sent in the run. */
   requestBudget?: number;
@@ -189,8 +196,11 @@ export async function runBtcHistoryBackfill(
   const sent = () => Object.values(meter).reduce((a, b) => a + b, 0);
   const sentAtStart = sent();
   let recordedThrough = sentAtStart;
+  /** A tighter request cap for the CURRENT phase (the visits, while history is owed). */
+  let phaseRequestCap: number | null = null;
   const overBudget = (deadline: number) => now() >= deadline
-    || (deps.requestBudget !== undefined && sent() - sentAtStart >= deps.requestBudget);
+    || (deps.requestBudget !== undefined && sent() - sentAtStart >= deps.requestBudget)
+    || (phaseRequestCap !== null && sent() - sentAtStart >= phaseRequestCap);
 
   let raw = await args.store.readCursor();
   let cp = parseCheckpoint(raw, args.accountId);
@@ -290,9 +300,11 @@ export async function runBtcHistoryBackfill(
     if (dirty) await commit();
 
     // ── Transport ───────────────────────────────────────────────────────────
+    // ONE host for the listing, the tip AND chain_stats. The proof compares a
+    // listing with that same index's own totals; two hosts at different tips
+    // (or with different index lag) could disagree on any busy head for ever.
     const fetchImpl = deps.fetchImpl ?? fetch;
     const explorer = (deps.explorerBaseUrl ?? btcExplorerBaseUrl()).replace(/\/+$/, "");
-    const balance = (deps.balanceBaseUrl ?? btcBalanceBaseUrl()).replace(/\/+$/, "");
     const get = (url: string, stage: BtcSyncStage, kind: string) => esploraGetJson(url, stage, fetchImpl, {
       deadlineMs, now, sleep: deps.sleep, beforeRequest: deps.beforeRequest,
       onAttempt: () => { meter[kind] = (meter[kind] ?? 0) + 1; },
@@ -306,32 +318,42 @@ export async function runBtcHistoryBackfill(
       return json as EsploraTxForProof[];
     };
     const stats = async (address: string): Promise<ChainStats> =>
-      parseChainStats(await get(`${balance}/api/address/${encodeURIComponent(address)}`, "balance", "stats"));
+      parseChainStats(await get(`${explorer}/api/address/${encodeURIComponent(address)}`, "balance", "stats"));
+    const readTip = async (): Promise<number> => {
+      const j = await get(`${explorer}/api/blocks/tip/height`, "transactions", "tip");
+      const t = typeof j === "number" ? j : Number(j);
+      if (!Number.isSafeInteger(t) || t < 0) throw new BtcProofDataError("the explorer returned no chain tip height");
+      return t;
+    };
 
     // ── 1. TIP ──────────────────────────────────────────────────────────────
     if (overBudget(deadlineMs)) { outcome.stoppedBecause = "BUDGET"; return await finish(); }
-    const tipJson = await get(`${explorer}/api/blocks/tip/height`, "transactions", "tip");
-    const tip = typeof tipJson === "number" ? tipJson : Number(tipJson);
-    if (!Number.isSafeInteger(tip) || tip < 0) throw new BtcProofDataError("the explorer returned no chain tip height");
+    let tip = await readTip();
 
-    const days = daysToMap(state.days);
     const work = new Map<string, ProgressWork>(state.addresses.map((a) => [a.address, workOf(a)]));
     /** Shallow (unsettled) points listed this run, per address; `listed` = the head was listed to its edge. */
     const head = new Map<string, { shallow: BtcTxPoint[]; listed: boolean }>();
+    /** Addresses that matched chain_stats THIS run (their shallow head included). */
+    const verifiedNow = new Set<string>();
+    /** A disagreement with the tip unchanged across the check — evidence, counted toward recovery. */
+    let mismatch: { address: string; detail: string } | null = null;
+    /** A disagreement while blocks kept landing — a race, retried next run, never counted. */
+    let raced = false;
     let foldedSinceCommit = 0;
     let pagesSinceCommit = 0;
     const markDirty = (d: string) => { if (state.dirtyFromISO === null || d < state.dirtyFromISO) state = { ...state, dirtyFromISO: d }; };
     absorb = () => {
       state = {
-        ...state, days: mapToDays(days), addresses: state.addresses.map((a) => progressOf(work.get(a.address)!)),
+        ...state, addresses: state.addresses.map((a) => progressOf(work.get(a.address)!)),
         ...(foldedSinceCommit > 0 ? { lastProgressAtISO: nowISO(), failures: 0, lastFailure: null } : {}),
       };
       foldedSinceCommit = 0; pagesSinceCommit = 0; dirty = true;
     };
-    /** Persist the in-memory progress (address totals + day map), then commit. */
+    /** Persist the in-memory progress (address totals + blocks), then commit. */
     const flush = async () => { absorb(); await commit(); };
     const fold = (w: ProgressWork, t: BtcTxPoint) => {
-      foldPoint(w, days, t);
+      foldPoint(w, t);
+      // The raw day is a lower bound on the monotone day, so rewriting from it covers both.
       markDirty(t.dateISO);
       state = { ...state, txsProcessed: state.txsProcessed + 1 };
       outcome.txsProcessed++;
@@ -349,14 +371,19 @@ export async function runBtcHistoryBackfill(
       const shallow: BtcTxPoint[] = [];
       if (fromNewest) head.set(w.p.address, { shallow, listed: false });
       const seen = new Set<string>();
-      let cursor = w.p.bottom?.txid ?? null;
+      // Resume after the block ABOVE the bottom, so the bottom block is listed
+      // whole again (deduped) — never after a mid-block txid whose neighbours
+      // the explorer may order differently next time.
+      let cursor = w.p.bottom ? (w.p.bottom.resumeTxid ?? w.p.bottom.txid) : null;
       let prevHeight = Number.POSITIVE_INFINITY;
       for (;;) {
         if (overBudget(deadline)) return "BUDGET";
         const page = await listPage(w.p.address, cursor);
         let added = 0;
+        let inBottomBlock = 0;
         for (const rawTx of page) {
           const t = pointFromTransaction(rawTx, w.p.address);
+          if (w.p.bottom && t.height === w.p.bottom.height) inBottomBlock++;
           if (seen.has(t.txid) || isFoldedBelowCheck(w.p.bottom, t)) continue; // duplicate delivery
           seen.add(t.txid);
           if (t.height > prevHeight) throw new BtcProofDataError(`the listing for ${w.p.address.slice(0, 6)}… is not in chain order`);
@@ -372,14 +399,15 @@ export async function runBtcHistoryBackfill(
           fold(w, t);
         }
         pagesSinceCommit++;
-        const short = page.length < ESPLORA_PAGE_SIZE;
-        if (short) {
+        if (page.length < ESPLORA_PAGE_SIZE) {
           w.p.reachedBeginning = true;
           if (fromNewest) head.set(w.p.address, { shallow, listed: true });
           await flush();
           return "BEGINNING";
         }
-        if (added === 0) throw new CursorStuckError(w.p.address);
+        // A full page of nothing new is a stuck cursor — unless it was the
+        // re-listed bottom block itself (an address with ≥ 25 txs in one block).
+        if (added === 0 && inBottomBlock < page.length) throw new CursorStuckError(w.p.address);
         if (fromNewest && w.p.top !== null) head.set(w.p.address, { shallow, listed: true });
         cursor = page[page.length - 1].txid;
         if (pagesSinceCommit >= commitEvery) await flush();
@@ -422,56 +450,105 @@ export async function runBtcHistoryBackfill(
       return "OK";
     };
 
-    // ── 2. HEAD ─────────────────────────────────────────────────────────────
-    // Bounded to half the run while older history is owed, so a busy wallet's
-    // new activity can never starve its backfill.
-    const historyOwed = !allReachedBeginning(state);
-    const headDeadline = historyOwed && !deps.headOnly ? startMs + Math.floor((deadlineMs - startMs) / 2) : deadlineMs;
-    let budgetHit = false;
-    for (const a of state.addresses) {
-      const w = work.get(a.address)!;
-      if (w.p.top) {
-        if ((await extendHead(w, headDeadline)) === "BUDGET") { budgetHit = true; break; }
-      } else if (w.p.reachedBeginning) {
-        // Nothing settled yet at all (empty, or only shallow activity): the
-        // head IS the whole listing, from the newest.
-        w.p.reachedBeginning = false;
-        if ((await walkBackward(w, headDeadline)) === "BUDGET") { budgetHit = true; break; }
+    /**
+     * VISIT one address whose history is imported: list its head (unless this
+     * run already did), then compare with ITS chain_stats. On a disagreement the
+     * tip is read again: if a block landed meanwhile, the head is listed once
+     * more under the new tip; a disagreement that persists while the tip keeps
+     * moving is a race (not counted). One with the tip unchanged is evidence: the
+     * address is re-listed from scratch (an unstable within-block order or a
+     * missed page heals there) and the streak counts toward RECOVERY_REQUIRED.
+     */
+    const visit = async (w: ProgressWork, deadline: number, headListed: boolean): Promise<"OK" | "BUDGET"> => {
+      for (let attempt = 0; ; attempt++) {
+        if (!headListed) {
+          if (w.p.top) { if ((await extendHead(w, deadline)) === "BUDGET") return "BUDGET"; }
+          else {
+            // Nothing settled yet (empty, or only shallow activity): the head IS the whole listing.
+            w.p.reachedBeginning = false;
+            if ((await walkBackward(w, deadline)) === "BUDGET") {
+              // Nothing folded: it is still the empty address it was, not an import.
+              if (w.p.bottom === null) w.p.reachedBeginning = true;
+              return "BUDGET";
+            }
+          }
+        }
+        headListed = false;
+        if (!w.p.reachedBeginning) return "OK";
+        if (overBudget(deadline)) return "BUDGET";
+        const shallow = head.get(w.p.address)?.shallow ?? [];
+        const expected: ChainStats = {
+          funded: w.funded + shallow.reduce((s, t) => s + t.funded, BigInt(0)),
+          spent: w.spent + shallow.reduce((s, t) => s + t.spent, BigInt(0)),
+          txCount: w.p.txCount + shallow.length,
+        };
+        const diff = statsMismatch(expected, await stats(w.p.address));
+        if (!diff) {
+          verifiedNow.add(w.p.address);
+          // Persisted only without a shallow head: a later run cannot re-count it.
+          w.p.verifiedAtISO = shallow.length === 0 ? nowISO() : null;
+          return "OK";
+        }
+        w.p.verifiedAtISO = null;
+        if (overBudget(deadline)) { raced = true; return "BUDGET"; }
+        const tipNow = await readTip();
+        if (tipNow !== tip) {
+          tip = tipNow;
+          if (attempt === 0) continue; // re-list the head under the new tip, once
+          raced = true;
+          return "OK";
+        }
+        mismatch = { address: w.p.address, detail: diff };
+        return "OK";
       }
+    };
+
+    // ── 2. VISITS ───────────────────────────────────────────────────────────
+    // Addresses whose history is imported: head + chain_stats, the least
+    // recently verified first (never verified before all), ties by a rotating
+    // start — so a large xpub that cannot be visited in one run is verified
+    // across runs and every address gets its turn. Bounded to half the run
+    // while older history is owed, so verification never starves the backfill.
+    const historyOwed = !allReachedBeginning(state);
+    const halve = historyOwed && !deps.headOnly;
+    const headDeadline = halve ? startMs + Math.floor((deadlineMs - startMs) / 2) : deadlineMs;
+    // …and half the request allowance, or a request-bounded worker run could
+    // spend it all on visits and never advance the history.
+    if (halve && deps.requestBudget !== undefined) phaseRequestCap = Math.max(1, Math.floor(deps.requestBudget / 2));
+    const n = state.addresses.length;
+    const rot = ((state.verifyCursor % n) + n) % n;
+    const order = state.addresses.map((a, i) => ({ a: a.address, v: a.verifiedAtISO ?? "", r: (i - rot + n) % n }))
+      .sort((x, y) => x.v.localeCompare(y.v) || x.r - y.r).map((x) => x.a);
+    let budgetHit = false;
+    let visited = 0;
+    for (const address of order) {
+      const w = work.get(address)!;
+      if (!w.p.reachedBeginning) continue;
+      if ((await visit(w, headDeadline, false)) === "BUDGET") { budgetHit = true; break; }
+      visited++;
+      if (mismatch) break;
     }
+    phaseRequestCap = null;
+    // The visits' own half-budget ending them is not the run's budget ending.
+    budgetHit = overBudget(deadlineMs);
     absorb();
+    state = { ...state, verifyCursor: n > 0 ? (rot + Math.max(1, visited)) % n : 0 };
 
     // ── 3. HISTORY ──────────────────────────────────────────────────────────
-    if (!deps.headOnly && !budgetHit) {
+    if (!deps.headOnly && !budgetHit && !mismatch) {
       for (const a of state.addresses) {
         const w = work.get(a.address)!;
         if (w.p.reachedBeginning) continue;
         if ((await walkBackward(w, deadlineMs)) === "BUDGET") { budgetHit = true; break; }
+        if ((await visit(w, deadlineMs, head.get(a.address)?.listed === true)) === "BUDGET") { budgetHit = true; break; }
+        if (mismatch) break;
       }
     }
     absorb();
 
-    // ── 4. VERIFY ───────────────────────────────────────────────────────────
-    const ready = set.complete && allReachedBeginning(state)
-      && state.addresses.every((a) => head.get(a.address)?.listed === true);
-    if (!ready) {
-      outcome.stoppedBecause = budgetHit || !allReachedBeginning(state) ? "BUDGET" : "UNVERIFIED";
-      return await finish();
-    }
-    let mismatch: { address: string; detail: string } | null = null;
-    for (const a of state.addresses) {
-      if (overBudget(deadlineMs)) { outcome.stoppedBecause = "BUDGET"; return await finish(); }
-      const shallow = head.get(a.address)?.shallow ?? [];
-      const expected: ChainStats = {
-        funded: BigInt(a.funded) + shallow.reduce((s, t) => s + t.funded, BigInt(0)),
-        spent: BigInt(a.spent) + shallow.reduce((s, t) => s + t.spent, BigInt(0)),
-        txCount: a.txCount + shallow.length,
-      };
-      const diff = statsMismatch(expected, await stats(a.address));
-      if (diff) { mismatch = { address: a.address, detail: diff }; break; }
-    }
-
+    // ── 4. A DISAGREEMENT ───────────────────────────────────────────────────
     if (mismatch) {
+      const mm: { address: string; detail: string } = mismatch;
       outcome.verified = false;
       outcome.stoppedBecause = "UNVERIFIED";
       const streak = state.mismatchStreak + 1;
@@ -479,8 +556,7 @@ export async function runBtcHistoryBackfill(
       let coverage: ChainCoverage | null = null;
       let licensedToISO = state.licensedToISO;
       // Rows that relied on the shallow head are no longer proven: withdraw the
-      // licence to the day before them (a tip reorg, or new activity racing the
-      // stats read — the next run re-verifies).
+      // licence to the day before them.
       if (state.provenOnce && state.headFromISO && state.licensedFromISO && state.licensedToISO) {
         const cap = addDaysISO(state.headFromISO, -1);
         if (cap >= state.licensedFromISO) {
@@ -489,11 +565,19 @@ export async function runBtcHistoryBackfill(
           coverage = { kind: "COMPLETE", fromISO: state.licensedFromISO, toISO: cap, source: BTC_CHAIN_STATS_SOURCE };
         }
       }
+      // Re-list the disagreeing address from scratch next time (its blocks go;
+      // the rows in force stay until a new proof).
+      const relisted = state.addresses.map((a) => {
+        if (a.address !== mm.address) return a;
+        if (a.blocks.length) markDirty(new Date(a.blocks[0][1] * 1000).toISOString().slice(0, 10));
+        return emptyProgress(a.address);
+      });
       state = {
-        ...state, mismatchStreak: streak, licensedToISO, headFromISO: span ? null : state.headFromISO,
+        ...state, addresses: relisted, mismatchStreak: streak, licensedToISO, headFromISO: span ? null : state.headFromISO,
+        completedAtISO: null,
         headUnverifiedSinceISO: state.headUnverifiedSinceISO ?? nowISO(),
         recovery: streak >= MISMATCH_RECOVERY_THRESHOLD
-          ? { reason: "BALANCE_MISMATCH", address: mismatch.address, detail: mismatch.detail, detectedAtISO: nowISO() } : null,
+          ? { reason: "BALANCE_MISMATCH", address: mm.address, detail: mm.detail, detectedAtISO: nowISO() } : null,
       };
       if (state.recovery) outcome.stoppedBecause = "RECOVERY";
       await commit({ span, coverage });
@@ -501,52 +585,77 @@ export async function runBtcHistoryBackfill(
       return await finish();
     }
 
+    const ready = set.complete && allReachedBeginning(state)
+      && state.addresses.every((a) => verifiedNow.has(a.address) || a.verifiedAtISO !== null);
+    if (!ready) {
+      if (raced) {
+        outcome.verified = false;
+        state = { ...state, headUnverifiedSinceISO: state.headUnverifiedSinceISO ?? nowISO() };
+      }
+      outcome.stoppedBecause = budgetHit || !allReachedBeginning(state) ? "BUDGET" : "UNVERIFIED";
+      return await finish();
+    }
+
     // ── PROVEN ──────────────────────────────────────────────────────────────
     outcome.verified = true;
-    const shallowAll = [...head.values()].flatMap((h) => h.shallow);
-    const withHead = new Map(days);
-    for (const t of shallowAll) withHead.set(t.dateISO, (withHead.get(t.dateISO) ?? BigInt(0)) + t.funded - t.spent);
+    // Only the shallow heads verified THIS run count; an address verified in an
+    // earlier run had none (or its verification was not kept).
+    const shallowAll = state.addresses.flatMap((a) => (verifiedNow.has(a.address) ? head.get(a.address)?.shallow ?? [] : []));
+    const withHead = walletDays(state.addresses, shallowAll);
     const sortedDays = [...withHead.keys()].sort();
     const today = todayISO();
-    const shallowFrom = shallowAll.length ? shallowAll.map((t) => t.dateISO).sort()[0] : null;
+    const yesterday = addDaysISO(today, -1);
+    // The licence runs to the day BEFORE the oldest verification relied on —
+    // today's end is not yet known — or through today when this run's
+    // verification covered a shallow head that every run re-verifies.
+    const bounds = state.addresses.map((a) => {
+      if (verifiedNow.has(a.address)) return (head.get(a.address)?.shallow.length ?? 0) > 0 ? today : yesterday;
+      return addDaysISO(a.verifiedAtISO!.slice(0, 10), -1);
+    });
+    let licensedToISO = bounds.sort()[0];
+    const shallowFromRaw = shallowAll.length ? new Date(Math.min(...shallowAll.map((t) => t.time)) * 1000).toISOString().slice(0, 10) : null;
     const firstProof = !state.provenOnce;
     let promoted: "PROVEN" | null = null;
     const legacyFrom = firstProof && state.mode === "STAGING" ? state.legacy?.fromISO ?? null : null;
     let discrepancy: { days: number; firstISO: string } | null = null;
     let rows: Array<{ dateISO: string; sats: bigint }> = [];
     let span: { from: string; to: string } | null = null;
-    let coverage: ChainCoverage;
     let licensedFromISO: string;
-    let licensedToISO: string;
 
     if (sortedDays.length === 0) {
-      // No confirmed activity on any address: proven empty, today only, no rows.
-      licensedFromISO = today; licensedToISO = today;
-      coverage = { kind: "COMPLETE", fromISO: today, toISO: today, source: BTC_CHAIN_STATS_SOURCE };
+      // No confirmed activity on any address: proven empty, no rows (absent, never zero-filled).
+      licensedFromISO = licensedToISO;
     } else {
       licensedFromISO = sortedDays[0];
-      licensedToISO = sortedDays[sortedDays.length - 1] > today ? sortedDays[sortedDays.length - 1] : today;
+      if (licensedToISO < licensedFromISO) {
+        // The whole history is from today: nothing is licensable before tomorrow.
+        outcome.stoppedBecause = "UNVERIFIED";
+        return await finish();
+      }
       const from = firstProof ? licensedFromISO
-        : [state.dirtyFromISO, state.headFromISO, shallowFrom, state.licensedToISO ? addDaysISO(state.licensedToISO, 1) : null, state.licensedFromISO && state.licensedFromISO > licensedFromISO ? licensedFromISO : null]
+        : [state.dirtyFromISO, state.headFromISO, shallowFromRaw, state.licensedToISO ? addDaysISO(state.licensedToISO, 1) : null,
+          state.licensedFromISO && state.licensedFromISO > licensedFromISO ? licensedFromISO : null]
           .filter((d): d is string => d !== null).sort()[0] ?? null;
+      const oldTo = state.licensedToISO;
       if (from !== null) {
         const f = from < licensedFromISO ? licensedFromISO : from;
-        if (f <= licensedToISO) {
-          rows = dailyClosings(withHead, f, licensedToISO);
-          const oldTo = state.licensedToISO;
-          span = { from: f, to: oldTo && oldTo > licensedToISO ? oldTo : licensedToISO };
-        }
+        if (f <= licensedToISO) rows = dailyClosings(withHead, f, licensedToISO);
+        // Delete through the OLD edge too, so a withdrawn day loses its row.
+        const to = oldTo && oldTo > licensedToISO ? oldTo : licensedToISO;
+        if (f <= to) span = { from: f, to };
       }
-      coverage = { kind: "COMPLETE", fromISO: licensedFromISO, toISO: licensedToISO, source: BTC_CHAIN_STATS_SOURCE };
     }
+    if (licensedToISO < licensedFromISO) licensedToISO = licensedFromISO;
+    const coverage: ChainCoverage = { kind: "COMPLETE", fromISO: licensedFromISO, toISO: licensedToISO, source: BTC_CHAIN_STATS_SOURCE };
     if (firstProof && state.mode === "STAGING" && state.legacy) {
       const legacy = args.store.legacy ? await args.store.legacy() : null;
       if (legacy) discrepancy = legacyDiscrepancy(rows, state.legacy, legacy.rows);
       promoted = "PROVEN";
     }
-    const changed = firstProof || rows.length > 0 || licensedToISO !== state.licensedToISO || licensedFromISO !== state.licensedFromISO;
+    const changed = firstProof || rows.length > 0 || span !== null || licensedToISO !== state.licensedToISO || licensedFromISO !== state.licensedFromISO;
     state = {
-      ...state, provenOnce: true, licensedFromISO, licensedToISO, headFromISO: shallowFrom, dirtyFromISO: null,
+      ...state, provenOnce: true, licensedFromISO, licensedToISO,
+      headFromISO: shallowFromRaw && shallowFromRaw <= licensedToISO ? shallowFromRaw : null, dirtyFromISO: null,
       headVerifiedAtISO: nowISO(), headUnverifiedSinceISO: null, mismatchStreak: 0, recovery: null,
       completedAtISO: state.completedAtISO ?? nowISO(),
       ...(firstProof ? { mode: "DIRECT" as const, legacy: null, promotedAtISO: state.mode === "STAGING" ? nowISO() : (state.promotedAtISO ?? null),
@@ -558,9 +667,10 @@ export async function runBtcHistoryBackfill(
       // checkpoint flip, in ONE transaction.
       await commit({ rows, span: firstProof ? null : span, replaceAll: firstProof, coverage });
       outcome.progressed = true;
-      // The replaced legacy rows changed too — the snapshot window must reach them.
+      // Deleted-only spans and replaced legacy rows changed too — the snapshot window must reach them.
+      if (span && !firstProof) impacted(span.from);
       if (legacyFrom) impacted(legacyFrom);
-      if (firstProof && rows.length === 0 && sortedDays.length === 0) impacted(today);
+      if (firstProof && rows.length === 0 && sortedDays.length === 0) impacted(licensedToISO);
     }
     outcome.promoted = promoted;
     outcome.stoppedBecause = "COMPLETE";

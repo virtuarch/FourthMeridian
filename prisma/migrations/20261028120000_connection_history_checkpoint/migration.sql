@@ -12,6 +12,12 @@
 -- which discovery rewrites wholesale without a compare-and-swap, and every
 -- Connections reader treats a non-null cursor as "discovery in progress".
 --
+-- ⚠️ DEPLOY ORDER: apply this migration on EVERY environment BEFORE the code
+-- that ships with it. The column is in schema.prisma, so the generated client
+-- selects it on every Connection read without an explicit `select` (Plaid,
+-- health, xpub discovery); code running against a database without the column
+-- fails those reads with P2022.
+--
 -- Additive and nullable; no backfill. NULL means the wallet's history is still
 -- the wholesale reconstruction's (unchanged behaviour). A row is populated only
 -- when a sync's inline import stops at its page budget.

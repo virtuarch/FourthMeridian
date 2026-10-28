@@ -292,8 +292,9 @@ async function planBtc(btc: BtcBackfillJobDeps, start: number, day: string) {
   let listed: BtcWorkerWallet[] = [];
   try { listed = await btc.wallets(); }
   catch (e) {
-    // Bitcoin's listing must never take Solana's pass down with it (e.g. the
-    // history-checkpoint column's migration not applied yet): no BTC work.
+    // Bitcoin's listing must never take Solana's pass down with it (a transient
+    // read failure): no BTC work this run. (The column's migration must precede
+    // this code everywhere — see lib/crypto/btc-history-checkpoint.ts.)
     console.warn(`[${SOL_BACKFILL_JOB}] BTC wallet listing failed (non-fatal — Bitcoin skipped this run):`, e instanceof Error ? e.message : String(e));
   }
   const parsed: BtcParsed[] = listed.map((w) => ({ ...w, checkpoint: parseBtcCheckpoint(w.cursor, w.accountId) }));

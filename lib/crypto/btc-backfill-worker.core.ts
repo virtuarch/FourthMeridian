@@ -16,7 +16,7 @@
  * reconstruction its syncs already run.
  */
 
-import { backfillStatus, shouldRunAutomatically, type BtcBackfillCheckpoint } from "./btc-history-backfill.core";
+import { backfillStatus, shouldRunAutomatically, needsVerificationVisit, type BtcBackfillCheckpoint } from "./btc-history-backfill.core";
 import { btcWorkerEnabled } from "./btc-history-backfill";
 
 export interface BtcBackfillWorkerConfig {
@@ -51,15 +51,19 @@ export function btcWorkerConfig(env: Record<string, string | undefined> = proces
 export interface BtcBackfillCandidate { accountId: string; connectionId: string; cursor: string | null }
 
 /**
- * Who runs, in order. Skipped: COMPLETE (new activity is the sync's head),
- * RECOVERY_REQUIRED (operator), FAILED within its daily pause.
+ * Who runs, in order. Skipped: RECOVERY_REQUIRED (operator), FAILED within its
+ * daily pause, and COMPLETE — unless some address is unverified or its
+ * verification is older than REVERIFY_AFTER_MS: a large xpub's re-verification
+ * then runs here, under the rate limiter and the daily cap, instead of relying
+ * on 15 s, unrated syncs that cannot visit every address.
  * Order: never progressed → least recently progressed → account id.
  */
 export function orderBtcCandidates<T extends BtcBackfillCandidate & { checkpoint: BtcBackfillCheckpoint | null }>(rows: readonly T[], nowMs: number): T[] {
   return rows
     .filter((r) => {
       const s = backfillStatus(r.checkpoint).state;
-      if (s === "COMPLETE" || s === "RECOVERY_REQUIRED") return false;
+      if (s === "RECOVERY_REQUIRED") return false;
+      if (s === "COMPLETE" && !needsVerificationVisit(r.checkpoint, nowMs)) return false;
       return shouldRunAutomatically(r.checkpoint, nowMs).run;
     })
     .sort((a, b) => (a.checkpoint?.lastProgressAtISO ?? "").localeCompare(b.checkpoint?.lastProgressAtISO ?? "") || a.accountId.localeCompare(b.accountId));

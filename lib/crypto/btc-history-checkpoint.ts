@@ -19,12 +19,16 @@
  * path's (btc-history-sync.ts). The column inherits Connection's row policies
  * (fm_app by userId; fm_system all) and table grants — no policy change.
  *
- * Read and written with parameterised raw SQL so this module does not depend on
- * a regenerated Prisma client; the column is in schema.prisma all the same.
+ * Read and written with parameterised raw SQL. ⚠️ DEPLOY ORDER: the column is
+ * in schema.prisma, so the generated client SELECTS it on every `connection.*`
+ * call without a `select` (Plaid, health, discovery…) — code deployed before
+ * the migration fails those with P2022. The migration goes FIRST, on every
+ * environment. The fallbacks below cover a transient read failure, not a
+ * missing column.
  * The client is always the CALLER's authority (audit-db-authority).
  */
 
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { ConnectionStatus, ProviderType, type Prisma, type PrismaClient } from "@prisma/client";
 import { emptyCheckpoint, serializeCheckpoint } from "./btc-history-backfill.core";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -36,7 +40,9 @@ type Client = PrismaClient | Prisma.TransactionClient;
  */
 export async function btcHistoryLink(client: Client, accountId: string): Promise<{ connectionId: string; credential: string | null; discoveryCursor: string | null } | null> {
   const link = await client.accountConnection.findFirst({
-    where: { financialAccountId: accountId, connectionId: { not: null }, deletedAt: null },
+    // The same filter as the worker's listing (jobs/sol-history-backfill.ts): an ACTIVE wallet connection.
+    where: { financialAccountId: accountId, connectionId: { not: null }, deletedAt: null,
+      connection: { provider: ProviderType.WALLET, status: ConnectionStatus.ACTIVE } },
     orderBy: [{ isCanonical: "desc" }, { createdAt: "asc" }],
     select: { connectionId: true, connection: { select: { credential: true, cursor: true } } },
   });
