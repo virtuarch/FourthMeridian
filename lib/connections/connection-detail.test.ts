@@ -8,7 +8,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { groupAccounts, connectionHealth, connectionHistory, abbreviateAddress, accountGroupKey } from "@/lib/connections/connection-detail.core";
+import { groupAccounts, connectionHealth, connectionHistory, abbreviateAddress, accountGroupKey, chartReadyRange } from "@/lib/connections/connection-detail.core";
 import { summarizeConnection } from "@/lib/connections/connection-summary";
 import type { SyncConnection } from "@/lib/sync/status";
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
@@ -85,8 +85,31 @@ console.log("History — never claims what is not proven");
   check("an unproven Solana wallet is PARTIAL with no dates", sol.coverage === "PARTIAL" && sol.fromISO === null && sol.toISO === null);
   check("…and names the import limitation honestly (never estimated)", sol.limitations.some((l) => /5,000/.test(l) && /never estimated/.test(l)));
   const done = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: true, licensedFromISO: "2017-10-16", licensedToISO: "2026-10-28", activityFromISO: "2021-04-27" } }));
+  const solAcct = [{ id: "a", name: "SOL", type: "crypto", chain: "SOL" }];
+  const two = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: true, licensedFromISO: "2022-03-26", licensedToISO: "2026-10-28", activityFromISO: "2022-03-26",
+    priceFromISO: "2026-09-27", chart: { fromISO: "2026-09-27", toISO: "2026-10-28", days: 32, continuous: true } } }), solAcct);
+  check("wallet history states NATIVE scope, never an unqualified 'Complete'", /^Native SOL history verified/.test(two.summary) && !/^Complete/.test(two.summary) && two.blockchain?.label === "Native SOL");
+  check("…and carries the chart-ready range separately, with the explanatory sentence when they differ",
+    two.chart?.fromISO === "2026-09-27" && two.chart.days === 32 && two.rangeNote === "Older blockchain activity is preserved. Earlier chart values require historical prices.");
+  check("…and the SPL token limitation is stated, not implied complete", two.limitations.some((l) => /SPL token balances are not reconstructed/.test(l)));
+  const same = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: true, licensedFromISO: "2026-09-27", licensedToISO: "2026-10-28", activityFromISO: "2026-09-27",
+    priceFromISO: "2025-01-01", chart: { fromISO: "2026-09-27", toISO: "2026-10-28", days: 32, continuous: true } } }), [{ id: "b", name: "BTC", type: "crypto", chain: "BTC" }]);
+  check("no range note when the chart reaches the start of verified history; no token caveat for Bitcoin", same.rangeNote === null && same.limitations.length === 0 && same.blockchain?.label === "Native BTC");
   check("a licensed wallet is COMPLETE from its ACTIVITY start, not the proof floor", done.coverage === "COMPLETE" && done.fromISO === "2021-04-27");
   check("an unsupported network is UNAVAILABLE", connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: false, licensed: false, licensedFromISO: null, licensedToISO: null, activityFromISO: null } })).coverage === "UNAVAILABLE");
+}
+
+console.log("Chart-ready range (balances × prices × snapshots)");
+{
+  const wh = { licensed: true, licensedFromISO: "2022-03-26", licensedToISO: "2026-10-28", activityFromISO: "2022-03-26" };
+  const days = (from: string, n: number) => Array.from({ length: n }, (_, k) => new Date(Date.parse(`${from}T00:00:00Z`) + k * 86_400_000).toISOString().slice(0, 10));
+  const r = chartReadyRange(wh, "2026-09-27", days("2026-09-27", 32));
+  check("2-yr balances + 31 days of prices ⇒ chart-ready from the price floor, 32 real snapshot days", r?.fromISO === "2026-09-27" && r?.toISO === "2026-10-28" && r?.days === 32 && r?.continuous === true, JSON.stringify(r));
+  const g = chartReadyRange(wh, "2026-09-27", days("2026-09-27", 32).filter((d) => d !== "2026-10-05"));
+  check("a missing snapshot day is reported as a gap, never bridged", g?.days === 31 && g?.continuous === false);
+  check("prices older than balances ⇒ chart starts at the balance licence", chartReadyRange({ ...wh, activityFromISO: "2026-10-01", licensedFromISO: "2026-10-01" }, "2020-01-01", days("2026-09-27", 32))?.fromISO === "2026-10-01");
+  check("no prices ⇒ no chart-ready history (never zero-valued days)", chartReadyRange(wh, null, days("2026-09-27", 32)) === null);
+  check("unlicensed history ⇒ none", chartReadyRange({ ...wh, licensed: false }, "2026-09-27", days("2026-09-27", 32)) === null);
 }
 
 console.log("Wiring and accessibility");
