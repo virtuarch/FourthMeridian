@@ -32,6 +32,15 @@
  * Completion is the backfill's own verdict (beginning reached, head verified,
  * continuity proven) — never "the job succeeded".
  *
+ * BITCOIN (2026-10-28) — the same job also carries Bitcoin wallets whose
+ * history the resumable backfill owns (lib/crypto/btc-history-backfill.ts),
+ * with the same lock, wake, regeneration and pending-marker semantics, its own
+ * token bucket and daily cap (a different provider — keyless Esplora), and on
+ * unless BTC_BACKFILL_ENABLED=false. When both chains have work, Solana is
+ * planned to the first half of the job budget and Bitcoin gets the rest;
+ * either chain alone gets all of it. The job name and registration are
+ * unchanged.
+ *
  * SUMMARY: counts, request meter and estimated units only — no ids, no
  * addresses, no balances.
  */
@@ -43,6 +52,13 @@ import {
 } from "@/lib/crypto/sol-backfill-worker.core";
 import type { SolBackfillStore } from "@/lib/crypto/sol-history-backfill";
 import type { SolResumableResult } from "@/lib/crypto/sol-history-backfill.store";
+import {
+  parseCheckpoint as parseBtcCheckpoint, serializeCheckpoint as serializeBtcCheckpoint, usageOn as btcUsageOn,
+  type BtcBackfillCheckpoint,
+} from "@/lib/crypto/btc-history-backfill.core";
+import { btcWorkerConfig, orderBtcCandidates, type BtcBackfillWorkerConfig } from "@/lib/crypto/btc-backfill-worker.core";
+import type { BtcBackfillStore, BtcBackfillDeps } from "@/lib/crypto/btc-history-backfill";
+import type { BtcResumableResult } from "@/lib/crypto/btc-history-backfill.store";
 
 export const SOL_BACKFILL_JOB = "sol-history-backfill";
 /** The dispatcher's invocation is 300 s; plan nothing past this point of a wake. */
@@ -70,8 +86,39 @@ export interface SolBackfillJobSummary {
   dailyRequestCap: number;
   budgetMs: number;
   stoppedBecause: "DISABLED" | "NO_WORK" | "JOB_BUDGET" | "DAILY_CAP" | "ALL_RUN";
-  /** > 0 ⇒ the dispatcher self-continues this job. */
+  /** > 0 ⇒ the dispatcher self-continues this job (Solana + Bitcoin). */
   deferred: number;
+  /** Bitcoin's pass, when its deps are wired (always in production). */
+  btc?: BtcBackfillPassSummary;
+}
+
+export interface BtcBackfillPassSummary {
+  enabled: boolean;
+  eligible: number;
+  walletsRun: number;
+  walletsSkippedLocked: number;
+  completed: number;
+  promoted: number;
+  failures: Record<string, number>;
+  txsProcessed: number;
+  rowsWritten: number;
+  regenerated: number;
+  regenerationsDeferred: number;
+  requests: Record<string, number> & { total: number };
+  dailyRequestsUsedBefore: number;
+  dailyRequestCap: number;
+  stoppedBecause: "DISABLED" | "NO_WORK" | "JOB_BUDGET" | "DAILY_CAP" | "ALL_RUN";
+  deferred: number;
+}
+
+/** A BTC wallet whose history the resumable backfill owns; `cursor` is its history checkpoint. */
+export interface BtcWorkerWallet { accountId: string; connectionId: string; cursor: string | null }
+
+/** Bitcoin's half of the job's deps. Locks and regeneration are shared with Solana's. */
+export interface BtcBackfillJobDeps {
+  wallets(): Promise<BtcWorkerWallet[]>;
+  reconstruct(args: { accountId: string; deps: BtcBackfillDeps }): Promise<BtcResumableResult>;
+  store(accountId: string): Promise<BtcBackfillStore | null>;
 }
 
 export interface WorkerWallet { accountId: string; connectionId: string; address: string; cursor: string | null }
@@ -93,6 +140,8 @@ export interface SolBackfillJobDeps {
   store(accountId: string): Promise<SolBackfillStore | null>;
   regenerationEnabled(): boolean;
   regenerate(accountId: string, fromISO: string, startedAtMs: number): Promise<void>;
+  /** Absent ⇒ the job carries Solana only. */
+  btc?: BtcBackfillJobDeps;
 }
 
 async function setPending(store: SolBackfillStore, accountId: string, address: string, mutate: (cp: SolBackfillCheckpoint) => SolBackfillCheckpoint): Promise<boolean> {
@@ -106,7 +155,17 @@ async function setPending(store: SolBackfillStore, accountId: string, address: s
   } catch { return false; } // CAS lost: someone advanced it — the marker is re-derived next run
 }
 
-export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfig; deps?: SolBackfillJobDeps } = {}): Promise<SolBackfillJobSummary> {
+async function setBtcPending(store: BtcBackfillStore, accountId: string, mutate: (cp: BtcBackfillCheckpoint) => BtcBackfillCheckpoint): Promise<boolean> {
+  const raw = await store.readCursor();
+  const cp = parseBtcCheckpoint(raw, accountId);
+  if (!cp) return false;
+  try {
+    await store.commit({ expectedCursor: raw, nextCursor: serializeBtcCheckpoint(mutate(cp)), replaceAll: false, deleteFromISO: null, deleteToISO: null, rows: [], coverage: null, rawTxs: [] });
+    return true;
+  } catch { return false; } // CAS lost: someone advanced it — the marker is re-derived next run
+}
+
+export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfig; btcConfig?: BtcBackfillWorkerConfig; deps?: SolBackfillJobDeps } = {}): Promise<SolBackfillJobSummary> {
   const cfg = opts.config ?? workerConfig();
   const summary: SolBackfillJobSummary = {
     enabled: cfg.enabled, eligible: 0, walletsRun: 0, walletsSkippedLocked: 0, completed: 0, promoted: 0,
@@ -123,9 +182,16 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const wake = await deps.wakeStartedAt();
   const jobDeadline = Math.min(start + cfg.jobBudgetMs, (wake ?? start) + WAKE_SAFE_MS);
   summary.budgetMs = Math.max(0, jobDeadline - start);
+  const day = new Date(start).toISOString().slice(0, 10);
+
+  // Bitcoin's work is planned first so the two chains can share the budget.
+  const btcCfg = opts.btcConfig ?? btcWorkerConfig();
+  const btcPlan = deps.btc && btcCfg.enabled ? await planBtc(deps.btc, start, day) : null;
+  const btcHasWork = !!btcPlan && btcPlan.work.length > 0;
+  /** The deadline the CURRENT chain's pass plans to (Solana: half when Bitcoin waits). */
+  let phaseDeadline = btcHasWork ? start + Math.floor((jobDeadline - start) / 2) : jobDeadline;
 
   const wallets = await deps.wallets();
-  const day = new Date(start).toISOString().slice(0, 10);
   const parsed = wallets.map((w) => ({ ...w, checkpoint: parseCheckpoint(w.cursor, w.accountId, w.address) }));
   summary.dailyRequestsUsedBefore = parsed.reduce((a, w) => a + usageOn(w.checkpoint, day), 0);
 
@@ -133,15 +199,20 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const pending = parsed.filter((w) => w.checkpoint?.snapshotPendingFromISO);
   const candidates = orderCandidates(parsed, start);
   summary.eligible = candidates.length;
-  if (candidates.length === 0 && pending.length === 0) { summary.stoppedBecause = "NO_WORK"; return summary; }
+  const solHasWork = !(candidates.length === 0 && pending.length === 0);
+  if (!solHasWork && !btcHasWork) {
+    summary.stoppedBecause = "NO_WORK";
+    if (btcPlan) summary.btc = { ...btcPlan.summary, stoppedBecause: "NO_WORK" };
+    return summary;
+  }
 
   const take = createRateLimiter(cfg.maxRequestsPerSecond, deps.now, deps.sleep);
-  summary.stoppedBecause = "ALL_RUN";
+  summary.stoppedBecause = solHasWork ? "ALL_RUN" : "NO_WORK";
 
   /** Returns the outcome and the lock stamp now in force (renewed, or unchanged). */
-  const regenerateUnderLock = async (w: WorkerWallet, fromISO: string, lockStamp: number): Promise<{ outcome: "DONE" | "DEFERRED"; stamp: number }> => {
+  const regenerateUnderLock = async (w: { accountId: string; connectionId: string }, fromISO: string, lockStamp: number): Promise<{ outcome: "DONE" | "DEFERRED"; stamp: number }> => {
     if (!deps.regenerationEnabled()) return { outcome: "DONE", stamp: lockStamp }; // nothing to keep in step (sync-crypto applies the same rule)
-    if (jobDeadline - deps.now() < REGEN_RESERVE_MS) return { outcome: "DEFERRED", stamp: lockStamp };
+    if (phaseDeadline - deps.now() < REGEN_RESERVE_MS) return { outcome: "DEFERRED", stamp: lockStamp };
     const renewed = Math.max(deps.now(), lockStamp + 1);
     if (!(await deps.renewLock(w.connectionId, lockStamp, renewed))) return { outcome: "DEFERRED", stamp: lockStamp };
     try { await deps.regenerate(w.accountId, fromISO, start); return { outcome: "DONE", stamp: renewed }; }
@@ -151,14 +222,14 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     }
   };
 
-  const work: Array<{ w: (typeof parsed)[number]; kind: "PENDING" | "BACKFILL" }> = [
+  const work: Array<{ w: (typeof parsed)[number]; kind: "PENDING" | "BACKFILL" }> = solHasWork ? [
     ...pending.map((w) => ({ w, kind: "PENDING" as const })),
     ...candidates.filter((c) => !pending.some((p) => p.accountId === c.accountId)).map((w) => ({ w, kind: "BACKFILL" as const })),
-  ];
+  ] : [];
 
   for (let i = 0; i < work.length; i++) {
     const { w, kind } = work[i];
-    const left = jobDeadline - deps.now();
+    const left = phaseDeadline - deps.now();
     if (left < Math.max(cfg.startReserveMs, 2_000)) { summary.stoppedBecause = "JOB_BUDGET"; summary.deferred += work.length - i; break; }
     const allowance = cfg.dailyRequestCap - summary.dailyRequestsUsedBefore - total();
     if (kind === "BACKFILL" && allowance <= 0) { summary.stoppedBecause = "DAILY_CAP"; break; } // resumes after UTC midnight, on cadence
@@ -205,6 +276,98 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   summary.requests = { ...meter, total: total() };
   summary.estimatedUnits = (meter.getTransaction ?? 0) * ALCHEMY_PAYG.unitsPerGetTransaction
     + (meter.getSignaturesForAddress ?? 0) * ALCHEMY_PAYG.unitsPerGetSignatures;
+
+  // ── BITCOIN ────────────────────────────────────────────────────────────────
+  if (btcPlan && deps.btc) {
+    phaseDeadline = jobDeadline;
+    summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline, regenerateUnderLock });
+    summary.deferred += summary.btc.deferred;
+  }
+  return summary;
+}
+
+type BtcParsed = BtcWorkerWallet & { checkpoint: BtcBackfillCheckpoint | null };
+
+async function planBtc(btc: BtcBackfillJobDeps, start: number, day: string) {
+  const parsed: BtcParsed[] = (await btc.wallets()).map((w) => ({ ...w, checkpoint: parseBtcCheckpoint(w.cursor, w.accountId) }));
+  const pending = parsed.filter((w) => w.checkpoint?.snapshotPendingFromISO);
+  const candidates = orderBtcCandidates(parsed, start);
+  const work: Array<{ w: BtcParsed; kind: "PENDING" | "BACKFILL" }> = [
+    ...pending.map((w) => ({ w, kind: "PENDING" as const })),
+    ...candidates.filter((c) => !pending.some((p) => p.accountId === c.accountId)).map((w) => ({ w, kind: "BACKFILL" as const })),
+  ];
+  const summary: BtcBackfillPassSummary = {
+    enabled: true, eligible: candidates.length, walletsRun: 0, walletsSkippedLocked: 0, completed: 0, promoted: 0,
+    failures: {}, txsProcessed: 0, rowsWritten: 0, regenerated: 0, regenerationsDeferred: 0, requests: { total: 0 },
+    dailyRequestsUsedBefore: parsed.reduce((a, w) => a + btcUsageOn(w.checkpoint, day), 0),
+    dailyRequestCap: 0, stoppedBecause: "ALL_RUN", deferred: 0,
+  };
+  return { work, summary };
+}
+
+/**
+ * Bitcoin's pass: Solana's loop with Bitcoin's run, bucket and cap. Each wallet
+ * under its sync lock (claimed, renewed for regeneration, released only while
+ * still ours — the shared lock deps).
+ */
+async function runBtcPass(
+  deps: SolBackfillJobDeps, btc: BtcBackfillJobDeps, cfg: BtcBackfillWorkerConfig,
+  plan: Awaited<ReturnType<typeof planBtc>>,
+  ctx: { start: number; jobDeadline: number; regenerateUnderLock: (w: { accountId: string; connectionId: string }, fromISO: string, lockStamp: number) => Promise<{ outcome: "DONE" | "DEFERRED"; stamp: number }> },
+): Promise<BtcBackfillPassSummary> {
+  const summary: BtcBackfillPassSummary = { ...plan.summary, dailyRequestCap: cfg.dailyRequestCap };
+  const meter: Record<string, number> = {};
+  const total = () => Object.values(meter).reduce((a, b) => a + b, 0);
+  const take = createRateLimiter(cfg.maxRequestsPerSecond, deps.now, deps.sleep);
+  if (plan.work.length === 0) summary.stoppedBecause = "NO_WORK";
+
+  for (let i = 0; i < plan.work.length; i++) {
+    const { w, kind } = plan.work[i];
+    const left = ctx.jobDeadline - deps.now();
+    if (left < Math.max(cfg.startReserveMs, 2_000)) { summary.stoppedBecause = "JOB_BUDGET"; summary.deferred += plan.work.length - i; break; }
+    const allowance = cfg.dailyRequestCap - summary.dailyRequestsUsedBefore - total();
+    if (kind === "BACKFILL" && allowance <= 0) { summary.stoppedBecause = "DAILY_CAP"; break; } // resumes after UTC midnight, on cadence
+    let stamp = deps.now();
+    if (!(await deps.claimLock(w.connectionId, stamp))) { summary.walletsSkippedLocked++; summary.deferred++; continue; }
+    try {
+      let fromISO = w.checkpoint?.snapshotPendingFromISO ?? null;
+      if (kind === "BACKFILL") {
+        const r = await btc.reconstruct({ accountId: w.accountId,
+          deps: { budgetMs: Math.max(1_000, Math.min(cfg.walletBudgetMs, left - REGEN_RESERVE_MS / 2)),
+            beforeRequest: take, meter, requestBudget: allowance, now: deps.now, sleep: deps.sleep } });
+        summary.walletsRun++;
+        const o = r.backfill;
+        if (o) {
+          summary.txsProcessed += o.txsProcessed;
+          summary.rowsWritten += o.rowsWritten;
+          if (o.promoted) summary.promoted++;
+          if (o.status.state === "COMPLETE") summary.completed++;
+          // More listing owed ⇒ continue soon. A wallet that is merely waiting
+          // to verify (discovery unfinished, a racing block) retries on cadence.
+          else if (o.stoppedBecause === "BUDGET" || o.status.state === "QUEUED") summary.deferred++;
+          if (o.failure) summary.failures[o.failure.code] = (summary.failures[o.failure.code] ?? 0) + 1;
+        }
+        if (r.impactedFromISO) fromISO = fromISO && fromISO < r.impactedFromISO ? fromISO : r.impactedFromISO;
+      }
+      if (fromISO) {
+        const regen = await ctx.regenerateUnderLock(w, fromISO, stamp);
+        stamp = regen.stamp; // release below checks ownership against the stamp in force
+        const store = await btc.store(w.accountId);
+        if (regen.outcome === "DONE") {
+          summary.regenerated++;
+          if (store && w.checkpoint?.snapshotPendingFromISO) await setBtcPending(store, w.accountId, (cp) => ({ ...cp, snapshotPendingFromISO: null }));
+        } else {
+          summary.regenerationsDeferred++;
+          summary.deferred++;
+          if (store) await setBtcPending(store, w.accountId, (cp) => ({ ...cp,
+            snapshotPendingFromISO: cp.snapshotPendingFromISO && cp.snapshotPendingFromISO < fromISO! ? cp.snapshotPendingFromISO : fromISO }));
+        }
+      }
+    } finally {
+      await deps.releaseLock(w.connectionId, stamp);
+    }
+  }
+  summary.requests = { ...meter, total: total() };
   return summary;
 }
 
@@ -260,5 +423,30 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
       const plan = await resolveHistoricalWorkWindow({ financialAccountIds: [accountId], changedSince: new Date(startedAtMs), positionHistoryImpactedFromISO: fromISO });
       await regenerateWealthHistoryForAccounts([accountId], { fromDate: plan.fromDate, toDate: plan.toDate });
     },
+    btc: await productionBtcDeps(systemDb),
+  };
+}
+
+/** Bitcoin's production wiring: wallets whose history checkpoint is on their history link. */
+async function productionBtcDeps(systemDb: import("@prisma/client").PrismaClient): Promise<BtcBackfillJobDeps> {
+  const { reconstructBtcHistoryResumable, prismaBtcBackfillStore } = await import("@/lib/crypto/btc-history-backfill.store");
+  return {
+    async wallets() {
+      // The SAME link btcHistoryLink uses (canonical first, then oldest), one
+      // per account; only accounts whose history the resumable backfill owns.
+      const rows = await systemDb.$queryRaw<Array<{ accountId: string; connectionId: string; cursor: string | null }>>`
+        SELECT DISTINCT ON (ac."financialAccountId")
+               ac."financialAccountId" AS "accountId", ac."connectionId" AS "connectionId", c."historyCheckpoint" AS "cursor"
+        FROM "AccountConnection" ac
+        JOIN "Connection" c ON c."id" = ac."connectionId"
+        JOIN "FinancialAccount" fa ON fa."id" = ac."financialAccountId"
+        WHERE ac."deletedAt" IS NULL AND ac."connectionId" IS NOT NULL
+          AND fa."deletedAt" IS NULL AND fa."walletChain" = 'BTC' AND fa."walletAddress" IS NOT NULL
+          AND c."provider" = 'WALLET' AND c."status" = 'ACTIVE'
+        ORDER BY ac."financialAccountId", ac."isCanonical" DESC, ac."createdAt" ASC`;
+      return rows.filter((r) => r.cursor !== null);
+    },
+    reconstruct: ({ accountId, deps }) => reconstructBtcHistoryResumable({ accountId, client: systemDb, deps }),
+    store: async (accountId) => (await prismaBtcBackfillStore(accountId, systemDb))?.store ?? null,
   };
 }

@@ -45,7 +45,7 @@ import {
 } from "@/lib/accounts/wallet-connection";
 import {
   fetchConfirmedSatsForAddresses,
-  fetchAddressTxsRaw,
+  fetchAddressTxsRawPaged,
   fetchAddressStatsBatch,
   normalizeBtcAddressTxs,
   satsToBtc,
@@ -79,6 +79,7 @@ import { reconcileWalletLedger, type LedgerReconciliation } from "@/lib/crypto/l
 import { economicDateFor } from "@/lib/transactions/economic-date-write";
 // v2.6-OWN-1 — the on-chain ledger names itself as the author of its flow facts.
 import { foreignFlowOwnershipFields } from "@/lib/transactions/flow-authority";
+import { btcHistoryLink, readHistoryCheckpoint, enqueueBtcHistoryBackfill } from "@/lib/crypto/btc-history-checkpoint";
 
 /**
  * The only chain this v1 sync supports.
@@ -153,7 +154,14 @@ export type BtcValuationOutcome =
  * record it as its own stage without inventing a duration.
  */
 export type BtcTransactionImportOutcome =
-  | { status: "IMPORTED"; addresses: number; fetched: number; written: number; startedAt: Date; durationMs: number }
+  | { status: "IMPORTED"; addresses: number; fetched: number; written: number; startedAt: Date; durationMs: number;
+      /**
+       * True when older history lies beyond what this run listed and the
+       * RESUMABLE backfill (btc-history-backfill.ts) carries it — either it
+       * already owned the wallet's history, or this run stopped at its page
+       * budget and handed it over. Never a silent truncation.
+       */
+      continuesResumably?: boolean }
   | { status: "FAILED"; addresses: number; reason: string; startedAt: Date; durationMs: number };
 
 export interface BtcSyncDeps {
@@ -320,13 +328,14 @@ type OwnAddressMap = Map<string, string>; // external address -> the user's own 
  * adapter only knows addresses).
  */
 async function resolveOwnWalletAddresses(
+  client: Prisma.TransactionClient | typeof db,
   ownerUserId: string,
   excludeAccountId: string,
   addresses: string[],
 ): Promise<OwnAddressMap> {
   const unique = [...new Set(addresses)];
   if (unique.length === 0) return new Map();
-  const rows = await db.providerAccountIdentity.findMany({
+  const rows = await client.providerAccountIdentity.findMany({
     where: {
       provider:          ProviderType.WALLET,
       externalAccountId: { in: unique },
@@ -438,6 +447,74 @@ export function filterFreshMovements<T extends { externalId: string }>(
 }
 
 /**
+ * Persist confirmed BTC transactions as ordinary Transaction rows — the ONE
+ * writer, shared by the sync's inline import and the resumable history backfill
+ * (which calls it inside its checkpoint transaction, with that transaction's
+ * client). Raw txs are deduped by txid and normalized against the wallet's FULL
+ * address set, so a movement between two of its own addresses nets out.
+ * Idempotent on externalTransactionId (tombstones included) with the
+ * active-row unique index as the race backstop.
+ */
+export async function persistBtcRawTxs(
+  client: Prisma.TransactionClient | typeof db,
+  account: { id: string; ownerUserId: string | null; addresses: string[] },
+  rawTxsIn: RawBtcTx[],
+): Promise<{ written: number }> {
+  const rawTxs = dedupeRawTxsByTxid(rawTxsIn);
+  const movements = normalizeBtcAddressTxs(rawTxs, account.addresses);
+  if (movements.length === 0) return { written: 0 };
+
+  // Engine-level counterparty resolution → INTERNAL transfers.
+  const ownByAddress = account.ownerUserId
+    ? await resolveOwnWalletAddresses(
+        client, account.ownerUserId, account.id, movements.flatMap((m) => m.counterpartyAddresses))
+    : new Map<string, string>();
+  // Idempotency: skip movements already imported for this account. The
+  // externalTransactionId (txid / txid:fee) is the dedupe key — a re-sync is a
+  // no-op.
+  //
+  // V26-PRE (B4) — two identity defenses this path previously lacked (the
+  // Plaid path has both; this one had neither):
+  //
+  //   TOMBSTONE WINS — the dedupe read now INCLUDES soft-deleted rows. An
+  //   on-chain tx never vanishes upstream, so a tombstoned BTC row reflects a
+  //   deliberate user / import-rollback decision; the old `deletedAt: null`
+  //   filter made the very next sync re-create the same externalTransactionId
+  //   as a NEW ACTIVE row, defeating the tombstone and violating the identity
+  //   doctrine's replay invariant ("must not create an additional active row").
+  //
+  //   RACE BACKSTOP — nothing locks a wallet sync, and the manual sync route
+  //   and the daily cron can run concurrently: both used to read `existing`,
+  //   then both createMany the same movements → duplicated financial rows
+  //   with no constraint to stop them. The DB now carries an active-row
+  //   unique index on (financialAccountId, externalTransactionId) WHERE
+  //   deletedAt IS NULL (migration 20260727_v26pre_b4_btc_identity_backstop),
+  //   and `skipDuplicates: true` (ON CONFLICT DO NOTHING) makes the losing
+  //   writer's overlap silently no-op instead of duplicating or failing the
+  //   whole batch.
+  const ids = movements.map((m) => m.externalId);
+  const existing = await client.transaction.findMany({
+    where:  { financialAccountId: account.id, externalTransactionId: { in: ids } },
+    select: { externalTransactionId: true },
+  });
+  const fresh = filterFreshMovements(movements, existing.map((e) => e.externalTransactionId));
+  if (fresh.length === 0) return { written: 0 };
+
+  const { count } = await client.transaction.createMany({
+    data: fresh.map((m) => buildTransactionRow(account.id, m, ownByAddress)),
+    skipDuplicates: true,
+  });
+  return { written: count };
+}
+
+/**
+ * Pages the sync lists per address once the RESUMABLE backfill owns the
+ * wallet's history: just the newest, for promptness. Everything older — and
+ * anything newer than one page — is the backfill's, from its checkpoint.
+ */
+export const BTC_SYNC_HEAD_PAGES = 1;
+
+/**
  * Import a wallet's confirmed BTC transactions (across ALL its addresses) as
  * ordinary Transaction rows. Raw txs are deduped by txid before normalization,
  * so a tx moving coins between two of the wallet's own addresses is ONE row set
@@ -451,58 +528,46 @@ async function importBtcTransactions(
   const startedAt = new Date();
   const t0 = Date.now();
   const addresses = account.addresses.length;
+  let continuesResumably = false;
   const imported = (fetched: number, written: number): BtcTransactionImportOutcome =>
-    ({ status: "IMPORTED", addresses, fetched, written, startedAt, durationMs: Date.now() - t0 });
+    ({ status: "IMPORTED", addresses, fetched, written, startedAt, durationMs: Date.now() - t0,
+      ...(continuesResumably ? { continuesResumably } : {}) });
   try {
-    const fetchTxs = deps.txFetcher ?? ((a: string) => fetchAddressTxsRaw(a, deps.fetchImpl));
+    // RESUMABLE HAND-OFF. A wallet whose history the resumable backfill owns
+    // lists only its newest page here; one that is NOT yet owned but stops at
+    // the page budget (40 × 25 = 1,000 per address) is handed to it below, so
+    // the ceiling no longer truncates silently. Injected fetchers (tests) keep
+    // the old shape and never hand off.
+    let owned = false;
+    if (!deps.txFetcher) {
+      try {
+        const link = await btcHistoryLink(db, account.id);
+        owned = link !== null && (await readHistoryCheckpoint(db, link.connectionId)) !== null;
+      } catch (e) {
+        console.warn(`[btc-sync] history checkpoint read failed for ${account.id} (non-fatal — full inline listing):`, e instanceof Error ? e.message : String(e));
+      }
+    }
+    let truncated = false;
+    const fetchTxs = deps.txFetcher ?? (async (a: string) => {
+      const r = await fetchAddressTxsRawPaged(a, deps.fetchImpl, owned ? { pageBudget: BTC_SYNC_HEAD_PAGES } : {});
+      if (r.truncated) truncated = true;
+      return r.txs;
+    });
     const lists = await Promise.all(account.addresses.map(fetchTxs));
     const rawTxs = dedupeRawTxsByTxid(lists.flat());
+    continuesResumably = owned;
+    if (truncated && !owned) {
+      try {
+        await enqueueBtcHistoryBackfill(db, account.id);
+        continuesResumably = true;
+        console.log(`[btc-sync] ${account.id}: history exceeds the inline page budget — continuing it resumably`);
+      } catch (e) {
+        console.warn(`[btc-sync] resumable history hand-off failed for ${account.id} (non-fatal):`, e instanceof Error ? e.message : String(e));
+      }
+    }
 
-    const movements = normalizeBtcAddressTxs(rawTxs, account.addresses);
-    if (movements.length === 0) return imported(rawTxs.length, 0);
-
-    // Engine-level counterparty resolution → INTERNAL transfers.
-    const ownByAddress = account.ownerUserId
-      ? await resolveOwnWalletAddresses(
-          account.ownerUserId, account.id, movements.flatMap((m) => m.counterpartyAddresses))
-      : new Map<string, string>();
-
-    // Idempotency: skip movements already imported for this account. The
-    // externalTransactionId (txid / txid:fee) is the dedupe key — a re-sync is a
-    // no-op.
-    //
-    // V26-PRE (B4) — two identity defenses this path previously lacked (the
-    // Plaid path has both; this one had neither):
-    //
-    //   TOMBSTONE WINS — the dedupe read now INCLUDES soft-deleted rows. An
-    //   on-chain tx never vanishes upstream, so a tombstoned BTC row reflects a
-    //   deliberate user / import-rollback decision; the old `deletedAt: null`
-    //   filter made the very next sync re-create the same externalTransactionId
-    //   as a NEW ACTIVE row, defeating the tombstone and violating the identity
-    //   doctrine's replay invariant ("must not create an additional active row").
-    //
-    //   RACE BACKSTOP — nothing locks a wallet sync, and the manual sync route
-    //   and the daily cron can run concurrently: both used to read `existing`,
-    //   then both createMany the same movements → duplicated financial rows
-    //   with no constraint to stop them. The DB now carries an active-row
-    //   unique index on (financialAccountId, externalTransactionId) WHERE
-    //   deletedAt IS NULL (migration 20260727_v26pre_b4_btc_identity_backstop),
-    //   and `skipDuplicates: true` (ON CONFLICT DO NOTHING) makes the losing
-    //   writer's overlap silently no-op instead of duplicating or failing the
-    //   whole batch.
-    const ids = movements.map((m) => m.externalId);
-    const existing = await db.transaction.findMany({
-      where:  { financialAccountId: account.id, externalTransactionId: { in: ids } },
-      select: { externalTransactionId: true },
-    });
-    const fresh = filterFreshMovements(movements, existing.map((e) => e.externalTransactionId));
-    if (fresh.length === 0) return imported(rawTxs.length, 0);
-
-    const { count } = await db.transaction.createMany({
-      data: fresh.map((m) => buildTransactionRow(account.id, m, ownByAddress)),
-      skipDuplicates: true,
-    });
-    return imported(rawTxs.length, count);
+    const { written } = await persistBtcRawTxs(db, account, rawTxs);
+    return imported(rawTxs.length, written);
   } catch (e) {
     // NON-FATAL MEANS EXACTLY THIS: the caller goes on to write the current
     // position and its valuation, and this outcome travels on the result (and

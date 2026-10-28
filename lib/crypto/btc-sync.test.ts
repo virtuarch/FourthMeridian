@@ -360,8 +360,12 @@ async function main(): Promise<void> {
   check("internal-transfer resolution via ProviderAccountIdentity + counterpartyAccountId",
     /providerAccountIdentity\.findMany/.test(sync) && /counterpartyAccountId/.test(sync) &&
     /FlowDirection\.INTERNAL/.test(sync));
-  check("no BTC-specific transaction table (writes db.transaction, not a db.*Transaction table)",
-    !/db\.(btcTransaction|walletTransaction|cryptoTransaction)/i.test(sync) && /db\.transaction\.createMany/.test(sync));
+  // BTC-HISTORY-RESUMABLE — the ONE Transaction writer (persistBtcRawTxs) takes
+  // its client, so the resumable history backfill can call it inside its
+  // checkpoint compare-and-swap transaction; the table is still `transaction`.
+  check("no BTC-specific transaction table (writes .transaction, not a *Transaction table)",
+    !/(db|client)\.(btcTransaction|walletTransaction|cryptoTransaction)/i.test(sync) && /client\.transaction\.createMany/.test(sync)
+    && /persistBtcRawTxs\(db, account, rawTxs\)/.test(sync));
   check("transaction import is best-effort (never fails the sync)",
     /importBtcTransactions[\s\S]*?catch/.test(sync));
 

@@ -36,7 +36,8 @@
 import { db } from "@/lib/db";
 import { PositionOrigin } from "@prisma/client";
 import { BTC_NATIVE, ETH_NATIVE, SOL_NATIVE } from "./native-asset";
-import { reconstructBtcHistory } from "./btc-history-sync";
+import { reconstructBtcHistoryOrResumable } from "./btc-history-backfill.store";
+import { btcSyncHeadOnly } from "./btc-history-backfill";
 import { reconstructSolHistoryResumable } from "./sol-history-backfill.store";
 import { syncHeadOnly } from "./sol-history-backfill";
 import { reconstructEthHistory } from "./eth-history-sync";
@@ -55,9 +56,9 @@ export interface WalletHistoryRefresh {
   windowFromISO?: string;
   windowToISO?:   string;
   /**
-   * ETH and SOL — what the reconstruction did and the earliest date whose
-   * stored quantity changed. BTC rebuilds wholesale and does not measure it, so
-   * these stay undefined for it (not measured, never "unchanged").
+   * ETH, SOL and resumable BTC — what the reconstruction did and the earliest
+   * date whose stored quantity changed. Wholesale BTC rebuilds without
+   * measuring it, so these stay undefined for it (not measured, never "unchanged").
    */
   mode?: "FULL" | "INCREMENTAL" | "NO_CHANGE";
   impactedFromISO?: string | null;
@@ -107,7 +108,11 @@ export async function refreshWalletHistory(
   // reconstruction is not a failure: ETH/BNB/AVAX have current positions and no
   // historical licence, exactly as their capability says.
   const run =
-    key === BTC_NATIVE.chain ? reconstructBtcHistory
+    // BTC: the wholesale reconstruction, unless the wallet's history has been
+    // handed to the resumable, checkpointed backfill (btc-history-backfill.ts) —
+    // which the sync does when the inline import stops at its 1,000-per-address
+    // page budget. Head-only while the background worker carries Bitcoin.
+    key === BTC_NATIVE.chain ? (a: { accountId: string; windowFromISO: string; windowToISO: string }) => reconstructBtcHistoryOrResumable({ ...a, client: db, headOnly: btcSyncHeadOnly() })
     // SOL: the resumable, checkpointed backfill (sol-history-backfill.ts). The
     // wholesale reconstructSolHistory stopped at 5,000 signatures per run and
     // never resumed; it remains only as the fixture-driven acceptance path.

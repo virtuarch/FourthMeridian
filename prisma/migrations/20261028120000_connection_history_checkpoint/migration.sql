@@ -1,0 +1,23 @@
+-- BTC-HISTORY-RESUMABLE — a durable checkpoint for the resumable Bitcoin
+-- history backfill (lib/crypto/btc-history-backfill*.ts).
+--
+-- Bitcoin history used to be re-listed from the newest transaction on every
+-- sync, bounded at 40 pages x 25 = 1,000 confirmed transactions per address,
+-- with no cursor: a larger address could never be imported past its newest
+-- 1,000, and its history never reconciled. The resumable backfill pages
+-- Esplora's /txs/chain/:last_seen_txid from a checkpoint stored HERE.
+--
+-- Why a new column and not Connection.cursor (where Solana's checkpoint lives):
+-- for an xpub wallet `cursor` already holds address discovery's checkpoint,
+-- which discovery rewrites wholesale without a compare-and-swap, and every
+-- Connections reader treats a non-null cursor as "discovery in progress".
+--
+-- Additive and nullable; no backfill. NULL means the wallet's history is still
+-- the wholesale reconstruction's (unchanged behaviour). A row is populated only
+-- when a sync's inline import stops at its page budget.
+--
+-- RLS: "Connection" is FORCE ROW LEVEL SECURITY with row policies on "userId"
+-- (fm_app) and fm_system_all, and table-level grants to fm_app / fm_system
+-- (20261002000100_rls_roles_and_policies). A new column is covered by both
+-- with no change: no column-level grant exists on this table.
+ALTER TABLE "Connection" ADD COLUMN "historyCheckpoint" TEXT;
