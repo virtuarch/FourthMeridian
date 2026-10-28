@@ -178,10 +178,15 @@ export async function runEthHistoryBackfill(
         return fail("PROOF_PREMISES_UNMET", "not a plain EOA (contract wallet, or a live EIP-7702 delegation)", { restart: true, terminal: true });
       }
       if (caveats.includes("PAGE_BUDGET_EXHAUSTED")) {
-        // The clock stopped it, not density: keep the chunk, resume next step.
-        if (now() >= deadline) return out("PROBE_BUDGET");
-        // Nothing closed this step: the next chunk is too dense for the budget.
-        // Halve it (never below the floor) so the next step can close one.
+        // Nothing closed this step — the next chunk is too dense for the budget,
+        // or (deadline) too slow for the time the step had: the same remedy for
+        // both. Halve it (never below the floor) so the next step can close one;
+        // the commit also records the calls this step spent. Without halving, a
+        // clock-stopped wallet would retry the same chunk for ever. Already at
+        // the floor ⇒ it cannot shrink further: an honest (transient) failure,
+        // so a wallet that can never close a chunk reaches FAILED and pauses
+        // instead of spending budget every run. The proof is kept.
+        if (cp.chunkBlocks <= MIN_ETH_CHUNK_BLOCKS) return fail("PROVIDER_FAILED", "no chunk closed within the step even at the minimum chunk size");
         const ok = await commit({ ...cp, chunkBlocks: Math.max(MIN_ETH_CHUNK_BLOCKS, Math.floor(cp.chunkBlocks / 2)) });
         return ok ? out("PROBE_BUDGET") : out("CONFLICT");
       }
@@ -237,7 +242,8 @@ export async function runEthHistoryBackfill(
         return fail("PROOF_PREMISES_UNMET", "the account is no longer a plain EOA", { restart: true, terminal: true });
       }
       if (caveats.includes("PAGE_BUDGET_EXHAUSTED")) {
-        if (now() >= deadline) return (await commit({ ...cp, forward: fw })) ? out("PROBE_BUDGET") : out("CONFLICT"); // the clock, not density: keep the chunk
+        // As backward: halve (density or the clock); at the floor, fail honestly.
+        if (fw.chunkBlocks <= MIN_ETH_CHUNK_BLOCKS) return fail("PROVIDER_FAILED", "no head chunk closed within the step even at the minimum chunk size");
         const ok = await commit({ ...cp, forward: { ...fw, chunkBlocks: Math.max(MIN_ETH_CHUNK_BLOCKS, Math.floor(fw.chunkBlocks / 2)) } });
         return ok ? out("PROBE_BUDGET") : out("CONFLICT");
       }

@@ -592,14 +592,12 @@ async function main() {
     check("…and no automatic path passes resume", !/resume: true/.test(src));
 
     // WALL-CLOCK BOUND: a slow provider (every JSON-RPC call costs 1 s here)
-    // cannot stretch a step past its deadline, whatever the probe budget —
-    // and a clock stop never halves the chunk (density did not stop it).
+    // cannot stretch a step past its deadline, whatever the probe budget.
     {
       const sim3 = simulate({ events: EVENTS, head: HEAD, headTimeSec: T_HEAD });
       const clock = { t: Date.parse(NOW_ISO) };
       const slow: typeof sim3.transport = async (body) => { clock.t += (Array.isArray(body) ? body.length : 1) * 1_000; return sim3.transport(body); };
       const timed = new MemoryStore(serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO)));
-      const chunk0 = timed.cp()!.chunkBlocks;
       const t0 = clock.t;
       const o3 = await runEthHistoryBackfill({ accountId: "a1", store: timed, todayISO: TODAY },
         { probeBudget: 4_000, now: () => clock.t, deadlineMs: t0 + 60_000, eth: { transport: slow, batchSize: 3 } });
@@ -607,7 +605,37 @@ async function main() {
       // After the stop, only the evidence for changes ALREADY proven is read (≤ 2 calls each) — never another probe.
       check("a 4,000-probe step on a slow provider stops at its deadline, not at its probe budget (no probe after it; only evidence for what was proven)",
         o3.stoppedBecause === "PROBE_BUDGET" && overrun <= 10_000 && sim3.chain.probes < 100, `overrun ${overrun} ms, probes ${sim3.chain.probes}`);
-      check("…and the clock stop keeps the chunk size", timed.cp()!.chunkBlocks === chunk0);
+    }
+
+    // CLOCK STOPS MUST STILL MAKE PROGRESS: a step too short to close even one
+    // chunk halves the chunk (as density does) and records the calls it spent,
+    // so a slow provider shrinks the chunk until steps close; and a wallet that
+    // cannot close even the minimum chunk reaches FAILED instead of spending budget for ever.
+    {
+      const run = async (stepMs: number) => {
+        const sim4 = simulate({ events: EVENTS, head: HEAD, headTimeSec: T_HEAD });
+        const clock = { t: Date.parse(NOW_ISO) };
+        const slow: typeof sim4.transport = async (body) => { clock.t += (Array.isArray(body) ? body.length : 1) * 1_000; return sim4.transport(body); };
+        const st = new MemoryStore(serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO)));
+        const chunks: number[] = []; const stops: string[] = [];
+        for (let i = 0; i < 40; i++) {
+          const o = await runEthHistoryBackfill({ accountId: "a1", store: st, todayISO: TODAY },
+            { probeBudget: 4_000, now: () => clock.t, deadlineMs: clock.t + stepMs, eth: { transport: slow, batchSize: 3 } });
+          stops.push(o.stoppedBecause); chunks.push(st.cp()!.chunkBlocks);
+          if (st.cp()!.provenFromBlock !== null || ethStatusFromCursor(st.cursor, TODAY)?.state === "FAILED") break;
+          clock.t += 3_600_000; // the next run
+        }
+        return { st, chunks, stops };
+      };
+      // 30 s per step at 1 s per call: the default 50,000-block chunk cannot close; smaller ones can.
+      const a = await run(30_000);
+      check("every clock-stopped step halves the chunk (never retries the same one)", a.chunks.length > 1 && a.chunks.slice(0, -1).every((c, i) => i === 0 || c < a.chunks[i - 1]), a.chunks.join(","));
+      check("…and the wallet eventually progresses (a chunk closes, proof boundary set)", a.st.cp()!.provenFromBlock !== null, `${a.stops.join(",")} / ${a.chunks.join(",")}`);
+      check("…every step's calls are recorded on the checkpoint (usage is true)", (a.st.cp()!.usage?.requests ?? 0) > 0);
+      // 3 s per step: not even the minimum chunk closes — escalate honestly.
+      const b = await run(3_000);
+      check("a step that cannot close even the minimum chunk escalates to FAILED (pauses) instead of spending for ever",
+        ethStatusFromCursor(b.st.cursor, TODAY)?.state === "FAILED" && b.chunks.at(-1) === MIN_ETH_CHUNK_BLOCKS, `${b.stops.join(",")} / ${b.chunks.join(",")}`);
     }
 
     // A FAILED streak alone (transient provider failures) keeps the proof: the

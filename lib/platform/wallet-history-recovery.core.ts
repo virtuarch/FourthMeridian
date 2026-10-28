@@ -102,8 +102,7 @@ export const DETERMINISTIC_FAILURES: Readonly<Record<string, string>> = {
   BALANCE_BEFORE_PROVABLE_FLOOR: "This address already held ETH before the earliest block that can be proven; a rebuild cannot close. Investigate before resuming.",
   // ETH: a contract wallet or a live EIP-7702 delegation — no interval can be proven (the daily automatic retry already covers a revoked delegation).
   PROOF_PREMISES_UNMET: "This address is not a plain account (contract wallet or delegation); no history can be proven. The daily automatic retry covers a revoked delegation.",
-  // SOL: no Solana RPC is configured in this deployment.
-  NO_PROVIDER_CONFIGURED: "No history provider is configured in this deployment; configure it before resuming.",
+  // (SOL's NO_PROVIDER_CONFIGURED is not listed: SOL reports it as UNAVAILABLE, which is never resumable — WRONG_STATE.)
   // BTC: the wallet has no address to list (discovery has not produced one).
   NO_ADDRESSES: "This wallet has no address to list yet; let address discovery finish before resuming.",
 };
