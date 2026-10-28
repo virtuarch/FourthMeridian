@@ -31,10 +31,11 @@ import {
 } from "./eth-history-backfill.core";
 import { runEthHistoryBackfill, EthCheckpointConflictError, type EthBackfillStore } from "./eth-history-backfill";
 import {
-  reconstructEthHistoryForSync, enqueueEthHistoryBackfill, settleEthHistoryCheckpoint, prismaEthBackfillStore, type EthSyncImpl,
+  reconstructEthHistoryForSync, enqueueEthHistoryBackfill, settleEthHistoryCheckpoint, prismaEthBackfillStore, ethHistoryPending, type EthSyncImpl,
 } from "./eth-history-backfill.store";
 import type { EthHistoryResult } from "./eth-history-sync";
 import { walletHistoryCheckpointStatus, historyWorkerEnabledFor } from "./history-checkpoint-status";
+import { historyImportText } from "@/lib/connections/connection-detail.core";
 import { emptyCheckpoint as emptyBtcCheckpoint, serializeCheckpoint as serializeBtcCheckpoint } from "./btc-history-backfill.core";
 import { emptyCheckpoint as emptySolCheckpoint, serializeCheckpoint as serializeSolCheckpoint } from "./sol-history-backfill.core";
 import { solHistoryBackfill, type SolBackfillJobDeps } from "@/jobs/sol-history-backfill";
@@ -548,6 +549,58 @@ async function main() {
     const r = await bound!.store.complete({ ...args, expectedCursor: lost!, nextCursor: done });
     check("…and a won CAS commits rows, licence and checkpoint together", r.ok && world.rows.length > 0 && world.coverage !== null && world.cursor === done,
       JSON.stringify({ ok: r.ok, refusal: r.refusal, rows: world.rows.length }));
+  }
+
+  // ══ 14. RECOVERY_REQUIRED IS NOT A DEAD END ═══════════════════════════════
+  {
+    const recovered = serializeCheckpoint({ ...queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO), failures: MAX_CONSECUTIVE_FAILURES,
+      lastFailure: { code: "BALANCE_BEFORE_PROVABLE_FLOOR", atISO: NOW_ISO }, recovery: { code: "BALANCE_BEFORE_PROVABLE_FLOOR", atISO: NOW_ISO } });
+    let stored: string | null = recovered;
+    const fake = {
+      accountConnection: { findFirst: async () => ({ connectionId: "c1", connection: { credential: null, cursor: null } }) },
+      $queryRaw: async () => [{ historyCheckpoint: stored }],
+      $executeRaw: async (_s: TemplateStringsArray, next: string, _id: string, expected: string | null) => { if (stored !== expected) return 0; stored = next; return 1; },
+    } as never;
+    check("RECOVERY_REQUIRED is not 'owed' to the worker (the worker will never run it on its own)", (await ethHistoryPending(fake, "a1")) === null);
+    stored = serializeCheckpoint({ ...queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO), provenFromBlock: 20_000_000, anchorBlock: HEAD });
+    check("…while QUEUED / IMPORTING still are", (await ethHistoryPending(fake, "a1")) === "IMPORTING");
+    stored = recovered;
+    const ran: string[] = [];
+    const r = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: fake, deferFull: true }, {
+      reconstruct: async (a) => { ran.push(String(a.deferFull)); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason: "NO_COVERAGE" }; },
+      pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, settle: async () => false,
+    });
+    check("flag on + RECOVERY_REQUIRED: the sync runs the INCREMENTAL path (not skipped)", ran.join() === "true");
+    check("…and its fallback does NOT re-queue the wallet automatically (checkpoint unchanged, nothing written)",
+      stored === recovered && r.refusal === "FULL_REBUILD_DEFERRED");
+    const ok = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: fake, deferFull: true }, {
+      reconstruct: async (a) => ({ accountId: a.accountId, ok: true, mode: "INCREMENTAL", derivedRowsWritten: 3 }),
+      pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, settle: async () => false,
+    });
+    check("…so a wallet whose stored history still verifies keeps refreshing incrementally", ok.ok && ok.mode === "INCREMENTAL");
+
+    // The operator exit: `resume`, the lever SOL and BTC expose — never set automatically.
+    const sim = simulate({ events: EVENTS, head: HEAD, headTimeSec: T_HEAD });
+    const store = new MemoryStore(recovered);
+    const auto = await runEthHistoryBackfill({ accountId: "a1", store, todayISO: TODAY }, { probeBudget: 150, now: () => Date.parse(NOW_ISO) + 90 * 86_400_000, eth: { transport: sim.transport } });
+    check("an automatic run never touches a RECOVERY_REQUIRED wallet, however much later", auto.stoppedBecause === "SKIPPED" && store.cursor === recovered);
+    const resumed = await runEthHistoryBackfill({ accountId: "a1", store, todayISO: TODAY, resume: true }, { probeBudget: 150, eth: { transport: sim.transport } });
+    const st = ethStatusFromCursor(store.cursor, TODAY)!;
+    check("an operator resume clears the recovery and restarts the proof (a fresh generation, IMPORTING)",
+      resumed.stoppedBecause === "PROBE_BUDGET" && st.state === "IMPORTING" && store.cp()!.recovery === null && store.cp()!.reconcileFailures === 0);
+    const src = code(read("jobs", "sol-history-backfill.ts")) + code(read("lib", "crypto", "wallet-history-refresh.ts"));
+    check("…and no automatic path passes resume", !/resume: true/.test(src));
+
+    // Honest, failure-specific copy.
+    check("RECOVERY_REQUIRED for a balance before the provable floor says exactly that",
+      /held ETH before the earliest block we can verify/.test(historyImportText("RECOVERY_REQUIRED", true, "BALANCE_BEFORE_PROVABLE_FLOOR")?.text ?? ""));
+    check("…a non-reconciling one says it does not add up",
+      /doesn’t add up/.test(historyImportText("RECOVERY_REQUIRED", true, "LEDGER_DOES_NOT_RECONCILE")?.text ?? ""));
+    check("…and SOL/BTC continuity recoveries keep their wording",
+      historyImportText("RECOVERY_REQUIRED", true, "GAP_DETECTED")?.text === "Needs attention — a gap was found"
+        && historyImportText("RECOVERY_REQUIRED", true)?.text === "Needs attention — a gap was found");
+    check("the detail view passes the failure code through",
+      /historyImportText\(wh\?\.historyImport\?\.state, i\?\.facts\?\.historyWorkerEnabled === true, wh\?\.historyImport\?\.lastFailureCode\)/.test(read("lib", "connections", "connection-detail.core.ts")));
   }
 
   console.log(`\neth-history-backfill: ${passes} passed, ${failures} failed`);

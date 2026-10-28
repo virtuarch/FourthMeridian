@@ -85,7 +85,13 @@ export interface EthBackfillOutcome {
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export async function runEthHistoryBackfill(
-  args: { accountId: string; store: EthBackfillStore; todayISO: string },
+  /**
+   * `resume` — OPERATOR resume, the same lever SOL and BTC expose
+   * (runSolHistoryBackfill / runBtcHistoryBackfill `resume`): bypasses the
+   * automatic gate and clears a recovery or a failure pause, starting a fresh
+   * generation. No automatic path ever sets it.
+   */
+  args: { accountId: string; store: EthBackfillStore; todayISO: string; resume?: boolean },
   deps: EthBackfillDeps,
 ): Promise<EthBackfillOutcome> {
   const { accountId, store } = args;
@@ -103,7 +109,10 @@ export async function runEthHistoryBackfill(
     stoppedBecause, status: cp ? backfillStatus(cp) : null, rowsWritten: 0, impactedFromISO: null, failure: null, requests: calls(), ...extra,
   });
   if (!cp) return out("NOT_QUEUED");
-  if (!shouldRunAutomatically(cp, now())) return out("SKIPPED");
+  if (args.resume && !cp.completedAtISO && (cp.recovery || cp.failures > 0)) {
+    // A recovery or a failure means the proof so far is not to be trusted: restart it.
+    cp = { ...restartGeneration(cp), failures: 0, lastFailure: null, recovery: null, reconcileFailures: 0 };
+  } else if (!shouldRunAutomatically(cp, now())) return out("SKIPPED");
 
   const nowISO = new Date(now()).toISOString();
   let counted = 0;
