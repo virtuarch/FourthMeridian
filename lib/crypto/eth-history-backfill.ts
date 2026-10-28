@@ -99,7 +99,9 @@ export async function runEthHistoryBackfill(
   const { accountId, store } = args;
   const now = deps.now ?? Date.now;
   const meter = deps.eth?.meter ?? {};
-  const ethDeps: EthHistoryDeps = { ...(deps.eth ?? {}), meter };
+  // The step's deadline bounds the acquisition's probing too (not only the
+  // segment loop), on the step's own clock.
+  const ethDeps: EthHistoryDeps = { ...(deps.eth ?? {}), meter, now, ...(deps.deadlineMs !== undefined ? { deadlineMs: deps.deadlineMs } : {}) };
   const before = meterTotal(meter);
   const calls = () => meterTotal(meter) - before;
   const deadline = deps.deadlineMs ?? Number.POSITIVE_INFINITY;
@@ -176,6 +178,8 @@ export async function runEthHistoryBackfill(
         return fail("PROOF_PREMISES_UNMET", "not a plain EOA (contract wallet, or a live EIP-7702 delegation)", { restart: true, terminal: true });
       }
       if (caveats.includes("PAGE_BUDGET_EXHAUSTED")) {
+        // The clock stopped it, not density: keep the chunk, resume next step.
+        if (now() >= deadline) return out("PROBE_BUDGET");
         // Nothing closed this step: the next chunk is too dense for the budget.
         // Halve it (never below the floor) so the next step can close one.
         const ok = await commit({ ...cp, chunkBlocks: Math.max(MIN_ETH_CHUNK_BLOCKS, Math.floor(cp.chunkBlocks / 2)) });
@@ -233,6 +237,7 @@ export async function runEthHistoryBackfill(
         return fail("PROOF_PREMISES_UNMET", "the account is no longer a plain EOA", { restart: true, terminal: true });
       }
       if (caveats.includes("PAGE_BUDGET_EXHAUSTED")) {
+        if (now() >= deadline) return (await commit({ ...cp, forward: fw })) ? out("PROBE_BUDGET") : out("CONFLICT"); // the clock, not density: keep the chunk
         const ok = await commit({ ...cp, forward: { ...fw, chunkBlocks: Math.max(MIN_ETH_CHUNK_BLOCKS, Math.floor(fw.chunkBlocks / 2)) } });
         return ok ? out("PROBE_BUDGET") : out("CONFLICT");
       }

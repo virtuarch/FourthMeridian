@@ -23,7 +23,7 @@ import { History, Loader2, RotateCcw } from "lucide-react";
 import { OPERATOR_REASON_CODES, OPERATOR_NOTE_MAX, type OperatorReasonCode } from "@/lib/audit";
 import type { HistoryResumePreviewResponse, HistoryResumeResponse } from "@/app/api/platform/platform-ops/connections/[id]/history-resume/route";
 import { BTN, BTN_PRIMARY, BTN_NEUTRAL, FIELD } from "./policy-editor-kit";
-import { RECOVERY_PANEL_TITLE, RESUME_CONFIRM_TEXT, historyResumeUrl, previewLines, resultLines } from "./wallet-history-recovery-view";
+import { RECOVERY_PANEL_TITLE, RESUME_CONFIRM_TEXT, historyResumeUrl, previewLines, refusalNotice, resultLines } from "./wallet-history-recovery-view";
 
 /** Presentational — every state provable by handing it props. */
 export function HistoryResumeSurface({
@@ -43,6 +43,7 @@ export function HistoryResumeSurface({
   onCancel: () => void;
 }) {
   const ready = reason !== "" && note.trim() !== "";
+  const notice = preview ? refusalNotice(preview) : null;
   return (
     <section aria-label={RECOVERY_PANEL_TITLE} className="flex flex-col gap-2 border-t border-[var(--border-hairline)] pt-3">
       <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
@@ -57,8 +58,10 @@ export function HistoryResumeSurface({
           {previewLines(preview).map((l) => <li key={l}>{l}</li>)}
         </ul>
       )}
-      {preview && !preview.allowed && preview.refusal && !result && (
-        <p className="text-[11px] text-[var(--text-muted)]">Resume unavailable: {preview.refusal.message}</p>
+      {notice && !result && (
+        notice.warn
+          ? <p role="alert" className="text-[11px] text-[var(--brass-300)]">{notice.text}</p>
+          : <p className="text-[11px] text-[var(--text-muted)]">{notice.text}</p>
       )}
       {preview?.allowed && !result && (
         <div className="flex flex-col gap-2">

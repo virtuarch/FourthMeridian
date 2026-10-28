@@ -45,7 +45,7 @@ import { workerConfig, createRateLimiter } from "@/lib/crypto/sol-backfill-worke
 import { btcWorkerConfig } from "@/lib/crypto/btc-backfill-worker.core";
 import { ethWorkerConfig, probeBudgetFor } from "@/lib/crypto/eth-history-backfill.core";
 import {
-  decideEligibility, passBudget, summarizePass, stateView, chainCheckpointStatus, isResumableChain, REFUSAL_HTTP_STATUS, normalizeChain,
+  decideEligibility, passBudget, summarizePass, stateView, chainCheckpointStatus, isResumableChain, recoveryCodeOf, REFUSAL_HTTP_STATUS, normalizeChain,
   type WalletHistoryTarget, type ResumableChain, type PassLimits, type PassBudget, type PassResult,
   type RecoveryRefusal, type RecoveryRefusalCode, type HistoryStateView,
 } from "./wallet-history-recovery.core";
@@ -53,7 +53,7 @@ import {
 /** Must equal lib/refresh/wallet-lock.ts WALLET_LOCK_TTL_MS (pinned by the test). */
 export const RECOVERY_LOCK_TTL_MS = 360_000;
 /** The wall-clock bound of one operator pass (the route's maxDuration leaves headroom). */
-export const RECOVERY_PASS_BUDGET_MS = 90_000;
+export const RECOVERY_PASS_BUDGET_MS = 75_000;
 
 export interface WalletHistoryRecoveryDeps {
   now(): number;
@@ -110,6 +110,8 @@ export type ResumeOutcome =
       stoppedBecause: string; failureCode: string | null;
       requests: number; rowsWritten: number;
       moreWorkRemains: boolean; continuesAutomatically: boolean; regenerationPending: boolean;
+      /** The pass ran but its audit row could not be written (logged); the outcome is still the real one. */
+      auditFailed: boolean;
     }
   | { ok: false; status: number; refusal: RecoveryRefusal; connectionId: string; chain: string | null; before: HistoryStateView | null };
 
@@ -125,7 +127,7 @@ export async function previewWalletHistoryResume(connectionId: string, deps: Wal
   const status = el.status;
   const running = !!target?.lockedAt && nowMs - target.lockedAt.getTime() < RECOVERY_LOCK_TTL_MS;
   const base = {
-    connectionId, chain, history: stateView(status),
+    connectionId, chain, history: viewWithRecovery(target, chain, status),
     requestsToday: status?.requestsToday ?? 0, lastProgressAtISO: status?.lastProgressAtISO ?? null,
     workerEnabled: isResumableChain(chain) ? deps.workerEnabled(chain) : false,
   };
@@ -138,6 +140,13 @@ export async function previewWalletHistoryResume(connectionId: string, deps: Wal
     : running ? { code: "ALREADY_RUNNING", message: "A sync or the history worker is running on this wallet now; try again when it finishes." }
     : null;
   return { ...base, budget: view, running, allowed: refusal === null, refusal };
+}
+
+/** The status view plus the code that put it there (RECOVERY_REQUIRED's own code). */
+function viewWithRecovery(target: WalletHistoryTarget | null, chain: string | null, status: Parameters<typeof stateView>[0]): HistoryStateView | null {
+  const v = stateView(status);
+  if (!v || !target || !status || !isResumableChain(chain)) return v;
+  return { ...v, recoveryCode: recoveryCodeOf(target, chain, status) };
 }
 
 function budgetRefusal(chain: ResumableChain): RecoveryRefusal {
@@ -163,7 +172,7 @@ export async function resumeWalletHistory(
   const today = dayOf(startMs);
   const target = await deps.loadTarget(connectionId);
   const el = decideEligibility(target, { todayISO: today, workerEnabled: deps.workerEnabled });
-  const before = stateView(el.status);
+  const before = viewWithRecovery(target, el.chain, el.status);
 
   const envelope = (result: OperatorActionInput["result"], chain: string | null, after: HistoryStateView | null, detail: Record<string, unknown>): OperatorActionInput => ({
     actor: input.actor,
@@ -178,7 +187,10 @@ export async function resumeWalletHistory(
     userAgent: input.userAgent ?? null,
   });
   const refuse = async (refusal: RecoveryRefusal, chain: string | null, extra: Record<string, unknown> = {}): Promise<ResumeOutcome> => {
-    await deps.audit(envelope("REFUSED", chain, before, { outcome: "refused", refusal: refusal.code, requests: 0, ...extra }));
+    // A path id that names no connection gets no audit row (it would let any
+    // caller write arbitrary ids into the log); it is logged instead.
+    if (refusal.code === "NOT_FOUND" && target === null) console.warn("[wallet-history-recovery] resume refused: connection not found");
+    else await deps.audit(envelope("REFUSED", chain, before, { outcome: "refused", refusal: refusal.code, requests: 0, ...extra }));
     return { ok: false, status: REFUSAL_HTTP_STATUS[refusal.code], refusal, connectionId, chain, before };
   };
 
@@ -234,18 +246,27 @@ export async function resumeWalletHistory(
   const afterStatus = reread ? chainCheckpointStatus(reread, chain, dayOf(deps.now())) : null;
   const summary = summarizePass(afterStatus, pass, { workerEnabled: deps.workerEnabled(chain), regenerationPending });
 
-  await deps.audit(envelope(summary.result, chain, summary.after, {
-    outcome: summary.result === "SUCCESS" ? "resumed" : "failed",
-    stoppedBecause: pass.stoppedBecause, failureCode: pass.failureCode,
-    requests, rowsWritten: pass.rowsWritten,
-    moreWorkRemains: summary.moreWorkRemains, continuesAutomatically: summary.continuesAutomatically,
-    regenerationPending,
-  }));
+  // The pass already happened: a failed audit write must not turn its real
+  // outcome into a 500. Logged loudly and flagged on the result instead.
+  let auditFailed = false;
+  try {
+    await deps.audit(envelope(summary.result, chain, summary.after, {
+      outcome: summary.result === "SUCCESS" ? "resumed" : "failed",
+      stoppedBecause: pass.stoppedBecause, failureCode: pass.failureCode,
+      requests, rowsWritten: pass.rowsWritten,
+      moreWorkRemains: summary.moreWorkRemains, continuesAutomatically: summary.continuesAutomatically,
+      regenerationPending,
+    }));
+  } catch (e) {
+    auditFailed = true;
+    console.error(`[wallet-history-recovery] AUDIT WRITE FAILED after a pass on connection ${connectionId} (${chain}, ${summary.result}, ${requests} requests):`,
+      e instanceof Error ? e.message : String(e));
+  }
 
   return {
     ok: true, connectionId, chain, before: before!, after: summary.after, result: summary.result,
     stoppedBecause: pass.stoppedBecause, failureCode: pass.failureCode, requests, rowsWritten: pass.rowsWritten,
-    moreWorkRemains: summary.moreWorkRemains, continuesAutomatically: summary.continuesAutomatically, regenerationPending,
+    moreWorkRemains: summary.moreWorkRemains, continuesAutomatically: summary.continuesAutomatically, regenerationPending, auditFailed,
   };
 }
 
@@ -354,10 +375,16 @@ export function productionWalletHistoryRecoveryDeps(client: PrismaClient, env: R
 
 /** The worker's own limits for the chain: the shared daily cap (and ETH's step probe budget). */
 export function limitsFor(chain: ResumableChain, env: Record<string, string | undefined> = process.env): PassLimits {
-  if (chain === "BTC") return { dailyRequestCap: btcWorkerConfig(env).dailyRequestCap };
+  // Per pass: the worker's own per-wallet share of a run — its wallet budget at its request rate.
+  const share = (walletBudgetMs: number, rps: number) => Math.ceil((walletBudgetMs / 1000) * rps);
+  if (chain === "BTC") {
+    const btc = btcWorkerConfig(env);
+    return { dailyRequestCap: btc.dailyRequestCap, perPassRequestCap: share(btc.walletBudgetMs, btc.maxRequestsPerSecond) };
+  }
   // ETH spends the SAME Alchemy key as Solana, so the SAME cap (jobs/sol-history-backfill.ts).
   const sol = workerConfig(env);
-  return chain === "ETH" ? { dailyRequestCap: sol.dailyRequestCap, probeBudget: ethWorkerConfig(env).probeBudget } : { dailyRequestCap: sol.dailyRequestCap };
+  const base = { dailyRequestCap: sol.dailyRequestCap, perPassRequestCap: share(sol.walletBudgetMs, sol.maxRequestsPerSecond) };
+  return chain === "ETH" ? { ...base, probeBudget: ethWorkerConfig(env).probeBudget } : base;
 }
 
 /** One bounded pass on the chain's runner with `resume: true`, bound to THIS connection. */

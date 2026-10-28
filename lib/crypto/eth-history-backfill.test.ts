@@ -591,6 +591,25 @@ async function main() {
     const src = code(read("jobs", "sol-history-backfill.ts")) + code(read("lib", "crypto", "wallet-history-refresh.ts"));
     check("…and no automatic path passes resume", !/resume: true/.test(src));
 
+    // WALL-CLOCK BOUND: a slow provider (every JSON-RPC call costs 1 s here)
+    // cannot stretch a step past its deadline, whatever the probe budget —
+    // and a clock stop never halves the chunk (density did not stop it).
+    {
+      const sim3 = simulate({ events: EVENTS, head: HEAD, headTimeSec: T_HEAD });
+      const clock = { t: Date.parse(NOW_ISO) };
+      const slow: typeof sim3.transport = async (body) => { clock.t += (Array.isArray(body) ? body.length : 1) * 1_000; return sim3.transport(body); };
+      const timed = new MemoryStore(serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO)));
+      const chunk0 = timed.cp()!.chunkBlocks;
+      const t0 = clock.t;
+      const o3 = await runEthHistoryBackfill({ accountId: "a1", store: timed, todayISO: TODAY },
+        { probeBudget: 4_000, now: () => clock.t, deadlineMs: t0 + 60_000, eth: { transport: slow, batchSize: 3 } });
+      const overrun = clock.t - (t0 + 60_000);
+      // After the stop, only the evidence for changes ALREADY proven is read (≤ 2 calls each) — never another probe.
+      check("a 4,000-probe step on a slow provider stops at its deadline, not at its probe budget (no probe after it; only evidence for what was proven)",
+        o3.stoppedBecause === "PROBE_BUDGET" && overrun <= 10_000 && sim3.chain.probes < 100, `overrun ${overrun} ms, probes ${sim3.chain.probes}`);
+      check("…and the clock stop keeps the chunk size", timed.cp()!.chunkBlocks === chunk0);
+    }
+
     // A FAILED streak alone (transient provider failures) keeps the proof: the
     // operator resume clears the pause and continues BELOW the stored boundary.
     const sim2 = simulate({ events: EVENTS, head: HEAD, headTimeSec: T_HEAD });

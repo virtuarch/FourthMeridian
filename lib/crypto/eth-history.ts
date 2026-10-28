@@ -354,6 +354,14 @@ export interface EthHistoryDeps {
    * Observation only: it changes no request, no order and no decision.
    */
   meter?: Record<string, number>;
+  /**
+   * WALL-CLOCK BOUND (2026-10-28). No probe batch STARTS at or after this
+   * instant: the run stops exactly as at its probe budget (proven chunks kept,
+   * PAGE_BUDGET_EXHAUSTED when nothing closed). Absent ⇒ probe budget only.
+   */
+  deadlineMs?: number;
+  /** The clock `deadlineMs` is read against. Default Date.now. */
+  now?: () => number;
 }
 
 /**
@@ -578,6 +586,8 @@ export async function acquireEthHistory(
   const pauseMs     = deps.pauseMs ?? 0;
   const throttleRetries = deps.throttleRetries ?? 6;
   const sleepImpl   = deps.sleepImpl;
+  const deadlineMs  = deps.deadlineMs ?? Number.POSITIVE_INFINITY;
+  const clock       = deps.now ?? Date.now;
 
   const cursor: EthHistoryCursor = { ...(args.cursor ?? EMPTY_ETH_HISTORY_CURSOR) };
   const empty = (coverage: ChainCoverage): EthHistoryAcquisition => ({
@@ -624,6 +634,8 @@ export async function acquireEthHistory(
     const need = [...new Set(blocks)].filter((b) => !states.has(b));
     if (need.length === 0) return true;
     if (probesUsed + need.length > budget) { budgetExhausted = true; return false; }
+    // Time is a budget too: a slow provider must not stretch a bounded step.
+    if (clock() >= deadlineMs) { budgetExhausted = true; return false; }
 
     const calls: EthRpcCall[] = [];
     for (const b of need) {
@@ -639,6 +651,9 @@ export async function acquireEthHistory(
     // proof would abort on evidence that was merely in flight.
     const staged: unknown[] = new Array(calls.length);
     for (let i = 0; i < calls.length; i += batchSize) {
+      // …checked before EVERY batch: a partly-read probe is discarded (never
+      // committed to `states`), so stopping mid-probe proves nothing wrong.
+      if (i > 0 && clock() >= deadlineMs) { budgetExhausted = true; return false; }
       const slice = calls.slice(i, i + batchSize);
       const res = await callBatchWithBackoff(slice, transport, { retries: throttleRetries, sleepImpl });
       rpcReads += slice.length;

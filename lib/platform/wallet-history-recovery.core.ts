@@ -78,17 +78,53 @@ export interface WalletHistoryTarget {
 
 export type RecoveryRefusalCode =
   | "NOT_FOUND" | "NOT_A_WALLET" | "NOT_ACTIVE" | "NO_WALLET_ACCOUNT" | "UNSUPPORTED_CHAIN" | "NOT_HISTORY_LINK"
-  | "NO_CHECKPOINT" | "WRONG_STATE" | "WORKER_DISABLED" | "NOT_ADMITTED" | "BUDGET_EXHAUSTED" | "ALREADY_RUNNING";
+  | "NO_CHECKPOINT" | "WRONG_STATE" | "NEEDS_INVESTIGATION" | "WORKER_DISABLED" | "NOT_ADMITTED" | "BUDGET_EXHAUSTED" | "ALREADY_RUNNING";
 
 export const REFUSAL_HTTP_STATUS: Readonly<Record<RecoveryRefusalCode, number>> = {
   NOT_FOUND: 404,
   NOT_A_WALLET: 422, NO_WALLET_ACCOUNT: 422, UNSUPPORTED_CHAIN: 422, NOT_HISTORY_LINK: 422,
-  NOT_ACTIVE: 409, NO_CHECKPOINT: 409, WRONG_STATE: 409, WORKER_DISABLED: 409, BUDGET_EXHAUSTED: 409, ALREADY_RUNNING: 409,
+  NOT_ACTIVE: 409, NO_CHECKPOINT: 409, WRONG_STATE: 409, NEEDS_INVESTIGATION: 409, WORKER_DISABLED: 409, BUDGET_EXHAUSTED: 409, ALREADY_RUNNING: 409,
   // A platform condition (maintenance / ingestion paused), not a permissions problem.
   NOT_ADMITTED: 503,
 };
 
 export interface RecoveryRefusal { code: RecoveryRefusalCode; message: string }
+
+/**
+ * Failure / recovery codes that a resume would DETERMINISTICALLY repeat — the
+ * cause is a property of the wallet or the deployment, not of the provider's
+ * mood. Resuming them would only restart a (for ETH, multi-day) rebuild that
+ * ends exactly where it started, so they are refused with the reason and left
+ * for an operator to investigate. Codes only; transient ones stay resumable.
+ */
+export const DETERMINISTIC_FAILURES: Readonly<Record<string, string>> = {
+  // ETH: the address held ETH before the provable floor — the full rebuild reconciles against zero and cannot close.
+  BALANCE_BEFORE_PROVABLE_FLOOR: "This address already held ETH before the earliest block that can be proven; a rebuild cannot close. Investigate before resuming.",
+  // ETH: a contract wallet or a live EIP-7702 delegation — no interval can be proven (the daily automatic retry already covers a revoked delegation).
+  PROOF_PREMISES_UNMET: "This address is not a plain account (contract wallet or delegation); no history can be proven. The daily automatic retry covers a revoked delegation.",
+  // SOL: no Solana RPC is configured in this deployment.
+  NO_PROVIDER_CONFIGURED: "No history provider is configured in this deployment; configure it before resuming.",
+  // BTC: the wallet has no address to list (discovery has not produced one).
+  NO_ADDRESSES: "This wallet has no address to list yet; let address discovery finish before resuming.",
+};
+
+/**
+ * The code that put a checkpoint where it is: the recovery's own code (ETH
+ * `recovery.code`, BTC `recovery.reason`, SOL a gap ⇒ "HISTORY_GAP"), else the
+ * last failure code. Parsed from the chain's column; only the CODE leaves.
+ */
+export function recoveryCodeOf(target: Pick<WalletHistoryTarget, "cursor" | "historyCheckpoint">, chain: ResumableChain, status: WalletHistoryCheckpointStatus): string | null {
+  const raw = chain === "SOL" ? target.cursor : target.historyCheckpoint;
+  if (status.state === "RECOVERY_REQUIRED" && raw) {
+    try {
+      const v = JSON.parse(raw) as { recovery?: { code?: unknown; reason?: unknown } | null; gap?: unknown };
+      if (chain === "SOL" && v.gap) return "HISTORY_GAP";
+      const c = v.recovery?.code ?? v.recovery?.reason;
+      if (typeof c === "string" && /^[A-Z_]{1,64}$/.test(c)) return c;
+    } catch { /* fall through to the failure code */ }
+  }
+  return status.lastFailureCode;
+}
 
 /** The checkpoint status for THIS chain's column only — never another chain's relabelled. */
 export function chainCheckpointStatus(target: Pick<WalletHistoryTarget, "cursor" | "historyCheckpoint">, chain: ResumableChain, todayISO: string): WalletHistoryCheckpointStatus | null {
@@ -99,7 +135,7 @@ export function chainCheckpointStatus(target: Pick<WalletHistoryTarget, "cursor"
 }
 
 export type Eligibility =
-  | { ok: true; chain: ResumableChain; accountId: string; status: WalletHistoryCheckpointStatus }
+  | { ok: true; chain: ResumableChain; accountId: string; status: WalletHistoryCheckpointStatus; recoveryCode: string | null }
   | { ok: false; refusal: RecoveryRefusal; chain: string | null; status: WalletHistoryCheckpointStatus | null };
 
 /**
@@ -129,17 +165,30 @@ export function decideEligibility(
   if (!RESUMABLE_STATES.includes(status.state)) {
     return no("WRONG_STATE", `History is ${status.state}; only RECOVERY_REQUIRED or FAILED can be resumed (the worker carries the rest).`, chain, status);
   }
+  const recoveryCode = recoveryCodeOf(target, chain, status);
+  if (recoveryCode && DETERMINISTIC_FAILURES[recoveryCode]) {
+    return no("NEEDS_INVESTIGATION", `${recoveryCode}: ${DETERMINISTIC_FAILURES[recoveryCode]}`, chain, status);
+  }
   if (!ctx.workerEnabled(chain)) return no("WORKER_DISABLED", `The history worker is disabled for ${chain} in this environment.`, chain, status);
-  return { ok: true, chain, accountId: target.accountIds[0], status };
+  return { ok: true, chain, accountId: target.accountIds[0], status, recoveryCode };
 }
 
 /** The bounded configuration one operator pass runs under (from the chain's worker config). */
 export interface PassLimits {
   /** Provider requests per UTC day for this chain's provider (the worker's cap). */
   dailyRequestCap: number;
-  /** ETH: the configured per-step probe budget. */
+  /**
+   * SOL / BTC: the most ONE operator pass may send — the worker's own
+   * per-wallet share of a run (wallet budget × request rate). One click can
+   * never spend the shared daily cap, whatever is left of it.
+   */
+  perPassRequestCap: number;
+  /** ETH: the per-step probe budget, capped for an operator pass (OPERATOR_ETH_PROBE_CAP). */
   probeBudget?: number;
 }
+
+/** An operator ETH pass never probes more than this (≈ 60 s at the worker's default), whatever the env allows. */
+export const OPERATOR_ETH_PROBE_CAP = 1_500;
 
 export interface PassBudget {
   dailyRequestCap: number;
@@ -147,7 +196,7 @@ export interface PassBudget {
   usedToday: number;
   remaining: number;
   exhausted: boolean;
-  /** SOL / BTC: the pass's request allowance. */
+  /** SOL / BTC: the pass's request allowance — min(remaining today, the per-pass cap). */
   requestBudget: number;
   /** ETH: the pass's probe budget (each probe ≈ 3 calls + evidence). */
   probeBudget: number;
@@ -172,9 +221,10 @@ export function passBudget(
   else if (chain === "ETH") used = ledger ? pos(ledger.solana) + Math.max(pos(ledger.other), own) : own;
   else used = Math.max(ledger ? pos(ledger.solana) + pos(ledger.other) : 0, own);
   const remaining = Math.max(0, limits.dailyRequestCap - used);
-  const probeBudget = chain === "ETH" && probeBudgetFor ? probeBudgetFor(remaining, limits.probeBudget ?? 0) : 0;
+  const probeBudget = chain === "ETH" && probeBudgetFor ? probeBudgetFor(remaining, Math.min(limits.probeBudget ?? 0, OPERATOR_ETH_PROBE_CAP)) : 0;
   const exhausted = chain === "ETH" ? probeBudget <= 0 : remaining <= 0;
-  return { dailyRequestCap: limits.dailyRequestCap, usedToday: used, remaining, exhausted, requestBudget: chain === "ETH" ? 0 : remaining, probeBudget };
+  const requestBudget = chain === "ETH" ? 0 : Math.min(remaining, Math.max(0, limits.perPassRequestCap));
+  return { dailyRequestCap: limits.dailyRequestCap, usedToday: used, remaining, exhausted, requestBudget, probeBudget };
 }
 
 /** What one bounded pass reports (any chain), in facts only. */
@@ -190,6 +240,8 @@ export interface PassResult {
 export interface HistoryStateView {
   state: string;
   lastFailureCode: string | null;
+  /** RECOVERY_REQUIRED: the recovery's own code (else the last failure code). */
+  recoveryCode?: string | null;
   failures: number;
   verifiedFromISO: string | null;
   verifiedToISO: string | null;

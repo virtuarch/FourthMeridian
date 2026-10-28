@@ -29,12 +29,12 @@ import {
   resumeWalletHistory, previewWalletHistoryResume, limitsFor, RECOVERY_LOCK_TTL_MS,
   type WalletHistoryRecoveryDeps,
 } from "./wallet-history-recovery";
-import { decideEligibility, passBudget, summarizePass, type WalletHistoryTarget, type PassResult, type ResumableChain } from "./wallet-history-recovery.core";
+import { decideEligibility, passBudget, summarizePass, OPERATOR_ETH_PROBE_CAP, type WalletHistoryTarget, type PassResult, type ResumableChain } from "./wallet-history-recovery.core";
 import { emptyCheckpoint as emptySol, serializeCheckpoint as serSol, MAX_CONSECUTIVE_FAILURES } from "@/lib/crypto/sol-history-backfill.core";
 import { emptyCheckpoint as emptyBtc, serializeCheckpoint as serBtc } from "@/lib/crypto/btc-history-backfill.core";
 import { queuedCheckpoint, serializeCheckpoint as serEth, probeBudgetFor } from "@/lib/crypto/eth-history-backfill.core";
 import { runSolHistoryBackfill, type SolBackfillStore } from "@/lib/crypto/sol-history-backfill";
-import { resultLines, previewLines } from "@/components/platform/widgets/wallet-history-recovery-view";
+import { resultLines, previewLines, refusalNotice } from "@/components/platform/widgets/wallet-history-recovery-view";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -58,7 +58,11 @@ const SOL_FAILED = serSol({ ...solProgress, failures: MAX_CONSECUTIVE_FAILURES, 
 const SOL_RECOVERY = serSol({ ...solProgress, gap: { fromSlot: 120, toSlot: 140, detectedAtISO: NOW_ISO } as never });
 const SOL_IMPORTING = serSol({ ...solProgress });
 const BTC_FAILED = serBtc({ ...emptyBtc("acc1", NOW_ISO), failures: MAX_CONSECUTIVE_FAILURES, lastFailure: { code: "PROVIDER_THROTTLED", atISO: NOW_ISO, detail: "429" } } as never);
-const ETH_RECOVERY = serEth({ ...queuedCheckpoint("acc1", "NO_COVERAGE", NOW_ISO), failures: 6, lastFailure: { code: "BALANCE_BEFORE_PROVABLE_FLOOR", atISO: NOW_ISO },
+// A reconcile-failure recovery: resumable (the data may have been transient).
+const ETH_RECOVERY = serEth({ ...queuedCheckpoint("acc1", "NO_COVERAGE", NOW_ISO), failures: 6, reconcileFailures: 3, lastFailure: { code: "LEDGER_DOES_NOT_RECONCILE", atISO: NOW_ISO },
+  recovery: { code: "LEDGER_DOES_NOT_RECONCILE", atISO: NOW_ISO } });
+// A deterministic one: the address held ETH before the provable floor — a resume would fail the same way.
+const ETH_FLOOR = serEth({ ...queuedCheckpoint("acc1", "NO_COVERAGE", NOW_ISO), failures: 6, lastFailure: { code: "BALANCE_BEFORE_PROVABLE_FLOOR", atISO: NOW_ISO },
   recovery: { code: "BALANCE_BEFORE_PROVABLE_FLOOR", atISO: NOW_ISO } });
 
 function target(over: Partial<WalletHistoryTarget> = {}): WalletHistoryTarget {
@@ -70,6 +74,7 @@ function target(over: Partial<WalletHistoryTarget> = {}): WalletHistoryTarget {
 function world(t: WalletHistoryTarget | null, opts: {
   enabled?: boolean; admitted?: boolean; ledger?: { solana: number; other: number } | null; cap?: number;
   lockHeld?: boolean; pass?: PassResult | "UNBOUND" | "THROW"; after?: Partial<WalletHistoryTarget>; spend?: number;
+  perPass?: number; auditThrowsAfterPass?: boolean; loadThrows?: boolean;
   /** What changes on the connection at the instant the lock is claimed (a racing sync/worker). */
   onClaim?: Partial<WalletHistoryTarget>;
 } = {}) {
@@ -80,9 +85,12 @@ function world(t: WalletHistoryTarget | null, opts: {
   const deps: WalletHistoryRecoveryDeps = {
     now: () => NOW,
     workerEnabled: () => opts.enabled ?? true,
-    loadTarget: async (id) => (current && id === current.connectionId ? { ...current, lockedAt: lockedBy === null ? null : new Date(lockedBy) } : null),
+    loadTarget: async (id) => {
+      if (opts.loadThrows) throw new Error("db down");
+      return current && id === current.connectionId ? { ...current, lockedAt: lockedBy === null ? null : new Date(lockedBy) } : null;
+    },
     admit: async () => (opts.admitted ?? true) ? { admitted: true } : { admitted: false, reason: "MAINTENANCE_MODE", label: "Maintenance mode is on." },
-    limits: (chain) => ({ dailyRequestCap: opts.cap ?? 1_000, ...(chain === "ETH" ? { probeBudget: 1_500 } : {}) }),
+    limits: (chain) => ({ dailyRequestCap: opts.cap ?? 1_000, perPassRequestCap: opts.perPass ?? 10_000, ...(chain === "ETH" ? { probeBudget: 4_000 } : {}) }),
     probeBudgetFor,
     providerUsageToday: async () => (opts.ledger === undefined ? { solana: 0, other: 0 } : opts.ledger),
     claimLock: async (_id, stamp) => { log.claims++; if (lockedBy !== null && stamp - lockedBy < RECOVERY_LOCK_TTL_MS) return false; lockedBy = stamp; if (opts.onClaim && current) current = { ...current, ...opts.onClaim }; return true; },
@@ -96,7 +104,11 @@ function world(t: WalletHistoryTarget | null, opts: {
     },
     recordUsage: async (_chain, meter) => { log.usage.push({ ...meter }); },
     markRegenerationPending: async (_chain, _acc, fromISO) => { log.pending.push(fromISO); return true; },
-    audit: async (input) => { buildOperatorActionData(input); log.audits.push(input); }, // the envelope's own validation runs
+    audit: async (input) => {
+      buildOperatorActionData(input); // the envelope's own validation runs
+      if (opts.auditThrowsAfterPass && input.result !== "REFUSED") throw new Error("audit insert failed");
+      log.audits.push(input);
+    },
   };
   return { deps, log, lockedBy: () => lockedBy };
 }
@@ -152,7 +164,8 @@ async function main() {
       check(`${name} ⇒ ${codeWanted} (${status}), no lock, no pass`,
         !o.ok && o.refusal.code === codeWanted && o.status === status && w.log.claims === 0 && w.log.passes.length === 0,
         JSON.stringify(o));
-      check(`…and audited REFUSED on the named connection`, w.log.audits.length === 1 && w.log.audits[0].result === "REFUSED"
+      if (codeWanted === "NOT_FOUND") check("…and NO audit row for an id that names no connection (logged instead)", w.log.audits.length === 0);
+      else check(`…and audited REFUSED on the named connection`, w.log.audits.length === 1 && w.log.audits[0].result === "REFUSED"
         && w.log.audits[0].target.id === CONN && w.log.audits[0].detail?.refusal === codeWanted);
     }
   }
@@ -173,6 +186,21 @@ async function main() {
       const el = decideEligibility(t, { todayISO: TODAY, workerEnabled: () => true });
       check(`${name} is eligible`, el.ok, JSON.stringify(el.ok ? null : el.refusal));
     }
+    const wf = world(target({ chain: "ETH", cursor: null, historyCheckpoint: ETH_FLOOR }));
+    const of = await resume(wf.deps);
+    check("ETH RECOVERY_REQUIRED for BALANCE_BEFORE_PROVABLE_FLOOR ⇒ NEEDS_INVESTIGATION 409 naming the cause, nothing run",
+      !of.ok && of.refusal.code === "NEEDS_INVESTIGATION" && of.status === 409 && /BALANCE_BEFORE_PROVABLE_FLOOR/.test(of.refusal.message)
+        && wf.log.claims === 0 && wf.log.passes.length === 0 && wf.log.audits[0]?.result === "REFUSED");
+    const pf = await previewWalletHistoryResume(CONN, wf.deps);
+    const notice = refusalNotice(pf as never);
+    check("…and the panel shows it as a WARNING with the recovery reason", notice?.warn === true && /Needs investigation/.test(notice.text)
+      && pf.history?.recoveryCode === "BALANCE_BEFORE_PROVABLE_FLOOR");
+    const premises = serEth({ ...queuedCheckpoint("acc1", "NO_COVERAGE", NOW_ISO), failures: 6, lastFailure: { code: "PROOF_PREMISES_UNMET", atISO: NOW_ISO } });
+    const op = await resume(world(target({ chain: "ETH", cursor: null, historyCheckpoint: premises })).deps);
+    check("ETH FAILED for PROOF_PREMISES_UNMET (contract wallet) ⇒ NEEDS_INVESTIGATION", !op.ok && op.refusal.code === "NEEDS_INVESTIGATION");
+    const solNoProvider = serSol({ ...solProgress, failures: MAX_CONSECUTIVE_FAILURES, lastFailure: { code: "NO_PROVIDER_CONFIGURED", atISO: NOW_ISO, detail: "x" } });
+    const on = await resume(world(target({ cursor: solNoProvider })).deps);
+    check("SOL with no provider configured reads UNAVAILABLE and is refused (never resumed)", !on.ok && on.refusal.code === "WRONG_STATE" && /UNAVAILABLE/.test(on.refusal.message));
   }
 
   // ── 4. Worker flag ─────────────────────────────────────────────────────────
@@ -209,12 +237,12 @@ async function main() {
     const oe = await resume(we.deps);
     check("ETH: too little Alchemy left for one probe ⇒ BUDGET_EXHAUSTED", !oe.ok && oe.refusal.code === "BUDGET_EXHAUSTED" && we.log.passes.length === 0);
     // The checkpoint is never below its own usage, and an unreadable ledger falls back to it.
-    const b = passBudget("SOL", { dailyRequestCap: 1_000 }, null, 950);
+    const b = passBudget("SOL", { dailyRequestCap: 1_000, perPassRequestCap: 10_000 }, null, 950);
     check("an unreadable ledger falls back to the wallet's checkpoint usage", b.usedToday === 950 && b.remaining === 50 && !b.exhausted && b.requestBudget === 50);
-    const b2 = passBudget("SOL", { dailyRequestCap: 1_000 }, { solana: 100, other: 300 }, 500);
+    const b2 = passBudget("SOL", { dailyRequestCap: 1_000, perPassRequestCap: 10_000 }, { solana: 100, other: 300 }, 500);
     check("SOL usage = other networks + max(Solana ledger, checkpoint)", b2.usedToday === 800);
-    const b3 = passBudget("ETH", { dailyRequestCap: 10_000, probeBudget: 1_500 }, { solana: 2_000, other: 100 }, 400, probeBudgetFor);
-    check("ETH usage = Solana ledger + max(other, checkpoint); probe budget clamped to the step", b3.usedToday === 2_400 && b3.probeBudget === 1_500);
+    const b3 = passBudget("ETH", { dailyRequestCap: 10_000, perPassRequestCap: 0, probeBudget: 4_000 }, { solana: 2_000, other: 100 }, 400, probeBudgetFor);
+    check("ETH usage = Solana ledger + max(other, checkpoint); probe budget clamped to the operator cap", b3.usedToday === 2_400 && b3.probeBudget === OPERATOR_ETH_PROBE_CAP);
     check("the limits are the worker's own caps (ETH shares the Solana/Alchemy cap)",
       limitsFor("ETH", { SOL_BACKFILL_DAILY_REQUEST_CAP: "1234" }).dailyRequestCap === 1_234
         && limitsFor("SOL", { SOL_BACKFILL_DAILY_REQUEST_CAP: "1234" }).dailyRequestCap === 1_234
@@ -242,7 +270,7 @@ async function main() {
   console.log("8. a pass — bounded, metered, regeneration marked, lock released");
   {
     const afterCursor = serSol({ ...solProgress, licensedFromISO: "2024-06-01" }); // IMPORTING again, verified further back
-    const w = world(target(), { after: { cursor: afterCursor }, ledger: { solana: 100, other: 0 }, cap: 1_000 });
+    const w = world(target(), { after: { cursor: afterCursor }, ledger: { solana: 100, other: 0 }, cap: 1_000, perPass: 300 });
     const pre = await previewWalletHistoryResume(CONN, w.deps);
     check("the preview shows the failure, the verified range, progress and the budget before confirming",
       pre.allowed && pre.history?.state === "FAILED" && pre.history.lastFailureCode === "PROVIDER_TIMEOUT"
@@ -251,7 +279,15 @@ async function main() {
     const lines = previewLines(pre as never).join("\n");
     check("…rendered as sentences (state, failure, verified, budget, worker)", /FAILED — PROVIDER_TIMEOUT/.test(lines) && /900 of 1000/.test(lines) && /Worker for SOL: on/.test(lines));
     const o = await resume(w.deps);
-    check("the pass ran once with the remaining budget as its request allowance", o.ok && w.log.passes.length === 1 && w.log.passes[0].requestBudget === 900);
+    check("the pass ran once, its allowance capped PER PASS (300), not the 900 left today", o.ok && w.log.passes.length === 1 && w.log.passes[0].requestBudget === 300);
+    const big = world(target(), { cap: 1_000, perPass: 5_000 });
+    await resume(big.deps);
+    check("…and never above what is left today", big.log.passes[0]?.requestBudget === 1_000);
+    const eth = world(target({ chain: "ETH", cursor: null, historyCheckpoint: ETH_RECOVERY }), { cap: 1_000_000 });
+    await resume(eth.deps);
+    check("ETH: an operator pass probes at most OPERATOR_ETH_PROBE_CAP even when the env allows 4,000", eth.log.passes[0]?.probeBudget === OPERATOR_ETH_PROBE_CAP);
+    check("the per-pass cap is the worker's per-wallet share (wallet budget × rate)",
+      limitsFor("SOL", {}).perPassRequestCap === 600 && limitsFor("BTC", {}).perPassRequestCap === 240 && limitsFor("ETH", {}).perPassRequestCap === 600);
     check("…usage flushed to the shared ledger", w.log.usage.length === 1 && w.log.usage[0].getTransaction === 42);
     check("…the regeneration it owes is marked for the worker", w.log.pending.join() === "2025-03-01");
     check("…and the lock released (only as ours)", w.log.releases.length === 1 && w.lockedBy() === null);
@@ -285,6 +321,16 @@ async function main() {
     const o3 = await resume(w3.deps);
     check("a store binding another connection under the lock ⇒ NOT_HISTORY_LINK, released, audited REFUSED",
       !o3.ok && o3.refusal.code === "NOT_HISTORY_LINK" && w3.lockedBy() === null && w3.log.audits.at(-1)?.result === "REFUSED");
+    const wa = world(target(), { auditThrowsAfterPass: true, after: { cursor: SOL_IMPORTING } });
+    const oa = await resume(wa.deps);
+    check("an audit write that fails AFTER a real pass returns the real outcome flagged auditFailed (no 500), lock released",
+      oa.ok && oa.auditFailed === true && oa.result === "SUCCESS" && wa.lockedBy() === null && wa.log.usage.length === 1
+        && /audit record could not be written/.test(resultLines(oa as never).join("\n")));
+    const wl = world(target(), { loadThrows: true });
+    let threwLoad = false;
+    try { await resume(wl.deps); } catch { threwLoad = true; }
+    check("a target read that throws BEFORE the lock propagates with nothing claimed, run or audited",
+      threwLoad && wl.log.claims === 0 && wl.log.passes.length === 0 && wl.log.audits.length === 0);
     const s = summarizePass(null, { stoppedBecause: "X", rowsWritten: 0, impactedFromISO: null, failureCode: null }, { workerEnabled: true, regenerationPending: false });
     check("an unreadable after-state is never reported as success", s.result === "FAILURE" && s.moreWorkRemains);
     check("the audit action is on both operator feeds, under Platform Ops' providers workspace",
@@ -317,7 +363,7 @@ async function main() {
       /: \{ \.\.\.cp, failures: 0, lastFailure: null, mismatchStreak: 0 \};/.test(btc) && /licensedFromISO: cp\.licensedFromISO, licensedToISO: cp\.licensedToISO/.test(btc));
     const mod = code("lib/platform/wallet-history-recovery.ts") + code("lib/platform/wallet-history-recovery.core.ts")
       + code("app/api/platform/platform-ops/connections/[id]/history-resume/route.ts");
-    check("the recovery path builds no reset: no restartGeneration, no emptyCheckpoint, no delete, no replaceAll, no checkpoint write of its own",
+    check("the recovery MODULE builds no reset of its own (the runners' resume semantics are pinned above): no restartGeneration, no emptyCheckpoint, no delete, no replaceAll, no checkpoint write of its own",
       !/restartGeneration|emptyCheckpoint|deleteMany|\.delete\(|replaceAll|casHistoryCheckpoint|historyCheckpoint"\s*=|cursor:\s*null/.test(mod));
     check("every runner call passes resume: true and nothing else in the module does",
       (mod.match(/resume: true/g) ?? []).length === 3);

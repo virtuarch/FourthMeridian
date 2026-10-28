@@ -22,12 +22,24 @@ export function previewLines(p: HistoryResumePreviewResponse): string[] {
   const lines: string[] = [];
   if (h) {
     lines.push(`State: ${h.state}${h.lastFailureCode ? ` — ${h.lastFailureCode} (×${h.failures})` : ""}`);
+    if (h.recoveryCode && h.recoveryCode !== h.lastFailureCode) lines.push(`Recovery reason: ${h.recoveryCode}`);
     lines.push(`Verified: ${h.verifiedFromISO ? `${h.verifiedFromISO} → ${h.verifiedToISO ?? "—"}` : "nothing licensed yet"}`);
     lines.push(`Progress: ${h.processed.count} ${h.processed.unit}${h.headVerified ? ", head verified" : ""}`);
   }
   if (p.budget) lines.push(`Budget today: ${p.budget.remaining} of ${p.budget.dailyRequestCap} requests left (this wallet used ${p.requestsToday})`);
   lines.push(`Worker for ${p.chain ?? "this chain"}: ${p.workerEnabled ? "on" : "off"}`);
   return lines;
+}
+
+/**
+ * Why resume is not offered, and whether it is a WARNING (the cause would
+ * repeat deterministically — investigate) or a plain condition (try later).
+ */
+export function refusalNotice(p: HistoryResumePreviewResponse): { text: string; warn: boolean } | null {
+  if (p.allowed || !p.refusal) return null;
+  return p.refusal.code === "NEEDS_INVESTIGATION"
+    ? { text: `Needs investigation — resume would fail the same way. ${p.refusal.message}`, warn: true }
+    : { text: `Resume unavailable: ${p.refusal.message}`, warn: false };
 }
 
 /** The structured result of a pass, in sentences. */
@@ -38,6 +50,7 @@ export function resultLines(r: HistoryResumeResponse): string[] {
     `Verified back to: ${a?.verifiedFromISO ?? "—"}`,
     `Requests used: ${r.requests}; rows written: ${r.rowsWritten}`,
   ];
+  if (r.auditFailed) lines.push("Warning: the pass ran but its audit record could not be written — report this.");
   if (!r.moreWorkRemains) lines.push("History is complete — no further work.");
   else if (r.continuesAutomatically) lines.push(`More work remains and will continue automatically${r.regenerationPending ? " (wealth history regeneration is queued)" : ""}.`);
   else lines.push("More work remains and will NOT continue automatically — review the state above.");
