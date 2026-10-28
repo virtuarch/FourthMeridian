@@ -95,30 +95,34 @@ export function connectionHealth(
   const stale = !!h?.needsAttention && (h.state === "OUT_OF_DATE" || h.state === "SYNC_INCOMPLETE");
 
   if (connection.provider === "WALLET") {
+    // A. Monitoring  B. Current holdings  C. History import  D. Native history
+    // E. Token history  F. Historical prices  — separate lines, never one "healthy".
     lines.push(connection.state === "error"
-      ? { key: "connection", label: "Connection", tone: "attention", text: "This wallet can’t be updated right now" }
-      : { key: "connection", label: "Connection", tone: "ok", text: "Watching this public address" });
-    const pos = rel(i?.positionObservedAt, now);
+      ? { key: "connection", label: "Monitoring", tone: "attention", text: "This wallet can’t be read right now" }
+      : { key: "connection", label: "Monitoring", tone: "ok", text: "Watching this public address" });
+    const pos = fmtDay(i?.positionObservedAt);
     lines.push(pos
       ? { key: "holdings", label: "Current holdings", tone: stale ? "attention" : "ok", text: `Updated ${pos}` }
       : { key: "holdings", label: "Current holdings", tone: "neutral", text: "Not read yet" });
-    if (i?.transactionsSyncedAt) {
-      lines.push({ key: "transactions", label: "Transactions", tone: "ok", text: `Imported ${rel(i.transactionsSyncedAt, now)}` });
-    }
     const wh = i?.walletHistory;
+    const imp = historyImportText(wh?.historyImport?.state, i?.facts?.historyWorkerEnabled === true);
+    if (imp && wh?.historyImport?.state !== "COMPLETE") lines.push({ key: "import", label: "History import", tone: imp.tone, text: imp.text });
     if (wh) {
       lines.push(!wh.supported
-        ? { key: "history", label: "Historical coverage", tone: "neutral", text: "Not available for this network yet" }
+        ? { key: "history", label: "Native history", tone: "neutral", text: "Not available for this network yet" }
         : wh.licensed
-          // NATIVE scope only — token balances are a separate, unreconstructed facet.
-          ? { key: "history", label: "Historical coverage", tone: "ok", text: "Native coin history verified" }
-          : { key: "history", label: "Historical coverage", tone: "neutral", text: "Incomplete — current holdings are unaffected" });
+          ? { key: "history", label: "Native history", tone: "ok", text: `Verified since ${fmtDay(wh.activityFromISO ?? wh.licensedFromISO)}` }
+          : { key: "history", label: "Native history", tone: "neutral", text: "Not verified yet" });
+      if (wh.supported) lines.push({ key: "tokens", label: "Token history", tone: "neutral", text: "Not reconstructed" });
+      lines.push(wh.priceFromISO
+        ? { key: "prices", label: "Historical prices", tone: "ok", text: `Available since ${fmtDay(wh.priceFromISO)}` }
+        : { key: "prices", label: "Historical prices", tone: "neutral", text: "Not available yet" });
     }
     lines.push(i?.valuationIsReadTime
-      ? { key: "valuation", label: "Valuation", tone: "ok", text: "Priced at the current market rate when you view it" }
+      ? { key: "valuation", label: "Current value", tone: "ok", text: "Priced at the market rate when you view it" }
       : i?.valuationUpdatedAt
-        ? { key: "valuation", label: "Valuation", tone: "ok", text: `Updated ${rel(i.valuationUpdatedAt, now)}` }
-        : { key: "valuation", label: "Valuation", tone: "neutral", text: "Not valued yet" });
+        ? { key: "valuation", label: "Current value", tone: "ok", text: `Updated ${fmtDay(i.valuationUpdatedAt)}` }
+        : { key: "valuation", label: "Current value", tone: "neutral", text: "Not valued yet" });
   } else {
     const conn: HealthLine =
       connection.state === "needs_reauth" ? { key: "connection", label: "Connection", tone: "attention", text: "Needs reconnecting" }
@@ -128,32 +132,45 @@ export function connectionHealth(
     lines.push(conn);
     const bal = rel(i?.balancesUpdatedAt, now);
     lines.push(bal
-      ? { key: "balances", label: "Balances", tone: stale ? "attention" : "ok", text: `Updated ${bal}` }
+      ? { key: "balances", label: "Balances", tone: stale ? "attention" : "ok", text: `Updated ${fmtDay(i?.balancesUpdatedAt)}` }
       : { key: "balances", label: "Balances", tone: "neutral", text: "Not received yet" });
     lines.push(
       connection.state === "importing" ? { key: "transactions", label: "Transactions", tone: "progress", text: "Importing" }
       : connection.state === "import_paused" ? { key: "transactions", label: "Transactions", tone: "neutral", text: "Paused — resumes automatically" }
-      : connection.lastSyncedAt ? { key: "transactions", label: "Transactions", tone: stale ? "attention" : "ok", text: `Updated ${rel(connection.lastSyncedAt, now)}` }
+      : connection.lastSyncedAt ? { key: "transactions", label: "Transactions", tone: stale ? "attention" : "ok", text: `Updated ${fmtDay(connection.lastSyncedAt)}` }
       // No sync clock, but transactions are evidenced — say so; never contradict the state detail.
       : i?.earliestTransactionDate ? { key: "transactions", label: "Transactions", tone: "ok", text: "Available" }
       : { key: "transactions", label: "Transactions", tone: "neutral", text: "Not imported yet" });
     if (i) {
       lines.push(
-        i.phase === "BUILDING_INTELLIGENCE" ? { key: "history", label: "Financial history", tone: "progress", text: "Building" }
-        : i.phase === "INTELLIGENCE_NOT_BUILT" ? { key: "history", label: "Financial history", tone: "attention", text: "Not built yet" }
-        : i.intelligenceReady ? { key: "history", label: "Financial history", tone: "ok", text: i.lastReconstructedAt ? `Built ${rel(i.lastReconstructedAt, now)}` : "Built" }
-        : { key: "history", label: "Financial history", tone: "neutral", text: "Waiting for transactions" });
+        i.phase === "BUILDING_INTELLIGENCE" ? { key: "history", label: "Net Worth history", tone: "progress", text: "Being built" }
+        : i.phase === "INTELLIGENCE_NOT_BUILT" ? { key: "history", label: "Net Worth history", tone: "neutral", text: "Not built yet — rebuilt automatically after the next sync" }
+        : i.intelligenceReady ? { key: "history", label: "Net Worth history", tone: "ok", text: i.lastReconstructedAt ? `Built ${fmtDay(i.lastReconstructedAt)}` : "Built" }
+        : { key: "history", label: "Net Worth history", tone: "neutral", text: "Waiting for transactions" });
     }
     if (connection.investments === "enabled") lines.push({ key: "investments", label: "Investments", tone: "ok", text: "Holdings synced" });
     if (connection.investments === "available") lines.push({ key: "investments", label: "Investments", tone: "neutral", text: "Available to enable" });
   }
 
   const has = (t: ConnectionTone) => lines.some((l) => l.tone === t);
+  if (connection.provider === "WALLET") {
+    const attention = has("attention");
+    const importing = lines.some((l) => l.key === "import" && l.tone === "progress");
+    const limited = lines.some((l) => (l.key === "history" || l.key === "prices" || l.key === "import") && l.tone === "neutral")
+      || (i?.walletHistory?.licensed === true && (i.walletHistory.chart?.fromISO ?? "9999") > (i.walletHistory.activityFromISO ?? i.walletHistory.licensedFromISO ?? "0000"));
+    const headline = lines[0].tone === "attention" ? "This wallet needs attention"
+      : attention ? "Current holdings ready; history needs attention"
+      : importing ? "Current holdings ready; history is being imported"
+      : limited ? "Current holdings ready; some history is limited"
+      : "Current holdings ready";
+    // Limited history is NOT green: current holdings being right says nothing about history.
+    return { headline, tone: attention ? "attention" : importing ? "progress" : limited ? "neutral" : "ok", lines };
+  }
   const historyIncomplete = lines.some((l) => l.key === "history" && l.tone === "neutral" && /Incomplete/.test(l.text));
   const headline =
     lines[0].tone === "attention" ? "Connection needs attention"
     : has("attention") ? "Some data needs attention"
-    : has("progress") ? (connection.provider === "WALLET" ? "Current holdings available; history is still importing" : "Current balances available; historical transactions are still importing")
+    : has("progress") ? "Current balances available; historical transactions are still importing"
     : historyIncomplete ? "Current holdings available; historical coverage incomplete"
     : has("neutral") ? "Connected; some data isn’t available yet"
     : "Connected and up to date";
@@ -268,4 +285,35 @@ export function chartReadyRange(
   const fromISO = inRange[0], toISO = inRange[inRange.length - 1];
   const span = Math.round((Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${fromISO}T00:00:00Z`)) / 86_400_000) + 1;
   return { fromISO, toISO, days: inRange.length, continuous: inRange.length === span };
+}
+
+// ── Honest facts (owner requirement 2026-10-28: "everything should be honest") ─
+
+/** "Oct 28, 2026" — one absolute format across the detail, so nothing goes stale. */
+export function fmtDay(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso.length === 10 ? `${iso}T00:00:00Z` : iso);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+
+/** Customer words for the resumable history import state. Never a percentage. */
+export function historyImportText(state: string | null | undefined, workerEnabled: boolean): { text: string; tone: ConnectionTone } | null {
+  switch (state) {
+    case "QUEUED":            return { text: workerEnabled ? "Queued — starts automatically" : "Queued", tone: "neutral" };
+    case "IMPORTING":         return { text: workerEnabled ? "In progress — continues automatically" : "In progress", tone: "progress" };
+    case "COMPLETE":          return { text: "Complete for the native coin", tone: "ok" };
+    case "FAILED":            return { text: "Paused after repeated errors — retries daily", tone: "attention" };
+    case "RECOVERY_REQUIRED": return { text: "Needs attention — a gap was found", tone: "attention" };
+    case "UNAVAILABLE":       return { text: "Not available in this environment", tone: "neutral" };
+    default:                  return null;
+  }
+}
+
+/** Token history scope per chain — said plainly; never folded into "complete". */
+export function tokenScopeLabel(chain: string | null | undefined): string {
+  const k = chain?.trim().toUpperCase();
+  if (k === "SOL") return "SPL tokens not reconstructed";
+  if (k === "ETH") return "ERC-20 tokens not reconstructed";
+  if (k === "BTC") return "Not applicable (Bitcoin has no tokens here)";
+  return "Not reconstructed";
 }

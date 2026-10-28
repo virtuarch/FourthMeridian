@@ -12,7 +12,9 @@ const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
 const menu = read("components/connections/ConnectionMenu.tsx");
 check("ConnectionMenu: fetch failures are no longer swallowed by .catch(() => {})", !/\.catch\(\(\) => \{\}\)/.test(menu));
 check("ConnectionMenu: post() returns an error message on !res.ok", /if \(res\.ok\) return null;/.test(menu));
-check("ConnectionMenu: every action awaits post() and records a failure", (menu.match(/const err = await post\(/g) ?? []).length === 3 && (menu.match(/if \(err\) setFailure\(err\);/g) ?? []).length === 3);
+// Two actions since "Restore financial intelligence" left the customer menu (owner directive 2026-10-28).
+check("ConnectionMenu: every action awaits post() and records a failure", (menu.match(/const err = await post\(/g) ?? []).length === 2 && (menu.match(/if \(err\) setFailure\(err\);/g) ?? []).length === 2);
+check("ConnectionMenu: no customer 'Restore financial intelligence' (derived history rebuilds automatically)", !/Restore financial intelligence/.test(menu) && !/build-intelligence/.test(menu));
 check("ConnectionMenu: the failure renders as an alert", /role="alert"[\s\S]{0,80}\{failure\}|\{failure && \(\s*<p role="alert"/.test(menu));
 
 const sess = read("components/security/ActiveSessions.tsx");

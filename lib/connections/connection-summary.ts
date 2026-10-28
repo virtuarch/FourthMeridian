@@ -73,7 +73,16 @@ export function summarizeConnection(
       // A wallet whose current holdings are fresh but whose history is not
       // proven is NOT simply "up to date" (Connections detail refinement).
       const wh = intelligence?.walletHistory;
-      if (connection.provider === "WALLET" && wh?.supported && !wh.licensed) return word("History incomplete", "neutral");
+      if (connection.provider === "WALLET") {
+        // The badge speaks for CURRENT holdings and says what history is doing —
+        // never an unqualified "Up to date" that reads as "everything is done".
+        const imp = wh?.historyImport?.state;
+        if (imp === "FAILED" || imp === "RECOVERY_REQUIRED") return word("History needs attention", "attention");
+        if (imp === "IMPORTING") return word("Importing history", "progress");
+        if (imp === "QUEUED") return word("History queued", "neutral");
+        if (wh?.supported && !wh.licensed) return word("History incomplete", "neutral");
+        return word("Holdings current", "ok");
+      }
       return word("Up to date", "ok");
     }
   }

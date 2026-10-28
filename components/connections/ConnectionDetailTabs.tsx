@@ -24,8 +24,9 @@ import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "rea
 import { Building2, ChevronDown, Wallet } from "lucide-react";
 import type { SyncConnection } from "@/lib/sync/status";
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
-import { summarizeConnection, relativeUpdated, type ConnectionTone } from "@/lib/connections/connection-summary";
+import { summarizeConnection, type ConnectionTone } from "@/lib/connections/connection-summary";
 import {
+  fmtDay, tokenScopeLabel,
   groupAccounts, connectionHealth, connectionHistory, abbreviateAddress, networkName, nativeAssetSymbol,
   type HistoryView,
 } from "@/lib/connections/connection-detail.core";
@@ -238,12 +239,15 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
                 ["Network", networkName(walletAccount?.chain)],
                 ["Wallet", walletAccount?.publicAddress ? <span className="font-mono text-xs">{abbreviateAddress(walletAccount.publicAddress)}</span> : null],
                 ["Assets tracked", nativeAssetSymbol(walletAccount?.chain) ? `${nativeAssetSymbol(walletAccount?.chain)} (native)` : null],
-                ["Holdings updated", intelligence?.positionObservedAt ? relativeUpdated(intelligence.positionObservedAt, now) : "Not read yet"],
-                ["History", coverageLine(history)],
+                ["Current holdings", intelligence?.positionObservedAt ? `Updated ${fmtDay(intelligence.positionObservedAt)}` : "Not read yet"],
+                ["Native history", history.blockchain && history.fromISO ? `Verified since ${fmtDay(history.fromISO)}` : coverageLine(history)],
+                ["Token history", tokenScopeLabel(walletAccount?.chain)],
+                ["Chart-ready history", history.chart ? `Since ${fmtDay(history.chart.fromISO)}` : "Not available yet"],
               ] : [
                 // Source and account count are in the identity line above.
-                ["Last updated", summary.updatedAt ? relativeUpdated(summary.updatedAt, now) : "Not yet"],
+                ["Last updated", summary.updatedAt ? fmtDay(summary.updatedAt) : "Not yet"],
                 ["History", coverageLine(history)],
+                ["Used in", intelligence?.facts?.destinations.length ? intelligence.facts.destinations.join(", ") : null],
               ]} />
               {!wallet && (
                 <>
@@ -289,11 +293,13 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
                     ? `USD-valued since ${fmtDate(history.chart.fromISO)} (${history.chart.days} day${history.chart.days === 1 ? "" : "s"}${history.chart.continuous ? "" : ", with gaps"})`
                     : "Not available yet"],
                   ["Chart through", history.chart ? fmtDate(history.chart.toISO) : null],
-                  ["Last built", history.lastBuiltISO ? relativeUpdated(history.lastBuiltISO, now) : null],
+                  ["Token history", tokenScopeLabel(walletAccount?.chain)],
+                  ["On-chain transactions", intelligence?.facts?.onChain ? `${intelligence.facts.onChain.processed.toLocaleString("en-US")} processed (${intelligence.facts.onChain.scope})` : null],
+                  ["Last history update", (intelligence?.walletHistory?.historyImport?.lastProgressAtISO ?? history.lastBuiltISO) ? fmtDay(intelligence?.walletHistory?.historyImport?.lastProgressAtISO ?? history.lastBuiltISO) : null],
                 ] : [
                   ["Earliest", history.fromISO ? fmtDate(history.fromISO) : null],
                   ["Through", history.toISO ? fmtDate(history.toISO) : null],
-                  ["Last built", history.lastBuiltISO ? relativeUpdated(history.lastBuiltISO, now) : null],
+                  ["Last built", history.lastBuiltISO ? fmtDay(history.lastBuiltISO) : null],
                   ["Coverage", coverageLine(history)],
                 ]} />
               </div>

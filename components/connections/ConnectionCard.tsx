@@ -22,8 +22,7 @@
  * Presentational; live state comes from the parent ConnectionsList poller.
  */
 
-import { createContext, useContext, useState } from "react";
-import { useRouter } from "next/navigation";
+import { createContext, useContext } from "react";
 import {
   CheckCircle2,
   Circle,
@@ -512,8 +511,9 @@ function ImportPausedContent({
 // ── Timeline not built (transactions ready, nothing building it) ─────────────
 // Transactions are complete but no reconstruction is recorded and nothing is
 // running to produce one. Saying "this finishes in the background" here was the
-// lie; the honest card offers the rebuild — the same action as the ⋯ menu's
-// "Restore financial intelligence" (POST /api/connections/build-intelligence).
+// lie. It offers NO rebuild button: building derived history is not a customer
+// chore (owner directive 2026-10-28). It is rebuilt automatically after the next
+// bank sync (jobs/sync-banks regenerates every synced item's history).
 function TimelineNotBuiltContent({
   connection,
   accounts,
@@ -523,46 +523,23 @@ function TimelineNotBuiltContent({
   accounts:     AccountLite[];
   intelligence: ConnectionIntelligenceStatus;
 }) {
-  const router = useRouter();
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const tx = intelligence.facts?.bankTransactions ?? null;
   const stages: Stage[] = [
-    { label: "Transactions available", value: String(accounts.length) + (accounts.length === 1 ? " account" : " accounts"), status: "done" },
-    { label: "Accounts connected", status: "done" },
-    { label: "Financial timeline not built yet", status: "pending" },
+    { label: "Accounts connected", value: String(accounts.length) + (accounts.length === 1 ? " account" : " accounts"), status: "done" },
+    { label: "Transactions imported", ...(tx ? { value: tx.count.toLocaleString("en-US") } : {}), status: "done" },
+    { label: "Net Worth history not built yet", status: "pending" },
   ];
   const available = formatAvailableHistory(intelligence.availableHistory);
-  async function build() {
-    setBusy(true); setFailed(false);
-    const res = await fetch("/api/connections/build-intelligence", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ connectionIds: [connection.id] }),
-    }).catch(() => null);
-    setBusy(false);
-    if (!res || !res.ok) { setFailed(true); return; }
-    router.refresh();
-  }
   return (
     <div className="flex flex-col">
-      <EyebrowHeading eyebrow="Timeline not built" institution={connection.institution} />
+      <EyebrowHeading eyebrow="Net Worth history not built" institution={connection.institution} />
       <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
-        Your transactions are available, but your financial timeline hasn’t been built and nothing is building it right now.
+        Your transactions are imported. Fourth Meridian builds your Net Worth history from them automatically after the next sync — there is nothing you need to do.
       </p>
       <StageStepper stages={stages} />
       {available !== "No historical data yet" && (
-        <p className="mt-2 text-xs text-[var(--text-muted)]">{available} of history available</p>
+        <p className="mt-2 text-xs text-[var(--text-muted)]">{available} of transactions imported</p>
       )}
-      <div className="mt-3 flex items-center gap-3">
-        <button
-          type="button"
-          onClick={build}
-          disabled={busy}
-          className="rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 py-1.5 text-sm text-[var(--text-primary)] disabled:opacity-60"
-        >
-          {busy ? "Building your timeline…" : "Build timeline"}
-        </button>
-        {failed && <span className="text-xs text-[var(--text-muted)]">Couldn’t start the build — try again.</span>}
-      </div>
       <AccountNames accounts={accounts} />
     </div>
   );
@@ -717,7 +694,7 @@ function ReadyContent({
       <AccountNames accounts={accounts} />
 
       {/* CONN-2D — provider-neutral lifecycle timeline (collapsible). */}
-      {intelligence && <ConnectionTimeline intelligence={intelligence} />}
+      {intelligence && <ConnectionTimeline intelligence={intelligence} provider={connection.provider} />}
     </div>
   );
 }
@@ -995,7 +972,7 @@ export function ConnectionDetail({ connection, accounts, intelligence, slow }: P
             accounts={accounts}
             intelligence={intelligence}
             healthExtra={<>{content}{walletActions}</>}
-            historyExtra={<>{intelligence && <ConnectionTimeline intelligence={intelligence} />}{importAction}</>}
+            historyExtra={<>{intelligence && <ConnectionTimeline intelligence={intelligence} provider={connection.provider} />}{importAction}</>}
           />
         </div>
       </InTabs.Provider>
