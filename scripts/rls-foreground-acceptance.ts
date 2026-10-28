@@ -302,7 +302,9 @@ async function main(): Promise<void> {
   check(24, "[connections] Alice sees her connection; the SAME loader run in Bob's session with ALICE'S userId returns none of hers",
     aliceConn.status.connections.some((c) => c.id === "pi_alice")
     && bobAsAlice.status.connections.length === 0 && Object.keys(bobAsAlice.accountsByConnectionId).length === 0
-    && bobPoll.status.connections.length === 0,
+    && bobPoll.status.connections.length === 0
+    // Connections 2.0 — the manual-asset read is owner-gated the same way.
+    && bobAsAlice.manualAssets.length === 0,
     `alice=${aliceConn.status.connections.map((c) => c.id).join()} bobAsAlice=${bobAsAlice.status.connections.length}`);
 
   // ════════════════════════════════════════════════════════════════════════

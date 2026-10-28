@@ -42,6 +42,14 @@
  * SEPARATE bounded context — admin-only, aggregate, no-PII, staleness-aware
  * (STALE/DEGRADED) — and is intentionally NOT merged in here.
  *
+ * CONNECTIONS 2.0 — REAL ASSETS. The user's own manual assets (a home, a car)
+ * join the envelope as `manualAssets` (lib/connections/real-assets.ts), read in
+ * the same tenant phase with the same ownership predicate (`ownerUserId = me`).
+ * They are not connections and never enter `status`. Each carries its VALUE —
+ * the owner-approved carve-out: that figure is the user's own typed estimate,
+ * not a portfolio read, and provider rows stay names-only. They are read for the
+ * page only; the 4 s poller (loadConnectionsSyncStatus) never reads them.
+ *
  * POSITION / HOLDING COUNTS are intentionally OUT OF CONTRACT. Position counts
  * (countCurrentPositionsByAccount) are valuation-derived portfolio data; reading
  * them here would re-make Connections a portfolio consumer, the exact thing PCS-2
@@ -76,6 +84,8 @@ import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
 // CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
 // here rather than re-decided, so a valuation clock is only claimed where one exists.
 import { usesLegacyColumnForCurrentValue } from "@/lib/crypto/wallet-sync-dispatch";
+import { loadConnectionsManualAssets } from "@/lib/connections/real-assets";
+import type { ManualAssetLite } from "@/lib/connections/real-assets.core";
 
 /**
  * The canonical Connections view model. `status` is the provider-agnostic
@@ -95,6 +105,8 @@ export interface ConnectionsSpaceData {
    * SyncConnection.id, same id space as accountsByConnectionId.
    */
   intelligenceByConnectionId: Record<string, ConnectionIntelligenceStatus>;
+  /** Connections 2.0 — the user's own manual assets (owner-gated), with their estimate. */
+  manualAssets: ManualAssetLite[];
 }
 
 /**
@@ -447,7 +459,7 @@ async function loadConnectionIntelligence(
  * derive state differently.
  */
 export async function loadConnectionsSyncStatus(client: ReadClient, userId: string): Promise<ConnectionsSyncView> {
-  const { status, intelligenceByConnectionId } = await loadConnectionsSpaceData(client, userId);
+  const { status, intelligenceByConnectionId } = await loadProviderConnections(client, userId);
   return { status, intelligenceByConnectionId };
 }
 
@@ -477,6 +489,14 @@ export async function loadConnectionsSyncStatus(client: ReadClient, userId: stri
  * lib/platform/, not a default this module falls into.
  */
 export async function loadConnectionsSpaceData(client: ReadClient, userId: string): Promise<ConnectionsSpaceData> {
+  const providers = await loadProviderConnections(client, userId);
+  // Connections 2.0 — the user's own manual assets, same phase, same owner gate.
+  const manualAssets = await loadConnectionsManualAssets(client, userId);
+  return { ...providers, manualAssets };
+}
+
+/** Provider connections only (Plaid + wallet) — the page and the poller share it. */
+async function loadProviderConnections(client: ReadClient, userId: string): Promise<Omit<ConnectionsSpaceData, "manualAssets">> {
   const [items, wallet] = await Promise.all([
     client.plaidItem.findMany({
       where:   { userId, status: { not: PlaidItemStatus.REVOKED } },
