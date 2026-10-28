@@ -43,7 +43,7 @@ const TABS: Array<{ key: TabKey; label: string }> = [
 const fmtDate = (iso: string) =>
   new Date(iso.length === 10 ? `${iso}T00:00:00Z` : iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 
-function Badge({ tone, children }: { tone: ConnectionTone; children: ReactNode }) {
+export function Badge({ tone, children }: { tone: ConnectionTone; children: ReactNode }) {
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full border border-[var(--border-hairline)] px-2 py-0.5 text-xs ${WORD[tone]}`}>
       <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${DOT[tone]}`} />
@@ -52,7 +52,7 @@ function Badge({ tone, children }: { tone: ConnectionTone; children: ReactNode }
   );
 }
 
-function Facts({ rows }: { rows: Array<[string, ReactNode] | null | false> }) {
+export function Facts({ rows }: { rows: Array<[string, ReactNode] | null | false> }) {
   const shown = rows.filter((r): r is [string, ReactNode] => !!r && r[1] !== null && r[1] !== undefined && r[1] !== "");
   return (
     <dl className="divide-y divide-[var(--border-hairline)] rounded-[var(--radius-md)] border border-[var(--border-hairline)]">
@@ -66,7 +66,7 @@ function Facts({ rows }: { rows: Array<[string, ReactNode] | null | false> }) {
   );
 }
 
-function SectionLabel({ children }: { children: ReactNode }) {
+export function SectionLabel({ children }: { children: ReactNode }) {
   return <h3 className="mb-2 mt-5 text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{children}</h3>;
 }
 
@@ -124,6 +124,78 @@ function AccountGroups({ accounts }: { accounts: AccountLite[] }) {
   );
 }
 
+/**
+ * Connections 2.0 — the tab primitive, shared by a provider connection's detail
+ * and a manual asset's (ManualAssetDetail), so both drawers have the same
+ * WAI-ARIA tabs, keyboard model and spacing. Only the selected panel renders.
+ */
+export function DetailTabs<K extends string>({ tabs, tab, onTab, label, render }: {
+  tabs:   ReadonlyArray<{ key: K; label: string }>;
+  tab:    K;
+  onTab:  (key: K) => void;
+  label:  string;
+  render: (key: K) => ReactNode;
+}) {
+  const tabRefs = useRef<Partial<Record<K, HTMLButtonElement | null>>>({});
+  const base = useId();
+
+  function onKey(e: KeyboardEvent<HTMLDivElement>) {
+    const i = tabs.findIndex((t) => t.key === tab);
+    const next =
+      e.key === "ArrowRight" ? tabs[(i + 1) % tabs.length]
+      : e.key === "ArrowLeft" ? tabs[(i + tabs.length - 1) % tabs.length]
+      : e.key === "Home" ? tabs[0] : e.key === "End" ? tabs[tabs.length - 1] : null;
+    if (!next) return;
+    e.preventDefault();
+    onTab(next.key);
+    tabRefs.current[next.key]?.focus();
+  }
+
+  return (
+    <>
+      <div role="tablist" aria-label={label} onKeyDown={onKey}
+        className="mt-4 flex gap-1 rounded-[var(--radius-md)] border border-[var(--border-hairline)] p-1">
+        {tabs.map((t) => {
+          const selected = t.key === tab;
+          return (
+            <button
+              key={t.key}
+              ref={(el) => { tabRefs.current[t.key] = el; }}
+              type="button"
+              role="tab"
+              id={`${base}-tab-${t.key}`}
+              aria-selected={selected}
+              aria-controls={`${base}-panel-${t.key}`}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => onTab(t.key)}
+              className={`min-h-10 flex-1 rounded-[var(--radius-sm)] px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] ${
+                selected ? "bg-[var(--surface-hover-strong)] font-medium text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+              }`}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {tabs.map((t) => (
+        <div
+          key={t.key}
+          role="tabpanel"
+          id={`${base}-panel-${t.key}`}
+          aria-labelledby={`${base}-tab-${t.key}`}
+          hidden={t.key !== tab}
+          tabIndex={0}
+          data-connection-tab={t.key}
+          className="mt-4 focus-visible:outline-none"
+        >
+          {t.key === tab && render(t.key)}
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function ConnectionDetailTabs({ connection, accounts, intelligence, healthExtra, historyExtra }: {
   connection: SyncConnection;
   accounts: AccountLite[];
@@ -134,8 +206,6 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
   historyExtra: ReactNode;
 }) {
   const [tab, setTab] = useState<TabKey>("overview");
-  const tabRefs = useRef<Record<TabKey, HTMLButtonElement | null>>({ overview: null, health: null, history: null });
-  const base = useId();
   const now = new Date();
   const summary = summarizeConnection(connection, intelligence, accounts.length);
   const health = connectionHealth(connection, intelligence, now);
@@ -143,18 +213,6 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
   const wallet = connection.provider === "WALLET";
   const walletAccount = wallet ? accounts[0] : undefined;
   const Icon = wallet ? Wallet : Building2;
-
-  function onKey(e: KeyboardEvent<HTMLDivElement>) {
-    const i = TABS.findIndex((t) => t.key === tab);
-    const next =
-      e.key === "ArrowRight" ? TABS[(i + 1) % TABS.length]
-      : e.key === "ArrowLeft" ? TABS[(i + TABS.length - 1) % TABS.length]
-      : e.key === "Home" ? TABS[0] : e.key === "End" ? TABS[TABS.length - 1] : null;
-    if (!next) return;
-    e.preventDefault();
-    setTab(next.key);
-    tabRefs.current[next.key]?.focus();
-  }
 
   return (
     // Phone: the sheet opens near-full height so it reads as a page, not a peek.
@@ -172,43 +230,9 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
         <Badge tone={summary.tone}>{summary.status}</Badge>
       </div>
 
-      <div role="tablist" aria-label="Connection detail" onKeyDown={onKey}
-        className="mt-4 flex gap-1 rounded-[var(--radius-md)] border border-[var(--border-hairline)] p-1">
-        {TABS.map((t) => {
-          const selected = t.key === tab;
-          return (
-            <button
-              key={t.key}
-              ref={(el) => { tabRefs.current[t.key] = el; }}
-              type="button"
-              role="tab"
-              id={`${base}-tab-${t.key}`}
-              aria-selected={selected}
-              aria-controls={`${base}-panel-${t.key}`}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => setTab(t.key)}
-              className={`min-h-10 flex-1 rounded-[var(--radius-sm)] px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] ${
-                selected ? "bg-[var(--surface-hover-strong)] font-medium text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-              }`}
-            >
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {TABS.map((t) => (
-        <div
-          key={t.key}
-          role="tabpanel"
-          id={`${base}-panel-${t.key}`}
-          aria-labelledby={`${base}-tab-${t.key}`}
-          hidden={t.key !== tab}
-          tabIndex={0}
-          data-connection-tab={t.key}
-          className="mt-4 focus-visible:outline-none"
-        >
-          {t.key === "overview" && t.key === tab && (
+      <DetailTabs tabs={TABS} tab={tab} onTab={setTab} label="Connection detail" render={(key) => (
+        <>
+          {key === "overview" && (
             <>
               <Facts rows={wallet ? [
                 ["Network", networkName(walletAccount?.chain)],
@@ -230,7 +254,7 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
             </>
           )}
 
-          {t.key === "health" && t.key === tab && (
+          {key === "health" && (
             <>
               <p className={`flex items-center gap-2 text-sm font-medium ${health.tone === "ok" ? "text-[var(--text-primary)]" : WORD[health.tone]}`}>
                 <span aria-hidden className={`h-2 w-2 rounded-full ${DOT[health.tone]}`} />
@@ -251,7 +275,7 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
             </>
           )}
 
-          {t.key === "history" && t.key === tab && (
+          {key === "history" && (
             <>
               <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{history.summary}</p>
               <div className="mt-3">
@@ -282,8 +306,8 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
               <div className="mt-4">{historyExtra}</div>
             </>
           )}
-        </div>
-      ))}
+        </>
+      )} />
     </div>
   );
 }

@@ -79,7 +79,7 @@ console.log("the wiring");
     /if \(welcome && !\(await isRouterPrefetch\(\)\)\) \{\s*await recordOnboardingEvent\(userId, "presented"\)\.catch\(/.test(conn) && !/"presented"/.test(view));
   check("Explore hides the rail invitation in this tab too (the rail outlives the client navigation)",
     /import \{ dismissNotice \} from "@\/components\/notices\/NoticeRail"/.test(view) && !/fetch\("\/api\/onboarding"/.test(view));
-  check("the empty-state heading holds when only manual assets exist (they are not connections)", !/"Add your first account"/.test(view));
+  check("the empty-state heading never claims a first account (manual assets now list in Connections)", !/"Add your first account"/.test(view));
   check("starting a first connection leaves the one-shot ready handoff", (view.match(/noteFirstConnectStarted\(\)/g) ?? []).length === 2);
   check("never asks for a seed phrase or key; says connecting is optional", /Never enter a seed phrase or private key/.test(view) && /Connecting is optional/.test(view));
   const wallet = code("components/dashboard/AddWalletModal.tsx");
@@ -88,6 +88,14 @@ console.log("the wiring");
     && /Never enter a seed phrase or private key\./.test(wallet));
   const dash = code("components/connections/ConnectionsSpaceDashboard.tsx");
   check("Connections' empty state is the onboarding view", /<ConnectionsOnboarding/.test(dash));
+  // Connections 2.0 (owner-approved) — real assets are now LISTED in Connections,
+  // so a user whose only entries are manual assets sees the list with the Real
+  // assets category instead of "Connect an account": the onboarding view stays
+  // the empty state only when there is nothing at all. (The rule above — the
+  // heading does not claim "first account" — still holds for that empty state.)
+  check("only-manual-assets ⇒ the list (Real assets), not the onboarding view",
+    /const hasConnections = status\.connections\.length > 0 \|\| manualAssets\.length > 0;/.test(dash)
+      && /hasConnections \? \(\s*<ConnectionsList[\s\S]*?manualAssets=\{manualAssets\}/.test(dash));
 }
 
 if (failures > 0) {

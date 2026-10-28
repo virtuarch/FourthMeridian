@@ -12,6 +12,10 @@
  * inside loadConnectionsSpaceData — no balances, no visibility redaction, no
  * institution-string grouping. See that module's header for the full rationale.
  *
+ * Connections 2.0 — the same read also returns the user's own manual assets
+ * (`manualAssets`, owner-gated, with the user's estimate), so a home or a car
+ * added here is listed here again under Real assets.
+ *
  * This route is additive: /dashboard/accounts is untouched.
  */
 
@@ -43,7 +47,7 @@ export default async function ConnectionsPage({ searchParams }: { searchParams: 
   // RLS-PREP-C — one tenant phase around the whole read. The loader used to
   // reach the migration principal on this page's behalf; it now takes the
   // authority it runs under, and this is it. Pure reads, no network.
-  const { status, accountsByConnectionId, intelligenceByConnectionId } =
+  const { status, accountsByConnectionId, intelligenceByConnectionId, manualAssets } =
     await withTenantDb(userId, (tx) => loadConnectionsSpaceData(tx, userId), { timeout: CONNECTIONS_PHASE_TIMEOUT_MS });
   // The welcome records itself as shown HERE, on the server, so the one-time
   // redirect can never repeat because a client call failed or was blocked.
@@ -60,6 +64,7 @@ export default async function ConnectionsPage({ searchParams }: { searchParams: 
       status={status}
       accountsByConnectionId={accountsByConnectionId}
       intelligenceByConnectionId={intelligenceByConnectionId}
+      manualAssets={manualAssets}
       plaidEnabled={env.isPlaidEnabled}
       welcome={welcome}
       firstName={me?.firstName ?? me?.name?.split(" ")[0] ?? null}
