@@ -165,7 +165,7 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-sm text-[var(--text-secondary)]">
-            {wallet ? `${networkName(walletAccount?.walletChain) ?? "Crypto"} wallet · watch-only` : `${summary.provider} · ${summary.accountsLabel}`}
+            {wallet ? `${networkName(walletAccount?.chain) ?? "Crypto"} wallet · watch-only` : `${summary.provider} · ${summary.accountsLabel}`}
           </p>
         </div>
         <Badge tone={summary.tone}>{summary.status}</Badge>
@@ -210,9 +210,9 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
           {t.key === "overview" && t.key === tab && (
             <>
               <Facts rows={wallet ? [
-                ["Network", networkName(walletAccount?.walletChain)],
-                ["Wallet", walletAccount?.walletAddress ? <span className="font-mono text-xs">{abbreviateAddress(walletAccount.walletAddress)}</span> : null],
-                ["Assets tracked", nativeAssetSymbol(walletAccount?.walletChain) ? `${nativeAssetSymbol(walletAccount?.walletChain)} (native)` : null],
+                ["Network", networkName(walletAccount?.chain)],
+                ["Wallet", walletAccount?.publicAddress ? <span className="font-mono text-xs">{abbreviateAddress(walletAccount.publicAddress)}</span> : null],
+                ["Assets tracked", nativeAssetSymbol(walletAccount?.chain) ? `${nativeAssetSymbol(walletAccount?.chain)} (native)` : null],
                 ["Holdings updated", intelligence?.positionObservedAt ? relativeUpdated(intelligence.positionObservedAt, now) : "Not read yet"],
                 ["History", coverageLine(history)],
               ] : [

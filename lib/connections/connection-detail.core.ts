@@ -187,7 +187,7 @@ export function connectionHistory(
   const lastBuiltISO = i?.lastReconstructedAt ?? null;
   if (connection.provider === "WALLET") {
     const wh = i?.walletHistory ?? null;
-    const sol = accounts.some((a) => a.walletChain?.toUpperCase() === "SOL");
+    const sol = accounts.some((a) => a.chain?.toUpperCase() === "SOL");
     if (!wh || !wh.supported) {
       return { coverage: "UNAVAILABLE", summary: "Historical coverage isn’t available for this network yet. Current holdings are tracked.",
         fromISO: null, toISO: null, lastBuiltISO, limitations: [] };

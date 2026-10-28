@@ -80,7 +80,7 @@ console.log("History — never claims what is not proven");
   check("a bank with no transactions says so (no zeroes, no empty chart)", connectionHistory(conn({}), intel({ earliestTransactionDate: null })).coverage === "UNAVAILABLE");
   check("importing is IMPORTING with no percentage", connectionHistory(conn({ state: "importing" }), intel({})).coverage === "IMPORTING"
     && !/%/.test(JSON.stringify(connectionHistory(conn({ state: "importing" }), intel({})))));
-  const solAccounts = [{ id: "a", name: "SOL", type: "crypto", walletChain: "SOL" }];
+  const solAccounts = [{ id: "a", name: "SOL", type: "crypto", chain: "SOL" }];
   const sol = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: false, licensedFromISO: null, licensedToISO: null, activityFromISO: null } }), solAccounts);
   check("an unproven Solana wallet is PARTIAL with no dates", sol.coverage === "PARTIAL" && sol.fromISO === null && sol.toISO === null);
   check("…and names the import limitation honestly (never estimated)", sol.limitations.some((l) => /5,000/.test(l) && /never estimated/.test(l)));

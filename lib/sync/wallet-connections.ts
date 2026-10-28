@@ -60,7 +60,7 @@ export async function loadWalletSyncConnections(client: ReadClient, userId: stri
       const fa = ac.financialAccount;
       if (!fa || fa.deletedAt !== null || seen.has(fa.id)) continue;
       seen.add(fa.id);
-      accounts.push({ id: fa.id, name: fa.name, type: fa.type, walletChain: fa.walletChain, walletAddress: fa.walletAddress });
+      accounts.push({ id: fa.id, name: fa.name, type: fa.type, chain: fa.walletChain, publicAddress: fa.walletAddress });
     }
     if (accounts.length === 0) continue; // no active account → no card (e.g. removed wallet)
 

@@ -59,8 +59,8 @@ export interface AccountLite {
   /** The provider's subtype ("credit card", "mortgage") — grouping only, never classification. */
   subtype?:       string | null;
   /** Wallets: the chain and the PUBLIC address (shown abbreviated). */
-  walletChain?:   string | null;
-  walletAddress?: string | null;
+  chain?:         string | null;
+  publicAddress?: string | null;
 }
 
 interface Props {
