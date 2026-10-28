@@ -232,6 +232,9 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   // Release 2 — repointing a customer Item's webhook changes where the provider
   // delivers; it is consequential infrastructure work and carries a reason.
   AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
+  // Resuming a wallet's history spends a shared provider budget on a customer's
+  // connection outside its automatic schedule; it carries a reason.
+  AuditAction.WALLET_HISTORY_RESUMED,
   // SEC-PLAT-2 — platform-wide signup / product switches, revoking a sent
   // invitation, and cross-tenant merchant merge decisions are consequential and
   // now carry a reason. Approve / deny / resend / direct invite stay

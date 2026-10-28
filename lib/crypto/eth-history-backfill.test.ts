@@ -591,6 +591,22 @@ async function main() {
     const src = code(read("jobs", "sol-history-backfill.ts")) + code(read("lib", "crypto", "wallet-history-refresh.ts"));
     check("…and no automatic path passes resume", !/resume: true/.test(src));
 
+    // A FAILED streak alone (transient provider failures) keeps the proof: the
+    // operator resume clears the pause and continues BELOW the stored boundary.
+    const sim2 = simulate({ events: EVENTS, head: HEAD, headTimeSec: T_HEAD });
+    const partial = new MemoryStore(serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO)));
+    await runEthHistoryBackfill({ accountId: "a1", store: partial, todayISO: TODAY }, { probeBudget: 150, now: () => Date.parse(NOW_ISO), eth: { transport: sim2.transport } });
+    const proven = partial.cp();
+    const failedCp: EthBackfillCheckpoint = { ...proven!, failures: MAX_CONSECUTIVE_FAILURES, lastFailure: { code: "PROVIDER_FAILED", atISO: NOW_ISO, detail: "timeout" } };
+    partial.cursor = serializeCheckpoint(failedCp);
+    check("a transient-failure streak reads FAILED", ethStatusFromCursor(partial.cursor, TODAY)?.state === "FAILED" && proven!.provenFromBlock !== null);
+    const res2 = await runEthHistoryBackfill({ accountId: "a1", store: partial, todayISO: TODAY, resume: true }, { probeBudget: 150, now: () => Date.parse(NOW_ISO), eth: { transport: sim2.transport } });
+    const kept = partial.cp()!;
+    check("an operator resume of FAILED keeps the proof: same anchor, the boundary moves strictly BELOW the stored one (no restart), movements kept, pause cleared",
+      res2.stoppedBecause !== "FAILED" && kept.anchorBlock === proven!.anchorBlock && (kept.reachedFloor || kept.provenFromBlock! < proven!.provenFromBlock!)
+        && kept.movements.length >= proven!.movements.length && kept.failures === 0 && kept.lastFailure === null,
+      JSON.stringify({ stop: res2.stoppedBecause, a: kept.anchorBlock, p: kept.provenFromBlock, p0: proven!.provenFromBlock }));
+
     // Honest, failure-specific copy.
     check("RECOVERY_REQUIRED for a balance before the provable floor says exactly that",
       /held ETH before the earliest block we can verify/.test(historyImportText("RECOVERY_REQUIRED", true, "BALANCE_BEFORE_PROVABLE_FLOOR")?.text ?? ""));

@@ -244,7 +244,13 @@ export interface SolBackfillJobDeps {
   eth?: EthBackfillJobDeps;
 }
 
-async function setPending(store: SolBackfillStore, accountId: string, address: string, mutate: (cp: SolBackfillCheckpoint) => SolBackfillCheckpoint): Promise<boolean> {
+/**
+ * Mutate a wallet's checkpoint with no rows (the regeneration-pending marker).
+ * False ⇒ not written (CAS lost). Exported for the operator resume
+ * (lib/platform/wallet-history-recovery.ts), which marks the regeneration its
+ * pass owes so this worker performs it, exactly as for a deferred one.
+ */
+export async function setPending(store: SolBackfillStore, accountId: string, address: string, mutate: (cp: SolBackfillCheckpoint) => SolBackfillCheckpoint): Promise<boolean> {
   const raw = await store.readCursor();
   const cp = parseCheckpoint(raw, accountId, address);
   if (!cp) return false;
@@ -255,7 +261,7 @@ async function setPending(store: SolBackfillStore, accountId: string, address: s
   } catch { return false; } // CAS lost: someone advanced it — the marker is re-derived next run
 }
 
-async function setBtcPending(store: BtcBackfillStore, accountId: string, mutate: (cp: BtcBackfillCheckpoint) => BtcBackfillCheckpoint): Promise<boolean> {
+export async function setBtcPending(store: BtcBackfillStore, accountId: string, mutate: (cp: BtcBackfillCheckpoint) => BtcBackfillCheckpoint): Promise<boolean> {
   const raw = await store.readCursor();
   const cp = parseBtcCheckpoint(raw, accountId);
   if (!cp) return false;
@@ -265,7 +271,7 @@ async function setBtcPending(store: BtcBackfillStore, accountId: string, mutate:
   } catch { return false; } // CAS lost: someone advanced it — the marker is re-derived next run
 }
 
-async function setEthPending(store: EthBackfillStore, accountId: string, mutate: (cp: EthBackfillCheckpoint) => EthBackfillCheckpoint): Promise<boolean> {
+export async function setEthPending(store: EthBackfillStore, accountId: string, mutate: (cp: EthBackfillCheckpoint) => EthBackfillCheckpoint): Promise<boolean> {
   const raw = await store.readCursor();
   const cp = parseEthCheckpoint(raw, accountId);
   if (!cp) return false;

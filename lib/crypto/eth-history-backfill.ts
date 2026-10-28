@@ -88,8 +88,10 @@ export async function runEthHistoryBackfill(
   /**
    * `resume` — OPERATOR resume, the same lever SOL and BTC expose
    * (runSolHistoryBackfill / runBtcHistoryBackfill `resume`): bypasses the
-   * automatic gate and clears a recovery or a failure pause, starting a fresh
-   * generation. No automatic path ever sets it.
+   * automatic gate and clears a recovery (starting a fresh generation) or a
+   * failure pause (keeping the proof). No automatic path ever sets it — the
+   * one caller is the Platform Ops "Resume history" action
+   * (lib/platform/wallet-history-recovery.ts).
    */
   args: { accountId: string; store: EthBackfillStore; todayISO: string; resume?: boolean },
   deps: EthBackfillDeps,
@@ -110,8 +112,14 @@ export async function runEthHistoryBackfill(
   });
   if (!cp) return out("NOT_QUEUED");
   if (args.resume && !cp.completedAtISO && (cp.recovery || cp.failures > 0)) {
-    // A recovery or a failure means the proof so far is not to be trusted: restart it.
-    cp = { ...restartGeneration(cp), failures: 0, lastFailure: null, recovery: null, reconcileFailures: 0 };
+    // A RECOVERY means the proof so far is not to be trusted: restart it (a new
+    // generation; the rows and licence in force are untouched until it closes).
+    // A FAILURE streak alone keeps the proof, as SOL and BTC do: every failure
+    // that could taint it (a reconcile failure, unmet proof premises) already
+    // restarted the generation when it was recorded, so what remains was proven.
+    cp = cp.recovery
+      ? { ...restartGeneration(cp), failures: 0, lastFailure: null, recovery: null, reconcileFailures: 0 }
+      : { ...cp, failures: 0, lastFailure: null };
   } else if (!shouldRunAutomatically(cp, now())) return out("SKIPPED");
 
   const nowISO = new Date(now()).toISOString();

@@ -189,8 +189,13 @@ function main() {
     // OPERATIONAL CONTROLS (2026-10-24) — the fifth CONTROL consumer: maintenance
     // mode (closed action body, reason + note required, audited, fresh on PATCH).
     const OPERATIONAL_ROUTE = "app/api/platform/platform-ops/operational-controls/route.ts";
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE].sort();
-    check(`the policies, job-cadence, ai-cost-controls, operational-controls and Plaid-webhook routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // HISTORY RECOVERY (2026-10-28) — the sixth CONTROL consumer: resuming ONE
+    // wallet's resumable history (explicit connection target, reason + note
+    // required, audited on every outcome, fresh on both verbs). It spends a
+    // shared provider budget on a customer's wallet outside its schedule.
+    const HISTORY_RESUME_ROUTE = "app/api/platform/platform-ops/connections/[id]/history-resume/route.ts";
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE].sort();
+    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook and history-resume routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
     const operational = code(OPERATIONAL_ROUTE);
     check("maintenance mode MUTATES only under FRESH CONTROL and reads at READ",
@@ -199,6 +204,12 @@ function main() {
         && !/requirePlatformAccess\([^)]*"CONTROL"/.test(operational));
     check("maintenance mode requires a structured reason and delegates to its one service",
       /parseOperatorReason\(/.test(operational) && /from "@\/lib\/platform\/policies\/operational-controls"/.test(operational) && !/platformSetting|auditLog/.test(operational));
+    const historyResume = code(HISTORY_RESUME_ROUTE);
+    check("history resume reads AND mutates only under FRESH CONTROL",
+      (historyResume.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 2);
+    check("history resume requires a structured reason and a note, and delegates to its one service",
+      /parseOperatorReason\(/.test(historyResume) && /if \(!reason\.note\)/.test(historyResume)
+        && /from "@\/lib\/platform\/wallet-history-recovery"/.test(historyResume) && !/auditLog|syncLockedAt/.test(historyResume));
     const webhook = code(WEBHOOK_ROUTE);
     check("the webhook repoint MUTATES only under FRESH CONTROL",
       /export async function POST[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/.test(webhook));
@@ -256,10 +267,14 @@ function main() {
   }
 
   // ── 6. EXACTLY ONE UI surface branches on control-plane access ──────────────
-  console.log("6. Only the Policies editor branches on control-plane access");
+  console.log("6. Only the Policies editor and the history-recovery host branch on control-plane access");
   {
     const ADMIN_SURFACE = "app/admin/platform-access/page.tsx";
     const POLICIES_WIDGET = "components/platform/widgets/OpsPoliciesWidget.tsx";
+    // HISTORY RECOVERY — the Connection diagnostics widget renders "Resume
+    // history" (WalletHistoryRecoveryPanel) only behind canControl; the panel
+    // itself never sees the flag.
+    const DIAGNOSTICS_WIDGET = "components/platform/widgets/OpsConnectionDiagnosticsWidget.tsx";
     // The literal CONTROL stays confined to the SYSTEM_ADMIN grant matrix: the
     // widget branches on the descriptive `canControl` flag, never on the level.
     const mentionsControl = [...walk("components"), ...walk("app").filter((f) => /\.tsx$/.test(f))]
@@ -276,8 +291,11 @@ function main() {
              /"CONTROL"\s*[!=]==?\s*(level|accessLevel|access)/.test(src) ||
              /canControl/.test(src);
     }).filter((f) => f !== "components/platform/PlatformSpaceDashboard.tsx"); // the host only forwards `access`
-    check(`the Policies widget is the only component that consumes control-plane access (scanned ${ui.length})`,
-      consumers.length === 1 && consumers[0] === POLICIES_WIDGET, consumers.join(", "));
+    check(`the Policies and Connection diagnostics widgets are the only components that consume control-plane access (scanned ${ui.length})`,
+      consumers.slice().sort().join() === [DIAGNOSTICS_WIDGET, POLICIES_WIDGET].sort().join(), consumers.join(", "));
+    const diagnostics = code(DIAGNOSTICS_WIDGET);
+    check("the diagnostics widget renders the recovery panel only behind canControl",
+      /const offerRecovery = access\?\.canControl === true;/.test(diagnostics) && /\{offerRecovery && selected\.provider === "WALLET"/.test(diagnostics));
     const widget = code(POLICIES_WIDGET);
     check("the widget renders its controls only behind canControl and never a control that 403s",
       /offerEdit = canControl &&/.test(widget) && /offerReset = canControl &&/.test(widget));
