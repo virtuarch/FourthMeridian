@@ -418,6 +418,8 @@ async function main() {
       && /persistPositionCoverage\(tx,/.test(run));
     check("only DERIVED rows of this source are ever deleted", /origin: PositionOrigin\.DERIVED, source: SOL_RECONSTRUCTION_SOURCE/.test(run) && !/OBSERVED[^\n]*deleteMany|deleteMany[^\n]*OBSERVED/.test(run));
     const health = read("lib/connections/space-data.ts") + read("lib/connections/space-data-health.ts");
+    check("the wallet state derivation excludes it too (never 'importing' on a SOL checkpoint)",
+      /discoveryCursor: c\.cursor && !isSolBackfillCursor\(c\.cursor\) \? c\.cursor : null/.test(read("lib/sync/wallet-connections.ts")));
     check("both source-health readers exclude the SOL checkpoint from 'discovery in progress'",
       (health.match(/discoveryCursor: !!\w+\.cursor && !isSolBackfillCursor\(\w+\.cursor\)/g) ?? []).length === 2);
     check("standard RPC methods only, finalized, v0-aware",
