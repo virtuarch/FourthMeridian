@@ -47,12 +47,20 @@ import {
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
 import { ConnectionTimeline } from "@/components/connections/ConnectionTimeline";
+import { ConnectionDetailTabs } from "@/components/connections/ConnectionDetailTabs";
 
 /** Account inventory item — NAMES ONLY on Connections (no balances). */
 export interface AccountLite {
   id:   string;
   name: string;
   type: string;
+  /** Last four digits, for display beside the name. Never a balance. */
+  mask?:          string | null;
+  /** The provider's subtype ("credit card", "mortgage") — grouping only, never classification. */
+  subtype?:       string | null;
+  /** Wallets: the chain and the PUBLIC address (shown abbreviated). */
+  walletChain?:   string | null;
+  walletAddress?: string | null;
 }
 
 interface Props {
@@ -199,6 +207,12 @@ function fmtSyncedAt(iso: string): string {
 
 /** True inside the Connections drawer, whose header already names the institution. */
 const InDrawer = createContext(false);
+/**
+ * True inside the tabbed detail's Health tab: accounts live in Overview and the
+ * lifecycle timeline in History, so the state content does not repeat them, and
+ * the ready state's freshness list is replaced by the Health dimensions.
+ */
+const InTabs = createContext(false);
 
 function EyebrowHeading({ eyebrow, institution }: { eyebrow: string; institution: string }) {
   const inDrawer = useContext(InDrawer);
@@ -251,7 +265,8 @@ function WalletActions({ connection, accounts }: { connection: SyncConnection; a
 }
 
 function AccountNames({ accounts }: { accounts: AccountLite[] }) {
-  if (accounts.length === 0) return null;
+  const inTabs = useContext(InTabs);
+  if (inTabs || accounts.length === 0) return null;
   return (
     <ul className="mt-3 divide-y divide-[var(--border-hairline)] border-t border-[var(--border-hairline)]">
       {accounts.map((a) => (
@@ -650,8 +665,12 @@ function ReadyContent({
   accounts:      AccountLite[];
   intelligence?: ConnectionIntelligenceStatus;
 }) {
+  const inTabs = useContext(InTabs);
   const { lastSyncedAt } = connection;
   const count = accounts.length;
+  // Tabbed detail: Health's dimension lines say everything below except the
+  // Investments capability action, which stays.
+  if (inTabs) return <InvestmentsCapability connection={connection} />;
   // CONN-2G — "Financial profile ready" is only shown when intelligence is
   // actually READY. With no intelligence data (pre-CONN-2 fallback) the card
   // keeps the prior "Connected" framing.
@@ -969,7 +988,17 @@ export function ConnectionDetail({ connection, accounts, intelligence, slow }: P
 
   return (
     <InDrawer.Provider value={true}>
-      <div data-connection-detail={state}>{content}{walletActions}{importAction}</div>
+      <InTabs.Provider value={true}>
+        <div data-connection-detail={state}>
+          <ConnectionDetailTabs
+            connection={connection}
+            accounts={accounts}
+            intelligence={intelligence}
+            healthExtra={<>{content}{walletActions}</>}
+            historyExtra={<>{intelligence && <ConnectionTimeline intelligence={intelligence} />}{importAction}</>}
+          />
+        </div>
+      </InTabs.Provider>
     </InDrawer.Provider>
   );
 }
