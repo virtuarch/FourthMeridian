@@ -115,6 +115,18 @@ export interface ConnectionIntelligenceStatus {
   /** True when this source's value is derived at READ time rather than stored, so
    *  a "valuation" clock would be meaningless for it (ETH, SOL). */
   valuationIsReadTime:     boolean;
+  /**
+   * WALLETS ONLY — the persisted coverage licence across the connection's
+   * accounts (wallet-history-metadata.ts). `supported` is the chain capability;
+   * `licensed` is whether any interval is proven. Absent for Plaid.
+   */
+  walletHistory?: {
+    supported: boolean;
+    licensed: boolean;
+    licensedFromISO: string | null;
+    licensedToISO: string | null;
+    activityFromISO: string | null;
+  } | null;
 }
 
 /** Structural input for the pure derivation — gathered by the loader. */

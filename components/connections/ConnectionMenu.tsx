@@ -120,7 +120,8 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="rounded-[var(--radius-sm)] p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-2,rgba(255,255,255,0.04))] hover:text-[var(--text-primary)]"
+        // 44px touch target (WCAG 2.5.5) — the icon stays 18px.
+        className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] hover:bg-[var(--surface-2,rgba(255,255,255,0.04))] hover:text-[var(--text-primary)]"
       >
         <MoreHorizontal size={18} />
       </button>

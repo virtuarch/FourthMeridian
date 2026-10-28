@@ -70,6 +70,10 @@ export function summarizeConnection(
       const h = intelligence?.sourceHealth;
       const mapped = h?.needsAttention ? HEALTH_WORD[h.state] : undefined;
       if (mapped) return word(mapped.status, mapped.tone);
+      // A wallet whose current holdings are fresh but whose history is not
+      // proven is NOT simply "up to date" (Connections detail refinement).
+      const wh = intelligence?.walletHistory;
+      if (connection.provider === "WALLET" && wh?.supported && !wh.licensed) return word("History incomplete", "neutral");
       return word("Up to date", "ok");
     }
   }

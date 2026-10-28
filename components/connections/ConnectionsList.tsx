@@ -31,9 +31,8 @@ import { ConnectionRow } from "@/components/connections/ConnectionRow";
 import { ConnectionMenu } from "@/components/connections/ConnectionMenu";
 import { Surface } from "@/components/atlas/Surface";
 import { GlassButton } from "@/components/atlas/GlassButton";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, ChevronLeft } from "lucide-react";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
-import { providerName } from "@/lib/sync/status";
 import { BuildIntelligencePanel } from "@/components/connections/BuildIntelligencePanel";
 import type { SyncStatus } from "@/lib/sync/status";
 import {
@@ -366,11 +365,19 @@ export function ConnectionsList({
       {/* The connection's detail — docked right on desktop, a bottom sheet on
           mobile (RightPanel). Overview, accounts, health, history coverage, last
           sync, work in progress and recovery actions, all from the same state. */}
-      <RightPanel open={selected != null} onClose={() => setSelectedId(null)} ariaLabel="Connection detail">
+      <RightPanel open={selected != null} onClose={() => setSelectedId(null)} ariaLabel="Connection detail" size="lg">
         {selected && (
           <>
             <PanelHeader
-              eyebrow={providerName(selected.provider)}
+              // Phone: the sheet reads as a page — "‹ Connections" dismisses it,
+              // and the close button returns at sm+ where the drawer docks.
+              leading={
+                <button type="button" onClick={() => setSelectedId(null)}
+                  className="-ml-1 mb-2 inline-flex min-h-11 items-center gap-1 rounded-[var(--radius-sm)] px-1 text-sm text-[var(--meridian-400)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:hidden">
+                  <ChevronLeft aria-hidden size={16} /> Connections
+                </button>
+              }
+              closeClassName="hidden sm:inline-flex sm:items-center sm:justify-center"
               title={selected.institution}
               actions={selected.state !== "importing" ? <ConnectionMenu connection={selected} /> : undefined}
             />
