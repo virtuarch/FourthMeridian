@@ -44,6 +44,7 @@ console.log("\nvaluationCoverageNote");
   check("names asset and both absolute dates", /SOL balances are known from Mar 26, 2022, but its historical prices start Sep 27, 2026/.test(note), note);
   check("never claims zero value", /never counted as zero/.test(note) && !/valued at \$?0/.test(note));
   check("chart already reaching the balance start ⇒ no note", valuationCoverageNote(cov, "2022-03-26") === null);
+  check("a chosen window starting after the price floor ⇒ no note (1 month from Sep 28)", valuationCoverageNote(cov, "2026-09-28") === null);
   check("no coverage / no chart ⇒ no note", valuationCoverageNote(null, "2026-09-27") === null && valuationCoverageNote(cov, null) === null);
   const noPrices = deriveValuationCoverage([{ symbol: "ETH", instrumentId: "eth", balanceFromISO: "2024-02-02" }], new Map([["eth", null]]));
   check("no stored prices wording", /no historical ETH prices are stored yet/.test(valuationCoverageNote(noPrices, "2026-10-01") ?? ""));

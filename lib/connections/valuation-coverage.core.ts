@@ -61,13 +61,15 @@ function fmtDay(iso: string): string {
 }
 
 /**
- * The one sentence under the chart, or null. Shown only when the plotted window
- * starts on/after a limited asset's balance start (otherwise the gap is not why
- * this chart starts where it does).
+ * The one sentence under the chart, or null. Shown only when PRICES are why the
+ * plotted window starts where it does: it starts after the asset's balance start
+ * AND no later than its price floor (a later start is the chosen window — e.g.
+ * "1 month" — not the price limit). No stored prices at all always qualifies.
  */
 export function valuationCoverageNote(cov: ValuationCoverage | null, chartFromISO: string | null): string | null {
   if (!cov || !chartFromISO) return null;
-  const relevant = cov.limits.filter((l) => l.balanceFromISO < chartFromISO);
+  const relevant = cov.limits.filter((l) => l.balanceFromISO < chartFromISO
+    && (l.pricedFromISO === null || chartFromISO <= l.pricedFromISO));
   if (!relevant.length) return null;
   const parts = relevant.map((l) => l.pricedFromISO
     ? `${l.symbol} balances are known from ${fmtDay(l.balanceFromISO)}, but its historical prices start ${fmtDay(l.pricedFromISO)}`
