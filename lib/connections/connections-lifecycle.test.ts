@@ -29,5 +29,13 @@ check("no percentage anywhere in the list", !/%|percent/i.test(list));
 check("Add another connection reuses the page's own actions", /\[data-connections-actions\] button/.test(list)
   && /data-connections-actions/.test(code("components/connections/ConnectionsActions.tsx")));
 
+// 2026-10-28 — wallet history the worker is importing: its own strip, persisted state only.
+check("history strip: per-connection worker flag + QUEUED/IMPORTING checkpoint state only",
+  /i\?\.facts\?\.historyWorkerEnabled === true && \(st === "QUEUED" \|\| st === "IMPORTING"\)/.test(list));
+check("history strip: never doubles a connection already in the setup strip", /!inFlight\.includes\(c\)/.test(list));
+check("history strip: holdings current, history continues, absolute proven date",
+  /data-connections-history-importing/.test(list) && /Current holdings are already up to date; older history continues in the background\./.test(list)
+  && /Verified back to \$\{fmtDay\(proven\)\} so far/.test(list));
+
 if (failures > 0) { console.error(`\nconnections-lifecycle: ${failures} failed.`); process.exit(1); }
 console.log("\nconnections-lifecycle: all checks passed.");
