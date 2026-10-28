@@ -84,7 +84,8 @@ import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
 import { chartReadyRange } from "@/lib/connections/connection-detail.core";
 import { getSnapshotDates } from "@/lib/data/snapshots";
 import { transactionAccountPopulation, type AccountPopulationEntry } from "@/lib/data/transaction-population";
-import { statusFromCursor } from "@/lib/crypto/sol-history-backfill.core";
+import { walletHistoryCheckpointStatus, historyWorkerEnabledFor } from "@/lib/crypto/history-checkpoint-status";
+import { readHistoryCheckpoints } from "@/lib/crypto/btc-history-checkpoint";
 import { connectionDestinations } from "@/lib/connections/connection-facts";
 // CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
 // here rather than re-decided, so a valuation clock is only claimed where one exists.
@@ -252,7 +253,7 @@ async function loadConnectionIntelligence(
   /** Raw provider fields per connection id, for sourceHealthForConnection. */
   rawByConnId: Map<string, Pick<SourceHealthInput, "plaid" | "wallet">>,
   /** CRYPTO-FRESHNESS-1 — per-facet success clocks (wallet connections). */
-  facetClocksByConnId: Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null; historyCursor?: string | null }>,
+  facetClocksByConnId: Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null; historyCursor?: string | null; historyCheckpoint?: string | null }>,
   /** Resolved once per page load — the same policies the Brief's data health uses. */
   policies: RefreshPolicies,
   /** Plaid item id → whether ingestion is actually running (getIngestionEvidence). */
@@ -386,7 +387,6 @@ async function loadConnectionIntelligence(
         _count: { _all: true },
       })).filter((r) => r.financialAccountId).map((r) => [r.financialAccountId as string, r._count._all]))
     : new Map<string, number>();
-  const historyWorkerEnabled = process.env.SOL_BACKFILL_ENABLED === "true";
   // Through the snapshot read authority (lib/data/snapshots.ts) — dates only.
   const snapshotDates: string[] = personalSpace ? await getSnapshotDates(client, personalSpace.spaceId) : [];
 
@@ -501,7 +501,13 @@ async function loadConnectionIntelligence(
       walletHistory.chart = chartReadyRange(walletHistory, priceFromISO, snapshotDates);
     }
     if (walletHistory && c.provider === "WALLET") {
-      const st = statusFromCursor(facets?.historyCursor ?? null, now.toISOString().slice(0, 10));
+      // SOL's checkpoint on `cursor`, BTC's / ETH's on `historyCheckpoint` — each
+      // in its own words (history-checkpoint-status.ts); none ⇒ null (no claim).
+      // An ETH checkpoint is the WORKER's alone (SOL and BTC checkpoints are
+      // also advanced by syncs): with the ETH worker off it describes nothing
+      // that is running, so it is not shown.
+      const found = walletHistoryCheckpointStatus(facets?.historyCursor ?? null, facets?.historyCheckpoint ?? null, now.toISOString().slice(0, 10));
+      const st = found && (found.chain !== "ETH" || historyWorkerEnabledFor("ETH")) ? found : null;
       walletHistory.historyImport = st ? { state: st.state, provenFromISO: st.historyFromISO, lastProgressAtISO: st.lastProgressAtISO,
         signaturesProcessed: st.signaturesProcessed, lastFailureCode: st.lastFailureCode } : null;
     }
@@ -521,7 +527,8 @@ async function loadConnectionIntelligence(
       onChain: c.provider !== "WALLET" ? null
         : solProcessed !== null && solProcessed > 0 ? { processed: solProcessed, scope: `native ${chain ?? ""}`.trim() }
         : walletRows > 0 ? { processed: walletRows, scope: `native ${chain ?? ""}`.trim() } : null,
-      historyWorkerEnabled,
+      // Per connection chain: each chain's worker has its own gate.
+      historyWorkerEnabled: c.provider === "WALLET" && historyWorkerEnabledFor(chain),
     };
     out[c.id] = { ...derived, walletHistory, facts };
   }
@@ -623,9 +630,13 @@ async function loadProviderConnections(client: ReadClient, userId: string): Prom
   for (const i of items) connectedAtByConnId.set(i.id, i.createdAt);
   for (const w of walletCreatedRows) connectedAtByConnId.set(w.id, w.createdAt);
   // CRYPTO-FRESHNESS-1 — per-facet success clocks, wallet connections only.
-  const facetClocksByConnId = new Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null; historyCursor?: string | null }>();
+  const facetClocksByConnId = new Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null; historyCursor?: string | null; historyCheckpoint?: string | null }>();
+  // BTC / ETH history checkpoints (raw: btc-history-checkpoint.ts). A read
+  // failure shows no import state (no claim), never a wrong one.
+  const historyCheckpoints = await readHistoryCheckpoints(client, walletCreatedRows.map((w) => w.id)).catch(() => new Map<string, string>());
   for (const w of walletCreatedRows) {
-    facetClocksByConnId.set(w.id, { transactionsSyncedAt: w.transactionsSyncedAt, historyRebuiltAt: w.historyRebuiltAt, historyCursor: w.cursor ?? null });
+    facetClocksByConnId.set(w.id, { transactionsSyncedAt: w.transactionsSyncedAt, historyRebuiltAt: w.historyRebuiltAt, historyCursor: w.cursor ?? null,
+      historyCheckpoint: historyCheckpoints.get(w.id) ?? null });
   }
 
   const intelligenceByConnectionId = await loadConnectionIntelligence(

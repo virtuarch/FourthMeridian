@@ -540,6 +540,16 @@ interface AcquireArgs {
   fromBlock: number;
   /** Inclusive upper bound — must be FINALIZED. The caller resolves the tag. */
   toBlock:   number;
+  /**
+   * RESUME (2026-10-28, the ETH history worker). A cursor from an earlier run
+   * over the SAME anchor (`anchorBlock === toBlock`) whose proof stopped at
+   * `provenFromBlock` continues from there instead of re-proving `[provenFrom,
+   * toBlock]`. The returned movements, change blocks and opening balance are
+   * this run's only — (provenFrom', resume] — and the coverage spans
+   * `[provenFrom', toBlock]`, which the earlier runs' proof closed above the
+   * resume block. The caller carries the earlier movements. Any other cursor is
+   * ignored: the run starts at `toBlock`, exactly as without one.
+   */
   cursor?:   EthHistoryCursor;
 }
 
@@ -677,7 +687,12 @@ export async function acquireEthHistory(
 
   // ── Right-to-left chunking, so a truncated run has a PROVEN boundary ───────
   const changeBlocks: number[] = [];
-  let provenFrom = hi;
+  const resumeFrom = args.cursor && args.cursor.anchorBlock === hi && args.cursor.provenFromBlock !== null
+    && args.cursor.provenFromBlock > lo && args.cursor.provenFromBlock < hi
+    ? args.cursor.provenFromBlock : hi;
+  // A cursor that does not resume this anchor says nothing about this run.
+  if (resumeFrom === hi) Object.assign(cursor, EMPTY_ETH_HISTORY_CURSOR);
+  let provenFrom = resumeFrom;
   cursor.anchorBlock = hi;
 
   // A throttle that OUTLASTS the backoff is not a failure of the proof — it is
@@ -708,8 +723,10 @@ export async function acquireEthHistory(
 
   // NOTHING WAS PROVEN. Not "a little was proven" — the first chunk did not
   // complete, so there is no interval to speak for. Coverage is UNKNOWN and the
-  // reason is the one that stopped it.
-  if (!proofHole && provenFrom >= hi) {
+  // reason is the one that stopped it. (A resumed run that closed no further
+  // chunk is the same case: it proved nothing THIS run, and its cursor keeps
+  // the earlier boundary.)
+  if (!proofHole && provenFrom >= resumeFrom) {
     const why: ChainCoverageCaveat =
       throttledOut ? "PROVIDER_THROTTLED"
       : budgetExhausted ? "PAGE_BUDGET_EXHAUSTED"

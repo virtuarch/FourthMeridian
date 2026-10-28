@@ -145,7 +145,9 @@ console.log("Honest facts — only destinations that genuinely consume the data"
   const sd = read("lib/connections/space-data.ts");
   check("destinations use THE banking population (crypto-owned rows excluded) for the transaction views",
     /transactionAccountPopulation\(client,/.test(sd) && /connectionDestinations\(accts\.map\(\(a\) => a\.type\), banking\.length > 0\)/.test(sd));
-  check("'continues automatically' is claimed only from the real worker flag", /historyWorkerEnabled = process\.env\.SOL_BACKFILL_ENABLED === "true"/.test(sd));
+  // 2026-10-28: per connection chain (SOL / BTC / ETH each have their own worker gate).
+  check("'continues automatically' is claimed only from the real worker flag", /historyWorkerEnabled: c\.provider === "WALLET" && historyWorkerEnabledFor\(chain\)/.test(sd)
+    && /if \(k === "SOL"\) return env\.SOL_BACKFILL_ENABLED === "true";/.test(read("lib/crypto/history-checkpoint-status.ts")));
   const menu = read("components/connections/ConnectionMenu.tsx");
   const list = read("components/connections/ConnectionsList.tsx");
   check("no customer-facing 'Restore financial intelligence' / rebuild panel", !/Restore financial intelligence|build-intelligence/.test(menu) && !/<BuildIntelligencePanel/.test(list));

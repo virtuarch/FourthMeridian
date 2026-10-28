@@ -137,8 +137,12 @@ const SYNC = code(read("lib", "crypto", "eth-history-sync.ts"));
 {
   const refresh = code(read("lib", "crypto", "wallet-history-refresh.ts"));
   check("ETH is dispatched by the production sync refresh",
-    // 2026-10-28: the ETH arm wraps the call in the shared provider-budget meter.
-    /key === ETH_NATIVE\.chain \? [^\n]*reconstructEthHistory\(/.test(refresh),
+    // 2026-10-28: the ETH arm wraps the call in the shared provider-budget meter,
+    // and (ETH history worker) goes through reconstructEthHistoryForSync, which
+    // with the worker off makes exactly the reconstructEthHistory call of before.
+    /key === ETH_NATIVE\.chain \? [^\n]*reconstructEthHistoryForSync\(/.test(refresh)
+      && /const r = await impl\.reconstruct\(\{ accountId, windowFromISO, windowToISO, deps \}\)/.test(code(read("lib", "crypto", "eth-history-backfill.store.ts")))
+      && /reconstruct: reconstructEthHistory,/.test(code(read("lib", "crypto", "eth-history-backfill.store.ts"))),
     "a third reconstruction with no caller is the W6f defect repeated");
   check("…alongside BTC and SOL, by chain identity rather than a literal",
     /BTC_NATIVE\.chain/.test(refresh) && /SOL_NATIVE\.chain/.test(refresh));

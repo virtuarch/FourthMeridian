@@ -41,7 +41,8 @@ import { btcSyncHeadOnly } from "./btc-history-backfill";
 import { ESPLORA_USAGE_NETWORK, ESPLORA_USAGE_PROVIDER } from "./btc-backfill-worker.core";
 import { reconstructSolHistoryResumable } from "./sol-history-backfill.store";
 import { syncHeadOnly } from "./sol-history-backfill";
-import { reconstructEthHistory } from "./eth-history-sync";
+import { reconstructEthHistoryForSync } from "./eth-history-backfill.store";
+import { ethWorkerEnabled } from "./eth-history-backfill.core";
 import { todayUTCISO } from "@/lib/time/clock";
 import { ALCHEMY_USAGE_NETWORK, ALCHEMY_USAGE_PROVIDER, recordProviderMeter } from "@/lib/usage/provider-budget";
 
@@ -141,7 +142,11 @@ export async function refreshWalletHistory(
     // wholesale reconstructSolHistory stopped at 5,000 signatures per run and
     // never resumed; it remains only as the fixture-driven acceptance path.
     : key === SOL_NATIVE.chain ? (a: HistoryWindow) => metered(ALCHEMY_USAGE_NETWORK.SOLANA, (meter) => reconstructSolHistoryResumable({ ...a, client: db, deps: { headOnly: syncHeadOnly(), meter } }))
-    : key === ETH_NATIVE.chain ? (a: HistoryWindow) => metered(ALCHEMY_USAGE_NETWORK.ETHEREUM, (meter) => reconstructEthHistory({ ...a, deps: { meter } }))
+    // ETH: the incremental path, and on its fallback the inline FULL rebuild —
+    // unless the history worker carries Ethereum (ETH_BACKFILL_ENABLED), when a
+    // fallback is queued for the worker and nothing is written here
+    // (eth-history-backfill.store.ts). Flag off: exactly reconstructEthHistory.
+    : key === ETH_NATIVE.chain ? (a: HistoryWindow) => metered(ALCHEMY_USAGE_NETWORK.ETHEREUM, (meter) => reconstructEthHistoryForSync({ ...a, client: db, deferFull: ethWorkerEnabled(), deps: { meter } }))
     : null;
   if (run === null) return { accountId, chain: key, refreshed: false, reason: "chain has no reconstruction" };
 
