@@ -185,7 +185,9 @@ async function main() {
     const refresh = read("lib/crypto/wallet-history-refresh.ts");
     check("SOL sync history and ETH history record into the ALCHEMY budget; BTC does not",
       /metered\(ALCHEMY_USAGE_NETWORK\.SOLANA/.test(refresh) && /metered\(ALCHEMY_USAGE_NETWORK\.ETHEREUM/.test(refresh) && !/metered\([^)]*BTC/.test(refresh));
-    check("…flushed when the run ends, refused or not", /\.finally\(\(\) => recordProviderMeter\(ALCHEMY_USAGE_PROVIDER/.test(refresh));
+    // 2026-10-28: crash-safe — flushed while the run sends AND when it ends, refused or not.
+    check("…flushed while the run sends and when it ends, refused or not",
+      /incrementalMeter\(\(meter, flushed\) => recordProviderMeter\(ALCHEMY_USAGE_PROVIDER, network, meter, \{ flushed \}\)/.test(refresh) && /run\(m\.meter\)\.finally\(\(\) => m\.flush\(\)\)/.test(refresh));
     const eth = read("lib/crypto/eth-history.ts");
     check("every ETH transport is the metered one (one construction site)", /function buildTransport\(deps: EthHistoryDeps\): EthRpcTransport \{\s*return meteredTransport\(buildRawTransport\(deps\), deps\.meter\);/.test(eth));
     const job = read("jobs/sol-history-backfill.ts");

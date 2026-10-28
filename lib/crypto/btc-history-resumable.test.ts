@@ -850,7 +850,7 @@ async function main() {
     check("the wallet refresh routes BTC to the resumable backfill when it owns the history (head-only with the worker)",
       /BTC_NATIVE\.chain \? \(a: HistoryWindow\) => meteredEsplora\(\(meter\) => reconstructBtcHistoryOrResumable\(\{ \.\.\.a, client: db, headOnly: btcSyncHeadOnly\(\), meter \}\)\)/.test(refresh));
     check("…its Esplora requests are recorded on the shared ledger under ESPLORA (never the Alchemy budget)",
-      /recordProviderMeter\(ESPLORA_USAGE_PROVIDER, ESPLORA_USAGE_NETWORK, meter\)/.test(refresh) && /ESPLORA_USAGE_PROVIDER = "ESPLORA"/.test(read("lib/crypto/btc-backfill-worker.core.ts")));
+      /recordProviderMeter\(ESPLORA_USAGE_PROVIDER, ESPLORA_USAGE_NETWORK, meter, \{ flushed \}\)/.test(refresh) && /ESPLORA_USAGE_PROVIDER = "ESPLORA"/.test(read("lib/crypto/btc-backfill-worker.core.ts")));
     const storeSrc = read("lib/crypto/btc-history-backfill.store.ts");
     check("…otherwise the wholesale reconstruction, unchanged", /return reconstructBtcHistory\(\{ accountId: args\.accountId, windowFromISO/.test(storeSrc));
     check("the store writes only DERIVED rows of its source (OBSERVED rows are never deleted)",

@@ -1,0 +1,336 @@
+/**
+ * jobs/history-worker-fairness.test.ts
+ *
+ * The background history worker (jobs/sol-history-backfill.ts), three defects
+ * live-verified on Preview 2026-10-28:
+ *
+ *   1. FAIRNESS — a fixed SOL → BTC → ETH order with ETH taking the remainder
+ *      starved Ethereum (its step needs 75 s) whenever SOL or BTC had backlog.
+ *      Now: a persisted rotation + a phase never shorter than its chain's step.
+ *   2. METERING — requests of a pass killed mid-flight were counted nowhere
+ *      (meter flushed only at wallet end). Now flushed while the pass sends.
+ *   3. PRICE GAPS — only planned inside a regeneration, so a COMPLETE wallet
+ *      never had its gap acquired. Now: every run, across every holder.
+ *
+ * Deterministic fakes only — no database, no network.
+ *   npx tsx --require ./scripts/lib/server-only-preload.cjs jobs/history-worker-fairness.test.ts
+ */
+
+import { solHistoryBackfill, WAKE_SAFE_MS, PRICE_GAP_RESERVE_MS, type SolBackfillJobDeps, type SolBackfillJobSummary } from "@/jobs/sol-history-backfill";
+import { workerConfig } from "@/lib/crypto/sol-backfill-worker.core";
+import { btcWorkerConfig } from "@/lib/crypto/btc-backfill-worker.core";
+import { ethWorkerConfig, queuedCheckpoint, serializeCheckpoint as serializeEth } from "@/lib/crypto/eth-history-backfill.core";
+import { emptyCheckpoint as emptyBtc, serializeCheckpoint as serializeBtc } from "@/lib/crypto/btc-history-backfill.core";
+import { emptyCheckpoint as emptySol, serializeCheckpoint as serializeSol, parseCheckpoint as parseSol, type SolBackfillCheckpoint } from "@/lib/crypto/sol-history-backfill.core";
+import type { SolBackfillStore } from "@/lib/crypto/sol-history-backfill";
+import { chainOrder, nextRotation, phaseDeadlineFor, HISTORY_CHAINS, type HistoryChain } from "@/lib/crypto/history-worker-schedule.core";
+import { incrementalMeter, meterTotal, METER_FLUSH_EVERY_CALLS, type RequestMeter } from "@/lib/usage/provider-budget.core";
+import {
+  acquireHistoricalPriceGaps, revalueHoldersAfterPriceGaps, priceGapAttemptKey, revaluationAttemptKey, valuedFromISO,
+  type PriceGapDeps, type RevaluationDeps, type HolderLicence, type InstrumentPriceFacts, type RevaluationOwed,
+} from "@/lib/prices/price-gap";
+
+let failures = 0, passes = 0;
+function check(name: string, ok: boolean, detail?: string): void {
+  if (ok) { passes++; console.log(`  ✓ ${name}`); }
+  else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
+}
+const ticks = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
+
+const DAY = "2026-10-28";
+const T0 = Date.parse(`${DAY}T10:00:00Z`);
+const ADDR = "7irKphsVxEfU8wtDhVgCyq7nQXUo9Q13ivUevk8qBMSN";
+const solCfg = { ...workerConfig({ SOL_BACKFILL_ENABLED: "true" }), dailyRequestCap: 1_000_000 };
+const btcCfg = btcWorkerConfig({ SOL_BACKFILL_ENABLED: "true" });
+const ethCfg = ethWorkerConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true" });
+const importingSol = (id: string) => serializeSol({ ...emptySol(id, ADDR, `${DAY}T00:00:00Z`), licensedFromISO: "2024-06-01", licensedToISO: DAY });
+
+/** A fake world: `sol`/`btc`/`eth` wallets with BACKLOG — each pass spends every ms it is given. */
+function world(o: { sol?: number; btc?: number; eth?: number; ethStepMs?: number; persist?: boolean; wakeAgoMs?: number } = {}) {
+  let t = T0;
+  const runs: Array<{ summary: unknown }> = []; // newest first, as the JobRun read returns them
+  const ledger: Record<string, number> = {};
+  const deadlines: Array<{ chain: HistoryChain; endsAt: number; runStart: number }> = [];
+  let runStart = T0;
+  const ran: HistoryChain[] = [];
+  const rec = (prefix: string) => async (meter: Readonly<RequestMeter>, flushed: RequestMeter) => {
+    for (const [k, v] of Object.entries(meter)) { const d = v - (flushed[k] ?? 0); if (d > 0) { ledger[`${prefix}:${k}`] = (ledger[`${prefix}:${k}`] ?? 0) + d; flushed[k] = v; } }
+  };
+  const ids = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
+  const deps: SolBackfillJobDeps = {
+    now: () => t, sleep: async (ms) => { t += ms; },
+    wakeStartedAt: async () => (o.wakeAgoMs !== undefined ? t - o.wakeAgoMs : null),
+    wallets: async () => ids("s", o.sol ?? 0).map((id) => ({ accountId: id, connectionId: `c-${id}`, address: ADDR, cursor: importingSol(id) })),
+    claimLock: async () => true, renewLock: async () => true, releaseLock: async () => {},
+    reconstruct: async ({ accountId, deps: dd }) => {
+      const d = { ...dd!, budgetMs: dd!.budgetMs! };
+      ran.push("SOL"); deadlines.push({ chain: "SOL", endsAt: t + d.budgetMs, runStart });
+      for (let i = 0; i < 10; i++) d.meter!.getTransaction = (d.meter!.getTransaction ?? 0) + 1;
+      t += d.budgetMs;
+      return { accountId, ok: true, derivedRowsWritten: 0, mode: "NO_CHANGE", impactedFromISO: null,
+        backfill: { status: { state: "IMPORTING" } as never, progressed: true, rowsWritten: 0, impactedFromISO: null, signaturesProcessed: 10, pagesFetched: 1, stoppedBecause: "BUDGET", failure: null } } as never;
+    },
+    store: async () => null,
+    regenerationEnabled: () => false,
+    regenerate: async () => {},
+    recordUsage: rec("sol"),
+    ...(o.persist === false ? {} : { previousRuns: async () => runs.slice(0, 16) }),
+    btc: {
+      wallets: async () => ids("b", o.btc ?? 0).map((id) => ({ accountId: id, connectionId: `c-${id}`, cursor: serializeBtc(emptyBtc(id, `${DAY}T00:00:00Z`)) })),
+      reconstruct: async ({ accountId, deps: dd }) => {
+        const d = { ...dd, budgetMs: dd.budgetMs! };
+        ran.push("BTC"); deadlines.push({ chain: "BTC", endsAt: t + d.budgetMs, runStart });
+        for (let i = 0; i < 10; i++) d.meter!.txs = (d.meter!.txs ?? 0) + 1;
+        t += d.budgetMs;
+        return { accountId, ok: true, derivedRowsWritten: 0, mode: "NO_CHANGE", impactedFromISO: null,
+          backfill: { status: { state: "IMPORTING" } as never, progressed: true, rowsWritten: 0, impactedFromISO: null, txsProcessed: 399, pagesFetched: 16, verified: null, stoppedBecause: "BUDGET", failure: null } } as never;
+      },
+      store: async () => null,
+      recordUsage: rec("btc"),
+    },
+    eth: {
+      wallets: async () => ids("e", o.eth ?? 0).map((id) => ({ accountId: id, connectionId: `c-${id}`, cursor: serializeEth(queuedCheckpoint(id, "NO_COVERAGE", `${DAY}T00:00:00Z`)) })),
+      reconstruct: async ({ deps: d }) => {
+        ran.push("ETH"); deadlines.push({ chain: "ETH", endsAt: d.deadlineMs ?? Infinity, runStart });
+        for (let i = 0; i < 225; i++) d.eth!.meter!.eth_getBalance = (d.eth!.meter!.eth_getBalance ?? 0) + 1;
+        t += o.ethStepMs ?? 60_000; // a backward step spends its whole probe budget
+        return { stoppedBecause: "PROBE_BUDGET", status: null, rowsWritten: 0, impactedFromISO: null, failure: null, requests: 225 };
+      },
+      store: async () => null,
+      recordUsage: rec("eth"),
+    },
+  };
+  const run = async (): Promise<SolBackfillJobSummary> => {
+    runStart = t;
+    const s = await solHistoryBackfill({ config: solCfg, btcConfig: btcCfg, ethConfig: ethCfg, deps });
+    runs.unshift({ summary: JSON.parse(JSON.stringify(s)) });
+    t += 15 * 60_000; // the next wake
+    return s;
+  };
+  return { deps, run, runs, ledger, deadlines, ran, now: () => t, kill: () => { runs.unshift({ summary: null }); t += 15 * 60_000; } };
+}
+const stepped = (s: SolBackfillJobSummary, c: HistoryChain) =>
+  c === "SOL" ? s.walletsRun > 0 : c === "BTC" ? (s.btc?.walletsRun ?? 0) > 0 : (s.eth?.walletsRun ?? 0) > 0;
+
+async function main() {
+  console.log("schedule (pure)");
+  {
+    check("rotation 0 is the old order SOL → BTC → ETH", chainOrder(0, new Set(HISTORY_CHAINS)).join() === "SOL,BTC,ETH");
+    check("…and every chain leads once in any 3 consecutive rotations",
+      [0, 1, 2].map((r) => chainOrder(r, new Set(HISTORY_CHAINS))[0]).sort().join() === "BTC,ETH,SOL"
+      && [7, 8, 9].map((r) => chainOrder(r, new Set(HISTORY_CHAINS))[0]).sort().join() === "BTC,ETH,SOL");
+    check("chains without work are skipped, the cycle kept", chainOrder(2, new Set<HistoryChain>(["SOL", "BTC"])).join() === "SOL,BTC" && chainOrder(1, new Set<HistoryChain>(["SOL", "ETH"])).join() === "ETH,SOL");
+    check("nextRotation: newest persisted + 1", nextRotation([{ summary: { schedule: { rotation: 4 } } }], 99) === 5);
+    check("…a killed run (no summary) still advances it", nextRotation([{ summary: null }, { summary: { schedule: { rotation: 4 } } }], 99) === 6);
+    check("…a NO_WORK run (no schedule) also counts as a run", nextRotation([{ summary: { stoppedBecause: "NO_WORK" } }, { summary: { schedule: { rotation: 0 } } }], 99) === 2);
+    check("…the job's first run ⇒ 0; nothing persisted ⇒ the slot fallback; garbage is ignored", nextRotation([], 7) === 0 && nextRotation([{ summary: { schedule: { rotation: -1 } } }, { summary: "x" }], 3) === 3);
+    check("phase: fair share when it covers the step", phaseDeadlineFor({ nowMs: 0, jobDeadlineMs: 120_000, chainsLeft: 3, needMs: 17_000 }) === 40_000);
+    check("…raised to the step need (ETH 77 s) when it does not", phaseDeadlineFor({ nowMs: 0, jobDeadlineMs: 120_000, chainsLeft: 3, needMs: 77_000 }) === 77_000);
+    check("…never past the job deadline", phaseDeadlineFor({ nowMs: 100_000, jobDeadlineMs: 120_000, chainsLeft: 2, needMs: 77_000 }) === 120_000
+      && phaseDeadlineFor({ nowMs: 130_000, jobDeadlineMs: 120_000, chainsLeft: 2, needMs: 77_000 }) === 130_000);
+    check("…the last phase takes everything left", phaseDeadlineFor({ nowMs: 10_000, jobDeadlineMs: 120_000, chainsLeft: 1, needMs: 0 }) === 120_000);
+  }
+
+  console.log("defect 1 reproduced: the fixed order starves Ethereum");
+  {
+    const w = world({ sol: 20, btc: 20, eth: 1, persist: false });
+    const out: SolBackfillJobSummary[] = [];
+    for (let i = 0; i < 6; i++) out.push(await w.run());
+    check("without the rotation (rotation 0 every run) ETH never starts a step: JOB_BUDGET, walletsRun 0, every run",
+      out.every((s) => s.eth?.stoppedBecause === "JOB_BUDGET" && s.eth.walletsRun === 0) && out.every((s) => s.btc!.walletsRun > 0), JSON.stringify(out.map((s) => s.eth)));
+  }
+
+  console.log("fixed: SOL backlog + BTC backlog + ETH work");
+  {
+    const N = 9, K = 3;
+    const w = world({ sol: 20, btc: 20, eth: 2 });
+    const out: SolBackfillJobSummary[] = [];
+    for (let i = 0; i < N; i++) out.push(await w.run());
+    const windowsOk = HISTORY_CHAINS.every((c) => out.every((_, i) => i + K > N || out.slice(i, i + K).some((s) => stepped(s, c))));
+    check(`every chain starts ≥ 1 step in EVERY window of ${K} consecutive runs (over ${N} runs)`, windowsOk,
+      out.map((s) => `${s.schedule?.order.join(">")}:${HISTORY_CHAINS.filter((c) => stepped(s, c)).join("+")}`).join(" | "));
+    check("…the leader rotates run to run (persisted in the summary)", out.map((s) => s.schedule?.rotation).join() === "0,1,2,3,4,5,6,7,8"
+      && out.slice(0, 3).map((s) => s.schedule!.order[0]).join() === "SOL,BTC,ETH");
+    check("…an ETH-led run gives Ethereum its full step (deadline ≥ 75 s after the phase starts)", out[2].eth!.walletsRun >= 1 && out[2].eth!.stoppedBecause !== "DAILY_CAP");
+    check("…no phase ever plans past the job budget", w.deadlines.length > 0 && w.deadlines.every((d) => d.endsAt <= d.runStart + solCfg.jobBudgetMs));
+
+    // A killed run (no summary written) still advances the rotation.
+    const k = world({ sol: 20, btc: 20, eth: 2 });
+    const a = await k.run(); k.kill(); const b = await k.run();
+    check("a run killed before its summary still advances the rotation (0, [killed 1], 2)", a.schedule?.rotation === 0 && b.schedule?.rotation === 2 && b.schedule.order[0] === "ETH");
+  }
+
+  console.log("single chain unchanged");
+  {
+    const e = world({ eth: 1 });
+    const s = await e.run();
+    check("ETH alone: whole budget, one step", s.eth?.walletsRun === 1 && s.schedule?.order.join() === "ETH" && e.deadlines[0].endsAt <= T0 + solCfg.jobBudgetMs);
+    const so = world({ sol: 1 });
+    const s2 = await so.run();
+    check("SOL alone: whole budget (wallet budget min(60 s, budget − 30 s))", s2.walletsRun === 1 && so.deadlines[0].endsAt - T0 === Math.min(solCfg.walletBudgetMs, solCfg.jobBudgetMs - 30_000));
+    const two = world({ sol: 1, btc: 1 });
+    await two.run();
+    check("SOL + BTC at rotation 0: Solana's first half, as before", two.deadlines[0].chain === "SOL" && two.deadlines[0].endsAt - T0 === solCfg.jobBudgetMs / 2 - 30_000);
+  }
+
+  console.log("budget never exceeds the wake");
+  {
+    // The wake began 170 s ago: 90 s remain before WAKE_SAFE_MS — less than the 120 s job budget.
+    const w = world({ sol: 20, btc: 20, eth: 1, wakeAgoMs: 170_000 });
+    for (let i = 0; i < 3; i++) {
+      const before = w.now();
+      const s = await w.run();
+      const wakeSafe = before - 170_000 + WAKE_SAFE_MS;
+      const mine = w.deadlines.filter((d) => d.runStart === before);
+      check(`run ${i}: budget = what the wake has left (${s.budgetMs} ms), every phase deadline within it`,
+        s.budgetMs === wakeSafe - before && mine.length > 0 && mine.every((d) => d.endsAt <= wakeSafe));
+    }
+  }
+
+  console.log("defect 2: crash-safe metering");
+  {
+    // Unit: a kill after k calls leaves ≥ k − (granularity) on the ledger.
+    let recorded = 0;
+    const m = incrementalMeter(async (meter, flushed) => { const d = meterTotal(meter) - meterTotal(flushed); recorded += d; for (const [k, v] of Object.entries(meter)) flushed[k] = v; });
+    for (let i = 0; i < 137; i++) { m.meter.x = (m.meter.x ?? 0) + 1; await Promise.resolve(); }
+    await ticks();
+    check(`killed after 137 calls (no final flush): ≥ 137 − ${METER_FLUSH_EVERY_CALLS - 1} recorded`, recorded >= 137 - (METER_FLUSH_EVERY_CALLS - 1) && recorded <= 137, String(recorded));
+    await m.flush();
+    check("…and a normal end records exactly the rest (no double count)", recorded === 137);
+    await m.flush();
+    check("…a second flush records nothing", recorded === 137);
+
+    let t = 0, timed = 0;
+    const tm = incrementalMeter(async (meter, flushed) => { timed += meterTotal(meter) - meterTotal(flushed); Object.assign(flushed, meter); }, { now: () => t });
+    tm.meter.x = 1; await ticks(); const early = timed;
+    t = 6_000; tm.meter.x = 2; await ticks();
+    check("a slow pass is flushed on time too (a call 5 s after the last flush)", early === 0 && timed === 2);
+
+    let calls = 0;
+    const bad = incrementalMeter(async () => { calls++; throw new Error("ledger down"); });
+    for (let i = 0; i < 120; i++) bad.meter.x = (bad.meter.x ?? 0) + 1;
+    await ticks(); await bad.flush();
+    check("a failing recorder never fails the run and never spins", calls > 0 && calls <= 4, String(calls));
+
+    // Batched ETH-style increments (225 calls in one synchronous loop).
+    let batch = 0;
+    const bm = incrementalMeter(async (meter, flushed) => { batch += meterTotal(meter) - meterTotal(flushed); Object.assign(flushed, { ...meter }); });
+    for (let i = 0; i < 225; i++) bm.meter.eth_getBalance = (bm.meter.eth_getBalance ?? 0) + 1;
+    await ticks();
+    check("a synchronous batch of 225 is recorded without waiting for the pass end", batch >= 225 - (METER_FLUSH_EVERY_CALLS - 1), String(batch));
+
+    // Job level: each chain's pass killed mid-flight (the reconstruct never returns).
+    for (const chain of HISTORY_CHAINS) {
+      const w = world({ sol: chain === "SOL" ? 1 : 0, btc: chain === "BTC" ? 1 : 0, eth: chain === "ETH" ? 1 : 0 });
+      const k = 173;
+      const hang = new Promise<never>(() => {});
+      const spend = async (meter: RequestMeter, key: string) => { for (let i = 0; i < k; i++) { meter[key] = (meter[key] ?? 0) + 1; await Promise.resolve(); } return hang; };
+      if (chain === "SOL") w.deps.reconstruct = async ({ deps: d }) => spend(d!.meter!, "getTransaction");
+      if (chain === "BTC") w.deps.btc!.reconstruct = async ({ deps: d }) => spend(d.meter!, "txs");
+      if (chain === "ETH") w.deps.eth!.reconstruct = async ({ deps: d }) => spend(d.eth!.meter!, "eth_getBalance");
+      void solHistoryBackfill({ config: solCfg, btcConfig: btcCfg, ethConfig: ethCfg, deps: w.deps });
+      await ticks(40);
+      const onLedger = Object.values(w.ledger).reduce((a, b) => a + b, 0);
+      check(`${chain} pass killed after ${k} requests: ${onLedger} on the shared ledger (≥ ${k - (METER_FLUSH_EVERY_CALLS - 1)})`,
+        onLedger >= k - (METER_FLUSH_EVERY_CALLS - 1) && onLedger <= k);
+    }
+
+    // Normal completion across several wallets and all three passes: ledger = meters, exactly.
+    const w = world({ sol: 3, btc: 3, eth: 1 });
+    const s = await w.run();
+    const sum = (p: string) => Object.entries(w.ledger).filter(([k]) => k.startsWith(`${p}:`)).reduce((a, [, n]) => a + n, 0);
+    check("normal completion: each ledger equals its pass's meter exactly (no double count)",
+      sum("sol") === s.requests.total && sum("btc") === s.btc!.requests.total && sum("eth") === (s.eth?.requests.total ?? 0) && s.requests.total > 0,
+      `${JSON.stringify(w.ledger)} vs sol ${s.requests.total} btc ${s.btc?.requests.total} eth ${s.eth?.requests.total}`);
+  }
+
+  console.log("defect 3: price gaps for holders with no backfill work");
+  {
+    // Preview's facts: a COMPLETE SOL wallet licensed from 2022-03-26; the archive holds 2026-09-27..; the provider serves 365 days.
+    const mk = (o: { earliest: string | null; wakeAgoMs?: number; snapshotStart?: string }) => {
+      let t = T0;
+      const facts = { SOL: o.earliest, ETH: o.earliest };
+      const attempts = new Set<string>();
+      const revalued = new Set<string>();
+      const requests: string[] = [];
+      const log: string[] = [];
+      const snapshotStart = o.snapshotStart ?? "2026-09-27";
+      const licences: HolderLicence[] = [
+        { financialAccountId: "s0", instrumentId: "SOL", licensedFromISO: "2022-03-26" },
+        { financialAccountId: "e0", instrumentId: "ETH", licensedFromISO: "2021-01-01" },
+      ];
+      const cursors: Record<string, string> = { s0: serializeSol({ ...emptySol("s0", ADDR, `${DAY}T00:00:00Z`), reachedBeginning: true,
+        completedAtISO: `${DAY}T00:00:00Z`, licensedFromISO: "2022-03-26", licensedToISO: DAY } as SolBackfillCheckpoint) };
+      const solStore: SolBackfillStore = {
+        async readCursor() { return cursors.s0; }, async anchor() { return null; },
+        async commit(c) { if (c.expectedCursor !== cursors.s0) throw new Error("cas"); cursors.s0 = c.nextCursor; },
+      };
+      const gapDeps: PriceGapDeps = {
+        licences: async (ids) => licences.filter((l) => ids.includes(l.financialAccountId)),
+        priceFacts: async (ids) => new Map(ids.map((id) => [id, { instrumentId: id, earliestRawCloseISO: facts[id as "SOL"], provider: { kind: "provider", source: "COINGECKO", floorISO: "2025-10-28" } } satisfies InstrumentPriceFacts])),
+        acquire: async (id, from, to) => { requests.push(`${id}:${from}..${to}`); facts[id as "SOL"] = from; t += 2_000; return { inserted: 334, detail: "ok" }; },
+        attemptedOn: async (keys) => new Set(keys.filter((k) => attempts.has(k))),
+        markAttempted: async (key) => { attempts.add(key); },
+      };
+      const owed = async (ids: readonly string[]): Promise<RevaluationOwed[]> => licences.filter((l) => ids.includes(l.financialAccountId)).flatMap((l) => {
+        const from = valuedFromISO(l.licensedFromISO, facts[l.instrumentId as "SOL"]);
+        return from && from < snapshotStart ? [{ accountId: l.financialAccountId, fromISO: from, floorISO: facts[l.instrumentId as "SOL"]!, earliestSnapshotISO: snapshotStart }] : [];
+      });
+      const deps: SolBackfillJobDeps = {
+        now: () => t, sleep: async (ms) => { t += ms; },
+        wakeStartedAt: async () => (o.wakeAgoMs !== undefined ? t - o.wakeAgoMs : null),
+        wallets: async () => [{ accountId: "s0", connectionId: "c-s0", address: ADDR, cursor: cursors.s0 }],
+        claimLock: async () => true, renewLock: async () => true, releaseLock: async () => {},
+        reconstruct: async () => { throw new Error("a COMPLETE wallet is never reconstructed"); },
+        store: async () => solStore,
+        regenerationEnabled: () => true,
+        regenerate: async (id, from) => { log.push(`regen:${id}:${from}`); },
+        cryptoHolders: async () => ["e0", "s0"],
+        acquirePriceGaps: (ids, { attempted, maxInstruments }) => acquireHistoricalPriceGaps({ accountIds: ids, attempted, maxInstruments, deps: gapDeps, yesterdayISO: "2026-10-27" }),
+        revaluationOwed: (ids) => owed(ids),
+        revalueHolders: (ids, { deadlineMs, attempted, maxInstruments }) => {
+          const rd: RevaluationDeps = {
+            acquireGaps: (x) => acquireHistoricalPriceGaps({ accountIds: x, attempted, maxInstruments, deps: gapDeps, yesterdayISO: "2026-10-27" }),
+            owed, revaluedAlready: async (keys) => new Set(keys.filter((k) => revalued.has(k))), markRevalued: async (k) => { revalued.add(k); },
+            regenerate: async (id, from, to) => { log.push(`revalue:${id}:${from}..${to}`); }, now: () => t,
+          };
+          return revalueHoldersAfterPriceGaps({ accountIds: ids, deps: rd, deadlineMs });
+        },
+      };
+      return { deps, requests, log, cursors, attempts, revalued, run: () => solHistoryBackfill({ config: { ...solCfg, jobBudgetMs: 240_000 }, deps }) };
+    };
+
+    const w = mk({ earliest: "2026-09-27" });
+    const s1 = await w.run();
+    check("a COMPLETE wallet's uncovered range: ONE acquisition per instrument, inside the provider window",
+      w.requests.join() === "ETH:2025-10-28..2026-09-26,SOL:2025-10-28..2026-09-26" && s1.priceGaps.acquired === 2 && s1.priceGapSweep?.holders === 2, w.requests.join());
+    const cp = parseSol(w.cursors.s0, "s0", ADDR);
+    check("…the SOL holder is flagged from its new valued-from and rebuilt under its lock this run",
+      s1.revaluationsRederived === 1 && w.log.includes("regen:s0:2025-10-28") && cp?.valuationCheckedFloorISO === "2025-10-28" && !cp?.snapshotPendingFromISO, w.log.join(","));
+    check("…the non-SOL holder is revalued over just the missing days", w.log.includes("revalue:e0:2025-10-28..2026-09-26") && s1.holderRevaluation?.revalued === 1, w.log.join(","));
+    check("…observations are shared per instrument: the durable once-a-day markers are set",
+      w.attempts.has(priceGapAttemptKey("COINGECKO", "SOL", "2026-09-27")) && w.revalued.has(revaluationAttemptKey("e0", "2025-10-28")));
+
+    const before = w.log.length;
+    const s2 = await w.run();
+    check("second run the same day: no provider request, nothing rebuilt again",
+      w.requests.length === 2 && s2.priceGaps.acquired === 0 && w.log.length === before && s2.revaluationsRederived === 0 && s2.stoppedBecause === "NO_WORK", JSON.stringify({ r: w.requests, l: w.log.slice(before) }));
+
+    const covered = mk({ earliest: "2021-01-01", snapshotStart: "2021-01-01" });
+    const s3 = await covered.run();
+    check("covered archive: no request, nothing owed", covered.requests.length === 0 && s3.priceGaps.acquired === 0 && covered.log.length === 0);
+
+    const late = mk({ earliest: "2026-09-27", wakeAgoMs: WAKE_SAFE_MS - PRICE_GAP_RESERVE_MS + 1_000 });
+    const s4 = await late.run();
+    check("too little wake time: deferred (no request, nothing written), the run finishes normally",
+      late.requests.length === 0 && s4.priceGapSweep?.skippedForTime === true && s4.stoppedBecause === "NO_WORK" && late.log.length === 0 && late.attempts.size === 0, JSON.stringify(s4.priceGapSweep));
+    const s5 = await late.run(); void s5;
+    const next = mk({ earliest: "2026-09-27" });
+    await next.run();
+    check("…and a later run with time acquires it", next.requests.length === 2);
+  }
+
+  console.log(`\nhistory-worker-fairness: ${passes} passed, ${failures} failed.`);
+  if (failures > 0) process.exit(1);
+}
+main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });

@@ -44,7 +44,7 @@ import { syncHeadOnly } from "./sol-history-backfill";
 import { reconstructEthHistoryForSync } from "./eth-history-backfill.store";
 import { ethWorkerEnabled } from "./eth-history-backfill.core";
 import { todayUTCISO } from "@/lib/time/clock";
-import { ALCHEMY_USAGE_NETWORK, ALCHEMY_USAGE_PROVIDER, recordProviderMeter } from "@/lib/usage/provider-budget";
+import { ALCHEMY_USAGE_NETWORK, ALCHEMY_USAGE_PROVIDER, incrementalMeter, recordProviderMeter } from "@/lib/usage/provider-budget";
 
 type HistoryWindow = { accountId: string; windowFromISO: string; windowToISO: string };
 
@@ -52,19 +52,22 @@ type HistoryWindow = { accountId: string; windowFromISO: string; windowToISO: st
  * SHARED PROVIDER BUDGET (2026-10-28) — the SOL and ETH history paths spend the
  * Alchemy key. Every request a run sends is counted by its transport and
  * recorded against the provider's daily budget when the run ends, refused or
- * not. BTC's resumable backfill reads Esplora, not Alchemy: its requests are
- * recorded under their own provider (ESPLORA), which the BTC worker's own daily
- * cap reads (the wholesale BTC path makes no history requests).
+ * not — and, since a sync killed mid-run must not spend uncounted requests,
+ * also WHILE it sends (every METER_FLUSH_EVERY_CALLS calls / _MS). BTC's
+ * resumable backfill reads Esplora, not Alchemy: its requests are recorded
+ * under their own provider (ESPLORA), which the BTC worker's own daily cap
+ * reads (the wholesale BTC path makes no history requests).
  */
 function metered<R>(network: string, run: (meter: Record<string, number>) => Promise<R>): Promise<R> {
-  const meter: Record<string, number> = {};
-  return run(meter).finally(() => recordProviderMeter(ALCHEMY_USAGE_PROVIDER, network, meter));
+  // Crash-safe: flushed while the run sends (provider-budget.core.ts incrementalMeter), and once more at the end.
+  const m = incrementalMeter((meter, flushed) => recordProviderMeter(ALCHEMY_USAGE_PROVIDER, network, meter, { flushed }).then(() => {}));
+  return run(m.meter).finally(() => m.flush());
 }
 
 /** BTC: the same, under its own provider (ESPLORA) — never the Alchemy budget. */
 function meteredEsplora<R>(run: (meter: Record<string, number>) => Promise<R>): Promise<R> {
-  const meter: Record<string, number> = {};
-  return run(meter).finally(() => recordProviderMeter(ESPLORA_USAGE_PROVIDER, ESPLORA_USAGE_NETWORK, meter));
+  const m = incrementalMeter((meter, flushed) => recordProviderMeter(ESPLORA_USAGE_PROVIDER, ESPLORA_USAGE_NETWORK, meter, { flushed }).then(() => {}));
+  return run(m.meter).finally(() => m.flush());
 }
 
 /** What a refresh did, for the log and for the caller's decision to regenerate. */
