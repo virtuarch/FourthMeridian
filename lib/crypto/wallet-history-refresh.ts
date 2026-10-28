@@ -110,7 +110,7 @@ export async function refreshWalletHistory(
     // SOL: the resumable, checkpointed backfill (sol-history-backfill.ts). The
     // wholesale reconstructSolHistory stopped at 5,000 signatures per run and
     // never resumed; it remains only as the fixture-driven acceptance path.
-    : key === SOL_NATIVE.chain ? reconstructSolHistoryResumable
+    : key === SOL_NATIVE.chain ? (a: { accountId: string; windowFromISO: string; windowToISO: string }) => reconstructSolHistoryResumable({ ...a, client: db })
     : key === ETH_NATIVE.chain ? reconstructEthHistory
     : null;
   if (run === null) return { accountId, chain: key, refreshed: false, reason: "chain has no reconstruction" };

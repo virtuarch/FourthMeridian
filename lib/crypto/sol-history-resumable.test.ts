@@ -490,7 +490,7 @@ async function main() {
   console.log("\nwiring");
   {
     const refresh = read("lib/crypto/wallet-history-refresh.ts");
-    check("the wallet refresh runs the RESUMABLE backfill for SOL", /SOL_NATIVE\.chain \? reconstructSolHistoryResumable/.test(refresh));
+    check("the wallet refresh runs the RESUMABLE backfill for SOL", /SOL_NATIVE\.chain \? \(a: [^)]*\) => reconstructSolHistoryResumable\(\{ \.\.\.a, client: db \}\)/.test(refresh));
     const run = read("lib/crypto/sol-history-backfill.ts") + read("lib/crypto/sol-history-backfill.store.ts");
     check("no transaction-count ceiling: runs are bounded by wall-clock only", !/pageBudget|PAGE_BUDGET/.test(run) && /deadlineMs/.test(run));
     check("the checkpoint is compare-and-swapped in the SAME transaction as rows and licence",

@@ -7,8 +7,7 @@
  * cursor — and the entry point `refreshWalletHistory` calls for SOL.
  */
 
-import { PositionOrigin } from "@prisma/client";
-import { db } from "@/lib/db";
+import { PositionOrigin, type PrismaClient } from "@prisma/client";
 import { SOL_ASSET, resolveCryptoInstrumentId } from "@/lib/investments/crypto-instrument";
 import { SOL_NATIVE } from "./native-asset";
 import { persistPositionCoverage } from "./position-coverage";
@@ -20,7 +19,8 @@ import {
 } from "./sol-history-backfill";
 
 /** The production store: Connection.cursor + PositionObservation + PositionCoverage. */
-export async function prismaSolBackfillStore(accountId: string): Promise<{ store: SolBackfillStore; address: string; connectionId: string } | null> {
+/** The client is the CALLER's authority (never a module default — audit-db-authority). */
+export async function prismaSolBackfillStore(accountId: string, db: PrismaClient): Promise<{ store: SolBackfillStore; address: string; connectionId: string } | null> {
   const account = await db.financialAccount.findUnique({
     where: { id: accountId },
     select: { walletChain: true, walletAddress: true, deletedAt: true,
@@ -30,7 +30,7 @@ export async function prismaSolBackfillStore(accountId: string): Promise<{ store
   });
   const connectionId = account?.connections[0]?.connectionId ?? null;
   if (!account || account.deletedAt || account.walletChain !== SOL_NATIVE.chain || !account.walletAddress || !connectionId) return null;
-  const instrumentId = await resolveCryptoInstrumentId(SOL_ASSET);
+  const instrumentId = await resolveCryptoInstrumentId(SOL_ASSET, { client: db });
   const lamportsPerSol = BigInt(10) ** BigInt(SOL_NATIVE.decimals);
 
   const store: SolBackfillStore = {
@@ -106,9 +106,9 @@ export interface SolResumableResult {
  * is a refusal — nothing beyond what is already proven is claimed.
  */
 export async function reconstructSolHistoryResumable(
-  args: { accountId: string; windowFromISO?: string; windowToISO?: string; resume?: boolean; deps?: SolBackfillDeps },
+  args: { accountId: string; client: PrismaClient; windowFromISO?: string; windowToISO?: string; resume?: boolean; deps?: SolBackfillDeps },
 ): Promise<SolResumableResult> {
-  const bound = await prismaSolBackfillStore(args.accountId);
+  const bound = await prismaSolBackfillStore(args.accountId, args.client);
   if (!bound) {
     return { accountId: args.accountId, ok: false, refusal: "NOT_A_SOL_WALLET", reason: "not a SOL wallet with an address and a connection",
       derivedRowsWritten: 0, mode: "NO_CHANGE", impactedFromISO: null, backfill: null };
