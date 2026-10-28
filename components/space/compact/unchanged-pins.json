@@ -12,7 +12,7 @@
  "components/space/widgets/cashflow/cash-flow-insights.ts": "25cb4a999dbed2bf83b63d860e5ba62d5b4f266748fe8f27dd352ff5f0ea92e2",
  "components/space/widgets/markets/MarketsWorkspace.tsx": "6cd0552ea70527515f3cecdf471bb6ecf87bb12ba9e66159bf72616310f3bd9f",
  "components/space/widgets/shared/CalendarHeatmapGrid.tsx": "72f42f14fbf04841cb76bf7c8be2939bd08ac5d5cf6b9c49504c3917990f37f2",
- "components/space/widgets/wealth/RealAssetsSection.tsx": "150171eb948d3e614aaa6fd316dfc4aea82c3d57b5ac603c72e49ddda417aa74",
+ "components/space/widgets/wealth/RealAssetsSection.tsx": "bf3fd09f2d9f2539d46a3d7f1ddb705802ab9ae97d673c410d9b3809440db0ce",
  "components/space/workspaces/WorkspaceComingSoon.tsx": "49d4c06b5cff3ecbb1a650f123f69b57802368a61790e4294864ace0378f42ec",
  "lib/accounts/account-reparenting.ts": "57300539f4dbe03770b751bf67859a52d36da43c66e657fd1c8dc64ee2af26b4",
  "lib/accounts/credit-utilization.ts": "5ba106a335fa1ea6da41265baccedfd044fc287184af0209bb25ef619258dd95",

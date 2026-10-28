@@ -15,7 +15,7 @@
  * claims data is gone — historical values remain until a separate correction slice.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import { MoreHorizontal, RefreshCw, Unplug } from "lucide-react";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
@@ -48,13 +48,34 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
   // UI-006: a failed action is said out loud, never swallowed into a silent refresh.
   const [failure, setFailure] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Menu-button focus contract (WAI-ARIA APG): opening moves focus to the first
+  // enabled item, arrows/Home/End move between items, Escape closes and returns
+  // focus to the trigger, Tab closes and lets focus move on.
+  useEffect(() => {
+    if (open) menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not([disabled])')?.focus();
+  }, [open]);
+
+  function onMenuKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
+    const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])') ?? []);
+    if (items.length === 0) return;
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const go = (i: number) => { e.preventDefault(); items[(i + items.length) % items.length].focus(); };
+    if (e.key === "ArrowDown") go(at + 1);
+    else if (e.key === "ArrowUp") go(at - 1);
+    else if (e.key === "Home") go(0);
+    else if (e.key === "End") go(items.length - 1);
+    else if (e.key === "Tab") setOpen(false);
+  }
 
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { setOpen(false); triggerRef.current?.focus(); } };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -108,6 +129,7 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
         </p>
       )}
       <button
+        ref={triggerRef}
         type="button"
         aria-label="Connection options"
         aria-haspopup="menu"
@@ -121,7 +143,10 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
 
       {open && (
         <div
+          ref={menuRef}
           role="menu"
+          aria-label={`Options for ${connection.institution}`}
+          onKeyDown={onMenuKeyDown}
           className="absolute right-0 z-20 mt-1 w-60 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border-hairline)] bg-[var(--surface-1,#161a22)] py-1 shadow-lg"
         >
           {isPlaid && <MenuItem icon={RefreshCw} label="Refresh connection" onClick={refresh} disabled={busy !== null} />}
