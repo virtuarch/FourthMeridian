@@ -64,5 +64,31 @@ console.log("due rule");
   check("continuation not due without deferred work", !decideJobDue(cont, { hours: 6 }, null, NOW, { ...primary, lastSummary: { deferred: 0 } }).due);
 }
 
+console.log("prompt start — sol-history-backfill (2026-10-28)");
+{
+  const sol = by("sol-history-backfill");
+  const pol = resolveJobCadence(sol, null, defaults);
+  check("DEFAULT: hourly, editable 1–24 h through its own key", pol.origin === "DEFAULT" && pol.hours === 1 && pol.editable
+    && pol.minHours === 1 && pol.maxHours === 24 && jobCadenceSettingKey(sol) === "job_cadence_hours_sol-history-backfill");
+  check("an operator override within bounds is honoured (6 h)", resolveJobCadence(sol, { value: "6", updatedAt: NOW }, defaults).hours === 6);
+  check("a row past the ceiling is NOT honoured (48 h ⇒ hourly default)", resolveJobCadence(sol, { value: "48", updatedAt: NOW }, defaults).origin === "INVALID_SETTING");
+  const ago = (min: number, summary?: unknown) => ({ lastStartedAt: new Date(NOW.getTime() - min * 60_000), lastStatus: "succeeded", lastSummary: summary });
+  const idle = { deferred: 0, stoppedBecause: "NO_WORK" };
+  // A wallet added right after a no-work run waits at most one hour (− tolerance), not a 6-hour slot.
+  const d61 = decideJobDue(sol, pol, ago(61, idle), NOW);
+  check("no-work run 61 min ago ⇒ CADENCE_ELAPSED (a new wallet starts within the hour)", d61.due && d61.reason === "CADENCE_ELAPSED");
+  const d56 = decideJobDue(sol, pol, ago(56, idle), NOW);
+  check("…56 min ago is inside the 5-min tolerance ⇒ due", d56.due);
+  const d30 = decideJobDue(sol, pol, ago(30, idle), NOW);
+  check("no-work run 30 min ago ⇒ NOT_YET_DUE, next at last + 55 min", !d30.due && d30.reason === "NOT_YET_DUE"
+    && d30.nextDueAt?.getTime() === NOW.getTime() - 30 * 60_000 + 3_600_000 - DUE_TOLERANCE_MS);
+  const c16 = decideJobDue(sol, pol, ago(16, { deferred: 3 }), NOW);
+  check("deferred work ⇒ SELF_CONTINUATION ~15 min later (unchanged by the hourly cadence)", c16.due && c16.reason === "SELF_CONTINUATION");
+  const c10 = decideJobDue(sol, pol, ago(10, { deferred: 3 }), NOW);
+  check("…but not before the continuation delay", !c10.due);
+  const failed = decideJobDue(sol, pol, { ...ago(61), lastStatus: "failed" }, NOW);
+  check("a failed run is retried on the hourly cadence", failed.due && failed.reason === "CADENCE_ELAPSED");
+}
+
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nall checks passed");
