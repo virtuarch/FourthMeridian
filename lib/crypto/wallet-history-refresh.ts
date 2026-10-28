@@ -37,7 +37,7 @@ import { db } from "@/lib/db";
 import { PositionOrigin } from "@prisma/client";
 import { BTC_NATIVE, ETH_NATIVE, SOL_NATIVE } from "./native-asset";
 import { reconstructBtcHistory } from "./btc-history-sync";
-import { reconstructSolHistory } from "./sol-history-sync";
+import { reconstructSolHistoryResumable } from "./sol-history-backfill.store";
 import { reconstructEthHistory } from "./eth-history-sync";
 import { todayUTCISO } from "@/lib/time/clock";
 
@@ -54,9 +54,9 @@ export interface WalletHistoryRefresh {
   windowFromISO?: string;
   windowToISO?:   string;
   /**
-   * ETH only — what the reconstruction did and the earliest date whose stored
-   * quantity changed. BTC and SOL rebuild wholesale and do not measure it, so
-   * these stay undefined for them (not measured, never "unchanged").
+   * ETH and SOL — what the reconstruction did and the earliest date whose
+   * stored quantity changed. BTC rebuilds wholesale and does not measure it, so
+   * these stay undefined for it (not measured, never "unchanged").
    */
   mode?: "FULL" | "INCREMENTAL" | "NO_CHANGE";
   impactedFromISO?: string | null;
@@ -107,7 +107,10 @@ export async function refreshWalletHistory(
   // historical licence, exactly as their capability says.
   const run =
     key === BTC_NATIVE.chain ? reconstructBtcHistory
-    : key === SOL_NATIVE.chain ? reconstructSolHistory
+    // SOL: the resumable, checkpointed backfill (sol-history-backfill.ts). The
+    // wholesale reconstructSolHistory stopped at 5,000 signatures per run and
+    // never resumed; it remains only as the fixture-driven acceptance path.
+    : key === SOL_NATIVE.chain ? reconstructSolHistoryResumable
     : key === ETH_NATIVE.chain ? reconstructEthHistory
     : null;
   if (run === null) return { accountId, chain: key, refreshed: false, reason: "chain has no reconstruction" };
@@ -134,7 +137,7 @@ export async function refreshWalletHistory(
       rowsWritten: result.derivedRowsWritten,
       windowFromISO: fromISO, windowToISO: toISO,
       ...("mode" in result && result.mode
-        ? { mode: result.mode, impactedFromISO: result.impactedFromISO ?? null, fallbackReason: result.fallbackReason }
+        ? { mode: result.mode, impactedFromISO: result.impactedFromISO ?? null, fallbackReason: "fallbackReason" in result ? result.fallbackReason : undefined }
         : {}),
     };
   } catch (e) {

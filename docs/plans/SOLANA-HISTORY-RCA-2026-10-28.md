@@ -52,3 +52,45 @@ Tests: `lib/crypto/sol-history-backfill.test.ts`.
 - **Dry-run first.** `reconstructSolHistory({dryRun:true})` reports the would-be coverage, row count and impacted-from date. The operator applies only after that.
 - **Notify the customer** only after a validated recovery: coverage COMPLETE or PARTIAL with an earlier start, and snapshots regenerated.
 - **Read-only checks to run against Production first** (owner approval needed for each read): `Connection.historyRebuiltAt`, `PositionCoverage`, `MIN(PositionObservation.date)` by origin, `RefreshEndpointResult(HISTORY_BACKFILL)`, and the Vercel log line `history not refreshed for <id>`.
+
+---
+
+## Addendum (same day) — the 5,000-transaction ceiling: confirmed cause and the resumable backfill
+
+### Confirmed cause (code, not inference)
+
+| Question | Finding |
+|---|---|
+| Origin | `DEFAULT_PAGE_BUDGET = 5` × `SIGNATURE_PAGE_LIMIT = 1000` in `lib/crypto/sol-history.ts`; the loop is `while (pagesFetched < pageBudget)`. |
+| Enforced by | **The application.** Solana's RPC caps a page at 1,000 and pages with `before`; the 5-page budget is ours. |
+| Pagination | Backward via `before` from the newest signature on every run. `until` was never passed. One sequential `getTransaction` per signature. |
+| Cursor persisted | **No.** The "stored on `Connection.cursor`" comment described nothing; `refreshWalletHistory` passed no cursor and nothing wrote one. (`newestSignature` also never advanced.) |
+| Timeouts | No timeout on history requests; whole runs were measured at 44 s. |
+| Rate limits | None: a 429 threw, the whole run became `PROVIDER_FAILED`, all fetched pages were discarded. |
+| Resume | Impossible — every run restarted at the newest signature. |
+| Duplicates | Not possible: DERIVED rows were delete-and-replaced; no `Transaction` rows are written. |
+| Reconstruction | Σ(movements) from **zero** had to equal today's balance. Past 5,000 signatures the opening balance is never reached, the residual equals it, and the run refuses `LEDGER_DOES_NOT_RECONCILE` — the same five pages, forever. |
+| Projection impact | Unlicensed SOL quantity is null ⇒ the crypto component refuses for those days, and Solana never reported `impactedFromISO`, so a widened history never triggered a deep snapshot rebuild. |
+
+### Implemented architecture (PR: feat/sol-history-resumable)
+
+- **The chain states balances.** Each transaction reports the owner's lamports before and after it. Consecutive transactions must satisfy `post(older) === pre(newer)`; a match proves the stretch complete, a mismatch is a **proven gap** (a transaction the index did not list). History is therefore provable a chunk at a time without the opening balance and without persisting movements.
+- **Two frontiers, one checkpoint.** `Connection.cursor` holds `{top, bottom, reachedBeginning, licensedFrom/To, gap, failures, lastFailure, signaturesProcessed}` (versioned JSON; no migration). Each run first extends the **top** (`until` = top signature, oldest-first) and verifies the newest transaction states the **observed** balance, then extends the **bottom** (`before` = bottom signature).
+- **Bounded by wall-clock, not count** (`SOL_HISTORY_RUN_BUDGET_MS`, default 45 s, far inside the 360 s wallet lock). No total ceiling.
+- **Commit per page**, in ONE transaction: the new days' DERIVED rows (`completeness = CHAIN_STATED`, `reconstructionVersion = 2`), the `PositionCoverage` licence (`COMPLETE` over the proven interval), and the checkpoint by **compare-and-swap** on the cursor the run started from — two concurrent runs can never both advance it.
+- **Transport**: per-request timeout, ≤4 retries with exponential backoff honouring `Retry-After` (never past the run deadline), JSON-RPC rate-limit errors treated as throttling, a small fetch pool (4) that drops to 1 when throttled.
+- **States**: QUEUED · IMPORTING (partial, with the proven interval) · COMPLETE · FAILED (6 consecutive failures; automatic retry once a day) · RECOVERY_REQUIRED (gap; proven history above it kept; automatic runs skip) · UNAVAILABLE. Operator `resume` clears failures/gap and retries.
+- **Snapshots**: the refresh now returns `mode` + `impactedFromISO` for SOL, which `wallet-post-sync` already feeds to the historical work window (closes gap 3 above).
+
+### Evidence
+
+`lib/crypto/sol-history-resumable.test.ts` (65 checks, deterministic in-memory chain incl. v0 lookup-table and failed transactions): 4,999 / 5,001 (1 run), 12,000 (5 runs), 52,000 (6 runs) — every day equals the chain's true end-of-day balance and each transaction is fetched exactly once; interruption + resume; 429 backoff/exhaustion/deadline; duplicate page delivery; concurrent runs (exactly one advances); head extension with `impactedFromISO`; idempotent re-run; gap detection without guessing; anchor mismatch; empty wallet; failure → FAILED → paused → resume.
+
+### Remaining limitations
+
+- **Throughput**: one run per wallet sync (4 scheduled/day + continuation + manual). At ~45 s/run a 100,000-transaction wallet takes on the order of weeks to finish; it shows IMPORTING with its proven interval meanwhile. A dedicated self-continuing job is the lever if that is too slow (owner decision: provider cost).
+- **SPL tokens** are still not reconstructed (native SOL only).
+- **Gaps** need an operator; there is no automatic recovery of a transaction the index never lists.
+- The `HISTORY_BACKFILL` execution stage still records refusals as SKIPPED; the code is now durable in the checkpoint (`lastFailure`) instead. Changing the ledger verdict is left for the Platform Ops pass so alerting is not altered silently.
+- **Production**: no migration. On first run each existing SOL wallet starts a fresh checkpoint and replaces its old DERIVED rows (only `source = sol-reconstruction`). No backfill is triggered by deployment; it advances with normal syncs.
+- **Release note (owner decision before Production):** a wallet that the old engine had fully licensed (under 5,000 signatures) gets a fresh checkpoint on its first new-engine run. That first commit replaces its old DERIVED rows with the newest proven page(s), so its licensed interval can be **narrower for a few syncs** until the bottom frontier passes the old start date. Nothing is fabricated in the meantime — older days refuse rather than guess — but charts for those days show "not available" briefly. Options: accept; or seed the first run with a larger one-off budget; or keep the old licence until the new bottom passes it (a follow-up change).
