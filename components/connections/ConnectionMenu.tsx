@@ -102,7 +102,7 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
   }
 
   async function refresh() {
-    setBusy("refresh"); setOpen(false);
+    setBusy("refresh"); setOpen(false); triggerRef.current?.focus();
     setFailure(null);
     const err = await post("/api/plaid/refresh", { plaidItemId: connection.id });
     if (err) setFailure(err);
@@ -117,6 +117,7 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
     if (err) setFailure(err);
     setBusy(null);
     setConfirmDisconnect(false);
+    triggerRef.current?.focus();
     router.refresh();
   }
 
@@ -169,7 +170,7 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
           confirmTone="meridian"
           busy={busy === "disconnect"}
           onConfirm={disconnect}
-          onClose={() => setConfirmDisconnect(false)}
+          onClose={() => { setConfirmDisconnect(false); triggerRef.current?.focus(); }}
         />
       )}
     </div>

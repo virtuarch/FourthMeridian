@@ -181,6 +181,7 @@ console.log("Wiring and accessibility");
 // ── Unproven history headline follows the import's persisted state ───────────
 {
   console.log("\nunproven wallet history — the History headline");
+  const menu0 = readFileSync(path.join(process.cwd(), "components/connections/ConnectionMenu.tsx"), "utf8");
   const q = unprovenHistorySummary("QUEUED", true, null);
   check("QUEUED is not described as a failure, and says it starts automatically (worker on)", /^Not verified yet — the history import is queued and starts automatically\./.test(q) && !/hasn’t been able|failed|error/i.test(q), q);
   check("QUEUED with the worker off never promises automatic progress", !/automatic/i.test(unprovenHistorySummary("QUEUED", false, null)));
@@ -188,6 +189,8 @@ console.log("Wiring and accessibility");
   check("IMPORTING states the verified-back-to date, absolute", /verified back to Mar 1, 2024 so far/.test(imp), imp);
   check("IMPORTING with the worker off never promises automatic progress", !/automatic/i.test(unprovenHistorySummary("IMPORTING", false, null)));
   check("FAILED says paused + daily retry", /^Paused — the history import hit repeated errors and retries daily\./.test(unprovenHistorySummary("FAILED", true, null)));
+  check("FAILED with the worker off never promises a daily retry", !/retries daily/.test(unprovenHistorySummary("FAILED", false, null)));
+  check("⋯ menu: Refresh / Disconnect / dialog close return focus to the trigger (never <body>)", (menu0.match(/triggerRef\.current\?\.focus\(\)/g) ?? []).length >= 4);
   check("RECOVERY_REQUIRED says why, in the failure's own terms", /held ETH before the earliest block/.test(unprovenHistorySummary("RECOVERY_REQUIRED", true, null, "BALANCE_BEFORE_PROVABLE_FLOOR")));
   check("every state keeps 'Current holdings are unaffected'", ["QUEUED", "IMPORTING", "FAILED", "RECOVERY_REQUIRED", null].every((st) => /Current holdings are unaffected\.$/.test(unprovenHistorySummary(st, true, null))));
   const wallet = conn({ provider: "WALLET", institution: "My ETH" });

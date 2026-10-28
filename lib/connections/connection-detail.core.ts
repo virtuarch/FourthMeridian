@@ -341,7 +341,9 @@ export function unprovenHistorySummary(state: string | null | undefined, workerE
         ? `Importing — verified back to ${fmtDay(provenFromISO)} so far${workerEnabled ? "; earlier history continues automatically" : ""}. ${held}`
         : `Importing — earlier history is being verified${workerEnabled ? " and continues automatically" : ""}. ${held}`;
     case "FAILED":
-      return `Paused — the history import hit repeated errors and retries daily. ${held}`;
+      return workerEnabled
+        ? `Paused — the history import hit repeated errors and retries daily. ${held}`
+        : `Paused — the history import hit repeated errors. ${held}`;
     case "RECOVERY_REQUIRED": {
       const why = historyImportText(state, workerEnabled, failureCode)?.text ?? "Needs attention";
       return `${why}. ${held}`;
