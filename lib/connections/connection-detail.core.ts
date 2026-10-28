@@ -158,8 +158,13 @@ export function connectionHealth(
     const importing = lines.some((l) => l.key === "import" && l.tone === "progress");
     const limited = lines.some((l) => (l.key === "history" || l.key === "prices" || l.key === "import") && l.tone === "neutral")
       || (i?.walletHistory?.licensed === true && (i.walletHistory.chart?.fromISO ?? "9999") > (i.walletHistory.activityFromISO ?? i.walletHistory.licensedFromISO ?? "0000"));
+    // Attention is attributed to the facet that has it: stale HOLDINGS are not
+    // "ready", and must never be blamed on history (Preview finding 2026-10-28).
+    const holdingsStale = lines.some((l) => l.key === "holdings" && l.tone === "attention");
+    const historyAttention = lines.some((l) => l.tone === "attention" && l.key !== "holdings" && l.key !== "connection");
     const headline = lines[0].tone === "attention" ? "This wallet needs attention"
-      : attention ? "Current holdings ready; history needs attention"
+      : holdingsStale ? (historyAttention ? "Current holdings are out of date; history needs attention" : "Current holdings are out of date")
+      : historyAttention ? "Current holdings ready; history needs attention"
       : importing ? "Current holdings ready; history is being imported"
       : limited ? "Current holdings ready; some history is limited"
       : "Current holdings ready";
@@ -240,11 +245,13 @@ export function connectionHistory(
     }
     return {
       coverage: "PARTIAL",
-      summary: "Incomplete — Fourth Meridian hasn’t been able to prove this wallet’s earlier history yet. Current holdings are unaffected.",
+      // The headline follows the import's persisted state: a queued or running
+      // import is not a failure, and must not read like one.
+      summary: unprovenHistorySummary(wh.historyImport?.state, i?.facts?.historyWorkerEnabled === true, wh.historyImport?.provenFromISO ?? null, wh.historyImport?.lastFailureCode ?? null),
       fromISO: null, toISO: null, lastBuiltISO,
       blockchain: null, chart: null, rangeNote: null,
       limitations: sol
-        ? ["Solana history is being moved to an importer that works through large wallets in stages, without the previous 5,000-transaction limit. Earlier days stay unavailable until they are proven — they are never estimated."]
+        ? ["Large Solana wallets are imported in stages. Earlier days stay unavailable until they are proven — they are never estimated."]
         : ["Earlier days stay unavailable until they are proven — they are never estimated."],
     };
   }
@@ -314,6 +321,35 @@ export function historyImportText(state: string | null | undefined, workerEnable
     case "RECOVERY_REQUIRED": return { text: "Needs attention — a gap was found", tone: "attention" };
     case "UNAVAILABLE":       return { text: "Not available in this environment", tone: "neutral" };
     default:                  return null;
+  }
+}
+
+/**
+ * The History tab's headline while a wallet's earlier history is not yet
+ * proven — said in the import's own state. Queued and running imports are not
+ * failures; only FAILED / RECOVERY_REQUIRED say something went wrong.
+ */
+export function unprovenHistorySummary(state: string | null | undefined, workerEnabled: boolean, provenFromISO: string | null, failureCode?: string | null): string {
+  const held = "Current holdings are unaffected.";
+  switch (state) {
+    case "QUEUED":
+      return workerEnabled
+        ? `Not verified yet — the history import is queued and starts automatically. ${held}`
+        : `Not verified yet — the history import is queued. ${held}`;
+    case "IMPORTING":
+      return provenFromISO
+        ? `Importing — verified back to ${fmtDay(provenFromISO)} so far${workerEnabled ? "; earlier history continues automatically" : ""}. ${held}`
+        : `Importing — earlier history is being verified${workerEnabled ? " and continues automatically" : ""}. ${held}`;
+    case "FAILED":
+      return workerEnabled
+        ? `Paused — the history import hit repeated errors and retries daily. ${held}`
+        : `Paused — the history import hit repeated errors. ${held}`;
+    case "RECOVERY_REQUIRED": {
+      const why = historyImportText(state, workerEnabled, failureCode)?.text ?? "Needs attention";
+      return `${why}. ${held}`;
+    }
+    default:
+      return `Incomplete — Fourth Meridian hasn’t been able to prove this wallet’s earlier history yet. ${held}`;
   }
 }
 

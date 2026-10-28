@@ -1,5 +1,6 @@
 import { getServerSession } from "next-auth";
 import { authOptions }      from "@/lib/auth";
+import { ACCOUNT_NAME_SELECT, accountDisplayName } from "@/lib/accounts/display-identity";
 import { withTenantDb }     from "@/lib/db/tenant-context";
 import { redirectToLogin }  from "@/lib/auth/login-redirect";
 import {
@@ -69,7 +70,8 @@ export default async function ArchivedAssetsPage() {
       },
       select: {
         id:            true,
-        name:          true,
+        // The canonical identity columns — a renamed asset shows its new name here too.
+        ...ACCOUNT_NAME_SELECT,
         balance:       true,
         currency:      true,
         deletedAt:     true,
@@ -126,7 +128,7 @@ export default async function ArchivedAssetsPage() {
 
   const assets: ArchivedAsset[] = accounts.map((a) => ({
     id:          a.id,
-    name:        a.name,
+    name:        accountDisplayName(a),
     balance:     a.balance,
     currency:    a.currency,
     deletedAt:   a.deletedAt!.toISOString(),

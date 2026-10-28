@@ -325,7 +325,7 @@ export function RealAssetsSection({ spaceId, spaceType, active = true, ctx }: {
           message={
             <span>
               It leaves your net worth and every Space it&rsquo;s shown in. You can restore it from
-              Settings → Data &amp; privacy → Archived assets.
+              Settings → Data &amp; Privacy → Archive &amp; Trash.
               {archiveError && <span className="mt-2 block text-[var(--coral-400)]" role="alert">{archiveError}</span>}
             </span>
           }

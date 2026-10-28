@@ -268,5 +268,5 @@ export function groupAssetActivity(
 
 /** The confirm copy for Remove — archive semantics, as the DELETE route behaves. */
 export function removeAssetMessage(name: string): string {
-  return `${name} leaves your net worth and every Space it's shown in. Its value history is kept, and you can restore it from Settings → Data & privacy → Archived assets.`;
+  return `${name} leaves your net worth and every Space it's shown in. Its value history is kept, and you can restore it from Settings → Data & Privacy → Archive & Trash.`;
 }

@@ -8,7 +8,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { groupAccounts, connectionHealth, connectionHistory, abbreviateAddress, accountGroupKey, chartReadyRange } from "@/lib/connections/connection-detail.core";
+import { groupAccounts, connectionHealth, connectionHistory, abbreviateAddress, accountGroupKey, chartReadyRange, unprovenHistorySummary } from "@/lib/connections/connection-detail.core";
 import { summarizeConnection } from "@/lib/connections/connection-summary";
 import { connectionDestinations } from "@/lib/connections/connection-facts";
 import type { SyncConnection } from "@/lib/sync/status";
@@ -98,7 +98,7 @@ console.log("History — never claims what is not proven");
   const solAccounts = [{ id: "a", name: "SOL", type: "crypto", chain: "SOL" }];
   const sol = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: false, licensedFromISO: null, licensedToISO: null, activityFromISO: null } }), solAccounts);
   check("an unproven Solana wallet is PARTIAL with no dates", sol.coverage === "PARTIAL" && sol.fromISO === null && sol.toISO === null);
-  check("…and names the import limitation honestly (never estimated)", sol.limitations.some((l) => /5,000/.test(l) && /never estimated/.test(l)));
+  check("…and names the import limitation honestly (never estimated)", sol.limitations.some((l) => /imported in stages/.test(l) && /never estimated/.test(l) && !/5,000/.test(l)));
   const done = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: true, licensedFromISO: "2017-10-16", licensedToISO: "2026-10-28", activityFromISO: "2021-04-27" } }));
   const solAcct = [{ id: "a", name: "SOL", type: "crypto", chain: "SOL" }];
   const two = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: true, licensedFromISO: "2022-03-26", licensedToISO: "2026-10-28", activityFromISO: "2022-03-26",
@@ -176,6 +176,34 @@ console.log("Wiring and accessibility");
   check("desktop drawer is wider (lg) and the phone sheet has a '‹ Connections' back control",
     /ariaLabel="Connection detail" size="lg"/.test(list) && /sm:hidden">\s*<ChevronLeft aria-hidden size=\{16\} \/> Connections/.test(list));
   check("the ⋯ menu stays in the drawer header", /actions=\{selected\.state !== "importing" \? <ConnectionMenu connection=\{selected\} \/> : undefined\}/.test(list));
+}
+
+// ── Unproven history headline follows the import's persisted state ───────────
+{
+  console.log("\nunproven wallet history — the History headline");
+  const menu0 = readFileSync(path.join(process.cwd(), "components/connections/ConnectionMenu.tsx"), "utf8");
+  const q = unprovenHistorySummary("QUEUED", true, null);
+  check("QUEUED is not described as a failure, and says it starts automatically (worker on)", /^Not verified yet — the history import is queued and starts automatically\./.test(q) && !/hasn’t been able|failed|error/i.test(q), q);
+  check("QUEUED with the worker off never promises automatic progress", !/automatic/i.test(unprovenHistorySummary("QUEUED", false, null)));
+  const imp = unprovenHistorySummary("IMPORTING", true, "2024-03-01");
+  check("IMPORTING states the verified-back-to date, absolute", /verified back to Mar 1, 2024 so far/.test(imp), imp);
+  check("IMPORTING with the worker off never promises automatic progress", !/automatic/i.test(unprovenHistorySummary("IMPORTING", false, null)));
+  check("FAILED says paused + daily retry", /^Paused — the history import hit repeated errors and retries daily\./.test(unprovenHistorySummary("FAILED", true, null)));
+  check("FAILED with the worker off never promises a daily retry", !/retries daily/.test(unprovenHistorySummary("FAILED", false, null)));
+  check("⋯ menu: Refresh / Disconnect / dialog close return focus to the trigger (never <body>)", (menu0.match(/triggerRef\.current\?\.focus\(\)/g) ?? []).length >= 4);
+  check("RECOVERY_REQUIRED says why, in the failure's own terms", /held ETH before the earliest block/.test(unprovenHistorySummary("RECOVERY_REQUIRED", true, null, "BALANCE_BEFORE_PROVABLE_FLOOR")));
+  check("every state keeps 'Current holdings are unaffected'", ["QUEUED", "IMPORTING", "FAILED", "RECOVERY_REQUIRED", null].every((st) => /Current holdings are unaffected\.$/.test(unprovenHistorySummary(st, true, null))));
+  const wallet = conn({ provider: "WALLET", institution: "My ETH" });
+  const h = connectionHistory(wallet, intel({ facts: { destinations: [], bankTransactions: null, onChain: null, historyWorkerEnabled: true },
+    walletHistory: { supported: true, licensed: false, licensedFromISO: null, licensedToISO: null, activityFromISO: null, historyImport: { state: "QUEUED", provenFromISO: null, lastProgressAtISO: null, signaturesProcessed: 0, lastFailureCode: null } } }), [{ chain: "ETH" } as never]);
+  check("connectionHistory uses the state-aware headline for a queued wallet (Preview finding 2026-10-28)", h.coverage === "PARTIAL" && /^Not verified yet — the history import is queued/.test(h.summary), h.summary);
+  const staleW = connectionHealth(wallet, intel({ positionObservedAt: "2026-10-28", sourceHealth: { state: "OUT_OF_DATE", needsAttention: true } as never,
+    walletHistory: { supported: true, licensed: true, licensedFromISO: "2022-03-26", licensedToISO: "2026-10-28", activityFromISO: "2022-03-26", chart: { fromISO: "2022-03-26", toISO: "2026-10-28", days: 1, continuous: true } } as never }), NOW);
+  check("stale holdings with verified history: the headline blames HOLDINGS, never history (Preview finding)", staleW.headline === "Current holdings are out of date", staleW.headline);
+  const menu = readFileSync(path.join(process.cwd(), "components/connections/ConnectionMenu.tsx"), "utf8");
+  check("⋯ menu: opening focuses the first enabled item", /useEffect\(\(\) => \{\s*if \(open\) menuRef\.current\?\.querySelector<HTMLButtonElement>\('\[role="menuitem"\]:not\(\[disabled\]\)'\)\?\.focus\(\);/.test(menu));
+  check("⋯ menu: arrows / Home / End move focus; Tab closes", /"ArrowDown"/.test(menu) && /"ArrowUp"/.test(menu) && /"Home"/.test(menu) && /"End"/.test(menu) && /e\.key === "Tab"\) setOpen\(false\)/.test(menu));
+  check("⋯ menu: Escape closes AND returns focus to the trigger", /setOpen\(false\); triggerRef\.current\?\.focus\(\);/.test(menu));
 }
 
 if (failures > 0) { console.error(`\nconnection-detail: ${failures} failed.`); process.exit(1); }
