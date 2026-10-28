@@ -64,9 +64,8 @@ export interface ScheduledJobFacts {
    * Optional — absent means DERIVED from the fire slots (lib/jobs/cadence.ts
    * slotPeriodHours: once daily → 24, [0,6,12,18] → 6), so no entry has to
    * restate its own schedule. Set it only for a job whose expectation differs
-   * from its slots. Read by the health check and, as the job's DEFAULT
-   * cadence, by lib/jobs/cadence-policy.core.ts (defaultCadenceHours) — the
-   * dispatcher never matches slots, so this is the number it judges due-ness by.
+   * from its slots. Read ONLY by the health check; the dispatcher never
+   * consults it.
    */
   expectedEveryHours?: number;
   /**
@@ -160,14 +159,15 @@ export const SCHEDULED_JOB_FACTS = declareJobs([
   // with a fixed duty, just before evaluate-alerts — so a shared wake gives
   // them their time first; the job itself plans only within the wake's time
   // (jobs/sol-history-backfill.ts, WAKE_SAFE_MS).
-  // PROMPT START (2026-10-28): due HOURLY by default (expectedEveryHours 1), so
-  // a newly connected wallet's history starts within the hour instead of
-  // waiting for a 6-hour slot; a no-op run is two indexed reads. Operator-
-  // editable 1–24 h through job_cadence_hours_sol-history-backfill. Self-
-  // continuation (~15 min while deferred) is unchanged and independent of it.
+  // PROMPT START (2026-10-28): an anchor every hour, so its DEFAULT cadence
+  // derives to 1 h (slotPeriodHours) — a newly connected wallet's history starts
+  // within the hour instead of waiting for a 6-hour slot; a no-op run is two
+  // indexed reads. Operator-editable 1–24 h through
+  // job_cadence_hours_sol-history-backfill. Self-continuation (~15 min while
+  // deferred) is unchanged and independent of it.
   {
-    name: "sol-history-backfill", hourUTC: [0, 6, 12, 18], minuteUTC: 30, selfContinues: true,
-    expectedEveryHours: 1, cadence: { minHours: 1, maxHours: 24 },
+    name: "sol-history-backfill", hourUTC: Array.from({ length: 24 }, (_, h) => h), minuteUTC: 30, selfContinues: true,
+    cadence: { minHours: 1, maxHours: 24 },
   },
   // OPS-5 S5 — sequenced LAST so it reads the freshest state of each slot.
   // OPERATIONALIZATION P0 (2026-10-07): every :30 slot the dispatcher already
