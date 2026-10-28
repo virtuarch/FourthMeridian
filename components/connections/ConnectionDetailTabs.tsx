@@ -16,9 +16,9 @@
  *   History   the proven interval, import state, limitations, the lifecycle
  *             timeline and the historical-import action
  *
- * Names and dates only — never balances (the Connections PCS-2 boundary). The
- * one quantity shown is a wallet TOKEN's on-chain unit count beside whether a
- * market price exists — never a money value.
+ * Names and dates only — never balances (the Connections PCS-2 boundary). A
+ * wallet's tokens are shown by identity, price presence and history facet only —
+ * never a unit count or a money value.
  * Every sentence comes from lib/connections/connection-detail.core.ts.
  */
 
@@ -28,7 +28,7 @@ import type { SyncConnection } from "@/lib/sync/status";
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
 import { summarizeConnection, type ConnectionTone } from "@/lib/connections/connection-summary";
 import {
-  fmtDay, tokenHistoryLabel, formatTokenQuantity, tokenPriceText,
+  fmtDay, tokenHistoryLabel, tokenPriceText,
   groupAccounts, connectionHealth, connectionHistory, abbreviateAddress, networkName, nativeAssetSymbol,
   type HistoryView,
 } from "@/lib/connections/connection-detail.core";
@@ -263,9 +263,8 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
                         <span className="min-w-0 truncate text-sm text-[var(--text-primary)]">
                           {t.label} <span className="text-xs text-[var(--text-muted)]">{t.standard === "SPL" ? "SPL" : "ERC-20"}</span>
                         </span>
-                        <span className="shrink-0 text-right">
-                          <span className="block text-sm tabular-nums text-[var(--text-primary)]">{formatTokenQuantity(t.quantity)}</span>
-                          <span className={`block text-xs ${t.priceStatus === "MARKET_PRICE" ? "text-[var(--text-muted)]" : WORD.neutral}`}>{tokenPriceText(t.priceStatus)}</span>
+                        <span className={`shrink-0 text-right text-xs ${t.priceStatus === "MARKET_PRICE" ? "text-[var(--text-secondary)]" : WORD.neutral}`}>
+                          {tokenPriceText(t.priceStatus)}
                         </span>
                       </li>
                     ))}

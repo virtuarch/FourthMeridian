@@ -27,7 +27,7 @@ import { syncWalletTokens, WALLET_TOKEN_POSITION_SOURCE, tokenCaptureConfig } fr
 import { composeWalletValue, type WalletCurrentValue } from "./wallet-current-value";
 import { facetFromCoverage, walletHistoryComplete } from "./wallet-instrument-history";
 import { fetchCoinGeckoTokenQuotes } from "@/lib/prices/providers/coingecko";
-import { connectionHealth, connectionHistory, tokenHistoryLabel, formatTokenQuantity } from "@/lib/connections/connection-detail.core";
+import { connectionHealth, connectionHistory, tokenHistoryLabel, tokenPriceText } from "@/lib/connections/connection-detail.core";
 import type { InstrumentValuation } from "@/lib/investments/valuation-core";
 
 let failures = 0, passes = 0;
@@ -433,9 +433,9 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
 // ══ CONNECTIONS DRAWER: DATA-DRIVEN TOKEN FACETS ══════════════════════════════
 {
   const conn = { id: "c", provider: "WALLET", state: "active" } as never;
-  const tokens = [{ label: "USDC", standard: "SPL" as const, quantity: 4.000001, priceStatus: "MARKET_PRICE" as const,
+  const tokens = [{ label: "USDC", standard: "SPL" as const, priceStatus: "MARKET_PRICE" as const,
     historyState: "NOT_RECONSTRUCTED" as const, firstObservedISO: "2026-10-28", lastObservedISO: "2026-10-28" },
-  { label: "Spam…1111", standard: "SPL" as const, quantity: 1e6, priceStatus: "NO_MARKET_PRICE" as const,
+  { label: "Spam…1111", standard: "SPL" as const, priceStatus: "NO_MARKET_PRICE" as const,
     historyState: "NOT_RECONSTRUCTED" as const, firstObservedISO: "2026-10-28", lastObservedISO: "2026-10-28" }];
   const intel = { positionObservedAt: "2026-10-28T10:00:00Z", valuationIsReadTime: true,
     walletHistory: { supported: true, licensed: true, licensedFromISO: "2022-01-01", licensedToISO: "2026-10-28", activityFromISO: "2022-01-01",
@@ -452,7 +452,15 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   check("the old hardcoded per-chain token limitation is gone", !/SPL token balances are not reconstructed yet/.test(read("lib", "connections", "connection-detail.core.ts")));
   check("no tokens recorded ⇒ said as such, not 'not reconstructed'", tokenHistoryLabel("SOL", []) === "No SPL token balances recorded");
   check("a network without token capture says so", tokenHistoryLabel("AVAX", undefined) === "Tokens aren’t tracked on this network yet");
-  check("a dust quantity is never rendered as a false zero", formatTokenQuantity(1e-9) === "< 0.000001");
+  check("unpriced tokens are labelled, never shown as zero", tokenPriceText("NO_MARKET_PRICE") === "Not valued — no market price");
+  // PCS-2 — Connections shows token identity, price presence and history facet; never a unit count.
+  const intelType = code(read("lib", "connections", "intelligence.ts"));
+  const tokensType = intelType.slice(intelType.indexOf("tokens?: Array<{"), intelType.indexOf("}>;", intelType.indexOf("tokens?: Array<{")));
+  check("PCS-2: the Connections token shape carries no quantity", !/quantity/.test(tokensType), tokensType);
+  const sd = code(read("lib", "connections", "space-data.ts"));
+  check("PCS-2: the Connections loader does not pass a token quantity",
+    !/quantity: t\.quantity/.test(sd.slice(sd.indexOf("walletHistory.tokens ="), sd.indexOf("walletHistory.walletComplete"))));
+  check("PCS-2: the drawer renders no token quantity", !/quantity/i.test(code(read("components", "connections", "ConnectionDetailTabs.tsx"))));
 }
 
 // ══ NATIVE-ONLY READERS EXCLUDE TOKENS (a USDC row is never read as SOL) ══════

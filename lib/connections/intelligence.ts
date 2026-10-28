@@ -140,13 +140,13 @@ export interface ConnectionIntelligenceStatus {
     historyImport?: { state: string; provenFromISO: string | null; lastProgressAtISO: string | null; signaturesProcessed: number; lastFailureCode: string | null } | null;
     /**
      * TOKEN HOLDINGS (PR-A) — the tokens this wallet currently holds, each its
-     * OWN history facet (lib/crypto/wallet-instrument-history). Quantity and
-     * price PRESENCE only — never a value (PCS-2). Undefined when not loaded.
+     * OWN history facet (lib/crypto/wallet-instrument-history). Identity, price
+     * PRESENCE and history state only — no quantity, no value: a unit count is a
+     * balance, and Connections never reads balances (PCS-2). Undefined when not loaded.
      */
     tokens?: Array<{
       label: string;
       standard: "SPL" | "ERC20";
-      quantity: number;
       priceStatus: "MARKET_PRICE" | "NO_MARKET_PRICE";
       historyState: "RECONSTRUCTED" | "NOT_RECONSTRUCTED" | "UNLICENSED";
       firstObservedISO: string;

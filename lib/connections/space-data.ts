@@ -506,7 +506,8 @@ async function loadConnectionIntelligence(
       walletHistory.chart = chartReadyRange(walletHistory, priceFromISO, snapshotDates);
       const perInstrument = (accountsByConnectionId[c.id] ?? []).map((a) => instrumentHistory.get(a.id)).filter((h) => h !== undefined);
       walletHistory.tokens = perInstrument.flatMap((h) => h.tokens.filter((t) => t.held).map((t) => ({
-        label: t.label, standard: t.standard, quantity: t.quantity, priceStatus: t.priceStatus,
+        // PCS-2 — identity, price presence and history state only; the quantity stays behind.
+        label: t.label, standard: t.standard, priceStatus: t.priceStatus,
         historyState: t.state, firstObservedISO: t.firstObservedISO, lastObservedISO: t.lastObservedISO,
       })));
       walletHistory.walletComplete = perInstrument.length > 0 && perInstrument.every((h) => h.complete);

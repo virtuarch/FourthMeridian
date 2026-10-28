@@ -115,7 +115,7 @@ console.log("History — never claims what is not proven");
     tokens: [] } }), solAcct);
   check("…and the SPL token scope is stated, not implied complete", twoNone.limitations.some((l) => /No SPL token balances have been recorded/.test(l)));
   const twoHeld = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: true, licensedFromISO: "2022-03-26", licensedToISO: "2026-10-28", activityFromISO: "2022-03-26",
-    tokens: [{ label: "USDC", standard: "SPL", quantity: 1, priceStatus: "MARKET_PRICE", historyState: "NOT_RECONSTRUCTED", firstObservedISO: "2026-10-28", lastObservedISO: "2026-10-28" }] } }), solAcct);
+    tokens: [{ label: "USDC", standard: "SPL", priceStatus: "MARKET_PRICE", historyState: "NOT_RECONSTRUCTED", firstObservedISO: "2026-10-28", lastObservedISO: "2026-10-28" }] } }), solAcct);
   check("…and a held token's history is its own facet, current balance only", twoHeld.limitations.some((l) => /tracked separately from native SOL history/.test(l)) && twoHeld.tokenFacets?.length === 1);
   const same = connectionHistory(conn({ provider: "WALLET" }), intel({ walletHistory: { supported: true, licensed: true, licensedFromISO: "2026-09-27", licensedToISO: "2026-10-28", activityFromISO: "2026-09-27",
     priceFromISO: "2025-01-01", chart: { fromISO: "2026-09-27", toISO: "2026-10-28", days: 32, continuous: true } } }), [{ id: "b", name: "BTC", type: "crypto", chain: "BTC" }]);

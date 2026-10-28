@@ -422,13 +422,6 @@ export function tokenScopeLabel(chain: string | null | undefined): string {
   return tokenHistoryLabel(chain, undefined);
 }
 
-/** A token quantity for display — whole units, never rounded to a false zero. */
-export function formatTokenQuantity(q: number): string {
-  if (!Number.isFinite(q)) return "—";
-  if (q > 0 && q < 0.000001) return "< 0.000001";
-  return q.toLocaleString("en-US", { maximumFractionDigits: 6 });
-}
-
 /** Valued / unpriced, in the customer's words. */
 export function tokenPriceText(status: "MARKET_PRICE" | "NO_MARKET_PRICE"): string {
   return status === "MARKET_PRICE" ? "Valued at market price" : "Not valued — no market price";
