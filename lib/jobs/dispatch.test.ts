@@ -122,9 +122,9 @@ async function main(): Promise<void> {
     // + sol-history-backfill (owner decision 2, 2026-10-28).
     check("registry holds fourteen jobs", SCHEDULED_JOBS.length === 14, `got ${SCHEDULED_JOBS.length}`);
     const sol = SCHEDULED_JOBS.find((j) => j.name === "sol-history-backfill");
-    check("sol-history-backfill self-continues, refreshes nothing (no wallet attempt-period effect), and runs after the wallet sweep",
+    check("sol-history-backfill self-continues, refreshes nothing (no wallet attempt-period effect), and runs second to last (before evaluate-alerts)",
       !!sol?.selfContinues && !sol.refreshes && !sol.continuationOf
-      && SCHEDULED_JOBS.findIndex((j) => j.name === "sol-history-backfill") > SCHEDULED_JOBS.findIndex((j) => j.name === "sync-crypto-continuation"),
+      && SCHEDULED_JOBS.findIndex((j) => j.name === "sol-history-backfill") === SCHEDULED_JOBS.length - 2,
       `policy ${JSON.stringify(pol.get("sol-history-backfill"))}`);
     check("names unique", byName.size === SCHEDULED_JOBS.length);
     check("sync-banks runs on the BANK refresh policy (24h default)", hours("sync-banks") === 24 && origin("sync-banks") === "REFRESH_POLICY");

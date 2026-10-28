@@ -135,12 +135,6 @@ export const SCHEDULED_JOB_FACTS = declareJobs([
     name: "sync-crypto-continuation", hourUTC: [0, 6, 12, 18], minuteUTC: 30,
     refreshes: "WALLET", continuationOf: "sync-crypto",
   },
-  // Owner decision 2 (2026-10-28) — the background Solana history backfill.
-  // Self-continues every ~15 min while wallets remain (summary.deferred), off
-  // unless SOL_BACKFILL_ENABLED=true; budgets and caps in
-  // lib/crypto/sol-backfill-worker.core.ts. Sequenced after the wallet sweep
-  // so a shared wake gives the sweep its budget first.
-  { name: "sol-history-backfill", hourUTC: [0, 6, 12, 18], minuteUTC: 30, selfContinues: true },
   // Pre-S2 slot: vercel.json "0 7 * * *". Single-purpose since S3.
   { name: "process-deletions", hourUTC: 7, minuteUTC: 0 },
   // ── S3 maintenance slot (07:30 — already covered by the single cron) ──────
@@ -158,6 +152,14 @@ export const SCHEDULED_JOB_FACTS = declareJobs([
   // subset of AuditLog) older than the 13-month retention window the owner set
   // on 2026-10-15. Security and operator actions are never touched. Daily, fixed.
   { name: "product-event-retention", hourUTC: 7, minuteUTC: 30 },
+  // Owner decision 2 (2026-10-28) — the background Solana history backfill.
+  // Self-continues every ~15 min while wallets remain (summary.deferred), off
+  // unless SOL_BACKFILL_ENABLED=true; budgets and caps in
+  // lib/crypto/sol-backfill-worker.core.ts. Sequenced late — after every job
+  // with a fixed duty, just before evaluate-alerts — so a shared wake gives
+  // them their time first; the job itself plans only within the wake's time
+  // (jobs/sol-history-backfill.ts, WAKE_SAFE_MS).
+  { name: "sol-history-backfill", hourUTC: [0, 6, 12, 18], minuteUTC: 30, selfContinues: true },
   // OPS-5 S5 — sequenced LAST so it reads the freshest state of each slot.
   // OPERATIONALIZATION P0 (2026-10-07): every :30 slot the dispatcher already
   // fires (vercel.json "0,30 0,6,7,12,18"), not once daily at 07:30 — a breach

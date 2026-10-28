@@ -222,6 +222,11 @@ async function main() {
     // page), so at most one slot's transactions are fetched twice per page.
     check(`${n.toLocaleString()}: each transaction fetched once (plus ≤ 1 deferred slot per page)`, counts.tx >= n && counts.tx <= n + counts.sig, `${counts.tx} for ${counts.sig} pages`);
     check(`${n.toLocaleString()}: no stale-row overwrite (rows always inside the rewritten span)`, store.violations.length === 0, store.violations.slice(0, 3).join(","));
+    if (n === 12_000) {
+      const u = parseCheckpoint(store.cursor, ACCOUNT, OWNER)?.usage;
+      check("every provider request is recorded durably in the checkpoint's daily usage (incl. across runs)",
+        u !== undefined && u !== null && u.requests === counts.sig + counts.tx, `${u?.requests} vs ${counts.sig + counts.tx}`);
+    }
     const cov = store.coverage as { kind: string; fromISO: string; toISO: string };
     check(`${n.toLocaleString()}: licence COMPLETE from the first transaction's day to the observation`,
       cov?.kind === "COMPLETE" && cov.fromISO === new Date(chain[0].blockTime * 1000).toISOString().slice(0, 10) && cov.toISO === ANCHOR_ISO, JSON.stringify(cov));

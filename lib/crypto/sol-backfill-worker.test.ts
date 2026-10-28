@@ -10,7 +10,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { workerConfig, orderCandidates, createRateLimiter, estimateBackfill, requestsForHistory } from "@/lib/crypto/sol-backfill-worker.core";
 import { emptyCheckpoint, type SolBackfillCheckpoint } from "@/lib/crypto/sol-history-backfill.core";
-import { runSolHistoryBackfill, type SolRpcCall } from "@/lib/crypto/sol-history-backfill";
+import { runSolHistoryBackfill, syncRunBudgetMs, type SolRpcCall, type SolBackfillStore } from "@/lib/crypto/sol-history-backfill";
+import { solHistoryBackfill, WAKE_SAFE_MS, type SolBackfillJobDeps } from "@/jobs/sol-history-backfill";
+import { serializeCheckpoint, parseCheckpoint } from "@/lib/crypto/sol-history-backfill.core";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -91,19 +93,91 @@ async function main() {
     check("the daily cap bounds spend: 100k requests/day ≈ 4M CU ≈ $2.08/day maximum", estimateBackfill(1e9, cfg).requestsPerDay === 100_000);
   }
 
+  console.log("the job, end to end against fakes");
+  {
+    const ADDR = "7irKphsVxEfU8wtDhVgCyq7nQXUo9Q13ivUevk8qBMSN";
+    const DAY = "2026-10-28";
+    const mk = (id: string, over: Partial<SolBackfillCheckpoint> = {}) => serializeCheckpoint({ ...emptyCheckpoint(id, ADDR, `${DAY}T00:00:00Z`),
+      top: { signature: "t", slot: 9, blockTime: 1, dateISO: DAY, preLamports: "0", postLamports: "1" },
+      bottom: { signature: "b", slot: 1, blockTime: 1, dateISO: "2026-01-01", preLamports: "0", postLamports: "1" },
+      licensedFromISO: "2026-01-01", licensedToISO: DAY, ...over });
+    function world(cursors: Record<string, string | null>, o: { wake?: number | null; lockBusy?: string[]; regen?: boolean; workMs?: number } = {}) {
+      let t = Date.parse(`${DAY}T10:00:00Z`);
+      const locks = new Map<string, number>();
+      const log: string[] = [];
+      const store = (id: string): SolBackfillStore => ({
+        async readCursor() { return cursors[id] ?? null; },
+        async anchor() { return null; },
+        async commit(c) { if (c.expectedCursor !== cursors[id]) throw new Error("cas"); cursors[id] = c.nextCursor; },
+      });
+      const deps: SolBackfillJobDeps = {
+        now: () => t, sleep: async (ms) => { t += ms; },
+        wakeStartedAt: async () => (o.wake === undefined ? null : o.wake === null ? null : t - o.wake),
+        wallets: async () => Object.keys(cursors).map((id) => ({ accountId: id, connectionId: `c-${id}`, address: ADDR, cursor: cursors[id] })),
+        claimLock: async (c, s) => { if (o.lockBusy?.includes(c) || locks.has(c)) return false; locks.set(c, s); return true; },
+        renewLock: async (c, f, to) => { if (locks.get(c) !== f) return false; locks.set(c, to); return true; },
+        releaseLock: async (c, s) => { if (locks.get(c) === s) locks.delete(c); else log.push(`release-refused:${c}`); },
+        reconstruct: async ({ accountId }) => {
+          t += o.workMs ?? 5_000; log.push(`run:${accountId}`);
+          return { accountId, ok: true, derivedRowsWritten: 10, mode: "INCREMENTAL", impactedFromISO: "2025-12-01",
+            backfill: { status: { state: "IMPORTING" } as never, progressed: true, rowsWritten: 10, impactedFromISO: "2025-12-01", signaturesProcessed: 100, pagesFetched: 1, stoppedBecause: "BUDGET", failure: null } };
+        },
+        store: async (id) => store(id),
+        regenerationEnabled: () => o.regen ?? true,
+        regenerate: async (id) => { t += 20_000; log.push(`regen:${id}`); },
+      };
+      return { deps, log, cursors, locks, at: () => t };
+    }
+    const cfg = { ...workerConfig({ SOL_BACKFILL_ENABLED: "true" }) };
+
+    const off = await solHistoryBackfill({ config: { ...cfg, enabled: false }, deps: world({ a: null }).deps });
+    check("disabled ⇒ returns at once, touches nothing (the rollback)", off.stoppedBecause === "DISABLED" && off.walletsRun === 0);
+
+    const w1 = world({ a: null, b: mk("b", { lastProgressAtISO: `${DAY}T01:00:00Z` }), c: mk("c", { lastProgressAtISO: `${DAY}T00:30:00Z` }) });
+    const s1 = await solHistoryBackfill({ config: cfg, deps: w1.deps });
+    check("fair order: never started, then least recently progressed", w1.log.filter((x) => x.startsWith("run:")).join(",") === "run:a,run:c,run:b", w1.log.join(","));
+    check("unfinished wallets self-continue (deferred > 0)", s1.deferred >= 3 && s1.stoppedBecause !== "DAILY_CAP", JSON.stringify({ d: s1.deferred, s: s1.stoppedBecause }));
+    check("every lock taken is released (ownership-checked)", w1.locks.size === 0 && !w1.log.some((x) => x.startsWith("release-refused")));
+
+    const w2 = world({ a: mk("a", { usage: { dayISO: DAY, requests: 99_990 } }), b: mk("b", { usage: { dayISO: DAY, requests: 20 } }) });
+    const s2 = await solHistoryBackfill({ config: cfg, deps: w2.deps });
+    check("the daily cap is the DURABLE usage across all wallets (worker + syncs): at the cap nothing runs", s2.stoppedBecause === "DAILY_CAP" && s2.dailyRequestsUsedBefore === 100_010 && !w2.log.some((x) => x.startsWith("run:")), JSON.stringify(s2));
+    const w2b = world({ a: mk("a", { usage: { dayISO: "2026-10-27", requests: 99_990 } }) });
+    check("…and yesterday's usage does not count today", (await solHistoryBackfill({ config: cfg, deps: w2b.deps })).dailyRequestsUsedBefore === 0);
+
+    const w3 = world({ a: null, b: null }, { lockBusy: ["c-a"] });
+    const s3 = await solHistoryBackfill({ config: cfg, deps: w3.deps });
+    check("a wallet a sync is holding is skipped (never blocked) and counted as deferred", s3.walletsSkippedLocked === 1 && w3.log.includes("run:b") && !w3.log.includes("run:a"));
+
+    const w4 = world({ a: mk("a") }, { wake: 200_000 });
+    const s4 = await solHistoryBackfill({ config: cfg, deps: w4.deps });
+    check("wake-aware: 200 s into a wake the job plans only to the wake's safe point", s4.budgetMs === WAKE_SAFE_MS - 200_000, String(s4.budgetMs));
+    check("…too little left to regenerate ⇒ regeneration DEFERRED and marked pending in the checkpoint",
+      s4.regenerationsDeferred === 1 && parseCheckpoint(w4.cursors.a, "a", ADDR)?.snapshotPendingFromISO === "2025-12-01", JSON.stringify(s4));
+    const w5 = world({ a: w4.cursors.a });
+    const s5 = await solHistoryBackfill({ config: cfg, deps: w5.deps });
+    check("the next run regenerates the pending window FIRST and clears the marker",
+      w5.log[0] === "regen:a" && s5.regenerated >= 1 && !parseCheckpoint(w5.cursors.a, "a", ADDR)?.snapshotPendingFromISO, w5.log.join(","));
+
+    const w6 = world({ a: null }, { regen: false });
+    const s6 = await solHistoryBackfill({ config: cfg, deps: w6.deps });
+    check("with WEALTH_REGENERATION_ENABLED off, no regeneration runs (as sync-crypto)", !w6.log.some((x) => x.startsWith("regen")) && s6.regenerationsDeferred === 0);
+
+    check("syncs run 15 s only while the worker is enabled (45 s otherwise)", syncRunBudgetMs({ SOL_BACKFILL_ENABLED: "true" }) === 15_000 && syncRunBudgetMs({}) === 45_000);
+  }
+
   console.log("wiring");
   {
     const read = (f: string) => readFileSync(path.join(process.cwd(), f), "utf8");
     const job = read("jobs/sol-history-backfill.ts");
     check("the job returns immediately when disabled", /if \(!cfg\.enabled\) return summary;/.test(job));
-    check("each wallet runs under its sync lock and is released in finally (normal syncs never blocked)",
-      /claimWalletSyncLock\(c\.connectionId, systemDb\)/.test(job) && /finally \{\s*await releaseWalletSyncLock\(c\.connectionId, systemDb\);/.test(job));
-    check("the daily cap is summed from this job's own ledger", /systemDb\.jobRun\.findMany\(\{\s*where: \{ jobName: SOL_BACKFILL_JOB, startedAt: \{ gte: startOfUTCDay/.test(job));
+    check("each wallet runs under its sync lock, released in finally", /deps\.claimLock\(w\.connectionId, stamp\)/.test(job) && /finally \{\s*await deps\.releaseLock\(w\.connectionId, stamp\);/.test(job));
+    check("the lock is released only while still ours", /syncLockedAt: new Date\(stampMs\) \}, data: \{ syncLockedAt: null \}/.test(job));
     check("changed rows regenerate wealth history over the impacted window (no new snapshot writer)",
-      /resolveHistoricalWorkWindow\(/.test(job) && /regenerateWealthHistoryForAccounts\(\[c\.accountId\]/.test(job) && !/snapshot\.(create|upsert)/i.test(job));
-    check("self-continues by reporting deferred wallets", /summary\.deferred = candidates\.length - i/.test(job));
+      /resolveHistoricalWorkWindow\(/.test(job) && /regenerateWealthHistoryForAccounts\(\[accountId\]/.test(job) && !/snapshot\.(create|upsert)/i.test(job));
+    check("one candidate per ACCOUNT, on the store's own link", /orderBy: \[\{ isCanonical: "desc" \}, \{ createdAt: "asc" \}\]/.test(job) && /seen\.has\(l\.financialAccountId\)/.test(job));
     const run = read("lib/crypto/sol-history-backfill.ts");
-    check("a wallet SYNC runs the backfill briefly (15 s) so holdings stay responsive", /export const DEFAULT_RUN_BUDGET_MS = 15_000;/.test(run));
+    check("a wallet SYNC runs the backfill briefly (15 s) while the worker is on", /export const DEFAULT_RUN_BUDGET_MS = 15_000;/.test(run) && /syncRunBudgetMs\(\)/.test(run));
   }
 
   if (failures > 0) { console.error(`\nsol-backfill-worker: ${failures} failed.`); process.exit(1); }

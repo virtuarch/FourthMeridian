@@ -35,7 +35,7 @@ import { baseUnitsToWhole, type ChainCoverage } from "./chain-movement";
 import {
   emptyCheckpoint, parseCheckpoint, serializeCheckpoint, pointFromTransaction,
   extendBackward, extendForward, dailyClosings, addDaysISO, backfillStatus, shouldRunAutomatically,
-  orderSameSlot, statesAnchor, applyToStaged, decidePromotion,
+  orderSameSlot, statesAnchor, applyToStaged, decidePromotion, usageOn,
   SolProofDataError, SOL_CONTINUITY_SOURCE,
   type SolBackfillCheckpoint, type SolBackfillFailureCode, type SolBackfillStatus,
   type SolTxForProof, type SolTxPoint,
@@ -48,6 +48,11 @@ export const SIGNATURE_PAGE_SIZE = 1000;           // the RPC's own per-call max
  * carries large histories with its own, larger, rate-limited budget.
  */
 export const DEFAULT_RUN_BUDGET_MS = 15_000;
+/** Without the background worker, syncs must carry history alone — the pre-worker 45 s. */
+export const STANDALONE_RUN_BUDGET_MS = 45_000;
+export function syncRunBudgetMs(env: Record<string, string | undefined> = process.env): number {
+  return env.SOL_BACKFILL_ENABLED === "true" ? DEFAULT_RUN_BUDGET_MS : STANDALONE_RUN_BUDGET_MS;
+}
 export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 export const DEFAULT_CONCURRENCY = 4;
 export const DEFAULT_MAX_RETRIES = 4;
@@ -286,12 +291,25 @@ export async function runSolHistoryBackfill(
 ): Promise<SolBackfillOutcome> {
   const now = deps.now ?? Date.now;
   const startMs = now();
-  const deadlineMs = startMs + (deps.budgetMs ?? envNumber("SOL_HISTORY_RUN_BUDGET_MS", DEFAULT_RUN_BUDGET_MS));
+  const deadlineMs = startMs + (deps.budgetMs ?? envNumber("SOL_HISTORY_RUN_BUDGET_MS", syncRunBudgetMs()));
   const concurrency = deps.concurrency ?? envNumber("SOL_HISTORY_CONCURRENCY", DEFAULT_CONCURRENCY);
   const owner = normalizeSolAddress(args.address);
   const nowISO = () => new Date(now()).toISOString();
-  const sent = () => (deps.meter ? Object.values(deps.meter).reduce((a, b) => a + b, 0) : 0);
+  // Every request is metered (an internal meter when the caller passes none),
+  // so the checkpoint's daily usage is true for syncs as well as the worker.
+  const meter = deps.meter ?? {};
+  deps = { ...deps, meter };
+  const sent = () => Object.values(meter).reduce((a, b) => a + b, 0);
   const sentAtStart = sent();
+  let recordedThrough = sentAtStart;
+  const todayISO = () => new Date(now()).toISOString().slice(0, 10);
+  /** Fold requests sent since the last commit into the checkpoint's daily usage. */
+  const stamp = (c: SolBackfillCheckpoint): SolBackfillCheckpoint => {
+    const day = todayISO();
+    const delta = sent() - recordedThrough;
+    recordedThrough = sent();
+    return { ...c, usage: { dayISO: day, requests: usageOn(c, day) + delta } };
+  };
   /** The run's budget: wall clock, and (worker) a request allowance. */
   const overBudget = (deadline: number) => now() >= deadline
     || (deps.requestBudget !== undefined && sent() - sentAtStart >= deps.requestBudget);
@@ -335,7 +353,8 @@ export async function runSolHistoryBackfill(
     return legacyRows;
   };
 
-  const commit = async (nextIn: SolBackfillCheckpoint, rows: Array<{ dateISO: string; lamports: bigint }>, span: { from: string; to: string } | null) => {
+  const commit = async (nextUnstamped: SolBackfillCheckpoint, rows: Array<{ dateISO: string; lamports: bigint }>, span: { from: string; to: string } | null) => {
+    const nextIn = stamp(nextUnstamped);
     if (nextIn.mode === "STAGING" && nextIn.legacy) {
       const staged = applyToStaged(nextIn.staged ?? [], span, rows);
       const decision = decidePromotion(nextIn, staged, nextIn.legacy, await loadLegacyRows());
@@ -378,7 +397,7 @@ export async function runSolHistoryBackfill(
   const fail = async (code: SolBackfillFailureCode, detail: string) => {
     outcome.failure = { code, detail };
     outcome.stoppedBecause = "FAILURE";
-    const next: SolBackfillCheckpoint = { ...working, failures: working.failures + 1, lastFailure: { code, atISO: nowISO(), detail: detail.slice(0, 300) } };
+    const next: SolBackfillCheckpoint = stamp({ ...working, failures: working.failures + 1, lastFailure: { code, atISO: nowISO(), detail: detail.slice(0, 300) } });
     try {
       // A failure-only update writes no rows; on a fresh wallet it records the
       // checkpoint (QUEUED with a failure) so the state is visible.
