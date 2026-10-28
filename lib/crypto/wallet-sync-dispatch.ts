@@ -439,9 +439,14 @@ export async function syncWalletByChain(
   // branch returns an outcome), so runFullRefresh never rethrows and the
   // never-throw contract of this function is preserved by construction.
   const runner = async ({ recorder }: { recorder: RefreshStageRecorder }): Promise<WalletSyncOutcome> => {
+  // TOKEN HOLDINGS (PR-A) — the adapter's in-flight token capture. Awaited in the
+  // `finally` below too, so a throw anywhere after `adapter.sync` can never
+  // leave it running past this sync (and its lock).
+  let pendingTokens: Promise<unknown> | undefined;
   try {
     recorder.begin("WALLET_SYNC", "PROVIDER");
     const result = await adapter.sync(accountId);
+    pendingTokens = result.tokenHoldings;
     if (result.ok) recorder.succeed("WALLET_SYNC");
     else recorder.fail("WALLET_SYNC", new Error(result.reason ?? `wallet sync failed at ${result.stage ?? "unknown"} stage`));
     // THE HISTORICAL IMPORT IS ITS OWN STAGE. It ran inside the adapter call, so
@@ -656,6 +661,8 @@ export async function syncWalletByChain(
       valuationModel: adapter.valuationModel,
       userMessage: walletSyncUserMessage("ADAPTER_ERROR", reason, key),
     };
+  } finally {
+    if (pendingTokens) await pendingTokens.catch(() => null);
   }
   };
 

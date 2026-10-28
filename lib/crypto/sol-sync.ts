@@ -357,6 +357,7 @@ export async function syncAllSolWallets(deps: SolSyncDeps = {}): Promise<SyncAll
   const syncedAccountIds: string[] = [];
   for (const w of wallets) {
     const r = await syncSolWallet(w.id, deps);
+    if (r.tokenHoldings) await r.tokenHoldings; // never rejects; never outlives this sweep
     if (r.ok) { succeeded++; syncedAccountIds.push(w.id); }
     else failed++;
   }

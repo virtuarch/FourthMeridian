@@ -303,7 +303,13 @@ async function writeTokenObservation(client: Client, financialAccountId: string,
       },
     },
     create: { financialAccountId, instrumentId, date, origin: PositionOrigin.OBSERVED, source: WALLET_TOKEN_POSITION_SOURCE, ...facts },
-    update: facts,
+    // EXPLICIT update arm (scripts/audit-account-reparenting): the account FK is
+    // only in the composite `where` and the create arm, so no re-parenting is
+    // expressible here.
+    update: {
+      quantity: facts.quantity, institutionPrice: null, institutionValue: null, institutionPriceAsOf: null,
+      costBasis: null, vestedQuantity: null, currency: facts.currency, isCash: false,
+    },
   });
 }
 

@@ -535,6 +535,14 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   check("token capture is not awaited on the native path (started, awaited beside quote/history)",
     /const tokenHoldings: Promise<WalletTokenSyncOutcome \| null> \| undefined =/.test(code(read("lib", "crypto", "sol-sync.ts")))
     && /result\.tokenHoldings \? result\.tokenHoldings\.catch/.test(code(read("lib", "crypto", "wallet-sync-dispatch.ts"))));
+  const disp = code(read("lib", "crypto", "wallet-sync-dispatch.ts"));
+  check("the dispatcher awaits in-flight token capture in a finally (never outlives the sync/lock)",
+    /\} finally \{\s*if \(pendingTokens\) await pendingTokens\.catch/.test(disp));
+  check("the sweeps await each wallet's token capture",
+    /if \(r\.tokenHoldings\) await r\.tokenHoldings;/.test(code(read("lib", "crypto", "sol-sync.ts")))
+    && /if \(r\.tokenHoldings\) await r\.tokenHoldings;/.test(code(read("lib", "crypto", "eth-sync.ts"))));
+  check("the token upsert's update arm is explicit (no account FK, auditable)",
+    /update: \{\s*quantity: facts\.quantity,/.test(code(read("lib", "crypto", "wallet-token-capture.ts"))));
   // Re-review 1 — tokens may spend at most their share; native keeps the rest.
   const { remainingCalls } = await import("@/lib/prices/coingecko-budget");
   check("tokens capped at 60% of the day", remainingCalls({ total: 150, tokens: 150 }, 250, "token", 0.6) === 0);
