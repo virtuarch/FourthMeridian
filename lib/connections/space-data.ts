@@ -73,6 +73,7 @@ import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refres
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
 import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
+import { chartReadyRange } from "@/lib/connections/connection-detail.core";
 // CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
 // here rather than re-decided, so a valuation clock is only claimed where one exists.
 import { usesLegacyColumnForCurrentValue } from "@/lib/crypto/wallet-sync-dispatch";
@@ -331,6 +332,33 @@ async function loadConnectionIntelligence(
     if (r.financialAccountId && r._max.date) positionObservedByAccount.set(r.financialAccountId, r._max.date);
   }
 
+  // CHART-READY COVERAGE (owner requirement 2026-10-28) — what the chart can
+  // show, from persisted facts only: each wallet account's native instrument
+  // (its coverage row), that instrument's stored daily USD closes, and the
+  // owner's Personal Space snapshot dates (the series GET /api/spaces/[id]/
+  // snapshots serves). Dates only — no price, no value.
+  const coverageInstrument = walletAccounts.length
+    ? new Map((await client.positionCoverage.findMany({
+        where: { financialAccountId: { in: walletAccounts.map((a) => a.id) } },
+        select: { financialAccountId: true, instrumentId: true },
+      })).map((r) => [r.financialAccountId, r.instrumentId]))
+    : new Map<string, string>();
+  const priceFloors = coverageInstrument.size
+    ? new Map((await client.priceObservation.groupBy({
+        by: ["instrumentId"], where: { instrumentId: { in: [...new Set(coverageInstrument.values())] }, basis: "RAW_CLOSE" },
+        _min: { date: true },
+      })).map((r) => [r.instrumentId, r._min.date ? r._min.date.toISOString().slice(0, 10) : null]))
+    : new Map<string, string | null>();
+  const personalSpace = coverageInstrument.size
+    ? await client.spaceMember.findFirst({
+        where: { userId, role: "OWNER", status: "ACTIVE", space: { type: "PERSONAL" } }, select: { spaceId: true },
+      })
+    : null;
+  const snapshotDates: string[] = personalSpace
+    ? (await client.spaceSnapshot.findMany({ where: { spaceId: personalSpace.spaceId }, select: { date: true }, orderBy: { date: "asc" } }))
+        .map((r) => r.date.toISOString().slice(0, 10))
+    : [];
+
   const out: Record<string, ConnectionIntelligenceStatus> = {};
   for (const c of connections) {
     // Connection availability = the earliest transaction across its accounts;
@@ -434,6 +462,12 @@ async function loadConnectionIntelligence(
         licensedToISO:   maxOf(lic.map((m) => m.licensedToISO)),
         activityFromISO: minOf(lic.map((m) => m.activityFromISO)),
       };
+      const instruments = (accountsByConnectionId[c.id] ?? []).map((a) => coverageInstrument.get(a.id)).filter((x): x is string => !!x);
+      // The LATEST floor across the wallet's assets bounds what is valued for all of them.
+      const floors = instruments.map((id) => priceFloors.get(id) ?? null);
+      const priceFromISO = floors.length && floors.every((f) => f !== null) ? maxOf(floors) : null;
+      walletHistory.priceFromISO = priceFromISO;
+      walletHistory.chart = chartReadyRange(walletHistory, priceFromISO, snapshotDates);
     }
     out[c.id] = { ...derived, walletHistory };
   }
@@ -546,3 +580,4 @@ export async function loadConnectionsSpaceData(client: ReadClient, userId: strin
 
   return { status, accountsByConnectionId, intelligenceByConnectionId };
 }
+
