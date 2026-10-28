@@ -16,8 +16,10 @@ function check(name: string, cond: boolean): void {
 const code = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
 
 const list = code("components/connections/ConnectionsList.tsx");
-check("ready is set ONLY on the poll's true → false transition", /if \(prevShouldPollRef\.current && !nextShouldPoll\) \{\s*router\.refresh\(\);\s*setJustCompleted\(true\);/.test(list)
-  && (list.match(/setJustCompleted\(/g) ?? []).length === 1);
+check("ready is set on the poll's true → false transition, or once from the onboarding handoff on a server-READY list — nowhere else",
+  /if \(prevShouldPollRef\.current && !nextShouldPoll\) \{\s*router\.refresh\(\);\s*takeFirstConnectStarted\(\);[^\n]*\n\s*setJustCompleted\(true\);/.test(list)
+  && /if \(shouldPoll \|\| !anyReady\) return;[\s\S]{0,160}if \(takeFirstConnectStarted\(\)\) setJustCompleted\(true\);/.test(list)
+  && (list.match(/setJustCompleted\(/g) ?? []).length === 2);
 check("first snapshot: Explore My Space (primary) + Add another connection (secondary)",
   /data-connections-ready/.test(list) && /href="\/dashboard"[\s\S]{0,400}Explore My Space/.test(list) && /Add another connection/.test(list));
 check("in-progress strip counts running work only (importing or building), not paused or deferred",
