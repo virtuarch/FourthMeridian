@@ -27,14 +27,20 @@ import { AlertTriangle, Clock, Loader2, Link2 } from "lucide-react";
 import { classifyPerspectiveEmpty, EMPTY_COPY, type PerspectiveKey } from "@/lib/space/perspective-empty-state.core";
 import type { DataSourceView } from "@/lib/connections/space-data-health.core";
 import { useSpaceIdContext } from "@/components/space/space-id-context";
+import type { ValuationCoverage } from "@/lib/connections/valuation-coverage.core";
 
-const cache = new Map<string, Promise<DataSourceView[] | null>>();
+type DataHealthPayload = { sources: DataSourceView[] | null; valuationCoverage: ValuationCoverage | null };
+const cache = new Map<string, Promise<DataHealthPayload | null>>();
 
-function loadSources(spaceId: string): Promise<DataSourceView[] | null> {
+function loadPayload(spaceId: string): Promise<DataHealthPayload | null> {
   let p = cache.get(spaceId);
   if (!p) {
     p = fetch(`/api/spaces/${encodeURIComponent(spaceId)}/data-health`, { cache: "no-store", credentials: "same-origin" })
-      .then(async (r) => (r.ok ? ((await r.json()) as { sources?: DataSourceView[] }).sources ?? null : null))
+      .then(async (r) => {
+        if (!r.ok) return null;
+        const j = (await r.json()) as { sources?: DataSourceView[]; valuationCoverage?: ValuationCoverage | null };
+        return { sources: j.sources ?? null, valuationCoverage: j.valuationCoverage ?? null };
+      })
       .catch(() => null);
     cache.set(spaceId, p);
     // A short-lived memo: perspectives mounting together share one read.
@@ -43,15 +49,24 @@ function loadSources(spaceId: string): Promise<DataSourceView[] | null> {
   return p;
 }
 
-export function useSpaceSources(spaceId: string | null | undefined): DataSourceView[] | null {
-  const [sources, setSources] = useState<DataSourceView[] | null>(null);
+function useDataHealth(spaceId: string | null | undefined): DataHealthPayload | null {
+  const [payload, setPayload] = useState<DataHealthPayload | null>(null);
   useEffect(() => {
     if (!spaceId) return;
     let live = true;
-    void loadSources(spaceId).then((s) => { if (live) setSources(s); });
+    void loadPayload(spaceId).then((s) => { if (live) setPayload(s); });
     return () => { live = false; };
   }, [spaceId]);
-  return sources;
+  return payload;
+}
+
+export function useSpaceSources(spaceId: string | null | undefined): DataSourceView[] | null {
+  return useDataHealth(spaceId)?.sources ?? null;
+}
+
+/** Why the Net Worth history starts where it does when prices bound it — the same one read. */
+export function useSpaceValuationCoverage(spaceId: string | null | undefined): ValuationCoverage | null {
+  return useDataHealth(spaceId)?.valuationCoverage ?? null;
 }
 
 const NOTE_COPY = {
