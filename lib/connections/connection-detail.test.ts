@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { groupAccounts, connectionHealth, connectionHistory, abbreviateAddress, accountGroupKey, chartReadyRange } from "@/lib/connections/connection-detail.core";
 import { summarizeConnection } from "@/lib/connections/connection-summary";
+import { connectionDestinations } from "@/lib/connections/connection-facts";
 import type { SyncConnection } from "@/lib/sync/status";
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
 
@@ -63,12 +64,26 @@ console.log("Health — multidimensional");
   const wallet = conn({ provider: "WALLET", institution: "My SOL" });
   const partial = connectionHealth(wallet, intel({ positionObservedAt: "2026-10-28", valuationIsReadTime: true,
     walletHistory: { supported: true, licensed: false, licensedFromISO: null, licensedToISO: null, activityFromISO: null } }), NOW);
-  check("a wallet with fresh holdings but unproven history is NOT 'up to date'", partial.headline === "Current holdings available; historical coverage incomplete" && partial.tone !== "ok", partial.headline);
+  check("a wallet with fresh holdings but unproven history is NOT 'up to date' (limited, not green)", partial.headline === "Current holdings ready; some history is limited" && partial.tone === "neutral", partial.headline);
   check("…and the row badge agrees", summarizeConnection(wallet, intel({ walletHistory: { supported: true, licensed: false, licensedFromISO: null, licensedToISO: null, activityFromISO: null } }), 1).status === "History incomplete");
   check("wallet health has no banking fields", !partial.lines.some((l) => l.key === "balances" || l.key === "investments"));
   const proven = connectionHealth(wallet, intel({ positionObservedAt: "2026-10-28", valuationIsReadTime: true,
-    walletHistory: { supported: true, licensed: true, licensedFromISO: "2023-01-01", licensedToISO: "2026-10-28", activityFromISO: "2023-02-01" } }), NOW);
-  check("a proven wallet is 'Connected and up to date'", proven.headline === "Connected and up to date");
+    walletHistory: { supported: true, licensed: true, licensedFromISO: "2023-01-01", licensedToISO: "2026-10-28", activityFromISO: "2023-02-01",
+      priceFromISO: "2020-01-01", chart: { fromISO: "2023-02-01", toISO: "2026-10-28", days: 1366, continuous: true } } }), NOW);
+  check("a wallet whose chart reaches the start of its proven history reads 'Current holdings ready' — never 'up to date'", proven.headline === "Current holdings ready" && proven.tone === "ok", proven.headline);
+  const short = connectionHealth(wallet, intel({ positionObservedAt: "2026-10-28", valuationIsReadTime: true,
+    walletHistory: { supported: true, licensed: true, licensedFromISO: "2022-03-26", licensedToISO: "2026-10-28", activityFromISO: "2022-03-26",
+      priceFromISO: "2026-09-27", chart: { fromISO: "2026-09-27", toISO: "2026-10-28", days: 32, continuous: true } } }), NOW);
+  check("native history verified but chart shorter ⇒ 'some history is limited', not green", short.headline === "Current holdings ready; some history is limited" && short.tone === "neutral");
+  check("wallet Health has separate lines: monitoring, holdings, native, tokens, prices, value",
+    ["connection", "holdings", "history", "tokens", "prices", "valuation"].every((k) => short.lines.some((l) => l.key === k))
+    && short.lines.find((l) => l.key === "tokens")?.text === "Not reconstructed"
+    && short.lines.find((l) => l.key === "prices")?.text === "Available since Sep 27, 2026");
+  check("dates are absolute (no relative 'today' that goes stale)", short.lines.find((l) => l.key === "holdings")?.text === "Updated Oct 28, 2026");
+  const importingW = connectionHealth(wallet, intel({ positionObservedAt: "2026-10-28", facts: { destinations: [], bankTransactions: null, onChain: null, historyWorkerEnabled: false },
+    walletHistory: { supported: true, licensed: false, licensedFromISO: null, licensedToISO: null, activityFromISO: null, historyImport: { state: "IMPORTING", provenFromISO: "2025-01-01", lastProgressAtISO: null, signaturesProcessed: 10, lastFailureCode: null } } }), NOW);
+  check("an importing wallet says so — and claims 'continues automatically' ONLY when the worker is enabled",
+    importingW.headline === "Current holdings ready; history is being imported" && importingW.lines.find((l) => l.key === "import")?.text === "In progress");
   const all = JSON.stringify([ok, reauth, importing, partial, proven]);
   check("no codes or provider vocabulary in any sentence", !/[A-Z]{3,}_[A-Z]{3,}|error code|plaid/i.test(all.replace(/"key":"[^"]*"/g, "")));
 }
@@ -112,6 +127,35 @@ console.log("Chart-ready range (balances × prices × snapshots)");
   check("unlicensed history ⇒ none", chartReadyRange({ ...wh, licensed: false }, "2026-09-27", days("2026-09-27", 32)) === null);
 }
 
+console.log("Honest facts — only destinations that genuinely consume the data");
+{
+  check("a crypto wallet feeds Net Worth, Assets, Investments — NEVER Cash Flow / Spending / Transactions",
+    JSON.stringify(connectionDestinations(["crypto"], false)) === JSON.stringify(["Net Worth", "Assets", "Investments"]));
+  check("a checking account with banking rows feeds Cash and the transaction views",
+    JSON.stringify(connectionDestinations(["checking"], true)) === JSON.stringify(["Net Worth", "Assets", "Cash", "Transactions", "Cash Flow", "Spending"]));
+  check("a bank account with NO banking rows does not claim the transaction views", !connectionDestinations(["savings"], false).includes("Cash Flow"));
+  check("a credit card feeds Debt (and its spending only via banking rows)", connectionDestinations(["debt"], false).join() === "Net Worth,Debt");
+  check("a manual real asset feeds Net Worth and Assets only", connectionDestinations(["other"], false).join() === "Net Worth,Assets");
+  const read = (f: string) => readFileSync(path.join(process.cwd(), f), "utf8");
+  const tl = read("components/connections/ConnectionTimeline.tsx").replace(/\/\*[\s\S]*?\*\//g, "");
+  check("the accordion no longer says 'Wealth timeline built', 'Cash flow available' or 'Transactions available'",
+    !/Wealth timeline built|Cash flow available|Transactions available|Financial intelligence|Data acquisition/.test(tl));
+  check("…no decorative checkmarks, absolute dates only", !/<Check\b|fmtRelative/.test(tl) && /fmtDay\(/.test(tl));
+  check("…'Used in' comes from the loader's destinations, not from a job finishing", /f\??\.destinations\.join/.test(tl));
+  const sd = read("lib/connections/space-data.ts");
+  check("destinations use THE banking population (crypto-owned rows excluded) for the transaction views",
+    /transactionAccountPopulation\(client,/.test(sd) && /connectionDestinations\(accts\.map\(\(a\) => a\.type\), banking\.length > 0\)/.test(sd));
+  check("'continues automatically' is claimed only from the real worker flag", /historyWorkerEnabled = process\.env\.SOL_BACKFILL_ENABLED === "true"/.test(sd));
+  const menu = read("components/connections/ConnectionMenu.tsx");
+  const list = read("components/connections/ConnectionsList.tsx");
+  check("no customer-facing 'Restore financial intelligence' / rebuild panel", !/Restore financial intelligence|build-intelligence/.test(menu) && !/<BuildIntelligencePanel/.test(list));
+  for (const [f, re] of [["jobs/sync-banks.ts", /regenerateWealthHistoryForAccounts\(/], ["lib/refresh/wallet-post-sync.ts", /regenerateWealthHistoryForAccounts\(/],
+    ["jobs/sol-history-backfill.ts", /regenerateWealthHistoryForAccounts\(/], ["lib/plaid/backgroundHistorySync.ts", /regenerateWealthHistoryForAccounts\(/]] as const) {
+    check(`the automatic lifecycle still rebuilds history: ${f}`, re.test(read(f)));
+  }
+  check("the first-snapshot card separates CURRENT from HISTORICAL", /Your current financial snapshot is ready/.test(list) && /historyStillArriving/.test(list));
+}
+
 console.log("Wiring and accessibility");
 {
   const read = (f: string) => readFileSync(path.join(process.cwd(), f), "utf8");
@@ -125,7 +169,7 @@ console.log("Wiring and accessibility");
   check("no balances in the detail (PCS-2): no balance / amount fields read", !/\.balance\b|currentBalance|formatCurrency/.test(tabs));
   const card = read("components/connections/ConnectionCard.tsx");
   check("every existing state renderer still feeds the Health tab", /healthExtra=\{<>\{content\}\{walletActions\}<\/>\}/.test(card));
-  check("the timeline and historical import move to History", /historyExtra=\{<>\{intelligence && <ConnectionTimeline intelligence=\{intelligence\} \/>\}\{importAction\}<\/>\}/.test(card));
+  check("the timeline and historical import move to History", /historyExtra=\{<>\{intelligence && <ConnectionTimeline intelligence=\{intelligence\} provider=\{connection\.provider\} \/>\}\{importAction\}<\/>\}/.test(card));
   const list = read("components/connections/ConnectionsList.tsx");
   check("desktop drawer is wider (lg) and the phone sheet has a '‹ Connections' back control",
     /ariaLabel="Connection detail" size="lg"/.test(list) && /sm:hidden">\s*<ChevronLeft aria-hidden size=\{16\} \/> Connections/.test(list));

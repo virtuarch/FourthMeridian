@@ -5,7 +5,9 @@
  *
  * The per-connection ⋯ menu. Exposes the connection lifecycle honestly:
  *   - Refresh connection            (Plaid — reuses POST /api/plaid/refresh {plaidItemId})
- *   - Restore financial intelligence (reuses POST /api/connections/build-intelligence)
+ *   (No customer "rebuild" action: rebuilding derived history is not a
+ *   customer chore. It runs automatically after syncs, history imports and the
+ *   background worker — owner directive 2026-10-28.)
  *   - Disconnect <institution>       (CONN-4A — stop syncing, PRESERVE history)
  *
  * "Disconnect" is Model A only: reversible, non-destructive, honestly worded. There
@@ -15,7 +17,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { MoreHorizontal, RefreshCw, Sparkles, Unplug } from "lucide-react";
+import { MoreHorizontal, RefreshCw, Unplug } from "lucide-react";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { connectionActionError } from "@/lib/connections/action-errors";
 import type { SyncConnection } from "@/lib/sync/status";
@@ -87,15 +89,6 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
     router.refresh();
   }
 
-  async function restore() {
-    setBusy("restore"); setOpen(false);
-    setFailure(null);
-    const err = await post("/api/connections/build-intelligence", { connectionIds: [connection.id] });
-    if (err) setFailure(err);
-    setBusy(null);
-    router.refresh();
-  }
-
   async function disconnect() {
     setBusy("disconnect");
     setFailure(null);
@@ -132,7 +125,6 @@ export function ConnectionMenu({ connection }: { connection: SyncConnection }) {
           className="absolute right-0 z-20 mt-1 w-60 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border-hairline)] bg-[var(--surface-1,#161a22)] py-1 shadow-lg"
         >
           {isPlaid && <MenuItem icon={RefreshCw} label="Refresh connection" onClick={refresh} disabled={busy !== null} />}
-          <MenuItem icon={Sparkles} label="Restore financial intelligence" onClick={restore} disabled={busy !== null} />
           <div className="my-1 h-px bg-[var(--border-hairline)]" />
           <MenuItem icon={Unplug} label={`Disconnect ${connection.institution}`} onClick={() => { setOpen(false); setConfirmDisconnect(true); }} disabled={busy !== null} danger />
         </div>

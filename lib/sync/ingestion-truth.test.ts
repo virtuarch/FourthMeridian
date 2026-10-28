@@ -117,9 +117,13 @@ function main(): void {
       const body = fnBody(fn);
       check(`${fn} claims no background work and shows no spinner`,
         !/background|animate-spin|Loader2/.test(body.replace(/\{busy \?[^}]*\}/, "")), body.slice(0, 80));
-      check(`${fn} says nothing is running`, /nothing is (running|building)/.test(body));
+      // TimelineNotBuiltContent no longer says "nothing is running": it says the
+      // rebuild happens automatically after the next sync (owner directive
+      // 2026-10-28) — still no spinner and no claim that work is in progress now.
+      if (fn === "TimelineNotBuiltContent") check(`${fn} says it rebuilds automatically, not that it is running`, /automatically after the next sync/.test(body) && /nothing you need to do/.test(body));
+      else check(`${fn} says nothing is running`, /nothing is (running|building)/.test(body));
     }
-    check("the not-built card offers the existing rebuild action", /\/api\/connections\/build-intelligence/.test(fnBody("TimelineNotBuiltContent")));
+    check("the not-built card offers NO customer rebuild action (it is automatic)", !/build-intelligence|Build timeline/.test(fnBody("TimelineNotBuiltContent")));
     const list = code("components/connections/ConnectionsList.tsx");
     check("the poller drives resume for paused imports", /import_paused/.test(list.slice(list.indexOf("const driveResume"), list.indexOf("const poll = useCallback"))));
     check("the poller stays alive while an import is paused (it is what resumes it)", /anyPaused/.test(list) && /"import_paused"\)\s*\|\|/.test(list));

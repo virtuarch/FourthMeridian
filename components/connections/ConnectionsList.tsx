@@ -39,7 +39,6 @@ import { Surface } from "@/components/atlas/Surface";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { CheckCircle2, ChevronLeft } from "lucide-react";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
-import { BuildIntelligencePanel } from "@/components/connections/BuildIntelligencePanel";
 import type { SyncStatus } from "@/lib/sync/status";
 import {
   isBuildingIntelligence,
@@ -311,6 +310,16 @@ export function ConnectionsList({
     c.state === "importing" || c.state === "import_paused" || inProgressPhase(c.id);
 
   const anyReady = status.connections.some((c) => intelligence[c.id]?.phase === "READY");
+  // Persisted state only: a wallet whose history import is queued/running, or
+  // whose native history is not yet proven, or whose chart starts later than it.
+  const historyStillArriving = status.connections.some((c) => {
+    const wh = intelligence[c.id]?.walletHistory;
+    if (c.provider !== "WALLET" || !wh?.supported) return false;
+    const st = wh.historyImport?.state;
+    return st === "QUEUED" || st === "IMPORTING" || !wh.licensed
+      || (wh.chart?.fromISO ?? "9999") > (wh.activityFromISO ?? wh.licensedFromISO ?? "0000");
+  });
+  const workerEnabled = Object.values(intelligence).some((i) => i?.facts?.historyWorkerEnabled === true);
 
   // A first connection started from the onboarding view in this tab that was
   // already READY before the poller ever ran (an empty wallet syncs inside the
@@ -483,13 +492,8 @@ export function ConnectionsList({
         )}
       </RightPanel>
 
-      {/* CONN-2B — master multi-account intelligence rebuild. Renders itself only
-          when ≥2 connections have transactions to rebuild from. */}
-      <BuildIntelligencePanel
-        connections={status.connections}
-        intelligence={intelligence}
-        accountsByConnectionId={accountsByConnectionId}
-      />
+      {/* No customer "rebuild" panel: derived history is rebuilt automatically
+          (owner directive 2026-10-28). The route stays for operator recovery. */}
 
       {/* Connections pass PR 3 — the first usable snapshot. Shown when work this
           visit watched has finished and at least one connection is READY. */}
@@ -499,8 +503,17 @@ export function ConnectionsList({
             <div className="flex items-start gap-2.5">
               <CheckCircle2 aria-hidden size={18} className="mt-0.5 shrink-0 text-[var(--accent-positive,#34d399)]" />
               <div>
-                <p className="text-sm font-semibold text-[var(--text-primary)]">Your financial snapshot is ready</p>
-                <p className="mt-0.5 text-xs text-[var(--text-secondary)]">Net worth, cash flow and history are built from what you connected. More history may keep arriving.</p>
+                {/* CURRENT vs HISTORICAL, said separately (owner requirement): a
+                    wallet whose earlier history is still being proven or priced
+                    has a current snapshot, not a complete historical picture. */}
+                <p className="text-sm font-semibold text-[var(--text-primary)]">
+                  {historyStillArriving ? "Your current financial snapshot is ready" : "Your financial snapshot is ready"}
+                </p>
+                <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                  {historyStillArriving
+                    ? `Current balances are in your Net Worth now. Earlier history is still being added${workerEnabled ? " automatically" : ""} — you can explore in the meantime.`
+                    : "Your Net Worth is built from what you connected."}
+                </p>
               </div>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:shrink-0">

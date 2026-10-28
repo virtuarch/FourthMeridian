@@ -136,7 +136,26 @@ export interface ConnectionIntelligenceStatus {
      * that span has no snapshot. Null when no such day exists.
      */
     chart?: { fromISO: string; toISO: string; days: number; continuous: boolean } | null;
+    /** The resumable history import's persisted state (Solana today); null when the chain has none. */
+    historyImport?: { state: string; provenFromISO: string | null; lastProgressAtISO: string | null; signaturesProcessed: number; lastFailureCode: string | null } | null;
   } | null;
+  /**
+   * CONNECTION FACTS (owner requirement "everything should be honest") — each
+   * derived from a persisted authority, never inferred from a job finishing:
+   *   destinations   the Personal Space views that actually consume this
+   *                  connection: balances by THE account classifier; Transactions /
+   *                  Cash Flow / Spending ONLY when its accounts are in the banking
+   *                  population (crypto-owned rows are excluded there by design)
+   *   bankTransactions  banking rows in the Personal Space (count + date range)
+   *   onChain        wallet on-chain transactions processed, with their scope
+   *   historyWorkerEnabled  whether history continues automatically in the background here
+   */
+  facts?: {
+    destinations: string[];
+    bankTransactions: { count: number; fromISO: string | null; toISO: string | null } | null;
+    onChain: { processed: number; scope: string } | null;
+    historyWorkerEnabled: boolean;
+  };
 }
 
 /** Structural input for the pure derivation — gathered by the loader. */

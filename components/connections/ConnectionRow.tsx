@@ -16,7 +16,8 @@
 
 import { Building2, ChevronRight, Wallet } from "lucide-react";
 import { ConnectionMenu } from "@/components/connections/ConnectionMenu";
-import { relativeUpdated, summarizeConnection, type ConnectionTone } from "@/lib/connections/connection-summary";
+import { summarizeConnection, type ConnectionTone } from "@/lib/connections/connection-summary";
+import { fmtDay } from "@/lib/connections/connection-detail.core";
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
 import type { SyncConnection } from "@/lib/sync/status";
 
@@ -44,7 +45,8 @@ interface Props {
 export function ConnectionRow({ connection, accountCount, intelligence, onOpen }: Props) {
   const s = summarizeConnection(connection, intelligence, accountCount);
   const Icon = connection.provider === "WALLET" ? Wallet : Building2;
-  const updated = s.updatedAt ? `Updated ${relativeUpdated(s.updatedAt)}` : "Not updated yet";
+  // Absolute date — a relative "today" goes stale on a page left open.
+  const updated = s.updatedAt ? `Updated ${fmtDay(s.updatedAt)}` : "Not updated yet";
 
   return (
     <li data-connection-row={connection.state} className="flex items-center">

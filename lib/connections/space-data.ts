@@ -83,6 +83,9 @@ import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wal
 import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
 import { chartReadyRange } from "@/lib/connections/connection-detail.core";
 import { getSnapshotDates } from "@/lib/data/snapshots";
+import { transactionAccountPopulation, type AccountPopulationEntry } from "@/lib/data/transaction-population";
+import { statusFromCursor } from "@/lib/crypto/sol-history-backfill.core";
+import { connectionDestinations } from "@/lib/connections/connection-facts";
 // CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
 // here rather than re-decided, so a valuation clock is only claimed where one exists.
 import { usesLegacyColumnForCurrentValue } from "@/lib/crypto/wallet-sync-dispatch";
@@ -249,7 +252,7 @@ async function loadConnectionIntelligence(
   /** Raw provider fields per connection id, for sourceHealthForConnection. */
   rawByConnId: Map<string, Pick<SourceHealthInput, "plaid" | "wallet">>,
   /** CRYPTO-FRESHNESS-1 — per-facet success clocks (wallet connections). */
-  facetClocksByConnId: Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null }>,
+  facetClocksByConnId: Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null; historyCursor?: string | null }>,
   /** Resolved once per page load — the same policies the Brief's data health uses. */
   policies: RefreshPolicies,
   /** Plaid item id → whether ingestion is actually running (getIngestionEvidence). */
@@ -362,11 +365,28 @@ async function loadConnectionIntelligence(
         _min: { date: true },
       })).map((r) => [r.instrumentId, r._min.date ? r._min.date.toISOString().slice(0, 10) : null]))
     : new Map<string, string | null>();
-  const personalSpace = coverageInstrument.size
+  const personalSpace = allAccountIds.length
     ? await client.spaceMember.findFirst({
         where: { userId, role: "OWNER", status: "ACTIVE", space: { type: "PERSONAL" } }, select: { spaceId: true },
       })
     : null;
+  // The banking population — the ONLY rows Transactions / Cash Flow / Spending
+  // read (bankingTransactionWhere excludes crypto-owned rows by design). An
+  // account in it with rows > 0 genuinely feeds those views; nothing else may
+  // claim to.
+  const bankingRows = personalSpace
+    ? new Map((await transactionAccountPopulation(client, { spaceId: personalSpace.spaceId }))
+        .filter((p) => p.rows > 0).map((p) => [p.accountId, p]))
+    : new Map<string, AccountPopulationEntry>();
+  // Wallet on-chain rows written to the ledger (Bitcoin writes them; Solana and
+  // Ethereum do not — Solana's processed count comes from its checkpoint).
+  const walletTxCounts = walletAccounts.length
+    ? new Map((await client.transaction.groupBy({
+        by: ["financialAccountId"], where: { financialAccountId: { in: walletAccounts.map((a) => a.id) }, deletedAt: null },
+        _count: { _all: true },
+      })).filter((r) => r.financialAccountId).map((r) => [r.financialAccountId as string, r._count._all]))
+    : new Map<string, number>();
+  const historyWorkerEnabled = process.env.SOL_BACKFILL_ENABLED === "true";
   // Through the snapshot read authority (lib/data/snapshots.ts) — dates only.
   const snapshotDates: string[] = personalSpace ? await getSnapshotDates(client, personalSpace.spaceId) : [];
 
@@ -480,7 +500,30 @@ async function loadConnectionIntelligence(
       walletHistory.priceFromISO = priceFromISO;
       walletHistory.chart = chartReadyRange(walletHistory, priceFromISO, snapshotDates);
     }
-    out[c.id] = { ...derived, walletHistory };
+    if (walletHistory && c.provider === "WALLET") {
+      const st = statusFromCursor(facets?.historyCursor ?? null, now.toISOString().slice(0, 10));
+      walletHistory.historyImport = st ? { state: st.state, provenFromISO: st.historyFromISO, lastProgressAtISO: st.lastProgressAtISO,
+        signaturesProcessed: st.signaturesProcessed, lastFailureCode: st.lastFailureCode } : null;
+    }
+    const accts = accountsByConnectionId[c.id] ?? [];
+    const banking = accts.map((a) => bankingRows.get(a.id)).filter((p): p is AccountPopulationEntry => p !== undefined);
+    const earliestBanking = banking.map((p) => earliestByAccount.get(p.accountId)).filter((d): d is Date => !!d).sort((x, y) => x.getTime() - y.getTime())[0] ?? null;
+    const chain = chains[0] ?? null;
+    const walletRows = accts.reduce((n, a) => n + (walletTxCounts.get(a.id) ?? 0), 0);
+    const solProcessed = walletHistory?.historyImport?.signaturesProcessed ?? null;
+    const facts: ConnectionIntelligenceStatus["facts"] = {
+      destinations: connectionDestinations(accts.map((a) => a.type), banking.length > 0),
+      bankTransactions: c.provider === "PLAID" && banking.length > 0 ? {
+        count: banking.reduce((n, p) => n + p.rows, 0),
+        fromISO: earliestBanking ? earliestBanking.toISOString().slice(0, 10) : null,
+        toISO: banking.map((p) => p.lastDate).filter((d): d is string => !!d).sort().at(-1) ?? null,
+      } : null,
+      onChain: c.provider !== "WALLET" ? null
+        : solProcessed !== null && solProcessed > 0 ? { processed: solProcessed, scope: `native ${chain ?? ""}`.trim() }
+        : walletRows > 0 ? { processed: walletRows, scope: `native ${chain ?? ""}`.trim() } : null,
+      historyWorkerEnabled,
+    };
+    out[c.id] = { ...derived, walletHistory, facts };
   }
   return out;
 }
@@ -580,9 +623,9 @@ async function loadProviderConnections(client: ReadClient, userId: string): Prom
   for (const i of items) connectedAtByConnId.set(i.id, i.createdAt);
   for (const w of walletCreatedRows) connectedAtByConnId.set(w.id, w.createdAt);
   // CRYPTO-FRESHNESS-1 — per-facet success clocks, wallet connections only.
-  const facetClocksByConnId = new Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null }>();
+  const facetClocksByConnId = new Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null; historyCursor?: string | null }>();
   for (const w of walletCreatedRows) {
-    facetClocksByConnId.set(w.id, { transactionsSyncedAt: w.transactionsSyncedAt, historyRebuiltAt: w.historyRebuiltAt });
+    facetClocksByConnId.set(w.id, { transactionsSyncedAt: w.transactionsSyncedAt, historyRebuiltAt: w.historyRebuiltAt, historyCursor: w.cursor ?? null });
   }
 
   const intelligenceByConnectionId = await loadConnectionIntelligence(
