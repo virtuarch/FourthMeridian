@@ -135,6 +135,12 @@ export const SCHEDULED_JOB_FACTS = declareJobs([
     name: "sync-crypto-continuation", hourUTC: [0, 6, 12, 18], minuteUTC: 30,
     refreshes: "WALLET", continuationOf: "sync-crypto",
   },
+  // Owner decision 2 (2026-10-28) — the background Solana history backfill.
+  // Self-continues every ~15 min while wallets remain (summary.deferred), off
+  // unless SOL_BACKFILL_ENABLED=true; budgets and caps in
+  // lib/crypto/sol-backfill-worker.core.ts. Sequenced after the wallet sweep
+  // so a shared wake gives the sweep its budget first.
+  { name: "sol-history-backfill", hourUTC: [0, 6, 12, 18], minuteUTC: 30, selfContinues: true },
   // Pre-S2 slot: vercel.json "0 7 * * *". Single-purpose since S3.
   { name: "process-deletions", hourUTC: 7, minuteUTC: 0 },
   // ── S3 maintenance slot (07:30 — already covered by the single cron) ──────
