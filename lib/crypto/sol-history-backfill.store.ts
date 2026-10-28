@@ -96,7 +96,7 @@ export async function prismaSolBackfillStore(accountId: string, db: PrismaClient
 
 // ── The refresh entry point ─────────────────────────────────────────────────
 
-export type SolResumableRefusal = "NOT_A_SOL_WALLET" | "HISTORY_GAP" | "BACKFILL_PAUSED" | SolBackfillFailureCode | "CHECKPOINT_CONFLICT";
+export type SolResumableRefusal = "NOT_A_SOL_WALLET" | "HISTORY_GAP" | "BACKFILL_PAUSED" | "DEFERRED_TO_WORKER" | SolBackfillFailureCode | "CHECKPOINT_CONFLICT";
 
 export interface SolResumableResult {
   accountId: string;
@@ -140,5 +140,10 @@ export async function reconstructSolHistoryResumable(
   if (o.stoppedBecause === "GAP") return { ...base, ok: false, refusal: "HISTORY_GAP", reason: "a transaction is missing from the address index; proven history is kept" };
   if (o.stoppedBecause === "SKIPPED") return { ...base, ok: false, refusal: o.status.state === "RECOVERY_REQUIRED" ? "HISTORY_GAP" : "BACKFILL_PAUSED", reason: `history backfill is ${o.status.state}` };
   if (o.failure) return { ...base, ok: false, refusal: o.failure.code, reason: o.failure.detail };
+  // A head-only sync that proved nothing new built nothing: not a refresh (the
+  // "history rebuilt" clock must not move), the worker carries the history.
+  if (args.deps?.headOnly && !o.progressed && o.status.state !== "COMPLETE") {
+    return { ...base, ok: false, refusal: "DEFERRED_TO_WORKER", reason: "history is carried by the background worker" };
+  }
   return { ...base, ok: true };
 }

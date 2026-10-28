@@ -50,6 +50,10 @@ export const SIGNATURE_PAGE_SIZE = 1000;           // the RPC's own per-call max
 export const DEFAULT_RUN_BUDGET_MS = 15_000;
 /** Without the background worker, syncs must carry history alone — the pre-worker 45 s. */
 export const STANDALONE_RUN_BUDGET_MS = 45_000;
+/** While the worker is enabled, a wallet sync proves only new activity. */
+export function syncHeadOnly(env: Record<string, string | undefined> = process.env): boolean {
+  return env.SOL_BACKFILL_ENABLED === "true";
+}
 export function syncRunBudgetMs(env: Record<string, string | undefined> = process.env): number {
   return env.SOL_BACKFILL_ENABLED === "true" ? DEFAULT_RUN_BUDGET_MS : STANDALONE_RUN_BUDGET_MS;
 }
@@ -88,6 +92,13 @@ export interface SolBackfillDeps {
   meter?: Record<string, number>;
   /** Stop (as for the wall clock) once this many requests were sent in the run. */
   requestBudget?: number;
+  /**
+   * HEAD only: prove new activity, leave older history to the background worker.
+   * What a wallet SYNC does while the worker is enabled, so historical work never
+   * slows a holdings refresh and every history request runs under the worker's
+   * rate limit and daily cap.
+   */
+  headOnly?: boolean;
 }
 
 function envNumber(name: string, fallback: number): number {
@@ -495,6 +506,8 @@ export async function runSolHistoryBackfill(
         await fail(code, fetched.error.message); return finish();
       }
     }
+
+    if (deps.headOnly) { outcome.stoppedBecause = working.reachedBeginning ? "COMPLETE" : "BUDGET"; return finish(); }
 
     // ── 2. HISTORY (and the whole of a fresh wallet's first run) ────────────
     // Pages are walked by their own cursor: a page whose transactions never

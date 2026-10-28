@@ -561,6 +561,24 @@ async function main() {
     check("no licensed legacy ⇒ direct writes; unlicensed leftovers are replaced", o.status.state === "COMPLETE" && !store.rows.has("2020-01-01") && sameAsTruth(store, chain).ok);
   }
 
+  console.log("\nhead-only syncs (worker enabled)");
+  {
+    const chain = makeChain(3_000, { seed: 111 });
+    const clock = { t: 0 };
+    const r = rpc(() => chain, clock);
+    const store = new MemoryStore(anchorFor(chain));
+    const fresh = await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store }, { call: r.call, budgetMs: 1e9, now: () => clock.t, headOnly: true });
+    check("a head-only sync on a fresh wallet sends nothing and writes nothing (history is the worker's)", r.counts.tx === 0 && r.counts.sig === 0 && store.rows.size === 0 && !fresh.progressed);
+    await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store }, { call: r.call, budgetMs: 1_200, now: () => clock.t }); // the worker's first run
+    const before = r.counts.tx;
+    const cpBefore = parseCheckpoint(store.cursor, ACCOUNT, OWNER);
+    const h = await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store }, { call: r.call, budgetMs: 1e9, now: () => clock.t, headOnly: true });
+    const cpAfter = parseCheckpoint(store.cursor, ACCOUNT, OWNER);
+    check("…and on a started wallet it checks only the head — the bottom frontier does not move", r.counts.tx === before && cpAfter?.bottom?.signature === cpBefore?.bottom?.signature && h.status.state === "IMPORTING");
+  }
+  const syncCfg = read("lib/crypto/sol-history-backfill.store.ts");
+  check("a head-only sync that built nothing is not a refresh (history clock unmoved)", /args\.deps\?\.headOnly && !o\.progressed/.test(syncCfg) && /"DEFERRED_TO_WORKER"/.test(syncCfg));
+
   console.log("\nunits");
   {
     const p = (sig: string, slot: number, iso: string, pre: number, post: number) =>
@@ -579,7 +597,7 @@ async function main() {
   console.log("\nwiring");
   {
     const refresh = read("lib/crypto/wallet-history-refresh.ts");
-    check("the wallet refresh runs the RESUMABLE backfill for SOL", /SOL_NATIVE\.chain \? \(a: [^)]*\) => reconstructSolHistoryResumable\(\{ \.\.\.a, client: db \}\)/.test(refresh));
+    check("the wallet refresh runs the RESUMABLE backfill for SOL", /SOL_NATIVE\.chain \? \(a: [^)]*\) => reconstructSolHistoryResumable\(\{ \.\.\.a, client: db, deps: \{ headOnly: syncHeadOnly\(\) \} \}\)/.test(refresh));
     const run = read("lib/crypto/sol-history-backfill.ts") + read("lib/crypto/sol-history-backfill.store.ts");
     check("no transaction-count ceiling: runs are bounded by wall-clock only", !/pageBudget|PAGE_BUDGET/.test(run) && /deadlineMs/.test(run));
     check("the checkpoint is compare-and-swapped in the SAME transaction as rows and licence",
