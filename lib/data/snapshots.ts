@@ -123,6 +123,19 @@ export interface SnapshotReadBound {
  * identity may see none of it". Naming the client is what makes the difference
  * visible at the call site.
  */
+/**
+ * The DATES of a Space's persisted snapshots, ascending, on/after `fromISO` —
+ * no values. What the Connections History tab needs to state the chart-ready
+ * range (and its gaps) of a wallet without reading any financial figure.
+ */
+export async function getSnapshotDates(client: ReadClient, spaceId: string, fromISO: string | null = null): Promise<string[]> {
+  const rows = await client.spaceSnapshot.findMany({
+    where: { spaceId, ...(fromISO ? { date: { gte: new Date(`${fromISO}T00:00:00.000Z`) } } : {}) },
+    select: { date: true }, orderBy: { date: "asc" },
+  });
+  return rows.map((r) => r.date.toISOString().slice(0, 10));
+}
+
 export async function getSnapshotExtent(
   client: ReadClient,
   spaceId: string,

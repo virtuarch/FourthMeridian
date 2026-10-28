@@ -74,6 +74,7 @@ import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
 import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
 import { chartReadyRange } from "@/lib/connections/connection-detail.core";
+import { getSnapshotDates } from "@/lib/data/snapshots";
 // CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
 // here rather than re-decided, so a valuation clock is only claimed where one exists.
 import { usesLegacyColumnForCurrentValue } from "@/lib/crypto/wallet-sync-dispatch";
@@ -354,10 +355,8 @@ async function loadConnectionIntelligence(
         where: { userId, role: "OWNER", status: "ACTIVE", space: { type: "PERSONAL" } }, select: { spaceId: true },
       })
     : null;
-  const snapshotDates: string[] = personalSpace
-    ? (await client.spaceSnapshot.findMany({ where: { spaceId: personalSpace.spaceId }, select: { date: true }, orderBy: { date: "asc" } }))
-        .map((r) => r.date.toISOString().slice(0, 10))
-    : [];
+  // Through the snapshot read authority (lib/data/snapshots.ts) — dates only.
+  const snapshotDates: string[] = personalSpace ? await getSnapshotDates(client, personalSpace.spaceId) : [];
 
   const out: Record<string, ConnectionIntelligenceStatus> = {};
   for (const c of connections) {
