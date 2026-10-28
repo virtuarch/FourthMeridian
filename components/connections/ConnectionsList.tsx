@@ -30,6 +30,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { CONNECTION_REFRESHED_EVENT } from "@/lib/connections/refresh-event";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ConnectionDetail, type AccountLite } from "@/components/connections/ConnectionCard";
@@ -299,6 +300,15 @@ export function ConnectionsList({
     // not by re-running this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldPoll]);
+
+  // A manual refresh from a drawer (SyncWalletButton) changes persisted state
+  // while this page is NOT polling (a ready wallet). Pull it once so the open
+  // drawer's Health/History reflect the refresh instead of the pre-refresh state.
+  useEffect(() => {
+    const onRefreshed = () => { void poll(); };
+    window.addEventListener(CONNECTION_REFRESHED_EVENT, onRefreshed);
+    return () => window.removeEventListener(CONNECTION_REFRESHED_EVENT, onRefreshed);
+  }, [poll]);
 
   // CONN-2 — a connection is still "in progress" while acquiring (importing) OR
   // reconstructing intelligence (state ready, but derived intelligence still

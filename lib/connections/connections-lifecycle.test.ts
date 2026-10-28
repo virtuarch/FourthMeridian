@@ -37,5 +37,15 @@ check("history strip: holdings current, history continues, absolute proven date"
   /data-connections-history-importing/.test(list) && /Current holdings are already up to date; older history continues in the background\./.test(list)
   && /Verified back to \$\{fmtDay\(proven\)\} so far/.test(list));
 
+// ── A manual refresh re-reads the polled drawer state (Preview finding 2026-10-28) ──
+{
+  const btn = readFileSync(path.join(process.cwd(), "components/dashboard/SyncWalletButton.tsx"), "utf8");
+  const list = readFileSync(path.join(process.cwd(), "components/connections/ConnectionsList.tsx"), "utf8");
+  check("SyncWalletButton dispatches CONNECTION_REFRESHED_EVENT on success, before router.refresh()",
+    /window\.dispatchEvent\(new Event\(CONNECTION_REFRESHED_EVENT\)\);\s*router\.refresh\(\);/.test(btn));
+  check("ConnectionsList polls once on CONNECTION_REFRESHED_EVENT (even when not polling) and removes the listener",
+    /window\.addEventListener\(CONNECTION_REFRESHED_EVENT, onRefreshed\)/.test(list) && /window\.removeEventListener\(CONNECTION_REFRESHED_EVENT, onRefreshed\)/.test(list) && /const onRefreshed = \(\) => \{ void poll\(\); \};/.test(list));
+}
+
 if (failures > 0) { console.error(`\nconnections-lifecycle: ${failures} failed.`); process.exit(1); }
 console.log("\nconnections-lifecycle: all checks passed.");

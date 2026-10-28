@@ -19,6 +19,7 @@
  */
 
 import { useState } from "react";
+import { CONNECTION_REFRESHED_EVENT } from "@/lib/connections/refresh-event";
 import { useRouter } from "next/navigation";
 import { connectionActionError } from "@/lib/connections/action-errors";
 import { RefreshCw, Loader2 } from "lucide-react";
@@ -71,6 +72,8 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
           ...(historyFailed ? ["Transaction history couldn't be refreshed right now. Existing history is kept."] : []),
         ].join(" "));
       }
+      // The Connections page holds polled state; tell it to re-read now.
+      window.dispatchEvent(new Event(CONNECTION_REFRESHED_EVENT));
       router.refresh();
     } catch {
       setError("Sync failed. Please try again.");
