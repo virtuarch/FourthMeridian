@@ -86,6 +86,7 @@ import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
 import { formatCurrency } from "@/lib/currency";
 import { WealthTrendChart } from "./WealthTrendChart";
 import { AdjustedBasisNote } from "./AdjustedBasisNote";
+import { ValuationCoverageNote } from "./ValuationCoverageNote";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import type { LensRoot } from "@/lib/history/lens-root-node";
 import { WealthChangeLedger } from "./WealthChangeLedger";
@@ -635,6 +636,10 @@ export function WealthWorkspace({
               from={result.chart.points[0]?.date ?? null}
               to={result.chart.points[result.chart.points.length - 1]?.date ?? null}
             />
+          )}
+          {/* 2026-10-28 — a price-bounded start says why (balances older than stored prices). */}
+          {(metric === "netWorth" || metric === "totalAssets") && (
+            <ValuationCoverageNote from={result.chart.points[0]?.date ?? null} />
           )}
           {/* v2.7 header parity — compact disclosures live under the chart, never below the card. */}
           <HeroNotes notes={[cryptoPriceNote]} className="lg:hidden" />
