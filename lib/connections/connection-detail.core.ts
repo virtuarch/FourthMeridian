@@ -166,7 +166,8 @@ export function connectionHealth(
     const importing = lines.some((l) => l.key === "import" && l.tone === "progress");
     // Held tokens without reconstructed history keep the wallet LIMITED: native
     // history being verified says nothing about the tokens beside it.
-    const tokensLimited = (i?.walletHistory?.tokens ?? []).some((x) => x.historyState !== "RECONSTRUCTED");
+    // A token verified only from a later start (PARTIAL) is limited too.
+    const tokensLimited = (i?.walletHistory?.tokens ?? []).some((x) => x.historyState !== "RECONSTRUCTED" || x.coverageKind === "PARTIAL");
     const limited = tokensLimited
       || lines.some((l) => (l.key === "history" || l.key === "prices" || l.key === "import") && l.tone === "neutral")
       || (i?.walletHistory?.licensed === true && (i.walletHistory.chart?.fromISO ?? "9999") > (i.walletHistory.activityFromISO ?? i.walletHistory.licensedFromISO ?? "0000"));
@@ -231,13 +232,28 @@ function tokenKind(chain: string | null | undefined): string | null {
   return k === "SOL" ? "SPL" : k === "ETH" ? "ERC-20" : null;
 }
 
-/** One token's history facet, in the customer's words — absolute dates only. */
+/**
+ * Why a token's history couldn't be verified, in plain words — from the stored
+ * coverage caveat (the existing ChainCoverage vocabulary), never a code.
+ */
+export function tokenUnverifiedReason(caveats: readonly string[] | undefined): string {
+  const c = caveats ?? [];
+  if (c.includes("PROOF_PREMISES_UNMET")) return "this token’s balance can change without a recorded transfer";
+  if (c.includes("ADDRESS_INDEX_INCOMPLETE")) return "its recorded transfers don’t add up to its current balance";
+  if (c.includes("INVALID_DATA")) return "the network returned data that couldn’t be checked";
+  if (c.includes("PAGE_BUDGET_EXHAUSTED")) return "it has more activity than could be checked so far";
+  return "the network couldn’t provide its full history";
+}
+
+/** One token's history facet, in the customer's words — absolute dates only, never a quantity (PCS-2). */
 export function tokenHistoryText(t: WalletTokens[number]): string {
-  if (t.historyState === "RECONSTRUCTED") return "History verified";
-  const since = fmtDay(t.firstObservedISO);
-  return t.historyState === "UNLICENSED"
-    ? `History couldn’t be verified — current balance only, recorded since ${since}`
-    : `History not reconstructed yet — current balance only, recorded since ${since}`;
+  if (t.historyState === "RECONSTRUCTED") {
+    const from = t.licensedFromISO ? fmtDay(t.licensedFromISO) : null;
+    if (t.coverageKind === "PARTIAL") return from ? `Verified from ${from} — earlier history couldn’t be proven` : "Verified only in part — earlier history couldn’t be proven";
+    return from ? `History verified since ${from}` : "History verified";
+  }
+  if (t.historyState === "UNLICENSED") return `Couldn’t be verified — ${tokenUnverifiedReason(t.caveats)}; current balance only`;
+  return "Not reconstructed yet";
 }
 
 /** Token limitations for the History tab, derived from the facets (never a per-chain constant). */

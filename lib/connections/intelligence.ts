@@ -151,6 +151,10 @@ export interface ConnectionIntelligenceStatus {
       historyState: "RECONSTRUCTED" | "NOT_RECONSTRUCTED" | "UNLICENSED";
       firstObservedISO: string;
       lastObservedISO: string;
+      /** SPL TOKEN HISTORY — licence start, its kind, and stored caveats (the plain-reason input). Dates only. */
+      licensedFromISO?: string | null;
+      coverageKind?: "COMPLETE" | "PARTIAL" | "UNKNOWN" | null;
+      caveats?: string[];
     }>;
     /** The wallet-level answer: native AND every token reconstructed. Never inferred from native alone. */
     walletComplete?: boolean;

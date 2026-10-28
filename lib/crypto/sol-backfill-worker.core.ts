@@ -18,6 +18,7 @@
  */
 
 import { backfillStatus, shouldRunAutomatically, type SolBackfillCheckpoint } from "./sol-history-backfill.core";
+import { parseSplState, splWorkOwed } from "./spl-history.core";
 
 export interface SolBackfillWorkerConfig {
   enabled: boolean;
@@ -68,10 +69,14 @@ export interface BackfillCandidate {
 export function orderCandidates(
   rows: readonly (BackfillCandidate & { checkpoint: SolBackfillCheckpoint | null })[],
   nowMs: number,
+  /** SPL TOKEN HISTORY: also run COMPLETE wallets whose token history is still owed. */
+  tokenHistory: boolean = process.env.SPL_HISTORY_ENABLED === "true",
 ): Array<BackfillCandidate & { checkpoint: SolBackfillCheckpoint | null }> {
   return rows
     .filter((r) => {
       const s = backfillStatus(r.checkpoint).state;
+      if (s === "COMPLETE" && tokenHistory && r.checkpoint
+        && splWorkOwed(parseSplState(r.checkpoint.tokens), r.checkpoint)) return true;
       if (s === "COMPLETE" || s === "RECOVERY_REQUIRED" || s === "UNAVAILABLE") return false;
       return shouldRunAutomatically(r.checkpoint, nowMs).run;
     })

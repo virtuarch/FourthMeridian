@@ -12,6 +12,7 @@ import { IS_TOKEN_INSTRUMENT, WALLET_TOKEN_POSITION_SOURCE, TOKEN_ALIAS_PROVIDER
 import { tokenReadWindow, type TokenObservationRow, type TokenPriceRow } from "./token-valuation.core";
 import { classifyAccounts } from "@/lib/account-classifier";
 import type { ConversionContext } from "@/lib/money/types";
+import { loadInstrumentCoverage, licensedInterval } from "./position-coverage";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -19,7 +20,11 @@ const isoOf = (d: Date) => d.toISOString().slice(0, 10);
 const day = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
 
 export interface TokenDayRows {
-  /** Token observations per account (only token instruments, OBSERVED wallet-token rows). */
+  /**
+   * Token observations per account: OBSERVED wallet-token rows, plus RECONSTRUCTED
+   * (DERIVED) token rows that lie inside their own (account, instrument) licensed
+   * coverage interval — a row is never its own licence. Observed wins on a shared day.
+   */
   observationsByAccount: Map<string, TokenObservationRow[]>;
   /** USD RAW_CLOSE / INTRADAY prices for those instruments. */
   prices: TokenPriceRow[];
@@ -48,9 +53,19 @@ export async function loadTokenDayRows(
     },
     select: { financialAccountId: true, instrumentId: true, date: true, quantity: true },
   });
+  // TOKEN HISTORY (SPL / ERC-20 history PRs) — reconstructed days, licence-clamped.
+  const derived = await client.positionObservation.findMany({
+    where: {
+      financialAccountId: { in: [...accountIds] },
+      origin: PositionOrigin.DERIVED, supersededById: null, deletedAt: null,
+      date: { gte: day(w.observationsFromISO), lte: day(w.toISO) },
+      instrument: IS_TOKEN_INSTRUMENT,
+    },
+    select: { financialAccountId: true, instrumentId: true, date: true, quantity: true },
+  });
   // Identity from the alias — and the alias is what makes a row a TOKEN row: a
   // row whose instrument carries no token alias is never valued as one.
-  const candidateIds = [...new Set(obs.map((o) => o.instrumentId))];
+  const candidateIds = [...new Set([...obs, ...derived].map((o) => o.instrumentId))];
   const aliases = candidateIds.length === 0 ? [] : await client.instrumentAlias.findMany({
     where: { instrumentId: { in: candidateIds }, provider: TOKEN_ALIAS_PROVIDER },
     select: { instrumentId: true, externalId: true, metadata: true },
@@ -60,6 +75,20 @@ export async function loadTokenDayRows(
     if (!parsed) continue;
     const sym = (a.metadata as { symbol?: unknown } | null)?.symbol;
     identity.set(a.instrumentId, { assetKey: a.externalId, contract: parsed.contract, symbol: typeof sym === "string" ? sym : null });
+  }
+  // Only rows of a TOKEN identity, and only inside their own licence.
+  const tokenDerived = derived.filter((d) => identity.has(d.instrumentId));
+  if (tokenDerived.length > 0) {
+    const coverage = await loadInstrumentCoverage(client, [...new Set(tokenDerived.map((d) => d.financialAccountId))]);
+    const observedDay = new Set(obs.map((o) => `${o.financialAccountId}|${o.instrumentId}|${isoOf(o.date)}`));
+    for (const d of tokenDerived) {
+      const cov = coverage.get(d.financialAccountId)?.get(d.instrumentId);
+      const lic = cov ? licensedInterval(cov) : null;
+      const iso = isoOf(d.date);
+      if (!lic || iso < lic.fromISO || iso > lic.toISO) continue;
+      if (observedDay.has(`${d.financialAccountId}|${d.instrumentId}|${iso}`)) continue;
+      obs.push(d);
+    }
   }
   for (const o of obs) {
     if (!identity.has(o.instrumentId)) continue;

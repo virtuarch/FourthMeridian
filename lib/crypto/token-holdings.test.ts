@@ -373,7 +373,7 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   const cov = deriveValuationCoverage([], new Map(), "2026-10-28");
   check("a priced token creates a coverage fact even with no price limits", cov?.tokensTrackedFromISO === "2026-10-28");
   check("chart starting before tracking ⇒ the token line is shown",
-    valuationCoverageNote(cov, "2025-10-28") === "Token holdings are included from Oct 28, 2026, when tracking began; earlier token balances aren’t reconstructed yet.");
+    valuationCoverageNote(cov, "2025-10-28") === "Token holdings are included from Oct 28, 2026; earlier token balances aren’t proven, so they aren’t counted.");
   check("chart starting on/after tracking ⇒ no token line", valuationCoverageNote(cov, "2026-10-28") === null);
   check("no priced token ⇒ no fact, no note", deriveValuationCoverage([], new Map(), null) === null);
 }
@@ -676,7 +676,7 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   const hist = connectionHistory(conn, intel, [{ id: "a", name: "w", type: "crypto", chain: "SOL" } as never]);
   check("History keeps native and token facets SEPARATE", hist.blockchain?.label === "Native SOL" && hist.tokenFacets?.length === 2);
   check("each token facet is honest, absolute-dated copy",
-    hist.tokenFacets?.[0].text === "History not reconstructed yet — current balance only, recorded since Oct 28, 2026", hist.tokenFacets?.[0].text);
+    hist.tokenFacets?.[0].text === "Not reconstructed yet", hist.tokenFacets?.[0].text);
   check("the old hardcoded per-chain token limitation is gone", !/SPL token balances are not reconstructed yet/.test(read("lib", "connections", "connection-detail.core.ts")));
   check("no tokens recorded ⇒ said as such, not 'not reconstructed'", tokenHistoryLabel("SOL", []) === "No SPL token balances recorded");
   check("a network without token capture says so", tokenHistoryLabel("AVAX", undefined) === "Tokens aren’t tracked on this network yet");

@@ -99,6 +99,15 @@ export interface SolBackfillDeps {
    * rate limit and daily cap.
    */
   headOnly?: boolean;
+  /**
+   * SPL TOKEN HISTORY — sees every transaction this run fetches (json encoding
+   * states pre/postTokenBalances too), so token-account discovery reuses the
+   * native fetch instead of repeating it (lib/crypto/spl-history.ts). Never
+   * changes what the native proof reads.
+   */
+  observeTransaction?: (signature: string, tx: unknown) => void;
+  /** Applied to every checkpoint this run commits — folds the observed token accounts in at the same CAS. */
+  annotateCheckpoint?: (cp: SolBackfillCheckpoint) => SolBackfillCheckpoint;
 }
 
 function envNumber(name: string, fallback: number): number {
@@ -206,7 +215,7 @@ async function transaction(call: SolRpcCall, signature: string): Promise<SolTxFo
  * Throttling drops the pool to one for the rest of the run.
  */
 async function fetchPoints(
-  call: SolRpcCall, owner: string, sigs: readonly SigRow[], ctx: { concurrency: number; stop: () => boolean },
+  call: SolRpcCall, owner: string, sigs: readonly SigRow[], ctx: { concurrency: number; stop: () => boolean; observe?: (signature: string, tx: unknown) => void },
 ): Promise<{ points: Array<SolTxPoint | null>; error: SolTransportError | SolProofDataError | null; stoppedForBudget: boolean }> {
   const out: Array<SolTxPoint | null> = [];
   let pool = Math.max(1, ctx.concurrency);
@@ -221,6 +230,7 @@ async function fetchPoints(
         if (e instanceof SolTransportError && e.code === "PROVIDER_THROTTLED" && pool > 1) { pool = 1; break; }
         return { points: out, error: e instanceof SolTransportError ? e : new SolTransportError("PROVIDER_ERROR", String(e)), stoppedForBudget: false };
       }
+      if (ctx.observe) ctx.observe(batch[j].signature, s.value);
       try { out.push(pointFromTransaction(s.value, batch[j].signature, owner)); }
       catch (e) { return { points: out, error: e as SolProofDataError, stoppedForBudget: false }; }
     }
@@ -319,7 +329,8 @@ export async function runSolHistoryBackfill(
     const day = todayISO();
     const delta = sent() - recordedThrough;
     recordedThrough = sent();
-    return { ...c, usage: { dayISO: day, requests: usageOn(c, day) + delta } };
+    const stamped = { ...c, usage: { dayISO: day, requests: usageOn(c, day) + delta } };
+    return deps.annotateCheckpoint ? deps.annotateCheckpoint(stamped) : stamped;
   };
   /** The run's budget: wall clock, and (worker) a request allowance. */
   const overBudget = (deadline: number) => now() >= deadline
@@ -453,7 +464,7 @@ export async function runSolHistoryBackfill(
       }
       // Slots at or below the top's are already proven whole.
       const oldestFirst = listed ? newer.reverse().filter((r) => r.slot > top0.slot) : [];
-      const fetched = await fetchPoints(call, owner, oldestFirst, { concurrency, stop: () => overBudget(headDeadline) });
+      const fetched = await fetchPoints(call, owner, oldestFirst, { concurrency, stop: () => overBudget(headDeadline), observe: deps.observeTransaction });
       const headDeferred = new Set<number>();
       if (fetched.points.length < oldestFirst.length) headDeferred.add(oldestFirst[fetched.points.length].slot);
       const points = orderSameSlot(withoutSlots(fetched.points, oldestFirst, headDeferred).filter((p): p is SolTxPoint => p !== null), top0.postLamports, "forward");
@@ -520,7 +531,7 @@ export async function runSolHistoryBackfill(
       const fullPage = listedPage.length === SIGNATURE_PAGE_SIZE;
       // Slots at or above the bottom's are already proven whole.
       const page = working.bottom ? listedPage.filter((r) => r.slot < working.bottom!.slot) : listedPage;
-      const fetched = await fetchPoints(call, owner, page, { concurrency, stop: () => overBudget(deadlineMs) });
+      const fetched = await fetchPoints(call, owner, page, { concurrency, stop: () => overBudget(deadlineMs), observe: deps.observeTransaction });
       outcome.signaturesProcessed += fetched.points.length;
       // Defer a slot that may continue on the next page, and one cut short by
       // the budget or a failure — unless that would defer the whole page.

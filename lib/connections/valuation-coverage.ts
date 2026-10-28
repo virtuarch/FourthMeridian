@@ -11,7 +11,7 @@ import 'server-only';
 import type { PrismaClient } from '@prisma/client';
 import { grantsBalanceDisclosure } from '@/lib/account-privacy';
 import { deriveValuationCoverage, type ValuationCoverage } from './valuation-coverage.core';
-import { IS_TOKEN_INSTRUMENT, WALLET_TOKEN_POSITION_SOURCE } from '@/lib/crypto/token-asset';
+import { IS_TOKEN_INSTRUMENT, NOT_TOKEN_INSTRUMENT, WALLET_TOKEN_POSITION_SOURCE } from '@/lib/crypto/token-asset';
 
 type Client = Pick<PrismaClient, 'spaceAccountLink' | 'positionCoverage' | 'priceObservation' | 'positionObservation'>;
 
@@ -26,7 +26,8 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
   if (!accountIds.length) return null;
 
   const coverage = await client.positionCoverage.findMany({
-    where: { financialAccountId: { in: accountIds }, kind: { in: ['COMPLETE', 'PARTIAL'] }, coveredFromDate: { not: null } },
+    // NATIVE licences only — a token's licence is not a ticker-named limit (tokens: below).
+    where: { financialAccountId: { in: accountIds }, kind: { in: ['COMPLETE', 'PARTIAL'] }, coveredFromDate: { not: null }, instrument: NOT_TOKEN_INSTRUMENT },
     select: { instrumentId: true, coveredFromDate: true, instrument: { select: { tickerSymbol: true } } },
   });
   const tokensTrackedFromISO = await pricedTokensTrackedFrom(client, accountIds);
@@ -61,5 +62,13 @@ async function pricedTokensTrackedFrom(client: Client, accountIds: string[]): Pr
   const priced = new Set((await client.priceObservation.groupBy({
     by: ['instrumentId'], where: { instrumentId: { in: firsts.map((f) => f.instrumentId) } }, _min: { date: true },
   })).map((p) => p.instrumentId));
-  return firsts.filter((f) => priced.has(f.instrumentId)).map((f) => day(f._min.date)).filter((d): d is string => d !== null).sort()[0] ?? null;
+  // SPL TOKEN HISTORY — a token whose history is LICENSED is included from its
+  // licensed start, not from when capture began (the reconstructed days count).
+  const licensed = new Map((await client.positionCoverage.findMany({
+    where: { financialAccountId: { in: accountIds }, instrumentId: { in: firsts.map((f) => f.instrumentId) }, kind: { in: ['COMPLETE', 'PARTIAL'] }, coveredFromDate: { not: null } },
+    select: { instrumentId: true, coveredFromDate: true },
+  })).map((c) => [c.instrumentId, day(c.coveredFromDate)]));
+  return firsts.filter((f) => priced.has(f.instrumentId))
+    .map((f) => { const obs = day(f._min.date); const lic = licensed.get(f.instrumentId) ?? null; return lic && obs && lic < obs ? lic : obs; })
+    .filter((d): d is string => d !== null).sort()[0] ?? null;
 }

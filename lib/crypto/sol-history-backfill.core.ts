@@ -140,6 +140,12 @@ export interface SolBackfillCheckpoint {
    * (another unpriced holding in the Space) never loops.
    */
   valuationCheckedFloorISO?: string | null;
+  /**
+   * SPL TOKEN HISTORY's own state (lib/crypto/spl-history.core.ts
+   * `parseSplState`), carried in this checkpoint so it moves by the same CAS.
+   * Opaque here: native SOL never reads it, and its completeness never depends on it.
+   */
+  tokens?: unknown;
   failures: number;
   lastFailure: { code: SolBackfillFailureCode; atISO: string; detail?: string } | null;
   signaturesProcessed: number;
