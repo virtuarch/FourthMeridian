@@ -43,6 +43,14 @@ export const FAILED_RETRY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** The acquisition's default chunk; halved after a step that proved nothing (a dense chunk), never below the minimum. */
 export const DEFAULT_ETH_CHUNK_BLOCKS = 50_000;
 export const MIN_ETH_CHUNK_BLOCKS = 1_000;
+/**
+ * A wallet whose proof keeps failing to reconcile is not retried forever: each
+ * reconciliation failure restarts the generation AND pauses it for a day
+ * (FAILED); after this many it needs an operator (RECOVERY_REQUIRED) — so a
+ * history that cannot close costs at most this many full proofs, never one a
+ * day against the shared Alchemy cap.
+ */
+export const MAX_RECONCILE_FAILURES = 3;
 
 export type EthBackfillFailureCode =
   /** Provider error, throttle that outlasted backoff, or no provider configured. Progress kept. */
@@ -52,7 +60,26 @@ export type EthBackfillFailureCode =
   /** Movements did not sum to the anchor, or a segment disagreed with the stored anchor. The generation restarts. */
   | "LEDGER_DOES_NOT_RECONCILE"
   /** No OBSERVED position to anchor the replay against yet. Progress kept. */
-  | "NO_OBSERVED_ANCHOR";
+  | "NO_OBSERVED_ANCHOR"
+  /**
+   * The address already held ETH at the provable floor (Byzantium). The full
+   * rebuild reconciles against a zero opening balance, so it cannot close —
+   * refused honestly (RECOVERY_REQUIRED), never written.
+   */
+  | "BALANCE_BEFORE_PROVABLE_FLOOR";
+
+/**
+ * The gap from the anchor to a newer finalized head, proven right-to-left like
+ * the backward proof and resumable the same way (its own boundary and chunk).
+ */
+export interface EthForwardSegment {
+  headBlock: number;
+  headBalanceWei: string | null;
+  headToISO: string | null;
+  provenFromBlock: number | null;
+  movements: StoredEthMovement[];
+  chunkBlocks: number;
+}
 
 /** A ChainMovement with its wei as a decimal string (JSON has no bigint). */
 export interface StoredEthMovement {
@@ -95,6 +122,12 @@ export interface EthBackfillCheckpoint {
   /** Licensed interval written by the completing step. */
   licensedFromISO: string | null;
   licensedToISO: string | null;
+  /** The gap from the anchor to a newer head, while it is being proven. */
+  forward?: EthForwardSegment | null;
+  /** Reconciliation failures across generations (never reset by mere progress). */
+  reconcileFailures?: number;
+  /** Set when automatic runs must stop (an operator decides). */
+  recovery?: { code: EthBackfillFailureCode; atISO: string } | null;
 }
 
 export function queuedCheckpoint(accountId: string, reason: string, nowISO: string): EthBackfillCheckpoint {
@@ -110,7 +143,7 @@ export function queuedCheckpoint(accountId: string, reason: string, nowISO: stri
 /** The same generation, with its proof progress discarded (a restart after a reconciliation failure). */
 export function restartGeneration(cp: EthBackfillCheckpoint): EthBackfillCheckpoint {
   return { ...cp, anchorBlock: null, anchorBalanceWei: null, provenFromBlock: null, provenFromISO: null, anchorToISO: null,
-    reachedFloor: false, movements: [], chunkBlocks: DEFAULT_ETH_CHUNK_BLOCKS };
+    reachedFloor: false, movements: [], chunkBlocks: DEFAULT_ETH_CHUNK_BLOCKS, forward: null };
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -135,6 +168,12 @@ function parseAny(raw: string | null | undefined): EthBackfillCheckpoint | null 
   if (!nullableInt(v.anchorBlock) || !nullableInt(v.provenFromBlock) || !Number.isSafeInteger(v.chunkBlocks)) return null;
   if (v.anchorBalanceWei !== null && !(typeof v.anchorBalanceWei === "string" && /^\d+$/.test(v.anchorBalanceWei))) return null;
   if (!Array.isArray(v.movements) || !v.movements.every(movementOk)) return null;
+  if (v.forward !== undefined && v.forward !== null) {
+    const f = v.forward;
+    if (!isObj(f) || !Number.isSafeInteger(f.headBlock) || !nullableInt(f.provenFromBlock) || !Number.isSafeInteger(f.chunkBlocks)
+      || !Array.isArray(f.movements) || !f.movements.every(movementOk)
+      || !(f.headBalanceWei === null || (typeof f.headBalanceWei === "string" && /^\d+$/.test(f.headBalanceWei)))) return null;
+  }
   return v as unknown as EthBackfillCheckpoint;
 }
 
@@ -173,7 +212,7 @@ export function mergeMovements(a: readonly StoredEthMovement[], b: readonly Stor
 
 // ── Customer / operator state — the SOL/BTC vocabulary ───────────────────────
 
-export type EthBackfillState = "QUEUED" | "IMPORTING" | "COMPLETE" | "FAILED";
+export type EthBackfillState = "QUEUED" | "IMPORTING" | "COMPLETE" | "FAILED" | "RECOVERY_REQUIRED";
 
 export interface EthBackfillStatus {
   state: EthBackfillState;
@@ -198,6 +237,7 @@ export function backfillStatus(cp: EthBackfillCheckpoint): EthBackfillStatus {
     movementsFound: cp.movementsFound ?? cp.movements.length, headVerified: cp.completedAtISO !== null,
   };
   if (cp.completedAtISO) return { ...base, state: "COMPLETE", partial: false, retryable: true };
+  if (cp.recovery) return { ...base, state: "RECOVERY_REQUIRED", partial: false, retryable: false };
   if (cp.failures >= MAX_CONSECUTIVE_FAILURES) return { ...base, state: "FAILED", partial: false, retryable: true };
   if (cp.provenFromBlock === null) return { ...base, state: "QUEUED", partial: false, retryable: true };
   return { ...base, state: "IMPORTING", partial: false, retryable: true };
@@ -205,7 +245,7 @@ export function backfillStatus(cp: EthBackfillCheckpoint): EthBackfillStatus {
 
 /** Should an automatic run do work now? FAILED waits out its daily pause. */
 export function shouldRunAutomatically(cp: EthBackfillCheckpoint, nowMs: number): boolean {
-  if (cp.completedAtISO) return false;
+  if (cp.completedAtISO || cp.recovery) return false;
   if (cp.failures >= MAX_CONSECUTIVE_FAILURES && cp.lastFailure) {
     return nowMs - Date.parse(cp.lastFailure.atISO) >= FAILED_RETRY_INTERVAL_MS;
   }
@@ -276,12 +316,19 @@ export function ethWorkerConfig(env: Record<string, string | undefined> = proces
 
 /** JSON-RPC calls one probe costs (balance, nonce, code). */
 export const CALLS_PER_PROBE = 3;
-/** Calls reserved beyond the probes: head, two coverage headers, and evidence for a few change blocks. */
+/**
+ * Evidence calls (block header + receipts: 2 per CHANGED block) are not probes.
+ * A changed block is found only by bisection, which costs at least two probes
+ * per change even in the densest window, so ≤ 1 evidence call per probe —
+ * budgeted as such (conservative), so the cap holds whatever the density.
+ */
+export const EVIDENCE_CALLS_PER_PROBE = 1;
+/** Calls reserved beyond that: heads and the coverage headers of up to two segments. */
 export const STEP_CALL_RESERVE = 16;
 
 /** The probe budget a step may spend under the remaining shared Alchemy allowance (0 ⇒ do not start). */
 export function probeBudgetFor(allowanceCalls: number, configured: number): number {
-  const n = Math.floor((allowanceCalls - STEP_CALL_RESERVE) / CALLS_PER_PROBE);
+  const n = Math.floor((allowanceCalls - STEP_CALL_RESERVE) / (CALLS_PER_PROBE + EVIDENCE_CALLS_PER_PROBE));
   return Math.max(0, Math.min(configured, n));
 }
 

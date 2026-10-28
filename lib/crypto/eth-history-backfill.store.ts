@@ -44,18 +44,45 @@ export async function ethHistoryPending(client: PrismaClient, accountId: string)
   return cp && !cp.completedAtISO ? backfillStatus(cp).state : null;
 }
 
+/**
+ * An INLINE full rebuild succeeded (the worker is off, or was turned off with
+ * a rebuild still queued): the worker's checkpoint no longer describes the
+ * wallet. Mark it COMPLETE with the licence the rebuild wrote, so no surface
+ * reports "importing" for a finished history and a re-enabled worker does
+ * not redo it. Only a non-complete ETH checkpoint of this account is touched.
+ */
+export async function settleEthHistoryCheckpoint(client: PrismaClient, accountId: string, result: EthHistoryResult, now: Date = new Date()): Promise<boolean> {
+  const link = await historyLink(client, accountId);
+  if (!link) return false;
+  const raw = await readHistoryCheckpoint(client, link.connectionId);
+  const cp = parseCheckpoint(raw, accountId);
+  if (!cp || cp.completedAtISO) return false;
+  const cov = result.coverage?.kind === "COMPLETE" ? result.coverage : null;
+  const nowISO = now.toISOString();
+  return casHistoryCheckpoint(client, link.connectionId, raw, serializeCheckpoint({
+    ...cp, movements: [], forward: null, movementsFound: result.reconciliation?.movementCount ?? cp.movements.length,
+    completedAtISO: nowISO, lastProgressAtISO: nowISO, licensedFromISO: cov?.fromISO ?? null, licensedToISO: cov?.toISO ?? null,
+    failures: 0, lastFailure: null, recovery: null,
+  }));
+}
+
 export interface EthSyncImpl {
   reconstruct: typeof reconstructEthHistory;
   pending: typeof ethHistoryPending;
   enqueue: typeof enqueueEthHistoryBackfill;
+  settle: typeof settleEthHistoryCheckpoint;
 }
-const PRODUCTION_IMPL: EthSyncImpl = { reconstruct: reconstructEthHistory, pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill };
+const PRODUCTION_IMPL: EthSyncImpl = {
+  reconstruct: reconstructEthHistory, pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, settle: settleEthHistoryCheckpoint,
+};
 
 /**
  * What `refreshWalletHistory` calls for ETH.
  *
  * `deferFull` false (the worker does not carry Ethereum): EXACTLY the call
  * made before — the incremental path, falling back to the inline FULL rebuild.
+ * Only after a SUCCESSFUL inline FULL rebuild is a leftover worker checkpoint
+ * settled (settleEthHistoryCheckpoint); every other outcome touches nothing.
  *
  * `deferFull` true: a rebuild already owed to the worker is not attempted here
  * (it would only fall back again); otherwise the incremental path runs, and a
@@ -67,7 +94,14 @@ export async function reconstructEthHistoryForSync(
   impl: EthSyncImpl = PRODUCTION_IMPL,
 ): Promise<EthHistoryResult> {
   const { accountId, windowFromISO, windowToISO, deps } = args;
-  if (!args.deferFull) return impl.reconstruct({ accountId, windowFromISO, windowToISO, deps });
+  if (!args.deferFull) {
+    const r = await impl.reconstruct({ accountId, windowFromISO, windowToISO, deps });
+    if (r.ok && r.mode === "FULL") {
+      try { await impl.settle(args.client, accountId, r); }
+      catch (e) { console.warn(`[eth-history] could not settle the worker checkpoint for ${accountId} (non-fatal):`, e instanceof Error ? e.message : String(e)); }
+    }
+    return r;
+  }
 
   let pending: EthBackfillState | null = null;
   try { pending = await impl.pending(args.client, accountId); }

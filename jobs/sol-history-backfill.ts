@@ -555,7 +555,9 @@ async function runEthPass(
     try {
       let fromISO = w.checkpoint?.snapshotPendingFromISO ?? null;
       if (kind === "BACKFILL") {
-        const o = await eth.reconstruct({ accountId: w.accountId, todayISO: ctx.day, deps: { probeBudget, now: deps.now, eth: { meter } } });
+        const o = await eth.reconstruct({ accountId: w.accountId, todayISO: ctx.day, deps: { probeBudget, now: deps.now, eth: { meter },
+          // No new segment once the pass's remaining time (less the regeneration reserve) is spent.
+          deadlineMs: deps.now() + Math.max(1_000, left - REGEN_RESERVE_MS / 2) } });
         summary.walletsRun++;
         await flushUsage();
         summary.rowsWritten += o.rowsWritten;

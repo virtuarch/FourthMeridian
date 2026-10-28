@@ -503,7 +503,11 @@ async function loadConnectionIntelligence(
     if (walletHistory && c.provider === "WALLET") {
       // SOL's checkpoint on `cursor`, BTC's / ETH's on `historyCheckpoint` — each
       // in its own words (history-checkpoint-status.ts); none ⇒ null (no claim).
-      const st = walletHistoryCheckpointStatus(facets?.historyCursor ?? null, facets?.historyCheckpoint ?? null, now.toISOString().slice(0, 10));
+      // An ETH checkpoint is the WORKER's alone (SOL and BTC checkpoints are
+      // also advanced by syncs): with the ETH worker off it describes nothing
+      // that is running, so it is not shown.
+      const found = walletHistoryCheckpointStatus(facets?.historyCursor ?? null, facets?.historyCheckpoint ?? null, now.toISOString().slice(0, 10));
+      const st = found && (found.chain !== "ETH" || historyWorkerEnabledFor("ETH")) ? found : null;
       walletHistory.historyImport = st ? { state: st.state, provenFromISO: st.historyFromISO, lastProgressAtISO: st.lastProgressAtISO,
         signaturesProcessed: st.signaturesProcessed, lastFailureCode: st.lastFailureCode } : null;
     }

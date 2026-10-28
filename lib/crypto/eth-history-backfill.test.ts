@@ -30,7 +30,9 @@ import {
   type EthBackfillCheckpoint,
 } from "./eth-history-backfill.core";
 import { runEthHistoryBackfill, EthCheckpointConflictError, type EthBackfillStore } from "./eth-history-backfill";
-import { reconstructEthHistoryForSync, enqueueEthHistoryBackfill, type EthSyncImpl } from "./eth-history-backfill.store";
+import {
+  reconstructEthHistoryForSync, enqueueEthHistoryBackfill, settleEthHistoryCheckpoint, prismaEthBackfillStore, type EthSyncImpl,
+} from "./eth-history-backfill.store";
 import type { EthHistoryResult } from "./eth-history-sync";
 import { walletHistoryCheckpointStatus, historyWorkerEnabledFor } from "./history-checkpoint-status";
 import { emptyCheckpoint as emptyBtcCheckpoint, serializeCheckpoint as serializeBtcCheckpoint } from "./btc-history-backfill.core";
@@ -134,16 +136,26 @@ async function main() {
     const untouchable = new Proxy({}, { get(_t, k) { throw new Error(`client touched: ${String(k)}`); } }) as never;
     const meter = { x: 1 };
     const impl: EthSyncImpl = {
-      reconstruct: async (a) => { calls.push(a); return { accountId: a.accountId, ok: true, mode: "FULL" }; },
+      reconstruct: async (a) => { calls.push(a); return { accountId: a.accountId, ok: true, mode: "INCREMENTAL" }; },
       pending: async () => { throw new Error("pending read with the flag off"); },
       enqueue: async () => { throw new Error("enqueue with the flag off"); },
+      settle: async () => { throw new Error("settle after a non-FULL outcome"); },
     };
     const r = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: "2026-01-01", windowToISO: TODAY, client: untouchable, deferFull: false, deps: { meter } }, impl);
     const arg = calls[0] as Record<string, unknown>;
     check("flag off: ONE reconstructEthHistory call, with exactly the arguments of before (no deferFull)",
       calls.length === 1 && JSON.stringify(Object.keys(arg).sort()) === JSON.stringify(["accountId", "deps", "windowFromISO", "windowToISO"])
         && arg.accountId === "a1" && (arg.deps as { meter: unknown }).meter === meter && r.ok, JSON.stringify(arg));
-    check("…and no checkpoint is read or written (the client is never touched)", true);
+    // The client is a Proxy that throws on ANY access, and pending/enqueue/settle throw: reaching here proves none ran.
+    let touched = false;
+    try { await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: "2026-01-01", windowToISO: TODAY, client: untouchable, deferFull: false }, {
+      ...impl, reconstruct: async (a) => ({ accountId: a.accountId, ok: false, refusal: "COVERAGE_UNLICENSED", mode: "INCREMENTAL" }) }); }
+    catch { touched = true; }
+    check("…and after an incremental result or a refusal, no checkpoint is read or written (the client is never touched)", !touched && calls.length === 1);
+    const settled: string[] = [];
+    await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: "2026-01-01", windowToISO: TODAY, client: untouchable, deferFull: false }, {
+      ...impl, reconstruct: async (a) => ({ accountId: a.accountId, ok: true, mode: "FULL" }), settle: async (_c, id) => { settled.push(id); return true; } });
+    check("…only a SUCCESSFUL inline FULL rebuild settles a leftover worker checkpoint", settled.join() === "a1");
     const refresh = code(read("lib", "crypto", "wallet-history-refresh.ts"));
     check("the production ETH arm passes the gate, and only the gate",
       /key === ETH_NATIVE\.chain \? [^\n]*reconstructEthHistoryForSync\(\{ \.\.\.a, client: db, deferFull: ethWorkerEnabled\(\), deps: \{ meter \} \}\)/.test(refresh));
@@ -162,6 +174,7 @@ async function main() {
       reconstruct: async (a) => { seen.push(a as never); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason: "NO_COVERAGE" }; },
       pending: async () => null,
       enqueue: async (_c, id, reason) => { queued.push(`${id}:${reason}`); return true; },
+      settle: async () => false,
     };
     const r = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: {} as never, deferFull: true }, impl);
     check("flag on: the incremental path runs with deferFull", seen.length === 1 && seen[0].deferFull === true);
@@ -231,8 +244,11 @@ async function main() {
     const meter: Record<string, number> = {};
     const outcomes: string[] = [];
     const bounds: number[] = [];
+    let maxStepProbes = 0;
     for (let i = 0; i < 20; i++) {
+      const p0 = sim.chain.probes;
       const o = await runEthHistoryBackfill({ accountId: "a1", store, todayISO: TODAY }, { probeBudget: 150, now: () => Date.parse(NOW_ISO), eth: { transport: sim.transport, meter } });
+      maxStepProbes = Math.max(maxStepProbes, sim.chain.probes - p0);
       outcomes.push(o.stoppedBecause);
       if (store.cp()?.provenFromBlock) bounds.push(store.cp()!.provenFromBlock!);
       if (i === 0) {
@@ -248,6 +264,7 @@ async function main() {
     check("the proven boundary only ever moves DOWN — a PROBE_BUDGET stop resumes, never restarts",
       bounds.every((b, i) => i === 0 || b <= bounds[i - 1]), bounds.join(","));
     check("rows are written exactly ONCE, at completion", store.writes.length === 1);
+    check("EVERY step — including the completing one — stays within ONE probe budget", maxStepProbes <= 150, `max ${maxStepProbes}`);
     const w = store.writes[0];
     const expectedFinal = sim.stateAt(HEAD + 2_000).balance;
     check("…anchored at the CURRENT head: the movement after the original anchor is included",
@@ -356,7 +373,7 @@ async function main() {
     check("the SHARED Alchemy cap (Solana + Ethereum calls today) defers the pass: DAILY_CAP, nothing runs",
       capped.eth?.stoppedBecause === "DAILY_CAP" && capped.eth.walletsRun === 0 && log.length === 0 && capped.eth.dailyRequestsUsedBefore === 9_990, JSON.stringify(capped.eth));
     check("…and the step's probe budget never exceeds what the allowance pays for",
-      capped.eth?.eligible === 1 && probeBudgetFor(10_000 - 9_990, 1_500) === 0 && probeBudgetFor(616, 1_500) === 200 && probeBudgetFor(1e9, 1_500) === 1_500);
+      capped.eth?.eligible === 1 && probeBudgetFor(10_000 - 9_990, 1_500) === 0 && probeBudgetFor(616, 1_500) === 150 && probeBudgetFor(1e9, 1_500) === 1_500);
 
     // Run to completion: the rows trigger a regeneration over what changed.
     for (let i = 0; i < 40 && !store.cp()!.completedAtISO; i++) await solHistoryBackfill({ config: solCfg, btcConfig: btcCfg, ethConfig: ethCfg, deps: base });
@@ -391,6 +408,146 @@ async function main() {
     check("Connections reads every chain's checkpoint and gates per chain",
       /walletHistoryCheckpointStatus\(/.test(sd) && /historyWorkerEnabledFor\(chain\)/.test(sd) && !/SOL_BACKFILL_ENABLED/.test(sd));
     check("Platform Ops reads the same", /walletHistoryCheckpointStatus\(/.test(code(read("lib", "platform", "connection-diagnostics.ts"))));
+  }
+
+  // ══ 10. A HISTORY THAT CANNOT RECONCILE IS BOUNDED ═════════════════════════
+  {
+    const sim = simulate({ events: EVENTS, head: HEAD, headTimeSec: T_HEAD });
+    const store = new MemoryStore(serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO)));
+    let attempts = 0;
+    store.complete = async () => { attempts++; return { accountId: "a1", ok: false, refusal: "LEDGER_DOES_NOT_RECONCILE", reason: "residual 1 wei" }; };
+    let t = Date.parse(NOW_ISO);
+    const states: string[] = [];
+    let pausedOk = true;
+    for (let i = 0; i < 200; i++) {
+      const o = await runEthHistoryBackfill({ accountId: "a1", store, todayISO: TODAY }, { probeBudget: 400, now: () => t, eth: { transport: sim.transport } });
+      if (o.stoppedBecause === "FAILED") {
+        states.push(ethStatusFromCursor(store.cursor, TODAY)!.state);
+        const soon = await runEthHistoryBackfill({ accountId: "a1", store, todayISO: TODAY }, { probeBudget: 400, now: () => t + 3600_000, eth: { transport: sim.transport } });
+        pausedOk = pausedOk && soon.stoppedBecause === "SKIPPED";
+        t += 25 * 3600_000; // the daily pause elapses
+      }
+      if (ethStatusFromCursor(store.cursor, TODAY)!.state === "RECOVERY_REQUIRED") break;
+    }
+    check("a reconciliation failure restarts AND pauses for a day (FAILED), never resets to a daily re-proof",
+      states[0] === "FAILED" && pausedOk, states.join(","));
+    check("…and after MAX_RECONCILE_FAILURES full proofs it stops for an operator (RECOVERY_REQUIRED)",
+      attempts === 3 && states.at(-1) === "RECOVERY_REQUIRED" && store.cp()!.reconcileFailures === 3, `${attempts} ${states.join(",")}`);
+    const callsBefore = sim.chain.calls;
+    const after = await runEthHistoryBackfill({ accountId: "a1", store, todayISO: TODAY }, { probeBudget: 400, now: () => t + 30 * 86_400_000, eth: { transport: sim.transport } });
+    check("…after which no automatic run sends a request", after.stoppedBecause === "SKIPPED" && sim.chain.calls === callsBefore
+      && orderEthCandidates([{ accountId: "a1", connectionId: "c1", cursor: store.cursor, checkpoint: store.cp() }], t).length === 0);
+
+    // A wallet that held ETH at the provable floor: refused honestly, before any write.
+    const pre = simulate({ events: [{ block: 4_000_000, delta: ETH(1) }, ...EVENTS], head: HEAD, headTimeSec: T_HEAD });
+    const s2 = new MemoryStore(serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO)));
+    let last = "";
+    for (let i = 0; i < 20 && last !== "FAILED"; i++) {
+      last = (await runEthHistoryBackfill({ accountId: "a1", store: s2, todayISO: TODAY }, { probeBudget: 400, eth: { transport: pre.transport } })).stoppedBecause;
+    }
+    const st = ethStatusFromCursor(s2.cursor, TODAY)!;
+    check("a balance already held at the provable floor ⇒ BALANCE_BEFORE_PROVABLE_FLOOR, RECOVERY_REQUIRED, nothing written",
+      st.state === "RECOVERY_REQUIRED" && st.lastFailureCode === "BALANCE_BEFORE_PROVABLE_FLOOR" && s2.writes.length === 0, JSON.stringify(st));
+  }
+
+  // ══ 11. A FORWARD GAP LARGER THAN ONE BUDGET COMPLETES OVER SEVERAL RUNS ═══
+  {
+    const sim = simulate({ events: EVENTS, head: HEAD, headTimeSec: T_HEAD });
+    const store = new MemoryStore(serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO)));
+    for (let i = 0; i < 20 && !store.cp()!.reachedFloor; i++) {
+      await runEthHistoryBackfill({ accountId: "a1", store, todayISO: TODAY }, { probeBudget: 400, eth: { transport: sim.transport } });
+    }
+    check("(setup) the backward proof reached the floor without writing", store.cp()!.reachedFloor && store.writes.length === 0);
+    // The head moves far on, through a busy stretch: many more changes than one budget proves.
+    const busy = Array.from({ length: 60 }, (_, k) => ({ block: HEAD + 1_000 + k * 4_999, delta: ETH(0.001 * (k + 1)) }));
+    sim.chain.events.push(...busy);
+    sim.chain.events.sort((a, b) => a.block - b.block);
+    sim.chain.head = HEAD + 320_000;
+    const outcomes: string[] = [];
+    let sawForwardProgress = false;
+    let maxStepProbes = 0;
+    for (let i = 0; i < 60; i++) {
+      const p0 = sim.chain.probes;
+      const o = await runEthHistoryBackfill({ accountId: "a1", store, todayISO: TODAY }, { probeBudget: 120, eth: { transport: sim.transport } });
+      maxStepProbes = Math.max(maxStepProbes, sim.chain.probes - p0);
+      outcomes.push(o.stoppedBecause);
+      if (store.cp()!.forward?.provenFromBlock) sawForwardProgress = true;
+      if (o.stoppedBecause === "COMPLETE" || o.stoppedBecause === "FAILED") break;
+    }
+    const w = store.writes[0];
+    check("the gap is proven over several runs, its progress persisted (never retried from scratch)",
+      outcomes.at(-1) === "COMPLETE" && outcomes.length > 2 && sawForwardProgress, outcomes.join(","));
+    check("…each run within one budget", maxStepProbes <= 120, `max ${maxStepProbes}`);
+    check("…and the single write holds every movement, reconciling to the new head exactly",
+      store.writes.length === 1 && w.anchorBalanceWei === sim.stateAt(HEAD + 320_000).balance
+        && reconcileMovementsAgainstBalance(w.movements, w.anchorBalanceWei).reconciles // (an outbound transfer is two movements — value and fee — so ≥ one per event, each exactly once)
+        && w.movements.length >= EVENTS.length + busy.length && new Set(w.movements.map((m) => `${m.eventId}#${m.movementKey}`)).size === w.movements.length
+        && busy.every((b) => w.movements.some((m) => m.baseUnitsDelta === b.delta)),
+      `${w?.movements.length} movements`);
+  }
+
+  // ══ 12. INLINE SUCCESS SETTLES A LEFTOVER CHECKPOINT; FLAG OFF HIDES ETH STATE
+  {
+    let stored: string | null = serializeCheckpoint({ ...queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO), provenFromBlock: 20_000_000, anchorBlock: HEAD });
+    const fake = {
+      accountConnection: { findFirst: async () => ({ connectionId: "c1", connection: { credential: null, cursor: null } }) },
+      $queryRaw: async () => [{ historyCheckpoint: stored }],
+      $executeRaw: async (_s: TemplateStringsArray, next: string, _id: string, expected: string | null) => { if (stored !== expected) return 0; stored = next; return 1; },
+    } as never;
+    const ok = await settleEthHistoryCheckpoint(fake, "a1", { accountId: "a1", ok: true, mode: "FULL",
+      coverage: { kind: "COMPLETE", fromISO: "2017-10-16", toISO: "2026-10-27", source: "ethereum-rpc" }, reconciliation: { reconciles: true, residualWei: "0", movementCount: 9 } });
+    const st = ethStatusFromCursor(stored, TODAY)!;
+    check("an inline FULL success marks a leftover IMPORTING checkpoint COMPLETE, with the licence it wrote",
+      ok && st.state === "COMPLETE" && st.historyFromISO === "2017-10-16" && st.historyToISO === "2026-10-27" && st.movementsFound === 9);
+    const again = stored;
+    check("…idempotent: a COMPLETE checkpoint is left alone", !(await settleEthHistoryCheckpoint(fake, "a1", { accountId: "a1", ok: true, mode: "FULL" })) && stored === again);
+    const sd = code(read("lib", "connections", "space-data.ts"));
+    check("Connections hides an ETH checkpoint's state while the ETH worker is off (SOL/BTC states are sync-advanced and kept)",
+      /found\.chain !== "ETH" \|\| historyWorkerEnabledFor\("ETH"\)/.test(sd));
+  }
+
+  // ══ 13. THE PRODUCTION STORE: CAS IN THE WRITE TRANSACTION ════════════════
+  {
+    const sim = simulate({ events: EVENTS, head: HEAD, headTimeSec: T_HEAD });
+    const acq = await acquireEthHistory({ ownerAddress: OWNER, fromBlock: EARLIEST_PROVABLE_BLOCK, toBlock: HEAD }, { transport: sim.transport });
+    const world = { cursor: serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO)) as string | null, rows: [] as unknown[], coverage: null as unknown };
+    const cas = (box: { cursor: string | null }) => async (_s: TemplateStringsArray, next: string, _id: string, expected: string | null) => {
+      if (box.cursor !== expected) return 0; box.cursor = next; return 1; };
+    const fakeDb = {
+      financialAccount: { findUnique: async () => ({ walletChain: "ETH", walletAddress: OWNER, deletedAt: null }) },
+      accountConnection: { findFirst: async () => ({ connectionId: "c1", connection: { credential: null, cursor: null } }) },
+      instrumentAlias: { findUnique: async () => ({ instrumentId: "inst-eth" }) },
+      positionObservation: {
+        findFirst: async () => ({ id: "obs-1", date: new Date("2026-10-27T12:00:00Z"), origin: "OBSERVED", completeness: null }),
+        findMany: async () => [],
+      },
+      $queryRaw: async () => [{ historyCheckpoint: world.cursor }],
+      $executeRaw: cas(world),
+      async $transaction(fn: (tx: unknown) => Promise<void>) {
+        // Staged, applied only if the callback resolves — a throw is a rollback.
+        const staged = { cursor: world.cursor, rows: [] as unknown[], coverage: null as unknown };
+        const tx = {
+          positionObservation: { deleteMany: async () => ({ count: 0 }), createMany: async (a: { data: unknown[] }) => { staged.rows.push(...a.data); return { count: a.data.length }; } },
+          positionCoverage: { upsert: async (a: unknown) => { staged.coverage = a; return a; } },
+          $executeRaw: cas(staged),
+        };
+        await fn(tx);
+        world.cursor = staged.cursor; world.rows = staged.rows; world.coverage = staged.coverage;
+      },
+    } as never;
+    const bound = await prismaEthBackfillStore("a1", fakeDb);
+    const coverage = acq.coverage as ChainCoverage & { kind: "COMPLETE" };
+    const args = { movements: acq.movements, coverage, anchorBalanceWei: acq.anchorBalanceWei!, fallbackReason: "NO_COVERAGE" as const, windowToISO: TODAY };
+    const lost = world.cursor;
+    let conflict = false;
+    try { await bound!.store.complete({ ...args, expectedCursor: "not-the-stored-value", nextCursor: "next" }); }
+    catch (e) { conflict = e instanceof EthCheckpointConflictError; }
+    check("a lost checkpoint CAS inside the write throws CONFLICT and ROLLS BACK: no rows, no licence, cursor unchanged",
+      conflict && world.rows.length === 0 && world.coverage === null && world.cursor === lost);
+    const done = serializeCheckpoint({ ...queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO), completedAtISO: NOW_ISO });
+    const r = await bound!.store.complete({ ...args, expectedCursor: lost!, nextCursor: done });
+    check("…and a won CAS commits rows, licence and checkpoint together", r.ok && world.rows.length > 0 && world.coverage !== null && world.cursor === done,
+      JSON.stringify({ ok: r.ok, refusal: r.refusal, rows: world.rows.length }));
   }
 
   console.log(`\neth-history-backfill: ${passes} passed, ${failures} failed`);
