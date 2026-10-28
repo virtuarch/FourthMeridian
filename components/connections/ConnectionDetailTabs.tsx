@@ -156,7 +156,8 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
   }
 
   return (
-    <div data-connection-tabs className="flex flex-col">
+    // Phone: the sheet opens near-full height so it reads as a page, not a peek.
+    <div data-connection-tabs className="flex min-h-[calc(92dvh-9rem)] flex-col sm:min-h-0">
       {/* Identity: the drawer header already names it; this says what it is and how it is. */}
       <div className="flex items-center gap-3">
         <span aria-hidden className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[rgba(125,168,255,.10)] text-[var(--meridian-400)]">
@@ -215,8 +216,7 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
                 ["Holdings updated", intelligence?.positionObservedAt ? relativeUpdated(intelligence.positionObservedAt, now) : "Not read yet"],
                 ["History", coverageLine(history)],
               ] : [
-                ["Source", summary.provider],
-                ["Accounts", String(accounts.length)],
+                // Source and account count are in the identity line above.
                 ["Last updated", summary.updatedAt ? relativeUpdated(summary.updatedAt, now) : "Not yet"],
                 ["History", coverageLine(history)],
               ]} />

@@ -33,7 +33,6 @@ import { Surface } from "@/components/atlas/Surface";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { CheckCircle2, ChevronLeft } from "lucide-react";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
-import { providerName } from "@/lib/sync/status";
 import { BuildIntelligencePanel } from "@/components/connections/BuildIntelligencePanel";
 import type { SyncStatus } from "@/lib/sync/status";
 import {
@@ -379,7 +378,6 @@ export function ConnectionsList({
                 </button>
               }
               closeClassName="hidden sm:inline-flex sm:items-center sm:justify-center"
-              eyebrow={providerName(selected.provider)}
               title={selected.institution}
               actions={selected.state !== "importing" ? <ConnectionMenu connection={selected} /> : undefined}
             />

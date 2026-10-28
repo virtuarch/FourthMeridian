@@ -133,6 +133,8 @@ export function connectionHealth(
       connection.state === "importing" ? { key: "transactions", label: "Transactions", tone: "progress", text: "Importing" }
       : connection.state === "import_paused" ? { key: "transactions", label: "Transactions", tone: "neutral", text: "Paused — resumes automatically" }
       : connection.lastSyncedAt ? { key: "transactions", label: "Transactions", tone: stale ? "attention" : "ok", text: `Updated ${rel(connection.lastSyncedAt, now)}` }
+      // No sync clock, but transactions are evidenced — say so; never contradict the state detail.
+      : i?.earliestTransactionDate ? { key: "transactions", label: "Transactions", tone: "ok", text: "Available" }
       : { key: "transactions", label: "Transactions", tone: "neutral", text: "Not imported yet" });
     if (i) {
       lines.push(

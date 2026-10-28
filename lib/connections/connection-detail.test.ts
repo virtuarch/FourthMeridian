@@ -52,6 +52,9 @@ console.log("Health — multidimensional");
   check("a current bank connection: 'Connected and up to date'", ok.headline === "Connected and up to date" && ok.tone === "ok");
   check("…with separate lines for connection, balances, transactions, history",
     ["connection", "balances", "transactions", "history"].every((k) => ok.lines.some((l) => l.key === k)));
+  const noClock = connectionHealth(conn({ lastSyncedAt: null }), intel({ earliestTransactionDate: "2026-07-01" }), NOW);
+  check("transactions evidenced without a sync clock read 'Available', never 'Not imported yet'",
+    noClock.lines.find((l) => l.key === "transactions")?.text === "Available");
   const reauth = connectionHealth(conn({ state: "needs_reauth" }), intel({}), NOW);
   check("needs reconnecting ⇒ 'Connection needs attention'", reauth.headline === "Connection needs attention" && reauth.tone === "attention");
   const importing = connectionHealth(conn({ state: "importing" }), intel({ phase: "IMPORTING", intelligenceReady: false }), NOW);
