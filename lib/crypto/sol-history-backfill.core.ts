@@ -97,6 +97,13 @@ export interface SolBackfillCheckpoint {
   licensedFromISO: string | null;
   licensedToISO: string | null;
   gap: SolHistoryGap | null;
+  /**
+   * Set while the head is proven continuous but its newest transaction does
+   * not (yet) state the observed balance — a race with the balance read, or
+   * activity not indexed yet. The licence then stops before the top's day.
+   * Not a failure: it never pauses the backfill.
+   */
+  headUnverifiedSinceISO?: string | null;
   failures: number;
   lastFailure: { code: SolBackfillFailureCode; atISO: string; detail?: string } | null;
   signaturesProcessed: number;
@@ -257,14 +264,17 @@ export function addDaysISO(dateISO: string, days: number): string {
  * End-of-day lamports for every day in [fromISO, toISO], from stated balances.
  *
  * `points` must contain every proven transaction that can be the latest one on
- * or before any day in the range (the caller includes the boundary point). A day
- * with no point on or before it in `points` gets NO entry — never a zero.
+ * or before any day in the range (the caller includes the boundary point), in
+ * CHAIN ORDER, oldest first — the order continuity proved. They are NOT
+ * re-sorted: two transactions in one slot share a blockTime, so only the proven
+ * order says which closed the day. A day with no point on or before it in
+ * `points` gets NO entry — never a zero.
  */
 export function dailyClosings(
   points: readonly SolTxPoint[], fromISO: string, toISO: string,
 ): Array<{ dateISO: string; lamports: bigint }> {
   if (fromISO > toISO) return [];
-  const asc = [...points].sort((a, b) => a.slot - b.slot || a.blockTime - b.blockTime);
+  const asc = points;
   const out: Array<{ dateISO: string; lamports: bigint }> = [];
   let i = 0;
   let last: SolTxPoint | null = null;
@@ -304,17 +314,20 @@ export interface SolBackfillStatus {
   lastFailureCode: SolBackfillFailureCode | null;
   lastProgressAtISO: string | null;
   signaturesProcessed: number;
+  /** False while the newest activity does not yet reconcile with the observed balance (history then stops short of today). */
+  headVerified: boolean;
 }
 
 export function backfillStatus(cp: SolBackfillCheckpoint | null): SolBackfillStatus {
   if (!cp) {
     return { state: "QUEUED", historyFromISO: null, historyToISO: null, partial: false, retryable: true,
-      lastFailureCode: null, lastProgressAtISO: null, signaturesProcessed: 0 };
+      lastFailureCode: null, lastProgressAtISO: null, signaturesProcessed: 0, headVerified: false };
   }
   const base = {
     historyFromISO: cp.licensedFromISO, historyToISO: cp.licensedToISO,
     lastFailureCode: cp.lastFailure?.code ?? null,
     lastProgressAtISO: cp.lastProgressAtISO, signaturesProcessed: cp.signaturesProcessed,
+    headVerified: cp.top !== null && !cp.headUnverifiedSinceISO,
   };
   const hasHistory = cp.licensedFromISO !== null;
   if (cp.gap) return { ...base, state: "RECOVERY_REQUIRED", partial: hasHistory, retryable: false };
@@ -344,4 +357,64 @@ export function shouldRunAutomatically(cp: SolBackfillCheckpoint | null, nowMs: 
  */
 export function isSolBackfillCursor(raw: string | null | undefined): boolean {
   return typeof raw === "string" && raw.startsWith(`{"kind":"${SOL_BACKFILL_CURSOR_KIND}"`);
+}
+
+/**
+ * Order transactions WITHIN a slot so the balances chain.
+ *
+ * `getSignaturesForAddress` orders by slot; within one slot its order is not a
+ * documented execution order. Reading a same-slot pair backwards would report a
+ * gap that is not there (and RECOVERY_REQUIRED for ever). So each run of
+ * same-slot points is permuted, small groups only, to the order whose
+ * pre/post balances connect to `edgeLamports` and to each other. No connecting
+ * order ⇒ the input order is kept and continuity reports the gap honestly.
+ *
+ * `direction` "backward": input newest-first, edge = the newer neighbour's PRE
+ * (or, for a fresh wallet, the observed balance its newest must state).
+ * "forward": input oldest-first, edge = the older neighbour's POST.
+ */
+export function orderSameSlot(points: readonly SolTxPoint[], edgeLamports: string | null, direction: "backward" | "forward"): SolTxPoint[] {
+  const out: SolTxPoint[] = [];
+  let edge = edgeLamports;
+  for (let i = 0; i < points.length; ) {
+    let j = i + 1;
+    while (j < points.length && points[j].slot === points[i].slot) j++;
+    const group = points.slice(i, j);
+    let ordered = group;
+    if (group.length > 1 && group.length <= 7 && edge !== null) {
+      const found = permuteToChain(group, edge, direction);
+      if (found) ordered = found;
+    }
+    out.push(...ordered);
+    const last = ordered[ordered.length - 1];
+    edge = direction === "backward" ? last.preLamports : last.postLamports;
+    i = j;
+  }
+  return out;
+}
+
+function permuteToChain(group: readonly SolTxPoint[], edge: string, direction: "backward" | "forward"): SolTxPoint[] | null {
+  const used = new Array(group.length).fill(false);
+  const path: SolTxPoint[] = [];
+  const walk = (e: string): boolean => {
+    if (path.length === group.length) return true;
+    for (let k = 0; k < group.length; k++) {
+      if (used[k]) continue;
+      const p = group[k];
+      const fits = direction === "backward" ? p.postLamports === e : p.preLamports === e;
+      if (!fits) continue;
+      used[k] = true; path.push(p);
+      if (walk(direction === "backward" ? p.preLamports : p.postLamports)) return true;
+      used[k] = false; path.pop();
+    }
+    return false;
+  };
+  return walk(edge) ? [...path] : null;
+}
+
+/** The observed balance an anchor states, with the float-storage tolerance it carries. */
+export function statesAnchor(postLamports: string, anchor: { lamports: bigint; toleranceLamports?: bigint }): boolean {
+  const d = BigInt(postLamports) - anchor.lamports;
+  const tol = anchor.toleranceLamports ?? BigInt(0);
+  return (d < BigInt(0) ? -d : d) <= tol;
 }

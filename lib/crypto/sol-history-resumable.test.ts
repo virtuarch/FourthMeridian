@@ -41,7 +41,7 @@ function prng(seed: number) {
 }
 
 /** N transactions, oldest first, ~perDay per day ending on `endISO`. */
-function makeChain(n: number, opts: { seed?: number; perDay?: number; endISO?: string; startLamports?: number } = {}): FixtureTx[] {
+function makeChain(n: number, opts: { seed?: number; perDay?: number; endISO?: string; startLamports?: number; sameSlotPairs?: boolean } = {}): FixtureTx[] {
   const rnd = prng(opts.seed ?? 7);
   const perDay = opts.perDay ?? 20;
   const end = Date.parse(`${opts.endISO ?? "2026-10-27"}T12:00:00Z`) / 1000;
@@ -56,8 +56,10 @@ function makeChain(n: number, opts: { seed?: number; perDay?: number; endISO?: s
     bal = up ? bal + amt : Math.max(0, bal - Math.min(bal, amt));
     const failedTx = rnd() < 0.03;
     if (failedTx) bal = Math.max(0, pre - 5000); // a failed tx still pays its fee
-    const blockTime = Math.floor(start + (i / n) * (end - start));
-    const slot = 100_000_000 + i * 3;
+    // sameSlotPairs: transactions 2k and 2k+1 share a slot (and so a blockTime).
+    const k = opts.sameSlotPairs ? i - (i % 2) : i;
+    const blockTime = Math.floor(start + (k / n) * (end - start));
+    const slot = 100_000_000 + k * 3;
     const viaLookupTable = rnd() < 0.25;
     const signature = `sig${String(i).padStart(7, "0")}`;
     const view: SolTxForProof = viaLookupTable
@@ -93,6 +95,8 @@ interface RpcOpts {
   failAt?: { n: number; error: Error };
   /** Throttle every getTransaction from the Nth on (1-based). */
   throttleFrom?: number;
+  /** Deliver transactions that share a slot in REVERSED order (index order within a slot is undocumented). */
+  reverseSameSlot?: boolean;
 }
 
 function rpc(chain: () => readonly FixtureTx[], clock: { t: number }, o: RpcOpts = {}) {
@@ -102,7 +106,17 @@ function rpc(chain: () => readonly FixtureTx[], clock: { t: number }, o: RpcOpts
   const index = () => {
     const src = chain();
     if (cached?.src !== src) {
-      const newestFirst = src.filter((t) => !o.hidden?.has(t.signature)).reverse();
+      let newestFirst = src.filter((t) => !o.hidden?.has(t.signature)).reverse();
+      if (o.reverseSameSlot) {
+        const out: FixtureTx[] = [];
+        for (let i = 0; i < newestFirst.length; ) {
+          let j = i + 1;
+          while (j < newestFirst.length && newestFirst[j].slot === newestFirst[i].slot) j++;
+          out.push(...newestFirst.slice(i, j).reverse());
+          i = j;
+        }
+        newestFirst = out;
+      }
       cached = { src, newestFirst, pos: new Map(newestFirst.map((t, i) => [t.signature, i])), bySig: new Map(src.map((t) => [t.signature, t])) };
     }
     return cached;
@@ -141,7 +155,7 @@ class MemoryStore implements SolBackfillStore {
   coverage: unknown = null;
   commits = 0;
   violations: string[] = [];
-  constructor(public anchorValue: { dateISO: string; lamports: bigint } | null) {}
+  constructor(public anchorValue: { dateISO: string; lamports: bigint; toleranceLamports?: bigint } | null) {}
   async readCursor() { return this.cursor; }
   async anchor() { return this.anchorValue; }
   async commit(c: SolBackfillCommit) {
@@ -188,6 +202,8 @@ async function runToEnd(store: MemoryStore, call: SolRpcCall, clock: { t: number
   return { runs, last };
 }
 
+const read = (f: string) => readFileSync(path.join(process.cwd(), f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
 async function main() {
   console.log("\nno ceiling: size × budget");
   for (const [n, budget] of [[4_999, 1e9], [5_001, 1e9], [12_000, 3_000], [52_000, 9_000]] as const) {
@@ -199,7 +215,9 @@ async function main() {
     const cmp = sameAsTruth(store, chain);
     check(`${n.toLocaleString()} transactions → COMPLETE in ${runs} run(s)`, last.status.state === "COMPLETE", `${last.stoppedBecause} ${last.status.state} ${JSON.stringify(last.failure)}`);
     check(`${n.toLocaleString()}: every day equals the chain's true end-of-day balance`, cmp.ok, cmp.detail);
-    check(`${n.toLocaleString()}: each transaction fetched exactly once across all runs`, counts.tx === n, `${counts.tx}`);
+    // Each full page re-lists its trailing slot (it may continue on the next
+    // page), so at most one slot's transactions are fetched twice per page.
+    check(`${n.toLocaleString()}: each transaction fetched once (plus ≤ 1 deferred slot per page)`, counts.tx >= n && counts.tx <= n + counts.sig, `${counts.tx} for ${counts.sig} pages`);
     check(`${n.toLocaleString()}: no stale-row overwrite (rows always inside the rewritten span)`, store.violations.length === 0, store.violations.slice(0, 3).join(","));
     const cov = store.coverage as { kind: string; fromISO: string; toISO: string };
     check(`${n.toLocaleString()}: licence COMPLETE from the first transaction's day to the observation`,
@@ -391,6 +409,69 @@ async function main() {
     check("…an explicit resume runs and completes", resumed.status.state === "COMPLETE" && sameAsTruth(flaky, chain).ok);
   }
 
+  console.log("\nreview findings (PR #99)");
+  {
+    // Two transactions per slot, delivered in chain order and in reversed order.
+    for (const reverse of [false, true]) {
+      const chain = makeChain(3_000, { seed: 61, sameSlotPairs: true, perDay: 7 });
+      const clock = { t: 0 };
+      const { call } = rpc(() => chain, clock, { reverseSameSlot: reverse });
+      const store = new MemoryStore(anchorFor(chain));
+      const { last } = await runToEnd(store, call, clock, 1_500);
+      const cmp = sameAsTruth(store, chain);
+      check(`same-slot transactions${reverse ? " delivered out of order" : ""}: the day closes on the LATER one`, last.status.state === "COMPLETE" && cmp.ok, `${last.status.state} ${cmp.detail}`);
+    }
+
+    // A gap in NEW activity must not license days the proof does not cover.
+    const at = (iso: string) => Date.parse(`${iso}T10:00:00Z`) / 1000;
+    const mk = (sig: string, slot: number, iso: string, pre: number, post: number): FixtureTx => ({ signature: sig, slot, blockTime: at(iso), pre, post,
+      view: { slot, blockTime: at(iso), transaction: { message: { accountKeys: [OWNER, OTHER] } }, meta: { preBalances: [pre, 1], postBalances: [post, 1] } } });
+    const S = 1_000_000_000;
+    let chain: FixtureTx[] = [mk("t0", 10, "2026-09-20", 0, 5 * S), mk("t1", 20, "2026-10-01", 5 * S, 5 * S + 1)];
+    const clock = { t: 0 };
+    const hidden = new Set<string>();
+    const { call } = rpc(() => chain, clock, { hidden });
+    const store = new MemoryStore({ dateISO: "2026-10-01", lamports: BigInt(5 * S + 1) });
+    await runToEnd(store, call, clock, 1e9);
+    chain = [...chain, mk("a", 30, "2026-10-10", 5 * S + 1, 6 * S + 1), mk("m", 40, "2026-10-12", 6 * S + 1, 3 * S + 1), mk("b", 50, "2026-10-20", 3 * S + 1, 4 * S + 1)];
+    hidden.add("m");
+    store.anchorValue = { dateISO: ANCHOR_ISO, lamports: BigInt(4 * S + 1) };
+    const g = await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store }, { call, budgetMs: 1e9, now: () => clock.t });
+    const cp = parseCheckpoint(store.cursor, ACCOUNT, OWNER);
+    check("a HEAD gap stops the licence BEFORE the newest proven transaction's day", g.stoppedBecause === "GAP" && cp?.licensedToISO === "2026-10-09", `${g.stoppedBecause} ${cp?.licensedToISO}`);
+    check("…so no day after the hidden transaction carries an unproven balance", ![...store.rows.keys()].some((d) => d >= "2026-10-10"), [...store.rows.keys()].filter((d) => d >= "2026-10-10").join(","));
+
+    // An unverified head (balance read raced new activity) never blocks the backfill.
+    const big = makeChain(4_000, { seed: 71 });
+    const c2 = { t: 0 };
+    const r2 = rpc(() => big, c2);
+    const s2 = new MemoryStore(anchorFor(big));
+    await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store: s2 }, { call: r2.call, budgetMs: 1_500, now: () => c2.t });
+    s2.anchorValue = { dateISO: ANCHOR_ISO, lamports: anchorFor(big).lamports + BigInt(7) }; // the head no longer reconciles
+    const before = parseCheckpoint(s2.cursor, ACCOUNT, OWNER)?.signaturesProcessed ?? 0;
+    const h = await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store: s2 }, { call: r2.call, budgetMs: 1_500, now: () => c2.t });
+    const after = parseCheckpoint(s2.cursor, ACCOUNT, OWNER);
+    check("an unverified head still lets older history advance", h.progressed && (after?.signaturesProcessed ?? 0) > before && !h.status.headVerified, `${before}→${after?.signaturesProcessed}`);
+    check("…and is not a failure (never pauses the backfill)", (after?.failures ?? -1) === 0 && h.failure === null);
+
+    // Float-stored anchors carry their representation error as tolerance.
+    const huge = makeChain(50, { seed: 81, startLamports: 4_900_000 * S });
+    const c3 = { t: 0 };
+    const tol = new MemoryStore({ dateISO: ANCHOR_ISO, lamports: anchorFor(huge).lamports + BigInt(2), toleranceLamports: BigInt(4) });
+    const th = await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store: tol }, { call: rpc(() => huge, c3).call, budgetMs: 1e9, now: () => c3.t });
+    check("a 4.9M SOL anchor off by float rounding still reconciles within its stated tolerance", th.status.state === "COMPLETE", JSON.stringify(th.failure));
+
+    // Committed progress then a failure: the run reports what changed.
+    const p = makeChain(2_500, { seed: 91 });
+    const c4 = { t: 0 };
+    const r4 = rpc(() => p, c4, { failAt: { n: 1_800, error: new SolTransportError("PROVIDER_THROTTLED", "429") } });
+    const s4 = new MemoryStore(anchorFor(p));
+    const pf = await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store: s4 }, { call: r4.call, budgetMs: 1e9, now: () => c4.t, concurrency: 1 });
+    check("progress then failure still reports rows written and where history changed", pf.progressed && pf.rowsWritten > 0 && pf.impactedFromISO !== null && pf.failure?.code === "PROVIDER_THROTTLED");
+    const store99 = read("lib/crypto/sol-history-backfill.store.ts");
+    check("…and the refresh treats committed progress as a refresh (snapshot window widens)", /if \(o\.progressed\) return \{ \.\.\.base, ok: true/.test(store99));
+  }
+
   console.log("\nunits");
   {
     const p = (sig: string, slot: number, iso: string, pre: number, post: number) =>
@@ -408,7 +489,6 @@ async function main() {
 
   console.log("\nwiring");
   {
-    const read = (f: string) => readFileSync(path.join(process.cwd(), f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     const refresh = read("lib/crypto/wallet-history-refresh.ts");
     check("the wallet refresh runs the RESUMABLE backfill for SOL", /SOL_NATIVE\.chain \? reconstructSolHistoryResumable/.test(refresh));
     const run = read("lib/crypto/sol-history-backfill.ts") + read("lib/crypto/sol-history-backfill.store.ts");

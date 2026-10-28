@@ -35,6 +35,7 @@ import { baseUnitsToWhole, type ChainCoverage } from "./chain-movement";
 import {
   emptyCheckpoint, parseCheckpoint, serializeCheckpoint, pointFromTransaction,
   extendBackward, extendForward, dailyClosings, addDaysISO, backfillStatus, shouldRunAutomatically,
+  orderSameSlot, statesAnchor,
   SolProofDataError, SOL_CONTINUITY_SOURCE,
   type SolBackfillCheckpoint, type SolBackfillFailureCode, type SolBackfillStatus,
   type SolTxForProof, type SolTxPoint,
@@ -126,8 +127,10 @@ export function buildRpcCall(deps: SolBackfillDeps, deadlineMs: number): SolRpcC
           }
         }
       } catch (e) {
-        if (e instanceof SolTransportError) throw e;
+        // The abort FIRST: a timeout while the body is read surfaces as a parse
+        // failure inside, and is a timeout, not invalid data.
         if (controller.signal.aborted) throw new SolTransportError("PROVIDER_TIMEOUT", `Solana RPC did not respond within ${timeout} ms (${method})`);
+        if (e instanceof SolTransportError) throw e;
         throw new SolTransportError("PROVIDER_ERROR", redactProviderSecrets(`network error reaching the Solana RPC (${method}): ${e instanceof Error ? e.message : String(e)}`));
       } finally {
         clearTimeout(timer);
@@ -189,6 +192,15 @@ async function fetchPoints(
   return { points: out, error: null, stoppedForBudget: false };
 }
 
+/**
+ * Never commit PART of a slot: within one slot the provider's order is not an
+ * execution order, so a slot is proven only as a whole (orderSameSlot). Returns
+ * the fetched points minus every point in a `deferred` slot.
+ */
+function withoutSlots(points: ReadonlyArray<SolTxPoint | null>, sigs: readonly SigRow[], deferred: ReadonlySet<number>): Array<SolTxPoint | null> {
+  return points.map((p, i) => (deferred.has(sigs[i].slot) ? undefined : p)).filter((p): p is SolTxPoint | null => p !== undefined);
+}
+
 // ── Store ────────────────────────────────────────────────────────────────────
 
 export class CheckpointConflictError extends Error {
@@ -212,7 +224,8 @@ export interface SolBackfillCommit {
 export interface SolBackfillStore {
   readCursor(): Promise<string | null>;
   /** The newest OBSERVED/IMPORTED balance: the independent anchor. */
-  anchor(): Promise<{ dateISO: string; lamports: bigint } | null>;
+  /** `toleranceLamports`: the float-storage error of the stored quantity (0 when exact). */
+  anchor(): Promise<{ dateISO: string; lamports: bigint; toleranceLamports?: bigint } | null>;
   /** One transaction. Throws CheckpointConflictError when the cursor is not `expectedCursor`. */
   commit(c: SolBackfillCommit): Promise<void>;
 }
@@ -308,74 +321,72 @@ export async function runSolHistoryBackfill(
 
   const anchor = await args.store.anchor();
   if (!anchor) { await fail("NO_OBSERVED_ANCHOR", "no observed balance yet to anchor history on"); return finish(); }
+  const anchorText = `${anchor.lamports} lamports`;
 
   try {
     // ── 1. HEAD ─────────────────────────────────────────────────────────────
+    // Bounded to half the run while older history is still owed, so a busy
+    // wallet's new activity can never starve its backfill. Only a GAP or a
+    // provider failure here ends the run; an unverified or unfinished head
+    // just leaves the licence short of today and carries on.
     if (working.top) {
+      const headDeadline = working.reachedBeginning ? deadlineMs : startMs + Math.floor((deadlineMs - startMs) / 2);
       const top0: SolTxPoint = working.top;
       const newer: SigRow[] = [];
+      let listed = true;
       for (let before: string | null = null; ; ) {
-        if (now() >= deadlineMs) { outcome.stoppedBecause = "BUDGET"; return finish(); }
-        const page = await signaturePage(call, owner, { before, until: working.top.signature });
+        if (now() >= headDeadline) { listed = false; break; }
+        const page = await signaturePage(call, owner, { before, until: top0.signature });
         outcome.pagesFetched++;
         newer.push(...page);
         if (page.length < SIGNATURE_PAGE_SIZE) break;
         before = page[page.length - 1].signature;
       }
-      const oldestFirst = newer.reverse();
-      const fetched = await fetchPoints(call, owner, oldestFirst, { concurrency, deadlineMs, now });
-      const points = fetched.points.filter((p): p is SolTxPoint => p !== null);
+      // Slots at or below the top's are already proven whole.
+      const oldestFirst = listed ? newer.reverse().filter((r) => r.slot > top0.slot) : [];
+      const fetched = await fetchPoints(call, owner, oldestFirst, { concurrency, deadlineMs: headDeadline, now });
+      const headDeferred = new Set<number>();
+      if (fetched.points.length < oldestFirst.length) headDeferred.add(oldestFirst[fetched.points.length].slot);
+      const points = orderSameSlot(withoutSlots(fetched.points, oldestFirst, headDeferred).filter((p): p is SolTxPoint => p !== null), top0.postLamports, "forward");
       outcome.signaturesProcessed += fetched.points.length;
-      const ext = extendForward(working.top, points);
-      const allFetched = fetched.points.length === oldestFirst.length && !fetched.error && !fetched.stoppedForBudget;
-      const newTop = ext.points.length ? ext.points[ext.points.length - 1] : working.top;
+      const ext = extendForward(top0, points);
+      const allFetched = listed && fetched.points.length === oldestFirst.length && !fetched.error && !fetched.stoppedForBudget;
+      const newTop = ext.points.length ? ext.points[ext.points.length - 1] : top0;
+      const headVerified = ext.kind === "OK" && allFetched && statesAnchor(newTop.postLamports, anchor);
 
-      if (ext.kind === "GAP") {
-        working = { ...working, gap: { ...ext.gap, side: "HEAD", detectedAtISO: nowISO() } };
-      }
-      // How far the licence may now run. All new activity proven AND the newest
-      // states the observed balance ⇒ through the observation's date. Otherwise
-      // only through the day before the first activity not yet proven.
-      const headVerified = ext.kind === "OK" && allFetched && newTop.postLamports === anchor.lamports.toString();
-      // The first signature NOT proven by this run (the gap's neighbour, or the
-      // first one not fetched), whose day bounds the licence when unverified.
-      const nextUnproven = ext.kind === "GAP"
-        ? oldestFirst.find((s) => s.signature === ext.gap.neighbourSignature)
-        : oldestFirst[fetched.points.length];
+      // How far the licence may run. Verified ⇒ through the observation's date.
+      // Otherwise ONLY through the day before the newest proven transaction:
+      // whatever is unproven (a gap's hidden transaction, an unfetched one, the
+      // mismatch with the observed balance) may have happened on that very day.
       let licensedTo = working.licensedToISO;
       if (headVerified) {
         licensedTo = anchor.dateISO > newTop.dateISO ? anchor.dateISO : newTop.dateISO;
-      } else if (ext.points.length > 0 && nextUnproven?.blockTime) {
-        const before = addDaysISO(new Date(nextUnproven.blockTime * 1000).toISOString().slice(0, 10), -1);
-        if (!licensedTo || before > licensedTo) licensedTo = before;
+      } else if (ext.points.length > 0) {
+        const cap = addDaysISO(newTop.dateISO, -1);
+        if (!licensedTo || cap > licensedTo) licensedTo = cap;
       }
       const changedFrom = ext.points.length ? ext.points[0].dateISO : null;
       const spanFrom = [changedFrom, working.licensedToISO ? addDaysISO(working.licensedToISO, 1) : null]
         .filter((d): d is string => d !== null).sort()[0] ?? null;
-      const advanced = ext.points.length > 0 || licensedTo !== working.licensedToISO;
+      const unverifiedSince = headVerified ? null : (working.headUnverifiedSinceISO ?? nowISO());
+      const advanced = ext.points.length > 0 || licensedTo !== working.licensedToISO
+        || (working.headUnverifiedSinceISO ?? null) !== unverifiedSince;
       if (advanced || ext.kind === "GAP") {
         const next: SolBackfillCheckpoint = {
-          ...working, top: newTop, licensedToISO: licensedTo,
+          ...working, top: newTop, licensedToISO: licensedTo, headUnverifiedSinceISO: unverifiedSince,
           signaturesProcessed: working.signaturesProcessed + ext.points.length,
-          lastProgressAtISO: nowISO(), failures: 0, lastFailure: null,
+          ...(ext.points.length > 0 ? { lastProgressAtISO: nowISO(), failures: 0, lastFailure: null } : {}),
+          gap: ext.kind === "GAP" ? { ...ext.gap, side: "HEAD", detectedAtISO: nowISO() } : working.gap,
         };
-        const rows = spanFrom && licensedTo && spanFrom <= licensedTo
-          ? dailyClosings([top0, ...ext.points], spanFrom, licensedTo) : [];
-        await commit(next, rows, spanFrom && licensedTo && spanFrom <= licensedTo ? { from: spanFrom, to: licensedTo } : null);
-        outcome.progressed = true;
+        const writeRows = spanFrom !== null && licensedTo !== null && spanFrom <= licensedTo;
+        const rows = writeRows ? dailyClosings([top0, ...ext.points], spanFrom, licensedTo!) : [];
+        await commit(next, rows, writeRows ? { from: spanFrom, to: licensedTo! } : null);
+        if (ext.points.length > 0 || rows.length > 0) outcome.progressed = true;
       }
       if (ext.kind === "GAP") { outcome.stoppedBecause = "GAP"; return finish(); }
       if (fetched.error) {
         const code = fetched.error instanceof SolTransportError ? fetched.error.code : "INVALID_DATA";
         await fail(code, fetched.error.message); return finish();
-      }
-      if (fetched.stoppedForBudget) { outcome.stoppedBecause = "BUDGET"; return finish(); }
-      if (!headVerified) {
-        // Every new transaction is proven continuous, but the newest does not
-        // state the observed balance: a race with this sync's balance read, or
-        // activity the index has not listed yet. Retry next run; never guess.
-        await fail("ANCHOR_MISMATCH", `newest transaction states ${newTop.postLamports} lamports; observed balance is ${anchor.lamports}`);
-        return finish();
       }
     }
 
@@ -385,22 +396,32 @@ export async function runSolHistoryBackfill(
     let pageBefore: string | null = working.bottom?.signature ?? null;
     while (!working.reachedBeginning) {
       if (now() >= deadlineMs) { outcome.stoppedBecause = "BUDGET"; return finish(); }
-      const page = await signaturePage(call, owner, { before: pageBefore });
+      const listedPage = await signaturePage(call, owner, { before: pageBefore });
       outcome.pagesFetched++;
+      const fullPage = listedPage.length === SIGNATURE_PAGE_SIZE;
+      // Slots at or above the bottom's are already proven whole.
+      const page = working.bottom ? listedPage.filter((r) => r.slot < working.bottom!.slot) : listedPage;
       const fetched = await fetchPoints(call, owner, page, { concurrency, deadlineMs, now });
       outcome.signaturesProcessed += fetched.points.length;
-      const points = fetched.points.filter((p): p is SolTxPoint => p !== null);
+      // Defer a slot that may continue on the next page, and one cut short by
+      // the budget or a failure — unless that would defer the whole page.
+      const deferred = new Set<number>();
+      if (fullPage && page.length > 0) deferred.add(page[page.length - 1].slot);
+      if (fetched.points.length < page.length) deferred.add(page[fetched.points.length].slot);
+      if (page.length > 0 && page.every((r) => deferred.has(r.slot)) && fetched.points.length === page.length) deferred.clear();
+      const edge = working.bottom ? working.bottom.preLamports : anchor.lamports.toString();
+      const points = orderSameSlot(withoutSlots(fetched.points, page, deferred).filter((p): p is SolTxPoint => p !== null), edge, "backward");
       const pageDone = fetched.points.length === page.length && !fetched.error && !fetched.stoppedForBudget;
 
       // A fresh wallet's first proven transaction must state the observed balance.
-      if (!working.top && points.length > 0 && points[0].postLamports !== anchor.lamports.toString()) {
-        await fail("ANCHOR_MISMATCH", `newest transaction states ${points[0].postLamports} lamports; observed balance is ${anchor.lamports}`);
+      if (!working.top && points.length > 0 && !statesAnchor(points[0].postLamports, anchor)) {
+        await fail("ANCHOR_MISMATCH", `newest transaction states ${points[0].postLamports} lamports; observed balance is ${anchorText}`);
         return finish();
       }
-      if (!working.top && points.length === 0 && pageDone && page.length < SIGNATURE_PAGE_SIZE) {
+      if (!working.top && points.length === 0 && pageDone && !fullPage) {
         // No activity at all. Proven only if the observed balance is zero.
-        if (anchor.lamports !== BigInt(0)) {
-          await fail("ANCHOR_MISMATCH", `no transactions listed, but the observed balance is ${anchor.lamports} lamports`);
+        if (!statesAnchor("0", anchor)) {
+          await fail("ANCHOR_MISMATCH", `no transactions listed, but the observed balance is ${anchorText}`);
           return finish();
         }
         const next: SolBackfillCheckpoint = { ...working, reachedBeginning: true, licensedFromISO: anchor.dateISO, licensedToISO: anchor.dateISO,
@@ -411,7 +432,7 @@ export async function runSolHistoryBackfill(
       }
 
       const ext = extendBackward(working.bottom, points);
-      const reachedBeginning = pageDone && ext.kind === "OK" && page.length < SIGNATURE_PAGE_SIZE;
+      const reachedBeginning = pageDone && ext.kind === "OK" && !fullPage;
       if (ext.points.length > 0 || reachedBeginning || ext.kind === "GAP") {
         const newBottom = ext.points.length ? ext.points[ext.points.length - 1] : working.bottom;
         const top = working.top ?? ext.points[0] ?? null;
@@ -421,7 +442,8 @@ export async function runSolHistoryBackfill(
         // a fresh wallet, everything from the new bottom through the licence.
         const spanFrom = newBottom?.dateISO ?? null;
         const spanTo = working.bottom ? addDaysISO(working.bottom.dateISO, -1) : licensedTo;
-        const rows = spanFrom && spanTo && spanFrom <= spanTo ? dailyClosings(ext.points, spanFrom, spanTo) : [];
+        // Chain order, oldest first — never re-sorted (same-slot transactions).
+        const rows = spanFrom && spanTo && spanFrom <= spanTo ? dailyClosings([...ext.points].reverse(), spanFrom, spanTo) : [];
         const next: SolBackfillCheckpoint = {
           ...working, top, bottom: newBottom,
           reachedBeginning, licensedFromISO: newBottom?.dateISO ?? working.licensedFromISO, licensedToISO: licensedTo,
@@ -439,8 +461,12 @@ export async function runSolHistoryBackfill(
         await fail(code, fetched.error.message); return finish();
       }
       if (fetched.stoppedForBudget) { outcome.stoppedBecause = "BUDGET"; return finish(); }
-      if (page.length > 0) pageBefore = page[page.length - 1].signature;
+      // Next page: after the last signature NOT deferred, so a deferred slot is listed again whole.
+      const lastKept = [...page].reverse().find((r) => !deferred.has(r.slot));
+      if (lastKept) pageBefore = lastKept.signature;
+      else if (listedPage.length > 0) pageBefore = listedPage[listedPage.length - 1].signature;
     }
+    if (working.top && working.headUnverifiedSinceISO) { outcome.stoppedBecause = "BUDGET"; return finish(); }
     outcome.stoppedBecause = "COMPLETE";
     return finish();
   } catch (e) {

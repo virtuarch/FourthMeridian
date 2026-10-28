@@ -94,3 +94,13 @@ Tests: `lib/crypto/sol-history-backfill.test.ts`.
 - The `HISTORY_BACKFILL` execution stage still records refusals as SKIPPED; the code is now durable in the checkpoint (`lastFailure`) instead. Changing the ledger verdict is left for the Platform Ops pass so alerting is not altered silently.
 - **Production**: no migration. On first run each existing SOL wallet starts a fresh checkpoint and replaces its old DERIVED rows (only `source = sol-reconstruction`). No backfill is triggered by deployment; it advances with normal syncs.
 - **Release note (owner decision before Production):** a wallet that the old engine had fully licensed (under 5,000 signatures) gets a fresh checkpoint on its first new-engine run. That first commit replaces its old DERIVED rows with the newest proven page(s), so its licensed interval can be **narrower for a few syncs** until the bottom frontier passes the old start date. Nothing is fabricated in the meantime — older days refuse rather than guess — but charts for those days show "not available" briefly. Options: accept; or seed the first run with a larger one-off budget; or keep the old licence until the new bottom passes it (a follow-up change).
+
+### Independent review (before merge) — fixed in the same PR
+
+An adversarial review with probe scripts found, and this PR now fixes:
+- **Same-slot ordering**: two transactions in one slot share a blockTime; end-of-day balances now follow the order continuity proved (never re-sorted), slots are permuted until their balances chain (the provider's within-slot order is undocumented), and a slot is only ever committed WHOLE (a page's trailing slot and a slot cut by the budget are re-listed next page).
+- **Head gap licence**: without a verified head the licence now stops the day BEFORE the newest proven transaction — an unproven transaction may share that day.
+- **Snapshot window**: committed progress followed by a failure still reports `impactedFromISO`, so the rebuild widens.
+- **Busy wallets**: the head phase takes at most half a run while history is owed, and an unverified head (balance read raced new activity) is not a failure and never blocks the backward backfill.
+- **Float anchors**: the stored quantity's representation error (above ~4.5M SOL) is carried as an explicit tolerance.
+- Timeouts while reading a body are PROVIDER_TIMEOUT; the connection link is chosen stably.
