@@ -157,6 +157,10 @@ export function parseCheckpoint(raw: string | null | undefined, accountId: strin
     && typeof (p as SolTxPoint).preLamports === "string" && /^\d{4}-\d{2}-\d{2}$/.test((p as SolTxPoint).dateISO));
   if (!pointOk(c.top ?? null) || !pointOk(c.bottom ?? null)) return null;
   if ((c.top == null) !== (c.bottom == null)) return null;
+  if (c.mode !== undefined && c.mode !== "DIRECT" && c.mode !== "STAGING") return null;
+  if (c.staged !== undefined && !(Array.isArray(c.staged) && c.staged.every((e) => Array.isArray(e) && e.length === 2
+    && /^\d{4}-\d{2}-\d{2}$/.test(String(e[0])) && /^\d+$/.test(String(e[1]))))) return null;
+  if (c.mode === "STAGING" && (!c.legacy || typeof c.legacy.fromISO !== "string" || typeof c.legacy.toISO !== "string")) return null;
   return c as SolBackfillCheckpoint;
 }
 
@@ -479,7 +483,11 @@ export function decidePromotion(
   let days = 0;
   let firstISO: string | null = null;
   for (const [d, lamports] of staged) {
-    if (d < legacy.fromISO || d > legacy.toISO) continue;
+    // legacy.toISO is EXCLUDED: the old importer licensed through the day of a
+    // MIDDAY balance reading, so its row there is that moment's balance, while
+    // the proof states the END of the day. Activity later that day makes them
+    // differ legitimately — that is not evidence the legacy history was wrong.
+    if (d < legacy.fromISO || d >= legacy.toISO) continue;
     const q = legacyRows.get(d);
     if (q === undefined) continue;
     const sol = Number(BigInt(lamports)) / 1e9;

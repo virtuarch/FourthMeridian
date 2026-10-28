@@ -16,6 +16,7 @@ import {
 } from "@/lib/crypto/sol-history-backfill";
 import {
   parseCheckpoint, backfillStatus, dailyClosings, extendBackward, MAX_CONSECUTIVE_FAILURES, isSolBackfillCursor,
+  decidePromotion, emptyCheckpoint,
   type SolTxForProof,
 } from "@/lib/crypto/sol-history-backfill.core";
 
@@ -536,6 +537,15 @@ async function main() {
     check("…the disagreement is disclosed with its first day", cp?.legacyDiscrepancy?.days === 1 && cp.legacyDiscrepancy.firstISO === wrongDay && o.status.legacyDiscrepancy?.days === 1);
     check("…and no legacy row survives beside the proof (projections never mixed)",
       [...store.rows.keys()].every((d) => d >= (cp?.licensedFromISO ?? "9")) && store.rows.get(wrongDay) === want.get(wrongDay));
+  }
+  {
+    // The legacy licence's LAST day is a midday reading; the proof's end-of-day
+    // value for it may differ without the legacy history being wrong.
+    const staged: Array<[string, string]> = [["2026-10-26", "5000000000"], ["2026-10-27", "6000000000"]];
+    const d = decidePromotion({ licensedFromISO: "2026-10-26", licensedToISO: "2026-10-28", reachedBeginning: false, completedAtISO: null },
+      staged, { fromISO: "2026-01-01", toISO: "2026-10-27" }, new Map([["2026-10-26", 5], ["2026-10-27", 5.5]]));
+    check("a different value on the legacy licence's last (midday-read) day is NOT a disproof", !d.promote && d.discrepancy === null, JSON.stringify(d));
+    check("a malformed staged checkpoint is not trusted", parseCheckpoint(JSON.stringify({ ...emptyCheckpoint(ACCOUNT, OWNER, "x"), mode: "STAGING", staged: [["bad", "1"]], legacy: { fromISO: "a", toISO: "b" } }), ACCOUNT, OWNER) === null);
   }
   {
     const chain = makeChain(500, { seed: 105 });
