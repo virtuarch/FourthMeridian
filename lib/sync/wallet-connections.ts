@@ -19,6 +19,7 @@ import type { ReadClient } from "@/lib/db/tenant-context";
 import { ProviderType, ConnectionStatus } from "@prisma/client";
 import { buildWalletSyncStatus, type SyncConnection, type WalletConnectionStateInput } from "@/lib/sync/status";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
+import { isSolBackfillCursor } from "@/lib/crypto/sol-history-backfill.core";
 
 export interface WalletSyncData {
   connections: SyncConnection[];
@@ -71,7 +72,8 @@ export async function loadWalletSyncConnections(client: ReadClient, userId: stri
       status:       c.status as WalletConnectionStateInput["status"],
       lastSyncedAt: c.lastSyncedAt,
       errorCode:    c.errorCode,
-      discoveryCursor: c.cursor ?? null,
+      // A SOL history checkpoint shares the column; it is not discovery.
+      discoveryCursor: c.cursor && !isSolBackfillCursor(c.cursor) ? c.cursor : null,
     });
   }
 
