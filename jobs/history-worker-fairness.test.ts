@@ -243,6 +243,24 @@ async function main() {
       JSON.stringify(pr.map((s) => ({ o: s.schedule?.order, btc: s.btc && { regen: s.btc.regenerated, def: s.btc.regenerationsDeferred } }))));
   }
 
+  console.log("re-review: the sweep survives a single-chain backlog; an impossible ETH reserve is clamped");
+  {
+    for (const chain of HISTORY_CHAINS) {
+      const w = world({ sol: chain === "SOL" ? 20 : 0, btc: chain === "BTC" ? 20 : 0, eth: chain === "ETH" ? 1 : 0 });
+      let swept = 0;
+      w.deps.cryptoHolders = async () => ["h1"];
+      w.deps.acquirePriceGaps = async () => { swept++; return { decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null }; };
+      const out: SolBackfillJobSummary[] = [];
+      for (let i = 0; i < 3; i++) out.push(await w.run());
+      check(`${chain}-only backlog: the price-gap sweep runs every run (the leader's phase leaves PRICE_GAP_RESERVE_MS)`,
+        swept === 3 && out.every((s) => s.priceGapSweep?.skippedForTime === false && stepped(s, chain)), JSON.stringify(out.map((s) => s.priceGapSweep)));
+    }
+    const w = world({ eth: 1 });
+    const big = { ...ethCfg, startReserveMs: 200_000 };
+    const s = await solHistoryBackfill({ config: solCfg, btcConfig: btcCfg, ethConfig: big, deps: w.deps });
+    check("ETH_BACKFILL_START_RESERVE_MS above the job budget is clamped: ETH still steps", (s.eth?.walletsRun ?? 0) === 1 && s.eth?.stoppedBecause !== "JOB_BUDGET", JSON.stringify(s.eth));
+  }
+
   console.log("defect 2: crash-safe metering");
   {
     // Unit: a kill after k calls leaves ≥ k − (granularity) on the ledger.

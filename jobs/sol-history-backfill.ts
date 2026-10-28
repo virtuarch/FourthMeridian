@@ -350,7 +350,13 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const btcCfg = opts.btcConfig ?? btcWorkerConfig();
   const btcPlan = deps.btc && btcCfg.enabled ? await planBtc(deps.btc, start, day) : null;
   const btcHasWork = !!btcPlan && btcPlan.work.length > 0;
-  const ethCfg = opts.ethConfig ?? ethWorkerConfig();
+  const ethCfgIn = opts.ethConfig ?? ethWorkerConfig();
+  // A start reserve the job budget can never hold would freeze Ethereum for good:
+  // clamp it (a step's probes are sized to its time, so a shorter step is safe) and say so.
+  const ethCfg = ethCfgIn.enabled && ethCfgIn.startReserveMs > cfg.jobBudgetMs - PHASE_SETUP_MS
+    ? (console.warn(`[${SOL_BACKFILL_JOB}] ETH_BACKFILL_START_RESERVE_MS ${ethCfgIn.startReserveMs} exceeds the job budget ${cfg.jobBudgetMs} — clamped`),
+      { ...ethCfgIn, startReserveMs: Math.max(2_000, cfg.jobBudgetMs - PHASE_SETUP_MS) })
+    : ethCfgIn;
   const ethPlan = deps.eth && ethCfg.enabled ? await planEth(deps.eth, start) : null;
   const ethHasWork = !!ethPlan && ethPlan.work.length > 0;
   /** The deadline the CURRENT chain's pass plans to (lib/crypto/history-worker-schedule.core.ts). */
@@ -598,8 +604,8 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
       ethPlan?.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0),
   };
   summary.schedule = { rotation, order: [...order], leaderShort: false };
-  const runPhase = async (chain: HistoryChain, chainsLeft: number) => {
-    phaseDeadline = phaseDeadlineFor({ nowMs: deps.now(), jobDeadlineMs: jobDeadline, chainsLeft, needMs: needMs[chain] });
+  const runPhase = async (chain: HistoryChain, chainsLeft: number, endBy = jobDeadline) => {
+    phaseDeadline = phaseDeadlineFor({ nowMs: deps.now(), jobDeadlineMs: endBy, chainsLeft, needMs: needMs[chain] });
     if (chain === "SOL") await runSolPass();
     else if (chain === "BTC" && btcPlan && deps.btc) {
       summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline: phaseDeadline, regenerateUnderLock });
@@ -618,7 +624,12 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     // lead: the next run starts from the same rotation (nextRotation).
     const leader = queue.shift()!;
     if (jobDeadline - deps.now() < needMs[leader]) summary.schedule.leaderShort = true;
-    await runPhase(leader, queue.length + 1);
+    // The sweep after it keeps its PRICE_GAP_RESERVE_MS — or a single-chain
+    // backlog (whose leader phase is the whole budget) would skip it every run.
+    // Never at the cost of the leader's own need.
+    const sweepPending = !swept && !!deps.acquirePriceGaps && !!deps.cryptoHolders;
+    const endBy = sweepPending && jobDeadline - PRICE_GAP_RESERVE_MS - deps.now() >= needMs[leader] ? jobDeadline - PRICE_GAP_RESERVE_MS : jobDeadline;
+    await runPhase(leader, queue.length + 1, endBy);
   }
   if (!swept) {
     // After the leader, never before it: the sweep cannot eat the leader's reserve.
