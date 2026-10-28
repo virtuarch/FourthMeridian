@@ -122,6 +122,20 @@ export function OpsConnectionDiagnosticsWidget({ section }: { section: PlatformS
                   <Row label="Available history" value={selected.intelligence.availableHistory} />
                 </Group>
 
+                {selected.historyBackfill && (
+                  <Group title="History backfill">
+                    <Row label="State" value={`${selected.historyBackfill.state}${selected.historyBackfill.mode === "STAGING" ? " (legacy history in force)" : ""}`} />
+                    <Row label="Proven" value={selected.historyBackfill.provenFromISO ? `${selected.historyBackfill.provenFromISO} → ${selected.historyBackfill.provenToISO ?? "—"}` : "—"} />
+                    <Row label="Head verified" value={selected.historyBackfill.headVerified ? "Yes" : "No"} />
+                    <Row label="Signatures processed" value={selected.historyBackfill.signaturesProcessed} />
+                    <Row label="Requests today" value={selected.historyBackfill.requestsToday} />
+                    <Row label="Last progress" value={fmt(selected.historyBackfill.lastProgressAtISO)} />
+                    {selected.historyBackfill.lastFailureCode && <Row label="Last failure" value={`${selected.historyBackfill.lastFailureCode} (×${selected.historyBackfill.failures})`} />}
+                    {selected.historyBackfill.nextAutomaticRetryISO && <Row label="Next automatic retry" value={fmt(selected.historyBackfill.nextAutomaticRetryISO)} />}
+                    {selected.historyBackfill.legacyDiscrepancyDays !== null && <Row label="Legacy discrepancy" value={`${selected.historyBackfill.legacyDiscrepancyDays} day(s) corrected`} />}
+                  </Group>
+                )}
+
                 <Group title="Current freshness">
                   <Row label="Latest snapshot" value={selected.freshness.latestSnapshotDate ? new Date(selected.freshness.latestSnapshotDate).toLocaleDateString() : "—"} />
                   <p className="text-[11px] leading-snug text-[var(--text-muted)]">

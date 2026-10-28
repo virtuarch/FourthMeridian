@@ -72,7 +72,8 @@ export function SectionLabel({ children }: { children: ReactNode }) {
 
 function coverageLine(h: HistoryView): string {
   switch (h.coverage) {
-    case "COMPLETE":    return h.fromISO ? `Complete from ${fmtDate(h.fromISO)}` : "Complete";
+    // Wallets: NATIVE scope, said so — never an unqualified "Complete".
+    case "COMPLETE":    return h.blockchain && h.fromISO ? `${h.blockchain.label} verified since ${fmtDate(h.fromISO)}` : h.fromISO ? `Verified from ${fmtDate(h.fromISO)}` : "Verified";
     case "AVAILABLE":   return h.fromISO ? `Available from ${fmtDate(h.fromISO)}` : "Available";
     case "PARTIAL":     return "Incomplete";
     case "IMPORTING":   return "Importing";
@@ -278,13 +279,25 @@ export function ConnectionDetailTabs({ connection, accounts, intelligence, healt
             <>
               <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{history.summary}</p>
               <div className="mt-3">
-                <Facts rows={[
+                <Facts rows={history.blockchain !== undefined ? [
+                  // WALLETS — two ranges, stated separately: what the chain proves,
+                  // and what the chart can actually show (balances × prices × snapshots).
+                  ["Blockchain history", history.blockchain && history.fromISO
+                    ? `${history.blockchain.label} verified since ${fmtDate(history.fromISO)}` : "Not verified yet"],
+                  ["Verified through", history.blockchain?.toISO ? fmtDate(history.blockchain.toISO) : null],
+                  ["Chart-ready history", history.chart
+                    ? `USD-valued since ${fmtDate(history.chart.fromISO)} (${history.chart.days} day${history.chart.days === 1 ? "" : "s"}${history.chart.continuous ? "" : ", with gaps"})`
+                    : "Not available yet"],
+                  ["Chart through", history.chart ? fmtDate(history.chart.toISO) : null],
+                  ["Last built", history.lastBuiltISO ? relativeUpdated(history.lastBuiltISO, now) : null],
+                ] : [
                   ["Earliest", history.fromISO ? fmtDate(history.fromISO) : null],
                   ["Through", history.toISO ? fmtDate(history.toISO) : null],
                   ["Last built", history.lastBuiltISO ? relativeUpdated(history.lastBuiltISO, now) : null],
                   ["Coverage", coverageLine(history)],
                 ]} />
               </div>
+              {history.rangeNote && <p className="mt-3 text-xs leading-relaxed text-[var(--text-secondary)]">{history.rangeNote}</p>}
               {history.limitations.length > 0 && (
                 <ul className="mt-3 space-y-1.5">
                   {history.limitations.map((x) => <li key={x} className="text-xs leading-relaxed text-[var(--text-muted)]">{x}</li>)}

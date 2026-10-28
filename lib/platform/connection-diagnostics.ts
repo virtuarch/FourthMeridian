@@ -26,6 +26,7 @@ import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wal
 import { deriveConnectionIntelligence, formatAvailableHistory } from "@/lib/connections/intelligence";
 import { deriveConnectionHealthState, staleWindowMs, type HealthState } from "@/lib/connections/health";
 import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
+import { statusFromCursor } from "@/lib/crypto/sol-history-backfill.core";
 import { getIngestionEvidence } from "@/lib/platform/refresh/projections";
 
 export interface ConnectionDiagnostic {
@@ -61,6 +62,25 @@ export interface ConnectionDiagnostic {
   freshness: {
     latestSnapshotDate: string | null; // FRESHNESS (snapshot recency), NOT rebuilt intelligence
   };
+  /**
+   * WALLETS with a resumable history checkpoint (Solana today) — the background
+   * backfill as an operator sees it. States, dates, counts and failure CODES
+   * only: no address, no balance, no provider text.
+   */
+  historyBackfill?: {
+    state: string;
+    mode: "DIRECT" | "STAGING";
+    provenFromISO: string | null;
+    provenToISO: string | null;
+    headVerified: boolean;
+    failures: number;
+    lastFailureCode: string | null;
+    nextAutomaticRetryISO: string | null;
+    lastProgressAtISO: string | null;
+    signaturesProcessed: number;
+    requestsToday: number;
+    legacyDiscrepancyDays: number | null;
+  } | null;
 }
 
 const DEFAULT_CAP = 50;
@@ -99,6 +119,8 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
       select:  {
         id: true, externalConnectionId: true, status: true, errorCode: true,
         lastSyncedAt: true, createdAt: true,
+        // The resumable history checkpoint (SOL) — only its STATUS leaves this function.
+        cursor: true,
         user: { select: { id: true } },
         accountConnections: { where: { deletedAt: null }, select: { financialAccountId: true } },
       },
@@ -291,6 +313,16 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
         availableHistory: formatAvailableHistory(intel.availableHistory),
       },
       freshness: { latestSnapshotDate: latestSnapshot(faIds)?.toISOString() ?? null },
+      historyBackfill: (() => {
+        const st = statusFromCursor(w.cursor, now.toISOString().slice(0, 10));
+        return st ? {
+          state: st.state, mode: st.mode, provenFromISO: st.historyFromISO, provenToISO: st.historyToISO,
+          headVerified: st.headVerified, failures: st.failures, lastFailureCode: st.lastFailureCode,
+          nextAutomaticRetryISO: st.nextAutomaticRetryISO, lastProgressAtISO: st.lastProgressAtISO,
+          signaturesProcessed: st.signaturesProcessed, requestsToday: st.requestsToday,
+          legacyDiscrepancyDays: st.legacyDiscrepancy?.days ?? null,
+        } : null;
+      })(),
     });
   }
 
