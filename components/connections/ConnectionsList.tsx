@@ -46,6 +46,7 @@ import {
 } from "@/lib/connections/intelligence";
 import type { ConnectionsSyncView } from "@/lib/connections/space-data";
 import { takeFirstConnectStarted } from "@/lib/connections/first-connect-handoff";
+import { fmtDay } from "@/lib/connections/connection-detail.core";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import { ManualAssetRow } from "@/components/connections/ManualAssetRow";
 import { ManualAssetDetail } from "@/components/connections/ManualAssetDetail";
@@ -338,6 +339,14 @@ export function ConnectionsList({
   );
   // Genuinely running work only — a paused import waits on resume, not on us.
   const inFlight = ordered.filter((c) => c.state === "importing" || inProgressPhase(c.id));
+  // Wallet history the worker is importing (persisted checkpoint state). Said to
+  // continue in the background ONLY while the worker is enabled — otherwise the
+  // row's own badge ("History queued") is the whole truth.
+  const historyImporting = ordered.filter((c) => {
+    const i = intelligence[c.id];
+    const st = c.provider === "WALLET" ? i?.walletHistory?.historyImport?.state : undefined;
+    return i?.facts?.historyWorkerEnabled === true && (st === "QUEUED" || st === "IMPORTING") && !inFlight.includes(c);
+  });
 
   // "Add another connection" — the page's own actions, not a second copy of them.
   const focusAddConnection = () => {
@@ -393,6 +402,27 @@ export function ConnectionsList({
           </button>
         </div>
       )}
+
+      {historyImporting.length > 0 && (() => {
+        const first = historyImporting[0];
+        const proven = intelligence[first.id]?.walletHistory?.historyImport?.provenFromISO ?? null;
+        return (
+          <div role="status" aria-live="polite" data-connections-history-importing
+            className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-[var(--border-hairline)] bg-[var(--surface-inset)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-[var(--text-secondary)]">
+              <span className="font-medium text-[var(--text-primary)]">
+                {historyImporting.length === 1 ? `Importing ${first.institution}’s history.` : `Importing history for ${historyImporting.length} wallets.`}
+              </span>{" "}
+              {historyImporting.length === 1 && proven ? `Verified back to ${fmtDay(proven)} so far. ` : ""}
+              Current holdings are already up to date; older history continues in the background.
+            </p>
+            <button type="button" onClick={() => { setSelectedAssetId(null); setSelectedId(first.id); }}
+              className="shrink-0 self-start rounded-[var(--radius-sm)] px-2 py-1 text-sm font-medium text-[var(--meridian-400)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:self-auto">
+              View progress
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Connections 2.0 — categories with counts. Scrolls sideways on a phone. */}
       <SegmentedControl
