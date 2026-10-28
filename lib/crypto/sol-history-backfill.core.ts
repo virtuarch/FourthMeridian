@@ -104,6 +104,22 @@ export interface SolBackfillCheckpoint {
    * Not a failure: it never pauses the backfill.
    */
   headUnverifiedSinceISO?: string | null;
+  /**
+   * OWNER DECISION 2026-10-28 — PRESERVE VALIDATED LEGACY HISTORY.
+   * "STAGING": the wallet already carries a licensed history from the previous
+   * importer. The new proof is built here (end-of-day closings in `staged`)
+   * and writes NO rows and NO licence until it is promoted — atomically —
+   * so the legacy history stays exactly as it was and two projections are
+   * never mixed. "DIRECT" (or absent): rows and licence are written as proven.
+   */
+  mode?: "DIRECT" | "STAGING";
+  /** STAGING only: [dateISO, lamports] end-of-day closings proven so far, ascending. */
+  staged?: Array<[string, string]>;
+  /** STAGING only: the legacy licensed interval being preserved. */
+  legacy?: { fromISO: string; toISO: string } | null;
+  promotedAtISO?: string | null;
+  /** Days on which the proof disagreed with the legacy rows it replaced (disclosed, never hidden). */
+  legacyDiscrepancy?: { days: number; firstISO: string; detectedAtISO: string } | null;
   failures: number;
   lastFailure: { code: SolBackfillFailureCode; atISO: string; detail?: string } | null;
   signaturesProcessed: number;
@@ -316,18 +332,25 @@ export interface SolBackfillStatus {
   signaturesProcessed: number;
   /** False while the newest activity does not yet reconcile with the observed balance (history then stops short of today). */
   headVerified: boolean;
+  /** True while the previous importer's validated history is still the one shown. */
+  legacyInForce: boolean;
+  /** Days where the proof disagreed with replaced legacy history (disclosed). */
+  legacyDiscrepancy: { days: number; firstISO: string } | null;
 }
 
 export function backfillStatus(cp: SolBackfillCheckpoint | null): SolBackfillStatus {
   if (!cp) {
     return { state: "QUEUED", historyFromISO: null, historyToISO: null, partial: false, retryable: true,
-      lastFailureCode: null, lastProgressAtISO: null, signaturesProcessed: 0, headVerified: false };
+      lastFailureCode: null, lastProgressAtISO: null, signaturesProcessed: 0, headVerified: false,
+      legacyInForce: false, legacyDiscrepancy: null };
   }
   const base = {
     historyFromISO: cp.licensedFromISO, historyToISO: cp.licensedToISO,
     lastFailureCode: cp.lastFailure?.code ?? null,
     lastProgressAtISO: cp.lastProgressAtISO, signaturesProcessed: cp.signaturesProcessed,
     headVerified: cp.top !== null && !cp.headUnverifiedSinceISO,
+    legacyInForce: cp.mode === "STAGING",
+    legacyDiscrepancy: cp.legacyDiscrepancy ? { days: cp.legacyDiscrepancy.days, firstISO: cp.legacyDiscrepancy.firstISO } : null,
   };
   const hasHistory = cp.licensedFromISO !== null;
   if (cp.gap) return { ...base, state: "RECOVERY_REQUIRED", partial: hasHistory, retryable: false };
@@ -417,4 +440,56 @@ export function statesAnchor(postLamports: string, anchor: { lamports: bigint; t
   const d = BigInt(postLamports) - anchor.lamports;
   const tol = anchor.toleranceLamports ?? BigInt(0);
   return (d < BigInt(0) ? -d : d) <= tol;
+}
+
+// ── Legacy preservation (staging → atomic promotion) ─────────────────────────
+
+/** Apply one chunk to the staged closings exactly as the store applies it to rows. */
+export function applyToStaged(
+  staged: ReadonlyArray<[string, string]>, span: { from: string; to: string } | null, rows: ReadonlyArray<{ dateISO: string; lamports: bigint }>,
+): Array<[string, string]> {
+  const m = new Map<string, string>(staged);
+  if (span) for (const d of [...m.keys()]) if (d >= span.from && d <= span.to) m.delete(d);
+  for (const r of rows) m.set(r.dateISO, r.lamports.toString());
+  return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+export interface PromotionDecision {
+  promote: boolean;
+  /** Why: COVERED (the proof spans the legacy interval) or LEGACY_DISPROVED (it disagrees on a proven day). */
+  reason: "COVERED" | "LEGACY_DISPROVED" | null;
+  discrepancy: { days: number; firstISO: string } | null;
+}
+
+/**
+ * Promote when the new proof covers the whole legacy interval — or as soon as
+ * it DISAGREES with a legacy row on a day it has proven: that legacy history is
+ * then demonstrably wrong, and presenting it any longer would mislead. A
+ * disagreement is returned for disclosure either way.
+ *
+ * `toleranceSol` absorbs float storage of the legacy quantity (never more).
+ */
+export function decidePromotion(
+  next: Pick<SolBackfillCheckpoint, "licensedFromISO" | "licensedToISO" | "reachedBeginning" | "completedAtISO">,
+  staged: ReadonlyArray<[string, string]>,
+  legacy: { fromISO: string; toISO: string },
+  legacyRows: ReadonlyMap<string, number>,
+  toleranceSol = 1e-9,
+): PromotionDecision {
+  let days = 0;
+  let firstISO: string | null = null;
+  for (const [d, lamports] of staged) {
+    if (d < legacy.fromISO || d > legacy.toISO) continue;
+    const q = legacyRows.get(d);
+    if (q === undefined) continue;
+    const sol = Number(BigInt(lamports)) / 1e9;
+    if (Math.abs(sol - q) > Math.max(toleranceSol, Math.abs(q) * 1e-12)) { days++; if (!firstISO) firstISO = d; }
+  }
+  const discrepancy = days > 0 ? { days, firstISO: firstISO! } : null;
+  const covered = !!next.licensedFromISO && !!next.licensedToISO
+    && (next.licensedFromISO <= legacy.fromISO || (next.reachedBeginning && !!next.completedAtISO))
+    && next.licensedToISO >= legacy.toISO;
+  if (discrepancy) return { promote: true, reason: "LEGACY_DISPROVED", discrepancy };
+  if (covered) return { promote: true, reason: "COVERED", discrepancy: null };
+  return { promote: false, reason: null, discrepancy: null };
 }

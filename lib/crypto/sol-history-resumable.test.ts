@@ -156,6 +156,8 @@ class MemoryStore implements SolBackfillStore {
   commits = 0;
   violations: string[] = [];
   constructor(public anchorValue: { dateISO: string; lamports: bigint; toleranceLamports?: bigint } | null) {}
+  legacyValue: { fromISO: string; toISO: string; rows: Map<string, number> } | null = null;
+  async legacy() { return this.legacyValue; }
   async readCursor() { return this.cursor; }
   async anchor() { return this.anchorValue; }
   async commit(c: SolBackfillCommit) {
@@ -488,6 +490,60 @@ async function main() {
     check("progress then failure still reports rows written and where history changed", pf.progressed && pf.rowsWritten > 0 && pf.impactedFromISO !== null && pf.failure?.code === "PROVIDER_THROTTLED");
     const store99 = read("lib/crypto/sol-history-backfill.store.ts");
     check("…and the refresh treats committed progress as a refresh (snapshot window widens)", /if \(o\.progressed\) \{[\s\S]{0,400}return \{ \.\.\.base, ok: true, \.\.\.refusal \};/.test(store99));
+  }
+
+  console.log("\nowner decision 1 — legacy history is preserved until replaced atomically");
+  {
+    const chain = makeChain(12_000, { seed: 101 });
+    const want = truth(chain, ANCHOR_ISO);
+    const days = [...want.keys()];
+    const legacyFrom = days[0], legacyTo = days[days.length - 3];
+    const legacyRows = new Map([...want].filter(([d]) => d <= legacyTo));
+    const clock = { t: 0 };
+    const { call } = rpc(() => chain, clock);
+    const store = new MemoryStore(anchorFor(chain));
+    for (const [d, q] of legacyRows) store.rows.set(d, q);
+    const legacyCov = { kind: "COMPLETE", fromISO: legacyFrom, toISO: legacyTo, source: "solana-rpc+balance-reconciliation" };
+    store.coverage = legacyCov;
+    store.legacyValue = { fromISO: legacyFrom, toISO: legacyTo, rows: new Map(legacyRows) };
+    const first = await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store }, { call, budgetMs: 2_000, now: () => clock.t });
+    check("while the new proof builds, legacy rows and licence are untouched", store.coverage === legacyCov && store.rows.size === legacyRows.size
+      && [...legacyRows].every(([d, q]) => store.rows.get(d) === q) && first.rowsWritten === 0, `${store.rows.size} ${first.rowsWritten}`);
+    check("…and the status says the legacy history is the one in force", first.status.legacyInForce && first.status.state === "IMPORTING");
+    check("…while the proof itself is durably staged in the checkpoint", (parseCheckpoint(store.cursor, ACCOUNT, OWNER)?.staged?.length ?? 0) > 0);
+    const { last } = await runToEnd(store, call, clock, 2_000);
+    const cp = parseCheckpoint(store.cursor, ACCOUNT, OWNER);
+    check("once the proof covers the legacy interval it is PROMOTED in one commit", (last.promoted === "COVERED" || cp?.promotedAtISO != null) && cp?.mode === "DIRECT" && !cp?.staged);
+    check("…the rows are then exactly the proven truth, under the new licence", sameAsTruth(store, chain).ok && (store.coverage as { source: string }).source === "solana-rpc+chain-continuity", sameAsTruth(store, chain).detail);
+    check("…and agreement with legacy is recorded as no discrepancy", !cp?.legacyDiscrepancy && !last.status.legacyInForce);
+  }
+  {
+    const chain = makeChain(6_000, { seed: 103 });
+    const want = truth(chain, ANCHOR_ISO);
+    const days = [...want.keys()];
+    const legacyRows = new Map(want);
+    const wrongDay = days[days.length - 5];
+    legacyRows.set(wrongDay, (legacyRows.get(wrongDay) ?? 0) + 3); // legacy was wrong on one recent day
+    const clock = { t: 0 };
+    const { call } = rpc(() => chain, clock);
+    const store = new MemoryStore(anchorFor(chain));
+    for (const [d, q] of legacyRows) store.rows.set(d, q);
+    store.coverage = { kind: "COMPLETE", fromISO: days[0], toISO: ANCHOR_ISO, source: "solana-rpc+balance-reconciliation" };
+    store.legacyValue = { fromISO: days[0], toISO: ANCHOR_ISO, rows: new Map(legacyRows) };
+    const o = await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store }, { call, budgetMs: 1_200, now: () => clock.t });
+    const cp = parseCheckpoint(store.cursor, ACCOUNT, OWNER);
+    check("legacy history demonstrably wrong on a proven day is withdrawn at once (not kept on show)", o.promoted === "LEGACY_DISPROVED" && cp?.mode === "DIRECT", `${o.promoted} ${cp?.mode}`);
+    check("…the disagreement is disclosed with its first day", cp?.legacyDiscrepancy?.days === 1 && cp.legacyDiscrepancy.firstISO === wrongDay && o.status.legacyDiscrepancy?.days === 1);
+    check("…and no legacy row survives beside the proof (projections never mixed)",
+      [...store.rows.keys()].every((d) => d >= (cp?.licensedFromISO ?? "9")) && store.rows.get(wrongDay) === want.get(wrongDay));
+  }
+  {
+    const chain = makeChain(500, { seed: 105 });
+    const clock = { t: 0 };
+    const store = new MemoryStore(anchorFor(chain));
+    store.rows.set("2020-01-01", 42); // an UNLICENSED leftover
+    const o = await runSolHistoryBackfill({ accountId: ACCOUNT, address: OWNER, store }, { call: rpc(() => chain, clock).call, budgetMs: 1e9, now: () => clock.t });
+    check("no licensed legacy ⇒ direct writes; unlicensed leftovers are replaced", o.status.state === "COMPLETE" && !store.rows.has("2020-01-01") && sameAsTruth(store, chain).ok);
   }
 
   console.log("\nunits");

@@ -10,9 +10,9 @@
 import { PositionOrigin, type PrismaClient } from "@prisma/client";
 import { SOL_ASSET, resolveCryptoInstrumentId } from "@/lib/investments/crypto-instrument";
 import { SOL_NATIVE } from "./native-asset";
-import { persistPositionCoverage } from "./position-coverage";
+import { persistPositionCoverage, loadPositionCoverage, licensedInterval } from "./position-coverage";
 import { SOL_RECONSTRUCTION_SOURCE } from "./sol-history-sync";
-import { SOL_CHAIN_STATED_BASIS, SOL_RECONSTRUCTION_VERSION, type SolBackfillFailureCode } from "./sol-history-backfill.core";
+import { SOL_CHAIN_STATED_BASIS, SOL_RECONSTRUCTION_VERSION, SOL_CONTINUITY_SOURCE, type SolBackfillFailureCode } from "./sol-history-backfill.core";
 import {
   runSolHistoryBackfill, CheckpointConflictError,
   type SolBackfillStore, type SolBackfillDeps, type SolBackfillOutcome,
@@ -51,6 +51,20 @@ export async function prismaSolBackfillStore(accountId: string, db: PrismaClient
       const lamports = BigInt(Math.round(row.quantity * Number(lamportsPerSol)));
       const toleranceLamports = BigInt(Math.max(1, Math.ceil(Math.abs(Number(lamports)) * Number.EPSILON * 4)));
       return { dateISO: row.date.toISOString().slice(0, 10), lamports, toleranceLamports };
+    },
+    async legacy() {
+      // The previous importer's LICENCE (never this importer's own), and its rows.
+      const cov = (await loadPositionCoverage(db, [accountId])).get(accountId);
+      if (!cov || cov.source === SOL_CONTINUITY_SOURCE) return null;
+      const interval = licensedInterval(cov);
+      if (!interval) return null;
+      const rows = await db.positionObservation.findMany({
+        where: { financialAccountId: accountId, instrumentId, origin: PositionOrigin.DERIVED, source: SOL_RECONSTRUCTION_SOURCE,
+          // Legacy rows carry no version (NULL) — `NOT { = 2 }` would drop them in SQL.
+          deletedAt: null, OR: [{ reconstructionVersion: null }, { reconstructionVersion: { not: SOL_RECONSTRUCTION_VERSION } }] },
+        select: { date: true, quantity: true },
+      });
+      return { ...interval, rows: new Map(rows.map((r) => [r.date.toISOString().slice(0, 10), r.quantity])) };
     },
     async commit(c) {
       await db.$transaction(async (tx) => {

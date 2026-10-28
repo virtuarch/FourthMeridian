@@ -35,7 +35,7 @@ import { baseUnitsToWhole, type ChainCoverage } from "./chain-movement";
 import {
   emptyCheckpoint, parseCheckpoint, serializeCheckpoint, pointFromTransaction,
   extendBackward, extendForward, dailyClosings, addDaysISO, backfillStatus, shouldRunAutomatically,
-  orderSameSlot, statesAnchor,
+  orderSameSlot, statesAnchor, applyToStaged, decidePromotion,
   SolProofDataError, SOL_CONTINUITY_SOURCE,
   type SolBackfillCheckpoint, type SolBackfillFailureCode, type SolBackfillStatus,
   type SolTxForProof, type SolTxPoint,
@@ -228,6 +228,11 @@ export interface SolBackfillStore {
   anchor(): Promise<{ dateISO: string; lamports: bigint; toleranceLamports?: bigint } | null>;
   /** One transaction. Throws CheckpointConflictError when the cursor is not `expectedCursor`. */
   commit(c: SolBackfillCommit): Promise<void>;
+  /**
+   * The previous importer's LICENSED history, when there is one: its interval
+   * and its DERIVED rows (whole SOL by date). Null when nothing is licensed.
+   */
+  legacy?(): Promise<{ fromISO: string; toISO: string; rows: Map<string, number> } | null>;
 }
 
 // ── The run ──────────────────────────────────────────────────────────────────
@@ -242,6 +247,8 @@ export interface SolBackfillOutcome {
   signaturesProcessed: number;
   pagesFetched: number;
   stoppedBecause: "COMPLETE" | "BUDGET" | "FAILURE" | "GAP" | "CONFLICT" | "SKIPPED" | "IDLE";
+  /** Set on the run that promoted staged history over legacy rows. */
+  promoted?: "COVERED" | "LEGACY_DISPROVED" | null;
   failure: { code: SolBackfillFailureCode | "CHECKPOINT_CONFLICT"; detail: string } | null;
 }
 
@@ -284,7 +291,53 @@ export async function runSolHistoryBackfill(
   let replaceAll = working.top === null;
 
   /** Persist `next` (and rows) by CAS from the cursor this run last wrote. */
-  const commit = async (next: SolBackfillCheckpoint, rows: Array<{ dateISO: string; lamports: bigint }>, span: { from: string; to: string } | null) => {
+  // OWNER DECISION 1 — a fresh checkpoint over a licensed legacy history
+  // STAGES its proof instead of replacing anything.
+  let legacyRows: Map<string, number> | null = null;
+  if (working.top === null && working.mode === undefined) {
+    const legacy = args.store.legacy ? await args.store.legacy() : null;
+    if (legacy) {
+      legacyRows = legacy.rows;
+      working = { ...working, mode: "STAGING", staged: [], legacy: { fromISO: legacy.fromISO, toISO: legacy.toISO } };
+    } else {
+      working = { ...working, mode: "DIRECT" };
+    }
+  }
+  const loadLegacyRows = async () => {
+    if (legacyRows) return legacyRows;
+    legacyRows = (args.store.legacy ? (await args.store.legacy())?.rows : null) ?? new Map();
+    return legacyRows;
+  };
+
+  const commit = async (nextIn: SolBackfillCheckpoint, rows: Array<{ dateISO: string; lamports: bigint }>, span: { from: string; to: string } | null) => {
+    if (nextIn.mode === "STAGING" && nextIn.legacy) {
+      const staged = applyToStaged(nextIn.staged ?? [], span, rows);
+      const decision = decidePromotion(nextIn, staged, nextIn.legacy, await loadLegacyRows());
+      if (!decision.promote) {
+        // Proof advances; rows and licence are untouched (legacy stays in force).
+        const next = { ...nextIn, staged };
+        const nextRaw = serializeCheckpoint(next);
+        await args.store.commit({ expectedCursor: raw, nextCursor: nextRaw, replaceAll: false,
+          deleteFromISO: null, deleteToISO: null, rows: [], coverage: null });
+        raw = nextRaw; working = next;
+        return;
+      }
+      // ATOMIC PROMOTION: every legacy row of this source goes, the proven rows
+      // and the new licence land, and the checkpoint flips — one transaction.
+      const next: SolBackfillCheckpoint = { ...nextIn, mode: "DIRECT", staged: undefined, legacy: null,
+        promotedAtISO: nowISO(),
+        legacyDiscrepancy: decision.discrepancy ? { ...decision.discrepancy, detectedAtISO: nowISO() } : null };
+      const nextRaw = serializeCheckpoint(next);
+      const all = staged.map(([d, l]) => ({ dateISO: d, lamports: BigInt(l) }));
+      await args.store.commit({ expectedCursor: raw, nextCursor: nextRaw, replaceAll: true,
+        deleteFromISO: null, deleteToISO: null,
+        rows: all.map((r) => ({ dateISO: r.dateISO, quantity: toSol(r.lamports) })), coverage: coverageOf(next) });
+      raw = nextRaw; working = next; replaceAll = false;
+      outcome.promoted = decision.reason;
+      if (all.length > 0) { outcome.rowsWritten += all.length; impacted(all[0].dateISO); }
+      return;
+    }
+    const next = nextIn;
     const nextRaw = serializeCheckpoint(next);
     await args.store.commit({
       expectedCursor: raw, nextCursor: nextRaw, replaceAll,
