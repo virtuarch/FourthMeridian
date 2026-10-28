@@ -15,7 +15,7 @@ import {
   type SolBackfillStore, type SolBackfillCommit, type SolRpcCall,
 } from "@/lib/crypto/sol-history-backfill";
 import {
-  parseCheckpoint, backfillStatus, dailyClosings, extendBackward, MAX_CONSECUTIVE_FAILURES,
+  parseCheckpoint, backfillStatus, dailyClosings, extendBackward, MAX_CONSECUTIVE_FAILURES, isSolBackfillCursor,
   type SolTxForProof,
 } from "@/lib/crypto/sol-history-backfill.core";
 
@@ -401,6 +401,9 @@ async function main() {
     const g = extendBackward(p("b", 2, "2026-01-03", 10, 4), [p("a", 1, "2026-01-01", 0, 9)]);
     check("continuity: post(older) ≠ pre(newer) is a gap", g.kind === "GAP");
     check("status of no checkpoint is QUEUED", backfillStatus(null).state === "QUEUED");
+    const raw = JSON.stringify({ kind: "sol-history", v: 1 });
+    check("a SOL checkpoint is recognisable, so source health never reads it as BTC discovery",
+      isSolBackfillCursor(raw) && !isSolBackfillCursor('{"v":1,"xpub":"…"}') && !isSolBackfillCursor(null));
   }
 
   console.log("\nwiring");
@@ -414,6 +417,9 @@ async function main() {
       /\$transaction\(async \(tx\) => \{\s*const swapped = await tx\.connection\.updateMany\(\{ where: \{ id: connectionId, cursor: c\.expectedCursor \}/.test(run)
       && /persistPositionCoverage\(tx,/.test(run));
     check("only DERIVED rows of this source are ever deleted", /origin: PositionOrigin\.DERIVED, source: SOL_RECONSTRUCTION_SOURCE/.test(run) && !/OBSERVED[^\n]*deleteMany|deleteMany[^\n]*OBSERVED/.test(run));
+    const health = read("lib/connections/space-data.ts") + read("lib/connections/space-data-health.ts");
+    check("both source-health readers exclude the SOL checkpoint from 'discovery in progress'",
+      (health.match(/discoveryCursor: !!\w+\.cursor && !isSolBackfillCursor\(\w+\.cursor\)/g) ?? []).length === 2);
     check("standard RPC methods only, finalized, v0-aware",
       /"getSignaturesForAddress"/.test(run) && /"getTransaction"/.test(run) && /commitment: "finalized"/.test(run) && /maxSupportedTransactionVersion: 0/.test(run));
   }

@@ -336,3 +336,12 @@ export function shouldRunAutomatically(cp: SolBackfillCheckpoint | null, nowMs: 
   }
   return { run: true };
 }
+
+/**
+ * Is this `Connection.cursor` a SOL history checkpoint? Source health reads
+ * "has a cursor" as "Bitcoin xpub discovery in progress"; a SOL checkpoint must
+ * never be mistaken for one.
+ */
+export function isSolBackfillCursor(raw: string | null | undefined): boolean {
+  return typeof raw === "string" && raw.startsWith(`{"kind":"${SOL_BACKFILL_CURSOR_KIND}"`);
+}

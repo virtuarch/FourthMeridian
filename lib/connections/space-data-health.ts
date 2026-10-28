@@ -14,6 +14,7 @@
  * credential, cursor value or external id is selected.
  */
 
+import { isSolBackfillCursor } from "@/lib/crypto/sol-history-backfill.core";
 import 'server-only';
 import type { PrismaClient, VisibilityLevel } from '@prisma/client';
 import { grantsAccountDetail } from '@/lib/ai/visibility';
@@ -78,7 +79,7 @@ export async function loadSpaceDataHealth(
       } : null,
       wallet: walletConn ? {
         key: walletConn.id, ownerUserId: walletConn.userId, status: walletConn.status,
-        errorCode: walletConn.errorCode, lastSyncedAt: walletConn.lastSyncedAt, discoveryCursor: !!walletConn.cursor,
+        errorCode: walletConn.errorCode, lastSyncedAt: walletConn.lastSyncedAt, discoveryCursor: !!walletConn.cursor && !isSolBackfillCursor(walletConn.cursor),
       } : null,
     };
   });

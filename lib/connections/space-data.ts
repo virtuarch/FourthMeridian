@@ -49,6 +49,7 @@
  * no money.
  */
 
+import { isSolBackfillCursor } from "@/lib/crypto/sol-history-backfill.core";
 import type { ReadClient } from "@/lib/db/tenant-context";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { PlaidItemStatus, ConnectionStatus } from "@prisma/client";
@@ -498,7 +499,7 @@ export async function loadConnectionsSpaceData(client: ReadClient, userId: strin
       syncIncompleteAt: i.syncIncompleteAt, historyBuildStartedAt: i.historyBuildStartedAt } });
   }
   for (const w of walletCreatedRows) {
-    rawByConnId.set(w.id, { wallet: { status: w.status, errorCode: w.errorCode, lastSyncedAt: w.lastSyncedAt, discoveryCursor: !!w.cursor } });
+    rawByConnId.set(w.id, { wallet: { status: w.status, errorCode: w.errorCode, lastSyncedAt: w.lastSyncedAt, discoveryCursor: !!w.cursor && !isSolBackfillCursor(w.cursor) } });
   }
   const connectedAtByConnId = new Map<string, Date>();
   for (const i of items) connectedAtByConnId.set(i.id, i.createdAt);
