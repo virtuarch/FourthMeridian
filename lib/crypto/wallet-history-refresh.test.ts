@@ -50,7 +50,9 @@ const body = (s: string) => {
     /refreshWalletHistory\(accountId, key\)/.test(dispatch),
     "without this the reconstructions have zero production callers and history goes stale");
   check("…and it is the dispatcher that calls it (one production caller, not a route)",
-    /const \[quote, historyRefresh\] = await Promise\.all\(\[/.test(dispatch));
+    // TOKEN HOLDINGS (PR-A) — a third non-gating stage (the in-flight token
+    // capture) joined the same Promise.all; the destructuring grew by one name.
+    /const \[quote, historyRefresh, tokenHoldings\] = await Promise\.all\(\[/.test(dispatch));
 
   const refresh = code(read("lib", "crypto", "wallet-history-refresh.ts"));
   check("…dispatching to the reconstruction that belongs to the chain",

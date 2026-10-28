@@ -80,6 +80,8 @@ import type { SourceHealthInput } from "@/lib/connections/space-data-health.core
 import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refresh-policy";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
+import { loadWalletInstrumentHistory } from "@/lib/crypto/wallet-instrument-history";
+import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
 import { chartReadyRange } from "@/lib/connections/connection-detail.core";
 import { getSnapshotDates } from "@/lib/data/snapshots";
@@ -328,6 +330,8 @@ async function loadConnectionIntelligence(
     .map((a) => ({ id: a.id, walletChain: walletChainByAccount.get(a.id) ?? null }))
     .filter((a) => a.walletChain !== null);
   const historyMeta = await loadWalletHistoryMetadata(walletAccounts, { client });
+  // TOKEN HOLDINGS (PR-A) — per-instrument history facets (native + each token).
+  const instrumentHistory = await loadWalletInstrumentHistory(client, walletAccounts);
 
   // CRYPTO-FRESHNESS-1 — CURRENT-POSITION FRESHNESS, from the spine.
   //
@@ -356,7 +360,8 @@ async function loadConnectionIntelligence(
   // snapshots serves). Dates only — no price, no value.
   const coverageInstrument = walletAccounts.length
     ? new Map((await client.positionCoverage.findMany({
-        where: { financialAccountId: { in: walletAccounts.map((a) => a.id) } },
+        // The NATIVE instrument's coverage row — a token row must not replace it.
+        where: { financialAccountId: { in: walletAccounts.map((a) => a.id) }, instrument: NOT_TOKEN_INSTRUMENT },
         select: { financialAccountId: true, instrumentId: true },
       })).map((r) => [r.financialAccountId, r.instrumentId]))
     : new Map<string, string>();
@@ -499,6 +504,14 @@ async function loadConnectionIntelligence(
       const priceFromISO = floors.length && floors.every((f) => f !== null) ? maxOf(floors) : null;
       walletHistory.priceFromISO = priceFromISO;
       walletHistory.chart = chartReadyRange(walletHistory, priceFromISO, snapshotDates);
+      const perInstrument = (accountsByConnectionId[c.id] ?? []).map((a) => instrumentHistory.get(a.id)).filter((h) => h !== undefined);
+      walletHistory.tokens = perInstrument.flatMap((h) => h.tokens.filter((t) => t.held).map((t) => ({
+        // PCS-2 — identity, price presence and history state only; the quantity stays behind.
+        label: t.label, standard: t.standard, priceStatus: t.priceStatus,
+        historyState: t.state, firstObservedISO: t.firstObservedISO, lastObservedISO: t.lastObservedISO,
+      })));
+      walletHistory.walletComplete = perInstrument.length > 0 && perInstrument.every((h) => h.complete);
+      walletHistory.chain = chains[0] ?? null;
     }
     if (walletHistory && c.provider === "WALLET") {
       // SOL's checkpoint on `cursor`, BTC's / ETH's on `historyCheckpoint` — each

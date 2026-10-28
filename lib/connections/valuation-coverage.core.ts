@@ -34,11 +34,18 @@ export interface ValuationCoverage {
   limits: ValuationCoverageLimit[];
   /** The latest price floor among the limits — the first day every limited asset can be valued; null if any has none. */
   valuedFromISO: string | null;
+  /**
+   * TOKEN HOLDINGS (PR-A) — the first day a PRICED wallet token was observed in
+   * this Space: token value is included from here; earlier token balances are
+   * not reconstructed. Null/absent when no priced token exists.
+   */
+  tokensTrackedFromISO?: string | null;
 }
 
 export function deriveValuationCoverage(
   rows: readonly ValuationCoverageInput[],
   priceFloors: ReadonlyMap<string, string | null>,
+  tokensTrackedFromISO: string | null = null,
 ): ValuationCoverage | null {
   const bySymbol = new Map<string, ValuationCoverageLimit>();
   for (const r of rows) {
@@ -50,10 +57,10 @@ export function deriveValuationCoverage(
     if (r.balanceFromISO < prev.balanceFromISO) prev.balanceFromISO = r.balanceFromISO;
   }
   const limits = [...bySymbol.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
-  if (!limits.length) return null;
+  if (!limits.length && !tokensTrackedFromISO) return null;
   const floors = limits.map((l) => l.pricedFromISO);
-  const valuedFromISO = floors.every((f): f is string => f !== null) ? [...floors].sort().at(-1)! : null;
-  return { limits, valuedFromISO };
+  const valuedFromISO = !limits.length ? null : floors.every((f): f is string => f !== null) ? [...floors].sort().at(-1)! : null;
+  return { limits, valuedFromISO, ...(tokensTrackedFromISO ? { tokensTrackedFromISO } : {}) };
 }
 
 function fmtDay(iso: string): string {
@@ -70,9 +77,14 @@ export function valuationCoverageNote(cov: ValuationCoverage | null, chartFromIS
   if (!cov || !chartFromISO) return null;
   const relevant = cov.limits.filter((l) => l.balanceFromISO < chartFromISO
     && (l.pricedFromISO === null || chartFromISO <= l.pricedFromISO));
-  if (!relevant.length) return null;
   const parts = relevant.map((l) => l.pricedFromISO
     ? `${l.symbol} balances are known from ${fmtDay(l.balanceFromISO)}, but its historical prices start ${fmtDay(l.pricedFromISO)}`
     : `${l.symbol} balances are known from ${fmtDay(l.balanceFromISO)}, but no historical ${l.symbol} prices are stored yet`);
-  return `${parts.join("; ")}. Earlier days aren’t valued (never counted as zero), so this history starts later.`;
+  const priceNote = parts.length ? `${parts.join("; ")}. Earlier days aren’t valued (never counted as zero), so this history starts later.` : null;
+  // TOKEN HOLDINGS (PR-A) — the chart reaches back before token tracking began:
+  // those days carry native value only. Said, never filled.
+  const tokenNote = cov.tokensTrackedFromISO && chartFromISO < cov.tokensTrackedFromISO
+    ? `Token holdings are included from ${fmtDay(cov.tokensTrackedFromISO)}, when tracking began; earlier token balances aren’t reconstructed yet.`
+    : null;
+  return [priceNote, tokenNote].filter((x): x is string => x !== null).join(" ") || null;
 }

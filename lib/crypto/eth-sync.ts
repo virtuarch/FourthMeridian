@@ -62,7 +62,11 @@
  *   - A provider failure NEVER writes a position. An unreachable RPC and an
  *     empty wallet are opposite facts and must never produce the same row.
  *
- * Out of scope (W-M1b): ERC-20 tokens, transaction import, internal transfers,
+ * TOKEN HOLDINGS (PR-A): ERC-20 CURRENT holdings are captured after a successful
+ * native read (evm-native.ts → lib/crypto/wallet-token-capture.ts), isolated and
+ * budgeted. ERC-20 HISTORY is not reconstructed.
+ *
+ * Out of scope (W-M1b): ERC-20 history, transaction import, internal transfers,
  * ENS, contract detection, staking, L2s, any EVM chain other than mainnet.
  */
 
@@ -117,6 +121,7 @@ export async function syncAllEthWallets(deps: EthSyncDeps = {}): Promise<SyncAll
   const syncedAccountIds: string[] = [];
   for (const w of wallets) {
     const r = await syncEthWallet(w.id, deps);
+    if (r.tokenHoldings) await r.tokenHoldings; // never rejects; never outlives this sweep
     if (r.ok) { succeeded++; syncedAccountIds.push(w.id); }
     else failed++;
   }
