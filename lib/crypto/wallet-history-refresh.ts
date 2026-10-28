@@ -38,6 +38,7 @@ import { PositionOrigin } from "@prisma/client";
 import { BTC_NATIVE, ETH_NATIVE, SOL_NATIVE } from "./native-asset";
 import { reconstructBtcHistory } from "./btc-history-sync";
 import { reconstructSolHistoryResumable } from "./sol-history-backfill.store";
+import { syncHeadOnly } from "./sol-history-backfill";
 import { reconstructEthHistory } from "./eth-history-sync";
 import { todayUTCISO } from "@/lib/time/clock";
 
@@ -110,7 +111,7 @@ export async function refreshWalletHistory(
     // SOL: the resumable, checkpointed backfill (sol-history-backfill.ts). The
     // wholesale reconstructSolHistory stopped at 5,000 signatures per run and
     // never resumed; it remains only as the fixture-driven acceptance path.
-    : key === SOL_NATIVE.chain ? (a: { accountId: string; windowFromISO: string; windowToISO: string }) => reconstructSolHistoryResumable({ ...a, client: db })
+    : key === SOL_NATIVE.chain ? (a: { accountId: string; windowFromISO: string; windowToISO: string }) => reconstructSolHistoryResumable({ ...a, client: db, deps: { headOnly: syncHeadOnly() } })
     : key === ETH_NATIVE.chain ? reconstructEthHistory
     : null;
   if (run === null) return { accountId, chain: key, refreshed: false, reason: "chain has no reconstruction" };
