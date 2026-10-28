@@ -44,7 +44,7 @@ export async function loadWalletSyncConnections(client: ReadClient, userId: stri
       cursor:       true,
       accountConnections: {
         where:  { deletedAt: null },
-        select: { financialAccount: { select: { id: true, name: true, type: true, deletedAt: true } } },
+        select: { financialAccount: { select: { id: true, name: true, type: true, deletedAt: true, walletChain: true, walletAddress: true } } },
       },
     },
     orderBy: { createdAt: "asc" },
@@ -61,7 +61,7 @@ export async function loadWalletSyncConnections(client: ReadClient, userId: stri
       const fa = ac.financialAccount;
       if (!fa || fa.deletedAt !== null || seen.has(fa.id)) continue;
       seen.add(fa.id);
-      accounts.push({ id: fa.id, name: fa.name, type: fa.type });
+      accounts.push({ id: fa.id, name: fa.name, type: fa.type, chain: fa.walletChain, publicAddress: fa.walletAddress });
     }
     if (accounts.length === 0) continue; // no active account → no card (e.g. removed wallet)
 

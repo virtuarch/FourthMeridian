@@ -26,15 +26,8 @@ import { Surface } from "@/components/atlas/Surface";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
-
-function postOnboarding(event: "dismissed"): Promise<void> {
-  return fetch("/api/onboarding", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ event }),
-    keepalive: true,
-  }).then(() => undefined, () => undefined);
-}
+import { dismissNotice } from "@/components/notices/NoticeRail";
+import { noteFirstConnectStarted } from "@/lib/connections/first-connect-handoff";
 
 function Option({ icon: Icon, title, body, note, onClick, disabled, busy }: {
   icon: LucideIcon; title: string; body: string; note?: string; onClick: () => void; disabled?: boolean; busy?: boolean;
@@ -74,9 +67,12 @@ export function ConnectionsOnboarding({ welcome = false, firstName = null, plaid
   const [assetAdded, setAssetAdded] = useState(false);
 
 
-  async function explore() {
+  function explore() {
     setLeaving(true);
-    await postOnboarding("dismissed");
+    // The notice rail's own dismissal: hides the "Add your first account"
+    // invitation in this tab at once (the rail outlives this client-side
+    // navigation) AND records it server-side (keepalive POST /api/onboarding).
+    dismissNotice("connect");
     router.push("/dashboard");
   }
 
@@ -84,7 +80,7 @@ export function ConnectionsOnboarding({ welcome = false, firstName = null, plaid
     <div className="mx-auto max-w-xl pt-2" data-connections-onboarding={welcome ? "welcome" : "empty"}>
       <div className="text-center">
         <h2 className="text-lg font-semibold text-[var(--text-primary)]">
-          {welcome ? `Welcome to Fourth Meridian${firstName ? `, ${firstName}` : ""}` : "Add your first account"}
+          {welcome ? `Welcome to Fourth Meridian${firstName ? `, ${firstName}` : ""}` : "Connect an account"}
         </h2>
         <p className="mx-auto mt-1.5 max-w-md text-sm leading-relaxed text-[var(--text-secondary)]">
           Bring in what you own and owe, and Fourth Meridian builds your net worth, cash flow and history from it.
@@ -106,7 +102,7 @@ export function ConnectionsOnboarding({ welcome = false, firstName = null, plaid
               title="Connect a bank or brokerage"
               body="Checking, savings, credit cards, loans and investments, through Plaid."
               note="Read-only. Fourth Meridian never sees your bank password."
-              onClick={() => openLink()}
+              onClick={() => { noteFirstConnectStarted(); openLink(); }}
               disabled={isLoading}
               busy={isLoading}
             />
@@ -141,7 +137,7 @@ export function ConnectionsOnboarding({ welcome = false, firstName = null, plaid
         <p className="text-[11px] text-[var(--text-muted)]">Connecting is optional. You can add accounts later from Connections.</p>
       </div>
 
-      {walletOpen && <AddWalletModal onClose={() => setWalletOpen(false)} onAdd={() => router.refresh()} />}
+      {walletOpen && <AddWalletModal onClose={() => setWalletOpen(false)} onAdd={() => { noteFirstConnectStarted(); router.refresh(); }} />}
       {assetOpen && <AddManualAssetModal onClose={() => setAssetOpen(false)} onAdd={() => { setAssetAdded(true); router.refresh(); }} />}
     </div>
   );

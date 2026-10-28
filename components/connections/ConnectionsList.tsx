@@ -31,9 +31,8 @@ import { ConnectionRow } from "@/components/connections/ConnectionRow";
 import { ConnectionMenu } from "@/components/connections/ConnectionMenu";
 import { Surface } from "@/components/atlas/Surface";
 import { GlassButton } from "@/components/atlas/GlassButton";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, ChevronLeft } from "lucide-react";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
-import { providerName } from "@/lib/sync/status";
 import { BuildIntelligencePanel } from "@/components/connections/BuildIntelligencePanel";
 import type { SyncStatus } from "@/lib/sync/status";
 import {
@@ -41,6 +40,7 @@ import {
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
 import type { ConnectionsSyncView } from "@/lib/connections/space-data";
+import { takeFirstConnectStarted } from "@/lib/connections/first-connect-handoff";
 
 const POLL_INTERVAL_MS = 4000;
 // Must outlast ONE server-side sync budget (maxDuration = 300s) plus margin,
@@ -199,6 +199,7 @@ export function ConnectionsList({
           isBuildingIntelligence(Object.values(next.intelligenceByConnectionId));
         if (prevShouldPollRef.current && !nextShouldPoll) {
           router.refresh();
+          takeFirstConnectStarted(); // the watched transition consumes the handoff
           setJustCompleted(true);
         }
         prevShouldPollRef.current = nextShouldPoll;
@@ -291,6 +292,16 @@ export function ConnectionsList({
 
   const anyReady = status.connections.some((c) => intelligence[c.id]?.phase === "READY");
 
+  // A first connection started from the onboarding view in this tab that was
+  // already READY before the poller ever ran (an empty wallet syncs inside the
+  // add request) still gets its ready moment — once, from persisted READY state.
+  useEffect(() => {
+    if (shouldPoll || !anyReady) return;
+    // One-shot handoff read on a settled, server-reported READY list.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (takeFirstConnectStarted()) setJustCompleted(true);
+  }, [shouldPoll, anyReady]);
+
   // One list. Work in progress (importing OR reconstructing) sorts first so a
   // just-added connection is the row the user sees; the rest keep server order.
   const ordered = [...status.connections].sort(
@@ -354,11 +365,19 @@ export function ConnectionsList({
       {/* The connection's detail — docked right on desktop, a bottom sheet on
           mobile (RightPanel). Overview, accounts, health, history coverage, last
           sync, work in progress and recovery actions, all from the same state. */}
-      <RightPanel open={selected != null} onClose={() => setSelectedId(null)} ariaLabel="Connection detail">
+      <RightPanel open={selected != null} onClose={() => setSelectedId(null)} ariaLabel="Connection detail" size="lg">
         {selected && (
           <>
             <PanelHeader
-              eyebrow={providerName(selected.provider)}
+              // Phone: the sheet reads as a page — "‹ Connections" dismisses it,
+              // and the close button returns at sm+ where the drawer docks.
+              leading={
+                <button type="button" onClick={() => setSelectedId(null)}
+                  className="-ml-1 mb-2 inline-flex min-h-11 items-center gap-1 rounded-[var(--radius-sm)] px-1 text-sm text-[var(--meridian-400)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:hidden">
+                  <ChevronLeft aria-hidden size={16} /> Connections
+                </button>
+              }
+              closeClassName="hidden sm:inline-flex sm:items-center sm:justify-center"
               title={selected.institution}
               actions={selected.state !== "importing" ? <ConnectionMenu connection={selected} /> : undefined}
             />

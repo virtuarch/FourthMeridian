@@ -27,9 +27,13 @@ export interface PanelHeaderProps {
   actions?: ReactNode;
   /** Omit the built-in close button (dismissal handled elsewhere in content). */
   hideClose?: boolean;
+  /** Optional control before the eyebrow/title (e.g. a mobile "‹ Back"). */
+  leading?: ReactNode;
+  /** Extra classes on the close button (e.g. "hidden sm:inline-flex" when `leading` dismisses on mobile). */
+  closeClassName?: string;
 }
 
-export function PanelHeader({ eyebrow, title, actions, hideClose = false }: PanelHeaderProps) {
+export function PanelHeader({ eyebrow, title, actions, hideClose = false, leading, closeClassName = "" }: PanelHeaderProps) {
   const { onClose, titleId, registerTitle } = usePanelContext("PanelHeader");
 
   // Tell <Panel> a visible title exists, so the dialog labels by it (aria-labelledby)
@@ -42,6 +46,7 @@ export function PanelHeader({ eyebrow, title, actions, hideClose = false }: Pane
   return (
     <header className="flex items-start justify-between gap-4 px-5 pb-4 pt-4 sm:pt-5 shrink-0">
       <div className="min-w-0">
+        {leading}
         {eyebrow && (
           <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
             {eyebrow}
@@ -58,7 +63,7 @@ export function PanelHeader({ eyebrow, title, actions, hideClose = false }: Pane
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="-mr-1 -mt-1 min-h-11 min-w-11 rounded-[var(--radius-sm)] p-2 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover-strong)] hover:text-[var(--text-primary)] touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
+            className={`${closeClassName} -mr-1 -mt-1 min-h-11 min-w-11 rounded-[var(--radius-sm)] p-2 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover-strong)] hover:text-[var(--text-primary)] touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]`}
           >
             <X size={16} strokeWidth={1.75} />
           </button>

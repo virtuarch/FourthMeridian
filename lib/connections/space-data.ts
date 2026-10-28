@@ -72,6 +72,7 @@ import type { SourceHealthInput } from "@/lib/connections/space-data-health.core
 import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refresh-policy";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
+import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
 // CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
 // here rather than re-decided, so a valuation clock is only claimed where one exists.
 import { usesLegacyColumnForCurrentValue } from "@/lib/crypto/wallet-sync-dispatch";
@@ -139,6 +140,8 @@ export interface ConnectionAccountRow {
     officialName: string | null;
     plaidName:    string | null;
     type:         string;
+    mask?:            string | null;
+    providerSubtype?: string | null;
   };
 }
 
@@ -163,6 +166,8 @@ export function groupConnectionAccounts(
       // v2.6-TRUTH-10 — the ONE identity authority.
       name: accountDisplayName(account),
       type: account.type,
+      mask:    account.mask ?? null,
+      subtype: account.providerSubtype ?? null,
     });
   }
   return out;
@@ -190,7 +195,7 @@ async function loadPlaidConnectionAccounts(
     select: {
       plaidItemDbId:    true,
       financialAccount: {
-        select: { id: true, type: true, ...ACCOUNT_NAME_SELECT },
+        select: { id: true, type: true, mask: true, providerSubtype: true, ...ACCOUNT_NAME_SELECT },
       },
     },
   });
@@ -393,7 +398,7 @@ async function loadConnectionIntelligence(
     const valuationIsReadTime = c.provider === "WALLET" && chains.length > 0
       && chains.every((ch) => !usesLegacyColumnForCurrentValue(ch));
 
-    out[c.id] = deriveConnectionIntelligence(
+    const derived = deriveConnectionIntelligence(
       {
         provider: c.provider,
         state:    c.state,
@@ -414,6 +419,23 @@ async function loadConnectionIntelligence(
       },
       now,
     );
+    // The coverage licence, as the drawer's History tab states it. Dates only.
+    let walletHistory: ConnectionIntelligenceStatus["walletHistory"] = null;
+    if (c.provider === "WALLET") {
+      const metas = (accountsByConnectionId[c.id] ?? []).map((a) => historyMeta.get(a.id)).filter((m) => m !== undefined);
+      const lic = metas.filter((m) => m.claimsHistory);
+      const minOf = (xs: (string | null)[]) => xs.filter((x): x is string => x !== null).sort()[0] ?? null;
+      const maxOf = (xs: (string | null)[]) => xs.filter((x): x is string => x !== null).sort().at(-1) ?? null;
+      walletHistory = {
+        supported: chains.some((ch) => chainSupportsHistory(ch)),
+        // EVERY account licensed — one unlicensed account leaves the source incomplete.
+        licensed: metas.length > 0 && lic.length === metas.length,
+        licensedFromISO: minOf(lic.map((m) => m.licensedFromISO)),
+        licensedToISO:   maxOf(lic.map((m) => m.licensedToISO)),
+        activityFromISO: minOf(lic.map((m) => m.activityFromISO)),
+      };
+    }
+    out[c.id] = { ...derived, walletHistory };
   }
   return out;
 }

@@ -20,14 +20,14 @@ import { relativeUpdated, summarizeConnection, type ConnectionTone } from "@/lib
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
 import type { SyncConnection } from "@/lib/sync/status";
 
-const DOT: Record<ConnectionTone, string> = {
+export const DOT: Record<ConnectionTone, string> = {
   ok:        "bg-[var(--accent-positive,#34d399)]",
   progress:  "bg-[var(--meridian-400)] animate-pulse motion-reduce:animate-none",
   attention: "bg-[var(--accent-warning,#f59e0b)]",
   neutral:   "bg-[var(--text-faint,#6b7280)]",
 };
 
-const WORD: Record<ConnectionTone, string> = {
+export const WORD: Record<ConnectionTone, string> = {
   ok:        "text-[var(--text-secondary)]",
   progress:  "text-[var(--meridian-400)]",
   attention: "text-[var(--accent-warning,#f59e0b)]",
