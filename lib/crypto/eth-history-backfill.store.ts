@@ -36,12 +36,24 @@ export async function enqueueEthHistoryBackfill(client: PrismaClient, accountId:
   return casHistoryCheckpoint(client, link.connectionId, raw, serializeCheckpoint(next));
 }
 
-/** The worker's state for this account's rebuild, while one is owed (null: none, or COMPLETE). */
+/**
+ * The worker's state for this account's rebuild, while the WORKER will still
+ * carry it (null: none, COMPLETE, or RECOVERY_REQUIRED).
+ *
+ * RECOVERY_REQUIRED is not owed: the worker never runs it again on its own, so
+ * deferring to it would leave the wallet with no history path at all. The sync
+ * runs the INCREMENTAL path as usual; a fallback stays refused (nothing
+ * written) and does not re-queue it — enqueueEthHistoryBackfill never
+ * replaces a non-complete checkpoint. The exit is an operator resume
+ * (runEthHistoryBackfill `resume`, as SOL/BTC).
+ */
 export async function ethHistoryPending(client: PrismaClient, accountId: string): Promise<EthBackfillState | null> {
   const link = await historyLink(client, accountId);
   if (!link) return null;
   const cp = parseCheckpoint(await readHistoryCheckpoint(client, link.connectionId), accountId);
-  return cp && !cp.completedAtISO ? backfillStatus(cp).state : null;
+  if (!cp || cp.completedAtISO) return null;
+  const state = backfillStatus(cp).state;
+  return state === "RECOVERY_REQUIRED" ? null : state;
 }
 
 /**
@@ -154,8 +166,8 @@ export async function prismaEthBackfillStore(accountId: string, db: PrismaClient
 }
 
 /** One worker step for one ETH wallet. */
-export async function reconstructEthHistoryResumable(args: { accountId: string; client: PrismaClient; todayISO: string; deps: EthBackfillDeps }): Promise<EthBackfillOutcome> {
+export async function reconstructEthHistoryResumable(args: { accountId: string; client: PrismaClient; todayISO: string; resume?: boolean; deps: EthBackfillDeps }): Promise<EthBackfillOutcome> {
   const bound = await prismaEthBackfillStore(args.accountId, args.client);
   if (!bound) return { stoppedBecause: "NOT_QUEUED", status: null, rowsWritten: 0, impactedFromISO: null, failure: null, requests: 0 };
-  return runEthHistoryBackfill({ accountId: args.accountId, store: bound.store, todayISO: args.todayISO }, args.deps);
+  return runEthHistoryBackfill({ accountId: args.accountId, store: bound.store, todayISO: args.todayISO, resume: args.resume }, args.deps);
 }

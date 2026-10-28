@@ -105,7 +105,7 @@ export function connectionHealth(
       ? { key: "holdings", label: "Current holdings", tone: stale ? "attention" : "ok", text: `Updated ${pos}` }
       : { key: "holdings", label: "Current holdings", tone: "neutral", text: "Not read yet" });
     const wh = i?.walletHistory;
-    const imp = historyImportText(wh?.historyImport?.state, i?.facts?.historyWorkerEnabled === true);
+    const imp = historyImportText(wh?.historyImport?.state, i?.facts?.historyWorkerEnabled === true, wh?.historyImport?.lastFailureCode);
     if (imp && wh?.historyImport?.state !== "COMPLETE") lines.push({ key: "import", label: "History import", tone: imp.tone, text: imp.text });
     if (wh) {
       lines.push(!wh.supported
@@ -297,7 +297,15 @@ export function fmtDay(iso: string | null | undefined): string | null {
 }
 
 /** Customer words for the resumable history import state. Never a percentage. */
-export function historyImportText(state: string | null | undefined, workerEnabled: boolean): { text: string; tone: ConnectionTone } | null {
+export function historyImportText(state: string | null | undefined, workerEnabled: boolean, failureCode?: string | null): { text: string; tone: ConnectionTone } | null {
+  // A recovery says WHY, in the failure's own terms — "a gap was found" is
+  // Solana's/Bitcoin's continuity case, not every chain's.
+  if (state === "RECOVERY_REQUIRED" && failureCode === "BALANCE_BEFORE_PROVABLE_FLOOR") {
+    return { text: "Needs attention — this wallet held ETH before the earliest block we can verify, so its full history can’t be proven", tone: "attention" };
+  }
+  if (state === "RECOVERY_REQUIRED" && failureCode === "LEDGER_DOES_NOT_RECONCILE") {
+    return { text: "Needs attention — its history doesn’t add up to the current balance, so it can’t be proven", tone: "attention" };
+  }
   switch (state) {
     case "QUEUED":            return { text: workerEnabled ? "Queued — starts automatically" : "Queued", tone: "neutral" };
     case "IMPORTING":         return { text: workerEnabled ? "In progress — continues automatically" : "In progress", tone: "progress" };
