@@ -100,6 +100,10 @@ const PRODUCERS = [
   // reader every paid model path consults (both AI routes + the provider
   // chokepoint), so maintenance stops paid AI through the canonical evaluator.
   { file: "lib/platform/ai/paid-requests-admission.ts",  migrated: true, note: "paid AI gate (PAID_AI_REQUEST) — maintenance stops paid model calls" },
+  // HISTORY RECOVERY (2026-10-28) — the operator "Resume history" pass on ONE
+  // wallet is provider ingestion: asked before the budget and the lock, a
+  // denial is audited REFUSED and nothing is touched.
+  { file: "lib/platform/wallet-history-recovery.ts",     migrated: true, note: "operator wallet history resume (one bounded pass)" },
 ] as const;
 
 /**
@@ -251,7 +255,7 @@ function main() {
       PRODUCERS.filter((p) => p.migrated).length === PRODUCERS.length);
     // ARCH-007 (2026-10-22): 12 → 11 — POST /api/plaid/sync was deleted (no consumer).
     // P1 (2026-10-23): 11 → 12 — the paid AI gate (PAID_AI_REQUEST).
-    check("the census holds all twelve known consumers", (PRODUCERS.length as number) === 12);
+    check("the census holds all thirteen known consumers", (PRODUCERS.length as number) === 13);
 
     // No producer OUTSIDE the census may consume admission.
     const consumers = [...walk("app"), ...walk("jobs"), ...walk("lib")]

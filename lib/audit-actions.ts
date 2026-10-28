@@ -261,6 +261,14 @@ export const AuditAction = {
   // this deployment's own /api/plaid/webhook (Plaid /item/webhook/update, then
   // read back). Carries the before/after webhook ORIGIN+PATH only — never a token.
   PLAID_ITEM_WEBHOOK_UPDATED:  "PLAID_ITEM_WEBHOOK_UPDATED",
+  // OPS — an operator resumed ONE self-custody wallet's resumable history
+  // (SOL / BTC / ETH) from RECOVERY_REQUIRED or FAILED: one bounded pass under
+  // the wallet's sync lock and the shared provider budget, checkpoints kept
+  // (lib/platform/wallet-history-recovery.ts). Reason REQUIRED. Every outcome
+  // after the reason parses is recorded — SUCCESS, FAILURE, REFUSED — with the
+  // chain, the prior and resulting state, and requests consumed. Never an
+  // address, a balance, or provider text.
+  WALLET_HISTORY_RESUMED:      "WALLET_HISTORY_RESUMED",
 
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link
@@ -501,6 +509,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,
   AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
+  AuditAction.WALLET_HISTORY_RESUMED,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
   // P1 — customer policy / cohort, execution cadence, operator refresh-all.

@@ -88,8 +88,10 @@ export async function runEthHistoryBackfill(
   /**
    * `resume` — OPERATOR resume, the same lever SOL and BTC expose
    * (runSolHistoryBackfill / runBtcHistoryBackfill `resume`): bypasses the
-   * automatic gate and clears a recovery or a failure pause, starting a fresh
-   * generation. No automatic path ever sets it.
+   * automatic gate and clears a recovery (starting a fresh generation) or a
+   * failure pause (keeping the proof). No automatic path ever sets it — the
+   * one caller is the Platform Ops "Resume history" action
+   * (lib/platform/wallet-history-recovery.ts).
    */
   args: { accountId: string; store: EthBackfillStore; todayISO: string; resume?: boolean },
   deps: EthBackfillDeps,
@@ -97,7 +99,9 @@ export async function runEthHistoryBackfill(
   const { accountId, store } = args;
   const now = deps.now ?? Date.now;
   const meter = deps.eth?.meter ?? {};
-  const ethDeps: EthHistoryDeps = { ...(deps.eth ?? {}), meter };
+  // The step's deadline bounds the acquisition's probing too (not only the
+  // segment loop), on the step's own clock.
+  const ethDeps: EthHistoryDeps = { ...(deps.eth ?? {}), meter, now, ...(deps.deadlineMs !== undefined ? { deadlineMs: deps.deadlineMs } : {}) };
   const before = meterTotal(meter);
   const calls = () => meterTotal(meter) - before;
   const deadline = deps.deadlineMs ?? Number.POSITIVE_INFINITY;
@@ -110,8 +114,14 @@ export async function runEthHistoryBackfill(
   });
   if (!cp) return out("NOT_QUEUED");
   if (args.resume && !cp.completedAtISO && (cp.recovery || cp.failures > 0)) {
-    // A recovery or a failure means the proof so far is not to be trusted: restart it.
-    cp = { ...restartGeneration(cp), failures: 0, lastFailure: null, recovery: null, reconcileFailures: 0 };
+    // A RECOVERY means the proof so far is not to be trusted: restart it (a new
+    // generation; the rows and licence in force are untouched until it closes).
+    // A FAILURE streak alone keeps the proof, as SOL and BTC do: every failure
+    // that could taint it (a reconcile failure, unmet proof premises) already
+    // restarted the generation when it was recorded, so what remains was proven.
+    cp = cp.recovery
+      ? { ...restartGeneration(cp), failures: 0, lastFailure: null, recovery: null, reconcileFailures: 0 }
+      : { ...cp, failures: 0, lastFailure: null };
   } else if (!shouldRunAutomatically(cp, now())) return out("SKIPPED");
 
   const nowISO = new Date(now()).toISOString();
@@ -168,8 +178,15 @@ export async function runEthHistoryBackfill(
         return fail("PROOF_PREMISES_UNMET", "not a plain EOA (contract wallet, or a live EIP-7702 delegation)", { restart: true, terminal: true });
       }
       if (caveats.includes("PAGE_BUDGET_EXHAUSTED")) {
-        // Nothing closed this step: the next chunk is too dense for the budget.
-        // Halve it (never below the floor) so the next step can close one.
+        // Nothing closed this step — the next chunk is too dense for the budget,
+        // or (deadline) too slow for the time the step had: the same remedy for
+        // both. Halve it (never below the floor) so the next step can close one;
+        // the commit also records the calls this step spent. Without halving, a
+        // clock-stopped wallet would retry the same chunk for ever. Already at
+        // the floor ⇒ it cannot shrink further: an honest (transient) failure,
+        // so a wallet that can never close a chunk reaches FAILED and pauses
+        // instead of spending budget every run. The proof is kept.
+        if (cp.chunkBlocks <= MIN_ETH_CHUNK_BLOCKS) return fail("PROVIDER_FAILED", "no chunk closed within the step even at the minimum chunk size");
         const ok = await commit({ ...cp, chunkBlocks: Math.max(MIN_ETH_CHUNK_BLOCKS, Math.floor(cp.chunkBlocks / 2)) });
         return ok ? out("PROBE_BUDGET") : out("CONFLICT");
       }
@@ -225,6 +242,8 @@ export async function runEthHistoryBackfill(
         return fail("PROOF_PREMISES_UNMET", "the account is no longer a plain EOA", { restart: true, terminal: true });
       }
       if (caveats.includes("PAGE_BUDGET_EXHAUSTED")) {
+        // As backward: halve (density or the clock); at the floor, fail honestly.
+        if (fw.chunkBlocks <= MIN_ETH_CHUNK_BLOCKS) return fail("PROVIDER_FAILED", "no head chunk closed within the step even at the minimum chunk size");
         const ok = await commit({ ...cp, forward: { ...fw, chunkBlocks: Math.max(MIN_ETH_CHUNK_BLOCKS, Math.floor(fw.chunkBlocks / 2)) } });
         return ok ? out("PROBE_BUDGET") : out("CONFLICT");
       }
