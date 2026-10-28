@@ -98,8 +98,9 @@ async function main(): Promise<void> {
       (d.class === "SECURITY_SENSITIVE" || d.class === "FINANCIAL_SEMANTIC_NOT_EDITABLE") && d.writeSurfaces.includes("PLATFORM_OPS"));
     check("no security-sensitive or financial-semantic key can become a Platform Ops control", forbidden.length === 0, forbidden.map((d) => d.key).join(", "));
     const ops = settingKeysForSurface("PLATFORM_OPS");
+    // 2026-10-28: + job_cadence_hours_sol-history-backfill (the worker's hourly default is operator-editable).
     check("Platform Ops owns exactly the operational policies",
-      [...ops].sort().join(",") === ["ai_daily_allowance_enforced", "ai_daily_allowance_usd", "ai_paid_requests_paused", "ai_spend_alert_fleet_usd_24h", "ai_spend_alert_user_usd_24h", "alert_rule_enabled:ai-spend-fleet-high", "alert_rule_enabled:ai-spend-user-high", "ingestion_paused", "job_cadence_hours_evaluate-alerts", "job_cadence_hours_fetch-fx-rates", "job_cadence_hours_fetch-security-prices", "maintenance_mode", "refresh_cadence_bank", "refresh_cadence_wallet"].join(","), ops.join(","));
+      [...ops].sort().join(",") === ["ai_daily_allowance_enforced", "ai_daily_allowance_usd", "ai_paid_requests_paused", "ai_spend_alert_fleet_usd_24h", "ai_spend_alert_user_usd_24h", "alert_rule_enabled:ai-spend-fleet-high", "alert_rule_enabled:ai-spend-user-high", "ingestion_paused", "job_cadence_hours_evaluate-alerts", "job_cadence_hours_fetch-fx-rates", "job_cadence_hours_fetch-security-prices", "job_cadence_hours_sol-history-backfill", "maintenance_mode", "refresh_cadence_bank", "refresh_cadence_wallet"].join(","), ops.join(","));
     check("every Platform Ops key is operator-configurable, resettable, and gated at the reserved capability",
       ops.every((k) => SETTING_DESCRIPTORS[k].operatorConfigurable && SETTING_DESCRIPTORS[k].resettable && SETTING_DESCRIPTORS[k].writeCapability === "CONTROL"));
     check("security keys are not operator-configurable and not resettable",
