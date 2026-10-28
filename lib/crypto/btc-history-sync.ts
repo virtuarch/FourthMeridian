@@ -53,7 +53,8 @@ import {
   movementsToQuantityEvents,
   type ChainMovement, type ChainCoverage,
 } from "./chain-movement";
-import { persistPositionCoverage } from "./position-coverage";
+import { persistPositionCoverage, loadPositionCoverage } from "./position-coverage";
+import { BTC_CHAIN_STATS_SOURCE } from "./btc-history-backfill.core";
 import { derivedRowsFromTimeline } from "./wallet-reconstruction";
 import { BTC_NATIVE } from "./native-asset";
 import {
@@ -82,7 +83,13 @@ export type BtcHistoryRefusal =
    */
   | "BALANCE_BASIS_AMBIGUOUS"
   /** Movements do not sum to the observed balance. */
-  | "LEDGER_DOES_NOT_RECONCILE";
+  | "LEDGER_DOES_NOT_RECONCILE"
+  /**
+   * The wallet's history is owned by the RESUMABLE backfill
+   * (btc-history-backfill.ts) and licensed by it. This path replaces every
+   * DERIVED row of the source, so running it would overwrite proven rows.
+   */
+  | "RESUMABLE_HISTORY_IN_FORCE";
 
 export interface BtcHistoryResult {
   accountId: string;
@@ -175,6 +182,13 @@ export async function reconstructBtcHistory(args: {
   if (!account || account.walletChain?.trim().toUpperCase() !== BTC_NATIVE.chain) {
     return { accountId, ok: false, refusal: "NO_MOVEMENT_LEDGER",
       reason: `not a syncable ${BTC_NATIVE.chain} wallet` };
+  }
+
+  // ── 0. OWNERSHIP. The resumable backfill's licence is never overwritten here.
+  const coverageInForce = (await loadPositionCoverage(client, [accountId])).get(accountId);
+  if (coverageInForce?.source === BTC_CHAIN_STATS_SOURCE) {
+    return { accountId, ok: false, refusal: "RESUMABLE_HISTORY_IN_FORCE",
+      reason: "history is owned by the resumable backfill (chain_stats-verified)" };
   }
 
   // ── 1. THE LEDGER. Native-denominated rows only: a wallet whose Transaction

@@ -223,7 +223,7 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
     targetJob: "sol-history-backfill",
     label: "Solana History Backfill",
     description:
-      "Advance resumable Solana wallet history (oldest-waiting wallets first) within the configured rate limit, per-wallet budget and daily request cap; each wallet under its sync lock; progress is checkpointed. Does nothing unless SOL_BACKFILL_ENABLED=true. Idempotent; never-throws per wallet.",
+      "Advance resumable Solana and Bitcoin wallet history (oldest-waiting wallets first) within each chain's rate limit, per-wallet budget and daily request cap; each wallet under its sync lock; progress is checkpointed. Does nothing unless SOL_BACKFILL_ENABLED=true (Bitcoin also off with BTC_BACKFILL_ENABLED=false). Idempotent; never-throws per wallet.",
     kinds: ["run-now", "dry-run"],
   },
 ];

@@ -36,7 +36,9 @@
 import { db } from "@/lib/db";
 import { PositionOrigin } from "@prisma/client";
 import { BTC_NATIVE, ETH_NATIVE, SOL_NATIVE } from "./native-asset";
-import { reconstructBtcHistory } from "./btc-history-sync";
+import { reconstructBtcHistoryOrResumable } from "./btc-history-backfill.store";
+import { btcSyncHeadOnly } from "./btc-history-backfill";
+import { ESPLORA_USAGE_NETWORK, ESPLORA_USAGE_PROVIDER } from "./btc-backfill-worker.core";
 import { reconstructSolHistoryResumable } from "./sol-history-backfill.store";
 import { syncHeadOnly } from "./sol-history-backfill";
 import { reconstructEthHistory } from "./eth-history-sync";
@@ -49,11 +51,19 @@ type HistoryWindow = { accountId: string; windowFromISO: string; windowToISO: st
  * SHARED PROVIDER BUDGET (2026-10-28) — the SOL and ETH history paths spend the
  * Alchemy key. Every request a run sends is counted by its transport and
  * recorded against the provider's daily budget when the run ends, refused or
- * not (BTC reads Esplora, not Alchemy, and is not metered here).
+ * not. BTC's resumable backfill reads Esplora, not Alchemy: its requests are
+ * recorded under their own provider (ESPLORA), which the BTC worker's own daily
+ * cap reads (the wholesale BTC path makes no history requests).
  */
 function metered<R>(network: string, run: (meter: Record<string, number>) => Promise<R>): Promise<R> {
   const meter: Record<string, number> = {};
   return run(meter).finally(() => recordProviderMeter(ALCHEMY_USAGE_PROVIDER, network, meter));
+}
+
+/** BTC: the same, under its own provider (ESPLORA) — never the Alchemy budget. */
+function meteredEsplora<R>(run: (meter: Record<string, number>) => Promise<R>): Promise<R> {
+  const meter: Record<string, number> = {};
+  return run(meter).finally(() => recordProviderMeter(ESPLORA_USAGE_PROVIDER, ESPLORA_USAGE_NETWORK, meter));
 }
 
 /** What a refresh did, for the log and for the caller's decision to regenerate. */
@@ -69,9 +79,9 @@ export interface WalletHistoryRefresh {
   windowFromISO?: string;
   windowToISO?:   string;
   /**
-   * ETH and SOL — what the reconstruction did and the earliest date whose
-   * stored quantity changed. BTC rebuilds wholesale and does not measure it, so
-   * these stay undefined for it (not measured, never "unchanged").
+   * ETH, SOL and resumable BTC — what the reconstruction did and the earliest
+   * date whose stored quantity changed. Wholesale BTC rebuilds without
+   * measuring it, so these stay undefined for it (not measured, never "unchanged").
    */
   mode?: "FULL" | "INCREMENTAL" | "NO_CHANGE";
   impactedFromISO?: string | null;
@@ -121,7 +131,12 @@ export async function refreshWalletHistory(
   // reconstruction is not a failure: ETH/BNB/AVAX have current positions and no
   // historical licence, exactly as their capability says.
   const run =
-    key === BTC_NATIVE.chain ? reconstructBtcHistory
+    // BTC: the wholesale reconstruction, unless the wallet's history has been
+    // handed to the resumable, checkpointed backfill (btc-history-backfill.ts) —
+    // which the sync does when the inline import stops at its 1,000-per-address
+    // page budget. Head-only while the background worker carries Bitcoin.
+    // Its Esplora requests are recorded under ESPLORA (never the Alchemy budget).
+    key === BTC_NATIVE.chain ? (a: HistoryWindow) => meteredEsplora((meter) => reconstructBtcHistoryOrResumable({ ...a, client: db, headOnly: btcSyncHeadOnly(), meter }))
     // SOL: the resumable, checkpointed backfill (sol-history-backfill.ts). The
     // wholesale reconstructSolHistory stopped at 5,000 signatures per run and
     // never resumed; it remains only as the fixture-driven acceptance path.

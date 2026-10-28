@@ -1105,6 +1105,13 @@ model Connection {
   transactionsSyncedAt DateTime?
   /// Last SUCCESSFUL derived-history reconstruction. Null = never succeeded.
   historyRebuiltAt     DateTime?
+  /// BTC-HISTORY-RESUMABLE (2026-10-28) — the resumable Bitcoin history
+  /// backfill's checkpoint (versioned JSON, lib/crypto/btc-history-backfill.core.ts),
+  /// compare-and-swapped by lib/crypto/btc-history-checkpoint.ts. NOT `cursor`:
+  /// for an xpub wallet that holds address discovery's checkpoint, rewritten
+  /// without CAS, and readers treat a cursor as "discovery in progress".
+  /// Null = the wallet's history is still the wholesale reconstruction's.
+  historyCheckpoint    String?
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
 
