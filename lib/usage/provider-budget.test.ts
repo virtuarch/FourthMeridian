@@ -10,7 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import {
-  meterTotal, meterDelta, effectiveDailyUsage, usageMetric, recordProviderMeter, providerCallsOn,
+  meterTotal, meterDelta, effectiveDailyUsage, splitLedgerCalls, usageMetric, recordProviderMeter, providerCallsOn,
   ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK, type UsageRecorder, type ProviderUsageClient,
 } from "./provider-budget";
 import { finalizedHead, readAccountStateAt, callBatchWithBackoff, type EthRpcTransport } from "@/lib/crypto/eth-history";
@@ -34,7 +34,9 @@ function ledger(day: string) {
     rows.set(k, (rows.get(k) ?? 0) + n);
   };
   const callsToday = (provider: string) => [...rows].filter(([k]) => k.startsWith(`${provider}|`) && k.endsWith(`|calls|${day}`)).reduce((a, [, n]) => a + n, 0);
-  return { rows, record, callsToday };
+  const split = (provider: string) => splitLedgerCalls([...rows].filter(([k]) => k.startsWith(`${provider}|`) && k.endsWith(`|calls|${day}`))
+    .map(([k, n]) => ({ metric: k.split("|")[1], count: n })));
+  return { rows, record, callsToday, split };
 }
 
 async function main() {
@@ -43,10 +45,14 @@ async function main() {
     check("meterTotal sums methods and ignores junk", meterTotal({ a: 3, b: 4, c: Number.NaN, d: -2 }) === 7);
     check("meterDelta is what was not yet flushed", JSON.stringify(meterDelta({ a: 5, b: 2 }, { a: 3, b: 2 })) === JSON.stringify({ a: 2 }));
     check("metric = network:method", usageMetric(ALCHEMY_USAGE_NETWORK.SOLANA, "getTransaction") === "solana:getTransaction");
-    check("budget in force = max(ledger, checkpoints): the checkpoints are a SUBSET of the ledger, never added to it",
-      effectiveDailyUsage({ ledgerCalls: 500, checkpointCalls: 120 }) === 500);
-    check("…a run killed before its flush still counts via the checkpoints", effectiveDailyUsage({ ledgerCalls: 100, checkpointCalls: 140 }) === 140);
-    check("…an unreadable ledger falls back to the checkpoints", effectiveDailyUsage({ ledgerCalls: null, checkpointCalls: 37 }) === 37);
+    check("budget = ledger(other) + max(ledger(solana), checkpoints): SOL checkpoints are a SUBSET of the Solana ledger, never added to it",
+      effectiveDailyUsage({ ledger: { solana: 500, other: 0 }, checkpointCalls: 120 }) === 500);
+    check("…a SOL run killed before its flush still counts via the checkpoints", effectiveDailyUsage({ ledger: { solana: 100, other: 0 }, checkpointCalls: 140 }) === 140);
+    check("REVIEW FIX: ETH 3,000 + SOL checkpoints 2,000 + ledger-SOL 0 ⇒ 5,000 (a killed SOL run is not hidden under ETH calls)",
+      effectiveDailyUsage({ ledger: { solana: 0, other: 3_000 }, checkpointCalls: 2_000 }) === 5_000);
+    check("…ETH 3,000 + flushed SOL 2,000 (= checkpoints) ⇒ 5,000, not 7,000", effectiveDailyUsage({ ledger: { solana: 2_000, other: 3_000 }, checkpointCalls: 2_000 }) === 5_000);
+    check("…an unreadable ledger falls back to the checkpoints", effectiveDailyUsage({ ledger: null, checkpointCalls: 37 }) === 37);
+    check("the split is by metric prefix", JSON.stringify(splitLedgerCalls([{ metric: "solana:getTransaction", count: 5 }, { metric: "ethereum:eth_getBalance", count: 7 }, { metric: "solanaX", count: 1 }])) === JSON.stringify({ solana: 5, other: 8 }));
   }
 
   console.log("recording");
@@ -65,9 +71,11 @@ async function main() {
     try { await recordProviderMeter(ALCHEMY_USAGE_PROVIDER, "solana", { x: 1 }, { record: thrower }); } catch { threw = true; }
     check("recording never throws (metering must not fail a sync)", !threw);
 
-    const client: ProviderUsageClient = { apiUsageCounter: { aggregate: async (a) => ({ _sum: { count: a.where.provider === "ALCHEMY" && a.where.unit === "calls" && a.where.day.toISOString() === "2026-10-28T00:00:00.000Z" ? BigInt(1234) : null } }) } };
-    check("providerCallsOn reads the day bucket across every metric (BigInt-safe)", (await providerCallsOn(client, ALCHEMY_USAGE_PROVIDER, "2026-10-28")) === 1234);
-    const broken: ProviderUsageClient = { apiUsageCounter: { aggregate: async () => { throw new Error("x"); } } };
+    const client: ProviderUsageClient = { apiUsageCounter: { findMany: async (a) => a.where.provider === "ALCHEMY" && a.where.unit === "calls" && a.where.day.toISOString() === "2026-10-28T00:00:00.000Z"
+      ? [{ metric: "solana:getTransaction", count: BigInt(1000) }, { metric: "ethereum:eth_getBalance", count: BigInt(234) }] : [] } };
+    const got = await providerCallsOn(client, ALCHEMY_USAGE_PROVIDER, "2026-10-28");
+    check("providerCallsOn reads the day bucket, split Solana / other (BigInt-safe)", got?.solana === 1000 && got?.other === 234, JSON.stringify(got));
+    const broken: ProviderUsageClient = { apiUsageCounter: { findMany: async () => { throw new Error("x"); } } };
     check("…and reads null, never throws, when unreadable", (await providerCallsOn(broken, ALCHEMY_USAGE_PROVIDER, "2026-10-28")) === null);
   }
 
@@ -125,7 +133,7 @@ async function main() {
       }),
       regenerationEnabled: () => true,
       regenerate: async (id) => { o.regenLog?.push(`regen:${id}`); },
-      providerUsageToday: async () => L.callsToday(ALCHEMY_USAGE_PROVIDER),
+      providerUsageToday: async () => L.split(ALCHEMY_USAGE_PROVIDER),
       recordUsage: (meter, flushed) => recordProviderMeter(ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK.SOLANA, meter, { flushed, record: L.record }).then(() => {}),
       ...(o.gaps ? { acquirePriceGaps: async (ids: string[]) => o.gaps!(ids) } : {}),
     });
@@ -164,8 +172,9 @@ async function main() {
     deps4.regenerate = async (id, from, s) => { order.push(`regen:${id}`); return regen(id, from, s); };
     const big = await solHistoryBackfill({ config: { ...cfg(10_000_000), jobBudgetMs: 240_000 }, deps: deps4 });
     check("the price-gap pass runs BEFORE the wallet's regeneration", order[0] === "gaps:a" && order[1] === "regen:a", order.join(","));
-    check("…a wallet whose licensed history starts before the old floor is marked pending from max(licence, newly priced)",
-      parseCheckpoint(cursors.b, "b", ADDR)?.snapshotPendingFromISO === "2025-10-28", cursors.b ?? "");
+    // b is later in the same run's work list, so the flag (also applied in memory) makes it regenerate THIS run and clear it.
+    check("…a wallet whose licensed history starts before the old floor is flagged (marker = new floor) and revalued",
+      parseCheckpoint(cursors.b, "b", ADDR)?.valuationCheckedFloorISO === "2025-10-28" && order.indexOf("regen:b") > order.indexOf("regen:a"), `${order.join(",")} ${cursors.b}`);
     check("…a wallet already inside the old archive is not", !parseCheckpoint(cursors.c, "c", ADDR)?.snapshotPendingFromISO);
     check("…counted, and the job self-continues", big.holdersMarkedPending === 1 && big.deferred > 0 && big.priceGaps.acquired === 1 && big.priceGaps.inserted === 334, JSON.stringify(big));
   }

@@ -39,7 +39,11 @@
  *     (lib/prices/price-gap.ts) — at most DEFAULT_PRICE_GAP_MAX_INSTRUMENTS per
  *     run, deduplicated within the run. The regeneration's planner then
  *     measures the new closes. Other wallets whose licensed history the new
- *     prices reach are marked pending, so they are revalued next run.
+ *     prices reach are flagged pending — under their own sync lock when free,
+ *     the checkpoint CAS retried once — so they are revalued next run. A flag
+ *     that still could not be written is counted (holdersFlagFailed) and
+ *     RE-DERIVED from persisted state: every run flags wallets whose
+ *     valued-from precedes their Spaces' earliest snapshot, once per floor.
  *
  * Completion is the backfill's own verdict (beginning reached, head verified,
  * continuity proven) — never "the job succeeded".
@@ -57,13 +61,16 @@ import type { SolBackfillStore } from "@/lib/crypto/sol-history-backfill";
 import type { SolResumableResult } from "@/lib/crypto/sol-history-backfill.store";
 import { effectiveDailyUsage } from "@/lib/usage/provider-budget.core";
 import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS } from "@/lib/prices/price-gap.core";
-import type { PriceGapRun } from "@/lib/prices/price-gap";
+import type { PriceGapRun, RevaluationOwed } from "@/lib/prices/price-gap";
+import type { LedgerCalls } from "@/lib/usage/provider-budget.core";
 
 export const SOL_BACKFILL_JOB = "sol-history-backfill";
 /** The dispatcher's invocation is 300 s; plan nothing past this point of a wake. */
 export const WAKE_SAFE_MS = 260_000;
 /** Do not start a wealth-history regeneration with less than this left. */
 export const REGEN_RESERVE_MS = 60_000;
+/** At most this many state-derived revaluations are flagged per run. */
+export const REVALUATION_REDERIVE_MAX = 10;
 /** Extra time a price-gap acquisition needs before a regeneration (one provider request per instrument). */
 export const PRICE_GAP_RESERVE_MS = 15_000;
 
@@ -93,6 +100,10 @@ export interface SolBackfillJobSummary {
   priceGaps: { acquired: number; inserted: number; failures: number; deferred: number };
   /** Other wallets marked for regeneration because newly acquired prices reach their history. */
   holdersMarkedPending: number;
+  /** Holders whose flag could not be written (lock busy AND CAS lost twice) — re-derived from state next run. */
+  holdersFlagFailed: number;
+  /** Wallets flagged this run because PERSISTED state says they are owed a revaluation (self-healing a lost flag). */
+  revaluationsRederived: number;
   dailyRequestCap: number;
   budgetMs: number;
   stoppedBecause: "DISABLED" | "NO_WORK" | "JOB_BUDGET" | "DAILY_CAP" | "ALL_RUN";
@@ -119,8 +130,10 @@ export interface SolBackfillJobDeps {
   store(accountId: string): Promise<SolBackfillStore | null>;
   regenerationEnabled(): boolean;
   regenerate(accountId: string, fromISO: string, startedAtMs: number): Promise<void>;
-  /** Today's calls on the shared provider ledger (ALCHEMY), or null. Optional: absent ⇒ checkpoints only. */
-  providerUsageToday?(dayISO: string): Promise<number | null>;
+  /** Today's calls on the shared provider ledger (ALCHEMY), split Solana / other, or null. Optional: absent ⇒ checkpoints only. */
+  providerUsageToday?(dayISO: string): Promise<LedgerCalls | null>;
+  /** Of these accounts, those whose persisted state owes a revaluation (lib/prices/price-gap.ts revaluationOwed). */
+  revaluationOwed?(accountIds: string[]): Promise<RevaluationOwed[]>;
   /** Record `meter` beyond `flushed` on the shared provider ledger; advances `flushed`. */
   recordUsage?(meter: Readonly<Record<string, number>>, flushed: Record<string, number>): Promise<void>;
   /** Detect + acquire historical price gaps for these accounts (lib/prices/price-gap.ts). */
@@ -145,6 +158,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     failures: {}, signaturesProcessed: 0, rowsWritten: 0, regenerated: 0, regenerationsDeferred: 0,
     requests: { total: 0 }, estimatedUnits: 0, dailyRequestsUsedBefore: 0, providerRequestsUsedBefore: null,
     dailyRequestCap: cfg.dailyRequestCap, priceGaps: { acquired: 0, inserted: 0, failures: 0, deferred: 0 }, holdersMarkedPending: 0,
+    holdersFlagFailed: 0, revaluationsRederived: 0,
     budgetMs: 0, stoppedBecause: "DISABLED", deferred: 0,
   };
   if (!cfg.enabled) return summary;
@@ -164,8 +178,51 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const day = new Date(start).toISOString().slice(0, 10);
   const parsed = wallets.map((w) => ({ ...w, checkpoint: parseCheckpoint(w.cursor, w.accountId, w.address) }));
   const checkpointCalls = parsed.reduce((a, w) => a + usageOn(w.checkpoint, day), 0);
-  summary.providerRequestsUsedBefore = deps.providerUsageToday ? await deps.providerUsageToday(day).catch(() => null) : null;
-  summary.dailyRequestsUsedBefore = effectiveDailyUsage({ ledgerCalls: summary.providerRequestsUsedBefore, checkpointCalls });
+  const ledger = deps.providerUsageToday ? await deps.providerUsageToday(day).catch(() => null) : null;
+  summary.providerRequestsUsedBefore = ledger ? ledger.solana + ledger.other : null;
+  summary.dailyRequestsUsedBefore = effectiveDailyUsage({ ledger, checkpointCalls });
+
+  /**
+   * Flag another wallet for revaluation from `from` under price floor
+   * `floorISO`: under ITS sync lock when free (released only if still ours),
+   * the checkpoint CAS retried once. False ⇒ not written; the state-derived
+   * pass below re-derives it next run, so a lost flag is never permanent.
+   */
+  const flagHolder = async (o: (typeof parsed)[number], from: string, floorISO: string): Promise<boolean> => {
+    const store = await deps.store(o.accountId);
+    if (!store) return false;
+    const stamp = deps.now();
+    const locked = await deps.claimLock(o.connectionId, stamp).catch(() => false);
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (await setPending(store, o.accountId, o.address, (cp) => ({ ...cp, valuationCheckedFloorISO: floorISO,
+          snapshotPendingFromISO: cp.snapshotPendingFromISO && cp.snapshotPendingFromISO < from ? cp.snapshotPendingFromISO : from }))) {
+          o.checkpoint = o.checkpoint ? { ...o.checkpoint, valuationCheckedFloorISO: floorISO,
+            snapshotPendingFromISO: o.checkpoint.snapshotPendingFromISO && o.checkpoint.snapshotPendingFromISO < from ? o.checkpoint.snapshotPendingFromISO : from } : o.checkpoint;
+          return true;
+        }
+      }
+      return false;
+    } finally {
+      if (locked) await deps.releaseLock(o.connectionId, stamp);
+    }
+  };
+
+  // SELF-HEAL: a wallet whose PERSISTED state owes a revaluation — valued-from
+  // (max of licence start and price floor) earlier than its Spaces' earliest
+  // snapshot — is flagged now, at most once per price floor. This is what
+  // makes a flag lost to a race (above) temporary rather than permanent.
+  if (deps.revaluationOwed) {
+    const licensed = parsed.filter((w) => w.checkpoint?.licensedFromISO && !w.checkpoint.snapshotPendingFromISO);
+    const owed = licensed.length ? await deps.revaluationOwed(licensed.map((w) => w.accountId)).catch(() => [] as RevaluationOwed[]) : [];
+    for (const o of owed) {
+      if (summary.revaluationsRederived >= REVALUATION_REDERIVE_MAX) break;
+      const w = parsed.find((x) => x.accountId === o.accountId);
+      if (!w?.checkpoint || w.checkpoint.valuationCheckedFloorISO === o.floorISO) continue;
+      if (await flagHolder(w, o.fromISO, o.floorISO)) summary.revaluationsRederived++;
+      else summary.holdersFlagFailed++;
+    }
+  }
 
   // Regenerations owed by earlier runs come first — snapshots must catch up with rows.
   const pending = parsed.filter((w) => w.checkpoint?.snapshotPendingFromISO);
@@ -211,11 +268,12 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
       const lic = o.checkpoint?.licensedFromISO ?? null;
       if (!lic || (oldFloor !== null && lic >= oldFloor)) continue;
       const from = lic > g.newlyPricedFromISO ? lic : g.newlyPricedFromISO;
-      const store = await deps.store(o.accountId);
-      if (store && await setPending(store, o.accountId, o.address, (cp) => ({ ...cp,
-        snapshotPendingFromISO: cp.snapshotPendingFromISO && cp.snapshotPendingFromISO < from ? cp.snapshotPendingFromISO : from }))) {
+      if (await flagHolder(o, from, g.newlyPricedFromISO)) {
         summary.holdersMarkedPending++;
         summary.deferred++; // revalued by the next (self-continued) run
+      } else {
+        summary.holdersFlagFailed++; // re-derived from state next run (self-heal above)
+        summary.deferred++;
       }
     }
   };
@@ -287,7 +345,7 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
   const { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled } = await import("@/lib/snapshots/regenerate-history");
   const { WALLET_LOCK_TTL_MS } = await import("@/lib/refresh/wallet-lock");
   const { providerCallsOn, recordProviderMeter, ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK } = await import("@/lib/usage/provider-budget");
-  const { acquireHistoricalPriceGaps, prismaPriceGapDeps } = await import("@/lib/prices/price-gap");
+  const { acquireHistoricalPriceGaps, prismaPriceGapDeps, revaluationOwed } = await import("@/lib/prices/price-gap");
   return {
     now: Date.now,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -330,6 +388,7 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
     store: async (accountId) => (await prismaSolBackfillStore(accountId, systemDb))?.store ?? null,
     regenerationEnabled: wealthRegenerationEnabled,
     providerUsageToday: (dayISO) => providerCallsOn(systemDb, ALCHEMY_USAGE_PROVIDER, dayISO),
+    revaluationOwed: (accountIds) => revaluationOwed(systemDb, accountIds),
     recordUsage: async (meter, flushed) => { await recordProviderMeter(ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK.SOLANA, meter, { flushed }); },
     acquirePriceGaps: (accountIds, { attempted, maxInstruments }) => acquireHistoricalPriceGaps({
       accountIds, attempted, maxInstruments,

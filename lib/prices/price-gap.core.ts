@@ -71,12 +71,27 @@ export type PriceGapSkip =
   | "NO_PROVIDER"
   /** Already requested this run from the same day or earlier. */
   | "ALREADY_ATTEMPTED"
+  /**
+   * DURABLE: the same gap (instrument, same archive floor) was already
+   * requested today and the floor did not move — an unfillable gap is asked
+   * for at most once per UTC day, not every ~15 minutes.
+   */
+  | "ALREADY_ATTEMPTED_TODAY"
   /** Over this run's instrument cap — picked up by the next trigger. */
   | "DEFERRED_RUN_CAP";
 
 export type PriceGapDecision =
   | { instrumentId: string; kind: "ACQUIRE"; fromISO: string; toISO: string; neededFromISO: string; holders: number }
   | { instrumentId: string; kind: PriceGapSkip; neededFromISO: string; holders: number };
+
+/**
+ * Identity of one gap request for the durable once-a-day marker: the provider,
+ * the instrument and the archive floor the gap ends at. A floor that moved is a
+ * different gap; the same floor on the same day is the same request.
+ */
+export function priceGapAttemptKey(source: string, instrumentId: string, earliestRawCloseISO: string | null): string {
+  return `price-gap:${source}:${instrumentId}:${earliestRawCloseISO ?? "none"}`;
+}
 
 /** Default per-run instrument cap. A crypto wallet holds one native instrument today; tokens are not reconstructed. */
 export const DEFAULT_PRICE_GAP_MAX_INSTRUMENTS = 5;
@@ -97,6 +112,8 @@ export function planPriceGaps(args: {
   maxInstruments?: number;
   /** instrumentId → the earliest day already requested this run. */
   attempted?: ReadonlyMap<string, string>;
+  /** priceGapAttemptKey values already requested TODAY (durable marker). */
+  attemptedToday?: ReadonlySet<string>;
 }): PriceGapDecision[] {
   const cap = Math.max(0, Math.floor(args.maxInstruments ?? DEFAULT_PRICE_GAP_MAX_INSTRUMENTS));
   const needed = new Map<string, { fromISO: string; holders: Set<string> }>();
@@ -126,9 +143,46 @@ export function planPriceGaps(args: {
 
     const tried = args.attempted?.get(instrumentId);
     if (tried !== undefined && tried <= fromISO) { out.push({ instrumentId, kind: "ALREADY_ATTEMPTED", neededFromISO, holders }); continue; }
+    if (args.attemptedToday?.has(priceGapAttemptKey(facts.provider.source, instrumentId, earliest))) {
+      out.push({ instrumentId, kind: "ALREADY_ATTEMPTED_TODAY", neededFromISO, holders }); continue;
+    }
     if (acquiring >= cap) { out.push({ instrumentId, kind: "DEFERRED_RUN_CAP", neededFromISO, holders }); continue; }
     acquiring++;
     out.push({ instrumentId, kind: "ACQUIRE", fromISO, toISO, neededFromISO, holders });
   }
   return out;
+}
+
+// ── Revaluation owed (state-derived, so a lost flag self-heals) ─────────────
+
+/**
+ * Does an account's PERSISTED state say its wealth history is owed a
+ * revaluation? Its valued-from — the latest, across the price-blocking
+ * instruments it holds, of max(licence start, price floor) — is earlier than
+ * the earliest snapshot its Spaces hold. Derived from facts on disk, never from
+ * a flag, so a flag lost to a race is re-derived on the next run.
+ *
+ * Returns the day to regenerate from, or null when nothing is owed (no licence,
+ * an unpriced instrument, no snapshots yet — the initial build is the normal
+ * path's — or snapshots already reach valued-from).
+ */
+export function revaluationOwedFromISO(args: {
+  /** instrumentId → licence start, for this account's price-blocking instruments. */
+  licences: ReadonlyMap<string, string>;
+  /** instrumentId → earliest RAW_CLOSE (absent ⇒ unpriced). */
+  floors: ReadonlyMap<string, string>;
+  /** Earliest snapshot day of the account's Spaces (the latest of their per-Space minima), or null. */
+  earliestSnapshotISO: string | null;
+}): { fromISO: string; floorISO: string } | null {
+  if (args.licences.size === 0 || args.earliestSnapshotISO === null) return null;
+  let from: string | null = null;
+  let floor: string | null = null;
+  for (const [instrumentId, lic] of args.licences) {
+    const f = args.floors.get(instrumentId) ?? null;
+    const v = valuedFromISO(lic, f);
+    if (v === null || f === null) return null; // an unpriced blocking instrument values nothing
+    if (from === null || v > from) from = v;
+    if (floor === null || f > floor) floor = f;
+  }
+  return from !== null && floor !== null && from < args.earliestSnapshotISO ? { fromISO: from, floorISO: floor } : null;
 }

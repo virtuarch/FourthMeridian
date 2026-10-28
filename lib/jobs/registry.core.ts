@@ -161,8 +161,9 @@ export const SCHEDULED_JOB_FACTS = declareJobs([
   // (jobs/sol-history-backfill.ts, WAKE_SAFE_MS).
   // PROMPT START (2026-10-28): an anchor every hour, so its DEFAULT cadence
   // derives to 1 h (slotPeriodHours) — a newly connected wallet's history starts
-  // within the hour instead of waiting for a 6-hour slot; a no-op run is two
-  // indexed reads. Operator-editable 1–24 h through
+  // within the hour instead of waiting for a 6-hour slot; a no-op run sends no
+  // provider request — its JobRun plus a few indexed reads (wake start, wallet
+  // list, today's usage, a batched revaluation check). Operator-editable 1–24 h through
   // job_cadence_hours_sol-history-backfill. Self-continuation (~15 min while
   // deferred) is unchanged and independent of it.
   {

@@ -54,6 +54,10 @@ function check(name: string, cond: boolean, detail?: string): void {
  *     lib/snapshots/backfill.ts           existing-row gate before createMany
  *     lib/snapshots/regenerate-history.ts frozen/partial-day planning + verify
  *     lib/snapshots/historical-work-window.ts  window bounds for regeneration
+ *     lib/prices/price-gap.ts             groupBy _min(date) per Space — the
+ *                                         earliest-snapshot bound of the
+ *                                         "revaluation owed" check (2026-10-28;
+ *                                         dates only, never values)
  *
  *   INTENTIONALLY DIFFERENT QUESTION
  *     lib/platform/connection-diagnostics.ts  groupBy _max(date) — snapshot
@@ -65,6 +69,7 @@ const ALLOWED_READERS = new Set([
   "lib/snapshots/backfill.ts",
   "lib/snapshots/regenerate-history.ts",
   "lib/snapshots/historical-work-window.ts",
+  "lib/prices/price-gap.ts",
   "lib/platform/connection-diagnostics.ts",
 ]);
 

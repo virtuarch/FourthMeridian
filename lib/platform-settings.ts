@@ -330,7 +330,7 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
   ),
   "job_cadence_hours_sol-history-backfill": jobCadence(
     "job_cadence_hours_sol-history-backfill", "sol-history-backfill", "Solana history backfill cadence (hours)",
-    "Hours between background Solana history runs when no work was deferred, so a newly connected wallet starts promptly. While wallets remain the job continues every ~15 minutes regardless. A run with nothing to do is two reads; the daily request cap still bounds provider cost.",
+    "Hours between background Solana history runs when no work was deferred, so a newly connected wallet starts promptly. While wallets remain the job continues every ~15 minutes regardless. A run with nothing to do sends no provider request: it records its JobRun and makes a few indexed reads (the wake's start, the Solana wallet list, today's provider usage and, for wallets with history, a batched revaluation check). The daily request cap still bounds provider cost.",
   ),
   ai_spend_alert_fleet_usd_24h: {
     key: "ai_spend_alert_fleet_usd_24h", label: "AI spend alert — fleet (USD / 24 h)",

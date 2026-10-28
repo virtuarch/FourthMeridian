@@ -62,14 +62,41 @@ export function usageMetric(network: string, method: string): string {
   return `${network}:${method}`;
 }
 
+/** Today's ledger calls for one provider, split at the Solana boundary. */
+export interface LedgerCalls {
+  /** Calls under `solana:*` metrics — the ones the SOL checkpoints also record. */
+  solana: number;
+  /** Every other metric (ETH history, …) — no checkpoint holds these. */
+  other: number;
+}
+
+/** Sum ledger rows (metric, count) into the Solana / other split. */
+export function splitLedgerCalls(rows: ReadonlyArray<{ metric: string; count: number }>): LedgerCalls {
+  const out: LedgerCalls = { solana: 0, other: 0 };
+  for (const r of rows) {
+    const n = Number.isFinite(r.count) && r.count > 0 ? r.count : 0;
+    if (r.metric.startsWith(`${ALCHEMY_USAGE_NETWORK.SOLANA}:`)) out.solana += n; else out.other += n;
+  }
+  return out;
+}
+
 /**
- * The budget already spent today: the larger of the shared ledger and the sum
- * of the Solana checkpoints (a subset of the ledger whenever it was flushed).
+ * The budget already spent today:
+ *
+ *     ledger(non-Solana)  +  max(ledger(Solana), Σ SOL checkpoint usage)
+ *
+ * The SOL checkpoints are a SUBSET of the ledger's Solana metrics (every SOL
+ * request is recorded in both), so the max avoids double counting them; the
+ * other metrics have no checkpoint and are always added. A plain max over the
+ * TOTAL would let a killed SOL run (checkpoints recorded, ledger not flushed)
+ * hide under ETH calls — 3,000 ETH + 2,000 unflushed SOL must read 5,000, not
+ * 3,000. An unreadable ledger (null) falls back to the checkpoints alone.
  */
-export function effectiveDailyUsage(args: { ledgerCalls: number | null; checkpointCalls: number }): number {
-  const ledger = args.ledgerCalls !== null && Number.isFinite(args.ledgerCalls) && args.ledgerCalls > 0 ? args.ledgerCalls : 0;
-  const cps = Number.isFinite(args.checkpointCalls) && args.checkpointCalls > 0 ? args.checkpointCalls : 0;
-  return Math.max(ledger, cps);
+export function effectiveDailyUsage(args: { ledger: LedgerCalls | null; checkpointCalls: number }): number {
+  const pos = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0);
+  const cps = pos(args.checkpointCalls);
+  if (!args.ledger) return cps;
+  return pos(args.ledger.other) + Math.max(pos(args.ledger.solana), cps);
 }
 
 /** "YYYY-MM-DD" → the counter's day bucket (UTC midnight). */

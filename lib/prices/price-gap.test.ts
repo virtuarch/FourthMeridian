@@ -11,7 +11,8 @@ import { readFileSync } from "node:fs";
 import { minusDaysISO } from "./config";
 import {
   valuedFromISO, planPriceGaps, acquireHistoricalPriceGaps, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS,
-  type HolderLicence, type InstrumentPriceFacts, type PriceGapDeps,
+  priceGapAttemptKey, revaluationOwedFromISO, revalueHoldersAfterPriceGaps, revaluationAttemptKey, REVALUATION_RESERVE_MS,
+  type HolderLicence, type InstrumentPriceFacts, type PriceGapDeps, type RevaluationDeps, type RevaluationOwed,
 } from "./price-gap";
 
 let failures = 0;
@@ -156,6 +157,72 @@ async function main() {
     check("a provider failure is counted and moves nothing", rf.failures === 1 && rf.newlyPricedFromISO === null && rf.inserted === 0);
   }
 
+  console.log("REVIEW FIX 4 — durable once-a-day marker for an unfillable gap");
+  {
+    const keys = new Set<string>();
+    const dry = world({ archive: { SOL: ["2026-10-20"] }, licences: [lic("a", "SOL", "2026-01-01")], missing: days("2025-01-01", "2026-10-27") });
+    const deps: PriceGapDeps = { ...dry.deps, attemptedOn: async (ks) => new Set(ks.filter((k) => keys.has(k))), markAttempted: async (k) => { keys.add(k); } };
+    await acquireHistoricalPriceGaps({ accountIds: ["a"], deps, yesterdayISO: YESTERDAY });
+    const r2 = await acquireHistoricalPriceGaps({ accountIds: ["a"], deps, yesterdayISO: YESTERDAY }); // a later run, same day
+    check("the same never-filled floor is requested ONCE per day across runs (not every ~15 min)",
+      dry.calls.length === 1 && r2.decisions[0]?.kind === "ALREADY_ATTEMPTED_TODAY" && keys.has(priceGapAttemptKey("coingecko", "SOL", "2026-10-20")), JSON.stringify(r2.decisions));
+    keys.clear(); // the next UTC day: the marker is day-scoped (ApiUsageCounter day bucket)
+    await acquireHistoricalPriceGaps({ accountIds: ["a"], deps, yesterdayISO: YESTERDAY });
+    check("…and retried the next day", dry.calls.length === 2);
+    const moved = planPriceGaps({ licences: [lic("a", "SOL", "2024-01-01")], facts: new Map([facts("SOL", "2026-09-01")]), yesterdayISO: YESTERDAY,
+      attemptedToday: new Set([priceGapAttemptKey("coingecko", "SOL", "2026-10-20")]) });
+    check("…a floor that MOVED is a different gap (not suppressed)", moved[0].kind === "ACQUIRE");
+  }
+
+  console.log("revaluation owed (state-derived)");
+  {
+    const one = (lic: string, floor: string | null, snap: string | null) => revaluationOwedFromISO({ licences: new Map([["SOL", lic]]), floors: new Map(floor ? [["SOL", floor]] : []), earliestSnapshotISO: snap });
+    check("licence 2022, floor 2025-10-28, snapshots from 2026-09-27 ⇒ owed from 2025-10-28", one("2022-03-26", "2025-10-28", "2026-09-27")?.fromISO === "2025-10-28");
+    check("snapshots already reach valued-from ⇒ nothing owed", one("2022-03-26", "2025-10-28", "2025-10-28") === null);
+    check("no snapshots yet ⇒ nothing owed here (the initial build is the normal path's)", one("2022-03-26", "2025-10-28", null) === null);
+    check("an unpriced blocking instrument ⇒ nothing owed (never valued at zero)", one("2022-03-26", null, "2026-09-27") === null);
+    const two = revaluationOwedFromISO({ licences: new Map([["SOL", "2022-01-01"], ["ETH", "2021-01-01"]]), floors: new Map([["SOL", "2025-10-28"], ["ETH", "2026-02-01"]]), earliestSnapshotISO: "2026-09-27" });
+    check("two blocking instruments ⇒ the LATER valued-from (a day needs both)", two?.fromISO === "2026-02-01" && two?.floorISO === "2026-02-01");
+  }
+
+  console.log("REVIEW FIX 2 — bounded revaluation of only the holders the new floor reaches");
+  {
+    const mk = (o: { owed: RevaluationOwed[]; done?: string[]; now?: () => number; regenMs?: number }) => {
+      const regens: string[] = []; const marks: string[] = []; let t = 0;
+      const deps: RevaluationDeps = {
+        acquireGaps: async () => ({ decisions: [], acquired: 1, inserted: 300, failures: 0, instruments: [], newlyPricedFromISO: "2025-10-28" }),
+        owed: async (ids) => o.owed.filter((x) => ids.includes(x.accountId)),
+        revaluedAlready: async (ks) => new Set(ks.filter((k) => o.done?.includes(k))),
+        markRevalued: async (k) => { marks.push(k); },
+        regenerate: async (id, from, to) => { regens.push(`${id}:${from}..${to}`); t += o.regenMs ?? 1_000; },
+        now: o.now ?? (() => t),
+      };
+      return { deps, regens, marks, at: () => t };
+    };
+    const owe = (id: string): RevaluationOwed => ({ accountId: id, fromISO: "2025-10-28", floorISO: "2025-10-28", earliestSnapshotISO: "2026-09-27" });
+    // The sweep had 40 ETH/BTC/SOL accounts; only 3 SOL holders are owed by state.
+    const sweepIds = Array.from({ length: 40 }, (_, i) => `acct-${String(i).padStart(2, "0")}`);
+    const w = mk({ owed: [owe("acct-03"), owe("acct-17"), owe("acct-29")] });
+    const r = await revalueHoldersAfterPriceGaps({ accountIds: sweepIds, deps: w.deps, deadlineMs: 1e9 });
+    check("ONLY the owed holders are regenerated, over just the missing days (valued-from .. day before the earliest snapshot)",
+      w.regens.join() === "acct-03:2025-10-28..2026-09-26,acct-17:2025-10-28..2026-09-26,acct-29:2025-10-28..2026-09-26" && r.revalued === 3, w.regens.join());
+    const many = mk({ owed: Array.from({ length: 14 }, (_, i) => owe(`h${String(i).padStart(2, "0")}`)) });
+    const rm = await revalueHoldersAfterPriceGaps({ accountIds: Array.from({ length: 14 }, (_, i) => `h${String(i).padStart(2, "0")}`), deps: many.deps, deadlineMs: 1e9, maxAccounts: 10 });
+    check("per-run account cap: 10 revalued, 4 deferred (still owed on disk, unmarked)", rm.revalued === 10 && rm.deferred === 4 && many.marks.length === 10);
+    const slow = mk({ owed: [owe("a"), owe("b"), owe("c")], regenMs: 50_000 });
+    const rs = await revalueHoldersAfterPriceGaps({ accountIds: ["a", "b", "c"], deps: slow.deps, deadlineMs: 120_000 });
+    check("wake time: stops starting rebuilds with < 60 s left and defers the rest", rs.revalued === 2 && rs.deferred === 1, JSON.stringify(rs));
+    const late = mk({ owed: [owe("a")] });
+    const rl = await revalueHoldersAfterPriceGaps({ accountIds: ["a"], deps: late.deps, deadlineMs: REVALUATION_RESERVE_MS - 1 });
+    check("too little wake left ⇒ the whole pass is skipped (no gap request, no rebuild)", rl.skippedForTime && rl.priceGaps === null && late.regens.length === 0);
+    const again = mk({ owed: [owe("a"), owe("b")], done: [revaluationAttemptKey("a", "2025-10-28")] });
+    const ra = await revalueHoldersAfterPriceGaps({ accountIds: ["a", "b"], deps: again.deps, deadlineMs: 1e9 });
+    check("an account already revalued under the same floor is not rebuilt again (no loop)", ra.alreadyRevalued === 1 && again.regens.join() === "b:2025-10-28..2026-09-26");
+    const failing = mk({ owed: [owe("a")] });
+    const rf = await revalueHoldersAfterPriceGaps({ accountIds: ["a"], deps: { ...failing.deps, regenerate: async () => { throw new Error("boom"); } }, deadlineMs: 1e9 });
+    check("a failing rebuild is counted, marked (not retried every run), never thrown", rf.failures === 1 && failing.marks.length === 1);
+  }
+
   console.log("wiring");
   {
     const src = readFileSync("lib/prices/price-gap.ts", "utf8");
@@ -167,7 +234,10 @@ async function main() {
     const job = readFileSync("jobs/sol-history-backfill.ts", "utf8");
     check("the worker runs the gap pass BEFORE its regeneration", job.indexOf("await priceGapsFor(w)") > 0 && job.indexOf("await priceGapsFor(w)") < job.indexOf("await deps.regenerate(w.accountId"));
     const sweep = readFileSync("jobs/sync-crypto.ts", "utf8");
-    check("the sweep runs the gap pass before resolving its history window", sweep.indexOf("acquireHistoricalPriceGaps(") > 0 && sweep.indexOf("acquireHistoricalPriceGaps(") < sweep.indexOf("await resolveHistoricalWorkWindow({\n              financialAccountIds: historyAccountIds"));
+    // REVIEW FIX 2: AFTER — a gap fill must never widen the sweep's measured window for every account.
+    check("the sweep runs the gap pass AFTER its ordinary regeneration, bounded by the wake",
+      sweep.indexOf("revalueHoldersAfterPriceGaps(") > sweep.indexOf("await regenerateWealthHistoryForAccounts(") && sweep.indexOf("await regenerateWealthHistoryForAccounts(") > 0
+        && /deadlineMs: \(wake \? wake\.startedAt\.getTime\(\) : runStartedAt\.getTime\(\)\) \+ WAKE_SAFE_MS/.test(sweep) && !/acquireHistoricalPriceGaps\(/.test(sweep));
   }
 
   if (failures > 0) { console.error(`\nprice-gap: ${failures} failed.`); process.exit(1); }

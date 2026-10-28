@@ -133,6 +133,13 @@ export interface SolBackfillCheckpoint {
    * history over them (it ran out of wake time). Done first on its next run.
    */
   snapshotPendingFromISO?: string | null;
+  /**
+   * The price floor this wallet was last flagged for revaluation under
+   * (jobs/sol-history-backfill.ts). A state-derived "revaluation owed" is acted
+   * on at most once per floor, so a history the snapshots still cannot reach
+   * (another unpriced holding in the Space) never loops.
+   */
+  valuationCheckedFloorISO?: string | null;
   failures: number;
   lastFailure: { code: SolBackfillFailureCode; atISO: string; detail?: string } | null;
   signaturesProcessed: number;
