@@ -308,7 +308,7 @@ function importedAll(store: MemoryStore, w: World, addresses: string[]): { ok: b
 
 function depsFor(ex: ReturnType<typeof explorer>, clock: { t: number }, over: BtcBackfillDeps = {}): BtcBackfillDeps {
   return {
-    fetchImpl: ex.fetchImpl, explorerBaseUrl: "https://esplora.test", balanceBaseUrl: "https://esplora.test",
+    fetchImpl: ex.fetchImpl, explorerBaseUrl: "https://esplora.test",
     now: () => clock.t, sleep: async (ms) => { clock.t += ms; }, budgetMs: 1e12, requestTimeoutMs: 60_000, ...over,
   };
 }
