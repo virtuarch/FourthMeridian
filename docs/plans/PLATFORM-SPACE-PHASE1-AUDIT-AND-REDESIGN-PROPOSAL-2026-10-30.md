@@ -177,6 +177,7 @@ Five grant areas × READ < WRITE < CONTROL, one grant per user-area, issued only
 - N1 per-job run series (unlocks `ExecutionStrip`/`RuntimeTrend`).
 - N2 provider usage vs caps (`providerCallsOn` + configured caps; crypto counters already exist).
 - N3 fleet backfill rollup by state + budget consumption **[C1 — Claude 1 reviews; read-only over their tables, no worker change]**.
+  Claude 1's contract for N3 (2026-10-30): read state through the canonical readers, never raw columns — SOL's checkpoint lives on `Connection.cursor` (test with `isSolBackfillCursor`); ETH, BTC and token state live in `Connection.historyCheckpoint`; budgets = `ApiUsageCounter` against the env caps. Never show COMPLETE from a raw status alone; include the PARTIAL / not-valued-yet token states (#120, more coming with #122). Claude 1 reviews before implementation.
 - N4 paged connection diagnostics (cursor instead of the 50 cap).
 - N5 grant roster read (who holds which area/level — names only for SECURITY READ, audited).
 
