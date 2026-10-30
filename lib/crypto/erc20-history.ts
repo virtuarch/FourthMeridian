@@ -39,7 +39,7 @@ import { fetchErc20TransfersPage, readBalancesAt } from "./erc20-history-rpc";
 import {
   readErc20Section, withErc20Section, emptySection, applyTransfers, closeSegment, anchorPlan, judgeAnchors,
   derivedRows, rowsFromISO, markPersisted, markUnsupported, orderForVerification, replayConsistent, unsupportedCoverage,
-  anchorsSampled, noteInconclusive, verifiedCoverage, ERC20_SEGMENT_RESTART_AFTER,
+  anchorsSampled, noteInconclusive, verifiedCoverage, ERC20_SEGMENT_RESTART_AFTER, ERC20_SEGMENT_RESTART_LIMIT,
   type Erc20HistorySection, type Erc20UnsupportedReason, type Erc20DerivedRow, type TokenPriority, type Erc20HistoryConfig,
 } from "./erc20-history.core";
 
@@ -197,10 +197,17 @@ export async function runErc20HistoryStep(
   // S1 recovery — a scan that keeps failing on one page (an expired pageKey, a
   // page the provider cannot serve) restarts its segment from fromBlock. The
   // buffer and pageKey were committed together, so dropping both is exact.
-  if (sec.segment?.pageKey && sec.lastFailure?.code === "SCAN_FAILED" && sec.failures >= ERC20_SEGMENT_RESTART_AFTER) {
-    sec = { ...sec, segment: { ...sec.segment, direction: "from", pageKey: null, pages: 0, buffer: {}, refused: [] } };
+  // F3 — restarts are counted and bounded, and the re-read is not progress: a
+  // page that fails again after a restart keeps climbing toward the backoff.
+  if (sec.segment?.pageKey && sec.lastFailure?.code === "SCAN_FAILED" && sec.failures >= ERC20_SEGMENT_RESTART_AFTER
+      && (sec.segmentRestarts ?? 0) < ERC20_SEGMENT_RESTART_LIMIT) {
+    const reached = Math.max(sec.segment.pages, sec.segment.replayToPages ?? 0);
+    sec = { ...sec, segmentRestarts: (sec.segmentRestarts ?? 0) + 1,
+      segment: { ...sec.segment, direction: "from", pageKey: null, pages: 0, buffer: {}, refused: [], replayToPages: reached } };
     scanned = true; // the restart is committed with whatever this step reads
   }
+  /** F3 — did this step move the scan beyond what it had already read (or close it)? */
+  const progressed = () => !sec.segment || sec.segment.pages > (sec.segment.replayToPages ?? -1);
   const seen = new Set<string>();
   while (sec.segment) {
     if (out.pagesRead >= cfg.maxPagesPerStep || left() < 1 || !timeLeft()) break;
@@ -211,7 +218,7 @@ export async function runErc20HistoryStep(
     } catch (e) {
       // Pages read so far this step are kept (the commit below records them) — and
       // they are progress, so the failure count restarts from them.
-      if (out.pagesRead > 0) await commitSection({ ...sec, failures: 0, lastFailure: null, lastProgressAtISO: nowISO() });
+      if (out.pagesRead > 0 && progressed()) await commitSection({ ...sec, failures: 0, lastFailure: null, lastProgressAtISO: nowISO() });
       else if (scanned) await commitSection(sec);
       return fail(failureCode(e, "SCAN_FAILED"), `transfer scan failed: ${msg(e)}`);
     }
@@ -221,10 +228,12 @@ export async function runErc20HistoryStep(
     const applied = page.refused.length ? { ...applied0, refused: [...new Set([...(seg.refused ?? []), ...page.refused])].sort() } : applied0;
     if (page.pageKey) sec = { ...sec, segment: { ...applied, pageKey: page.pageKey, pages: seg.pages + 1 } };
     else if (seg.direction === "from") sec = { ...sec, segment: { ...applied, direction: "to", pageKey: null, pages: seg.pages + 1 } };
-    else sec = { ...closeSegment({ ...sec, segment: applied }, cfg.maxContracts), lastScanDayISO: todayISO };
+    else sec = { ...closeSegment({ ...sec, segment: applied }, cfg.maxContracts), lastScanDayISO: todayISO, segmentRestarts: 0 };
   }
   if (scanned) {
-    if (!(await commitSection({ ...sec, failures: 0, lastFailure: null, lastProgressAtISO: nowISO() }))) return finish("CONFLICT", sec);
+    // A replay that has not yet passed the old frontier keeps the failure count (F3).
+    const next = progressed() ? { ...sec, failures: 0, lastFailure: null, lastProgressAtISO: nowISO() } : sec;
+    if (!(await commitSection(next))) return finish("CONFLICT", sec);
   }
   if (sec.segment) return finish("BUDGET", sec); // the scan resumes at its pageKey next step
 

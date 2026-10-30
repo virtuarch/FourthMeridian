@@ -87,6 +87,8 @@ export const ERC20_BACKOFF_AFTER = 3;
 export const ERC20_BACKOFF_MS = 24 * 60 * 60 * 1000;
 /** Consecutive SCAN failures with an open pageKey after which the segment restarts from its fromBlock. */
 export const ERC20_SEGMENT_RESTART_AFTER = 2;
+/** Restarts of one segment before it is left to the backoff (re-review F3: a restart is not a cure). */
+export const ERC20_SEGMENT_RESTART_LIMIT = 2;
 /** Consecutive inconclusive (revert / non-standard) verifications before a token is refused (SPL: HEAD_MISMATCH_LIMIT). */
 export const ERC20_CALL_FAILURE_LIMIT = 3;
 /** An inconclusive token is not re-asked before this — a transient node fault gets time to clear. */
@@ -258,6 +260,12 @@ export interface Erc20ScanSegment {
   buffer: Record<string, { decimals: number | null; firstBlock: number; firstDayISO: string; transfers: number; days: DayBucket[] }>;
   /** Contracts with an unreadable transfer in this segment (refused at close). */
   refused?: string[];
+  /**
+   * F3 — after a restart: the pages already read before it. Re-reading them is
+   * NOT progress (it never resets `failures`); only reading past them, or
+   * closing the segment, is.
+   */
+  replayToPages?: number;
 }
 
 export interface Erc20HistorySection {
@@ -280,6 +288,8 @@ export interface Erc20HistorySection {
   snapshotPendingFromISO: string | null;
   /** Consecutive failed steps (a throttle is not counted). Drives the backoff and the segment restart. */
   failures: number;
+  /** F3 — restarts of the open segment (reset when a segment closes). At ERC20_SEGMENT_RESTART_LIMIT no more. */
+  segmentRestarts?: number;
   lastFailure: { code: string; atISO: string; detail?: string } | null;
   lastProgressAtISO: string | null;
 }

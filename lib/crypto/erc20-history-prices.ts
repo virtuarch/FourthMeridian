@@ -26,13 +26,28 @@
  * lists it thin, leaves it NO_MARKET (disclosed, never valued); anything else
  * unanswered leaves it NOT_VALUED_YET (disclosed; the wallet is not complete).
  *
+ * PROBE BUDGET (re-review F1). Probes are capped DURABLY per UTC day across
+ * every run and wallet (`ERC20_HISTORY_PROBE_DAILY_CAP`, default 20, counted on
+ * ApiUsageCounter under ERC20_PROBE_USAGE_PROVIDER — a run that self-continues
+ * every 15 min cannot reset it), AND they only spend while the CoinGecko TOKEN
+ * share keeps a reserve (`ERC20_HISTORY_PROBE_HELD_RESERVE`, default half of it)
+ * untouched for HELD-token quotes and SPL / ERC-20 history closes. An
+ * unreadable ledger ⇒ no probe.
+ *
+ * NEVER HELD (F2). A token whose rows never show a positive balance (zero-value
+ * spam transfers) is neither probed nor priced: there is nothing to value.
+ *
  * Takes `client` explicitly. Never throws for a provider failure.
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { acquireTokenHistoricalCloses } from "@/lib/prices/token-history-prices";
 import type { TokenQuoteTarget } from "@/lib/prices/current-quotes";
+import { coinGeckoBudgetConfig, defaultCoinGeckoBudget } from "@/lib/prices/coingecko-budget";
+import { USAGE_UNIT_CALLS, usageDayBucket } from "@/lib/usage/provider-budget.core";
+import { todayUTCISO } from "@/lib/time/clock";
 import { TOKEN_ALIAS_PROVIDER, parseTokenAssetKey } from "./token-asset";
+import { loadTokenHeldSpans } from "./token-held-spans";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -53,6 +68,55 @@ const defaultProbe: Erc20QuoteProbe = async (target, client) => {
   return o.calls ?? 0;
 };
 
+/** ApiUsageCounter provider/network for the durable per-day probe count (F1). Not a COINGECKO row: the probe's vendor call is metered there by the quote path itself. */
+export const ERC20_PROBE_USAGE_PROVIDER = "ERC20_HISTORY";
+export const ERC20_PROBE_USAGE_NETWORK = "coingecko-probe";
+
+const num = (v: string | undefined, d: number, min: number, max: number) => { const n = Number(v); return Number.isFinite(n) && n >= min && n <= max ? n : d; };
+export function erc20ProbeConfig(env: Record<string, string | undefined> = process.env) {
+  return {
+    dailyCap: Math.floor(num(env.ERC20_HISTORY_PROBE_DAILY_CAP, 20, 0, 1_000)),
+    /** Fraction of the TOKEN share probes must leave untouched for held-token quotes and history closes. */
+    heldReserve: num(env.ERC20_HISTORY_PROBE_HELD_RESERVE, 0.5, 0, 1),
+  };
+}
+
+/**
+ * PURE (F1) — probes allowed NOW: within the durable daily cap, and only while
+ * the TOKEN share stays above its held-quote reserve. Unknown anything ⇒ 0.
+ */
+export function probeAllowance(f: { probesToday: number | null; tokenRemaining: number | null; tokenShareCap: number; dailyCap: number; heldReserve: number }): number {
+  if (f.probesToday === null || f.tokenRemaining === null) return 0;
+  const reserve = Math.ceil(f.tokenShareCap * f.heldReserve);
+  return Math.max(0, Math.min(f.dailyCap - f.probesToday, f.tokenRemaining - reserve));
+}
+
+/** The durable probe gate: how many probes may be sent now, and record one sent. */
+export interface Erc20ProbeGate { allowance(): Promise<number>; record(n: number): Promise<void> }
+
+export function defaultProbeGate(client: Client, env: Record<string, string | undefined> = process.env): Erc20ProbeGate {
+  const cfg = erc20ProbeConfig(env);
+  const cg = coinGeckoBudgetConfig(env);
+  return {
+    async allowance() {
+      let probesToday: number | null = null;
+      try {
+        const rows = await (client as PrismaClient).apiUsageCounter.findMany({
+          where: { provider: ERC20_PROBE_USAGE_PROVIDER, unit: USAGE_UNIT_CALLS, day: usageDayBucket(todayUTCISO()) }, select: { metric: true, count: true },
+        });
+        probesToday = rows.reduce((a, r) => a + (Number(r.count) || 0), 0);
+      } catch { probesToday = null; }
+      const tokenRemaining = await defaultCoinGeckoBudget(client, env).remaining("token").catch(() => null);
+      return probeAllowance({ probesToday, tokenRemaining, tokenShareCap: Math.floor(cg.dailyCallCap * cg.tokenShare), dailyCap: cfg.dailyCap, heldReserve: cfg.heldReserve });
+    },
+    async record(n) {
+      if (n <= 0) return;
+      const { recordProviderMeter } = await import("@/lib/usage/provider-budget");
+      try { await recordProviderMeter(ERC20_PROBE_USAGE_PROVIDER, ERC20_PROBE_USAGE_NETWORK, { probe: n }); } catch { /* never fails a run */ }
+    },
+  };
+}
+
 /** PURE — should this token be quote-probed now? Only one never priced, not asked within the window. */
 export function needsQuoteProbe(metadata: unknown, nowMs: number): boolean {
   const q = (metadata as { quote?: { attemptedAt?: unknown; pricedAt?: unknown } } | null)?.quote;
@@ -68,6 +132,7 @@ export async function acquireErc20HistoricalPrices(args: {
   maxTokens: number;
   acquire?: typeof acquireTokenHistoricalCloses;
   probe?: Erc20QuoteProbe;
+  probeGate?: Erc20ProbeGate;
   now?: () => number;
 }): Promise<Erc20PriceRun> {
   const out: Erc20PriceRun = { calls: 0, inserted: 0, tokensFetched: 0, earliestInsertedISO: null, probed: 0 };
@@ -76,12 +141,15 @@ export async function acquireErc20HistoricalPrices(args: {
   const ids = [...new Set(args.instrumentIds)];
   if (ids.length === 0 || args.maxTokens <= 0) return out;
   const acquire = args.acquire ?? acquireTokenHistoricalCloses;
-  const [aliases, coverage] = await Promise.all([
+  const gate = args.probeGate ?? defaultProbeGate(args.client);
+  let probesLeft: number | null = null; // read lazily, once: only when a probe is wanted
+  const [aliases, coverage, held] = await Promise.all([
     args.client.instrumentAlias.findMany({ where: { instrumentId: { in: ids }, provider: TOKEN_ALIAS_PROVIDER }, select: { instrumentId: true, externalId: true, metadata: true } }),
     args.client.positionCoverage.findMany({
       where: { financialAccountId: args.accountId, instrumentId: { in: ids }, kind: "COMPLETE", coveredFromDate: { not: null }, coveredToDate: { not: null } },
       select: { instrumentId: true, coveredFromDate: true, coveredToDate: true },
     }),
+    loadTokenHeldSpans(args.client, [args.accountId], ids),
   ]);
   for (const instrumentId of ids) {
     if (out.tokensFetched >= args.maxTokens) break;
@@ -91,11 +159,17 @@ export async function acquireErc20HistoricalPrices(args: {
     if (parsed?.standard !== "ERC20") continue;
     const lic = coverage.find((c) => c.instrumentId === instrumentId);
     if (!lic?.coveredFromDate || !lic.coveredToDate) continue; // only a verified token is priced historically
+    if (!held.has(`${args.accountId}|${instrumentId}`)) continue; // F2 — never held: nothing to value
     let probeCalls = 0;
     if (needsQuoteProbe(alias?.metadata, now())) {
-      try { probeCalls = await probe({ instrumentId, assetKey: assetKey!, platform: "ethereum", contract: parsed.contract }, args.client); }
-      catch { /* a probe is an outcome; the token stays NOT_VALUED_YET and is disclosed */ }
-      out.probed++;
+      if (probesLeft === null) probesLeft = await gate.allowance().catch(() => 0);
+      if (probesLeft > 0) {
+        probesLeft--;
+        try { probeCalls = await probe({ instrumentId, assetKey: assetKey!, platform: "ethereum", contract: parsed.contract }, args.client); }
+        catch { /* a probe is an outcome; the token stays NOT_VALUED_YET and is disclosed */ }
+        finally { await gate.record(1).catch(() => undefined); }
+        out.probed++;
+      }
     }
     const r = await acquire({ client: args.client, instrumentId, assetKey: assetKey!, fromISO: isoOf(lic.coveredFromDate), toISO: isoOf(lic.coveredToDate) });
     if (r.calls + probeCalls > 0) out.tokensFetched++;
