@@ -170,10 +170,12 @@ export async function runErc20HistoryPass(
         if (o.failure) summary.failures[o.failure.code] = (summary.failures[o.failure.code] ?? 0) + 1;
         if (o.stoppedBecause === "BUDGET" || o.stoppedBecause === "CONFLICT" || (o.pending > 0 && !o.failure)) summary.deferred++;
         fromISO = minISO(fromISO, o.impactedFromISO);
-        // Historical prices for this wallet's verified tokens (their own CoinGecko budget).
-        if (deps.acquirePrices && priceTokensLeft > 0 && o.verifiedInstrumentIds.length > 0) {
+        // Historical prices for EVERY verified token of this wallet — held or exited (B1) —
+        // under the CoinGecko TOKEN share. A token the shared path already covers costs no call.
+        const candidates = o.pricingCandidates ?? o.verifiedInstrumentIds;
+        if (deps.acquirePrices && priceTokensLeft > 0 && candidates.length > 0) {
           try {
-            const p = await deps.acquirePrices({ accountId: w.accountId, instrumentIds: o.verifiedInstrumentIds, maxTokens: priceTokensLeft });
+            const p = await deps.acquirePrices({ accountId: w.accountId, instrumentIds: candidates, maxTokens: priceTokensLeft });
             priceTokensLeft -= p.tokensFetched;
             summary.prices.tokensFetched += p.tokensFetched; summary.prices.inserted += p.inserted; summary.prices.calls += p.calls;
             if (p.earliestInsertedISO) {

@@ -131,7 +131,7 @@ export async function prismaErc20HistoryStore(accountId: string, db: PrismaClien
 export async function reconstructErc20HistoryStep(args: { accountId: string; client: PrismaClient; todayISO: string; deps: Erc20HistoryStepDeps }): Promise<Erc20HistoryOutcome> {
   const bound = await prismaErc20HistoryStore(args.accountId, args.client);
   if (!bound) {
-    return { stoppedBecause: "NOTHING_OWED", requests: 0, pagesRead: 0, verified: [], unsupported: [], inconclusive: [], pending: 0, impactedFromISO: null, verifiedInstrumentIds: [], failure: null };
+    return { stoppedBecause: "NOTHING_OWED", requests: 0, pagesRead: 0, verified: [], unsupported: [], inconclusive: [], pending: 0, impactedFromISO: null, verifiedInstrumentIds: [], pricingCandidates: [], failure: null };
   }
   const rpcUrl = args.deps.eth?.rpcUrl !== undefined ? args.deps.eth.rpcUrl : alchemyRpcUrl(ALCHEMY_NETWORKS.ETHEREUM);
   return runErc20HistoryStep({ accountId: args.accountId, store: bound.store, todayISO: args.todayISO },

@@ -161,6 +161,11 @@ export interface ConnectionIntelligenceStatus {
     }>;
     /** The wallet-level answer: native AND every token reconstructed. Never inferred from native alone. */
     walletComplete?: boolean;
+    /**
+     * PR #122 review B1 — tokens with verified history (held or exited) whose
+     * days are not valued yet: no stored historical price. Counts only.
+     */
+    tokensNotValuedYet?: number;
     /** The wallet's chain token (e.g. "SOL"), for chain-specific token wording. */
     chain?: string | null;
   } | null;

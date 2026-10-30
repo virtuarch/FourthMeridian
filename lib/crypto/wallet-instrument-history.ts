@@ -37,6 +37,7 @@ import { licensedInterval, loadInstrumentCoverage } from "./position-coverage";
 import type { ChainCoverage } from "./chain-movement";
 import { nativeAssetForChain } from "./native-asset";
 import { unsupportedReasonOf, type Erc20UnsupportedReason } from "./erc20-history.core";
+import { reconstructedTokenValuation } from "./token-valuation.core";
 import {
   parseTokenAssetKey, tokenDisplayLabel, shortenTokenAddress, TOKEN_ALIAS_PROVIDER, WALLET_TOKEN_POSITION_SOURCE, type TokenStandard,
 } from "./token-asset";
@@ -124,6 +125,15 @@ export interface WalletInstrumentHistory {
   tokenHistorySupported: boolean;
   /** Every token this wallet ever held has been found and decided (chain reader; false when unknown). */
   tokenInventoryComplete: boolean;
+  /**
+   * PR #122 review B1 — LICENSED token histories (held now OR long since exited)
+   * whose days are not valued yet (token-valuation.core `reconstructedTokenValuation`
+   * NOT_VALUED_YET: no stored historical close, not confirmed unlisted/thin).
+   * Any ⇒ the wallet is never complete; a missing price is never $0.
+   */
+  tokensNotValuedYet: number;
+  /** …and those confirmed to have no (liquid) market — never valued, disclosed. */
+  tokensWithoutMarket: number;
   /** THE wallet-level answer. Never true because the native facet alone is. */
   complete:  boolean;
 }
@@ -140,9 +150,12 @@ export function facetFromCoverage(coverage: ChainCoverage | null | undefined):
 
 /** Pure: the wallet-level completeness rule (see the header). */
 export function walletHistoryComplete(
-  h: Pick<WalletInstrumentHistory, "chain" | "native" | "tokens"> & { tokenInventoryComplete?: boolean },
+  h: Pick<WalletInstrumentHistory, "chain" | "native" | "tokens"> & { tokenInventoryComplete?: boolean; tokensNotValuedYet?: number },
 ): boolean {
   if (h.native.state !== "RECONSTRUCTED") return false;
+  // B1 — a reconstructed token whose history is not valued yet: the wallet's
+  // history is short by an unknown amount, so it can never read complete.
+  if ((h.tokensNotValuedYet ?? 0) > 0) return false;
   const chain = h.chain.trim().toUpperCase();
   if (!TOKEN_BEARING_CHAINS.has(chain)) return true;
   if (!TOKEN_HISTORY_CHAINS.has(chain)) return false;
@@ -204,15 +217,21 @@ export async function loadWalletInstrumentHistory(
     }),
   ]);
 
-  const aliasByInstrument = new Map<string, { assetKey: string; symbol: string | null; thin: boolean }>();
+  const aliasByInstrument = new Map<string, { assetKey: string; symbol: string | null; thin: boolean; metadata: unknown }>();
   for (const a of aliases) {
     const meta = a.metadata as { symbol?: unknown; quote?: { outcome?: unknown } } | null;
     // A native alias shares the namespace; record it too so the native facet can name its key.
     aliasByInstrument.set(a.instrumentId, {
       assetKey: a.externalId, symbol: typeof meta?.symbol === "string" ? meta.symbol : null,
-      thin: meta?.quote?.outcome === "THIN",
+      thin: meta?.quote?.outcome === "THIN", metadata: a.metadata,
     });
   }
+  // B1 — which LICENSED token instruments have any stored historical close.
+  const licensedTokenIds = [...new Set([...coverage.values()].flatMap((m) => [...m.entries()]
+    .filter(([id, c]) => parseTokenAssetKey(aliasByInstrument.get(id)?.assetKey) !== null && licensedInterval(c) !== null).map(([id]) => id)))];
+  const withClose = new Set(licensedTokenIds.length === 0 ? [] : (await client.priceObservation.groupBy({
+    by: ["instrumentId"], where: { instrumentId: { in: licensedTokenIds }, basis: "RAW_CLOSE" },
+  })).map((p) => p.instrumentId));
   const latestQty = new Map(latestRows.map((r) => [`${r.financialAccountId}|${r.instrumentId}`, r.quantity]));
   const latestPrice = new Map(prices.map((p) => [p.instrumentId, p._max.date ? isoOf(p._max.date) : null]));
 
@@ -256,8 +275,16 @@ export async function loadWalletInstrumentHistory(
     }
     tokens.sort((x, y) => (x.held === y.held ? x.label.localeCompare(y.label) : x.held ? -1 : 1));
 
+    let tokensNotValuedYet = 0, tokensWithoutMarket = 0;
+    for (const [id, c] of cov) {
+      const alias = aliasByInstrument.get(id);
+      if (!parseTokenAssetKey(alias?.assetKey) || licensedInterval(c) === null) continue;
+      const v = reconstructedTokenValuation(withClose.has(id), alias?.metadata);
+      if (v === "NOT_VALUED_YET") tokensNotValuedYet++;
+      else if (v === "NO_MARKET") tokensWithoutMarket++;
+    }
     const h = { accountId: a.id, chain, native: nativeFacet, tokens, tokenHistorySupported: TOKEN_HISTORY_CHAINS.has(chain),
-      tokenInventoryComplete: inventory.get(a.id) === true };
+      tokenInventoryComplete: inventory.get(a.id) === true, tokensNotValuedYet, tokensWithoutMarket };
     out.set(a.id, { ...h, complete: walletHistoryComplete(h) });
   }
   return out;

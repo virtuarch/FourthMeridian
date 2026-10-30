@@ -45,6 +45,13 @@ export interface ValuationCoverage {
    * historical prices: those token days are not valued (never zero) before this.
    */
   tokenPricesFromISO?: string | null;
+  /**
+   * PR #122 review B1 — tokens with verified (licensed) history, held now or
+   * long since exited, whose days are NOT valued yet (no stored historical
+   * price), and those with no (liquid) market at all. Counts only; absent when 0.
+   */
+  tokensNotValuedYet?: number;
+  tokensWithoutMarket?: number;
 }
 
 export function deriveValuationCoverage(
@@ -52,6 +59,7 @@ export function deriveValuationCoverage(
   priceFloors: ReadonlyMap<string, string | null>,
   tokensTrackedFromISO: string | null = null,
   tokenPricesFromISO: string | null = null,
+  tokenValuation: { notValuedYet: number; withoutMarket: number } = { notValuedYet: 0, withoutMarket: 0 },
 ): ValuationCoverage | null {
   const bySymbol = new Map<string, ValuationCoverageLimit>();
   for (const r of rows) {
@@ -63,10 +71,12 @@ export function deriveValuationCoverage(
     if (r.balanceFromISO < prev.balanceFromISO) prev.balanceFromISO = r.balanceFromISO;
   }
   const limits = [...bySymbol.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
-  if (!limits.length && !tokensTrackedFromISO && !tokenPricesFromISO) return null;
+  const notYet = Math.max(0, tokenValuation.notValuedYet), noMarket = Math.max(0, tokenValuation.withoutMarket);
+  if (!limits.length && !tokensTrackedFromISO && !tokenPricesFromISO && !notYet && !noMarket) return null;
   const floors = limits.map((l) => l.pricedFromISO);
   const valuedFromISO = !limits.length ? null : floors.every((f): f is string => f !== null) ? [...floors].sort().at(-1)! : null;
-  return { limits, valuedFromISO, ...(tokensTrackedFromISO ? { tokensTrackedFromISO } : {}), ...(tokenPricesFromISO ? { tokenPricesFromISO } : {}) };
+  return { limits, valuedFromISO, ...(tokensTrackedFromISO ? { tokensTrackedFromISO } : {}), ...(tokenPricesFromISO ? { tokenPricesFromISO } : {}),
+    ...(notYet ? { tokensNotValuedYet: notYet } : {}), ...(noMarket ? { tokensWithoutMarket: noMarket } : {}) };
 }
 
 function fmtDay(iso: string): string {
@@ -95,5 +105,14 @@ export function valuationCoverageNote(cov: ValuationCoverage | null, chartFromIS
   const tokenPriceNote = cov.tokenPricesFromISO && chartFromISO < cov.tokenPricesFromISO
     ? `Verified token history is valued from ${fmtDay(cov.tokenPricesFromISO)}, when stored historical token prices begin; earlier token days aren’t valued (never counted as zero).`
     : null;
-  return [priceNote, tokenNote, tokenPriceNote].filter((x): x is string => x !== null).join(" ") || null;
+  // B1 — whatever the window: these tokens' days are missing from the history, not zero.
+  const n = cov.tokensNotValuedYet ?? 0;
+  const notYetNote = n > 0
+    ? `${n === 1 ? "1 token" : `${n} tokens`} with verified history ${n === 1 ? "isn’t" : "aren’t"} valued yet — no historical prices are stored for ${n === 1 ? "it" : "them"}, so ${n === 1 ? "its" : "their"} balances aren’t counted here (never as zero).`
+    : null;
+  const k = cov.tokensWithoutMarket ?? 0;
+  const noMarketNote = k > 0
+    ? `${k === 1 ? "1 token" : `${k} tokens`} with verified history ${k === 1 ? "has" : "have"} no reliable market price, so ${k === 1 ? "it isn’t" : "they aren’t"} counted (never as zero).`
+    : null;
+  return [priceNote, tokenNote, tokenPriceNote, notYetNote, noMarketNote].filter((x): x is string => x !== null).join(" ") || null;
 }

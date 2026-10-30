@@ -30,14 +30,17 @@ import { runErc20HistoryStep, type Erc20HistoryStore, type Erc20TokenWrite, type
 import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps } from "./erc20-history-pass";
 import { queuedCheckpoint, serializeCheckpoint, parseCheckpoint } from "./eth-history-backfill.core";
 import { walletHistoryComplete, facetFromCoverage, TOKEN_HISTORY_CHAINS } from "./wallet-instrument-history";
-import { tokensValueOnDay, tokenValueOnDay } from "./token-valuation.core";
+import { tokensValueOnDay, tokenValueOnDay, reconstructedTokenValuation } from "./token-valuation.core";
+import { loadWalletInstrumentHistory } from "./wallet-instrument-history";
+import { loadValuationCoverage } from "@/lib/connections/valuation-coverage";
+import { IS_TOKEN_INSTRUMENT } from "./token-asset";
 import type { ChainCoverage } from "./chain-movement";
-import { tokenHistoryText } from "@/lib/connections/connection-detail.core";
+import { tokenHistoryText, connectionHealth, connectionHistory } from "@/lib/connections/connection-detail.core";
 import { deriveValuationCoverage, valuationCoverageNote } from "@/lib/connections/valuation-coverage.core";
 import { acquireTokenHistoricalCloses, TOKEN_HISTORY_PRICE_SOURCE } from "@/lib/prices/token-history-prices";
 import { fetchCoinGeckoTokenDailyClosesUsd, TOKEN_HISTORICAL_PRICE_SEAM } from "@/lib/prices/providers/coingecko";
 import { coinGeckoUsageToday, TOKEN_HISTORY_METRIC_PREFIX, COINGECKO_USAGE_NETWORK } from "@/lib/prices/coingecko-budget";
-import { acquireErc20HistoricalPrices } from "./erc20-history-prices";
+import { acquireErc20HistoricalPrices, needsQuoteProbe, ERC20_PROBE_RETRY_MS } from "./erc20-history-prices";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -639,7 +642,7 @@ async function main(): Promise<void> {
       step: async ({ deps: d }) => {
         for (let i = 0; i < 250; i++) { d.eth!.meter!.eth_call = (d.eth!.meter!.eth_call ?? 0) + 1; await new Promise((r) => setImmediate(r)); }
         recordedWhileSending = Object.values(ledger).reduce((x, y) => x + y, 0);
-        return { stoppedBecause: "BUDGET", requests: 250, pagesRead: 0, verified: [], unsupported: [], inconclusive: [], pending: 1, impactedFromISO: null, verifiedInstrumentIds: [], failure: null };
+        return { stoppedBecause: "BUDGET", requests: 250, pagesRead: 0, verified: [], unsupported: [], inconclusive: [], pending: 1, impactedFromISO: null, verifiedInstrumentIds: [], pricingCandidates: [], failure: null };
       },
       setPending: async () => true,
       recordUsage: async (meter, flushed) => { for (const [k, v] of Object.entries(meter)) { const dd = v - (flushed[k] ?? 0); if (dd > 0) { ledger[k] = (ledger[k] ?? 0) + dd; flushed[k] = v; } } },
@@ -648,6 +651,116 @@ async function main(): Promise<void> {
       { ...baseCtx, regenerateUnderLock: async (_w: unknown, _f: string, stamp: number) => ({ outcome: "DONE" as const, stamp }) });
     check("S3: ≥ 200 of 250 calls were on the ledger before the step returned (flushed every 100)", recordedWhileSending >= 200, String(recordedWhileSending));
     check("S3: and every call is recorded exactly once by the end", (ledger.eth_call ?? 0) === 250 && fs.requests.total === 250, JSON.stringify(ledger));
+  }
+
+  // ── 20. B1: a token the wallet no longer holds is priced, or honestly disclosed — never silently dropped ──
+  {
+    const EXITED_KEY = `eip155:1/erc20:${USDC}`;
+    // (a) The pure rule.
+    check("B1 rule: a stored close ⇒ VALUED", reconstructedTokenValuation(true, {}) === "VALUED");
+    check("B1 rule: never quoted (sold before capture) ⇒ NOT_VALUED_YET", reconstructedTokenValuation(false, null) === "NOT_VALUED_YET" && reconstructedTokenValuation(false, {}) === "NOT_VALUED_YET");
+    check("B1 rule: quoted PRICED but no closes yet ⇒ NOT_VALUED_YET", reconstructedTokenValuation(false, { quote: { outcome: "PRICED", pricedAt: "x" } }) === "NOT_VALUED_YET");
+    check("B1 rule: thin / unlisted ⇒ NO_MARKET (the held-token rule)", reconstructedTokenValuation(false, { quote: { outcome: "THIN" } }) === "NO_MARKET"
+      && reconstructedTokenValuation(false, { quote: { outcome: "UNLISTED" } }) === "NO_MARKET" && reconstructedTokenValuation(false, { priceHistory: { outcome: "UNLISTED" } }) === "NO_MARKET");
+    check("B1 rule: an EMPTY history answer is not 'no market' ⇒ NOT_VALUED_YET", reconstructedTokenValuation(false, { quote: { outcome: "PRICED", pricedAt: "x" }, priceHistory: { outcome: "EMPTY" } }) === "NOT_VALUED_YET");
+
+    // (b) Price acquisition: an exited token (no quote marker) is probed through the current-quote path, then priced.
+    const meta: Record<string, unknown> = {};
+    const inserted: Array<{ instrumentId: string; date: Date }> = [];
+    const probes: string[] = [];
+    const client = {
+      instrumentAlias: {
+        findMany: async () => [{ instrumentId: "usdc", externalId: EXITED_KEY, metadata: { ...meta } }],
+        findUnique: async () => ({ metadata: { ...meta } }),
+        update: async ({ data }: { data: { metadata: Record<string, unknown> } }) => { Object.assign(meta, data.metadata); return {}; },
+      },
+      positionCoverage: { findMany: async () => [{ instrumentId: "usdc", coveredFromDate: new Date("2025-01-10T00:00:00Z"), coveredToDate: new Date("2026-10-27T00:00:00Z") }] },
+      priceObservation: { createMany: async ({ data }: { data: Array<{ instrumentId: string; date: Date }> }) => { inserted.push(...data); return { count: data.length }; } },
+    };
+    const NOW = Date.parse("2026-10-28T12:00:00Z");
+    const acquire: typeof acquireTokenHistoricalCloses = (a) => acquireTokenHistoricalCloses({ ...a, now: new Date(NOW), historyDays: 365,
+      budget: { remaining: async () => 50, record: async () => {}, pace: async () => {} },
+      fetchCloses: async () => ({ configured: true, unlisted: false, closes: [{ dateISO: "2025-11-01", price: 1 }, { dateISO: "2025-11-02", price: 1 }] }) });
+    const listed = (outcome: "PRICED" | "THIN") => async (t: { assetKey: string }) => {
+      probes.push(t.assetKey);
+      meta.quote = { attemptedAt: new Date(NOW).toISOString(), outcome, ...(outcome === "PRICED" ? { pricedAt: new Date(NOW).toISOString() } : {}) };
+      return 1;
+    };
+    const r1 = await acquireErc20HistoricalPrices({ client: client as never, accountId: "acc", instrumentIds: ["usdc"], maxTokens: 5, acquire, probe: listed("PRICED"), now: () => NOW });
+    check("B1: an exited, never-quoted token is quote-probed (the current-quote path)", probes.join() === EXITED_KEY && r1.probed === 1);
+    check("B1: …and then its historical closes are acquired (it no longer vanishes)", inserted.length === 2 && r1.inserted === 2 && r1.earliestInsertedISO === "2025-11-01", JSON.stringify(r1));
+    const r2 = await acquireErc20HistoricalPrices({ client: client as never, accountId: "acc", instrumentIds: ["usdc"], maxTokens: 5, acquire, probe: listed("PRICED"), now: () => NOW + 1 });
+    check("B1: a priced token is never re-probed", probes.length === 1 && r2.probed === 0);
+    // Thin market after the probe: the existing eligibility rule refuses history.
+    for (const k of Object.keys(meta)) delete meta[k];
+    inserted.length = 0; probes.length = 0;
+    const r3 = await acquireErc20HistoricalPrices({ client: client as never, accountId: "acc", instrumentIds: ["usdc"], maxTokens: 5, acquire, probe: listed("THIN"), now: () => NOW });
+    check("B1: a probed THIN token is never priced historically (thin-market rule respected)", r3.probed === 1 && inserted.length === 0);
+    const r4 = await acquireErc20HistoricalPrices({ client: client as never, accountId: "acc", instrumentIds: ["usdc"], maxTokens: 5, acquire, probe: listed("THIN"), now: () => NOW + 3_600_000 });
+    check("B1: …and not re-probed within the probe window", r4.probed === 0 && probes.length === 1 && needsQuoteProbe(meta, NOW + ERC20_PROBE_RETRY_MS + 1));
+    // The pass hands EVERY verified token to the price path, not only this step's.
+    const pm = newMem();
+    const pc: Chain = { head: 3000, calls: [], txs: [tx(USDC, 100, OTHER, WALLET, 1_000_000), tx(USDC, 200, WALLET, OTHER, 1_000_000)] };
+    await step(pc, pm);
+    const quiet = await step(pc, pm); // same day: nothing owed, nothing re-verified
+    check("B1: price candidates include tokens verified on earlier steps (held or exited)",
+      quiet.verifiedInstrumentIds.length === 0 && quiet.pricingCandidates.join() === `inst:${USDC}`, JSON.stringify(quiet));
+
+    // (c) Disclosure: the Net Worth chart note reads LICENSED tokens, not only observed ones.
+    const covClient = (o: { closes?: string | null; usdcMeta?: unknown }) => ({
+      spaceAccountLink: { findMany: async () => [{ visibilityLevel: "FULL", financialAccountId: "acc" }] },
+      positionCoverage: { findMany: async ({ where }: { where: { instrument?: unknown } }) =>
+        JSON.stringify(where.instrument) === JSON.stringify(IS_TOKEN_INSTRUMENT)
+          ? [{ instrumentId: "usdc", financialAccountId: "acc", kind: "COMPLETE", coveredFromDate: new Date("2025-01-10T00:00:00Z"), coveredToDate: new Date("2026-10-27T00:00:00Z"), caveats: [], source: ERC20_HISTORY_SOURCE },
+             { instrumentId: "dai", financialAccountId: "acc", kind: "COMPLETE", coveredFromDate: new Date("2026-09-01T00:00:00Z"), coveredToDate: new Date("2026-10-27T00:00:00Z"), caveats: [], source: ERC20_HISTORY_SOURCE }]
+          : [] },
+      // Capture only ever saw DAI (held now, priced); USDC was sold before capture began.
+      positionObservation: { groupBy: async () => [{ instrumentId: "dai", _min: { date: new Date("2026-10-01T00:00:00Z") } }] },
+      priceObservation: { groupBy: async ({ where }: { where: { instrumentId: { in: string[] }; basis?: string } }) =>
+        where.instrumentId.in.flatMap((id) => id === "dai" ? [{ instrumentId: "dai", _min: { date: new Date("2025-10-28T00:00:00Z") } }]
+          : id === "usdc" && o.closes ? [{ instrumentId: "usdc", _min: { date: new Date(`${o.closes}T00:00:00Z`) } }] : []) },
+      instrumentAlias: { findMany: async () => [{ instrumentId: "usdc", metadata: o.usdcMeta ?? {} }, { instrumentId: "dai", metadata: { quote: { outcome: "PRICED", pricedAt: "x" } } }] },
+    });
+    const c1 = await loadValuationCoverage(covClient({}) as never, "space");
+    const n1 = valuationCoverageNote(c1, "2025-06-01") ?? "";
+    check("B1: an exited, unpriced verified token is DISCLOSED on the chart (it was silently dropped before)",
+      c1?.tokensNotValuedYet === 1 && /1 token with verified history isn’t valued yet/.test(n1) && /never as zero/.test(n1), n1);
+    const n1late = valuationCoverageNote(c1, "2026-10-01") ?? "";
+    check("B1: …whatever window the chart shows", /isn’t valued yet/.test(n1late), n1late);
+    const c2 = await loadValuationCoverage(covClient({ usdcMeta: { quote: { outcome: "THIN", attemptedAt: "x" } } }) as never, "space");
+    check("B1: a thin/unlisted exited token is disclosed as having no reliable market price", c2?.tokensWithoutMarket === 1 && !c2.tokensNotValuedYet
+      && /no reliable market price/.test(valuationCoverageNote(c2, "2025-06-01") ?? ""));
+    const c3 = await loadValuationCoverage(covClient({ closes: "2025-10-28" }) as never, "space");
+    check("B1: once priced, it is valued from its first close (the earlier licence days said so)", !c3?.tokensNotValuedYet && c3?.tokenPricesFromISO === "2025-10-28"
+      && /Verified token history is valued from/.test(valuationCoverageNote(c3, "2025-06-01") ?? ""));
+
+    // (d) The wallet never reads complete while one exists — loader, health headline and History copy.
+    const nativeCov = { instrumentId: "eth", financialAccountId: "acc", kind: "COMPLETE", coveredFromDate: new Date("2020-01-01T00:00:00Z"), coveredToDate: new Date("2026-10-27T00:00:00Z"), caveats: [], source: "eth" };
+    const tokenCov = { instrumentId: "usdc", financialAccountId: "acc", kind: "COMPLETE", coveredFromDate: new Date("2025-01-10T00:00:00Z"), coveredToDate: new Date("2026-10-27T00:00:00Z"), caveats: [], source: ERC20_HISTORY_SOURCE };
+    const doneSection = { ...emptySection(), scannedToBlock: 10, scannedToISO: "2026-10-27", contracts: { [USDC]: {
+      decimals: 6, firstBlock: 5, firstDayISO: "2025-01-10", transfers: 2, baseRaw: "0", days: [], state: "VERIFIED", reason: null,
+      verifiedToBlock: 10, persistedThroughISO: "2026-10-27", instrumentId: "usdc" } } } as Erc20HistorySection;
+    const whClient = (closes: boolean) => ({
+      positionCoverage: { findMany: async () => [nativeCov, tokenCov] },
+      positionObservation: { groupBy: async () => [], findMany: async () => [] },
+      instrumentAlias: { findMany: async () => [{ instrumentId: "usdc", externalId: EXITED_KEY, metadata: {} }] },
+      priceObservation: { groupBy: async ({ where }: { where: { basis?: string } }) => (where.basis === "RAW_CLOSE" && closes ? [{ instrumentId: "usdc" }] : []) },
+      accountConnection: { findFirst: async () => ({ connectionId: "c1", connection: { credential: null, cursor: null } }) },
+      $queryRaw: async () => [{ historyCheckpoint: withErc20Section(null, "acc", doneSection) }],
+    });
+    const h0 = (await loadWalletInstrumentHistory(whClient(false) as never, [{ id: "acc", walletChain: "ETH" }])).get("acc")!;
+    check("B1: native + every token verified, but an exited token unvalued ⇒ the wallet is NOT complete",
+      h0.native.state === "RECONSTRUCTED" && h0.tokenInventoryComplete && h0.tokensNotValuedYet === 1 && h0.complete === false, JSON.stringify({ c: h0.complete, n: h0.tokensNotValuedYet, inv: h0.tokenInventoryComplete }));
+    const h1 = (await loadWalletInstrumentHistory(whClient(true) as never, [{ id: "acc", walletChain: "ETH" }])).get("acc")!;
+    check("B1: …and complete once its history is priced", h1.tokensNotValuedYet === 0 && h1.complete === true);
+    const conn = { id: "c", provider: "WALLET", state: "active" } as never;
+    const intel = (n: number) => ({ positionObservedAt: "2026-10-28T10:00:00Z", valuationIsReadTime: true,
+      walletHistory: { supported: true, licensed: true, licensedFromISO: "2020-01-01", licensedToISO: "2026-10-27", activityFromISO: "2020-01-01",
+        priceFromISO: "2020-01-01", chart: { fromISO: "2020-01-01", toISO: "2026-10-27", days: 2492, continuous: true }, chain: "ETH", tokens: [], walletComplete: n === 0, tokensNotValuedYet: n } }) as never;
+    check("B1: Connections headline is LIMITED while a verified token isn’t valued", connectionHealth(conn, intel(1), new Date("2026-10-28T12:00:00Z")).headline === "Current holdings ready; some history is limited");
+    check("B1: …and ready once it is", connectionHealth(conn, intel(0), new Date("2026-10-28T12:00:00Z")).headline === "Current holdings ready");
+    const lim = connectionHistory(conn, intel(2), [{ id: "a", name: "w", type: "crypto", chain: "ETH" } as never]).limitations.join(" ");
+    check("B1: History tab says how many and why, never a value", /2 tokens with verified history aren’t valued yet/.test(lim) && !/\$/.test(lim), lim);
   }
 
   // ── 16. Historical token prices (THE one token price path, #120's) ────────

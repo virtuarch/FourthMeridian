@@ -124,3 +124,39 @@ export function tokenReadWindow(fromISO: string, toISO: string, staleAfterDays: 
   const obsFrom = new Date(Date.parse(`${fromISO}T00:00:00Z`) - staleAfterDays * dayMs).toISOString().slice(0, 10);
   return { observationsFromISO: obsFrom, pricesFromISO: minusDay(fromISO), toISO };
 }
+
+// ── Reconstructed tokens: are their historical days valued? (PR #122 review B1) ──
+
+/**
+ * A token with LICENSED reconstructed history (SPL / ERC-20 history), held now
+ * or long since exited, is in one of three valuation states for its history:
+ *
+ *   VALUED          historical closes are stored for it (RAW_CLOSE) — its days
+ *                   are valued from the first one (an earlier licence start is
+ *                   disclosed as `tokenPricesFromISO`, valuation-coverage.core);
+ *   NO_MARKET       the vendor answered: not listed, or listed below the
+ *                   liquidity floor (thin) — it is never valued, honestly, the
+ *                   same rule as a held unpriced token ("Not valued");
+ *   NOT_VALUED_YET  anything else — never quoted (a token sold before capture
+ *                   began has no current quote), quoted but no closes yet, the
+ *                   budget ran out, the vendor returned an empty range. Its days
+ *                   contribute nothing; the wallet must not read complete while
+ *                   one exists, and the chart says so.
+ *
+ * Inputs are the token's alias metadata (the quote marker `quote` and the price
+ * history marker `priceHistory`, read loosely — this module imports nothing)
+ * and whether any RAW_CLOSE exists for it. A missing price is never $0.
+ */
+export type ReconstructedTokenValuation = "VALUED" | "NO_MARKET" | "NOT_VALUED_YET";
+
+export function reconstructedTokenValuation(hasHistoricalClose: boolean, aliasMetadata: unknown): ReconstructedTokenValuation {
+  if (hasHistoricalClose) return "VALUED";
+  const m = (aliasMetadata && typeof aliasMetadata === "object" ? aliasMetadata : {}) as {
+    quote?: { outcome?: unknown; pricedAt?: unknown }; priceHistory?: { outcome?: unknown };
+  };
+  const q = m.quote?.outcome;
+  if (q === "THIN") return "NO_MARKET";
+  if (m.priceHistory?.outcome === "UNLISTED") return "NO_MARKET";
+  if ((q === "UNLISTED" || q === "INVALID") && typeof m.quote?.pricedAt !== "string") return "NO_MARKET";
+  return "NOT_VALUED_YET";
+}

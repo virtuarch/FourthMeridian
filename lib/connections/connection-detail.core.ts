@@ -168,7 +168,9 @@ export function connectionHealth(
     // Held tokens without reconstructed history keep the wallet LIMITED: native
     // history being verified says nothing about the tokens beside it.
     // A token verified only from a later start (PARTIAL) is limited too.
-    const tokensLimited = (i?.walletHistory?.tokens ?? []).some((x) => x.historyState !== "RECONSTRUCTED" || x.coverageKind === "PARTIAL");
+    // B1 — a verified token history (held or exited) with no stored prices yet is limited too.
+    const tokensLimited = (i?.walletHistory?.tokens ?? []).some((x) => x.historyState !== "RECONSTRUCTED" || x.coverageKind === "PARTIAL")
+      || (i?.walletHistory?.tokensNotValuedYet ?? 0) > 0;
     const limited = tokensLimited
       || lines.some((l) => (l.key === "history" || l.key === "prices" || l.key === "import") && l.tone === "neutral")
       || (i?.walletHistory?.licensed === true && (i.walletHistory.chart?.fromISO ?? "9999") > (i.walletHistory.activityFromISO ?? i.walletHistory.licensedFromISO ?? "0000"));
@@ -267,10 +269,18 @@ export function tokenHistoryText(t: WalletTokens[number]): string {
   return "Not reconstructed yet";
 }
 
+/** B1 — the plain sentence for verified token histories whose days aren't valued yet (a count, never a value). */
+export function tokensNotValuedText(n: number | undefined): string | null {
+  if (!n || n <= 0) return null;
+  return `${n === 1 ? "1 token" : `${n} tokens`} with verified history ${n === 1 ? "isn’t" : "aren’t"} valued yet — no historical prices are stored for ${n === 1 ? "it" : "them"}, so ${n === 1 ? "its" : "their"} past balances aren’t counted in this wallet’s history (never as zero).`;
+}
+
 /** Token limitations for the History tab, derived from the facets (never a per-chain constant). */
-function tokenLimitations(chain: string | null, sym: string, tokens: WalletTokens | undefined): string[] {
+function tokenLimitations(chain: string | null, sym: string, tokens: WalletTokens | undefined, notValuedYet?: number): string[] {
   const kind = tokenKind(chain);
   if (!kind || !tokenCaptureSupported(chain)) return [];
+  const unvalued = tokensNotValuedText(notValuedYet);
+  if (unvalued) return [...tokenLimitations(chain, sym, tokens), unvalued];
   if (!tokens) return [];
   if (tokens.length === 0) return [`No ${kind} token balances have been recorded for this wallet. Native ${sym} history is shown above.`];
   const pending = tokens.filter((t) => t.historyState !== "RECONSTRUCTED").length;
@@ -299,7 +309,7 @@ export function connectionHistory(
     }
     const chain = accounts.find((a) => a.chain)?.chain?.toUpperCase() ?? null;
     const sym = nativeAssetSymbol(chain) ?? "native";
-    const tokenNote = tokenLimitations(chain, sym, wh.tokens);
+    const tokenNote = tokenLimitations(chain, sym, wh.tokens, wh.tokensNotValuedYet);
     const tokenFacets = (wh.tokens ?? []).map((t, n) => ({ key: `${t.label}-${n}`, label: `${t.label} history`, text: tokenHistoryText(t) }));
     if (wh.licensed) {
       const fromISO = wh.activityFromISO ?? wh.licensedFromISO;

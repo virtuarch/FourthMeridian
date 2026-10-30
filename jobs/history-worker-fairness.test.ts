@@ -274,7 +274,7 @@ async function main() {
       const tokenSteps: number[] = [];
       w.deps.ethTokens = {
         wallets: async () => [{ accountId: "e0", connectionId: "c-e0", cursor: null }],
-        step: async () => { tokenSteps.push(w.now()); return { stoppedBecause: "DONE", requests: 0, pagesRead: 0, verified: [], unsupported: [], inconclusive: [], pending: 0, impactedFromISO: null, verifiedInstrumentIds: [], failure: null }; },
+        step: async () => { tokenSteps.push(w.now()); return { stoppedBecause: "DONE", requests: 0, pagesRead: 0, verified: [], unsupported: [], inconclusive: [], pending: 0, impactedFromISO: null, verifiedInstrumentIds: [], pricingCandidates: [], failure: null }; },
         setPending: async () => true,
       };
       const out: SolBackfillJobSummary[] = [];

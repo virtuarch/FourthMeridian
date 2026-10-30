@@ -512,6 +512,7 @@ async function loadConnectionIntelligence(
         licensedFromISO: t.licensedFromISO, licensedToISO: t.licensedToISO, coverageKind: t.coverageKind ?? null, caveats: t.caveats ?? [], historyReason: t.reason ?? null,
       })));
       walletHistory.walletComplete = perInstrument.length > 0 && perInstrument.every((h) => h.complete);
+      walletHistory.tokensNotValuedYet = perInstrument.reduce((n, h) => n + h.tokensNotValuedYet, 0);
       walletHistory.chain = chains[0] ?? null;
     }
     if (walletHistory && c.provider === "WALLET") {

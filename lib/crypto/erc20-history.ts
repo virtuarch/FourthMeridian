@@ -104,8 +104,14 @@ export interface Erc20HistoryOutcome {
   pending: number;
   /** Earliest day whose token rows changed (regeneration from here), or null. */
   impactedFromISO: string | null;
-  /** Instruments verified this step (newly or extended) — price backfill candidates. */
+  /** Instruments verified this step (newly or extended). */
   verifiedInstrumentIds: string[];
+  /**
+   * B1 — historical-price candidates: EVERY verified token of the wallet (this
+   * step's first), held now or not — a token sold before capture began has
+   * reconstructed rows but no current quote, and must still be priced.
+   */
+  pricingCandidates: string[];
   failure: { code: string; detail: string } | null;
 }
 
@@ -137,12 +143,14 @@ export async function runErc20HistoryStep(
 
   const out: Erc20HistoryOutcome = {
     stoppedBecause: "DONE", requests: 0, pagesRead: 0, verified: [], unsupported: [], inconclusive: [], pending: 0,
-    impactedFromISO: null, verifiedInstrumentIds: [], failure: null,
+    impactedFromISO: null, verifiedInstrumentIds: [], pricingCandidates: [], failure: null,
   };
   const finish = (stoppedBecause: Erc20HistoryOutcome["stoppedBecause"], s: Erc20HistorySection | null) => {
     out.stoppedBecause = stoppedBecause;
     out.requests = calls();
     out.pending = s ? orderForVerification(s, () => 0, now()).length : 0;
+    const verifiedIds = s ? Object.values(s.contracts).filter((c) => c.state === "VERIFIED" && c.instrumentId).map((c) => c.instrumentId!).sort() : [];
+    out.pricingCandidates = [...new Set([...out.verifiedInstrumentIds, ...verifiedIds])];
     return out;
   };
 
