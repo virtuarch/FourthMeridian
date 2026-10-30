@@ -97,3 +97,16 @@ The marketing frame omits that block until it is fixed.
 - Daily Brief section still uses the hand-made illustrative card; a real Brief capture would fit the pattern.
 - Open Graph image could use a product frame.
 - Optional hover-tooltip frame for the Net Worth chart (harness supports interactions; dropped for simplicity).
+
+## 9. Independent review (performance · accessibility · accuracy)
+
+No blockers. Fixed in the follow-up commit:
+- loop never resumed after a tab switch (IntersectionObserver does not re-report) → tab visibility is its own state;
+- pointer and focus holds tracked separately; focus on Pause/Play is not a hold (Play works from the keyboard);
+- choosing a step pauses the loop on that step;
+- first Net Worth frame loads eagerly (the section can sit in the first screen ≤900px);
+- copy: "every change and chart on the page follows it" (the headline balance is as-of, not period-dependent).
+
+Confirmed by the reviewer: alt-text figures match the images; claims trace to app code; no real-looking private data; contrast of 13px #6e7896 on #060911 ≈ 4.54:1 (passes AA, at the margin).
+
+CI: `audit-account-reparenting` ratchet required classifying the fixture's use of `counterpartyAccountId` — recorded as `DTO` (in-memory synthetic rows, no write path).

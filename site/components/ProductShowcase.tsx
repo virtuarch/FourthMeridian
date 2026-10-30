@@ -11,9 +11,9 @@
  *
  * Motion is a cross-fade between still frames — no video, no animation library.
  * It advances only while the figure is on screen and the tab is visible; it
- * stops while the pointer or keyboard focus is inside it; the visitor can pause
- * it; and under prefers-reduced-motion it never advances on its own (the steps
- * stay clickable). Frames of one loop share an aspect ratio and are stacked in
+ * holds while the pointer is over it or keyboard focus is on a frame step; the
+ * visitor can pause it, and choosing a step pauses it on that step; under
+ * prefers-reduced-motion it never advances on its own (the steps stay clickable). Frames of one loop share an aspect ratio and are stacked in
  * one box, so changing frame never moves the page.
  */
 import { useEffect, useRef, useState } from "react";
@@ -32,18 +32,24 @@ export interface ShowcaseFrame {
 
 const MOBILE_QUERY = "(max-width: 600px)";
 
-export function ProductShowcase({ label, frames, interval = 4200, note }: {
+export function ProductShowcase({ label, frames, interval = 4200, note, eager = false }: {
   /** Accessible name of the figure ("Personal Space — Net Worth"). */
   label: string;
   frames: ShowcaseFrame[];
   interval?: number;
   /** Optional line under the frame (e.g. what is illustrative). */
   note?: string;
+  /** Load the first frame eagerly (a showcase that can sit in the first screen). */
+  eager?: boolean;
 }) {
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
-  const [held, setHeld] = useState(false);          // pointer / focus inside
-  const [visible, setVisible] = useState(false);
+  // Two independent holds: a click focuses a step, then the pointer leaves
+  // while focus stays — one flag would release the hold too early.
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [inView, setInView] = useState(false);
+  const [tabVisible, setTabVisible] = useState(true);
   const [reduced, setReduced] = useState(true);     // assume reduced until known
   const ref = useRef<HTMLElement | null>(null);
   const loop = frames.length > 1;
@@ -59,14 +65,17 @@ export function ProductShowcase({ label, frames, interval = 4200, note }: {
   useEffect(() => {
     const el = ref.current;
     if (!el || !loop) return;
-    const io = new IntersectionObserver(([e]) => setVisible(e.isIntersecting), { threshold: 0.35 });
+    const io = new IntersectionObserver(([e]) => setInView(e.isIntersecting), { threshold: 0.35 });
     io.observe(el);
-    const onVis = () => { if (document.hidden) setVisible(false); };
+    // Tab visibility is its own signal: switching tabs moves nothing on screen,
+    // so the observer would never report the return.
+    const onVis = () => setTabVisible(!document.hidden);
+    onVis();
     document.addEventListener("visibilitychange", onVis);
     return () => { io.disconnect(); document.removeEventListener("visibilitychange", onVis); };
   }, [loop]);
 
-  const running = loop && visible && !paused && !held && !reduced;
+  const running = loop && inView && tabVisible && !paused && !hovered && !focused && !reduced;
   useEffect(() => {
     if (!running) return;
     const t = window.setTimeout(() => setActive((i) => (i + 1) % frames.length), interval);
@@ -80,10 +89,12 @@ export function ProductShowcase({ label, frames, interval = 4200, note }: {
       ref={ref}
       className={styles.showcase}
       aria-label={label}
-      onPointerEnter={() => setHeld(true)}
-      onPointerLeave={() => setHeld(false)}
-      onFocus={() => setHeld(true)}
-      onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHeld(false); }}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      // Focus on the Pause/Play control itself is not a hold — otherwise Play,
+      // pressed from the keyboard, could never resume the loop.
+      onFocus={(e) => setFocused(!(e.target as HTMLElement).dataset.loopToggle)}
+      onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false); }}
     >
       <div className={styles.window}>
         <span className={styles.badge}>Product UI · demo data</span>
@@ -94,7 +105,7 @@ export function ProductShowcase({ label, frames, interval = 4200, note }: {
           {frames.map((f, i) => (
             <picture key={f.desktop.src} className={styles.frame} data-active={i === active ? "" : undefined}>
               <source media={MOBILE_QUERY} srcSet={f.mobile.src} width={f.mobile.width} height={f.mobile.height} />
-              <img src={f.desktop.src} width={f.desktop.width} height={f.desktop.height} alt={i === active ? f.alt : ""} loading="lazy" decoding="async" />
+              <img src={f.desktop.src} width={f.desktop.width} height={f.desktop.height} alt={i === active ? f.alt : ""} loading={eager && i === 0 ? "eager" : "lazy"} decoding="async" />
             </picture>
           ))}
         </div>
@@ -103,7 +114,7 @@ export function ProductShowcase({ label, frames, interval = 4200, note }: {
         <div className={styles.controls}>
           <div className={styles.steps} role="group" aria-label={`${label} — views`}>
             {frames.map((f, i) => (
-              <button key={f.caption} type="button" className={styles.step} aria-pressed={i === active} onClick={() => setActive(i)}>
+              <button key={f.caption} type="button" className={styles.step} aria-pressed={i === active} onClick={() => { setActive(i); setPaused(true); }}>
                 <span className={styles.track} aria-hidden>
                   <span className={styles.fill} data-running={running && i === active ? "" : undefined}
                     style={{ animationDuration: `${interval}ms` }} key={`${active}-${running}`} />
@@ -113,7 +124,7 @@ export function ProductShowcase({ label, frames, interval = 4200, note }: {
             ))}
           </div>
           {!reduced && (
-            <button type="button" className={styles.pause} onClick={() => setPaused((p) => !p)} aria-pressed={paused}>
+            <button type="button" data-loop-toggle="" className={styles.pause} onClick={() => setPaused((p) => !p)} aria-pressed={paused}>
               {paused ? "Play" : "Pause"}<span className={styles.srOnly}> {label} loop</span>
             </button>
           )}

@@ -56,8 +56,8 @@ export default function HomePage() {
       </section>
 
       <Reveal as="section" className={`${styles.section} ${styles.showcase} ${styles.firstShowcase}`} id="personal-space" aria-labelledby="personal-space-title">
-        <div className={styles.sectionLead}><p className={styles.eyebrow}>Your Personal Space</p><h2 id="personal-space-title">Everything you own and owe, on one timeline.</h2><p>Net worth, assets and liabilities in one place, with the history behind them. Pick a period—the last 90 days, the year so far, the last twelve months—and every figure on the page follows it.</p></div>
-        <ProductShowcase label="Personal Space — Net worth" frames={NET_WORTH_FRAMES} />
+        <div className={styles.sectionLead}><p className={styles.eyebrow}>Your Personal Space</p><h2 id="personal-space-title">Everything you own and owe, on one timeline.</h2><p>Net worth, assets and liabilities in one place, with the history behind them. Pick a period—the last 90 days, the year so far, the last twelve months—and every change and chart on the page follows it.</p></div>
+        <ProductShowcase label="Personal Space — Net worth" frames={NET_WORTH_FRAMES} eager />
       </Reveal>
 
       <Reveal as="section" className={`${styles.section} ${styles.philosophy}`} id="philosophy">
