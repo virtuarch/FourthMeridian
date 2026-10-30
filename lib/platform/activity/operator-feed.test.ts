@@ -45,7 +45,8 @@ async function main() {
     check("every admitted action is one the Security feed already lists (a subset, never a widening)",
       PLATFORM_OPS_FEED_ACTIONS.every((a) => OPERATOR_ACTION_FEED_ACTIONS.includes(a)));
     check("no security-only action is admitted", SECURITY_ONLY_ACTIONS.every((a) => !(a in PLATFORM_OPS_FEED_RULES)));
-    const expected = ["PLATFORM_OPERATION_EXECUTED", "PLATFORM_OPERATION_DRY_RUN", "JOB_CADENCE_CHANGED", "JOB_CADENCE_RESET",
+    // PLATFORM-SEC-1 adds the fleet-run intent row (PLATFORM_OPERATION_REQUESTED), a JOB target.
+    const expected = ["PLATFORM_OPERATION_EXECUTED", "PLATFORM_OPERATION_DRY_RUN", "PLATFORM_OPERATION_REQUESTED", "JOB_CADENCE_CHANGED", "JOB_CADENCE_RESET",
       "PLATFORM_POLICY_CHANGED", "PLATFORM_POLICY_RESET", "CONNECTION_RESYNC_TRIGGERED", "CONNECTION_REAUTH_REQUESTED",
       "PLAID_ITEM_WEBHOOK_UPDATED", "PLAID_ITEM_REVOCATION_RETRY_REQUESTED", "OPERATOR_REFRESH_ALL",
       // A connection action (D6): resuming ONE wallet connection's history.

@@ -36,6 +36,7 @@ export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   PLATFORM_GRANT_REINSTATED:    "Reinstated platform access",
   PLATFORM_OPERATION_EXECUTED:  "Ran a manual operation",
   PLATFORM_OPERATION_DRY_RUN:   "Dry-ran an operation",
+  PLATFORM_OPERATION_REQUESTED: "Started a fleet-wide operation",
   BETA_ACCESS_APPROVED:         "Approved a beta request",
   BETA_ACCESS_DENIED:           "Denied a beta request",
   BETA_MODE_CHANGED:            "Changed signup mode",

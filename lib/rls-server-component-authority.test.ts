@@ -173,7 +173,9 @@ console.log("\n1b. lib/platform/directory.server.ts — the platform reads' one 
   // Every platform read in the shell goes through here. The count feeds the
   // GlobalHeader's context switch (layout.tsx), the two-read transaction feeds
   // the directory page. All three are tenant reads keyed on the viewer's own id.
-  const EXPECTED_TX = ["platformGrant.count", "platformGrant.findMany", "space.findMany"].sort();
+  // SEC-PLAT-1 adds the caller's OWN second-factor flag (user.findUnique, own id)
+  // so an un-enrolled operator is sent to enrolment when enforcement is on.
+  const EXPECTED_TX = ["platformGrant.count", "platformGrant.findMany", "space.findMany", "user.findUnique"].sort();
   const txSites = callSites(src, TX_CALL);
   check(`the ${EXPECTED_TX.length} platform reads are enumerated, all as the tenant`,
     JSON.stringify(txSites) === JSON.stringify(EXPECTED_TX),

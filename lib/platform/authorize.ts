@@ -45,6 +45,30 @@ import type { SessionUser }         from "@/lib/session";
 import { hasPlatformAccess }        from "./policy";
 import type { PlatformGrantCtx }    from "./policy";
 import { recordPlatformAccessDenied } from "@/lib/platform/ops/access-denied";
+import { operatorTotpMissing } from "@/lib/auth-totp-policy";
+import { decideAdminApiAccess, type AdminApiAccess } from "@/lib/admin-totp-enrollment";
+import { env }                      from "@/lib/env";
+
+/**
+ * SEC-PLAT-1 — the refusal a grant holder WITHOUT TOTP receives. Pages read the
+ * header (never the body) to send the operator to the existing enrolment
+ * screen instead of the Platform directory.
+ */
+export const PLATFORM_DENIAL_HEADER = "x-fm-platform-denial";
+export const OPERATOR_TOTP_REQUIRED = "operator-totp-required";
+export const OPERATOR_TOTP_ENROLMENT_PATH = "/dashboard/settings/security?setup2fa=true";
+
+function operatorTotpRequired(): NextResponse {
+  return NextResponse.json(
+    { error: "Two-factor authentication is required for Platform access. Set it up in Settings → Security.", code: "OPERATOR_TOTP_REQUIRED" },
+    { status: 403, headers: { [PLATFORM_DENIAL_HEADER]: OPERATOR_TOTP_REQUIRED, "Cache-Control": "no-store" } },
+  );
+}
+
+/** True when a page-side refusal from the guard is the operator-TOTP one. */
+export function isOperatorTotpRefusal(res: Response): boolean {
+  return res.headers.get(PLATFORM_DENIAL_HEADER) === OPERATOR_TOTP_REQUIRED;
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -75,6 +99,33 @@ export function decidePlatformAccess(
   return hasPlatformAccess(area, needed, grants);
 }
 
+/**
+ * PLATFORM-SEC-1 (2026-10-30) — the SYSTEM_ADMIN break-glass bypass obeys the
+ * SAME rule as /api/admin (decideAdminApiAccess, lib/session.ts adminApiAccess):
+ * refused while DISABLE_SYSTEM_ADMIN is on (FORBIDDEN_DISABLED) and while the
+ * admin's TOTP enrolment is pending (FORBIDDEN_PENDING). Before this, the
+ * bypass returned before any check, so a SYSTEM_ADMIN session issued before the
+ * kill switch was flipped kept full Platform API authority, CONTROL included.
+ * PURE — one decision, two consoles, no drift.
+ */
+export function decideBreakGlass(input: {
+  role: UserRole;
+  requireTotpSetup: boolean;
+  systemAdminDisabled: boolean;
+}): AdminApiAccess {
+  return decideAdminApiAccess(input);
+}
+
+/**
+ * SEC-PLAT-1 — PURE. True when an operator who otherwise holds an ACTIVE grant
+ * must be refused because they have no second factor AND enforcement is on.
+ * `enforced` is env.isOperatorTotpEnforced (Preview first; Production only on
+ * an explicit rollout decision).
+ */
+export function decideOperatorTotpRefusal(input: { role: UserRole; totpEnabled: boolean; enforced: boolean }): boolean {
+  return input.enforced && operatorTotpMissing(input);
+}
+
 // ── Adapters ──────────────────────────────────────────────────────────────────
 
 /**
@@ -89,14 +140,28 @@ async function resolvePlatformAccess(
   needed: PlatformAccessLevel,
 ): Promise<[PlatformAuth, null] | [null, NextResponse]> {
   // Break-glass — the bypass lives in the adapter (07-07 ruling), not the pure
-  // policy. SYSTEM_ADMIN never needs (and is never issued) a grant row.
+  // policy. SYSTEM_ADMIN never needs (and is never issued) a grant row. It is
+  // honoured only when the admin console itself would be (decideBreakGlass):
+  // the DISABLE_SYSTEM_ADMIN kill switch and pending TOTP enrolment close it.
   if (user.role === UserRole.SYSTEM_ADMIN) {
+    const verdict = decideBreakGlass({
+      role: user.role,
+      requireTotpSetup: user.requireTotpSetup,
+      systemAdminDisabled: env.isSystemAdminDisabled,
+    });
+    if (verdict !== "ALLOW") {
+      recordPlatformAccessDenied({ userId: user.id, area, needed, grant: "break_glass_refused" }, { client: db });
+      return [null, forbidden()];
+    }
     return [{ user, grant: null }, null];
   }
 
+  // SEC-PLAT-1 — the grant AND the holder's second-factor state, read fresh
+  // together (one query): a 2FA reset or disable takes effect on the very next
+  // platform request, whatever the session cache says.
   const row = await db.platformGrant.findUnique({
     where:  { userId_area: { userId: user.id, area } },
-    select: { area: true, level: true, status: true },
+    select: { area: true, level: true, status: true, user: { select: { totpEnabled: true } } },
   });
 
   const grants: PlatformGrantCtx[] = row ? [row] : [];
@@ -111,6 +176,14 @@ async function resolvePlatformAccess(
       { client: db },
     );
     return [null, forbidden()]; // 403 — no / insufficient / revoked grant
+  }
+
+  // SEC-PLAT-1 (owner ruling P-2) — an ACTIVE grant is not enough: the holder
+  // must have TOTP enabled. Decided after the grant (so a caller with no grant
+  // learns nothing about MFA) and recorded like any other refusal.
+  if (decideOperatorTotpRefusal({ role: user.role, totpEnabled: row!.user.totpEnabled === true, enforced: env.isOperatorTotpEnforced })) {
+    recordPlatformAccessDenied({ userId: user.id, area, needed, grant: "mfa_required" }, { client: db });
+    return [null, operatorTotpRequired()];
   }
 
   // Non-null asserted: a non-admin only passes when an ACTIVE matching grant

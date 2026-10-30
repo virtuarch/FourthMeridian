@@ -30,7 +30,9 @@ import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import { redirectToLogin } from "@/lib/auth/login-redirect";
-import { loadPlatformDirectory } from "@/lib/platform/directory.server";
+import { loadPlatformDirectory, operatorHasTotp } from "@/lib/platform/directory.server";
+import { OPERATOR_TOTP_ENROLMENT_PATH } from "@/lib/platform/authorize";
+import { env } from "@/lib/env";
 import { PlatformSpaceDirectory } from "@/components/platform/PlatformSpaceDirectory";
 
 export const runtime = "nodejs";
@@ -44,6 +46,8 @@ export default async function PlatformDirectoryPage() {
   //    to show and the viewer has no business here: back to the launcher.
   const spaces = await loadPlatformDirectory(session.user.id);
   if (spaces.length === 0) redirect("/dashboard/spaces");
+  // SEC-PLAT-1 — same rule as the shared guard, same destination as [area].
+  if (env.isOperatorTotpEnforced && !(await operatorHasTotp(session.user.id))) redirect(OPERATOR_TOTP_ENROLMENT_PATH);
 
   return <PlatformSpaceDirectory spaces={spaces} />;
 }
