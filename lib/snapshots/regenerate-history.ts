@@ -56,7 +56,10 @@ import {
   fromISO,
   type CashAccountBalance,
 } from "@/lib/snapshots/backfill-core";
-import { regenerateDay, type DayRegenInput, type DayRegenResult } from "@/lib/snapshots/regenerate-history.core";
+import {
+  regenerateDay, revokedLinkContributionWindow, blockingRevokedLinks,
+  type DayRegenInput, type DayRegenResult, type RevokedLinkFacts, type RevokedLinkWindow,
+} from "@/lib/snapshots/regenerate-history.core";
 import {
   classifyRegeneration,
   REGENERATION_DISPOSITIONS,
@@ -193,6 +196,14 @@ export interface RegenerateWealthHistoryResult {
   // docs/initiatives/wealth-timeline/WEALTH_TIMELINE_AMENDMENT_SYSTEM_PROPOSAL.md §9.
   skippedMembershipChanged: number;
   /**
+   * 2026-10-30 — operator diagnostic for the per-link membership guard: every
+   * REVOKED link of the Space, the day range it blocks
+   * ([contributesFromISO, revokedOnISO); null from = every earlier day), the
+   * basis for that range, and how many of THIS run's candidate days it blocked.
+   * Internal only — never part of the per-day diffs an amendment preview returns.
+   */
+  membershipBlocks: Array<RevokedLinkWindow & { blockedDays: number }>;
+  /**
    * V26-CRYPTO-STATUS-1 — rows whose crypto verdict was recorded WITHOUT
    * rewriting the row: a single-column update marking the stored crypto figure
    * unassertable. Counted separately from `written` because no financial scalar
@@ -222,7 +233,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const applyWrites = !args.dryRun && (wealthRegenerationEnabled() || args.isAmendment === true);
 
   const zero: RegenerateWealthHistoryResult = {
-    spaceId, fromDate, toDate, considered: 0, written: 0, patched: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0, cryptoStatusStamped: 0,
+    spaceId, fromDate, toDate, considered: 0, written: 0, patched: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0, membershipBlocks: [], cryptoStatusStamped: 0,
     dispositions: Object.fromEntries(REGENERATION_DISPOSITIONS.map((d) => [d, 0])) as Record<RegenerationDisposition, number>,
     applied: applyWrites, diffs: [], integrity: null,
   };
@@ -724,7 +735,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // A LEGACY asset (no ledger rows, no profile) keeps floor = today, byte-for-
   // byte the previous behaviour, so no existing Space's history changes without
   // a user action (owner decision; see the core module's header).
-  const manualAssets = accounts.filter((a) => a.type === "other" && a.syncStatus === "manual");
+  const manualAssets = accounts.filter(isManualRealAsset);
   const manualHistoryByAccount = new Map<string, ManualAssetHistoryInput>();
   if (manualAssets.length > 0) {
     const histories = await loadHistoriesFor(
@@ -792,18 +803,15 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const dailyCash = reconstructDailyCashBalances(cashAccounts, cashDeltas, today, effectiveStart);
   const dailyCard = reconstructDailyLiabilityBalances(cardAccounts, cardDeltas, today, effectiveStart);
 
-  // 2026-07-15 — dates any account was REVOKED from this Space (§9 fix). Used
-  // to gate automatic regen: a day whose date precedes a revocation may still
-  // have had that account as a genuine member, and this function only ever
-  // queries CURRENTLY active links (linkRows above) — writing over such a day
-  // would silently drop that account's real historical contribution. Cheap,
-  // one query, independent of the ACTIVE-only linkRows query above.
-  const revokedDates = (
-    await client.spaceAccountLink.findMany({
-      where:  { spaceId, status: ShareStatus.REVOKED, revokedAt: { not: null } },
-      select: { revokedAt: true },
-    })
-  ).map((r) => truncDateUTC(r.revokedAt!));
+  // §9 membership guard, PER REVOKED LINK (2026-10-30). Regeneration only sees
+  // CURRENTLY active links (linkRows above), so a day whose stored row may carry
+  // a since-revoked account must not be rewritten — but only the days THAT
+  // account could have contributed to. The window per link is decided in the
+  // pure core (revokedLinkContributionWindow); this only gathers the facts.
+  // Fails closed: any account whose evidence cannot be established blocks every
+  // day before its revocation, which is the previous Space-wide behaviour.
+  const revokedWindows = await loadRevokedLinkWindows(client, spaceId, today);
+  const blockedDaysByLink = new Map<string, number>(revokedWindows.map((w) => [w.linkId, 0]));
 
   // Existing rows in the window — for the frozen-row flag + before/after diffs.
   const existing = await client.spaceSnapshot.findMany({
@@ -1114,6 +1122,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     }
 
     const prior = existingByDate.get(dISO);
+    // §9 per-link guard — which revoked links (if any) could have contributed to
+    // this day's stored row. Counted per link for the operator diagnostic.
+    const dayBlockers = blockingRevokedLinks(revokedWindows, dISO);
+    for (const w of dayBlockers) blockedDaysByLink.set(w.linkId, (blockedDaysByLink.get(w.linkId) ?? 0) + 1);
     const input: DayRegenInput = {
       date: dISO,
       existingIsEstimated: prior ? prior.isEstimated : null,
@@ -1151,11 +1163,11 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // RWA-2B — a real-asset value modeled between, or carried from, the user's
       // dated estimates makes the day an estimate; a recorded anchor adds nothing.
       realAssetTier: realAssetTierFor(dayRealAssetBases),
-      // 2026-07-15 §9 fix — any account revoked strictly after this day was
-      // plausibly still a member of the Space as of this day; the `accounts`
-      // array above only reflects CURRENTLY active links, so writing this day
-      // would silently drop that account's real contribution.
-      membershipChangedSince: revokedDates.some((r) => r.getTime() > d.getTime()),
+      // 2026-07-15 §9 fix, per link since 2026-10-30 — an account revoked
+      // strictly after this day that COULD HAVE contributed to its stored row;
+      // the `accounts` array above only reflects CURRENTLY active links, so
+      // writing this day would silently drop that account's real contribution.
+      membershipChangedSince: dayBlockers.length > 0,
       // Phase 2 — an explicit amendment bypasses the frozen + membership guards.
       isAmendment: args.isAmendment === true,
     };
@@ -1347,6 +1359,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     }
   }
 
+  result.membershipBlocks = revokedWindows.map((w) => ({ ...w, blockedDays: blockedDaysByLink.get(w.linkId) ?? 0 }));
   return result;
 }
 
@@ -1399,6 +1412,121 @@ async function verifyLiabilitySeries(
     // count already conveys the scale.
     violations: violations.slice(0, 10),
   };
+}
+
+/** RWA-2B's manual real-asset predicate — the only kind valued from a valuation ledger. */
+function isManualRealAsset(a: { type: string; syncStatus: string | null }): boolean {
+  return a.type === "other" && a.syncStatus === "manual";
+}
+
+/**
+ * §9 per-link membership guard — the I/O half. Gathers, in a fixed number of
+ * batched reads (links → accounts → manual-asset ledgers + earliest
+ * transactions; never per link), the facts the pure core needs to bound each
+ * REVOKED link's contribution, and returns the core's windows.
+ *
+ * FAILS CLOSED at every step: an account that cannot be read, a kind with no
+ * engine-authoritative floor, or a ledger read that throws all yield an
+ * UNBOUNDED window — every day before the revocation stays blocked, exactly the
+ * pre-2026-10-30 Space-wide behaviour. Only the revoked-link query itself is
+ * allowed to throw (as it always was): without it nothing is known at all.
+ *
+ * Link model (checked): SpaceAccountLink is unique per (space, account), and
+ * archive/restore flips status/revokedAt on that ONE row (links-everywhere.ts
+ * reactivateAccountLinksEverywhere; the share route upserts the same row). A
+ * restored account is therefore ACTIVE and regenerated with everyone else; a
+ * REVOKED row's createdAt is its FIRST link date and revokedAt its LATEST
+ * revocation, so its window spans every membership period it ever had.
+ */
+export async function loadRevokedLinkWindows(client: Client, spaceId: string, today: Date): Promise<RevokedLinkWindow[]> {
+  const links = await client.spaceAccountLink.findMany({
+    where:  { spaceId, status: ShareStatus.REVOKED, revokedAt: { not: null } },
+    select: { id: true, financialAccountId: true, createdAt: true, revokedAt: true },
+  });
+  if (links.length === 0) return [];
+
+  type Account = { id: string; type: string; syncStatus: string | null; currency: string; balance: number; lastUpdated: Date; createdAt: Date };
+  let accountsById = new Map<string, Account>();
+  try {
+    // Separate from the link read (not a relation select) so an account that is
+    // missing or unreadable degrades to UNBOUNDED instead of failing the run.
+    const rows = await client.financialAccount.findMany({
+      where:  { id: { in: [...new Set(links.map((l) => l.financialAccountId))] } },
+      select: { id: true, type: true, syncStatus: true, currency: true, balance: true, lastUpdated: true, createdAt: true },
+    });
+    accountsById = new Map(rows.map((r) => [r.id, { ...r, type: r.type as string }]));
+  } catch (err) {
+    console.warn(`[wealth-regen] ${spaceId}: revoked-account read failed (fail closed): ${err instanceof Error ? err.message : err}`);
+  }
+
+  // Manual real assets are the only kind with an engine-authoritative floor.
+  const manual = [...accountsById.values()].filter(isManualRealAsset);
+  const ledgerFloor = new Map<string, { firstAnchorISO: string | null; isLegacy: boolean; acquisitionISO: string | null }>();
+  const earliestTx = new Map<string, string>();
+  const earliestValuationRow = new Map<string, string>();
+  let ledgerOk = manual.length === 0;
+  if (manual.length > 0) {
+    try {
+      const manualIds = manual.map((a) => a.id);
+      const [histories, grouped, valuationFloors] = await Promise.all([
+        loadHistoriesFor(client, manual.map((a) => ({ id: a.id, currency: a.currency, balance: a.balance, lastUpdated: a.lastUpdated })), isoDate(today)),
+        // Any transaction, deleted or not — the lowest bound any writer could have used.
+        client.transaction.groupBy({ by: ["financialAccountId"], where: { financialAccountId: { in: manualIds } }, _min: { date: true } }),
+        // Every valuation row, any currency — the resolver drops other-currency rows.
+        client.assetValuation.groupBy({ by: ["financialAccountId"], where: { financialAccountId: { in: manualIds } }, _min: { effectiveDate: true } }),
+      ]);
+      for (const a of manual) {
+        const h = histories.get(a.id);
+        if (!h) continue; // no history resolved ⇒ left out of ledgerFloor ⇒ UNBOUNDED
+        const input: ManualAssetHistoryInput = {
+          resolved: h.resolved,
+          isLegacy: isLegacyManualAsset({ resolved: h.resolved, hasProfile: h.profile !== null }),
+        };
+        ledgerFloor.set(a.id, {
+          // THE engine floor (the same call the active-asset path above makes).
+          // With no anchor it answers `today`, which is not a floor here — the
+          // core reads null as "no ledger floor" and fails closed.
+          firstAnchorISO: h.resolved.anchors.length > 0 ? manualAssetHistoryFloor(input, isoDate(today)) : null,
+          isLegacy: input.isLegacy,
+          acquisitionISO: h.profile?.acquisitionDate ?? null,
+        });
+      }
+      for (const g of grouped) {
+        if (g.financialAccountId && g._min.date) earliestTx.set(g.financialAccountId, isoDate(truncDateUTC(g._min.date)));
+      }
+      for (const g of valuationFloors) {
+        if (g._min.effectiveDate) earliestValuationRow.set(g.financialAccountId, isoDate(truncDateUTC(g._min.effectiveDate)));
+      }
+      ledgerOk = true;
+    } catch (err) {
+      console.warn(`[wealth-regen] ${spaceId}: revoked manual-asset ledger read failed (fail closed): ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  return links.map((l) => {
+    const account = accountsById.get(l.financialAccountId);
+    const ledger = ledgerFloor.get(l.financialAccountId);
+    const facts: RevokedLinkFacts = {
+      linkId: l.id,
+      financialAccountId: l.financialAccountId,
+      linkCreatedISO: isoDate(truncDateUTC(l.createdAt)),
+      revokedOnISO: isoDate(truncDateUTC(l.revokedAt!)),
+      evidence:
+        !account ? { kind: "UNBOUNDED", why: "ACCOUNT_UNREADABLE" }
+        : !isManualRealAsset(account) ? { kind: "UNBOUNDED", why: `NO_ENGINE_FLOOR_FOR_${account.type.toUpperCase()}` }
+        : !ledgerOk || !ledger ? { kind: "UNBOUNDED", why: "MANUAL_ASSET_LEDGER_UNAVAILABLE" }
+        : {
+            kind: "MANUAL_REAL_ASSET",
+            firstAnchorISO: ledger.firstAnchorISO,
+            isLegacy: ledger.isLegacy,
+            earliestTransactionISO: earliestTx.get(l.financialAccountId) ?? null,
+            earliestValuationRowISO: earliestValuationRow.get(l.financialAccountId) ?? null,
+            acquisitionISO: ledger.acquisitionISO,
+            accountCreatedISO: isoDate(truncDateUTC(account.createdAt)),
+          },
+    };
+    return revokedLinkContributionWindow(facts);
+  });
 }
 
 /**
