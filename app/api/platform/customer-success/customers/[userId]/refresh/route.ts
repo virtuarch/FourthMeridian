@@ -19,6 +19,7 @@ import { getRequestMeta } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { recordOperatorAction } from "@/lib/audit";
 import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
+import { entitlementLoadOptions } from "@/lib/entitlements/consume";
 import { refreshAllForUser } from "@/lib/refresh/refresh-all";
 import { clientRefreshDeps } from "@/lib/refresh/deps";
 import type { RefreshAllReport } from "@/lib/refresh/outcomes";
@@ -39,7 +40,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ userId: st
 
   const meta = getRequestMeta(req);
   const actor = { userId: auth.user.id, via: auth.grant ? ("PLATFORM_GRANT" as const) : ("SYSTEM_ADMIN" as const) };
-  const entitlements = await loadEffectiveEntitlements(systemDb, userId);
+  const entitlements = await loadEffectiveEntitlements(systemDb, userId, entitlementLoadOptions());
   // fm_system reads: the operator is acting outside their own tenancy by definition.
   const report = await refreshAllForUser({ userId, authority: "OPERATOR", actor, entitlements }, clientRefreshDeps(systemDb));
 

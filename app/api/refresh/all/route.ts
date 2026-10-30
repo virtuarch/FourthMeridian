@@ -26,6 +26,7 @@ import { getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { buildAuditData } from "@/lib/audit";
 import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
+import { entitlementLoadOptions } from "@/lib/entitlements/consume";
 import { refreshAllForUser } from "@/lib/refresh/refresh-all";
 import { tenantRefreshDeps } from "@/lib/refresh/deps";
 
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest) {
   const limited = await limitByUser(user.id, "refresh-all", { limit: 6, windowSec: 3600 });
   if (limited) return limited;
 
-  const entitlements = await withTenantDb(user.id, (tx) => loadEffectiveEntitlements(tx, user.id));
+  const entitlements = await withTenantDb(user.id, (tx) => loadEffectiveEntitlements(tx, user.id, entitlementLoadOptions()));
 
   const report = await refreshAllForUser(
     { userId: user.id, authority: "USER", entitlements },

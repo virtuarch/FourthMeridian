@@ -114,6 +114,59 @@ export const POLICY_GROUPS: Readonly<Record<string, PolicyGroupDefinition>> = {
 /** What a customer with NO assignment row resolves to (reported as unassigned). */
 export const DEFAULT_POLICY_GROUP = BETA_FULL_ACCESS_V1.key;
 
+// ── Fail-closed restriction (owner ruling, 2026-10-30) ───────────────────────
+
+/**
+ * WHAT A CUSTOMER WITH A MISSING OR INVALID POLICY-GROUP ASSIGNMENT MAY USE
+ * WHILE THE ROLLOUT SWITCH `POLICY_ASSIGNMENT_FAIL_CLOSED=enforce` IS ON.
+ *
+ * Owner ruling: a missing assignment row, or a row naming a key this catalogue
+ * does not define, must FAIL CLOSED — never silently fall back to Beta or any
+ * other paid-capability group. Unverified paid entitlements and NEW costly
+ * operations are denied; basic login, existing records and safe read-only
+ * access are preserved. Nothing is deleted, disconnected or rewritten: the
+ * restriction is a read-time resolution (resolve.ts), so correcting the
+ * assignment restores normal entitlements on the very next request.
+ *
+ * ⚠️ THIS IS NOT A POLICY GROUP. It is deliberately absent from POLICY_GROUPS
+ * and OVERLAYS, so it is never listed by the policy-groups read, never offered
+ * in Customer Success, and never accepted by `isPolicyGroupKey` /
+ * `isOverlayKey` (the assignment write path refuses it). Pinned by
+ * lib/entitlements/fail-closed.test.ts.
+ *
+ * Per dimension, and why:
+ *   conversations            false  — new AI conversations are paid generation.
+ *   dailyBrief               true   — GET /api/brief (reading an EXISTING Brief) is
+ *                                     gated by this boolean; reading stays open.
+ *                                     NEW generation is denied by the allowance (0)
+ *                                     and by the explicit fail-closed refusal on
+ *                                     POST /api/brief/generate.
+ *   aiTurnsPerMinute         0      — no paid model turns.
+ *   aiTurnsPerHour           0      — no paid model turns.
+ *   aiDailyUsdAllowance      0      — the existing allowance checks refuse every
+ *                                     new AI call (chat and Brief) at $0.
+ *   manualBankRefreshCooldownMinutes 10080 (7 days) — manual refresh is a paid
+ *                                     provider call; the routes also refuse it
+ *                                     explicitly. SCHEDULED platform refresh is not
+ *                                     an entitlement and continues.
+ *   manualWalletRefreshPerHour 0     — no manual wallet syncs.
+ *   exportsPerDay            1      — an export is a read of the customer's OWN
+ *                                     data (safe read-only access), kept at one.
+ *   maxConnections           0      — no NEW connections; existing connections are
+ *                                     untouched (the cap gates creation only).
+ */
+export const FAIL_CLOSED_VALUES: EntitlementValues = Object.freeze({
+  conversations: false,
+  dailyBrief: true,
+  aiTurnsPerMinute: 0,
+  aiTurnsPerHour: 0,
+  manualBankRefreshCooldownMinutes: 10_080,
+  manualWalletRefreshPerHour: 0,
+  exportsPerDay: 1,
+  aiDailyUsdAllowance: 0,
+  maxConnections: 0,
+});
+
 // ── Overlays (the explicit Founder / Super User override) ─────────────────────
 
 export interface OverlayDefinition {

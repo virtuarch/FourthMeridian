@@ -75,12 +75,20 @@ export interface CustomerPolicyView {
   aiDailyUsdAllowanceOverride: number | null;
   /** AI COST CONTROLS — the allowance IN FORCE for this customer and where it came from (the ONE precedence function). */
   aiDailyAllowance: { usd: number; source: string; ceilingUsd: number; platformUsd: number | null; policyUsd: number; overlayUsd: number | null };
+  /** FAIL CLOSED (owner ruling, 2026-10-30) — the assignment is missing/invalid and the rollout switch is on: no group is in force. */
+  failClosed: boolean;
+  failClosedReason: "UNASSIGNED" | "UNKNOWN_POLICY_GROUP" | null;
 }
+
+/** The label the policy view shows when no group is in force (fail closed). */
+export const FAIL_CLOSED_POLICY_LABEL = "None in force — restricted until a valid policy group is assigned";
 
 export function projectPolicy(e: EffectiveEntitlements): CustomerPolicyView {
   const a = e.dimensions.aiDailyUsdAllowance;
   return {
-    assigned: e.assigned, policyGroup: e.policyGroup, policyGroupLabel: POLICY_GROUPS[e.policyGroup]?.label ?? e.policyGroup,
+    assigned: e.assigned, policyGroup: e.policyGroup,
+    policyGroupLabel: e.failClosed === true ? FAIL_CLOSED_POLICY_LABEL : POLICY_GROUPS[e.policyGroup]?.label ?? e.policyGroup,
+    failClosed: e.failClosed === true, failClosedReason: e.failClosedReason ?? null,
     policyGroupKnown: e.policyGroupKnown, unknownPolicyGroup: e.unknownPolicyGroup,
     overlay: e.overlay, overlayLabel: e.overlay ? OVERLAYS[e.overlay]?.label ?? e.overlay : null, overlayKnown: e.overlayKnown,
     assignedAt: e.assignedAt, assignedById: e.assignedById,

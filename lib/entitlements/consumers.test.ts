@@ -81,7 +81,8 @@ console.log("Catalogue routes + their ONE reader (lib/platform/policy-groups-rea
 console.log("consume helper (lib/entitlements/consume.ts)");
 {
   const s = strip("lib/entitlements/consume.ts");
-  check("reads on the tenant role through withTenantDb", /withTenantDb\(userId,\s*\(tx\) => loadEffectiveEntitlements\(tx,\s*userId\)\)/.test(s));
+  // Owner ruling (2026-10-30) — the default loader also hands the resolver the fail-closed switch.
+  check("reads on the tenant role through withTenantDb", /withTenantDb\(userId,\s*\(tx\) => loadEffectiveEntitlements\(tx,\s*userId,\s*entitlementLoadOptions\(\)\)\)/.test(s));
   check("imports no database client of its own", !/from "@\/lib\/db"/.test(s));
 }
 

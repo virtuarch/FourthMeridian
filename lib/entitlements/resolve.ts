@@ -17,6 +17,18 @@
  * `ai_daily_allowance_usd`, handed in by the loader) > POLICY, ceiling last.
  * Every other dimension is unchanged.
  *
+ * FAIL CLOSED (owner ruling, 2026-10-30) — when the caller passes
+ * `{ failClosed: true }` (the loaders pass env.isPolicyAssignmentFailClosed, the
+ * POLICY_ASSIGNMENT_FAIL_CLOSED=enforce rollout switch) AND the assignment is
+ * missing or names an unknown policy group, every dimension resolves from the
+ * catalogue's FAIL_CLOSED_VALUES with source FAIL_CLOSED. The overlay and the
+ * per-customer AI override are IGNORED in that state (an overlay must never
+ * resurrect paid access on a broken assignment); the platform ceilings still
+ * clamp. With `failClosed` false or absent the result is byte-for-byte what it
+ * was before the ruling (POLICY_DEFAULT fallback) — pinned by resolve.test.ts.
+ * Pure and per-request: nothing is written, so a corrected assignment restores
+ * normal entitlements on the next request.
+ *
  * "Platform policy / safety constraint" (admission facts like maintenance_mode,
  * provider locks and cooldown floors) is enforced where work executes, not here:
  * this resolver says what the customer is ENTITLED to; the execution path says
@@ -32,12 +44,20 @@
  */
 
 import {
-  DEFAULT_POLICY_GROUP, DIMENSION_KEYS, ENTITLEMENT_DIMENSIONS, OVERLAYS, POLICY_GROUPS,
+  DEFAULT_POLICY_GROUP, DIMENSION_KEYS, ENTITLEMENT_DIMENSIONS, FAIL_CLOSED_VALUES, OVERLAYS, POLICY_GROUPS,
   type EntitlementDimensionKey, type EntitlementValue, type EntitlementValues,
 } from "./catalogue";
 import { parseAllowanceSettingValue, resolveAiDailyAllowance } from "./ai-allowance";
 
-export type EntitlementSource = "POLICY" | "POLICY_DEFAULT" | "OVERLAY" | "CEILING" | "USER_OVERRIDE" | "PLATFORM_SETTING";
+export type EntitlementSource = "POLICY" | "POLICY_DEFAULT" | "OVERLAY" | "CEILING" | "USER_OVERRIDE" | "PLATFORM_SETTING" | "FAIL_CLOSED";
+
+/** Why an assignment failed closed: no row at all, or a row naming a key the catalogue does not define. */
+export type FailClosedReason = "UNASSIGNED" | "UNKNOWN_POLICY_GROUP";
+
+/** Resolver options. `failClosed` is the rollout switch's value, handed in by the loader (the resolver stays pure). */
+export interface ResolveOptions {
+  failClosed?: boolean;
+}
 
 /** The PlatformSetting key the loader reads for the platform allowance value (registered in lib/platform-settings.ts). */
 export const AI_DAILY_ALLOWANCE_SETTING_KEY = "ai_daily_allowance_usd";
@@ -91,6 +111,15 @@ export interface EffectiveEntitlements {
   assignedById: string | null;
   /** AI COST CONTROLS — the per-customer override as stored (null when none). */
   aiDailyUsdAllowanceOverride: number | null;
+  /**
+   * FAIL CLOSED — true when the rollout switch is on AND the assignment is
+   * missing or unknown: every dimension then comes from FAIL_CLOSED_VALUES and
+   * NO policy group is in force (`policyGroup` still names the catalogue
+   * default only so the shape is unchanged — read this flag first).
+   */
+  failClosed: boolean;
+  /** Why it failed closed; null when it did not. */
+  failClosedReason: FailClosedReason | null;
 }
 
 function clamp(key: EntitlementDimensionKey, asked: EntitlementValue): { value: EntitlementValue; clamped: boolean } {
@@ -117,6 +146,7 @@ function clamp(key: EntitlementDimensionKey, asked: EntitlementValue): { value: 
 export function resolveEffectiveEntitlements(
   facts: AssignmentFacts | null,
   platform: PlatformEntitlementInputs = NO_PLATFORM_INPUTS,
+  options: ResolveOptions = {},
 ): EffectiveEntitlements {
   const assigned = facts !== null;
   const known = assigned && facts.policyGroup in POLICY_GROUPS;
@@ -129,6 +159,37 @@ export function resolveEffectiveEntitlements(
   const override = typeof facts?.aiDailyUsdAllowanceOverride === "number" ? facts.aiDailyUsdAllowanceOverride : null;
 
   const dimensions = {} as Record<EntitlementDimensionKey, EffectiveDimension>;
+
+  // FAIL CLOSED — a missing or unknown assignment under the rollout switch. The
+  // restricted set replaces the policy; the overlay, the per-customer override
+  // and the platform allowance setting are NOT candidates (none may resurrect
+  // paid access on a broken assignment). The ceiling still clamps last.
+  if (options.failClosed === true && !known) {
+    for (const key of DIMENSION_KEYS) {
+      const asked = (FAIL_CLOSED_VALUES as EntitlementValues)[key];
+      const { value, clamped } = clamp(key, asked);
+      const dim: EffectiveDimension = {
+        key, value, source: clamped ? "CEILING" : "FAIL_CLOSED", ceiling: ENTITLEMENT_DIMENSIONS[key].ceiling,
+        policyValue: asked, overlayValue: null, clamped,
+      };
+      if (key === "aiDailyUsdAllowance") { dim.platformValue = null; dim.overrideValue = null; }
+      dimensions[key] = dim;
+    }
+    return {
+      policyGroup: groupKey,
+      assigned,
+      policyGroupKnown: !assigned,
+      unknownPolicyGroup: assigned ? facts!.policyGroup : null,
+      overlay: overlayKnown ? overlayKey : null,
+      overlayKnown: overlayKey === null || overlayKnown,
+      dimensions,
+      assignedAt: facts?.assignedAt.toISOString() ?? null,
+      assignedById: facts?.assignedById ?? null,
+      aiDailyUsdAllowanceOverride: override,
+      failClosed: true,
+      failClosedReason: assigned ? "UNKNOWN_POLICY_GROUP" : "UNASSIGNED",
+    };
+  }
   for (const key of DIMENSION_KEYS) {
     const policyValue = (group.values as EntitlementValues)[key];
     const overlayValue = overlay && key in overlay.values ? (overlay.values[key] as EntitlementValue) : null;
@@ -167,6 +228,8 @@ export function resolveEffectiveEntitlements(
     assignedAt: facts?.assignedAt.toISOString() ?? null,
     assignedById: facts?.assignedById ?? null,
     aiDailyUsdAllowanceOverride: override,
+    failClosed: false,
+    failClosedReason: null,
   };
 }
 
@@ -181,6 +244,7 @@ export function explainEntitlement(d: EffectiveDimension): string {
     case "PLATFORM_SETTING": return `${label}: ${v} — platform setting (policy ${String(d.policyValue)}).`;
     case "POLICY":           return `${label}: ${v} — policy group.`;
     case "POLICY_DEFAULT":   return `${label}: ${v} — default policy group (no assignment recorded).`;
+    case "FAIL_CLOSED":      return `${label}: ${v} — restricted (fail closed): the customer's policy-group assignment is missing or invalid; correct it in Customer Success to restore the plan.`;
   }
 }
 
@@ -217,7 +281,14 @@ export async function loadPlatformEntitlementInputs(client: EntitlementReadClien
   return { aiDailyUsdAllowanceUsd: parseAllowanceSettingValue(row?.value ?? null, ENTITLEMENT_DIMENSIONS.aiDailyUsdAllowance.ceiling) };
 }
 
-export async function loadEffectiveEntitlements(client: EntitlementReadClient, userId: string): Promise<EffectiveEntitlements> {
+/**
+ * FAIL CLOSED — `options.failClosed` is the rollout switch's value. This module
+ * imports no environment (it stays pure and reachable from every surface), so
+ * every production caller hands in env.isPolicyAssignmentFailClosed — through
+ * `entitlementLoadOptions()` (lib/entitlements/consume.ts). Absent ⇒ false ⇒
+ * exactly the pre-ruling resolution.
+ */
+export async function loadEffectiveEntitlements(client: EntitlementReadClient, userId: string, options: ResolveOptions = {}): Promise<EffectiveEntitlements> {
   const [row, platform] = await Promise.all([
     client.customerPolicyAssignment.findUnique({ where: { userId } }),
     loadPlatformEntitlementInputs(client),
@@ -225,5 +296,5 @@ export async function loadEffectiveEntitlements(client: EntitlementReadClient, u
   return resolveEffectiveEntitlements(row ? {
     policyGroup: row.policyGroup, overlay: row.overlay, assignedAt: row.assignedAt, assignedById: row.assignedById,
     aiDailyUsdAllowanceOverride: row.aiDailyUsdAllowanceOverride ?? null,
-  } : null, platform);
+  } : null, platform, options);
 }

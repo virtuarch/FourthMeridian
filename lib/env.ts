@@ -128,6 +128,10 @@ const _e = {
   // SEC-PLAT-1 rollout switch — "enforce" makes TOTP mandatory for Platform
   // operators (lib/platform/authorize.ts). Unset/anything else = not enforced.
   OPERATOR_TOTP_ENFORCEMENT: process.env.OPERATOR_TOTP_ENFORCEMENT,
+  // Owner ruling (2026-10-30) rollout switch — "enforce" makes a missing or
+  // invalid customer policy-group assignment FAIL CLOSED (lib/entitlements).
+  // Unset/anything else = today's behaviour (the catalogue default).
+  POLICY_ASSIGNMENT_FAIL_CLOSED: process.env.POLICY_ASSIGNMENT_FAIL_CLOSED,
   NODE_ENV:             process.env.NODE_ENV,
 
   // V26-ENV-1 — deployment-environment identity. `VERCEL` is "1" on every Vercel
@@ -665,6 +669,16 @@ export const env = {
    * dormant and behaviour is exactly as before.
    */
   get isOperatorTotpEnforced() { return _e.OPERATOR_TOTP_ENFORCEMENT === "enforce"; },
+  /**
+   * Owner ruling (2026-10-30) — a missing or invalid customer policy-group
+   * assignment FAILS CLOSED only when POLICY_ASSIGNMENT_FAIL_CLOSED === "enforce"
+   * (set per environment: Preview first; Production only with separate owner
+   * approval). Unset ⇒ the code ships dormant and resolution is exactly as
+   * before (the catalogue default). Read by the entitlement loaders
+   * (lib/entitlements/consume.ts entitlementLoadOptions) and the Platform Ops
+   * attention / alert readers (severity of the exposure).
+   */
+  get isPolicyAssignmentFailClosed() { return _e.POLICY_ASSIGNMENT_FAIL_CLOSED === "enforce"; },
 
   // ── Merchant Operations (MI2 S2) ────────────────────────────────────────────
   /** The designated Merchant Operations Space id, or null when unset (gate fails closed). */
