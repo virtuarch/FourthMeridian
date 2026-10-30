@@ -84,6 +84,11 @@ export interface EthBackfillOutcome {
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** True when this proof generation's stored movements already prove the address signed a transaction. */
+export function ownerSignedIn(movements: readonly { role: string }[]): boolean {
+  return movements.some((m) => m.role === "FEE");
+}
+
 export async function runEthHistoryBackfill(
   /**
    * `resume` — OPERATOR resume, the same lever SOL and BTC expose
@@ -168,6 +173,9 @@ export async function runEthHistoryBackfill(
         ownerAddress: store.walletAddress, fromBlock: EARLIEST_PROVABLE_BLOCK, toBlock: hi,
         cursor: cp.anchorBlock !== null && cp.provenFromBlock !== null
           ? { provenFromBlock: cp.provenFromBlock, anchorBlock: cp.anchorBlock, reachedWindowStart: false } : undefined,
+        // EARLY ORIGIN key proof carried across steps: a FEE movement exists only
+        // where a receipt's `from` is this address — a transaction it signed.
+        ownerSigned: ownerSignedIn(cp.movements),
       }, { ...ethDeps, probeBudget: probesLeft, chunkBlocks: cp.chunkBlocks });
     } catch (e) {
       return fail("PROVIDER_FAILED", `acquisition failed: ${msg(e)}`);
