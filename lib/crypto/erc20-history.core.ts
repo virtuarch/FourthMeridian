@@ -624,12 +624,14 @@ const num = (env: Record<string, string | undefined>, k: string, d: number, min:
 };
 
 /**
- * Env-configured, clamped. Rides the Ethereum worker's gate (SOL_BACKFILL_ENABLED
- * + ETH_BACKFILL_ENABLED); `ERC20_HISTORY_ENABLED=false` turns it off alone.
+ * Env-configured, clamped. OFF unless explicitly enabled: it rides the Ethereum
+ * worker's gate (SOL_BACKFILL_ENABLED + ETH_BACKFILL_ENABLED) AND needs its own
+ * `ERC20_HISTORY_ENABLED=true` — the same `=== "true"` opt-in as its siblings, so
+ * no environment starts spending Alchemy / CoinGecko calls on merge or promotion.
  */
 export function erc20HistoryConfig(env: Record<string, string | undefined> = process.env): Erc20HistoryConfig {
   return {
-    enabled: env.SOL_BACKFILL_ENABLED === "true" && env.ETH_BACKFILL_ENABLED === "true" && env.ERC20_HISTORY_ENABLED !== "false",
+    enabled: env.SOL_BACKFILL_ENABLED === "true" && env.ETH_BACKFILL_ENABLED === "true" && env.ERC20_HISTORY_ENABLED === "true",
     stepRequestBudget:    num(env, "ERC20_HISTORY_STEP_REQUESTS", 120, 10, 2_000),
     maxPagesPerStep:      num(env, "ERC20_HISTORY_PAGES_PER_STEP", 20, 1, 200),
     maxTokensPerStep:     num(env, "ERC20_HISTORY_TOKENS_PER_STEP", 8, 1, 100),

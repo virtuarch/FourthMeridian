@@ -382,7 +382,7 @@ async function main(): Promise<void> {
       setPending: async (_a, mutate) => { const s = readErc20Section(m.cursor, ACC).section!; m.cursor = withErc20Section(m.cursor, ACC, mutate(s)); return true; },
       acquirePrices: async () => ({ calls: 1, inserted: 3, tokensFetched: 1, earliestInsertedISO: "2025-12-01" }),
     };
-    const cfg = { ...erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true" }) };
+    const cfg = { ...erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true", ERC20_HISTORY_ENABLED: "true" }) };
     const ctx = (ledgerUsed: number | null) => ({
       jobDeadline: Date.now() + 600_000, day: "2026-10-28", dailyRequestCap: 1_000, now: Date.now,
       claimLock: async () => true, releaseLock: async () => {},
@@ -408,6 +408,10 @@ async function main(): Promise<void> {
     const off = await planErc20History(deps, erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true" }), "2026-10-29");
     check("gate: off unless the Ethereum worker is on", off.work.length === 0 && off.summary.stoppedBecause === "DISABLED");
     check("gate: ERC20_HISTORY_ENABLED=false is a kill switch", !erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true", ERC20_HISTORY_ENABLED: "false" }).enabled);
+    // B2 — default OFF: the ETH worker being on is not an opt-in to token history.
+    check("gate (B2): OFF by default even with the ETH worker on", !erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true" }).enabled);
+    check("gate (B2): any value but \"true\" is OFF", ["1", "TRUE", "yes", "", " true"].every((v) => !erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true", ERC20_HISTORY_ENABLED: v }).enabled));
+    check("gate (B2): explicit opt-in turns it on", erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true", ERC20_HISTORY_ENABLED: "true" }).enabled);
   }
 
   // ── 14. Pure pieces ──────────────────────────────────────────────────────
