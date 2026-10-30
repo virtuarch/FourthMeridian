@@ -659,6 +659,11 @@ export function patchableRows(results: readonly DayRegenResult[]): DayRegenResul
 //                              transaction, earliest valuation row of any
 //                              currency, acquisition date. AssetValuation is
 //                              append-only (RLS: SELECT + INSERT for tenants).
+//                              ManualAssetProfile is never mutated by code
+//                              (pinned in the membership test); an edit path
+//                              for acquisitionDate would invalidate this floor.
+//                              Exception: the dev seed / one-off 07-02 repair in
+//                              scripts/backfill-snapshots.ts bypassed floors.
 //                              A LEGACY asset (balance-only) or one with no
 //                              anchor has no ledger floor ⇒ UNBOUNDED.
 //   anything else / unknown / evidence that failed to load ⇒ UNBOUNDED.

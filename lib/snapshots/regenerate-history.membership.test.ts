@@ -21,6 +21,8 @@ import {
   type DayRegenInput, type RevokedLinkFacts, type RevokedLinkWindow,
 } from "./regenerate-history.core";
 import { loadRevokedLinkWindows } from "./regenerate-history";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -369,9 +371,35 @@ async function testLoader(): Promise<void> {
   }
 }
 
+// The manual-asset floor includes ManualAssetProfile.acquisitionDate. That
+// table is UPDATE/DELETE-able at the DB level, so the floor is only sound while
+// no code mutates it: moving an acquisition date LATER would unblock days a
+// past regen valued from the purchase price, and they would be rewritten
+// without the asset. If you add an edit path, the guard must stop trusting it.
+function testProfileImmutability(): void {
+  const root = path.resolve(__dirname, "..", "..");
+  const offenders: string[] = [];
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir)) {
+      if (name === "node_modules" || name.startsWith(".")) continue;
+      const full = path.join(dir, name);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!/\.(ts|tsx)$/.test(name) || /\.test\.tsx?$/.test(name)) continue;
+      const src = readFileSync(full, "utf8");
+      if (/manualAssetProfile\s*\.\s*(update|updateMany|upsert|delete|deleteMany)\b/.test(src)
+        || /(UPDATE|DELETE\s+FROM)\s+"?ManualAssetProfile"?/i.test(src)) {
+        offenders.push(path.relative(root, full));
+      }
+    }
+  };
+  for (const d of ["app", "lib", "scripts"]) walk(path.join(root, d));
+  check("no code mutates ManualAssetProfile (the acquisition-date floor depends on it)", offenders.length === 0, offenders.join(", "));
+}
+
 async function main(): Promise<void> {
   testPure();
   await testLoader();
+  testProfileImmutability();
   if (failures > 0) { console.error(`\n✗ ${failures} check(s) failed`); process.exit(1); }
   console.log("\n✓ all membership-guard checks passed");
 }
