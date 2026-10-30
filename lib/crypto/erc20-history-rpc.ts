@@ -9,10 +9,10 @@
  *   alchemy_getAssetTransfers   one page (≤ 1,000 transfers) per call
  *   eth_call balanceOf          one call per anchor, batched per token
  *
- * No Prisma, no DB. A throttle is retried with the shared bounded backoff; every
- * other failure THROWS — except a per-call `eth_call` revert, which is an answer
- * about the CONTRACT (it does not implement balanceOf the standard way) and is
- * returned as such for that one token.
+ * No Prisma, no DB. A throttle is retried with the shared bounded backoff (the
+ * caller bounds the retries by its remaining request budget); every other
+ * failure THROWS — except a per-call `eth_call` execution revert, which is
+ * returned as such for that one token (inconclusive until confirmed).
  */
 
 import {
@@ -50,10 +50,18 @@ export class Erc20ProviderError extends Error {
   constructor(message: string) { super(message); this.name = "Erc20ProviderError"; }
 }
 
-/** JSON-RPC error codes / messages a node uses for an execution revert. */
-function isRevert(err: { code?: unknown; message?: unknown }): boolean {
-  const m = typeof err.message === "string" ? err.message.toLowerCase() : "";
-  return err.code === 3 || m.includes("revert") || m.includes("invalid opcode") || m.includes("out of gas");
+/**
+ * S5 — an EXECUTION failure of the call itself: EIP-1474 code 3 (execution
+ * reverted, with data), or a message that STARTS with the EVM's own words.
+ * Anything else — including "out of gas" (a node gas-cap / capacity answer) and
+ * messages that merely contain "revert" somewhere — is a provider failure:
+ * retryable, never a statement about the contract. Even a real revert is only
+ * INCONCLUSIVE for the token (erc20-history.core ERC20_CALL_FAILURE_LIMIT).
+ */
+export function isExecutionRevert(err: { code?: unknown; message?: unknown }): boolean {
+  if (err.code === 3) return true;
+  const m = typeof err.message === "string" ? err.message.trim().toLowerCase() : "";
+  return m.startsWith("execution reverted") || m.startsWith("invalid opcode");
 }
 
 /** Send one batch, keeping per-call errors (only a throttle or a transport failure throws). */
@@ -99,7 +107,7 @@ export async function readBalancesAt(
       const rows = await callSettled(calls, transport);
       return rows.map((r) => {
         if ("result" in r) return parseBalanceOfResult(r.result);
-        if (isRevert(r.error)) return { kind: "REVERTED" } as const;
+        if (isExecutionRevert(r.error)) return { kind: "REVERTED" } as const;
         throw new Erc20ProviderError(redactProviderSecrets(`provider error ${String(r.error.code ?? "?")}: ${String(r.error.message ?? "unknown")}`));
       });
     } catch (e) {

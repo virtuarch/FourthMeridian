@@ -25,7 +25,7 @@ import { alchemyRpcUrl, ALCHEMY_NETWORKS } from "./alchemy";
 import { resolveTokenInstrumentId, readTokenAliasMetadata } from "./token-instrument";
 import { erc20AssetKey, parseTokenAssetKey, IS_TOKEN_INSTRUMENT, TOKEN_ALIAS_PROVIDER, WALLET_TOKEN_POSITION_SOURCE } from "./token-asset";
 import {
-  readErc20Section, withErc20Section, ERC20_RECONSTRUCTION_SOURCE, ERC20_RECONSTRUCTION_VERSION,
+  readErc20Section, withErc20Section, resetErc20Section, ERC20_RECONSTRUCTION_SOURCE, ERC20_RECONSTRUCTION_VERSION,
   type Erc20HistorySection,
 } from "./erc20-history.core";
 import {
@@ -131,7 +131,7 @@ export async function prismaErc20HistoryStore(accountId: string, db: PrismaClien
 export async function reconstructErc20HistoryStep(args: { accountId: string; client: PrismaClient; todayISO: string; deps: Erc20HistoryStepDeps }): Promise<Erc20HistoryOutcome> {
   const bound = await prismaErc20HistoryStore(args.accountId, args.client);
   if (!bound) {
-    return { stoppedBecause: "NOTHING_OWED", requests: 0, pagesRead: 0, verified: [], unsupported: [], pending: 0, impactedFromISO: null, verifiedInstrumentIds: [], failure: null };
+    return { stoppedBecause: "NOTHING_OWED", requests: 0, pagesRead: 0, verified: [], unsupported: [], inconclusive: [], pending: 0, impactedFromISO: null, verifiedInstrumentIds: [], failure: null };
   }
   const rpcUrl = args.deps.eth?.rpcUrl !== undefined ? args.deps.eth.rpcUrl : alchemyRpcUrl(ALCHEMY_NETWORKS.ETHEREUM);
   return runErc20HistoryStep({ accountId: args.accountId, store: bound.store, todayISO: args.todayISO },
@@ -146,6 +146,25 @@ export async function setErc20Pending(client: PrismaClient, accountId: string, m
   const { section } = readErc20Section(raw, accountId);
   if (!section) return false;
   const next = withErc20Section(raw, accountId, mutate(section));
+  return next !== null && casHistoryCheckpoint(client, link.connectionId, raw, next);
+}
+
+/**
+ * OPERATOR RESET (S5) — replace this account's token section with a fresh one
+ * (core `resetErc20Section`): every token is re-derived from full evidence and
+ * re-judged, including one refused earlier. Native checkpoint fields are
+ * untouched (the section is written into its host). Rows and coverage are left
+ * as they are until each token is decided again — a verified token's rows are
+ * rewritten from its first day, a refused one's coverage stays UNKNOWN (licenses
+ * nothing) meanwhile. CAS: false when the checkpoint moved or is foreign.
+ */
+export async function resetErc20History(client: PrismaClient, accountId: string): Promise<boolean> {
+  const link = await historyLink(client, accountId);
+  if (!link) return false;
+  const raw = await readHistoryCheckpoint(client, link.connectionId);
+  const { host, section } = readErc20Section(raw, accountId);
+  if (host === "FOREIGN") return false;
+  const next = withErc20Section(raw, accountId, resetErc20Section(section));
   return next !== null && casHistoryCheckpoint(client, link.connectionId, raw, next);
 }
 

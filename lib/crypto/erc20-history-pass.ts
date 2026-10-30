@@ -92,7 +92,7 @@ function emptySummary(enabled: boolean): Erc20HistoryPassSummary {
 }
 
 /** Who has work, in order. A listing failure is "no work this run" — it never takes the job down. */
-export async function planErc20History(deps: Erc20HistoryPassDeps, cfg: Pick<Erc20HistoryConfig, "enabled">, todayISO: string): Promise<Erc20HistoryPlan> {
+export async function planErc20History(deps: Erc20HistoryPassDeps, cfg: Pick<Erc20HistoryConfig, "enabled">, todayISO: string, nowMs: number = Date.now()): Promise<Erc20HistoryPlan> {
   if (!cfg.enabled) return { work: [], parsed: [], summary: emptySummary(false) };
   let listed: Erc20HistoryWallet[] = [];
   try { listed = await deps.wallets(); }
@@ -105,7 +105,7 @@ export async function planErc20History(deps: Erc20HistoryPassDeps, cfg: Pick<Erc
   }
   const pending = parsed.filter((w) => w.section?.snapshotPendingFromISO);
   const steps = parsed
-    .filter((w) => erc20WorkOwed(w.section, todayISO))
+    .filter((w) => erc20WorkOwed(w.section, todayISO, nowMs)) // backed-off wallets wait (S1)
     .sort((a, b) => (a.section ? 1 : 0) - (b.section ? 1 : 0)
       || (a.section?.lastProgressAtISO ?? "").localeCompare(b.section?.lastProgressAtISO ?? "") || a.accountId.localeCompare(b.accountId));
   const work = [
@@ -148,7 +148,7 @@ export async function runErc20HistoryPass(
     try {
       let fromISO = w.section?.snapshotPendingFromISO ?? null;
       // A PENDING wallet with budget still steps (its regeneration is first; its step is cheap when nothing is owed).
-      if (requestBudget > 0 && erc20WorkOwed(w.section, ctx.day)) {
+      if (requestBudget > 0 && erc20WorkOwed(w.section, ctx.day, ctx.now())) {
         const o = await deps.step({ accountId: w.accountId, todayISO: ctx.day, deps: {
           config: cfg, requestBudget, now: ctx.now, eth: { meter },
           deadlineMs: ctx.now() + Math.max(1_000, left - 30_000),

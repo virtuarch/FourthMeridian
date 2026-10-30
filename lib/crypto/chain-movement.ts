@@ -108,10 +108,18 @@ export type ChainCoverageCaveat =
   | "TOKEN_OPENING_BALANCE_UNEXPLAINED"
   | "TOKEN_BALANCE_CALL_FAILED"
   | "TOKEN_DECIMALS_UNKNOWN"
-  | "TOKEN_NO_TRANSFER_RECORDS";
+  | "TOKEN_NO_TRANSFER_RECORDS"
+  | "TOKEN_TRANSFER_UNREADABLE"
+  /**
+   * INFORMATIONAL, on a COMPLETE token licence (never blocking): its replay was
+   * checked against `balanceOf` at a SAMPLE of its active months, not every
+   * one (erc20-history.core anchorPlan) — the stated limit, kept in the data.
+   */
+  | "TOKEN_ANCHORS_SAMPLED";
 
 export type ChainCoverage =
-  | { kind: "COMPLETE"; fromISO: string; toISO: string; source: string }
+  /** `caveats` on COMPLETE are informational only (e.g. TOKEN_ANCHORS_SAMPLED) — they never limit the licence. */
+  | { kind: "COMPLETE"; fromISO: string; toISO: string; source: string; caveats?: readonly ChainCoverageCaveat[] }
   | {
       kind: "PARTIAL";
       coveredFromISO: string | null;

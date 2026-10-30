@@ -33,8 +33,12 @@
  *             (evenly spread, first and last included);
  *   HEAD      the scan's finalized head — must equal the replay's end balance.
  *
- * Every anchor must match EXACTLY (base units). Any mismatch, a revert, or a
- * non-standard return ⇒ the token is UNSUPPORTED with a reason, no daily rows
+ * Every anchor must match EXACTLY (base units). Any mismatch ⇒ the token is
+ * UNSUPPORTED at once (an exact value is deterministic evidence). A revert or a
+ * non-standard return is INCONCLUSIVE on its own — a node can say "reverted" /
+ * "out of gas" transiently — so it is retried on later steps, spaced
+ * (`ERC20_CALL_RETRY_MS`), and refuses the token only after
+ * `ERC20_CALL_FAILURE_LIMIT` consecutive inconclusive verifications. Refused ⇒ the token is UNSUPPORTED with a reason, no daily rows
  * are written for it (its current OBSERVED balance from capture stays the only
  * fact), and its evidence count is kept. Only a token whose every anchor matches
  * is VERIFIED: PositionCoverage COMPLETE over [first-transfer day, head day] and
@@ -42,7 +46,10 @@
  *
  * Sampling is the stated limit: a mismatch strictly between two matching
  * anchors that cancels before the next one would not be seen. The anchors that
- * are checked are exact, and the head is re-checked on every extension.
+ * are checked are exact, and the head is re-checked on every extension. A
+ * licence whose month anchors were SAMPLED (more active months than anchors)
+ * carries the `TOKEN_ANCHORS_SAMPLED` caveat on its COMPLETE coverage, so the
+ * limit is in the data, not only here.
  *
  * ── WHERE THE STATE LIVES ───────────────────────────────────────────────────
  * One per-wallet section (`Erc20HistorySection`), durable, compare-and-swapped
@@ -73,6 +80,18 @@ export const BALANCE_OF_SELECTOR = "0x70a08231";
 
 const ZERO = BigInt(0);
 
+// ── Retry, backoff, recovery (the SPL conventions: spl-history.core) ────────
+
+/** Consecutive failed steps after which a wallet runs at most once per `ERC20_BACKOFF_MS`. */
+export const ERC20_BACKOFF_AFTER = 3;
+export const ERC20_BACKOFF_MS = 24 * 60 * 60 * 1000;
+/** Consecutive SCAN failures with an open pageKey after which the segment restarts from its fromBlock. */
+export const ERC20_SEGMENT_RESTART_AFTER = 2;
+/** Consecutive inconclusive (revert / non-standard) verifications before a token is refused (SPL: HEAD_MISMATCH_LIMIT). */
+export const ERC20_CALL_FAILURE_LIMIT = 3;
+/** An inconclusive token is not re-asked before this — a transient node fault gets time to clear. */
+export const ERC20_CALL_RETRY_MS = 6 * 60 * 60 * 1000;
+
 // ── Reasons ─────────────────────────────────────────────────────────────────
 
 export type Erc20UnsupportedReason =
@@ -86,6 +105,8 @@ export type Erc20UnsupportedReason =
   | "BALANCE_CALL_FAILED"
   /** No decimals from the transfers or the token's metadata — no quantity can be stated. */
   | "DECIMALS_UNKNOWN"
+  /** A transfer of this contract could not be read exactly (its sum would be silently wrong). */
+  | "TRANSFER_UNREADABLE"
   /** A balance was observed but no transfer records it. */
   | "NO_TRANSFER_RECORDS";
 
@@ -96,6 +117,7 @@ export const REASON_CAVEAT: Readonly<Record<Erc20UnsupportedReason, ChainCoverag
   OPENING_BALANCE_UNEXPLAINED:    "TOKEN_OPENING_BALANCE_UNEXPLAINED",
   BALANCE_CALL_FAILED:            "TOKEN_BALANCE_CALL_FAILED",
   DECIMALS_UNKNOWN:               "TOKEN_DECIMALS_UNKNOWN",
+  TRANSFER_UNREADABLE:            "TOKEN_TRANSFER_UNREADABLE",
   NO_TRANSFER_RECORDS:            "TOKEN_NO_TRANSFER_RECORDS",
 };
 
@@ -116,6 +138,7 @@ export function unsupportedReasonText(reason: Erc20UnsupportedReason | null | un
     case "OPENING_BALANCE_UNEXPLAINED":    return "it held a balance before its first recorded transfer";
     case "BALANCE_CALL_FAILED":            return "its contract didn’t answer standard balance checks";
     case "DECIMALS_UNKNOWN":               return "its decimal places couldn’t be read";
+    case "TRANSFER_UNREADABLE":            return "one of its transfer records couldn’t be read exactly";
     case "NO_TRANSFER_RECORDS":            return "no transfer records explain its balance";
     default:                               return "its history didn’t match the chain";
   }
@@ -144,14 +167,18 @@ const ADDR = /^0x[0-9a-fA-F]{40}$/;
 
 /**
  * Parse one `alchemy_getAssetTransfers` result. THROWS on an error member or a
- * malformed envelope, and on any transfer that cannot be attributed and summed
- * exactly — a transfer we cannot read is not one we may skip (the sum would be
- * silently wrong), so the page is refused and the step retries.
+ * malformed envelope, and on a transfer whose CONTRACT cannot be read (it
+ * cannot be attributed to any token). A transfer of a readable contract that
+ * cannot be summed exactly is never skipped silently: that contract is
+ * returned in `refused` (S1 — it alone is refused, TRANSFER_UNREADABLE, and
+ * the rest of the wallet's tokens proceed) and none of its transfers on the
+ * page are kept.
  */
-export function parseAssetTransfers(result: unknown): { transfers: Erc20Transfer[]; pageKey: string | null } {
+export function parseAssetTransfers(result: unknown): { transfers: Erc20Transfer[]; pageKey: string | null; refused: string[] } {
   const r = result as { transfers?: unknown; pageKey?: unknown } | null;
   if (!r || typeof r !== "object" || !Array.isArray(r.transfers)) throw new Error("unexpected alchemy_getAssetTransfers result (missing transfers)");
   const transfers: Erc20Transfer[] = [];
+  const refused = new Set<string>();
   for (const t of r.transfers as Array<Record<string, unknown>>) {
     const rc = (t?.rawContract ?? {}) as { value?: unknown; address?: unknown; decimal?: unknown };
     const contract = typeof rc.address === "string" && ADDR.test(rc.address) ? rc.address.toLowerCase() : null;
@@ -162,8 +189,10 @@ export function parseAssetTransfers(result: unknown): { transfers: Erc20Transfer
     const to = typeof t?.to === "string" && ADDR.test(t.to) ? t.to.toLowerCase() : null;
     const ts = (t?.metadata as { blockTimestamp?: unknown } | undefined)?.blockTimestamp;
     const tsMs = typeof ts === "string" ? Date.parse(ts) : NaN;
-    if (!contract || raw === null || blockNum === null || !Number.isSafeInteger(blockNum) || !uniqueId || !from || !to || !Number.isFinite(tsMs)) {
-      throw new Error(`unreadable ERC-20 transfer in alchemy_getAssetTransfers (${typeof uniqueId === "string" ? uniqueId : "no id"})`);
+    if (!contract) throw new Error(`unreadable ERC-20 transfer in alchemy_getAssetTransfers (${typeof uniqueId === "string" ? uniqueId : "no id"}): no contract`);
+    if (raw === null || blockNum === null || !Number.isSafeInteger(blockNum) || !uniqueId || !from || !to || !Number.isFinite(tsMs)) {
+      refused.add(contract);
+      continue;
     }
     const dec = typeof rc.decimal === "string" && /^0x[0-9a-fA-F]{1,4}$/.test(rc.decimal) ? Number(BigInt(rc.decimal)) : null;
     const m = /:log:(\d+)$/.exec(uniqueId);
@@ -174,7 +203,7 @@ export function parseAssetTransfers(result: unknown): { transfers: Erc20Transfer
     });
   }
   const pk = r.pageKey;
-  return { transfers, pageKey: typeof pk === "string" && pk ? pk : null };
+  return { transfers: transfers.filter((t) => !refused.has(t.contract)), pageKey: typeof pk === "string" && pk ? pk : null, refused: [...refused].sort() };
 }
 
 /** Deterministic order: block, then log index, then id. */
@@ -208,6 +237,13 @@ export interface Erc20ContractHistory {
   persistedThroughISO: string | null;
   /** The instrument the coverage row was written for (once decided). */
   instrumentId: string | null;
+  /** Consecutive inconclusive verifications (revert / non-standard), and when the last was. */
+  callFailures?: number;
+  callFailureAtISO?: string | null;
+  /** Its month anchors were ever sampled (more active months than anchors) — sticky. */
+  sampled?: boolean;
+  /** Refused by evidence the scan could not read (decided at the next verification, rows included). */
+  refusedReason?: Erc20UnsupportedReason | null;
 }
 
 /** An in-progress scan over (scannedToBlock, toBlock]: the `from` query, then the `to` query. */
@@ -220,6 +256,8 @@ export interface Erc20ScanSegment {
   pages: number;
   /** Movements of this segment, by contract, not yet merged. */
   buffer: Record<string, { decimals: number | null; firstBlock: number; firstDayISO: string; transfers: number; days: DayBucket[] }>;
+  /** Contracts with an unreadable transfer in this segment (refused at close). */
+  refused?: string[];
 }
 
 export interface Erc20HistorySection {
@@ -231,10 +269,16 @@ export interface Erc20HistorySection {
   lastScanDayISO: string | null;
   segment: Erc20ScanSegment | null;
   contracts: Record<string, Erc20ContractHistory>;
-  /** More contracts than the section tracks — the wallet can never read complete. */
+  /**
+   * More contracts than the section tracks — the wallet can never read complete.
+   * A LOWER BOUND on the distinct untracked contracts (the largest number seen
+   * in one segment): it never counts the same contract twice, and is > 0
+   * exactly when something was left untracked.
+   */
   overflow: number;
   usage: { dayISO: string; requests: number } | null;
   snapshotPendingFromISO: string | null;
+  /** Consecutive failed steps (a throttle is not counted). Drives the backoff and the segment restart. */
   failures: number;
   lastFailure: { code: string; atISO: string; detail?: string } | null;
   lastProgressAtISO: string | null;
@@ -379,11 +423,11 @@ export function closeSegment(section: Erc20HistorySection, maxContracts: number)
   const seg = section.segment;
   if (!seg) return section;
   const contracts = { ...section.contracts };
-  let overflow = section.overflow;
+  let untracked = 0;
   for (const [addr, b] of Object.entries(seg.buffer).sort(([a], [c]) => a.localeCompare(c))) {
     const prev = contracts[addr];
     if (!prev) {
-      if (Object.keys(contracts).length >= maxContracts) { overflow++; continue; }
+      if (Object.keys(contracts).length >= maxContracts) { untracked++; continue; }
       contracts[addr] = {
         decimals: b.decimals, firstBlock: b.firstBlock, firstDayISO: b.firstDayISO, transfers: b.transfers,
         baseRaw: "0", days: b.days, state: "PENDING", reason: null, verifiedToBlock: null, persistedThroughISO: null, instrumentId: null,
@@ -394,6 +438,21 @@ export function closeSegment(section: Erc20HistorySection, maxContracts: number)
     if (prev.state !== "UNSUPPORTED") for (const x of b.days) addToBuckets(days, x.d, big(x.delta), x.lastBlock);
     contracts[addr] = { ...prev, decimals: prev.decimals ?? b.decimals, transfers: prev.transfers + b.transfers, days };
   }
+  // S1 — a contract with an unreadable transfer is refused (alone); the verify phase decides it, rows included.
+  for (const addr of [...new Set(seg.refused ?? [])].sort()) {
+    const prev = contracts[addr];
+    if (prev) {
+      if (prev.state !== "UNSUPPORTED") contracts[addr] = { ...prev, refusedReason: "TRANSFER_UNREADABLE" };
+      continue;
+    }
+    if (Object.keys(contracts).length >= maxContracts) { untracked++; continue; }
+    contracts[addr] = {
+      decimals: null, firstBlock: seg.fromBlock, firstDayISO: seg.toISO, transfers: 0, baseRaw: "0", days: [], state: "PENDING",
+      reason: null, verifiedToBlock: null, persistedThroughISO: null, instrumentId: null, refusedReason: "TRANSFER_UNREADABLE",
+    };
+  }
+  // N4 — a lower bound on distinct untracked contracts, never inflated by re-seeing the same ones every segment.
+  const overflow = Math.max(section.overflow, untracked);
   return { ...section, contracts, overflow, segment: null, scannedToBlock: seg.toBlock, scannedToISO: seg.toISO };
 }
 
@@ -431,7 +490,22 @@ export function spreadIndices(n: number, k: number): number[] {
 export function anchorPlan(c: Erc20ContractHistory, headBlock: number, maxMonthAnchors: number): Anchor[] {
   const anchors: Anchor[] = [];
   if (c.verifiedToBlock === null && c.firstBlock > 0) anchors.push({ kind: "OPENING", block: c.firstBlock - 1, expected: ZERO });
-  // Month ends: the balance after the last active day of each month.
+  const { months, bal } = monthEnds(c);
+  for (const i of spreadIndices(months.length, maxMonthAnchors)) {
+    if (months[i].block < headBlock) anchors.push({ kind: "MONTH", block: months[i].block, expected: months[i].balance });
+  }
+  anchors.push({ kind: "HEAD", block: headBlock, expected: bal });
+  const seen = new Set<number>();
+  return anchors.filter((a) => (seen.has(a.block) ? false : (seen.add(a.block), true)));
+}
+
+/** N1 — would this verification check only a SAMPLE of the active months (more than the anchors allow)? */
+export function anchorsSampled(c: Erc20ContractHistory, headBlock: number, maxMonthAnchors: number): boolean {
+  return monthEnds(c).months.filter((m) => m.block < headBlock).length > maxMonthAnchors;
+}
+
+/** Month ends of the unpersisted days: the balance after the last active day of each month, and the end balance. */
+function monthEnds(c: Erc20ContractHistory): { months: Array<{ block: number; balance: bigint }>; bal: bigint } {
   const months: Array<{ block: number; balance: bigint }> = [];
   let bal = big(c.baseRaw);
   for (let i = 0; i < c.days.length; i++) {
@@ -443,12 +517,7 @@ export function anchorPlan(c: Erc20ContractHistory, headBlock: number, maxMonthA
       months.push({ block: lastBlockOfMonth, balance: bal });
     }
   }
-  for (const i of spreadIndices(months.length, maxMonthAnchors)) {
-    if (months[i].block < headBlock) anchors.push({ kind: "MONTH", block: months[i].block, expected: months[i].balance });
-  }
-  anchors.push({ kind: "HEAD", block: headBlock, expected: bal });
-  const seen = new Set<number>();
-  return anchors.filter((a) => (seen.has(a.block) ? false : (seen.add(a.block), true)));
+  return { months, bal };
 }
 
 /** One balanceOf read: a 32-byte word, no code at that block ("0x"), or a revert / non-standard answer. */
@@ -473,18 +542,21 @@ export function balanceOfCalldata(wallet: string): string {
 export function judgeAnchors(anchors: readonly Anchor[], reads: readonly BalanceRead[]):
   { verified: true } | { verified: false; reason: Erc20UnsupportedReason; detail: string } {
   if (reads.length !== anchors.length) throw new Error("anchor reads do not match the plan");
+  // An exact value that disagrees is deterministic evidence and wins over an
+  // inconclusive read elsewhere in the plan (S5): judge every VALUE first.
+  let inconclusive: { verified: false; reason: Erc20UnsupportedReason; detail: string } | null = null;
   for (let i = 0; i < anchors.length; i++) {
     const a = anchors[i];
     const r = reads[i];
     if (a.kind === "OPENING" && r.kind === "NO_CODE") continue;
-    if (r.kind !== "VALUE") return { verified: false, reason: "BALANCE_CALL_FAILED", detail: `balanceOf at block ${a.block}: ${r.kind.toLowerCase()}` };
+    if (r.kind !== "VALUE") { inconclusive ??= { verified: false, reason: "BALANCE_CALL_FAILED", detail: `balanceOf at block ${a.block}: ${r.kind.toLowerCase()}` }; continue; }
     if (r.raw === a.expected) continue;
     if (a.kind === "OPENING") return { verified: false, reason: "OPENING_BALANCE_UNEXPLAINED", detail: `balance before the first transfer (block ${a.block}) is not zero` };
     return r.raw > a.expected
       ? { verified: false, reason: "REBASING_OR_NONSTANDARD", detail: `on-chain balance exceeds the replay at block ${a.block}` }
       : { verified: false, reason: "FEE_ON_TRANSFER_OR_NONSTANDARD", detail: `on-chain balance is below the replay at block ${a.block}` };
   }
-  return { verified: true };
+  return inconclusive ?? { verified: true };
 }
 
 // ── Rows ────────────────────────────────────────────────────────────────────
@@ -525,29 +597,65 @@ export function rowsFromISO(c: Erc20ContractHistory): string {
 }
 
 /** After rows through `headISO` were persisted: fold the days into the base, keep nothing unpersisted. */
-export function markPersisted(c: Erc20ContractHistory, headBlock: number, headISO: string, instrumentId: string): Erc20ContractHistory {
+export function markPersisted(c: Erc20ContractHistory, headBlock: number, headISO: string, instrumentId: string, sampled = false): Erc20ContractHistory {
   return { ...c, baseRaw: balanceThroughScan(c).toString(), days: [], state: "VERIFIED", reason: null,
-    verifiedToBlock: headBlock, persistedThroughISO: headISO, instrumentId };
+    verifiedToBlock: headBlock, persistedThroughISO: headISO, instrumentId, callFailures: 0, callFailureAtISO: null,
+    sampled: c.sampled === true || sampled };
 }
 
 export function markUnsupported(c: Erc20ContractHistory, reason: Erc20UnsupportedReason, instrumentId: string | null): Erc20ContractHistory {
-  return { ...c, days: [], state: "UNSUPPORTED", reason, instrumentId: instrumentId ?? c.instrumentId };
+  return { ...c, days: [], state: "UNSUPPORTED", reason, instrumentId: instrumentId ?? c.instrumentId, refusedReason: null };
+}
+
+/** S5 — one more inconclusive verification; refuse only at `ERC20_CALL_FAILURE_LIMIT`. */
+export function noteInconclusive(c: Erc20ContractHistory, atISO: string): { contract: Erc20ContractHistory; refuse: boolean } {
+  const n = (c.callFailures ?? 0) + 1;
+  return { contract: { ...c, callFailures: n, callFailureAtISO: atISO }, refuse: n >= ERC20_CALL_FAILURE_LIMIT };
+}
+
+/** The COMPLETE licence a verified contract is persisted with (N1: sampled anchors are said in the data). */
+export function verifiedCoverage(c: Pick<Erc20ContractHistory, "firstDayISO" | "sampled">, headISO: string): ChainCoverage & { kind: "COMPLETE" } {
+  return { kind: "COMPLETE", fromISO: c.firstDayISO, toISO: headISO, source: ERC20_HISTORY_SOURCE,
+    ...(c.sampled ? { caveats: ["TOKEN_ANCHORS_SAMPLED"] as const } : {}) };
+}
+
+/**
+ * OPERATOR RESET (S5) — a fresh section that re-derives every token from full
+ * evidence on the next steps (a refused token's movements are not kept, so it
+ * can only be re-judged by a rescan). The regeneration marker is carried, so
+ * nothing already owed is dropped; rows are rewritten as tokens re-verify.
+ */
+export function resetErc20Section(s: Erc20HistorySection | null): Erc20HistorySection {
+  return { ...emptySection(), snapshotPendingFromISO: s?.snapshotPendingFromISO ?? null };
 }
 
 // ── What a step owes, and in what order ─────────────────────────────────────
 
-/** Does this contract need anchors at the current scan head? */
-export function needsVerification(c: Erc20ContractHistory, scannedToBlock: number | null): boolean {
+/**
+ * Does this contract need anchors at the current scan head? A contract whose
+ * last verification was inconclusive waits `ERC20_CALL_RETRY_MS` (when the
+ * caller passes the clock); a refused-by-evidence one is owed at once.
+ */
+export function needsVerification(c: Erc20ContractHistory, scannedToBlock: number | null, nowMs?: number): boolean {
   if (c.state === "UNSUPPORTED" || scannedToBlock === null) return false;
+  if (c.refusedReason) return true;
+  if ((c.callFailures ?? 0) > 0 && c.callFailureAtISO && nowMs !== undefined && nowMs - Date.parse(c.callFailureAtISO) < ERC20_CALL_RETRY_MS) return false;
   return c.state === "PENDING" || (c.verifiedToBlock ?? -1) < scannedToBlock;
 }
 
+/** S1 — repeated failed steps: at most once per ERC20_BACKOFF_MS, never every wake. */
+export function erc20BackedOff(section: Pick<Erc20HistorySection, "failures" | "lastFailure"> | null, nowMs: number | undefined): boolean {
+  if (!section || nowMs === undefined || section.failures < ERC20_BACKOFF_AFTER || !section.lastFailure) return false;
+  return nowMs - Date.parse(section.lastFailure.atISO) < ERC20_BACKOFF_MS;
+}
+
 /** Work owed by this wallet's token history today (a regeneration marker is separate). */
-export function erc20WorkOwed(section: Erc20HistorySection | null, todayISO: string): boolean {
+export function erc20WorkOwed(section: Erc20HistorySection | null, todayISO: string, nowMs?: number): boolean {
   if (!section) return true;
+  if (erc20BackedOff(section, nowMs)) return false;
   if (section.segment) return true;
   if ((section.lastScanDayISO ?? "") < todayISO) return true;
-  return Object.values(section.contracts).some((c) => needsVerification(c, section.scannedToBlock));
+  return Object.values(section.contracts).some((c) => needsVerification(c, section.scannedToBlock, nowMs));
 }
 
 /** Priority: 0 = observed token with a market price, 1 = observed unpriced, 2 = seen only in transfers. */
@@ -555,10 +663,10 @@ export type TokenPriority = 0 | 1 | 2;
 
 /** Priced first, then observed, then transfer-only; earliest first within a tier; then by address. */
 export function orderForVerification(
-  section: Erc20HistorySection, priorityOf: (contract: string) => TokenPriority,
+  section: Erc20HistorySection, priorityOf: (contract: string) => TokenPriority, nowMs?: number,
 ): string[] {
   return Object.entries(section.contracts)
-    .filter(([, c]) => needsVerification(c, section.scannedToBlock))
+    .filter(([, c]) => needsVerification(c, section.scannedToBlock, nowMs))
     .sort(([a, x], [b, y]) => priorityOf(a) - priorityOf(b) || x.firstBlock - y.firstBlock || a.localeCompare(b))
     .map(([a]) => a);
 }

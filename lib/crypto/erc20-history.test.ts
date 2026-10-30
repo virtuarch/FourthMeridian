@@ -20,9 +20,12 @@ import { join } from "path";
 import {
   readErc20Section, withErc20Section, carriedTokens, summarizeSection, erc20HistoryComplete, anchorPlan, judgeAnchors,
   derivedRows, spreadIndices, parseAssetTransfers, unsupportedReasonOf, unsupportedCoverage, unsupportedReasonText,
-  erc20HistoryConfig, ERC20_HISTORY_SOURCE, REASON_CAVEAT, emptySection,
+  erc20HistoryConfig, ERC20_HISTORY_SOURCE, REASON_CAVEAT, emptySection, closeSegment, erc20WorkOwed, erc20BackedOff, resetErc20Section,
+  ERC20_BACKOFF_AFTER, ERC20_BACKOFF_MS, ERC20_CALL_FAILURE_LIMIT, ERC20_CALL_RETRY_MS, ERC20_SEGMENT_RESTART_AFTER,
   type Erc20HistorySection, type Erc20ContractHistory,
 } from "./erc20-history.core";
+import { isExecutionRevert } from "./erc20-history-rpc";
+import { licensedInterval, coverageFromRow } from "./position-coverage";
 import { runErc20HistoryStep, type Erc20HistoryStore, type Erc20TokenWrite, type KnownToken } from "./erc20-history";
 import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps } from "./erc20-history-pass";
 import { queuedCheckpoint, serializeCheckpoint, parseCheckpoint } from "./eth-history-backfill.core";
@@ -68,6 +71,14 @@ interface Chain {
   pageSize?: number;
   /** Shuffle + duplicate transfers in every page. */
   messy?: boolean;
+  /** A per-call eth_call error (transient or real), by contract and block. */
+  callError?: (contract: string, block: number) => { code: number; message: string } | null;
+  /** Every request answers 429 (capacity). */
+  throttle?: boolean;
+  /** Fail the transfer page at this pageKey (an expired pageKey). */
+  failPageKey?: string;
+  /** Corrupt the rawContract.value of transfers of this contract. */
+  unreadable?: string;
   calls: string[];
 }
 
@@ -96,6 +107,7 @@ function transferJson(t: Tx) {
 function transport(c: Chain) {
   const one = (call: { id: number; method: string; params: unknown[] }) => {
     c.calls.push(call.method);
+    if (c.throttle) return { jsonrpc: "2.0", id: call.id, error: { code: 429, message: "capacity" } };
     if (call.method === "eth_getBlockByNumber") {
       return { jsonrpc: "2.0", id: call.id, result: { number: "0x" + c.head.toString(16), timestamp: "0x" + Math.floor(tsOf(c.head) / 1000).toString(16) } };
     }
@@ -106,12 +118,16 @@ function transport(c: Chain) {
         .sort((a, b) => a.block - b.block || a.log - b.log);
       const size = c.pageSize ?? 1000;
       const off = p.pageKey ? Number(p.pageKey) : 0;
-      let page = all.slice(off, off + size).map(transferJson);
+      if (c.failPageKey && p.pageKey === c.failPageKey) return { jsonrpc: "2.0", id: call.id, error: { code: -32602, message: "invalid pageKey" } };
+      let page = all.slice(off, off + size).map(transferJson)
+        .map((t) => (c.unreadable && t.rawContract.address === c.unreadable ? { ...t, rawContract: { ...t.rawContract, value: null as unknown as string } } : t));
       if (c.messy && page.length > 0) page = [...page].reverse().concat([page[0]]);
       return { jsonrpc: "2.0", id: call.id, result: { transfers: page, ...(off + size < all.length ? { pageKey: String(off + size) } : {}) } };
     }
     if (call.method === "eth_call") {
       const [{ to }, tag] = call.params as [{ to: string; data: string }, string];
+      const err = c.callError?.(to, Number(BigInt(tag)));
+      if (err) return { jsonrpc: "2.0", id: call.id, error: err };
       if (c.revert?.has(to)) return { jsonrpc: "2.0", id: call.id, error: { code: 3, message: "execution reverted" } };
       const block = Number(BigInt(tag));
       if (!c.txs.some((t) => t.contract === to && t.block <= block + 1) && block < Math.min(...c.txs.filter((t) => t.contract === to).map((t) => t.block))) {
@@ -158,10 +174,11 @@ const newMem = (cursor: string | null = null): Mem => ({ cursor, rows: new Map()
 const CFG = { maxPagesPerStep: 20, maxTokensPerStep: 8, maxMonthAnchors: 6, maxContracts: 300 };
 const ACC = "acc-eth-1";
 
-async function step(chain: Chain, m: Mem, opts: { budget?: number; today?: string; cfg?: Partial<typeof CFG>; meter?: Record<string, number> } = {}) {
+async function step(chain: Chain, m: Mem, opts: { budget?: number; today?: string; cfg?: Partial<typeof CFG>; meter?: Record<string, number>; now?: number; retries?: number } = {}) {
   const meter = opts.meter ?? {};
   return runErc20HistoryStep({ accountId: ACC, store: memStore(m), todayISO: opts.today ?? "2026-10-28" },
-    { config: { ...CFG, ...opts.cfg }, requestBudget: opts.budget ?? 500, eth: { transport: transport(chain), meter, throttleRetries: 0, sleepImpl: async () => {} } });
+    { config: { ...CFG, ...opts.cfg }, requestBudget: opts.budget ?? 500, ...(opts.now !== undefined ? { now: () => opts.now! } : {}),
+      eth: { transport: transport(chain), meter, throttleRetries: opts.retries ?? 0, sleepImpl: async () => {} } });
 }
 const sectionOf = (m: Mem) => readErc20Section(m.cursor, ACC).section!;
 const tx = (contract: string, block: number, from: string, to: string, raw: number, log = 0, decimals?: number | null): Tx =>
@@ -237,7 +254,8 @@ async function main(): Promise<void> {
     const reasons = Object.fromEntries(o.unsupported.map((u) => [u.contract, u.reason]));
     check("rebasing ⇒ REBASING_OR_NONSTANDARD", reasons[STETH] === "REBASING_OR_NONSTANDARD", JSON.stringify(reasons));
     check("fee-on-transfer ⇒ FEE_ON_TRANSFER_OR_NONSTANDARD", reasons[FEE] === "FEE_ON_TRANSFER_OR_NONSTANDARD");
-    check("revert ⇒ BALANCE_CALL_FAILED", reasons[BAD] === "BALANCE_CALL_FAILED");
+    // S5 — one revert is INCONCLUSIVE (retried later), not a verdict; three spaced ones refuse (section 18).
+    check("revert ⇒ inconclusive on the first read, not refused", reasons[BAD] === undefined && o.inconclusive.includes(BAD) && !m.coverage.has(`inst:${BAD}`), JSON.stringify(o.inconclusive));
     check("unsupported: no rows for any of them", !m.rows.has(`inst:${STETH}`) && !m.rows.has(`inst:${FEE}`) && !m.rows.has(`inst:${BAD}`));
     const cs = m.coverage.get(`inst:${STETH}`)!;
     check("unsupported: UNKNOWN coverage with the reason caveat", cs.kind === "UNKNOWN" && cs.caveats.includes(REASON_CAVEAT.REBASING_OR_NONSTANDARD) && unsupportedReasonOf(cs) === "REBASING_OR_NONSTANDARD");
@@ -429,9 +447,17 @@ async function main(): Promise<void> {
       const p = parseAssetTransfers({ transfers: [{ ...transferJson(tx(USDC, 1, OTHER, WALLET, 123)), value: 999999 }] });
       return p.transfers[0].raw === BigInt(123);
     })());
+    // S1 — an unreadable transfer of a READABLE contract refuses that contract (never skipped silently)…
+    const pr = parseAssetTransfers({ transfers: [
+      { blockNum: "0x1", uniqueId: "x", from: OTHER, to: WALLET, rawContract: { address: USDC, value: null } },
+      { blockNum: "0x2", uniqueId: "y:log:0", from: OTHER, to: WALLET, rawContract: { address: USDC, value: "0x01", decimal: "0x6" }, metadata: { blockTimestamp: "2026-01-01T00:00:00Z" } },
+      { blockNum: "0x2", uniqueId: "z:log:1", from: OTHER, to: WALLET, rawContract: { address: DAI, value: "0x01", decimal: "0x12" }, metadata: { blockTimestamp: "2026-01-01T00:00:00Z" } },
+    ] });
+    check("an unreadable transfer refuses its contract, and none of its transfers are kept", pr.refused.join() === USDC && pr.transfers.every((t) => t.contract === DAI) && pr.transfers.length === 1);
+    // …and one whose CONTRACT is unreadable still refuses the page (it can't be attributed).
     let threw = false;
-    try { parseAssetTransfers({ transfers: [{ blockNum: "0x1", uniqueId: "x", from: OTHER, to: WALLET, rawContract: { address: USDC, value: null } }] }); } catch { threw = true; }
-    check("an unreadable transfer refuses the page (never skipped)", threw);
+    try { parseAssetTransfers({ transfers: [{ blockNum: "0x1", uniqueId: "x", from: OTHER, to: WALLET, rawContract: { address: "nope", value: "0x1" } }] }); } catch { threw = true; }
+    check("an unattributable transfer refuses the page", threw);
     check("rows: zero runs collapse to one row", derivedRows({ ...c, days: [{ d: "2026-01-05", delta: "5", lastBlock: 1 }, { d: "2026-01-07", delta: "-5", lastBlock: 2 }] }, 0, "2026-01-05", "2026-01-12").length === 3);
     check("reason copy is plain", unsupportedReasonText("REBASING_OR_NONSTANDARD").includes("rebasing") && unsupportedCoverage("BALANCE_CALL_FAILED").kind === "UNKNOWN");
     // tokensValueOnDay grouping keeps the one rule's answer.
@@ -454,6 +480,129 @@ async function main(): Promise<void> {
     const cov = deriveValuationCoverage([], new Map(), null, "2025-10-28");
     check("chart note: verified token history valued from its first price", /Verified token history is valued from/.test(valuationCoverageNote(cov, "2024-01-01") ?? ""));
     check("chart note: silent when the chart starts after", valuationCoverageNote(cov, "2026-01-01") === null);
+  }
+
+  // ── 18. Review fixes: S1 backoff/recovery, S3 retry budget, S5 transient reverts, N1/N2/N4 ──
+  {
+    // S5 — a verified token, then a TRANSIENT node error at HEAD whose message says "out of gas".
+    const chain: Chain = { head: 3000, calls: [], txs: [tx(USDC, 100, OTHER, WALLET, 1_000_000)] };
+    const m = newMem();
+    await step(chain, m);
+    const before = JSON.stringify([...m.rows.get(`inst:${USDC}`)!]);
+    chain.head = 3100; chain.calls = [];
+    chain.callError = (_c, b) => (b === 3100 ? { code: -32000, message: "out of gas: gas required exceeds allowance" } : null);
+    const t1 = await step(chain, m, { today: "2026-10-29" });
+    check("S5: 'out of gas' from the node is a provider failure, never a verdict",
+      t1.failure?.code === "PROVIDER_FAILED" && t1.unsupported.length === 0 && sectionOf(m).contracts[USDC].state === "VERIFIED", JSON.stringify(t1));
+    check("S5: …and the verified rows and licence stay", JSON.stringify([...m.rows.get(`inst:${USDC}`)!]) === before && m.coverage.get(`inst:${USDC}`)?.kind === "COMPLETE");
+
+    // S5 — a real execution revert at HEAD on a verified token: inconclusive, spaced, refused only at the limit.
+    chain.callError = (_c, b) => (b === 3100 ? { code: 3, message: "execution reverted" } : null);
+    const T = Date.parse("2026-10-29T12:00:00Z");
+    const r1 = await step(chain, m, { today: "2026-10-29", now: T });
+    check("S5: first revert of a VERIFIED token ⇒ inconclusive, rows kept", r1.inconclusive.includes(USDC) && r1.unsupported.length === 0 && m.rows.has(`inst:${USDC}`), JSON.stringify(r1));
+    const early = await step(chain, m, { today: "2026-10-29", now: T + 60_000 });
+    check("S5: not re-asked before the retry spacing", !early.inconclusive.includes(USDC) && early.requests === 0, JSON.stringify(early));
+    const r2 = await step(chain, m, { today: "2026-10-29", now: T + ERC20_CALL_RETRY_MS + 1 });
+    check("S5: second spaced revert still inconclusive", r2.inconclusive.includes(USDC) && m.rows.has(`inst:${USDC}`));
+    const r3 = await step(chain, m, { today: "2026-10-29", now: T + 2 * ERC20_CALL_RETRY_MS + 2 });
+    check(`S5: the ${ERC20_CALL_FAILURE_LIMIT}rd spaced revert refuses (BALANCE_CALL_FAILED), rows deleted`,
+      r3.unsupported[0]?.reason === "BALANCE_CALL_FAILED" && !m.rows.has(`inst:${USDC}`), JSON.stringify(r3));
+    // A recovered call clears the count.
+    const m2 = newMem();
+    const c2: Chain = { head: 3000, calls: [], txs: [tx(USDC, 100, OTHER, WALLET, 1_000_000)], callError: (_c, b) => (b === 3000 ? { code: 3, message: "execution reverted" } : null) };
+    await step(c2, m2, { now: T });
+    c2.callError = undefined;
+    const ok = await step(c2, m2, { now: T + ERC20_CALL_RETRY_MS + 1 });
+    check("S5: a later clean read verifies and clears the count", ok.verified.includes(USDC) && (sectionOf(m2).contracts[USDC].callFailures ?? 0) === 0);
+    check("S5: an exact mismatch still refutes on the FIRST read, even beside a revert",
+      judgeAnchors([{ kind: "MONTH", block: 1, expected: BigInt(5) }, { kind: "HEAD", block: 2, expected: BigInt(5) }], [{ kind: "REVERTED" }, { kind: "VALUE", raw: BigInt(6) }]).verified === false
+      && (judgeAnchors([{ kind: "MONTH", block: 1, expected: BigInt(5) }, { kind: "HEAD", block: 2, expected: BigInt(5) }], [{ kind: "REVERTED" }, { kind: "VALUE", raw: BigInt(6) }]) as { reason: string }).reason === "REBASING_OR_NONSTANDARD");
+    check("S5: only an EVM execution failure is a revert", isExecutionRevert({ code: 3 }) && isExecutionRevert({ message: "execution reverted: nope" })
+      && !isExecutionRevert({ code: -32000, message: "out of gas" }) && !isExecutionRevert({ code: -32000, message: "upstream said: request reverted to cache" }));
+    check("S5: operator reset re-derives every token, keeps the owed regeneration",
+      (() => { const r = resetErc20Section({ ...sectionOf(m), snapshotPendingFromISO: "2026-01-02" }); return Object.keys(r.contracts).length === 0 && r.scannedToBlock === null && r.snapshotPendingFromISO === "2026-01-02"; })());
+
+    // S1 — a persistent failure backs off (once a day), and the counter is read.
+    const fm = newMem();
+    const dead: Chain = { head: 3000, calls: [], txs: [tx(USDC, 100, OTHER, WALLET, 1_000_000)], callError: () => null };
+    const deadTransport = async () => JSON.stringify({ jsonrpc: "2.0", id: 0, error: { code: -32603, message: "internal error" } });
+    const stepDead = (now: number) => runErc20HistoryStep({ accountId: ACC, store: memStore(fm), todayISO: "2026-10-28" },
+      { config: CFG, requestBudget: 50, now: () => now, eth: { transport: deadTransport, meter: {}, throttleRetries: 0, sleepImpl: async () => {} } });
+    for (let i = 0; i < ERC20_BACKOFF_AFTER; i++) await stepDead(T + i);
+    const fs = sectionOf(fm);
+    check("S1: consecutive failures are counted", fs.failures === ERC20_BACKOFF_AFTER, String(fs.failures));
+    check("S1: backed off — no work owed within the day", !erc20WorkOwed(fs, "2026-10-28", T + 3_600_000) && erc20BackedOff(fs, T + 3_600_000));
+    check("S1: …owed again after the backoff", erc20WorkOwed(fs, "2026-10-28", T + ERC20_BACKOFF_MS + 10));
+    void dead;
+    // A throttle is not this wallet's failure.
+    const th = newMem();
+    await step({ head: 3000, calls: [], txs: [], throttle: true }, th);
+    check("S1: a throttle never counts toward the backoff", (readErc20Section(th.cursor, ACC).section?.failures ?? 0) === 0);
+    // A scan stuck on one page restarts its segment from fromBlock.
+    const sm = newMem();
+    const stuck: Chain = { head: 3000, calls: [], pageSize: 1, txs: [tx(USDC, 100, OTHER, WALLET, 1_000_000), tx(USDC, 200, OTHER, WALLET, 1_000_000), tx(USDC, 300, OTHER, WALLET, 1_000_000)] };
+    await step(stuck, sm, { cfg: { maxPagesPerStep: 1 } }); // page 1, pageKey "1" committed
+    for (let i = 0; i < 4 && sectionOf(sm).segment?.pageKey !== "1"; i++) await step(stuck, sm, { cfg: { maxPagesPerStep: 1 } });
+    stuck.failPageKey = "1";
+    for (let i = 0; i < ERC20_SEGMENT_RESTART_AFTER; i++) await step(stuck, sm, { cfg: { maxPagesPerStep: 1 } });
+    check("S1: repeated scan failures on one page are counted", sectionOf(sm).failures >= ERC20_SEGMENT_RESTART_AFTER && sectionOf(sm).segment?.pageKey === "1");
+    const restarted = await step(stuck, sm, { cfg: { maxPagesPerStep: 1 } });
+    check("S1: …then the segment restarts from fromBlock (buffer dropped with its pageKey)",
+      restarted.failure === null && sectionOf(sm).segment?.pageKey !== "1" && sectionOf(sm).failures === 0, JSON.stringify({ o: restarted, seg: sectionOf(sm).segment }));
+    stuck.failPageKey = undefined;
+    for (let i = 0; i < 10 && sectionOf(sm).segment; i++) await step(stuck, sm, { cfg: { maxPagesPerStep: 1 } });
+    await step(stuck, sm);
+    check("S1: the restarted scan finishes exactly (no double count)", m.rows !== sm.rows && sm.rows.get(`inst:${USDC}`)?.get(dayOf(300)) === 3, JSON.stringify([...(sm.rows.get(`inst:${USDC}`) ?? [])]));
+    // An unreadable transfer refuses that ONE contract — a verified one included, rows deleted; the rest verifies.
+    const um = newMem();
+    const uc: Chain = { head: 3000, calls: [], txs: [tx(USDC, 100, OTHER, WALLET, 1_000_000), tx(DAI, 120, OTHER, WALLET, 1, 0, 18)] };
+    await step(uc, um);
+    check("S1 (setup): both verified", um.rows.has(`inst:${DAI}`) && um.rows.has(`inst:${USDC}`));
+    uc.txs.push(tx(DAI, 3050, OTHER, WALLET, 1, 0, 18), tx(USDC, 3060, OTHER, WALLET, 1_000_000));
+    uc.head = 3100; uc.calls = []; uc.unreadable = DAI;
+    const uo = await step(uc, um, { today: "2026-10-29" });
+    check("S1: unreadable transfer ⇒ that contract alone is refused (TRANSFER_UNREADABLE)",
+      uo.verified.join() === USDC && uo.unsupported.find((u) => u.contract === DAI)?.reason === "TRANSFER_UNREADABLE", JSON.stringify(uo));
+    check("S1: …and nothing of it is summed or kept", !um.rows.has(`inst:${DAI}`) && unsupportedReasonOf(um.coverage.get(`inst:${DAI}`)) === "TRANSFER_UNREADABLE");
+
+    // S3 — throttle retries never push a step past its request budget.
+    const meter: Record<string, number> = {};
+    const tb = await step({ head: 3000, calls: [], txs: [], throttle: true }, newMem(), { budget: 3, retries: 6, meter });
+    check("S3: retries are bounded by the step budget", tb.requests <= 3 && Object.values(meter).reduce((a, b) => a + b, 0) <= 3, String(tb.requests));
+    const am: Record<string, number> = {};
+    const ac: Chain = { head: 5000, calls: [], txs: [1, 2, 3].map((i) => tx(USDC, i * 800, OTHER, WALLET, 1_000_000)) };
+    const pre = newMem(); await step({ ...ac, calls: [] }, pre, { budget: 3 }); // scan only (head + from + to)
+    ac.throttle = true;
+    const ab = await step(ac, pre, { budget: 6, retries: 6, meter: am });
+    check("S3: anchor retries never exceed what is left", ab.requests <= 6, String(ab.requests));
+
+    // N1 — sampled anchors are in the data.
+    const nm = newMem();
+    const months = Array.from({ length: 9 }, (_, i) => tx(USDC, 100 + i * 24 * 31, OTHER, WALLET, 1_000_000));
+    await step({ head: 9000, calls: [], txs: months }, nm, { cfg: { maxMonthAnchors: 3 } });
+    const nc = nm.coverage.get(`inst:${USDC}`)!;
+    check("N1: a sampled licence carries TOKEN_ANCHORS_SAMPLED on COMPLETE coverage", nc.kind === "COMPLETE" && (nc.caveats ?? []).includes("TOKEN_ANCHORS_SAMPLED"), JSON.stringify(nc));
+    check("N1: …and it still licenses (informational, never blocking)", licensedInterval(nc) !== null);
+    const nm2 = newMem();
+    await step({ head: 9000, calls: [], txs: months.slice(0, 2) }, nm2, { cfg: { maxMonthAnchors: 3 } });
+    check("N1: every month anchored ⇒ no caveat", ((nm2.coverage.get(`inst:${USDC}`) as { caveats?: string[] }).caveats ?? []).length === 0);
+    const row = coverageFromRow({ kind: "COMPLETE", coveredFromDate: new Date("2026-01-01T00:00:00Z"), coveredToDate: new Date("2026-02-01T00:00:00Z"), caveats: ["TOKEN_ANCHORS_SAMPLED"], source: ERC20_HISTORY_SOURCE });
+    check("N1: the caveat survives the database round trip", row.kind === "COMPLETE" && (row.caveats ?? []).includes("TOKEN_ANCHORS_SAMPLED"));
+
+    // N2 — with contracts left untracked, an observed token without transfers is not called NO_TRANSFER_RECORDS.
+    const om = newMem();
+    om.known.set(SPAM, { instrumentId: "inst:obs", decimals: 6, priced: false, firstObservedISO: "2026-01-02", held: true });
+    const oo = await step({ head: 2000, calls: [], txs: [tx(USDC, 100, OTHER, WALLET, 1), tx(DAI, 101, OTHER, WALLET, 1, 0, 18)] }, om, { cfg: { maxContracts: 1 } });
+    check("N2: overflow ⇒ no NO_TRANSFER_RECORDS verdict for an observed token", !oo.unsupported.some((u) => u.reason === "NO_TRANSFER_RECORDS") && !om.coverage.has("inst:obs"), JSON.stringify(oo.unsupported));
+
+    // N4 — the same untracked contract seen again does not inflate the counter.
+    let ns = { ...emptySection(), contracts: { [USDC]: { state: "VERIFIED", days: [], transfers: 1 } as unknown as Erc20ContractHistory } } as Erc20HistorySection;
+    for (let i = 0; i < 3; i++) {
+      ns = closeSegment({ ...ns, segment: { fromBlock: i, toBlock: i, toISO: "2026-01-01", direction: "to", pageKey: null, pages: 1,
+        buffer: { [SPAM]: { decimals: 6, firstBlock: i, firstDayISO: "2026-01-01", transfers: 1, days: [] } } } }, 1);
+    }
+    check("N4: overflow is not inflated by re-seeing the same contract", ns.overflow === 1, String(ns.overflow));
   }
 
   // ── 16. Historical token prices (THE one token price path, #120's) ────────

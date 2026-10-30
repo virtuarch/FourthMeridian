@@ -366,7 +366,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const ethPlan = deps.eth && ethCfg.enabled ? await planEth(deps.eth, start) : null;
   // ERC-20 token history is part of Ethereum's phase: it runs after the native pass, on what is left of it.
   const erc20Cfg = opts.erc20Config ?? erc20HistoryConfig();
-  const tokenPlan = deps.ethTokens && erc20Cfg.enabled ? await planErc20History(deps.ethTokens, erc20Cfg, day) : null;
+  const tokenPlan = deps.ethTokens && erc20Cfg.enabled ? await planErc20History(deps.ethTokens, erc20Cfg, day, deps.now()) : null;
   const ethHasWork = (!!ethPlan && ethPlan.work.length > 0) || (!!tokenPlan && tokenPlan.work.length > 0);
   /** The deadline the CURRENT chain's pass plans to (lib/crypto/history-worker-schedule.core.ts). */
   let phaseDeadline = jobDeadline;
