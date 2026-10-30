@@ -41,7 +41,7 @@ import { tokenHistoryText, connectionHealth, connectionHistory } from "@/lib/con
 import { deriveValuationCoverage, valuationCoverageNote } from "@/lib/connections/valuation-coverage.core";
 import { acquireTokenHistoricalCloses, TOKEN_HISTORY_PRICE_SOURCE } from "@/lib/prices/token-history-prices";
 import { fetchCoinGeckoTokenDailyClosesUsd, TOKEN_HISTORICAL_PRICE_SEAM } from "@/lib/prices/providers/coingecko";
-import { coinGeckoUsageToday, TOKEN_HISTORY_METRIC_PREFIX, COINGECKO_USAGE_NETWORK } from "@/lib/prices/coingecko-budget";
+import { coinGeckoUsageToday, TOKEN_HISTORY_METRIC_PREFIX, COINGECKO_USAGE_NETWORK, COINGECKO_USAGE_PROVIDER } from "@/lib/prices/coingecko-budget";
 import { acquireErc20HistoricalPrices, needsQuoteProbe, probeAllowance, ERC20_PROBE_RETRY_MS, ERC20_PROBE_USAGE_PROVIDER } from "./erc20-history-prices";
 
 let failures = 0, passes = 0;
@@ -743,7 +743,7 @@ async function main(): Promise<void> {
       probeAllowance({ probesToday: 0, tokenRemaining: 80, tokenShareCap: 150, dailyCap: 20, heldReserve: 0.5 }) === 5
       && probeAllowance({ probesToday: null, tokenRemaining: 80, tokenShareCap: 150, dailyCap: 20, heldReserve: 0.5 }) === 0
       && probeAllowance({ probesToday: 0, tokenRemaining: null, tokenShareCap: 150, dailyCap: 20, heldReserve: 0.5 }) === 0);
-    check("F1: the probe count lives on the durable ledger, apart from COINGECKO's own rows", ERC20_PROBE_USAGE_PROVIDER !== "COINGECKO"
+    check("F1: the probe count lives on the durable ledger, apart from COINGECKO's own rows", (ERC20_PROBE_USAGE_PROVIDER as string) !== COINGECKO_USAGE_PROVIDER
       && /apiUsageCounter\.findMany/.test(read("lib", "crypto", "erc20-history-prices.ts")) && /recordProviderMeter\(ERC20_PROBE_USAGE_PROVIDER/.test(read("lib", "crypto", "erc20-history-prices.ts")));
 
     // F2 — a never-held token (zero-value transfers only) is neither probed nor priced.
