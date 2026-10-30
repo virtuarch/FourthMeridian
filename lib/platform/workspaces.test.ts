@@ -419,7 +419,12 @@ console.log("Phase 1 UX · views");
     // VISUAL SPEC §5 — AI & Costs re-ruled from two inline views (AI · Costs) to ONE
     // lead view hosting the same six keys in drawers (no key added or lost).
     "platform-ai[ai:<ai-costs>{ops_ai_invocations+ops_ai_trend+ops_ai_budget+ops_brief_ops+ops_plaid_usage+ops_cost}]",
-    "platform-policies[groups:ops_policies/groups defaults:ops_policies/defaults alerts:ops_alerts emergency:ops_policies/emergency]",
+    // VISUAL SPEC §5 — Policies › Policy groups re-ruled from the inline catalogue
+    // panel to ONE read-only entitlement lead hosting ops_policies (in its groups /
+    // defaults / emergency variants) and ops_alerts in drawers; the other three
+    // views stay as drill-downs so platform-policies:defaults / :alerts and
+    // ?view=emergency open exactly what they always did.
+    "platform-policies[groups:<policies>{ops_policies+ops_alerts} defaults:ops_policies/defaults alerts:ops_alerts emergency:ops_policies/emergency]",
   ].join(" | "), shape);
   check("labels: Operations · Providers · AI & Costs · Policies (Operations is PLATFORM_OPS-local; the shared identity stays Overview)",
     ops.map((w) => w.label ?? getPlatformWorkspace(w.workspaceId)?.label).join(" · ") === "Operations · Providers · AI & Costs · Policies"
@@ -466,16 +471,29 @@ console.log("Phase 1 UX · views");
   // unified Jobs list, as the Overview's 5-row card (hosted) and the Jobs
   // drill-down's full list (PLATFORM OPS VISUAL SPEC §4 row D; it replaced the
   // former ops_manual_operations exception). Anything else twice fails.
-  check("a key renders in ONE view, except the declared ops_policies variants and ops_job_health (Overview card + Jobs)",
+  // VISUAL SPEC §5 — ops_alerts joins the declared exceptions: the Policies
+  // dashboard's Alerts card opens it in a drawer (hosted) and the Alerts
+  // drill-down renders it inline (deep link platform-policies:alerts) — the
+  // same pattern as ops_job_health (Overview card + Jobs).
+  check("a key renders in ONE view, except the declared ops_policies variants, ops_job_health (Overview card + Jobs) and ops_alerts (Policies drawer + Alerts)",
     (() => {
       const seen = new Map<string, number>();
       for (const w of ops) for (const v of w.views ?? []) for (const k of viewComposedKeys(v)) seen.set(k, (seen.get(k) ?? 0) + 1);
-      return [...seen].every(([k, n]) => n === 1 || k === "ops_policies" || (k === "ops_job_health" && n === 2));
+      return [...seen].every(([k, n]) => n === 1 || k === "ops_policies" || ((k === "ops_job_health" || k === "ops_alerts") && n === 2));
     })());
-  check("ops_policies renders in groups / defaults / emergency, each with its own variant and never bare",
-    (getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.views ?? [])
-      .flatMap((v) => v.sections.filter((e) => viewSectionKey(e) === "ops_policies").map((e) => `${v.id}=${typeof e === "string" ? "bare" : e.variant}`))
-      .join() === "groups=groups,defaults=defaults,emergency=emergency");
+  // VISUAL SPEC §5 — the groups view no longer renders ops_policies inline: its
+  // lead hosts it (the catalogue / defaults / emergency drawers pass the variant).
+  // The two drill-downs keep their inline variant, never bare.
+  check("ops_policies renders inline in defaults / emergency (each with its own variant, never bare) and is hosted by the groups lead",
+    (() => {
+      const views = getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.views ?? [];
+      const inline = views.flatMap((v) => v.sections.filter((e) => viewSectionKey(e) === "ops_policies").map((e) => `${v.id}=${typeof e === "string" ? "bare" : e.variant}`)).join();
+      const groups = views.find((v) => v.id === "groups");
+      return inline === "defaults=defaults,emergency=emergency" && groups?.lead === "policies" && (groups.hosted ?? []).includes("ops_policies") && groups.sections.length === 0;
+    })());
+  check("Policies drills down (no second tab row); its default view stays groups",
+    getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.viewControl === "drilldown"
+      && getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.views?.[0].id === "groups");
 
   check("other areas are unchanged: no views anywhere outside PLATFORM_OPS",
     ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => getPlatformAreaWorkspaces(a).every((w) => w.views === undefined && w.label === undefined)));

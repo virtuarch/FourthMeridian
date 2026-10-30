@@ -17,8 +17,11 @@
 
 import type { ReactNode } from "react";
 import type { SpaceMountAccess } from "@/lib/space/mount-context";
+import type { PlatformSectionVariant } from "@/lib/platform/workspaces";
 
-export type RenderHosted = (key: string, onOpenWorkspace?: (workspaceId: string) => void) => ReactNode | null;
+/** `variant` (Policies only): the slice of a variant-taking widget to render —
+ *  the same prop an inline view entry passes; the widget keeps its own gating. */
+export type RenderHosted = (key: string, onOpenWorkspace?: (workspaceId: string) => void, variant?: PlatformSectionVariant) => ReactNode | null;
 
 export interface PlatformViewLeadProps {
   renderHosted: RenderHosted;

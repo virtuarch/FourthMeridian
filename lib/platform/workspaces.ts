@@ -134,7 +134,7 @@ export interface PlatformWorkspaceView {
 }
 
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
-export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs";
+export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -300,10 +300,21 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     // ── Policies (formerly "Controls") — declared policy. ONE section,
     // ops_policies, renders a different slice per view (its `variant`), plus
     // the alert rules. No new section key: views are composition only.
+    // PLATFORM OPS VISUAL SPEC §5 — the default view is ONE entitlement
+    // dashboard (components/platform/leads/PoliciesLead.tsx, READ-ONLY):
+    // customer-coverage hero · distribution donut · comparison matrix (six
+    // categories) · group cards → group detail · Platform defaults / Alerts /
+    // Emergency controls cards. Those cards open the EXISTING widgets in
+    // drawers, HOSTED unchanged (ops_policies in its defaults / emergency /
+    // groups variant, ops_alerts) with their gating, reasons and confirmations.
+    // The other three views are kept as DRILL-DOWNS (no second tab row) so
+    // every deep link and read-model target (platform-policies:defaults /
+    // :alerts, ?view=emergency) still opens exactly what it always did.
     withViews({
       workspaceId: "platform-policies",
+      viewControl: "drilldown",
       views: [
-        { id: "groups", label: "Policy groups", sections: [{ key: "ops_policies", variant: "groups" }] },
+        { id: "groups", label: "Policy groups", lead: "policies", sections: [], hosted: ["ops_policies", "ops_alerts"] },
         { id: "defaults", label: "Platform defaults", sections: [{ key: "ops_policies", variant: "defaults" }] },
         { id: "alerts", label: "Alerts", sections: ["ops_alerts"] },
         { id: "emergency", label: "Emergency controls", sections: [{ key: "ops_policies", variant: "emergency" }] },

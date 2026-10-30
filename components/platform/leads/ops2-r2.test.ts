@@ -195,7 +195,9 @@ console.log("C. Connection diagnostics + provider cleanup — hosted, never re-g
   }
   const dash = code("components/platform/PlatformSpaceDashboard.tsx");
   check("the dashboard renders a hosted key through the SAME registry widget with the operator's access",
-    /const renderHosted: RenderHosted = \(key, onOpenWorkspace\) => \{[\s\S]{0,260}<Widget section=\{row\} onOpenWorkspace=\{onOpenWorkspace \?\? onOpen\} access=\{access\} \/>/.test(dash));
+    // VISUAL SPEC §5 (Policies) — re-ruled: a lead may pass the variant an inline
+    // view entry would (the Policies drawers); the bare form is unchanged.
+    /const renderHosted: RenderHosted = \(key, onOpenWorkspace, variant\) => \{[\s\S]{0,600}<Widget section=\{row\} onOpenWorkspace=\{onOpenWorkspace \?\? onOpen\} access=\{access\} variant=\{variant\} \/>[\s\S]{0,40}<Widget section=\{row\} onOpenWorkspace=\{onOpenWorkspace \?\? onOpen\} access=\{access\} \/>/.test(dash));
   // PLATFORM OPS VISUAL SPEC §3 — ops_manual_operations is absorbed by the unified
   // Jobs section (ops_job_health → OpsJobsWidget); its widget is no longer registered.
   check("…the registry still maps the diagnostics + cleanup keys to their own widgets, and jobs to the unified Jobs widget",
@@ -215,6 +217,8 @@ console.log("D. Dashboard + composition");
     providers: code("components/platform/leads/ProvidersLead.tsx") + code("components/platform/leads/providers-model.ts"),
     // VISUAL SPEC §5 — the AI & Costs dashboard hosts the former AI / Costs views' widgets.
     "ai-costs": code("components/platform/leads/AiCostsLead.tsx"),
+    // VISUAL SPEC §5 — the Policies dashboard hosts ops_policies + ops_alerts in drawers.
+    policies: code("components/platform/leads/PoliciesLead.tsx"),
   };
   for (const w of ops) for (const v of w.views ?? []) {
     if (!v.lead) continue;
@@ -244,7 +248,7 @@ console.log("D. Dashboard + composition");
 // ── E. Source rules ──────────────────────────────────────────────────────────
 
 console.log("E. Source rules (leads)");
-for (const f of ["OperationsLead.tsx", "PipelineLead.tsx", "ProvidersLead.tsx", "AiCostsLead.tsx", "visual-kit.tsx", "lead-kit.tsx", "operations-model.ts", "providers-model.ts", "ai-costs-model.ts", "lead-contract.ts"]) {
+for (const f of ["OperationsLead.tsx", "PipelineLead.tsx", "ProvidersLead.tsx", "AiCostsLead.tsx", "PoliciesLead.tsx", "visual-kit.tsx", "lead-kit.tsx", "operations-model.ts", "providers-model.ts", "ai-costs-model.ts", "policies-model.ts", "lead-contract.ts"]) {
   const src = code(`components/platform/leads/${f}`);
   check(`${f}: no access-level literal / control flag (capability ratchet)`, !/\bCONTROL\b/.test(src) && !/canControl/.test(src));
   check(`${f}: no viewport read (responsive by classes)`, !/matchMedia|innerWidth/.test(src));
