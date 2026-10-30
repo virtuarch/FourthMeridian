@@ -147,10 +147,12 @@ export interface OperationsLeadSurfaceProps {
   onOpenWorkspace: (workspaceId: string) => void;
   onSelectExecution: (s: ExecutionSelection) => void;
   onSelectJob: (job: string) => void;
+  /** Start times of recent manual runs (operations GET) — excluded from wake evidence. */
+  manualStarts?: readonly string[] | null;
 }
 
 export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
-  const evidence = schedulerEvidence(p.jobs, p.scheduler);
+  const evidence = schedulerEvidence(p.jobs, p.scheduler, p.manualStarts ?? null);
   const groups = p.attention.data ? groupAttention(p.attention.data, evidence, p.jobs.data) : [];
   const trend = executionDays(p.history.data, p.nowMs, TREND_DAYS);
   const kpis = healthKpis({ jobs: p.jobs, scheduler: p.scheduler, attention: p.attention, groups, days7: trend.slice(-7) });
@@ -328,6 +330,8 @@ export function OperationsLead({ renderHosted, hasHosted, onOpenWorkspace, acces
   const history = useSharedWidgetFetch<OperationalHistoryResult>(HISTORY_URL);
   const daily = useSharedWidgetFetch<RefreshDailySeries>("/api/platform/platform-ops/refresh/daily");
   const executions = useSharedWidgetFetch<ExecutionPageDTO>("/api/platform/platform-ops/refresh/executions?limit=5");
+  // Same URL as the unified jobs card (shared session fetch — one request).
+  const operations = useSharedWidgetFetch<{ recent?: { startedAt: string }[] }>("/api/platform/platform-ops/operations");
   // One clock read per mount (relative ages + the day axis), never during render.
   const [nowMs] = useState(() => Date.now());
   const [drawer, setDrawer] = useState<OperationsDrawer | null>(null);
@@ -359,7 +363,7 @@ export function OperationsLead({ renderHosted, hasHosted, onOpenWorkspace, acces
     <>
       <OperationsLeadSurface
         overview={overview} attention={attention} jobs={jobs} scheduler={scheduler} history={history} daily={daily} executions={executions}
-        nowMs={nowMs} hasHosted={hasHosted}
+        nowMs={nowMs} hasHosted={hasHosted} manualStarts={operations.data?.recent?.map((r) => r.startedAt) ?? null}
         jobsSlot={<UnifiedJobs mode="summary" access={access} nowMs={nowMs} selected={job} onSelect={setJob} />}
         onOpenDrawer={setDrawer} onOpenWorkspace={onOpenWorkspace} onSelectExecution={setExecution}
         onSelectJob={(j) => (hasHosted(JOBS_KEY) ? setJob(j) : onOpenWorkspace(JOBS_VIEW))}

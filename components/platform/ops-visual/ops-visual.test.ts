@@ -41,6 +41,7 @@ import {
   outcomeComposition,
   refreshDays,
   schedulerEvidence,
+  commandOnlyRows,
   successRate7d,
   utcDay,
 } from "./ops-visual-model";
@@ -74,7 +75,7 @@ const previewJobs = {
   healthy: false, checkedAt: AGO_H(0),
   counts: { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 2, neverRan: 12 },
   jobs: SCHEDULED_JOB_NAMES.map((name) =>
-    name === "evaluate-alerts" ? job(name, { status: "dead", expectedEveryHours: 6, lastStartedAt: "2026-10-07T07:30:00.000Z", lastRunStatus: "succeeded", totalRuns: 3, succeededRuns: 3 })
+    name === "evaluate-alerts" ? job(name, { status: "dead", expectedEveryHours: 6, lastStartedAt: "2026-10-07T07:30:00.000Z", lastRunStatus: "succeeded", totalRuns: 3, succeededRuns: 3, manualRuns: 3 })
     : name === "sol-history-backfill" ? job(name, { status: "dead", expectedEveryHours: 1, lastStartedAt: "2026-10-28T09:00:00.000Z", lastRunStatus: "succeeded", totalRuns: 1, succeededRuns: 1, manualRuns: 1 })
     : job(name, { expectedEveryHours: name === "sync-crypto" ? 6 : 24 })),
 };
@@ -82,7 +83,9 @@ const scheduler = (external: { job: string; recordedExecutions: number }[], reco
   observed: { lastRecordedExecutionAt: AGO_H(2), recordedExecutions: recorded, overdue: [], externalCrons: external.map((e) => ({ ...e, lastRecordedExecutionAt: AGO_H(0.1), registered: false as const })) },
   expected: { nextSlotAt: null, jobsInNextSlot: [], registeredJobs: 14 }, notes: [], window: { from: AGO_H(24), to: AGO_H(0) }, checkedAt: AGO_H(0),
 });
-const previewScheduler = scheduler([], 1);
+// Preview shape: no backstop rows and no SCHEDULED execution in the window
+// (#136 review fix: an execution in the window counts as wake evidence unless known manual).
+const previewScheduler = scheduler([], 0);
 const prodScheduler = scheduler([{ job: BACKSTOP_CRON_JOB, recordedExecutions: 288 }], 288 + 96);
 
 /** A production-like job-health response: all healthy, one failing, one overdue, one never-ran continuation. */
@@ -129,8 +132,10 @@ console.log("2. Scheduler evidence and honest job status");
   const ranNoBackstop = { ...prodJobs, jobs: prodJobs.jobs.filter((r) => r.totalRuns > 0) };
   check("no backstop rows but registered jobs executed and none never-ran ⇒ unknown (insufficient evidence)",
     schedulerEvidence(ok(ranNoBackstop), ok(scheduler([], 40))).state === "unknown" && schedulerEvidence(ok(ranNoBackstop), ok(scheduler([], 40))).headline === SCHEDULER_UNKNOWN);
-  check("no backstop rows and NO registered execution in 24 h while a 6 h job was due ⇒ inactive",
-    schedulerEvidence(ok(ranNoBackstop), ok(scheduler([], 0))).state === "inactive");
+  // #136 review fix: these jobs have SCHEDULED history on this deployment, so
+  // total silence now is an outage — "stopped", never "not active on this deployment".
+  check("no backstop rows, NO execution in 24 h, scheduled history before ⇒ stopped (outage)",
+    schedulerEvidence(ok(ranNoBackstop), ok(scheduler([], 0))).state === "stopped");
 
   const words = previewJobs.jobs.map((r) => honestJobStatus(r, evInactive));
   check("inactive scheduler: no job is called dead / never ran / overdue", words.every((w) => !/dead|never ran|overdue/i.test(`${w.word} ${w.reason}`.replace(SCHEDULER_INACTIVE, ""))));
@@ -348,6 +353,31 @@ const dash = (over: Record<string, unknown> = {}) => renderToStaticMarkup(create
   check("the lead mounts NO hosted widget on the default screen (drawers closed)", calls.length === 0, calls.join());
   const lead = code("components/platform/leads/OperationsLead.tsx");
   check("the lead reuses Personal components (Block/Surface, BreakdownWidget) and adds no raw fetch", /from "@\/components\/atlas\/Surface"/.test(lead) && /from "@\/components\/space\/widgets\/BreakdownWidget"/.test(lead) && !/\bfetch\(/.test(lead));
+}
+
+console.log("8. #136 review fixes — scheduler evidence");
+{
+  // Scheduled history on this deployment + silence now ⇒ STOPPED (an outage), never "not active".
+  const stoppedJobs = { ...previewJobs, jobs: previewJobs.jobs.map((r) => r.job === "evaluate-alerts" ? { ...r, manualRuns: 0 } : r) };
+  const ev = schedulerEvidence(ok(stoppedJobs), ok(previewScheduler));
+  check("scheduled runs recorded before + silence now ⇒ stopped", ev.state === "stopped", ev.state);
+  check("…and a stopped scheduler does NOT mute job rows (Overdue stays Overdue)",
+    honestJobStatus(stoppedJobs.jobs.find((r) => r.job === "evaluate-alerts")!, ev).kind === "late");
+  // Backstop silent, but registered (scheduled) jobs ran in the window, one never-ran ⇒ unknown, not inactive.
+  const mixed = schedulerEvidence(ok(previewJobs), ok(scheduler([], 5)));
+  check("backstop silent, scheduled jobs ran, one never-ran ⇒ unknown", mixed.state === "unknown", mixed.state);
+  // A MANUAL run in the window is not a wake.
+  const manualOnly = schedulerEvidence(ok(previewJobs), ok(scheduler([], 1)), [AGO_H(1)]);
+  check("one manual run in the window is not wake evidence ⇒ inactive", manualOnly.state === "inactive", manualOnly.state);
+  const withoutManualInfo = schedulerEvidence(ok(previewJobs), ok(scheduler([], 1)));
+  check("without manual-run info, one execution in the window ⇒ unknown (never a guess)", withoutManualInfo.state === "unknown", withoutManualInfo.state);
+  // Job health unreadable ⇒ manual operations still reachable.
+  const fallback = commandOnlyRows([
+    { id: "dry-run:sync-banks", kind: "dry-run", targetJob: "sync-banks", jobName: "sync-banks", label: "Dry Run", targetLabel: "Bank Connections", description: "", mutates: false, destructive: false, confirm: "", requires: { level: "WRITE", reason: false } },
+    { id: "run-now:sync-banks", kind: "run-now", targetJob: "sync-banks", jobName: "sync-banks", label: "Run Now", targetLabel: "Bank Connections", description: "", mutates: true, destructive: false, confirm: "", requires: { level: "CONTROL", reason: true } },
+  ] as never);
+  check("job health unreadable ⇒ one row per command target, status Unknown, controls kept",
+    fallback.length === 1 && fallback[0].status.word === "Unknown" && JSON.stringify(fallback[0].controls).includes("run-now:sync-banks"));
 }
 
 if (failures > 0) {

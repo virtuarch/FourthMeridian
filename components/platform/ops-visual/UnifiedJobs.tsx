@@ -40,9 +40,10 @@ import type { OperationsResponse, OperationActionResponse } from "@/app/api/plat
 import type { OperationalHistoryResult } from "@/lib/platform/history/types";
 import type { OperationCommand } from "@/lib/platform/operations/registry";
 import type { SpaceMountAccess } from "@/lib/space/mount-context";
-import { slotWords } from "./job-catalog";
+import { jobLabel, slotWords } from "./job-catalog";
 import { DayBars, DayBarsLegend, DAY_BAR_COLORS, Sparkline7 } from "./DayBars";
 import {
+  commandOnlyRows,
   executionDays,
   jobRows,
   jobRuns,
@@ -290,16 +291,19 @@ export interface UnifiedJobsSurfaceProps {
 export function UnifiedJobsSurface(p: UnifiedJobsSurfaceProps) {
   const [query, setQuery] = useState("");
   const a = jobAccess(p.access);
-  const evidence = schedulerEvidence(p.jobs, p.scheduler);
+  const evidence = schedulerEvidence(p.jobs, p.scheduler, p.operations.data?.recent?.map((r) => r.startedAt) ?? null);
+  // Review nit — while operations is loading, pass null (not []) so a manual job
+  // never briefly reads "Not offered on this deployment".
+  const commands = p.operations.data?.commands ?? null;
   const rows = p.jobs.data
-    ? jobRows({ jobs: p.jobs.data, evidence, history: p.history.data, commands: p.operations.data?.commands ?? (p.operations.loading ? [] : null), nowMs: p.nowMs })
-    : [];
+    ? jobRows({ jobs: p.jobs.data, evidence, history: p.history.data, commands, nowMs: p.nowMs })
+    : commands ? commandOnlyRows(commands) : [];
   const q = query.trim().toLowerCase();
   const shown = p.mode === "summary" ? rows.slice(0, SUMMARY_ROWS) : rows.filter((r) => !q || r.label.toLowerCase().includes(q) || r.job.includes(q) || r.status.word.toLowerCase().includes(q));
   const current = p.selected ? rows.find((r) => r.job === p.selected) ?? null : null;
 
   let body: ReactNode;
-  if (!p.jobs.data) {
+  if (!p.jobs.data && rows.length === 0) {
     body = <p className="py-3 text-xs text-[var(--text-muted)]">{p.jobs.loading ? "Reading job health…" : `Job health unavailable${p.jobs.error ? ` — ${p.jobs.error}` : ""}`}</p>;
   } else if (shown.length === 0) {
     body = <p className="py-3 text-xs text-[var(--text-muted)]">{q ? "No job matches." : "No scheduled jobs reported."}</p>;
@@ -337,6 +341,23 @@ export function UnifiedJobsSurface(p: UnifiedJobsSurfaceProps) {
           </p>
         )}
         {body}
+        {/* Review fix — the manual-run audit trail (was the old widget's
+            "Recent manual runs"): who-ran-what lives in the operator feed; here,
+            the last runs with status and time, from the operations response. */}
+        {p.mode === "full" && (p.operations.data?.recent?.length ?? 0) > 0 && (
+          <div className="border-t border-[var(--border-hairline)] py-3" data-recent-manual-runs>
+            <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">Recent manual runs</p>
+            <ul className="flex flex-col gap-1">
+              {p.operations.data!.recent.slice(0, 6).map((r) => (
+                <li key={r.id} className="flex items-center gap-2 text-[11px]">
+                  <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{jobLabel(r.jobName)}</span>
+                  <span className="text-[var(--text-muted)]">{r.status.toLowerCase()}</span>
+                  <span className="tabular-nums text-[var(--text-muted)]">{relTime(r.startedAt, p.nowMs)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </Surface>
       </div>
       <DetailDrawer open={current !== null} onClose={() => p.onSelect(null)} eyebrow="Job" title={current?.label ?? ""} size="lg">

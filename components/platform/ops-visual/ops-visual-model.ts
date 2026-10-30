@@ -60,9 +60,10 @@ export const SCHEDULER_RUN_CAP = 2_000;
 /** The history series' newest-first point cap (lib/platform/history/sources.ts MAX_POINTS). */
 export const HISTORY_POINT_CAP = 500;
 
-export type SchedulerState = "active" | "inactive" | "unknown";
+export type SchedulerState = "active" | "inactive" | "stopped" | "unknown";
 
 export const SCHEDULER_INACTIVE = "No scheduled execution observed — scheduler not active on this deployment";
+export const SCHEDULER_STOPPED = "Scheduler stopped — no scheduled execution observed";
 export const SCHEDULER_UNKNOWN = "Scheduler state unknown";
 export const SCHEDULER_ACTIVE = "Scheduler active on this deployment";
 
@@ -92,6 +93,8 @@ export interface SchedulerEvidence {
 export function schedulerEvidence(
   jobs: Fetched<PlatformJobHealthResponse>,
   scheduler: Fetched<SchedulerObservationResponse>,
+  /** Start times of recent MANUAL runs (operations GET `recent`) — a manual run is not evidence of a scheduler wake. */
+  manualStarts?: readonly string[] | null,
 ): SchedulerEvidence {
   const j = jobs.data;
   const s = scheduler.data;
@@ -107,9 +110,25 @@ export function schedulerEvidence(
     return { state: "unknown", headline: SCHEDULER_UNKNOWN, basis: "The observation window is too short to judge." };
   }
   const neverRanPrimary = j.jobs.filter((r) => r.totalRuns === 0 && continuationOf(r.job) === null);
-  const registeredInWindow = registeredExecutions(s);
+  const from = Date.parse(s.window.from);
+  const manualInWindow = (manualStarts ?? []).filter((t) => Date.parse(t) >= from).length;
+  // Scheduled executions only: manual runs in the window don't evidence a wake.
+  const registeredInWindow = Math.max(0, registeredExecutions(s) - manualInWindow);
   const someJobWasDue = j.jobs.some((r) => r.expectedEveryHours > 0 && r.expectedEveryHours < windowHours);
-  if (neverRanPrimary.length > 0 || (registeredInWindow === 0 && someJobWasDue)) {
+  // Review fix — both branches need "no registered job executed in the window":
+  // a newly added never-run job beside jobs that DID run is not evidence of no wake.
+  if (registeredInWindow === 0 && (neverRanPrimary.length > 0 || someJobWasDue)) {
+    // Review fix — if the ledger holds SCHEDULED (non-manual) runs, the scheduler
+    // used to fire here: silence now is an OUTAGE ("stopped"), never the
+    // by-design "not active on this deployment".
+    const scheduledBefore = j.jobs.some((r) => (r.totalRuns ?? 0) - (r.manualRuns ?? 0) > 0);
+    if (scheduledBefore) {
+      return {
+        state: "stopped",
+        headline: SCHEDULER_STOPPED,
+        basis: `Scheduled runs were recorded on this deployment before, but the 5-minute backstop cron left no row and no registered job executed in the last ${Math.round(windowHours)} h.`,
+      };
+    }
     const why = neverRanPrimary.length > 0
       ? `${n(neverRanPrimary.length)} registered job${neverRanPrimary.length === 1 ? " has" : "s have"} never run, though every wake runs a never-run job`
       : `no registered job executed, though at least one was due`;
@@ -492,6 +511,26 @@ export interface JobRowModel {
   days7: DayBar[];
   controls: JobControls;
   row: PlatformJobRow;
+}
+
+/**
+ * Review fix — when job health cannot be read, manual operations must stay
+ * reachable: one row per command target, status Unknown, with its controls.
+ */
+export function commandOnlyRows(commands: readonly OperationCommand[]): JobRowModel[] {
+  const targets = [...new Set(commands.map((c) => c.targetJob))];
+  return targets.map((job) => ({
+    job,
+    label: jobLabel(job),
+    status: { kind: "unknown", word: "Unknown", tone: "muted", reason: "Job health could not be read" },
+    cadence: "—",
+    lastRunAt: null,
+    nextExpectedAt: null,
+    days7: [],
+    controls: jobControls(job, commands),
+    row: { job, status: "unknown", expectedEveryHours: 0, totalRuns: 0, manualRuns: 0, succeededRuns: 0, failedRuns: 0, consecutiveFailures: 0,
+      lastStartedAt: null, lastRunStatus: null, lastCompletedAt: null, nextExpectedAt: null } as unknown as PlatformJobRow,
+  }));
 }
 
 /** One row per scheduled job, worst first (then registry order). */
