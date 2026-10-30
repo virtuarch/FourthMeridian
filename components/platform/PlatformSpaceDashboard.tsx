@@ -72,6 +72,7 @@ import { OperationsLead } from "./leads/OperationsLead";
 import { PipelineLead } from "./leads/PipelineLead";
 import { ProvidersLead } from "./leads/ProvidersLead";
 import { AiCostsLead } from "./leads/AiCostsLead";
+import { GrowthLead } from "./leads/GrowthLead";
 import { PoliciesLead } from "./leads/PoliciesLead";
 import { PlatformAreaHero } from "./PlatformAreaHero";
 import { PlatformSpaceSwitcher } from "./PlatformSpaceSwitcher";
@@ -212,6 +213,7 @@ const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLe
   providers:  ProvidersLead,
   "ai-costs": AiCostsLead,
   policies:   PoliciesLead,
+  growth:     GrowthLead,
 };
 
 /**
