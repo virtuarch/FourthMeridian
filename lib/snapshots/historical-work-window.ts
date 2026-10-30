@@ -156,7 +156,8 @@ async function resolveBlockingPriceFloor(
  * date this reaches can still be refused for lack of prices or ownership.
  * Nothing here asserts a value.
  */
-export async function resolveEvidenceFloor(financialAccountIds: string[], client: typeof db = db): Promise<string | null> {
+/** The client is REQUIRED and the caller's authority (audit-db-authority: no defaulted owner client). */
+export async function resolveEvidenceFloor(client: typeof db, financialAccountIds: string[]): Promise<string | null> {
   if (financialAccountIds.length === 0) return null;
   const scope = { financialAccountId: { in: financialAccountIds } };
 
@@ -211,7 +212,7 @@ export async function resolveHistoricalWorkWindow(
   const { financialAccountIds, changedSince, now = new Date() } = args;
   const recent = recentWealthWindow(now);
 
-  const evidenceFloorISO = await resolveEvidenceFloor(financialAccountIds);
+  const evidenceFloorISO = await resolveEvidenceFloor(db, financialAccountIds);
 
   const resolved = await resolveBlockingPriceFloor(financialAccountIds);
   const { unpricedBlockingInstruments } = resolved;

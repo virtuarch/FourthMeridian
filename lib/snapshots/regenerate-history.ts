@@ -82,7 +82,7 @@ import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconst
 import { loadPositionCoverage, resolveLicensedQuantityAsOf } from "@/lib/crypto/position-coverage";
 import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 import { loadTokenDayRows } from "@/lib/crypto/token-valuation";
-import { tokensValueOnDay } from "@/lib/crypto/token-valuation.core";
+import { tokensValueOnDay, tokenDayMissingRequiredPrice } from "@/lib/crypto/token-valuation.core";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
@@ -1085,14 +1085,23 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         const cryptoDay = cryptoDayValuation.positions.map((p) => ({ type: "crypto", balance: p.nativeValue, currency: "USD" }));
         // TOKEN HOLDINGS (PR-A) — VALUED tokens of the same wallets, in USD,
         // through the SAME conversion path. Unpriced / stale tokens add nothing.
+        // OWNER RULING 2026-10-30 — a HELD token that has a market but no price
+        // serving this day makes the day's crypto valuation INCOMPLETE, exactly as
+        // an unpriced native asset does (all-or-nothing): the component is refused
+        // ("unavailable", stored value preserved) — never an understated total.
+        let tokenPriceMissing = false;
         if (tokenRows) {
+          const noMarket = (id: string) => tokenRows.identity.get(id)?.noMarket === true;
           for (const obs of tokenRows.observationsByAccount.values()) {
             const t = tokensValueOnDay(obs, tokenRows.prices, dISO);
+            if (tokenDayMissingRequiredPrice(t.tokens, noMarket)) tokenPriceMissing = true;
             for (const v of t.tokens) if (v.state === "VALUED" && v.valueUsd !== null) cryptoDay.push({ type: "crypto", balance: v.valueUsd, currency: "USD" });
           }
         }
-        digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;
-        hasDigitalAssetEvidence = true;
+        if (!tokenPriceMissing) {
+          digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;
+          hasDigitalAssetEvidence = true;
+        }
       }
     }
 

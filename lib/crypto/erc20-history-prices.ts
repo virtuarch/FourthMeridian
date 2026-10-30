@@ -44,7 +44,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { acquireTokenHistoricalCloses } from "@/lib/prices/token-history-prices";
 import type { TokenQuoteTarget } from "@/lib/prices/current-quotes";
 import { coinGeckoBudgetConfig, defaultCoinGeckoBudget } from "@/lib/prices/coingecko-budget";
-import { USAGE_UNIT_CALLS, usageDayBucket } from "@/lib/usage/provider-budget.core";
+import { usageDayBucket } from "@/lib/usage/provider-budget.core";
 import { todayUTCISO } from "@/lib/time/clock";
 import { TOKEN_ALIAS_PROVIDER, parseTokenAssetKey } from "./token-asset";
 import { loadTokenHeldSpans } from "./token-held-spans";
@@ -68,9 +68,16 @@ const defaultProbe: Erc20QuoteProbe = async (target, client) => {
   return o.calls ?? 0;
 };
 
-/** ApiUsageCounter provider/network for the durable per-day probe count (F1). Not a COINGECKO row: the probe's vendor call is metered there by the quote path itself. */
+/**
+ * ApiUsageCounter row for the durable per-day probe count (F1). An ATTEMPT
+ * count (unit "attempts", like PRICE_GAP / REVALUATION), never "calls": the
+ * probe's vendor call is already metered under COINGECKO by the quote path, and
+ * a "calls" row would be listed as an external provider and double-counted by
+ * Platform Ops (delta re-review L2).
+ */
 export const ERC20_PROBE_USAGE_PROVIDER = "ERC20_HISTORY";
-export const ERC20_PROBE_USAGE_NETWORK = "coingecko-probe";
+export const ERC20_PROBE_USAGE_METRIC = "coingecko-probe";
+export const ERC20_PROBE_USAGE_UNIT = "attempts";
 
 const num = (v: string | undefined, d: number, min: number, max: number) => { const n = Number(v); return Number.isFinite(n) && n >= min && n <= max ? n : d; };
 export function erc20ProbeConfig(env: Record<string, string | undefined> = process.env) {
@@ -94,7 +101,10 @@ export function probeAllowance(f: { probesToday: number | null; tokenRemaining: 
 /** The durable probe gate: how many probes may be sent now, and record one sent. */
 export interface Erc20ProbeGate { allowance(): Promise<number>; record(n: number): Promise<void> }
 
-export function defaultProbeGate(client: Client, env: Record<string, string | undefined> = process.env): Erc20ProbeGate {
+export function defaultProbeGate(
+  client: Client, env: Record<string, string | undefined> = process.env,
+  recordUsage?: (provider: string, metric: string, unit: string, n: number) => Promise<void>,
+): Erc20ProbeGate {
   const cfg = erc20ProbeConfig(env);
   const cg = coinGeckoBudgetConfig(env);
   return {
@@ -102,7 +112,7 @@ export function defaultProbeGate(client: Client, env: Record<string, string | un
       let probesToday: number | null = null;
       try {
         const rows = await (client as PrismaClient).apiUsageCounter.findMany({
-          where: { provider: ERC20_PROBE_USAGE_PROVIDER, unit: USAGE_UNIT_CALLS, day: usageDayBucket(todayUTCISO()) }, select: { metric: true, count: true },
+          where: { provider: ERC20_PROBE_USAGE_PROVIDER, unit: ERC20_PROBE_USAGE_UNIT, day: usageDayBucket(todayUTCISO()) }, select: { metric: true, count: true },
         });
         probesToday = rows.reduce((a, r) => a + (Number(r.count) || 0), 0);
       } catch { probesToday = null; }
@@ -111,8 +121,8 @@ export function defaultProbeGate(client: Client, env: Record<string, string | un
     },
     async record(n) {
       if (n <= 0) return;
-      const { recordProviderMeter } = await import("@/lib/usage/provider-budget");
-      try { await recordProviderMeter(ERC20_PROBE_USAGE_PROVIDER, ERC20_PROBE_USAGE_NETWORK, { probe: n }); } catch { /* never fails a run */ }
+      const rec = recordUsage ?? (await import("@/lib/usage/record")).recordApiUsage;
+      try { await rec(ERC20_PROBE_USAGE_PROVIDER, ERC20_PROBE_USAGE_METRIC, ERC20_PROBE_USAGE_UNIT, n); } catch { /* never fails a run */ }
     },
   };
 }
@@ -142,7 +152,6 @@ export async function acquireErc20HistoricalPrices(args: {
   if (ids.length === 0 || args.maxTokens <= 0) return out;
   const acquire = args.acquire ?? acquireTokenHistoricalCloses;
   const gate = args.probeGate ?? defaultProbeGate(args.client);
-  let probesLeft: number | null = null; // read lazily, once: only when a probe is wanted
   const [aliases, coverage, held] = await Promise.all([
     args.client.instrumentAlias.findMany({ where: { instrumentId: { in: ids }, provider: TOKEN_ALIAS_PROVIDER }, select: { instrumentId: true, externalId: true, metadata: true } }),
     args.client.positionCoverage.findMany({
@@ -162,9 +171,8 @@ export async function acquireErc20HistoricalPrices(args: {
     if (!held.has(`${args.accountId}|${instrumentId}`)) continue; // F2 — never held: nothing to value
     let probeCalls = 0;
     if (needsQuoteProbe(alias?.metadata, now())) {
-      if (probesLeft === null) probesLeft = await gate.allowance().catch(() => 0);
-      if (probesLeft > 0) {
-        probesLeft--;
+      // Re-read before EVERY probe: acquisitions between probes spend the same TOKEN share.
+      if ((await gate.allowance().catch(() => 0)) > 0) {
         try { probeCalls = await probe({ instrumentId, assetKey: assetKey!, platform: "ethereum", contract: parsed.contract }, args.client); }
         catch { /* a probe is an outcome; the token stays NOT_VALUED_YET and is disclosed */ }
         finally { await gate.record(1).catch(() => undefined); }

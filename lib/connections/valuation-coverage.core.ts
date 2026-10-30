@@ -52,6 +52,8 @@ export interface ValuationCoverage {
    */
   tokensNotValuedYet?: number;
   tokensWithoutMarket?: number;
+  /** S1 — tokens whose stored prices END inside the time they were held: valued only until then. */
+  tokensValuedUntilEarlier?: number;
 }
 
 export function deriveValuationCoverage(
@@ -59,7 +61,7 @@ export function deriveValuationCoverage(
   priceFloors: ReadonlyMap<string, string | null>,
   tokensTrackedFromISO: string | null = null,
   tokenPricesFromISO: string | null = null,
-  tokenValuation: { notValuedYet: number; withoutMarket: number } = { notValuedYet: 0, withoutMarket: 0 },
+  tokenValuation: { notValuedYet: number; withoutMarket: number; valuedUntilEarlier?: number } = { notValuedYet: 0, withoutMarket: 0 },
 ): ValuationCoverage | null {
   const bySymbol = new Map<string, ValuationCoverageLimit>();
   for (const r of rows) {
@@ -72,11 +74,13 @@ export function deriveValuationCoverage(
   }
   const limits = [...bySymbol.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
   const notYet = Math.max(0, tokenValuation.notValuedYet), noMarket = Math.max(0, tokenValuation.withoutMarket);
-  if (!limits.length && !tokensTrackedFromISO && !tokenPricesFromISO && !notYet && !noMarket) return null;
+  const untilEarlier = Math.max(0, tokenValuation.valuedUntilEarlier ?? 0);
+  if (!limits.length && !tokensTrackedFromISO && !tokenPricesFromISO && !notYet && !noMarket && !untilEarlier) return null;
   const floors = limits.map((l) => l.pricedFromISO);
   const valuedFromISO = !limits.length ? null : floors.every((f): f is string => f !== null) ? [...floors].sort().at(-1)! : null;
   return { limits, valuedFromISO, ...(tokensTrackedFromISO ? { tokensTrackedFromISO } : {}), ...(tokenPricesFromISO ? { tokenPricesFromISO } : {}),
-    ...(notYet ? { tokensNotValuedYet: notYet } : {}), ...(noMarket ? { tokensWithoutMarket: noMarket } : {}) };
+    ...(notYet ? { tokensNotValuedYet: notYet } : {}), ...(noMarket ? { tokensWithoutMarket: noMarket } : {}),
+    ...(untilEarlier ? { tokensValuedUntilEarlier: untilEarlier } : {}) };
 }
 
 function fmtDay(iso: string): string {
@@ -102,17 +106,19 @@ export function valuationCoverageNote(cov: ValuationCoverage | null, chartFromIS
   const tokenNote = cov.tokensTrackedFromISO && chartFromISO < cov.tokensTrackedFromISO
     ? `Token holdings are included from ${fmtDay(cov.tokensTrackedFromISO)}; earlier token balances aren’t proven, so they aren’t counted.`
     : null;
+  // Owner ruling 2026-10-30 — concise: balances verified, valuation available
+  // from a date, older holdings without prices. Never a value, never "zero".
   const tokenPriceNote = cov.tokenPricesFromISO && chartFromISO < cov.tokenPricesFromISO
-    ? `Verified token history is valued from ${fmtDay(cov.tokenPricesFromISO)}, when stored historical token prices begin; earlier token days aren’t valued (never counted as zero).`
+    ? `Token valuation available from ${fmtDay(cov.tokenPricesFromISO)}.`
     : null;
   // B1 — whatever the window: these tokens' days are missing from the history, not zero.
-  const n = cov.tokensNotValuedYet ?? 0;
+  const n = (cov.tokensNotValuedYet ?? 0) + (cov.tokensValuedUntilEarlier ?? 0);
   const notYetNote = n > 0
-    ? `${n === 1 ? "1 token" : `${n} tokens`} with verified history ${n === 1 ? "isn’t" : "aren’t"} valued yet — no historical prices are stored for ${n === 1 ? "it" : "them"}, so ${n === 1 ? "its" : "their"} balances aren’t counted here (never as zero).`
+    ? `Older token holdings exist but lack historical prices (${n === 1 ? "1 token" : `${n} tokens`}) — those days aren’t valued, never counted as zero.`
     : null;
   const k = cov.tokensWithoutMarket ?? 0;
   const noMarketNote = k > 0
-    ? `${k === 1 ? "1 token" : `${k} tokens`} with verified history ${k === 1 ? "isn’t" : "aren’t"} counted — no reliable market price was found for ${k === 1 ? "it" : "them"} when last checked (never counted as zero).`
+    ? `${k === 1 ? "1 token" : `${k} tokens`} without a reliable market price when last checked ${k === 1 ? "isn’t" : "aren’t"} valued (never counted as zero).`
     : null;
   return [priceNote, tokenNote, tokenPriceNote, notYetNote, noMarketNote].filter((x): x is string => x !== null).join(" ") || null;
 }

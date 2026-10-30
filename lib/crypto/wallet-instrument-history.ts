@@ -127,13 +127,13 @@ export interface WalletInstrumentHistory {
   /** Every token this wallet ever held has been found and decided (chain reader; false when unknown). */
   tokenInventoryComplete: boolean;
   /**
-   * PR #122 review B1 — LICENSED token histories (held now OR long since exited)
-   * whose days are not valued yet (token-valuation.core `reconstructedTokenValuation`
-   * NOT_VALUED_YET: no stored historical close, not confirmed unlisted/thin).
-   * Any ⇒ the wallet is never complete; a missing price is never $0.
+   * VALUATION coverage (never balance completeness — owner ruling 2026-10-30):
+   * LICENSED token histories (held now OR long since exited) none of whose held
+   * days are priced (token-valuation.core NOT_VALUED_YET). Disclosed; a missing
+   * price is never $0.
    */
   tokensNotValuedYet: number;
-  /** F4 — valued only from a price floor INSIDE their held period (the native "later price floor" rule): limiting. */
+  /** F4/S1 — valued over only PART of their held period (prices start later, or end earlier). Disclosed, not a balance limit. */
   tokensValuedFromLater: number;
   /** …and those confirmed to have no (liquid) market — never valued, disclosed. Never-held tokens count nowhere (F2). */
   tokensWithoutMarket: number;
@@ -156,11 +156,11 @@ export function walletHistoryComplete(
   h: Pick<WalletInstrumentHistory, "chain" | "native" | "tokens"> & { tokenInventoryComplete?: boolean; tokensNotValuedYet?: number; tokensValuedFromLater?: number },
 ): boolean {
   if (h.native.state !== "RECONSTRUCTED") return false;
-  // B1 — a reconstructed token whose history is not valued yet: the wallet's
-  // history is short by an unknown amount, so it can never read complete.
-  if ((h.tokensNotValuedYet ?? 0) > 0) return false;
-  // F4 — valued only from a later price floor: limited, as native is.
-  if ((h.tokensValuedFromLater ?? 0) > 0) return false;
+  // OWNER RULING 2026-10-30 — BALANCE completeness is independent of prices:
+  // a token's missing historical prices never make this answer false. They are
+  // a VALUATION fact, carried separately (tokensNotValuedYet / tokensValuedFromLater)
+  // and disclosed; the per-day valuation refuses unpriced days (token-valuation.core
+  // tokenDayMissingRequiredPrice) instead of this flag claiming anything.
   const chain = h.chain.trim().toUpperCase();
   if (!TOKEN_BEARING_CHAINS.has(chain)) return true;
   if (!TOKEN_HISTORY_CHAINS.has(chain)) return false;
@@ -237,6 +237,10 @@ export async function loadWalletInstrumentHistory(
   const firstClose = new Map((licensedTokenIds.length === 0 ? [] : await client.priceObservation.groupBy({
     by: ["instrumentId"], where: { instrumentId: { in: licensedTokenIds }, basis: "RAW_CLOSE" }, _min: { date: true },
   })).map((p) => [p.instrumentId, p._min?.date ? isoOf(p._min.date) : null] as const));
+  // S1 — and where they END (RAW_CLOSE or INTRADAY: both serve a day).
+  const lastClose = new Map((licensedTokenIds.length === 0 ? [] : await client.priceObservation.groupBy({
+    by: ["instrumentId"], where: { instrumentId: { in: licensedTokenIds }, basis: { in: ["RAW_CLOSE", "INTRADAY"] } }, _max: { date: true },
+  })).map((p) => [p.instrumentId, p._max?.date ? isoOf(p._max.date) : null] as const));
   // F2/F4 — when each was actually held (never-held ⇒ absent).
   const heldSpans = licensedTokenIds.length === 0 ? new Map() : await loadTokenHeldSpans(client, ids, licensedTokenIds);
   const latestQty = new Map(latestRows.map((r) => [`${r.financialAccountId}|${r.instrumentId}`, r.quantity]));
@@ -287,9 +291,9 @@ export async function loadWalletInstrumentHistory(
       const alias = aliasByInstrument.get(id);
       const licence = licensedInterval(c);
       if (!parseTokenAssetKey(alias?.assetKey) || licence === null) continue;
-      const v = reconstructedTokenValuation({ licence, held: heldSpans.get(`${a.id}|${id}`) ?? null, closesFromISO: firstClose.get(id) ?? null }, alias?.metadata);
+      const v = reconstructedTokenValuation({ licence, held: heldSpans.get(`${a.id}|${id}`) ?? null, closesFromISO: firstClose.get(id) ?? null, closesToISO: lastClose.get(id) ?? null }, alias?.metadata);
       if (v === "NOT_VALUED_YET") tokensNotValuedYet++;
-      else if (v === "VALUED_FROM_LATER") tokensValuedFromLater++;
+      else if (v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER") tokensValuedFromLater++;
       else if (v === "NO_MARKET") tokensWithoutMarket++;
     }
     const h = { accountId: a.id, chain, native: nativeFacet, tokens, tokenHistorySupported: TOKEN_HISTORY_CHAINS.has(chain),

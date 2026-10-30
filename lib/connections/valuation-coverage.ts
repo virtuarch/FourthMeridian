@@ -35,7 +35,7 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
   });
   const tok = await pricedTokenDisclosure(client, accountIds);
   const { trackedFromISO: tokensTrackedFromISO, pricesFromISO: tokenPricesFromISO } = tok;
-  const tokenValuation = { notValuedYet: tok.notValuedYet, withoutMarket: tok.withoutMarket };
+  const tokenValuation = { notValuedYet: tok.notValuedYet, withoutMarket: tok.withoutMarket, valuedUntilEarlier: tok.valuedUntilEarlier };
   if (!coverage.length) return deriveValuationCoverage([], new Map(), tokensTrackedFromISO, tokenPricesFromISO, tokenValuation);
 
   const instrumentIds = [...new Set(coverage.map((c) => c.instrumentId))];
@@ -72,7 +72,7 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
  * Dates and counts only.
  */
 async function pricedTokenDisclosure(client: Client, accountIds: string[]): Promise<{
-  trackedFromISO: string | null; pricesFromISO: string | null; notValuedYet: number; withoutMarket: number;
+  trackedFromISO: string | null; pricesFromISO: string | null; notValuedYet: number; withoutMarket: number; valuedUntilEarlier: number;
 }> {
   const [firsts, licensedRows] = await Promise.all([
     client.positionObservation.groupBy({
@@ -93,7 +93,7 @@ async function pricedTokenDisclosure(client: Client, accountIds: string[]): Prom
     const prev = licensed.get(c.instrumentId);
     if (!prev || f < prev) licensed.set(c.instrumentId, f);
   }
-  if (!firsts.length && !licensed.size) return { trackedFromISO: null, pricesFromISO: null, notValuedYet: 0, withoutMarket: 0 };
+  if (!firsts.length && !licensed.size) return { trackedFromISO: null, pricesFromISO: null, notValuedYet: 0, withoutMarket: 0, valuedUntilEarlier: 0 };
   const firstIds = firsts.map((f) => f.instrumentId);
   const licensedIds = [...licensed.keys()];
   const [everPriced, closes, aliases] = await Promise.all([
@@ -107,22 +107,27 @@ async function pricedTokenDisclosure(client: Client, accountIds: string[]): Prom
     .filter((d): d is string => d !== null).sort()[0] ?? null;
   const firstClose = new Map(closes.map((p) => [p.instrumentId, day(p._min.date)]));
   const meta = new Map(aliases.map((a) => [a.instrumentId, a.metadata]));
+  // S1 — where each token's closes END (RAW_CLOSE or INTRADAY: both serve a day).
+  const lastClose = new Map((licensedIds.length ? await client.priceObservation.groupBy({
+    by: ['instrumentId'], where: { instrumentId: { in: licensedIds }, basis: { in: ['RAW_CLOSE', 'INTRADAY'] } }, _max: { date: true },
+  }) : []).map((p) => [p.instrumentId, day(p._max?.date ?? null)]));
   // F2/F4 — per (account, token): when it was actually held; never-held tokens count nowhere.
   const held = await loadTokenHeldSpans(client as never, accountIds, licensedIds);
-  const RANK: Record<ReconstructedTokenValuation, number> = { NOT_VALUED_YET: 4, VALUED_FROM_LATER: 3, NO_MARKET: 2, VALUED: 1, NEVER_HELD: 0 };
+  const RANK: Record<ReconstructedTokenValuation, number> = { NOT_VALUED_YET: 5, VALUED_FROM_LATER: 4, VALUED_UNTIL_EARLIER: 3, NO_MARKET: 2, VALUED: 1, NEVER_HELD: 0 };
   const worst = new Map<string, ReconstructedTokenValuation>();
   for (const r of live) {
     const licence = licensedInterval(coverageFromRow(r))!;
-    const v = reconstructedTokenValuation({ licence, held: held.get(`${r.financialAccountId}|${r.instrumentId}`) ?? null, closesFromISO: firstClose.get(r.instrumentId) ?? null }, meta.get(r.instrumentId));
+    const v = reconstructedTokenValuation({ licence, held: held.get(`${r.financialAccountId}|${r.instrumentId}`) ?? null, closesFromISO: firstClose.get(r.instrumentId) ?? null, closesToISO: lastClose.get(r.instrumentId) ?? null }, meta.get(r.instrumentId));
     const prev = worst.get(r.instrumentId);
     if (!prev || RANK[v] > RANK[prev]) worst.set(r.instrumentId, v);
   }
-  let notValuedYet = 0, withoutMarket = 0;
+  let notValuedYet = 0, withoutMarket = 0, valuedUntilEarlier = 0;
   const pricedFrom: string[] = [];
   for (const [id, v] of worst) {
     if (v === 'NOT_VALUED_YET') notValuedYet++;
     else if (v === 'NO_MARKET') withoutMarket++;
     else if (v === 'VALUED_FROM_LATER') pricedFrom.push(firstClose.get(id)!);
+    else if (v === 'VALUED_UNTIL_EARLIER') valuedUntilEarlier++;
   }
-  return { trackedFromISO, pricesFromISO: pricedFrom.sort().at(-1) ?? null, notValuedYet, withoutMarket };
+  return { trackedFromISO, pricesFromISO: pricedFrom.sort().at(-1) ?? null, notValuedYet, withoutMarket, valuedUntilEarlier };
 }

@@ -89,6 +89,14 @@ export const ERC20_BACKOFF_MS = 24 * 60 * 60 * 1000;
 export const ERC20_SEGMENT_RESTART_AFTER = 2;
 /** Restarts of one segment before it is left to the backoff (re-review F3: a restart is not a cure). */
 export const ERC20_SEGMENT_RESTART_LIMIT = 2;
+/**
+ * Delta re-review L1 — consecutive SCAN failures, AFTER every restart is spent,
+ * at which a page is declared unservable: the section is marked `scanStuck`
+ * (terminal until an operator reset — resetErc20History), the wallet stops
+ * spending calls on it, and its token inventory never reads complete. Values
+ * are never wrong meanwhile: licences simply stop at the last verified head.
+ */
+export const ERC20_SCAN_STUCK_AFTER = 6;
 /** Consecutive inconclusive (revert / non-standard) verifications before a token is refused (SPL: HEAD_MISMATCH_LIMIT). */
 export const ERC20_CALL_FAILURE_LIMIT = 3;
 /** An inconclusive token is not re-asked before this — a transient node fault gets time to clear. */
@@ -290,6 +298,8 @@ export interface Erc20HistorySection {
   failures: number;
   /** F3 — restarts of the open segment (reset when a segment closes). At ERC20_SEGMENT_RESTART_LIMIT no more. */
   segmentRestarts?: number;
+  /** L1 — the scan hit a page that cannot be served: terminal until an operator reset (operator-visible). */
+  scanStuck?: { atISO: string; fromBlock: number; toBlock: number; detail: string } | null;
   lastFailure: { code: string; atISO: string; detail?: string } | null;
   lastProgressAtISO: string | null;
 }
@@ -662,6 +672,7 @@ export function erc20BackedOff(section: Pick<Erc20HistorySection, "failures" | "
 /** Work owed by this wallet's token history today (a regeneration marker is separate). */
 export function erc20WorkOwed(section: Erc20HistorySection | null, todayISO: string, nowMs?: number): boolean {
   if (!section) return true;
+  if (section.scanStuck) return false; // terminal: an operator reset re-arms it (L1)
   if (erc20BackedOff(section, nowMs)) return false;
   if (section.segment) return true;
   if ((section.lastScanDayISO ?? "") < todayISO) return true;
@@ -697,6 +708,8 @@ export interface Erc20HistorySummary {
   unsupported: number;
   pending: number;
   overflow: number;
+  /** L1 — the scan is stuck on an unservable page (operator-visible; terminal until reset). */
+  stuck: boolean;
 }
 
 export function summarizeSection(section: Erc20HistorySection | null): Erc20HistorySummary {
@@ -709,12 +722,13 @@ export function summarizeSection(section: Erc20HistorySection | null): Erc20Hist
     unsupported: cs.filter((c) => c.state === "UNSUPPORTED").length,
     pending: cs.filter((c) => c.state === "PENDING").length,
     overflow: section?.overflow ?? 0,
+    stuck: !!section?.scanStuck,
   };
 }
 
 /** Every token the wallet ever touched is verified (the token half of wallet completeness). */
 export function erc20HistoryComplete(s: Erc20HistorySummary): boolean {
-  return s.scanned && s.overflow === 0 && s.pending === 0 && s.unsupported === 0;
+  return s.scanned && s.overflow === 0 && s.pending === 0 && s.unsupported === 0 && !s.stuck;
 }
 
 // ── Gates and per-step bounds ───────────────────────────────────────────────

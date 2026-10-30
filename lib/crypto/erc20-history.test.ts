@@ -21,7 +21,7 @@ import {
   readErc20Section, withErc20Section, carriedTokens, summarizeSection, erc20HistoryComplete, anchorPlan, judgeAnchors,
   derivedRows, spreadIndices, parseAssetTransfers, unsupportedReasonOf, unsupportedCoverage, unsupportedReasonText,
   erc20HistoryConfig, ERC20_HISTORY_SOURCE, REASON_CAVEAT, emptySection, closeSegment, erc20WorkOwed, erc20BackedOff, resetErc20Section,
-  ERC20_BACKOFF_AFTER, ERC20_BACKOFF_MS, ERC20_CALL_FAILURE_LIMIT, ERC20_CALL_RETRY_MS, ERC20_SEGMENT_RESTART_AFTER, ERC20_SEGMENT_RESTART_LIMIT,
+  ERC20_BACKOFF_AFTER, ERC20_BACKOFF_MS, ERC20_CALL_FAILURE_LIMIT, ERC20_CALL_RETRY_MS, ERC20_SEGMENT_RESTART_AFTER, ERC20_SEGMENT_RESTART_LIMIT, ERC20_SCAN_STUCK_AFTER,
   type Erc20HistorySection, type Erc20ContractHistory,
 } from "./erc20-history.core";
 import { isExecutionRevert } from "./erc20-history-rpc";
@@ -30,7 +30,7 @@ import { runErc20HistoryStep, type Erc20HistoryStore, type Erc20TokenWrite, type
 import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps } from "./erc20-history-pass";
 import { queuedCheckpoint, serializeCheckpoint, parseCheckpoint } from "./eth-history-backfill.core";
 import { walletHistoryComplete, facetFromCoverage, TOKEN_HISTORY_CHAINS } from "./wallet-instrument-history";
-import { tokensValueOnDay, tokenValueOnDay, reconstructedTokenValuation, tokenValuationLimits } from "./token-valuation.core";
+import { tokensValueOnDay, tokenValueOnDay, reconstructedTokenValuation, tokenValuationLimits, tokenDayMissingRequiredPrice, tokenHasNoMarket } from "./token-valuation.core";
 import { heldSpanFrom } from "./token-held-spans";
 import { resolveEvidenceFloor } from "@/lib/snapshots/historical-work-window";
 import { loadWalletInstrumentHistory } from "./wallet-instrument-history";
@@ -42,7 +42,7 @@ import { deriveValuationCoverage, valuationCoverageNote } from "@/lib/connection
 import { acquireTokenHistoricalCloses, TOKEN_HISTORY_PRICE_SOURCE } from "@/lib/prices/token-history-prices";
 import { fetchCoinGeckoTokenDailyClosesUsd, TOKEN_HISTORICAL_PRICE_SEAM } from "@/lib/prices/providers/coingecko";
 import { coinGeckoUsageToday, TOKEN_HISTORY_METRIC_PREFIX, COINGECKO_USAGE_NETWORK, COINGECKO_USAGE_PROVIDER } from "@/lib/prices/coingecko-budget";
-import { acquireErc20HistoricalPrices, needsQuoteProbe, probeAllowance, ERC20_PROBE_RETRY_MS, ERC20_PROBE_USAGE_PROVIDER } from "./erc20-history-prices";
+import { acquireErc20HistoricalPrices, needsQuoteProbe, probeAllowance, defaultProbeGate, ERC20_PROBE_RETRY_MS, ERC20_PROBE_USAGE_PROVIDER, ERC20_PROBE_USAGE_UNIT } from "./erc20-history-prices";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -483,7 +483,7 @@ async function main(): Promise<void> {
     check("copy: not reconstructed yet", n === "Not reconstructed yet");
     check("copy: no digits beyond the date", !/\d/.test(u) && !/\d/.test(n));
     const cov = deriveValuationCoverage([], new Map(), null, "2025-10-28");
-    check("chart note: verified token history valued from its first price", /Verified token history is valued from/.test(valuationCoverageNote(cov, "2024-01-01") ?? ""));
+    check("chart note: token valuation available from its first price", /Token valuation available from/.test(valuationCoverageNote(cov, "2024-01-01") ?? ""));
     check("chart note: silent when the chart starts after", valuationCoverageNote(cov, "2026-01-01") === null);
   }
 
@@ -744,7 +744,7 @@ async function main(): Promise<void> {
       && probeAllowance({ probesToday: null, tokenRemaining: 80, tokenShareCap: 150, dailyCap: 20, heldReserve: 0.5 }) === 0
       && probeAllowance({ probesToday: 0, tokenRemaining: null, tokenShareCap: 150, dailyCap: 20, heldReserve: 0.5 }) === 0);
     check("F1: the probe count lives on the durable ledger, apart from COINGECKO's own rows", (ERC20_PROBE_USAGE_PROVIDER as string) !== COINGECKO_USAGE_PROVIDER
-      && /apiUsageCounter\.findMany/.test(read("lib", "crypto", "erc20-history-prices.ts")) && /recordProviderMeter\(ERC20_PROBE_USAGE_PROVIDER/.test(read("lib", "crypto", "erc20-history-prices.ts")));
+      && /apiUsageCounter\.findMany/.test(read("lib", "crypto", "erc20-history-prices.ts")));
 
     // F2 — a never-held token (zero-value transfers only) is neither probed nor priced.
     for (const k of Object.keys(meta)) delete meta[k];
@@ -769,7 +769,7 @@ async function main(): Promise<void> {
         ? [{ financialAccountId: "acc", instrumentId: id, _min: { date: new Date(`${f}T00:00:00Z`) }, _max: { date: new Date(`${t}T00:00:00Z`) } }]
         : z ? [{ financialAccountId: "acc", instrumentId: id, _max: { date: new Date(`${z}T00:00:00Z`) } }] : []);
     };
-    const covClient = (o: { closes?: string | null; usdcMeta?: unknown; usdcHeld?: [string, string, string | null] | null; extra?: Record<string, [string, string, string | null]> }) => ({
+    const covClient = (o: { closes?: string | null; closesTo?: string; usdcMeta?: unknown; usdcHeld?: [string, string, string | null] | null; extra?: Record<string, [string, string, string | null]> }) => ({
       spaceAccountLink: { findMany: async () => [{ visibilityLevel: "FULL", financialAccountId: "acc" }] },
       positionCoverage: { findMany: async ({ where }: { where: { instrument?: unknown } }) =>
         JSON.stringify(where.instrument) === JSON.stringify(IS_TOKEN_INSTRUMENT)
@@ -777,27 +777,30 @@ async function main(): Promise<void> {
           : [] },
       // Capture only ever saw DAI (held now, priced); USDC was sold before capture began; SPAM was never held (zero-value transfers).
       positionObservation: { groupBy: spanRows({ ...(o.usdcHeld === null ? {} : { usdc: o.usdcHeld ?? ["2025-01-10", "2025-06-30", "2025-07-01"] }), dai: ["2026-09-01", "2026-10-27", null], ...(o.extra ?? {}) }) },
-      priceObservation: { groupBy: async ({ where }: { where: { instrumentId: { in: string[] }; basis?: string } }) =>
-        where.instrumentId.in.flatMap((id) => id === "dai" ? [{ instrumentId: "dai", _min: { date: new Date("2025-10-28T00:00:00Z") } }]
-          : id === "usdc" && o.closes ? [{ instrumentId: "usdc", _min: { date: new Date(`${o.closes}T00:00:00Z`) } }] : []) },
+      priceObservation: { groupBy: async ({ where }: { where: { instrumentId: { in: string[] }; basis?: unknown } }) => {
+        const max = typeof where.basis === "object"; // the S1 "where do closes END" read
+        const d = (iso: string) => (max ? { _max: { date: new Date(`${iso}T00:00:00Z`) } } : { _min: { date: new Date(`${iso}T00:00:00Z`) } });
+        return where.instrumentId.in.flatMap((id) => id === "dai" ? [{ instrumentId: "dai", ...d(max ? "2026-10-27" : "2025-10-28") }]
+          : id === "usdc" && o.closes ? [{ instrumentId: "usdc", ...d(max ? (o.closesTo ?? "2026-10-27") : o.closes) }] : []);
+      } },
       instrumentAlias: { findMany: async () => [{ instrumentId: "usdc", metadata: o.usdcMeta ?? {} }, { instrumentId: "spam", metadata: {} }, { instrumentId: "dai", metadata: { quote: { outcome: "PRICED", pricedAt: "x" } } }] },
     });
     const c1 = await loadValuationCoverage(covClient({}) as never, "space");
     const n1 = valuationCoverageNote(c1, "2025-06-01") ?? "";
     check("B1: an exited, unpriced verified token is DISCLOSED on the chart (it was silently dropped before)",
-      c1?.tokensNotValuedYet === 1 && /1 token with verified history isn’t valued yet/.test(n1) && /never as zero/.test(n1), n1);
+      c1?.tokensNotValuedYet === 1 && /Older token holdings exist but lack historical prices \(1 token\)/.test(n1) && /never counted as zero/.test(n1), n1);
     check("F2: a never-held token (zero-value transfers) is counted NOWHERE", c1?.tokensNotValuedYet === 1 && !c1?.tokensWithoutMarket);
     const n1late = valuationCoverageNote(c1, "2026-10-01") ?? "";
-    check("B1: …whatever window the chart shows", /isn’t valued yet/.test(n1late), n1late);
+    check("B1: …whatever window the chart shows", /lack historical prices/.test(n1late), n1late);
     const c2 = await loadValuationCoverage(covClient({ usdcMeta: { quote: { outcome: "THIN", attemptedAt: "x" } } }) as never, "space");
     const n2 = valuationCoverageNote(c2, "2025-06-01") ?? "";
     check("B1/F6: a thin/unlisted exited token is disclosed — as of when it was last checked", c2?.tokensWithoutMarket === 1 && !c2.tokensNotValuedYet
-      && /no reliable market price was found for it when last checked/.test(n2), n2);
+      && /without a reliable market price when last checked/.test(n2), n2);
     const c3 = await loadValuationCoverage(covClient({ closes: "2025-10-28" }) as never, "space");
     check("F4: closes only AFTER it was sold ⇒ still NOT valued (any close is not enough)", c3?.tokensNotValuedYet === 1, JSON.stringify(c3));
     const c4 = await loadValuationCoverage(covClient({ closes: "2025-03-01" }) as never, "space");
     check("F4: closes from inside its held period ⇒ valued from there, said on the chart", !c4?.tokensNotValuedYet && c4?.tokenPricesFromISO === "2025-03-01"
-      && /Verified token history is valued from/.test(valuationCoverageNote(c4, "2025-01-01") ?? ""));
+      && /Token valuation available from/.test(valuationCoverageNote(c4, "2025-01-01") ?? ""));
     const c5 = await loadValuationCoverage(covClient({ closes: "2025-01-01" }) as never, "space");
     check("F4: closes covering its whole held period ⇒ VALUED, nothing to disclose for it", !c5?.tokensNotValuedYet && c5?.tokenPricesFromISO !== "2025-01-01");
 
@@ -807,38 +810,56 @@ async function main(): Promise<void> {
     const doneSection = { ...emptySection(), scannedToBlock: 10, scannedToISO: "2026-10-27", contracts: { [USDC]: {
       decimals: 6, firstBlock: 5, firstDayISO: "2025-01-10", transfers: 2, baseRaw: "0", days: [], state: "VERIFIED", reason: null,
       verifiedToBlock: 10, persistedThroughISO: "2026-10-27", instrumentId: "usdc" } } } as Erc20HistorySection;
-    const whClient = (closesFrom: string | null, o: { spam?: boolean } = {}) => ({
+    const whClient = (closesFrom: string | null, o: { spam?: boolean; closesTo?: string } = {}) => ({
       positionCoverage: { findMany: async () => [nativeCov, tokenCov("usdc"), ...(o.spam ? [tokenCov("spam")] : [])] },
       positionObservation: { groupBy: async ({ where }: { where: { quantity?: unknown; source?: unknown } }) => (where.source ? []
         : JSON.stringify(where.quantity) === JSON.stringify({ gt: 0 })
           ? [{ financialAccountId: "acc", instrumentId: "usdc", _min: { date: new Date("2025-01-10T00:00:00Z") }, _max: { date: new Date("2025-06-30T00:00:00Z") } }]
           : [{ financialAccountId: "acc", instrumentId: "usdc", _max: { date: new Date("2025-07-01T00:00:00Z") } }]), findMany: async () => [] },
       instrumentAlias: { findMany: async () => [{ instrumentId: "usdc", externalId: EXITED_KEY, metadata: {} }, { instrumentId: "spam", externalId: `eip155:1/erc20:${SPAM}`, metadata: {} }] },
-      priceObservation: { groupBy: async ({ where }: { where: { basis?: string } }) => (where.basis === "RAW_CLOSE" && closesFrom ? [{ instrumentId: "usdc", _min: { date: new Date(`${closesFrom}T00:00:00Z`) } }] : []) },
+      priceObservation: { groupBy: async ({ where }: { where: { basis?: unknown } }) => (!closesFrom ? []
+        : where.basis === "RAW_CLOSE" ? [{ instrumentId: "usdc", _min: { date: new Date(`${closesFrom}T00:00:00Z`) } }]
+        : typeof where.basis === "object" ? [{ instrumentId: "usdc", _max: { date: new Date(`${o.closesTo ?? "2026-10-27"}T00:00:00Z`) } }] : []) },
       accountConnection: { findFirst: async () => ({ connectionId: "c1", connection: { credential: null, cursor: null } }) },
       $queryRaw: async () => [{ historyCheckpoint: withErc20Section(null, "acc", doneSection) }],
     });
-    const wh = async (closesFrom: string | null, o: { spam?: boolean } = {}) => (await loadWalletInstrumentHistory(whClient(closesFrom, o) as never, [{ id: "acc", walletChain: "ETH" }])).get("acc")!;
+    const wh = async (closesFrom: string | null, o: { spam?: boolean; closesTo?: string } = {}) => (await loadWalletInstrumentHistory(whClient(closesFrom, o) as never, [{ id: "acc", walletChain: "ETH" }])).get("acc")!;
     const h0 = await wh(null);
-    check("B1: native + every token verified, but an exited token unvalued ⇒ the wallet is NOT complete",
-      h0.native.state === "RECONSTRUCTED" && h0.tokenInventoryComplete && h0.tokensNotValuedYet === 1 && h0.complete === false, JSON.stringify({ c: h0.complete, n: h0.tokensNotValuedYet, inv: h0.tokenInventoryComplete }));
+    // Owner ruling 2026-10-30 — balance completeness is independent of prices; the valuation gap is a separate, disclosed fact.
+    check("RULING: every balance verified, an exited token unvalued ⇒ BALANCE complete, valuation gap counted separately",
+      h0.native.state === "RECONSTRUCTED" && h0.tokenInventoryComplete && h0.tokensNotValuedYet === 1 && h0.complete === true, JSON.stringify({ c: h0.complete, n: h0.tokensNotValuedYet, inv: h0.tokenInventoryComplete }));
     const h1 = await wh("2025-01-01");
     check("B1: …and complete once its held period is priced", h1.tokensNotValuedYet === 0 && h1.tokensValuedFromLater === 0 && h1.complete === true);
     const h2 = await wh("2025-10-28");
-    check("F4: held only before the 365-day price window ⇒ NOT complete, though a close exists", h2.tokensNotValuedYet === 1 && h2.complete === false);
+    check("F4: held only before the 365-day price window ⇒ counted NOT valued (a close elsewhere is not coverage); balance still complete", h2.tokensNotValuedYet === 1 && h2.complete === true);
     const h3 = await wh("2025-03-01");
-    check("F4: priced only from inside its held period ⇒ limited (the native later-price-floor rule)", h3.tokensValuedFromLater === 1 && h3.complete === false);
+    check("F4: priced only from inside its held period ⇒ counted partly valued; balance still complete", h3.tokensValuedFromLater === 1 && h3.complete === true);
     const h4 = await wh("2025-01-01", { spam: true });
     check("F2: a never-held spam token beside it never makes the wallet limited", h4.tokensNotValuedYet === 0 && h4.tokensWithoutMarket === 0 && h4.complete === true, JSON.stringify(h4));
     const conn = { id: "c", provider: "WALLET", state: "active" } as never;
     const intel = (n: number, later = 0) => ({ positionObservedAt: "2026-10-28T10:00:00Z", valuationIsReadTime: true,
       walletHistory: { supported: true, licensed: true, licensedFromISO: "2020-01-01", licensedToISO: "2026-10-27", activityFromISO: "2020-01-01",
         priceFromISO: "2020-01-01", chart: { fromISO: "2020-01-01", toISO: "2026-10-27", days: 2492, continuous: true }, chain: "ETH", tokens: [], walletComplete: n === 0 && later === 0, tokensNotValuedYet: n, tokensValuedFromLater: later } }) as never;
-    check("B1: Connections headline is LIMITED while a verified token isn’t valued", connectionHealth(conn, intel(1), new Date("2026-10-28T12:00:00Z")).headline === "Current holdings ready; some history is limited");
-    check("F4: …and while one is valued only from a later price floor", connectionHealth(conn, intel(0, 1), new Date("2026-10-28T12:00:00Z")).headline === "Current holdings ready; some history is limited");
+    check("RULING: missing token prices never make the balance import 'limited' (ERC-20)", connectionHealth(conn, intel(1), new Date("2026-10-28T12:00:00Z")).headline === "Current holdings ready"
+      && connectionHealth(conn, intel(0, 1), new Date("2026-10-28T12:00:00Z")).headline === "Current holdings ready");
     check("B1: …and ready once it is", connectionHealth(conn, intel(0), new Date("2026-10-28T12:00:00Z")).headline === "Current holdings ready");
     const lim = connectionHistory(conn, intel(2, 1), [{ id: "a", name: "w", type: "crypto", chain: "ETH" } as never]).limitations.join(" ");
-    check("B1/F4: History tab says how many and why, never a value", /2 tokens with verified history aren’t valued yet/.test(lim) && /1 token with verified history is valued only from when its stored historical prices begin/.test(lim) && !/\$/.test(lim), lim);
+    check("RULING: History tab says it concisely — balance verified through, older holdings lack prices — never a value",
+      /Balance history verified through Oct 27, 2026\. Older holdings exist but lack historical prices \(3 tokens\)/.test(lim) && !/\$/.test(lim), lim);
+
+    // Delta S1 — closes must also REACH the held span: a shared archive can end before this wallet held it.
+    check("S1 rule: closes ending inside the held span ⇒ VALUED_UNTIL_EARLIER (limiting)",
+      reconstructedTokenValuation({ licence: LIC, held: { fromISO: "2025-01-10", toISO: "2025-06-30" }, closesFromISO: "2025-01-01", closesToISO: "2025-03-31" }, {}) === "VALUED_UNTIL_EARLIER"
+      && tokenValuationLimits("VALUED_UNTIL_EARLIER"));
+    check("S1 rule: the reviewer's case — closes Jan–Mar 2025, held Oct 1 → Dec 15 ⇒ NOT valued at all",
+      reconstructedTokenValuation({ licence: LIC, held: { fromISO: "2025-10-01", toISO: "2025-12-15" }, closesFromISO: "2025-01-01", closesToISO: "2025-03-31" }, {}) === "NOT_VALUED_YET");
+    check("S1 rule: a tail within the tolerance is still VALUED; interior gaps are not inspected (as native)",
+      reconstructedTokenValuation({ licence: LIC, held: { fromISO: "2025-01-10", toISO: null }, closesFromISO: "2025-01-01", closesToISO: "2026-10-25" }, {}) === "VALUED");
+    const c6 = await loadValuationCoverage(covClient({ closes: "2025-01-01", closesTo: "2025-03-31" }) as never, "space");
+    check("S1: the chart discloses a token whose prices end before it was sold", c6?.tokensValuedUntilEarlier === 1
+      && /Older token holdings exist but lack historical prices/.test(valuationCoverageNote(c6, "2025-01-01") ?? ""), JSON.stringify(c6));
+    const h5 = await wh("2025-01-01", { closesTo: "2025-03-31" });
+    check("S1: closes ending before the sale ⇒ counted partly valued (disclosed), balance unaffected", h5.tokensValuedFromLater === 1 && h5.complete === true, JSON.stringify(h5));
 
     // F3 — a page that fails persistently: restarts are bounded, re-reads are not progress, the backoff engages.
     const fm3 = newMem();
@@ -853,7 +874,54 @@ async function main(): Promise<void> {
     }
     const s3 = sectionOf(fm3);
     check("F3: a persistently failing page reaches the backoff (it no longer loops below it)", erc20BackedOff(s3, T3 + steps * 900_000) && steps < 30, JSON.stringify({ steps, f: s3.failures, r: s3.segmentRestarts }));
-    check("F3: restarts are counted and bounded", (s3.segmentRestarts ?? 0) === ERC20_SEGMENT_RESTART_LIMIT);
+    check("F3: restarts are counted and bounded", (s3.segmentRestarts ?? 0) >= 1 && (s3.segmentRestarts ?? 0) <= ERC20_SEGMENT_RESTART_LIMIT, String(s3.segmentRestarts));
+
+    // Delta L1 — a budget-stopped replay never fires a second restart; an unservable page becomes terminal + visible.
+    const rm = newMem();
+    const long: Chain = { head: 3000, calls: [], pageSize: 1, txs: Array.from({ length: 8 }, (_, i) => tx(USDC, 100 + i * 10, OTHER, WALLET, 1_000_000)) };
+    for (let i = 0; i < 12 && sectionOf(rm)?.segment?.pageKey !== "6"; i++) await step(long, rm, { cfg: { maxPagesPerStep: 1 } });
+    long.failPageKey = "6";
+    for (let i = 0; i < ERC20_SEGMENT_RESTART_AFTER; i++) await step(long, rm, { cfg: { maxPagesPerStep: 2 } });
+    await step(long, rm, { cfg: { maxPagesPerStep: 2 } }); // restart #1; replays 2 of its 7 pages, stops on its page budget
+    check("L1 (setup): one restart, replay under way", sectionOf(rm).segmentRestarts === 1 && (sectionOf(rm).segment?.pages ?? 0) < 6);
+    await step(long, rm, { cfg: { maxPagesPerStep: 2 } }); // still replaying: must NOT restart again
+    check("L1: a budget-stopped replay step does not fire a second restart", sectionOf(rm).segmentRestarts === 1 && sectionOf(rm).lastFailure?.code === "SCAN_REPLAYING",
+      JSON.stringify({ r: sectionOf(rm).segmentRestarts, f: sectionOf(rm).lastFailure?.code, p: sectionOf(rm).segment?.pages }));
+    const stuckM = newMem();
+    const dead6: Chain = { head: 3000, calls: [], pageSize: 1, txs: long.txs };
+    for (let i = 0; i < 12 && sectionOf(stuckM)?.segment?.pageKey !== "6"; i++) await step(dead6, stuckM, { cfg: { maxPagesPerStep: 7 } });
+    dead6.failPageKey = "6";
+    let n6 = 0;
+    for (; n6 < 40 && !sectionOf(stuckM).scanStuck; n6++) await step(dead6, stuckM, { cfg: { maxPagesPerStep: 7 } }); // no clock ⇒ no backoff gate here
+    const ss = sectionOf(stuckM);
+    check("L1: a permanently unservable page becomes TERMINAL (scanStuck), after every restart is spent",
+      !!ss.scanStuck && ss.segmentRestarts === ERC20_SEGMENT_RESTART_LIMIT && ss.failures >= ERC20_SCAN_STUCK_AFTER, JSON.stringify({ n6, f: ss.failures, r: ss.segmentRestarts }));
+    check("L1: …stops spending calls, reads incomplete, and says so (operator-visible)", !erc20WorkOwed(ss, "2026-10-29", Date.now() + ERC20_BACKOFF_MS + 60_000) /* past any backoff: terminal, not merely backed off */
+      && summarizeSection(ss).stuck && !erc20HistoryComplete(summarizeSection(ss)) && !!ss.scanStuck?.detail);
+    const before6 = dead6.calls.length;
+    await step(dead6, stuckM, { cfg: { maxPagesPerStep: 7 }, today: "2026-10-30" });
+    check("L1: …and no further provider call is spent on it", dead6.calls.length === before6);
+    check("L1: the operator reset re-arms it", !resetErc20Section(ss).scanStuck && erc20WorkOwed(resetErc20Section(ss), "2026-10-30"));
+
+    // Delta L2 — probe attempts are an ATTEMPT count, never "calls" (not an external provider in Platform Ops).
+    const units: string[] = [];
+    let readUnit: unknown = null;
+    const g = defaultProbeGate({ apiUsageCounter: { findMany: async (a: { where: { provider: string; unit: unknown } }) => { if (a.where.provider === ERC20_PROBE_USAGE_PROVIDER) readUnit = a.where.unit; return []; } },
+      apiUsage: undefined } as never, { COINGECKO_DAILY_CALL_CAP: "250" }, async (_p, _m, unit) => { units.push(unit); });
+    await g.allowance().catch(() => 0); await g.record(1);
+    check("L2: the probe count is written AND read with unit 'attempts' (like PRICE_GAP)", units.join() === "attempts" && readUnit === "attempts" && ERC20_PROBE_USAGE_UNIT === "attempts");
+
+    // Delta NIT — the allowance is re-read before every probe.
+    for (const k of Object.keys(meta)) delete meta[k];
+    let reads = 0;
+    const twoTokens = { ...client, instrumentAlias: { ...client.instrumentAlias, findMany: async () => [
+      { instrumentId: "usdc", externalId: EXITED_KEY, metadata: {} }, { instrumentId: "dai2", externalId: `eip155:1/erc20:${DAI}`, metadata: {} }] },
+      positionCoverage: { findMany: async () => ["usdc", "dai2"].map((id) => ({ instrumentId: id, coveredFromDate: new Date("2025-01-10T00:00:00Z"), coveredToDate: new Date("2026-10-27T00:00:00Z") })) },
+      positionObservation: { groupBy: async ({ where }: { where: { quantity?: unknown } }) => (JSON.stringify(where.quantity) === JSON.stringify({ gt: 0 })
+        ? ["usdc", "dai2"].map((id) => ({ financialAccountId: "acc", instrumentId: id, _min: { date: new Date("2025-01-10T00:00:00Z") }, _max: { date: new Date("2025-06-30T00:00:00Z") } })) : []) } };
+    await acquireErc20HistoricalPrices({ client: twoTokens as never, accountId: "acc", instrumentIds: ["usdc", "dai2"], maxTokens: 5, acquire: async () => ({ status: "THIN_OR_UNPRICED", inserted: 0, earliestISO: null, calls: 0 }),
+      probe: async () => 1, probeGate: { allowance: async () => { reads++; return 5; }, record: async () => {} }, now: () => NOW });
+    check("NIT: the probe allowance is re-checked before each probe", reads === 2, String(reads));
 
     // F5 — the regeneration window only WIDENS: token rows count, and a licensed token start widens it (SPL and ERC-20 alike).
     const floorClient = (o: { positionMin: string | null; tokenLicenceMin: string | null }) => {
@@ -867,12 +935,87 @@ async function main(): Promise<void> {
       } };
     };
     const spl = floorClient({ positionMin: "2026-01-01", tokenLicenceMin: "2023-05-02" }); // an SPL licence reaching back further than any row
-    check("F5: an SPL licensed token start widens the evidence floor", (await resolveEvidenceFloor(["acc"], spl.c as never)) === "2023-05-02");
+    check("F5: an SPL licensed token start widens the evidence floor", (await resolveEvidenceFloor(spl.c as never, ["acc"])) === "2023-05-02");
     const erc = floorClient({ positionMin: "2024-03-05", tokenLicenceMin: "2024-03-05" }); // ERC-20 rows from the licence start
-    check("F5: ERC-20 token rows count toward the floor (never narrowed)", (await resolveEvidenceFloor(["acc"], erc.c as never)) === "2024-03-05"
+    check("F5: ERC-20 token rows count toward the floor (never narrowed)", (await resolveEvidenceFloor(erc.c as never, ["acc"])) === "2024-03-05"
       && !JSON.stringify(erc.seen[0]).includes("NOT"), JSON.stringify(erc.seen[0]));
     const nat = floorClient({ positionMin: "2022-01-01", tokenLicenceMin: "2024-01-01" });
-    check("F5: a later token licence never narrows it", (await resolveEvidenceFloor(["acc"], nat.c as never)) === "2022-01-01");
+    check("F5: a later token licence never narrows it", (await resolveEvidenceFloor(nat.c as never, ["acc"])) === "2022-01-01");
+  }
+
+  // ── 21. OWNER RULING 2026-10-30 — one coverage model: balance ≠ price ≠ valuation (SPL + ERC-20 + native) ──
+  {
+    const SPL_KEY = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const ERC_KEY = `eip155:1/erc20:${USDC}`;
+    const nativeDone = { instrumentId: "n", assetKey: "k", label: "X", state: "RECONSTRUCTED" as const, licensedFromISO: "2020-01-01", licensedToISO: "2026-10-27" };
+    const fullTok = { state: "RECONSTRUCTED", coverageKind: "COMPLETE" } as never;
+
+    // (1) Balance completeness is independent of prices — SOL/SPL and ETH/ERC-20 through the SAME rule.
+    for (const chain of ["SOL", "ETH"]) {
+      check(`RULING 1 (${chain}): unpriced / partly priced tokens never make BALANCE history incomplete`,
+        walletHistoryComplete({ chain, native: nativeDone, tokens: [fullTok], tokenInventoryComplete: true, tokensNotValuedYet: 3, tokensValuedFromLater: 2 }) === true);
+      check(`RULING 1 (${chain}): …while an unverified balance still does`, walletHistoryComplete({ chain, native: nativeDone, tokens: [fullTok], tokenInventoryComplete: false }) === false);
+    }
+    const solConn = { id: "c", provider: "WALLET", state: "active" } as never;
+    const solIntel = { positionObservedAt: "2026-10-28T10:00:00Z", valuationIsReadTime: true,
+      walletHistory: { supported: true, licensed: true, licensedFromISO: "2022-01-01", licensedToISO: "2026-10-27", activityFromISO: "2022-01-01",
+        priceFromISO: "2022-01-01", chart: { fromISO: "2022-01-01", toISO: "2026-10-27", days: 1761, continuous: true }, chain: "SOL",
+        tokens: [{ label: "USDC", standard: "SPL", priceStatus: "MARKET_PRICE", historyState: "RECONSTRUCTED", coverageKind: "COMPLETE", licensedFromISO: "2022-01-01", firstObservedISO: "2026-10-01", lastObservedISO: "2026-10-27" }],
+        walletComplete: true, tokensNotValuedYet: 1, tokensValuedFromLater: 1 } } as never;
+    check("RULING 1 (SPL): Connections never reads 'limited' for missing token prices", connectionHealth(solConn, solIntel, new Date("2026-10-28T12:00:00Z")).headline === "Current holdings ready");
+
+    // (2)+(3) Per-day valuation: a held token with a market but no price SERVING the day makes the day incomplete —
+    // one EARLIER price never covers later held days (single-earlier-price rule). Same rule for SPL and ERC-20 instruments.
+    for (const [label, id] of [["SPL", "spl-usdc"], ["ERC-20", "erc-usdc"]] as const) {
+      const obs = [{ instrumentId: id, dateISO: "2025-10-01", quantity: 100 }, { instrumentId: id, dateISO: "2025-10-20", quantity: 100 }];
+      const early = [{ instrumentId: id, dateISO: "2025-03-31", basis: "RAW_CLOSE" as const, priceUsd: 1 }];
+      const t = tokensValueOnDay(obs, early, "2025-10-20");
+      check(`RULING 3 (${label}): an earlier price never values a later held day (UNPRICED, value null — never $0)`,
+        t.tokens[0].state === "UNPRICED" && t.tokens[0].valueUsd === null && t.totalUsd === 0);
+      check(`RULING 2 (${label}): that day's valuation is INCOMPLETE (the crypto component is refused, as native)`,
+        tokenDayMissingRequiredPrice(t.tokens, () => false) === true);
+      check(`RULING 2 (${label}): a NO_MARKET token is disclosed, never blocking`, tokenDayMissingRequiredPrice(t.tokens, () => true) === false);
+      const priced = tokensValueOnDay(obs, [...early, { instrumentId: id, dateISO: "2025-10-19", basis: "RAW_CLOSE" as const, priceUsd: 1 }], "2025-10-20");
+      check(`RULING 2 (${label}): a price serving the day ⇒ complete, valued`, !tokenDayMissingRequiredPrice(priced.tokens, () => false) && priced.totalUsd === 100);
+      const closed = tokensValueOnDay([...obs, { instrumentId: id, dateISO: "2025-10-25", quantity: 0 }], early, "2025-10-26");
+      check(`RULING 2 (${label}): a closed (0) token never blocks`, !tokenDayMissingRequiredPrice(closed.tokens, () => false));
+    }
+    check("RULING 2 (native non-regression): a wallet with no tokens is unaffected", tokenDayMissingRequiredPrice([], () => false) === false);
+    const regen = read("lib", "snapshots", "regenerate-history.ts");
+    check("RULING 2: regeneration refuses the crypto evidence on such a day (never an understated total)",
+      /if \(tokenDayMissingRequiredPrice\(t\.tokens, noMarket\)\) tokenPriceMissing = true;/.test(regen)
+      && /if \(!tokenPriceMissing\) \{\s*digitalAssetValue = classifyAccounts\(cryptoDay, ctx, dISO\)\.totalDigitalAssets;\s*hasDigitalAssetEvidence = true;/.test(regen));
+    const core = read("lib", "snapshots", "regenerate-history.core.ts");
+    check("RULING 2: …which the day core turns into 'unavailable' with the stored value preserved (native's path)",
+      /: cryptoMaterial \? "unavailable"/.test(core) && /NO_CRYPTO_EVIDENCE_REASON_CODE/.test(core));
+    check("RULING 2: the materiality rule is ONE function for SPL and ERC-20 (alias metadata, no chain branch)",
+      tokenHasNoMarket({ quote: { outcome: "THIN" } }) && tokenHasNoMarket({ quote: { outcome: "UNLISTED" } }) && !tokenHasNoMarket({ quote: { outcome: "PRICED", pricedAt: "x" } }) && !tokenHasNoMarket(null)
+      && /noMarket: tokenHasNoMarket\(a\.metadata\)/.test(read("lib", "crypto", "token-valuation.ts")));
+
+    // (4) Disclosure: concise, the three statements, for both chains (the loader is chain-agnostic; keys of both kinds).
+    for (const key of [SPL_KEY, ERC_KEY]) {
+      const cv = deriveValuationCoverage([], new Map(), null, "2025-10-28", { notValuedYet: 1, withoutMarket: 0 });
+      const note = valuationCoverageNote(cv, "2024-01-01") ?? "";
+      check(`RULING 4 (${key.startsWith("solana") ? "SPL" : "ERC-20"}): chart says "Token valuation available from" + "Older token holdings exist but lack historical prices"`,
+        /Token valuation available from Oct 28, 2025\./.test(note) && /Older token holdings exist but lack historical prices/.test(note) && !/\$|\b0\.00\b/.test(note), note);
+    }
+    const hist = connectionHistory(solConn, solIntel, [{ id: "a", name: "w", type: "crypto", chain: "SOL" } as never]).limitations.join(" ");
+    check("RULING 4 (SPL): History tab: 'Balance history verified through <date>. Older holdings exist but lack historical prices'",
+      /Balance history verified through Oct 27, 2026\. Older holdings exist but lack historical prices \(2 tokens\)/.test(hist), hist);
+
+    // (5) Verified balances and checkpoints are preserved: valuation code never writes rows, licences or checkpoints.
+    const valuationSrc = ["lib/connections/valuation-coverage.ts", "lib/crypto/token-valuation.ts", "lib/crypto/token-valuation.core.ts", "lib/crypto/token-held-spans.ts", "lib/crypto/wallet-instrument-history.ts"]
+      .map((f) => read(...f.split("/"))).join("\n");
+    check("RULING 5: valuation never deletes or rewrites balances, licences or checkpoints",
+      !/positionObservation\.(delete|update|create)|positionCoverage\.(delete|update|upsert|create)|casHistoryCheckpoint|historyCheckpoint\s*:/.test(valuationSrc));
+
+    // (6) Native non-regression.
+    const nativeOnly = deriveValuationCoverage([{ symbol: "ETH", instrumentId: "eth", balanceFromISO: "2017-01-01" }], new Map([["eth", "2018-01-01"]]));
+    const nn = valuationCoverageNote(nativeOnly, "2018-01-01") ?? "";
+    check("RULING 6 (native): the native price-floor note is unchanged and carries no token sentence",
+      /ETH balances are known from Jan 1, 2017, but its historical prices start Jan 1, 2018/.test(nn) && !/[Tt]oken/.test(nn), nn);
+    check("RULING 6 (native): a native-only wallet's completeness is unchanged",
+      walletHistoryComplete({ chain: "BTC", native: nativeDone, tokens: [] }) === true && walletHistoryComplete({ chain: "BTC", native: { ...nativeDone, state: "NOT_RECONSTRUCTED" }, tokens: [] }) === false);
   }
 
   // ── 16. Historical token prices (THE one token price path, #120's) ────────

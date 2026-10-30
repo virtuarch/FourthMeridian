@@ -135,9 +135,14 @@ export function tokenReadWindow(fromISO: string, toISO: string, staleAfterDays: 
  *
  *   NEVER_HELD        no positive balance ever (e.g. zero-value spam transfers):
  *                     nothing to value — never probed, never counted (F2);
- *   VALUED            closes start on or before its first held day — its held
- *                     period is valued (a still-held token's newest days by the
- *                     day rule as usual);
+ *   VALUED            closes start on or before its first held day AND reach its
+ *                     last held day (within CLOSES_END_TOLERANCE_DAYS) — its held
+ *                     period is valued. Interior gaps are not inspected, as for
+ *                     native prices (the day rule simply refuses an unpriced day);
+ *   VALUED_UNTIL_EARLIER closes stop INSIDE its held period (the shared archive
+ *                     ended — another wallet's span, the token went thin, or the
+ *                     tail was never fetched): valued only until then — LIMITING
+ *                     (delta re-review S1);
  *   VALUED_FROM_LATER closes start INSIDE its held period: valued only from
  *                     there. The native rule (a later price floor ⇒ limited):
  *                     disclosed as `tokenPricesFromISO`, and LIMITING (F4);
@@ -152,13 +157,19 @@ export function tokenReadWindow(fromISO: string, toISO: string, staleAfterDays: 
  * Inputs are read loosely (alias metadata: `quote`, `priceHistory`). A missing
  * price is never $0.
  */
-export type ReconstructedTokenValuation = "NEVER_HELD" | "VALUED" | "VALUED_FROM_LATER" | "NO_MARKET" | "NOT_VALUED_YET";
+export type ReconstructedTokenValuation = "NEVER_HELD" | "VALUED" | "VALUED_FROM_LATER" | "VALUED_UNTIL_EARLIER" | "NO_MARKET" | "NOT_VALUED_YET";
+
+/** Closes may trail the last held day by this much (a daily tail not yet fetched; the day rule's d−1 fallback). */
+export const CLOSES_END_TOLERANCE_DAYS = 3;
+const minusDays = (iso: string, n: number) => new Date(Date.parse(`${iso}T00:00:00Z`) - n * 86_400_000).toISOString().slice(0, 10);
 
 export interface ReconstructedTokenFacts {
   licence: { fromISO: string; toISO: string };
   /** When it was held (quantity > 0); `toISO` null = still held. Null = never held. */
   held: { fromISO: string; toISO: string | null } | null;
   closesFromISO: string | null;
+  /** Its latest stored close (RAW_CLOSE or INTRADAY — both serve a day). Null when none. */
+  closesToISO?: string | null;
 }
 
 export function reconstructedTokenValuation(f: ReconstructedTokenFacts, aliasMetadata: unknown): ReconstructedTokenValuation {
@@ -166,22 +177,53 @@ export function reconstructedTokenValuation(f: ReconstructedTokenFacts, aliasMet
   const heldFrom = f.held.fromISO > f.licence.fromISO ? f.held.fromISO : f.licence.fromISO;
   const heldTo = f.held.toISO === null || f.held.toISO > f.licence.toISO ? f.licence.toISO : f.held.toISO;
   if (heldFrom > heldTo) return "NEVER_HELD"; // held only outside the licence: no licensed day to value
-  if (f.closesFromISO !== null) {
-    if (f.closesFromISO <= heldFrom) return "VALUED";
-    if (f.closesFromISO <= heldTo) return "VALUED_FROM_LATER";
-    // Closes begin only after it was last held: none of its held days is valued.
+  const closesTo = f.closesToISO === undefined ? null : f.closesToISO;
+  // Closes that END before it was first held value none of its held days either.
+  const endsBeforeHeld = closesTo !== null && closesTo < heldFrom;
+  if (f.closesFromISO !== null && f.closesFromISO <= heldTo && !endsBeforeHeld) {
+    if (f.closesFromISO > heldFrom) return "VALUED_FROM_LATER";
+    if (closesTo !== null && closesTo < minusDays(heldTo, CLOSES_END_TOLERANCE_DAYS)) return "VALUED_UNTIL_EARLIER";
+    return "VALUED";
   }
+  // No close inside its held period: none of its held days is valued.
+  return tokenHasNoMarket(aliasMetadata) ? "NO_MARKET" : "NOT_VALUED_YET";
+}
+
+/**
+ * THE materiality rule for an unpriced token (owner ruling 2026-10-30): the
+ * vendor said — when last asked — it does not list the token, or lists it below
+ * the liquidity floor (thin). Such a token is disclosed, never valued and never
+ * BLOCKING. Any other unpriced held token is a REQUIRED price that is missing.
+ */
+export function tokenHasNoMarket(aliasMetadata: unknown): boolean {
   const m = (aliasMetadata && typeof aliasMetadata === "object" ? aliasMetadata : {}) as {
     quote?: { outcome?: unknown; pricedAt?: unknown }; priceHistory?: { outcome?: unknown };
   };
   const q = m.quote?.outcome;
-  if (q === "THIN") return "NO_MARKET";
-  if (m.priceHistory?.outcome === "UNLISTED") return "NO_MARKET";
-  if ((q === "UNLISTED" || q === "INVALID") && typeof m.quote?.pricedAt !== "string") return "NO_MARKET";
-  return "NOT_VALUED_YET";
+  if (q === "THIN") return true;
+  if (m.priceHistory?.outcome === "UNLISTED") return true;
+  return (q === "UNLISTED" || q === "INVALID") && typeof m.quote?.pricedAt !== "string";
+}
+
+/**
+ * OWNER RULING 2026-10-30 — the DAY rule for tokens, matching native's
+ * all-or-nothing crypto valuation: a day on which a HELD token (fresh quantity
+ * > 0) that has a market lacks a price serving that day (UNPRICED — only a row
+ * dated d or d−1 serves d, so one EARLIER price never covers later days) is not
+ * a complete valuation day. Regeneration then refuses the day's crypto
+ * component exactly as it does for an unpriced native asset (verdict
+ * "unavailable"; the stored value preserved, never an understated total, never
+ * $0). NO_MARKET and closed (0) tokens never block; a STALE quantity is a
+ * quantity question, not a price one, and keeps its existing treatment.
+ */
+export function tokenDayMissingRequiredPrice(
+  tokens: ReadonlyArray<Pick<TokenDayValue, "instrumentId" | "state">>,
+  noMarket: (instrumentId: string) => boolean,
+): boolean {
+  return tokens.some((t) => t.state === "UNPRICED" && !noMarket(t.instrumentId));
 }
 
 /** Does this state keep the wallet's history from reading complete? */
 export function tokenValuationLimits(v: ReconstructedTokenValuation): boolean {
-  return v === "NOT_VALUED_YET" || v === "VALUED_FROM_LATER";
+  return v === "NOT_VALUED_YET" || v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER";
 }

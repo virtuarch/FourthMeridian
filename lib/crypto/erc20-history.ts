@@ -39,7 +39,7 @@ import { fetchErc20TransfersPage, readBalancesAt } from "./erc20-history-rpc";
 import {
   readErc20Section, withErc20Section, emptySection, applyTransfers, closeSegment, anchorPlan, judgeAnchors,
   derivedRows, rowsFromISO, markPersisted, markUnsupported, orderForVerification, replayConsistent, unsupportedCoverage,
-  anchorsSampled, noteInconclusive, verifiedCoverage, ERC20_SEGMENT_RESTART_AFTER, ERC20_SEGMENT_RESTART_LIMIT,
+  anchorsSampled, noteInconclusive, verifiedCoverage, ERC20_SEGMENT_RESTART_AFTER, ERC20_SEGMENT_RESTART_LIMIT, ERC20_SCAN_STUCK_AFTER,
   type Erc20HistorySection, type Erc20UnsupportedReason, type Erc20DerivedRow, type TokenPriority, type Erc20HistoryConfig,
 } from "./erc20-history.core";
 
@@ -158,6 +158,8 @@ export async function runErc20HistoryStep(
   const host = readErc20Section(raw, accountId);
   if (host.host === "FOREIGN") return finish("FOREIGN_CHECKPOINT", null);
   let sec: Erc20HistorySection = host.section ?? emptySection();
+  // L1 — a scan declared stuck spends nothing until an operator reset re-arms it.
+  if (sec.scanStuck) return finish("NOTHING_OWED", sec);
   let counted = 0;
   const withUsage = (s: Erc20HistorySection): Erc20HistorySection => {
     const n = calls();
@@ -178,7 +180,10 @@ export async function runErc20HistoryStep(
   const fail = async (code: string, detail: string): Promise<Erc20HistoryOutcome> => {
     out.failure = { code, detail };
     const failures = code === "PROVIDER_THROTTLED" ? sec.failures : sec.failures + 1;
-    const ok = await commitSection({ ...sec, failures, lastFailure: { code, atISO: nowISO(), detail } });
+    // L1 — every restart spent and the page still fails: declared unservable (terminal, operator-visible).
+    const stuck = code === "SCAN_FAILED" && sec.segment && (sec.segmentRestarts ?? 0) >= ERC20_SEGMENT_RESTART_LIMIT && failures >= ERC20_SCAN_STUCK_AFTER
+      ? { scanStuck: { atISO: nowISO(), fromBlock: sec.segment.fromBlock, toBlock: sec.segment.toBlock, detail: detail.slice(0, 300) } } : {};
+    const ok = await commitSection({ ...sec, failures, lastFailure: { code, atISO: nowISO(), detail }, ...stuck });
     return finish(ok ? "FAILED" : "CONFLICT", sec);
   };
 
@@ -232,7 +237,11 @@ export async function runErc20HistoryStep(
   }
   if (scanned) {
     // A replay that has not yet passed the old frontier keeps the failure count (F3).
-    const next = progressed() ? { ...sec, failures: 0, lastFailure: null, lastProgressAtISO: nowISO() } : sec;
+    // L1 — and a replay step that stopped on its budget is not a new failure: the old
+    // SCAN_FAILED is relabelled so it cannot fire a second restart mid-replay (the
+    // count and its time still drive the backoff).
+    const next = progressed() ? { ...sec, failures: 0, lastFailure: null, lastProgressAtISO: nowISO() }
+      : { ...sec, lastFailure: sec.lastFailure?.code === "SCAN_FAILED" ? { ...sec.lastFailure, code: "SCAN_REPLAYING" } : sec.lastFailure };
     if (!(await commitSection(next))) return finish("CONFLICT", sec);
   }
   if (sec.segment) return finish("BUDGET", sec); // the scan resumes at its pageKey next step
