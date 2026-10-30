@@ -14,11 +14,17 @@
  * lives inside, "FinTracker" is the default Space Template — never the product.
  *
  * FACTUAL PASS (OPERATIONALIZATION P0, 2026-10-07). Every capability named here
- * is one the shipped product has, in the words the code uses for it. The
- * canonical positioning is "Fourth Meridian is an AI-native wealth management
- * platform" (lib/ai/conversation/product.ts PRODUCT_IDENTITY says the same to
- * the model). Not "financial operating system", not "intelligent financial
- * ecosystem". Roadmap concepts (Business/Property/Vehicle/Trip Spaces are
+ * is one the shipped product has, in the words the code uses for it.
+ *
+ * POSITIONING (owner, 2026-10-30): the category is "AI-powered financial
+ * understanding"; the differentiator is financial CONTEXT — accounts, assets,
+ * liabilities, income, spending, investments and conversations in one
+ * understandable picture. Not "wealth management" (it manages nothing: read-only
+ * aggregation, user-directed decisions, no trading, no personalized regulated
+ * advice), not "financial operating system", not "intelligent financial
+ * ecosystem". The model's own self-description (lib/ai/conversation/product.ts
+ * PRODUCT_IDENTITY) still says "AI-native wealth management platform" — changing
+ * it is an AI-behaviour change, tracked separately. Roadmap concepts (Business/Property/Vehicle/Trip Spaces are
  * `comingSoon` in lib/space-templates/registry.ts; Markets is an empty
  * skeleton) are not described as shipped. Limits that shape the promise —
  * three exports a day, a seven-day deletion window — are stated.
@@ -26,9 +32,9 @@
 
 export const SITE = {
   name: "Fourth Meridian",
-  tagline: "Your whole financial life, in one clear view.",
+  tagline: "Your whole financial life. Finally in context.",
   /** The canonical positioning sentence. Verbatim, everywhere it is quoted. */
-  positioning: "Fourth Meridian is an AI-native wealth management platform.",
+  positioning: "Fourth Meridian is AI-powered financial understanding: your whole financial life, in context.",
 } as const;
 
 /**
@@ -112,11 +118,12 @@ export const ABOUT = {
       "financial position — cash, spending, income, debt and investments — " +
       "honest enough that you can make decisions from it and then get on with " +
       "your life.",
-    "Fourth Meridian is an AI-native wealth management platform. Your connected " +
-      "accounts become one continuously updated picture. A Daily Brief reads it " +
-      "for you and says what changed. Conversations answer questions and model " +
-      "what-ifs from your own numbers, and show the figures behind each answer. " +
-      "It never moves money or acts on your accounts.",
+    "Fourth Meridian is AI-powered financial understanding. Your accounts connect " +
+      "read-only and become one picture that refreshes as they do. A Daily Brief " +
+      "reads it for you and says what changed. Conversations answer questions and " +
+      "model what-ifs from your own numbers, and show the figures behind each " +
+      "answer. It never moves money, trades or acts on your accounts — the " +
+      "decisions stay yours.",
     "That picture is organized into Spaces — your personal Space, a shared " +
       "family Space, or a custom one — each bringing the right people and " +
       "accounts into focus without losing the whole.",
