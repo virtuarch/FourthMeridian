@@ -470,7 +470,7 @@ export function spaceTiles(signals: OverviewSignals, spaces: readonly OverviewSp
         const total = sumObserved(points);
         return { value: total === null ? null : count(total), points, caption: `UTC days · last ${points.length} · usage counters`, asOf: d.checkedAt };
       }));
-      tiles.push(tileFrom(base("ops-ai-spend", `AI spend · ${TREND_DAYS} d`, "usd", "ESTIMATED", platformWorkspaceHref("PLATFORM_OPS", "platform-ai", "costs")), ops.aiTrend, (d) => {
+      tiles.push(tileFrom(base("ops-ai-spend", `AI spend · ${TREND_DAYS} d`, "usd", "ESTIMATED", platformWorkspaceHref("PLATFORM_OPS", "platform-ai")), ops.aiTrend, (d) => {
         const points = calendarPoints(d.days, (x) => x.estimatedSpendUsd, d.checkedAt);
         const total = d.pricingConfigured ? sumObserved(points) : null;
         const inWindow = new Set(points.map((p) => p.key));

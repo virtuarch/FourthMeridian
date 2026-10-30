@@ -506,7 +506,9 @@ console.log("P. Platform Space — the same contract on the ?workspace= axis (th
   check("V15. an OLD deep link ?workspace=platform-refresh opens Operations › Pipeline (SSR = client) and canonicalizes to ?view=pipeline in place",
     pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && pnav.activeView === "pipeline" && cur().search === "?view=pipeline" && pushes() === 0 && history.length === 2, writes.join(" | "));
   await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-costs");
-  check("V16. ?workspace=platform-costs opens AI & Costs › Costs", pnav.activeTab === "platform-ai" && pnav.activeView === "costs" && cur().search === "?workspace=platform-ai&view=costs", cur().search);
+  // Platform Ops visual spec §5 — AI & Costs is ONE dashboard (Costs moved into its
+  // drawers), so the retired economics id opens it on its only (default) view.
+  check("V16. ?workspace=platform-costs opens the AI & Costs dashboard", pnav.activeTab === "platform-ai" && pnav.activeView === "ai" && cur().search === "?workspace=platform-ai", cur().search);
   await loadPlatform("/dashboard/platform/PLATFORM_OPS?foo=1&view=jobs");
   await open("platform-policies");
   check("V17. unrelated params survive view writes", cur().search === "?foo=1&workspace=platform-policies", cur().search);
