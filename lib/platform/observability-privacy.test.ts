@@ -70,6 +70,10 @@ const READERS = [
   "lib/platform/growth/product-analytics-core.ts",
   "lib/platform/activity/activity.ts",
   "lib/platform/growth/growth.ts",
+  // PLATFORM SPACES 2.0 — the Growth acquisition reader + pure core (requesters
+  // are an md5 digest computed in SQL; ids are joins, never output).
+  "lib/platform/growth/acquisition.ts",
+  "lib/platform/growth/acquisition-core.ts",
   // PLATFORM OPS PHASE 1 UX — the shared Policy Group catalogue reader (counts only).
   "lib/platform/policy-groups-read.ts",
 ];
@@ -92,6 +96,8 @@ const ROUTES = [
   "app/api/platform/platform-ops/ai-spend/route.ts",
   // BETA A1–A8 — the GROWTH_REVENUE analytics route (its gate is pinned below).
   "app/api/platform/growth-revenue/product-analytics/route.ts",
+  // PLATFORM SPACES 2.0 — the Growth acquisition route (GROWTH_REVENUE READ; gate pinned below).
+  "app/api/platform/growth-revenue/acquisition/route.ts",
   // PLATFORM OPS PHASE 1 UX — the Policy Group catalogue, PLATFORM_OPS READ (gate pinned in its route.test.ts).
   "app/api/platform/platform-ops/policy-groups/route.ts",
 ];
@@ -162,6 +168,22 @@ console.log("source · BETA — the product-analytics route is a GROWTH_REVENUE 
   check("the analytics reader selects no user relation (no identity is ever joined)", !/user:\s*\{\s*select/.test(reader));
   const dto = strip("lib/platform/growth/product-analytics-types.ts");
   check("the frozen DTO declares no identity field", !/^\s*(userId|email|username|name|spaceName)\??\s*:/m.test(dto));
+}
+
+console.log("source · PLATFORM SPACES 2.0 — the acquisition route is a GROWTH_REVENUE READ gate; the reader never reads an address");
+{
+  const route = strip("app/api/platform/growth-revenue/acquisition/route.ts");
+  check("the acquisition route requires GROWTH_REVENUE READ and returns the error first",
+    /requirePlatformAccess\(\s*["']GROWTH_REVENUE["']\s*,\s*["']READ["']\s*\)/.test(route) && /if\s*\(\s*err\s*\)\s*return\s+err/.test(route));
+  check("the acquisition route never requests WRITE/CONTROL, exports no mutating verb, imports no db, and is no-store",
+    !/["'](WRITE|CONTROL)["']/.test(route) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route) && !/@\/lib\/db/.test(route) && /no-store/.test(route));
+  const reader = strip("lib/platform/growth/acquisition.ts");
+  check("the acquisition reader reads through fm_system only", /systemDb/.test(reader) && !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*["']@\/lib\/db["']/.test(reader));
+  check("the acquisition reader digests the requester address in SQL and selects no address column",
+    /md5\(lower\(trim\("email"\)\)\)\s+AS\s+k/.test(reader) && !/SELECT[^;]*"email"\s*(,|FROM)/.test(reader));
+  check("the acquisition reader selects no name, username or user relation", !/\b(name|username)\s*:\s*true/.test(reader) && !/user:\s*\{\s*select/.test(reader));
+  const dto = strip("lib/platform/growth/acquisition-types.ts");
+  check("the acquisition DTO declares no identity field", !/^\s*(userId|email|username|name|spaceName|requesterKey)\??\s*:/m.test(dto));
 }
 
 console.log("runtime · builders emit no customer material even when fed it");

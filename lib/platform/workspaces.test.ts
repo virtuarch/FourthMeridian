@@ -495,8 +495,19 @@ console.log("Phase 1 UX · views");
     getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.viewControl === "drilldown"
       && getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.views?.[0].id === "groups");
 
-  check("other areas are unchanged: no views anywhere outside PLATFORM_OPS",
-    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => getPlatformAreaWorkspaces(a).every((w) => w.views === undefined && w.label === undefined)));
+  check("areas not yet redesigned are unchanged: no views outside PLATFORM_OPS and GROWTH_REVENUE",
+    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS" && a !== "GROWTH_REVENUE").every((a) => getPlatformAreaWorkspaces(a).every((w) => w.views === undefined && w.label === undefined)));
+  // PLATFORM SPACES 2.0 — Growth is ONE dashboard view (lead "growth") hosting
+  // all seven former sections, the beta signup list among them.
+  {
+    const g = getPlatformWorkspaceComposition("GROWTH_REVENUE", "platform-overview");
+    const v = g?.views?.[0];
+    check("Growth: one view 'overview' led by the growth dashboard, nothing stacked inline",
+      g?.views?.length === 1 && v?.id === "overview" && v.lead === "growth" && v.sections.length === 0);
+    check("Growth: every former section is hosted (the beta list included) and still composed",
+      JSON.stringify([...(v?.hosted ?? [])].sort()) === JSON.stringify(["growth_activity", "growth_beta_requests", "growth_funnel", "growth_policy_groups", "growth_product_analytics", "growth_signups", "growth_users"])
+        && JSON.stringify([...(g?.sections ?? [])].sort()) === JSON.stringify([...(v?.hosted ?? [])].sort()));
+  }
   check("platformAreaViewIds: PLATFORM_OPS lists every workspace's views (first = default); other areas list none",
     JSON.stringify(platformAreaViewIds("PLATFORM_OPS")) === JSON.stringify({
       "platform-overview": ["overview", "jobs", "pipeline"],

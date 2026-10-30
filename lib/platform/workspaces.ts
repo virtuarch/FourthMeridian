@@ -134,7 +134,7 @@ export interface PlatformWorkspaceView {
 }
 
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
-export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies";
+export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -331,7 +331,20 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     { workspaceId: "platform-operator-actions", sections: ["sec_operator_actions"] },
   ],
   GROWTH_REVENUE: [
-    { workspaceId: "platform-overview", sections: ["growth_signups", "growth_product_analytics", "growth_beta_requests", "growth_users", "growth_activity", "growth_funnel", "growth_policy_groups"] },
+    // PLATFORM SPACES 2.0 — ONE acquisition & growth dashboard
+    // (components/platform/leads/GrowthLead.tsx): hero · acquisition per day ·
+    // waitlist · the BETA SIGNUP LIST (hosted in the page, third, by owner
+    // requirement) · request calendar · sources · funnel · onboarding and
+    // retention cohort heatmaps · active accounts · adoption · time of week.
+    // The six other former widgets are HOSTED unchanged in its drawers, so every
+    // section key stays composed and every capability stays reachable.
+    withViews({
+      workspaceId: "platform-overview",
+      views: [
+        { id: "overview", label: "Growth", lead: "growth", sections: [],
+          hosted: ["growth_beta_requests", "growth_signups", "growth_product_analytics", "growth_users", "growth_activity", "growth_funnel", "growth_policy_groups"] },
+      ],
+    }),
   ],
   // Redesign §4.3 — Customers (the list + audited profile) and Incidents.
   CUSTOMER_SUCCESS: [
