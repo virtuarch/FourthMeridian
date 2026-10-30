@@ -6,7 +6,7 @@
  *         are excluded and why. Counts only, never an identity:
  *           { eligible, groupKey, excluded: { deactivated, nonCustomerRoles,
  *             alreadyAssigned, unknownAssignments }, checkedAt }
- *   POST  APPLY — { reason: { code, note? }, expectedEligible? }
+ *   POST  APPLY — { reason: { code, note? }, expectedEligible }  (expectedEligible REQUIRED)
  *         Creates a DEFAULT_POLICY_GROUP assignment for each eligible account,
  *         in ONE transaction with ONE CUSTOMER_POLICY_RECONCILED audit row.
  *
@@ -89,10 +89,11 @@ export async function POST(req: NextRequest) {
     return res;
   };
 
-  if (!body) return refuse(NextResponse.json({ error: "A JSON body { reason, expectedEligible? } is required." } satisfies BetaReconciliationRefusal, { status: 400 }), "VALIDATION");
+  if (!body) return refuse(NextResponse.json({ error: "A JSON body { reason, expectedEligible } is required." } satisfies BetaReconciliationRefusal, { status: 400 }), "VALIDATION");
   const expected = body.expectedEligible;
-  if (expected !== undefined && !(typeof expected === "number" && Number.isInteger(expected) && expected >= 0)) {
-    return refuse(NextResponse.json({ error: "expectedEligible must be the non-negative count you confirmed." } satisfies BetaReconciliationRefusal, { status: 400 }), "VALIDATION");
+  // Required: a POST must name the count the operator confirmed (count before change is a contract, not a UI habit).
+  if (!(typeof expected === "number" && Number.isInteger(expected) && expected >= 0)) {
+    return refuse(NextResponse.json({ error: "expectedEligible is required: the non-negative count you confirmed." } satisfies BetaReconciliationRefusal, { status: 400 }), "VALIDATION");
   }
   let reason;
   try { reason = parseOperatorReason(body.reason); }
@@ -101,7 +102,7 @@ export async function POST(req: NextRequest) {
   }
 
   const result = await applyBetaReconciliation({
-    expectedEligible: expected as number | undefined,
+    expectedEligible: expected,
     reason,
     actor: { ...operatorActorFrom(auth, "PLATFORM_OPS"), ...meta },
   });

@@ -123,11 +123,12 @@ async function main() {
     t.check("an unsafe note (long digit run) → 400", (await post(probeA.cookie, { reason: { code: "OTHER", note: "acct 4111111111111111" }, expectedEligible: 3 })).status === 400);
     t.check("a non-integer expectedEligible → 400", (await post(probeB.cookie, { reason: REASON, expectedEligible: "3" })).status === 400);
     t.check("a negative expectedEligible → 400", (await post(probeB.cookie, { reason: REASON, expectedEligible: -1 })).status === 400);
+    t.check("a missing expectedEligible → 400 (count before change is required)", (await post(probeB.cookie, { reason: REASON })).status === 400);
     t.check("no body → 400", (await post(probeB.cookie, undefined)).status === 400);
     t.check("…and no refusal created or changed an assignment", snapshot() === before && audits().length === 0);
     const refusals = fake.rows("AuditLog", { action: "PLATFORM_CONTROL_REFUSED" });
     t.check("each refusal past the grant is recorded (PLATFORM_CONTROL_REFUSED, beta-reconciliation, never the note)",
-      refusals.length === 6 && refusals.every((r) => (r.metadata as { control?: string }).control === "beta-reconciliation") && !JSON.stringify(refusals).includes("4111111111111111"));
+      refusals.length === 7 && refusals.every((r) => (r.metadata as { control?: string }).control === "beta-reconciliation") && !JSON.stringify(refusals).includes("4111111111111111"));
   }
 
   t.section("4. the population changed — 409, nothing written");
