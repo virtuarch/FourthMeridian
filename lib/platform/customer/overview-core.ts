@@ -79,7 +79,7 @@ export function buildCsOverview(facts: CsOverviewFacts, now: Date, windowDays: 3
       reasons: (Object.keys(sets) as AttentionKey[]).map((key) => ({ key, label: ATTENTION_LABELS[key], count: sets[key].size })),
     },
     connections: facts.connections,
-    incidents: { days: facts.incidentDays, floor: facts.incidentsFloor || facts.openFloor === true, openByKind, open: openByKind.reduce((a, r) => a + r.count, 0) },
+    incidents: { days: facts.incidentDays, floor: facts.incidentsFloor, openByKind, open: openByKind.reduce((a, r) => a + r.count, 0), openFloor: facts.openFloor === true },
     onboarding: buildOnboardingCohorts(funnel, dayOf(now)),
     notes: [
       "Customers are role-USER accounts; deactivated accounts are counted apart and never in a share.",

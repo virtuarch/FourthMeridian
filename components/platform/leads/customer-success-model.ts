@@ -42,7 +42,7 @@ export function csKpis(f: Fetched<CsOverviewResponse>): Kpi[] {
       tone: o.attention.customers > 0 ? "warn" : undefined },
     { key: "connected", label: "Through first connection", value: o.customers.active ? `${Math.round((connected / o.customers.active) * 100)}%` : "—",
       sub: `${n(connected)} of ${n(o.customers.active)} · strict funnel` },
-    { key: "issues", label: "Active sync incidents", value: `${n(o.incidents.open)}${o.incidents.floor ? "+" : ""}`, sub: "now · as the Incidents workspace", tone: o.incidents.open > 0 ? "warn" : undefined },
+    { key: "issues", label: "Active sync incidents", value: `${n(o.incidents.open)}${o.incidents.openFloor ? "+" : ""}`, sub: "now · same rules as Incidents", tone: o.incidents.open > 0 ? "warn" : undefined },
   ];
 }
 

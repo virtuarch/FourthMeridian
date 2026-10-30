@@ -33,6 +33,8 @@ export interface CsOverviewResponse {
     /** Active sync incidents now (derived state, the Incidents workspace's read), by kind. */
     openByKind: { kind: string; label: string; count: number }[];
     open: number;
+    /** True when the active-incident scan hit its ceiling — `open` is a floor (separate from the trend's `floor`). */
+    openFloor: boolean;
   };
   onboarding: AcquisitionResponse["onboarding"];
   notes: string[];

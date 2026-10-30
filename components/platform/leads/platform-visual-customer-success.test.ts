@@ -25,7 +25,7 @@ const O: CsOverviewResponse = {
     { key: "firstConnection", label: "First connection", count: 3 }, { key: "firstAiTurn", label: "First AI turn", count: 1 }, { key: "firstBriefViewed", label: "First Brief viewed", count: 0 }, { key: "returned", label: "Returned", count: 1 }],
   attention: { customers: 3, reasons: [{ key: "reconnect", label: "A connection needs reconnecting", count: 1 }, { key: "incident", label: "An unresolved sync issue", count: 1 }, { key: "policy", label: "Policy group missing or invalid", count: 0 }, { key: "stalled", label: "Not connected 7+ days after registering", count: 2 }] },
   connections: { total: 5, counts: zero, retired: { revoked: 2, ownerInactive: 0 } },
-  incidents: { days: [{ day: "2026-11-20", opened: 1, resolved: 2 }], floor: false, openByKind: [{ kind: "MISSING_ACCOUNT", label: "Missing account", count: 1 }], open: 1 },
+  incidents: { days: [{ day: "2026-11-20", opened: 1, resolved: 2 }], floor: false, openByKind: [{ kind: "MISSING_ACCOUNT", label: "Missing account", count: 1 }], open: 1, openFloor: false },
   onboarding: { stages: [{ key: "verified", label: "Verified" }, { key: "firstSession", label: "First session" }, { key: "firstConnection", label: "First connection" }, { key: "firstAiTurn", label: "First AI turn" }, { key: "firstBriefViewed", label: "First Brief viewed" }],
     rows: [{ weekStart: "2026-11-16", size: 2, cells: [{ state: "value", num: 2, den: 2 }, { state: "value", num: 1, den: 2 }, { state: "value", num: 0, den: 2 }, { state: "value", num: 0, den: 2 }, { state: "value", num: 0, den: 2 }] }] },
   notes: ["Not available: support tickets (no ticketing system) and customer health scores (no authoritative model)."],
