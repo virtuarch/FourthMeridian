@@ -29,41 +29,65 @@
  * CustomerCohort), the effective value a read-time reduction (resolve.ts) with
  * deterministic precedence CEILING → POLICY → OVERLAY, clamped to the ceiling
  * last. "Unlimited" never appears: every count has a ceiling. Pure: no I/O.
+ *
+ * POLICY EDITOR (Phase 2, 2026-10-30) — policy GROUP VALUES may now also live
+ * as versioned rows (PolicyGroup / PolicyGroupVersion, edited from Platform
+ * Operations under CONTROL with a reason). What stays HERE, code-owned and
+ * never editable from data: the dimension registry (kinds, ceilings, labels,
+ * categories), FAIL_CLOSED_VALUES, OVERLAYS (Founder), COHORTS, and
+ * BETA_FULL_ACCESS_V1 as the BUILT-IN seed group and the fallback whenever the
+ * table is absent or unreadable (lib/entitlements/policy-groups.ts).
  */
+
+/**
+ * POLICY EDITOR (Phase 2) — the editor's sections. Each dimension names ONE
+ * category; the labels are the ones the Policies dashboard already shows
+ * (components/platform/leads/policies-model.ts POLICY_CATEGORIES — pinned equal
+ * by lib/entitlements/policy-groups.test.ts). Presentation grouping only: a
+ * category grants nothing.
+ */
+export const ENTITLEMENT_CATEGORIES = {
+  ai: "AI features & allowances",
+  connections: "Connections & accounts",
+  refresh: "Refresh & synchronization",
+  exports: "Exports & premium features",
+  insights: "Financial insights & reports",
+} as const;
+export type EntitlementCategory = keyof typeof ENTITLEMENT_CATEGORIES;
 
 /** The dimensions a Policy Group speaks to. Each has a consumer in product code. */
 export const ENTITLEMENT_DIMENSIONS = {
   /** Conversations surface available at all. Consumer: app/api/ai/chat. */
   conversations: { kind: "boolean", ceiling: true,
-    label: "Conversations", description: "May open and use Conversations." },
+    label: "Conversations", description: "May open and use Conversations.", category: "ai" },
   /** Daily Brief available at all. Consumer: app/api/brief/*. */
   dailyBrief: { kind: "boolean", ceiling: true,
-    label: "Daily Brief", description: "May read and generate the Daily Brief." },
+    label: "Daily Brief", description: "May read and generate the Daily Brief.", category: "insights" },
   /** Conversation turns per minute (abuse pacing). Consumer: app/api/ai/chat. */
   aiTurnsPerMinute: { kind: "count", ceiling: 30,
-    label: "Conversation turns per minute", description: "Pacing window for Conversations." },
+    label: "Conversation turns per minute", description: "Pacing window for Conversations.", category: "ai" },
   /** Conversation turns per hour — the economic/stolen-session bound. Consumer: app/api/ai/chat. */
   aiTurnsPerHour: { kind: "count", ceiling: 60,
-    label: "Conversation turns per hour", description: "Hourly bound on model calls a session may cause." },
+    label: "Conversation turns per hour", description: "Hourly bound on model calls a session may cause.", category: "ai" },
   /** Minimum minutes between manual refreshes of one bank connection. Consumer: lib/plaid/refreshCooldown. */
   manualBankRefreshCooldownMinutes: { kind: "minutes-floor", ceiling: 15,
-    label: "Bank refresh cooldown (minutes)", description: "How soon one bank connection may be manually refreshed again." },
+    label: "Bank refresh cooldown (minutes)", description: "How soon one bank connection may be manually refreshed again.", category: "refresh" },
   /** Manual wallet syncs per hour (shared-IP explorer protection). Consumer: app/api/accounts/[id]/sync. */
   manualWalletRefreshPerHour: { kind: "count", ceiling: 6,
-    label: "Wallet syncs per hour", description: "Manual crypto wallet refreshes per hour." },
+    label: "Wallet syncs per hour", description: "Manual crypto wallet refreshes per hour.", category: "refresh" },
   /** Full data exports per day. Consumer: app/api/user/export. */
   exportsPerDay: { kind: "count", ceiling: 10,
-    label: "Exports per day", description: "Full data exports per day." },
+    label: "Exports per day", description: "Full data exports per day.", category: "exports" },
   /** BETA C7 — estimated AI spend (USD, whole dollars) a customer may cause per UTC day across
    *  Conversations and the Daily Brief, priced by the code-owned rate card over the invocation
    *  ledger. Consumer: app/api/ai/chat (refuses above the allowance; an unpriceable model never
    *  counts as zero — it refuses). */
   aiDailyUsdAllowance: { kind: "count", ceiling: 20,
-    label: "AI daily allowance (USD, estimated)", description: "Estimated AI spend a customer may cause per UTC day." },
+    label: "AI daily allowance (USD, estimated)", description: "Estimated AI spend a customer may cause per UTC day.", category: "ai" },
   /** BETA C7' — connected provider Items (Plaid Items + wallet connections) a customer may hold
    *  at once, counting every non-REVOKED Item. Consumer: app/api/plaid/link-token, app/api/accounts/wallet. */
   maxConnections: { kind: "count", ceiling: 25,
-    label: "Maximum connections", description: "Connected Items a customer may hold at once." },
+    label: "Maximum connections", description: "Connected Items a customer may hold at once.", category: "connections" },
 } as const;
 
 export type EntitlementDimensionKey = keyof typeof ENTITLEMENT_DIMENSIONS;

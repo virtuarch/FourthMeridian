@@ -23,6 +23,7 @@
  *   200  { outcome: "ASSIGNED" | "NOTHING_TO_ASSIGN", eligible, created, skipped, groupKey, dryRun }
  *   400  { error }                                     malformed body / missing or unsafe reason
  *   409  { error, code: "CONFLICT", dryRun }           the population changed; nothing written
+ *   409  { error, code: "BLOCKED", dryRun }            Beta is archived / unusable; nothing written
  *
  * EVERY rule — the population, create-only (createMany + skipDuplicates; an
  * existing assignment, Founder or an unknown group, is never touched), the one
@@ -57,11 +58,15 @@ export interface BetaReconciliationApplyResponse {
 
 export interface BetaReconciliationRefusal {
   error: string;
-  code?: "CONFLICT";
+  code?: "CONFLICT" | "BLOCKED";
   dryRun?: BetaReconciliationDryRun;
 }
 
 export const POPULATION_CHANGED = "The population changed — re-check.";
+export const BETA_BLOCKED = {
+  ARCHIVED: "The Beta policy group is archived — nothing was assigned (reconciliation never assigns another group).",
+  INVALID: "The Beta policy group's stored definition is unusable — nothing was assigned (reconciliation never assigns another group).",
+} as const;
 
 export async function GET() {
   const [, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
@@ -84,7 +89,7 @@ export async function POST(req: NextRequest) {
   const meta = { ipAddress: getClientIp(req), userAgent: req.headers.get("user-agent") };
   const raw = await req.json().catch(() => null);
   const body = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
-  const refuse = async (res: NextResponse, code: "VALIDATION" | "CONFLICT") => {
+  const refuse = async (res: NextResponse, code: "VALIDATION" | "CONFLICT" | "NOT_EDITABLE") => {
     await recordControlRefusal(auth, { control: "beta-reconciliation", verb: "apply", code, targetKey: null, reasonCode: reasonCodeOf(body) }, meta);
     return res;
   };
@@ -107,6 +112,10 @@ export async function POST(req: NextRequest) {
     actor: { ...operatorActorFrom(auth, "PLATFORM_OPS"), ...meta },
   });
   const dryRun = await readBetaReconciliation();
+  if (!result.ok && result.code === "BLOCKED") {
+    // Never falls through to another group: Beta archived / unusable ⇒ 409, nothing written.
+    return refuse(NextResponse.json({ error: BETA_BLOCKED[result.blocked], code: "BLOCKED", dryRun } satisfies BetaReconciliationRefusal, { status: 409 }), "NOT_EDITABLE");
+  }
   if (!result.ok) {
     return refuse(NextResponse.json({ error: POPULATION_CHANGED, code: "CONFLICT", dryRun } satisfies BetaReconciliationRefusal, { status: 409 }), "CONFLICT");
   }

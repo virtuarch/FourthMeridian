@@ -18,6 +18,13 @@
  * braces. Audited as CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED (reason-required)
  * when it is the only change; a change made together with a group or overlay
  * change rides that action's row (the change block carries all three facts).
+ *
+ * POLICY EDITOR (Phase 2) — Customer Success may ASSIGN any group the
+ * policy-group catalogue offers as assignable: a code group or a DB group that
+ * is VALID and NOT ARCHIVED (lib/entitlements/policy-groups.ts
+ * isAssignableGroup). An archived, invalid or unknown key is REFUSED here,
+ * never stored. CS cannot create or edit groups (that is Platform Operations
+ * CONTROL, lib/platform/policies/policy-groups-write.ts).
  */
 
 import "server-only";
@@ -25,8 +32,10 @@ import type { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { OperatorActionValidationError, recordOperatorAction, type OperatorReason } from "@/lib/audit";
-import { ENTITLEMENT_DIMENSIONS, isCohortKey, isOverlayKey, isPolicyGroupKey } from "@/lib/entitlements/catalogue";
+import { ENTITLEMENT_DIMENSIONS, POLICY_GROUPS, isCohortKey, isOverlayKey } from "@/lib/entitlements/catalogue";
 import { loadPlatformEntitlementInputs, resolveEffectiveEntitlements, type EffectiveEntitlements } from "@/lib/entitlements/resolve";
+import { isAssignableGroup, type PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
+import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 
 /** The catalogue ceiling an override may never exceed (derived, never hand-copied). */
 export const AI_ALLOWANCE_OVERRIDE_CEILING_USD: number = ENTITLEMENT_DIMENSIONS.aiDailyUsdAllowance.ceiling;
@@ -57,6 +66,11 @@ export interface AssignTx {
     create(args: { data: { userId: string; cohort: string; source: string; assignedById: string } }): Promise<{ id: string; joinedAt: Date }>;
   };
   auditLog: { create(args: { data: Prisma.AuditLogUncheckedCreateInput }): Promise<unknown> };
+  /**
+   * REVIEW FIX 3 — the row-locked re-check of the PolicyGroup (`FOR SHARE`),
+   * a parameterised tagged template (never string-built SQL).
+   */
+  $queryRaw<T = unknown>(query: TemplateStringsArray, ...values: unknown[]): PromiseLike<T>;
 }
 export interface AssignClient { $transaction<T>(fn: (tx: AssignTx) => Promise<T>): Promise<T> }
 
@@ -76,8 +90,18 @@ export interface AssignPolicyInput {
   actor: AssignActor;
 }
 
-export async function assignCustomerPolicy(input: AssignPolicyInput, client: AssignClient = systemDb as unknown as AssignClient): Promise<EffectiveEntitlements> {
-  if (input.policyGroup !== undefined && !isPolicyGroupKey(input.policyGroup)) throw new AssignmentRefusedError(`Unknown policy group "${input.policyGroup}".`);
+export async function assignCustomerPolicy(
+  input: AssignPolicyInput,
+  client: AssignClient = systemDb as unknown as AssignClient,
+  loadCatalogue: () => Promise<PolicyGroupCatalogue> = loadPolicyGroupCatalogue,
+): Promise<EffectiveEntitlements> {
+  const catalogue = await loadCatalogue();
+  if (input.policyGroup !== undefined && !isAssignableGroup(catalogue, input.policyGroup)) {
+    const g = catalogue.groups[input.policyGroup];
+    throw new AssignmentRefusedError(g?.archived ? `Policy group "${input.policyGroup}" is archived and cannot be assigned.`
+      : g ? `Policy group "${input.policyGroup}" has an invalid stored definition and cannot be assigned.`
+      : `Unknown policy group "${input.policyGroup}".`);
+  }
   if (typeof input.overlay === "string" && !isOverlayKey(input.overlay)) throw new AssignmentRefusedError(`Unknown overlay "${input.overlay}".`);
   if (input.policyGroup === undefined && input.overlay === undefined && input.aiDailyUsdAllowanceOverride === undefined) throw new AssignmentRefusedError("Nothing to change.");
   if (input.aiDailyUsdAllowanceOverride !== undefined && input.aiDailyUsdAllowanceOverride !== null) {
@@ -87,8 +111,20 @@ export async function assignCustomerPolicy(input: AssignPolicyInput, client: Ass
   if (!input.reason) throw new OperatorActionValidationError("A structured reason is required.");
 
   return client.$transaction(async (tx) => {
+    // REVIEW FIX 3 — the archive race. The catalogue above may be up to 30 s
+    // old; inside THIS transaction the group row is re-read under FOR SHARE, so
+    // a concurrent archive (which takes FOR UPDATE before counting assignments,
+    // policy-groups-write.ts) either sees this assignment or waits and this
+    // refuses. A code-only key with no row stays allowed. Skipped only when the
+    // definitions are the code catalogue (table absent / unreadable): DB-only
+    // keys are then already refused above, and built-in groups cannot be archived.
+    if (input.policyGroup !== undefined && catalogue.source === "DB") {
+      const rows = await tx.$queryRaw<{ archivedAt: Date | null }[]>`SELECT "archivedAt" FROM "PolicyGroup" WHERE "key" = ${input.policyGroup} FOR SHARE`;
+      if (rows.length > 0 && rows[0].archivedAt !== null) throw new AssignmentRefusedError(`Policy group "${input.policyGroup}" is archived and cannot be assigned.`);
+      if (rows.length === 0 && !(input.policyGroup in POLICY_GROUPS)) throw new AssignmentRefusedError(`Unknown policy group "${input.policyGroup}".`);
+    }
     const before = await tx.customerPolicyAssignment.findUnique({ where: { userId: input.userId } });
-    const current = resolveEffectiveEntitlements(before);
+    const current = resolveEffectiveEntitlements(before, undefined, { catalogue });
     const nextGroup = input.policyGroup ?? current.policyGroup;
     const nextOverlay = input.overlay === undefined ? (before?.overlay ?? null) : input.overlay;
     const beforeOverride = before?.aiDailyUsdAllowanceOverride ?? null;
@@ -123,7 +159,7 @@ export async function assignCustomerPolicy(input: AssignPolicyInput, client: Ass
     return resolveEffectiveEntitlements({
       policyGroup: row.policyGroup, overlay: row.overlay, assignedAt: row.assignedAt, assignedById: row.assignedById,
       aiDailyUsdAllowanceOverride: rowOverride,
-    }, platform);
+    }, platform, { catalogue });
   });
 }
 

@@ -19,6 +19,7 @@ import { getRequestMeta } from "@/lib/api";
 import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit";
 import { AssignmentRefusedError, assignCustomerPolicy } from "@/lib/platform/customer/assign";
 import { projectPolicy, type CustomerPolicyView } from "@/lib/platform/customer/customer-core";
+import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 
 export const runtime = "nodejs";
 
@@ -45,7 +46,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ userId: st
       reason,
       actor: { userId: auth.user.id, via: auth.grant ? "PLATFORM_GRANT" : "SYSTEM_ADMIN", area: "CUSTOMER_SUCCESS", ipAddress: meta.ip, userAgent: meta.userAgent },
     });
-    return NextResponse.json({ success: true, policy: projectPolicy(effective) } satisfies AssignPolicyResponse);
+    return NextResponse.json({ success: true, policy: projectPolicy(effective, await loadPolicyGroupCatalogue()) } satisfies AssignPolicyResponse);
   } catch (e) {
     if (e instanceof OperatorActionValidationError || e instanceof AssignmentRefusedError) return NextResponse.json({ error: e.message }, { status: 400 });
     throw e;

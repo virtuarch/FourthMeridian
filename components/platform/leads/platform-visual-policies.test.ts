@@ -18,6 +18,13 @@
  *      flag and only while the dry run counts n > 0; the confirmation states
  *      the exact count and the guarantee and requires a reason; it reaches the
  *      real route (READ dry run, fresh CONTROL POST).
+ *   6. POLICY EDITOR — edit affordances only when the editor offers actions
+ *      (behind the access flag); the editor's edit step (categories, toggles,
+ *      steppers + sliders vs the ceiling, floors, live effective + Founder),
+ *      review step (before → after, customers affected, cost exposure labelled
+ *      an estimated ceiling, measured spend "not yet available", reason), the
+ *      default / archive steps, the version history (Restore only when offered),
+ *      and the 390 px rules.
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/platform/leads/platform-visual-policies.test.ts
  */
@@ -27,7 +34,7 @@ import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-  DEFAULT_POLICY_GROUP, DIMENSION_KEYS, ENTITLEMENT_DIMENSIONS, OVERLAYS, POLICY_GROUPS, COHORTS,
+  DEFAULT_POLICY_GROUP, DIMENSION_KEYS, ENTITLEMENT_CATEGORIES, ENTITLEMENT_DIMENSIONS, OVERLAYS, POLICY_GROUPS, COHORTS,
 } from "@/lib/entitlements/catalogue";
 import {
   PLATFORM_AREA_WORKSPACES, getPlatformWorkspaceComposition, platformAreaViewIds, resolvePlatformDestination, resolvePlatformViewId, viewSectionKey,
@@ -43,6 +50,9 @@ import { PlatformWorkspaceBody } from "../PlatformSpaceDashboard";
 import { BetaReconciliationButton, BetaReconciliationConfirmBody, BetaReconciliationEntry, RECONCILE_URL } from "./BetaReconciliationEntry";
 import { RECONCILE_GUARANTEE, reconcileConfirmCount, reconcileEntryLabel, reconcileOutcome } from "./policies-model";
 import { EMPTY_OPERATOR_REASON } from "../widgets/OperatorReasonField";
+import * as editorModule from "./PolicyGroupEditor";
+import * as editorModel from "./policy-editor-model";
+import * as historyModule from "./PolicyGroupHistory";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -68,7 +78,8 @@ function catalogue(counts: { groups?: Record<string, number>; overlays?: Record<
   return {
     dimensions: DIMENSION_KEYS.map((key) => {
       const d = ENTITLEMENT_DIMENSIONS[key];
-      return { key, label: d.label, description: d.description, kind: d.kind, ceiling: d.ceiling };
+      // + the editor category (POLICY EDITOR), as readPolicyGroups now sends it.
+      return { key, label: d.label, description: d.description, kind: d.kind, ceiling: d.ceiling, category: d.category, categoryLabel: ENTITLEMENT_CATEGORIES[d.category] };
     }),
     policyGroups: Object.values(POLICY_GROUPS).map((g) => ({
       key: g.key, label: g.label, description: g.description, effectiveFrom: g.effectiveFrom,
@@ -202,9 +213,19 @@ const props = (over: Record<string, unknown> = {}) => ({
   // Group detail drawer.
   const gd = renderToStaticMarkup(createElement(PoliciesDrawerBody, { drawer: { kind: "group", key: "BETA_FULL_ACCESS_V1" }, data: DATA, renderHosted: () => null, onOpenWorkspace: () => {} }));
   const gdt = text(gd);
-  check("group detail: six categories + Assignments + Version history + Cost exposure",
-    (gd.match(/data-category=/g) ?? []).length === 6 && /Assignments/.test(gdt) && /Effective from 2026-10-08 · Arrives with the policy editor/.test(gdt) && /Arrives with policy economics/.test(gdt));
-  check("group detail: says 'Editing arrives with the policy editor' exactly once, with no edit control", (gdt.match(/Editing arrives with the policy editor/g) ?? []).length === 1 && !/<button/.test(gd));
+  // POLICY EDITOR — the placeholder lines ("Arrives with the policy editor / policy economics") are gone:
+  // the history + exposure block is hosted (PolicyGroupHistory via the `history` slot), and a reader
+  // who may not edit is told once why there is no edit control.
+  check("group detail: six categories + Assignments + effective-from line, no placeholder copy",
+    (gd.match(/data-category=/g) ?? []).length === 6 && /Assignments/.test(gdt) && /Effective from 2026-10-08/.test(gdt) && !/Arrives with/.test(gdt));
+  check("group detail (read-only): says why once, with no edit control", (gd.match(/data-read-only-note/g) ?? []).length === 1 && model.READ_ONLY_NOTE.length > 0 && !/<button/.test(gd));
+  const withHistory = renderToStaticMarkup(createElement(PoliciesDrawerBody, { drawer: { kind: "group", key: "BETA_FULL_ACCESS_V1" }, data: DATA, renderHosted: () => null, onOpenWorkspace: () => {},
+    history: (k: string) => createElement("div", { "data-history-slot": k }), editable: true }));
+  check("group detail hosts the history + exposure block; an editor-enabled reader sees no read-only note",
+    /data-history-slot="BETA_FULL_ACCESS_V1"/.test(withHistory) && !/data-read-only-note/.test(withHistory) && !/data-read-only/.test(withHistory));
+  const overlayDetail = renderToStaticMarkup(createElement(PoliciesDrawerBody, { drawer: { kind: "group", key: "BETA_FULL_ACCESS_V1+FOUNDER_INTERNAL_V1" }, data: DATA, renderHosted: () => null, onOpenWorkspace: () => {},
+    history: () => createElement("div", { "data-history-slot": "x" }) }));
+  check("an overlay column has no history slot (overlays are code-owned)", !/data-history-slot/.test(overlayDetail));
   check("drawer titles: a group by its catalogue name; a ghost group stays closed",
     policiesDrawerTitle({ kind: "group", key: "BETA_FULL_ACCESS_V1" }, DATA) === "Beta — full access (v1)" && policiesDrawerTitle({ kind: "group", key: "X" }, DATA) === "");
 }
@@ -302,6 +323,123 @@ console.log("5. Beta reconciliation — one deliberate, gated entry");
   check("reachable: the entry reads and posts the real route (GET READ, POST fresh)",
     RECONCILE_URL === "/api/platform/platform-ops/policies/reconcile-beta" && src.includes(`useSharedWidgetFetch<BetaReconciliationDryRunResponse>("${RECONCILE_URL}")`)
       && /export async function GET[\s\S]*requirePlatformAccess\("PLATFORM_OPS", "READ"\)/.test(route) && /export async function POST[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS",/.test(route));
+}
+
+// ── 6. Policy editor ─────────────────────────────────────────────────────────
+
+console.log("6. Policy editor — gated affordances, edit → review → confirm, history");
+{
+  const noop = () => {};
+  const actions = { onEdit: noop, onClone: noop, onNew: noop, onRestore: noop };
+  const editable = renderToStaticMarkup(createElement(PoliciesLeadSurface, props({ edit: actions }) as never));
+  check("with editor actions: each GROUP card offers Edit + Clone (the overlay column never does)",
+    (editable.match(/data-group-edit="/g) ?? []).length === 1 && /data-group-edit="BETA_FULL_ACCESS_V1"/.test(editable)
+      && /aria-label="Edit Beta — full access \(v1\)"/.test(editable) && /aria-label="Clone Beta — full access \(v1\)"/.test(editable));
+  check("…'New group' on the Policy groups block", (editable.match(/data-new-group/g) ?? []).length === 1 && editable.indexOf("data-new-group") > editable.indexOf('id="policies-groups"'));
+  check("…the group card drops its Read-only chip; the overlay card keeps it", (editable.match(/data-read-only/g) ?? []).length === 1);
+  const readOnly = renderToStaticMarkup(createElement(PoliciesLeadSurface, props() as never));
+  check("without actions: no Edit / Clone / New group anywhere (read-only operators)", !/data-group-edit|data-new-group/.test(readOnly) && !/\b(Edit|Clone|New group)\b/.test(buttons(readOnly).join(" ")));
+  const lead = code("components/platform/leads/PoliciesLead.tsx");
+  check("the lead takes its actions from usePolicyGroupEditor(access, …) and reads no access flag itself",
+    /usePolicyGroupEditor\(access, groups\.data\)/.test(lead) && !/canControl/.test(lead) && /\{editor\.panel\}/.test(lead));
+
+  // The gate, rendered: a tiny host calls the hook with each access shape.
+  const Probe = ({ access }: { access: unknown }) => {
+    const e = editorModule.usePolicyGroupEditor(access as never, DATA);
+    return createElement("span", { "data-offered": e.actions ? "yes" : "no" });
+  };
+  const offered = (access: unknown) => /data-offered="yes"/.test(renderToStaticMarkup(createElement(Probe, { access })));
+  check("usePolicyGroupEditor offers actions ONLY with canControl (not WRITE, not absent)",
+    offered({ canRead: true, canWrite: true, canControl: true }) && !offered({ canRead: true, canWrite: true, canControl: false }) && !offered(undefined));
+
+  // The editor body — edit step.
+  const detail = {
+    group: { key: "BETA_FULL_ACCESS_V1", label: "Beta — full access (v1)", description: "d", version: 2, builtIn: true, archived: false, archivedAt: null, isDefault: true, valid: true,
+      invalidReasons: [], source: "DB", effectiveFrom: "2026-10-30", values: { ...POLICY_GROUPS.BETA_FULL_ACCESS_V1.values } },
+    versions: [
+      { version: 2, createdAt: "2026-10-30T10:00:00.000Z", createdBy: "opsadmin", label: "Beta — full access (v1)", reasonCode: "POLICY_ROLLOUT",
+        summary: { kind: "UPDATED", changes: [{ key: "exportsPerDay", before: 2, after: 3 }] }, restorable: true, values: { ...POLICY_GROUPS.BETA_FULL_ACCESS_V1.values }, current: true },
+      { version: 1, createdAt: "2026-10-29T10:00:00.000Z", createdBy: "Seeded from code", label: "Beta — full access (v1)", reasonCode: "POLICY_ROLLOUT",
+        summary: { kind: "SEEDED", changes: [] }, restorable: true, values: { ...POLICY_GROUPS.BETA_FULL_ACCESS_V1.values, exportsPerDay: 2 }, current: false },
+    ],
+    versionsTruncated: false,
+    assignments: { customers: 12, withOverlay: 2, withFounder: 2, unassignedResolvingHere: 0,
+      buckets: [{ overlay: null, overrideUsd: null, count: 10 }, { overlay: "FOUNDER_INTERNAL_V1", overrideUsd: null, count: 2 }] },
+    effective: { plain: null, founder: null },
+    cost: { platformAllowanceUsd: null, current: null, measured30dUsd: null, measuredNote: "Measured AI spend per policy group is not yet available." },
+    defaultPolicyGroup: "BETA_FULL_ACCESS_V1", failClosedEnforced: false, checkedAt: "2026-10-30T10:00:00.000Z",
+  };
+  const draft = { key: "BETA_FULL_ACCESS_V1", label: "Beta — full access (v1)", description: "d", values: { ...POLICY_GROUPS.BETA_FULL_ACCESS_V1.values } as Record<string, boolean | number> };
+  const body = (over: Record<string, unknown>) => renderToStaticMarkup(createElement(editorModule.PolicyEditorBody, {
+    mode: { kind: "edit", key: "BETA_FULL_ACCESS_V1" }, step: "edit", data: DATA, detail, draft, onDraft: noop, reason: EMPTY_OPERATOR_REASON, onReason: noop, busy: false, feedback: null, ...over,
+  } as never));
+  const edit = body({});
+  const et = text(edit);
+  check("edit: one section per catalogue category, in the editor order",
+    [...edit.matchAll(/data-editor-section="([a-z]+)"/g)].map((m) => m[1]).join() === "ai,connections,refresh,exports,insights");
+  check("edit: every dimension is a row exactly once", (edit.match(/data-editor-row=/g) ?? []).length === DIMENSION_KEYS.length);
+  check("edit: on/off entitlements are real switches (role=switch, aria-checked)", (edit.match(/role="switch"/g) ?? []).length === 2 && /aria-checked="true"/.test(edit));
+  check("edit: counts and floors are a stepper (− number +) and a slider", (edit.match(/type="number"/g) ?? []).length === 7 && (edit.match(/type="range"/g) ?? []).length === 7
+    && /aria-label="Decrease Data exports per day"/.test(edit) && /aria-label="Increase Data exports per day"/.test(edit));
+  check("edit: value vs the ceiling ('of 25', 'of $20') and the floor's fastest ('fastest 15 min')", /of 25/.test(et) && /of \$20/.test(et) && /fastest 15 min/.test(et));
+  check("edit: a live EFFECTIVE value per row, and 'With Founder' because the group has Founder assignees",
+    (edit.match(/data-effective/g) ?? []).length === DIMENSION_KEYS.length && /Effective \$5/.test(et) && /With Founder \$20/.test(et) && /With Founder 10/.test(et));
+  const noFounder = text(body({ detail: { ...detail, assignments: { ...detail.assignments, withFounder: 0 } } }));
+  check("edit: no Founder line when the group has no Founder assignees", !/With Founder/.test(noFounder));
+  check("edit: the key field appears only for a NEW group (the key is immutable after create)",
+    !/Key \(permanent\)/.test(et) && /Key \(permanent\)/.test(text(body({ mode: { kind: "new" }, draft: { ...draft, key: "" } }))));
+  const bad = text(body({ draft: { ...draft, values: { ...draft.values, maxConnections: 99 } } }));
+  check("edit: an out-of-range value is named under the form (the server's own rule)", /Maximum connections: must be between 0 and the platform ceiling of 25/.test(bad));
+
+  // Review step.
+  const changed = { ...draft, values: { ...draft.values, aiDailyUsdAllowance: 8, exportsPerDay: 4 } };
+  const review = body({ step: "review", draft: changed });
+  const rt = text(review);
+  check("review: each changed entitlement before → after", /data-change="aiDailyUsdAllowance"/.test(review) && /\$5 → \$8/.test(rt) && /3 → 4/.test(rt) && (review.match(/data-change=/g) ?? []).length === 2);
+  check("review: customers affected (counts)", /12 customers assigned · 2 with Founder/.test(rt));
+  check("review: COST EXPOSURE = customers × allowance, labelled an estimated ceiling, was / now (10×$8 + 2×$20 = $120; was $90)",
+    /\$120/.test(rt) && /was \$90/.test(rt) && /Estimated ceiling · max estimated AI spend \/ day/.test(rt));
+  check("review: measured spend is said to be not yet available (never invented)", /Measured AI spend per policy group is not yet available\./.test(rt));
+  check("review: a required structured reason", /Choose a reason/.test(rt) && /A reason is recorded with this action/.test(rt));
+  const dflt = text(body({ step: "default" }));
+  check("make default: says it affects NEW registrations only, with a reason", /Affects new registrations only — existing assignments do not change\./.test(dflt) && /Choose a reason/.test(dflt));
+  const arch = text(body({ step: "archive" }));
+  check("archive: says nothing is deleted, with a reason", /Nothing is deleted/.test(arch) && /Choose a reason/.test(arch));
+  check("archive is blocked while customers are assigned, and for the default (said, not hidden)",
+    /12 customers are assigned/.test(String(editorModel.archiveBlocker({ ...detail, group: { ...detail.group, isDefault: false, builtIn: false } } as never)))
+      && /default group cannot be archived/.test(String(editorModel.archiveBlocker(detail as never))));
+
+  check("review fix 6: a BUILT-IN group says it cannot be archived; the overflow renders no Archive item for it",
+    /Built-in groups cannot be archived/.test(String(editorModel.archiveBlocker({ ...detail, group: { ...detail.group, isDefault: false }, assignments: { ...detail.assignments, customers: 0 } } as never)))
+      && /\{!detail\?\.group\.builtIn && \(<>/.test(code("components/platform/leads/PolicyGroupEditor.tsx")));
+  check("review fix 7: an archived card offers neither Edit nor Clone",
+    !/<button/.test(renderToStaticMarkup(createElement(editorModule.GroupEditButtons, { groupKey: "OLD_V1", label: "Old", actions, archived: true }))));
+  const blocked = renderToStaticMarkup(createElement(BetaReconciliationButton, { eligible: 3, onSelect: noop, blocked: "ARCHIVED" }));
+  check("review fix 5: Beta archived ⇒ the entry says eligible-but-blocked, no button (never another group)",
+    /data-beta-blocked/.test(blocked) && !/<button/.test(blocked) && /3 unassigned accounts · Beta is archived — not assigned/.test(text(blocked)));
+
+  // History.
+  const hist = renderToStaticMarkup(createElement(historyModule.PolicyGroupHistoryView, { detail: detail as never, loading: false, error: null }));
+  const ht = text(hist);
+  check("history: version, when, who, what changed; the current version marked", /v2/.test(ht) && /2026-10-30 10:00 UTC · opsadmin/.test(ht) && /Edited · 1 change/.test(ht) && /Seeded from the code catalogue/.test(ht) && /Current/.test(ht));
+  check("history (read-only): NO Restore button", !/data-restore-version/.test(hist) && !/<button/.test(hist));
+  const histEdit = renderToStaticMarkup(createElement(historyModule.PolicyGroupHistoryView, { detail: detail as never, loading: false, error: null, onRestore: noop }));
+  check("history (offered): 'Restore this version' on earlier versions only", (histEdit.match(/data-restore-version=/g) ?? []).length === 1 && /data-restore-version="1"/.test(histEdit));
+  check("history: cost exposure as an estimated ceiling ($90 = 10×$5 + 2×$20) and measured 'not yet available'",
+    /\$90/.test(ht) && /Estimated ceiling · max estimated AI spend \/ day/.test(ht) && /not yet available/.test(ht));
+
+  // 390 px rules (source): grids collapse below sm, every flex row can shrink, actions live in the sheet footer.
+  const ed = code("components/platform/leads/PolicyGroupEditor.tsx");
+  check("390 px: the row grid is single-column below sm; no fixed width wider than the phone",
+    /grid min-w-0 gap-2 sm:grid-cols-\[minmax\(0,1fr\)_minmax\(0,9rem\)\]/.test(ed) && !/\bw-\[(\d{3,})px\]/.test(ed) && !/min-w-\[\d/.test(ed));
+  check("390 px: the panel is the atlas RightPanel (a full-width bottom sheet on mobile) and its actions are in PanelFooter",
+    /<RightPanel /.test(ed) && /<PanelFooter>[\s\S]*data-confirm[\s\S]*<\/PanelFooter>/.test(ed) && /<PanelFooter>[\s\S]*data-review[\s\S]*<\/PanelFooter>/.test(ed));
+  check("touch targets: steppers, toggles and pills are ≥ 44 px below lg", /h-11 w-11/.test(ed) && /min-h-11/.test(ed) && /h-11 w-14/.test(ed));
+  check("the editor files never spell the access level", ![ed, code("components/platform/leads/PolicyGroupHistory.tsx"), code("components/platform/leads/policy-editor-model.ts")].some((src) => /\bCONTROL\b/.test(src)));
+  check("the history component reads no access flag (Restore arrives as a prop)", !/canControl|canWrite|access/.test(code("components/platform/leads/PolicyGroupHistory.tsx")));
+  check("the editor writes only through the five policy-group routes",
+    /\$\{groupDetailUrl\(draft\.key\)\}\/archive/.test(ed) && /\$\{groupDetailUrl\(draft\.key\)\}\/default/.test(ed) && /\$\{groupDetailUrl\(mode\.key\)\}\/rollback/.test(ed)
+      && /send\(groupDetailUrl\(mode\.key\), "PATCH"/.test(ed) && /send\(CREATE_URL, "POST"/.test(ed) && editorModule.CREATE_URL === "/api/platform/platform-ops/policy-groups/create");
 }
 
 if (failures > 0) {

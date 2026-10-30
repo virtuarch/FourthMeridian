@@ -204,9 +204,33 @@ function main() {
     // CONTROL on POST, the dry run at READ. Same bar as the other fleet-wide
     // policy controls (cadences, AI cost controls, fleet-wide manual runs).
     const RECONCILE_ROUTE = "app/api/platform/platform-ops/policies/reconcile-beta/route.ts";
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE].sort();
-    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs) and beta-reconciliation routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // POLICY EDITOR (owner ruling 2026-10-30) — "Platform Operations CONTROL
+    // permission is required to create, edit, clone, archive, or otherwise modify
+    // customer policy groups. Require an operator reason and audit trail." Five
+    // DELIBERATE additions, one per write verb, each fresh CONTROL + reason +
+    // one audited transaction (lib/platform/policies/policy-groups-write.ts):
+    // create/clone, edit (PATCH on [key], whose GET stays READ), rollback,
+    // archive, default.
+    const POLICY_GROUP_ROUTES = [
+      "app/api/platform/platform-ops/policy-groups/create/route.ts",
+      "app/api/platform/platform-ops/policy-groups/[key]/route.ts",
+      "app/api/platform/platform-ops/policy-groups/[key]/rollback/route.ts",
+      "app/api/platform/platform-ops/policy-groups/[key]/archive/route.ts",
+      "app/api/platform/platform-ops/policy-groups/[key]/default/route.ts",
+    ];
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES].sort();
+    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation and policy-group editor routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
+    for (const f of POLICY_GROUP_ROUTES) {
+      const src = code(f);
+      const writes = (src.match(/export async function (POST|PATCH|PUT|DELETE)/g) ?? []).length;
+      check(`${f}: every write verb is FRESH CONTROL, takes a structured reason and delegates to the one write service`,
+        writes === 1 && (src.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 1
+          && /reasonOrRefuse\(/.test(src) && /from "@\/lib\/platform\/policies\/policy-groups-write"/.test(src)
+          && !/policyGroupVersion|policyGroup\.|auditLog|customerPolicyAssignment/.test(src));
+    }
+    check("the group read (GET [key]) stays at READ",
+      /export async function GET[\s\S]*requirePlatformAccess\("PLATFORM_OPS", "READ"\)[\s\S]*export async function PATCH/.test(code("app/api/platform/platform-ops/policy-groups/[key]/route.ts")));
     const reconcile = code(RECONCILE_ROUTE);
     check("beta reconciliation MUTATES only under FRESH CONTROL and dry-runs at READ",
       /export async function POST[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/.test(reconcile)
@@ -312,6 +336,12 @@ function main() {
     // access flag (pinned by platform-visual-policies.test.ts) — it forwards
     // `access`, like the dashboard host.
     const RECONCILE_ENTRY = "components/platform/leads/BetaReconciliationEntry.tsx";
+    // POLICY EDITOR (owner ruling 2026-10-30) — DELIBERATE consumer addition: the
+    // policy-group editor offers New / Edit / Clone / Restore / Archive / Make
+    // default only behind canControl (usePolicyGroupEditor). PoliciesLead.tsx
+    // and PolicyGroupHistory.tsx receive the actions as props and read no access
+    // flag (pinned by platform-visual-policies.test.ts).
+    const POLICY_EDITOR = "components/platform/leads/PolicyGroupEditor.tsx";
     // The literal CONTROL stays confined to the SYSTEM_ADMIN grant matrix: the
     // widget branches on the descriptive `canControl` flag, never on the level.
     const mentionsControl = [...walk("components"), ...walk("app").filter((f) => /\.tsx$/.test(f))]
@@ -328,8 +358,12 @@ function main() {
              /"CONTROL"\s*[!=]==?\s*(level|accessLevel|access)/.test(src) ||
              /canControl/.test(src);
     }).filter((f) => f !== "components/platform/PlatformSpaceDashboard.tsx"); // the host only forwards `access`
-    check(`the Policies, Connection diagnostics, unified Jobs (manual operations) and Beta reconciliation components are the only components that consume control-plane access (scanned ${ui.length})`,
-      consumers.slice().sort().join() === [DIAGNOSTICS_WIDGET, POLICIES_WIDGET, OPERATIONS_WIDGET, RECONCILE_ENTRY].sort().join(), consumers.join(", "));
+    check(`the Policies, Connection diagnostics, unified Jobs (manual operations), Beta reconciliation and policy-group editor components are the only components that consume control-plane access (scanned ${ui.length})`,
+      consumers.slice().sort().join() === [DIAGNOSTICS_WIDGET, POLICIES_WIDGET, OPERATIONS_WIDGET, RECONCILE_ENTRY, POLICY_EDITOR].sort().join(), consumers.join(", "));
+    const editor = code(POLICY_EDITOR);
+    check("the policy-group editor offers its actions (and mounts its panel) only behind canControl",
+      (editor.match(/canControl/g) ?? []).length === 1 && /const offer = access\?\.canControl === true;/.test(editor)
+        && /if \(!offer\) return \{ actions: undefined, panel: null, status: null \};/.test(editor));
     check("the Beta reconciliation entry mounts (and reads) only behind canControl",
       /return access\?\.canControl === true \? <Reconcile \/> : null;/.test(code(RECONCILE_ENTRY)));
     const diagnostics = code(DIAGNOSTICS_WIDGET);

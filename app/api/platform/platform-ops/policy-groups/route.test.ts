@@ -38,7 +38,8 @@ async function operator(name: string, grant: { area: string; level: string; stat
 function configureCounts() {
   const groupKey = Object.keys(POLICY_GROUPS)[0];
   fake.on("CustomerPolicyAssignment", "groupBy", (args) => {
-    const by = (args.by as string[])[0];
+    // POLICY EDITOR — the reader also groups by [policyGroup, overlay] (overlay counts per group); that one answers [].
+    const by = (args.by as string[]).join();
     return by === "policyGroup"
       ? [{ policyGroup: groupKey, _count: { _all: 2 } }, { policyGroup: "RETIRED_GROUP", _count: { _all: 1 } }]
       : [];
@@ -87,7 +88,8 @@ async function main() {
     t.check("the two bodies are identical apart from the clock", JSON.stringify(a) === JSON.stringify(b), { a, b });
     t.check("the same top-level keys, in the same order",
       // + unassignedActiveCustomers: the active-only population the fail-closed Attention item counts.
-      Object.keys(opsOk.body as Body).join() === "dimensions,policyGroups,overlays,cohorts,unassignedCustomers,unassignedActiveCustomers,unknownAssignments,defaultPolicyGroup,checkedAt",
+      // + catalogueSource (POLICY EDITOR): where the group definitions came from (DB | CODE | CODE_FALLBACK).
+      Object.keys(opsOk.body as Body).join() === "dimensions,policyGroups,overlays,cohorts,unassignedCustomers,unassignedActiveCustomers,unknownAssignments,defaultPolicyGroup,catalogueSource,checkedAt",
       Object.keys(opsOk.body as Body).join());
     const body = opsOk.body as {
       dimensions: { key: string }[]; policyGroups: { key: string; isDefault: boolean; customers: number }[];
@@ -99,6 +101,11 @@ async function main() {
       && body.defaultPolicyGroup === DEFAULT_POLICY_GROUP);
     t.check("counts come from the configured groupBy: 2 on the first group, 1 unknown assignment",
       body.policyGroups[0].customers === 2 && body.unknownAssignments === 1, body);
+    t.check("POLICY EDITOR: no PolicyGroup rows ⇒ the code catalogue, each group carries version/builtIn/archived/valid",
+      (opsOk.body as { catalogueSource?: string }).catalogueSource === "DB"
+        && (body.policyGroups as unknown as { valid: boolean; archived: boolean; builtIn: boolean; source: string }[]).every((g) => g.valid && !g.archived && g.builtIn && g.source === "CODE"));
+    t.check("POLICY EDITOR: each dimension carries its editor category",
+      (body.dimensions as unknown as { category?: string; categoryLabel?: string }[]).every((d) => typeof d.category === "string" && typeof d.categoryLabel === "string"));
     // Five seeded USER-role accounts; three assignment rows ⇒ two unassigned.
     t.check("unassigned = USER accounts minus assignment rows (never negative)", body.unassignedCustomers === 2, body.unassignedCustomers);
   }
@@ -108,6 +115,9 @@ async function main() {
     const route = await import("./route");
     const growthRoute = await import("../../growth-revenue/policy-groups/route");
     const verbs = (m: Record<string, unknown>) => ["POST", "PUT", "PATCH", "DELETE"].filter((v) => v in m);
+    // POLICY EDITOR — the list routes stay read-only; group WRITES live under
+    // policy-groups/create and policy-groups/[key]/… at fresh CONTROL
+    // (app/api/platform/platform-ops/policy-groups/editor-routes.test.ts).
     t.check("neither route exports a mutating verb", verbs(route).length === 0 && verbs(growthRoute).length === 0);
     t.check("the read wrote nothing", ["create", "update", "upsert", "delete", "createMany", "updateMany", "deleteMany"]
       .every((op) => fake.callsTo("CustomerPolicyAssignment", op).length === 0 && fake.callsTo("CustomerCohort", op).length === 0));

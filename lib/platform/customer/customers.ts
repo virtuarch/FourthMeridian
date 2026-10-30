@@ -21,7 +21,7 @@
 import "server-only";
 import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
-import { DEFAULT_POLICY_GROUP } from "@/lib/entitlements/catalogue";
+import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { ENGAGEMENT_AI_SURFACES } from "@/lib/platform/growth/product-analytics-core";
 import { loadLastEngagements } from "@/lib/platform/growth/product-analytics";
 import { projectActivity, projectRollup, type CustomerRollup } from "./customer-core";
@@ -64,6 +64,7 @@ export async function listCustomers(opts: { search?: string; limit?: number; now
       ] }
     : {};
 
+  const defaultPolicyGroup = (await loadPolicyGroupCatalogue()).defaultKey;
   const [total, users] = await Promise.all([
     client.user.count({ where }),
     client.user.findMany({
@@ -141,7 +142,8 @@ export async function listCustomers(opts: { search?: string; limit?: number; now
         id: u.id, email: u.email, name: u.name, username: u.username, role: u.role,
         createdAt: u.createdAt.toISOString(), deactivatedAt: u.deactivatedAt?.toISOString() ?? null,
         lastActiveAt: act.lastActiveAt, lastActiveSource: act.lastActiveSource,
-        policyGroup: a?.policyGroup ?? DEFAULT_POLICY_GROUP, policyAssigned: a !== undefined, overlay: a?.overlay ?? null,
+        // POLICY EDITOR — an unassigned row names the catalogue DEFAULT (policyAssigned false says so).
+        policyGroup: a?.policyGroup ?? defaultPolicyGroup, policyAssigned: a !== undefined, overlay: a?.overlay ?? null,
         cohorts: cohortsBy.get(u.id) ?? [],
         connectionCount: (plaidBy.get(u.id) ?? 0) + (connBy.get(u.id) ?? 0),
         ...rollup,

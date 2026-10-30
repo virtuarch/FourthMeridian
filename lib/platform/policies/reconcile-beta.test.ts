@@ -20,6 +20,10 @@ import path from "node:path";
 import { AuditAction, OPERATOR_ACTION_FEED_ACTIONS } from "@/lib/audit-actions";
 import { REASON_REQUIRED_ACTIONS } from "@/lib/audit";
 import { DEFAULT_POLICY_GROUP, POLICY_GROUPS } from "@/lib/entitlements/catalogue";
+import { CODE_CATALOGUE, buildPolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
+
+/** Hermetic: the code catalogue (production uses the cached loader). */
+const CODE = async () => CODE_CATALOGUE;
 import { PLATFORM_OPS_FEED_RULES } from "@/lib/platform/activity/operator-feed-core";
 import {
   ELIGIBLE_WHERE, applyBetaReconciliation, readBetaReconciliation,
@@ -76,7 +80,7 @@ async function main() {
   console.log("1. the apply");
   {
     const { client, calls } = fakeClient(["u_a", "u_b"]);
-    const r = await applyBetaReconciliation({ expectedEligible: 3, reason: REASON, actor: ACTOR }, client);
+    const r = await applyBetaReconciliation({ expectedEligible: 3, reason: REASON, actor: ACTOR }, client, CODE);
     check("a changed population ⇒ CONFLICT with both counts", !r.ok && r.code === "CONFLICT" && r.eligible === 2 && r.expectedEligible === 3);
     check("…and only the read ran (no insert, no audit)", calls.map((c) => c.op).join() === "user.findMany");
     check("the read is the eligible population: active USER, no assignment row",
@@ -85,12 +89,12 @@ async function main() {
   }
   {
     const { client, calls } = fakeClient([], {});
-    const r = await applyBetaReconciliation({ expectedEligible: 0, reason: REASON, actor: ACTOR }, client);
+    const r = await applyBetaReconciliation({ expectedEligible: 0, reason: REASON, actor: ACTOR }, client, CODE);
     check("nobody eligible ⇒ NOTHING_TO_ASSIGN, nothing written", r.ok && r.outcome === "NOTHING_TO_ASSIGN" && calls.length === 1);
   }
   {
     const { client, calls } = fakeClient(["u_a", "u_b", "u_c"], { concurrentlyAssigned: ["u_c"] });
-    const r = await applyBetaReconciliation({ expectedEligible: 3, reason: REASON, actor: ACTOR }, client);
+    const r = await applyBetaReconciliation({ expectedEligible: 3, reason: REASON, actor: ACTOR }, client, CODE);
     check("applied: eligible 3, created 2, skipped 1 (the concurrent assignment won)", r.ok && r.outcome === "ASSIGNED" && r.eligible === 3 && r.created === 2 && r.skipped === 1, r);
     check("order: read → createMany → ONE audit row, all inside the one transaction", calls.map((c) => c.op).join() === "user.findMany,cpa.createMany,auditLog.create");
     const cm = calls[1].args as { data: Record<string, unknown>[]; skipDuplicates: boolean };
@@ -105,7 +109,7 @@ async function main() {
     check("audit: counts + reason; never an affected id", audit.metadata.eligible === 3 && audit.metadata.created === 2 && audit.metadata.skipped === 1
       && (audit.metadata.reason as { code: string }).code === "POLICY_ROLLOUT" && !/u_a|u_b|u_c/.test(JSON.stringify(audit)));
     let threw = false;
-    try { await applyBetaReconciliation({ reason: undefined as never, actor: ACTOR }, fakeClient(["u_a"]).client); } catch { threw = true; }
+    try { await applyBetaReconciliation({ reason: undefined as never, actor: ACTOR }, fakeClient(["u_a"]).client, CODE); } catch { threw = true; }
     check("without a reason the audit chokepoint throws — the insert cannot commit un-audited", threw);
   }
   {
@@ -114,7 +118,7 @@ async function main() {
       user: { count: async (a) => { seen.push(`user:${JSON.stringify(a.where)}`); return 1; } },
       customerPolicyAssignment: { count: async (a) => { seen.push(`cpa:${JSON.stringify(a.where)}`); return 1; } },
     };
-    const d = await readBetaReconciliation(read, new Date("2026-10-30T12:00:00Z"));
+    const d = await readBetaReconciliation(read, new Date("2026-10-30T12:00:00Z"), CODE);
     check("dry run: five counts, no findMany (counts only)", seen.length === 5 && d.checkedAt === "2026-10-30T12:00:00.000Z" && d.groupKey === DEFAULT_POLICY_GROUP);
     const known = JSON.stringify(Object.keys(POLICY_GROUPS));
     check("dry run buckets: eligible · deactivated · non-customer · known-group rows · unknown-group rows", [
@@ -140,16 +144,42 @@ async function main() {
   {
     const src = code(MODULE);
     const groupLiterals = Object.keys(POLICY_GROUPS).filter((k) => src.includes(`"${k}"`));
-    check("the module names no group key literal — only DEFAULT_POLICY_GROUP", groupLiterals.length === 0 && /policyGroup: groupKey/.test(src) && /const groupKey = DEFAULT_POLICY_GROUP;/.test(src));
+    // Ruling (review correction): the TARGET is the built-in Beta whatever the DB default is.
+    check("the module names no group key literal — only DEFAULT_POLICY_GROUP", groupLiterals.length === 0 && /policyGroup: groupKey/.test(src) && /const groupKey = DEFAULT_POLICY_GROUP;/.test(src)
+      && !/defaultKey/.test(src));
     check("no Free / Paid / Pro anywhere in the module", !/\b(FREE|PAID|PRO)(_|\b)/i.test(src));
     check("the default IS the beta group", DEFAULT_POLICY_GROUP === "BETA_FULL_ACCESS_V1");
+  }
+
+  console.log("\n3b. Beta archived / unusable ⇒ blocked, never another group");
+  {
+    const mk = (archivedAt: Date | null, values: unknown, defaultKey: string) => buildPolicyGroupCatalogue(
+      [{ key: DEFAULT_POLICY_GROUP, label: "Beta", description: "", isDefault: defaultKey === DEFAULT_POLICY_GROUP, builtIn: true, archivedAt, currentVersion: 1 },
+       { key: "PAID_V1", label: "Paid", description: "", isDefault: defaultKey === "PAID_V1", builtIn: false, archivedAt: null, currentVersion: 1 }],
+      [{ groupKey: DEFAULT_POLICY_GROUP, version: 1, values, createdAt: new Date() }, { groupKey: "PAID_V1", version: 1, values: POLICY_GROUPS[DEFAULT_POLICY_GROUP].values, createdAt: new Date() }], new Date());
+    const read: BetaReconciliationReadClient = { user: { count: async () => 2 }, customerPolicyAssignment: { count: async () => 0 } };
+    const moved = mk(null, POLICY_GROUPS[DEFAULT_POLICY_GROUP].values, "PAID_V1");
+    const d = await readBetaReconciliation(read, new Date(), async () => moved);
+    check("the DB default moved to PAID_V1 ⇒ the target is STILL Beta, not blocked", d.groupKey === DEFAULT_POLICY_GROUP && d.blocked === null);
+    const applied = fakeClient(["u_a"]);
+    const r = await applyBetaReconciliation({ expectedEligible: 1, reason: REASON, actor: ACTOR }, applied.client, async () => moved);
+    check("…and the apply assigns Beta (never the moved default)", r.ok && r.groupKey === DEFAULT_POLICY_GROUP);
+    for (const [why, cat] of [["ARCHIVED", mk(new Date(), POLICY_GROUPS[DEFAULT_POLICY_GROUP].values, "PAID_V1")], ["INVALID", mk(null, "garbage", "PAID_V1")]] as const) {
+      const dd = await readBetaReconciliation(read, new Date(), async () => cat);
+      check(`Beta ${why}: the dry run reports eligible-but-blocked`, dd.eligible === 2 && dd.blocked === why && dd.groupKey === DEFAULT_POLICY_GROUP);
+      const f = fakeClient(["u_a"]);
+      const rr = await applyBetaReconciliation({ expectedEligible: 1, reason: REASON, actor: ACTOR }, f.client, async () => cat);
+      check(`Beta ${why}: the apply REFUSES (BLOCKED) — no transaction, no row, no audit, never PAID_V1`,
+        !rr.ok && rr.code === "BLOCKED" && rr.blocked === why && f.calls.length === 0);
+    }
   }
 
   console.log("\n4. registration default — new accounts are born on Beta");
   {
     const reg = code("app/api/auth/register/route.ts");
-    check("register creates the assignment with DEFAULT_POLICY_GROUP inside its transaction",
-      /db\.\$transaction\(async \(tx\) =>[\s\S]*tx\.customerPolicyAssignment\.create\(\{\s*data:\s*\{\s*userId:\s*newUser\.id,\s*policyGroup:\s*DEFAULT_POLICY_GROUP\s*\}/.test(reg));
+    // POLICY EDITOR — the catalogue default (read before the transaction; Beta unless an operator moved it).
+    check("register creates the assignment with the catalogue default inside its transaction",
+      /const defaultPolicyGroup = \(await loadPolicyGroupCatalogue\(\)\)\.defaultKey;[\s\S]*db\.\$transaction\(async \(tx\) =>[\s\S]*tx\.customerPolicyAssignment\.create\(\{\s*data:\s*\{\s*userId:\s*newUser\.id,\s*policyGroup:\s*defaultPolicyGroup\s*\}/.test(reg));
     check("…with no overlay (Founder is never granted at birth)", !/FOUNDER/.test(reg));
   }
 

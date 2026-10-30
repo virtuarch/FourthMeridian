@@ -49,8 +49,12 @@ console.log("Registration (app/api/auth/register/route.ts)");
 {
   const s = strip("app/api/auth/register/route.ts");
   const tx = s.slice(s.indexOf("db.$transaction(async (tx)"), s.indexOf("return newUser;"));
+  // POLICY EDITOR — the default is the catalogue's (DB default row, else the code
+  // DEFAULT_POLICY_GROUP), read BEFORE the transaction by the never-throwing loader.
   check("policy assignment is created INSIDE the registration transaction, on the default group",
-    /tx\.customerPolicyAssignment\.create\(\{\s*data:\s*\{\s*userId:\s*newUser\.id,\s*policyGroup:\s*DEFAULT_POLICY_GROUP\s*\}/.test(tx));
+    /tx\.customerPolicyAssignment\.create\(\{\s*data:\s*\{\s*userId:\s*newUser\.id,\s*policyGroup:\s*defaultPolicyGroup\s*\}/.test(tx));
+  check("…the default group is read from the policy-group catalogue BEFORE the transaction",
+    /const defaultPolicyGroup = \(await loadPolicyGroupCatalogue\(\)\)\.defaultKey;/.test(s.slice(0, s.indexOf("db.$transaction(async (tx)"))));
   check("cohort row only when an invite was redeemed, with INVITE_COHORT and source INVITE",
     /if \(betaRequestId\) \{\s*await tx\.customerCohort\.create\(\{\s*data:\s*\{\s*userId:\s*newUser\.id,\s*cohort:\s*INVITE_COHORT,\s*source:\s*"INVITE"\s*\}/.test(tx));
   check("no cohort literal is spelled in the route (catalogue owns the key)", !/CLOSED_BETA_2026/.test(s));

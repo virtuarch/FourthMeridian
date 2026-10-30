@@ -13,6 +13,13 @@
  * resolver itself is pure (lib/entitlements/resolve.ts); the platform ceilings
  * are already applied by the time a value reaches a route, so no value a route
  * reads here can exceed them.
+ *
+ * POLICY EDITOR — the group DEFINITIONS (not the customer's row) come from the
+ * cached, never-throwing catalogue loader (lib/platform/policies/
+ * policy-group-catalogue.ts) through `entitlementLoadOptions().loadCatalogue`:
+ * deployment configuration on fm_system, so the tenant role needs no grant on
+ * the definition tables. Every production caller already passes
+ * entitlementLoadOptions(), so every surface resolves the same definitions.
  */
 
 import "server-only";
@@ -22,16 +29,17 @@ import { withTenantDb } from "@/lib/db/tenant-context";
 import { env } from "@/lib/env";
 import { ENTITLEMENT_DIMENSIONS, type EntitlementDimensionKey } from "./catalogue";
 import { explainEntitlement, loadEffectiveEntitlements, type EffectiveEntitlements, type ResolveOptions } from "./resolve";
+import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 
 export type EntitlementLoader = (userId: string) => Promise<EffectiveEntitlements>;
 
 /**
  * FAIL CLOSED (owner ruling, 2026-10-30) — the ONE place the rollout switch
- * reaches the resolver. Every production caller of `loadEffectiveEntitlements`
+ * (and, POLICY EDITOR, the group-definition loader) reaches the resolver. Every production caller of `loadEffectiveEntitlements`
  * passes this, so enforcement and every operator view resolve the same way.
  */
 export function entitlementLoadOptions(): ResolveOptions {
-  return { failClosed: env.isPolicyAssignmentFailClosed };
+  return { failClosed: env.isPolicyAssignmentFailClosed, loadCatalogue: loadPolicyGroupCatalogue };
 }
 
 /** The default loader: one tenant phase, the resolver's one read. */

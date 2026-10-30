@@ -16,7 +16,8 @@
 import "server-only";
 import { systemDb } from "@/lib/db";
 import { env } from "@/lib/env";
-import { POLICY_GROUPS } from "@/lib/entitlements/catalogue";
+import { resolvableGroupKeys, type PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
+import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { POLICY_ASSIGNMENT_ISSUE_CAP, buildPolicyAssignmentHealth, type PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
 
 /** The narrow read surface (systemDb satisfies it; tests hand a fake). Counts and finds only. */
@@ -43,10 +44,15 @@ export interface PolicyAssignmentReadClient {
 
 export async function loadPolicyAssignmentHealth(opts: {
   client?: PolicyAssignmentReadClient; enforced?: boolean; now?: Date; cap?: number;
+  /** POLICY EDITOR — the definitions in force (default: the cached catalogue loader). */
+  catalogue?: PolicyGroupCatalogue;
 } = {}): Promise<PolicyAssignmentHealth> {
   const client = opts.client ?? (systemDb as unknown as PolicyAssignmentReadClient);
   const cap = opts.cap ?? POLICY_ASSIGNMENT_ISSUE_CAP;
-  const known = Object.keys(POLICY_GROUPS);
+  // POLICY EDITOR — "known" = resolves to a VALID plan (code or DB group,
+  // archived included). A DB group whose stored definition is invalid fails its
+  // customers closed, so they are reported here like an unknown key.
+  const known = resolvableGroupKeys(opts.catalogue ?? await loadPolicyGroupCatalogue());
   // Review fix: only accounts that can use the product — deactivated (incl.
   // pending-deletion) accounts and non-customer roles are not affected parties.
   const unassignedWhere = { role: "USER" as const, deactivatedAt: null, policyAssignment: { is: null } };

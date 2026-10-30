@@ -4,12 +4,16 @@
  * components/platform/leads/PoliciesLead.tsx  (Platform Ops visual spec §5 — Policies)
  *
  * THE POLICIES DEFAULT SCREEN — an entitlement overview in the accepted
- * Operations grammar (Personal Space language). READ-ONLY: editing policy
- * groups arrives with the policy editor (Phase 2), so there is no edit
- * affordance here — not a disabled one, not a fake one; the group detail says
- * so once. The one exception is the owner-ruled Beta reconciliation entry
- * (BetaReconciliationEntry.tsx), which creates missing assignments only and
- * never edits a group or an existing assignment.
+ * Operations grammar (Personal Space language). The screen itself is
+ * read-only; the two deliberate entries are hosted, never decided, here:
+ *   · the owner-ruled Beta reconciliation entry (BetaReconciliationEntry.tsx),
+ *     which creates missing assignments only;
+ *   · POLICY EDITOR (Phase 2) — "New group" on the Policy groups block, "Edit"
+ *     and "Clone" on each group card, "Restore this version" in the group
+ *     detail's history. They come from usePolicyGroupEditor (PolicyGroupEditor.tsx),
+ *     which offers them only to an operator whose access allows policy-group
+ *     changes; this file never reads an access flag — without the actions it
+ *     renders exactly the read-only cards (a "Read-only" chip, no edit control).
  *
  *   ≥ lg (12-col)
  *     A  Customer policies hero (12)  covered x of y · default group · 4 KPIs
@@ -27,7 +31,7 @@
  *
  * Drawers (ONE DetailDrawer; its body exists only while open):
  *   group      the group's entitlements by category, assignments (counts),
- *              version history and cost exposure slots
+ *              cost exposure and version history (PolicyGroupHistory)
  *   catalogue  ops_policies · groups     (PolicyGroupsPanel: overlays, cohorts)
  *   defaults   ops_policies · defaults   (refresh + execution cadence, AI cost
  *                                         controls incl. the kill switch)
@@ -55,14 +59,14 @@ import type { OperationalControlsReadModel } from "@/lib/platform/policies/opera
 import type { PlatformViewLeadProps, RenderHosted } from "./lead-contract";
 import { Caption, ChartMessage, Doorway, Meter } from "./visual-kit";
 import { BetaReconciliationEntry } from "./BetaReconciliationEntry";
+import { GroupEditButtons, NewGroupButton, usePolicyGroupEditor, type PolicyEditActions } from "./PolicyGroupEditor";
+import { PolicyGroupHistory } from "./PolicyGroupHistory";
 import { HealthHero, type HeroModel } from "../ops-visual/HealthHero";
 import { StatusWord } from "../ops-visual/UnifiedJobs";
 import type { Fetched } from "../ops-visual/ops-visual-model";
 import {
-  COST_EXPOSURE_NOTE,
-  EDITING_NOTE,
   NO_ENTITLEMENTS_YET,
-  VERSION_HISTORY_NOTE,
+  READ_ONLY_NOTE,
   aiControlsLine,
   alertsLine,
   comparisonMatrix,
@@ -114,6 +118,15 @@ function ReadOnlyChip() {
       Read-only
     </span>
   );
+}
+
+/** A group's state word (archived / invalid definition) — said, never only coloured. */
+function StateChip({ column }: { column: PolicyColumn }) {
+  if (column.valid === false) {
+    return <span data-invalid-group className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide" style={{ color: TONE_COLOR.bad, border: `1px solid ${TONE_COLOR.bad}` }}>Invalid · fails closed</span>;
+  }
+  if (column.archived) return <span data-archived-group className="shrink-0 text-[11px] text-[var(--text-muted)]">Archived</span>;
+  return null;
 }
 
 /** A static on/off shape — a picture of the value, never a control (no role, no button). */
@@ -191,15 +204,19 @@ function ComparisonMatrix({ categories, columns }: { categories: readonly Matrix
 
 // ── C — group cards ──────────────────────────────────────────────────────────
 
-export function GroupCard({ data, column, onSelect }: { data: PolicyGroupsResponse; column: PolicyColumn; onSelect?: () => void }) {
+export function GroupCard({ data, column, onSelect, edit }: { data: PolicyGroupsResponse; column: PolicyColumn; onSelect?: () => void; edit?: PolicyEditActions }) {
   const limits = keyLimits(data, column);
+  // The editor's affordances exist only for a group (an overlay is code-owned) and only when the host offered them.
+  const editable = edit !== undefined && column.kind === "group";
   const body = (
     <>
       <span className="flex min-w-0 items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--text-primary)]" title={column.title}>{column.label}</span>
         {column.isDefault && <span className="shrink-0 text-[11px] text-[var(--text-muted)]">Default</span>}
         {column.kind === "overlay" && <span className="shrink-0 text-[11px] text-[var(--text-muted)]">Overlay</span>}
-        <ReadOnlyChip />
+        {typeof column.version === "number" && <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-faint)]">v{column.version}</span>}
+        <StateChip column={column} />
+        {!editable && <ReadOnlyChip />}
         {onSelect && <ChevronRight size={14} aria-hidden className="shrink-0 text-[var(--text-faint)] group-hover:text-[var(--text-secondary)]" />}
       </span>
       <span className="block text-[11px] tabular-nums text-[var(--text-secondary)]">{plural(column.customers, "customer")}</span>
@@ -222,6 +239,11 @@ export function GroupCard({ data, column, onSelect }: { data: PolicyGroupsRespon
         </button>
       ) : (
         <div data-group-card={column.key} className="flex min-w-0 flex-col gap-3 p-4">{body}</div>
+      )}
+      {editable && (
+        <div className="border-t border-[var(--border-hairline)] px-4 py-2.5">
+          <GroupEditButtons groupKey={column.key} label={column.title} actions={edit!} archived={column.archived === true} />
+        </div>
       )}
     </Surface>
   );
@@ -269,6 +291,13 @@ export interface PoliciesLeadSurfaceProps {
    * own whether to render anything; the surface only places it.
    */
   reconcileSlot?: ReactNode;
+  /**
+   * POLICY EDITOR — present ONLY when usePolicyGroupEditor offered edit actions
+   * (the operator's access allows it). Absent ⇒ the read-only screen exactly.
+   */
+  edit?: PolicyEditActions;
+  /** The editor's last outcome line (beside the Policy groups heading). */
+  editorStatus?: ReactNode;
 }
 
 export function policiesHeroModel(groups: Fetched<PolicyGroupsResponse>): HeroModel {
@@ -348,10 +377,16 @@ export function PoliciesLeadSurface(p: PoliciesLeadSurfaceProps) {
 
       {/* C — Policy groups: one card per group (and per overlay as applied). */}
       <Block id="policies-groups" label="Policy groups"
-        action={canPolicies && data ? <span className="lg:hidden"><Doorway label="Catalogue" onSelect={() => p.onOpenDrawer({ kind: "catalogue" })} dialog /></span> : undefined}>
+        action={(canPolicies && data) || p.edit || p.editorStatus ? (
+          <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+            {p.editorStatus}
+            {p.edit && data && <NewGroupButton actions={p.edit} />}
+            {canPolicies && data && <span className="lg:hidden"><Doorway label="Catalogue" onSelect={() => p.onOpenDrawer({ kind: "catalogue" })} dialog /></span>}
+          </span>
+        ) : undefined}>
         {data && columns.length > 0 ? (
           <ul aria-label="Policy groups" className="grid min-w-0 gap-4 lg:grid-cols-2">
-            {columns.map((c) => <GroupCard key={c.key} data={data} column={c} onSelect={() => p.onOpenDrawer({ kind: "group", key: c.key })} />)}
+            {columns.map((c) => <GroupCard key={c.key} data={data} column={c} edit={p.edit} onSelect={() => p.onOpenDrawer({ kind: "group", key: c.key })} />)}
           </ul>
         ) : (
           <Surface className="px-4 py-3 sm:px-5"><p className="text-xs text-[var(--text-muted)]">{data ? "No policy group is defined" : unread("policy groups")}</p></Surface>
@@ -398,17 +433,19 @@ export function PoliciesLeadSurface(p: PoliciesLeadSurfaceProps) {
 
 // ── Drawer bodies ────────────────────────────────────────────────────────────
 
-/** The group detail: entitlements by category, assignments, version history and cost exposure slots. */
-export function GroupDetailBody({ data, groupKey }: { data: PolicyGroupsResponse; groupKey: string }) {
+/** The group detail: entitlements by category, assignments, then cost exposure + version history (`history`). */
+export function GroupDetailBody({ data, groupKey, history, editable = false }: { data: PolicyGroupsResponse; groupKey: string; history?: ReactNode; editable?: boolean }) {
   const d = groupDetail(data, groupKey);
   if (!d) return null;
   return (
     <div className="flex min-w-0 flex-col gap-6" data-group-detail={groupKey}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <ReadOnlyChip />
+        {!editable && <ReadOnlyChip />}
+        <StateChip column={d.column} />
         {d.column.isDefault && <span className="text-[11px] text-[var(--text-muted)]">Default group</span>}
+        {typeof d.column.version === "number" && <span className="text-[11px] tabular-nums text-[var(--text-muted)]">Version {d.column.version}</span>}
         <span className="text-[11px] tabular-nums text-[var(--text-muted)]">{plural(d.column.customers, "customer")}</span>
-        <span className="text-[11px] text-[var(--text-faint)]" data-editing-note>{EDITING_NOTE}</span>
+        {!editable && d.column.kind === "group" && <span className="text-[11px] text-[var(--text-faint)]" data-read-only-note>{READ_ONLY_NOTE}</span>}
       </div>
       {d.categories.map((cat) => (
         <section key={cat.id} aria-label={cat.label} className="flex min-w-0 flex-col gap-2" data-category={cat.id}>
@@ -438,14 +475,8 @@ export function GroupDetailBody({ data, groupKey }: { data: PolicyGroupsResponse
           ))}
         </dl>
       </section>
-      <section aria-label="Version history" className="flex min-w-0 flex-col gap-1">
-        <h3 className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">Version history</h3>
-        <p className="text-[11px] text-[var(--text-muted)]">{`Effective from ${d.column.effectiveFrom} · ${VERSION_HISTORY_NOTE}`}</p>
-      </section>
-      <section aria-label="Cost exposure" className="flex min-w-0 flex-col gap-1">
-        <h3 className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">Cost exposure</h3>
-        <p className="text-[11px] text-[var(--text-muted)]" data-cost-exposure-slot>{COST_EXPOSURE_NOTE}</p>
-      </section>
+      {d.column.kind === "group" && <p className="text-[11px] text-[var(--text-muted)]">{`Effective from ${d.column.effectiveFrom}`}</p>}
+      {d.column.kind === "group" && history}
     </div>
   );
 }
@@ -458,13 +489,16 @@ export function policiesDrawerTitle(d: PoliciesDrawer | null, data: PolicyGroups
 }
 
 /** A drawer's body (exported so hosting is provable without a DOM portal). */
-export function PoliciesDrawerBody({ drawer, data, renderHosted, onOpenWorkspace }: {
+export function PoliciesDrawerBody({ drawer, data, renderHosted, onOpenWorkspace, history, editable }: {
   drawer: PoliciesDrawer;
   data: PolicyGroupsResponse | null;
   renderHosted: RenderHosted;
   onOpenWorkspace: (id: string) => void;
+  /** The group detail's history + exposure block (the lead mounts PolicyGroupHistory). */
+  history?: (groupKey: string) => ReactNode;
+  editable?: boolean;
 }) {
-  if (drawer.kind === "group") return data ? <GroupDetailBody data={data} groupKey={drawer.key} /> : null;
+  if (drawer.kind === "group") return data ? <GroupDetailBody data={data} groupKey={drawer.key} history={history?.(drawer.key)} editable={editable} /> : null;
   const h = POLICY_DRAWERS[drawer.kind];
   return <div className="min-w-0">{renderHosted(h.key, onOpenWorkspace, h.variant)}</div>;
 }
@@ -477,17 +511,32 @@ export function PoliciesLead({ renderHosted, hasHosted, onOpenWorkspace, access 
   const operational = useSharedWidgetFetch<OperationalControlsReadModel>("/api/platform/platform-ops/operational-controls");
   const alerts = useSharedWidgetFetch<PlatformAlertsResponse>("/api/platform/platform-ops/alerts");
   const [drawer, setDrawer] = useState<PoliciesDrawer | null>(null);
+  // POLICY EDITOR — actions exist only when the editor offers them (it decides from `access`).
+  const editor = usePolicyGroupEditor(access, groups.data);
+  const edit = editor.actions;
   // A doorway inside a drawer closes it, then moves the rail.
   const go = (id: string) => { setDrawer(null); onOpenWorkspace(id); };
+  // Opening the editor from a drawer closes the drawer first (one surface at a time).
+  const editFromDrawer: PolicyEditActions | undefined = edit && {
+    onEdit: (k) => { setDrawer(null); edit.onEdit(k); },
+    onClone: (k) => { setDrawer(null); edit.onClone(k); },
+    onNew: () => { setDrawer(null); edit.onNew(); },
+    onRestore: (k, v) => { setDrawer(null); edit.onRestore(k, v); },
+  };
+  const history = (key: string) => <PolicyGroupHistory groupKey={key} onRestore={editFromDrawer ? (v) => editFromDrawer.onRestore(key, v) : undefined} />;
 
   const title = policiesDrawerTitle(drawer, groups.data);
-  const body: ReactNode = drawer && title ? <PoliciesDrawerBody drawer={drawer} data={groups.data} renderHosted={renderHosted} onOpenWorkspace={go} /> : null;
+  const body: ReactNode = drawer && title
+    ? <PoliciesDrawerBody drawer={drawer} data={groups.data} renderHosted={renderHosted} onOpenWorkspace={go} history={history} editable={edit !== undefined} />
+    : null;
 
   return (
     <>
       <PoliciesLeadSurface groups={groups} policies={policies} cadence={cadence} costControls={costControls} operational={operational} alerts={alerts}
         hasHosted={hasHosted} onOpenDrawer={setDrawer} onOpenWorkspace={onOpenWorkspace}
-        reconcileSlot={<BetaReconciliationEntry access={access} />} />
+        reconcileSlot={<BetaReconciliationEntry access={access} />}
+        edit={editFromDrawer} editorStatus={editor.status} />
+      {editor.panel}
       <DetailDrawer open={drawer !== null && body !== null} onClose={() => setDrawer(null)} eyebrow="Policies" title={title} size="xl">
         {body}
       </DetailDrawer>

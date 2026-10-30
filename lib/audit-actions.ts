@@ -341,6 +341,18 @@ export const AuditAction = {
   // same transaction as the inserts, reason-required; target = the POLICY_GROUP;
   // metadata carries counts only (eligible, created, skipped) — never an identity.
   CUSTOMER_POLICY_RECONCILED:      "CUSTOMER_POLICY_RECONCILED",
+  // POLICY EDITOR (owner ruling 2026-10-30) — a PLATFORM_OPS CONTROL holder
+  // created / cloned, edited (a new immutable version), rolled back (a new
+  // version from an earlier one), archived, or moved the default of a customer
+  // Policy Group (lib/platform/policies/policy-groups-write.ts). ONE row per
+  // operation, in the same transaction, reason-required; target = the
+  // POLICY_GROUP; metadata carries the change summary (dimension, before,
+  // after) and customer COUNTS — never a customer id.
+  POLICY_GROUP_CREATED:            "POLICY_GROUP_CREATED",
+  POLICY_GROUP_UPDATED:            "POLICY_GROUP_UPDATED",
+  POLICY_GROUP_ROLLED_BACK:        "POLICY_GROUP_ROLLED_BACK",
+  POLICY_GROUP_ARCHIVED:           "POLICY_GROUP_ARCHIVED",
+  POLICY_GROUP_DEFAULT_CHANGED:    "POLICY_GROUP_DEFAULT_CHANGED",
   JOB_CADENCE_CHANGED:             "JOB_CADENCE_CHANGED",
   JOB_CADENCE_RESET:               "JOB_CADENCE_RESET",
   REFRESH_ALL_REQUESTED:           "REFRESH_ALL_REQUESTED",
@@ -530,6 +542,12 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.CUSTOMER_COHORT_ASSIGNED,
   // Beta reconciliation — the fleet-wide default-assignment run (counts only).
   AuditAction.CUSTOMER_POLICY_RECONCILED,
+  // Policy editor — group create / edit / rollback / archive / default (counts only).
+  AuditAction.POLICY_GROUP_CREATED,
+  AuditAction.POLICY_GROUP_UPDATED,
+  AuditAction.POLICY_GROUP_ROLLED_BACK,
+  AuditAction.POLICY_GROUP_ARCHIVED,
+  AuditAction.POLICY_GROUP_DEFAULT_CHANGED,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
   AuditAction.OPERATOR_REFRESH_ALL,

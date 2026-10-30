@@ -4,6 +4,8 @@
  * Run: npx tsx --require ./scripts/lib/server-only-preload.cjs lib/platform/customer/assign.test.ts
  */
 import { OperatorActionValidationError } from "@/lib/audit";
+import { buildPolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
+import { POLICY_GROUPS } from "@/lib/entitlements/catalogue";
 import { AI_ALLOWANCE_OVERRIDE_CEILING_USD, AssignmentRefusedError, assignCustomerCohort, assignCustomerPolicy, validateAllowanceOverride, type AssignClient, type AssignTx } from "./assign";
 
 let failures = 0;
@@ -12,8 +14,10 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-function fakeClient(seed: { assignment?: { policyGroup: string; overlay: string | null; aiDailyUsdAllowanceOverride?: number | null } | null; cohorts?: string[] } = {}) {
-  const state = { assignment: seed.assignment ?? null, cohorts: new Set(seed.cohorts ?? []), audits: [] as Record<string, unknown>[], txs: 0, rolledBack: 0 };
+function fakeClient(seed: { assignment?: { policyGroup: string; overlay: string | null; aiDailyUsdAllowanceOverride?: number | null } | null; cohorts?: string[];
+  /** Review fix 3 — the PolicyGroup rows the FOR SHARE re-check sees (key → archivedAt). */
+  groupRows?: Record<string, Date | null> } = {}) {
+  const state = { assignment: seed.assignment ?? null, cohorts: new Set(seed.cohorts ?? []), audits: [] as Record<string, unknown>[], txs: 0, rolledBack: 0, raw: [] as { sql: string; values: unknown[] }[] };
   const tx: AssignTx = {
     customerPolicyAssignment: {
       findUnique: async () => state.assignment ? { ...state.assignment, assignedAt: new Date("2026-10-01T00:00:00Z"), assignedById: "prev" } : null,
@@ -24,6 +28,12 @@ function fakeClient(seed: { assignment?: { policyGroup: string; overlay: string 
       create: async ({ data }) => { state.cohorts.add(data.cohort); return { id: "c-new", joinedAt: new Date("2026-10-08T00:00:00Z") }; },
     },
     auditLog: { create: async ({ data }) => { state.audits.push(data as unknown as Record<string, unknown>); } },
+    // REVIEW FIX 3 — the FOR SHARE re-check (no PolicyGroup rows in this fake: code groups only).
+    $queryRaw: async <T,>(q: TemplateStringsArray, ...values: unknown[]) => {
+      state.raw.push({ sql: q.join("?"), values });
+      const k = values[0] as string;
+      return (seed.groupRows && k in seed.groupRows ? [{ archivedAt: seed.groupRows[k] }] : []) as unknown as T;
+    },
   };
   const client: AssignClient = { $transaction: async (fn) => { state.txs++; const snapshot = { a: state.assignment, c: new Set(state.cohorts), n: state.audits.length }; try { return await fn(tx); } catch (e) { state.assignment = snapshot.a; state.cohorts = snapshot.c; state.audits.length = snapshot.n; state.rolledBack++; throw e; } } };
   return { client, state };
@@ -87,6 +97,29 @@ const reason = { code: "BETA_ONBOARDING" as const };
     check("set together with the group ⇒ ONE row (POLICY_ASSIGNED) whose change carries the override too", s2.audits.length === 1 && s2.audits[0].action === "CUSTOMER_POLICY_ASSIGNED"
       && (s2.audits[0].metadata as { change: { after: { aiDailyUsdAllowanceOverride: number } } }).change.after.aiDailyUsdAllowanceOverride === 3);
     check("an undefined override keeps the stored one", (await assignCustomerPolicy({ userId: "u2", overlay: null, reason, actor }, c2)).aiDailyUsdAllowanceOverride === 3);
+  }
+  console.log("review fix 3 — the archive race (FOR SHARE re-check inside the transaction)");
+  {
+    // The catalogue (≤ 30 s old) still says PRO_V1 is assignable; the row read under lock says archived.
+    const stale = buildPolicyGroupCatalogue(
+      [{ key: "PRO_V1", label: "Pro", description: "", isDefault: false, builtIn: false, archivedAt: null, currentVersion: 1 }],
+      [{ groupKey: "PRO_V1", version: 1, values: POLICY_GROUPS.BETA_FULL_ACCESS_V1.values, createdAt: new Date() }], new Date());
+    const { client, state } = fakeClient({ groupRows: { PRO_V1: new Date("2026-10-30T12:00:00Z") } });
+    let refused = ""; try { await assignCustomerPolicy({ userId: "u1", policyGroup: "PRO_V1", reason, actor }, client, async () => stale); } catch (e) { refused = e instanceof AssignmentRefusedError ? e.message : String(e); }
+    check("archived between the catalogue read and the transaction ⇒ refused, nothing written, rolled back",
+      /archived/.test(refused) && state.assignment === null && state.audits.length === 0 && state.rolledBack === 1);
+    check("…the re-check is a parameterised FOR SHARE (the key is a bound value)",
+      state.raw.length === 1 && /FROM "PolicyGroup" WHERE "key" = \? FOR SHARE$/.test(state.raw[0].sql) && state.raw[0].values[0] === "PRO_V1");
+    const ok = fakeClient({ groupRows: { PRO_V1: null } });
+    const e = await assignCustomerPolicy({ userId: "u1", policyGroup: "PRO_V1", reason, actor }, ok.client, async () => stale);
+    check("a non-archived DB group passes the re-check and is assigned", e.policyGroup === "PRO_V1" && ok.state.audits.length === 1);
+    const code = fakeClient({ groupRows: {} });
+    const dbCat = buildPolicyGroupCatalogue([], [], new Date());
+    const b = await assignCustomerPolicy({ userId: "u1", policyGroup: "BETA_FULL_ACCESS_V1", reason, actor }, code.client, async () => dbCat);
+    check("a code-only key with NO row stays allowed", b.policyGroup === "BETA_FULL_ACCESS_V1");
+    const gone = fakeClient({ groupRows: {} });
+    let r2 = ""; try { await assignCustomerPolicy({ userId: "u1", policyGroup: "PRO_V1", reason, actor }, gone.client, async () => stale); } catch (err) { r2 = (err as Error).message; }
+    check("a DB-only key whose row is absent under lock ⇒ refused as unknown", /Unknown policy group/.test(r2) && gone.state.assignment === null);
   }
   console.log("cohorts");
   {
