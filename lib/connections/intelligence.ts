@@ -153,6 +153,7 @@ export interface ConnectionIntelligenceStatus {
       lastObservedISO: string;
       /** SPL TOKEN HISTORY — licence start, its kind, and stored caveats (the plain-reason input). Dates only. */
       licensedFromISO?: string | null;
+      licensedToISO?: string | null;
       coverageKind?: "COMPLETE" | "PARTIAL" | "UNKNOWN" | null;
       caveats?: string[];
     }>;

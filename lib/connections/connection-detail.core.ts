@@ -245,10 +245,19 @@ export function tokenUnverifiedReason(caveats: readonly string[] | undefined): s
   return "the network couldn’t provide its full history";
 }
 
+function daysApart(fromISO: string, toISO: string): number {
+  return Math.round((Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${fromISO}T00:00:00Z`)) / 86_400_000);
+}
+
 /** One token's history facet, in the customer's words — absolute dates only, never a quantity (PCS-2). */
 export function tokenHistoryText(t: WalletTokens[number]): string {
   if (t.historyState === "RECONSTRUCTED") {
     const from = t.licensedFromISO ? fmtDay(t.licensedFromISO) : null;
+    // A licence that stopped well short of the latest observation was FROZEN:
+    // newer activity couldn't be proven, so the verified stretch ends there.
+    if (t.coverageKind === "PARTIAL" && t.licensedToISO && t.lastObservedISO && daysApart(t.licensedToISO, t.lastObservedISO) > 2) {
+      return `Verified ${from ? `from ${from} ` : ""}through ${fmtDay(t.licensedToISO)} — later activity couldn’t be proven`;
+    }
     if (t.coverageKind === "PARTIAL") return from ? `Verified from ${from} — earlier history couldn’t be proven` : "Verified only in part — earlier history couldn’t be proven";
     return from ? `History verified since ${from}` : "History verified";
   }
@@ -263,8 +272,12 @@ function tokenLimitations(chain: string | null, sym: string, tokens: WalletToken
   if (!tokens) return [];
   if (tokens.length === 0) return [`No ${kind} token balances have been recorded for this wallet. Native ${sym} history is shown above.`];
   const pending = tokens.filter((t) => t.historyState !== "RECONSTRUCTED").length;
-  if (pending === 0) return [];
-  return [`Token history is tracked separately from native ${sym} history. ${pending === tokens.length ? (tokens.length === 1 ? "This wallet’s token shows" : `All ${tokens.length} tokens show`) : `${pending} of ${tokens.length} tokens show`} its current balance only — earlier balances are never estimated.`
+  // The stated discovery limit (SPL): verified means "as far as can be discovered".
+  const scope = kind === "SPL" && tokens.some((t) => t.historyState === "RECONSTRUCTED")
+    ? ["Verified token history covers every token account this wallet’s own transactions reveal. An account opened and closed by others without ever involving this wallet can’t be discovered."]
+    : [];
+  if (pending === 0) return scope;
+  return [...scope, `Token history is tracked separately from native ${sym} history. ${pending === tokens.length ? (tokens.length === 1 ? "This wallet’s token shows" : `All ${tokens.length} tokens show`) : `${pending} of ${tokens.length} tokens show`} its current balance only — earlier balances are never estimated.`
     .replace("tokens show its", "tokens show their")];
 }
 
