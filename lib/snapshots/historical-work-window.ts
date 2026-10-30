@@ -173,7 +173,7 @@ async function resolveEvidenceFloor(financialAccountIds: string[]): Promise<stri
       _min: { earliestReturnedDate: true },
     }),
     db.positionObservation.aggregate({
-      where: { ...scope, deletedAt: null, supersededById: null },
+      where: { ...scope, deletedAt: null, supersededById: null, instrument: NOT_TOKEN_INSTRUMENT },
       _min:  { date: true },
     }),
   ]);

@@ -101,6 +101,8 @@ import {
   ethWorkerConfig, orderEthCandidates, probeBudgetFor, stepProbeBudget, type EthBackfillCheckpoint, type EthBackfillWorkerConfig,
 } from "@/lib/crypto/eth-history-backfill.core";
 import type { EthBackfillStore, EthBackfillDeps, EthBackfillOutcome } from "@/lib/crypto/eth-history-backfill";
+import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps, type Erc20HistoryPassSummary } from "@/lib/crypto/erc20-history-pass";
+import { erc20HistoryConfig, type Erc20HistoryConfig } from "@/lib/crypto/erc20-history.core";
 import { effectiveDailyUsage, incrementalMeter, meterTotal, type IncrementalMeter, type MeterRecorder } from "@/lib/usage/provider-budget.core";
 import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS } from "@/lib/prices/price-gap.core";
 import type { PriceGapRun, RevaluationOwed, RevaluationRun } from "@/lib/prices/price-gap";
@@ -165,6 +167,8 @@ export interface SolBackfillJobSummary {
   btc?: BtcBackfillPassSummary;
   /** Ethereum's pass, when enabled and wired. */
   eth?: EthBackfillPassSummary;
+  /** ERC-20 token history's pass (lib/crypto/erc20-history-pass.ts) — part of Ethereum's phase. */
+  ethTokens?: Erc20HistoryPassSummary;
 }
 
 export interface EthBackfillPassSummary {
@@ -267,6 +271,8 @@ export interface SolBackfillJobDeps {
   btc?: BtcBackfillJobDeps;
   /** Absent ⇒ no Ethereum pass. */
   eth?: EthBackfillJobDeps;
+  /** Absent ⇒ no ERC-20 token-history pass. */
+  ethTokens?: Erc20HistoryPassDeps;
 }
 
 /**
@@ -317,7 +323,7 @@ function addPriceGaps(summary: SolBackfillJobSummary, g: PriceGapRun): void {
   summary.priceGaps.deferred += g.decisions.filter((d) => d.kind === "DEFERRED_RUN_CAP").length;
 }
 
-export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfig; btcConfig?: BtcBackfillWorkerConfig; ethConfig?: EthBackfillWorkerConfig; deps?: SolBackfillJobDeps } = {}): Promise<SolBackfillJobSummary> {
+export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfig; btcConfig?: BtcBackfillWorkerConfig; ethConfig?: EthBackfillWorkerConfig; erc20Config?: Erc20HistoryConfig; deps?: SolBackfillJobDeps } = {}): Promise<SolBackfillJobSummary> {
   const cfg = opts.config ?? workerConfig();
   const summary: SolBackfillJobSummary = {
     enabled: cfg.enabled, eligible: 0, walletsRun: 0, walletsSkippedLocked: 0, completed: 0, promoted: 0,
@@ -358,7 +364,10 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
       { ...ethCfgIn, startReserveMs: Math.max(2_000, cfg.jobBudgetMs - PHASE_SETUP_MS) })
     : ethCfgIn;
   const ethPlan = deps.eth && ethCfg.enabled ? await planEth(deps.eth, start) : null;
-  const ethHasWork = !!ethPlan && ethPlan.work.length > 0;
+  // ERC-20 token history is part of Ethereum's phase: it runs after the native pass, on what is left of it.
+  const erc20Cfg = opts.erc20Config ?? erc20HistoryConfig();
+  const tokenPlan = deps.ethTokens && erc20Cfg.enabled ? await planErc20History(deps.ethTokens, erc20Cfg, day) : null;
+  const ethHasWork = (!!ethPlan && ethPlan.work.length > 0) || (!!tokenPlan && tokenPlan.work.length > 0);
   /** The deadline the CURRENT chain's pass plans to (lib/crypto/history-worker-schedule.core.ts). */
   let phaseDeadline = jobDeadline;
 
@@ -474,6 +483,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     summary.stoppedBecause = "NO_WORK";
     if (btcPlan) summary.btc = { ...btcPlan.summary, stoppedBecause: "NO_WORK" };
     if (ethPlan) summary.eth = { ...ethPlan.summary, dailyRequestCap: cfg.dailyRequestCap, stoppedBecause: "NO_WORK" };
+    if (tokenPlan) summary.ethTokens = { ...tokenPlan.summary, dailyRequestCap: cfg.dailyRequestCap };
     return summary;
   }
 
@@ -610,13 +620,25 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     else if (chain === "BTC" && btcPlan && deps.btc) {
       summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline: phaseDeadline, regenerateUnderLock });
       summary.deferred += summary.btc.deferred;
-    } else if (chain === "ETH" && ethPlan && deps.eth) {
-      summary.eth = await runEthPass(deps, deps.eth, ethCfg, ethPlan, {
-        jobDeadline: phaseDeadline, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(),
-        usage: ethUsage, regenerateUnderLock,
-      });
-      summary.deferred += summary.eth.deferred;
+    } else if (chain === "ETH") {
+      if (ethPlan && deps.eth) {
+        summary.eth = await runEthPass(deps, deps.eth, ethCfg, ethPlan, {
+          jobDeadline: phaseDeadline, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(),
+          usage: ethUsage, regenerateUnderLock,
+        });
+        summary.deferred += summary.eth.deferred;
+      }
+      await runTokenPass(phaseDeadline);
     }
+  };
+  /** ERC-20 token history (one isolated call; the pass owns its listing, budget and regeneration). */
+  const runTokenPass = async (endBy: number) => {
+    if (!tokenPlan || !deps.ethTokens || summary.ethTokens) return;
+    summary.ethTokens = await runErc20HistoryPass(tokenPlan, deps.ethTokens, erc20Cfg, {
+      jobDeadline: endBy, day, dailyRequestCap: cfg.dailyRequestCap, now: deps.now, claimLock: deps.claimLock, releaseLock: deps.releaseLock,
+      providerUsageToday: deps.providerUsageToday, regenerateUnderLock,
+    });
+    summary.deferred += summary.ethTokens.deferred;
   };
   const queue = [...order];
   if (queue.length > 0) {
@@ -655,6 +677,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     });
     summary.deferred += summary.eth.deferred;
   }
+  await runTokenPass(jobDeadline);
   summary.requests = { ...meter, total: total() }; // (Solana's pass set the same when it ran)
 
   await revalueOtherHolders();
@@ -948,6 +971,7 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
     },
     btc: await productionBtcDeps(systemDb),
     eth: await productionEthDeps(systemDb),
+    ethTokens: (await import("@/lib/crypto/erc20-history.store")).prismaErc20HistoryPassDeps(systemDb),
   };
 }
 

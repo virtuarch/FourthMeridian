@@ -36,6 +36,7 @@
 import { db } from "@/lib/db";
 import { PositionOrigin } from "@prisma/client";
 import { BTC_NATIVE, ETH_NATIVE, SOL_NATIVE } from "./native-asset";
+import { NOT_TOKEN_INSTRUMENT } from "./token-asset";
 import { reconstructBtcHistoryOrResumable } from "./btc-history-backfill.store";
 import { btcSyncHeadOnly } from "./btc-history-backfill";
 import { ESPLORA_USAGE_NETWORK, ESPLORA_USAGE_PROVIDER } from "./btc-backfill-worker.core";
@@ -108,7 +109,7 @@ async function earliestEvidenceISO(accountId: string): Promise<string | null> {
       select: { date: true },
     }),
     db.positionObservation.findFirst({
-      where:  { financialAccountId: accountId, supersededById: null, deletedAt: null },
+      where:  { financialAccountId: accountId, supersededById: null, deletedAt: null, instrument: NOT_TOKEN_INSTRUMENT },
       orderBy: { date: "asc" },
       select: { date: true },
     }),
@@ -197,6 +198,6 @@ export async function refreshWalletHistory(
  */
 export async function countDerivedRows(accountId: string): Promise<number> {
   return db.positionObservation.count({
-    where: { financialAccountId: accountId, origin: PositionOrigin.DERIVED, deletedAt: null },
+    where: { financialAccountId: accountId, origin: PositionOrigin.DERIVED, deletedAt: null, instrument: NOT_TOKEN_INSTRUMENT },
   });
 }

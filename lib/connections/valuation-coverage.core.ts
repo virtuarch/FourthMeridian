@@ -40,12 +40,18 @@ export interface ValuationCoverage {
    * not reconstructed. Null/absent when no priced token exists.
    */
   tokensTrackedFromISO?: string | null;
+  /**
+   * ERC-20 HISTORY — verified token history reaches back before its stored
+   * historical prices: those token days are not valued (never zero) before this.
+   */
+  tokenPricesFromISO?: string | null;
 }
 
 export function deriveValuationCoverage(
   rows: readonly ValuationCoverageInput[],
   priceFloors: ReadonlyMap<string, string | null>,
   tokensTrackedFromISO: string | null = null,
+  tokenPricesFromISO: string | null = null,
 ): ValuationCoverage | null {
   const bySymbol = new Map<string, ValuationCoverageLimit>();
   for (const r of rows) {
@@ -57,10 +63,10 @@ export function deriveValuationCoverage(
     if (r.balanceFromISO < prev.balanceFromISO) prev.balanceFromISO = r.balanceFromISO;
   }
   const limits = [...bySymbol.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
-  if (!limits.length && !tokensTrackedFromISO) return null;
+  if (!limits.length && !tokensTrackedFromISO && !tokenPricesFromISO) return null;
   const floors = limits.map((l) => l.pricedFromISO);
   const valuedFromISO = !limits.length ? null : floors.every((f): f is string => f !== null) ? [...floors].sort().at(-1)! : null;
-  return { limits, valuedFromISO, ...(tokensTrackedFromISO ? { tokensTrackedFromISO } : {}) };
+  return { limits, valuedFromISO, ...(tokensTrackedFromISO ? { tokensTrackedFromISO } : {}), ...(tokenPricesFromISO ? { tokenPricesFromISO } : {}) };
 }
 
 function fmtDay(iso: string): string {
@@ -86,5 +92,8 @@ export function valuationCoverageNote(cov: ValuationCoverage | null, chartFromIS
   const tokenNote = cov.tokensTrackedFromISO && chartFromISO < cov.tokensTrackedFromISO
     ? `Token holdings are included from ${fmtDay(cov.tokensTrackedFromISO)}; earlier token balances aren’t proven, so they aren’t counted.`
     : null;
-  return [priceNote, tokenNote].filter((x): x is string => x !== null).join(" ") || null;
+  const tokenPriceNote = cov.tokenPricesFromISO && chartFromISO < cov.tokenPricesFromISO
+    ? `Verified token history is valued from ${fmtDay(cov.tokenPricesFromISO)}, when stored historical token prices begin; earlier token days aren’t valued (never counted as zero).`
+    : null;
+  return [priceNote, tokenNote, tokenPriceNote].filter((x): x is string => x !== null).join(" ") || null;
 }

@@ -456,7 +456,9 @@ async function main() {
     check("native complete + every token COMPLETE + inventory proven ⇒ complete", walletHistoryComplete({ chain: "SOL", native: nativeDone, tokens: [full], tokenInventoryComplete: true }) === true);
     check("a token verified only from a later start (PARTIAL) ⇒ NOT complete", walletHistoryComplete({ chain: "SOL", native: nativeDone, tokens: [partial], tokenInventoryComplete: true }) === false);
     check("native NOT complete ⇒ never complete, whatever the tokens", walletHistoryComplete({ chain: "SOL", native: { ...nativeDone, ...facetFromCoverage(null) }, tokens: [full], tokenInventoryComplete: true }) === false);
-    check("ETH (no token history wired here) stays incomplete", walletHistoryComplete({ chain: "ETH", native: nativeDone, tokens: [], tokenInventoryComplete: true }) === false);
+    // ERC-20 history (PR #122) wires ETH through the same inventory rule: unproven ⇒ incomplete.
+    check("ETH without a proven token inventory stays incomplete", walletHistoryComplete({ chain: "ETH", native: nativeDone, tokens: [] }) === false
+      && walletHistoryComplete({ chain: "ETH", native: nativeDone, tokens: [], tokenInventoryComplete: false }) === false);
     check("inventory from a cursor: absent / foreign ⇒ false", splInventoryCompleteFromCursor(null) === false && splInventoryCompleteFromCursor('{"kind":"btc"}') === false && splInventoryCompleteFromCursor(nativeCursor()) === false);
   }
 

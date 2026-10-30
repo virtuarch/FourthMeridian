@@ -36,6 +36,7 @@ import { PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
 import { licensedInterval, loadInstrumentCoverage } from "./position-coverage";
 import type { ChainCoverage } from "./chain-movement";
 import { nativeAssetForChain } from "./native-asset";
+import { unsupportedReasonOf, type Erc20UnsupportedReason } from "./erc20-history.core";
 import {
   parseTokenAssetKey, tokenDisplayLabel, shortenTokenAddress, TOKEN_ALIAS_PROVIDER, WALLET_TOKEN_POSITION_SOURCE, type TokenStandard,
 } from "./token-asset";
@@ -43,11 +44,15 @@ import {
 type Client = PrismaClient | Prisma.TransactionClient;
 
 /**
- * Chains whose TOKEN history acquisition is proven. EMPTY in PR-A: no token
- * history is reconstructed anywhere. A follow-up adds its chain here, on
- * evidence, in the same PR that writes the token coverage.
+ * Chains whose TOKEN history acquisition is proven, each with its inventory
+ * reader below. SOL: SPL history (spl-history*.ts). ETH: ERC-20 history
+ * (erc20-history*.ts) — every contract the wallet ever touched is discovered
+ * from its transfer evidence, and each is licensed only after its replay
+ * matched on-chain balanceOf at every anchor; the inventory reader answers
+ * "discovery closed AND every discovered token decided" — not merely the
+ * tokens current capture happened to see.
  */
-export const TOKEN_HISTORY_CHAINS: ReadonlySet<string> = new Set<string>(["SOL"]);
+export const TOKEN_HISTORY_CHAINS: ReadonlySet<string> = new Set<string>(["SOL", "ETH"]);
 
 /**
  * SPL TOKEN HISTORY (2026-10-28) — per chain, whether every token the wallet
@@ -59,6 +64,7 @@ export const TOKEN_HISTORY_CHAINS: ReadonlySet<string> = new Set<string>(["SOL"]
 export type TokenInventoryReader = (client: Client, accountIds: readonly string[]) => Promise<Map<string, boolean>>;
 const TOKEN_INVENTORY_READERS: Record<string, () => Promise<TokenInventoryReader>> = {
   SOL: async () => (await import("./spl-history-inventory")).loadSplInventoryComplete,
+  ETH: async () => (await import("./erc20-history-inventory")).loadErc20InventoryComplete,
 };
 
 /** Chains that carry tokens at all (a BTC wallet's history is native-only by construction). */
@@ -83,6 +89,8 @@ export interface InstrumentHistoryFacet {
   coverageKind?:   "COMPLETE" | "PARTIAL" | "UNKNOWN" | null;
   /** Stored caveats of an unlicensed/partial record — the plain-reason input for Connections copy. */
   caveats?:        string[];
+  /** UNLICENSED tokens: why the history was refused (erc20-history.core reasons), else null. */
+  reason?:         Erc20UnsupportedReason | null;
 }
 
 export interface TokenHistoryFacet extends InstrumentHistoryFacet {
@@ -243,6 +251,7 @@ export async function loadWalletInstrumentHistory(
         firstObservedISO: isoOf(s._min.date), lastObservedISO,
         priceStatus,
         ...facetFromCoverage(cov.get(s.instrumentId) ?? null),
+        reason: unsupportedReasonOf(cov.get(s.instrumentId) ?? null),
       });
     }
     tokens.sort((x, y) => (x.held === y.held ? x.label.localeCompare(y.label) : x.held ? -1 : 1));
@@ -253,3 +262,4 @@ export async function loadWalletInstrumentHistory(
   }
   return out;
 }
+

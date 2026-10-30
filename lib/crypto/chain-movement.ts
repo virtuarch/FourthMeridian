@@ -92,7 +92,23 @@ export type ChainCoverageCaveat =
    * delegation. Reporting that as bad data would send someone to retry a request
    * that will keep succeeding.
    */
-  | "PROOF_PREMISES_UNMET";
+  | "PROOF_PREMISES_UNMET"
+  /**
+   * ERC-20 HISTORY — why a TOKEN's transfer replay was refused (always on
+   * UNKNOWN coverage, which licenses nothing): the on-chain `balanceOf` at a
+   * checked block disagreed with the replay — above it (rebasing / balance
+   * changes without Transfer events) or below it (fee-on-transfer, or events
+   * that overstate what arrived) — a balance existed before the first transfer,
+   * the contract did not answer `balanceOf` in the standard way, the token's
+   * decimals are unknown, or a balance was observed that no transfer records.
+   * lib/crypto/erc20-history.core.ts owns the mapping.
+   */
+  | "TOKEN_REBASING_OR_NONSTANDARD"
+  | "TOKEN_FEE_ON_TRANSFER_OR_NONSTANDARD"
+  | "TOKEN_OPENING_BALANCE_UNEXPLAINED"
+  | "TOKEN_BALANCE_CALL_FAILED"
+  | "TOKEN_DECIMALS_UNKNOWN"
+  | "TOKEN_NO_TRANSFER_RECORDS";
 
 export type ChainCoverage =
   | { kind: "COMPLETE"; fromISO: string; toISO: string; source: string }

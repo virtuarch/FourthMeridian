@@ -30,8 +30,8 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
     where: { financialAccountId: { in: accountIds }, kind: { in: ['COMPLETE', 'PARTIAL'] }, coveredFromDate: { not: null }, instrument: NOT_TOKEN_INSTRUMENT },
     select: { instrumentId: true, coveredFromDate: true, instrument: { select: { tickerSymbol: true } } },
   });
-  const tokensTrackedFromISO = await pricedTokensTrackedFrom(client, accountIds);
-  if (!coverage.length) return deriveValuationCoverage([], new Map(), tokensTrackedFromISO);
+  const { trackedFromISO: tokensTrackedFromISO, pricesFromISO: tokenPricesFromISO } = await pricedTokenDisclosure(client, accountIds);
+  if (!coverage.length) return deriveValuationCoverage([], new Map(), tokensTrackedFromISO, tokenPricesFromISO);
 
   const instrumentIds = [...new Set(coverage.map((c) => c.instrumentId))];
   const floors = await client.priceObservation.groupBy({
@@ -44,31 +44,53 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
     coverage.map((c) => ({ symbol: c.instrument.tickerSymbol ?? 'Asset', instrumentId: c.instrumentId, balanceFromISO: day(c.coveredFromDate) })),
     priceFloors,
     tokensTrackedFromISO,
+    tokenPricesFromISO,
   );
 }
 
 /**
  * TOKEN HOLDINGS (PR-A) — the first day a token that has EVER been priced was
- * observed in these accounts. Unpriced tokens never contribute value, so they
- * never need a disclosure. Dates only.
+ * observed in these accounts, among tokens whose history is NOT verified (their
+ * earlier balances are not reconstructed). Unpriced tokens never contribute
+ * value, so they never need a disclosure. Dates only.
+ *
+ * ERC-20 HISTORY — a VERIFIED priced token (COMPLETE token coverage) is valued
+ * from its licence start, but only where historical prices exist:
+ * `pricesFromISO` is the latest first-price day among verified priced tokens
+ * whose licence starts earlier (the day from which every one is valued).
  */
-async function pricedTokensTrackedFrom(client: Client, accountIds: string[]): Promise<string | null> {
+async function pricedTokenDisclosure(client: Client, accountIds: string[]): Promise<{ trackedFromISO: string | null; pricesFromISO: string | null }> {
   const firsts = await client.positionObservation.groupBy({
     by: ['instrumentId'],
     where: { financialAccountId: { in: accountIds }, source: WALLET_TOKEN_POSITION_SOURCE, supersededById: null, deletedAt: null, instrument: IS_TOKEN_INSTRUMENT },
     _min: { date: true },
   });
-  if (!firsts.length) return null;
-  const priced = new Set((await client.priceObservation.groupBy({
-    by: ['instrumentId'], where: { instrumentId: { in: firsts.map((f) => f.instrumentId) } }, _min: { date: true },
-  })).map((p) => p.instrumentId));
-  // SPL TOKEN HISTORY — a token whose history is LICENSED is included from its
-  // licensed start, not from when capture began (the reconstructed days count).
-  const licensed = new Map((await client.positionCoverage.findMany({
-    where: { financialAccountId: { in: accountIds }, instrumentId: { in: firsts.map((f) => f.instrumentId) }, kind: { in: ['COMPLETE', 'PARTIAL'] }, coveredFromDate: { not: null } },
-    select: { instrumentId: true, coveredFromDate: true },
-  })).map((c) => [c.instrumentId, day(c.coveredFromDate)]));
-  return firsts.filter((f) => priced.has(f.instrumentId))
+  if (!firsts.length) return { trackedFromISO: null, pricesFromISO: null };
+  const ids = firsts.map((f) => f.instrumentId);
+  const [priceFloors, licensedRows] = await Promise.all([
+    client.priceObservation.groupBy({ by: ['instrumentId'], where: { instrumentId: { in: ids } }, _min: { date: true } }),
+    client.positionCoverage.findMany({
+      where: { financialAccountId: { in: accountIds }, instrumentId: { in: ids }, kind: { in: ['COMPLETE', 'PARTIAL'] }, coveredFromDate: { not: null } },
+      select: { instrumentId: true, coveredFromDate: true },
+    }),
+  ]);
+  const floor = new Map(priceFloors.map((p) => [p.instrumentId, day(p._min.date)]));
+  // SPL / ERC-20 TOKEN HISTORY — a token whose history is LICENSED is included
+  // from its licensed start, not from when capture began (the reconstructed days count).
+  const licensed = new Map<string, string>();
+  for (const c of licensedRows) {
+    const f = day(c.coveredFromDate)!;
+    const prev = licensed.get(c.instrumentId);
+    if (!prev || f < prev) licensed.set(c.instrumentId, f);
+  }
+  const trackedFromISO = firsts.filter((f) => floor.has(f.instrumentId))
     .map((f) => { const obs = day(f._min.date); const lic = licensed.get(f.instrumentId) ?? null; return lic && obs && lic < obs ? lic : obs; })
     .filter((d): d is string => d !== null).sort()[0] ?? null;
+  // A licensed priced token is valued only where historical prices exist: the
+  // latest first-price day among those whose licence starts earlier.
+  const pricesFromISO = [...licensed.entries()]
+    .map(([id, from]) => ({ from, priced: floor.get(id) ?? null }))
+    .filter((x): x is { from: string; priced: string } => x.priced !== null && x.from < x.priced)
+    .map((x) => x.priced).sort().at(-1) ?? null;
+  return { trackedFromISO, pricesFromISO };
 }

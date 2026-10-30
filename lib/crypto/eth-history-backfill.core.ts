@@ -128,6 +128,12 @@ export interface EthBackfillCheckpoint {
   reconcileFailures?: number;
   /** Set when automatic runs must stop (an operator decides). */
   recovery?: { code: EthBackfillFailureCode; atISO: string } | null;
+  /**
+   * ERC-20 HISTORY — the wallet's token-history section (erc20-history.core.ts
+   * owns its shape). Opaque here: native code never reads it, and every native
+   * write spreads the checkpoint, so it is carried through unchanged.
+   */
+  tokens?: unknown;
 }
 
 export function queuedCheckpoint(accountId: string, reason: string, nowISO: string): EthBackfillCheckpoint {

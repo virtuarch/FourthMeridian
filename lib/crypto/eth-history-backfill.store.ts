@@ -17,6 +17,7 @@ import { btcHistoryLink as historyLink, readHistoryCheckpoint, casHistoryCheckpo
 import { reconstructEthHistory, persistEthFullHistory, type EthHistoryResult } from "./eth-history-sync";
 import type { EthHistoryDeps } from "./eth-history";
 import { parseCheckpoint, queuedCheckpoint, serializeCheckpoint, backfillStatus, type EthBackfillState } from "./eth-history-backfill.core";
+import { readErc20Section, carriedTokens } from "./erc20-history.core";
 import { runEthHistoryBackfill, EthCheckpointConflictError, type EthBackfillStore, type EthBackfillDeps, type EthBackfillOutcome } from "./eth-history-backfill";
 
 /**
@@ -31,8 +32,13 @@ export async function enqueueEthHistoryBackfill(client: PrismaClient, accountId:
   if (!link) return false;
   const raw = await readHistoryCheckpoint(client, link.connectionId);
   const existing = parseCheckpoint(raw, accountId);
-  if (raw !== null && !existing?.completedAtISO) return false;
-  const next = { ...queuedCheckpoint(accountId, reason, now.toISOString()), snapshotPendingFromISO: existing?.snapshotPendingFromISO ?? null };
+  // ERC-20 HISTORY — a standalone token section (no native checkpoint yet) is
+  // not a native checkpoint: it never blocks the queue, and the token section
+  // (wherever it lives) is carried into the new document untouched.
+  const tokenOnly = readErc20Section(raw, accountId).host === "STANDALONE";
+  if (raw !== null && !tokenOnly && !existing?.completedAtISO) return false;
+  const next = { ...queuedCheckpoint(accountId, reason, now.toISOString()), snapshotPendingFromISO: existing?.snapshotPendingFromISO ?? null,
+    ...carriedTokens(raw, accountId) };
   return casHistoryCheckpoint(client, link.connectionId, raw, serializeCheckpoint(next));
 }
 

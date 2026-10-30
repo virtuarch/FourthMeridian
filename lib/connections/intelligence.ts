@@ -149,6 +149,8 @@ export interface ConnectionIntelligenceStatus {
       standard: "SPL" | "ERC20";
       priceStatus: "MARKET_PRICE" | "NO_MARKET_PRICE" | "THIN_MARKET";
       historyState: "RECONSTRUCTED" | "NOT_RECONSTRUCTED" | "UNLICENSED";
+      /** UNLICENSED: why the history couldn't be verified (lib/crypto/erc20-history.core reason code). */
+      historyReason?: string | null;
       firstObservedISO: string;
       lastObservedISO: string;
       /** SPL TOKEN HISTORY — licence start, its kind, and stored caveats (the plain-reason input). Dates only. */

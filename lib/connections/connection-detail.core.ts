@@ -20,6 +20,7 @@ import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligenc
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { relativeUpdated, type ConnectionTone } from "@/lib/connections/connection-summary";
 import { tokenCaptureSupported } from "@/lib/crypto/token-asset";
+import { unsupportedReasonText, type Erc20UnsupportedReason } from "@/lib/crypto/erc20-history.core";
 
 // ── Overview: account groups ─────────────────────────────────────────────────
 
@@ -261,7 +262,8 @@ export function tokenHistoryText(t: WalletTokens[number]): string {
     if (t.coverageKind === "PARTIAL") return from ? `Verified from ${from} — earlier history couldn’t be proven` : "Verified only in part — earlier history couldn’t be proven";
     return from ? `History verified since ${from}` : "History verified";
   }
-  if (t.historyState === "UNLICENSED") return `Couldn’t be verified — ${tokenUnverifiedReason(t.caveats)}; current balance only`;
+  // ERC-20 refusals carry their own reason code (erc20-history.core); SPL ones a coverage caveat.
+  if (t.historyState === "UNLICENSED") return `Couldn’t be verified — ${t.historyReason ? unsupportedReasonText(t.historyReason as Erc20UnsupportedReason) : tokenUnverifiedReason(t.caveats)}; current balance only`;
   return "Not reconstructed yet";
 }
 

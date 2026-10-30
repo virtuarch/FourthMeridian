@@ -11,7 +11,9 @@
  *
  * A token counts on day d only when BOTH hold, each on its OWN evidence:
  *
- *   quantity  the token's own latest OBSERVED row on or before d is recent —
+ *   quantity  the token's own latest row on or before d is recent — an OBSERVED
+ *             row, or (ERC-20 history) a VERIFIED reconstructed row inside the
+ *             token's COMPLETE licence (token-valuation.ts selects them) —
  *             the same freshness rule native wallets use (lib/freshness
  *             `bandForAge`: LIVE or RECENT, i.e. under STALE_AFTER_DAYS). A
  *             fresh native observation never makes a stale token quantity
@@ -106,8 +108,14 @@ export function tokensValueOnDay(
   prices: readonly TokenPriceRow[],
   dISO: string,
 ): { totalUsd: number; tokens: TokenDayValue[] } {
-  const ids = [...new Set(observations.map((o) => o.instrumentId))].sort();
-  const tokens = ids.map((id) => tokenValueOnDay(id, observations, prices, dISO));
+  // Grouped once per call (identical result): each token scans only its own rows,
+  // which keeps a long regeneration window linear in the rows, not tokens × rows.
+  const obsBy = new Map<string, TokenObservationRow[]>();
+  for (const o of observations) (obsBy.get(o.instrumentId) ?? obsBy.set(o.instrumentId, []).get(o.instrumentId)!).push(o);
+  const pricesBy = new Map<string, TokenPriceRow[]>();
+  for (const p of prices) (pricesBy.get(p.instrumentId) ?? pricesBy.set(p.instrumentId, []).get(p.instrumentId)!).push(p);
+  const ids = [...obsBy.keys()].sort();
+  const tokens = ids.map((id) => tokenValueOnDay(id, obsBy.get(id)!, pricesBy.get(id) ?? [], dISO));
   return { totalUsd: tokens.reduce((s, t) => s + (t.valueUsd ?? 0), 0), tokens };
 }
 
