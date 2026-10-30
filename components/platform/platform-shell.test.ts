@@ -149,7 +149,9 @@ console.log("\nA. SECTIONS — published from the ACTIVE workspace's DB rows");
   );
   check(
     "a NON-composed section's anchor is absent from that body",
-    !bodyHtml.includes(`id="${platformSectionAnchor("ops_manual_operations")}"`),
+    // R2 review fix — ops_manual_operations is now composed in the Jobs view of
+    // this workspace, so the example of a key composed ELSEWHERE is an AI & Costs key.
+    !bodyHtml.includes(`id="${platformSectionAnchor("ops_ai_invocations")}"`),
   );
   // The body is scoped to the ACTIVE workspace, not to "every enabled row": a
   // key that is available in the DB map but composed into a DIFFERENT workspace

@@ -245,7 +245,11 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       views: [
         { id: "overview", label: "Overview", lead: "operations", sections: [],
           hosted: ["ops_overview", "ops_platform_health", "ops_convergence", "ops_timeline", "ops_manual_operations"] },
-        { id: "jobs", label: "Jobs", icon: "Timer", sections: ["ops_job_health", "ops_scheduler", "ops_history"] },
+        // R2 review fix — Jobs is a DRILL-DOWN view and the destination every
+        // "Run from Jobs" action (attention run-now, operator-feed links) opens,
+        // so Manual operations stays here inline as well as behind the Overview's
+        // deliberate "Run an operation…" entry. Not on the default screen.
+        { id: "jobs", label: "Jobs", icon: "Timer", sections: ["ops_job_health", "ops_scheduler", "ops_manual_operations", "ops_history"] },
         { id: "pipeline", label: "Pipeline", icon: "RefreshCw", lead: "pipeline", sections: ["ops_refresh_executions"],
           hosted: ["ops_refresh_summary", "ops_connection_health", "ops_refresh_coverage"] },
       ],

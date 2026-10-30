@@ -193,11 +193,17 @@ function titleOf(id: string | null, entities: readonly ProviderEntity[]): string
 
 // ── The lead ─────────────────────────────────────────────────────────────────
 
-export function ProvidersLeadSurface({ inputs, selected, sheetOpen, onSelect, onCloseSheet, hasHosted, renderHosted, onOpenWorkspace }: {
+export function ProvidersLeadSurface({ inputs, selected, sheetOpen, desktopDetail = true, onSelect, onCloseSheet, hasHosted, renderHosted, onOpenWorkspace }: {
   inputs: ProviderInputs;
   /** null ⇒ the worst-first default. */
   selected: string | null;
   sheetOpen: boolean;
+  /**
+   * R2 review fix — whether the (CSS-hidden below lg) desktop pane may mount the
+   * detail. False while a MOBILE selection is open in the sheet, so a hosted
+   * diagnostics widget never mounts twice (duplicate fetches/dialogs/ids).
+   */
+  desktopDetail?: boolean;
   onSelect: (id: string, from: "desktop" | "mobile") => void;
   onCloseSheet: () => void;
   hasHosted: (key: string) => boolean;
@@ -224,7 +230,7 @@ export function ProvidersLeadSurface({ inputs, selected, sheetOpen, onSelect, on
           <ProvidersMaster entities={entities} selected={current} onSelect={(id) => onSelect(id, "desktop")} hasHosted={hasHosted} loading={loading} />
         </div>
         <section aria-label="Provider detail" className="min-w-0 lg:col-span-7">
-          {current && (
+          {current && desktopDetail && (
             <LeadSection title={titleOf(current, entities)}>{detail("desktop")}</LeadSection>
           )}
         </section>
@@ -244,14 +250,18 @@ export function ProvidersLead({ renderHosted, hasHosted, onOpenWorkspace }: Plat
   const operations = useSharedWidgetFetch<ProviderOperationSummary>("/api/platform/platform-ops/refresh/provider-operations");
   const [selected, setSelected] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [origin, setOrigin] = useState<"desktop" | "mobile" | null>(null);
 
   return (
     <ProvidersLeadSurface
       inputs={{ health, apiUsage, email, plaid, operations }}
       selected={selected}
       sheetOpen={sheetOpen}
-      onSelect={(id, from) => { setSelected(id); if (from === "mobile") setSheetOpen(true); }}
-      onCloseSheet={() => setSheetOpen(false)}
+      desktopDetail={!sheetOpen && origin !== "mobile"}
+      onSelect={(id, from) => { setSelected(id); setOrigin(from); if (from === "mobile") setSheetOpen(true); }}
+      // A mobile selection is released when its sheet closes, so nothing stays
+      // mounted (and fetching) in the hidden desktop pane afterwards.
+      onCloseSheet={() => { setSheetOpen(false); if (origin === "mobile") { setSelected(null); setOrigin(null); } }}
       hasHosted={hasHosted}
       renderHosted={renderHosted}
       onOpenWorkspace={(id) => { setSheetOpen(false); onOpenWorkspace(id); }}

@@ -225,6 +225,19 @@ console.log("C. Connection diagnostics + provider cleanup — hosted, never re-g
     hasHosted: () => true, renderHosted: (k: string) => { hosted.push(k); return createElement("div", { "data-hosted": k }); }, onOpenWorkspace: () => {},
   }));
   check("the Connections detail renders BOTH hosted widgets through renderHosted", hosted.join() === "ops_connection_diagnostics,ops_provider_cleanup" && /data-hosted="ops_connection_diagnostics"/.test(html));
+  // R2 review fix — a MOBILE selection open in the sheet must not ALSO mount in
+  // the CSS-hidden desktop pane (double fetches, duplicate dialogs/ids).
+  const mobileHosted: string[] = [];
+  renderToStaticMarkup(createElement(ProvidersLeadSurface, {
+    inputs: providerInputs(), selected: "diag:connections", sheetOpen: true, desktopDetail: false, onSelect: () => {}, onCloseSheet: () => {},
+    hasHosted: () => true, renderHosted: (k: string) => { mobileHosted.push(k); return createElement("div", { "data-hosted": k }); }, onOpenWorkspace: () => {},
+  }));
+  check("with a mobile selection open, the hidden desktop pane mounts nothing (no double mount)",
+    !mobileHosted.includes("ops_connection_diagnostics") || mobileHosted.filter((k) => k === "ops_connection_diagnostics").length <= 1);
+  const lead = code("components/platform/leads/ProvidersLead.tsx");
+  check("…desktop pane is gated on desktopDetail, and a mobile selection is released when its sheet closes",
+    /\{current && desktopDetail && \(/.test(lead) && /desktopDetail=\{!sheetOpen && origin !== "mobile"\}/.test(lead)
+      && /if \(origin === "mobile"\) \{ setSelected\(null\); setOrigin\(null\); \}/.test(lead));
   check("FLEET_DIAGNOSTICS names the connection widget + cleanup together", FLEET_DIAGNOSTICS[0].keys.join() === "ops_connection_diagnostics,ops_provider_cleanup");
   for (const f of ["ProvidersLead.tsx", "providers-model.ts", "OperationsLead.tsx", "PipelineLead.tsx"]) {
     const src = code(`components/platform/leads/${f}`);

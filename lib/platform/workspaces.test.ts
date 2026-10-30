@@ -279,9 +279,13 @@ console.log("PLATFORM_OPS decomposition shape");
   // R2 — re-ruled: Manual Operations moved from the Jobs view into the Overview
   // lead's deliberate drawer; it renders INLINE on no view (fleet commands are
   // never casual buttons on a page).
-  check("Manual Operations is hosted by the Overview lead and rendered inline nowhere",
+  // R2 review fix — Manual Operations is hosted by the Overview lead (the
+  // deliberate "Run an operation…" entry) AND inline on the Jobs drill-down view,
+  // which is where every "Run from Jobs" action lands. Never inline on the
+  // default Overview screen.
+  check("Manual Operations: hosted by the Overview lead, inline only on Jobs, never inline on the default screen",
     overview.reachable.includes("ops_manual_operations")
-      && (operations.views ?? []).every((v) => !v.sections.map(viewSectionKey).includes("ops_manual_operations")));
+      && (operations.views ?? []).filter((v) => v.sections.map(viewSectionKey).includes("ops_manual_operations")).map((v) => v.id).join() === "jobs");
   check("Rich Job Health lives in the Jobs view", viewKeys("platform-overview", "jobs").includes("ops_job_health"));
   check("Alerts detail lives in the Policies workspace", byId.get("platform-policies")?.sections.includes("ops_alerts") === true);
   check("Providers workspace groups provider + freshness + api; connection health renders once, in Pipeline (P-10)", (() => {
@@ -394,7 +398,7 @@ console.log("Phase 1 UX · views");
   // summary-first leads; Pipeline keeps its paginated execution table inline.
   const shape = ops.map((w) => `${w.workspaceId}[${(w.views ?? []).map((v) => `${v.id}:${v.lead ? `<${v.lead}>` : ""}${v.sections.map((e) => typeof e === "string" ? e : `${e.key}/${e.variant}`).join("+")}${v.hosted ? `{${v.hosted.join("+")}}` : ""}`).join(" ")}]`).join(" | ");
   check("the approved composition, exactly (workspace → views → lead · inline sections · hosted keys, in order)", shape === [
-    "platform-overview[overview:<operations>{ops_overview+ops_platform_health+ops_convergence+ops_timeline+ops_manual_operations} jobs:ops_job_health+ops_scheduler+ops_history pipeline:<pipeline>ops_refresh_executions{ops_refresh_summary+ops_connection_health+ops_refresh_coverage}]",
+    "platform-overview[overview:<operations>{ops_overview+ops_platform_health+ops_convergence+ops_timeline+ops_manual_operations} jobs:ops_job_health+ops_scheduler+ops_manual_operations+ops_history pipeline:<pipeline>ops_refresh_executions{ops_refresh_summary+ops_connection_health+ops_refresh_coverage}]",
     "platform-providers[health:<providers>{ops_provider_health+ops_provider_operations+ops_resource_freshness+ops_connection_diagnostics+ops_provider_cleanup+ops_api_usage+ops_email_delivery}]",
     "platform-ai[ai:ops_ai_invocations+ops_ai_trend+ops_ai_budget+ops_brief_ops costs:ops_plaid_usage+ops_cost]",
     "platform-policies[groups:ops_policies/groups defaults:ops_policies/defaults alerts:ops_alerts emergency:ops_policies/emergency]",
@@ -439,11 +443,13 @@ console.log("Phase 1 UX · views");
   const unreachable = SIX_WORKSPACE_KEYS.filter((k) => !inSomeView.has(k));
   check("every previously composed PLATFORM_OPS key is reachable in some view (inline or hosted)", unreachable.length === 0, unreachable.join(", "));
   check("…and no view composes a key the six-workspace composition did not (no new section keys)", [...inSomeView].every((k) => SIX_WORKSPACE_KEYS.includes(k)));
-  check("a key renders in ONE view, except ops_policies whose views are its declared variants",
+  // Declared exceptions only: ops_policies (its variants) and ops_manual_operations
+  // (Overview drawer + Jobs, the run destination — R2 review fix). Anything else twice fails.
+  check("a key renders in ONE view, except the declared ops_policies variants and ops_manual_operations (Overview drawer + Jobs)",
     (() => {
       const seen = new Map<string, number>();
       for (const w of ops) for (const v of w.views ?? []) for (const k of viewComposedKeys(v)) seen.set(k, (seen.get(k) ?? 0) + 1);
-      return [...seen].every(([k, n]) => n === 1 || k === "ops_policies");
+      return [...seen].every(([k, n]) => n === 1 || k === "ops_policies" || (k === "ops_manual_operations" && n === 2));
     })());
   check("ops_policies renders in groups / defaults / emergency, each with its own variant and never bare",
     (getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.views ?? [])
