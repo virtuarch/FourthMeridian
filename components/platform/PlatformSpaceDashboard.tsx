@@ -67,6 +67,8 @@ import {
   type PlatformWorkspaceView,
 } from "@/lib/platform/workspaces";
 import { PlatformAreaHero } from "./PlatformAreaHero";
+import { PlatformSpaceSwitcher } from "./PlatformSpaceSwitcher";
+import { usePlatformNav } from "@/components/ui/PlatformNavContext";
 import type { PlatformSection } from "./widget-kit";
 import { SecAuditFeedWidget } from "./widgets/SecAuditFeedWidget";
 import { SecOperatorActionsWidget } from "./widgets/SecOperatorActionsWidget";
@@ -450,6 +452,9 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
   // count-based, so no FX and no Manage). The operator's access level, formerly a
   // toolbar badge, folds into the subtitle so no information is lost.
   const { publishSpace, publishCurrencyControl } = useSpaceChromePublisher();
+  // R1 — the granted Spaces for the mobile Space switcher beside the title
+  // (the Platform nav provider's server-loaded rows; desktop uses the rail).
+  const { spaces: grantedSpaces } = usePlatformNav();
   const chromeSubtitle = `Platform · ${areaLabel} · ${accessLevel}`;
   useEffect(() => {
     publishCurrencyControl(null);
@@ -502,6 +507,7 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
       // `hidden … lg:block`), so exactly one switcher shows at any width.
       railVisibility="belowLg"
       title={spaceName}
+      titleAccessory={<PlatformSpaceSwitcher spaces={grantedSpaces} currentArea={area} />}
       subtitle={chromeSubtitle}
       railOptions={railOptions}
       activeTab={openWorkspaceId}

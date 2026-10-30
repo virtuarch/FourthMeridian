@@ -109,6 +109,12 @@ export interface SpaceShellProps {
    */
   compactTitleOnly?: boolean;
   railVisibility?: "always" | "belowLg";
+  /**
+   * Platform Operations 2.0 R1 — a control rendered BESIDE the mobile (<lg)
+   * title, outside the <h1> (a Platform Space's Space switcher). Absent ⇒ the
+   * header row is byte-identical to before (customer Spaces never pass it).
+   */
+  titleAccessory?: ReactNode;
 
   /** The workspace viewport — the active tab's content. Owned by the host. */
   children: ReactNode;
@@ -130,6 +136,7 @@ export function SpaceShell({
   onLeave,
   compactRailOptions,
   compactTitleOnly = false,
+  titleAccessory,
   children,
 }: SpaceShellProps) {
   const isUtility = variant === "utility";
@@ -184,7 +191,14 @@ export function SpaceShell({
               </div>
             ) : (
               <div className="min-w-0">
-                <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
+                {titleAccessory ? (
+                  <div className="flex min-w-0 items-center gap-1">
+                    <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
+                    {titleAccessory}
+                  </div>
+                ) : (
+                  <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
+                )}
                 <p className={mobileOptimized ? "line-clamp-2 text-[13px] text-[var(--text-muted)]" : "truncate text-[13px] text-[var(--text-muted)]"}>{subtitle}</p>
               </div>
             )}

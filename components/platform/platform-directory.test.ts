@@ -5,10 +5,13 @@
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/platform/platform-directory.test.ts
  *
- * The Platform Spaces DIRECTORY — the one home of the HQ cards:
+ * The Platform directory page — since Platform Operations 2.0 R1 the OVERVIEW
+ * command center (components/platform/overview), fed by the same rows:
  *   A. the pure mapper: one row shape, registry order, grant ∩ Space;
- *   B. 0 / 1 / n render, the HQ card idiom, no Create CTA;
- *   C. links only — bare area URLs, no cookie, no switch call, no auto-open;
+ *   B. 0 / 1 / n render (R1: one Space section per granted row, replacing the
+ *      HQ card idiom), no Create CTA;
+ *   C. links only — bare area URLs, the page/Overview write no cookie, no
+ *      switch call, no auto-open (the nav provider alone remembers the Space);
  *   D. decision N1: the launcher no longer carries the group; /api/spaces keeps
  *      its `platform` key for the sidebar; the area page redirects here.
  */
@@ -17,7 +20,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { PlatformSpaceDirectory } from "@/components/platform/PlatformSpaceDirectory";
+import { PlatformOverviewView, initialSignals } from "@/components/platform/overview/PlatformOverview";
 import { platformAreaHref, platformDirectoryRows, type PlatformDirectoryRow } from "@/lib/platform/directory";
 import { ALL_PLATFORM_AREAS, PLATFORM_AREAS } from "@/lib/platform/policy";
 
@@ -30,7 +33,13 @@ const read = (...p: string[]) => readFileSync(path.join(process.cwd(), ...p), "u
 const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
 const text = (h: string) => h.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 const hrefs = (html: string) => [...html.matchAll(/<a [^>]*href="([^"]+)"/g)].map((m) => m[1]);
-const render = (spaces: PlatformDirectoryRow[]) => renderToStaticMarkup(createElement(PlatformSpaceDirectory, { spaces }));
+const render = (rows: PlatformDirectoryRow[]) => {
+  const spaces = rows.map((r) => ({ id: r.id, name: r.name, area: r.area }));
+  return renderToStaticMarkup(createElement(PlatformOverviewView, { spaces, signals: initialSignals(spaces) }));
+};
+/** The Space doorways (section headings) of the Overview, in document order. */
+const spaceLinks = (html: string) =>
+  [...(html.match(/<section aria-label="Spaces"[^>]*>([\s\S]*)<\/section>/)?.[1] ?? "").matchAll(/<a class="group inline-flex[^"]*" href="([^"?]+)"/g)].map((m) => m[1]);
 
 // Fixtures in DELIBERATELY scrambled order, with names that exist nowhere in
 // the source, so only the registry can order them and only the row can name them.
@@ -63,52 +72,47 @@ console.log("A. The pure mapper — one row shape, registry order, grant ∩ Spa
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("B. 0 / 1 / n render — the HQ card idiom, no Create CTA");
+console.log("B. 0 / 1 / n render — one Space section per granted row (R1 Overview), no Create CTA");
 {
+  // R1 — REPLACES the HQ-card pins (badge, "Platform area · {access}", arrow
+  // card): the Overview renders one Space SECTION per granted row — a doorway
+  // link + that Space's KPI tiles — with the same 0/1/n, order and grant rules.
   const zero = render([]);
-  check("0: the title and an honest empty line, no cards, no CTA",
-    /<h1[^>]*>Platform Spaces<\/h1>/.test(zero) && text(zero).includes("No Platform Space is granted to this account") &&
-      hrefs(zero).length === 0 && !/<ul/.test(zero));
+  check("0: the title and an honest empty line, no Space section, no CTA",
+    /<h1[^>]*>Overview<\/h1>/.test(zero) && text(zero).includes("No Platform Space is granted to this account") &&
+      hrefs(zero).length === 0);
 
   const one = render(platformDirectoryRows([space(1)], [grant(1, "MANAGE")]));
-  check("1: exactly one card, a LINK to the bare area URL",
-    hrefs(one).join() === `/dashboard/platform/${areas[1]}`, hrefs(one).join());
-  check("1: the HQ badge, the Space's name, 'Platform area · {access}', the arrow",
-    />HQ</.test(one) && one.includes(`ROW-NAME::${areas[1]}`) && text(one).includes("Platform area · MANAGE") && one.includes("lucide-arrow-up-right"));
-  check("1: the card is an <li> Surface (the launcher's row idiom)", /<li class="rounded-\[var\(--radius-lg\)\] border/.test(one));
-  check("1: accessible name 'Open <name>'", one.includes(`aria-label="Open ROW-NAME::${areas[1]}"`));
+  check("1: exactly one Space doorway, a LINK to the bare area URL",
+    spaceLinks(one).join() === `/dashboard/platform/${areas[1]}`, spaceLinks(one).join());
+  check("1: the Space's name from the row", one.includes(`ROW-NAME::${areas[1]}`));
 
   const many = render(platformDirectoryRows([space(2), space(0), space(1)], [grant(0), grant(1), grant(2)]));
-  check("n: n cards, in registry order",
-    hrefs(many).join() === [0, 1, 2].map((i) => `/dashboard/platform/${areas[i]}`).join(), hrefs(many).join());
-  check("n: every card names its Space from the row", [0, 1, 2].every((i) => many.includes(`ROW-NAME::${areas[i]}`)));
+  check("n: n Space doorways, in registry order",
+    spaceLinks(many).join() === [0, 1, 2].map((i) => `/dashboard/platform/${areas[i]}`).join(), spaceLinks(many).join());
+  check("n: every section names its Space from the row", [0, 1, 2].every((i) => many.includes(`ROW-NAME::${areas[i]}`)));
   check("a Space the operator is NOT granted simply does not appear",
     !render(platformDirectoryRows([space(0), space(1)], [grant(0)])).includes(`ROW-NAME::${areas[1]}`));
 
   for (const html of [zero, one, many]) {
     check("no Create CTA, no 'Create' anywhere (provisioned by grant, never created)", !/Create/.test(text(html)));
-    check("the manifesto is one line of framing", text(html).includes("Provisioned by grant, never created here."));
-    check("no money, no figure on an HQ card", !/\$|\d+\.\d+%/.test(text(html)));
+    check("no money and no figure before any area has answered (first frame)", !/\$|\d+\.\d+%/.test(text(html).replace(/\d+ Platform Spaces?/, "")));
   }
-  check("title: Platform Spaces (the launcher's floating-title treatment, no hero panel)",
-    /<h1 class="text-3xl font-semibold tracking-tight/.test(many) && !/GlassPanel|backdrop-filter/.test(many));
+  check("title: Overview, with the granted count as framing", text(many).includes("3 Platform Spaces · granted to you"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("C. Links only — no cookie, no switch, no storage, no auto-open");
 {
-  const dir = code(read("components", "platform", "PlatformSpaceDirectory.tsx"));
-  check("not a Client Component (no state, ships as HTML)", !/"use client"/.test(dir));
-  check("no router.push, no onClick — cards are <Link>s", !/router\.push|onClick|useRouter/.test(dir) && /<Link/.test(dir));
-  check("prefetch={false} on the card link", (dir.match(/prefetch=\{false\}/g) ?? []).length === 1);
-  check("no cookie, storage, fetch or switch call", !/document\.cookie|localStorage|sessionStorage|fetch\(|\/api\//.test(dir));
-  check("hrefs come from the one helper (platformAreaHref), never a template here",
-    /href=\{platformAreaHref\(p\.area\)\}/.test(dir) && !/`\/dashboard\/platform\//.test(dir));
-  check("no ?workspace= deep link (bare area = default workspace)", !/workspace=/.test(dir));
-  check("no sorting here — order arrives from the loader", !/\.sort\(/.test(dir));
+  const dir = code(read("components", "platform", "overview", "PlatformOverview.tsx")) + code(read("components", "platform", "overview", "overview-model.ts"));
+  check("no router.push, no onClick — doorways are <Link>s", !/router\.push|onClick|useRouter/.test(dir) && /<Link/.test(dir));
+  check("prefetch={false} on every Overview link", (dir.match(/<Link\b/g) ?? []).length === (dir.match(/prefetch=\{false\}/g) ?? []).length);
+  check("no cookie, storage or switch call (the Overview remembers nothing)", !/document\.cookie|localStorage|sessionStorage|\/api\/space\/switch|fm_platform_space|PLATFORM_SPACE_COOKIE/.test(dir));
+  check("Space hrefs come from the one helper (platformAreaHref / platformWorkspaceHref), never a template here",
+    /platformAreaHref\(space\.area\)/.test(dir) && !/`\/dashboard\/platform\//.test(dir));
+  check("no sorting of Spaces here — order arrives from the loader", !/spaces\.(slice\(\)\.)?sort\(/.test(dir));
   const realNames = Object.values(PLATFORM_AREAS).map((a) => a.spaceName);
   check("no hardcoded platform Space names", realNames.every((n) => !dir.includes(n)));
-  check("no hardcoded PlatformArea literals", Object.keys(PLATFORM_AREAS).every((a) => !dir.includes(a)));
 
   const page = code(read("app", "(shell)", "dashboard", "platform", "page.tsx"));
   check("the page loads through the one read site", /loadPlatformDirectory\(session\.user\.id\)/.test(page));
@@ -118,7 +122,8 @@ console.log("C. Links only — no cookie, no switch, no storage, no auto-open");
     !/redirect\([^)]*platformAreaHref|redirect\(`\/dashboard\/platform\/|last/i.test(page));
   check("no cookie / switch / customer-Space authority on the page",
     !/ACTIVE_SPACE_COOKIE|cookies\(|resolveSpaceContext|getSpaceContext|spaceMember|\/api\/space\/switch/.test(page));
-  check("the page renders the directory and nothing else", /<PlatformSpaceDirectory spaces=\{spaces\} \/>/.test(page));
+  check("the page renders the Overview and nothing else, from the granted rows only",
+    /return <PlatformOverview spaces=\{spaces\.map\(/.test(page) && (page.match(/<[A-Z]\w+/g) ?? []).length === 1);
 
   const mapper = code(read("lib", "platform", "directory.ts"));
   check("the mapper is pure and client-safe (no Prisma client, no server-only, no db)",

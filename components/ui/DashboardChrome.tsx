@@ -42,11 +42,15 @@ import { NoticeRail } from "@/components/notices/NoticeRail";
 import type { AppNoticeStatus } from "@/components/notices/notice-model";
 import { SpaceChromeProvider } from "@/lib/space/space-chrome-context";
 import { OPEN_CREATE_SPACE_EVENT, isPrimaryDestActive } from "@/lib/space-nav";
+import { PlatformNavProvider } from "@/components/ui/PlatformNavContext";
+import type { PlatformSpaceOption } from "@/lib/platform/nav";
 
 export function DashboardChrome({
   children,
   hasPlatformGrants = false,
   noticeStatus = null,
+  platformSpaces,
+  platformArea = null,
 }: {
   children: ReactNode;
   // UNIFIED NOTICES — the rail's first status, read by the layout (no pop-in);
@@ -56,6 +60,12 @@ export function DashboardChrome({
   // count, as the tenant, fail-closed to false): shows the GlobalHeader's
   // Personal/Platform context switch. Optional so every other mount is unchanged.
   hasPlatformGrants?: boolean;
+  // Platform Operations 2.0 R1 — SERVER facts from the layout for the Platform
+  // context's three-destination nav: the granted Platform Spaces (tenant read)
+  // and the remembered Current Space, already intersected with those grants.
+  // Optional so every other mount is unchanged (no Platform Spaces).
+  platformSpaces?: readonly PlatformSpaceOption[];
+  platformArea?: string | null;
 }) {
   const router = useRouter();
   const pathname = usePathname() ?? "";
@@ -80,42 +90,44 @@ export function DashboardChrome({
 
   return (
     <SpaceChromeProvider>
-      <div className="min-h-screen bg-[var(--bg-base)]">
-        <GlobalHeader hasPlatformGrants={hasPlatformGrants} />
+      <PlatformNavProvider spaces={platformSpaces} rememberedArea={platformArea} pathname={pathname}>
+        <div className="min-h-screen bg-[var(--bg-base)]">
+          <GlobalHeader hasPlatformGrants={hasPlatformGrants} />
 
-        <div className="mx-auto flex w-full max-w-[1320px] gap-0 px-4 sm:px-5 lg:gap-8 lg:px-8">
-          <ContextualNavbar />
+          <div className="mx-auto flex w-full max-w-[1320px] gap-0 px-4 sm:px-5 lg:gap-8 lg:px-8">
+            <ContextualNavbar />
 
-          <main
-            className={
-              conversationSurface
-                ? "min-w-0 flex-1 pt-6 pb-[calc(3.5rem+1px+env(safe-area-inset-bottom))] lg:pb-4"
-                : "min-w-0 flex-1 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-6 lg:pb-16"
-            }
-          >
-            {/* UNIFIED NOTICES — ONE rail for the whole shell: maintenance (highest
-                priority) and the 2FA reminder (not on the AI surface). Renders
-                nothing when no notice applies. Replaces the S8 TotpNudgeBanner. */}
-            <NoticeRail initialStatus={noticeStatus} conversationSurface={conversationSurface} />
-            {children}
-          </main>
+            <main
+              className={
+                conversationSurface
+                  ? "min-w-0 flex-1 pt-6 pb-[calc(3.5rem+1px+env(safe-area-inset-bottom))] lg:pb-4"
+                  : "min-w-0 flex-1 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-6 lg:pb-16"
+              }
+            >
+              {/* UNIFIED NOTICES — ONE rail for the whole shell: maintenance (highest
+                  priority) and the 2FA reminder (not on the AI surface). Renders
+                  nothing when no notice applies. Replaces the S8 TotpNudgeBanner. */}
+              <NoticeRail initialStatus={noticeStatus} conversationSurface={conversationSurface} />
+              {children}
+            </main>
+          </div>
+
+          {/* Mobile presentation of the same navigation model as ContextualNavbar. */}
+          <BottomNav />
+
+          {/* TI5-3C — the single Transaction Detail drawer, shared by every surface
+              (Banking, Space, Debt, AccountModal). ?transaction= driven. */}
+          <Suspense fallback={null}>
+            <TransactionDetailDrawer />
+          </Suspense>
+
+          <CreateSpaceModal
+            open={createSpaceOpen}
+            onClose={() => setCreateSpaceOpen(false)}
+            onCreated={() => router.refresh()}
+          />
         </div>
-
-        {/* Mobile presentation of the same navigation model as ContextualNavbar. */}
-        <BottomNav />
-
-        {/* TI5-3C — the single Transaction Detail drawer, shared by every surface
-            (Banking, Space, Debt, AccountModal). ?transaction= driven. */}
-        <Suspense fallback={null}>
-          <TransactionDetailDrawer />
-        </Suspense>
-
-        <CreateSpaceModal
-          open={createSpaceOpen}
-          onClose={() => setCreateSpaceOpen(false)}
-          onCreated={() => router.refresh()}
-        />
-      </div>
+      </PlatformNavProvider>
     </SpaceChromeProvider>
   );
 }

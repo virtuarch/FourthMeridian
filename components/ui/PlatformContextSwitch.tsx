@@ -27,8 +27,9 @@
  *   • Not an authority: it reads no cookie, writes no cookie, touches no storage,
  *     calls no `/api/space/switch`, performs no fetch. The Platform Space pages
  *     and `/api/spaces` remain the only places access is decided.
- *   • Not auto-open: the Platform link goes to the directory, never to a "last
- *     used" area (none is stored anywhere).
+ *   • Not auto-open: the Platform link goes to the Overview (the directory
+ *     route), never to a "last used" area. (R1: the remembered Current Space —
+ *     components/ui/PlatformNavContext — only LABELS the Platform nav.)
  *
  * WHY NOT `components/atlas/SegmentedControl` DIRECTLY
  *   That primitive is a `role="tablist"` of `<button>`s with an imperative

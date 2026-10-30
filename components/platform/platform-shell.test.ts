@@ -31,7 +31,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { SpaceChromeSection } from "@/lib/space/space-chrome-context";
-import { PlatformNav, SectionsNav, isPlatformSpaceRoute } from "@/components/ui/ContextualNavbar";
+import { PlatformDestinationsNav, PlatformNav, SectionsNav, isPlatformSpaceRoute } from "@/components/ui/ContextualNavbar";
 import {
   PlatformWorkspaceBody,
   platformChromeSections,
@@ -246,6 +246,31 @@ console.log("\nC. PLATFORM block — driven by the access-derived destinations")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log("\nC2. R1 — the Platform context's rail: three destinations, the switcher under Current Space");
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const rows = [
+    { id: "s1", name: "ROW::PLATFORM_OPS", area: "PLATFORM_OPS" },
+    { id: "s2", name: "ROW::GROWTH_REVENUE", area: "GROWTH_REVENUE" },
+  ];
+  const rail = (pathname: string, spaces = rows, current: (typeof rows)[number] | null = rows[1]) =>
+    renderToStaticMarkup(createElement(PlatformDestinationsNav, { pathname, spaces, current }));
+  const top = (html: string) => [...(html.match(/<nav aria-label="Platform"[^>]*>([\s\S]*)<\/nav>/)?.[1] ?? "").matchAll(/<a [^>]*href="([^"]+)"/g)].map((m) => m[1]);
+  const html = rail("/dashboard/platform/GROWTH_REVENUE");
+  check("the block is the Platform landmark with the PLATFORM eyebrow", html.includes(">Platform</p>") && html.includes('aria-label="Platform"'));
+  check("Overview · AI · Current Space lead, in that order (the SAME three as the mobile bar)",
+    top(html).slice(0, 3).join() === "/dashboard/platform,/dashboard/platform/ai,/dashboard/platform/GROWTH_REVENUE", top(html).join());
+  check("the Current Space row carries the selected Space's real name", html.includes("ROW::GROWTH_REVENUE"));
+  check("under Current Space: the Space switcher (granted Spaces only, as links)",
+    /role="group" aria-label="Platform Spaces"/.test(html) && top(html).slice(3).join() === "/dashboard/platform/PLATFORM_OPS,/dashboard/platform/GROWTH_REVENUE");
+  check("exactly one accent-lit destination (Current Space on an area route)", (html.match(/aria-current="true"/g) ?? []).length === 1);
+  check("a single granted Space ⇒ no switcher (nothing to switch to)", !/aria-label="Platform Spaces"/.test(rail("/dashboard/platform", [rows[0]], rows[0])));
+  check("no granted Space known ⇒ the three still render; no switcher, no invented name",
+    top(rail("/dashboard/platform", [], null)).length === 3 && !rail("/dashboard/platform", [], null).includes("ROW::"));
+  check("every row is ≥ 36 px with a visible focus ring", /min-h-9/.test(html) && /focus-visible:ring-2/.test(html));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 console.log("\nD. ORIGIN — the list has one source, and Space mode gates it");
 // ─────────────────────────────────────────────────────────────────────────────
 {
@@ -273,15 +298,21 @@ console.log("\nD. ORIGIN — the list has one source, and Space mode gates it");
     "there is exactly ONE fetch of /api/spaces in the sidebar (not duplicated per mode)",
     (NAVBAR_SRC.match(/fetch\("\/api\/spaces"\)/g) ?? []).length === 1,
   );
+  // R1 — REPLACES "both modes render the SAME PlatformNav component": in the
+  // Platform context BOTH modes now render the SAME three-destination block
+  // (PlatformContextNav, fed by the Platform nav provider's granted rows);
+  // PlatformNav remains the personal sidebar's one way in (one mount).
   check(
-    "both modes render the SAME PlatformNav component (one navigation pattern)",
-    (NAVBAR_SRC.match(/<PlatformNav\b/g) ?? []).length === 2,
+    "both modes render the SAME Platform-context block (one navigation pattern); PlatformNav once, on the personal side",
+    (NAVBAR_SRC.match(/<PlatformContextNav\b/g) ?? []).length === 2 && (NAVBAR_SRC.match(/<PlatformNav\b/g) ?? []).length === 1,
   );
   check(
     "Space mode gates the block on the platform axis (isPlatformSpaceRoute)",
     /onPlatformAxis\s*=\s*isPlatformSpaceRoute\(pathname\)/.test(NAVBAR_SRC) &&
-      /\{onPlatformAxis\s*&&\s*<PlatformNav/.test(NAVBAR_SRC),
+      /\{onPlatformAxis\s*&&\s*<PlatformContextNav/.test(NAVBAR_SRC),
   );
+  check("the Platform-context rows come from the provider (granted rows), not a literal",
+    /const \{ spaces, current \} = usePlatformNav\(\);/.test(NAVBAR_SRC));
 
   check("isPlatformSpaceRoute: a platform Space route", isPlatformSpaceRoute("/dashboard/platform/PLATFORM_OPS"));
   check("isPlatformSpaceRoute: a customer Space route is NOT", !isPlatformSpaceRoute("/dashboard"));
@@ -291,6 +322,9 @@ console.log("\nD. ORIGIN — the list has one source, and Space mode gates it");
   // header's context switch still reads it as the platform CONTEXT.
   check("isPlatformSpaceRoute: the /dashboard/platform directory index is NOT (off the Space axis)",
     !isPlatformSpaceRoute("/dashboard/platform"));
+  // R1 — the AI page shares the prefix but is a destination, not a Space.
+  check("isPlatformSpaceRoute: the /dashboard/platform/ai page is NOT (a destination, never an area)",
+    !isPlatformSpaceRoute("/dashboard/platform/ai"));
   check("isPlatformSpaceRoute: null/undefined pathname is NOT", !isPlatformSpaceRoute(null) && !isPlatformSpaceRoute(undefined));
 }
 
