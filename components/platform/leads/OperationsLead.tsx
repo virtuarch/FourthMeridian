@@ -1,44 +1,48 @@
 "use client";
 
 /**
- * components/platform/leads/OperationsLead.tsx  (Platform Operations 2.0 — R2, plan §4.2)
+ * components/platform/leads/OperationsLead.tsx  (Platform Ops visual spec §4 — the representative workspace)
  *
- * THE OPERATIONS DEFAULT SCREEN — summary first, ≈ one screen on desktop:
+ * THE OPERATIONS DEFAULT SCREEN, rebuilt in the Personal Space visual language
+ * (owner rejection of R1/R2: "an old administration console wearing different
+ * navigation"). Analytics first, text last; one label, one figure, one chart and
+ * at most one caption per card; history and diagnostics in focused detail.
  *
- *   StatusHeader       the overview's worst-domain verdict + when it was checked +
- *                      attention total · open incidents · jobs · pipeline
- *   AttentionQueue     the attention route's top 5 (server order); "View all"
- *                      opens a drawer with the FULL attention list and its
- *                      resync / request-reauth actions (AttentionBlock, unchanged)
- *   Jobs & activity    4 KPIs (scheduler 24 h runs, job-health counts) + the five
- *                      newest executions, each opening the execution panel;
- *                      "All jobs" opens the Jobs detail view
- *   Detail             ≤ 5 doorways: Domains & sources · Incidents · Platform
- *                      health · Pipeline · Activity & usage
- *   Manual operations  ONE deliberate entry ("Run an operation…") that opens the
- *                      existing Manual operations widget in a drawer — its own
- *                      write / fleet gating, reason, confirmation and pre-run
- *                      audit are untouched, and nothing runs from this screen
+ *   ≥ lg (12-col, Personal grammar: space-y-10, gap-8, symmetric pairs)
+ *     A  Health hero (12)            verdict · checked time · 4 KPI figures
+ *     B  Execution trend (7)         stacked executions per UTC day (history)
+ *        Outcome composition (5)     BreakdownWidget donut (job health)
+ *     C  Needs attention (6)         top 3 GROUPED by shared cause
+ *        Refresh activity (6)        14-day bars (refresh/daily)
+ *     D  Jobs (12)                   the unified list, 5 rows worst first, See all
+ *     E  Recent activity (12)        3 executions → the execution timeline
+ *   < lg
+ *     hero card → 2×2 KPIs → ONE chart card (trend) → attention (3) → jobs (3)
+ *     → recent activity (3); the donut and refresh bars are desktop-only.
  *
- * Desktop: two columns (verdict + attention | jobs + detail + operations).
- * Mobile: the same order composed for a phone — 3 attention rows, a 2×2 KPI
- * grid, 3 recent executions, then the doorways.
+ * Every former widget stays reachable from a drawer (ops_overview's status board,
+ * attention list with its resync / reauth actions and activity blocks;
+ * ops_convergence + ops_timeline; ops_platform_health) and the unified jobs card
+ * renders only where the view hosts "ops_job_health" (its enabled DB row).
  *
- * Presentation only. Every word is the answering route's (operations-model.ts);
- * hosted sections render through `renderHosted` (registry widget + DB row +
- * access), and the overview blocks render only when the view hosts ops_overview.
+ * Presentation only. Words and figures come from ops-visual-model.ts (pure) and
+ * operations-model.ts; reads go through the shared workspace session.
  */
 
 import { useState, type ReactNode } from "react";
-import { DetailDrawer, StatusHeader, AttentionQueue, KpiTile, EntityList, EntityRow, ControlledActionSurface, ProvenanceChip } from "../ui";
+import { ChevronRight } from "lucide-react";
+import { Block, Surface } from "@/components/atlas/Surface";
+import { BreakdownWidget } from "@/components/space/widgets/BreakdownWidget";
+import { DetailDrawer } from "../ui";
 import { useSharedWidgetFetch } from "../workspace-session";
 import { platformViewTarget } from "@/lib/platform/workspaces";
 import type { OperationsOverview } from "@/lib/platform/ops/overview";
 import type { AttentionResponse } from "@/lib/platform/ops/attention";
-import type { ConvergenceResult } from "@/lib/platform/convergence/types";
 import type { PlatformJobHealthResponse } from "@/app/api/platform/platform-ops/job-health/route";
 import type { SchedulerObservationResponse } from "@/app/api/platform/platform-ops/scheduler/route";
 import type { ExecutionPageDTO } from "@/lib/platform/refresh/execution-query-core";
+import type { RefreshDailySeries } from "@/lib/platform/refresh/types";
+import type { OperationalHistoryResult } from "@/lib/platform/history/types";
 import { STATE_TONE, STATE_WORD } from "../widgets/ops-overview-view";
 import { ExecutionTimelinePanel } from "../widgets/ExecutionTimelinePanel";
 import { StatusBoard } from "../widgets/overview/StatusBoard";
@@ -50,169 +54,285 @@ import { AiActivityBlock } from "../widgets/overview/AiActivityBlock";
 import { EconomicsBlock } from "../widgets/overview/EconomicsBlock";
 import { ActivityFeedBlock } from "../widgets/overview/ActivityFeedBlock";
 import type { PlatformViewLeadProps } from "./lead-contract";
-import type { StatusTone } from "../platform-surface";
-import { LeadSection } from "./lead-kit";
+import { TONE_COLOR, type StatusTone } from "../platform-surface";
+import { recentExecutions, type Fetched } from "./operations-model";
+import { HealthHero, type HeroModel } from "../ops-visual/HealthHero";
+import { DayBars, DayBarsLegend, DAY_BAR_COLORS } from "../ops-visual/DayBars";
+import { StatusWord, UnifiedJobs, JOBS_URL, SCHEDULER_URL, HISTORY_URL } from "../ops-visual/UnifiedJobs";
 import {
-  attentionNotes,
-  attentionRows,
   attentionTotal,
-  jobKpis,
-  openIncidentCount,
-  recentExecutions,
-  statusModel,
-  type Fetched,
-} from "./operations-model";
+  executionDays,
+  groupAttention,
+  healthKpis,
+  outcomeComposition,
+  refreshDays,
+  schedulerEvidence,
+  type AttentionGroup,
+  type SchedulerEvidence,
+} from "../ops-visual/ops-visual-model";
 
 /** The drawers this lead opens. Each holds detail that used to sit on the page. */
-export type OperationsDrawer = "attention" | "board" | "incidents" | "health" | "activity" | "operations";
+export type OperationsDrawer = "attention" | "board" | "incidents" | "health" | "activity";
 
-const JOBS_VIEW = platformViewTarget("platform-overview", "jobs");
-const PIPELINE_VIEW = platformViewTarget("platform-overview", "pipeline");
+export const JOBS_VIEW = platformViewTarget("platform-overview", "jobs");
+export const PIPELINE_VIEW = platformViewTarget("platform-overview", "pipeline");
 /** The overview blocks are ops_overview's content; they render only where the view hosts it. */
 const OVERVIEW_KEY = "ops_overview";
+/** The unified jobs card renders only where the view hosts the jobs section. */
+const JOBS_KEY = "ops_job_health";
+
+/** Default-screen caps (spec §4). */
+export const ATTENTION_ROWS = 3;
+export const RECENT_ROWS = 3;
+export const TREND_DAYS = 14;
 
 interface ExecutionSelection { id: string; eyebrow: string; title: string }
+
+const n = (v: number) => v.toLocaleString("en-US");
+const hhmm = (iso: string) => `Checked ${new Date(iso).toISOString().slice(11, 16)} UTC`;
+
+const DOORWAY =
+  "inline-flex min-h-11 items-center gap-1 rounded-[var(--radius-xs)] text-[11px] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-8";
+
+function Doorway({ label, onSelect, dialog = false }: { label: string; onSelect: () => void; dialog?: boolean }) {
+  return (
+    <button type="button" onClick={onSelect} aria-haspopup={dialog ? "dialog" : undefined} className={DOORWAY}>
+      {label} <ChevronRight size={12} aria-hidden />
+    </button>
+  );
+}
+
+/** One caption line under a chart. */
+function Caption({ children }: { children: ReactNode }) {
+  return <p className="mt-3 truncate text-[11px] text-[var(--text-muted)]">{children}</p>;
+}
+
+// ── The hero model ────────────────────────────────────────────────────────────
+
+export function heroModel(args: {
+  overview: Fetched<OperationsOverview>;
+  evidence: SchedulerEvidence;
+  groups: readonly AttentionGroup[];
+  attention: Fetched<AttentionResponse>;
+  kpis: HeroModel["kpis"];
+}): HeroModel {
+  const o = args.overview.data;
+  const verdict = o
+    ? { word: STATE_WORD[o.worst], tone: STATE_TONE[o.worst] }
+    : { word: args.overview.loading ? "Reading" : "Unknown", tone: "muted" as StatusTone };
+  const issues = args.attention.data
+    ? args.groups.length === 0 ? "Nothing needs attention" : `${n(args.groups.length)} issue${args.groups.length === 1 ? "" : "s"} need${args.groups.length === 1 ? "s" : ""} attention`
+    : args.attention.loading ? "Reading attention…" : "Attention unavailable";
+  const caption = args.evidence.state === "inactive" ? `${issues} · scheduler not active on this deployment` : issues;
+  const basisLine = args.evidence.state === "inactive" ? "Scheduler not active on this deployment"
+    : args.evidence.state === "active" ? "Scheduler active" : "Scheduler state unknown";
+  return { verdict, checked: o ? hhmm(o.checkedAt) : null, caption, basisLine, kpis: args.kpis };
+}
+
+// ── The surface (prop-driven, fetch-free — every state renders in a test) ────
 
 export interface OperationsLeadSurfaceProps {
   overview: Fetched<OperationsOverview>;
   attention: Fetched<AttentionResponse>;
-  convergence: Fetched<ConvergenceResult>;
   jobs: Fetched<PlatformJobHealthResponse>;
   scheduler: Fetched<SchedulerObservationResponse>;
+  history: Fetched<OperationalHistoryResult>;
+  daily: Fetched<RefreshDailySeries>;
   executions: Fetched<ExecutionPageDTO>;
   nowMs: number;
   hasHosted: (key: string) => boolean;
+  /** The unified jobs card (summary mode) — the container renders it, a test passes a stand-in. */
+  jobsSlot: ReactNode;
   onOpenDrawer: (d: OperationsDrawer) => void;
   onOpenWorkspace: (workspaceId: string) => void;
   onSelectExecution: (s: ExecutionSelection) => void;
+  onSelectJob: (job: string) => void;
 }
 
-/** The prop-driven default screen (fetch-free, so every state renders in a test). */
 export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
-  const status = statusModel(p.overview, p.attention, p.convergence);
+  const evidence = schedulerEvidence(p.jobs, p.scheduler);
+  const groups = p.attention.data ? groupAttention(p.attention.data, evidence, p.jobs.data) : [];
+  const trend = executionDays(p.history.data, p.nowMs, TREND_DAYS);
+  const kpis = healthKpis({ jobs: p.jobs, scheduler: p.scheduler, attention: p.attention, groups, days7: trend.slice(-7) });
+  const hero = heroModel({ overview: p.overview, evidence, groups, attention: p.attention, kpis });
+  const composition = p.jobs.data ? outcomeComposition(p.jobs.data) : [];
   const board = p.hasHosted(OVERVIEW_KEY);
-  const rows = p.attention.data ? attentionRows(p.attention.data, p.nowMs) : [];
   const total = p.attention.data ? attentionTotal(p.attention.data) : 0;
-  const kpis = jobKpis(p.jobs, p.scheduler);
-  const recent = p.executions.data ? recentExecutions(p.executions.data, p.nowMs) : [];
-  const o = p.overview.data;
-  const pipeline = o?.domains.find((d) => d.key === "pipeline");
-  const incidents = p.convergence.data;
+  const recent = p.executions.data ? recentExecutions(p.executions.data, p.nowMs, RECENT_ROWS) : [];
+  const refresh = p.daily.data ? refreshDays(p.daily.data, p.nowMs, TREND_DAYS) : null;
+  const unobservedDays = trend.filter((d) => !d.observed).length;
+  const trendRuns = trend.reduce((a, d) => a + d.succeeded + d.failed + d.other, 0);
 
-  // ≤ 5 doorways, each only where its detail is hosted (or is a view).
-  const detail: { key: string; name: string; status?: { word: string; tone: StatusTone }; summary: string; onSelect: () => void }[] = [];
-  if (board) detail.push({
-    key: "board", name: "Domains & sources", onSelect: () => p.onOpenDrawer("board"),
-    status: o ? { word: STATE_WORD[o.worst], tone: STATE_TONE[o.worst] } : undefined,
-    summary: o ? (status.notHealthy.length ? status.notHealthy.join(" · ") : `All ${o.domains.length} domains healthy`) : "Status board, sources and policy",
-  });
-  if (p.hasHosted("ops_convergence") || p.hasHosted("ops_timeline")) detail.push({
-    key: "incidents", name: "Incidents", onSelect: () => p.onOpenDrawer("incidents"),
-    status: incidents ? (openIncidentCount(incidents) > 0 ? { word: `${openIncidentCount(incidents)} open`, tone: "warn" } : { word: "None open", tone: "ok" }) : undefined,
-    summary: incidents ? `${incidents.episodes.length} episode${incidents.episodes.length === 1 ? "" : "s"} · ${incidents.eventCount} events in the window` : "Convergence episodes and the event timeline",
-  });
-  if (p.hasHosted("ops_platform_health")) detail.push({
-    key: "health", name: "Platform health", onSelect: () => p.onOpenDrawer("health"),
-    summary: o ? o.posture.map((c) => `${c.label} ${c.word}`).join(" · ") : "Alerts, providers, freshness, configuration",
-  });
-  detail.push({
-    key: "pipeline", name: "Pipeline", onSelect: () => p.onOpenWorkspace(PIPELINE_VIEW),
-    status: pipeline ? { word: STATE_WORD[pipeline.state], tone: STATE_TONE[pipeline.state] } : undefined,
-    summary: pipeline ? `${pipeline.figure.value} · ${pipeline.figure.qualifier}` : "Refresh executions, outcomes and coverage",
-  });
-  if (board) detail.push({
-    key: "activity", name: "Activity & usage", onSelect: () => p.onOpenDrawer("activity"),
-    summary: "Jobs matrix · refresh activity · AI · economics · operator actions",
-  });
+  const openGroup = (g: AttentionGroup) => {
+    if (g.action.kind === "job") p.onSelectJob(g.action.job);
+    else if (g.action.kind === "jobs") p.onOpenWorkspace(JOBS_VIEW);
+    else if (board) p.onOpenDrawer("attention");
+    else p.onOpenWorkspace(g.action.workspace);
+  };
+
+  // The detail doorways — each only where its detail is hosted.
+  const more: { key: OperationsDrawer; label: string }[] = [];
+  if (board) more.push({ key: "board", label: "Status board" });
+  if (p.hasHosted("ops_convergence") || p.hasHosted("ops_timeline")) more.push({ key: "incidents", label: "Incidents" });
+  if (p.hasHosted("ops_platform_health")) more.push({ key: "health", label: "Platform health" });
+  if (board) more.push({ key: "activity", label: "Activity & usage" });
+
+  const jobCount = p.jobs.data?.jobs.length ?? null;
 
   return (
-    <div className="grid min-w-0 gap-4 md:gap-6 lg:grid-cols-12">
-      <div className="flex min-w-0 flex-col gap-4 md:gap-6 lg:col-span-7">
-        <StatusHeader
-          verdict={status.verdict}
-          title={status.title}
-          checkedAt={status.checkedAt}
-          facts={status.facts}
-          aside={o ? <ProvenanceChip kind="MEASURED" asOf={o.checkedAt} /> : undefined}
-        />
-        <AttentionQueue
-          items={rows.map((r) => ({
-            key: r.key, severity: r.severity, title: r.title, why: r.why, meta: r.meta,
-            action: board
-              ? { label: r.nextLabel, onSelect: () => p.onOpenDrawer("attention") }
-              : { label: r.nextLabel, onSelect: () => p.onOpenWorkspace(r.workspace) },
-          }))}
-          loading={p.attention.loading}
-          emptyText={p.attention.data && p.attention.data.authoritiesFailed.length === 0 && rows.length === 0
-            ? `Nothing needs attention — ${p.attention.data.authoritiesChecked.count} sources checked.` : null}
-          notes={attentionNotes(p.attention)}
-          viewAll={board && total > 0 ? [{ key: "all", label: "View all", count: total.toLocaleString("en-US"), onSelect: () => p.onOpenDrawer("attention") }] : []}
-        />
+    <div className="min-w-0 space-y-8 sm:space-y-10 max-lg:space-y-6!" data-ops-dashboard>
+      {/* A — Health hero. */}
+      <HealthHero model={hero} />
+
+      {/* B — Execution trend (7) · Outcome composition (5). */}
+      <div className="grid items-stretch gap-6 lg:grid-cols-12 lg:gap-8">
+        <Block id="ops-trend" label="Execution trend" className="min-w-0 lg:col-span-7"
+          action={<DayBarsLegend items={[{ label: "Succeeded", color: DAY_BAR_COLORS.succeeded }, { label: "Failed", color: DAY_BAR_COLORS.failed }]} />}>
+          <Surface className="flex-1 p-4 sm:p-5">
+            {p.history.data ? (
+              <>
+                <DayBars days={trend} ariaLabel="Scheduled job executions per UTC day" />
+                <Caption>
+                  {evidence.state === "inactive" && trendRuns === 0
+                    ? "No scheduled execution observed on this deployment"
+                    : `${n(trendRuns)} executions · ${TREND_DAYS} UTC days${unobservedDays ? ` · ${unobservedDays} without data` : ""}`}
+                </Caption>
+              </>
+            ) : (
+              <p className="py-10 text-center text-xs text-[var(--text-muted)]">{p.history.loading ? "Reading execution history…" : `Execution history unavailable${p.history.error ? ` — ${p.history.error}` : ""}`}</p>
+            )}
+          </Surface>
+        </Block>
+        <Block id="ops-composition" label="Outcome composition" className="min-w-0 max-lg:hidden lg:col-span-5"
+          action={<span className="text-[11px] text-[var(--text-faint)]">Jobs by last run</span>}>
+          <Surface className="flex-1 p-4 sm:p-5">
+            <BreakdownWidget
+              items={composition}
+              viewMode="donut"
+              itemNoun="job"
+              formatValue={(v) => n(v)}
+              centerTone="neutral"
+              emptyHeadline={p.jobs.loading ? "Reading job health…" : p.jobs.error ? "Job health unavailable" : "No scheduled jobs reported"}
+            />
+          </Surface>
+        </Block>
       </div>
 
-      <div className="flex min-w-0 flex-col gap-4 md:gap-6 lg:col-span-5">
-        <LeadSection title="Jobs & activity" action={{ label: "All jobs", onSelect: () => p.onOpenWorkspace(JOBS_VIEW) }}>
-          <div className="grid grid-cols-2 gap-2 sm:gap-3">
-            {kpis.map((k) => (
-              <KpiTile key={k.key} label={k.label} value={k.value} unavailableReason={k.unavailableReason} note={k.note}
-                provenance={k.value !== null ? <ProvenanceChip kind="MEASURED" /> : undefined} />
-            ))}
-          </div>
-          <EntityList label="Recent executions" empty={p.executions.loading ? null : p.executions.error ? `Executions unavailable — ${p.executions.error}` : "No executions recorded yet."}>
-            {recent.map((r, i) => (
-              <div key={r.id} className={i >= 3 ? "max-sm:hidden" : undefined}>
-                <EntityRow name={r.name} status={r.status} summary={r.summary}
-                  onSelect={() => p.onSelectExecution({ id: r.id, eyebrow: r.eyebrow, title: r.name })} />
-              </div>
-            ))}
-          </EntityList>
-        </LeadSection>
-
-        <LeadSection title="Detail">
-          <EntityList label="Operations detail">
-            {detail.slice(0, 5).map((d) => (
-              <EntityRow key={d.key} name={d.name} status={d.status} summary={d.summary} onSelect={d.onSelect} />
-            ))}
-          </EntityList>
-        </LeadSection>
-
-        {p.hasHosted("ops_manual_operations") && (
-          <ControlledActionSurface
-            title="Manual operations"
-            actions={[{
-              id: "manual-operations",
-              label: "Run or dry-run a scheduled job",
-              description: "Opens the operations console. Every run asks for confirmation; fleet-wide runs also need elevated access and a reason, and are audited before they start.",
-              authority: "Requires write access · fleet-wide runs require elevated access",
-              opens: { label: "Run an operation…", onOpen: () => p.onOpenDrawer("operations") },
-            }]}
-          />
-        )}
+      {/* C — Needs attention (6) · Refresh activity (6). */}
+      <div className="grid items-stretch gap-6 lg:grid-cols-12 lg:gap-8">
+        <Block id="ops-attention" label="Needs attention" className="min-w-0 lg:col-span-6"
+          action={board && total > 0 ? <Doorway label={`View all (${n(total)})`} onSelect={() => p.onOpenDrawer("attention")} dialog /> : undefined}>
+          <Surface className="flex-1 px-4 py-2 sm:px-5">
+            {p.attention.data ? (
+              groups.length === 0 ? (
+                <p className="py-3 text-xs text-[var(--text-muted)]">Nothing needs attention · {n(p.attention.data.authoritiesChecked.count)} sources checked</p>
+              ) : (
+                <ul aria-label="Needs attention" className="flex flex-col">
+                  {groups.slice(0, ATTENTION_ROWS).map((g) => (
+                    <li key={g.key} className="border-t border-[var(--border-hairline)] first:border-t-0">
+                      <button type="button" onClick={() => openGroup(g)} aria-haspopup={g.action.kind === "attention" && board ? "dialog" : undefined}
+                        className="group flex min-h-11 w-full items-center gap-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">
+                        <span aria-hidden className="h-2 w-2 shrink-0 rounded-full" style={{ background: TONE_COLOR[g.tone] }} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-medium text-[var(--text-primary)]">{g.title}</span>
+                          <span className="block truncate text-[11px] text-[var(--text-muted)]">{g.line}</span>
+                        </span>
+                        <ChevronRight size={14} aria-hidden className="shrink-0 text-[var(--text-faint)] group-hover:text-[var(--text-secondary)]" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : (
+              <p className="py-3 text-xs text-[var(--text-muted)]">{p.attention.loading ? "Reading attention…" : `Attention unavailable${p.attention.error ? ` — ${p.attention.error}` : ""}`}</p>
+            )}
+            {p.attention.data && p.attention.data.authoritiesFailed.length > 0 && (
+              <p className="truncate border-t border-[var(--border-hairline)] py-2 text-[11px] text-[var(--accent-warning)]">
+                {p.attention.data.authoritiesFailed.length} attention source(s) unread
+              </p>
+            )}
+          </Surface>
+        </Block>
+        <Block id="ops-refresh" label="Refresh activity" className="min-w-0 max-lg:hidden lg:col-span-6"
+          action={<Doorway label="Pipeline" onSelect={() => p.onOpenWorkspace(PIPELINE_VIEW)} />}>
+          <Surface className="flex-1 p-4 sm:p-5">
+            {refresh ? (
+              <>
+                <DayBars days={refresh} ariaLabel="Refresh executions per UTC day" height={160} />
+                <Caption>
+                  {`${n(refresh.filter((d) => d.observed).reduce((a, d) => a + d.succeeded + d.failed + d.other, 0))} refresh executions · ${TREND_DAYS} UTC days${p.daily.data!.floor ? " · a floor (capped read)" : ""}`}
+                </Caption>
+              </>
+            ) : (
+              <p className="py-10 text-center text-xs text-[var(--text-muted)]">{p.daily.loading ? "Reading refresh activity…" : `Refresh activity unavailable${p.daily.error ? ` — ${p.daily.error}` : ""}`}</p>
+            )}
+          </Surface>
+        </Block>
       </div>
+
+      {/* D — the unified Jobs list. */}
+      {p.hasHosted(JOBS_KEY) && (
+        <Block id="ops-jobs" label="Jobs"
+          action={<Doorway label={jobCount !== null ? `See all ${jobCount}` : "See all"} onSelect={() => p.onOpenWorkspace(JOBS_VIEW)} />}>
+          {p.jobsSlot}
+        </Block>
+      )}
+
+      {/* E — Recent activity. */}
+      <Block id="ops-activity" label="Recent activity" action={<Doorway label="Pipeline" onSelect={() => p.onOpenWorkspace(PIPELINE_VIEW)} />}>
+        <Surface className="px-4 py-2 sm:px-5">
+          {recent.length > 0 ? (
+            <ul aria-label="Recent activity" className="flex flex-col">
+              {recent.map((r) => (
+                <li key={r.id} className="border-t border-[var(--border-hairline)] first:border-t-0">
+                  <button type="button" aria-haspopup="dialog" onClick={() => p.onSelectExecution({ id: r.id, eyebrow: r.eyebrow, title: r.name })}
+                    className="group flex min-h-11 w-full items-center gap-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">
+                    <span className="min-w-0 flex-1 truncate text-sm text-[var(--text-primary)]">{r.name}</span>
+                    <StatusWord word={r.status.word} tone={r.status.tone} className="shrink-0" />
+                    <span className="hidden shrink-0 text-[11px] tabular-nums text-[var(--text-muted)] sm:inline">{r.summary}</span>
+                    <ChevronRight size={14} aria-hidden className="shrink-0 text-[var(--text-faint)] group-hover:text-[var(--text-secondary)]" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="py-3 text-xs text-[var(--text-muted)]">
+              {p.executions.loading ? "Reading recent executions…" : p.executions.error ? `Executions unavailable — ${p.executions.error}` : "No executions recorded yet."}
+            </p>
+          )}
+        </Surface>
+      </Block>
+
+      {more.length > 0 && (
+        <nav aria-label="Operations detail" className="flex flex-wrap items-center gap-x-4">
+          {more.map((m) => <Doorway key={m.key} label={m.label} onSelect={() => p.onOpenDrawer(m.key)} dialog />)}
+        </nav>
+      )}
     </div>
   );
 }
 
-const DRAWER_TITLE: Record<OperationsDrawer, { eyebrow: string; title: string }> = {
-  attention:  { eyebrow: "Operations", title: "Needs attention" },
-  board:      { eyebrow: "Operations", title: "Domains & sources" },
-  incidents:  { eyebrow: "Operations", title: "Incidents" },
-  health:     { eyebrow: "Operations", title: "Platform health" },
-  activity:   { eyebrow: "Operations", title: "Activity & usage" },
-  operations: { eyebrow: "Operations", title: "Manual operations" },
+const DRAWER_TITLE: Record<OperationsDrawer, string> = {
+  attention: "Needs attention",
+  board: "Status board",
+  incidents: "Incidents",
+  health: "Platform health",
+  activity: "Activity & usage",
 };
 
 export function OperationsLead({ renderHosted, hasHosted, onOpenWorkspace, access }: PlatformViewLeadProps) {
   const overview = useSharedWidgetFetch<OperationsOverview>("/api/platform/platform-ops/overview");
   const attention = useSharedWidgetFetch<AttentionResponse>("/api/platform/platform-ops/attention");
-  const convergence = useSharedWidgetFetch<ConvergenceResult>("/api/platform/platform-ops/convergence");
-  const jobs = useSharedWidgetFetch<PlatformJobHealthResponse>("/api/platform/platform-ops/job-health");
-  const scheduler = useSharedWidgetFetch<SchedulerObservationResponse>("/api/platform/platform-ops/scheduler");
+  const jobs = useSharedWidgetFetch<PlatformJobHealthResponse>(JOBS_URL);
+  const scheduler = useSharedWidgetFetch<SchedulerObservationResponse>(SCHEDULER_URL);
+  const history = useSharedWidgetFetch<OperationalHistoryResult>(HISTORY_URL);
+  const daily = useSharedWidgetFetch<RefreshDailySeries>("/api/platform/platform-ops/refresh/daily");
   const executions = useSharedWidgetFetch<ExecutionPageDTO>("/api/platform/platform-ops/refresh/executions?limit=5");
-  // One clock read per mount (relative ages on the summary), never during render.
+  // One clock read per mount (relative ages + the day axis), never during render.
   const [nowMs] = useState(() => Date.now());
   const [drawer, setDrawer] = useState<OperationsDrawer | null>(null);
   const [execution, setExecution] = useState<ExecutionSelection | null>(null);
+  const [job, setJob] = useState<string | null>(null);
 
   // A doorway inside a drawer closes the drawer, then moves the rail.
   const go = (id: string) => { setDrawer(null); onOpenWorkspace(id); };
@@ -220,11 +340,11 @@ export function OperationsLead({ renderHosted, hasHosted, onOpenWorkspace, acces
 
   let body: ReactNode = null;
   switch (drawer) {
-    case "attention":  body = hasHosted(OVERVIEW_KEY) ? <AttentionBlock {...shared} /> : null; break;
-    case "board":      body = hasHosted(OVERVIEW_KEY) ? <div className="flex flex-col gap-8"><StatusBoard title="Status board" {...shared} /><ConnectionHealthBlock {...shared} /></div> : null; break;
-    case "incidents":  body = <div className="flex flex-col gap-8">{renderHosted("ops_convergence", go)}{renderHosted("ops_timeline", go)}</div>; break;
-    case "health":     body = renderHosted("ops_platform_health", go); break;
-    case "activity":   body = hasHosted(OVERVIEW_KEY) ? (
+    case "attention": body = hasHosted(OVERVIEW_KEY) ? <AttentionBlock {...shared} /> : null; break;
+    case "board":     body = hasHosted(OVERVIEW_KEY) ? <div className="flex flex-col gap-8"><StatusBoard title="Status board" {...shared} /><ConnectionHealthBlock {...shared} /></div> : null; break;
+    case "incidents": body = <div className="flex flex-col gap-8">{renderHosted("ops_convergence", go)}{renderHosted("ops_timeline", go)}</div>; break;
+    case "health":    body = renderHosted("ops_platform_health", go); break;
+    case "activity":  body = hasHosted(OVERVIEW_KEY) ? (
       <div className="flex flex-col gap-8">
         <JobsMatrixBlock {...shared} />
         <RefreshActivityBlock {...shared} />
@@ -233,32 +353,21 @@ export function OperationsLead({ renderHosted, hasHosted, onOpenWorkspace, acces
         <ActivityFeedBlock {...shared} />
       </div>
     ) : null; break;
-    case "operations": body = renderHosted("ops_manual_operations", go); break;
   }
 
   return (
     <>
       <OperationsLeadSurface
-        overview={overview} attention={attention} convergence={convergence}
-        jobs={jobs} scheduler={scheduler} executions={executions}
+        overview={overview} attention={attention} jobs={jobs} scheduler={scheduler} history={history} daily={daily} executions={executions}
         nowMs={nowMs} hasHosted={hasHosted}
+        jobsSlot={<UnifiedJobs mode="summary" access={access} nowMs={nowMs} selected={job} onSelect={setJob} />}
         onOpenDrawer={setDrawer} onOpenWorkspace={onOpenWorkspace} onSelectExecution={setExecution}
+        onSelectJob={(j) => (hasHosted(JOBS_KEY) ? setJob(j) : onOpenWorkspace(JOBS_VIEW))}
       />
-      <DetailDrawer
-        open={drawer !== null}
-        onClose={() => setDrawer(null)}
-        eyebrow={drawer ? DRAWER_TITLE[drawer].eyebrow : undefined}
-        title={drawer ? DRAWER_TITLE[drawer].title : ""}
-        size="xl"
-      >
+      <DetailDrawer open={drawer !== null} onClose={() => setDrawer(null)} eyebrow="Operations" title={drawer ? DRAWER_TITLE[drawer] : ""} size="xl">
         {body}
       </DetailDrawer>
-      <ExecutionTimelinePanel
-        executionId={execution?.id ?? null}
-        eyebrow={execution?.eyebrow ?? ""}
-        title={execution?.title ?? ""}
-        onClose={() => setExecution(null)}
-      />
+      <ExecutionTimelinePanel executionId={execution?.id ?? null} eyebrow={execution?.eyebrow ?? ""} title={execution?.title ?? ""} onClose={() => setExecution(null)} />
     </>
   );
 }

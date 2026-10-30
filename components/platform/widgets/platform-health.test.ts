@@ -525,9 +525,12 @@ function main() {
       // PLATFORM OPS PHASE 1 UX — re-ruled: a target may name a VIEW of a
       // doorway workspace (Policies › Alerts); the WORKSPACE it opens must be one
       // the Overview offers a doorway into.
-      const doorwayWorkspaces = (overview?.doorways ?? []).map((id) => resolvePlatformDestination(id)?.workspaceId);
-      check(`${group}'s target is a composed Overview doorway`,
-        doorwayWorkspaces.includes(resolvePlatformDestination(GROUP_DOORWAY[group])?.workspaceId), (overview?.doorways ?? []).join(","));
+      // PLATFORM OPS VISUAL SPEC (2026-10-30) — re-ruled: the Overview's "Explore"
+      // doorway row is gone (one navigation row: the workspace rail). A target's
+      // workspace must be one the area composes — a rail tab — or Operations itself.
+      const railWorkspaces = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS.map((w) => w.workspaceId);
+      check(`${group}'s target is a composed PLATFORM_OPS workspace (a rail tab)`,
+        overview != null && railWorkspaces.includes(resolvePlatformDestination(GROUP_DOORWAY[group])?.workspaceId ?? ""), railWorkspaces.join(","));
     }
     for (const d of doorways) {
       check(`accessible name starts with the visible label (${d.visible})`, d.aria.startsWith(d.visible), d.aria);

@@ -90,8 +90,11 @@ function main() {
     check("platform-refresh resolves (alias) to Operations › Pipeline",
       PLATFORM_WORKSPACE_ALIASES["platform-refresh"]?.workspaceId === "platform-overview" && PLATFORM_WORKSPACE_ALIASES["platform-refresh"]?.viewId === "pipeline");
     check("the Pipeline view is composed into PLATFORM_OPS", ops?.views?.some((v) => v.id === "pipeline") === true);
-    check("the Pipeline view is reachable from the Overview doorways", /doorways:[^\]]*platformViewTarget\("platform-overview", "pipeline"\)/.test(workspaces)
-      && (ops?.doorways ?? []).includes("platform-overview:pipeline"));
+    // PLATFORM OPS VISUAL SPEC (2026-10-30) — re-ruled: no doorway row; the
+    // Operations dashboard's Refresh activity / Recent activity cards open Pipeline.
+    const lead = readFileSync(path.join(process.cwd(), "components/platform/leads/OperationsLead.tsx"), "utf8");
+    check("the Pipeline view is reachable from the Operations dashboard", /PIPELINE_VIEW = platformViewTarget\("platform-overview", "pipeline"\)/.test(lead)
+      && /onOpenWorkspace\(PIPELINE_VIEW\)/.test(lead) && ops?.viewControl === "drilldown");
     check("its icon exists in the workspace icon map", /RefreshCw/.test(dashboard));
   }
 
