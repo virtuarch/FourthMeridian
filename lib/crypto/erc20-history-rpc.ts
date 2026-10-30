@@ -32,7 +32,7 @@ const hex = (n: number) => "0x" + n.toString(16);
 export async function fetchErc20TransfersPage(
   args: { wallet: string; direction: "from" | "to"; fromBlock: number; toBlock: number; pageKey: string | null },
   deps: EthHistoryDeps,
-): Promise<{ transfers: Erc20Transfer[]; pageKey: string | null }> {
+): Promise<{ transfers: Erc20Transfer[]; pageKey: string | null; refused: string[] }> {
   const transport = buildTransport(deps);
   const params: Record<string, unknown> = {
     fromBlock: hex(args.fromBlock), toBlock: hex(args.toBlock),
