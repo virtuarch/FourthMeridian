@@ -72,6 +72,7 @@ import { OperationsLead } from "./leads/OperationsLead";
 import { PipelineLead } from "./leads/PipelineLead";
 import { ProvidersLead } from "./leads/ProvidersLead";
 import { AiCostsLead } from "./leads/AiCostsLead";
+import { PoliciesLead } from "./leads/PoliciesLead";
 import { PlatformAreaHero } from "./PlatformAreaHero";
 import { PlatformSpaceSwitcher } from "./PlatformSpaceSwitcher";
 import { usePlatformNav } from "@/components/ui/PlatformNavContext";
@@ -210,6 +211,7 @@ const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLe
   pipeline:   PipelineLead,
   providers:  ProvidersLead,
   "ai-costs": AiCostsLead,
+  policies:   PoliciesLead,
 };
 
 /**
@@ -414,11 +416,16 @@ export function PlatformWorkspaceBody({
   // widget renders nothing (fails safe, like an inline section).
   const hasHosted = (key: string): boolean =>
     hosted.includes(key) && dbByKey.has(key) && PLATFORM_WIDGET_REGISTRY[key] != null;
-  const renderHosted: RenderHosted = (key, onOpenWorkspace) => {
+  const renderHosted: RenderHosted = (key, onOpenWorkspace, variant) => {
     if (!hasHosted(key)) return null;
     const row = dbByKey.get(key)!;
     const Widget = PLATFORM_WIDGET_REGISTRY[key];
-    return <Widget section={row} onOpenWorkspace={onOpenWorkspace ?? onOpen} access={access} />;
+    // A variant rides only where the lead asks for one (the Policies drawers),
+    // exactly as an inline view entry passes it; every other hosted widget
+    // receives exactly the props it always did.
+    return variant
+      ? <Widget section={row} onOpenWorkspace={onOpenWorkspace ?? onOpen} access={access} variant={variant} />
+      : <Widget section={row} onOpenWorkspace={onOpenWorkspace ?? onOpen} access={access} />;
   };
 
   return (

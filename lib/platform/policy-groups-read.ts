@@ -38,6 +38,12 @@ export interface PolicyGroupsResponse {
   cohorts: CohortRow[];
   /** USER-role accounts with no assignment row — they resolve to the default and are reported as such. */
   unassignedCustomers: number;
+  /**
+   * ACTIVE USER accounts (not deactivated / pending deletion) with no assignment
+   * row — the same population the fail-closed Attention item and alert count, so
+   * Policies and Attention always agree. Optional for readers built before it.
+   */
+  unassignedActiveCustomers?: number;
   /** Assignment rows naming a key the catalogue no longer defines (a retired group) — resolve to the default. */
   unknownAssignments: number;
   defaultPolicyGroup: string;
@@ -46,11 +52,12 @@ export interface PolicyGroupsResponse {
 
 /** The catalogue with its customer counts. Counts only: groupBy + count, never findMany, no identity. */
 export async function readPolicyGroups(): Promise<PolicyGroupsResponse> {
-  const [byGroup, byOverlay, byCohort, users] = await Promise.all([
+  const [byGroup, byOverlay, byCohort, users, unassignedActive] = await Promise.all([
     systemDb.customerPolicyAssignment.groupBy({ by: ["policyGroup"], _count: { _all: true } }),
     systemDb.customerPolicyAssignment.groupBy({ by: ["overlay"], where: { overlay: { not: null } }, _count: { _all: true } }),
     systemDb.customerCohort.groupBy({ by: ["cohort"], _count: { _all: true } }),
     systemDb.user.count({ where: { role: "USER" } }),
+    systemDb.user.count({ where: { role: "USER", deactivatedAt: null, policyAssignment: { is: null } } }),
   ]);
   const groupCount = new Map(byGroup.map((g) => [g.policyGroup, g._count._all] as const));
   const overlayCount = new Map(byOverlay.map((g) => [g.overlay as string, g._count._all] as const));
@@ -73,6 +80,7 @@ export async function readPolicyGroups(): Promise<PolicyGroupsResponse> {
     })),
     cohorts: Object.values(COHORTS).map((c) => ({ key: c.key, label: c.label, description: c.description, entry: c.entry, customers: cohortCount.get(c.key) ?? 0 })),
     unassignedCustomers: Math.max(0, users - assigned),
+    unassignedActiveCustomers: unassignedActive,
     unknownAssignments,
     defaultPolicyGroup: DEFAULT_POLICY_GROUP,
     checkedAt: new Date().toISOString(),
