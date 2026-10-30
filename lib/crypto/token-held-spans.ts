@@ -46,3 +46,29 @@ export async function loadTokenHeldSpans(client: Client, accountIds: readonly st
   }
   return out;
 }
+
+/**
+ * PR #122 delta review F3 — each token's stored historical closes, RAW_CLOSE
+ * ONLY: first, last, and every date (for interior-gap detection in
+ * token-valuation.core `reconstructedTokenValuation`). One row kind for all
+ * three, so a single recent INTRADAY quote can never extend close coverage over
+ * the days before it. Absent ⇒ no stored close. Dates only.
+ */
+export interface TokenCloseFacts { fromISO: string; toISO: string; datesISO: string[] }
+
+export async function loadTokenCloseFacts(client: Client, instrumentIds: readonly string[]): Promise<Map<string, TokenCloseFacts>> {
+  const out = new Map<string, TokenCloseFacts>();
+  if (instrumentIds.length === 0) return out;
+  const rows = await client.priceObservation.findMany({
+    where: { instrumentId: { in: [...instrumentIds] }, basis: "RAW_CLOSE" },
+    select: { instrumentId: true, date: true },
+    distinct: ["instrumentId", "date"],
+  });
+  const by = new Map<string, Set<string>>();
+  for (const r of rows) (by.get(r.instrumentId) ?? by.set(r.instrumentId, new Set()).get(r.instrumentId)!).add(isoOf(r.date));
+  for (const [id, set] of by) {
+    const datesISO = [...set].sort();
+    out.set(id, { fromISO: datesISO[0], toISO: datesISO[datesISO.length - 1], datesISO });
+  }
+  return out;
+}

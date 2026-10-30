@@ -428,7 +428,7 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   check("BOTH writers call the shared rule and the shared loader",
     /tokensValueOnDay\(obs, tokenRows\.prices, dISO\)/.test(regenSrc) && /loadTokenDayRows\(client,/.test(regenSrc)
     && /tokensValueOnDay\(obs, tokenRows\.prices, asOf\)/.test(liveSrc) && /loadTokenDayRows\(client, accountIds, asOf, asOf\)/.test(liveSrc));
-  check("regenerated tokens join only where the native crypto is itself valued", /if \(cryptoDayValuation\.licensed\) \{[\s\S]*?tokensValueOnDay/.test(regenSrc));
+  check("regenerated tokens join only where the native crypto is itself valued", /if \(cryptoDayValuation\.licensed && !gate\.tokenPriceMissing\) \{[\s\S]{0,800}?for \(const v of dayTokens\) if \(v\.state === "VALUED"/.test(regenSrc));
 
   const seed: WalletCurrentValue = {
     accountId: "w", chain: "SOL", assetKey: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501", symbol: "SOL",

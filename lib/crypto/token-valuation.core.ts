@@ -137,8 +137,11 @@ export function tokenReadWindow(fromISO: string, toISO: string, staleAfterDays: 
  *                     nothing to value — never probed, never counted (F2);
  *   VALUED            closes start on or before its first held day AND reach its
  *                     last held day (within CLOSES_END_TOLERANCE_DAYS) — its held
- *                     period is valued. Interior gaps are not inspected, as for
- *                     native prices (the day rule simply refuses an unpriced day);
+ *                     period is valued — and, when the close dates are supplied,
+ *                     no held day inside them goes unserved (see VALUED_WITH_GAPS);
+ *   VALUED_WITH_GAPS  (delta review F3) closes span its held period but leave
+ *                     INTERIOR held days that no close serves (the day rule's d /
+ *                     d−1): those days are unavailable — LIMITING, disclosed;
  *   VALUED_UNTIL_EARLIER closes stop INSIDE its held period (the shared archive
  *                     ended — another wallet's span, the token went thin, or the
  *                     tail was never fetched): valued only until then — LIMITING
@@ -160,7 +163,7 @@ export function tokenReadWindow(fromISO: string, toISO: string, staleAfterDays: 
  * Inputs are read loosely (alias metadata: `quote`, `priceHistory`). A missing
  * price is never $0.
  */
-export type ReconstructedTokenValuation = "NEVER_HELD" | "EXCLUDED" | "VALUED" | "VALUED_FROM_LATER" | "VALUED_UNTIL_EARLIER" | "NO_MARKET" | "NOT_VALUED_YET";
+export type ReconstructedTokenValuation = "NEVER_HELD" | "EXCLUDED" | "VALUED" | "VALUED_WITH_GAPS" | "VALUED_FROM_LATER" | "VALUED_UNTIL_EARLIER" | "NO_MARKET" | "NOT_VALUED_YET";
 
 /** Closes may trail the last held day by this much (a daily tail not yet fetched; the day rule's d−1 fallback). */
 export const CLOSES_END_TOLERANCE_DAYS = 3;
@@ -170,24 +173,62 @@ export interface ReconstructedTokenFacts {
   licence: { fromISO: string; toISO: string };
   /** When it was held (quantity > 0); `toISO` null = still held. Null = never held. */
   held: { fromISO: string; toISO: string | null } | null;
+  /** Its first stored historical close (RAW_CLOSE only), or null. */
   closesFromISO: string | null;
-  /** Its latest stored close (RAW_CLOSE or INTRADAY — both serve a day). Null when none. */
+  /**
+   * Its latest stored historical close — RAW_CLOSE ONLY, the same row kind as
+   * `closesFromISO` (delta review F3: a single recent INTRADAY quote must never
+   * extend historical close coverage over the days before it). Null when none.
+   */
   closesToISO?: string | null;
+  /**
+   * Every stored RAW_CLOSE date (any order). When supplied, interior held days
+   * no close serves make the token VALUED_WITH_GAPS. Absent ⇒ not inspected.
+   */
+  closeDatesISO?: readonly string[];
+}
+
+const plusDays = (iso: string, n: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+
+/** The days it was held, clamped to its licence; null when none lie inside it. */
+export function tokenHeldWindow(f: Pick<ReconstructedTokenFacts, "licence" | "held">): { fromISO: string; toISO: string } | null {
+  if (!f.held) return null;
+  const fromISO = f.held.fromISO > f.licence.fromISO ? f.held.fromISO : f.licence.fromISO;
+  const toISO = f.held.toISO === null || f.held.toISO > f.licence.toISO ? f.licence.toISO : f.held.toISO;
+  return fromISO > toISO ? null : { fromISO, toISO };
+}
+
+/**
+ * PURE (delta review F3) — the INTERIOR runs of days in [fromISO, toISO] that lie
+ * between two stored closes yet are served by neither (the day rule serves d from
+ * a close dated d or d−1). Days before the first / after the last close are the
+ * VALUED_FROM_LATER / VALUED_UNTIL_EARLIER questions, not gaps. Sorted.
+ */
+export function tokenCloseGaps(closeDatesISO: readonly string[], fromISO: string, toISO: string): { fromISO: string; toISO: string }[] {
+  const dates = [...new Set(closeDatesISO)].sort();
+  const out: { fromISO: string; toISO: string }[] = [];
+  for (let i = 0; i + 1 < dates.length; i++) {
+    const a = plusDays(dates[i], 2), b = minusDays(dates[i + 1], 1);
+    const from = a > fromISO ? a : fromISO, to = b < toISO ? b : toISO;
+    if (from <= to) out.push({ fromISO: from, toISO: to });
+  }
+  return out;
 }
 
 export function reconstructedTokenValuation(f: ReconstructedTokenFacts, aliasMetadata: unknown): ReconstructedTokenValuation {
   if (!f.held) return "NEVER_HELD";
   // Owner clarification 2026-10-30 — only an EXPLICIT classification excludes a held token.
   if (tokenValuationExclusion(aliasMetadata)) return "EXCLUDED";
-  const heldFrom = f.held.fromISO > f.licence.fromISO ? f.held.fromISO : f.licence.fromISO;
-  const heldTo = f.held.toISO === null || f.held.toISO > f.licence.toISO ? f.licence.toISO : f.held.toISO;
-  if (heldFrom > heldTo) return "NEVER_HELD"; // held only outside the licence: no licensed day to value
+  const w = tokenHeldWindow(f);
+  if (!w) return "NEVER_HELD"; // held only outside the licence: no licensed day to value
+  const heldFrom = w.fromISO, heldTo = w.toISO;
   const closesTo = f.closesToISO === undefined ? null : f.closesToISO;
   // Closes that END before it was first held value none of its held days either.
   const endsBeforeHeld = closesTo !== null && closesTo < heldFrom;
   if (f.closesFromISO !== null && f.closesFromISO <= heldTo && !endsBeforeHeld) {
     if (f.closesFromISO > heldFrom) return "VALUED_FROM_LATER";
     if (closesTo !== null && closesTo < minusDays(heldTo, CLOSES_END_TOLERANCE_DAYS)) return "VALUED_UNTIL_EARLIER";
+    if (f.closeDatesISO && tokenCloseGaps(f.closeDatesISO, heldFrom, heldTo).length > 0) return "VALUED_WITH_GAPS";
     return "VALUED";
   }
   // No close inside its held period: none of its held days is valued.
@@ -225,6 +266,10 @@ export function tokenHasNoMarket(aliasMetadata: unknown): boolean {
 export type TokenExclusionKind = "SPAM" | "NON_ECONOMIC" | "EXCLUDED";
 export function tokenValuationExclusion(aliasMetadata: unknown): { kind: TokenExclusionKind; source: string } | null {
   const e = (aliasMetadata as { exclusion?: { kind?: unknown; source?: unknown } } | null)?.exclusion;
+  // Any non-empty `source` is accepted only because no writer exists yet. The
+  // first writer added (provider flag, denylist, operator/user decision) must
+  // also fix the allow-list of accepted sources here, so an arbitrary string can
+  // never exclude a held token from valuation completeness.
   if (!e || typeof e.source !== "string" || !e.source.trim()) return null; // unattributed ⇒ not a classification
   return e.kind === "SPAM" || e.kind === "NON_ECONOMIC" || e.kind === "EXCLUDED" ? { kind: e.kind, source: e.source } : null;
 }
@@ -249,7 +294,38 @@ export function tokenDayMissingRequiredPrice(
   return tokens.some((t) => t.state === "UNPRICED" && !excluded(t.instrumentId));
 }
 
+/**
+ * PR #122 delta review F1 — THE DAY'S HELD-BUT-UNVALUED FACT, independent of
+ * today's balance.
+ *
+ * Regeneration's crypto refusal used to fire only when the wallet's CURRENT
+ * (flat) balance was material — so a wallet emptied today whose history held an
+ * unpriced token (or an unpriced native asset) refused nothing, and the day's
+ * crypto was written as the flat ≈ $0. This answers, from the DAY's own evidence:
+ * did the day hold a material asset (an unpriced held token with a market, or a
+ * native position the day valuation could not value, or a held token on a day
+ * native valuation was refused so tokens never reached the total) that has no
+ * value? True ⇒ the day's crypto is "unavailable" — preserved, never $0.
+ *
+ *   · an EXPLICITLY excluded token never blocks (tokenValuationExclusion);
+ *   · a NO_MARKET / thin / unlisted held token DOES block (owner clarification);
+ *   · a never-held / closed / not-yet-observed token never blocks;
+ *   · a STALE token quantity keeps its existing (quantity) treatment.
+ */
+export function cryptoDayHeldUnvalued(f: {
+  /** The native day valuation (valueCryptoDay), or null when the Space has no crypto account. */
+  native: { licensed: boolean; positionCount: number } | null;
+  tokens: ReadonlyArray<Pick<TokenDayValue, "instrumentId" | "state">>;
+  excluded: (instrumentId: string) => boolean;
+}): { tokenPriceMissing: boolean; heldUnvalued: boolean } {
+  const tokenPriceMissing = tokenDayMissingRequiredPrice(f.tokens, f.excluded);
+  const heldToken = f.tokens.some((t) => (t.state === "VALUED" || t.state === "UNPRICED") && !f.excluded(t.instrumentId));
+  const nativeRefused = f.native !== null && !f.native.licensed;
+  const nativeHeldUnvalued = nativeRefused && f.native!.positionCount > 0;
+  return { tokenPriceMissing, heldUnvalued: tokenPriceMissing || nativeHeldUnvalued || (nativeRefused && heldToken) };
+}
+
 /** Does this state keep the wallet's history from reading complete? */
 export function tokenValuationLimits(v: ReconstructedTokenValuation): boolean {
-  return v === "NOT_VALUED_YET" || v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER" || v === "NO_MARKET";
+  return v === "NOT_VALUED_YET" || v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER" || v === "VALUED_WITH_GAPS" || v === "NO_MARKET";
 }

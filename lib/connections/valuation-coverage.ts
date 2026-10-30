@@ -12,8 +12,8 @@ import type { PrismaClient } from '@prisma/client';
 import { grantsBalanceDisclosure } from '@/lib/account-privacy';
 import { deriveValuationCoverage, type ValuationCoverage } from './valuation-coverage.core';
 import { IS_TOKEN_INSTRUMENT, NOT_TOKEN_INSTRUMENT, TOKEN_ALIAS_PROVIDER, WALLET_TOKEN_POSITION_SOURCE } from '@/lib/crypto/token-asset';
-import { reconstructedTokenValuation, type ReconstructedTokenValuation } from '@/lib/crypto/token-valuation.core';
-import { loadTokenHeldSpans } from '@/lib/crypto/token-held-spans';
+import { reconstructedTokenValuation, tokenCloseGaps, tokenHeldWindow, type ReconstructedTokenValuation } from '@/lib/crypto/token-valuation.core';
+import { loadTokenCloseFacts, loadTokenHeldSpans } from '@/lib/crypto/token-held-spans';
 import { coverageFromRow, licensedInterval } from '@/lib/crypto/position-coverage';
 
 type Client = Pick<PrismaClient, 'spaceAccountLink' | 'positionCoverage' | 'priceObservation' | 'positionObservation' | 'instrumentAlias'>;
@@ -35,7 +35,7 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
   });
   const tok = await pricedTokenDisclosure(client, accountIds);
   const { trackedFromISO: tokensTrackedFromISO, pricesFromISO: tokenPricesFromISO } = tok;
-  const tokenValuation = { notValuedYet: tok.notValuedYet, withoutMarket: tok.withoutMarket, valuedUntilEarlier: tok.valuedUntilEarlier, excluded: tok.excluded };
+  const tokenValuation = { notValuedYet: tok.notValuedYet, withoutMarket: tok.withoutMarket, valuedUntilEarlier: tok.valuedUntilEarlier, valuedWithGaps: tok.valuedWithGaps, gapsToISO: tok.gapsToISO, excluded: tok.excluded };
   if (!coverage.length) return deriveValuationCoverage([], new Map(), tokensTrackedFromISO, tokenPricesFromISO, tokenValuation);
 
   const instrumentIds = [...new Set(coverage.map((c) => c.instrumentId))];
@@ -69,11 +69,13 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
  *   · NEVER_HELD — no positive balance ever: not counted at all (F2);
  *   · NOT_VALUED_YET — counted and disclosed (and the wallet is never complete);
  *   · NO_MARKET — a legitimate unpriced holding: counted and disclosed (never valued, never zero);
+ *   · VALUED_WITH_GAPS — interior held days no close serves (delta F3): counted, and the latest
+ *     such day carried so the chart discloses it only when its window reaches back over a gap;
  *   · EXCLUDED — explicitly classified (spam / non-economic): counted APART, never mixed with the above.
  * Dates and counts only.
  */
 async function pricedTokenDisclosure(client: Client, accountIds: string[]): Promise<{
-  trackedFromISO: string | null; pricesFromISO: string | null; notValuedYet: number; withoutMarket: number; valuedUntilEarlier: number; excluded: number;
+  trackedFromISO: string | null; pricesFromISO: string | null; notValuedYet: number; withoutMarket: number; valuedUntilEarlier: number; valuedWithGaps: number; gapsToISO: string | null; excluded: number;
 }> {
   const [firsts, licensedRows] = await Promise.all([
     client.positionObservation.groupBy({
@@ -94,42 +96,49 @@ async function pricedTokenDisclosure(client: Client, accountIds: string[]): Prom
     const prev = licensed.get(c.instrumentId);
     if (!prev || f < prev) licensed.set(c.instrumentId, f);
   }
-  if (!firsts.length && !licensed.size) return { trackedFromISO: null, pricesFromISO: null, notValuedYet: 0, withoutMarket: 0, valuedUntilEarlier: 0, excluded: 0 };
+  if (!firsts.length && !licensed.size) return { trackedFromISO: null, pricesFromISO: null, notValuedYet: 0, withoutMarket: 0, valuedUntilEarlier: 0, valuedWithGaps: 0, gapsToISO: null, excluded: 0 };
   const firstIds = firsts.map((f) => f.instrumentId);
   const licensedIds = [...licensed.keys()];
-  const [everPriced, closes, aliases] = await Promise.all([
+  const [everPriced, closeFacts, aliases] = await Promise.all([
     firstIds.length ? client.priceObservation.groupBy({ by: ['instrumentId'], where: { instrumentId: { in: firstIds } }, _min: { date: true } }) : [],
-    licensedIds.length ? client.priceObservation.groupBy({ by: ['instrumentId'], where: { instrumentId: { in: licensedIds }, basis: 'RAW_CLOSE' }, _min: { date: true } }) : [],
+    // B1 / S1 / delta F3 — first, last and every historical close: RAW_CLOSE only.
+    loadTokenCloseFacts(client as never, licensedIds),
     licensedIds.length ? client.instrumentAlias.findMany({ where: { instrumentId: { in: licensedIds }, provider: TOKEN_ALIAS_PROVIDER }, select: { instrumentId: true, metadata: true } }) : [],
   ]);
   const priced = new Set(everPriced.map((p) => p.instrumentId));
   const trackedFromISO = firsts.filter((f) => priced.has(f.instrumentId))
     .map((f) => { const obs = day(f._min.date); const lic = licensed.get(f.instrumentId) ?? null; return lic && obs && lic < obs ? lic : obs; })
     .filter((d): d is string => d !== null).sort()[0] ?? null;
-  const firstClose = new Map(closes.map((p) => [p.instrumentId, day(p._min.date)]));
   const meta = new Map(aliases.map((a) => [a.instrumentId, a.metadata]));
-  // S1 — where each token's closes END (RAW_CLOSE or INTRADAY: both serve a day).
-  const lastClose = new Map((licensedIds.length ? await client.priceObservation.groupBy({
-    by: ['instrumentId'], where: { instrumentId: { in: licensedIds }, basis: { in: ['RAW_CLOSE', 'INTRADAY'] } }, _max: { date: true },
-  }) : []).map((p) => [p.instrumentId, day(p._max?.date ?? null)]));
   // F2/F4 — per (account, token): when it was actually held; never-held tokens count nowhere.
   const held = await loadTokenHeldSpans(client as never, accountIds, licensedIds);
-  const RANK: Record<ReconstructedTokenValuation, number> = { NOT_VALUED_YET: 6, VALUED_FROM_LATER: 5, VALUED_UNTIL_EARLIER: 4, NO_MARKET: 3, EXCLUDED: 2, VALUED: 1, NEVER_HELD: 0 };
+  const RANK: Record<ReconstructedTokenValuation, number> = { NOT_VALUED_YET: 7, VALUED_FROM_LATER: 6, VALUED_UNTIL_EARLIER: 5, NO_MARKET: 4, VALUED_WITH_GAPS: 3, EXCLUDED: 2, VALUED: 1, NEVER_HELD: 0 };
   const worst = new Map<string, ReconstructedTokenValuation>();
+  // Delta F3 — the latest unserved interior held day of any token, so the chart
+  // says so only when its window reaches back over a gap.
+  let gapsToISO: string | null = null;
   for (const r of live) {
     const licence = licensedInterval(coverageFromRow(r))!;
-    const v = reconstructedTokenValuation({ licence, held: held.get(`${r.financialAccountId}|${r.instrumentId}`) ?? null, closesFromISO: firstClose.get(r.instrumentId) ?? null, closesToISO: lastClose.get(r.instrumentId) ?? null }, meta.get(r.instrumentId));
+    const cf = closeFacts.get(r.instrumentId);
+    const facts = { licence, held: held.get(`${r.financialAccountId}|${r.instrumentId}`) ?? null, closesFromISO: cf?.fromISO ?? null, closesToISO: cf?.toISO ?? null, closeDatesISO: cf?.datesISO ?? [] };
+    const v = reconstructedTokenValuation(facts, meta.get(r.instrumentId));
+    if (v === 'VALUED_WITH_GAPS') {
+      const w = tokenHeldWindow(facts)!;
+      const last = tokenCloseGaps(facts.closeDatesISO, w.fromISO, w.toISO).at(-1)?.toISO ?? null;
+      if (last && (gapsToISO === null || last > gapsToISO)) gapsToISO = last;
+    }
     const prev = worst.get(r.instrumentId);
     if (!prev || RANK[v] > RANK[prev]) worst.set(r.instrumentId, v);
   }
-  let notValuedYet = 0, withoutMarket = 0, valuedUntilEarlier = 0, excluded = 0;
+  let notValuedYet = 0, withoutMarket = 0, valuedUntilEarlier = 0, valuedWithGaps = 0, excluded = 0;
   const pricedFrom: string[] = [];
   for (const [id, v] of worst) {
     if (v === 'NOT_VALUED_YET') notValuedYet++;
     else if (v === 'NO_MARKET') withoutMarket++;
-    else if (v === 'VALUED_FROM_LATER') pricedFrom.push(firstClose.get(id)!);
+    else if (v === 'VALUED_FROM_LATER') pricedFrom.push(closeFacts.get(id)!.fromISO);
     else if (v === 'VALUED_UNTIL_EARLIER') valuedUntilEarlier++;
+    else if (v === 'VALUED_WITH_GAPS') valuedWithGaps++;
     else if (v === 'EXCLUDED') excluded++;
   }
-  return { trackedFromISO, pricesFromISO: pricedFrom.sort().at(-1) ?? null, notValuedYet, withoutMarket, valuedUntilEarlier, excluded };
+  return { trackedFromISO, pricesFromISO: pricedFrom.sort().at(-1) ?? null, notValuedYet, withoutMarket, valuedUntilEarlier, valuedWithGaps, gapsToISO: valuedWithGaps ? gapsToISO : null, excluded };
 }

@@ -180,6 +180,16 @@ export interface DayRegenInput {
   digitalAssetTier: CompletenessTier;
   /** True when a historical BTC price reached the day (else keep flat, never fabricate). */
   hasDigitalAssetEvidence: boolean;
+  /**
+   * PR #122 delta review F1 — the DAY held a material digital asset that has no
+   * value on it (token-valuation.core `cryptoDayHeldUnvalued`: an unpriced held
+   * token with a market, or a native position the day valuation refused). Decided
+   * from the day's own evidence, so it refuses the crypto component REGARDLESS of
+   * `base.totalDigitalAssets` — the wallet's CURRENT flat balance, which is ≈ 0
+   * for a wallet emptied today and must never turn a held day into $0. Absent ⇒
+   * false (every pre-existing caller unchanged).
+   */
+  digitalAssetHeldUnvalued?: boolean;
   /** Trust tier of the walked-back cash/card component (typically "derived"). */
   cashCardTier: CompletenessTier;
   /**
@@ -389,9 +399,11 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   // former is an immutable observation this function must never classify, and
   // the latter was computed against a different account set, so this run has no
   // authority over it. Both return before this line.
-  const cryptoMaterial = Math.abs(base.totalDigitalAssets) > CRYPTO_MATERIALITY_EPSILON;
+  const heldUnvalued = input.digitalAssetHeldUnvalued === true;
+  const cryptoMaterial = heldUnvalued || Math.abs(base.totalDigitalAssets) > CRYPTO_MATERIALITY_EPSILON;
   const cryptoVerdict: CryptoValuationStatus | null =
-    input.hasDigitalAssetEvidence && Math.abs(input.digitalAssetValue) > CRYPTO_MATERIALITY_EPSILON ? "supported"
+    heldUnvalued ? "unavailable"
+    : input.hasDigitalAssetEvidence && Math.abs(input.digitalAssetValue) > CRYPTO_MATERIALITY_EPSILON ? "supported"
     : cryptoMaterial ? "unavailable"
     : null;
 
@@ -444,7 +456,13 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
 
   // CRYPTO — the exact analogue, decided independently of investments.
   let cryptoRefusal: string | null = null;
-  if (input.hasDigitalAssetEvidence && !isUsableValuation(input.digitalAssetValue)) {
+  if (heldUnvalued) {
+    // HELD BUT UNVALUED (delta review F1): the day held a material asset with no
+    // value on it. Refused whatever today's flat balance says — never $0.
+    cryptoRefusal =
+      `${NO_CRYPTO_EVIDENCE_REASON_CODE}: a digital asset held on this date has no price serving it ` +
+      `(or its native valuation was refused); the stored value is preserved, NOT asserted as zero.`;
+  } else if (input.hasDigitalAssetEvidence && !isUsableValuation(input.digitalAssetValue)) {
     cryptoRefusal =
       `${INVALID_VALUATION_REASON_CODE} (digitalAssets): historical valuation was negative or non-finite; ` +
       `the stored value is preserved, not overwritten.`;

@@ -38,7 +38,7 @@ import type { ChainCoverage } from "./chain-movement";
 import { nativeAssetForChain } from "./native-asset";
 import { unsupportedReasonOf, type Erc20UnsupportedReason } from "./erc20-history.core";
 import { reconstructedTokenValuation } from "./token-valuation.core";
-import { loadTokenHeldSpans } from "./token-held-spans";
+import { loadTokenHeldSpans, loadTokenCloseFacts } from "./token-held-spans";
 import {
   parseTokenAssetKey, tokenDisplayLabel, shortenTokenAddress, TOKEN_ALIAS_PROVIDER, WALLET_TOKEN_POSITION_SOURCE, type TokenStandard,
 } from "./token-asset";
@@ -133,7 +133,7 @@ export interface WalletInstrumentHistory {
    * price is never $0.
    */
   tokensNotValuedYet: number;
-  /** F4/S1 — valued over only PART of their held period (prices start later, or end earlier). Disclosed, not a balance limit. */
+  /** F4/S1/F3 — valued over only PART of their held period (prices start later, end earlier, or leave interior gaps). Disclosed, not a balance limit. */
   tokensValuedFromLater: number;
   /** …and those confirmed to have no (liquid) market — never valued, disclosed. Never-held tokens count nowhere (F2). */
   tokensWithoutMarket: number;
@@ -236,13 +236,9 @@ export async function loadWalletInstrumentHistory(
   // B1 — which LICENSED token instruments have any stored historical close.
   const licensedTokenIds = [...new Set([...coverage.values()].flatMap((m) => [...m.entries()]
     .filter(([id, c]) => parseTokenAssetKey(aliasByInstrument.get(id)?.assetKey) !== null && licensedInterval(c) !== null).map(([id]) => id)))];
-  const firstClose = new Map((licensedTokenIds.length === 0 ? [] : await client.priceObservation.groupBy({
-    by: ["instrumentId"], where: { instrumentId: { in: licensedTokenIds }, basis: "RAW_CLOSE" }, _min: { date: true },
-  })).map((p) => [p.instrumentId, p._min?.date ? isoOf(p._min.date) : null] as const));
-  // S1 — and where they END (RAW_CLOSE or INTRADAY: both serve a day).
-  const lastClose = new Map((licensedTokenIds.length === 0 ? [] : await client.priceObservation.groupBy({
-    by: ["instrumentId"], where: { instrumentId: { in: licensedTokenIds }, basis: { in: ["RAW_CLOSE", "INTRADAY"] } }, _max: { date: true },
-  })).map((p) => [p.instrumentId, p._max?.date ? isoOf(p._max.date) : null] as const));
+  // B1 / S1 / delta F3 — where each token's historical closes start, END, and
+  // every day between: RAW_CLOSE only (an INTRADAY quote never extends coverage).
+  const closeFacts = await loadTokenCloseFacts(client, licensedTokenIds);
   // F2/F4 — when each was actually held (never-held ⇒ absent).
   const heldSpans = licensedTokenIds.length === 0 ? new Map() : await loadTokenHeldSpans(client, ids, licensedTokenIds);
   const latestQty = new Map(latestRows.map((r) => [`${r.financialAccountId}|${r.instrumentId}`, r.quantity]));
@@ -293,9 +289,9 @@ export async function loadWalletInstrumentHistory(
       const alias = aliasByInstrument.get(id);
       const licence = licensedInterval(c);
       if (!parseTokenAssetKey(alias?.assetKey) || licence === null) continue;
-      const v = reconstructedTokenValuation({ licence, held: heldSpans.get(`${a.id}|${id}`) ?? null, closesFromISO: firstClose.get(id) ?? null, closesToISO: lastClose.get(id) ?? null }, alias?.metadata);
+      const v = reconstructedTokenValuation({ licence, held: heldSpans.get(`${a.id}|${id}`) ?? null, closesFromISO: closeFacts.get(id)?.fromISO ?? null, closesToISO: closeFacts.get(id)?.toISO ?? null, closeDatesISO: closeFacts.get(id)?.datesISO ?? [] }, alias?.metadata);
       if (v === "NOT_VALUED_YET") tokensNotValuedYet++;
-      else if (v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER") tokensValuedFromLater++;
+      else if (v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER" || v === "VALUED_WITH_GAPS") tokensValuedFromLater++; // partly valued
       else if (v === "NO_MARKET") tokensWithoutMarket++;
       else if (v === "EXCLUDED") tokensExcluded++;
     }

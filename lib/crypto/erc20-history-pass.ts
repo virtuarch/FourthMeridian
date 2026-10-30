@@ -36,6 +36,7 @@ import { incrementalMeter, meterTotal } from "@/lib/usage/provider-budget.core";
 import {
   readErc20Section, erc20WorkOwed, sectionUsageOn,
   type Erc20HistoryConfig, type Erc20HistorySection,
+  ERC20_PRICE_RUN_SEVERITY, type Erc20PriceRunStatus,
 } from "./erc20-history.core";
 import type { Erc20HistoryOutcome, Erc20HistoryStepDeps } from "./erc20-history";
 
@@ -54,7 +55,7 @@ export interface Erc20HistoryPassDeps {
    * one token price path (erc20-history-prices.ts → lib/prices/token-history-prices.ts).
    * Returns the earliest day a close was inserted.
    */
-  acquirePrices?(args: { accountId: string; instrumentIds: string[]; maxTokens: number }): Promise<{ calls: number; inserted: number; tokensFetched: number; earliestInsertedISO: string | null }>;
+  acquirePrices?(args: { accountId: string; instrumentIds: string[]; maxTokens: number }): Promise<{ calls: number; inserted: number; tokensFetched: number; earliestInsertedISO: string | null; status?: Erc20PriceRunStatus; reason?: string | null; tokensSkipped?: number }>;
 }
 
 /** What the job lends the pass (its clock, locks, ledger and regeneration). */
@@ -79,11 +80,16 @@ export interface Erc20HistoryPassSummary {
   failures: Record<string, number>;
   regenerated: number;
   regenerationsDeferred: number;
-  prices: { tokensFetched: number; inserted: number; calls: number };
+  /**
+   * Delta review F4 — `status` is the WORST price-run outcome this pass (see
+   * erc20-history-prices `Erc20PriceRunStatus`); anything but COMPLETE also sets
+   * `stoppedBecause: "PRICES_INCOMPLETE"` when the wallet loop itself ran out.
+   */
+  prices: { tokensFetched: number; inserted: number; calls: number; status: Erc20PriceRunStatus; reason: string | null; tokensSkipped: number };
   requests: { total: number };
   dailyRequestsUsedBefore: number;
   dailyRequestCap: number;
-  stoppedBecause: "DISABLED" | "NO_WORK" | "JOB_BUDGET" | "DAILY_CAP" | "BUDGET_UNKNOWN" | "ALL_RUN";
+  stoppedBecause: "DISABLED" | "NO_WORK" | "JOB_BUDGET" | "DAILY_CAP" | "BUDGET_UNKNOWN" | "ALL_RUN" | "PRICES_INCOMPLETE";
   deferred: number;
 }
 
@@ -93,7 +99,7 @@ export interface Erc20HistoryPlan { work: Array<{ w: Parsed; kind: "PENDING" | "
 function emptySummary(enabled: boolean): Erc20HistoryPassSummary {
   return {
     enabled, eligible: 0, walletsRun: 0, walletsSkippedLocked: 0, tokensVerified: 0, tokensUnsupported: {}, failures: {},
-    regenerated: 0, regenerationsDeferred: 0, prices: { tokensFetched: 0, inserted: 0, calls: 0 }, requests: { total: 0 },
+    regenerated: 0, regenerationsDeferred: 0, prices: { tokensFetched: 0, inserted: 0, calls: 0, status: "COMPLETE", reason: null, tokensSkipped: 0 }, requests: { total: 0 },
     dailyRequestsUsedBefore: 0, dailyRequestCap: 0, stoppedBecause: enabled ? "ALL_RUN" : "DISABLED", deferred: 0,
   };
 }
@@ -145,6 +151,10 @@ export async function runErc20HistoryPass(
   const budgetKnown = ledger !== null;
   summary.dailyRequestsUsedBefore = ledger ? ledger.solana + ledger.other + Math.max(0, sectionCalls - ledger.other) : sectionCalls;
   let priceTokensLeft = cfg.maxPriceTokensPerRun;
+  const markPrices = (status: Erc20PriceRunStatus, reason: string, skipped: number) => {
+    summary.prices.tokensSkipped += skipped;
+    if (ERC20_PRICE_RUN_SEVERITY[status] > ERC20_PRICE_RUN_SEVERITY[summary.prices.status]) { summary.prices.status = status; summary.prices.reason = reason; }
+  };
 
   for (let i = 0; i < plan.work.length; i++) {
     const { w, kind } = plan.work[i];
@@ -173,11 +183,14 @@ export async function runErc20HistoryPass(
         // Historical prices for EVERY verified token of this wallet — held or exited (B1) —
         // under the CoinGecko TOKEN share. A token the shared path already covers costs no call.
         const candidates = o.pricingCandidates ?? o.verifiedInstrumentIds;
-        if (deps.acquirePrices && priceTokensLeft > 0 && candidates.length > 0) {
+        if (deps.acquirePrices && candidates.length > 0 && priceTokensLeft <= 0) {
+          markPrices("TOKEN_LIMIT", "price-token limit reached for this run; tokens left for a later run", candidates.length);
+        } else if (deps.acquirePrices && candidates.length > 0) {
           try {
             const p = await deps.acquirePrices({ accountId: w.accountId, instrumentIds: candidates, maxTokens: priceTokensLeft });
             priceTokensLeft -= p.tokensFetched;
             summary.prices.tokensFetched += p.tokensFetched; summary.prices.inserted += p.inserted; summary.prices.calls += p.calls;
+            if (p.status && p.status !== "COMPLETE") markPrices(p.status, p.reason ?? p.status, p.tokensSkipped ?? 0);
             if (p.earliestInsertedISO) {
               // S2 — durable BEFORE the regeneration: closes are inserted now, and the
               // 24 h / marker-covered price path will not insert them again to re-flag it.
@@ -208,5 +221,10 @@ export async function runErc20HistoryPass(
   }
   await flushUsage();
   summary.requests = { total: meterTotal(meter) };
+  if (summary.prices.status !== "COMPLETE") {
+    // Delta F4 — a stopped price run is a non-success outcome, never "done".
+    if (summary.stoppedBecause === "ALL_RUN") summary.stoppedBecause = "PRICES_INCOMPLETE";
+    console.warn(`[erc20-history] historical token prices incomplete (${summary.prices.status}): ${summary.prices.reason ?? ""}`);
+  }
   return summary;
 }

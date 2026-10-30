@@ -30,7 +30,9 @@ import { runErc20HistoryStep, type Erc20HistoryStore, type Erc20TokenWrite, type
 import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps } from "./erc20-history-pass";
 import { queuedCheckpoint, serializeCheckpoint, parseCheckpoint } from "./eth-history-backfill.core";
 import { walletHistoryComplete, facetFromCoverage, TOKEN_HISTORY_CHAINS } from "./wallet-instrument-history";
-import { tokensValueOnDay, tokenValueOnDay, reconstructedTokenValuation, tokenValuationLimits, tokenDayMissingRequiredPrice, tokenHasNoMarket, tokenValuationExclusion } from "./token-valuation.core";
+import { tokensValueOnDay, tokenValueOnDay, reconstructedTokenValuation, tokenValuationLimits, tokenDayMissingRequiredPrice, tokenHasNoMarket, tokenValuationExclusion, cryptoDayHeldUnvalued, tokenCloseGaps } from "./token-valuation.core";
+import { regenerateDay } from "@/lib/snapshots/regenerate-history.core";
+import { valueCryptoDay } from "./historical-crypto-valuation.core";
 import { heldSpanFrom } from "./token-held-spans";
 import { resolveEvidenceFloor } from "@/lib/snapshots/historical-work-window";
 import { loadWalletInstrumentHistory } from "./wallet-instrument-history";
@@ -638,6 +640,24 @@ async function main(): Promise<void> {
     const p2 = await planErc20History(deps, cfg, "2026-10-28");
     check("S2: …so the next run plans that regeneration first", p2.work[0]?.kind === "PENDING");
 
+    // Delta F4 — the pass/job surfaces a stopped price run as a NON-SUCCESS outcome, never "done".
+    for (const [status, ok] of [["BUDGET_STOPPED", false], ["COMPLETE", true]] as const) {
+      const pm4 = newMem();
+      const pchain: Chain = { head: 3000, calls: [], txs: [tx(USDC, 100, OTHER, WALLET, 1_000_000)] };
+      const d4: Erc20HistoryPassDeps = {
+        wallets: async () => [{ accountId: ACC, connectionId: "c1", cursor: pm4.cursor }],
+        step: ({ todayISO, deps: d }) => runErc20HistoryStep({ accountId: ACC, store: memStore(pm4), todayISO }, { ...d, eth: { ...d.eth, transport: transport(pchain), throttleRetries: 0 } }),
+        setPending: async (_a, mutate) => { const s0 = readErc20Section(pm4.cursor, ACC).section!; pm4.cursor = withErc20Section(pm4.cursor, ACC, mutate(s0)); return true; },
+        acquirePrices: async () => ({ calls: 0, inserted: 0, tokensFetched: 0, earliestInsertedISO: null, status, reason: ok ? null : "CoinGecko token budget reached; 1 token(s) not priced this run", tokensSkipped: ok ? 0 : 1 }),
+      };
+      const s4 = await runErc20HistoryPass(await planErc20History(d4, cfg, "2026-10-28"), d4, cfg,
+        { ...baseCtx, regenerateUnderLock: async (_w: unknown, _f: string, stamp: number) => ({ outcome: "DONE" as const, stamp }) });
+      check(ok ? "F4: a COMPLETE price run leaves the pass ALL_RUN" : "F4: a budget-stopped price run makes the pass PRICES_INCOMPLETE with status + reason (not done)",
+        ok ? s4.prices.status === "COMPLETE" && s4.stoppedBecause === "ALL_RUN"
+          : s4.prices.status === "BUDGET_STOPPED" && s4.stoppedBecause === "PRICES_INCOMPLETE" && /budget/.test(s4.prices.reason ?? "") && s4.prices.tokensSkipped === 1,
+        JSON.stringify({ p: s4.prices, b: s4.stoppedBecause }));
+    }
+
     // S3 — the pass meter reaches the ledger WHILE a step sends (every 100 calls), not only after it.
     const ledger: Record<string, number> = {};
     let recordedWhileSending = 0;
@@ -738,7 +758,21 @@ async function main(): Promise<void> {
     check("F1: probes per day never exceed the durable cap, however many runs", sent === 20 && ledgerProbes === 20, `${sent} / ${ledgerProbes}`);
     sent = 0; ledgerProbes = 0;
     await run({ probe: async () => { sent++; return 1; }, probeGate: gate({ tokenRemaining: 75, shareCap: 150 }) });
+    const rAllow = await run({ probe: async () => { sent++; return 1; }, probeGate: gate({ tokenRemaining: 75, shareCap: 150 }) });
     check("F1: no probe once the TOKEN share is down to the held-quote reserve", sent === 0);
+    // Delta F4 — a refused probe is REPORTED, never a silent "done".
+    check("F4: probe allowance 0 ⇒ status ALLOWANCE_EXHAUSTED with a reason and the skipped token counted",
+      rAllow.status === "ALLOWANCE_EXHAUSTED" && /allowance/.test(rAllow.reason ?? "") && rAllow.tokensSkipped === 1 && rAllow.probed === 0, JSON.stringify(rAllow));
+    for (const k of Object.keys(meta)) delete meta[k];
+    ledgerProbes = 0;
+    const rOk = await run();
+    check("F4: a run that asked every token reports COMPLETE (reason null, nothing skipped)", rOk.status === "COMPLETE" && rOk.reason === null && rOk.tokensSkipped === 0, JSON.stringify(rOk));
+    const budgetAcquire: typeof acquireTokenHistoricalCloses = async () => ({ status: "BUDGET", inserted: 0, earliestISO: null, calls: 0 });
+    const rBudget = await run({ acquire: budgetAcquire, probeGate: gate({ cap: 0 }) });
+    check("F4: the token budget stopping the run ⇒ BUDGET_STOPPED (worst wins over ALLOWANCE_EXHAUSTED), reason given",
+      rBudget.status === "BUDGET_STOPPED" && /budget/.test(rBudget.reason ?? "") && rBudget.tokensSkipped >= 1, JSON.stringify(rBudget));
+    const rLimit = await run({ maxTokens: 0 });
+    check("F4: no price-token allowance ⇒ TOKEN_LIMIT, never silently empty", rLimit.status === "TOKEN_LIMIT" && rLimit.tokensSkipped === 1);
     check("F1: allowance is the tighter of the cap and the reserve; unknown ⇒ 0",
       probeAllowance({ probesToday: 0, tokenRemaining: 80, tokenShareCap: 150, dailyCap: 20, heldReserve: 0.5 }) === 5
       && probeAllowance({ probesToday: null, tokenRemaining: 80, tokenShareCap: 150, dailyCap: 20, heldReserve: 0.5 }) === 0
@@ -769,7 +803,17 @@ async function main(): Promise<void> {
         ? [{ financialAccountId: "acc", instrumentId: id, _min: { date: new Date(`${f}T00:00:00Z`) }, _max: { date: new Date(`${t}T00:00:00Z`) } }]
         : z ? [{ financialAccountId: "acc", instrumentId: id, _max: { date: new Date(`${z}T00:00:00Z`) } }] : []);
     };
-    const covClient = (o: { closes?: string | null; closesTo?: string; usdcMeta?: unknown; usdcHeld?: [string, string, string | null] | null; extra?: Record<string, [string, string, string | null]> }) => ({
+    // Delta F3 — closes are read as RAW_CLOSE rows (first, last and every date); `drop` punches interior gaps.
+    const denseCloses = (id: string, from: string, to: string, drop: readonly string[] = []) => {
+      const out: { instrumentId: string; date: Date }[] = [];
+      for (let t = Date.parse(`${from}T00:00:00Z`); t <= Date.parse(`${to}T00:00:00Z`); t += 86_400_000) {
+        const iso = new Date(t).toISOString().slice(0, 10);
+        if (!drop.includes(iso)) out.push({ instrumentId: id, date: new Date(t) });
+      }
+      return out;
+    };
+    const gapDrop = Array.from({ length: 10 }, (_, k) => `2025-04-${String(k + 1).padStart(2, "0")}`);
+    const covClient = (o: { closes?: string | null; closesTo?: string; intradayTo?: string; drop?: string[]; usdcMeta?: unknown; usdcHeld?: [string, string, string | null] | null; extra?: Record<string, [string, string, string | null]> }) => ({
       spaceAccountLink: { findMany: async () => [{ visibilityLevel: "FULL", financialAccountId: "acc" }] },
       positionCoverage: { findMany: async ({ where }: { where: { instrument?: unknown } }) =>
         JSON.stringify(where.instrument) === JSON.stringify(IS_TOKEN_INSTRUMENT)
@@ -781,8 +825,10 @@ async function main(): Promise<void> {
         const max = typeof where.basis === "object"; // the S1 "where do closes END" read
         const d = (iso: string) => (max ? { _max: { date: new Date(`${iso}T00:00:00Z`) } } : { _min: { date: new Date(`${iso}T00:00:00Z`) } });
         return where.instrumentId.in.flatMap((id) => id === "dai" ? [{ instrumentId: "dai", ...d(max ? "2026-10-27" : "2025-10-28") }]
-          : id === "usdc" && o.closes ? [{ instrumentId: "usdc", ...d(max ? (o.closesTo ?? "2026-10-27") : o.closes) }] : []);
-      } },
+          : id === "usdc" && o.closes ? [{ instrumentId: "usdc", ...d(max ? (o.intradayTo ?? o.closesTo ?? "2026-10-27") : o.closes) }] : []);
+      }, findMany: async ({ where }: { where: { instrumentId: { in: string[] }; basis?: unknown } }) => where.basis !== "RAW_CLOSE" ? []
+        : where.instrumentId.in.flatMap((id) => id === "dai" ? denseCloses("dai", "2025-10-28", "2026-10-27")
+          : id === "usdc" && o.closes ? denseCloses("usdc", o.closes, o.closesTo ?? "2026-10-27", o.drop) : []) },
       instrumentAlias: { findMany: async () => [{ instrumentId: "usdc", metadata: o.usdcMeta ?? {} }, { instrumentId: "spam", metadata: {} }, { instrumentId: "dai", metadata: { quote: { outcome: "PRICED", pricedAt: "x" } } }] },
     });
     const c1 = await loadValuationCoverage(covClient({}) as never, "space");
@@ -810,7 +856,7 @@ async function main(): Promise<void> {
     const doneSection = { ...emptySection(), scannedToBlock: 10, scannedToISO: "2026-10-27", contracts: { [USDC]: {
       decimals: 6, firstBlock: 5, firstDayISO: "2025-01-10", transfers: 2, baseRaw: "0", days: [], state: "VERIFIED", reason: null,
       verifiedToBlock: 10, persistedThroughISO: "2026-10-27", instrumentId: "usdc" } } } as Erc20HistorySection;
-    const whClient = (closesFrom: string | null, o: { spam?: boolean; closesTo?: string } = {}) => ({
+    const whClient = (closesFrom: string | null, o: { spam?: boolean; closesTo?: string; drop?: string[] } = {}) => ({
       positionCoverage: { findMany: async () => [nativeCov, tokenCov("usdc"), ...(o.spam ? [tokenCov("spam")] : [])] },
       positionObservation: { groupBy: async ({ where }: { where: { quantity?: unknown; source?: unknown } }) => (where.source ? []
         : JSON.stringify(where.quantity) === JSON.stringify({ gt: 0 })
@@ -819,11 +865,12 @@ async function main(): Promise<void> {
       instrumentAlias: { findMany: async () => [{ instrumentId: "usdc", externalId: EXITED_KEY, metadata: {} }, { instrumentId: "spam", externalId: `eip155:1/erc20:${SPAM}`, metadata: {} }] },
       priceObservation: { groupBy: async ({ where }: { where: { basis?: unknown } }) => (!closesFrom ? []
         : where.basis === "RAW_CLOSE" ? [{ instrumentId: "usdc", _min: { date: new Date(`${closesFrom}T00:00:00Z`) } }]
-        : typeof where.basis === "object" ? [{ instrumentId: "usdc", _max: { date: new Date(`${o.closesTo ?? "2026-10-27"}T00:00:00Z`) } }] : []) },
+        : typeof where.basis === "object" ? [{ instrumentId: "usdc", _max: { date: new Date(`${o.closesTo ?? "2026-10-27"}T00:00:00Z`) } }] : []),
+        findMany: async ({ where }: { where: { basis?: unknown } }) => (!closesFrom || where.basis !== "RAW_CLOSE" ? [] : denseCloses("usdc", closesFrom, o.closesTo ?? "2026-10-27", o.drop)) },
       accountConnection: { findFirst: async () => ({ connectionId: "c1", connection: { credential: null, cursor: null } }) },
       $queryRaw: async () => [{ historyCheckpoint: withErc20Section(null, "acc", doneSection) }],
     });
-    const wh = async (closesFrom: string | null, o: { spam?: boolean; closesTo?: string } = {}) => (await loadWalletInstrumentHistory(whClient(closesFrom, o) as never, [{ id: "acc", walletChain: "ETH" }])).get("acc")!;
+    const wh = async (closesFrom: string | null, o: { spam?: boolean; closesTo?: string; drop?: string[] } = {}) => (await loadWalletInstrumentHistory(whClient(closesFrom, o) as never, [{ id: "acc", walletChain: "ETH" }])).get("acc")!;
     const h0 = await wh(null);
     // Owner ruling 2026-10-30 — balance completeness is independent of prices; the valuation gap is a separate, disclosed fact.
     check("RULING: every balance verified, an exited token unvalued ⇒ BALANCE complete, valuation gap counted separately",
@@ -834,6 +881,9 @@ async function main(): Promise<void> {
     check("F4: held only before the 365-day price window ⇒ counted NOT valued (a close elsewhere is not coverage); balance still complete", h2.tokensNotValuedYet === 1 && h2.complete === true);
     const h3 = await wh("2025-03-01");
     check("F4: priced only from inside its held period ⇒ counted partly valued; balance still complete", h3.tokensValuedFromLater === 1 && h3.complete === true);
+    const h3g = await wh("2025-01-01", { drop: gapDrop });
+    check("F3: interior price gaps over held days ⇒ counted partly valued on the wallet (History copy); balance still complete",
+      h3g.tokensValuedFromLater === 1 && h3g.tokensNotValuedYet === 0 && h3g.complete === true, JSON.stringify({ l: h3g.tokensValuedFromLater }));
     const h4 = await wh("2025-01-01", { spam: true });
     check("F2: a never-held spam token beside it never makes the wallet limited", h4.tokensNotValuedYet === 0 && h4.tokensWithoutMarket === 0 && h4.complete === true, JSON.stringify(h4));
     const conn = { id: "c", provider: "WALLET", state: "active" } as never;
@@ -858,6 +908,30 @@ async function main(): Promise<void> {
     const c6 = await loadValuationCoverage(covClient({ closes: "2025-01-01", closesTo: "2025-03-31" }) as never, "space");
     check("S1: the chart discloses a token whose prices end before it was sold", c6?.tokensValuedUntilEarlier === 1
       && /Older token holdings exist but lack historical prices/.test(valuationCoverageNote(c6, "2025-01-01") ?? ""), JSON.stringify(c6));
+
+    // Delta F3 — ONE row kind (RAW_CLOSE) for first/last/gaps: a recent INTRADAY quote never extends close coverage.
+    const c7 = await loadValuationCoverage(covClient({ closes: "2025-01-01", closesTo: "2025-03-31", intradayTo: "2026-10-27" }) as never, "space");
+    check("F3: closes ending 2025-03 + one recent INTRADAY row ⇒ still VALUED_UNTIL_EARLIER (never VALUED)",
+      c7?.tokensValuedUntilEarlier === 1 && !c7?.tokensValuedWithGaps, JSON.stringify(c7));
+    check("F3 rule: closesToISO is RAW_CLOSE-only — the reviewer's case classifies limiting",
+      reconstructedTokenValuation({ licence: LIC, held: { fromISO: "2025-01-10", toISO: null }, closesFromISO: "2025-01-01", closesToISO: "2025-03-31" }, {}) === "VALUED_UNTIL_EARLIER");
+    // Delta F3 — interior gaps over held dates.
+    check("F3 rule: tokenCloseGaps finds unserved interior days (d / d−1 rule), clamped to the held window",
+      JSON.stringify(tokenCloseGaps(["2025-03-31", "2025-04-11"], "2025-01-10", "2025-06-30")) === JSON.stringify([{ fromISO: "2025-04-02", toISO: "2025-04-10" }])
+      && tokenCloseGaps(["2025-03-31", "2025-04-02"], "2025-01-10", "2025-06-30").length === 0
+      && tokenCloseGaps(["2025-03-31", "2025-04-11"], "2025-05-01", "2025-06-30").length === 0);
+    check("F3 rule: closes spanning the held period with an interior hole ⇒ VALUED_WITH_GAPS (limiting); one missing day ⇒ VALUED",
+      reconstructedTokenValuation({ licence: LIC, held: { fromISO: "2025-01-10", toISO: "2025-06-30" }, closesFromISO: "2025-01-01", closesToISO: "2026-10-27", closeDatesISO: denseCloses("x", "2025-01-01", "2026-10-27", gapDrop).map((r) => r.date.toISOString().slice(0, 10)) }, {}) === "VALUED_WITH_GAPS"
+      && tokenValuationLimits("VALUED_WITH_GAPS")
+      && reconstructedTokenValuation({ licence: LIC, held: { fromISO: "2025-01-10", toISO: "2025-06-30" }, closesFromISO: "2025-01-01", closesToISO: "2026-10-27", closeDatesISO: denseCloses("x", "2025-01-01", "2026-10-27", ["2025-04-01"]).map((r) => r.date.toISOString().slice(0, 10)) }, {}) === "VALUED");
+    const c8 = await loadValuationCoverage(covClient({ closes: "2025-01-01", drop: gapDrop }) as never, "space");
+    const n8 = valuationCoverageNote(c8, "2025-01-01") ?? "";
+    check("F3: the chart discloses interior price gaps over held days as partial, never zero",
+      c8?.tokensValuedWithGaps === 1 && c8?.tokenPriceGapsToISO === "2025-04-10" && /1 token has gaps in its historical prices/.test(n8) && /never counted as zero/.test(n8) && !/\$/.test(n8), n8);
+    check("F3: …only when the displayed window reaches back over the gap",
+      !/gaps in its historical prices/.test(valuationCoverageNote(c8, "2025-06-01") ?? ""));
+    const c9 = await loadValuationCoverage(covClient({ closes: "2025-01-01", drop: ["2026-01-05", "2026-01-06", "2026-01-07"] }) as never, "space");
+    check("F3: a gap AFTER it was sold is not a held-day gap (nothing disclosed)", !c9?.tokensValuedWithGaps, JSON.stringify(c9));
     const h5 = await wh("2025-01-01", { closesTo: "2025-03-31" });
     check("S1: closes ending before the sale ⇒ counted partly valued (disclosed), balance unaffected", h5.tokensValuedFromLater === 1 && h5.complete === true, JSON.stringify(h5));
 
@@ -981,13 +1055,75 @@ async function main(): Promise<void> {
       check(`RULING 2 (${label}): a closed (0) token never blocks`, !tokenDayMissingRequiredPrice(closed.tokens, () => false));
     }
     check("RULING 2 (native non-regression): a wallet with no tokens is unaffected", tokenDayMissingRequiredPrice([], () => false) === false);
-    const regen = read("lib", "snapshots", "regenerate-history.ts");
-    check("RULING 2: regeneration refuses the crypto evidence on such a day (never an understated total)",
-      /if \(tokenDayMissingRequiredPrice\(t\.tokens, excluded\)\) tokenPriceMissing = true;/.test(regen)
-      && /if \(!tokenPriceMissing\) \{\s*digitalAssetValue = classifyAccounts\(cryptoDay, ctx, dISO\)\.totalDigitalAssets;\s*hasDigitalAssetEvidence = true;/.test(regen));
-    const core = read("lib", "snapshots", "regenerate-history.core.ts");
-    check("RULING 2: …which the day core turns into 'unavailable' with the stored value preserved (native's path)",
-      /: cryptoMaterial \? "unavailable"/.test(core) && /NO_CRYPTO_EVIDENCE_REASON_CODE/.test(core));
+    // Delta review F1/F2 — BEHAVIOURAL: the binding's day gate (cryptoDayHeldUnvalued) feeding the
+    // pure day decision (regenerateDay), with the wallet EMPTIED TODAY (flat base ≈ 0) — the case a
+    // current-balance guard could not see. Never $0; preserved as "unavailable".
+    {
+      const STORED_ROW = { stocks: 0, crypto: 640, total: 640, cash: 100, savings: 0, debt: 0, netWorth: 740, totalAssets: 740, netLiquid: 100, cashOnHand: 100 };
+      const day = (gate: { heldUnvalued: boolean; tokenPriceMissing: boolean }, nativeLicensed: boolean, valuedUsd: number, existing: typeof STORED_ROW | null = STORED_ROW) => regenerateDay({
+        date: "2025-06-01", existingIsEstimated: existing ? true : null, existing,
+        base: { totalInvestments: 0, totalDigitalAssets: 0 /* emptied today */, totalChecking: 100, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0 },
+        investmentValue: 0, investmentTier: "derived", hasInvestmentEvidence: false,
+        digitalAssetValue: valuedUsd, digitalAssetTier: "estimated",
+        hasDigitalAssetEvidence: nativeLicensed && !gate.tokenPriceMissing, // the binding's rule
+        digitalAssetHeldUnvalued: gate.heldUnvalued,
+        cashCardTier: "derived", membershipChangedSince: false,
+      });
+      const cryptoOf = (r: ReturnType<typeof regenerateDay>) => r.components?.find((c) => c.component === "crypto");
+      const usdtObs = [{ instrumentId: "usdt", dateISO: "2025-05-30", quantity: 640 }];
+      const nativeOk = { licensed: true, positionCount: 0 }; // ETH drained to 0 on this day: no native position
+      // (a) unpriced held token, wallet emptied today ⇒ refused / unavailable, never 0.
+      const unpriced = tokensValueOnDay(usdtObs, [], "2025-06-01").tokens;
+      const ga = cryptoDayHeldUnvalued({ native: nativeOk, tokens: unpriced, excluded: () => false });
+      const ra = day(ga, true, 0);
+      check("F1 (a): emptied-today wallet + unpriced held USDT ⇒ crypto PRESERVED, verdict unavailable — never $0",
+        ga.heldUnvalued && ra.cryptoValuationStatus === "unavailable" && cryptoOf(ra)?.action === "preserved" && cryptoOf(ra)?.authorized === false
+        && cryptoOf(ra)?.value === 640 && ra.fieldPatch?.crypto === undefined, JSON.stringify({ ga, v: ra.cryptoValuationStatus, c: cryptoOf(ra) }));
+      const raNoRow = day(ga, true, 0, null);
+      check("F1 (a): …and with no stored row the day is skipped (unsupported), never written as 0",
+        raNoRow.action === "skip-unsupported" && raNoRow.fields === null && raNoRow.cryptoValuationStatus === "unavailable");
+      // (b) priced held day ⇒ valued.
+      const priced = tokensValueOnDay(usdtObs, [{ instrumentId: "usdt", dateISO: "2025-06-01", basis: "RAW_CLOSE", priceUsd: 1 }], "2025-06-01");
+      const gb = cryptoDayHeldUnvalued({ native: nativeOk, tokens: priced.tokens, excluded: () => false });
+      const rb = day(gb, true, priced.totalUsd);
+      check("F1 (b): a priced held day is VALUED (recomputed, supported, 640)",
+        !gb.heldUnvalued && rb.cryptoValuationStatus === "supported" && cryptoOf(rb)?.action === "recomputed" && cryptoOf(rb)?.value === 640, JSON.stringify(cryptoOf(rb)));
+      // (c) NO_MARKET held token ⇒ refused (no-market is not spam).
+      const gc = cryptoDayHeldUnvalued({ native: nativeOk, tokens: unpriced, excluded: (id) => tokenValuationExclusion(id === "usdt" ? { quote: { outcome: "THIN" } } : {}) !== null });
+      const rc = day(gc, true, 0);
+      check("F1 (c): a NO_MARKET (thin) held token still refuses the day — never excluded by itself",
+        gc.heldUnvalued && rc.cryptoValuationStatus === "unavailable" && cryptoOf(rc)?.action === "preserved");
+      // (d) explicitly excluded ⇒ not blocking, and shown distinct (EXCLUDED, never VALUED / NO_MARKET).
+      const spamMeta = { exclusion: { kind: "SPAM", source: "operator", atISO: "2026-10-30" } };
+      const gd = cryptoDayHeldUnvalued({ native: nativeOk, tokens: unpriced, excluded: (id) => id === "usdt" && tokenValuationExclusion(spamMeta) !== null });
+      const rd = day(gd, true, 0);
+      check("F1 (d): an EXPLICITLY excluded held token does not block the day",
+        !gd.heldUnvalued && !gd.tokenPriceMissing && cryptoOf(rd)?.action === "recomputed");
+      check("F1 (d): …and is classified apart (EXCLUDED, counted separately)",
+        reconstructedTokenValuation({ licence: { fromISO: "2025-01-10", toISO: "2026-10-27" }, held: { fromISO: "2025-01-10", toISO: null }, closesFromISO: null }, spamMeta) === "EXCLUDED"
+        && /excluded as spam/.test(valuationCoverageNote(deriveValuationCoverage([], new Map(), null, null, { notValuedYet: 0, withoutMarket: 0, excluded: 1 }), "2025-01-01") ?? ""));
+      // (e) never-held token ⇒ not blocking.
+      const never = tokensValueOnDay([{ instrumentId: "spam", dateISO: "2025-05-30", quantity: 0 }], [], "2025-06-01").tokens;
+      const ge = cryptoDayHeldUnvalued({ native: nativeOk, tokens: never, excluded: () => false });
+      check("F1 (e): a never-held (0-balance) token never blocks the day", !ge.heldUnvalued && cryptoOf(day(ge, true, 0))?.action === "recomputed");
+      // Native: the SAME code path — an unpriced native position on a drained-today wallet refuses too.
+      const nat = valueCryptoDay({ accounts: [{ financialAccountId: "w", name: "w", nativeBalance: 0.5, assetKey: "eth", symbol: "ETH", applicable: true }], unitPriceByAssetKey: { eth: null }, quantityLicensed: true });
+      const gn = cryptoDayHeldUnvalued({ native: { licensed: nat.licensed, positionCount: nat.positionCount }, tokens: [], excluded: () => false });
+      const rn = day(gn, nat.licensed, 0);
+      check("F1 native: an unpriced held ETH position on a drained-today wallet ⇒ unavailable, never $0",
+        nat.refusal === "NO_PRICE" && gn.heldUnvalued && rn.cryptoValuationStatus === "unavailable" && cryptoOf(rn)?.action === "preserved");
+      const natZero = valueCryptoDay({ accounts: [{ financialAccountId: "w", name: "w", nativeBalance: 0, assetKey: "eth", symbol: "ETH", applicable: true }], unitPriceByAssetKey: { eth: 3000 }, quantityLicensed: true });
+      const gz = cryptoDayHeldUnvalued({ native: { licensed: natZero.licensed, positionCount: natZero.positionCount }, tokens: [], excluded: () => false });
+      check("F1 native non-regression: a priced, genuinely empty wallet still values to 0 (supported zero is allowed)",
+        !gz.heldUnvalued && cryptoOf(day(gz, true, 0))?.action === "recomputed");
+      const natDeclared = valueCryptoDay({ accounts: [{ financialAccountId: "w", name: "w", nativeBalance: 0, assetKey: "eth", symbol: "ETH", applicable: true }], unitPriceByAssetKey: { eth: null }, quantityLicensed: true });
+      check("F1 native non-regression: an empty wallet on a day with no price is NOT flagged held (W-M0 declared-asset rule unchanged)",
+        !cryptoDayHeldUnvalued({ native: { licensed: natDeclared.licensed, positionCount: natDeclared.positionCount }, tokens: [], excluded: () => false }).heldUnvalued);
+    }
+    // Wiring pin (complements the behavioural checks above): the binding feeds the gate into the day input.
+    const regenSrc = read("lib", "snapshots", "regenerate-history.ts");
+    check("F1 wiring: regeneration computes the day gate and passes digitalAssetHeldUnvalued into regenerateDay",
+      /cryptoDayHeldUnvalued\(\{/.test(regenSrc) && /digitalAssetHeldUnvalued = gate\.heldUnvalued;/.test(regenSrc) && /\n\s+digitalAssetHeldUnvalued,\n/.test(regenSrc));
     check("RULING 2: the exclusion rule is ONE function for SPL and ERC-20 (alias metadata, no chain branch)",
       /excluded: tokenValuationExclusion\(a\.metadata\) !== null/.test(read("lib", "crypto", "token-valuation.ts")) && tokenHasNoMarket({ quote: { outcome: "THIN" } }));
 

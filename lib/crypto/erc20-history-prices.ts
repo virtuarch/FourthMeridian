@@ -48,12 +48,22 @@ import { usageDayBucket } from "@/lib/usage/provider-budget.core";
 import { todayUTCISO } from "@/lib/time/clock";
 import { TOKEN_ALIAS_PROVIDER, parseTokenAssetKey } from "./token-asset";
 import { loadTokenHeldSpans } from "./token-held-spans";
+import { ERC20_PRICE_RUN_SEVERITY, type Erc20PriceRunStatus } from "./erc20-history.core";
+
+export { ERC20_PRICE_RUN_SEVERITY, type Erc20PriceRunStatus };
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
 const isoOf = (d: Date) => d.toISOString().slice(0, 10);
 
-export interface Erc20PriceRun { calls: number; inserted: number; tokensFetched: number; earliestInsertedISO: string | null; probed: number }
+export interface Erc20PriceRun {
+  calls: number; inserted: number; tokensFetched: number; earliestInsertedISO: string | null; probed: number;
+  status: Erc20PriceRunStatus;
+  /** Human-readable why, null when COMPLETE. */
+  reason: string | null;
+  /** Tokens left unasked by a stop, plus tokens whose probe was refused by the allowance. */
+  tokensSkipped: number;
+}
 
 /** A never-priced token is quote-probed at most this often (an exited spam token costs ≤ 1 call a week). */
 export const ERC20_PROBE_RETRY_MS = 7 * 24 * 3_600_000;
@@ -145,11 +155,15 @@ export async function acquireErc20HistoricalPrices(args: {
   probeGate?: Erc20ProbeGate;
   now?: () => number;
 }): Promise<Erc20PriceRun> {
-  const out: Erc20PriceRun = { calls: 0, inserted: 0, tokensFetched: 0, earliestInsertedISO: null, probed: 0 };
+  const out: Erc20PriceRun = { calls: 0, inserted: 0, tokensFetched: 0, earliestInsertedISO: null, probed: 0, status: "COMPLETE", reason: null, tokensSkipped: 0 };
+  const mark = (status: Erc20PriceRunStatus, reason: string) => {
+    if (ERC20_PRICE_RUN_SEVERITY[status] > ERC20_PRICE_RUN_SEVERITY[out.status]) { out.status = status; out.reason = reason; }
+  };
   const probe = args.probe ?? defaultProbe;
   const now = args.now ?? Date.now;
   const ids = [...new Set(args.instrumentIds)];
-  if (ids.length === 0 || args.maxTokens <= 0) return out;
+  if (ids.length === 0) return out;
+  if (args.maxTokens <= 0) { mark("TOKEN_LIMIT", "no price-token allowance left this run"); out.tokensSkipped = ids.length; return out; }
   const acquire = args.acquire ?? acquireTokenHistoricalCloses;
   const gate = args.probeGate ?? defaultProbeGate(args.client);
   const [aliases, coverage, held] = await Promise.all([
@@ -160,8 +174,13 @@ export async function acquireErc20HistoricalPrices(args: {
     }),
     loadTokenHeldSpans(args.client, [args.accountId], ids),
   ]);
-  for (const instrumentId of ids) {
-    if (out.tokensFetched >= args.maxTokens) break;
+  for (let i = 0; i < ids.length; i++) {
+    const instrumentId = ids[i];
+    if (out.tokensFetched >= args.maxTokens) {
+      out.tokensSkipped += ids.length - i;
+      mark("TOKEN_LIMIT", `price-token limit (${args.maxTokens}) reached; ${ids.length - i} token(s) left for a later run`);
+      break;
+    }
     const alias = aliases.find((a) => a.instrumentId === instrumentId);
     const assetKey = alias?.externalId;
     const parsed = parseTokenAssetKey(assetKey);
@@ -177,6 +196,9 @@ export async function acquireErc20HistoricalPrices(args: {
         catch { /* a probe is an outcome; the token stays NOT_VALUED_YET and is disclosed */ }
         finally { await gate.record(1).catch(() => undefined); }
         out.probed++;
+      } else {
+        out.tokensSkipped++;
+        mark("ALLOWANCE_EXHAUSTED", "quote-probe allowance exhausted; never-priced token(s) left NOT_VALUED_YET for a later run");
       }
     }
     const r = await acquire({ client: args.client, instrumentId, assetKey: assetKey!, fromISO: isoOf(lic.coveredFromDate), toISO: isoOf(lic.coveredToDate) });
@@ -184,7 +206,13 @@ export async function acquireErc20HistoricalPrices(args: {
     out.calls += r.calls + probeCalls;
     out.inserted += r.inserted;
     if (r.earliestISO && (out.earliestInsertedISO === null || r.earliestISO < out.earliestInsertedISO)) out.earliestInsertedISO = r.earliestISO;
-    if (r.status === "BUDGET") break; // the shared token share is spent: nothing more this run
+    if (r.status === "BUDGET") {
+      // The shared token share is spent: nothing more this run — said, never silent.
+      // This token was not priced either (the shared path spent nothing on it).
+      out.tokensSkipped += ids.length - i;
+      mark("BUDGET_STOPPED", `CoinGecko token budget reached; ${ids.length - i} token(s) not priced this run`);
+      break;
+    }
   }
   return out;
 }

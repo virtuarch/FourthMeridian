@@ -82,7 +82,7 @@ import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconst
 import { loadPositionCoverage, resolveLicensedQuantityAsOf } from "@/lib/crypto/position-coverage";
 import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 import { loadTokenDayRows } from "@/lib/crypto/token-valuation";
-import { tokensValueOnDay, tokenDayMissingRequiredPrice } from "@/lib/crypto/token-valuation.core";
+import { tokensValueOnDay, cryptoDayHeldUnvalued, type TokenDayValue } from "@/lib/crypto/token-valuation.core";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
@@ -1047,6 +1047,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     let digitalAssetValue = c.totalDigitalAssets;
     let hasDigitalAssetEvidence = false;
     let cryptoDayValuation: CryptoDayValuation | null = null;
+    let digitalAssetHeldUnvalued = false;
     if (cryptoAccounts.length > 0) {
       // HIST-2C / W-M0 — from the one-shot window read above, one entry per asset
       // actually held. An asset with no close on this day maps to null, which the
@@ -1079,29 +1080,33 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         unitPriceByAssetKey,
         quantityLicensed: cryptoQuantityLicensed(dISO),
       });
-      if (cryptoDayValuation.licensed) {
+      // TOKEN HOLDINGS (PR-A) — the same wallets' tokens on this day, valued by THE
+      // token day rule. Evaluated whether or not native valuation licensed the day,
+      // so a held token is never invisible to the refusal below.
+      const dayTokens: TokenDayValue[] = [];
+      const excluded = (id: string) => tokenRows?.identity.get(id)?.excluded === true; // explicit classification only
+      if (tokenRows) {
+        for (const obs of tokenRows.observationsByAccount.values()) dayTokens.push(...tokensValueOnDay(obs, tokenRows.prices, dISO).tokens);
+      }
+      // OWNER RULING 2026-10-30 / delta review F1 — a HELD asset with no value on
+      // this day (an unpriced held token that has a market, an unvalued native
+      // position, or held tokens on a day native refused) makes the day's crypto
+      // UNAVAILABLE — decided from the DAY's evidence, never from today's flat
+      // balance (a wallet emptied today must not turn a held day into $0).
+      const gate = cryptoDayHeldUnvalued({
+        native: { licensed: cryptoDayValuation.licensed, positionCount: cryptoDayValuation.positionCount },
+        tokens: dayTokens, excluded,
+      });
+      digitalAssetHeldUnvalued = gate.heldUnvalued;
+      if (cryptoDayValuation.licensed && !gate.tokenPriceMissing) {
         // classifyAccounts still does the FX to the reporting currency — the SAME
         // conversion path every other total uses (no second FX interpretation).
         const cryptoDay = cryptoDayValuation.positions.map((p) => ({ type: "crypto", balance: p.nativeValue, currency: "USD" }));
-        // TOKEN HOLDINGS (PR-A) — VALUED tokens of the same wallets, in USD,
-        // through the SAME conversion path. Unpriced / stale tokens add nothing.
-        // OWNER RULING 2026-10-30 — a HELD token that has a market but no price
-        // serving this day makes the day's crypto valuation INCOMPLETE, exactly as
-        // an unpriced native asset does (all-or-nothing): the component is refused
-        // ("unavailable", stored value preserved) — never an understated total.
-        let tokenPriceMissing = false;
-        if (tokenRows) {
-          const excluded = (id: string) => tokenRows.identity.get(id)?.excluded === true; // explicit classification only
-          for (const obs of tokenRows.observationsByAccount.values()) {
-            const t = tokensValueOnDay(obs, tokenRows.prices, dISO);
-            if (tokenDayMissingRequiredPrice(t.tokens, excluded)) tokenPriceMissing = true;
-            for (const v of t.tokens) if (v.state === "VALUED" && v.valueUsd !== null) cryptoDay.push({ type: "crypto", balance: v.valueUsd, currency: "USD" });
-          }
-        }
-        if (!tokenPriceMissing) {
-          digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;
-          hasDigitalAssetEvidence = true;
-        }
+        // VALUED tokens of the same wallets, in USD, through the SAME conversion
+        // path. Excluded / closed / stale tokens add nothing.
+        for (const v of dayTokens) if (v.state === "VALUED" && v.valueUsd !== null && !excluded(v.instrumentId)) cryptoDay.push({ type: "crypto", balance: v.valueUsd, currency: "USD" });
+        digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;
+        hasDigitalAssetEvidence = true;
       }
     }
 
@@ -1164,6 +1169,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       digitalAssetValue,
       digitalAssetTier: "estimated", // constant-quantity assumption × real price
       hasDigitalAssetEvidence,
+      digitalAssetHeldUnvalued,
       // REG-2 — a held-flat balance account (current balance carried backward, no
       // transaction reconstruction) makes the day's cash/card component an
       // "estimated" (not "derived") value, so the row is honestly labeled a weaker

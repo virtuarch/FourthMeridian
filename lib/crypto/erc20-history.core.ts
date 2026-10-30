@@ -773,3 +773,16 @@ export function erc20HistoryConfig(env: Record<string, string | undefined> = pro
     startReserveMs:       num(env, "ERC20_HISTORY_START_RESERVE_MS", 20_000, 2_000, 200_000),
   };
 }
+
+/**
+ * Delta review F4 — HOW the run ended, never silent:
+ *   COMPLETE             every eligible token was asked (or needed nothing);
+ *   BUDGET_STOPPED       the CoinGecko TOKEN share ran out — the remaining tokens were not asked;
+ *   ALLOWANCE_EXHAUSTED  a never-priced token needed a quote probe and the durable
+ *                        probe allowance was 0 — it stays NOT_VALUED_YET until a later run;
+ *   TOKEN_LIMIT          `maxTokens` reached with tokens still to ask.
+ * Anything but COMPLETE is a non-success the pass reports (never "done").
+ */
+export type Erc20PriceRunStatus = "COMPLETE" | "BUDGET_STOPPED" | "ALLOWANCE_EXHAUSTED" | "TOKEN_LIMIT";
+/** Severity order for combining runs: the worst outcome wins. */
+export const ERC20_PRICE_RUN_SEVERITY: Record<Erc20PriceRunStatus, number> = { COMPLETE: 0, TOKEN_LIMIT: 1, ALLOWANCE_EXHAUSTED: 2, BUDGET_STOPPED: 3 };
