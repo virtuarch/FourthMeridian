@@ -15,6 +15,7 @@ import type { BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import type { DayBar, Fetched, Kpi } from "../ops-visual/ops-visual-model";
 import type { HeroModel } from "../ops-visual/HealthHero";
 import type { FunnelBarStage } from "../charts/FunnelBars";
+import type { ShareBar } from "../charts/ShareBars";
 import { WEEKDAYS, pct, type HeatAxis, type HeatCell } from "../charts/heatmap-model";
 
 export type GrowthWindow = "30" | "90";
@@ -66,7 +67,8 @@ export function growthKpis(acq: Fetched<AcquisitionResponse>, pa: Fetched<Produc
 
 export function growthHero(acq: Fetched<AcquisitionResponse>, pa: Fetched<ProductAnalyticsResponse>): HeroModel {
   const p = pa.data, a = acq.data;
-  const accounts = p ? p.registrations.total - p.registrations.deactivated : null;
+  // Every registered account — the same population the funnel's first stage counts.
+  const accounts = p ? p.registrations.total : null;
   return {
     title: "Growth",
     dot: false,
@@ -74,7 +76,7 @@ export function growthHero(acq: Fetched<AcquisitionResponse>, pa: Fetched<Produc
     verdict: { word: accounts === null ? "—" : plural(accounts, "account"), tone: "muted" },
     checked: a ? hhmm(a.checkedAt) : p ? hhmm(p.checkedAt) : null,
     caption: a && p
-      ? `+${n(a.registrations.total)} registered · ${n(a.requests.total)} beta requests · last ${a.windowDays} UTC days`
+      ? `+${n(a.registrations.total)} registered in ${a.windowDays} d · ${n(p.registrations.deactivated)} deactivated · ${n(a.requests.total)} beta requesters`
       : reason(a ? pa : acq, "growth figures"),
     kpis: growthKpis(acq, pa),
     kpiLabels: { first: "Acquisition figures", second: "Waitlist and engagement figures", all: "Growth figures" },
@@ -113,17 +115,21 @@ export function waitlistItems(a: AcquisitionResponse): BreakdownItem[] {
   ].filter((i) => i.value > 0);
 }
 
-export function sourceItems(a: AcquisitionResponse): BreakdownItem[] {
-  return a.sources.map((s, i) => ({ id: `src-${i}`, label: s.label, value: s.count }));
+/** Requesters in the window by first source, as shares of ALL requesters (the unrecorded ones included). */
+export function sourceBars(a: AcquisitionResponse): ShareBar[] {
+  const whole = a.sources.reduce((s, x) => s + x.count, 0) + a.sourcesUnrecorded;
+  const share = (c: number) => (whole > 0 ? c / whole : null);
+  const out: ShareBar[] = a.sources.map((s, i) => ({ key: `src-${i}`, label: s.label, count: s.count, share: share(s.count) }));
+  if (a.sourcesUnrecorded > 0) out.push({ key: "unrecorded", label: "No source recorded", count: a.sourcesUnrecorded, share: share(a.sourcesUnrecorded), muted: true });
+  return out;
 }
+export const sourceWhole = (a: AcquisitionResponse): number => a.sources.reduce((s, x) => s + x.count, 0) + a.sourcesUnrecorded;
 
-export function adoptionItems(p: ProductAnalyticsResponse): BreakdownItem[] {
+/** Adoption as the AUTHORITY's share of registered accounts (an account uses several features — never a share of the bars' sum). */
+export function adoptionBars(p: ProductAnalyticsResponse): ShareBar[] {
   return [...p.features]
     .sort((x, y) => y.adopters - x.adopters)
-    .map((f) => ({
-      id: f.key, label: f.label, value: f.adopters,
-      meta: f.adoption === undefined ? undefined : f.adoption === null ? "—" : `${Math.round(f.adoption * 100)}% of accounts`,
-    }));
+    .map((f) => ({ key: f.key, label: f.label, count: f.adopters, share: typeof f.adoption === "number" ? f.adoption : null }));
 }
 
 export function funnelStages(p: ProductAnalyticsResponse): FunnelBarStage[] {

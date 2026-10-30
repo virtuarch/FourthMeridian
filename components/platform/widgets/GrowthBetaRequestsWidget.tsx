@@ -24,7 +24,7 @@
  * and mode as text, and one explanatory line — never a button that 403s.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, X, Send, Ban, Loader2, ShieldAlert, UserPlus, Rocket, Search, ArrowUpDown, ChevronRight, Settings2 } from "lucide-react";
 import { Block, Surface } from "@/components/atlas/Surface";
 import {
@@ -123,6 +123,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   // Waiting is first-in-first-out (oldest first); Invited reads newest first, as the route orders it.
   const [sort, setSort]                                 = useState<"newest" | "oldest">("oldest");
   const [showAll, setShowAll]                           = useState(false);
+  const firstLoadDone                                   = useRef(false);
   const [settingsOpen, setSettingsOpen]                 = useState(false);
   // SEC-PLAT-2 — mode / status changes and revocation carry a required reason
   // (lib/audit.ts REASON_REQUIRED_ACTIONS); one value serves whichever confirm is open.
@@ -138,7 +139,13 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
         fetch("/api/platform/growth-revenue/beta-status", { credentials: "same-origin" }),
       ]);
       if (!rReq.ok) throw new Error(rReq.status === 403 ? "Not authorized" : `Request failed (${rReq.status})`);
-      setReqs((await rReq.json()) as BetaRequestsResponse);
+      const body = (await rReq.json()) as BetaRequestsResponse;
+      setReqs(body);
+      // First read only: open on the tab that has work in it (Waiting, unless it is empty and invitations are not).
+      if (!firstLoadDone.current) {
+        firstLoadDone.current = true;
+        if (body.pending.length === 0 && body.invitations.length > 0) { setTab("invited"); setSort("newest"); }
+      }
       if (rStatus.ok) setStatus((await rStatus.json()) as BetaStatusResponse);
       setLoadedAt(new Date().toISOString());
     } catch (e) {

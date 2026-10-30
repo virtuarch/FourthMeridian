@@ -120,6 +120,8 @@ export function cohortLayout(rows: readonly CohortRow[], cols: readonly HeatAxis
     cols: cols.map((c) => ({ ...c, shown: c.shown ?? true })),
     cells: rows.map((r) =>
       r.cells.map((c): HeatCell => {
+        // A cohort with no members has nothing to measure in any period: blank, never hatched or 0 %.
+        if (r.size === 0) return { kind: "blank" };
         if (c.state === "noData") return { kind: "noData" };
         if (c.state === "immature") return { kind: "immature" };
         if (c.den === 0) return { kind: "blank" };
