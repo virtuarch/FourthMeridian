@@ -1,5 +1,5 @@
 /**
- * lib/entitlements/assignment-health.ts  (owner ruling, 2026-10-30 — the read)
+ * lib/platform/policy-assignment-health.ts  (owner ruling, 2026-10-30 — the read)
  *
  * THE ONE READ behind "which customers have a missing or invalid policy-group
  * assignment", shared by the Platform Ops Attention feed (lib/platform/ops/
@@ -16,8 +16,8 @@
 import "server-only";
 import { systemDb } from "@/lib/db";
 import { env } from "@/lib/env";
-import { POLICY_GROUPS } from "./catalogue";
-import { POLICY_ASSIGNMENT_ISSUE_CAP, buildPolicyAssignmentHealth, type PolicyAssignmentHealth } from "./assignment-health-core";
+import { POLICY_GROUPS } from "@/lib/entitlements/catalogue";
+import { POLICY_ASSIGNMENT_ISSUE_CAP, buildPolicyAssignmentHealth, type PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
 
 /** The narrow read surface (systemDb satisfies it; tests hand a fake). Counts and finds only. */
 export interface PolicyAssignmentReadClient {

@@ -29,7 +29,7 @@ import { getAiFailureHealth } from "@/lib/platform/ai/failures";
 import { getAiSpendHealth } from "@/lib/platform/ai/spend-health";
 import { getActiveIncidentPage } from "@/lib/platform/incidents/projections";
 import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
-import { loadPolicyAssignmentHealth } from "@/lib/entitlements/assignment-health";
+import { loadPolicyAssignmentHealth } from "@/lib/platform/policy-assignment-health";
 import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity } from "@/lib/alerts/rules";
 import type { AuthorityOutputs } from "@/lib/alerts/authorities";
 import {

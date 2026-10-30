@@ -25,7 +25,7 @@ import {
 import { explainEntitlement, loadEffectiveEntitlements, resolveEffectiveEntitlements, type AssignmentFacts } from "./resolve";
 import { countLimit, refuseIfDisabled, refuseIfFailClosed, PLAN_NEEDS_ATTENTION_CODE } from "./consume";
 import { buildPolicyAssignmentHealth, customerRef, describePolicyAssignmentIssue, POLICY_ASSIGNMENT_ISSUE_CAP } from "./assignment-health-core";
-import { loadPolicyAssignmentHealth, type PolicyAssignmentReadClient } from "./assignment-health";
+import { loadPolicyAssignmentHealth, type PolicyAssignmentReadClient } from "@/lib/platform/policy-assignment-health";
 import { buildAttention, ATTENTION_AUTHORITIES } from "@/lib/platform/ops/attention-core";
 import { ALERT_RULES } from "@/lib/alerts/rules";
 import { evaluateAlertRules, evaluatePolicyAssignmentInvalid } from "@/lib/alerts/evaluate";
@@ -312,10 +312,10 @@ async function main(): Promise<void> {
   console.log("8. no write / delete in the new code paths");
   {
     const MUTATE = /\.(create|createMany|update|updateMany|upsert|delete|deleteMany|executeRaw|\$executeRaw|\$executeRawUnsafe)\s*\(/;
-    for (const f of ["lib/entitlements/assignment-health.ts", "lib/entitlements/assignment-health-core.ts", "lib/entitlements/resolve.ts", "lib/entitlements/catalogue.ts", "lib/entitlements/consume.ts"]) {
+    for (const f of ["lib/platform/policy-assignment-health.ts", "lib/entitlements/assignment-health-core.ts", "lib/entitlements/resolve.ts", "lib/entitlements/catalogue.ts", "lib/entitlements/consume.ts"]) {
       check(`${f}: no create / update / delete call`, !MUTATE.test(strip(f)));
     }
-    const ah = strip("lib/entitlements/assignment-health.ts");
+    const ah = strip("lib/platform/policy-assignment-health.ts");
     check("assignment-health: selects no email / name / username", !/\b(email|name|username)\s*:\s*true/.test(ah));
     const core = strip("lib/entitlements/assignment-health-core.ts");
     check("assignment-health-core: pure (no db, no env, no clock read)", !/@\/lib\/db|systemDb|process\.env|@\/lib\/env|new Date\(\)/.test(core));
@@ -333,7 +333,7 @@ async function main(): Promise<void> {
   const lt = code("app/api/plaid/link-token/route.ts");
   check("an investments-consent link token is refused when fail-closed (plain update mode still repairs)",
     /if \(consentParam === "investments"\) \{[\s\S]{0,200}refuseIfFailClosed\(/.test(lt));
-  const ah = code("lib/entitlements/assignment-health.ts");
+  const ah = code("lib/platform/policy-assignment-health.ts");
   check("affected parties exclude deactivated / non-customer accounts", /deactivatedAt: null, policyAssignment: \{ is: null \}/.test(ah) && /user: \{ role: "USER" as const, deactivatedAt: null \}/.test(ah));
 }
 

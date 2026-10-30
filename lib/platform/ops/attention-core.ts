@@ -136,7 +136,7 @@ export interface AttentionInputs {
   /** `latest: null` = evaluator never ran (an answer); outer null = loader failed. */
   alerts: { latest: AlertLatestEvaluation | null; titles: Readonly<Record<string, string>> } | null;
   incidents: { items: readonly PlatformIncidentProjection[]; activeTotal: number; truncated: boolean } | null;
-  /** Owner ruling (2026-10-30) — the policy-assignment read (lib/entitlements/assignment-health.ts).
+  /** Owner ruling (2026-10-30) — the policy-assignment read (lib/platform/policy-assignment-health.ts).
    *  Absent (undefined) is treated exactly like null: NOT read, so the authority is named as failed. */
   policyAssignments?: PolicyAssignmentHealth | null;
 }

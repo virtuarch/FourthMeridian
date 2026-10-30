@@ -57,7 +57,7 @@ import { getAiFailureHealth } from "@/lib/platform/ai/failures";
 import { getBriefOps } from "@/lib/platform/ai/brief-ops";
 // Owner ruling (2026-10-30) — the policy-assignment authority (its own bounded,
 // read-only fm_system read; this file still imports no database client).
-import { loadPolicyAssignmentHealth } from "@/lib/entitlements/assignment-health";
+import { loadPolicyAssignmentHealth } from "@/lib/platform/policy-assignment-health";
 
 /** Active incidents asked for. More than the preview's six; still a floor when exceeded. */
 export const ATTENTION_INCIDENT_LIMIT = 20;

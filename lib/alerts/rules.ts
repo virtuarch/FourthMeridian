@@ -75,7 +75,7 @@
  * policy-assignment-invalid (owner ruling, 2026-10-30): "missing or invalid
  * customer policy-group assignments fail closed" needs an actionable operator
  * alert identifying the affected assignment. It reads the policy-assignment
- * authority (lib/entitlements/assignment-health.ts — the same read as the
+ * authority (lib/platform/policy-assignment-health.ts — the same read as the
  * Attention item). Critical while POLICY_ASSIGNMENT_FAIL_CLOSED=enforce (the
  * customer is being refused paid features); warning while the switch is off
  * (the exposure, before it bites). One breach per customer keyed on the opaque
@@ -230,7 +230,7 @@ export const ALERT_RULES: readonly AlertRuleDefinition[] = [
     kind: "policy-assignment",
     title: "Customer policy assignment missing or invalid",
     description:
-      "A customer account has no policy-group assignment, or its assignment names a key the catalogue does not define. Critical while POLICY_ASSIGNMENT_FAIL_CLOSED=enforce (the customer fails closed: new AI, manual refresh and new connections are refused); warning while it is off (they still resolve to the Beta default). One breach per customer, named by an opaque reference only; fix it in Customer Success by assigning a valid policy group — access recovers on the next request. Reads the policy-assignment authority (lib/entitlements/assignment-health.ts); never writes an assignment.",
+      "A customer account has no policy-group assignment, or its assignment names a key the catalogue does not define. Raised (critical) only while POLICY_ASSIGNMENT_FAIL_CLOSED=enforce, when the customer fails closed (new AI, manual refresh and new connections are refused); while the switch is off nothing is refused and the exposure shows as a warning in Platform Ops › Attention instead of an alert. One breach per customer, named by an opaque reference only; fix it in Customer Success by assigning a valid policy group — access recovers on the next request. Reads the policy-assignment authority (lib/platform/policy-assignment-health.ts); never writes an assignment.",
     authority: "policy-assignments",
     live: true,
     defaultEnabled: true,

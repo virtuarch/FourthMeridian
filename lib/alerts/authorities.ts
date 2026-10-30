@@ -98,6 +98,6 @@ export interface AuthorityOutputs {
   /** OBS-004 — active sync incidents (null = did not gather). */
   syncIncidents: SyncIncidentHealth | null;
   /** Owner ruling (2026-10-30) — missing / invalid customer policy-group assignments
-   *  (lib/entitlements/assignment-health.ts). Optional: absent = did not gather. */
+   *  (lib/platform/policy-assignment-health.ts). Optional: absent = did not gather. */
   policyAssignments?: PolicyAssignmentHealth | null;
 }
