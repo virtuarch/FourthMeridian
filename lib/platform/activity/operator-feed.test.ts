@@ -50,7 +50,9 @@ async function main() {
       "PLATFORM_POLICY_CHANGED", "PLATFORM_POLICY_RESET", "CONNECTION_RESYNC_TRIGGERED", "CONNECTION_REAUTH_REQUESTED",
       "PLAID_ITEM_WEBHOOK_UPDATED", "PLAID_ITEM_REVOCATION_RETRY_REQUESTED", "OPERATOR_REFRESH_ALL",
       // A connection action (D6): resuming ONE wallet connection's history.
-      "WALLET_HISTORY_RESUMED"].sort();
+      "WALLET_HISTORY_RESUMED",
+      // Beta reconciliation: a POLICY_GROUP target, counts only (never a customer).
+      "CUSTOMER_POLICY_RECONCILED"].sort();
     check("the admitted set is exactly D6: job, connection, platform-setting, provider cleanup, Refresh All",
       [...PLATFORM_OPS_FEED_ACTIONS].sort().join() === expected.join(), PLATFORM_OPS_FEED_ACTIONS.join());
     check("every rule names a platform workspace doorway", Object.values(PLATFORM_OPS_FEED_RULES).every((r) => /^platform-/.test(r.workspace)));

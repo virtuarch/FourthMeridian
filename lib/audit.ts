@@ -223,6 +223,9 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
   AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,
   AuditAction.CUSTOMER_COHORT_ASSIGNED,
+  // Beta reconciliation — creates the default assignment for every active
+  // unassigned customer at once; consequential, so it carries a reason.
+  AuditAction.CUSTOMER_POLICY_RECONCILED,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
   // UX-P1 D7 — the financial-refresh cadence (bank / wallet) is the same class

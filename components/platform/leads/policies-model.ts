@@ -356,3 +356,38 @@ export function killSwitchState(a: Fetched<AiCostControlsReadModel>): { word: st
 export function emergencyEngaged(o: Fetched<OperationalControlsReadModel>, a: Fetched<AiCostControlsReadModel>): boolean {
   return maintenanceState(o).tone === "bad" || killSwitchState(a).tone === "bad";
 }
+
+// ── Beta reconciliation (owner ruling, 2026-10-30) ────────────────────────────
+//
+// The ONE deliberate entry that gives active customers with NO assignment the
+// beta default. The words live here (pure); whether the entry is OFFERED is the
+// host component's call (BetaReconciliationEntry.tsx), and the server route is
+// the authority either way.
+
+/** The guarantee the confirmation states, verbatim. */
+export const RECONCILE_GUARANTEE =
+  "Creates Beta assignments only for active accounts that have none. Existing assignments — including Founder — are never changed.";
+
+/** The entry's label, or null when there is nothing to assign (then nothing renders). */
+export function reconcileEntryLabel(eligible: number | null | undefined): string | null {
+  if (!eligible || eligible <= 0) return null;
+  return `Assign Beta to ${eligible.toLocaleString("en-US")} unassigned account${eligible === 1 ? "" : "s"}`;
+}
+
+/** The confirmation's exact-count sentence. */
+export function reconcileConfirmCount(eligible: number): string {
+  return `${eligible.toLocaleString("en-US")} active account${eligible === 1 ? "" : "s"} without an assignment will be placed on Beta.`;
+}
+
+/** The outcome line after a POST answered (status + body). */
+export function reconcileOutcome(status: number, body: { created?: number; skipped?: number; error?: string }): { text: string; tone: StatusTone } {
+  if (status === 200) {
+    const created = body.created ?? 0;
+    const skipped = body.skipped ?? 0;
+    return {
+      text: `Assigned Beta to ${created.toLocaleString("en-US")} account${created === 1 ? "" : "s"}${skipped > 0 ? ` · ${skipped} already assigned meanwhile (left unchanged)` : ""}`,
+      tone: "ok",
+    };
+  }
+  return { text: body.error ?? `Not applied (HTTP ${status})`, tone: status === 409 ? "warn" : "bad" };
+}

@@ -335,6 +335,12 @@ export const AuditAction = {
   // the before/after USD figure, a policy value, never a balance).
   CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED: "CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED",
   CUSTOMER_COHORT_ASSIGNED:        "CUSTOMER_COHORT_ASSIGNED",
+  // BETA RECONCILIATION (owner ruling 2026-10-30) — a PLATFORM_OPS CONTROL
+  // holder gave every ACTIVE customer with NO assignment the beta default
+  // (lib/platform/policies/reconcile-beta.ts). ONE row per run, written in the
+  // same transaction as the inserts, reason-required; target = the POLICY_GROUP;
+  // metadata carries counts only (eligible, created, skipped) — never an identity.
+  CUSTOMER_POLICY_RECONCILED:      "CUSTOMER_POLICY_RECONCILED",
   JOB_CADENCE_CHANGED:             "JOB_CADENCE_CHANGED",
   JOB_CADENCE_RESET:               "JOB_CADENCE_RESET",
   REFRESH_ALL_REQUESTED:           "REFRESH_ALL_REQUESTED",
@@ -522,6 +528,8 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
   AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,
   AuditAction.CUSTOMER_COHORT_ASSIGNED,
+  // Beta reconciliation — the fleet-wide default-assignment run (counts only).
+  AuditAction.CUSTOMER_POLICY_RECONCILED,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
   AuditAction.OPERATOR_REFRESH_ALL,
