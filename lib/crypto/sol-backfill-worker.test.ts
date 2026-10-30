@@ -11,7 +11,7 @@ import path from "node:path";
 import { workerConfig, orderCandidates, createRateLimiter, estimateBackfill, requestsForHistory } from "@/lib/crypto/sol-backfill-worker.core";
 import { emptyCheckpoint, type SolBackfillCheckpoint } from "@/lib/crypto/sol-history-backfill.core";
 import { runSolHistoryBackfill, syncRunBudgetMs, type SolRpcCall, type SolBackfillStore } from "@/lib/crypto/sol-history-backfill";
-import { solHistoryBackfill, WAKE_SAFE_MS, type SolBackfillJobDeps } from "@/jobs/sol-history-backfill";
+import { solHistoryBackfill, solBackfillJobOutcome, WAKE_SAFE_MS, type SolBackfillJobDeps } from "@/jobs/sol-history-backfill";
 import { serializeCheckpoint, parseCheckpoint } from "@/lib/crypto/sol-history-backfill.core";
 
 let failures = 0;
@@ -101,7 +101,7 @@ async function main() {
       top: { signature: "t", slot: 9, blockTime: 1, dateISO: DAY, preLamports: "0", postLamports: "1" },
       bottom: { signature: "b", slot: 1, blockTime: 1, dateISO: "2026-01-01", preLamports: "0", postLamports: "1" },
       licensedFromISO: "2026-01-01", licensedToISO: DAY, ...over });
-    function world(cursors: Record<string, string | null>, o: { wake?: number | null; lockBusy?: string[]; regen?: boolean; workMs?: number } = {}) {
+    function world(cursors: Record<string, string | null>, o: { wake?: number | null; lockBusy?: string[]; regen?: boolean; workMs?: number; splPrices?: { status: "COMPLETE" | "BUDGET_STOPPED"; reason: string | null; mintsSkipped: number } } = {}) {
       let t = Date.parse(`${DAY}T10:00:00Z`);
       const locks = new Map<string, number>();
       const log: string[] = [];
@@ -120,6 +120,7 @@ async function main() {
         reconstruct: async ({ accountId }) => {
           t += o.workMs ?? 5_000; log.push(`run:${accountId}`);
           return { accountId, ok: true, derivedRowsWritten: 10, mode: "INCREMENTAL", impactedFromISO: "2025-12-01",
+            ...(o.splPrices ? { tokens: { prices: o.splPrices } as never } : {}),
             backfill: { status: { state: "IMPORTING" } as never, progressed: true, rowsWritten: 10, impactedFromISO: "2025-12-01", signaturesProcessed: 100, pagesFetched: 1, stoppedBecause: "BUDGET", failure: null } };
         },
         store: async (id) => store(id),
@@ -158,6 +159,16 @@ async function main() {
     const s5 = await solHistoryBackfill({ config: cfg, deps: w5.deps });
     check("the next run regenerates the pending window FIRST and clears the marker",
       w5.log[0] === "regen:a" && s5.regenerated >= 1 && !parseCheckpoint(w5.cursors.a, "a", ADDR)?.snapshotPendingFromISO, w5.log.join(","));
+
+    // Re-review F4 — a stopped token price run is the JOB's verdict (PARTIAL), not only a summary field.
+    check("re-review F4: a run whose prices all completed reads outcome COMPLETE", s1.outcome === "COMPLETE" && (s1.partialReasons ?? []).length === 0, JSON.stringify(s1.outcome));
+    const wp = world({ a: null }, { splPrices: { status: "BUDGET_STOPPED", reason: "CoinGecko token budget reached; remaining SPL mints not priced this run", mintsSkipped: 2 } });
+    const sp = await solHistoryBackfill({ config: cfg, deps: wp.deps });
+    check("re-review F4 (SPL): a budget-stopped SPL price run ⇒ job outcome PARTIAL, named, with the skipped count",
+      sp.outcome === "PARTIAL" && sp.splPrices?.status === "BUDGET_STOPPED" && sp.splPrices.mintsSkipped === 2 && /^SPL_PRICES_BUDGET_STOPPED: CoinGecko token budget reached/.test(sp.partialReasons?.[0] ?? ""), JSON.stringify({ o: sp.outcome, r: sp.partialReasons, p: sp.splPrices }));
+    const erc = (status: "COMPLETE" | "BUDGET_STOPPED" | "ALLOWANCE_EXHAUSTED" | "TOKEN_LIMIT") => solBackfillJobOutcome({ ethTokens: { prices: { tokensFetched: 0, inserted: 0, calls: 0, status, reason: status === "COMPLETE" ? null : "why", tokensSkipped: 1 } } as never });
+    check("re-review F4 (ERC-20): every non-COMPLETE price status ⇒ job outcome PARTIAL; COMPLETE ⇒ COMPLETE",
+      (["BUDGET_STOPPED", "ALLOWANCE_EXHAUSTED", "TOKEN_LIMIT"] as const).every((st) => erc(st).outcome === "PARTIAL" && erc(st).partialReasons[0] === `ERC20_PRICES_${st}: why`) && erc("COMPLETE").outcome === "COMPLETE");
 
     const w6 = world({ a: null }, { regen: false });
     const s6 = await solHistoryBackfill({ config: cfg, deps: w6.deps });

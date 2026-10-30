@@ -410,7 +410,8 @@ function meteredTransport(transport: EthRpcTransport, meter: Record<string, numb
   };
 }
 
-function buildTransport(deps: EthHistoryDeps): EthRpcTransport {
+/** The metered transport every Ethereum history read uses (shared with the ERC-20 history, erc20-history-rpc.ts). */
+export function buildTransport(deps: EthHistoryDeps): EthRpcTransport {
   return meteredTransport(buildRawTransport(deps), deps.meter);
 }
 

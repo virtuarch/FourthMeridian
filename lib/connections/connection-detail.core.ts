@@ -20,6 +20,8 @@ import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligenc
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { relativeUpdated, type ConnectionTone } from "@/lib/connections/connection-summary";
 import { tokenCaptureSupported } from "@/lib/crypto/token-asset";
+import { unsupportedReasonText, type Erc20UnsupportedReason } from "@/lib/crypto/erc20-history.core";
+import { laterHoldingsUnpricedText, tokenPriceGapsText } from "@/lib/connections/valuation-coverage.core";
 
 // ── Overview: account groups ─────────────────────────────────────────────────
 
@@ -167,6 +169,8 @@ export function connectionHealth(
     // Held tokens without reconstructed history keep the wallet LIMITED: native
     // history being verified says nothing about the tokens beside it.
     // A token verified only from a later start (PARTIAL) is limited too.
+    // Owner ruling 2026-10-30: BALANCE history only — a token's missing historical
+    // prices never make the balance import "limited" (they are disclosed on the History tab).
     const tokensLimited = (i?.walletHistory?.tokens ?? []).some((x) => x.historyState !== "RECONSTRUCTED" || x.coverageKind === "PARTIAL");
     const limited = tokensLimited
       || lines.some((l) => (l.key === "history" || l.key === "prices" || l.key === "import") && l.tone === "neutral")
@@ -261,14 +265,40 @@ export function tokenHistoryText(t: WalletTokens[number]): string {
     if (t.coverageKind === "PARTIAL") return from ? `Verified from ${from} — earlier history couldn’t be proven` : "Verified only in part — earlier history couldn’t be proven";
     return from ? `History verified since ${from}` : "History verified";
   }
-  if (t.historyState === "UNLICENSED") return `Couldn’t be verified — ${tokenUnverifiedReason(t.caveats)}; current balance only`;
+  // ERC-20 refusals carry their own reason code (erc20-history.core); SPL ones a coverage caveat.
+  if (t.historyState === "UNLICENSED") return `Couldn’t be verified — ${t.historyReason ? unsupportedReasonText(t.historyReason as Erc20UnsupportedReason) : tokenUnverifiedReason(t.caveats)}; current balance only`;
   return "Not reconstructed yet";
 }
 
+/**
+ * Owner ruling 2026-10-30 — the one concise VALUATION disclosure for token
+ * histories (balances are verified; prices are a separate fact): which tokens'
+ * held days lack historical prices, never a value. Null when nothing applies.
+ */
+export function tokenValuationText(
+  notValuedYet: number | undefined, valuedFromLater: number | undefined, verifiedThroughISO?: string | null, withoutMarket?: number, excluded?: number,
+  more: { valuedUntilEarlier?: number; valuedUntilRange?: { fromISO: string | null; toISO: string } | null; withGaps?: number } = {},
+): string | null {
+  // NO_MARKET is a legitimate unpriced holding (owner clarification) — counted with the others.
+  // Only tokens whose OLDER held days are unpriced say "older" (re-review F3): prices that
+  // stop early leave the RECENT days unpriced, and interior gaps are said as gaps.
+  const n = (notValuedYet ?? 0) + (valuedFromLater ?? 0) + (withoutMarket ?? 0);
+  const later = laterHoldingsUnpricedText(more.valuedUntilEarlier ?? 0, more.valuedUntilRange, (iso) => fmtDay(iso) ?? iso);
+  const gaps = tokenPriceGapsText(more.withGaps ?? 0);
+  const x = excluded ?? 0;
+  if (n <= 0 && !later && !gaps && x <= 0) return null;
+  const through = verifiedThroughISO ? `Balance history verified through ${fmtDay(verifiedThroughISO)}. ` : "";
+  const unpriced = n > 0 ? `Older holdings exist but lack historical prices (${n === 1 ? "1 token" : `${n} tokens`}) — those days aren’t valued, never counted as zero.` : null;
+  const excl = x > 0 ? `${x === 1 ? "1 token" : `${x} tokens`} excluded as spam or non-economic.` : null;
+  return `${through}${[unpriced, later, gaps, excl].filter((t): t is string => t !== null).join(" ")}`;
+}
+
 /** Token limitations for the History tab, derived from the facets (never a per-chain constant). */
-function tokenLimitations(chain: string | null, sym: string, tokens: WalletTokens | undefined): string[] {
+function tokenLimitations(chain: string | null, sym: string, tokens: WalletTokens | undefined, notValuedYet?: number, valuedFromLater?: number, verifiedThroughISO?: string | null, withoutMarket?: number, excluded?: number, more: Parameters<typeof tokenValuationText>[5] = {}): string[] {
   const kind = tokenKind(chain);
   if (!kind || !tokenCaptureSupported(chain)) return [];
+  const extra = tokenValuationText(notValuedYet, valuedFromLater, verifiedThroughISO, withoutMarket, excluded, more);
+  if (extra) return [...tokenLimitations(chain, sym, tokens), extra];
   if (!tokens) return [];
   if (tokens.length === 0) return [`No ${kind} token balances have been recorded for this wallet. Native ${sym} history is shown above.`];
   const pending = tokens.filter((t) => t.historyState !== "RECONSTRUCTED").length;
@@ -297,7 +327,8 @@ export function connectionHistory(
     }
     const chain = accounts.find((a) => a.chain)?.chain?.toUpperCase() ?? null;
     const sym = nativeAssetSymbol(chain) ?? "native";
-    const tokenNote = tokenLimitations(chain, sym, wh.tokens);
+    const tokenNote = tokenLimitations(chain, sym, wh.tokens, wh.tokensNotValuedYet, wh.tokensValuedFromLater, wh.licensedToISO, wh.tokensWithoutMarket, wh.tokensExcluded,
+      { valuedUntilEarlier: wh.tokensValuedUntilEarlier, valuedUntilRange: wh.tokenValuedUntilRange, withGaps: wh.tokensValuedWithGaps });
     const tokenFacets = (wh.tokens ?? []).map((t, n) => ({ key: `${t.label}-${n}`, label: `${t.label} history`, text: tokenHistoryText(t) }));
     if (wh.licensed) {
       const fromISO = wh.activityFromISO ?? wh.licensedFromISO;

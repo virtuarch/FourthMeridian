@@ -426,9 +426,9 @@ const solFetch = (value: unknown[]) => (async (_u: string, init: { body: string 
   const regenSrc = code(read("lib", "snapshots", "regenerate-history.ts"));
   const liveSrc = code(read("lib", "crypto", "wallet-current-value.ts"));
   check("BOTH writers call the shared rule and the shared loader",
-    /tokensValueOnDay\(obs, tokenRows\.prices, dISO\)/.test(regenSrc) && /loadTokenDayRows\(client,/.test(regenSrc)
+    /cryptoTokenDayDecision\([\s\S]{0,200}?tokenRows, dISO\)/.test(regenSrc) && /tokensValueOnDay\(obs, rows\.prices, dISO\)/.test(code(read("lib", "crypto", "token-valuation.core.ts"))) && /loadTokenDayRows\(client,/.test(regenSrc)
     && /tokensValueOnDay\(obs, tokenRows\.prices, asOf\)/.test(liveSrc) && /loadTokenDayRows\(client, accountIds, asOf, asOf\)/.test(liveSrc));
-  check("regenerated tokens join only where the native crypto is itself valued", /if \(cryptoDayValuation\.licensed\) \{[\s\S]*?tokensValueOnDay/.test(regenSrc));
+  check("regenerated tokens join only where the native crypto is itself valued", /if \(tokenDay\.tokensJoin\) \{[\s\S]{0,600}?for \(const usd of tokenDay\.valuedTokenUsd\)/.test(regenSrc)); // the rule itself: erc20-history.test.ts (re-review F2, behavioural)
 
   const seed: WalletCurrentValue = {
     accountId: "w", chain: "SOL", assetKey: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501", symbol: "SOL",

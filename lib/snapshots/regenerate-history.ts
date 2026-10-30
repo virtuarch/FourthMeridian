@@ -61,7 +61,7 @@ import {
   type DayRegenInput, type DayRegenResult, type RevokedLinkFacts, type RevokedLinkWindow,
 } from "@/lib/snapshots/regenerate-history.core";
 import {
-  classifyRegeneration,
+  planDayPersistence,
   REGENERATION_DISPOSITIONS,
   type RegenerationDisposition,
 } from "@/lib/snapshots/regeneration-candidates.core";
@@ -82,7 +82,7 @@ import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconst
 import { loadPositionCoverage, resolveLicensedQuantityAsOf } from "@/lib/crypto/position-coverage";
 import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 import { loadTokenDayRows } from "@/lib/crypto/token-valuation";
-import { tokensValueOnDay } from "@/lib/crypto/token-valuation.core";
+import { cryptoTokenDayDecision } from "@/lib/crypto/token-valuation.core";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
@@ -1047,6 +1047,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     let digitalAssetValue = c.totalDigitalAssets;
     let hasDigitalAssetEvidence = false;
     let cryptoDayValuation: CryptoDayValuation | null = null;
+    let digitalAssetHeldUnvalued = false;
     if (cryptoAccounts.length > 0) {
       // HIST-2C / W-M0 — from the one-shot window read above, one entry per asset
       // actually held. An asset with no close on this day maps to null, which the
@@ -1079,18 +1080,20 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         unitPriceByAssetKey,
         quantityLicensed: cryptoQuantityLicensed(dISO),
       });
-      if (cryptoDayValuation.licensed) {
+      // TOKEN HOLDINGS (PR-A) + OWNER RULING 2026-10-30 / delta review F1 — the
+      // same wallets' tokens on this day, through ONE pure decision
+      // (token-valuation.core cryptoTokenDayDecision): a HELD asset with no value
+      // on this day makes the day's crypto UNAVAILABLE — decided from the DAY's
+      // evidence, never from today's flat balance — and VALUED tokens join the
+      // total only where native is itself valued and no held token is unpriced.
+      const tokenDay = cryptoTokenDayDecision(
+        { licensed: cryptoDayValuation.licensed, positionCount: cryptoDayValuation.positionCount }, tokenRows, dISO);
+      digitalAssetHeldUnvalued = tokenDay.heldUnvalued;
+      if (tokenDay.tokensJoin) {
         // classifyAccounts still does the FX to the reporting currency — the SAME
         // conversion path every other total uses (no second FX interpretation).
         const cryptoDay = cryptoDayValuation.positions.map((p) => ({ type: "crypto", balance: p.nativeValue, currency: "USD" }));
-        // TOKEN HOLDINGS (PR-A) — VALUED tokens of the same wallets, in USD,
-        // through the SAME conversion path. Unpriced / stale tokens add nothing.
-        if (tokenRows) {
-          for (const obs of tokenRows.observationsByAccount.values()) {
-            const t = tokensValueOnDay(obs, tokenRows.prices, dISO);
-            for (const v of t.tokens) if (v.state === "VALUED" && v.valueUsd !== null) cryptoDay.push({ type: "crypto", balance: v.valueUsd, currency: "USD" });
-          }
-        }
+        for (const usd of tokenDay.valuedTokenUsd) cryptoDay.push({ type: "crypto", balance: usd, currency: "USD" });
         digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;
         hasDigitalAssetEvidence = true;
       }
@@ -1155,6 +1158,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       digitalAssetValue,
       digitalAssetTier: "estimated", // constant-quantity assumption × real price
       hasDigitalAssetEvidence,
+      digitalAssetHeldUnvalued,
       // REG-2 — a held-flat balance account (current balance carried backward, no
       // transaction reconstruction) makes the day's cash/card component an
       // "estimated" (not "derived") value, so the row is honestly labeled a weaker
@@ -1211,26 +1215,23 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // rewritten, some preserved. It never reaches classifyRegeneration's
     // full-row comparison, because "did every field change" is not the question
     // being asked of it.
-    if (res.action === "write-partial") {
-      const patch = res.fieldPatch ?? {};
-      if (Object.keys(patch).length > 0 && prior) {
-        patches.push({
-          date: d,
-          isEstimated: res.isEstimated,
-          fieldPatch: patch,
-          completenessTier: res.tier,
-          contributingComponentCount: res.contributingComponentCount,
-          totalComponentCount: res.totalComponentCount,
-          cryptoValuationStatus: res.cryptoValuationStatus,
-        });
-      }
-      result.dispositions.UPDATED += Object.keys(patch).length > 0 && prior ? 1 : 0;
-      continue;
+    // Delta re-review F1 — ONE pure decision (regeneration-candidates.core
+    // planDayPersistence) for write / patch / status-only stamp, so a
+    // write-partial day with an EMPTY patch still records a changed verdict.
+    const plan = planDayPersistence(res, prior ?? null);
+    if (plan.disposition) result.dispositions[plan.disposition]++;
+    if (plan.patch && prior) {
+      patches.push({
+        date: d,
+        isEstimated: res.isEstimated,
+        fieldPatch: plan.patch,
+        completenessTier: res.tier,
+        contributingComponentCount: res.contributingComponentCount,
+        totalComponentCount: res.totalComponentCount,
+        cryptoValuationStatus: res.cryptoValuationStatus,
+      });
     }
-
-    const candidate = classifyRegeneration(res, prior ?? null);
-    result.dispositions[candidate.disposition]++;
-    if (candidate.disposition === "UPDATED" && res.fields) {
+    if (plan.write && res.fields) {
       // V26-INVESTMENTS-HISTORY — `res.tier` was already computed here and then
       // discarded at the upsert; it is the row-level worst-of(cash/card,
       // investment, crypto) the FLIP rule derives `isEstimated` from. Persisting
@@ -1266,15 +1267,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // was still valued from evidence, and leaving that unrecorded would strand
     // a correct value as `legacy-unrecorded` forever. Stamping is what makes the
     // repair reach every day the regeneration actually classified.
-    if (
-      applyWrites &&
-      res.cryptoValuationStatus !== null &&
-      candidate.disposition !== "UPDATED" &&
-      prior && prior.isEstimated === true &&
-      prior.cryptoValuationStatus !== res.cryptoValuationStatus
-    ) {
-      metadataOnlyStamps.push({ date: d, status: res.cryptoValuationStatus });
-    }
+    if (applyWrites && plan.stamp !== null) metadataOnlyStamps.push({ date: d, status: plan.stamp });
   }
 
   // Only UPDATED days are written. `writes` is already filtered to them.

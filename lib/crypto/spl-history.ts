@@ -83,7 +83,7 @@ export interface SplHistoryStore {
    * Historical USD closes for a mint whose licence was just committed
    * (lib/prices/token-history-prices.ts). Optional: absent ⇒ no price acquisition.
    */
-  acquirePrices?(m: { mint: string; decimals: number; program: string | null; fromISO: string; toISO: string }): Promise<{ inserted: number; earliestISO: string | null }>;
+  acquirePrices?(m: { mint: string; decimals: number; program: string | null; fromISO: string; toISO: string }): Promise<{ inserted: number; earliestISO: string | null; /** The shared path's status; "BUDGET" stops pricing for this run. */ status?: string }>;
 }
 
 export interface SplRunDeps {
@@ -108,6 +108,13 @@ export interface SplRunOutcome {
   signaturesProcessed: number;
   requests: number;
   pricesInserted: number;
+  /**
+   * Re-review F4 (SPL ≡ ERC-20) — how historical price acquisition ended: COMPLETE,
+   * or BUDGET_STOPPED when the shared CoinGecko token share ran out (the remaining
+   * committed mints were not priced this run). Never silent: the job reports it
+   * as a PARTIAL outcome.
+   */
+  prices: { status: "COMPLETE" | "BUDGET_STOPPED"; reason: string | null; mintsSkipped: number };
   inventoryComplete: boolean;
   failure: { code: string; detail: string } | null;
 }
@@ -194,7 +201,7 @@ export async function runSplTokenHistory(
   const concurrency = deps.concurrency ?? 4;
   const outcome: SplRunOutcome = {
     stoppedBecause: "DONE", rowsWritten: 0, impactedFromISO: null, mintsCommitted: [], rebuilt: [],
-    signaturesProcessed: 0, requests: 0, pricesInserted: 0, inventoryComplete: false, failure: null,
+    signaturesProcessed: 0, requests: 0, pricesInserted: 0, prices: { status: "COMPLETE", reason: null, mintsSkipped: 0 }, inventoryComplete: false, failure: null,
   };
   const done = (why: SplRunOutcome["stoppedBecause"]) => { outcome.stoppedBecause = why; outcome.requests = deps.sent() - sent0; return outcome; };
   const overBudget = () => now() >= deps.deadlineMs || (deps.requestBudget !== undefined && deps.sent() - sent0 >= deps.requestBudget);
@@ -606,11 +613,18 @@ export async function runSplTokenHistory(
       if (rows.length > 0) { outcome.rowsWritten += rows.length; impacted(rows[0].dateISO); }
       if (startMoved) impacted(base.licensedFromISO!);
       // Historical prices for a PRICED mint over its licence (bounded, shared, never invented).
-      if (args.store.acquirePrices && priced.has(m.mint)) {
+      if (args.store.acquirePrices && priced.has(m.mint) && outcome.prices.status === "BUDGET_STOPPED") {
+        outcome.prices.mintsSkipped++; // the token share is spent: not asked again this run (said, never silent)
+      } else if (args.store.acquirePrices && priced.has(m.mint)) {
         try {
           const p = await args.store.acquirePrices({ mint: m.mint, decimals: m.decimals, program: m.program, fromISO, toISO });
           outcome.pricesInserted += p.inserted;
           if (p.inserted > 0 && p.earliestISO) impacted(p.earliestISO < fromISO ? fromISO : p.earliestISO);
+          if (p.status === "BUDGET") {
+            outcome.prices.mintsSkipped++;
+            outcome.prices.status = "BUDGET_STOPPED";
+            outcome.prices.reason = "CoinGecko token budget reached; remaining SPL mints not priced this run";
+          }
         } catch { /* prices are retried on the next commit or tail; never fail the step */ }
       }
     }

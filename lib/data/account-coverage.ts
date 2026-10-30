@@ -32,6 +32,7 @@ import {
   type AccountHistoricalCoverage, type CoverageClass,
 } from "./account-coverage.core";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
+import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 import { nativeAssetForChain, ledgerEpsilonFor } from "@/lib/crypto/native-asset";
 
 /** One account as the gather needs it — identity and class only, never a balance. */
@@ -108,7 +109,8 @@ export async function getAccountCoverage(
     positionIds.length + walletIds.length > 0
       ? client.positionObservation.groupBy({
           by: ["financialAccountId"],
-          where: { financialAccountId: { in: [...positionIds, ...walletIds] } },
+          // Native evidence only: a token row (ERC-20 history) must not widen a wallet's native window.
+          where: { financialAccountId: { in: [...positionIds, ...walletIds] }, instrument: NOT_TOKEN_INSTRUMENT },
           _min: { date: true },
         })
       : Promise.resolve([]),

@@ -509,9 +509,16 @@ async function loadConnectionIntelligence(
         // PCS-2 — identity, price presence and history state only; the quantity stays behind.
         label: t.label, standard: t.standard, priceStatus: t.priceStatus,
         historyState: t.state, firstObservedISO: t.firstObservedISO, lastObservedISO: t.lastObservedISO,
-        licensedFromISO: t.licensedFromISO, licensedToISO: t.licensedToISO, coverageKind: t.coverageKind ?? null, caveats: t.caveats ?? [],
+        licensedFromISO: t.licensedFromISO, licensedToISO: t.licensedToISO, coverageKind: t.coverageKind ?? null, caveats: t.caveats ?? [], historyReason: t.reason ?? null,
       })));
       walletHistory.walletComplete = perInstrument.length > 0 && perInstrument.every((h) => h.complete);
+      walletHistory.tokensNotValuedYet = perInstrument.reduce((n, h) => n + h.tokensNotValuedYet, 0);
+      walletHistory.tokensValuedFromLater = perInstrument.reduce((n, h) => n + h.tokensValuedFromLater, 0);
+      walletHistory.tokensValuedUntilEarlier = perInstrument.reduce((n, h) => n + h.tokensValuedUntilEarlier, 0);
+      walletHistory.tokenValuedUntilRange = perInstrument.map((h) => h.tokenValuedUntilRange).filter((r) => r !== null).sort((a, b) => a!.toISO.localeCompare(b!.toISO))[0] ?? null;
+      walletHistory.tokensValuedWithGaps = perInstrument.reduce((n, h) => n + h.tokensValuedWithGaps, 0);
+      walletHistory.tokensWithoutMarket = perInstrument.reduce((n, h) => n + h.tokensWithoutMarket, 0);
+      walletHistory.tokensExcluded = perInstrument.reduce((n, h) => n + h.tokensExcluded, 0);
       walletHistory.chain = chains[0] ?? null;
     }
     if (walletHistory && c.provider === "WALLET") {

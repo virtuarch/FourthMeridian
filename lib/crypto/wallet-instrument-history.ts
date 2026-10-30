@@ -36,6 +36,9 @@ import { PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
 import { licensedInterval, loadInstrumentCoverage } from "./position-coverage";
 import type { ChainCoverage } from "./chain-movement";
 import { nativeAssetForChain } from "./native-asset";
+import { unsupportedReasonOf, type Erc20UnsupportedReason } from "./erc20-history.core";
+import { reconstructedTokenValuation } from "./token-valuation.core";
+import { loadTokenHeldSpans, loadTokenCloseFacts } from "./token-held-spans";
 import {
   parseTokenAssetKey, tokenDisplayLabel, shortenTokenAddress, TOKEN_ALIAS_PROVIDER, WALLET_TOKEN_POSITION_SOURCE, type TokenStandard,
 } from "./token-asset";
@@ -43,11 +46,15 @@ import {
 type Client = PrismaClient | Prisma.TransactionClient;
 
 /**
- * Chains whose TOKEN history acquisition is proven. EMPTY in PR-A: no token
- * history is reconstructed anywhere. A follow-up adds its chain here, on
- * evidence, in the same PR that writes the token coverage.
+ * Chains whose TOKEN history acquisition is proven, each with its inventory
+ * reader below. SOL: SPL history (spl-history*.ts). ETH: ERC-20 history
+ * (erc20-history*.ts) — every contract the wallet ever touched is discovered
+ * from its transfer evidence, and each is licensed only after its replay
+ * matched on-chain balanceOf at every anchor; the inventory reader answers
+ * "discovery closed AND every discovered token decided" — not merely the
+ * tokens current capture happened to see.
  */
-export const TOKEN_HISTORY_CHAINS: ReadonlySet<string> = new Set<string>(["SOL"]);
+export const TOKEN_HISTORY_CHAINS: ReadonlySet<string> = new Set<string>(["SOL", "ETH"]);
 
 /**
  * SPL TOKEN HISTORY (2026-10-28) — per chain, whether every token the wallet
@@ -59,6 +66,7 @@ export const TOKEN_HISTORY_CHAINS: ReadonlySet<string> = new Set<string>(["SOL"]
 export type TokenInventoryReader = (client: Client, accountIds: readonly string[]) => Promise<Map<string, boolean>>;
 const TOKEN_INVENTORY_READERS: Record<string, () => Promise<TokenInventoryReader>> = {
   SOL: async () => (await import("./spl-history-inventory")).loadSplInventoryComplete,
+  ETH: async () => (await import("./erc20-history-inventory")).loadErc20InventoryComplete,
 };
 
 /** Chains that carry tokens at all (a BTC wallet's history is native-only by construction). */
@@ -83,6 +91,8 @@ export interface InstrumentHistoryFacet {
   coverageKind?:   "COMPLETE" | "PARTIAL" | "UNKNOWN" | null;
   /** Stored caveats of an unlicensed/partial record — the plain-reason input for Connections copy. */
   caveats?:        string[];
+  /** UNLICENSED tokens: why the history was refused (erc20-history.core reasons), else null. */
+  reason?:         Erc20UnsupportedReason | null;
 }
 
 export interface TokenHistoryFacet extends InstrumentHistoryFacet {
@@ -116,6 +126,25 @@ export interface WalletInstrumentHistory {
   tokenHistorySupported: boolean;
   /** Every token this wallet ever held has been found and decided (chain reader; false when unknown). */
   tokenInventoryComplete: boolean;
+  /**
+   * VALUATION coverage (never balance completeness — owner ruling 2026-10-30):
+   * LICENSED token histories (held now OR long since exited) none of whose held
+   * days are priced (token-valuation.core NOT_VALUED_YET). Disclosed; a missing
+   * price is never $0.
+   */
+  tokensNotValuedYet: number;
+  /** F4 — priced only from INSIDE their held period (older held days unpriced). Disclosed, not a balance limit. */
+  tokensValuedFromLater: number;
+  /** S1 / re-review F3 — prices STOP inside their held period: the RECENT held days are unpriced. */
+  tokensValuedUntilEarlier: number;
+  /** …the valued span of the one whose prices stop earliest. */
+  tokenValuedUntilRange: { fromISO: string | null; toISO: string } | null;
+  /** Delta F3 — interior held days no close serves. */
+  tokensValuedWithGaps: number;
+  /** …and those confirmed to have no (liquid) market — never valued, disclosed. Never-held tokens count nowhere (F2). */
+  tokensWithoutMarket: number;
+  /** Explicitly classified (spam / non-economic) — never valued, never limiting, counted apart (owner clarification). */
+  tokensExcluded: number;
   /** THE wallet-level answer. Never true because the native facet alone is. */
   complete:  boolean;
 }
@@ -132,9 +161,14 @@ export function facetFromCoverage(coverage: ChainCoverage | null | undefined):
 
 /** Pure: the wallet-level completeness rule (see the header). */
 export function walletHistoryComplete(
-  h: Pick<WalletInstrumentHistory, "chain" | "native" | "tokens"> & { tokenInventoryComplete?: boolean },
+  h: Pick<WalletInstrumentHistory, "chain" | "native" | "tokens"> & { tokenInventoryComplete?: boolean; tokensNotValuedYet?: number; tokensValuedFromLater?: number },
 ): boolean {
   if (h.native.state !== "RECONSTRUCTED") return false;
+  // OWNER RULING 2026-10-30 — BALANCE completeness is independent of prices:
+  // a token's missing historical prices never make this answer false. They are
+  // a VALUATION fact, carried separately (tokensNotValuedYet / tokensValuedFromLater)
+  // and disclosed; the per-day valuation refuses unpriced days (token-valuation.core
+  // tokenDayMissingRequiredPrice) instead of this flag claiming anything.
   const chain = h.chain.trim().toUpperCase();
   if (!TOKEN_BEARING_CHAINS.has(chain)) return true;
   if (!TOKEN_HISTORY_CHAINS.has(chain)) return false;
@@ -196,15 +230,23 @@ export async function loadWalletInstrumentHistory(
     }),
   ]);
 
-  const aliasByInstrument = new Map<string, { assetKey: string; symbol: string | null; thin: boolean }>();
+  const aliasByInstrument = new Map<string, { assetKey: string; symbol: string | null; thin: boolean; metadata: unknown }>();
   for (const a of aliases) {
     const meta = a.metadata as { symbol?: unknown; quote?: { outcome?: unknown } } | null;
     // A native alias shares the namespace; record it too so the native facet can name its key.
     aliasByInstrument.set(a.instrumentId, {
       assetKey: a.externalId, symbol: typeof meta?.symbol === "string" ? meta.symbol : null,
-      thin: meta?.quote?.outcome === "THIN",
+      thin: meta?.quote?.outcome === "THIN", metadata: a.metadata,
     });
   }
+  // B1 — which LICENSED token instruments have any stored historical close.
+  const licensedTokenIds = [...new Set([...coverage.values()].flatMap((m) => [...m.entries()]
+    .filter(([id, c]) => parseTokenAssetKey(aliasByInstrument.get(id)?.assetKey) !== null && licensedInterval(c) !== null).map(([id]) => id)))];
+  // B1 / S1 / delta F3 — where each token's historical closes start, END, and
+  // every day between: RAW_CLOSE only (an INTRADAY quote never extends coverage).
+  const closeFacts = await loadTokenCloseFacts(client, licensedTokenIds);
+  // F2/F4 — when each was actually held (never-held ⇒ absent).
+  const heldSpans = licensedTokenIds.length === 0 ? new Map() : await loadTokenHeldSpans(client, ids, licensedTokenIds);
   const latestQty = new Map(latestRows.map((r) => [`${r.financialAccountId}|${r.instrumentId}`, r.quantity]));
   const latestPrice = new Map(prices.map((p) => [p.instrumentId, p._max.date ? isoOf(p._max.date) : null]));
 
@@ -243,13 +285,33 @@ export async function loadWalletInstrumentHistory(
         firstObservedISO: isoOf(s._min.date), lastObservedISO,
         priceStatus,
         ...facetFromCoverage(cov.get(s.instrumentId) ?? null),
+        reason: unsupportedReasonOf(cov.get(s.instrumentId) ?? null),
       });
     }
     tokens.sort((x, y) => (x.held === y.held ? x.label.localeCompare(y.label) : x.held ? -1 : 1));
 
+    let tokensNotValuedYet = 0, tokensWithoutMarket = 0, tokensValuedFromLater = 0, tokensValuedUntilEarlier = 0, tokensValuedWithGaps = 0, tokensExcluded = 0;
+    let tokenValuedUntilRange: { fromISO: string | null; toISO: string } | null = null;
+    for (const [id, c] of cov) {
+      const alias = aliasByInstrument.get(id);
+      const licence = licensedInterval(c);
+      if (!parseTokenAssetKey(alias?.assetKey) || licence === null) continue;
+      const v = reconstructedTokenValuation({ licence, held: heldSpans.get(`${a.id}|${id}`) ?? null, closesFromISO: closeFacts.get(id)?.fromISO ?? null, closesToISO: closeFacts.get(id)?.toISO ?? null, closeDatesISO: closeFacts.get(id)?.datesISO ?? [] }, alias?.metadata);
+      if (v === "NOT_VALUED_YET") tokensNotValuedYet++;
+      else if (v === "VALUED_FROM_LATER") tokensValuedFromLater++;
+      else if (v === "VALUED_UNTIL_EARLIER") {
+        tokensValuedUntilEarlier++;
+        const cf = closeFacts.get(id)!;
+        if (!tokenValuedUntilRange || cf.toISO < tokenValuedUntilRange.toISO) tokenValuedUntilRange = { fromISO: cf.fromISO, toISO: cf.toISO };
+      }
+      else if (v === "VALUED_WITH_GAPS") tokensValuedWithGaps++;
+      else if (v === "NO_MARKET") tokensWithoutMarket++;
+      else if (v === "EXCLUDED") tokensExcluded++;
+    }
     const h = { accountId: a.id, chain, native: nativeFacet, tokens, tokenHistorySupported: TOKEN_HISTORY_CHAINS.has(chain),
-      tokenInventoryComplete: inventory.get(a.id) === true };
+      tokenInventoryComplete: inventory.get(a.id) === true, tokensNotValuedYet, tokensValuedFromLater, tokensValuedUntilEarlier, tokenValuedUntilRange, tokensValuedWithGaps, tokensWithoutMarket, tokensExcluded };
     out.set(a.id, { ...h, complete: walletHistoryComplete(h) });
   }
   return out;
 }
+

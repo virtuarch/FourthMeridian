@@ -191,7 +191,7 @@ export async function persistPositionCoverage(
     : coverage.kind === "PARTIAL"
       ? { fromISO: coverage.coveredFromISO, toISO: coverage.coveredToISO }
       : { fromISO: null, toISO: null };
-  const caveats = coverage.kind === "COMPLETE" ? [] : [...coverage.caveats];
+  const caveats = [...(coverage.caveats ?? [])];
 
   const data = {
     kind:            coverage.kind,
@@ -246,7 +246,8 @@ export interface CoverageRowFields {
 export function coverageFromRow(r: CoverageRowFields): ChainCoverage {
   const caveats = r.caveats as ChainCoverageCaveat[];
   if (r.kind === "COMPLETE" && r.coveredFromDate && r.coveredToDate) {
-    return { kind: "COMPLETE", fromISO: isoOf(r.coveredFromDate), toISO: isoOf(r.coveredToDate), source: r.source };
+    return { kind: "COMPLETE", fromISO: isoOf(r.coveredFromDate), toISO: isoOf(r.coveredToDate), source: r.source,
+      ...(caveats?.length ? { caveats } : {}) };
   }
   if (r.kind === "PARTIAL") {
     return {
