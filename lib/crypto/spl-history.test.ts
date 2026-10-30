@@ -15,12 +15,12 @@ import {
 import {
   parseSplState, mintExtensionVerdict, attributedRaw, stateKey, splWorkOwed, discoverOwnedTokenAccounts,
   tokenPointFromTransaction, mergeDiscovered, freshSplState, MAX_TRACKED_ACCOUNTS, HEAD_MISMATCH_LIMIT,
-  SPL_CONTINUITY_SOURCE, MAX_OVERFLOW_RECORDS, MAX_OVERFLOW_MINTS, MAX_DAYS_PER_ACCOUNT, BACKOFF_AFTER, BACKOFF_MS,
+  SPL_CONTINUITY_SOURCE, MAX_OVERFLOW_RECORDS, MAX_OVERFLOW_MINTS, MAX_PENDING_DISCOVERED, MAX_DAYS_PER_ACCOUNT, BACKOFF_AFTER, BACKOFF_MS,
   decideMint, overflowedMints, inventoryCompleteOf, nativeWatchIntact, needsExtensionCheck, stagedDays, discoveryComplete,
   type SplHistoryState,
 } from "@/lib/crypto/spl-history.core";
 import {
-  runSolHistoryBackfill, buildRpcCall, CheckpointConflictError,
+  runSolHistoryBackfill, buildRpcCall, CheckpointConflictError, SolTransportError,
   type SolBackfillStore, type SolBackfillCommit, type SolRpcCall,
 } from "@/lib/crypto/sol-history-backfill";
 import { emptyCheckpoint, serializeCheckpoint, parseCheckpoint, type SolBackfillCheckpoint, type SolTxForProof } from "@/lib/crypto/sol-history-backfill.core";
@@ -550,10 +550,24 @@ async function main() {
       && decideMint(spammy.mints.find((m) => m.mint === USDC)!, usdcOnly.map((x) => ({ ...x, creation: true, days: [["2026-10-01", `${USDC}:W:1`]] })),
         { discoveryComplete: true, verifiedThisRun: new Set(usdcOnly.map((x) => x.address)), todayISO: TODAY, overflowed: overflowedMints(spammy) }).status === "COMPLETE");
     const many = Array.from({ length: MAX_OVERFLOW_MINTS + 5 }, (_, i) => ({ address: `Over${i}`, mint: `M${i}`, program: SPL_TOKEN_PROGRAM_ID, decimals: 0 }));
-    const sat = mergeDiscovered(st, many);
+    // A fully tracked USDC, then more untracked NFT mints than the memory holds.
+    const base = mergeDiscovered(mergeDiscovered(freshSplState("NATIVE"), spam.slice(1)), [{ address: "UsdcTracked", mint: USDC, program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }], (m) => m === USDC);
+    const sat = mergeDiscovered(base, many);
+    const tracked = sat.accounts.filter((x) => x.mints.includes(USDC)).map((x) => ({ ...x, creation: true, days: [["2026-10-01", `${USDC}:W:1`]] as Array<[string, string]> }));
+    check("past the untracked-mint memory the state is SATURATED (inventory incomplete) …", sat.overflowSaturated === true && inventoryCompleteOf(sat, true) === false);
+    check("…but a FULLY TRACKED mint recorded before saturation is still decided per mint (COMPLETE)",
+      decideMint(sat.mints.find((m) => m.mint === USDC)!, tracked, { discoveryComplete: true, verifiedThisRun: new Set(tracked.map((x) => x.address)), todayISO: TODAY, overflowed: overflowedMints(sat) }).status === "COMPLETE");
     check("an untracked-only mint gets no mint record (bounded checkpoint)", !sat.mints.some((m) => m.mint === "M7"));
-    check("past the remembered bound the state is SATURATED and no mint may be COMPLETE",
-      sat.overflowSaturated === true && decideMint(sat.mints.find((m) => m.mint === BONK) ?? usdc, sat.accounts, { discoveryComplete: true, verifiedThisRun: verifiedAll, todayISO: TODAY, saturated: true }).status === "UNSUPPORTED");
+    // After saturation: a mint first RECORDED now may have lost an untracked account ⇒ never COMPLETE (honest reason).
+    const late = mergeDiscovered({ ...sat, accounts: sat.accounts.filter((x) => x.address !== "Spam001") }, [{ address: "LateAcct", mint: BONK, program: SPL_TOKEN_PROGRAM_ID, decimals: 5 }]);
+    const bonk = late.mints.find((m) => m.mint === BONK)!;
+    check("…a mint first recorded AFTER saturation is never COMPLETE (TOO_MANY_ACCOUNTS)", bonk.afterSaturation === true
+      && decideMint(bonk, late.accounts.filter((x) => x.mints.includes(BONK)).map((x) => ({ ...x, creation: true })), { discoveryComplete: true, verifiedThisRun: new Set(["LateAcct"]), todayISO: TODAY, overflowed: overflowedMints(late) }).reason === "TOO_MANY_ACCOUNTS");
+    // A recorded mint overflowing once the memory is full is held on its own record — never lost.
+    const usdcOver = mergeDiscovered(sat, [{ address: "UsdcSecond", mint: USDC, program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }]); // no slot to take (unpriced here)
+    check("…and a recorded mint that overflows once the memory is full is held on its record (never COMPLETE)",
+      usdcOver.mints.find((m) => m.mint === USDC)?.untracked === true
+      && decideMint(usdcOver.mints.find((m) => m.mint === USDC)!, tracked, { discoveryComplete: true, verifiedThisRun: new Set(tracked.map((x) => x.address)), todayISO: TODAY, overflowed: overflowedMints(usdcOver) }).status === "UNSUPPORTED");
     // Native-hook finds are QUEUED, then placed priced-first by the token step.
     const c = new Chain();
     const usdcAta = "ZzzUsdcLast1111111111111111111111111111111111";
@@ -568,6 +582,28 @@ async function main() {
     await runOnce(c, store, {});
     const after = stateOf(store);
     check("…and the token step places them priced-first: USDC tracked, spam overflow remembered", after.accounts.some((a) => a.address === usdcAta) && overflowedMints(after).has(SPAM) && (after.pendingDiscovered ?? []).length === 0);
+  }
+
+  console.log("review: a full discovery queue re-walks (priced-first), never refuses");
+  {
+    const c = new Chain();
+    const usdcClosed = "ClosedUsdcQ11111111111111111111111111111111";
+    c.tx("2026-10-04", 9, [OWNER, usdcClosed], c.create(usdcClosed, USDC));
+    c.tx("2026-10-05", 9, [OTHER, usdcClosed], mv(usdcClosed, 4_000_000));
+    c.tx("2026-10-08", 9, [OWNER, usdcClosed, OTHER], mv(usdcClosed, -4_000_000));
+    c.tx("2026-10-08", 10, [OWNER, usdcClosed], close(usdcClosed));
+    // One native run sees 600 airdropped spam ATAs, then the closed USDC account.
+    const finds = [...Array.from({ length: 600 }, (_, i) => ({ address: `Air${String(i).padStart(4, "0")}`, mint: `Drop${i}`, program: SPL_TOKEN_PROGRAM_ID, decimals: 0 })),
+      { address: usdcClosed, mint: USDC, program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }];
+    const cur = annotateWithDiscoveries(JSON.parse(nativeCursor()), finds, "NATIVE") as SolBackfillCheckpoint & { tokens: SplHistoryState };
+    const qs = parseSplState(cur.tokens)!;
+    check("a full queue refuses nothing: USDC is not held, discovery falls back to a WALK",
+      !overflowedMints(qs).has(USDC) && !qs.overflowSaturated && qs.discovery.source === "WALK" && !qs.discovery.walkDone && (qs.pendingDiscovered ?? []).length === MAX_PENDING_DISCOVERED);
+    const store = memStore(JSON.stringify(cur), new Set([USDC]));
+    for (let i = 0; i < 4 && store.coverage.get(USDC)?.kind !== "COMPLETE"; i++) await runOnce(c, store, {});
+    const m = rowsMatchTruth(c, store, USDC, 6);
+    check("…the re-walk finds the closed USDC account, places it priced-first, and USDC is COMPLETE = truth",
+      store.coverage.get(USDC)?.kind === "COMPLETE" && m.ok && stateOf(store).accounts.some((x) => x.address === usdcClosed), `${JSON.stringify(store.coverage.get(USDC))} ${m.detail}`);
   }
 
   console.log("review: flag toggled mid-import");
@@ -804,10 +840,38 @@ async function main() {
     check("…the wallet's token inventory is no longer complete", stateOf(store).inventoryComplete === false);
     await runOnce(c, store, { nowMs: later + 86_400_000 });
     check("…and it never extends again", store.coverage.get(USDC)?.kind === "PARTIAL" && (store.coverage.get(USDC) as { coveredToISO: string }).coveredToISO === TODAY);
+    // Later: a re-walk finds an OLDER closed USDC account the frozen rows never summed ⇒ withdrawn.
+    const older = "OlderClosed7777777777777777777777777777777";
+    const cpF = JSON.parse(store.cursor()!) as SolBackfillCheckpoint & { tokens: SplHistoryState };
+    const withOlder = { ...cpF, tokens: { ...cpF.tokens, pendingDiscovered: [{ address: older, mint: USDC, program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }] } };
+    c.txs.unshift(...(() => { const o = new Chain(); o.tx("2026-10-01", 1, [OWNER, older], o.create(older, USDC)); o.tx("2026-10-01", 2, [OTHER, older], mv(older, 2_000_000));
+      o.tx("2026-10-02", 1, [OWNER, older, OTHER], mv(older, -2_000_000)); o.tx("2026-10-02", 2, [OWNER, older], close(older));
+      return o.txs.map((t, i) => ({ ...t, slot: 100 + i, view: { ...(t.view as object), slot: 100 + i } })); })());
+    const sF = memStore(JSON.stringify(withOlder), new Set([USDC]));
+    for (const [k, v] of store.rows) sF.rows.set(k, new Map(v));
+    await runOnce(c, sF, { nowMs: later + 2 * 86_400_000 });
+    check("a FROZEN licence is re-checked: a later-found account that held the mint during it WITHDRAWS it (no stale PARTIAL rows)",
+      sF.coverage.get(USDC)?.kind === "UNKNOWN" && (sF.rows.get(USDC)?.size ?? 0) === 0, JSON.stringify(sF.coverage.get(USDC)));
+    const cpU = JSON.parse(store.cursor()!) as SolBackfillCheckpoint & { tokens: SplHistoryState };
+    const sU = memStore(JSON.stringify({ ...cpU, tokens: { ...cpU.tokens, overflowMints: [USDC], overflow: 1 } }), new Set([USDC]));
+    for (const [k, v] of store.rows) sU.rows.set(k, new Map(v));
+    await runOnce(c, sU, { nowMs: later + 2 * 86_400_000 });
+    check("…and an untracked account of it withdraws it too", sU.coverage.get(USDC)?.kind === "UNKNOWN" && (sU.rows.get(USDC)?.size ?? 0) === 0, JSON.stringify(sU.coverage.get(USDC)));
     const facet = { label: "USDC", standard: "SPL" as const, priceStatus: "MARKET_PRICE" as const, firstObservedISO: "2026-10-02", lastObservedISO: "2026-10-31",
       historyState: "RECONSTRUCTED" as const, coverageKind: "PARTIAL" as const, licensedFromISO: "2026-10-02", licensedToISO: TODAY };
     check("customer copy says the verified stretch ENDS, not that earlier history is missing",
       tokenHistoryText(facet) === "Verified from Oct 2, 2026 through Oct 28, 2026 — later activity couldn’t be proven", tokenHistoryText(facet));
+  }
+
+  console.log("review: a transient throttle is not an unproductive run");
+  {
+    const c = new Chain();
+    const ata = "AtaThrottle1111111111111111111111111111111111";
+    c.tx("2026-10-03", 9, [OWNER, ata], c.create(ata, USDC));
+    const throttled: SolRpcCall = async (method) => { if (method === "getTokenAccountsByOwner") throw new SolTransportError("PROVIDER_THROTTLED", "429"); return null; };
+    const store = memStore(watchedCursor(), new Set([USDC]));
+    for (let i = 0; i < BACKOFF_AFTER + 1; i++) await runOnce(c, store, { rpc: throttled, nowMs: NOW + i * 1000 });
+    check("repeated throttles never back the wallet off for a day", (stateOf(store).backoff?.count ?? 0) === 0, JSON.stringify(stateOf(store).backoff));
   }
 
   console.log("review: backoff, ordering, sync limit, checkpoint size, price marker");
@@ -832,7 +896,7 @@ async function main() {
     check("a backed-off token-only wallet is not a candidate", orderCandidates([{ ...rows[0], checkpoint: { ...cpNow, tokens: st } }], NOW + 5000, true).length === 0);
     check("a sync's token step has a small explicit request limit", splSyncRequestLimit({}) === 25 && splSyncRequestLimit({ SPL_HISTORY_SYNC_REQUEST_LIMIT: "5" }) === 5 && splSyncRequestLimit({ SPL_HISTORY_SYNC_REQUEST_LIMIT: "x" }) === 25);
 
-    // Checkpoint size: an account with more active days than the bound is refused and stages nothing.
+    // Checkpoint size: an account with more active days than the bound keeps its NEWEST days and is proven from the first kept (never refused).
     const big = new Chain();
     const hot = "AtaHot99999999999999999999999999999999999999";
     big.tx("2023-01-01", 9, [OWNER, hot], big.create(hot, USDC));
@@ -840,8 +904,11 @@ async function main() {
     const bs = memStore(watchedCursor(), new Set([USDC]));
     await runOnce(big, bs, {});
     const bst = stateOf(bs);
-    check("more active days than one account may stage ⇒ refused (PAGE_BUDGET_EXHAUSTED), nothing staged, no rows",
-      bst.accounts[0]?.failure === "TOO_MUCH_ACTIVITY" && stagedDays(bst) === 0 && bs.coverage.get(USDC)?.kind === "UNKNOWN" && (bs.rows.get(USDC)?.size ?? 0) === 0, JSON.stringify(bs.coverage.get(USDC)));
+    const bcov = bs.coverage.get(USDC);
+    const bm = rowsMatchTruth(big, bs, USDC, 6);
+    check("more active days than one account may stage ⇒ NOT refused: PARTIAL from the first kept day (PAGE_BUDGET_EXHAUSTED), rows equal truth, staging bounded",
+      bst.accounts[0]?.failure === null && bst.accounts[0]?.capped === true && stagedDays(bst) <= MAX_DAYS_PER_ACCOUNT
+        && bcov?.kind === "PARTIAL" && bcov.coveredFromISO === "2023-01-07" && bcov.caveats.includes("PAGE_BUDGET_EXHAUSTED") && bm.ok, `${JSON.stringify(bcov)} ${bm.detail}`);
 
     // Price marker: records what was RETURNED, re-reads before writing.
     let meta: Record<string, unknown> = { quote: { attemptedAt: "2026-10-28T00:00:00Z", outcome: "PRICED", pricedAt: "2026-10-28T00:00:00Z" } };

@@ -82,7 +82,12 @@ export interface CoinGeckoBudget {
 
 /** The metric prefix every token-quote request is recorded under. */
 export const TOKEN_QUOTE_METRIC_PREFIX = `${COINGECKO_USAGE_NETWORK}:simple/token_price`;
-/** Historical token closes (lib/prices/token-history-prices.ts) — counted in the TOKEN share too. */
+/**
+ * Historical token closes (lib/prices/token-history-prices.ts) — counted in the
+ * TOKEN share too. STABLE: every token-history caller (SPL now, ERC-20 next)
+ * must meter its contract `market_chart/range` requests under this prefix and
+ * spend `remaining("token")`, so token history never eats the native share.
+ */
 export const TOKEN_HISTORY_METRIC_PREFIX = `${COINGECKO_USAGE_NETWORK}:market_chart/range:`;
 
 /**

@@ -38,13 +38,13 @@ import {
 } from "./sol-history-backfill.core";
 import { SolTransportError, CheckpointConflictError, type SolRpcCall } from "./sol-history-backfill";
 import {
-  HEAD_MISMATCH_LIMIT, MAX_DAYS_PER_ACCOUNT, MAX_OVERFLOW_MINTS, MAX_PENDING_DISCOVERED, MAX_STAGED_DAYS_TOTAL, REASON_CAVEAT, SPL_CONTINUITY_SOURCE,
-  deadMints, demoteToWalk, nativeWatchIntact, overflowCount, overflowedMints, premiseReason, resetAccount, retryableReason, rewriteFrom, splWorkOwed, stagedDays,
+  HEAD_MISMATCH_LIMIT, MAX_DAYS_PER_ACCOUNT, MAX_PENDING_DISCOVERED, MAX_STAGED_DAYS_TOTAL, REASON_CAVEAT, SPL_CONTINUITY_SOURCE,
+  deadMints, demoteToWalk, frozenNewcomers, frozenPremise, nativeWatchIntact, overflowCount, overflowedMints, premiseReason, resetAccount, retryableReason, rewriteFrom, splWorkOwed, stagedDays,
   ABSENT, accountWalked, continueDecision, coverageForDecision, currentByAddress, decideMint, discoverOwnedTokenAccounts,
   discoveryComplete, endOfDayKeys, freshSplState, inventoryCompleteOf, matchesAnchor, mergeDays,
   mergeDiscovered, mintDailyRaw, mintExtensionVerdict, needsExtensionCheck, orderMints, ownedMintsIn, parseSplState, tokenPointFromTransaction,
   trimDays, currentStateKey,
-  type DiscoveredTokenAccount, type MintDecision, type SplAccountState, type SplHistoryState, type SplMintState, type SplTxView,
+  type DiscoveredTokenAccount, type MintDecision, type SplAccountState, type SplUnsupportedReason, type SplHistoryState, type SplMintState, type SplTxView,
 } from "./spl-history.core";
 import type { ChainCoverage } from "./chain-movement";
 
@@ -217,6 +217,8 @@ export async function runSplTokenHistory(
   let priced = new Set<string>();
   const isPriced = (m: string) => priced.has(m);
   const accountsBefore = state.accounts.length;
+  /** Did this run change the state beyond the last cursor it committed (e.g. a merge of finds)? */
+  const mergedChanged = (st: SplHistoryState) => JSON.stringify(st) !== JSON.stringify((parseSplState((JSON.parse(raw!) as { tokens?: unknown }).tokens)));
 
   /** Persist `next` (and a mint's rows) by CAS from the cursor this step last read or wrote. */
   const commit = async (next: SplHistoryState, mint?: SplMintWrite) => {
@@ -229,7 +231,11 @@ export async function runSplTokenHistory(
     ({ ...st, backoff: { count: (st.backoff?.count ?? 0) + 1, lastAtISO: new Date(now()).toISOString() } });
   const fail = async (code: string, detail: string) => {
     outcome.failure = { code, detail: detail.slice(0, 300) };
-    try { await commit({ ...bumpBackoff(state), lastRunAtISO: new Date(now()).toISOString() }); } catch { /* the proven state is already committed */ }
+    // A run that committed progress, or a transient throttle, is not "unproductive".
+    const madeProgress = outcome.signaturesProcessed > 0 || outcome.mintsCommitted.length > 0 || outcome.rebuilt.length > 0;
+    const next = madeProgress ? { ...state, backoff: { count: 0, lastAtISO: null } }
+      : code === "PROVIDER_THROTTLED" ? state : bumpBackoff(state);
+    try { await commit({ ...next, lastRunAtISO: new Date(now()).toISOString() }); } catch { /* the proven state is already committed */ }
     return done("FAILURE");
   };
 
@@ -315,12 +321,17 @@ export async function runSplTokenHistory(
 
     for (const m of orderMints(state.mints, isPriced)) {
       const dead = deadMints(state);
-      if (dead.has(m.mint)) continue; // a final verdict owes no requests
-      for (const addr of state.accounts.filter((a) => a.mints.includes(m.mint)).map((a) => a.address)) {
+      // A final verdict owes no requests — except a FROZEN licence's later
+      // accounts, walked to learn whether the licence still stands.
+      const onlyNewcomers = dead.has(m.mint);
+      const addrs = onlyNewcomers
+        ? frozenNewcomers(m, state.accounts).filter((a) => !a.failure && !accountWalked(a)).map((a) => a.address)
+        : state.accounts.filter((a) => a.mints.includes(m.mint)).map((a) => a.address);
+      for (const addr of addrs) {
         if (visited.has(addr)) continue;
         visited.add(addr);
         let a = state.accounts.find((x) => x.address === addr)!;
-        if (a.failure || a.mints.every((x) => dead.has(x))) continue;
+        if (a.failure || (!onlyNewcomers && a.mints.every((x) => dead.has(x)))) continue;
         if (overBudget()) { stoppedForBudget = true; break; }
 
         // 4a. HEAD — activity newer than the proven top.
@@ -474,7 +485,8 @@ export async function runSplTokenHistory(
     const discDone = discoveryComplete(state, native);
     /** Accounts whose every mint has a final verdict keep nothing staged (bounded checkpoint). */
     const clearDead = (st: SplHistoryState): SplAccountState[] => {
-      const dead = deadMints(st);
+      const frozen = new Set(st.mints.filter((x) => x.frozen).map((x) => x.mint));
+      const dead = new Set([...deadMints(st)].filter((x) => !frozen.has(x))); // a frozen licence's accounts are still checked
       return st.accounts.map((a) => (a.mints.length > 0 && a.mints.every((x) => dead.has(x)) && (a.days.length || a.dirtyFromISO) ? { ...a, days: [], dirtyFromISO: null } : a));
     };
     for (const m0 of orderMints(state.mints, isPriced)) {
@@ -482,12 +494,16 @@ export async function runSplTokenHistory(
       // Refusals are final, except a head mismatch (re-checked every run).
       if (m.status === "UNSUPPORTED" && !retryableReason(m.reason)) continue;
       const mine = state.accounts.filter((a) => a.mints.includes(m.mint));
-      // A FROZEN licence stays exactly as proven — unless it was frozen for a
-      // head mismatch alone (no account failed), which a later match thaws.
-      if (m.frozen && !(retryableReason(m.frozen) && !mine.some((a) => a.failure !== null))) continue;
+      // A FROZEN licence is re-checked against its premise on EVERY run (an
+      // untracked or later account withdraws it); otherwise it stays exactly as
+      // proven — unless frozen for a head mismatch alone, which a later match thaws.
+      const premise = frozenPremise(m, mine, overflowedMints(state));
+      const withdrawFrozen = premise !== null && premise !== "HOLD";
+      if (m.frozen && !withdrawFrozen && !(retryableReason(m.frozen) && !mine.some((a) => a.failure !== null))) continue;
       const base: SplMintState = m.frozen ? { ...m, status: m.frozenFrom ?? "PARTIAL" } : m;
-      let d: MintDecision = decideMint(base, mine, { discoveryComplete: discDone, verifiedThisRun: verified, todayISO,
-        overflowed: overflowedMints(state), saturated: state.overflowSaturated ?? false });
+      let d: MintDecision = withdrawFrozen
+        ? { status: "UNSUPPORTED", reason: premise as SplUnsupportedReason, fromISO: null, toISO: null }
+        : decideMint(base, mine, { discoveryComplete: discDone, verifiedThisRun: verified, todayISO, overflowed: overflowedMints(state) });
       d = continueDecision(base, d);
       if (d.status === "PENDING") continue;
       const committed = base.licensedToISO !== null && (base.status === "COMPLETE" || base.status === "PARTIAL");
@@ -502,7 +518,7 @@ export async function runSplTokenHistory(
           // unknown) — WITHDRAWS it below: those rows were never proven.
           const culprits = mine.filter((a) => a.failure !== null || (a.headMismatches >= HEAD_MISMATCH_LIMIT && !verified.has(a.address)));
           const licensed = new Set(m.licensedAccounts ?? []);
-          if (!premiseReason(reason) && culprits.length > 0 && culprits.every((a) => licensed.has(a.address))) {
+          if (!withdrawFrozen && !premiseReason(reason) && culprits.length > 0 && culprits.every((a) => licensed.has(a.address))) {
             if (m.frozen === reason) continue; // already said
             const frozen: SplMintState = { ...m, status: "PARTIAL", frozen: reason, frozenFrom: m.frozen ? m.frozenFrom ?? "PARTIAL" : (m.status as "COMPLETE" | "PARTIAL") };
             const next = { ...state, mints: state.mints.map((x) => (x.mint === m.mint ? frozen : x)) };
@@ -571,7 +587,11 @@ export async function runSplTokenHistory(
       // account keeps only what can carry into new days — and remembers, as
       // `trimmedFromISO`, from when its staged days are still exact.
       const dead = deadMints(after);
-      const settled = new Set(after.mints.filter((x) => dead.has(x.mint) || (x.licensedToISO && (x.status === "COMPLETE" || x.status === "PARTIAL"))).map((x) => x.mint));
+      // A mint frozen for a retryable reason may thaw and must then rewrite from
+      // its old edge: its accounts are NOT settled (never trimmed, dirty kept).
+      const settled = new Set(after.mints.filter((x) => (dead.has(x.mint) && !x.frozen)
+        || (!x.frozen && x.licensedToISO && (x.status === "COMPLETE" || x.status === "PARTIAL"))
+        || (x.frozen && !retryableReason(x.frozen))).map((x) => x.mint));
       const accounts = after.accounts.map((a) => {
         if (!a.mints.includes(m.mint) || !a.mints.every((x) => settled.has(x))) return a;
         const kept = trimDays(a.days, toISO);
@@ -602,7 +622,9 @@ export async function runSplTokenHistory(
     const owed = splWorkOwed(state, { reachedBeginning: native.reachedBeginning, gap: native.gap, top: native.top, bottom: native.bottom });
     const prevBackoff = state.backoff ?? { count: 0, lastAtISO: null };
     const backoff = progressed || !owed ? { count: 0, lastAtISO: null } : { count: prevBackoff.count + 1, lastAtISO: new Date(now()).toISOString() };
-    if (inv !== state.inventoryComplete || state.lastRunAtISO?.slice(0, 10) !== todayISO || backoff.count !== prevBackoff.count) {
+    // A merge of queued / current finds is persisted even on a quiet run (else it is redone every wake).
+    const merged = mergedChanged(state);
+    if (merged || inv !== state.inventoryComplete || state.lastRunAtISO?.slice(0, 10) !== todayISO || backoff.count !== prevBackoff.count) {
       await commit({ ...state, inventoryComplete: inv, lastRunAtISO: new Date(now()).toISOString(), backoff });
     }
     outcome.inventoryComplete = inv;
@@ -617,7 +639,15 @@ export async function runSplTokenHistory(
 
 /** Bound one account's staged days: beyond the bound it is refused, and stages nothing. */
 function capDays(a: SplAccountState): SplAccountState {
-  return a.days.length > MAX_DAYS_PER_ACCOUNT ? { ...a, days: [], failure: "TOO_MUCH_ACTIVITY" } : a;
+  if (a.days.length <= MAX_DAYS_PER_ACCOUNT) return a;
+  // Never refused for activity: keep the NEWEST days and prove the account from
+  // the first one kept (a later proven start — its mint reads PARTIAL with
+  // PAGE_BUDGET_EXHAUSTED). Each kept day's end state is exact, so rows from it are.
+  const days = a.days.slice(a.days.length - MAX_DAYS_PER_ACCOUNT);
+  const from = days[0][0];
+  return { ...a, days, creation: false, capped: true,
+    provenFromISO: a.provenFromISO && a.provenFromISO > from ? a.provenFromISO : from,
+    dirtyFromISO: a.dirtyFromISO && a.dirtyFromISO < from ? from : a.dirtyFromISO };
 }
 
 function addDay(iso: string): string {
@@ -671,18 +701,18 @@ export function annotateWithDiscoveries(
   const oMints = new Set(state.overflowMints ?? []);
   const pending = [...(state.pendingDiscovered ?? [])];
   const seen = new Set(pending.map((d) => `${d.address}|${d.mint}`));
-  let saturated = state.overflowSaturated ?? false;
+  let full = false;
   for (const d of found) {
     const k = `${d.address}|${d.mint}`;
     if (tracked.has(k) || seen.has(k) || oMints.has(d.mint)) continue; // an overflowed mint is held already
-    if (pending.length >= MAX_PENDING_DISCOVERED) {
-      // No room to queue it for placing: its MINT is held from COMPLETE instead
-      // (never dropped silently); past that bound, nothing may read complete.
-      if (oMints.size < MAX_OVERFLOW_MINTS) oMints.add(d.mint); else saturated = true;
-      continue;
-    }
+    if (pending.length >= MAX_PENDING_DISCOVERED) { full = true; break; }
     pending.push(d); seen.add(k);
   }
+  // No room to queue every find for priced-first placing: nothing is refused —
+  // discovery falls back to a WALK (it merges priced-first, page by page, and
+  // re-finds what was not queued). Discovery is not complete until it is done.
+  if (full) state = demoteToWalk(state, cp);
+  const saturated = state.overflowSaturated ?? false;
   const discovery = { ...state.discovery, watchedTop: cp.top?.signature ?? null, watchedBottom: cp.bottom?.signature ?? null };
   return { ...cp, tokens: { ...state, discovery, pendingDiscovered: pending, overflowMints: [...oMints], overflowSaturated: saturated,
     overflow: overflowCount(state.overflowed ?? [], oMints.size, saturated) } } as SolBackfillCheckpoint;

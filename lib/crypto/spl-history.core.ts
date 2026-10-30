@@ -119,7 +119,7 @@ export const MAX_OVERFLOW_RECORDS = 256;
 export const MAX_OVERFLOW_MINTS = 1024;
 /** Native-hook discoveries held for the token step to place (priced first). Past this ⇒ saturated. */
 export const MAX_PENDING_DISCOVERED = 512;
-/** End-of-day entries one account may stage. Beyond ⇒ refused (too much activity to stage here). */
+/** End-of-day entries one account may stage. Beyond, its oldest days are dropped and it is proven from a later start (PARTIAL). */
 export const MAX_DAYS_PER_ACCOUNT = 750;
 /** End-of-day entries staged across all accounts. Beyond ⇒ further backward walks wait for commits. */
 export const MAX_STAGED_DAYS_TOTAL = 6000;
@@ -143,7 +143,7 @@ export type SplUnsupportedReason =
   | "INVALID_DATA"
   /** More token accounts than can be tracked, at least one of them for this mint. */
   | "TOO_MANY_ACCOUNTS"
-  /** More active days than one account may stage in the checkpoint. */
+  /** More active days than one account may stage (legacy states only — now a later proven start, PARTIAL). */
   | "TOO_MUCH_ACTIVITY";
 
 /** The stored caveat each refusal carries — the EXISTING ChainCoverage vocabulary, no new one. */
@@ -473,6 +473,12 @@ export interface SplAccountState {
    * account is committed or refused.
    */
   dirtyFromISO?: string | null;
+  /**
+   * More active days than one account may stage: its OLDEST days were dropped
+   * and it is proven only from `provenFromISO` (a later proven start ⇒ its mint
+   * is PARTIAL, caveat PAGE_BUDGET_EXHAUSTED) — never refused for it.
+   */
+  capped?: boolean;
 }
 
 export type SplMintStatus = "PENDING" | "COMPLETE" | "PARTIAL" | "UNSUPPORTED";
@@ -493,6 +499,14 @@ export interface SplMintState {
    * persisted as PARTIAL, never COMPLETE again without a rebuild.
    */
   frozen?: SplUnsupportedReason | null;
+  /** An account of this mint could not be tracked: never COMPLETE (TOO_MANY_ACCOUNTS). */
+  untracked?: boolean;
+  /**
+   * First recorded AFTER the untracked-mint memory saturated: an untracked
+   * account of it may have gone unremembered, so it is never COMPLETE. Mints
+   * recorded before saturation (and never untracked) stay decidable.
+   */
+  afterSaturation?: boolean;
   /** The status the licence had when it was frozen (a retryable freeze thaws back to it). */
   frozenFrom?: "COMPLETE" | "PARTIAL" | null;
   /**
@@ -614,13 +628,17 @@ export function mergeDiscovered(
   const committed = (mint: string) => mints.some((m) => m.mint === mint && m.licensedToISO !== null);
   const remember = (address: string, mint: string) => {
     if (!overflowed.some(([a, m]) => a === address && m === mint) && overflowed.length < MAX_OVERFLOW_RECORDS) overflowed.push([address, mint]);
+    // A RECORDED mint is held directly on its record — never lost to a full memory.
+    const rec = mints.find((x) => x.mint === mint);
+    if (rec) { rec.untracked = true; return; }
     if (!oMints.has(mint)) { if (oMints.size < MAX_OVERFLOW_MINTS) oMints.add(mint); else saturated = true; }
   };
   const ensureMint = (f: DiscoveredTokenAccount) => {
     const m = mints.find((x) => x.mint === f.mint);
     if (!m) {
       mints.push({ mint: f.mint, decimals: f.decimals, program: f.program, status: "PENDING", reason: null,
-        licensedFromISO: null, licensedToISO: null, extension: initialExtension(f.program) });
+        licensedFromISO: null, licensedToISO: null, extension: initialExtension(f.program),
+        ...(saturated ? { afterSaturation: true } : {}) });
       return;
     }
     // A mint seen under anything but classic SPL must be checked (or, under an
@@ -765,6 +783,40 @@ export function resetAccount(a: SplAccountState): SplAccountState {
     verifiedAtISO: null, headMismatches: 0, signatures: 0, trimmedFromISO: null, dirtyFromISO: null };
 }
 
+/** Accounts of a FROZEN mint its licence was not computed from (they joined later). */
+export function frozenNewcomers(m: SplMintState, accounts: readonly SplAccountState[]): SplAccountState[] {
+  if (!m.frozen) return [];
+  const licensed = new Set(m.licensedAccounts ?? []);
+  return accounts.filter((a) => a.mints.includes(m.mint) && !licensed.has(a.address));
+}
+
+/**
+ * Does a FROZEN licence still stand? Its rows were proven from `licensedAccounts`
+ * only, and the premise is re-checked on every run, not just at the freeze:
+ *   · a refused extension, or an account of the mint that could not be tracked
+ *     (or may have gone unremembered) ⇒ WITHDRAW with that reason;
+ *   · an account that joined later and failed, or held this mint on or before
+ *     the licence's last day (or cannot show it did not: trimmed, or not walked
+ *     from creation) ⇒ WITHDRAW with the freeze's reason (a frozen licence
+ *     cannot be re-proven);
+ *   · a later account still walking ⇒ "HOLD" (decided once it is walked);
+ *   · otherwise null: the frozen licence stands.
+ */
+export function frozenPremise(m: SplMintState, accounts: readonly SplAccountState[], overflowed: ReadonlySet<string>): SplUnsupportedReason | "HOLD" | null {
+  if (!m.frozen) return null;
+  if (m.extension && m.extension !== "OK") return m.extension;
+  if (m.untracked || m.afterSaturation || overflowed.has(m.mint)) return "TOO_MANY_ACCOUNTS";
+  const to = m.licensedToISO;
+  let hold = false;
+  for (const a of frozenNewcomers(m, accounts)) {
+    if (a.failure) return a.failure;
+    if (!accountWalked(a)) { hold = true; continue; }
+    if (a.trimmedFromISO || !a.creation || !to) return m.frozen;
+    if (a.days.some(([d, k]) => d <= to && attributedRaw(k, m.mint) !== BigInt(0))) return m.frozen;
+  }
+  return hold ? "HOLD" : null;
+}
+
 /** Total staged end-of-day entries (checkpoint size driver). */
 export function stagedDays(state: Pick<SplHistoryState, "accounts">): number {
   return state.accounts.reduce((n, a) => n + a.days.length, 0);
@@ -781,7 +833,7 @@ export function continueDecision(m: SplMintState, d: MintDecision): MintDecision
   if (d.status !== "COMPLETE" && d.status !== "PARTIAL") return d;
   const from = d.status === "PARTIAL" && d.fromISO && d.fromISO > m.licensedFromISO ? d.fromISO : m.licensedFromISO;
   const status: SplMintStatus = m.status === "PARTIAL" || d.status === "PARTIAL" ? "PARTIAL" : "COMPLETE";
-  return { status, reason: null, fromISO: from, toISO: d.toISO };
+  return { status, reason: null, fromISO: from, toISO: d.toISO, ...(d.capped ? { capped: true } : {}) };
 }
 
 /** Program of a mint, for its token-2022 check. Classic SPL needs none. */
@@ -809,6 +861,8 @@ export interface MintDecision {
   reason: SplUnsupportedReason | null;
   fromISO: string | null;
   toISO: string | null;
+  /** PARTIAL because an account had more activity than could be staged (its oldest days dropped). */
+  capped?: boolean;
 }
 
 /**
@@ -818,13 +872,15 @@ export interface MintDecision {
 export function decideMint(
   m: SplMintState,
   accounts: readonly SplAccountState[],
-  ctx: { discoveryComplete: boolean; verifiedThisRun: ReadonlySet<string>; todayISO: string; overflowed?: ReadonlySet<string>; saturated?: boolean },
+  ctx: { discoveryComplete: boolean; verifiedThisRun: ReadonlySet<string>; todayISO: string; overflowed?: ReadonlySet<string> },
 ): MintDecision {
   const pending: MintDecision = { status: "PENDING", reason: null, fromISO: null, toISO: null };
   const refuse = (reason: SplUnsupportedReason): MintDecision => ({ status: "UNSUPPORTED", reason, fromISO: null, toISO: null });
   if (m.extension && m.extension !== "OK") return refuse(m.extension);
-  // An account of this mint could not be tracked: its sum would be short.
-  if (ctx.saturated || ctx.overflowed?.has(m.mint)) return refuse("TOO_MANY_ACCOUNTS");
+  // An account of this mint could not be tracked (or may have gone unremembered,
+  // the mint being first recorded after saturation): its sum would be short.
+  // Decided PER MINT — a fully tracked mint is never refused for others' overflow.
+  if (m.untracked || m.afterSaturation || ctx.overflowed?.has(m.mint)) return refuse("TOO_MANY_ACCOUNTS");
   const mine = accounts.filter((a) => a.mints.includes(m.mint));
   const failed = mine.find((a) => a.failure !== null);
   if (failed) return refuse(failed.failure!);
@@ -839,7 +895,7 @@ export function decideMint(
   const firstDays = mine.map((a) => a.days[0]?.[0] ?? a.top?.dateISO ?? ctx.todayISO).sort();
   if (gapStarts.length > 0) {
     const from = gapStarts[gapStarts.length - 1];
-    return { status: "PARTIAL", reason: null, fromISO: from, toISO: ctx.todayISO };
+    return { status: "PARTIAL", reason: null, fromISO: from, toISO: ctx.todayISO, capped: mine.some((a) => a.capped) };
   }
   return { status: "COMPLETE", reason: null, fromISO: firstDays[0], toISO: ctx.todayISO };
 }
@@ -848,7 +904,8 @@ export function decideMint(
 export function coverageForDecision(d: MintDecision): ChainCoverage | null {
   if (d.status === "COMPLETE" && d.fromISO && d.toISO) return { kind: "COMPLETE", fromISO: d.fromISO, toISO: d.toISO, source: SPL_CONTINUITY_SOURCE };
   if (d.status === "PARTIAL" && d.fromISO && d.toISO) {
-    return { kind: "PARTIAL", coveredFromISO: d.fromISO, coveredToISO: d.toISO, caveats: ["ADDRESS_INDEX_INCOMPLETE"], source: SPL_CONTINUITY_SOURCE };
+    return { kind: "PARTIAL", coveredFromISO: d.fromISO, coveredToISO: d.toISO,
+      caveats: d.capped ? ["ADDRESS_INDEX_INCOMPLETE", "PAGE_BUDGET_EXHAUSTED"] : ["ADDRESS_INDEX_INCOMPLETE"], source: SPL_CONTINUITY_SOURCE };
   }
   if (d.status === "UNSUPPORTED" && d.reason) return { kind: "UNKNOWN", caveats: [REASON_CAVEAT[d.reason]], source: SPL_CONTINUITY_SOURCE };
   return null;
@@ -883,6 +940,8 @@ export function splWorkOwed(
   if (state.discovery.source === "WALK" && !state.discovery.walkDone && !native.gap) return true;
   const refused = deadMints(state);
   if (state.accounts.some((a) => !accountWalked(a) && a.mints.some((m) => !refused.has(m)))) return true;
+  // A later account of a FROZEN licence must be walked to know whether the licence still stands.
+  if (state.mints.some((m) => frozenNewcomers(m, state.accounts).some((a) => !a.failure && !accountWalked(a)))) return true;
   // A PENDING mint needs a run when it awaits its Token-2022 check, or when
   // everything it needs is walked and discovered — the run verifies and decides
   // it. One still waiting on the NATIVE backfill's discovery is native's work.
