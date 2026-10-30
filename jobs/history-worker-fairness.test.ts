@@ -20,6 +20,7 @@ import { solHistoryBackfill, WAKE_SAFE_MS, PRICE_GAP_RESERVE_MS, type SolBackfil
 import { workerConfig } from "@/lib/crypto/sol-backfill-worker.core";
 import { btcWorkerConfig } from "@/lib/crypto/btc-backfill-worker.core";
 import { ethWorkerConfig, queuedCheckpoint, serializeCheckpoint as serializeEth } from "@/lib/crypto/eth-history-backfill.core";
+import { erc20HistoryConfig } from "@/lib/crypto/erc20-history.core";
 import { emptyCheckpoint as emptyBtc, serializeCheckpoint as serializeBtc } from "@/lib/crypto/btc-history-backfill.core";
 import { emptyCheckpoint as emptySol, serializeCheckpoint as serializeSol, parseCheckpoint as parseSol, type SolBackfillCheckpoint } from "@/lib/crypto/sol-history-backfill.core";
 import type { SolBackfillStore } from "@/lib/crypto/sol-history-backfill";
@@ -259,6 +260,30 @@ async function main() {
     const big = { ...ethCfg, startReserveMs: 200_000 };
     const s = await solHistoryBackfill({ config: solCfg, btcConfig: btcCfg, ethConfig: big, deps: w.deps });
     check("ETH_BACKFILL_START_RESERVE_MS above the job budget is clamped: ETH still steps", (s.eth?.walletsRun ?? 0) === 1 && s.eth?.stoppedBecause !== "JOB_BUDGET", JSON.stringify(s.eth));
+  }
+
+  console.log("ERC-20 review N3: a native ETH backlog cannot starve the token pass");
+  {
+    const erc20Cfg = erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true", ERC20_HISTORY_ENABLED: "true" });
+    for (const shape of ["eth-led"] as const) {
+      const w = world({ eth: 1 });
+      w.deps.providerUsageToday = async () => ({ solana: 0, other: 0 });
+      // A native backlog that spends every ms its pass is given (a dense step stops only on its deadline).
+      const native = w.deps.eth!.reconstruct;
+      w.deps.eth!.reconstruct = async (a) => { const r = await native(a); await w.deps.sleep!(Math.max(0, (a.deps.deadlineMs ?? w.now()) - w.now())); return r; };
+      const tokenSteps: number[] = [];
+      w.deps.ethTokens = {
+        wallets: async () => [{ accountId: "e0", connectionId: "c-e0", cursor: null }],
+        step: async () => { tokenSteps.push(w.now()); return { stoppedBecause: "DONE", requests: 0, pagesRead: 0, verified: [], unsupported: [], inconclusive: [], pending: 0, impactedFromISO: null, verifiedInstrumentIds: [], failure: null }; },
+        setPending: async () => true,
+      };
+      const out: SolBackfillJobSummary[] = [];
+      for (let i = 0; i < 3 && tokenSteps.length === 0; i++) out.push(await solHistoryBackfill({ config: solCfg, btcConfig: btcCfg, ethConfig: ethCfg, erc20Config: erc20Cfg, deps: w.deps }));
+      const ethLed = out.find((s) => s.schedule?.order.includes("ETH") && (s.eth?.walletsRun ?? 0) > 0);
+      check(`N3 (${shape}): the native ETH step still runs AND the token pass steps in the same ETH phase`,
+        !!ethLed && (ethLed.ethTokens?.walletsRun ?? 0) === 1 && ethLed.ethTokens?.stoppedBecause !== "JOB_BUDGET",
+        JSON.stringify(out.map((s) => ({ order: s.schedule?.order, eth: s.eth?.walletsRun, tok: s.ethTokens && { run: s.ethTokens.walletsRun, stop: s.ethTokens.stoppedBecause } }))));
+    }
   }
 
   console.log("defect 2: crash-safe metering");

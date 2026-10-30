@@ -605,6 +605,51 @@ async function main(): Promise<void> {
     check("N4: overflow is not inflated by re-seeing the same contract", ns.overflow === 1, String(ns.overflow));
   }
 
+  // ── 19. Pass review fixes: S2 durable marker before regeneration, S3 incremental flush ──
+  {
+    const cfg = { ...erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true", ERC20_HISTORY_ENABLED: "true" }) };
+    const baseCtx = {
+      jobDeadline: Date.now() + 600_000, day: "2026-10-28", dailyRequestCap: 10_000, now: Date.now,
+      claimLock: async () => true, releaseLock: async () => {}, providerUsageToday: async () => ({ solana: 0, other: 0 }),
+    };
+    // S2 — the worker is killed between the price insert and the regeneration.
+    const chain: Chain = { head: 3000, calls: [], txs: [tx(USDC, 100, OTHER, WALLET, 1_000_000)] };
+    const m = newMem();
+    const deps: Erc20HistoryPassDeps = {
+      wallets: async () => [{ accountId: ACC, connectionId: "c1", cursor: m.cursor }],
+      step: ({ todayISO, deps: d }) => runErc20HistoryStep({ accountId: ACC, store: memStore(m), todayISO }, { ...d, eth: { ...d.eth, transport: transport(chain), throttleRetries: 0 } }),
+      setPending: async (_a, mutate) => { const s0 = readErc20Section(m.cursor, ACC).section!; m.cursor = withErc20Section(m.cursor, ACC, mutate(s0)); return true; },
+      acquirePrices: async () => ({ calls: 1, inserted: 3, tokensFetched: 1, earliestInsertedISO: "2025-12-01" }),
+    };
+    let killed = false;
+    try {
+      await runErc20HistoryPass(await planErc20History(deps, cfg, "2026-10-28"), deps, cfg,
+        { ...baseCtx, regenerateUnderLock: async () => { throw new Error("killed (maxDuration)"); } });
+    } catch { killed = true; }
+    check("S2: a kill between price insert and regeneration keeps the price days owed (durable first)",
+      killed && sectionOf(m).snapshotPendingFromISO === "2025-12-01", String(sectionOf(m).snapshotPendingFromISO));
+    const p2 = await planErc20History(deps, cfg, "2026-10-28");
+    check("S2: …so the next run plans that regeneration first", p2.work[0]?.kind === "PENDING");
+
+    // S3 — the pass meter reaches the ledger WHILE a step sends (every 100 calls), not only after it.
+    const ledger: Record<string, number> = {};
+    let recordedWhileSending = 0;
+    const flushDeps: Erc20HistoryPassDeps = {
+      wallets: async () => [{ accountId: ACC, connectionId: "c1", cursor: null }],
+      step: async ({ deps: d }) => {
+        for (let i = 0; i < 250; i++) { d.eth!.meter!.eth_call = (d.eth!.meter!.eth_call ?? 0) + 1; await new Promise((r) => setImmediate(r)); }
+        recordedWhileSending = Object.values(ledger).reduce((x, y) => x + y, 0);
+        return { stoppedBecause: "BUDGET", requests: 250, pagesRead: 0, verified: [], unsupported: [], inconclusive: [], pending: 1, impactedFromISO: null, verifiedInstrumentIds: [], failure: null };
+      },
+      setPending: async () => true,
+      recordUsage: async (meter, flushed) => { for (const [k, v] of Object.entries(meter)) { const dd = v - (flushed[k] ?? 0); if (dd > 0) { ledger[k] = (ledger[k] ?? 0) + dd; flushed[k] = v; } } },
+    };
+    const fs = await runErc20HistoryPass(await planErc20History(flushDeps, cfg, "2026-10-28"), flushDeps, { ...cfg, stepRequestBudget: 2_000 },
+      { ...baseCtx, regenerateUnderLock: async (_w: unknown, _f: string, stamp: number) => ({ outcome: "DONE" as const, stamp }) });
+    check("S3: ≥ 200 of 250 calls were on the ledger before the step returned (flushed every 100)", recordedWhileSending >= 200, String(recordedWhileSending));
+    check("S3: and every call is recorded exactly once by the end", (ledger.eth_call ?? 0) === 250 && fs.requests.total === 250, JSON.stringify(ledger));
+  }
+
   // ── 16. Historical token prices (THE one token price path, #120's) ────────
   {
     // The adapter: each verified token asks for its OWN licence on this account; nothing else is asked.

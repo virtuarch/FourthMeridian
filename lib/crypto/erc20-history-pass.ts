@@ -15,17 +15,24 @@
  *              bound and what is left. An unreadable ledger spends nothing.
  *   prices     verified priced tokens' historical closes (CoinGecko, its own
  *              guarded budget) through the injected acquisition, bounded per run
+ *   metering   crash-safe: the pass meter is an incrementalMeter, flushed to the
+ *              ledger WHILE steps send (every 100 calls / 10 s — the sibling
+ *              passes' cadence), so a kill mid-step loses at most one window (S3)
  *   snapshots  rows changed ⇒ regenerate from the earliest changed day through
  *              the job's regenerateUnderLock (the existing machinery — no new
- *              snapshot writer); deferred ⇒ the section's snapshotPendingFromISO
- *              marker keeps it owed, and the next run regenerates it first.
+ *              snapshot writer). The marker is DURABLE BEFORE the regeneration
+ *              starts (S2): the step commits its own changed day with its rows,
+ *              and a price insert's earliest day is CAS-ed onto
+ *              snapshotPendingFromISO right after the insert — a kill between
+ *              insert and regeneration leaves the days owed, never forgotten.
+ *              DONE clears it; deferred keeps it, and the next run regenerates first.
  *
  * No Prisma, no DB: every effect is a dependency (production wiring in
  * erc20-history.store.ts).
  */
 
-import type { LedgerCalls } from "@/lib/usage/provider-budget.core";
-import { meterTotal } from "@/lib/usage/provider-budget.core";
+import type { LedgerCalls, IncrementalMeter } from "@/lib/usage/provider-budget.core";
+import { incrementalMeter, meterTotal } from "@/lib/usage/provider-budget.core";
 import {
   readErc20Section, erc20WorkOwed, sectionUsageOn,
   type Erc20HistoryConfig, type Erc20HistorySection,
@@ -125,9 +132,12 @@ export async function runErc20HistoryPass(
 ): Promise<Erc20HistoryPassSummary> {
   const summary: Erc20HistoryPassSummary = { ...plan.summary, dailyRequestCap: ctx.dailyRequestCap };
   if (!cfg.enabled || plan.work.length === 0) return summary;
-  const meter: Record<string, number> = {};
-  const flushed: Record<string, number> = {};
-  const flushUsage = async () => { if (deps.recordUsage) { try { await deps.recordUsage(meter, flushed); } catch { /* metering never fails a run */ } } };
+  // S3 — flushed while steps send, not only between them (a kill mid-step loses at most one window).
+  const usage: IncrementalMeter = deps.recordUsage
+    ? incrementalMeter((m, f) => deps.recordUsage!(m, f), { now: ctx.now })
+    : { meter: {}, flushed: {}, flush: async () => {} };
+  const meter = usage.meter;
+  const flushUsage = () => usage.flush();
 
   // The shared cap, read NOW. Unreadable is not "plenty": only regenerations run.
   const ledger = ctx.providerUsageToday ? await ctx.providerUsageToday(ctx.day).catch(() => null) : null;
@@ -166,7 +176,13 @@ export async function runErc20HistoryPass(
             const p = await deps.acquirePrices({ accountId: w.accountId, instrumentIds: o.verifiedInstrumentIds, maxTokens: priceTokensLeft });
             priceTokensLeft -= p.tokensFetched;
             summary.prices.tokensFetched += p.tokensFetched; summary.prices.inserted += p.inserted; summary.prices.calls += p.calls;
-            fromISO = minISO(fromISO, p.earliestInsertedISO);
+            if (p.earliestInsertedISO) {
+              // S2 — durable BEFORE the regeneration: closes are inserted now, and the
+              // 24 h / marker-covered price path will not insert them again to re-flag it.
+              const day = p.earliestInsertedISO;
+              await deps.setPending(w.accountId, (s) => ({ ...s, snapshotPendingFromISO: minISO(s.snapshotPendingFromISO, day) })).catch(() => false);
+              fromISO = minISO(fromISO, day);
+            }
           } catch (e) {
             console.warn("[erc20-history] historical token prices failed (non-fatal):", e instanceof Error ? e.message : String(e));
           }

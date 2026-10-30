@@ -605,13 +605,20 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const withWork = new Set<HistoryChain>([...(solWork().length > 0 ? ["SOL" as const] : []), ...(btcHasWork ? ["BTC" as const] : []), ...(ethHasWork ? ["ETH" as const] : [])]);
   const order = chainOrder(rotation, withWork);
   const regenNeed = REGEN_RESERVE_MS + PHASE_SETUP_MS;
+  // N3 — ERC-20 token work rides the ETH phase AFTER the native pass: it gets its
+  // own slice (its start reserve, or a regeneration's when its first item is a
+  // PENDING one) on top of native's need, and native stops short of it — so a
+  // native backlog can no longer starve the token pass.
+  const tokenNeedMs = tokenPlan && tokenPlan.work.length > 0
+    ? Math.max(Math.max(erc20Cfg.startReserveMs, 2_000) + PHASE_SETUP_MS, tokenPlan.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0)
+    : 0;
   const needMs: Record<HistoryChain, number> = {
     SOL: Math.max(Math.max(cfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
       solFirstPending && deps.regenerationEnabled() ? regenNeed + (deps.acquirePriceGaps ? PRICE_GAP_RESERVE_MS : 0) : 0),
     BTC: Math.max(Math.max(btcCfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
       btcPlan?.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0),
-    ETH: Math.max(Math.max(ethCfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
-      ethPlan?.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0),
+    ETH: (tokenNeedMs > 0 && !(ethPlan && ethPlan.work.length > 0) ? 0 : Math.max(Math.max(ethCfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
+      ethPlan?.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0)) + tokenNeedMs,
   };
   summary.schedule = { rotation, order: [...order], leaderShort: false };
   const runPhase = async (chain: HistoryChain, chainsLeft: number, endBy = jobDeadline) => {
@@ -622,8 +629,10 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
       summary.deferred += summary.btc.deferred;
     } else if (chain === "ETH") {
       if (ethPlan && deps.eth) {
+        // Native stops short of the token slice (never before now).
+        const nativeEnd = tokenNeedMs > 0 ? Math.max(deps.now(), phaseDeadline - tokenNeedMs) : phaseDeadline;
         summary.eth = await runEthPass(deps, deps.eth, ethCfg, ethPlan, {
-          jobDeadline: phaseDeadline, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(),
+          jobDeadline: nativeEnd, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(),
           usage: ethUsage, regenerateUnderLock,
         });
         summary.deferred += summary.eth.deferred;
