@@ -13,28 +13,34 @@ import { resolvableGroupKeys } from "@/lib/entitlements/policy-groups";
 import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { loadFunnelFacts } from "@/lib/platform/growth/product-analytics";
 import { getIncidentsDailySeries } from "./incidents-daily";
+import { getActiveIncidentPage } from "@/lib/platform/incidents/projections";
 import { buildCsOverview } from "./overview-core";
 import type { CsOverviewResponse } from "./overview-types";
 
 const BROKEN = ["NEEDS_REAUTH", "ERROR"] as const;
+/** Unresolved rows scanned for the active-incident projection; a full scan is reported as a floor. */
+export const ACTIVE_INCIDENT_SCAN = 1000;
 const NON_WALLET = ["PLAID", "MANUAL", "CSV"] as const;
 
 export async function getCsOverview(windowDays: 30 | 90, now: Date = new Date()): Promise<CsOverviewResponse> {
   const client = systemDb;
   const known = resolvableGroupKeys(await loadPolicyGroupCatalogue());
-  const [customers, deactivated, funnel, plaidBroken, connBroken, openIssues, unassigned, invalid, health, daily] = await Promise.all([
+  const [customers, deactivated, funnel, plaidBroken, connBroken, activePage, unassigned, invalid, health, daily] = await Promise.all([
     client.user.findMany({ where: { role: "USER", deactivatedAt: null }, select: { id: true } }),
     client.user.count({ where: { role: "USER", deactivatedAt: { not: null } } }),
     loadFunnelFacts(client),
     client.plaidItem.findMany({ where: { status: { in: [...BROKEN] } }, select: { userId: true } }),
     client.connection.findMany({ where: { status: { in: [...BROKEN] }, provider: { notIn: [...NON_WALLET] } }, select: { userId: true } }),
-    client.syncIssue.findMany({ where: { resolved: false }, select: { kind: true, plaidItemId: true, financialAccountId: true } }),
+    // The canonical ACTIVE incidents (derived state: orphaned, superseded and event rows excluded) —
+    // the same read the Incidents workspace uses, so both say the same number.
+    getActiveIncidentPage(ACTIVE_INCIDENT_SCAN),
     client.user.findMany({ where: { role: "USER", deactivatedAt: null, policyAssignment: { is: null } }, select: { id: true } }),
     client.customerPolicyAssignment.findMany({ where: { policyGroup: { notIn: known } }, select: { userId: true } }),
     getConnectionHealth(0),
     getIncidentsDailySeries(now, windowDays),
   ]);
 
+  const openIssues = activePage.incidents;
   // Sync-issue owners: through the Item, else through the account's owner / creator.
   const itemIds = [...new Set(openIssues.flatMap((i) => (i.plaidItemId ? [i.plaidItemId] : [])))];
   const accountIds = [...new Set(openIssues.flatMap((i) => (!i.plaidItemId && i.financialAccountId ? [i.financialAccountId] : [])))];
@@ -57,5 +63,6 @@ export async function getCsOverview(windowDays: 30 | 90, now: Date = new Date())
     incidentDays: daily.days,
     incidentsFloor: daily.floor,
     openByKind: [...byKind.entries()].map(([kind, count]) => ({ kind, count })),
+    openFloor: activePage.scanTruncated,
   }, now, windowDays);
 }

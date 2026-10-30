@@ -230,8 +230,9 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                       </span>
                     </td>
                     <td className="truncate px-2 py-2.5 align-middle text-[var(--text-secondary)]">{c.funnelStage ?? "—"}</td>
-                    <td className="truncate px-2 py-2.5 align-middle text-[var(--text-secondary)]" title={c.cohorts.length ? c.cohorts.join(", ") : "no cohort"}>
-                      {c.policyGroup}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"}
+                    <td className="px-2 py-2.5 align-middle text-[var(--text-secondary)]">
+                      <span className="block truncate">{c.policyGroup}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"}</span>
+                      <span className="block truncate text-[11px] text-[var(--text-muted)]">{c.cohorts.length ? c.cohorts.join(", ") : "no cohort"}</span>
                     </td>
                     <td className="px-2 py-2.5 align-middle tabular-nums text-[var(--text-secondary)]">{c.connectionCount}</td>
                     <td className="px-2 py-2.5 align-middle tabular-nums" style={{ color: c.deactivatedAt ? "var(--text-faint)" : "var(--text-secondary)" }}>{c.deactivatedAt ? "deactivated" : ago(c.lastActiveAt)}</td>
@@ -248,7 +249,12 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                     <span className="flex min-w-0 flex-col">
                       <span className="truncate font-medium text-[var(--text-primary)]">{operatorDisplayName(c)}</span>
                       <span className="truncate text-[11px] text-[var(--text-muted)]">
-                        {c.funnelStage ?? "—"} · {c.policyGroup}{c.policyAssigned ? "" : " (default)"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
+                        {c.funnelStage ?? "—"} · {c.policyGroup}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"} · {c.cohorts.length ? c.cohorts.join(", ") : "no cohort"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
+                      </span>
+                      <span className="flex flex-wrap gap-x-2 text-[11px] tabular-nums text-[var(--text-muted)]">
+                        {rollupCells(c as CustomerRow, nowMs).map((cell, i) => (
+                          <span key={cell.key}>{i > 0 ? "· " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>
+                        ))}
                       </span>
                     </span>
                     <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : ago(c.lastActiveAt)}</span>

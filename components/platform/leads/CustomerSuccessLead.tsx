@@ -150,7 +150,7 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
           <Surface className="flex-1 p-4 sm:p-5">
             {o && totals ? (
               <>
-                <DayBars days={incidentBars(o)} height={200} noun="episode event" palette={INCIDENT_PALETTE}
+                <DayBars days={incidentBars(o)} height={200} noun="lifecycle event" palette={INCIDENT_PALETTE} failedWord="opened"
                   ariaLabel="Sync-issue episodes opened and resolved per UTC day" />
                 <div className="mt-2"><DayBarsLegend items={[{ label: "Resolved", color: INCIDENT_PALETTE.succeeded }, { label: "Opened", color: INCIDENT_PALETTE.failed }]} /></div>
                 <Caption>{`${n(totals.opened)} opened · ${n(totals.resolved)} resolved · ${o.windowDays} UTC days${o.incidents.floor ? " · at least (read cap)" : ""}`}</Caption>

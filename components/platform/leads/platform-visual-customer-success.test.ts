@@ -47,7 +47,7 @@ console.log("1. order and charts");
 console.log("2. figures and honesty");
 {
   check("connected = through first connection or beyond (3 + 1 + 0 + 1)", connectedCount(O) === 5);
-  check("reasons are shares of ACTIVE customers", attentionBars(O)[3].share === 2 / 8);
+  check("reasons are shares of ACTIVE customers (stalled = 2 of 8)", attentionBars(O)[3].share === 2 / 8);
   check("no support tickets or health score invented", !/ticket/i.test(render(ok).replace(/support tickets \(no ticketing system\)/, "")) && !/health score/i.test(strip("components/platform/leads/CustomerSuccessLead.tsx").replace(/health scores\./, "")));
   check("failed read → '—' KPIs and unavailable", csKpis(failed).every((k) => k.value === "—") && render(failed).includes("unavailable — Request failed (500)"));
 }

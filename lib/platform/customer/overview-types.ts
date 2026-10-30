@@ -30,7 +30,7 @@ export interface CsOverviewResponse {
   incidents: {
     days: { day: string; opened: number; resolved: number }[];
     floor: boolean;
-    /** Unresolved sync-issue episodes now, by kind. */
+    /** Active sync incidents now (derived state, the Incidents workspace's read), by kind. */
     openByKind: { kind: string; label: string; count: number }[];
     open: number;
   };

@@ -33,16 +33,16 @@ export function csKpis(f: Fetched<CsOverviewResponse>): Kpi[] {
   const o = f.data;
   if (!o) {
     const sub = reason(f, "customer figures");
-    return [["customers", "Customers"], ["help", "Need help"], ["connected", "Connected"], ["issues", "Open sync issues"]].map(([key, label]) => ({ key, label, value: "—", sub }));
+    return [["customers", "Customers"], ["help", "Need help"], ["connected", "Through first connection"], ["issues", "Active sync incidents"]].map(([key, label]) => ({ key, label, value: "—", sub }));
   }
   const connected = connectedCount(o);
   return [
     { key: "customers", label: "Customers", value: n(o.customers.active), sub: `${n(o.customers.deactivated)} deactivated` },
     { key: "help", label: "Need help", value: n(o.attention.customers), sub: o.customers.active ? `of ${n(o.customers.active)} customers` : "no customers",
       tone: o.attention.customers > 0 ? "warn" : undefined },
-    { key: "connected", label: "Connected", value: o.customers.active ? `${Math.round((connected / o.customers.active) * 100)}%` : "—",
-      sub: `${n(connected)} of ${n(o.customers.active)} reached a first connection` },
-    { key: "issues", label: "Open sync issues", value: n(o.incidents.open), sub: "unresolved episodes now", tone: o.incidents.open > 0 ? "warn" : undefined },
+    { key: "connected", label: "Through first connection", value: o.customers.active ? `${Math.round((connected / o.customers.active) * 100)}%` : "—",
+      sub: `${n(connected)} of ${n(o.customers.active)} · strict funnel` },
+    { key: "issues", label: "Active sync incidents", value: `${n(o.incidents.open)}${o.incidents.floor ? "+" : ""}`, sub: "now · as the Incidents workspace", tone: o.incidents.open > 0 ? "warn" : undefined },
   ];
 }
 

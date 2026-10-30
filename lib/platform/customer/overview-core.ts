@@ -31,13 +31,15 @@ export interface CsOverviewFacts {
   incidentDays: { day: string; opened: number; resolved: number }[];
   incidentsFloor: boolean;
   openByKind: readonly { kind: string; count: number }[];
+  /** True when the active-incident scan hit its ceiling (open counts are a floor). */
+  openFloor?: boolean;
 }
 
 export const ATTENTION_LABELS: Readonly<Record<AttentionKey, string>> = {
   reconnect: "A connection needs reconnecting",
-  incident: "An unresolved sync issue",
+  incident: "An active sync incident",
   policy: "Policy group missing or invalid",
-  stalled: `Not connected ${ABANDONMENT_HORIZON_DAYS}+ days after registering`,
+  stalled: `Stalled before first connection, ${ABANDONMENT_HORIZON_DAYS}+ days after registering`,
 };
 
 const kindLabel = (k: string) => k.replace(/_/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase());
@@ -77,13 +79,14 @@ export function buildCsOverview(facts: CsOverviewFacts, now: Date, windowDays: 3
       reasons: (Object.keys(sets) as AttentionKey[]).map((key) => ({ key, label: ATTENTION_LABELS[key], count: sets[key].size })),
     },
     connections: facts.connections,
-    incidents: { days: facts.incidentDays, floor: facts.incidentsFloor, openByKind, open: openByKind.reduce((a, r) => a + r.count, 0) },
+    incidents: { days: facts.incidentDays, floor: facts.incidentsFloor || facts.openFloor === true, openByKind, open: openByKind.reduce((a, r) => a + r.count, 0) },
     onboarding: buildOnboardingCohorts(funnel, dayOf(now)),
     notes: [
       "Customers are role-USER accounts; deactivated accounts are counted apart and never in a share.",
       "Onboarding stage is the strict funnel (the same one Growth uses), as of now.",
       "A customer can need help for several reasons; the headline counts each customer once.",
-      "Sync issues are unresolved episodes; resolved episodes are kept 90 days after resolution.",
+      "\"Stalled before first connection\" follows the strict funnel: a customer who connected but skipped an earlier stage (verification, a first session) is counted here too.",
+      "Open sync incidents are the canonical ACTIVE incidents (the Incidents workspace's read) — orphaned, superseded and event rows are excluded; resolved episodes are kept 90 days.",
       "Not available: support tickets (no ticketing system) and customer health scores (no authoritative model).",
     ],
   };
