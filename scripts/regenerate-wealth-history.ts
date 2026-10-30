@@ -117,7 +117,7 @@ async function main(): Promise<void> {
   if (res.skippedMembershipChanged > 0) {
     console.log(
       `⚠ ${res.skippedMembershipChanged} day(s) left untouched because an account was removed from this Space after that date. ` +
-      `Automatic regen never rewrites those on its own — see docs/initiatives/wealth-timeline/WEALTH_TIMELINE_AMENDMENT_SYSTEM_PROPOSAL.md.`,
+      `Automatic regen never rewrites those on its own — see docs/plans/CONNECTIONS-CRYPTO-HISTORY-CLOSEOUT-2026-10-30.md §3.1.`,
     );
   }
 

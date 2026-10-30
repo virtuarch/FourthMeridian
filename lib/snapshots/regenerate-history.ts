@@ -193,7 +193,7 @@ export interface RegenerateWealthHistoryResult {
   // 2026-07-15 — days left untouched because an account was removed from the
   // Space after that date. See regenerate-history.core.ts's
   // "MEMBERSHIP CHANGED" guard and
-  // docs/initiatives/wealth-timeline/WEALTH_TIMELINE_AMENDMENT_SYSTEM_PROPOSAL.md §9.
+  // docs/plans/CONNECTIONS-CRYPTO-HISTORY-CLOSEOUT-2026-10-30.md §3.1 (the §9 membership guard).
   skippedMembershipChanged: number;
   /**
    * 2026-10-30 — operator diagnostic for the per-link membership guard: every
@@ -1413,10 +1413,34 @@ function isManualRealAsset(a: { type: string; syncStatus: string | null }): bool
 }
 
 /**
+ * §9 membership exits — PURE. Every link whose account left this Space's member
+ * set, with the instant it left. FAILS CLOSED on both gaps the first cut had:
+ *   · a REVOKED link with no revokedAt has an unknown exit, so it is taken as
+ *     `today` (every earlier day it could have contributed to stays blocked);
+ *   · an ACTIVE link to a trashed account exits at the account's deletedAt.
+ * A link present in both sets keeps the earlier exit.
+ */
+export function membershipExitLinks(
+  revoked: readonly { id: string; financialAccountId: string; createdAt: Date; revokedAt: Date | null }[],
+  trashed: readonly { id: string; financialAccountId: string; createdAt: Date; deletedAt: Date | null }[],
+  today: Date,
+): { id: string; financialAccountId: string; createdAt: Date; exitAt: Date }[] {
+  const byId = new Map<string, { id: string; financialAccountId: string; createdAt: Date; exitAt: Date }>();
+  const add = (l: { id: string; financialAccountId: string; createdAt: Date }, exitAt: Date) => {
+    const prev = byId.get(l.id);
+    if (!prev || exitAt < prev.exitAt) byId.set(l.id, { id: l.id, financialAccountId: l.financialAccountId, createdAt: l.createdAt, exitAt });
+  };
+  for (const l of revoked) add(l, l.revokedAt ?? today);
+  for (const l of trashed) add(l, l.deletedAt ?? today);
+  return [...byId.values()];
+}
+
+/**
  * §9 per-link membership guard — the I/O half. Gathers, in a fixed number of
  * batched reads (links → accounts → manual-asset ledgers + earliest
  * transactions; never per link), the facts the pure core needs to bound each
- * REVOKED link's contribution, and returns the core's windows.
+ * membership EXIT's contribution — a REVOKED link, or an ACTIVE link to a
+ * trashed account (membershipExitLinks) — and returns the core's windows.
  *
  * FAILS CLOSED at every step: an account that cannot be read, a kind with no
  * engine-authoritative floor, or a ledger read that throws all yield an
@@ -1432,10 +1456,23 @@ function isManualRealAsset(a: { type: string; syncStatus: string | null }): bool
  * revocation, so its window spans every membership period it ever had.
  */
 export async function loadRevokedLinkWindows(client: Client, spaceId: string, today: Date): Promise<RevokedLinkWindow[]> {
-  const links = await client.spaceAccountLink.findMany({
-    where:  { spaceId, status: ShareStatus.REVOKED, revokedAt: { not: null } },
-    select: { id: true, financialAccountId: true, createdAt: true, revokedAt: true },
-  });
+  const [revokedRows, trashedRows] = await Promise.all([
+    client.spaceAccountLink.findMany({
+      where:  { spaceId, status: ShareStatus.REVOKED },
+      select: { id: true, financialAccountId: true, createdAt: true, revokedAt: true },
+    }),
+    // An ACTIVE link to a trashed (soft-deleted) account leaves the member set
+    // (the active-link read filters deletedAt) — a membership exit like a revocation.
+    client.spaceAccountLink.findMany({
+      where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: { not: null } } },
+      select: { id: true, financialAccountId: true, createdAt: true, financialAccount: { select: { deletedAt: true } } },
+    }),
+  ]);
+  const links = membershipExitLinks(
+    revokedRows,
+    trashedRows.map((l) => ({ id: l.id, financialAccountId: l.financialAccountId, createdAt: l.createdAt, deletedAt: l.financialAccount.deletedAt })),
+    today,
+  );
   if (links.length === 0) return [];
 
   type Account = { id: string; type: string; syncStatus: string | null; currency: string; balance: number; lastUpdated: Date; createdAt: Date };
@@ -1503,7 +1540,7 @@ export async function loadRevokedLinkWindows(client: Client, spaceId: string, to
       linkId: l.id,
       financialAccountId: l.financialAccountId,
       linkCreatedISO: isoDate(truncDateUTC(l.createdAt)),
-      revokedOnISO: isoDate(truncDateUTC(l.revokedAt!)),
+      revokedOnISO: isoDate(truncDateUTC(l.exitAt)),
       evidence:
         !account ? { kind: "UNBOUNDED", why: "ACCOUNT_UNREADABLE" }
         : !isManualRealAsset(account) ? { kind: "UNBOUNDED", why: `NO_ENGINE_FLOOR_FOR_${account.type.toUpperCase()}` }
