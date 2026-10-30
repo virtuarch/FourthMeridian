@@ -168,6 +168,9 @@ export interface ConnectionIntelligenceStatus {
     tokensNotValuedYet?: number;
     /** F4 — tokens valued only from a price floor inside their held period (limiting, as native). */
     tokensValuedFromLater?: number;
+    /** Legitimate unpriced holdings with no (liquid) market, and explicitly excluded tokens — counted apart. */
+    tokensWithoutMarket?: number;
+    tokensExcluded?: number;
     /** The wallet's chain token (e.g. "SOL"), for chain-specific token wording. */
     chain?: string | null;
   } | null;

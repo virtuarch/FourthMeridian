@@ -137,6 +137,8 @@ export interface WalletInstrumentHistory {
   tokensValuedFromLater: number;
   /** …and those confirmed to have no (liquid) market — never valued, disclosed. Never-held tokens count nowhere (F2). */
   tokensWithoutMarket: number;
+  /** Explicitly classified (spam / non-economic) — never valued, never limiting, counted apart (owner clarification). */
+  tokensExcluded: number;
   /** THE wallet-level answer. Never true because the native facet alone is. */
   complete:  boolean;
 }
@@ -286,7 +288,7 @@ export async function loadWalletInstrumentHistory(
     }
     tokens.sort((x, y) => (x.held === y.held ? x.label.localeCompare(y.label) : x.held ? -1 : 1));
 
-    let tokensNotValuedYet = 0, tokensWithoutMarket = 0, tokensValuedFromLater = 0;
+    let tokensNotValuedYet = 0, tokensWithoutMarket = 0, tokensValuedFromLater = 0, tokensExcluded = 0;
     for (const [id, c] of cov) {
       const alias = aliasByInstrument.get(id);
       const licence = licensedInterval(c);
@@ -295,9 +297,10 @@ export async function loadWalletInstrumentHistory(
       if (v === "NOT_VALUED_YET") tokensNotValuedYet++;
       else if (v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER") tokensValuedFromLater++;
       else if (v === "NO_MARKET") tokensWithoutMarket++;
+      else if (v === "EXCLUDED") tokensExcluded++;
     }
     const h = { accountId: a.id, chain, native: nativeFacet, tokens, tokenHistorySupported: TOKEN_HISTORY_CHAINS.has(chain),
-      tokenInventoryComplete: inventory.get(a.id) === true, tokensNotValuedYet, tokensValuedFromLater, tokensWithoutMarket };
+      tokenInventoryComplete: inventory.get(a.id) === true, tokensNotValuedYet, tokensValuedFromLater, tokensWithoutMarket, tokensExcluded };
     out.set(a.id, { ...h, complete: walletHistoryComplete(h) });
   }
   return out;

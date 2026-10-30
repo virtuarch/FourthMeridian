@@ -274,18 +274,22 @@ export function tokenHistoryText(t: WalletTokens[number]): string {
  * histories (balances are verified; prices are a separate fact): which tokens'
  * held days lack historical prices, never a value. Null when nothing applies.
  */
-export function tokenValuationText(notValuedYet: number | undefined, partlyValued: number | undefined, verifiedThroughISO?: string | null): string | null {
-  const n = (notValuedYet ?? 0) + (partlyValued ?? 0);
-  if (n <= 0) return null;
+export function tokenValuationText(notValuedYet: number | undefined, partlyValued: number | undefined, verifiedThroughISO?: string | null, withoutMarket?: number, excluded?: number): string | null {
+  // NO_MARKET is a legitimate unpriced holding (owner clarification) — counted with the others.
+  const n = (notValuedYet ?? 0) + (partlyValued ?? 0) + (withoutMarket ?? 0);
+  const x = excluded ?? 0;
+  if (n <= 0 && x <= 0) return null;
   const through = verifiedThroughISO ? `Balance history verified through ${fmtDay(verifiedThroughISO)}. ` : "";
-  return `${through}Older holdings exist but lack historical prices (${n === 1 ? "1 token" : `${n} tokens`}) — those days aren’t valued, never counted as zero.`;
+  const unpriced = n > 0 ? `Older holdings exist but lack historical prices (${n === 1 ? "1 token" : `${n} tokens`}) — those days aren’t valued, never counted as zero.` : "";
+  const excl = x > 0 ? `${unpriced ? " " : ""}${x === 1 ? "1 token" : `${x} tokens`} excluded as spam or non-economic.` : "";
+  return `${through}${unpriced}${excl}`;
 }
 
 /** Token limitations for the History tab, derived from the facets (never a per-chain constant). */
-function tokenLimitations(chain: string | null, sym: string, tokens: WalletTokens | undefined, notValuedYet?: number, valuedFromLater?: number, verifiedThroughISO?: string | null): string[] {
+function tokenLimitations(chain: string | null, sym: string, tokens: WalletTokens | undefined, notValuedYet?: number, valuedFromLater?: number, verifiedThroughISO?: string | null, withoutMarket?: number, excluded?: number): string[] {
   const kind = tokenKind(chain);
   if (!kind || !tokenCaptureSupported(chain)) return [];
-  const extra = tokenValuationText(notValuedYet, valuedFromLater, verifiedThroughISO);
+  const extra = tokenValuationText(notValuedYet, valuedFromLater, verifiedThroughISO, withoutMarket, excluded);
   if (extra) return [...tokenLimitations(chain, sym, tokens), extra];
   if (!tokens) return [];
   if (tokens.length === 0) return [`No ${kind} token balances have been recorded for this wallet. Native ${sym} history is shown above.`];
@@ -315,7 +319,7 @@ export function connectionHistory(
     }
     const chain = accounts.find((a) => a.chain)?.chain?.toUpperCase() ?? null;
     const sym = nativeAssetSymbol(chain) ?? "native";
-    const tokenNote = tokenLimitations(chain, sym, wh.tokens, wh.tokensNotValuedYet, wh.tokensValuedFromLater, wh.licensedToISO);
+    const tokenNote = tokenLimitations(chain, sym, wh.tokens, wh.tokensNotValuedYet, wh.tokensValuedFromLater, wh.licensedToISO, wh.tokensWithoutMarket, wh.tokensExcluded);
     const tokenFacets = (wh.tokens ?? []).map((t, n) => ({ key: `${t.label}-${n}`, label: `${t.label} history`, text: tokenHistoryText(t) }));
     if (wh.licensed) {
       const fromISO = wh.activityFromISO ?? wh.licensedFromISO;

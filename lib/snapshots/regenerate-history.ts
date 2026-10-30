@@ -1091,10 +1091,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         // ("unavailable", stored value preserved) — never an understated total.
         let tokenPriceMissing = false;
         if (tokenRows) {
-          const noMarket = (id: string) => tokenRows.identity.get(id)?.noMarket === true;
+          const excluded = (id: string) => tokenRows.identity.get(id)?.excluded === true; // explicit classification only
           for (const obs of tokenRows.observationsByAccount.values()) {
             const t = tokensValueOnDay(obs, tokenRows.prices, dISO);
-            if (tokenDayMissingRequiredPrice(t.tokens, noMarket)) tokenPriceMissing = true;
+            if (tokenDayMissingRequiredPrice(t.tokens, excluded)) tokenPriceMissing = true;
             for (const v of t.tokens) if (v.state === "VALUED" && v.valueUsd !== null) cryptoDay.push({ type: "crypto", balance: v.valueUsd, currency: "USD" });
           }
         }

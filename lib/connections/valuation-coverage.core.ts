@@ -54,6 +54,8 @@ export interface ValuationCoverage {
   tokensWithoutMarket?: number;
   /** S1 — tokens whose stored prices END inside the time they were held: valued only until then. */
   tokensValuedUntilEarlier?: number;
+  /** Explicitly classified spam / non-economic tokens — excluded from valuation, shown apart (owner clarification). */
+  tokensExcluded?: number;
 }
 
 export function deriveValuationCoverage(
@@ -61,7 +63,7 @@ export function deriveValuationCoverage(
   priceFloors: ReadonlyMap<string, string | null>,
   tokensTrackedFromISO: string | null = null,
   tokenPricesFromISO: string | null = null,
-  tokenValuation: { notValuedYet: number; withoutMarket: number; valuedUntilEarlier?: number } = { notValuedYet: 0, withoutMarket: 0 },
+  tokenValuation: { notValuedYet: number; withoutMarket: number; valuedUntilEarlier?: number; excluded?: number } = { notValuedYet: 0, withoutMarket: 0 },
 ): ValuationCoverage | null {
   const bySymbol = new Map<string, ValuationCoverageLimit>();
   for (const r of rows) {
@@ -75,12 +77,13 @@ export function deriveValuationCoverage(
   const limits = [...bySymbol.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
   const notYet = Math.max(0, tokenValuation.notValuedYet), noMarket = Math.max(0, tokenValuation.withoutMarket);
   const untilEarlier = Math.max(0, tokenValuation.valuedUntilEarlier ?? 0);
-  if (!limits.length && !tokensTrackedFromISO && !tokenPricesFromISO && !notYet && !noMarket && !untilEarlier) return null;
+  const excluded = Math.max(0, tokenValuation.excluded ?? 0);
+  if (!limits.length && !tokensTrackedFromISO && !tokenPricesFromISO && !notYet && !noMarket && !untilEarlier && !excluded) return null;
   const floors = limits.map((l) => l.pricedFromISO);
   const valuedFromISO = !limits.length ? null : floors.every((f): f is string => f !== null) ? [...floors].sort().at(-1)! : null;
   return { limits, valuedFromISO, ...(tokensTrackedFromISO ? { tokensTrackedFromISO } : {}), ...(tokenPricesFromISO ? { tokenPricesFromISO } : {}),
     ...(notYet ? { tokensNotValuedYet: notYet } : {}), ...(noMarket ? { tokensWithoutMarket: noMarket } : {}),
-    ...(untilEarlier ? { tokensValuedUntilEarlier: untilEarlier } : {}) };
+    ...(untilEarlier ? { tokensValuedUntilEarlier: untilEarlier } : {}), ...(excluded ? { tokensExcluded: excluded } : {}) };
 }
 
 function fmtDay(iso: string): string {
@@ -120,5 +123,7 @@ export function valuationCoverageNote(cov: ValuationCoverage | null, chartFromIS
   const noMarketNote = k > 0
     ? `${k === 1 ? "1 token" : `${k} tokens`} without a reliable market price when last checked ${k === 1 ? "isn’t" : "aren’t"} valued (never counted as zero).`
     : null;
-  return [priceNote, tokenNote, tokenPriceNote, notYetNote, noMarketNote].filter((x): x is string => x !== null).join(" ") || null;
+  const x = cov.tokensExcluded ?? 0;
+  const excludedNote = x > 0 ? `${x === 1 ? "1 token" : `${x} tokens`} excluded as spam or non-economic.` : null;
+  return [priceNote, tokenNote, tokenPriceNote, notYetNote, noMarketNote, excludedNote].filter((x): x is string => x !== null).join(" ") || null;
 }

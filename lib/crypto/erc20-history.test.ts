@@ -30,14 +30,14 @@ import { runErc20HistoryStep, type Erc20HistoryStore, type Erc20TokenWrite, type
 import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps } from "./erc20-history-pass";
 import { queuedCheckpoint, serializeCheckpoint, parseCheckpoint } from "./eth-history-backfill.core";
 import { walletHistoryComplete, facetFromCoverage, TOKEN_HISTORY_CHAINS } from "./wallet-instrument-history";
-import { tokensValueOnDay, tokenValueOnDay, reconstructedTokenValuation, tokenValuationLimits, tokenDayMissingRequiredPrice, tokenHasNoMarket } from "./token-valuation.core";
+import { tokensValueOnDay, tokenValueOnDay, reconstructedTokenValuation, tokenValuationLimits, tokenDayMissingRequiredPrice, tokenHasNoMarket, tokenValuationExclusion } from "./token-valuation.core";
 import { heldSpanFrom } from "./token-held-spans";
 import { resolveEvidenceFloor } from "@/lib/snapshots/historical-work-window";
 import { loadWalletInstrumentHistory } from "./wallet-instrument-history";
 import { loadValuationCoverage } from "@/lib/connections/valuation-coverage";
 import { IS_TOKEN_INSTRUMENT } from "./token-asset";
 import type { ChainCoverage } from "./chain-movement";
-import { tokenHistoryText, connectionHealth, connectionHistory } from "@/lib/connections/connection-detail.core";
+import { tokenHistoryText, connectionHealth, connectionHistory, tokenValuationText } from "@/lib/connections/connection-detail.core";
 import { deriveValuationCoverage, valuationCoverageNote } from "@/lib/connections/valuation-coverage.core";
 import { acquireTokenHistoricalCloses, TOKEN_HISTORY_PRICE_SOURCE } from "@/lib/prices/token-history-prices";
 import { fetchCoinGeckoTokenDailyClosesUsd, TOKEN_HISTORICAL_PRICE_SEAM } from "@/lib/prices/providers/coingecko";
@@ -673,7 +673,7 @@ async function main(): Promise<void> {
     check("F2 rule: never held (no positive balance) ⇒ NEVER_HELD, whatever its prices", V(null, null) === "NEVER_HELD" && V(null, "2025-01-01") === "NEVER_HELD");
     check("F4 rule: held ONLY before the price window ⇒ NOT_VALUED_YET (any close is not enough)", V(HELD, "2025-10-28") === "NOT_VALUED_YET");
     check("F4 rule: closes begin inside its held period ⇒ VALUED_FROM_LATER (limiting, as native)", V({ fromISO: "2025-01-10", toISO: null }, "2025-10-28") === "VALUED_FROM_LATER"
-      && tokenValuationLimits("VALUED_FROM_LATER") && tokenValuationLimits("NOT_VALUED_YET") && !tokenValuationLimits("VALUED") && !tokenValuationLimits("NO_MARKET"));
+      && tokenValuationLimits("VALUED_FROM_LATER") && tokenValuationLimits("NOT_VALUED_YET") && !tokenValuationLimits("VALUED") && tokenValuationLimits("NO_MARKET") && !tokenValuationLimits("EXCLUDED"));
     check("F2/F4 held span: exit = the day before the first zero after the last positive row; still held ⇒ open",
       JSON.stringify(heldSpanFrom("2025-01-10", "2025-03-01", "2025-07-01")) === JSON.stringify({ fromISO: "2025-01-10", toISO: "2025-06-30" })
       && heldSpanFrom("2025-01-10", "2025-03-01", "2025-02-01")?.toISO === null && heldSpanFrom(null, null, "2025-01-01") === null);
@@ -974,7 +974,7 @@ async function main(): Promise<void> {
         t.tokens[0].state === "UNPRICED" && t.tokens[0].valueUsd === null && t.totalUsd === 0);
       check(`RULING 2 (${label}): that day's valuation is INCOMPLETE (the crypto component is refused, as native)`,
         tokenDayMissingRequiredPrice(t.tokens, () => false) === true);
-      check(`RULING 2 (${label}): a NO_MARKET token is disclosed, never blocking`, tokenDayMissingRequiredPrice(t.tokens, () => true) === false);
+      check(`RULING 2 (${label}): only an EXPLICITLY excluded token never blocks`, tokenDayMissingRequiredPrice(t.tokens, () => true) === false);
       const priced = tokensValueOnDay(obs, [...early, { instrumentId: id, dateISO: "2025-10-19", basis: "RAW_CLOSE" as const, priceUsd: 1 }], "2025-10-20");
       check(`RULING 2 (${label}): a price serving the day ⇒ complete, valued`, !tokenDayMissingRequiredPrice(priced.tokens, () => false) && priced.totalUsd === 100);
       const closed = tokensValueOnDay([...obs, { instrumentId: id, dateISO: "2025-10-25", quantity: 0 }], early, "2025-10-26");
@@ -983,14 +983,13 @@ async function main(): Promise<void> {
     check("RULING 2 (native non-regression): a wallet with no tokens is unaffected", tokenDayMissingRequiredPrice([], () => false) === false);
     const regen = read("lib", "snapshots", "regenerate-history.ts");
     check("RULING 2: regeneration refuses the crypto evidence on such a day (never an understated total)",
-      /if \(tokenDayMissingRequiredPrice\(t\.tokens, noMarket\)\) tokenPriceMissing = true;/.test(regen)
+      /if \(tokenDayMissingRequiredPrice\(t\.tokens, excluded\)\) tokenPriceMissing = true;/.test(regen)
       && /if \(!tokenPriceMissing\) \{\s*digitalAssetValue = classifyAccounts\(cryptoDay, ctx, dISO\)\.totalDigitalAssets;\s*hasDigitalAssetEvidence = true;/.test(regen));
     const core = read("lib", "snapshots", "regenerate-history.core.ts");
     check("RULING 2: …which the day core turns into 'unavailable' with the stored value preserved (native's path)",
       /: cryptoMaterial \? "unavailable"/.test(core) && /NO_CRYPTO_EVIDENCE_REASON_CODE/.test(core));
-    check("RULING 2: the materiality rule is ONE function for SPL and ERC-20 (alias metadata, no chain branch)",
-      tokenHasNoMarket({ quote: { outcome: "THIN" } }) && tokenHasNoMarket({ quote: { outcome: "UNLISTED" } }) && !tokenHasNoMarket({ quote: { outcome: "PRICED", pricedAt: "x" } }) && !tokenHasNoMarket(null)
-      && /noMarket: tokenHasNoMarket\(a\.metadata\)/.test(read("lib", "crypto", "token-valuation.ts")));
+    check("RULING 2: the exclusion rule is ONE function for SPL and ERC-20 (alias metadata, no chain branch)",
+      /excluded: tokenValuationExclusion\(a\.metadata\) !== null/.test(read("lib", "crypto", "token-valuation.ts")) && tokenHasNoMarket({ quote: { outcome: "THIN" } }));
 
     // (4) Disclosure: concise, the three statements, for both chains (the loader is chain-agnostic; keys of both kinds).
     for (const key of [SPL_KEY, ERC_KEY]) {
@@ -1016,6 +1015,51 @@ async function main(): Promise<void> {
       /ETH balances are known from Jan 1, 2017, but its historical prices start Jan 1, 2018/.test(nn) && !/[Tt]oken/.test(nn), nn);
     check("RULING 6 (native): a native-only wallet's completeness is unchanged",
       walletHistoryComplete({ chain: "BTC", native: nativeDone, tokens: [] }) === true && walletHistoryComplete({ chain: "BTC", native: { ...nativeDone, state: "NOT_RECONSTRUCTED" }, tokens: [] }) === false);
+  }
+
+  // ── 22. OWNER CLARIFICATION 2026-10-30 — "no market price" ≠ spam: only an EXPLICIT classification excludes ──
+  {
+    const LIC2 = { fromISO: "2025-01-10", toISO: "2026-10-27" };
+    const held = { fromISO: "2025-01-10", toISO: null };
+    const SPAM_META = { exclusion: { kind: "SPAM", source: "operator:test", atISO: "2026-10-30T00:00:00Z" } };
+    for (const [label, key] of [["SPL", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"], ["ERC-20", `eip155:1/erc20:${SPAM}`]] as const) {
+      // (a) a legitimate unpriced held token ⇒ the affected dates are incomplete.
+      const id = `${label}-tok`;
+      const obs = [{ instrumentId: id, dateISO: "2025-10-01", quantity: 5 }];
+      const day = tokensValueOnDay(obs, [], "2025-10-02");
+      const meta = new Map<string, unknown>([[id, {}]]);
+      const excl = (m: Map<string, unknown>) => (iid: string) => tokenValuationExclusion(m.get(iid)) !== null;
+      check(`CLARIFY (${label} ${key.slice(0, 6)}): a legitimate unpriced held token ⇒ that date's valuation is incomplete`, tokenDayMissingRequiredPrice(day.tokens, excl(meta)));
+      // (b) NO_MARKET / thin / unlisted are NOT excluded.
+      for (const q of ["UNLISTED", "THIN", "INVALID"]) {
+        const m = new Map<string, unknown>([[id, { quote: { outcome: q, attemptedAt: "x" } }]]);
+        check(`CLARIFY (${label}): a ${q} held token is NOT excluded — its dates stay incomplete, and it is limiting`,
+          tokenDayMissingRequiredPrice(day.tokens, excl(m)) && reconstructedTokenValuation({ licence: LIC2, held, closesFromISO: null }, m.get(id)) === "NO_MARKET" && tokenValuationLimits("NO_MARKET"));
+      }
+      // (c) an EXPLICITLY classified spam token is excluded, still visible, counted apart.
+      const ms = new Map<string, unknown>([[id, SPAM_META]]);
+      check(`CLARIFY (${label}): an explicitly classified spam token is EXCLUDED (never blocks, never limiting)`,
+        !tokenDayMissingRequiredPrice(day.tokens, excl(ms)) && reconstructedTokenValuation({ licence: LIC2, held, closesFromISO: null }, SPAM_META) === "EXCLUDED" && !tokenValuationLimits("EXCLUDED"));
+      check(`CLARIFY (${label}): …but it is still a visible token row (UNPRICED, value null — never $0, never dropped)`, day.tokens.length === 1 && day.tokens[0].state === "UNPRICED" && day.tokens[0].valueUsd === null);
+      // (d) NEVER_HELD is excluded.
+      check(`CLARIFY (${label}): NEVER_HELD (zero throughout) is excluded`, reconstructedTokenValuation({ licence: LIC2, held: null, closesFromISO: null }, {}) === "NEVER_HELD"
+        && !tokenDayMissingRequiredPrice(tokensValueOnDay([{ instrumentId: id, dateISO: "2025-10-01", quantity: 0 }], [], "2025-10-02").tokens, () => false));
+    }
+    check("CLARIFY: an UNATTRIBUTED or unknown-kind 'exclusion' is not a classification (no heuristic, no guess)",
+      tokenValuationExclusion({ exclusion: { kind: "SPAM" } }) === null && tokenValuationExclusion({ exclusion: { kind: "LOOKS_SPAMMY", source: "x" } }) === null && tokenValuationExclusion(null) === null);
+    check("CLARIFY: nothing in the runtime WRITES an exclusion today (only NEVER_HELD is excluded in practice)",
+      !/exclusion\s*:\s*\{/.test(["lib/crypto/wallet-token-capture.ts", "lib/prices/current-quotes.ts", "lib/crypto/erc20-history.store.ts", "lib/crypto/spl-history.store.ts", "lib/crypto/token-instrument.ts"].map((f) => read(...f.split("/"))).join("\n")));
+    // Copy: excluded tokens are counted APART from legitimate unpriced holdings.
+    const cv = deriveValuationCoverage([], new Map(), null, null, { notValuedYet: 1, withoutMarket: 1, excluded: 2 });
+    const note = valuationCoverageNote(cv, "2025-01-01") ?? "";
+    check("CLARIFY: chart copy keeps them distinct — 'lack historical prices' vs 'N tokens excluded as spam'",
+      /Older token holdings exist but lack historical prices \(1 token\)/.test(note) && /without a reliable market price/.test(note) && /2 tokens excluded as spam or non-economic\./.test(note), note);
+    const t = tokenValuationText(1, 0, "2026-10-27", 1, 2) ?? "";
+    check("CLARIFY: History copy counts NO_MARKET with the unpriced holdings and the excluded apart",
+      /lack historical prices \(2 tokens\)/.test(t) && /2 tokens excluded as spam or non-economic\./.test(t), t);
+    // Native non-regression.
+    check("CLARIFY (native): native-only days and notes are unaffected", tokenDayMissingRequiredPrice([], () => false) === false
+      && valuationCoverageNote(deriveValuationCoverage([{ symbol: "BTC", instrumentId: "b", balanceFromISO: "2015-01-01" }], new Map([["b", "2015-01-01"]])), "2015-01-01") === null);
   }
 
   // ── 16. Historical token prices (THE one token price path, #120's) ────────

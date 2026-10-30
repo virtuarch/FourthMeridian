@@ -9,7 +9,7 @@
 import { PositionOrigin, PriceBasis, type Prisma, type PrismaClient } from "@prisma/client";
 import { STALE_AFTER_DAYS } from "@/lib/freshness/observation";
 import { IS_TOKEN_INSTRUMENT, WALLET_TOKEN_POSITION_SOURCE, TOKEN_ALIAS_PROVIDER, parseTokenAssetKey } from "./token-asset";
-import { tokenReadWindow, tokenHasNoMarket, type TokenObservationRow, type TokenPriceRow } from "./token-valuation.core";
+import { tokenReadWindow, tokenValuationExclusion, type TokenObservationRow, type TokenPriceRow } from "./token-valuation.core";
 import { classifyAccounts } from "@/lib/account-classifier";
 import type { ConversionContext } from "@/lib/money/types";
 import { loadInstrumentCoverage, licensedInterval } from "./position-coverage";
@@ -29,8 +29,8 @@ export interface TokenDayRows {
   /** USD RAW_CLOSE / INTRADAY prices for those instruments. */
   prices: TokenPriceRow[];
   /** Identity per token instrument, from its alias (rows without a token alias are dropped). */
-  /** `noMarket` — the vendor said (when last asked) unlisted or thin: never valued, never blocking (token-valuation.core tokenHasNoMarket). */
-  identity: Map<string, { assetKey: string; contract: string; symbol: string | null; noMarket?: boolean }>;
+  /** `excluded` — an EXPLICIT classification (token-valuation.core tokenValuationExclusion): never valued, never blocking. */
+  identity: Map<string, { assetKey: string; contract: string; symbol: string | null; excluded?: boolean }>;
 }
 
 /** Rows sufficient to value every day in [fromISO, toISO] for these accounts. */
@@ -41,7 +41,7 @@ export async function loadTokenDayRows(
   toISO: string,
 ): Promise<TokenDayRows> {
   const observationsByAccount = new Map<string, TokenObservationRow[]>();
-  const identity = new Map<string, { assetKey: string; contract: string; symbol: string | null; noMarket?: boolean }>();
+  const identity = new Map<string, { assetKey: string; contract: string; symbol: string | null; excluded?: boolean }>();
   if (accountIds.length === 0) return { observationsByAccount, prices: [], identity };
   const w = tokenReadWindow(fromISO, toISO, STALE_AFTER_DAYS);
   const obs = await client.positionObservation.findMany({
@@ -75,7 +75,7 @@ export async function loadTokenDayRows(
     const parsed = parseTokenAssetKey(a.externalId);
     if (!parsed) continue;
     const sym = (a.metadata as { symbol?: unknown } | null)?.symbol;
-    identity.set(a.instrumentId, { assetKey: a.externalId, contract: parsed.contract, symbol: typeof sym === "string" ? sym : null, noMarket: tokenHasNoMarket(a.metadata) });
+    identity.set(a.instrumentId, { assetKey: a.externalId, contract: parsed.contract, symbol: typeof sym === "string" ? sym : null, excluded: tokenValuationExclusion(a.metadata) !== null });
   }
   // Only rows of a TOKEN identity, and only inside their own licence.
   const tokenDerived = derived.filter((d) => identity.has(d.instrumentId));

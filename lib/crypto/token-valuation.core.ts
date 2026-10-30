@@ -147,7 +147,10 @@ export function tokenReadWindow(fromISO: string, toISO: string, staleAfterDays: 
  *                     there. The native rule (a later price floor ⇒ limited):
  *                     disclosed as `tokenPricesFromISO`, and LIMITING (F4);
  *   NO_MARKET         none of its held days priced, and the vendor said (when
- *                     last asked): not listed, or thin — never valued;
+ *                     last asked): not listed, or thin — a LEGITIMATE unpriced
+ *                     holding (owner clarification): disclosed and limiting;
+ *   EXCLUDED          explicitly classified (tokenValuationExclusion) — never
+ *                     valued, never limiting, visible and counted separately;
  *   NOT_VALUED_YET    none of its held days priced, for any other reason —
  *                     never quoted (sold before capture began), closes not yet
  *                     acquired, or closes that begin only AFTER it was last held
@@ -157,7 +160,7 @@ export function tokenReadWindow(fromISO: string, toISO: string, staleAfterDays: 
  * Inputs are read loosely (alias metadata: `quote`, `priceHistory`). A missing
  * price is never $0.
  */
-export type ReconstructedTokenValuation = "NEVER_HELD" | "VALUED" | "VALUED_FROM_LATER" | "VALUED_UNTIL_EARLIER" | "NO_MARKET" | "NOT_VALUED_YET";
+export type ReconstructedTokenValuation = "NEVER_HELD" | "EXCLUDED" | "VALUED" | "VALUED_FROM_LATER" | "VALUED_UNTIL_EARLIER" | "NO_MARKET" | "NOT_VALUED_YET";
 
 /** Closes may trail the last held day by this much (a daily tail not yet fetched; the day rule's d−1 fallback). */
 export const CLOSES_END_TOLERANCE_DAYS = 3;
@@ -174,6 +177,8 @@ export interface ReconstructedTokenFacts {
 
 export function reconstructedTokenValuation(f: ReconstructedTokenFacts, aliasMetadata: unknown): ReconstructedTokenValuation {
   if (!f.held) return "NEVER_HELD";
+  // Owner clarification 2026-10-30 — only an EXPLICIT classification excludes a held token.
+  if (tokenValuationExclusion(aliasMetadata)) return "EXCLUDED";
   const heldFrom = f.held.fromISO > f.licence.fromISO ? f.held.fromISO : f.licence.fromISO;
   const heldTo = f.held.toISO === null || f.held.toISO > f.licence.toISO ? f.licence.toISO : f.held.toISO;
   if (heldFrom > heldTo) return "NEVER_HELD"; // held only outside the licence: no licensed day to value
@@ -190,10 +195,11 @@ export function reconstructedTokenValuation(f: ReconstructedTokenFacts, aliasMet
 }
 
 /**
- * THE materiality rule for an unpriced token (owner ruling 2026-10-30): the
- * vendor said — when last asked — it does not list the token, or lists it below
- * the liquidity floor (thin). Such a token is disclosed, never valued and never
- * BLOCKING. Any other unpriced held token is a REQUIRED price that is missing.
+ * The vendor said — when last asked — it does not list the token, or lists it
+ * below the liquidity floor (thin). A DESCRIPTION of why it is unpriced, used
+ * for copy only. Owner clarification 2026-10-30: "no market price" does NOT
+ * mean spam or worthless — such a held token is a legitimate unpriced holding
+ * and its days are NOT complete valuations. It never excludes on its own.
  */
 export function tokenHasNoMarket(aliasMetadata: unknown): boolean {
   const m = (aliasMetadata && typeof aliasMetadata === "object" ? aliasMetadata : {}) as {
@@ -206,6 +212,24 @@ export function tokenHasNoMarket(aliasMetadata: unknown): boolean {
 }
 
 /**
+ * OWNER CLARIFICATION 2026-10-30 — the ONLY way a HELD token leaves valuation
+ * completeness: an EXPLICIT, defensible classification recorded on its alias
+ * (`metadata.exclusion = { kind: "SPAM" | "NON_ECONOMIC" | "EXCLUDED", source, atISO }`)
+ * by a provider flag, a denylist, or an operator/user decision. NO heuristic
+ * lives here, and nothing in the codebase WRITES this field today (no captured
+ * provider spam flag, no denylist, no user exclusion exists) — so in practice
+ * only NEVER_HELD tokens are excluded. An excluded token stays visible and is
+ * counted separately ("N tokens excluded as spam"), never mixed with
+ * legitimate unpriced holdings.
+ */
+export type TokenExclusionKind = "SPAM" | "NON_ECONOMIC" | "EXCLUDED";
+export function tokenValuationExclusion(aliasMetadata: unknown): { kind: TokenExclusionKind; source: string } | null {
+  const e = (aliasMetadata as { exclusion?: { kind?: unknown; source?: unknown } } | null)?.exclusion;
+  if (!e || typeof e.source !== "string" || !e.source.trim()) return null; // unattributed ⇒ not a classification
+  return e.kind === "SPAM" || e.kind === "NON_ECONOMIC" || e.kind === "EXCLUDED" ? { kind: e.kind, source: e.source } : null;
+}
+
+/**
  * OWNER RULING 2026-10-30 — the DAY rule for tokens, matching native's
  * all-or-nothing crypto valuation: a day on which a HELD token (fresh quantity
  * > 0) that has a market lacks a price serving that day (UNPRICED — only a row
@@ -213,17 +237,19 @@ export function tokenHasNoMarket(aliasMetadata: unknown): boolean {
  * a complete valuation day. Regeneration then refuses the day's crypto
  * component exactly as it does for an unpriced native asset (verdict
  * "unavailable"; the stored value preserved, never an understated total, never
- * $0). NO_MARKET and closed (0) tokens never block; a STALE quantity is a
- * quantity question, not a price one, and keeps its existing treatment.
+ * $0). Only an EXPLICITLY excluded token (tokenValuationExclusion) and a
+ * closed (0) token never block — NO_MARKET / thin / unlisted DO block (owner
+ * clarification 2026-10-30). A STALE quantity is a quantity question, not a
+ * price one, and keeps its existing treatment.
  */
 export function tokenDayMissingRequiredPrice(
   tokens: ReadonlyArray<Pick<TokenDayValue, "instrumentId" | "state">>,
-  noMarket: (instrumentId: string) => boolean,
+  excluded: (instrumentId: string) => boolean,
 ): boolean {
-  return tokens.some((t) => t.state === "UNPRICED" && !noMarket(t.instrumentId));
+  return tokens.some((t) => t.state === "UNPRICED" && !excluded(t.instrumentId));
 }
 
 /** Does this state keep the wallet's history from reading complete? */
 export function tokenValuationLimits(v: ReconstructedTokenValuation): boolean {
-  return v === "NOT_VALUED_YET" || v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER";
+  return v === "NOT_VALUED_YET" || v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER" || v === "NO_MARKET";
 }
