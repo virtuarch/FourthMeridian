@@ -16,7 +16,8 @@
  *     jump within the row — so 168 cells never mean 168 tab presses;
  *   - `onSelect` (optional) turns Enter/click into a drill-down.
  *
- * Accessibility: role="grid" with an aria-label summary; each cell carries its
+ * Accessibility: role="grid" > role="row" (each row a CSS grid on one shared
+ * column template) > role="gridcell"; the column axis sits outside the grid. Each cell carries its
  * own aria-label (the readout text); the legend names every state, so the
  * hatch/dash/ramp never carry meaning by colour alone.
  */
@@ -52,11 +53,19 @@ export function HeatGrid({
   const { rows, cols, cells } = layout;
   const max = domainMax ?? maxValue(cells);
   const [active, setActive] = useState<{ r: number; c: number } | null>(null);
-  const [focus, setFocus] = useState<{ r: number; c: number }>({ r: 0, c: 0 });
+  const [focusState, setFocus] = useState<{ r: number; c: number } | null>(null);
 
   if (rows.length === 0 || cols.length === 0) return null;
 
-  const usable = (r: number, c: number) => cells[r]?.[c] && cells[r][c].kind !== "blank";
+  const usable = (r: number, c: number) => cells[r]?.[c] !== undefined && cells[r][c].kind !== "blank";
+  // The roving tab stop: the last focused cell while it still exists in THIS
+  // layout (a period change can shrink the grid), else the first usable cell —
+  // never a blank padding cell, never an index past the edge.
+  const firstUsable = (() => {
+    for (let c = 0; c < cols.length; c++) for (let r = 0; r < rows.length; r++) if (usable(r, c)) return { r, c };
+    return { r: 0, c: 0 };
+  })();
+  const focus = focusState && focusState.r < rows.length && focusState.c < cols.length ? focusState : firstUsable;
   const readout = active && usable(active.r, active.c) ? describe(active.r, active.c, cells[active.r][active.c]) : hint;
 
   function move(e: KeyboardEvent<HTMLDivElement>) {
@@ -79,9 +88,11 @@ export function HeatGrid({
   return (
     <div className="min-w-0 overflow-hidden p-0.5" data-heat-grid>
       <div role="grid" aria-label={ariaLabel} aria-rowcount={rows.length} aria-colcount={cols.length} onKeyDown={move}
-        onPointerLeave={() => setActive(null)} className="grid min-w-0 gap-[2px]" style={{ gridTemplateColumns: template }}>
+        onPointerLeave={() => setActive(null)} className="flex min-w-0 flex-col gap-[2px]">
         {rows.map((row, r) => (
-          <div role="row" key={row.key} className="contents">
+          // Each row is its own grid on the shared column template (no display:contents,
+          // which some engines drop from the accessibility tree).
+          <div role="row" key={row.key} className="grid min-w-0 gap-[2px]" style={{ gridTemplateColumns: template }}>
             <span role="rowheader" className="truncate pr-1.5 text-right text-[10px] leading-none text-[var(--text-muted)] tabular-nums"
               style={{ height: rowHeight, lineHeight: `${rowHeight}px` }} title={row.label}>
               {row.shown === false ? "" : row.label}
@@ -118,14 +129,18 @@ export function HeatGrid({
             })}
           </div>
         ))}
-        <span aria-hidden />
+      </div>
+      {/* The column axis sits OUTSIDE the grid role (valid grid structure); each
+          cell's aria-label already names its column. */}
+      <div aria-hidden className="grid min-w-0 gap-[2px]" style={{ gridTemplateColumns: template }} data-heat-axis>
+        <span />
         {cols.map((col) => (
-          <span key={col.key} aria-hidden className="overflow-visible whitespace-nowrap pt-1 text-[10px] leading-none text-[var(--text-muted)] tabular-nums">
+          <span key={col.key} className="overflow-visible whitespace-nowrap pt-1 text-[10px] leading-none text-[var(--text-muted)] tabular-nums">
             {col.shown === false ? "" : col.label}
           </span>
         ))}
       </div>
-      <p className="mt-2 min-h-[1.25rem] truncate text-[11px] text-[var(--text-secondary)] tabular-nums" aria-live="polite" data-heat-readout>
+      <p className="mt-2 min-h-[1.25rem] text-[11px] leading-snug text-[var(--text-secondary)] tabular-nums" aria-live="polite" data-heat-readout>
         {readout}
       </p>
       <HeatLegend low={legend.low} high={legend.high} cells={cells} />

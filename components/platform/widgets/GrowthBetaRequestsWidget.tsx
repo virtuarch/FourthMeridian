@@ -28,6 +28,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Check, X, Send, Ban, Loader2, ShieldAlert, UserPlus, Rocket, Search, ArrowUpDown, ChevronRight, Settings2 } from "lucide-react";
 import { Block, Surface } from "@/components/atlas/Surface";
 import {
+  UtcStamp,
   WidgetMessage,
   timeAgo,
   type PlatformSection,
@@ -119,6 +120,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   // PLATFORM SPACES 2.0 — the list's own view state (client-side over the rows the route returns).
   const [tab, setTab]                                   = useState<"pending" | "invited">("pending");
   const [query, setQuery]                               = useState("");
+  // Waiting is first-in-first-out (oldest first); Invited reads newest first, as the route orders it.
   const [sort, setSort]                                 = useState<"newest" | "oldest">("oldest");
   const [showAll, setShowAll]                           = useState(false);
   const [settingsOpen, setSettingsOpen]                 = useState(false);
@@ -216,6 +218,10 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
     .filter((r) => !q || r.email.toLowerCase().includes(q))
     .sort((a, b) => byTime(a.invitedAt, b.invitedAt));
   const rowsShown = tab === "pending" ? pendingRows.length : invitationRows.length;
+  // The route returns at most 100 rows per list — say so when the count is larger (search covers those rows only).
+  const loadedRows = tab === "pending" ? reqs?.pending.length ?? 0 : reqs?.invitations.length ?? 0;
+  const totalRows = tab === "pending" ? reqs?.counts.pending ?? 0 : reqs?.counts.approved ?? 0;
+  const truncated = totalRows > loadedRows ? `showing ${loadedRows} of ${totalRows} (${tab === "pending" ? "oldest" : "newest"} first)` : null;
   const limit = showAll ? Infinity : LIST_ROWS;
   const TH = "px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]";
   const TD = "px-2 py-2.5 align-middle";
@@ -361,8 +367,8 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
             {/* ── Toolbar: status tabs · search · sort ─────────────────────── */}
             <div className="flex flex-wrap items-center gap-2" data-beta-toolbar>
               <span role="tablist" aria-label="Request status" className="inline-flex items-center rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-0.5">
-                {([["pending", "Waiting", reqs.counts.pending], ["invited", "Invited", reqs.invitations.length]] as const).map(([id, label, count]) => (
-                  <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => { setTab(id); setShowAll(false); }}
+                {([["pending", "Waiting", reqs.counts.pending], ["invited", "Invited", reqs.counts.approved]] as const).map(([id, label, count]) => (
+                  <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => { setTab(id); setShowAll(false); setSort(id === "pending" ? "oldest" : "newest"); }}
                     className={`min-h-11 rounded-[var(--radius-xs)] px-2.5 text-[11px] font-medium tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-7 ${
                       tab === id ? "bg-[var(--surface-raised,rgba(255,255,255,.06))] text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}>
                     {label} <span className="text-[var(--text-muted)]">{count}</span>
@@ -469,7 +475,11 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
 
             {/* ── Footer: show all · the decided counts (not rows) ─────────── */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-hairline)] pt-2 text-[11px] text-[var(--text-muted)] tabular-nums">
-              <span>{`${reqs.counts.redeemed} joined · ${reqs.counts.denied} declined${loadedAt ? ` · read ${timeAgo(loadedAt)} ago` : ""}`}</span>
+              <span className="flex flex-wrap items-center gap-x-2">
+                <span>{`${reqs.counts.redeemed} joined · ${reqs.counts.denied} declined or revoked`}</span>
+                {truncated && <span data-list-truncated>{truncated}</span>}
+                <LoadedStamp checkedAt={loadedAt} />
+              </span>
               {rowsShown > LIST_ROWS && (
                 <button type="button" onClick={() => setShowAll((v) => !v)} className="inline-flex min-h-11 items-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:min-h-8">
                   {showAll ? "Show fewer" : `Show all ${rowsShown}`}
@@ -484,6 +494,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                 <PanelHeader eyebrow="Beta request" title={selectedRequest.email} />
                 <PanelContent>
                   <div className="flex flex-col gap-3 text-xs">
+                    {error && <ActionError message={error} />}
                     <Row label="Requested" value={`${timeAgo(selectedRequest.createdAt)} ago`} />
                     {selectedRequest.requestCount > 1 && (
                       <Row label="Submissions" value={`${selectedRequest.requestCount}× · last ${selectedRequest.lastRequestedAt ? `${timeAgo(selectedRequest.lastRequestedAt)} ago` : "—"}`} />
@@ -530,6 +541,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                 <PanelHeader eyebrow="Invitation" title={selectedInvitation.email} />
                 <PanelContent>
                   <div className="flex flex-col gap-3 text-xs">
+                    {error && <ActionError message={error} />}
                     <Row label="Invited" value={selectedInvitation.invitedAt ? `${timeAgo(selectedInvitation.invitedAt)} ago` : "—"} />
                     <Row label="Expires" value={selectedInvitation.inviteExpiresAt
                       ? (selectedInvitation.expired ? `expired ${timeAgo(selectedInvitation.inviteExpiresAt)} ago` : until(selectedInvitation.inviteExpiresAt))
@@ -570,7 +582,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
             <ConfirmDialog
               icon={ShieldAlert}
               title={`Change signup mode to ${MODE_META[pendingMode].label}?`}
-              message={<>{MODE_META[pendingMode].detail}<OperatorReasonField value={reason} onChange={setReason} disabled={acting === "mode"} /></>}
+              message={<>{MODE_META[pendingMode].detail}{error && <ActionError message={error} />}<OperatorReasonField value={reason} onChange={setReason} disabled={acting === "mode"} /></>}
               confirmLabel="Change mode"
               confirmTone={pendingMode === "open" ? "danger" : "meridian"}
               busy={acting === "mode"}
@@ -583,7 +595,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
             <ConfirmDialog
               icon={Rocket}
               title={`Set product status to ${PRODUCT_STATUSES.find((s) => s.value === pendingStatus)?.label}?`}
-              message={<>This is framing only — it does not change who can sign up (that&apos;s the beta mode).<OperatorReasonField value={reason} onChange={setReason} disabled={acting === "status"} /></>}
+              message={<>This is framing only — it does not change who can sign up (that&apos;s the beta mode).{error && <ActionError message={error} />}<OperatorReasonField value={reason} onChange={setReason} disabled={acting === "status"} /></>}
               confirmLabel="Update status"
               confirmTone="meridian"
               busy={acting === "status"}
@@ -596,7 +608,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
             <ConfirmDialog
               icon={Ban}
               title="Revoke this invitation?"
-              message={<>The single-use token will be invalidated and can no longer be redeemed. No users or existing access are removed.<OperatorReasonField value={reason} onChange={setReason} disabled={acting === revokeId} /></>}
+              message={<>The single-use token will be invalidated and can no longer be redeemed. No users or existing access are removed.{error && <ActionError message={error} />}<OperatorReasonField value={reason} onChange={setReason} disabled={acting === revokeId} /></>}
               confirmLabel="Revoke invitation"
               busy={acting === revokeId}
               confirmDisabled={reasonPayload(reason) === null}
@@ -619,4 +631,14 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="text-[var(--text-primary)]">{value}</span>
     </div>
   );
+}
+
+/** A failed action, shown WHERE the operator is looking (inside the open panel or confirm), never only behind it. */
+function ActionError({ message }: { message: string }) {
+  return <p role="alert" className="my-2 text-[11px] text-[var(--accent-negative)]" data-action-error>{message}</p>;
+}
+
+/** UI-009 — when the list was last read, in UTC (every refetch moves it). */
+function LoadedStamp({ checkedAt }: { checkedAt: string | null }) {
+  return <UtcStamp iso={checkedAt} label="Read" />;
 }

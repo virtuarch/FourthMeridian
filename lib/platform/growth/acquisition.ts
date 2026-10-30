@@ -42,14 +42,14 @@ export async function loadAcquisitionFacts(client: AcquisitionDb, now: Date, win
        WHERE "receivedAt" >= ${since}
        ORDER BY "receivedAt" ASC
        LIMIT ${ACQUISITION_ROW_CAP}`,
-    client.betaAccessRequest.findMany({ select: { status: true, inviteExpiresAt: true } }),
+    client.betaAccessRequest.findMany({ select: { status: true, inviteExpiresAt: true, invitedAt: true } }),
     client.auditLog.findMany({
       where: { action: AuditAction.LOGIN, createdAt: { gte: since } },
       select: { createdAt: true }, take: ACQUISITION_ROW_CAP,
     }),
     client.aiInvocation.findMany({
       where: { surface: "chat", userId: { not: null }, occurredAt: { gte: since } },
-      select: { correlationId: true, turnIndex: true, occurredAt: true, id: true }, take: ACQUISITION_ROW_CAP,
+      select: { correlationId: true, turnIndex: true, occurredAt: true, userId: true }, take: ACQUISITION_ROW_CAP,
     }),
     loadFunnelFacts(client),
     loadActivityFacts(client, cohortSince),
@@ -68,10 +68,11 @@ export async function loadAcquisitionFacts(client: AcquisitionDb, now: Date, win
         receivedAt: r.at,
         source: boundAcquisitionSource(r.source),
       })),
-      waitlist: waitlist.map((w) => ({ status: String(w.status), inviteExpiresAt: w.inviteExpiresAt })),
+      waitlist: waitlist.map((w) => ({ status: String(w.status), inviteExpiresAt: w.inviteExpiresAt, invitedAt: w.invitedAt })),
       logins: logins.map((l) => l.createdAt),
       chatTurns: chat.map((c) => ({
-        key: c.correlationId && c.turnIndex !== null ? `${c.correlationId}#${c.turnIndex}` : c.id,
+        // The product analytics' own turn key (product-analytics-core turnKey), so both pages count a turn alike.
+        key: c.correlationId && c.turnIndex !== null ? `${c.correlationId}#${c.turnIndex}` : `${c.userId}|${dayOf(c.occurredAt)}|${c.occurredAt.toISOString()}`,
         at: c.occurredAt,
       })),
       funnel,

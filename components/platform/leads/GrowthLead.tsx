@@ -42,7 +42,7 @@ import { HeatGrid } from "../charts/HeatGrid";
 import { FunnelBars } from "../charts/FunnelBars";
 import { calendarLayout, cohortLayout, weekHourLayout } from "../charts/heatmap-model";
 import {
-  BETA_LIST_KEY, GROWTH_COLORS, GROWTH_DRAWERS, RETENTION_COLS, TIME_OF_WEEK_MIN_EVENTS, activeBars, adoptionItems,
+  BETA_LIST_KEY, GROWTH_COLORS, GROWTH_DRAWERS, ONBOARDING_SHORT, RETENTION_COLS, TIME_OF_WEEK_MIN_EVENTS, activeBars, adoptionItems,
   cohortCellText, cohortHasHistory, countBars, describeCalendarCell, describeCohortCell, describeWeekHourCell, funnelStages,
   growthHero, seriesCaption, sourceItems, waitlistItems, type GrowthDrawer, type GrowthWindow,
 } from "./growth-model";
@@ -116,7 +116,7 @@ function TimeOfWeekCard({ acq }: { acq: Fetched<AcquisitionResponse> }) {
       action={<Segmented label="Activity" value={series} onChange={setSeries} options={[{ id: "signIns", label: "Sign-ins" }, { id: "chat", label: "AI chat" }]} />}>
       <Surface className="flex-1 p-4 sm:p-5">
         {!a ? <Loading f={acq} what="activity" /> : total < TIME_OF_WEEK_MIN_EVENTS ? (
-          <ChartMessage>{`Only ${n(total)} ${noun}s in ${a.windowDays} days — too few to show a weekly pattern`}</ChartMessage>
+          <ChartMessage>{`Only ${n(total)} ${total === 1 ? noun : `${noun}s`} in ${a.windowDays} days — too few to show a weekly pattern`}</ChartMessage>
         ) : (
           <>
             <HeatGrid layout={layout} rowHeight={14} labelWidth={30}
@@ -154,7 +154,7 @@ export function GrowthLeadSurface(p: GrowthLeadSurfaceProps) {
   const only = (g: Group) => (group === g ? "" : "max-lg:hidden");
 
   const cal = a ? calendarLayout(a.requests.perDay) : null;
-  const onboarding = a ? cohortLayout(a.onboarding.rows, a.onboarding.stages.map((s) => ({ key: s.key, label: s.label, shown: true }))) : null;
+  const onboarding = a ? cohortLayout(a.onboarding.rows, a.onboarding.stages.map((s) => ({ key: s.key, label: ONBOARDING_SHORT[s.key] ?? s.label, shown: true }))) : null;
   const retention = a ? cohortLayout(a.retention.rows, RETENTION_COLS) : null;
   const waitlist = a ? waitlistItems(a) : [];
   const waitlistTotal = waitlist.reduce((s, i) => s + i.value, 0);

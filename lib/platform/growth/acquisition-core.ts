@@ -51,7 +51,7 @@ export const ONBOARDING_STAGES: readonly OnboardingStageKey[] = [
 ];
 
 export interface RequestEventFact { requesterKey: string; receivedAt: Date; source: AcquisitionSource | null }
-export interface WaitlistFact { status: string; inviteExpiresAt: Date | null }
+export interface WaitlistFact { status: string; inviteExpiresAt: Date | null; invitedAt: Date | null }
 export interface ChatTurnFact { key: string; at: Date }
 
 export type CohortFunnelFacts = Pick<ProductAnalyticsFacts,
@@ -142,14 +142,15 @@ export function buildAcquisition(facts: AcquisitionFacts, now: Date, windowDays:
   const registrationDays = perDay(days, from, facts.funnel.users.map((u) => dayOf(u.createdAt)));
 
   // ── Waitlist (current state) ───────────────────────────────────────────────
-  const waitlist = { pending: 0, invited: 0, invitedExpired: 0, redeemed: 0, declined: 0 };
+  const waitlist = { pending: 0, invited: 0, invitedExpired: 0, redeemed: 0, declined: 0, revoked: 0 };
   for (const w of facts.waitlist) {
     if (w.status === "PENDING") waitlist.pending++;
     else if (w.status === "APPROVED") {
       if (w.inviteExpiresAt && w.inviteExpiresAt.getTime() < now.getTime()) waitlist.invitedExpired++;
       else waitlist.invited++;
     } else if (w.status === "REDEEMED") waitlist.redeemed++;
-    else if (w.status === "DENIED") waitlist.declined++;
+    // A revoked invitation is stored as DENIED with its invitedAt kept (growth.ts lifecycle).
+    else if (w.status === "DENIED") { if (w.invitedAt) waitlist.revoked++; else waitlist.declined++; }
   }
 
   // ── Time of week (UTC) ─────────────────────────────────────────────────────
@@ -248,7 +249,7 @@ export function buildAcquisition(facts: AcquisitionFacts, now: Date, windowDays:
     checkedAt: now.toISOString(),
     windowDays, from, to: today,
     coverage,
-    requests: { perDay: requestDays, total: observedTotal(requestDays) },
+    requests: { perDay: requestDays, total: firstByRequester.size },
     registrations: { perDay: registrationDays, total: observedTotal(registrationDays) },
     waitlist,
     sources,

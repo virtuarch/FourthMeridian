@@ -60,7 +60,7 @@ export function growthKpis(acq: Fetched<AcquisitionResponse>, pa: Fetched<Produc
       sub: a ? `${n(a.waitlist.invited)} invited · ${n(a.waitlist.invitedExpired)} expired` : reason(acq, "waitlist"),
       tone: a && a.waitlist.pending > 0 ? "warn" : undefined },
     { key: "engaged", label: "Engaged · 30 d", value: p ? n(p.active.monthly.engaged) : "—",
-      sub: p ? `of ${n(p.registrations.total - p.registrations.deactivated)} active accounts` : reason(pa, "activity") },
+      sub: p ? `of ${n(p.registrations.total - p.registrations.deactivated)} open accounts` : reason(pa, "activity") },
   ];
 }
 
@@ -108,6 +108,7 @@ export function waitlistItems(a: AcquisitionResponse): BreakdownItem[] {
     { id: "invited", label: "Invited", value: w.invited, color: GROWTH_COLORS.primary },
     { id: "expired", label: "Invite expired", value: w.invitedExpired, color: "var(--coral-400)" },
     { id: "redeemed", label: "Joined", value: w.redeemed, color: "var(--accent-positive)" },
+    { id: "revoked", label: "Invite revoked", value: w.revoked, color: GROWTH_COLORS.secondary },
     { id: "declined", label: "Declined", value: w.declined, color: GROWTH_COLORS.muted },
   ].filter((i) => i.value > 0);
 }
@@ -158,6 +159,11 @@ export function describeCohortCell(row: CohortRow, colLabel: string, cell: HeatC
 
 export const cohortCellText = (cell: HeatCell): string | null =>
   cell.kind === "value" && cell.num !== undefined && cell.den ? pct(cell.num, cell.den) : cell.kind === "zero" ? "0%" : null;
+
+/** Column labels short enough for a 390 px grid; the readout names the full stage. */
+export const ONBOARDING_SHORT: Readonly<Record<string, string>> = {
+  verified: "Verified", firstSession: "Session", firstConnection: "Connected", firstAiTurn: "AI", firstBriefViewed: "Brief",
+};
 
 export const RETENTION_COLS: HeatAxis[] = Array.from({ length: 8 }, (_, k) => ({ key: `w${k}`, label: `W${k}`, shown: true }));
 

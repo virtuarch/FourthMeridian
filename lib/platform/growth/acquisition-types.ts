@@ -50,12 +50,12 @@ export interface AcquisitionResponse {
   requests: {
     /** Distinct requesting emails per UTC day (a resubmission the same day counts once). */
     perDay: AcquisitionDay[];
-    /** Σ perDay over observed days. */
+    /** Distinct requesters across the whole window (a requester on 3 days counts once). */
     total: number;
   };
   registrations: { perDay: AcquisitionDay[]; total: number };
   /** The waitlist as it stands now (current state; status is overwritten in place). */
-  waitlist: { pending: number; invited: number; invitedExpired: number; redeemed: number; declined: number };
+  waitlist: { pending: number; invited: number; invitedExpired: number; redeemed: number; declined: number; revoked: number };
   /** Where requesters in the window came from (first submission's allowlisted source). */
   sources: { label: string; count: number }[];
   /** Requesters in the window whose submission carried no source. */

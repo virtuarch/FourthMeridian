@@ -58,7 +58,7 @@ console.log("2. requests — distinct requester per day; first in-window source"
   const day = (d: string) => r.requests.perDay.find((x) => x.day === d)?.count;
   check("a same-day resubmission counts once", day("2026-11-10") === 2);
   check("a later-day resubmission counts on its day", day("2026-11-12") === 1);
-  check("total sums the observed days", r.requests.total === 5);
+  check("total is distinct requesters across the window (a on two days counts once)", r.requests.total === 4);
   check("sources rank by requesters; first submission decides", JSON.stringify(r.sources) === JSON.stringify([{ label: "newsletter", count: 2 }, { label: "news.example", count: 1 }]), r.sources);
   check("a requester with no source is counted as unrecorded", r.sourcesUnrecorded === 1);
 }
@@ -67,14 +67,15 @@ console.log("3. waitlist — current state, expired invitations split out");
 {
   const r = buildAcquisition(facts({
     waitlist: [
-      { status: "PENDING", inviteExpiresAt: null },
-      { status: "APPROVED", inviteExpiresAt: at("2026-11-25T00:00:00Z") },
-      { status: "APPROVED", inviteExpiresAt: at("2026-11-01T00:00:00Z") },
-      { status: "REDEEMED", inviteExpiresAt: null },
-      { status: "DENIED", inviteExpiresAt: null },
+      { status: "PENDING", inviteExpiresAt: null, invitedAt: null },
+      { status: "APPROVED", inviteExpiresAt: at("2026-11-25T00:00:00Z"), invitedAt: at("2026-11-11T00:00:00Z") },
+      { status: "APPROVED", inviteExpiresAt: at("2026-11-01T00:00:00Z"), invitedAt: at("2026-10-18T00:00:00Z") },
+      { status: "REDEEMED", inviteExpiresAt: null, invitedAt: at("2026-10-01T00:00:00Z") },
+      { status: "DENIED", inviteExpiresAt: null, invitedAt: null },
+      { status: "DENIED", inviteExpiresAt: null, invitedAt: at("2026-10-02T00:00:00Z") },
     ],
   }), NOW, 30);
-  check("counts by status", JSON.stringify(r.waitlist) === JSON.stringify({ pending: 1, invited: 1, invitedExpired: 1, redeemed: 1, declined: 1 }), r.waitlist);
+  check("counts by status; a revoked invitation (DENIED with invitedAt) is not a decline", JSON.stringify(r.waitlist) === JSON.stringify({ pending: 1, invited: 1, invitedExpired: 1, redeemed: 1, declined: 1, revoked: 1 }), r.waitlist);
 }
 
 console.log("4. time of week — Monday = row 0, UTC hours, one cell per chat turn");

@@ -32,7 +32,7 @@ const ACQ: AcquisitionResponse = {
   coverage: { requestsFrom: "2026-10-07", engagementFrom: "2026-10-15", chatFrom: "2026-08-23" },
   requests: { perDay: DAYS.map((day, i) => ({ day, count: i % 3 })), total: 29 },
   registrations: { perDay: DAYS.map((day, i) => ({ day, count: i === 4 ? 2 : 0 })), total: 2 },
-  waitlist: { pending: 3, invited: 1, invitedExpired: 1, redeemed: 8, declined: 0 },
+  waitlist: { pending: 3, invited: 1, invitedExpired: 1, redeemed: 8, declined: 0, revoked: 0 },
   sources: [{ label: "newsletter", count: 4 }], sourcesUnrecorded: 2,
   timeOfWeek: { signIns: grid(1), signInTotal: 168, chatTurns: grid(0), chatTotal: 3 },
   retention: { offsets: 8, rows: [
