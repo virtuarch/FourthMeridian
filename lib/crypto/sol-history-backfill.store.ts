@@ -18,9 +18,9 @@ import {
   type SolBackfillStore, type SolBackfillDeps, type SolBackfillOutcome,
 } from "./sol-history-backfill";
 import { normalizeSolAddress } from "./sol-rpc";
-import { parseSplState } from "./spl-history.core";
+import { parseSplState, nativeWatchIntact } from "./spl-history.core";
 import { runSplTokenHistory, createSplDiscoveryCollector, annotateWithDiscoveries, type SplRunOutcome } from "./spl-history";
-import { prismaSplHistoryStore, splHistoryEnabled } from "./spl-history.store";
+import { prismaSplHistoryStore, splHistoryEnabled, splSyncRequestLimit } from "./spl-history.store";
 
 /** The production store: Connection.cursor + PositionObservation + PositionCoverage. */
 /** The client is the CALLER's authority (never a module default — audit-db-authority). */
@@ -150,11 +150,21 @@ export async function reconstructSolHistoryResumable(
   let freshSource: "NATIVE" | "WALK" = "WALK";
   if (splOn) {
     const before = parseCheckpoint(await bound.store.readCursor(), args.accountId, owner);
-    freshSource = !before || (before.top === null && parseSplState(before.tokens) === null) ? "NATIVE" : "WALK";
+    const beforeState = before ? parseSplState(before.tokens) : null;
+    freshSource = !before || (before.top === null && beforeState === null) ? "NATIVE" : "WALK";
+    // Native moved while unwatched (the flag was off) ⇒ discovery can't vouch
+    // for that stretch: NATIVE falls back to a WALK, a WALK starts over. Done
+    // once, at this run's first native commit — every later commit of the run
+    // is watched by this hook.
+    let demote = !!before && !!beforeState && !nativeWatchIntact(beforeState, before);
     collector = createSplDiscoveryCollector(owner);
     const c = collector;
     deps0.observeTransaction = c.observe;
-    deps0.annotateCheckpoint = (cp) => annotateWithDiscoveries(cp, c.all(), freshSource);
+    deps0.annotateCheckpoint = (cp) => {
+      const out = annotateWithDiscoveries(cp, c.all(), freshSource, { demote });
+      demote = false;
+      return out;
+    };
   }
   const o = await runSolHistoryBackfill({ accountId: args.accountId, address: bound.address, store: bound.store, resume: args.resume }, deps0);
   const native = nativeResult(args, o);
@@ -163,7 +173,9 @@ export async function reconstructSolHistoryResumable(
   // The token step gets what is LEFT of the same run: wall clock and request allowance.
   const budgetMs = deps0.budgetMs ?? (Number(process.env.SOL_HISTORY_RUN_BUDGET_MS) > 0 ? Number(process.env.SOL_HISTORY_RUN_BUDGET_MS) : syncRunBudgetMs());
   const deadlineMs = startMs + budgetMs;
-  const requestBudget = deps0.requestBudget !== undefined ? deps0.requestBudget - (sent() - sentAtStart) : undefined;
+  // The worker passes its allowance; a wallet SYNC passes none — it gets a small
+  // explicit limit, so syncs never spend token-history requests outside the cap.
+  const requestBudget = deps0.requestBudget !== undefined ? deps0.requestBudget - (sent() - sentAtStart) : splSyncRequestLimit();
   if (deadlineMs - now() < 2_000 || (requestBudget !== undefined && requestBudget <= 0)) return native;
   let call;
   try { call = buildRpcCall({ ...deps0, observeTransaction: undefined, annotateCheckpoint: undefined }, deadlineMs); }

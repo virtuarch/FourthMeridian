@@ -72,19 +72,32 @@ export function orderCandidates(
   /** SPL TOKEN HISTORY: also run COMPLETE wallets whose token history is still owed. */
   tokenHistory: boolean = process.env.SPL_HISTORY_ENABLED === "true",
 ): Array<BackfillCandidate & { checkpoint: SolBackfillCheckpoint | null }> {
-  return rows
+  const byProgress = (a: { accountId: string; checkpoint: SolBackfillCheckpoint | null }, b: typeof a) => {
+    const ka = a.checkpoint?.lastProgressAtISO ?? "";
+    const kb = b.checkpoint?.lastProgressAtISO ?? "";
+    return ka.localeCompare(kb) || a.accountId.localeCompare(b.accountId);
+  };
+  const native = rows
     .filter((r) => {
       const s = backfillStatus(r.checkpoint).state;
-      if (s === "COMPLETE" && tokenHistory && r.checkpoint
-        && splWorkOwed(parseSplState(r.checkpoint.tokens), r.checkpoint)) return true;
       if (s === "COMPLETE" || s === "RECOVERY_REQUIRED" || s === "UNAVAILABLE") return false;
       return shouldRunAutomatically(r.checkpoint, nowMs).run;
     })
+    .sort(byProgress);
+  if (!tokenHistory) return native;
+  // Token-only work (native COMPLETE) runs AFTER every native import, under the
+  // same automatic-run gate, and only while the token step is not backed off —
+  // so it can never starve a native backfill, nor retry a stuck wallet every wake.
+  const tokenOnly = rows
+    .filter((r) => backfillStatus(r.checkpoint).state === "COMPLETE" && r.checkpoint
+      && shouldRunAutomatically(r.checkpoint, nowMs).run
+      && splWorkOwed(parseSplState(r.checkpoint.tokens), r.checkpoint, nowMs))
     .sort((a, b) => {
-      const ka = a.checkpoint?.lastProgressAtISO ?? "";
-      const kb = b.checkpoint?.lastProgressAtISO ?? "";
+      const ka = parseSplState(a.checkpoint!.tokens)?.lastRunAtISO ?? "";
+      const kb = parseSplState(b.checkpoint!.tokens)?.lastRunAtISO ?? "";
       return ka.localeCompare(kb) || a.accountId.localeCompare(b.accountId);
     });
+  return [...native, ...tokenOnly];
 }
 
 /** A token bucket: `take()` resolves when a request may be sent. One per run. */

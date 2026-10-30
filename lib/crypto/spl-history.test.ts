@@ -15,7 +15,9 @@ import {
 import {
   parseSplState, mintExtensionVerdict, attributedRaw, stateKey, splWorkOwed, discoverOwnedTokenAccounts,
   tokenPointFromTransaction, mergeDiscovered, freshSplState, MAX_TRACKED_ACCOUNTS, HEAD_MISMATCH_LIMIT,
-  SPL_CONTINUITY_SOURCE, type SplHistoryState,
+  SPL_CONTINUITY_SOURCE, MAX_OVERFLOW_RECORDS, MAX_OVERFLOW_MINTS, MAX_DAYS_PER_ACCOUNT, BACKOFF_AFTER, BACKOFF_MS,
+  decideMint, overflowedMints, inventoryCompleteOf, nativeWatchIntact, needsExtensionCheck, stagedDays, discoveryComplete,
+  type SplHistoryState,
 } from "@/lib/crypto/spl-history.core";
 import {
   runSolHistoryBackfill, buildRpcCall, CheckpointConflictError,
@@ -27,7 +29,8 @@ import { walletHistoryComplete, facetFromCoverage } from "@/lib/crypto/wallet-in
 import { splInventoryCompleteFromCursor } from "@/lib/crypto/spl-history-inventory";
 import { SPL_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@/lib/crypto/token-asset";
 import { tokenHistoryText, tokenUnverifiedReason } from "@/lib/connections/connection-detail.core";
-import { planTokenPriceRequest } from "@/lib/prices/token-history-prices";
+import { planTokenPriceRequest, acquireTokenHistoricalCloses } from "@/lib/prices/token-history-prices";
+import { splSyncRequestLimit } from "@/lib/crypto/spl-history.store";
 import { fetchCoinGeckoTokenDailyClosesUsd, parseMarketChartCloses } from "@/lib/prices/providers/coingecko";
 import type { ChainCoverage } from "@/lib/crypto/chain-movement";
 
@@ -110,7 +113,7 @@ function fixtureRpc(chain: Chain, opts: { mintExtensions?: Record<string, string
     }
     if (method === "getAccountInfo") {
       const ext = opts.mintExtensions?.[params[0] as string] ?? [];
-      return { value: { data: { parsed: { type: "mint", info: { extensions: ext.map((e) => ({ extension: e, state: {} })) } } } } };
+      return { value: { owner: TOKEN_2022_PROGRAM_ID, data: { parsed: { type: "mint", info: { extensions: ext.map((e) => ({ extension: e, state: {} })) } } } } };
     }
     if (method === "getSignaturesForAddress") {
       const addr = params[0] as string;
@@ -134,6 +137,11 @@ function nativeCursor(extra: Partial<SolBackfillCheckpoint> = {}): string {
   const p = { signature: "native1", slot: 1, blockTime: Math.floor(Date.parse("2026-09-01T00:00:00Z") / 1000), dateISO: "2026-09-01", preLamports: "0", postLamports: "5000000" };
   return serializeCheckpoint({ ...emptyCheckpoint("acct_sol", OWNER, "2026-09-01T00:00:00Z"), top: p, bottom: p, reachedBeginning: true,
     licensedFromISO: "2026-09-01", licensedToISO: TODAY, completedAtISO: "2026-09-02T00:00:00Z", mode: "DIRECT", ...extra });
+}
+
+/** A native checkpoint whose token discovery hook has WATCHED every native commit (source NATIVE, intact). */
+function watchedCursor(extra: Partial<SolBackfillCheckpoint> = {}): string {
+  return JSON.stringify(annotateWithDiscoveries(JSON.parse(nativeCursor(extra)), [], "NATIVE"));
 }
 
 interface MemStore extends SplHistoryStore {
@@ -211,7 +219,7 @@ async function main() {
     c.tx("2026-10-06", 9, [OWNER, ata, aux], all(mv(ata, -2_000_000), mv(aux, 2_000_000)));
     c.tx("2026-10-06", 15, [OTHER, aux], mv(aux, 1_250_000));
     c.tx("2026-10-20", 9, [OWNER, ata, OTHER], mv(ata, -500_000));
-    const store = memStore(nativeCursor(), new Set([USDC]));
+    const store = memStore(watchedCursor(), new Set([USDC]));
     const { o, meter } = await runOnce(c, store, { freshSource: "NATIVE" });
     const cov = store.coverage.get(USDC);
     check("USDC is COMPLETE from its first account's creation day", cov?.kind === "COMPLETE" && cov.fromISO === "2026-10-02" && cov.toISO === TODAY && cov.source === SPL_CONTINUITY_SOURCE, JSON.stringify(cov));
@@ -271,7 +279,7 @@ async function main() {
     c.tx("2026-10-04", 9, [OTHER, a1], mv(a1, 2_000_000));
     c.tx("2026-10-05", 9, [OTHER, a2], mv(a2, 1_000_000));
     const rpc = fixtureRpc(c, { mintExtensions: { [PYUSD]: ["transferFeeConfig", "metadataPointer", "tokenMetadata"], [YIELD]: ["interestBearingConfig"] } });
-    const store = memStore(nativeCursor(), new Set([PYUSD, YIELD]));
+    const store = memStore(watchedCursor(), new Set([PYUSD, YIELD]));
     const { meter } = await runOnce(c, store, { freshSource: "NATIVE", rpc });
     const p = rowsMatchTruth(c, store, PYUSD, 6);
     check("Token-2022 with transfer fees (amount deltas stated) ⇒ COMPLETE, rows equal truth", store.coverage.get(PYUSD)?.kind === "COMPLETE" && p.ok, p.detail);
@@ -279,14 +287,14 @@ async function main() {
     check("interest-bearing Token-2022 ⇒ UNSUPPORTED (PROOF_PREMISES_UNMET), and NO rows", y?.kind === "UNKNOWN" && y.caveats.includes("PROOF_PREMISES_UNMET") && (store.rows.get(YIELD)?.size ?? 0) === 0, JSON.stringify(y));
     check("each Token-2022 mint is checked once (getAccountInfo)", meter.getAccountInfo === 2, JSON.stringify(meter));
     check("mint extension verdicts: scaled UI / confidential / unknown are refused, none ⇒ OK",
-      mintExtensionVerdict({ value: { data: { parsed: { type: "mint", info: { extensions: [{ extension: "scaledUiAmountConfig" }] } } } } }) === "BALANCE_EXTENSION"
-      && mintExtensionVerdict({ value: { data: { parsed: { type: "mint", info: { extensions: [{ extension: "confidentialTransferMint" }] } } } } }) === "CONFIDENTIAL_BALANCES"
-      && mintExtensionVerdict({ value: { data: { parsed: { type: "mint", info: { extensions: [{ extension: "somethingNew" }] } } } } }) === "UNRECOGNISED_EXTENSION"
-      && mintExtensionVerdict({ value: { data: { parsed: { type: "mint", info: {} } } } }) === "OK");
+      mintExtensionVerdict({ value: { owner: TOKEN_2022_PROGRAM_ID, data: { parsed: { type: "mint", info: { extensions: [{ extension: "scaledUiAmountConfig" }] } } } } }) === "BALANCE_EXTENSION"
+      && mintExtensionVerdict({ value: { owner: TOKEN_2022_PROGRAM_ID, data: { parsed: { type: "mint", info: { extensions: [{ extension: "confidentialTransferMint" }] } } } } }) === "CONFIDENTIAL_BALANCES"
+      && mintExtensionVerdict({ value: { owner: TOKEN_2022_PROGRAM_ID, data: { parsed: { type: "mint", info: { extensions: [{ extension: "somethingNew" }] } } } } }) === "UNRECOGNISED_EXTENSION"
+      && mintExtensionVerdict({ value: { owner: TOKEN_2022_PROGRAM_ID, data: { parsed: { type: "mint", info: {} } } } }) === "OK");
     const st = stateOf(store);
     check("a refused mint keeps the inventory incomplete (wallet cannot read complete)", st.inventoryComplete === false);
     const again = await runOnce(c, store, {});
-    check("a refused mint is not re-checked, and owes no further work", again.meter.getAccountInfo === undefined && splWorkOwed(stateOf(store), { reachedBeginning: true, gap: null, top: {} }) === false, JSON.stringify(again.meter));
+    check("a refused mint is not re-checked, and owes no further work", again.meter.getAccountInfo === undefined && splWorkOwed(stateOf(store), JSON.parse(store.cursor()!) as SolBackfillCheckpoint) === false, JSON.stringify(again.meter));
   }
 
   // ══ 4. RECONCILIATION MISMATCH ⇒ NO FABRICATED ROWS; a mid-history gap ⇒ PARTIAL ══
@@ -299,7 +307,7 @@ async function main() {
     const lost = c.tx("2026-10-08", 9, [OTHER, ata], mv(ata, 4_000_000));
     c.tx("2026-10-12", 9, [OTHER, ata], mv(ata, 2_000_000));
     c.hide(ata, lost); // the index does not list it
-    const store = memStore(nativeCursor(), new Set([USDC]));
+    const store = memStore(watchedCursor(), new Set([USDC]));
     await runOnce(c, store, { freshSource: "NATIVE" });
     const cov = store.coverage.get(USDC);
     const m = rowsMatchTruth(c, store, USDC, 6);
@@ -316,7 +324,7 @@ async function main() {
     const lying = (program: string) => program === SPL_TOKEN_PROGRAM_ID
       ? { value: [{ pubkey: ata, account: { data: { parsed: { info: { mint: USDC, tokenAmount: { amount: "9000000", decimals: 6 } } } } } }] } : { value: [] };
     const rpc = fixtureRpc(c, { overrideCurrent: lying });
-    const store = memStore(nativeCursor(), new Set([USDC]));
+    const store = memStore(watchedCursor(), new Set([USDC]));
     for (let i = 0; i < HEAD_MISMATCH_LIMIT; i++) await runOnce(c, store, { freshSource: "NATIVE", rpc });
     const cov = store.coverage.get(USDC);
     check("replay end ≠ current balance (every run) ⇒ UNSUPPORTED, ADDRESS_INDEX_INCOMPLETE", cov?.kind === "UNKNOWN" && cov.caveats.includes("ADDRESS_INDEX_INCOMPLETE"), JSON.stringify(cov));
@@ -337,19 +345,24 @@ async function main() {
       return c;
     };
     const ref = build();
-    const refStore = memStore(nativeCursor(), new Set([USDC]));
+    const refStore = memStore(watchedCursor(), new Set([USDC]));
     await runOnce(ref, refStore, { freshSource: "NATIVE" });
     const c = build();
-    const store = memStore(nativeCursor(), new Set([USDC]));
+    const store = memStore(watchedCursor(), new Set([USDC]));
     const first = await runOnce(c, store, { freshSource: "NATIVE", requestBudget: 1 });
     check("budget of 1 request ⇒ stops, no rows, nothing fabricated", first.o.stoppedBecause === "BUDGET" && store.rows.size === 0 && (first.meter.getTokenAccountsByOwner ?? 0) <= 2, `${first.o.stoppedBecause} ${JSON.stringify(first.meter)}`);
     let runs = 1;
-    while (store.coverage.get(USDC)?.kind !== "COMPLETE" && runs < 40) { await runOnce(c, store, { requestBudget: 9 }); runs++; }
+    let maxSent = 0;
+    while (store.coverage.get(USDC)?.kind !== "COMPLETE" && runs < 40) {
+      const r = await runOnce(c, store, { requestBudget: 9 }); runs++;
+      maxSent = Math.max(maxSent, Object.values(r.meter).reduce((x, y) => x + y, 0));
+    }
+    check("no run sends past its request allowance (a fetch batch never overshoots)", maxSent <= 9, String(maxSent));
     const m = rowsMatchTruth(c, store, USDC, 6);
     check(`resumed in bounded chunks (${runs} runs) ⇒ the SAME rows as one unbounded run`, m.ok && JSON.stringify([...store.rows.get(USDC)!]) === JSON.stringify([...refStore.rows.get(USDC)!]), m.detail);
     check("every chunk was committed by CAS (checkpoint advanced each run)", store.commits.length >= runs);
     // A conflicting writer: the step stops, never overwrites.
-    const s2 = memStore(nativeCursor(), new Set([USDC]));
+    const s2 = memStore(watchedCursor(), new Set([USDC]));
     const racing: MemStore = { ...s2, async commit(x) { await s2.commit({ ...x, expectedCursor: "someone-else" }); } };
     const r = await runOnce(c, racing, { freshSource: "NATIVE" });
     check("a checkpoint moved by another runner ⇒ CONFLICT, nothing written", r.o.stoppedBecause === "CONFLICT" && s2.rows.size === 0);
@@ -365,7 +378,7 @@ async function main() {
     c.tx("2026-10-02", 10, [OTHER, spamAta], mv(spamAta, 1_000_000));
     c.tx("2026-10-03", 9, [OWNER, usdcAta], c.create(usdcAta, USDC));
     c.tx("2026-10-04", 9, [OTHER, usdcAta], mv(usdcAta, 3_000_000));
-    const store = memStore(nativeCursor(), new Set([USDC]));
+    const store = memStore(watchedCursor(), new Set([USDC]));
     // Enough for anchors + one account's walk (sig page + 2 tx) + its head page, not the spam's.
     await runOnce(c, store, { freshSource: "NATIVE", requestBudget: 6 });
     check("with budget for one, the PRICED mint is reconstructed and the spam waits", store.coverage.get(USDC)?.kind === "COMPLETE" && !store.coverage.has(SPAM), JSON.stringify([...store.coverage.keys()]));
@@ -385,8 +398,9 @@ async function main() {
     const ata = "AtaUsdc5555555555555555555555555555555555555";
     c.tx("2026-10-02", 9, [OWNER, ata], c.create(ata, USDC));
     c.tx("2026-10-03", 9, [OTHER, ata], mv(ata, 1_000_000));
-    const before = JSON.parse(nativeCursor());
-    const store = memStore(nativeCursor(), new Set([USDC]));
+    const before = JSON.parse(watchedCursor());
+    delete before.tokens;
+    const store = memStore(watchedCursor(), new Set([USDC]));
     await runOnce(c, store, { freshSource: "NATIVE" });
     const after = JSON.parse(store.cursor()!);
     delete after.tokens;
@@ -425,7 +439,8 @@ async function main() {
     check("native rows + coverage are identical with the token hooks installed", plain.commits.map(strip).join() === hooked.commits.map(strip).join() && plain.commits.length > 0);
     const hookedCp = JSON.parse(hooked.cur()!) as { tokens?: unknown };
     const tokState = parseSplState(hookedCp.tokens);
-    check("the native fetch discovered the wallet's token account at no extra request (source NATIVE)", tokState?.discovery.source === "NATIVE" && tokState.accounts.some((a) => a.address === ata));
+    check("the native fetch discovered the wallet's token account at no extra request (source NATIVE)", tokState?.discovery.source === "NATIVE" && (tokState.pendingDiscovered ?? []).some((a) => a.address === ata)
+      && tokState.discovery.watchedTop === (JSON.parse(hooked.cur()!) as SolBackfillCheckpoint).top?.signature);
     check("the hooked native cursor is still a SOL checkpoint (readers use isSolBackfillCursor)", hooked.cur()!.startsWith('{"kind":"sol-history"'));
   }
 
@@ -464,7 +479,7 @@ async function main() {
     const row = { accountId: "acct_sol", connectionId: "c", cursor: nativeCursor(), address: OWNER, checkpoint: cp };
     check("a COMPLETE native wallet with token work owed is a worker candidate (when enabled)", orderCandidates([row], NOW, true).length === 1);
     check("…and is not when token history is disabled (native behaviour unchanged)", orderCandidates([row], NOW, false).length === 0);
-    const doneState = { ...freshSplState("NATIVE"), inventoryComplete: true };
+    const doneState = { ...parseSplState((JSON.parse(watchedCursor()) as { tokens: unknown }).tokens)!, inventoryComplete: true };
     const doneCp = { ...cp, tokens: doneState };
     check("a wallet with no token work left is not re-run", orderCandidates([{ ...row, checkpoint: doneCp }], NOW, true).length === 0);
 
@@ -503,6 +518,350 @@ async function main() {
     check("json-encoded keys append lookup-table addresses (v0)", discoverOwnedTokenAccounts({ slot: 1, blockTime: 1, transaction: { message: { accountKeys: [OTHER] } },
       meta: { preTokenBalances: [{ accountIndex: 1, mint: USDC, owner: OWNER, uiTokenAmount: { amount: "1", decimals: 6 } }], postTokenBalances: [], loadedAddresses: { writable: ["viaAlt"], readonly: [] } } }, OWNER)[0]?.address === "viaAlt");
     check("a malformed token state is never trusted", parseSplState({ kind: "spl-history", v: 1, discovery: { source: "X" }, accounts: [], mints: [] }) === null && parseSplState(undefined) === null);
+  }
+
+  // ══ 12. REVIEW FIXES ═══════════════════════════════════════════════════════
+  console.log("review: account bound never understates a mint");
+  {
+    const spam = Array.from({ length: MAX_TRACKED_ACCOUNTS }, (_, i) => ({ address: `Spam${String(i).padStart(3, "0")}`, mint: SPAM, program: SPL_TOKEN_PROGRAM_ID, decimals: 0 }));
+    // One slot left: USDC's first account is tracked, its second is not.
+    let st = mergeDiscovered(freshSplState("NATIVE"), spam.slice(1));
+    // Every spam account has started walking: none may be evicted.
+    st = { ...st, accounts: st.accounts.map((a) => ({ ...a, top: { signature: "s", slot: 1, blockTime: 1, dateISO: "2026-10-01", preLamports: "-", postLamports: "-" }, bottom: { signature: "s", slot: 1, blockTime: 1, dateISO: "2026-10-01", preLamports: "-", postLamports: "-" } })) };
+    st = mergeDiscovered(st, [{ address: "UsdcA", mint: USDC, program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }, { address: "UsdcB", mint: USDC, program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }], (m) => m === USDC);
+    check("an untracked account is REMEMBERED with its mint (and the mint is known)", (st.overflowed ?? []).some(([a, m]) => a === "UsdcB" && m === USDC) && st.mints.some((m) => m.mint === USDC));
+    const usdc = st.mints.find((m) => m.mint === USDC)!;
+    const verifiedAll = new Set(st.accounts.map((a) => a.address));
+    const d = decideMint(usdc, st.accounts, { discoveryComplete: true, verifiedThisRun: verifiedAll, todayISO: TODAY, overflowed: overflowedMints(st) });
+    check("a mint with an untracked account is NEVER COMPLETE (TOO_MANY_ACCOUNTS)", d.status === "UNSUPPORTED" && d.reason === "TOO_MANY_ACCOUNTS");
+    check("…and the inventory reads incomplete", inventoryCompleteOf(st, true) === false);
+    // An unstarted spam account yields its slot to a priced one, and is remembered.
+    const fresh = mergeDiscovered(freshSplState("NATIVE"), spam);
+    const evicted = mergeDiscovered(fresh, [{ address: "UsdcC", mint: USDC, program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }], (m) => m === USDC);
+    check("a priced account evicts an unstarted unpriced one; the evicted pair is remembered (its mint held)",
+      evicted.accounts.some((a) => a.address === "UsdcC") && overflowedMints(evicted).has(SPAM) && !overflowedMints(evicted).has(USDC));
+    // A spam-heavy wallet: hundreds of untracked accounts of ONE mint never saturate — USDC stays decidable.
+    const flood = Array.from({ length: MAX_OVERFLOW_RECORDS * 2 }, (_, i) => ({ address: `Flood${i}`, mint: SPAM, program: SPL_TOKEN_PROGRAM_ID, decimals: 0 }));
+    const spammy = mergeDiscovered(mergeDiscovered(freshSplState("NATIVE"), [{ address: "UsdcOnly", mint: USDC, program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }], (m) => m === USDC), flood, (m) => m === USDC);
+    const usdcOnly = spammy.accounts.filter((x) => x.mints.includes(USDC));
+    check("hundreds of untracked spam accounts hold only THEIR mint: no saturation, USDC still decidable, checkpoint bounded",
+      !spammy.overflowSaturated && overflowedMints(spammy).has(SPAM) && !overflowedMints(spammy).has(USDC)
+      && (spammy.overflowed ?? []).length <= MAX_OVERFLOW_RECORDS && spammy.accounts.length === MAX_TRACKED_ACCOUNTS
+      && decideMint(spammy.mints.find((m) => m.mint === USDC)!, usdcOnly.map((x) => ({ ...x, creation: true, days: [["2026-10-01", `${USDC}:W:1`]] })),
+        { discoveryComplete: true, verifiedThisRun: new Set(usdcOnly.map((x) => x.address)), todayISO: TODAY, overflowed: overflowedMints(spammy) }).status === "COMPLETE");
+    const many = Array.from({ length: MAX_OVERFLOW_MINTS + 5 }, (_, i) => ({ address: `Over${i}`, mint: `M${i}`, program: SPL_TOKEN_PROGRAM_ID, decimals: 0 }));
+    const sat = mergeDiscovered(st, many);
+    check("an untracked-only mint gets no mint record (bounded checkpoint)", !sat.mints.some((m) => m.mint === "M7"));
+    check("past the remembered bound the state is SATURATED and no mint may be COMPLETE",
+      sat.overflowSaturated === true && decideMint(sat.mints.find((m) => m.mint === BONK) ?? usdc, sat.accounts, { discoveryComplete: true, verifiedThisRun: verifiedAll, todayISO: TODAY, saturated: true }).status === "UNSUPPORTED");
+    // Native-hook finds are QUEUED, then placed priced-first by the token step.
+    const c = new Chain();
+    const usdcAta = "ZzzUsdcLast1111111111111111111111111111111111";
+    c.tx("2026-10-03", 9, [OWNER, usdcAta], c.create(usdcAta, USDC));
+    c.tx("2026-10-04", 9, [OTHER, usdcAta], mv(usdcAta, 3_000_000));
+    const hookFinds = [...Array.from({ length: MAX_TRACKED_ACCOUNTS + 10 }, (_, i) => ({ address: `Aaa${String(i).padStart(3, "0")}`, mint: SPAM, program: SPL_TOKEN_PROGRAM_ID, decimals: 0 })),
+      { address: usdcAta, mint: USDC, program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }];
+    const cur = JSON.stringify(annotateWithDiscoveries(JSON.parse(nativeCursor()), hookFinds, "NATIVE"));
+    const qs = parseSplState((JSON.parse(cur) as { tokens: unknown }).tokens)!;
+    check("the native hook QUEUES its finds (no address-order slot grab)", qs.accounts.length === 0 && (qs.pendingDiscovered ?? []).length === hookFinds.length);
+    const store = memStore(cur, new Set([USDC]));
+    await runOnce(c, store, {});
+    const after = stateOf(store);
+    check("…and the token step places them priced-first: USDC tracked, spam overflow remembered", after.accounts.some((a) => a.address === usdcAta) && overflowedMints(after).has(SPAM) && (after.pendingDiscovered ?? []).length === 0);
+  }
+
+  console.log("review: flag toggled mid-import");
+  {
+    const c = new Chain();
+    const gone = "GoneUsdc222222222222222222222222222222222222";
+    c.tx("2026-10-12", 9, [OWNER, gone], c.create(gone, USDC));
+    c.tx("2026-10-13", 9, [OTHER, gone], mv(gone, 9_000_000));
+    c.tx("2026-10-15", 9, [OWNER, gone, OTHER], mv(gone, -9_000_000));
+    c.tx("2026-10-15", 10, [OWNER, gone], close(gone));
+    // Watched at top "native1"; then native advanced WITHOUT the hook (flag off).
+    const watched = JSON.parse(watchedCursor()) as SolBackfillCheckpoint & { tokens: unknown };
+    const moved = { ...watched, top: { ...watched.top!, signature: "native2", slot: 2 } };
+    const st0 = parseSplState(moved.tokens)!;
+    check("a native move the hook did not watch is detected", nativeWatchIntact(st0, moved) === false && splWorkOwed(st0, moved, NOW) === true);
+    const store = memStore(JSON.stringify(moved), new Set([USDC]));
+    const r = await runOnce(c, store, {});
+    const st = stateOf(store);
+    check("…discovery falls back to a WALK of the owner's transactions (never trusts native reachedBeginning)",
+      st.discovery.source === "WALK" && st.discovery.walkDone && (r.meter.getSignaturesForAddress ?? 0) >= 1);
+    check("…and the closed account native never showed the hook is found and proven", store.coverage.get(USDC)?.kind === "COMPLETE" && rowsMatchTruth(c, store, USDC, 6).ok);
+    const demoted = parseSplState((annotateWithDiscoveries(moved, [], "NATIVE", { demote: true }) as { tokens?: unknown }).tokens)!;
+    check("the native hook itself demotes when told the watch broke", demoted.discovery.source === "WALK");
+  }
+
+  console.log("review: an account joining a committed mint ⇒ exact rewrite from the trim point, never from a trimmed list");
+  {
+    const c = new Chain();
+    const a = "AtaUsdc6666666666666666666666666666666666666", b = "HandOver666666666666666666666666666666666666";
+    c.tx("2026-10-01", 9, [OTHER, b], c.create(b, USDC, { owner: OTHER }));
+    c.tx("2026-10-02", 9, [OTHER, b], mv(b, 4_000_000));
+    c.tx("2026-10-05", 9, [OWNER, a], c.create(a, USDC));
+    c.tx("2026-10-06", 9, [OTHER, a], mv(a, 2_000_000));
+    const store = memStore(watchedCursor(), new Set([USDC]));
+    await runOnce(c, store, { nowMs: Date.parse("2026-10-20T12:00:00Z") });
+    check("first licence: COMPLETE from A's creation", store.coverage.get(USDC)?.kind === "COMPLETE" && rowsMatchTruth(c, store, USDC, 6).ok);
+    const trimmedA = stateOf(store).accounts.find((x) => x.address === a)!;
+    check("the commit trims A and records from when its staged days are still exact", trimmedA.trimmedFromISO === "2026-10-06" && trimmedA.days.length === 1, JSON.stringify(trimmedA.days));
+    const oct05 = store.rows.get(USDC)?.get("2026-10-05");
+    // SetAuthority: B (held by someone else since Oct 1) becomes the wallet's on Oct 22.
+    c.tx("2026-10-22", 9, [OTHER, b], (st) => { const x = st.get(b)!; st.set(b, { ...x, owner: OWNER }); });
+    const r = await runOnce(c, store, {});
+    const m = rowsMatchTruth(c, store, USDC, 6);
+    check("B carried nothing of the wallet's before the hand-over ⇒ no rebuild; rows rewritten only from A's trim point, all equal truth",
+      r.o.rebuilt.length === 0 && m.ok && store.rows.get(USDC)?.get("2026-10-05") === oct05 && store.rows.get(USDC)?.get("2026-10-21") === 2 && store.rows.get(USDC)?.get("2026-10-22") === 6, m.detail);
+  }
+
+  console.log("review: a closed account found AFTER commit (re-walk) ⇒ rebuild, proven rows never overwritten from a trimmed list");
+  {
+    const build = () => {
+      const c = new Chain();
+      const a = "AtaUsdc4444444444444444444444444444444444444", x = "ClosedLater44444444444444444444444444444444";
+      c.tx("2026-10-02", 9, [OWNER, a], c.create(a, USDC));
+      c.tx("2026-10-03", 9, [OTHER, a], mv(a, 1_000_000));
+      c.tx("2026-10-06", 10, [OWNER, x], c.create(x, USDC));
+      c.tx("2026-10-07", 10, [OTHER, x], mv(x, 3_000_000));
+      c.tx("2026-10-09", 10, [OWNER, x, OTHER], mv(x, -3_000_000));
+      c.tx("2026-10-09", 11, [OWNER, x], close(x));
+      c.tx("2026-10-12", 9, [OTHER, a], mv(a, 5_000_000));
+      return { c, a, x };
+    };
+    const { c } = build();
+    // Run 1: NATIVE discovery the hook never fed X to (as if the flag had been off when native saw it).
+    const store = memStore(watchedCursor(), new Set([USDC]));
+    await runOnce(c, store, { nowMs: Date.parse("2026-10-20T12:00:00Z") });
+    check("first licence committed without X (A trimmed: exact from Oct 12)", store.coverage.get(USDC)?.kind === "COMPLETE"
+      && stateOf(store).accounts.find((y) => y.trimmedFromISO === "2026-10-12") !== undefined);
+    // The flag goes off and on: native moved unwatched ⇒ discovery re-walks, and finds X.
+    const cp = JSON.parse(store.cursor()!) as SolBackfillCheckpoint;
+    const moved = JSON.stringify({ ...cp, top: { ...cp.top!, signature: "native-moved-unwatched", slot: cp.top!.slot + 1 } });
+    const s2 = memStore(moved, new Set([USDC]));
+    for (const [k, v] of store.rows) s2.rows.set(k, new Map(v));
+    for (const [k, v] of store.coverage) s2.coverage.set(k, v);
+    const r2 = await runOnce(c, s2, {});
+    const st2 = stateOf(s2);
+    check("X joined the committed mint with balances before A's trim point ⇒ REBUILD: mint PENDING, accounts reset",
+      r2.o.rebuilt.includes(USDC) && st2.mints.find((y) => y.mint === USDC)?.status === "PENDING" && st2.accounts.every((y) => y.top === null && y.days.length === 0), JSON.stringify(r2.o.rebuilt));
+    check("…meanwhile the licence is WITHDRAWN (rows lacked X), never rewritten with short sums",
+      s2.coverage.get(USDC)?.kind === "UNKNOWN" && (s2.rows.get(USDC)?.size ?? 0) === 0, JSON.stringify(s2.coverage.get(USDC)));
+    for (let i = 0; i < 4 && s2.coverage.get(USDC)?.kind !== "COMPLETE"; i++) await runOnce(c, s2, {});
+    const m = rowsMatchTruth(c, s2, USDC, 6);
+    check("…the rebuilt licence equals the chain's truth every day, X included", s2.coverage.get(USDC)?.kind === "COMPLETE" && m.ok && s2.rows.get(USDC)?.get("2026-10-07") === 4 && s2.rows.get(USDC)?.get("2026-10-11") === 1, m.detail);
+  }
+
+  console.log("review: a WALK's watch — native moving unwatched after the walk restarts it");
+  {
+    const c = new Chain();
+    const a = "AtaUsdc3333333333333333333333333333333333333", y = "ClosedLate333333333333333333333333333333333";
+    c.tx("2026-10-02", 9, [OWNER, a], c.create(a, USDC));
+    c.tx("2026-10-03", 9, [OTHER, a], mv(a, 1_000_000));
+    // No token state: the step starts a WALK, watched from the native top as it is now.
+    const store = memStore(nativeCursor(), new Set([USDC]));
+    await runOnce(c, store, { nowMs: Date.parse("2026-10-20T12:00:00Z") });
+    const st1 = stateOf(store);
+    const cp1 = JSON.parse(store.cursor()!) as SolBackfillCheckpoint;
+    check("a state the step starts is a WALK watched from the native top", st1.discovery.source === "WALK" && st1.discovery.walkDone
+      && st1.discovery.watchedTop === cp1.top?.signature && store.coverage.get(USDC)?.kind === "COMPLETE");
+    // Flag off: a token account is opened and closed while native moves unwatched.
+    c.tx("2026-10-24", 9, [OWNER, y], c.create(y, USDC));
+    c.tx("2026-10-24", 10, [OTHER, y], mv(y, 7_000_000));
+    c.tx("2026-10-26", 9, [OWNER, y, OTHER], mv(y, -7_000_000));
+    c.tx("2026-10-26", 10, [OWNER, y], close(y));
+    const moved = { ...cp1, top: { ...cp1.top!, signature: "native-head-unwatched", slot: cp1.top!.slot + 9 } };
+    check("…a WALK whose native top moved unwatched is NOT complete discovery", discoveryComplete(st1, moved) === false && splWorkOwed(st1, moved, NOW) === true);
+    const s2 = memStore(JSON.stringify(moved), new Set([USDC]));
+    for (const [k, v] of store.rows) s2.rows.set(k, new Map(v));
+    for (const [k, v] of store.coverage) s2.coverage.set(k, v);
+    for (let i = 0; i < 3 && !(stateOf(s2).discovery.walkDone && stateOf(s2).accounts.some((x) => x.address === y && x.creation)); i++) await runOnce(c, s2, {});
+    const m = rowsMatchTruth(c, s2, USDC, 6);
+    check("…the walk starts over, finds the account opened and closed meanwhile, and its days are in the licence",
+      stateOf(s2).accounts.some((x) => x.address === y) && s2.coverage.get(USDC)?.kind === "COMPLETE" && m.ok && s2.rows.get(USDC)?.get("2026-10-25") === 8, m.detail);
+    const reWalk = parseSplState((annotateWithDiscoveries({ ...moved, tokens: st1 }, [], "WALK", { demote: true }) as { tokens?: unknown }).tokens)!;
+    check("…and the hook restarts a WALK when told the watch broke", reWalk.discovery.source === "WALK" && reWalk.discovery.walkDone === false && reWalk.discovery.watchedTop === "native-head-unwatched");
+  }
+
+  console.log("review: an untracked account appearing for a COMMITTED mint withdraws it (never kept as proven)");
+  {
+    const c = new Chain();
+    const a = "AtaUsdc2222222222222222222222222222222222222";
+    c.tx("2026-10-02", 9, [OWNER, a], c.create(a, USDC));
+    c.tx("2026-10-03", 9, [OTHER, a], mv(a, 1_000_000));
+    const store = memStore(watchedCursor(), new Set([USDC]));
+    await runOnce(c, store);
+    check("COMPLETE first", store.coverage.get(USDC)?.kind === "COMPLETE");
+    // The bound is full and an account of USDC could not be tracked (its history is unknown).
+    const cp = JSON.parse(store.cursor()!) as SolBackfillCheckpoint & { tokens: SplHistoryState };
+    // …while its licensed account also disagrees with the chain (a freeze-able failure on its own).
+    const over = { ...cp, tokens: { ...cp.tokens, overflowed: [["UntrackedUsdc111111111111111111111111111111", USDC]], overflow: 1,
+      accounts: cp.tokens.accounts.map((x) => ({ ...x, headMismatches: HEAD_MISMATCH_LIMIT })) } };
+    const s2 = memStore(JSON.stringify(over), new Set([USDC]));
+    for (const [k, v] of store.rows) s2.rows.set(k, new Map(v));
+    const lying = (program: string) => program === SPL_TOKEN_PROGRAM_ID
+      ? { value: [{ pubkey: a, account: { data: { parsed: { info: { mint: USDC, owner: OWNER, tokenAmount: { amount: "7", decimals: 6 } } } } } }] } : { value: [] };
+    await runOnce(c, s2, { rpc: fixtureRpc(c, { overrideCurrent: lying }) });
+    const cov = s2.coverage.get(USDC);
+    check("…the licence is WITHDRAWN: UNSUPPORTED with an honest reason, no rows, inventory incomplete",
+      cov?.kind === "UNKNOWN" && cov.caveats.includes("PAGE_BUDGET_EXHAUSTED") && (s2.rows.get(USDC)?.size ?? 0) === 0
+      && stateOf(s2).mints.find((m) => m.mint === USDC)?.reason === "TOO_MANY_ACCOUNTS" && stateOf(s2).inventoryComplete === false, JSON.stringify(cov));
+    check("…the refusal is final: its account stages nothing and owes no work", stateOf(s2).accounts.every((x) => x.days.length === 0)
+      && splWorkOwed(stateOf(s2), JSON.parse(s2.cursor()!) as SolBackfillCheckpoint, NOW) === false);
+    check("…and tokenUnverifiedReason states it plainly", tokenUnverifiedReason(cov && cov.kind === "UNKNOWN" ? cov.caveats : []) === "it has more activity than could be checked so far");
+  }
+
+  console.log("review: a head-mismatch freeze thaws when the chain agrees again");
+  {
+    const c = new Chain();
+    const a = "AtaUsdc1212121212121212121212121212121212121";
+    c.tx("2026-10-02", 9, [OWNER, a], c.create(a, USDC));
+    c.tx("2026-10-03", 9, [OTHER, a], mv(a, 1_000_000));
+    const store = memStore(watchedCursor(), new Set([USDC]));
+    await runOnce(c, store, { nowMs: Date.parse("2026-10-20T12:00:00Z") });
+    const lying = (program: string) => program === SPL_TOKEN_PROGRAM_ID
+      ? { value: [{ pubkey: a, account: { data: { parsed: { info: { mint: USDC, owner: OWNER, tokenAmount: { amount: "9000000", decimals: 6 } } } } } }] } : { value: [] };
+    for (let i = 0; i < HEAD_MISMATCH_LIMIT; i++) await runOnce(c, store, { rpc: fixtureRpc(c, { overrideCurrent: lying }), nowMs: Date.parse(`2026-10-2${1 + i}T12:00:00Z`) });
+    const frozen = store.coverage.get(USDC);
+    check("repeated head mismatches FREEZE a committed licence: PARTIAL through its last proven day",
+      frozen?.kind === "PARTIAL" && frozen.coveredToISO === "2026-10-20" && stateOf(store).mints.find((m) => m.mint === USDC)?.frozen === "RECONCILIATION_MISMATCH" && stateOf(store).inventoryComplete === false, JSON.stringify(frozen));
+    await runOnce(c, store);
+    const m = rowsMatchTruth(c, store, USDC, 6);
+    check("…a later match THAWS it back to COMPLETE through today, rows equal truth", store.coverage.get(USDC)?.kind === "COMPLETE" && m.ok
+      && (store.coverage.get(USDC) as { toISO: string }).toISO === TODAY && !stateOf(store).mints.find((x) => x.mint === USDC)?.frozen, m.detail);
+  }
+
+  console.log("review: a walk that finishes before its mint is decided is still rewritten (durable dirty day)");
+  {
+    const c = new Chain();
+    const a = "AtaUsdc5656565656565656565656565656565656565", x = "ClosedLater56565656565656565656565656565656";
+    c.tx("2026-10-02", 9, [OWNER, a], c.create(a, USDC));
+    c.tx("2026-10-03", 9, [OTHER, a], mv(a, 1_000_000));
+    c.tx("2026-10-06", 10, [OWNER, x], c.create(x, USDC));
+    c.tx("2026-10-07", 10, [OTHER, x], mv(x, 3_000_000));
+    c.tx("2026-10-09", 10, [OWNER, x, OTHER], mv(x, -3_000_000));
+    c.tx("2026-10-09", 11, [OWNER, x], close(x));
+    c.tx("2026-10-12", 9, [OTHER, a], mv(a, 5_000_000));
+    const store = memStore(watchedCursor(), new Set([USDC]));
+    await runOnce(c, store, { nowMs: Date.parse("2026-10-20T12:00:00Z") });
+    // X is found (the hook queues it); this run A disagrees with the chain, so USDC is not decided — X's walk finishes anyway.
+    const cp = JSON.parse(store.cursor()!) as SolBackfillCheckpoint & { tokens: SplHistoryState };
+    const queued = { ...cp, tokens: { ...cp.tokens, pendingDiscovered: [{ address: x, mint: USDC, program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }] } };
+    const s2 = memStore(JSON.stringify(queued), new Set([USDC]));
+    for (const [k, v] of store.rows) s2.rows.set(k, new Map(v));
+    for (const [k, v] of store.coverage) s2.coverage.set(k, v);
+    const lying = (program: string) => program === SPL_TOKEN_PROGRAM_ID
+      ? { value: [{ pubkey: a, account: { data: { parsed: { info: { mint: USDC, owner: OWNER, tokenAmount: { amount: "1", decimals: 6 } } } } } }] } : { value: [] };
+    const r2 = await runOnce(c, s2, { rpc: fixtureRpc(c, { overrideCurrent: lying }) });
+    const xs = stateOf(s2).accounts.find((y) => y.address === x)!;
+    check("X walked to creation while USDC waited (no decision this run)", xs.creation && r2.o.mintsCommitted.length === 0 && xs.dirtyFromISO === "2026-10-06", JSON.stringify(r2.o.mintsCommitted));
+    const r3 = await runOnce(c, s2);
+    check("…the next run still sees X's early days and REBUILDS (never keeps rows that lack X)", r3.o.rebuilt.includes(USDC) && s2.coverage.get(USDC)?.kind === "UNKNOWN");
+    for (let i = 0; i < 4 && s2.coverage.get(USDC)?.kind !== "COMPLETE"; i++) await runOnce(c, s2);
+    const m = rowsMatchTruth(c, s2, USDC, 6);
+    check("…then equals the chain's truth", s2.coverage.get(USDC)?.kind === "COMPLETE" && m.ok, m.detail);
+  }
+
+  console.log("review: Token-2022 / unknown program");
+  {
+    const st = mergeDiscovered(freshSplState("NATIVE"), [{ address: "x", mint: "NoProgMint", program: null, decimals: 6 }]);
+    const m = st.mints[0];
+    check("a mint first seen WITHOUT a program id is checked, never assumed classic", m.extension === null && needsExtensionCheck(m));
+    const weird = mergeDiscovered(freshSplState("NATIVE"), [{ address: "y", mint: "WeirdMint", program: "SomeOtherProgram111111111111111111111111111", decimals: 6 }]);
+    check("a mint seen under an UNKNOWN token program is refused outright (fail closed, no request spent)",
+      weird.mints[0].extension === "UNRECOGNISED_EXTENSION" && !needsExtensionCheck(weird.mints[0])
+      && decideMint(weird.mints[0], weird.accounts, { discoveryComplete: true, verifiedThisRun: new Set(["y"]), todayISO: TODAY }).status === "UNSUPPORTED");
+    const later = mergeDiscovered(mergeDiscovered(freshSplState("NATIVE"), [{ address: "z", mint: "LaterMint", program: SPL_TOKEN_PROGRAM_ID, decimals: 6 }]),
+      [{ address: "z2", mint: "LaterMint", program: "SomeOtherProgram111111111111111111111111111", decimals: 6 }]);
+    check("…even when first seen as classic SPL", later.mints[0].extension === "UNRECOGNISED_EXTENSION");
+    let threw = false;
+    try { mintExtensionVerdict({ value: { data: { parsed: { type: "mint", info: {} } } } }); } catch { threw = true; }
+    check("a mint answer that states no owning program is unreadable (retried), never assumed safe", threw);
+    check("a mint owned by an unknown program is refused", mintExtensionVerdict({ value: { owner: "SomeOtherProgram111111111111111111111111111", data: { parsed: { type: "mint", info: {} } } } }) === "UNRECOGNISED_EXTENSION");
+    check("a mint owned by classic SPL with no extensions is OK", mintExtensionVerdict({ value: { owner: SPL_TOKEN_PROGRAM_ID, data: { parsed: { type: "mint", info: {} } } } }) === "OK");
+    check("an unchecked mint is never decided", decideMint(m, st.accounts, { discoveryComplete: true, verifiedThisRun: new Set(["x"]), todayISO: TODAY }).status === "PENDING");
+  }
+
+  console.log("review: frozen licence after a head gap");
+  {
+    const c = new Chain();
+    const ata = "AtaUsdc7777777777777777777777777777777777777";
+    c.tx("2026-10-02", 9, [OWNER, ata], c.create(ata, USDC));
+    c.tx("2026-10-03", 9, [OTHER, ata], mv(ata, 1_000_000));
+    const store = memStore(watchedCursor(), new Set([USDC]));
+    await runOnce(c, store, {});
+    check("COMPLETE first", store.coverage.get(USDC)?.kind === "COMPLETE");
+    const rowsBefore = JSON.stringify([...store.rows.get(USDC)!]);
+    const lost = c.tx("2026-10-29", 9, [OTHER, ata], mv(ata, 5_000_000));
+    c.tx("2026-10-30", 9, [OTHER, ata], mv(ata, 1_000_000));
+    c.hide(ata, lost);
+    const later = Date.parse("2026-10-31T12:00:00Z");
+    await runOnce(c, store, { nowMs: later });
+    const cov = store.coverage.get(USDC);
+    const ms = stateOf(store).mints.find((m) => m.mint === USDC)!;
+    check("a head gap after commit FREEZES the licence: PARTIAL through its last proven day, rows untouched",
+      cov?.kind === "PARTIAL" && cov.coveredToISO === TODAY && ms.frozen === "RECONCILIATION_MISMATCH" && JSON.stringify([...store.rows.get(USDC)!]) === rowsBefore, JSON.stringify(cov));
+    check("…the wallet's token inventory is no longer complete", stateOf(store).inventoryComplete === false);
+    await runOnce(c, store, { nowMs: later + 86_400_000 });
+    check("…and it never extends again", store.coverage.get(USDC)?.kind === "PARTIAL" && (store.coverage.get(USDC) as { coveredToISO: string }).coveredToISO === TODAY);
+    const facet = { label: "USDC", standard: "SPL" as const, priceStatus: "MARKET_PRICE" as const, firstObservedISO: "2026-10-02", lastObservedISO: "2026-10-31",
+      historyState: "RECONSTRUCTED" as const, coverageKind: "PARTIAL" as const, licensedFromISO: "2026-10-02", licensedToISO: TODAY };
+    check("customer copy says the verified stretch ENDS, not that earlier history is missing",
+      tokenHistoryText(facet) === "Verified from Oct 2, 2026 through Oct 28, 2026 — later activity couldn’t be proven", tokenHistoryText(facet));
+  }
+
+  console.log("review: backoff, ordering, sync limit, checkpoint size, price marker");
+  {
+    const c = new Chain();
+    const ata = "AtaT22888888888888888888888888888888888888888";
+    c.tx("2026-10-03", 9, [OWNER, ata], c.create(ata, PYUSD, { program: TOKEN_2022_PROGRAM_ID }));
+    const base = fixtureRpc(c);
+    const unreadable: SolRpcCall = async (method, params) => (method === "getAccountInfo" ? { value: null } : base(method, params));
+    const store = memStore(watchedCursor(), new Set([PYUSD]));
+    for (let i = 0; i <= BACKOFF_AFTER; i++) await runOnce(c, store, { rpc: unreadable, nowMs: NOW + i * 1000 });
+    const st = stateOf(store);
+    const cpNow = JSON.parse(store.cursor()!) as SolBackfillCheckpoint;
+    check("unproductive runs back off: no worker run for a day", (st.backoff?.count ?? 0) >= BACKOFF_AFTER && splWorkOwed(st, cpNow, NOW + 5000) === false && splWorkOwed(st, cpNow, NOW + BACKOFF_MS + 5000) === true);
+    const importing = { ...cpNow, reachedBeginning: false, completedAtISO: null, tokens: undefined };
+    const rows = [
+      { accountId: "tokenOnly", connectionId: "c1", cursor: null, address: OWNER, checkpoint: { ...cpNow, tokens: { ...st, backoff: { count: 0, lastAtISO: null } } } },
+      { accountId: "nativeWork", connectionId: "c2", cursor: null, address: OWNER, checkpoint: importing },
+    ];
+    const ordered = orderCandidates(rows, NOW, true);
+    check("token-only work is ordered AFTER native imports", ordered.map((r) => r.accountId).join() === "nativeWork,tokenOnly", ordered.map((r) => r.accountId).join());
+    check("a backed-off token-only wallet is not a candidate", orderCandidates([{ ...rows[0], checkpoint: { ...cpNow, tokens: st } }], NOW + 5000, true).length === 0);
+    check("a sync's token step has a small explicit request limit", splSyncRequestLimit({}) === 25 && splSyncRequestLimit({ SPL_HISTORY_SYNC_REQUEST_LIMIT: "5" }) === 5 && splSyncRequestLimit({ SPL_HISTORY_SYNC_REQUEST_LIMIT: "x" }) === 25);
+
+    // Checkpoint size: an account with more active days than the bound is refused and stages nothing.
+    const big = new Chain();
+    const hot = "AtaHot99999999999999999999999999999999999999";
+    big.tx("2023-01-01", 9, [OWNER, hot], big.create(hot, USDC));
+    for (let i = 0; i < MAX_DAYS_PER_ACCOUNT + 5; i++) big.tx(new Date(Date.parse("2023-01-02T00:00:00Z") + i * 86_400_000).toISOString().slice(0, 10), 9, [OTHER, hot], mv(hot, 1));
+    const bs = memStore(watchedCursor(), new Set([USDC]));
+    await runOnce(big, bs, {});
+    const bst = stateOf(bs);
+    check("more active days than one account may stage ⇒ refused (PAGE_BUDGET_EXHAUSTED), nothing staged, no rows",
+      bst.accounts[0]?.failure === "TOO_MUCH_ACTIVITY" && stagedDays(bst) === 0 && bs.coverage.get(USDC)?.kind === "UNKNOWN" && (bs.rows.get(USDC)?.size ?? 0) === 0, JSON.stringify(bs.coverage.get(USDC)));
+
+    // Price marker: records what was RETURNED, re-reads before writing.
+    let meta: Record<string, unknown> = { quote: { attemptedAt: "2026-10-28T00:00:00Z", outcome: "PRICED", pricedAt: "2026-10-28T00:00:00Z" } };
+    let reads = 0;
+    const fake = {
+      instrumentAlias: {
+        findUnique: async () => { reads++; if (reads === 2) meta = { ...meta, quote: { ...(meta.quote as object), attemptedAt: "2026-10-28T09:00:00Z" } }; return { metadata: meta }; },
+        update: async (a: { data: { metadata: Record<string, unknown> } }) => { meta = a.data.metadata; return {}; },
+      },
+      priceObservation: { createMany: async (a: { data: unknown[] }) => ({ count: a.data.length }) },
+    };
+    const out = await acquireTokenHistoricalCloses({
+      client: fake as never, instrumentId: "i", assetKey: `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:${USDC}`, fromISO: "2026-10-01", toISO: TODAY,
+      budget: { remaining: async () => 10, record: async () => {}, pace: async () => {} },
+      fetchCloses: async () => ({ configured: true, unlisted: false, closes: [{ dateISO: "2026-10-01", price: 1 }, { dateISO: "2026-10-10", price: 1 }] }),
+      now: new Date(NOW), historyDays: 365,
+    });
+    const ph = meta.priceHistory as { toISO: string };
+    check("price marker records the last day actually RETURNED, not the day asked", out.inserted === 2 && ph.toISO === "2026-10-10", JSON.stringify(ph));
+    check("…and the quote marker written concurrently is preserved (re-read before write)", (meta.quote as { attemptedAt: string }).attemptedAt === "2026-10-28T09:00:00Z");
   }
 
   console.log(`\n${passes} passed, ${failures} failed`);

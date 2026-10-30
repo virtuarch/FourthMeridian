@@ -45,10 +45,17 @@
  *     only the stretch above the gap is proven (a later proven start).
  *
  * A MINT is COMPLETE only when token-account discovery is complete and every
- * account discovered for it is verified from creation; PARTIAL when every
- * account is verified but at least one only from a later proven start (licensed
- * from the LATEST such start); UNSUPPORTED with a plain reason when it cannot be
- * proven at all. No row is ever written outside the licensed interval.
+ * account discovered for it is tracked and verified from creation; PARTIAL when
+ * every account is verified but at least one only from a later proven start
+ * (licensed from the LATEST such start); UNSUPPORTED with a plain reason when it
+ * cannot be proven at all. No row is ever written outside the licensed interval.
+ *
+ * After a licence is committed: a failure to EXTEND it (an account it was
+ * computed from stops verifying) FREEZES it — PARTIAL through its last proven
+ * day, never complete again unless a head mismatch clears; a failure of its
+ * PREMISE (a refused extension, an untracked account, or a failing account that
+ * joined later) WITHDRAWS it. Rows are never rewritten from a trimmed day list
+ * (`rewriteFrom`): the mint is rebuilt from full evidence instead.
  *
  * ── DISCOVERY, AND ITS STATED LIMIT ─────────────────────────────────────────
  * Current accounts come from `getTokenAccountsByOwner` (both programs). CLOSED
@@ -57,7 +64,10 @@
  * the wallet. The native SOL backfill already fetches every one of those
  * transactions; when it starts fresh with this module wired, it feeds them here
  * at no extra cost (source NATIVE). A wallet whose native history was imported
- * before this existed is re-walked once (source WALK). An account that was never
+ * before this existed is re-walked once (source WALK). Either source records
+ * the native ends it has WATCHED: if native moves without the hook (the kill
+ * switch was off), discovery is not complete again until it is redone (NATIVE
+ * falls back to a WALK, a WALK starts over). An account that was never
  * touched by a transaction listing the wallet — e.g. created by a third party
  * with InitializeAccount3 and later closed by a separate close authority — is
  * UNDISCOVERABLE by this method; that limit is stated, not hidden.
@@ -90,12 +100,32 @@ export const SPL_STATE_VERSION = 1;
 
 /**
  * Token accounts tracked per wallet. A bound on checkpoint size and work, not a
- * claim: accounts beyond it are counted (`overflow`) and keep the wallet's
- * token inventory INCOMPLETE — never silently dropped from the answer.
+ * claim: an account beyond it is REMEMBERED with its mint (`overflowed`), its
+ * mint is refused (TOO_MANY_ACCOUNTS — never summed without it, and a committed
+ * licence is withdrawn), and the wallet's token inventory stays INCOMPLETE.
  */
 export const MAX_TRACKED_ACCOUNTS = 48;
 /** Consecutive runs whose newest proven state disagreed with the chain before a mint is refused. */
 export const HEAD_MISMATCH_LIMIT = 3;
+/** (address, mint) pairs remembered for untracked accounts — de-duplication only (beyond it, pairs are not kept). */
+export const MAX_OVERFLOW_RECORDS = 256;
+/**
+ * MINTS with at least one account that could NOT be tracked. Such a mint is
+ * never decided COMPLETE (an untracked account would be missing from its sum).
+ * Past this many the state is SATURATED: no mint may read COMPLETE at all,
+ * because an unremembered overflow could be any mint. A spam-heavy wallet with
+ * hundreds of accounts of a few mints stays far below it.
+ */
+export const MAX_OVERFLOW_MINTS = 1024;
+/** Native-hook discoveries held for the token step to place (priced first). Past this ⇒ saturated. */
+export const MAX_PENDING_DISCOVERED = 512;
+/** End-of-day entries one account may stage. Beyond ⇒ refused (too much activity to stage here). */
+export const MAX_DAYS_PER_ACCOUNT = 750;
+/** End-of-day entries staged across all accounts. Beyond ⇒ further backward walks wait for commits. */
+export const MAX_STAGED_DAYS_TOTAL = 6000;
+/** Unproductive / failed token runs before the worker backs off. */
+export const BACKOFF_AFTER = 3;
+export const BACKOFF_MS = 24 * 60 * 60 * 1000;
 
 /** The absent state: not an initialised token account on that side. */
 export const ABSENT = "-";
@@ -110,7 +140,11 @@ export type SplUnsupportedReason =
   /** The replay does not end at the account's current on-chain balance (an unlisted transaction). */
   | "RECONCILIATION_MISMATCH"
   /** A response that cannot be read as a token balance statement. */
-  | "INVALID_DATA";
+  | "INVALID_DATA"
+  /** More token accounts than can be tracked, at least one of them for this mint. */
+  | "TOO_MANY_ACCOUNTS"
+  /** More active days than one account may stage in the checkpoint. */
+  | "TOO_MUCH_ACTIVITY";
 
 /** The stored caveat each refusal carries — the EXISTING ChainCoverage vocabulary, no new one. */
 export const REASON_CAVEAT: Readonly<Record<SplUnsupportedReason, ChainCoverageCaveat>> = {
@@ -119,6 +153,8 @@ export const REASON_CAVEAT: Readonly<Record<SplUnsupportedReason, ChainCoverageC
   UNRECOGNISED_EXTENSION: "PROOF_PREMISES_UNMET",
   RECONCILIATION_MISMATCH: "ADDRESS_INDEX_INCOMPLETE",
   INVALID_DATA:           "INVALID_DATA",
+  TOO_MANY_ACCOUNTS:      "PAGE_BUDGET_EXHAUSTED",
+  TOO_MUCH_ACTIVITY:      "PAGE_BUDGET_EXHAUSTED",
 };
 
 // ── Wire shapes ──────────────────────────────────────────────────────────────
@@ -382,8 +418,13 @@ export type MintExtensionVerdict = "OK" | Extract<SplUnsupportedReason, "BALANCE
  * answer (the mint stays unchecked and is retried — never assumed safe).
  */
 export function mintExtensionVerdict(result: unknown): MintExtensionVerdict {
-  const info = (result as { value?: { data?: { parsed?: { type?: unknown; info?: { extensions?: unknown } } } } | null } | null)?.value?.data?.parsed;
+  const value = (result as { value?: { owner?: unknown; data?: { parsed?: { type?: unknown; info?: { extensions?: unknown } } } } | null } | null)?.value;
+  const info = value?.data?.parsed;
   if (!info || info.type !== "mint") throw new SolProofDataError("mint account is not a parsed mint");
+  // FAIL CLOSED on the owning program: an unstated owner is unreadable (retried,
+  // never assumed classic); anything but the two token programs is refused.
+  if (typeof value?.owner !== "string" || !value.owner) throw new SolProofDataError("mint account states no owning program");
+  if (value.owner !== SPL_TOKEN_PROGRAM_ID && value.owner !== TOKEN_2022_PROGRAM_ID) return "UNRECOGNISED_EXTENSION";
   const ext = info.info?.extensions;
   if (ext === undefined) return "OK";
   if (!Array.isArray(ext)) throw new SolProofDataError("mint extensions unreadable");
@@ -418,6 +459,20 @@ export interface SplAccountState {
   headMismatches: number;
   failure: SplUnsupportedReason | null;
   signatures: number;
+  /**
+   * Set when `days` LOST entries at a commit trim: the date of the first entry
+   * kept (the carry-in). Every entry before it is gone, so the staged days are
+   * exact only for days on or after this one — a row before it can never be
+   * computed from them (spl-history.ts rebuilds or refuses instead).
+   */
+  trimmedFromISO?: string | null;
+  /**
+   * The earliest day whose staged state changed since this account's mints last
+   * committed — PERSISTED (a walk can finish runs before its mint is decided),
+   * so the rewrite always starts early enough. Cleared once every mint of the
+   * account is committed or refused.
+   */
+  dirtyFromISO?: string | null;
 }
 
 export type SplMintStatus = "PENDING" | "COMPLETE" | "PARTIAL" | "UNSUPPORTED";
@@ -430,8 +485,22 @@ export interface SplMintState {
   reason: SplUnsupportedReason | null;
   licensedFromISO: string | null;
   licensedToISO: string | null;
-  /** Token-2022 only; null = not checked yet. Classic SPL mints have no extensions. */
+  /** "OK" only for a mint proven classic SPL (or a checked Token-2022 mint); null = must be checked. */
   extension: MintExtensionVerdict | null;
+  /**
+   * A COMMITTED licence that can no longer be extended (a head gap, or an
+   * untrackable account appeared): kept as proven through `licensedToISO`,
+   * persisted as PARTIAL, never COMPLETE again without a rebuild.
+   */
+  frozen?: SplUnsupportedReason | null;
+  /** The status the licence had when it was frozen (a retryable freeze thaws back to it). */
+  frozenFrom?: "COMPLETE" | "PARTIAL" | null;
+  /**
+   * The token accounts the committed licence was computed from. A failure on an
+   * account NOT in it (one that joined later) cannot freeze the licence — that
+   * account's earlier balances are unknown, so the licence is withdrawn instead.
+   */
+  licensedAccounts?: string[] | null;
 }
 
 export interface SplHistoryState {
@@ -443,21 +512,44 @@ export interface SplHistoryState {
     walkBefore: string | null;
     walkDone: boolean;
     walkSignatures: number;
+    /**
+     * The native top (and, NATIVE, bottom) signature as of the last point
+     * discovery is known to have covered: the last native commit the hook
+     * WATCHED, or — WALK — the native top when the walk (re)started (the walk
+     * covers everything at or below it). If the native checkpoint has moved past
+     * them without the hook (the flag was off), a stretch of owner transactions
+     * went unseen: NATIVE falls back to a WALK, a WALK starts over. Discovery is
+     * never complete while they disagree (`discoveryComplete`).
+     */
+    watchedTop?: string | null;
+    watchedBottom?: string | null;
   };
   accounts: SplAccountState[];
   mints: SplMintState[];
   /** Discovered accounts beyond MAX_TRACKED_ACCOUNTS — the inventory can never be complete while > 0. */
   overflow: number;
+  /** Untracked (address, mint) pairs, bounded by MAX_OVERFLOW_RECORDS (de-duplication only). */
+  overflowed?: Array<[string, string]>;
+  /** Mints with an untracked account (bounded by MAX_OVERFLOW_MINTS; past it ⇒ saturated). Never shrinks. */
+  overflowMints?: string[];
+  /** More overflow than could be remembered: no mint may read COMPLETE. */
+  overflowSaturated?: boolean;
+  /** Native-hook finds not yet placed (the token step places them, priced first). */
+  pendingDiscovered?: DiscoveredTokenAccount[];
+  /** Consecutive failed or unproductive runs, for the worker's backoff. */
+  backoff?: { count: number; lastAtISO: string | null };
   /** Discovery complete, nothing overflowed, and every discovered mint has a terminal, licensed verdict. */
   inventoryComplete: boolean;
   lastRunAtISO: string | null;
 }
 
-export function freshSplState(source: "NATIVE" | "WALK"): SplHistoryState {
+export function freshSplState(source: "NATIVE" | "WALK", watched: NativeEnds | null = null): SplHistoryState {
   return {
     kind: SPL_STATE_KIND, v: SPL_STATE_VERSION,
-    discovery: { source, walkBefore: null, walkDone: false, walkSignatures: 0 },
-    accounts: [], mints: [], overflow: 0, inventoryComplete: false, lastRunAtISO: null,
+    discovery: { source, walkBefore: null, walkDone: false, walkSignatures: 0,
+      watchedTop: watched?.top?.signature ?? null, watchedBottom: watched?.bottom?.signature ?? null },
+    accounts: [], mints: [], overflow: 0, overflowed: [], overflowMints: [], overflowSaturated: false, pendingDiscovered: [],
+    backoff: { count: 0, lastAtISO: null }, inventoryComplete: false, lastRunAtISO: null,
   };
 }
 
@@ -472,7 +564,14 @@ export function parseSplState(raw: unknown): SplHistoryState | null {
     if ((a.top == null) !== (a.bottom == null)) return null;
   }
   for (const m of s.mints) if (!m || typeof m.mint !== "string" || !isValidDecimals(m.decimals)) return null;
-  return s as SplHistoryState;
+  if (s.overflowed !== undefined && !(Array.isArray(s.overflowed) && s.overflowed.every((e) => Array.isArray(e) && e.length === 2))) return null;
+  return {
+    ...(s as SplHistoryState),
+    overflowed: s.overflowed ?? [], overflowSaturated: s.overflowSaturated ?? false,
+    overflowMints: Array.isArray(s.overflowMints) ? s.overflowMints.filter((m): m is string => typeof m === "string") : [],
+    pendingDiscovered: Array.isArray(s.pendingDiscovered) ? s.pendingDiscovered : [],
+    backoff: s.backoff && typeof s.backoff.count === "number" ? s.backoff : { count: 0, lastAtISO: null },
+  };
 }
 
 function blankAccount(address: string, mint: string, program: string | null): SplAccountState {
@@ -483,25 +582,76 @@ function blankAccount(address: string, mint: string, program: string | null): Sp
 }
 
 /**
+ * The extension verdict a newly seen mint starts with — FAIL CLOSED: only a mint
+ * seen under classic SPL needs no check; Token-2022 or an unstated program is
+ * checked; any other program is refused outright (no request spent on it).
+ */
+function initialExtension(program: string | null): MintExtensionVerdict | null {
+  if (program === SPL_TOKEN_PROGRAM_ID) return "OK";
+  if (program === null || program === TOKEN_2022_PROGRAM_ID) return null;
+  return "UNRECOGNISED_EXTENSION";
+}
+
+/**
  * Fold discovered accounts (current enumeration or transaction history) into the
- * state. Idempotent. Priced mints claim the bounded account slots first; beyond
- * the bound an account is counted in `overflow`, never silently dropped.
+ * state. Idempotent. PRICED mints claim the bounded account slots first — a
+ * priced account may evict a not-yet-walked account of unpriced mints. An
+ * account that cannot be tracked is REMEMBERED as an (address, mint) pair, and
+ * its mint is recorded, so the mint is held from COMPLETE (`decideMint`) —
+ * never silently summed without it.
  */
 export function mergeDiscovered(
   state: SplHistoryState,
   found: readonly DiscoveredTokenAccount[],
   isPriced: (mint: string) => boolean = () => false,
 ): SplHistoryState {
-  const accounts = state.accounts.map((a) => ({ ...a, mints: [...a.mints] }));
+  let accounts = state.accounts.map((a) => ({ ...a, mints: [...a.mints] }));
   const mints = state.mints.map((m) => ({ ...m }));
   const byAddr = new Map(accounts.map((a) => [a.address, a]));
-  const overflowSeen = new Set<string>();
+  const overflowed: Array<[string, string]> = [...(state.overflowed ?? [])];
+  const oMints = new Set([...(state.overflowMints ?? []), ...overflowed.map(([, m]) => m)]);
+  let saturated = state.overflowSaturated ?? false;
+  const committed = (mint: string) => mints.some((m) => m.mint === mint && m.licensedToISO !== null);
+  const remember = (address: string, mint: string) => {
+    if (!overflowed.some(([a, m]) => a === address && m === mint) && overflowed.length < MAX_OVERFLOW_RECORDS) overflowed.push([address, mint]);
+    if (!oMints.has(mint)) { if (oMints.size < MAX_OVERFLOW_MINTS) oMints.add(mint); else saturated = true; }
+  };
+  const ensureMint = (f: DiscoveredTokenAccount) => {
+    const m = mints.find((x) => x.mint === f.mint);
+    if (!m) {
+      mints.push({ mint: f.mint, decimals: f.decimals, program: f.program, status: "PENDING", reason: null,
+        licensedFromISO: null, licensedToISO: null, extension: initialExtension(f.program) });
+      return;
+    }
+    // A mint seen under anything but classic SPL must be checked (or, under an
+    // unknown program, refused), whatever it was first seen as. A refusal stands.
+    const refused = m.extension !== null && m.extension !== "OK";
+    if (f.program && f.program !== SPL_TOKEN_PROGRAM_ID && m.program !== f.program) {
+      m.program = f.program;
+      if (!refused) m.extension = initialExtension(f.program);
+    } else if (!m.program && f.program) {
+      m.program = f.program;
+      if (!refused && f.program !== SPL_TOKEN_PROGRAM_ID) m.extension = initialExtension(f.program);
+    }
+  };
   const ordered = [...found].sort((x, y) => Number(isPriced(y.mint)) - Number(isPriced(x.mint)) || x.address.localeCompare(y.address));
   for (const f of ordered) {
     let a = byAddr.get(f.address);
     if (!a) {
+      if (accounts.length >= MAX_TRACKED_ACCOUNTS && isPriced(f.mint)) {
+        const victim = accounts.find((x) => x.top === null && !x.creation && x.failure === null
+          && x.mints.every((m) => !isPriced(m) && !committed(m)));
+        if (victim) {
+          accounts = accounts.filter((x) => x !== victim);
+          byAddr.delete(victim.address);
+          for (const m of victim.mints) remember(victim.address, m);
+        }
+      }
       if (accounts.length >= MAX_TRACKED_ACCOUNTS) {
-        overflowSeen.add(f.address);
+        // Remembered, not tracked. No mint record is made for it (bounded
+        // checkpoint): a mint known only from untracked accounts has no history
+        // here at all, and the overflow keeps the inventory incomplete.
+        remember(f.address, f.mint);
         continue;
       }
       a = blankAccount(f.address, f.mint, f.program);
@@ -511,22 +661,113 @@ export function mergeDiscovered(
       a.mints.push(f.mint);
     }
     if (!a.program && f.program) a.program = f.program;
-    if (!mints.some((m) => m.mint === f.mint)) {
-      mints.push({
-        mint: f.mint, decimals: f.decimals, program: f.program, status: "PENDING", reason: null,
-        licensedFromISO: null, licensedToISO: null,
-        extension: f.program === TOKEN_2022_PROGRAM_ID ? null : "OK",
-      });
-    } else {
-      const m = mints.find((x) => x.mint === f.mint)!;
-      // A mint seen under Token-2022 must be checked even if first seen without a program id.
-      if (f.program === TOKEN_2022_PROGRAM_ID && m.program !== TOKEN_2022_PROGRAM_ID) { m.program = f.program; m.extension = null; }
-      else if (!m.program && f.program) m.program = f.program;
-    }
+    ensureMint(f);
   }
-  // Untracked addresses are not stored, so each merge counts the ones IT could
-  // not place; the state keeps the largest count seen (never back to 0 by forgetting).
-  return { ...state, accounts, mints, overflow: Math.max(overflowSeen.size, state.overflow) };
+  // A pair is no longer overflowed once its account is tracked (it was let back in).
+  const kept = overflowed.filter(([addr]) => !byAddr.has(addr));
+  return { ...state, accounts, mints, overflowed: kept, overflowMints: [...oMints], overflowSaturated: saturated,
+    overflow: overflowCount(kept, oMints.size, saturated) };
+}
+
+/** The `overflow` count: > 0 exactly when anything could not be tracked. */
+export function overflowCount(pairs: readonly unknown[], mints: number, saturated: boolean): number {
+  return Math.max(pairs.length, mints) + (saturated ? 1 : 0);
+}
+
+/** Mints held from COMPLETE because one of their accounts could not be tracked. */
+export function overflowedMints(state: Pick<SplHistoryState, "overflowed" | "overflowMints">): Set<string> {
+  return new Set([...(state.overflowMints ?? []), ...(state.overflowed ?? []).map(([, m]) => m)]);
+}
+
+/** The native checkpoint's ends, as the watch compares them. */
+export interface NativeEnds { top: { signature: string } | null; bottom?: { signature: string } | null }
+
+/**
+ * Has discovery covered every native move since it began? NATIVE: every native
+ * commit was WATCHED by the hook (top and bottom both as last seen) — only then
+ * may it inherit native's reachedBeginning. WALK: the native top has only moved
+ * under the hook since the walk started (the walk itself covers everything at or
+ * below where it started). A move made while the flag was off breaks it.
+ */
+export function nativeWatchIntact(state: SplHistoryState, native: NativeEnds): boolean {
+  const topOk = (state.discovery.watchedTop ?? null) === (native.top?.signature ?? null);
+  if (state.discovery.source === "WALK") return topOk;
+  return topOk && (state.discovery.watchedBottom ?? null) === (native.bottom?.signature ?? null);
+}
+
+/**
+ * Discovery can no longer vouch for the stretch native moved through unwatched:
+ * NATIVE becomes a WALK, a WALK starts over — from the native ends NOW, which
+ * the new walk covers. What was already found is kept (finds are only hints).
+ */
+export function demoteToWalk(state: SplHistoryState, native: NativeEnds): SplHistoryState {
+  return { ...state, discovery: { source: "WALK", walkBefore: null, walkDone: false, walkSignatures: 0,
+    watchedTop: native.top?.signature ?? null, watchedBottom: native.bottom?.signature ?? null } };
+}
+
+/**
+ * A refusal that can clear on a later run: only a head mismatch (re-checked
+ * every run). Every other reason — including TOO_MANY_ACCOUNTS, since a tracked
+ * slot is never given back — is final.
+ */
+export function retryableReason(r: SplUnsupportedReason | null | undefined): boolean {
+  return r === "RECONCILIATION_MISMATCH";
+}
+
+/**
+ * Reasons that break the PREMISE a committed licence was computed on (the
+ * balance is not `amount`, or an account of the mint was never summed): the
+ * licence is withdrawn, never frozen as proven.
+ */
+export function premiseReason(r: SplUnsupportedReason): boolean {
+  return r === "BALANCE_EXTENSION" || r === "CONFIDENTIAL_BALANCES" || r === "UNRECOGNISED_EXTENSION" || r === "TOO_MANY_ACCOUNTS";
+}
+
+/** Mints with a FINAL verdict: refused for good, or frozen for a final reason. Their accounts owe no work. */
+export function deadMints(state: Pick<SplHistoryState, "mints">): Set<string> {
+  return new Set(state.mints.filter((m) => (m.extension && m.extension !== "OK")
+    || (m.frozen && !retryableReason(m.frozen))
+    || (m.status === "UNSUPPORTED" && !retryableReason(m.reason))).map((m) => m.mint));
+}
+
+/**
+ * Where a rewrite of `mint`'s rows may start, given the span the run would like
+ * (`spanFrom`), or null when it CANNOT be computed from the staged days and the
+ * mint must be rebuilt from full evidence.
+ *
+ * An account trimmed at an earlier commit is exact only from its
+ * `trimmedFromISO`; before that it carries no entries, and summing it there
+ * would read its carry-in as its whole past. So with T = the latest such date:
+ *   · a FIRST licence starting before T cannot be computed (no old rows to keep);
+ *   · a committed licence keeps its proven rows before T — allowed only when
+ *     nothing that changed since could alter them: every account dirtied before
+ *     T is untrimmed, began at creation, and attributes ZERO of this mint on
+ *     every staged day before T (e.g. an account handed to the wallet later).
+ *     Then the rewrite starts at T, where every account is exact.
+ */
+export function rewriteFrom(mint: string, mine: readonly SplAccountState[], spanFrom: string, committed: boolean): string | null {
+  const trims = mine.map((a) => a.trimmedFromISO).filter((d): d is string => !!d).sort();
+  if (trims.length === 0) return spanFrom;
+  const t = trims[trims.length - 1];
+  if (spanFrom >= t) return spanFrom;
+  if (!committed) return null;
+  for (const a of mine) {
+    if (!a.dirtyFromISO || a.dirtyFromISO >= t) continue;
+    if (a.trimmedFromISO || !a.creation) return null;
+    if (a.days.some(([d, k]) => d < t && attributedRaw(k, mint) !== BigInt(0))) return null;
+  }
+  return t;
+}
+
+/** An account walked again from nothing (its staged evidence was incomplete). */
+export function resetAccount(a: SplAccountState): SplAccountState {
+  return { ...a, top: null, bottom: null, pageBefore: null, creation: false, provenFromISO: null, days: [],
+    verifiedAtISO: null, headMismatches: 0, signatures: 0, trimmedFromISO: null, dirtyFromISO: null };
+}
+
+/** Total staged end-of-day entries (checkpoint size driver). */
+export function stagedDays(state: Pick<SplHistoryState, "accounts">): number {
+  return state.accounts.reduce((n, a) => n + a.days.length, 0);
 }
 
 /**
@@ -545,12 +786,16 @@ export function continueDecision(m: SplMintState, d: MintDecision): MintDecision
 
 /** Program of a mint, for its token-2022 check. Classic SPL needs none. */
 export function needsExtensionCheck(m: SplMintState): boolean {
-  return m.extension === null && m.program !== SPL_TOKEN_PROGRAM_ID;
+  return m.extension === null;
 }
 
-/** Is token-account discovery complete? */
-export function discoveryComplete(state: SplHistoryState, native: { reachedBeginning: boolean; gap: unknown | null }): boolean {
+/**
+ * Is token-account discovery complete? Proven by DISCOVERY's own coverage —
+ * never inherited from a native completion the hook did not watch.
+ */
+export function discoveryComplete(state: SplHistoryState, native: NativeEnds & { reachedBeginning: boolean; gap: unknown | null }): boolean {
   if (native.gap) return false; // the native walk stopped: owner transactions below the gap are unlisted
+  if (!nativeWatchIntact(state, native)) return false;
   return state.discovery.source === "NATIVE" ? native.reachedBeginning : state.discovery.walkDone;
 }
 
@@ -573,18 +818,20 @@ export interface MintDecision {
 export function decideMint(
   m: SplMintState,
   accounts: readonly SplAccountState[],
-  ctx: { discoveryComplete: boolean; verifiedThisRun: ReadonlySet<string>; todayISO: string },
+  ctx: { discoveryComplete: boolean; verifiedThisRun: ReadonlySet<string>; todayISO: string; overflowed?: ReadonlySet<string>; saturated?: boolean },
 ): MintDecision {
   const pending: MintDecision = { status: "PENDING", reason: null, fromISO: null, toISO: null };
   const refuse = (reason: SplUnsupportedReason): MintDecision => ({ status: "UNSUPPORTED", reason, fromISO: null, toISO: null });
   if (m.extension && m.extension !== "OK") return refuse(m.extension);
+  // An account of this mint could not be tracked: its sum would be short.
+  if (ctx.saturated || ctx.overflowed?.has(m.mint)) return refuse("TOO_MANY_ACCOUNTS");
   const mine = accounts.filter((a) => a.mints.includes(m.mint));
   const failed = mine.find((a) => a.failure !== null);
   if (failed) return refuse(failed.failure!);
   // Repeatedly disagreeing with the chain is a refusal — but a retryable one:
   // the account keeps being checked, and a later match re-decides the mint.
   if (mine.some((a) => a.headMismatches >= HEAD_MISMATCH_LIMIT && !ctx.verifiedThisRun.has(a.address))) return refuse("RECONCILIATION_MISMATCH");
-  if (m.extension === null && m.program !== SPL_TOKEN_PROGRAM_ID) return pending;
+  if (m.extension === null) return pending;
   if (!ctx.discoveryComplete || mine.length === 0) return pending;
   if (!mine.every(accountWalked)) return pending;
   if (!mine.every((a) => ctx.verifiedThisRun.has(a.address))) return pending;
@@ -609,8 +856,10 @@ export function coverageForDecision(d: MintDecision): ChainCoverage | null {
 
 /** The inventory answer the wallet-level completeness rule reads. */
 export function inventoryCompleteOf(state: SplHistoryState, discoveryDone: boolean): boolean {
-  return discoveryDone && state.overflow === 0
-    && state.mints.every((m) => m.status === "COMPLETE");
+  return discoveryDone && state.overflow === 0 && !state.overflowSaturated && (state.overflowed ?? []).length === 0
+    && (state.overflowMints ?? []).length === 0
+    && (state.pendingDiscovered ?? []).length === 0
+    && state.mints.every((m) => m.status === "COMPLETE" && !m.frozen);
 }
 
 /**
@@ -619,11 +868,20 @@ export function inventoryCompleteOf(state: SplHistoryState, discoveryDone: boole
  * backfill can do (NATIVE discovery waits on it), nor for accounts beyond the
  * bound (never tracked), nor for refused mints.
  */
-export function splWorkOwed(state: SplHistoryState | null, native: { reachedBeginning: boolean; gap: unknown | null; top: unknown | null }): boolean {
+export function splWorkOwed(
+  state: SplHistoryState | null,
+  native: NativeEnds & { reachedBeginning: boolean; gap: unknown | null },
+  nowMs?: number,
+): boolean {
   if (!native.top) return false; // native first
   if (!state) return true;       // never run
+  // Repeated failed or unproductive runs: once a day, never every wake.
+  const b = state.backoff;
+  if (b && b.count >= BACKOFF_AFTER && b.lastAtISO && nowMs !== undefined && nowMs - Date.parse(b.lastAtISO) < BACKOFF_MS) return false;
+  if ((state.pendingDiscovered ?? []).length > 0) return true;
+  if (!nativeWatchIntact(state, native)) return true; // demote / restart the walk
   if (state.discovery.source === "WALK" && !state.discovery.walkDone && !native.gap) return true;
-  const refused = new Set(state.mints.filter((m) => (m.extension && m.extension !== "OK") || (m.status === "UNSUPPORTED" && m.reason !== "RECONCILIATION_MISMATCH")).map((m) => m.mint));
+  const refused = deadMints(state);
   if (state.accounts.some((a) => !accountWalked(a) && a.mints.some((m) => !refused.has(m)))) return true;
   // A PENDING mint needs a run when it awaits its Token-2022 check, or when
   // everything it needs is walked and discovered — the run verifies and decides

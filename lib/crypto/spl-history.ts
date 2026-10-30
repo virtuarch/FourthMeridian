@@ -38,6 +38,8 @@ import {
 } from "./sol-history-backfill.core";
 import { SolTransportError, CheckpointConflictError, type SolRpcCall } from "./sol-history-backfill";
 import {
+  HEAD_MISMATCH_LIMIT, MAX_DAYS_PER_ACCOUNT, MAX_OVERFLOW_MINTS, MAX_PENDING_DISCOVERED, MAX_STAGED_DAYS_TOTAL, REASON_CAVEAT, SPL_CONTINUITY_SOURCE,
+  deadMints, demoteToWalk, nativeWatchIntact, overflowCount, overflowedMints, premiseReason, resetAccount, retryableReason, rewriteFrom, splWorkOwed, stagedDays,
   ABSENT, accountWalked, continueDecision, coverageForDecision, currentByAddress, decideMint, discoverOwnedTokenAccounts,
   discoveryComplete, endOfDayKeys, freshSplState, inventoryCompleteOf, matchesAnchor, mergeDays,
   mergeDiscovered, mintDailyRaw, mintExtensionVerdict, needsExtensionCheck, orderMints, ownedMintsIn, parseSplState, tokenPointFromTransaction,
@@ -101,6 +103,8 @@ export interface SplRunOutcome {
   rowsWritten: number;
   impactedFromISO: string | null;
   mintsCommitted: Array<{ mint: string; status: "COMPLETE" | "PARTIAL" | "UNSUPPORTED" }>;
+  /** Mints sent back to be rebuilt from full evidence (their staged days could not compute a rewrite). */
+  rebuilt: string[];
   signaturesProcessed: number;
   requests: number;
   pricesInserted: number;
@@ -137,13 +141,15 @@ function txFetcher(call: SolRpcCall) {
 
 /** In-order prefix of transactions fetched before the stop condition or the first failure. */
 async function fetchInOrder(
-  get: (sig: string) => Promise<SplTxView>, sigs: readonly SigRow[], ctx: { concurrency: number; stop: () => boolean },
+  get: (sig: string) => Promise<SplTxView>, sigs: readonly SigRow[], ctx: { concurrency: number; stop: () => boolean; room?: () => number },
 ): Promise<{ txs: SplTxView[]; error: SolTransportError | null; stoppedForBudget: boolean }> {
   const txs: SplTxView[] = [];
   let pool = Math.max(1, ctx.concurrency);
   for (let i = 0; i < sigs.length; ) {
     if (ctx.stop()) return { txs, error: null, stoppedForBudget: true };
-    const batch = sigs.slice(i, i + pool);
+    // Never send a batch wider than the request allowance left (no overshoot).
+    const width = Math.min(pool, Math.max(1, Math.floor(ctx.room?.() ?? pool)));
+    const batch = sigs.slice(i, i + width);
     const settled = await Promise.allSettled(batch.map((s) => get(s.signature)));
     for (const s of settled) {
       if (s.status === "rejected") {
@@ -172,7 +178,11 @@ export async function runSplTokenHistory(
     headOnly?: boolean;
     /** Token accounts the native run saw the wallet own (its transaction hook). */
     discovered?: readonly DiscoveredTokenAccount[];
-    /** Discovery source for a wallet with no token state yet (NATIVE only when the native run started fresh with the hook). */
+    /**
+     * Kept for the caller's signature. A token state is only ever started as
+     * NATIVE by the native hook (annotateWithDiscoveries), which watched the
+     * native commit; one this step starts itself is always a WALK.
+     */
     freshSource?: "NATIVE" | "WALK";
   },
   deps: SplRunDeps,
@@ -183,11 +193,12 @@ export async function runSplTokenHistory(
   const sent0 = deps.sent();
   const concurrency = deps.concurrency ?? 4;
   const outcome: SplRunOutcome = {
-    stoppedBecause: "DONE", rowsWritten: 0, impactedFromISO: null, mintsCommitted: [],
+    stoppedBecause: "DONE", rowsWritten: 0, impactedFromISO: null, mintsCommitted: [], rebuilt: [],
     signaturesProcessed: 0, requests: 0, pricesInserted: 0, inventoryComplete: false, failure: null,
   };
   const done = (why: SplRunOutcome["stoppedBecause"]) => { outcome.stoppedBecause = why; outcome.requests = deps.sent() - sent0; return outcome; };
   const overBudget = () => now() >= deps.deadlineMs || (deps.requestBudget !== undefined && deps.sent() - sent0 >= deps.requestBudget);
+  const room = () => (deps.requestBudget === undefined ? Number.POSITIVE_INFINITY : deps.requestBudget - (deps.sent() - sent0));
   const impacted = (d: string) => { if (outcome.impactedFromISO === null || d < outcome.impactedFromISO) outcome.impactedFromISO = d; };
 
   let raw = await args.store.readCursor();
@@ -196,10 +207,16 @@ export async function runSplTokenHistory(
   if (!raw || !native || native.kind !== SOL_BACKFILL_CURSOR_KIND) { outcome.skipped = "no native SOL checkpoint yet"; return done("SKIPPED"); }
   if (!native.top) { outcome.skipped = "native SOL history has not proven its first transaction yet"; return done("SKIPPED"); }
 
-  let state: SplHistoryState = parseSplState(native.tokens) ?? freshSplState(args.freshSource ?? "WALK");
+  // A state first made HERE is always a WALK from the native ends as they are
+  // now: only the hook (annotateWithDiscoveries), watching native commit by
+  // commit, may start one as NATIVE.
+  let state: SplHistoryState = parseSplState(native.tokens) ?? freshSplState("WALK", native);
+  // A stretch of native history the discovery hook did not watch (the flag was
+  // off) cannot vouch for discovery: NATIVE becomes a WALK, a WALK starts over.
+  if (!nativeWatchIntact(state, native)) state = demoteToWalk(state, native);
   let priced = new Set<string>();
   const isPriced = (m: string) => priced.has(m);
-  state = mergeDiscovered(state, args.discovered ?? [], isPriced);
+  const accountsBefore = state.accounts.length;
 
   /** Persist `next` (and a mint's rows) by CAS from the cursor this step last read or wrote. */
   const commit = async (next: SplHistoryState, mint?: SplMintWrite) => {
@@ -208,9 +225,11 @@ export async function runSplTokenHistory(
     await args.store.commit({ expectedCursor: raw!, nextCursor: nextRaw, mint });
     raw = nextRaw; native = nextNative; state = next;
   };
+  const bumpBackoff = (st: SplHistoryState): SplHistoryState =>
+    ({ ...st, backoff: { count: (st.backoff?.count ?? 0) + 1, lastAtISO: new Date(now()).toISOString() } });
   const fail = async (code: string, detail: string) => {
     outcome.failure = { code, detail: detail.slice(0, 300) };
-    try { await commit({ ...state, lastRunAtISO: new Date(now()).toISOString() }); } catch { /* the proven state is already committed */ }
+    try { await commit({ ...bumpBackoff(state), lastRunAtISO: new Date(now()).toISOString() }); } catch { /* the proven state is already committed */ }
     return done("FAILURE");
   };
 
@@ -235,8 +254,13 @@ export async function runSplTokenHistory(
     }
     const current = currentByAddress(currentEntries);
     const currentFor = (address: string) => current.get(address) ?? null;
-    priced = await args.store.pricedMints([...new Set([...state.mints.map((m) => m.mint), ...currentEntries.map((e) => e.mint)])]).catch(() => new Set<string>());
-    state = mergeDiscovered(state, currentEntries.map((e) => ({ address: e.tokenAccount, mint: e.mint, program: e.program, decimals: e.decimals })), isPriced);
+    const hinted = [...(state.pendingDiscovered ?? []), ...(args.discovered ?? [])];
+    priced = await args.store.pricedMints([...new Set([...state.mints.map((m) => m.mint), ...currentEntries.map((e) => e.mint), ...hinted.map((h) => h.mint)])]).catch(() => new Set<string>());
+    // Every find placed in ONE priced-first merge (current accounts + the native hook's finds).
+    state = mergeDiscovered({ ...state, pendingDiscovered: [] }, [
+      ...currentEntries.map((e) => ({ address: e.tokenAccount, mint: e.mint, program: e.program, decimals: e.decimals })),
+      ...hinted,
+    ], isPriced);
     /** Can this account's current state be read from the anchor? */
     const anchorable = (a: SplAccountState) => anchorReliable && !a.mints.some((m) => unreadableMints.has(m));
 
@@ -255,9 +279,15 @@ export async function runSplTokenHistory(
       while (!state.discovery.walkDone) {
         if (overBudget()) { await commit(state); return done("BUDGET"); }
         const page = await signaturePage(call, owner, { before: state.discovery.walkBefore });
-        const fetched = await fetchInOrder(getTx, page, { concurrency, stop: overBudget });
+        const fetched = await fetchInOrder(getTx, page, { concurrency, stop: overBudget, room });
         const found: DiscoveredTokenAccount[] = [];
         for (const tx of fetched.txs) found.push(...discoverOwnedTokenAccounts(tx, owner));
+        // Mints first seen in the walk are priced before they compete for slots.
+        const unseen = [...new Set(found.map((f) => f.mint))].filter((x) => !priced.has(x) && !state.mints.some((y) => y.mint === x));
+        if (unseen.length) {
+          const more = await args.store.pricedMints(unseen).catch(() => new Set<string>());
+          priced = new Set([...priced, ...more]);
+        }
         // Discovery is a HINT, so a partially read page still contributes its
         // accounts — but the cursor advances only past a page read whole.
         let next = mergeDiscovered(state, found, isPriced);
@@ -277,19 +307,20 @@ export async function runSplTokenHistory(
 
     // ── 4. WALK each token account, priced mints first ─────────────────────
     const verified = new Set<string>();
-    const changedFrom = new Map<string, string>(); // account → earliest day whose state this run changed
-    const markChanged = (addr: string, d: string) => { const p = changedFrom.get(addr); if (!p || d < p) changedFrom.set(addr, d); };
+    /** Record (durably, with the account) the earliest day whose staged state changed. */
+    const dirty = (x: SplAccountState, d: string): SplAccountState => (x.dirtyFromISO && x.dirtyFromISO <= d ? x : { ...x, dirtyFromISO: d });
     const setAccount = (a: SplAccountState) => { state = { ...state, accounts: state.accounts.map((x) => (x.address === a.address ? a : x)) }; };
     const visited = new Set<string>();
     let stoppedForBudget = false;
 
     for (const m of orderMints(state.mints, isPriced)) {
-      if (m.extension && m.extension !== "OK") continue;
+      const dead = deadMints(state);
+      if (dead.has(m.mint)) continue; // a final verdict owes no requests
       for (const addr of state.accounts.filter((a) => a.mints.includes(m.mint)).map((a) => a.address)) {
         if (visited.has(addr)) continue;
         visited.add(addr);
         let a = state.accounts.find((x) => x.address === addr)!;
-        if (a.failure) continue;
+        if (a.failure || a.mints.every((x) => dead.has(x))) continue;
         if (overBudget()) { stoppedForBudget = true; break; }
 
         // 4a. HEAD — activity newer than the proven top.
@@ -305,7 +336,7 @@ export async function runSplTokenHistory(
             before = page[page.length - 1].signature;
           }
           const oldestFirst = headComplete ? newer.reverse().filter((r) => r.slot > top0.slot) : [];
-          const fetched = await fetchInOrder(getTx, oldestFirst, { concurrency, stop: overBudget });
+          const fetched = await fetchInOrder(getTx, oldestFirst, { concurrency, stop: overBudget, room });
           if (fetched.txs.length < oldestFirst.length) headComplete = false;
           let pts: SolTxPoint[] = [];
           try {
@@ -327,8 +358,7 @@ export async function runSplTokenHistory(
             a = { ...a, failure: "RECONCILIATION_MISMATCH" }; setAccount(a); await commit(state); continue;
           }
           if (ext.points.length > 0) {
-            a = { ...a, mints: ownedMintsIn(ext.points, a.mints), top: ext.points[ext.points.length - 1], days: mergeDays(a.days, endOfDayKeys(ext.points), "new"), signatures: a.signatures + ext.points.length };
-            markChanged(addr, ext.points[0].dateISO);
+            a = capDays(dirty({ ...a, mints: ownedMintsIn(ext.points, a.mints), top: ext.points[ext.points.length - 1], days: mergeDays(a.days, endOfDayKeys(ext.points), "new"), signatures: a.signatures + ext.points.length }, ext.points[0].dateISO));
           }
           if (fetched.error) { setAccount(a); await commit(state); return await fail(fetched.error.code, fetched.error.message); }
           if (headComplete && anchorable(a)) {
@@ -343,13 +373,14 @@ export async function runSplTokenHistory(
           if (!headComplete) { stoppedForBudget = true; break; }
         }
 
-        // 4b. HISTORY — older than the proven bottom, back to creation.
-        while (!args.headOnly && !accountWalked(a) && !a.failure) {
+        // 4b. HISTORY — older than the proven bottom, back to creation. Held
+        // (not walked) while the checkpoint already stages its bound of days.
+        while (!args.headOnly && !accountWalked(a) && !a.failure && stagedDays(state) < MAX_STAGED_DAYS_TOTAL) {
           if (overBudget()) { stoppedForBudget = true; break; }
           const listed = await signaturePage(call, addr, { before: a.pageBefore ?? a.bottom?.signature ?? null });
           const fullPage = listed.length === SIGNATURE_PAGE_SIZE;
           const page = a.bottom ? listed.filter((r) => r.slot < a.bottom!.slot) : listed;
-          const fetched = await fetchInOrder(getTx, page, { concurrency, stop: overBudget });
+          const fetched = await fetchInOrder(getTx, page, { concurrency, stop: overBudget, room });
           outcome.signaturesProcessed += fetched.txs.length;
           let pts: Array<{ p: SolTxPoint | null; slot: number }>;
           try {
@@ -412,15 +443,15 @@ export async function runSplTokenHistory(
               if (pre === ABSENT || pre.endsWith(":0")) creation = true;
               else provenFromISO = newBottom.dateISO; // existed with a balance before anything listed
             }
-            a = {
+            a = capDays({
               ...a, mints, top, bottom: newBottom, creation, provenFromISO,
               days: mergeDays(a.days, endOfDayKeys(chainOrder), "existing"),
               pageBefore: nextPageBefore(),
               signatures: a.signatures + ext.points.length,
               ...(wasFresh && top ? { verifiedAtISO: todayISO, headMismatches: 0 } : {}),
-            };
+            });
             if (wasFresh && top) verified.add(addr);
-            if (chainOrder.length) markChanged(addr, chainOrder[0].dateISO);
+            if (chainOrder.length && !a.failure) a = dirty(a, chainOrder[0].dateISO);
             setAccount(a);
             await commit(state);
           } else if (!pageDone && fetched.txs.length === 0 && !fetched.error) {
@@ -440,52 +471,120 @@ export async function runSplTokenHistory(
     // Accounts not visited this run (budget) cannot be verified this run; their mints wait.
 
     // ── 5. DECIDE + COMMIT per mint ────────────────────────────────────────
-    const discDone = discoveryComplete(state, { reachedBeginning: native.reachedBeginning, gap: native.gap });
+    const discDone = discoveryComplete(state, native);
+    /** Accounts whose every mint has a final verdict keep nothing staged (bounded checkpoint). */
+    const clearDead = (st: SplHistoryState): SplAccountState[] => {
+      const dead = deadMints(st);
+      return st.accounts.map((a) => (a.mints.length > 0 && a.mints.every((x) => dead.has(x)) && (a.days.length || a.dirtyFromISO) ? { ...a, days: [], dirtyFromISO: null } : a));
+    };
     for (const m0 of orderMints(state.mints, isPriced)) {
       const m = state.mints.find((x) => x.mint === m0.mint)!;
-      // Refusals are final except a reconciliation mismatch, which is re-checked every run.
-      if (m.status === "UNSUPPORTED" && m.reason !== "RECONCILIATION_MISMATCH") continue;
+      // Refusals are final, except a head mismatch (re-checked every run).
+      if (m.status === "UNSUPPORTED" && !retryableReason(m.reason)) continue;
       const mine = state.accounts.filter((a) => a.mints.includes(m.mint));
-      let d: MintDecision = decideMint(m, mine, { discoveryComplete: discDone, verifiedThisRun: verified, todayISO });
-      d = continueDecision(m, d);
+      // A FROZEN licence stays exactly as proven — unless it was frozen for a
+      // head mismatch alone (no account failed), which a later match thaws.
+      if (m.frozen && !(retryableReason(m.frozen) && !mine.some((a) => a.failure !== null))) continue;
+      const base: SplMintState = m.frozen ? { ...m, status: m.frozenFrom ?? "PARTIAL" } : m;
+      let d: MintDecision = decideMint(base, mine, { discoveryComplete: discDone, verifiedThisRun: verified, todayISO,
+        overflowed: overflowedMints(state), saturated: state.overflowSaturated ?? false });
+      d = continueDecision(base, d);
       if (d.status === "PENDING") continue;
-      const committed = m.licensedToISO !== null && (m.status === "COMPLETE" || m.status === "PARTIAL");
+      const committed = base.licensedToISO !== null && (base.status === "COMPLETE" || base.status === "PARTIAL");
       if (d.status === "UNSUPPORTED") {
-        // A proven licence is never withdrawn by a later failure; it simply stops extending.
-        if (committed) continue;
-        if (m.status === "UNSUPPORTED" && m.reason === d.reason) continue; // already said
+        const reason = d.reason!;
+        if (committed) {
+          // A committed licence whose failure is about EXTENDING it (an account
+          // it was computed from stopped verifying) is FROZEN: kept as proven
+          // through its last day, persisted PARTIAL, never read as complete. A
+          // failure that breaks its PREMISE — a refused extension, an untracked
+          // account, or an account that joined later (its earlier balances are
+          // unknown) — WITHDRAWS it below: those rows were never proven.
+          const culprits = mine.filter((a) => a.failure !== null || (a.headMismatches >= HEAD_MISMATCH_LIMIT && !verified.has(a.address)));
+          const licensed = new Set(m.licensedAccounts ?? []);
+          if (!premiseReason(reason) && culprits.length > 0 && culprits.every((a) => licensed.has(a.address))) {
+            if (m.frozen === reason) continue; // already said
+            const frozen: SplMintState = { ...m, status: "PARTIAL", frozen: reason, frozenFrom: m.frozen ? m.frozenFrom ?? "PARTIAL" : (m.status as "COMPLETE" | "PARTIAL") };
+            const next = { ...state, mints: state.mints.map((x) => (x.mint === m.mint ? frozen : x)) };
+            await commit({ ...next, accounts: clearDead(next) }, {
+              mint: m.mint, decimals: m.decimals, program: m.program, replaceAll: false, deleteFromISO: null, deleteToISO: null, rows: [],
+              coverage: { kind: "PARTIAL", coveredFromISO: m.licensedFromISO, coveredToISO: m.licensedToISO, caveats: [REASON_CAVEAT[reason]], source: SPL_CONTINUITY_SOURCE },
+            });
+            outcome.mintsCommitted.push({ mint: m.mint, status: "PARTIAL" });
+            continue;
+          }
+        } else if (m.status === "UNSUPPORTED" && m.reason === reason) continue; // already said
         const coverage = coverageForDecision(d)!;
-        const next: SplMintState = { ...m, status: "UNSUPPORTED", reason: d.reason };
-        await commit({ ...state, mints: state.mints.map((x) => (x.mint === m.mint ? next : x)) },
+        const refused: SplMintState = { ...m, status: "UNSUPPORTED", reason, licensedFromISO: null, licensedToISO: null,
+          frozen: null, frozenFrom: null, licensedAccounts: null };
+        const next = { ...state, mints: state.mints.map((x) => (x.mint === m.mint ? refused : x)) };
+        await commit({ ...next, accounts: clearDead(next) },
           { mint: m.mint, decimals: m.decimals, program: m.program, replaceAll: true, deleteFromISO: null, deleteToISO: null, rows: [], coverage });
         outcome.mintsCommitted.push({ mint: m.mint, status: "UNSUPPORTED" });
+        if (committed && base.licensedFromISO) impacted(base.licensedFromISO); // withdrawn rows change those days
         continue;
       }
       const fromISO = d.fromISO!;
       const toISO = d.toISO!;
       // Days to (re)write: everything on a first licence; otherwise from the
-      // earliest day this run changed, or the day after the old edge.
-      const changed = mine.map((a) => changedFrom.get(a.address)).filter((x): x is string => !!x).sort()[0] ?? null;
-      const afterOld = committed ? addDay(m.licensedToISO!) : fromISO;
+      // earliest day any of its accounts changed since it last committed (held
+      // durably on the account), or the day after the old edge.
+      const changed = mine.map((a) => a.dirtyFromISO).filter((x): x is string => !!x).sort()[0] ?? null;
+      const afterOld = committed ? addDay(base.licensedToISO!) : fromISO;
       let spanFrom = committed ? [changed, afterOld].filter((x): x is string => !!x).sort()[0] : fromISO;
       if (spanFrom < fromISO) spanFrom = fromISO;
-      const startMoved = committed && fromISO !== m.licensedFromISO;
-      if (committed && spanFrom > toISO && !startMoved && d.status === m.status) continue; // nothing new
+      // NEVER from a trimmed list: an account trimmed at an earlier commit is
+      // exact only from its trim point. Either the rewrite can start there
+      // (nothing that changed could alter the proven rows before it), or the
+      // mint is REBUILT from full evidence — its accounts walked again from
+      // nothing — and a committed licence is withdrawn meanwhile (its rows
+      // may lack the newly found account), never overwritten with short sums.
+      const exactFrom = rewriteFrom(m.mint, mine, spanFrom, committed);
+      if (exactFrom === null) {
+        const resetAddrs = new Set(mine.map((a) => a.address));
+        const resetMints = new Set(mine.flatMap((a) => a.mints));
+        const dead = deadMints(state);
+        const pending = (x: SplMintState): SplMintState => ({ ...x, status: "PENDING", reason: null, licensedFromISO: null, licensedToISO: null,
+          frozen: null, frozenFrom: null, licensedAccounts: null });
+        await commit({
+          ...state,
+          accounts: state.accounts.map((a) => (resetAddrs.has(a.address) ? resetAccount(a) : a)),
+          mints: state.mints.map((x) => (x.mint === m.mint || (resetMints.has(x.mint) && !dead.has(x.mint)) ? pending(x) : x)),
+        }, committed ? {
+          mint: m.mint, decimals: m.decimals, program: m.program, replaceAll: true, deleteFromISO: null, deleteToISO: null, rows: [],
+          coverage: { kind: "UNKNOWN", caveats: ["PAGE_BUDGET_EXHAUSTED"], source: SPL_CONTINUITY_SOURCE },
+        } : undefined);
+        outcome.rebuilt.push(m.mint);
+        if (committed && base.licensedFromISO) impacted(base.licensedFromISO);
+        continue;
+      }
+      spanFrom = exactFrom;
+      const startMoved = committed && fromISO !== base.licensedFromISO;
+      if (committed && spanFrom > toISO && !startMoved && d.status === base.status && !m.frozen) continue; // nothing new
       const raws = spanFrom <= toISO ? mintDailyRaw(mine, m.mint, spanFrom, toISO) : [];
       const rows = raws.map((r) => ({ dateISO: r.dateISO, quantity: baseUnitsToWhole(r.raw, m.decimals) }));
       const coverage = coverageForDecision(d)!;
-      const nextMint: SplMintState = { ...m, status: d.status, reason: null, licensedFromISO: fromISO, licensedToISO: toISO };
-      // Once committed, an account whose every mint is committed keeps only what can carry into new days.
-      const committedMints = new Set(state.mints.filter((x) => x.mint === m.mint || (x.licensedToISO && (x.status === "COMPLETE" || x.status === "PARTIAL"))).map((x) => x.mint));
-      const accounts = state.accounts.map((a) => (a.mints.includes(m.mint) && a.mints.every((x) => committedMints.has(x)) ? { ...a, days: trimDays(a.days, toISO) } : a));
-      await commit({ ...state, accounts, mints: state.mints.map((x) => (x.mint === m.mint ? nextMint : x)) }, {
+      const nextMint: SplMintState = { ...m, status: d.status, reason: null, licensedFromISO: fromISO, licensedToISO: toISO,
+        frozen: null, frozenFrom: null, licensedAccounts: mine.map((a) => a.address) };
+      const after = { ...state, mints: state.mints.map((x) => (x.mint === m.mint ? nextMint : x)) };
+      // Once every mint of an account is committed (or refused for good), the
+      // account keeps only what can carry into new days — and remembers, as
+      // `trimmedFromISO`, from when its staged days are still exact.
+      const dead = deadMints(after);
+      const settled = new Set(after.mints.filter((x) => dead.has(x.mint) || (x.licensedToISO && (x.status === "COMPLETE" || x.status === "PARTIAL"))).map((x) => x.mint));
+      const accounts = after.accounts.map((a) => {
+        if (!a.mints.includes(m.mint) || !a.mints.every((x) => settled.has(x))) return a;
+        const kept = trimDays(a.days, toISO);
+        return { ...a, days: kept, dirtyFromISO: null, trimmedFromISO: kept.length < a.days.length ? kept[0]?.[0] ?? toISO : a.trimmedFromISO ?? null };
+      });
+      await commit({ ...after, accounts }, {
         mint: m.mint, decimals: m.decimals, program: m.program,
         replaceAll: !committed, deleteFromISO: committed && spanFrom <= toISO ? spanFrom : null, deleteToISO: committed && spanFrom <= toISO ? toISO : null,
         deleteBeforeISO: startMoved ? fromISO : null, rows, coverage,
       });
       outcome.mintsCommitted.push({ mint: m.mint, status: d.status });
       if (rows.length > 0) { outcome.rowsWritten += rows.length; impacted(rows[0].dateISO); }
-      if (startMoved) impacted(m.licensedFromISO!);
+      if (startMoved) impacted(base.licensedFromISO!);
       // Historical prices for a PRICED mint over its licence (bounded, shared, never invented).
       if (args.store.acquirePrices && priced.has(m.mint)) {
         try {
@@ -497,8 +596,14 @@ export async function runSplTokenHistory(
     }
 
     const inv = inventoryCompleteOf(state, discDone);
-    if (inv !== state.inventoryComplete || state.lastRunAtISO?.slice(0, 10) !== todayISO) {
-      await commit({ ...state, inventoryComplete: inv, lastRunAtISO: new Date(now()).toISOString() });
+    // BACKOFF: a run that owed work and moved nothing counts toward the worker's
+    // daily backoff (an unreadable anchor, an uncheckable mint…); progress resets it.
+    const progressed = outcome.signaturesProcessed > 0 || outcome.mintsCommitted.length > 0 || outcome.rebuilt.length > 0 || state.accounts.length > accountsBefore;
+    const owed = splWorkOwed(state, { reachedBeginning: native.reachedBeginning, gap: native.gap, top: native.top, bottom: native.bottom });
+    const prevBackoff = state.backoff ?? { count: 0, lastAtISO: null };
+    const backoff = progressed || !owed ? { count: 0, lastAtISO: null } : { count: prevBackoff.count + 1, lastAtISO: new Date(now()).toISOString() };
+    if (inv !== state.inventoryComplete || state.lastRunAtISO?.slice(0, 10) !== todayISO || backoff.count !== prevBackoff.count) {
+      await commit({ ...state, inventoryComplete: inv, lastRunAtISO: new Date(now()).toISOString(), backoff });
     }
     outcome.inventoryComplete = inv;
     return done(stoppedForBudget ? "BUDGET" : "DONE");
@@ -508,6 +613,11 @@ export async function runSplTokenHistory(
     if (e instanceof SolProofDataError) return await fail("INVALID_DATA", e.message);
     throw e;
   }
+}
+
+/** Bound one account's staged days: beyond the bound it is refused, and stages nothing. */
+function capDays(a: SplAccountState): SplAccountState {
+  return a.days.length > MAX_DAYS_PER_ACCOUNT ? { ...a, days: [], failure: "TOO_MUCH_ACTIVITY" } : a;
 }
 
 function addDay(iso: string): string {
@@ -538,13 +648,42 @@ export function createSplDiscoveryCollector(owner: string) {
  * Fold the collector's finds into a native checkpoint about to be committed
  * (the native run's `annotateCheckpoint` hook), so discovery is durable at the
  * same commit that makes the native cursor move past those transactions.
+ *
+ * The finds are QUEUED (`pendingDiscovered`, bounded — past the bound the state
+ * is saturated and no mint may read COMPLETE), not placed: placing needs the
+ * priced-first order, which only the token step knows. And the commit's native
+ * top/bottom are recorded as WATCHED (both sources): a later native move this
+ * hook did not see breaks the watch (`nativeWatchIntact`) and discovery is
+ * redone. `demote` (the caller found the watch already broken before this run)
+ * makes that fallback here, at the first commit of the run.
  */
 export function annotateWithDiscoveries(
   cp: SolBackfillCheckpoint & { tokens?: unknown },
   found: readonly DiscoveredTokenAccount[],
   freshSource: "NATIVE" | "WALK",
+  opts: { demote?: boolean } = {},
 ): SolBackfillCheckpoint {
-  if (found.length === 0 && cp.tokens !== undefined) return cp;
-  const state = parseSplState(cp.tokens) ?? freshSplState(freshSource);
-  return { ...cp, tokens: mergeDiscovered(state, found) } as SolBackfillCheckpoint;
+  // A state the hook starts is watched from this very commit.
+  let state = parseSplState(cp.tokens) ?? freshSplState(freshSource, cp);
+  if (opts.demote) state = demoteToWalk(state, cp);
+  const tracked = new Set(state.accounts.flatMap((a) => a.mints.map((m) => `${a.address}|${m}`)));
+  for (const [a, m] of state.overflowed ?? []) tracked.add(`${a}|${m}`); // already remembered: never re-queued
+  const oMints = new Set(state.overflowMints ?? []);
+  const pending = [...(state.pendingDiscovered ?? [])];
+  const seen = new Set(pending.map((d) => `${d.address}|${d.mint}`));
+  let saturated = state.overflowSaturated ?? false;
+  for (const d of found) {
+    const k = `${d.address}|${d.mint}`;
+    if (tracked.has(k) || seen.has(k) || oMints.has(d.mint)) continue; // an overflowed mint is held already
+    if (pending.length >= MAX_PENDING_DISCOVERED) {
+      // No room to queue it for placing: its MINT is held from COMPLETE instead
+      // (never dropped silently); past that bound, nothing may read complete.
+      if (oMints.size < MAX_OVERFLOW_MINTS) oMints.add(d.mint); else saturated = true;
+      continue;
+    }
+    pending.push(d); seen.add(k);
+  }
+  const discovery = { ...state.discovery, watchedTop: cp.top?.signature ?? null, watchedBottom: cp.bottom?.signature ?? null };
+  return { ...cp, tokens: { ...state, discovery, pendingDiscovered: pending, overflowMints: [...oMints], overflowSaturated: saturated,
+    overflow: overflowCount(state.overflowed ?? [], oMints.size, saturated) } } as SolBackfillCheckpoint;
 }

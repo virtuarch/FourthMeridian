@@ -28,6 +28,12 @@ export function splHistoryEnabled(env: Record<string, string | undefined> = proc
   return env.SPL_HISTORY_ENABLED === "true";
 }
 
+/** Token-history requests one wallet SYNC may send (the worker brings its own allowance). Default 25, clamped 0..200. */
+export function splSyncRequestLimit(env: Record<string, string | undefined> = process.env): number {
+  const n = Number(env.SPL_HISTORY_SYNC_REQUEST_LIMIT);
+  return Number.isInteger(n) && n >= 0 && n <= 200 ? n : 25;
+}
+
 export function prismaSplHistoryStore(accountId: string, connectionId: string, db: PrismaClient): SplHistoryStore {
   return {
     async readCursor() {
