@@ -26,6 +26,7 @@
  */
 
 import type { ChainCoverage, ChainMovement } from "./chain-movement";
+import { normalizeEthAddress } from "./eth-rpc";
 import {
   acquireEthHistory, finalizedBlockNumber, EARLIEST_PROVABLE_BLOCK, ETH_HISTORY_SOURCE, ETHEREUM_NETWORK_ID, type EthHistoryDeps,
 } from "./eth-history";
@@ -94,8 +95,8 @@ export function ownerSignedIn(
   movements: readonly { role: string; ownedAddress: string; networkId: string }[],
   ownerAddress: string,
 ): boolean {
-  const owner = ownerAddress.toLowerCase();
-  return movements.some((m) => m.role === "FEE" && m.networkId === ETHEREUM_NETWORK_ID && m.ownedAddress.toLowerCase() === owner);
+  const owner = normalizeEthAddress(ownerAddress);
+  return movements.some((m) => m.role === "FEE" && m.networkId === ETHEREUM_NETWORK_ID && normalizeEthAddress(m.ownedAddress) === owner);
 }
 
 export async function runEthHistoryBackfill(

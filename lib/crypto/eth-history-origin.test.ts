@@ -485,6 +485,8 @@ async function main() {
     const fee = (ownedAddress: string, networkId = ETHEREUM_NETWORK_ID, role = "FEE") => ({ role, ownedAddress, networkId });
     check("ownerSignedIn: a FEE row owned by the address on Ethereum proves signing (case-insensitive)",
       ownerSignedIn([fee(me.toLowerCase())], me));
+    check("ownerSignedIn: a mixed-case / padded STORED address still matches (same normalisation as the writer)",
+      ownerSignedIn([fee(` ${me} `)], ` ${me.toLowerCase()} `));
     check("ownerSignedIn: a FEE row for ANOTHER address proves nothing",
       !ownerSignedIn([fee("0x0000000000000000000000000000000000000002")], me));
     check("ownerSignedIn: a FEE row on another network proves nothing",
