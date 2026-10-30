@@ -31,6 +31,7 @@ import type {
   OperationActionResponse,
 } from "@/app/api/platform/platform-ops/operations/route";
 import type { OperationCommand } from "@/lib/platform/operations/registry";
+import { OperatorReasonField, EMPTY_OPERATOR_REASON, reasonPayload, type OperatorReasonValue } from "./OperatorReasonField";
 import type { SpaceMountAccess } from "@/lib/space/mount-context";
 
 type Feedback = { commandId: string; text: string; tone: "ok" | "warn" | "err" };
@@ -49,10 +50,14 @@ const TONE_COLOR: Record<"ok" | "warn" | "err", string> = {
 
 /** UI-001 — what a READ holder sees instead of Run / Dry-run buttons that would 403. */
 export const OPS_OPERATIONS_READ_ONLY_LINE = "Read-only — running or dry-running operations needs WRITE access to Platform Operations.";
+/** PLATFORM-SEC-1 — shown in place of a fleet-wide Run to an operator without control-plane access. */
+export const OPS_FLEET_RUN_ELEVATED_LINE = "Fleet-wide run needs Control access";
 
 export function OpsManualOperationsWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
   // Fail-safe: an absent access prop renders read-only; the server gate is the authority.
   const canWrite = access?.canWrite === true;
+  const canControl = access?.canControl === true;
+  const [reason, setReason] = useState<OperatorReasonValue>(EMPTY_OPERATOR_REASON);
   const [data, setData] = useState<OperationsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +85,7 @@ export function OpsManualOperationsWidget({ section, access }: { section: Platfo
     return () => { alive = false; };
   }, [load]);
 
-  const invoke = useCallback(async (command: OperationCommand) => {
+  const invoke = useCallback(async (command: OperationCommand, why?: OperatorReasonValue) => {
     setActing(command.id);
     setFeedback(null);
     try {
@@ -88,7 +93,7 @@ export function OpsManualOperationsWidget({ section, access }: { section: Platfo
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ commandId: command.id }),
+        body: JSON.stringify({ commandId: command.id, ...(command.requires.reason && why ? { reason: reasonPayload(why) } : {}) }),
       });
       const res = (await r.json().catch(() => ({}))) as Partial<OperationActionResponse> & { error?: string };
       if (r.status === 409) {
@@ -118,7 +123,7 @@ export function OpsManualOperationsWidget({ section, access }: { section: Platfo
 
   // Run Now (mutating) confirms first; Dry Run runs immediately (non-mutating).
   function onCommand(command: OperationCommand) {
-    if (command.mutates) setConfirming(command);
+    if (command.mutates) { setReason(EMPTY_OPERATOR_REASON); setConfirming(command); }
     else void invoke(command);
   }
 
@@ -148,7 +153,10 @@ export function OpsManualOperationsWidget({ section, access }: { section: Platfo
                   <p className="text-xs font-medium text-[var(--text-primary)]">{g.label}</p>
                   <div className="flex items-center gap-1.5">
                     {!canWrite && <span className="text-[10px] text-[var(--text-muted)]" data-read-only-line>{OPS_OPERATIONS_READ_ONLY_LINE}</span>}
-                    {canWrite && g.commands.map((c) => {
+                    {canWrite && g.commands.some((c) => c.requires.level !== "WRITE" && !canControl) && (
+                      <span className="text-[10px] text-[var(--text-muted)]" data-fleet-elevated-line>{OPS_FLEET_RUN_ELEVATED_LINE}</span>
+                    )}
+                    {canWrite && g.commands.filter((c) => c.requires.level === "WRITE" || canControl).map((c) => {
                       const busy = acting === c.id;
                       const isRun = c.mutates;
                       return (
@@ -223,14 +231,21 @@ export function OpsManualOperationsWidget({ section, access }: { section: Platfo
           open
           icon={Play}
           title={`${confirming.label} — ${confirming.targetLabel}`}
-          message={confirming.confirm}
+          message={confirming.requires.reason ? (
+            <>
+              <span>{confirming.confirm} This runs across every customer connection it covers.</span>
+              <OperatorReasonField value={reason} onChange={setReason} disabled={acting !== null}
+                label="Fleet-wide run — a reason is recorded with it" />
+            </>
+          ) : confirming.confirm}
+          confirmDisabled={confirming.requires.reason && reasonPayload(reason) === null}
           confirmLabel={confirming.label}
           confirmTone={confirming.destructive ? "danger" : "meridian"}
           busy={acting === confirming.id}
           onClose={() => { if (acting === null) setConfirming(null); }}
           onConfirm={async () => {
             const c = confirming;
-            await invoke(c);
+            await invoke(c, reason);
             setConfirming(null);
           }}
         />

@@ -44,7 +44,9 @@ console.log("G2' — the shared guard enforces it on every request");
   check("the grant read also reads the holder's totpEnabled (one fresh query)",
     /platformGrant\.findUnique\(\{[\s\S]*?select: \{ area: true, level: true, status: true, user: \{ select: \{ totpEnabled: true \} \} \}/.test(a));
   check("MFA is decided AFTER the grant (no MFA disclosure to a caller without access)",
-    a.indexOf("return [null, forbidden()]") > -1 && a.indexOf("return [null, forbidden()]") < a.indexOf("operatorTotpMissing("));
+    // PLATFORM-SEC-1: the first forbidden() is now the break-glass refusal; the
+    // ordering that matters is grant refusal ("insufficient") before the MFA decision.
+    a.indexOf('"insufficient"') > -1 && a.indexOf('"insufficient"') < a.indexOf("decideOperatorTotpRefusal({ role: user.role"));
   check("the refusal is recorded as mfa_required", /grant: "mfa_required"/.test(a));
   check("both entry points (cached + fresh) share the one resolver",
     (a.match(/return resolvePlatformAccess\(user, area, needed\)/g) ?? []).length === 2);

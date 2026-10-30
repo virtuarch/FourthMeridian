@@ -61,6 +61,8 @@ type AdminStatus = {
   lastLogin:              string | null;
   lastLoginIp:            string | null;
   lastCodeGeneration:     string | null;
+  /** SEC-PLAT-1 rollout state (OPERATOR_TOTP_ENFORCEMENT === "enforce"). */
+  operatorTotpEnforced?:  boolean;
 };
 
 type SecurityUser = {
@@ -492,19 +494,35 @@ export function AdminSecurityConsole() {
               </div>
             </div>
 
-            {/* SEC-PLAT-1 — operator MFA is enforced in code, not a setting: locked, like SYSTEM_ADMIN. */}
-            <div className="flex items-start justify-between gap-4 py-3 border-b border-gray-800/40">
-              <div>
-                <div className="flex items-center gap-2">
-                  <p className="text-sm text-white font-medium">Require TOTP for Platform operators</p>
-                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">Always on</span>
+            {/* SEC-PLAT-1 — operator MFA is enforced in code, not a setting: read-only
+                here. Its rollout is a per-deployment switch (OPERATOR_TOTP_ENFORCEMENT),
+                so this line states the deployment's real state, never a toggle. */}
+            {(() => {
+              const enforced = adminStatus?.operatorTotpEnforced === true;
+              return (
+                <div className="flex items-start justify-between gap-4 py-3 border-b border-gray-800/40">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm text-white font-medium">Require TOTP for Platform operators</p>
+                      <span className={enforced
+                        ? "text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400"
+                        : "text-[10px] font-medium px-1.5 py-0.5 rounded-md border border-[var(--accent-warning)] text-[var(--accent-warning)]"}>
+                        {!adminStatus ? "…" : enforced ? "Enforced" : "Not enforced yet"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {enforced
+                        ? "Anyone holding Platform access must have 2FA on. Without it, Platform pages and routes are refused until they enrol; their own account keeps working."
+                        : "Rollout pending for this deployment. When enforced, anyone holding Platform access must have 2FA on; accounts flagged \"2FA off\" in Platform access would wait for enrolment."}
+                    </p>
+                  </div>
+                  <div className={`shrink-0 w-9 h-5 rounded-full border flex items-center px-0.5 cursor-not-allowed ${enforced ? "bg-emerald-500/30 border-emerald-500/30" : "bg-gray-800 border-gray-700"}`}
+                    title={enforced ? "Locked — enforced on this deployment" : "Set by deployment rollout, not here"} aria-hidden>
+                    <div className={`w-4 h-4 rounded-full ${enforced ? "bg-emerald-400 ml-auto" : "bg-gray-600"}`} />
+                  </div>
                 </div>
-                <p className="text-xs text-gray-500 mt-0.5">Anyone holding Platform access must have 2FA on. Without it, Platform pages and routes are refused until they enrol; their own account keeps working.</p>
-              </div>
-              <div className="shrink-0 w-9 h-5 rounded-full bg-emerald-500/30 border border-emerald-500/30 flex items-center px-0.5 cursor-not-allowed" title="Locked — always required">
-                <div className="w-4 h-4 rounded-full bg-emerald-400 ml-auto" />
-              </div>
-            </div>
+              );
+            })()}
 
             {([
               { key: "require_totp_all_users"  as const, label: "Require TOTP for all users",  desc: "All users must set up 2FA before accessing the dashboard." },

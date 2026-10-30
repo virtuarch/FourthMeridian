@@ -120,17 +120,23 @@ WHERE rc."usedAt" IS NULL;
 
 ## 3. Rollout sequence (each step needs owner approval)
 
+> **Updated 2026-10-30 (PLATFORM-SEC-1).** Enforcement now ships **dormant** behind a per-deployment
+> switch: `OPERATOR_TOTP_ENFORCEMENT=enforce` turns it on (guard refusal, page redirects, and the
+> 2FA-disable refusal together); unset = behaviour exactly as before. Merging no longer activates
+> anything. Activation = setting the variable on one environment and redeploying; rollback = removing it.
+> The same PR fixes the SYSTEM_ADMIN kill-switch gap on Platform APIs (§7) — that part is not gated.
+
 1. **Pre-enrol** every operator *before* activation:
    - Each operator: Settings → Security → Set up two-factor (scan, verify, store recovery codes).
    - Re-run §1 / §1.1. Target: `operators_without_totp = 0` on the environment about to be activated.
-2. **Preview activation:** merge the SEC-PLAT-1 PR to `develop` (after the gates: `npm run ci` under the shared lock, then GitHub checks).
+2. **Preview activation:** merge the PR to `develop` (dormant), then set `OPERATOR_TOTP_ENFORCEMENT=enforce` on the Preview (develop) environment and redeploy develop. `/admin/security` shows **Enforced** once live.
 3. **Preview verification (owner's browser):**
    - (a) An enrolled operator opens every Platform area: unchanged.
    - (b) A throwaway USER with a READ grant and no TOTP: `/dashboard/platform/PLATFORM_OPS` redirects to enrolment, and an API call returns 403 `OPERATOR_TOTP_REQUIRED`. After enrolling: access works.
    - (c) That user tries to disable 2FA: 403.
    - (d) Security Ops shows the `platform_access_denied` trip with grant posture `mfa_required`.
    - (e) Revoke the throwaway grant and confirm 2FA can be disabled again. Then delete the throwaway account.
-4. **Production:** run §1.1. If any operator lacks TOTP, they enrol first. Then promote with the normal release train (`develop` → `main`, Production deploy), and only on explicit approval.
+4. **Production:** the code may reach Production dormant with any normal promotion. Activation is separate and only on explicit approval: run §1.1; every operator enrols and has working recovery codes (or a second SYSTEM_ADMIN able to reset); then set `OPERATOR_TOTP_ENFORCEMENT=enforce` on Production and redeploy.
 5. **Post-deploy:** re-run §1.1 and spot-check one operator session on Production.
 
 ---
@@ -143,6 +149,7 @@ WHERE rc."usedAt" IS NULL;
 | Operator lost the device and the recovery codes | A SYSTEM_ADMIN uses `/admin/security` → user → **Reset 2FA**. That requires the admin's own live TOTP and the literal `RESET`, revokes the user's sessions and emails them. The operator signs in, is refused Platform access, and enrols again. Grants stay intact throughout. |
 | An operator must keep working without TOTP (exceptional) | Not supported by design. Revoke or downgrade the grant instead; there is no per-user bypass. |
 | SYSTEM_ADMIN lost their own TOTP | Unchanged break-glass procedure: another SYSTEM_ADMIN resets it, or use DB-level recovery under the existing runbook. SEC-PLAT-1 does not touch SYSTEM_ADMIN. |
+| Fast rollback (any environment) | Remove `OPERATOR_TOTP_ENFORCEMENT` (or set it to anything but `enforce`) and redeploy. Enforcement, page redirects and the disable refusal all switch off together; nothing else changes. |
 | Full rollback | Revert the SEC-PLAT-1 merge commit on `develop` (and on `main` if promoted) and redeploy. No schema or data change to undo. The removed `require_totp_admins` row may still exist in `PlatformSetting`; nothing reads it, and a revert makes it visible again. |
 | Partial rollback (keep the switch removal, drop enforcement) | Revert only the guard hunk in `lib/platform/authorize.ts` and the disable-route hunk. |
 
@@ -172,3 +179,11 @@ That would require the session re-derivation (`lib/auth/session-proof.ts`, run a
 - the locked console line;
 - the matrix badge;
 - SYSTEM_ADMIN and customer rules are unchanged.
+
+---
+
+## 7. PLATFORM-SEC-1 companion fixes (same PR, 2026-10-30)
+
+- **Kill switch on Platform APIs.** The SYSTEM_ADMIN break-glass bypass in `resolvePlatformAccess` now applies `decideAdminApiAccess` — the same rule as `/api/admin` — so `DISABLE_SYSTEM_ADMIN` and pending admin TOTP enrolment refuse Platform API calls too, including from sessions issued before the switch was flipped. Refusals are recorded (`break_glass_refused`). Not gated: it makes the documented invariant true.
+- **Fleet-wide manual operations.** Running `sync-banks`, `sync-crypto` or `sol-history-backfill` from Manual operations needs fresh CONTROL and a structured reason (dry runs stay WRITE), matching single-wallet history resume.
+- **Tests:** `lib/platform/platform-sec-1.test.ts` (mutation-checked: removing the kill-switch check, the CONTROL check or the MFA decision each fails it), plus the updated ratchets in `capability-control.test.ts`, `ops-write-access-gating.test.ts`, `operator-action-adoption.test.ts`, `operator-mfa.test.ts`, `rls-server-component-authority.test.ts`.

@@ -46,6 +46,8 @@ import { hasPlatformAccess }        from "./policy";
 import type { PlatformGrantCtx }    from "./policy";
 import { recordPlatformAccessDenied } from "@/lib/platform/ops/access-denied";
 import { operatorTotpMissing } from "@/lib/auth-totp-policy";
+import { decideAdminApiAccess, type AdminApiAccess } from "@/lib/admin-totp-enrollment";
+import { env }                      from "@/lib/env";
 
 /**
  * SEC-PLAT-1 — the refusal a grant holder WITHOUT TOTP receives. Pages read the
@@ -97,6 +99,33 @@ export function decidePlatformAccess(
   return hasPlatformAccess(area, needed, grants);
 }
 
+/**
+ * PLATFORM-SEC-1 (2026-10-30) — the SYSTEM_ADMIN break-glass bypass obeys the
+ * SAME rule as /api/admin (decideAdminApiAccess, lib/session.ts adminApiAccess):
+ * refused while DISABLE_SYSTEM_ADMIN is on (FORBIDDEN_DISABLED) and while the
+ * admin's TOTP enrolment is pending (FORBIDDEN_PENDING). Before this, the
+ * bypass returned before any check, so a SYSTEM_ADMIN session issued before the
+ * kill switch was flipped kept full Platform API authority, CONTROL included.
+ * PURE — one decision, two consoles, no drift.
+ */
+export function decideBreakGlass(input: {
+  role: UserRole;
+  requireTotpSetup: boolean;
+  systemAdminDisabled: boolean;
+}): AdminApiAccess {
+  return decideAdminApiAccess(input);
+}
+
+/**
+ * SEC-PLAT-1 — PURE. True when an operator who otherwise holds an ACTIVE grant
+ * must be refused because they have no second factor AND enforcement is on.
+ * `enforced` is env.isOperatorTotpEnforced (Preview first; Production only on
+ * an explicit rollout decision).
+ */
+export function decideOperatorTotpRefusal(input: { role: UserRole; totpEnabled: boolean; enforced: boolean }): boolean {
+  return input.enforced && operatorTotpMissing(input);
+}
+
 // ── Adapters ──────────────────────────────────────────────────────────────────
 
 /**
@@ -111,8 +140,19 @@ async function resolvePlatformAccess(
   needed: PlatformAccessLevel,
 ): Promise<[PlatformAuth, null] | [null, NextResponse]> {
   // Break-glass — the bypass lives in the adapter (07-07 ruling), not the pure
-  // policy. SYSTEM_ADMIN never needs (and is never issued) a grant row.
+  // policy. SYSTEM_ADMIN never needs (and is never issued) a grant row. It is
+  // honoured only when the admin console itself would be (decideBreakGlass):
+  // the DISABLE_SYSTEM_ADMIN kill switch and pending TOTP enrolment close it.
   if (user.role === UserRole.SYSTEM_ADMIN) {
+    const verdict = decideBreakGlass({
+      role: user.role,
+      requireTotpSetup: user.requireTotpSetup,
+      systemAdminDisabled: env.isSystemAdminDisabled,
+    });
+    if (verdict !== "ALLOW") {
+      recordPlatformAccessDenied({ userId: user.id, area, needed, grant: "break_glass_refused" }, { client: db });
+      return [null, forbidden()];
+    }
     return [{ user, grant: null }, null];
   }
 
@@ -141,7 +181,7 @@ async function resolvePlatformAccess(
   // SEC-PLAT-1 (owner ruling P-2) — an ACTIVE grant is not enough: the holder
   // must have TOTP enabled. Decided after the grant (so a caller with no grant
   // learns nothing about MFA) and recorded like any other refusal.
-  if (operatorTotpMissing({ role: user.role, totpEnabled: row!.user.totpEnabled === true })) {
+  if (decideOperatorTotpRefusal({ role: user.role, totpEnabled: row!.user.totpEnabled === true, enforced: env.isOperatorTotpEnforced })) {
     recordPlatformAccessDenied({ userId: user.id, area, needed, grant: "mfa_required" }, { client: db });
     return [null, operatorTotpRequired()];
   }

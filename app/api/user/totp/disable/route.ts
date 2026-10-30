@@ -34,6 +34,7 @@ import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { requireFreshUser } from "@/lib/session";
+import { env } from "@/lib/env";
 import { createNotification } from "@/lib/notifications/create";
 import { limitByUser } from "@/lib/rate-limit";
 
@@ -78,7 +79,9 @@ export async function POST(req: NextRequest) {
   const activeGrants = await withTenantDb(user.id, (tx) => tx.platformGrant.count({
     where: { userId: user.id, status: "ACTIVE" },
   }));
-  if (activeGrants > 0) {
+  // Enforced only with operator MFA itself (env.isOperatorTotpEnforced), so the
+  // rollout switch turns on the whole control at once, never half of it.
+  if (env.isOperatorTotpEnforced && activeGrants > 0) {
     return NextResponse.json(
       { error: "Two-factor authentication can't be turned off while you have Platform access. Ask a system administrator to remove your Platform access first.", code: "OPERATOR_TOTP_REQUIRED" },
       { status: 403 },

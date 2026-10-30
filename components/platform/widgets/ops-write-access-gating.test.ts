@@ -18,7 +18,12 @@ for (const [w, line] of [["OpsManualOperationsWidget", "OPS_OPERATIONS_READ_ONLY
   check(`${w}: a READ holder gets the explanatory line`, new RegExp(`!canWrite[\\s\\S]{0,160}${line}`).test(s));
 }
 const ops = src("OpsManualOperationsWidget");
-check("Run / Dry-run buttons render only when canWrite", /\{canWrite && g\.commands\.map\(/.test(ops));
+check("Run / Dry-run buttons render only when canWrite", /\{canWrite && g\.commands\.filter\(\(c\) => [^\n]{0,80}\)\.map\(/.test(ops));
+// PLATFORM-SEC-1 — a fleet-wide Run renders only with control-plane access; a
+// WRITE-only operator sees the one explanatory line instead.
+check("fleet-wide Run renders only with canControl", /g\.commands\.filter\(\(c\) => c\.requires\.level === "WRITE" \|\| canControl\)/.test(ops));
+check("a WRITE-only operator gets the fleet line", /c\.requires\.level !== "WRITE" && !canControl[\s\S]{0,200}OPS_FLEET_RUN_ELEVATED_LINE/.test(ops));
+check("the fleet confirm collects a reason and blocks without one", /OperatorReasonField/.test(ops) && /confirmDisabled=\{confirming\.requires\.reason && reasonPayload\(reason\) === null\}/.test(ops));
 const cleanup = src("OpsProviderCleanupWidget");
 check("Retry cleanup renders only when canWrite", /!o\.itemGone && canWrite && \(/.test(cleanup));
 // SEC-PLAT-4 — the Growth users widget has no write control at all (deactivate /

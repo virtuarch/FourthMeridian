@@ -125,6 +125,9 @@ const _e = {
   CLIENT_IP_TRUST_CLOUDFLARE: process.env.CLIENT_IP_TRUST_CLOUDFLARE,
 
   DISABLE_SYSTEM_ADMIN: process.env.DISABLE_SYSTEM_ADMIN,
+  // SEC-PLAT-1 rollout switch — "enforce" makes TOTP mandatory for Platform
+  // operators (lib/platform/authorize.ts). Unset/anything else = not enforced.
+  OPERATOR_TOTP_ENFORCEMENT: process.env.OPERATOR_TOTP_ENFORCEMENT,
   NODE_ENV:             process.env.NODE_ENV,
 
   // V26-ENV-1 — deployment-environment identity. `VERCEL` is "1" on every Vercel
@@ -654,6 +657,14 @@ export const env = {
   // ── Admin ─────────────────────────────────────────────────────────────────
   /** When true, all SYSTEM_ADMIN logins are blocked. */
   get isSystemAdminDisabled() { return _e.DISABLE_SYSTEM_ADMIN === "true"; },
+  /**
+   * SEC-PLAT-1 — mandatory operator TOTP is ENFORCED only when
+   * OPERATOR_TOTP_ENFORCEMENT === "enforce" (set per environment: Preview first;
+   * Production only after an explicit rollout decision with verified operator
+   * recovery). Fails safe for the rollout, not for access: unset ⇒ the code ships
+   * dormant and behaviour is exactly as before.
+   */
+  get isOperatorTotpEnforced() { return _e.OPERATOR_TOTP_ENFORCEMENT === "enforce"; },
 
   // ── Merchant Operations (MI2 S2) ────────────────────────────────────────────
   /** The designated Merchant Operations Space id, or null when unset (gate fails closed). */

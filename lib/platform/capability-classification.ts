@@ -253,6 +253,21 @@ export const MUTATION_FAMILIES: readonly MutationFamily[] = [
       "The Emergency axis. Separate from the Operator axis by construction and " +
       "unchanged by OPS-2D-2 (SECURITY_MODEL.md §three axes).",
   },
+  // ── Manual operations (PLATFORM-SEC-1, 2026-10-30 — resolved per command) ──
+  {
+    key: "manual-operations",
+    label: "Manual operations — Run Now / Dry Run over the command registry",
+    status: "SHIPPED",
+    capability: "WRITE",
+    rationale:
+      "Resolved PER COMMAND, as the open classification anticipated. The route's " +
+      "floor is PLATFORM_OPS / WRITE (single-scope runs and every dry run). A " +
+      "mutating run of a FLEET target (registry `fleet: true`: sync-banks, " +
+      "sync-crypto, sol-history-backfill) additionally requires a fresh CONTROL " +
+      "check and a structured reason (operationRequirement), the same bar as a " +
+      "single-wallet history resume — cost-bearing provider work at platform scale.",
+    routes: ["app/api/platform/platform-ops/operations/route.ts"],
+  },
 ];
 
 // ── Open questions ────────────────────────────────────────────────────────────
@@ -283,22 +298,5 @@ export const OPEN_CLASSIFICATIONS: readonly MutationFamily[] = [
       "app/api/platform/growth-revenue/registration-mode/route.ts",
       "app/api/platform/growth-revenue/product-status/route.ts",
     ],
-  },
-  {
-    key: "manual-operations",
-    label: "Manual operations — Run Now / Dry Run over the command registry",
-    status: "UNRESOLVED",
-    capability: "WRITE",
-    rationale:
-      "Ships today as PLATFORM_OPS / WRITE (OPS-5 S4).",
-    tension:
-      "Running a registered job early is a refresh-request in spirit — an " +
-      "occurrence of existing behaviour — which argues WRITE. But the registry is " +
-      "open-ended and already includes process-deletions, an irreversible purge; " +
-      "'apply an approved operational command' scales with whatever is registered, " +
-      "so one classification for the whole surface may be the wrong shape. The " +
-      "resolution may be per-command rather than per-route, which is a design " +
-      "question OPS-2D-2 does not settle.",
-    routes: ["app/api/platform/platform-ops/operations/route.ts"],
   },
 ];

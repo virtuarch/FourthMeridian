@@ -42,7 +42,11 @@ console.log("Run Now — the JobRun id is the execution reference; the JOB is th
   check("target kind JOB", /target:\s*\{\s*kind:\s*"JOB"/.test(s));
   check("execution carries commandId + jobRunId", /execution:\s*\{\s*commandId:[^}]*jobRunId:/.test(s));
   check("in-flight is recorded as REFUSED, a body failure as FAILURE", /"in-flight"\s*\?\s*"REFUSED"/.test(s) && /"failed"\s*\?\s*"FAILURE"/.test(s));
-  check("Run Now does not require a reason (the action is the reason)", !/parseOperatorReason/.test(s));
+  // PLATFORM-SEC-1 — a single-scope Run Now still needs no reason (the action is
+  // the reason); a FLEET-wide run must carry one, parsed only when the command
+  // declares it, and recorded with the operator action.
+  check("a reason is parsed only when the command requires it", /if \(command\.requires\.reason\)\s*\{[\s\S]{0,80}parseOperatorReason\(/.test(s));
+  check("the fleet reason is recorded with the action", /\.\.\.\(reason \? \{ reason \} : \{\}\)/.test(s));
 }
 
 console.log("connection actions — PLAID_ITEM target, refresh execution reference, no identity");
