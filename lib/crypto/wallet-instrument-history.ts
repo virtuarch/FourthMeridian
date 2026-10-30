@@ -24,7 +24,8 @@
  *      tokenInstrumentId, coverage)` — the facet then reads RECONSTRUCTED;
  *   2. add the chain to `TOKEN_HISTORY_CHAINS` once acquisition is proven for
  *      EVERY token on it (not merely the ones captured) — only then can a
- *      wallet on that chain read complete.
+ *      wallet on that chain read complete — and register its inventory reader
+ *      in TOKEN_INVENTORY_READERS (SOL: lib/crypto/spl-history-inventory.ts).
  *
  * Pure core (`facetFromCoverage`, `walletHistoryComplete`) + one DB binding that
  * takes `client` explicitly. Dates, quantities and price PRESENCE only — no
@@ -46,7 +47,19 @@ type Client = PrismaClient | Prisma.TransactionClient;
  * history is reconstructed anywhere. A follow-up adds its chain here, on
  * evidence, in the same PR that writes the token coverage.
  */
-export const TOKEN_HISTORY_CHAINS: ReadonlySet<string> = new Set<string>();
+export const TOKEN_HISTORY_CHAINS: ReadonlySet<string> = new Set<string>(["SOL"]);
+
+/**
+ * SPL TOKEN HISTORY (2026-10-28) — per chain, whether every token the wallet
+ * EVER held has been found (token-account discovery done, nothing beyond the
+ * tracking bound, every discovered mint decided). Facets list only tokens seen
+ * currently; a closed token never captured has no facet, so without this a
+ * wallet whose old tokens were never found would read complete. Absent ⇒ false.
+ */
+export type TokenInventoryReader = (client: Client, accountIds: readonly string[]) => Promise<Map<string, boolean>>;
+const TOKEN_INVENTORY_READERS: Record<string, () => Promise<TokenInventoryReader>> = {
+  SOL: async () => (await import("./spl-history-inventory")).loadSplInventoryComplete,
+};
 
 /** Chains that carry tokens at all (a BTC wallet's history is native-only by construction). */
 const TOKEN_BEARING_CHAINS: ReadonlySet<string> = new Set(["SOL", "ETH", "BNB", "AVAX", "MATIC"]);
@@ -66,6 +79,10 @@ export interface InstrumentHistoryFacet {
   state:           InstrumentHistoryState;
   licensedFromISO: string | null;
   licensedToISO:   string | null;
+  /** The persisted coverage kind (COMPLETE vs PARTIAL licence), null without a record. */
+  coverageKind?:   "COMPLETE" | "PARTIAL" | "UNKNOWN" | null;
+  /** Stored caveats of an unlicensed/partial record — the plain-reason input for Connections copy. */
+  caveats?:        string[];
 }
 
 export interface TokenHistoryFacet extends InstrumentHistoryFacet {
@@ -97,26 +114,34 @@ export interface WalletInstrumentHistory {
   tokens:    TokenHistoryFacet[];
   /** Is token history acquisition supported on this chain at all? */
   tokenHistorySupported: boolean;
+  /** Every token this wallet ever held has been found and decided (chain reader; false when unknown). */
+  tokenInventoryComplete: boolean;
   /** THE wallet-level answer. Never true because the native facet alone is. */
   complete:  boolean;
 }
 
 /** Pure: one instrument's coverage → its facet state. */
 export function facetFromCoverage(coverage: ChainCoverage | null | undefined):
-  Pick<InstrumentHistoryFacet, "state" | "licensedFromISO" | "licensedToISO"> {
-  if (!coverage) return { state: "NOT_RECONSTRUCTED", licensedFromISO: null, licensedToISO: null };
+  Pick<InstrumentHistoryFacet, "state" | "licensedFromISO" | "licensedToISO" | "coverageKind" | "caveats"> {
+  if (!coverage) return { state: "NOT_RECONSTRUCTED", licensedFromISO: null, licensedToISO: null, coverageKind: null, caveats: [] };
   const i = licensedInterval(coverage);
-  return i ? { state: "RECONSTRUCTED", licensedFromISO: i.fromISO, licensedToISO: i.toISO }
-    : { state: "UNLICENSED", licensedFromISO: null, licensedToISO: null };
+  const caveats = coverage.kind === "COMPLETE" ? [] : [...coverage.caveats];
+  return i ? { state: "RECONSTRUCTED", licensedFromISO: i.fromISO, licensedToISO: i.toISO, coverageKind: coverage.kind, caveats }
+    : { state: "UNLICENSED", licensedFromISO: null, licensedToISO: null, coverageKind: coverage.kind, caveats };
 }
 
 /** Pure: the wallet-level completeness rule (see the header). */
-export function walletHistoryComplete(h: Pick<WalletInstrumentHistory, "chain" | "native" | "tokens">): boolean {
+export function walletHistoryComplete(
+  h: Pick<WalletInstrumentHistory, "chain" | "native" | "tokens"> & { tokenInventoryComplete?: boolean },
+): boolean {
   if (h.native.state !== "RECONSTRUCTED") return false;
   const chain = h.chain.trim().toUpperCase();
   if (!TOKEN_BEARING_CHAINS.has(chain)) return true;
   if (!TOKEN_HISTORY_CHAINS.has(chain)) return false;
-  return h.tokens.every((t) => t.state === "RECONSTRUCTED");
+  // Every token ever held found and decided — and each current one licensed
+  // COMPLETE: a token verified only from a later start leaves the wallet partial.
+  if (h.tokenInventoryComplete !== true) return false;
+  return h.tokens.every((t) => t.state === "RECONSTRUCTED" && (t.coverageKind ?? "COMPLETE") === "COMPLETE");
 }
 
 const isoOf = (d: Date) => d.toISOString().slice(0, 10);
@@ -144,6 +169,13 @@ export async function loadWalletInstrumentHistory(
   ]);
 
   const tokenInstrumentIds = [...new Set(spans.map((s) => s.instrumentId))];
+  const inventory = new Map<string, boolean>();
+  for (const [chainKey, load] of Object.entries(TOKEN_INVENTORY_READERS)) {
+    const ids = accounts.filter((a) => (a.walletChain ?? "").trim().toUpperCase() === chainKey).map((a) => a.id);
+    if (ids.length === 0) continue;
+    try { for (const [id, ok] of await (await load())(client, ids)) inventory.set(id, ok); }
+    catch { /* unreadable ⇒ not proven complete */ }
+  }
   const coveredInstrumentIds = [...new Set([...coverage.values()].flatMap((m) => [...m.keys()]))];
   const aliasIds = [...new Set([...tokenInstrumentIds, ...coveredInstrumentIds])];
 
@@ -215,7 +247,8 @@ export async function loadWalletInstrumentHistory(
     }
     tokens.sort((x, y) => (x.held === y.held ? x.label.localeCompare(y.label) : x.held ? -1 : 1));
 
-    const h = { accountId: a.id, chain, native: nativeFacet, tokens, tokenHistorySupported: TOKEN_HISTORY_CHAINS.has(chain) };
+    const h = { accountId: a.id, chain, native: nativeFacet, tokens, tokenHistorySupported: TOKEN_HISTORY_CHAINS.has(chain),
+      tokenInventoryComplete: inventory.get(a.id) === true };
     out.set(a.id, { ...h, complete: walletHistoryComplete(h) });
   }
   return out;

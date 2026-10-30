@@ -509,6 +509,7 @@ async function loadConnectionIntelligence(
         // PCS-2 — identity, price presence and history state only; the quantity stays behind.
         label: t.label, standard: t.standard, priceStatus: t.priceStatus,
         historyState: t.state, firstObservedISO: t.firstObservedISO, lastObservedISO: t.lastObservedISO,
+        licensedFromISO: t.licensedFromISO, licensedToISO: t.licensedToISO, coverageKind: t.coverageKind ?? null, caveats: t.caveats ?? [],
       })));
       walletHistory.walletComplete = perInstrument.length > 0 && perInstrument.every((h) => h.complete);
       walletHistory.chain = chains[0] ?? null;

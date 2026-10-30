@@ -84,7 +84,7 @@ export function valuationCoverageNote(cov: ValuationCoverage | null, chartFromIS
   // TOKEN HOLDINGS (PR-A) — the chart reaches back before token tracking began:
   // those days carry native value only. Said, never filled.
   const tokenNote = cov.tokensTrackedFromISO && chartFromISO < cov.tokensTrackedFromISO
-    ? `Token holdings are included from ${fmtDay(cov.tokensTrackedFromISO)}, when tracking began; earlier token balances aren’t reconstructed yet.`
+    ? `Token holdings are included from ${fmtDay(cov.tokensTrackedFromISO)}; earlier token balances aren’t proven, so they aren’t counted.`
     : null;
   return [priceNote, tokenNote].filter((x): x is string => x !== null).join(" ") || null;
 }

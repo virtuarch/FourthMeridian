@@ -12,11 +12,15 @@ import { SOL_ASSET, resolveCryptoInstrumentId } from "@/lib/investments/crypto-i
 import { SOL_NATIVE } from "./native-asset";
 import { persistPositionCoverage, loadPositionCoverage, licensedInterval } from "./position-coverage";
 import { SOL_RECONSTRUCTION_SOURCE } from "./sol-history-sync";
-import { SOL_CHAIN_STATED_BASIS, SOL_RECONSTRUCTION_VERSION, SOL_CONTINUITY_SOURCE, type SolBackfillFailureCode } from "./sol-history-backfill.core";
+import { SOL_CHAIN_STATED_BASIS, SOL_RECONSTRUCTION_VERSION, SOL_CONTINUITY_SOURCE, parseCheckpoint, type SolBackfillFailureCode } from "./sol-history-backfill.core";
 import {
-  runSolHistoryBackfill, CheckpointConflictError,
+  runSolHistoryBackfill, CheckpointConflictError, buildRpcCall, syncRunBudgetMs, SolTransportError,
   type SolBackfillStore, type SolBackfillDeps, type SolBackfillOutcome,
 } from "./sol-history-backfill";
+import { normalizeSolAddress } from "./sol-rpc";
+import { parseSplState, nativeWatchIntact } from "./spl-history.core";
+import { runSplTokenHistory, createSplDiscoveryCollector, annotateWithDiscoveries, type SplRunOutcome } from "./spl-history";
+import { prismaSplHistoryStore, splHistoryEnabled, splSyncRequestLimit } from "./spl-history.store";
 
 /** The production store: Connection.cursor + PositionObservation + PositionCoverage. */
 /** The client is the CALLER's authority (never a module default — audit-db-authority). */
@@ -108,6 +112,8 @@ export interface SolResumableResult {
   mode: "INCREMENTAL" | "NO_CHANGE";
   impactedFromISO: string | null;
   backfill: SolBackfillOutcome | null;
+  /** SPL token history's step this run (null: disabled, skipped before it ran, or no budget left). */
+  tokens?: SplRunOutcome | null;
 }
 
 /**
@@ -127,7 +133,77 @@ export async function reconstructSolHistoryResumable(
     return { accountId: args.accountId, ok: false, refusal: "NOT_A_SOL_WALLET", reason: "not a SOL wallet with an address and a connection",
       derivedRowsWritten: 0, mode: "NO_CHANGE", impactedFromISO: null, backfill: null };
   }
-  const o = await runSolHistoryBackfill({ accountId: args.accountId, address: bound.address, store: bound.store, resume: args.resume }, args.deps);
+  // SPL TOKEN HISTORY — discovery rides on the native fetch (its transaction
+  // hook), folded into each native commit. A wallet whose native checkpoint is
+  // fresh gets discovery for free (NATIVE); one imported before this existed
+  // is re-walked by the token step itself (WALK).
+  const splOn = splHistoryEnabled();
+  const owner = normalizeSolAddress(bound.address);
+  const deps0: SolBackfillDeps = { ...(args.deps ?? {}) };
+  const meter = deps0.meter ?? {};
+  deps0.meter = meter;
+  const now = deps0.now ?? Date.now;
+  const startMs = now();
+  const sent = () => Object.values(meter).reduce((a, b) => a + b, 0);
+  const sentAtStart = sent();
+  let collector: ReturnType<typeof createSplDiscoveryCollector> | null = null;
+  let freshSource: "NATIVE" | "WALK" = "WALK";
+  if (splOn) {
+    const before = parseCheckpoint(await bound.store.readCursor(), args.accountId, owner);
+    const beforeState = before ? parseSplState(before.tokens) : null;
+    freshSource = !before || (before.top === null && beforeState === null) ? "NATIVE" : "WALK";
+    // Native moved while unwatched (the flag was off) ⇒ discovery can't vouch
+    // for that stretch: NATIVE falls back to a WALK, a WALK starts over. Done
+    // once, at this run's first native commit — every later commit of the run
+    // is watched by this hook.
+    let demote = !!before && !!beforeState && !nativeWatchIntact(beforeState, before);
+    collector = createSplDiscoveryCollector(owner);
+    const c = collector;
+    deps0.observeTransaction = c.observe;
+    deps0.annotateCheckpoint = (cp) => {
+      const out = annotateWithDiscoveries(cp, c.all(), freshSource, { demote });
+      demote = false;
+      return out;
+    };
+  }
+  const o = await runSolHistoryBackfill({ accountId: args.accountId, address: bound.address, store: bound.store, resume: args.resume }, deps0);
+  const native = nativeResult(args, o);
+  if (!collector || o.stoppedBecause === "CONFLICT") return native;
+
+  // The token step gets what is LEFT of the same run: wall clock and request allowance.
+  const budgetMs = deps0.budgetMs ?? (Number(process.env.SOL_HISTORY_RUN_BUDGET_MS) > 0 ? Number(process.env.SOL_HISTORY_RUN_BUDGET_MS) : syncRunBudgetMs());
+  const deadlineMs = startMs + budgetMs;
+  // The worker passes its allowance; a wallet SYNC passes none — it gets a small
+  // explicit limit, so syncs never spend token-history requests outside the cap.
+  const requestBudget = deps0.requestBudget !== undefined ? deps0.requestBudget - (sent() - sentAtStart) : splSyncRequestLimit();
+  if (deadlineMs - now() < 2_000 || (requestBudget !== undefined && requestBudget <= 0)) return native;
+  let call;
+  try { call = buildRpcCall({ ...deps0, observeTransaction: undefined, annotateCheckpoint: undefined }, deadlineMs); }
+  catch (e) { if (e instanceof SolTransportError) return native; throw e; }
+  let tokens: SplRunOutcome;
+  try {
+    tokens = await runSplTokenHistory(
+      { owner, store: prismaSplHistoryStore(args.accountId, bound.connectionId, args.client), headOnly: deps0.headOnly, discovered: collector.all(), freshSource },
+      { call, deadlineMs, now, sent, requestBudget, concurrency: deps0.concurrency },
+    );
+  } catch (e) {
+    // Token history must never take the native result down with it.
+    console.warn("[sol-history] SPL token history step failed (non-fatal):", e instanceof Error ? e.message : String(e));
+    return native;
+  }
+  if (tokens.rowsWritten === 0 && tokens.impactedFromISO === null) return { ...native, tokens };
+  const impactedFromISO = [native.impactedFromISO, tokens.impactedFromISO].filter((d): d is string => d !== null).sort()[0] ?? null;
+  const merged: SolResumableResult = { ...native, tokens, impactedFromISO, derivedRowsWritten: native.derivedRowsWritten + Math.max(tokens.rowsWritten, 1), mode: "INCREMENTAL" };
+  // A head-only sync deferred native history but proved token days: that IS a refresh.
+  if (!native.ok && native.refusal === "DEFERRED_TO_WORKER") return { ...merged, ok: true, refusal: undefined, reason: undefined };
+  return merged;
+}
+
+/** The native run's result, exactly as before token history existed. */
+function nativeResult(
+  args: { accountId: string; deps?: SolBackfillDeps },
+  o: SolBackfillOutcome,
+): SolResumableResult {
   const base = { accountId: args.accountId, derivedRowsWritten: o.rowsWritten, impactedFromISO: o.impactedFromISO,
     mode: (o.rowsWritten > 0 ? "INCREMENTAL" : "NO_CHANGE") as "INCREMENTAL" | "NO_CHANGE", backfill: o };
   // Committed progress is a refresh even when the run then stopped: those days
