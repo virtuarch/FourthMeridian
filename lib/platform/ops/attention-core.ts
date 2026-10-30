@@ -47,6 +47,12 @@ import type { SyncIssueSeverity } from "@/lib/platform/sync-issue-semantics";
 import type { ExecutionRowDTO } from "@/lib/platform/refresh/execution-query-core";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { BriefOps } from "@/lib/platform/ai/brief-ops";
+import { platformViewTarget } from "@/lib/platform/workspaces";
+
+/** PLATFORM OPS PHASE 1 UX — alert rules live in Policies › Alerts (the default
+ *  Policies view is Policy groups). Jobs / Pipeline targets keep their retired
+ *  ids, which resolve to Operations › Jobs / Pipeline (PLATFORM_WORKSPACE_ALIASES). */
+const ALERTS_VIEW = platformViewTarget("platform-policies", "alerts");
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
 
@@ -305,8 +311,8 @@ function alertItems(a: NonNullable<AttentionInputs["alerts"]>): AttentionItem[] 
       entity: { kind: "alert-rule", label: title },
       problem: `Firing in the latest evaluation — ${rule.breaches} breach${rule.breaches === 1 ? "" : "es"} (${rule.severity ?? "severity not recorded"}).`,
       since: a.latest.evaluatedAtISO,
-      evidence: { kind: "alert", id: rule.id, workspace: "platform-policies" },
-      actions: [{ kind: "open-workspace", workspace: "platform-policies" }],
+      evidence: { kind: "alert", id: rule.id, workspace: ALERTS_VIEW },
+      actions: [{ kind: "open-workspace", workspace: ALERTS_VIEW }],
       basis: "latest evaluate-alerts run (per-rule outcomes) — the only notion of an active alert; since = that evaluation's time, not the breach's onset",
     });
   }

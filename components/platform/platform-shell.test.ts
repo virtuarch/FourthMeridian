@@ -37,7 +37,7 @@ import {
   platformChromeSections,
   platformSectionAnchor,
 } from "@/components/platform/PlatformSpaceDashboard";
-import { PLATFORM_AREA_WORKSPACES } from "@/lib/platform/workspaces";
+import { PLATFORM_AREA_WORKSPACES, viewSectionKey } from "@/lib/platform/workspaces";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
 
 let failures = 0;
@@ -69,8 +69,13 @@ console.log("\nA. SECTIONS — published from the ACTIVE workspace's DB rows");
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const ops = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS;
-  const overview = ops.find((w) => w.workspaceId === "platform-overview")!;
-  const refresh = ops.find((w) => w.workspaceId === "platform-refresh")!;
+  // PLATFORM OPS PHASE 1 UX — re-ruled: Overview and Pipeline (formerly the
+  // "platform-refresh" workspace) are now VIEWS of Operations, and the sidebar
+  // publishes the ACTIVE VIEW's sections. The same assertions therefore run on
+  // the two views' compositions.
+  const operations = ops.find((w) => w.workspaceId === "platform-overview")!;
+  const overview = { sections: operations.views![0].sections.map(viewSectionKey) };
+  const refresh = { sections: operations.views!.find((v) => v.id === "pipeline")!.sections.map(viewSectionKey) };
 
   // Every composed key of both workspaces has an enabled DB row with a label
   // that exists nowhere in the source (so only the row can supply it).
@@ -299,8 +304,12 @@ console.log("\nE. PUBLISH LIFECYCLE — the host feeds the SAME chrome channel")
       /@\/lib\/space\/space-chrome-context/.test(HOST_SRC),
   );
   check(
+    // PLATFORM OPS PHASE 1 UX — re-ruled: the ACTIVE VIEW's keys (the whole
+    // workspace's keys when it has no views) — what the body renders, nothing more.
     "sections are derived from the ACTIVE workspace's composed keys",
-    /platformChromeSections\(active\?\.sections/.test(HOST_SRC),
+    /platformChromeSections\(activeSections \?\? NO_SECTION_KEYS/.test(HOST_SRC) &&
+      /const activeSections = activeViewDef\?\.sections \?\? active\?\.sections;/.test(HOST_SRC) &&
+      /sectionKeys=\{activeSections \?\? active\.sections\}/.test(HOST_SRC),
   );
   check(
     "sections are CLEARED on unmount (mirrors the identity publish)",

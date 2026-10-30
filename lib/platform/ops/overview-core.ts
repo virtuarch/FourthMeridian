@@ -25,6 +25,14 @@ import type { ProviderHealthResult, ProviderTrust } from "@/lib/platform/provide
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 import type { EnvReport } from "@/lib/env";
 import type { AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { platformViewTarget } from "@/lib/platform/workspaces";
+
+/** PLATFORM OPS PHASE 1 UX — posture chips open the Policies VIEW that holds
+ *  their detail (the default Policies view is Policy groups). Jobs / Pipeline
+ *  targets keep their retired ids, which resolve to Operations › Jobs /
+ *  Pipeline (PLATFORM_WORKSPACE_ALIASES). */
+const ALERTS_VIEW = platformViewTarget("platform-policies", "alerts");
+const DEFAULTS_VIEW = platformViewTarget("platform-policies", "defaults");
 
 export type DomainState = "HEALTHY" | "DEGRADED" | "FAILED" | "STALE" | "UNKNOWN";
 
@@ -388,9 +396,9 @@ const hoursWord = (h: number): string => (!Number.isFinite(h) ? "unreadable time
  */
 export function deriveAlertsPosture(a: PostureInputs["alerts"], now?: Date): PostureChip {
   const basis = "latest evaluate-alerts run (per-rule outcomes)";
-  if (!a) return unavailable("alerts", "Alerts", "platform-policies", basis);
-  if (a.rulesRegistered === 0) return { key: "alerts", label: "Alerts", word: "Unknown", tone: "muted", count: "no rules registered", state: "unknown", workspace: "platform-policies", basis };
-  if (!a.latest) return { key: "alerts", label: "Alerts", word: "Unknown", tone: "muted", count: "never evaluated", state: "unknown", workspace: "platform-policies", basis };
+  if (!a) return unavailable("alerts", "Alerts", ALERTS_VIEW, basis);
+  if (a.rulesRegistered === 0) return { key: "alerts", label: "Alerts", word: "Unknown", tone: "muted", count: "no rules registered", state: "unknown", workspace: ALERTS_VIEW, basis };
+  if (!a.latest) return { key: "alerts", label: "Alerts", word: "Unknown", tone: "muted", count: "never evaluated", state: "unknown", workspace: ALERTS_VIEW, basis };
   if (now) {
     const silent = alertEvaluatorSilence(a.latest.evaluatedAtISO, a.cadenceHours, now);
     if (silent) {
@@ -398,7 +406,7 @@ export function deriveAlertsPosture(a: PostureInputs["alerts"], now?: Date): Pos
       return {
         key: "alerts", label: "Alerts", word: "Unknown — evaluator silent", tone: silent.dead ? "bad" : "warn",
         count: `last evaluated ${hoursWord(silent.ageHours)} ago · expected every ${cadence} h`,
-        state: "unknown", workspace: "platform-policies",
+        state: "unknown", workspace: ALERTS_VIEW,
         basis: `${basis} — too old to speak for now; the evaluator itself is overdue`,
       };
     }
@@ -406,8 +414,8 @@ export function deriveAlertsPosture(a: PostureInputs["alerts"], now?: Date): Pos
   const firing = a.latest.rules.filter((r) => r.firing);
   const critical = firing.some((r) => r.severity === "critical");
   const evaluated = a.latest.rules.filter((r) => r.enabled).length;
-  if (firing.length === 0) return { key: "alerts", label: "Alerts", word: "Quiet", tone: "ok", count: `0 of ${evaluated} firing`, state: "observed", workspace: "platform-policies", basis };
-  return { key: "alerts", label: "Alerts", word: critical ? "Firing (critical)" : "Firing", tone: critical ? "bad" : "warn", count: `${firing.length} of ${evaluated} firing`, state: "observed", workspace: "platform-policies", basis };
+  if (firing.length === 0) return { key: "alerts", label: "Alerts", word: "Quiet", tone: "ok", count: `0 of ${evaluated} firing`, state: "observed", workspace: ALERTS_VIEW, basis };
+  return { key: "alerts", label: "Alerts", word: critical ? "Firing (critical)" : "Firing", tone: critical ? "bad" : "warn", count: `${firing.length} of ${evaluated} firing`, state: "observed", workspace: ALERTS_VIEW, basis };
 }
 
 /** PROVIDERS — the provider authority's own worst-wins trust roll-up. */
@@ -442,11 +450,11 @@ export function deriveFreshnessPosture(f: PostureInputs["freshness"]): PostureCh
 /** CONFIGURATION — lib/env.ts's own pass/warn/fail verdicts (names only, never values). */
 export function deriveConfigurationPosture(e: PostureInputs["configuration"]): PostureChip {
   const basis = "environment report (variable names and verdicts only)";
-  if (!e) return unavailable("configuration", "Configuration", "platform-policies", basis);
+  if (!e) return unavailable("configuration", "Configuration", DEFAULTS_VIEW, basis);
   const total = e.counts.pass + e.counts.warn + e.counts.fail;
-  if (e.counts.fail > 0) return { key: "configuration", label: "Configuration", word: "Failing", tone: "bad", count: `${e.counts.fail} of ${total} failing · ${e.deploymentEnv}`, state: "observed", workspace: "platform-policies", basis };
-  if (e.counts.warn > 0) return { key: "configuration", label: "Configuration", word: "Warning", tone: "warn", count: `${e.counts.warn} of ${total} warning · ${e.deploymentEnv}`, state: "observed", workspace: "platform-policies", basis };
-  return { key: "configuration", label: "Configuration", word: "Set", tone: "ok", count: `${e.counts.pass} of ${total} set · ${e.deploymentEnv}`, state: "observed", workspace: "platform-policies", basis };
+  if (e.counts.fail > 0) return { key: "configuration", label: "Configuration", word: "Failing", tone: "bad", count: `${e.counts.fail} of ${total} failing · ${e.deploymentEnv}`, state: "observed", workspace: DEFAULTS_VIEW, basis };
+  if (e.counts.warn > 0) return { key: "configuration", label: "Configuration", word: "Warning", tone: "warn", count: `${e.counts.warn} of ${total} warning · ${e.deploymentEnv}`, state: "observed", workspace: DEFAULTS_VIEW, basis };
+  return { key: "configuration", label: "Configuration", word: "Set", tone: "ok", count: `${e.counts.pass} of ${total} set · ${e.deploymentEnv}`, state: "observed", workspace: DEFAULTS_VIEW, basis };
 }
 
 export function derivePosture(inputs: PostureInputs, now?: Date): readonly PostureChip[] {

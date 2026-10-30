@@ -117,7 +117,11 @@ console.log("source");
   const widget = strip("components/platform/widgets/OpsPoliciesWidget.tsx");
   check("the host reads the operational-controls url through the workspace session and publishes mutations back",
     /useSharedWidgetFetch<OperationalControlsReadModel>\(OPERATIONAL_URL\)/.test(widget) && /useSharedWidgetPublish<OperationalControlsReadModel>\(OPERATIONAL_URL\)/.test(widget));
-  check("the panel renders from its own fetch, not gated on the policies read", /\{operational && <MaintenanceModePanel/.test(widget));
+  // PLATFORM OPS PHASE 1 UX — re-ruled: the panel now also carries the VIEW's
+  // slice flag, which is derived from the variant alone (never from the
+  // policies read), so the UI-010 property this pin guards still holds.
+  check("the panel renders from its own fetch, not gated on the policies read",
+    /\{showEmergency && operational && <MaintenanceModePanel/.test(widget) && /const showEmergency = variant !== "defaults";/.test(widget));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

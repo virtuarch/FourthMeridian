@@ -48,7 +48,7 @@ import { useState, type ReactNode } from "react";
 import { Activity, AlertTriangle, ArrowRight, Loader2 } from "lucide-react";
 import { useWidgetFetch, type PlatformSection } from "../widget-kit";
 import { GroupLabel, Provenance, SectionSurface, ToneBadge, TwoLine } from "../platform-surface";
-import { getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { resolvePlatformDestination } from "@/lib/platform/workspaces";
 import {
   GROUP_DOORWAY,
   GROUP_LABEL,
@@ -182,7 +182,7 @@ function SourceBlock<T>({
 /**
  * The doorway out of a group and into the workspace that owns its detail.
  *
- * The LABEL is the workspace registry's own (`getPlatformWorkspace`), so a
+ * The LABEL is the destination resolver's (`resolvePlatformDestination`), so a
  * renamed workspace renames its doorway and cannot drift into a promise the
  * rail does not keep. A target the registry does not know renders nothing —
  * as does a surface whose host has not wired `onOpen`.
@@ -195,7 +195,7 @@ function GroupDoorway({
   onOpen?: (workspaceId: string) => void;
 }) {
   const targetId = GROUP_DOORWAY[group];
-  const def = getPlatformWorkspace(targetId);
+  const def = resolvePlatformDestination(targetId);
   if (!def || !onOpen) return null;
   return (
     <button

@@ -25,6 +25,9 @@
 import { AuditAction, type AuditActionType } from "@/lib/audit-actions";
 import { projectOperatorActionEvent, type OperatorAuditRowLike } from "@/lib/platform/security/operator-actions-core";
 
+/** Policies › Platform defaults — spelled as the literal view target so the rule type stays a closed union. */
+const POLICY_DEFAULTS_VIEW = "platform-policies:defaults";
+
 // ── The ruling, as a table ───────────────────────────────────────────────────
 
 /** Which envelope target kinds each admitted action may carry. `LEGACY_OK` admits pre-envelope rows (no target). */
@@ -34,17 +37,21 @@ export interface FeedActionRule {
   /** Pre-P1 rows for this action have no envelope target; admit them on the action alone. */
   legacyOk: boolean;
   /** The platform workspace that holds the target's detail. */
-  workspace: "platform-jobs" | "platform-policies" | "platform-providers" | "platform-refresh";
+  // PLATFORM OPS PHASE 1 UX — a policy change opens Policies › Platform
+  // defaults (where the cadence editors live). "platform-jobs" /
+  // "platform-refresh" are retired ids that resolve to Operations › Jobs /
+  // Pipeline (PLATFORM_WORKSPACE_ALIASES); kept so the payload stays stable.
+  workspace: "platform-jobs" | typeof POLICY_DEFAULTS_VIEW | "platform-providers" | "platform-refresh";
 }
 
 export const PLATFORM_OPS_FEED_RULES: Readonly<Record<string, FeedActionRule>> = {
   [AuditAction.PLATFORM_OPERATION_EXECUTED]:  { label: "Ran a manual operation",    kinds: ["JOB"], legacyOk: true,  workspace: "platform-jobs" },
   [AuditAction.PLATFORM_OPERATION_DRY_RUN]:   { label: "Dry-ran an operation",      kinds: ["JOB"], legacyOk: true,  workspace: "platform-jobs" },
   [AuditAction.PLATFORM_OPERATION_REQUESTED]: { label: "Started a fleet-wide operation", kinds: ["JOB"], legacyOk: false, workspace: "platform-jobs" },
-  [AuditAction.JOB_CADENCE_CHANGED]:          { label: "Changed a job cadence",     kinds: ["JOB"], legacyOk: false, workspace: "platform-policies" },
-  [AuditAction.JOB_CADENCE_RESET]:            { label: "Reset a job cadence",       kinds: ["JOB"], legacyOk: false, workspace: "platform-policies" },
-  [AuditAction.PLATFORM_POLICY_CHANGED]:      { label: "Changed a platform policy",  kinds: ["PLATFORM_SETTING"], legacyOk: true, workspace: "platform-policies" },
-  [AuditAction.PLATFORM_POLICY_RESET]:        { label: "Reset a platform policy",    kinds: ["PLATFORM_SETTING"], legacyOk: true, workspace: "platform-policies" },
+  [AuditAction.JOB_CADENCE_CHANGED]:          { label: "Changed a job cadence",     kinds: ["JOB"], legacyOk: false, workspace: POLICY_DEFAULTS_VIEW },
+  [AuditAction.JOB_CADENCE_RESET]:            { label: "Reset a job cadence",       kinds: ["JOB"], legacyOk: false, workspace: POLICY_DEFAULTS_VIEW },
+  [AuditAction.PLATFORM_POLICY_CHANGED]:      { label: "Changed a platform policy",  kinds: ["PLATFORM_SETTING"], legacyOk: true, workspace: POLICY_DEFAULTS_VIEW },
+  [AuditAction.PLATFORM_POLICY_RESET]:        { label: "Reset a platform policy",    kinds: ["PLATFORM_SETTING"], legacyOk: true, workspace: POLICY_DEFAULTS_VIEW },
   [AuditAction.CONNECTION_RESYNC_TRIGGERED]:  { label: "Resynced a connection",     kinds: ["PLAID_ITEM", "CONNECTION"], legacyOk: true, workspace: "platform-providers" },
   [AuditAction.CONNECTION_REAUTH_REQUESTED]:  { label: "Requested reauthorization", kinds: ["PLAID_ITEM", "CONNECTION"], legacyOk: true, workspace: "platform-providers" },
   [AuditAction.PLAID_ITEM_WEBHOOK_UPDATED]:   { label: "Repointed a connection webhook", kinds: ["PLAID_ITEM"], legacyOk: false, workspace: "platform-providers" },
