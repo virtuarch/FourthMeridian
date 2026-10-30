@@ -9,13 +9,19 @@
  *          the checked time, ONE large figure (the verdict word, Atlas `Figure`
  *          size "hero"), one caption line, then the four KPI figures on Atlas
  *          `Surface` tiles.
- *   < lg   the shared `CompactHeroCard` (the Net Worth / Cash Flow phone card,
- *          unchanged) followed by the KPIs as two 2-up `CompactKpiStrip`s (2×2).
+ *   < lg   it2 — the CompactHeroCard RHYTHM (same panel treatment `COMPACT_HERO`
+ *          and the same first three row classes `COMPACT_HERO_ROWS`) without its
+ *          finance-only rows: title + checked time · the verdict · ONE caption
+ *          line — no empty change/range/talk rows (the shared card reserves them
+ *          at fixed heights, which left ~70 px of nothing here). The KPIs follow
+ *          directly as two 2-up `CompactKpiStrip`s (2×2). CompactHeroCard itself
+ *          is unchanged.
  *
  * Presentation only: every word and figure arrives from ops-visual-model.ts.
  */
 
-import { CompactHeroCard } from "@/components/space/compact/CompactHeroCard";
+import { COMPACT_HERO_ROWS } from "@/components/space/compact/CompactHeroCard";
+import { COMPACT_HERO } from "@/components/space/compact/compact-hero";
 import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
 import { Figure, Surface } from "@/components/atlas/Surface";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
@@ -27,8 +33,6 @@ export interface HeroModel {
   checked: string | null;
   /** ONE line under the verdict. */
   caption: string;
-  /** The compact card's fourth row (one line). */
-  basisLine: string;
   kpis: readonly Kpi[];
 }
 
@@ -37,7 +41,7 @@ function Dot({ tone, size = 10 }: { tone: StatusTone; size?: number }) {
 }
 
 export function HealthHero({ model }: { model: HeroModel }) {
-  const { verdict, checked, caption, basisLine, kpis } = model;
+  const { verdict, checked, caption, kpis } = model;
   const pair = (from: number) => kpis.slice(from, from + 2).map((k) => ({
     key: k.key,
     label: k.label,
@@ -47,17 +51,24 @@ export function HealthHero({ model }: { model: HeroModel }) {
   return (
     <div id="ops-health" className="scroll-mt-20" data-health-hero>
       {/* COMPACT (< lg) — the Personal phone hero card + a 2×2 KPI grid. */}
-      <CompactHeroCard
-        title="Platform health"
-        freshness={checked}
-        trust={<Dot tone={verdict.tone} size={8} />}
-        value={verdict.word}
-        valueTone={verdict.tone === "bad" ? "negative" : "neutral"}
-        change={null}
-        noChangeLabel={caption}
-        range={basisLine}
-        currency="USD"
-      />
+      <section data-compact-hero aria-label="Platform health" className={`lg:hidden grid gap-1 ${COMPACT_HERO}`}>
+        <div className={COMPACT_HERO_ROWS[0]}>
+          <p className="shrink-0 whitespace-nowrap text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Platform health</p>
+          <span className="ml-auto min-w-0 truncate text-[11px] tabular-nums text-[var(--text-muted)]">{checked ?? ""}</span>
+        </div>
+        <div className={`${COMPACT_HERO_ROWS[1]} gap-2.5`}>
+          <Dot tone={verdict.tone} size={10} />
+          <p
+            className="min-w-0 overflow-hidden whitespace-nowrap text-[clamp(28px,9vw,40px)] font-semibold leading-tight tracking-tight"
+            style={{ color: verdict.tone === "bad" ? "var(--accent-negative)" : "var(--text-primary)" }}
+          >
+            {verdict.word}
+          </p>
+        </div>
+        <div className={COMPACT_HERO_ROWS[2]}>
+          <p className="min-w-0 truncate text-[12px] leading-6 text-[var(--text-muted)]" title={caption}>{caption}</p>
+        </div>
+      </section>
       <div className="mt-3 flex flex-col gap-2 lg:hidden">
         <CompactKpiStrip ariaLabel="Platform health figures" items={pair(0)} />
         <CompactKpiStrip ariaLabel="Platform activity figures" items={pair(2)} />

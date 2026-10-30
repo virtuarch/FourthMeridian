@@ -266,7 +266,12 @@ console.log("\nC2. R1 — the Platform context's rail: three destinations, the s
   check("the block is the Platform landmark with the PLATFORM eyebrow", html.includes(">Platform</p>") && html.includes('aria-label="Platform"'));
   check("Overview · AI · Current Space lead, in that order (the SAME three as the mobile bar)",
     top(html).slice(0, 3).join() === "/dashboard/platform,/dashboard/platform/ai,/dashboard/platform/GROWTH_REVENUE", top(html).join());
-  check("the Current Space row carries the selected Space's real name", html.includes("ROW::GROWTH_REVENUE"));
+  // it2 — with the switcher nested beneath, the destination reads "Current Space"
+  // and the selected Space's real name appears ONCE (its marked list row).
+  check("the Current Space row reads 'Current Space'; the selected name appears once, marked",
+    /<span class="flex-1 truncate">Current Space<\/span>/.test(html) && (html.match(/ROW::GROWTH_REVENUE/g) ?? []).length === 1 && /\(current\)/.test(html));
+  check("a single granted Space ⇒ the destination carries its real name (no list)",
+    rail("/dashboard/platform/PLATFORM_OPS", [rows[0]], rows[0]).includes("ROW::PLATFORM_OPS"));
   check("under Current Space: the Space switcher (granted Spaces only, as links)",
     /role="group" aria-label="Platform Spaces"/.test(html) && top(html).slice(3).join() === "/dashboard/platform/PLATFORM_OPS,/dashboard/platform/GROWTH_REVENUE");
   check("exactly one accent-lit destination (Current Space on an area route)", (html.match(/aria-current="true"/g) ?? []).length === 1);
@@ -274,6 +279,12 @@ console.log("\nC2. R1 — the Platform context's rail: three destinations, the s
   check("no granted Space known ⇒ the three still render; no switcher, no invented name",
     top(rail("/dashboard/platform", [], null)).length === 3 && !rail("/dashboard/platform", [], null).includes("ROW::"));
   check("every row is ≥ 36 px with a visible focus ring", /min-h-9/.test(html) && /focus-visible:ring-2/.test(html));
+  // it2 — the Space block above the workspaces is headed "Workspaces" + the access
+  // chip on the platform axis; no repeated name / meta line (customer Spaces keep both).
+  check("it2: platform-axis Space block reads 'Workspaces' + access chip, no meta line",
+    /onPlatformAxis \? \(\s*<h1[^>]*>\s*<span className="sr-only">\{identity\.name\} · <\/span>Workspaces/.test(NAVBAR_SRC) &&
+    /onPlatformAxis && identity\.accessChip/.test(NAVBAR_SRC) &&
+    /\{!onPlatformAxis && <p className="mt-1 text-\[11px\] text-\[var\(--text-muted\)\]">\{identity\.subtitle\}<\/p>\}/.test(NAVBAR_SRC));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

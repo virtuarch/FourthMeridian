@@ -483,6 +483,25 @@ export function PlatformWorkspaceBody({
   );
 }
 
+/** "CONTROL" → "Control" — the access level as a chip word. */
+export function accessChipWord(level: string): string {
+  return level ? level.charAt(0).toUpperCase() + level.slice(1).toLowerCase() : "";
+}
+
+/** Platform Ops it2 — the small access chip beside the compact title (and the sidebar's Workspaces heading). */
+export function AccessChip({ level }: { level: string }) {
+  if (!level) return null;
+  return (
+    <span
+      className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]"
+      style={{ background: "var(--surface-hover)", border: "1px solid var(--border-hairline)" }}
+      data-access-chip
+    >
+      <span className="sr-only">Access: </span>{accessChipWord(level)}
+    </span>
+  );
+}
+
 export function PlatformSpaceDashboard({ area, sections, mountContext, selectedView = null }: Props) {
   // ── Identity / display / navigation / access / shell — ALL from the shared
   //    contract (PS-6C). Nothing here is rebuilt from a second local derivation. ──
@@ -511,10 +530,10 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
   // Rail navigation is the CONTRACT's workspace projection (key/label/icon NAME),
   // not a second registry walk here. Resolving the icon name → component is the
   // consuming surface's concern (the contract is client-safe string data).
-  const railOptions: SpaceShellRailOption[] = available.map((w) => {
-    const Icon = WORKSPACE_ICONS[w.icon] ?? LayoutDashboard;
-    return { id: w.key, label: w.label, icon: <Icon size={14} aria-hidden /> };
-  });
+  // it2 — the rail is the compact (<lg) switcher only; it fills the row in four
+  // equal, text-only columns so every workspace fits a 375 px phone (the icons
+  // stay on the desktop sidebar rows, resolved there from the same icon name).
+  const railOptions: SpaceShellRailOption[] = available.map((w) => ({ id: w.key, label: w.label }));
 
   const active = composition.find((w) => w.workspaceId === activeTab) ?? composition[0];
   // The open VIEW of the active workspace (its default when the hook's view
@@ -536,10 +555,10 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
   useEffect(() => {
     publishCurrencyControl(null);
     publishSpace({
-      identity: { name: spaceName, subtitle: chromeSubtitle },
+      identity: { name: spaceName, subtitle: chromeSubtitle, accessChip: accessChipWord(accessLevel) },
     });
     return () => publishSpace(null);
-  }, [publishSpace, publishCurrencyControl, spaceName, chromeSubtitle]);
+  }, [publishSpace, publishCurrencyControl, spaceName, chromeSubtitle, accessLevel]);
 
   // SECTIONS — the ACTIVE workspace's "what's inside" list, published UP to the
   // same ContextualNavbar block customer workspaces feed (SpaceChrome sections
@@ -585,6 +604,10 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
       railVisibility="belowLg"
       title={spaceName}
       titleAccessory={<PlatformSpaceSwitcher spaces={grantedSpaces} currentArea={area} />}
+      // it2 — one compact title line (name · switcher · access chip), no meta
+      // line, and a four-equal-column rail that fits a 375 px phone.
+      titleChip={<AccessChip level={accessLevel} />}
+      fillCompactRail
       subtitle={chromeSubtitle}
       railOptions={railOptions}
       activeTab={openWorkspaceId}

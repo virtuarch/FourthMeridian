@@ -66,6 +66,13 @@ export const SCHEDULER_INACTIVE = "No scheduled execution observed — scheduler
 export const SCHEDULER_STOPPED = "Scheduler stopped — no scheduled execution observed";
 export const SCHEDULER_UNKNOWN = "Scheduler state unknown";
 export const SCHEDULER_ACTIVE = "Scheduler active on this deployment";
+/** it2 — a Preview deployment: Vercel fires crons on Production deployments only. */
+export const SCHEDULER_PREVIEW = "Scheduled jobs don't run on Preview";
+/** The attention / job wording for a Preview deployment's jobs. */
+export const NOT_RUNNING_ON_PREVIEW = "Not running on Preview";
+
+/** The deployment environment as env-status reports it (`deploymentEnv`); null/absent = unknown. */
+export type DeploymentEnv = "production" | "preview" | "development" | (string & {});
 
 export interface SchedulerEvidence {
   state: SchedulerState;
@@ -73,6 +80,8 @@ export interface SchedulerEvidence {
   headline: string;
   /** The evidence behind the state (job detail / Technical disclosure). */
   basis: string;
+  /** it2 — true when the state rests on the deployment being Preview (crons never fire there). */
+  preview?: boolean;
 }
 
 /**
@@ -89,16 +98,25 @@ export interface SchedulerEvidence {
  *   ACTIVE: the backstop left rows in the window (the cron provider reaches this
  *   deployment; job health is then shown as the route reports it).
  *   UNKNOWN: anything else, including a source that did not answer.
+ *
+ *   it2 — the DEPLOYMENT ENVIRONMENT comes first: Vercel fires crons on
+ *   Production deployments only, so on a Preview deployment with no backstop row
+ *   in the window the scheduler is INACTIVE by design — whatever non-manual runs
+ *   the ledger holds (a developer harness writes those, not a deployment
+ *   scheduler, so they never make Preview silence an outage). Production or an
+ *   unknown environment keeps the ledger evidence (stopped / unknown / active).
  */
 export function schedulerEvidence(
   jobs: Fetched<PlatformJobHealthResponse>,
   scheduler: Fetched<SchedulerObservationResponse>,
   /** Start times of recent MANUAL runs (operations GET `recent`) — a manual run is not evidence of a scheduler wake. */
   manualStarts?: readonly string[] | null,
+  /** it2 — env-status `deploymentEnv`; null/absent = unknown (the ledger evidence decides). */
+  deploymentEnv?: DeploymentEnv | null,
 ): SchedulerEvidence {
   const j = jobs.data;
   const s = scheduler.data;
-  if (!j || !s) {
+  if (!s) {
     return { state: "unknown", headline: SCHEDULER_UNKNOWN, basis: "The scheduler observation or job health could not be read." };
   }
   const windowHours = (Date.parse(s.window.to) - Date.parse(s.window.from)) / HOUR_MS;
@@ -108,6 +126,17 @@ export function schedulerEvidence(
   }
   if (!Number.isFinite(windowHours) || windowHours < 1) {
     return { state: "unknown", headline: SCHEDULER_UNKNOWN, basis: "The observation window is too short to judge." };
+  }
+  if (deploymentEnv === "preview") {
+    return {
+      state: "inactive",
+      headline: SCHEDULER_PREVIEW,
+      basis: `Vercel runs crons on Production deployments only; no backstop-cron execution was recorded in the last ${Math.round(windowHours)} h.`,
+      preview: true,
+    };
+  }
+  if (!j) {
+    return { state: "unknown", headline: SCHEDULER_UNKNOWN, basis: "The scheduler observation or job health could not be read." };
   }
   const neverRanPrimary = j.jobs.filter((r) => r.totalRuns === 0 && continuationOf(r.job) === null);
   const from = Date.parse(s.window.from);
@@ -180,7 +209,7 @@ export function honestJobStatus(row: PlatformJobRow, evidence: SchedulerEvidence
   if (row.status === "healthy") return { kind: "healthy", word: "Healthy", tone: "ok", reason: "Ran on schedule" };
 
   // never-ran · overdue · dead — what they MEAN depends on whether a wake happened.
-  if (evidence.state === "inactive") return { kind: "not-observed", word: "Not observed", tone: "muted", reason: SCHEDULER_INACTIVE };
+  if (evidence.state === "inactive") return { kind: "not-observed", word: "Not observed", tone: "muted", reason: evidence.headline };
   if (evidence.state === "unknown") return { kind: "unknown", word: "Unknown", tone: "muted", reason: SCHEDULER_UNKNOWN };
 
   if (row.status === "never-ran") {
@@ -352,10 +381,24 @@ export interface AttentionGroup {
   action: AttentionGroupAction;
 }
 
-/** The problem's cause, without its particulars ("Overdue — expected every 6 h, …" → "Overdue"). */
-function causeLead(problem: string): string {
-  return problem.split(/ — |\. |\(/)[0].replace(/\d[\d,.]*/g, "#").trim();
+/**
+ * The problem's cause, without its particulars: "Overdue — expected every 6 h, …"
+ * → "Overdue"; "Wallet sync failed · 1 occurrence." → "Wallet sync failed" (a
+ * " · " segment that carries a figure is a particular, not the cause).
+ */
+export function causeText(problem: string): string {
+  const lead = problem.split(/ — |\. |\(/)[0].trim().replace(/\.$/, "");
+  const kept = lead.split(" · ").map((x) => x.trim()).filter((x) => x && !/\d/.test(x));
+  return kept.join(" · ") || lead;
 }
+
+/** The occurrence count a problem states ("· 3 occurrences"), or null. */
+function occurrencesIn(problem: string): number | null {
+  const m = /(\d[\d,]*) occurrences?\b/.exec(problem);
+  return m ? Number(m[1].replace(/,/g, "")) : null;
+}
+
+const plural = (count: number, one: string, many: string) => `${n(count)} ${count === 1 ? one : many}`;
 
 /**
  * The attention items, grouped by SHARED CAUSE, in the server's order (a group
@@ -368,42 +411,58 @@ export function groupAttention(
   evidence: SchedulerEvidence,
   jobs: PlatformJobHealthResponse | null,
 ): AttentionGroup[] {
-  const groups = new Map<string, AttentionGroup & { order: number }>();
-  const failedJobs = new Set((jobs?.jobs ?? []).filter((r) => honestJobStatus(r, evidence).kind === "failed").map((r) => r.job));
-  const notObserved = (jobs?.jobs ?? []).filter((r) => honestJobStatus(r, evidence).kind === "not-observed").length;
+  type Acc = AttentionGroup & { order: number; cause: string; occurrences: number; occurrencesKnown: boolean };
+  const groups = new Map<string, Acc>();
+  const byJob = new Map((jobs?.jobs ?? []).map((r) => [r.job, honestJobStatus(r, evidence)] as const));
+  const failedJobs = new Set([...byJob].filter(([, h]) => h.kind === "failed").map(([j]) => j));
+  const notObserved = [...byJob.values()].filter((h) => h.kind === "not-observed").length;
+
+  // it2 — a job's cause is its HONEST status word (never the server's raw "Dead").
+  const jobCause = (it: AttentionItem): { cause: string; line: string } => {
+    const h = byJob.get(it.entity.label);
+    if (h) return { cause: h.word, line: `${h.word} · ${h.reason}` };
+    const cause = causeText(it.problem).replace(/^Dead\b/, "Overdue");
+    return { cause, line: cause };
+  };
 
   attention.items.forEach((it: AttentionItem, order) => {
     const schedulerCause = it.entity.kind === "job" && evidence.state === "inactive" && !failedJobs.has(it.entity.label);
-    const key = schedulerCause ? "scheduler-inactive" : `${it.entity.kind}|${it.severity}|${causeLead(it.problem)}`;
+    const isJob = it.entity.kind === "job";
+    const own = isJob ? jobCause(it) : { cause: causeText(it.problem), line: it.problem };
+    const occ = occurrencesIn(it.problem);
+    const key = schedulerCause ? "scheduler-inactive" : `${it.entity.kind}|${it.severity}|${own.cause}`;
     const g = groups.get(key);
     if (g) {
       g.count++;
+      g.occurrences += occ ?? 0;
+      g.occurrencesKnown = g.occurrencesKnown && occ !== null;
       if (SEVERITY_RANK[it.severity] < SEVERITY_RANK[g.severity]) { g.severity = it.severity; g.tone = SEVERITY_TONE[it.severity]; }
       if (!schedulerCause) {
         g.title = `${n(g.count)} ${KIND_PLURAL[it.entity.kind]}`;
-        g.line = causeLead(it.problem).replace(/#/g, "").replace(/\s+/g, " ").trim() || it.problem;
-        g.action = it.entity.kind === "job" ? { kind: "jobs" } : g.action;
+        g.line = g.occurrencesKnown ? `${g.cause} · ${plural(g.occurrences, "occurrence", "occurrences")}` : g.cause;
+        g.action = isJob ? { kind: "jobs" } : g.action;
       }
       return;
     }
     groups.set(key, schedulerCause
-      ? { key, order, severity: it.severity, tone: SEVERITY_TONE[it.severity], count: 1,
-          title: "Scheduler not active on this deployment", line: "", action: { kind: "jobs" } }
-      : { key, order, severity: it.severity, tone: SEVERITY_TONE[it.severity], count: 1,
-          title: it.entity.kind === "job" ? jobLabel(it.entity.label) : it.entity.label, line: it.problem,
-          action: it.entity.kind === "job" ? { kind: "job", job: it.entity.label } : { kind: "attention", workspace: it.evidence.workspace } });
+      ? { key, order, severity: it.severity, tone: SEVERITY_TONE[it.severity], count: 1, cause: "", occurrences: 0, occurrencesKnown: false,
+          title: "", line: "", action: { kind: "jobs" } }
+      : { key, order, severity: it.severity, tone: SEVERITY_TONE[it.severity], count: 1, cause: own.cause, occurrences: occ ?? 0, occurrencesKnown: occ !== null,
+          title: isJob ? jobLabel(it.entity.label) : it.entity.label, line: own.line,
+          action: isJob ? { kind: "job", job: it.entity.label } : { kind: "attention", workspace: it.evidence.workspace } });
   });
 
   const sched = groups.get("scheduler-inactive");
   if (sched) {
     sched.count = Math.max(sched.count, notObserved);
-    sched.line = `No scheduled execution observed · ${n(sched.count)} job${sched.count === 1 ? "" : "s"}`;
+    sched.title = plural(sched.count, "job", "jobs");
+    sched.line = evidence.preview ? NOT_RUNNING_ON_PREVIEW : "Not observed · scheduler not active on this deployment";
   }
 
   // The SERVER's order (attention is already severity-ranked there — the one
   // ordering authority): a group sits where its first item sat. Map insertion
   // order is that order, so nothing is re-sorted here.
-  return [...groups.values()].map(({ order: _order, ...g }) => g);
+  return [...groups.values()].map(({ order: _order, cause: _cause, occurrences: _o, occurrencesKnown: _k, ...g }) => g);
 }
 
 /** Total attention items (the server's own counts). */
@@ -439,6 +498,27 @@ export interface Kpi {
   tone?: StatusTone;
 }
 
+/** The operations route's manual-run list cap (operations/route.ts RECENT_LIMIT). */
+export const MANUAL_RECENT_CAP = 20;
+
+/**
+ * it2 — the executions KPI's qualifier: the manual / scheduled split, never
+ * "scheduled" for runs an operator started. Manual runs come from the operations
+ * route's `recent` list; when that list is full and reaches into the window its
+ * count is a floor, so no scheduled figure is claimed.
+ */
+export function runsSplit(s: SchedulerObservationResponse, runs: number, manualStarts: readonly string[] | null, cap = MANUAL_RECENT_CAP): string {
+  if (manualStarts === null) return "registered jobs";
+  if (runs === 0) return "none recorded";
+  const from = Date.parse(s.window.from);
+  const inWindow = manualStarts.filter((t) => Date.parse(t) >= from).length;
+  const floor = manualStarts.length >= cap && inWindow === manualStarts.length;
+  const manual = Math.min(runs, inWindow);
+  if (floor) return `≥${n(manual)} manual`;
+  const scheduled = runs - manual;
+  return [scheduled > 0 ? `${n(scheduled)} scheduled` : null, manual > 0 ? `${n(manual)} manual` : null].filter(Boolean).join(" · ");
+}
+
 /** Success rate over the last 7 FULLY covered UTC days; null when the series does not cover them. */
 export function successRate7d(days7: readonly DayBar[]): number | null {
   if (days7.length < 7 || days7.some((d) => !d.observed)) return null;
@@ -453,6 +533,10 @@ export function healthKpis(args: {
   attention: Fetched<AttentionResponse>;
   groups: readonly AttentionGroup[];
   days7: readonly DayBar[];
+  /** Start times of recent MANUAL runs (operations GET `recent`, capped); null/absent = unknown. */
+  manualStarts?: readonly string[] | null;
+  /** The cap of that list (operations route RECENT_LIMIT) — a full list is a floor. */
+  manualCap?: number;
 }): Kpi[] {
   const { jobs, scheduler, attention, groups, days7 } = args;
   const out: Kpi[] = [];
@@ -466,7 +550,7 @@ export function healthKpis(args: {
   const s = scheduler.data;
   if (s) {
     const runs = registeredExecutions(s);
-    out.push({ key: "runs", label: "Executions · 24 h", value: s.observed.recordedExecutions >= SCHEDULER_RUN_CAP ? `≥${n(runs)}` : n(runs), sub: "scheduled jobs" });
+    out.push({ key: "runs", label: "Executions · 24 h", value: s.observed.recordedExecutions >= SCHEDULER_RUN_CAP ? `≥${n(runs)}` : n(runs), sub: runsSplit(s, runs, args.manualStarts ?? null, args.manualCap ?? MANUAL_RECENT_CAP) });
   } else out.push({ key: "runs", label: "Executions · 24 h", value: "—", sub: scheduler.loading ? "reading" : "unavailable", tone: "muted" });
   const rate7 = successRate7d(days7);
   if (rate7 !== null) out.push({ key: "success", label: "Success rate", value: `${Math.round(rate7 * 100)}%`, sub: "7 d", tone: rate7 < 0.9 ? "warn" : undefined });

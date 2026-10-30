@@ -115,6 +115,19 @@ export interface SpaceShellProps {
    * header row is byte-identical to before (customer Spaces never pass it).
    */
   titleAccessory?: ReactNode;
+  /**
+   * Platform Ops visual it2 — a small chip (the operator's access level) on the
+   * SAME compact (<lg) title line, after `titleAccessory`. When present the
+   * compact header is ONE line: the subtitle (meta) line is not rendered below
+   * lg. Absent ⇒ the header is byte-identical (customer Spaces never pass it).
+   */
+  titleChip?: ReactNode;
+  /**
+   * Platform Ops visual it2 — the belowLg rail fills the row in equal columns
+   * (every workspace fits a 375 px phone with no horizontal scroll). Only read
+   * with `railVisibility="belowLg"`; absent ⇒ unchanged.
+   */
+  fillCompactRail?: boolean;
 
   /** The workspace viewport — the active tab's content. Owned by the host. */
   children: ReactNode;
@@ -137,6 +150,8 @@ export function SpaceShell({
   compactRailOptions,
   compactTitleOnly = false,
   titleAccessory,
+  titleChip,
+  fillCompactRail = false,
   children,
 }: SpaceShellProps) {
   const isUtility = variant === "utility";
@@ -176,6 +191,19 @@ export function SpaceShell({
               <p className="text-sm text-[var(--text-muted)]">{subtitle}</p>
             </div>
             {headerActions && <div className="shrink-0">{headerActions}</div>}
+          </div>
+        ) : titleChip ? (
+          /* Platform Ops it2 — the ONE-LINE compact header: name · Space switcher ·
+             access chip. No meta line (the chip carries the access level). */
+          <div className="lg:hidden mb-3 flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-1" data-compact-header>
+              <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
+              {titleAccessory}
+              {titleChip}
+            </div>
+            <div className="lg:hidden flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+              <SpaceControls currencyControl={currencyControl} onManage={onManage} onLeave={onLeave} />
+            </div>
           </div>
         ) : (
           /* Mobile-only relocation row (<lg) — identity + the canonical
@@ -225,6 +253,12 @@ export function SpaceShell({
               {rail}
             </div>
           </>
+        ) : showRail && railVisibility === "belowLg" && fillCompactRail ? (
+          /* Platform Ops it2 — equal columns across the row: all workspaces fit
+             a 375 px phone (no off-screen tab, no horizontal scroll). */
+          <div className="lg:hidden mb-5 flex [&>div]:w-full [&_button]:flex-1 [&_button]:px-1" data-compact-rail-fill>
+            {rail}
+          </div>
         ) : showRail && (
           <div className={railVisibility === "belowLg" ? "lg:hidden mb-7 flex justify-center" : "mb-7 flex justify-center"}>
             {rail}
