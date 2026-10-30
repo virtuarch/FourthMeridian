@@ -11,7 +11,7 @@ import { ImageResponse } from "next/og";
  * and states nothing but the canonical positioning.
  */
 export const dynamic = "force-static";
-export const alt = "Fourth Meridian — an AI-native wealth management platform";
+export const alt = "Fourth Meridian — your whole financial life, finally in context";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -39,10 +39,10 @@ export default function OpenGraphImage() {
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
           <div style={{ fontSize: 64, fontWeight: 600, lineHeight: 1.08, letterSpacing: -1.5, maxWidth: 1000 }}>
-            An AI-native wealth management platform.
+            Your whole financial life. Finally in context.
           </div>
           <div style={{ fontSize: 30, lineHeight: 1.35, color: "#b7c0d1", maxWidth: 1000 }}>
-            One continuously updated understanding of your cash, spending, income, debt and investments.
+            AI-powered financial understanding: your accounts, spending, debt and investments in one connected picture.
           </div>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 24, color: "#8b96ab" }}>

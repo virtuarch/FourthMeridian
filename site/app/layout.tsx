@@ -5,11 +5,11 @@ import { APP_LINKS, PUBLIC_CONFIG } from "@site/lib/public-config";
 import ui from "@site/components/ui.module.css";
 import "./globals.css";
 
-const TITLE = "Fourth Meridian — AI-native wealth management";
+const TITLE = "Fourth Meridian — AI-powered financial understanding";
 // The canonical positioning (content/copy.ts SITE.positioning), then what the
 // shipped product does, then its status. Nothing here is roadmap.
 const DESCRIPTION =
-  "Fourth Meridian is an AI-native wealth management platform: one continuously updated understanding of your cash, spending, income, debt and investments, with a Daily Brief and Conversations grounded in your own numbers. Closed beta, invite-only.";
+  "Fourth Meridian brings your accounts, spending, debt and investments into one connected picture, with a Daily Brief and AI conversations grounded in your own financial data. Read-only connections; the decisions stay yours. Closed beta, invite-only.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(PUBLIC_CONFIG.siteOrigin),
