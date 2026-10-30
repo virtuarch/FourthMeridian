@@ -158,6 +158,11 @@ export interface PlatformWorkspaceComposition {
   /** Overview-only: destination ids (workspace ids, view targets, or aliases —
    *  see resolvePlatformDestination) this workspace links to as doorways. */
   doorways?: readonly string[];
+  /** How the workspace's views are navigated (spec §1: ONE row of tabs before
+   *  content). "segmented" (default) renders the view control as a row; a
+   *  "drilldown" workspace reaches its non-default views from its own cards and
+   *  shows only a compact "back" link on them — never a second tab row. */
+  viewControl?: "segmented" | "drilldown";
 }
 
 /** The section key of a view entry. */
@@ -222,40 +227,36 @@ export function aliasedPlatformViewId(id: string | null | undefined): string | n
 export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWorkspaceComposition[]> = {
   PLATFORM_OPS: [
     // ── Operations — "is the platform working, and is the work running?" ──────
-    // PLATFORM OPS 2.0 (R2) — summary-first. The default view is the OPERATIONS
-    // lead (status header · top-5 attention · jobs & activity KPIs + five recent
-    // executions · deliberate manual-operations entry · detail doorways), ≈ one
-    // screen. Everything it summarises stays reachable through its drawers:
-    //   ops_overview          the full status board, attention list (with its
-    //                         resync / reauth actions) and the other overview blocks
+    // PLATFORM OPS VISUAL SPEC (2026-10-30, after the owner rejected R1/R2) — the
+    // default view is ONE analytical dashboard in the Personal Space language
+    // (components/platform/leads/OperationsLead.tsx): health hero · execution
+    // trend · outcome composition · needs attention (grouped by cause) · refresh
+    // activity · the UNIFIED Jobs list · recent activity. Its drawers keep every
+    // former widget reachable:
+    //   ops_overview          status board, the full attention list (with its
+    //                         resync / reauth actions) and the activity blocks
     //   ops_platform_health   "Platform health" drawer
     //   ops_convergence +
     //   ops_timeline          "Incidents" drawer
-    //   ops_manual_operations "Run an operation…" drawer (fleet CONTROL + reason +
-    //                         confirmation + pre-run audit unchanged — #131)
-    // Jobs is the DETAIL view of the scheduler work (the full job table with its
-    // execution panel, the scheduler observation, the history series) — manual
-    // operations left it: a fleet command is never a casual button on a view.
-    // Pipeline is a detail view: KPI + top failures lead, the paginated
-    // execution table inline, the endpoint roll-up / connection health /
-    // coverage in drawers.
+    //   ops_job_health        the unified Jobs card (5 rows, worst first) — its
+    //                         rows carry Dry run / Run now for every job the
+    //                         operations registry can run (fleet runs: Control
+    //                         access + reason + confirmation), so Manual operations
+    //                         is no longer a section of its own (absorbed below)
+    // Jobs is the drill-down: every job, searchable, then the scheduler
+    // observation and the history series. Pipeline is unchanged. Operations
+    // reaches its drill-downs from the dashboard's cards ("See all", "Pipeline"),
+    // so its views are never a second row of tabs (viewControl "drilldown").
     withViews({
       workspaceId: "platform-overview",
       label: "Operations",
+      viewControl: "drilldown",
       views: [
         { id: "overview", label: "Overview", lead: "operations", sections: [],
-          hosted: ["ops_overview", "ops_platform_health", "ops_convergence", "ops_timeline", "ops_manual_operations"] },
-        // R2 review fix — Jobs is a DRILL-DOWN view and the destination every
-        // "Run from Jobs" action (attention run-now, operator-feed links) opens,
-        // so Manual operations stays here inline as well as behind the Overview's
-        // deliberate "Run an operation…" entry. Not on the default screen.
-        { id: "jobs", label: "Jobs", icon: "Timer", sections: ["ops_job_health", "ops_scheduler", "ops_manual_operations", "ops_history"] },
+          hosted: ["ops_overview", "ops_platform_health", "ops_convergence", "ops_timeline", "ops_job_health"] },
+        { id: "jobs", label: "Jobs", icon: "Timer", sections: ["ops_job_health", "ops_scheduler", "ops_history"] },
         { id: "pipeline", label: "Pipeline", icon: "RefreshCw", lead: "pipeline", sections: ["ops_refresh_executions"],
           hosted: ["ops_refresh_summary", "ops_connection_health", "ops_refresh_coverage"] },
-      ],
-      doorways: [
-        platformViewTarget("platform-overview", "jobs"), platformViewTarget("platform-overview", "pipeline"),
-        "platform-providers", "platform-ai", "platform-policies",
       ],
     }),
     // ── Providers — "is each provider trustworthy, and what does it cost us?" ──
@@ -358,6 +359,12 @@ export const PLATFORM_SECTION_REPRESENTATION: Readonly<Record<string, string>> =
   // BETA V2 — absorbed by the Security posture surface (components/platform/widgets/SecurityPostureWidget.tsx).
   sec_sessions:           "sec_auth_posture",
   sec_anomalies:          "sec_auth_posture",
+  // PLATFORM OPS VISUAL SPEC §3 — the unified Jobs experience: every manual
+  // operation (Dry run / Run now, fleet runs behind Control access + reason +
+  // confirmation through the same POST /platform-ops/operations) is on its job's
+  // row and detail in ops_job_health. The section keeps its DB row; its widget
+  // is no longer registered.
+  ops_manual_operations:  "ops_job_health",
 };
 
 // ── Accessors ───────────────────────────────────────────────────────────────────

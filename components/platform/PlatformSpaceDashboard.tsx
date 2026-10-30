@@ -53,7 +53,7 @@ import {
 } from "@/lib/space/use-platform-workspace-navigation";
 import type { SpaceMountContext, SpaceMountAccess } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, ArrowRight } from "lucide-react";
+import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, ArrowRight, ChevronLeft } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
@@ -83,7 +83,7 @@ import { SecAnomaliesWidget } from "./widgets/SecAnomaliesWidget";
 import { CsCustomersWidget } from "./widgets/CsCustomersWidget";
 import { GrowthPolicyGroupsWidget } from "./widgets/GrowthPolicyGroupsWidget";
 import { GrowthProductAnalyticsWidget } from "./widgets/GrowthProductAnalyticsWidget";
-import { OpsJobHealthWidget } from "./widgets/OpsJobHealthWidget";
+import { OpsJobsWidget } from "./ops-visual/OpsJobsWidget";
 import { OpsRateLimitsWidget } from "./widgets/OpsRateLimitsWidget";
 import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
 import { OpsApiUsageWidget } from "./widgets/OpsApiUsageWidget";
@@ -92,7 +92,6 @@ import { OpsConnectionDiagnosticsWidget } from "./widgets/OpsConnectionDiagnosti
 import { OpsProviderCleanupWidget } from "./widgets/OpsProviderCleanupWidget";
 import { OpsEmailDeliveryWidget } from "./widgets/OpsEmailDeliveryWidget";
 import { OpsResourceFreshnessWidget } from "./widgets/OpsResourceFreshnessWidget";
-import { OpsManualOperationsWidget } from "./widgets/OpsManualOperationsWidget";
 import { OpsProviderHealthWidget } from "./widgets/OpsProviderHealthWidget";
 import { OpsAlertsWidget } from "./widgets/OpsAlertsWidget";
 import { OpsHistoryWidget } from "./widgets/OpsHistoryWidget";
@@ -152,7 +151,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   sec_sessions:     SecSessionsWidget,
   sec_anomalies:    SecAnomaliesWidget,
   // Platform Operations
-  ops_job_health:         OpsJobHealthWidget,
+  ops_job_health:         OpsJobsWidget,
   ops_rate_limits:        OpsRateLimitsWidget,
   ops_env_status:         OpsEnvStatusWidget,
   ops_api_usage:          OpsApiUsageWidget,
@@ -161,7 +160,6 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   ops_provider_cleanup:       OpsProviderCleanupWidget,
   ops_email_delivery:     OpsEmailDeliveryWidget,
   ops_resource_freshness: OpsResourceFreshnessWidget,
-  ops_manual_operations:  OpsManualOperationsWidget,
   ops_provider_health:    OpsProviderHealthWidget,
   ops_alerts:             OpsAlertsWidget,
   ops_history:            OpsHistoryWidget,
@@ -346,6 +344,28 @@ export function PlatformViewSwitcher({ views, activeView, onSelect, workspaceLab
         className="max-lg:[&>button]:min-h-11"
       />
     </div>
+  );
+}
+
+/**
+ * PLATFORM OPS VISUAL SPEC §1 — a "drilldown" workspace's way back from a
+ * non-default view: ONE compact link ("‹ Operations · Jobs"), never a second
+ * full-height tab row under the workspace rail.
+ */
+export function PlatformDrilldownBack({ label, viewLabel, onBack }: { label: string; viewLabel: string; onBack: () => void }) {
+  return (
+    <nav aria-label={`${label} navigation`} className="-mb-4 flex min-w-0 items-center gap-1.5 text-xs md:-mb-6">
+      <button
+        type="button"
+        onClick={onBack}
+        className="inline-flex min-h-11 items-center gap-1 rounded-[var(--radius-xs)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-8"
+      >
+        <ChevronLeft size={14} aria-hidden />
+        {label}
+      </button>
+      <span aria-hidden className="text-[var(--text-faint)]">/</span>
+      <span aria-current="page" className="truncate font-medium text-[var(--text-primary)]">{viewLabel}</span>
+    </nav>
   );
 }
 
@@ -577,7 +597,14 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
       {active ? (
         <div className="flex flex-col gap-8 md:gap-10">
           {/* PLATFORM OPS PHASE 1 UX — the view control leads the body. */}
-          {active.views && active.views.length > 1 && activeViewDef && (
+          {active.views && active.views.length > 1 && activeViewDef && active.viewControl === "drilldown" && !isDefaultView && (
+            <PlatformDrilldownBack
+              label={available.find((w) => w.key === active.workspaceId)?.label ?? active.workspaceId}
+              viewLabel={activeViewDef.label}
+              onBack={() => setActiveView(active.views![0].id)}
+            />
+          )}
+          {active.views && active.views.length > 1 && activeViewDef && active.viewControl !== "drilldown" && (
             <PlatformViewSwitcher
               views={active.views}
               activeView={activeViewDef.id}

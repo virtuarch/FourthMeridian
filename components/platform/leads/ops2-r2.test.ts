@@ -20,11 +20,10 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { OperationsLead, OperationsLeadSurface } from "./OperationsLead";
 import { ProviderDetail, ProvidersLeadSurface, ProvidersMaster } from "./ProvidersLead";
 import { PipelineLeadSurface, pipelineKpis } from "./PipelineLead";
 import { ALLOWANCE_UNKNOWN, FLEET_DIAGNOSTICS, NOT_ASSESSED, groupEntities, providerEntities, type ProviderInputs } from "./providers-model";
-import { PLATFORM_AREA_WORKSPACES, viewComposedKeys } from "@/lib/platform/workspaces";
+import { PLATFORM_AREA_WORKSPACES, PLATFORM_SECTION_REPRESENTATION, viewComposedKeys } from "@/lib/platform/workspaces";
 import { PlatformWorkspaceBody } from "../PlatformSpaceDashboard";
 
 let failures = 0;
@@ -67,65 +66,15 @@ const overviewData = {
   posture: [{ key: "alerts", label: "Alerts", word: "Clear", tone: "ok", count: "0", state: "observed", workspace: "platform-policies:alerts", basis: "b" }],
 } as never;
 
-const attentionItem = (i: number, sev: string) => ({
-  id: `a${i}`, severity: sev, entity: { kind: "connection", label: `Connection ${i}` }, problem: `Problem ${i}`, since: AGO(30 + i),
-  evidence: { kind: "connection", workspace: "platform-providers" }, actions: [{ kind: "resync", connectionId: `c${i}`, source: "PLAID" }], basis: "b",
-});
-const attentionData = {
-  checkedAt: AGO(1), items: Array.from({ length: 8 }, (_, i) => attentionItem(i, i < 2 ? "critical" : "warning")),
-  counts: { critical: 2, error: 0, warning: 6, info: 0 }, authoritiesChecked: { count: 7, names: [] }, authoritiesFailed: [], floors: [],
-  recentFirings: { runs: 0, newestEvaluatedAt: null, oldestEvaluatedAt: null, count: 0, items: [] }, userImpact: {},
-} as never;
-const convergenceData = { window: { from: AGO(1440), to: AGO(0) }, episodes: [
-  { id: "e1", from: AGO(100), to: AGO(90), title: "t", subjects: [], participants: [], events: [], narrative: { happened: "h", caused: null, recovered: null }, trust: "observed" },
-  { id: "e2", from: AGO(100), to: AGO(90), title: "t", subjects: [], participants: [], events: [], narrative: { happened: "h", caused: null, recovered: "r" }, trust: "observed" },
-], events: [], eventCount: 14, participants: [], checkedAt: AGO(1) } as never;
-const jobsData = { healthy: false, checkedAt: AGO(1), counts: { healthy: 8, running: 1, overdue: 1, failing: 1, dead: 0, neverRan: 2 }, jobs: [] } as never;
-const schedulerData = { observed: { lastRecordedExecutionAt: AGO(3), recordedExecutions: 37, overdue: [], externalCrons: [] }, expected: { nextSlotAt: null, jobsInNextSlot: [], registeredJobs: 13 }, notes: [], window: { from: AGO(1440), to: AGO(0) }, checkedAt: AGO(1) } as never;
 const execRow = (i: number) => ({ id: `x${i}`, runId: `r${i}`, plaidItemId: `item_${i}abcdef`, sourceKind: "PLAID_ITEM", sourceRef: null, network: null, trigger: "CRON", profile: "p", startedAt: AGO(i * 7), completedAt: AGO(i * 7 - 1), durationMs: 4200, overallStatus: i === 2 ? "FAILED" : "SUCCEEDED", parentJobRunId: null, hasError: i === 2, deploymentSha: null, errorSummary: null, admissionReason: null, failureStage: null, failureCategory: null, outcome: null });
-const execData = { rows: Array.from({ length: 8 }, (_, i) => execRow(i + 1)), nextCursor: "c", audience: "operator", scopeDenied: false } as never;
-
-const ALL_OPS_HOSTED = new Set(["ops_overview", "ops_platform_health", "ops_convergence", "ops_timeline", "ops_manual_operations"]);
-const opsSurface = (over: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(OperationsLeadSurface, {
-  overview: ok(overviewData), attention: ok(attentionData), convergence: ok(convergenceData), jobs: ok(jobsData), scheduler: ok(schedulerData), executions: ok(execData),
-  nowMs: NOW, hasHosted: (k: string) => ALL_OPS_HOSTED.has(k), onOpenDrawer: () => {}, onOpenWorkspace: () => {}, onSelectExecution: () => {}, ...over,
-} as never));
 
 // ── A. Operations default screen ─────────────────────────────────────────────
-
-console.log("A. Operations — summary-first default screen");
-{
-  const html = opsSurface();
-  const t = text(html);
-  const ls = lists(html);
-  check("every list on the default screen shows ≤ 5 items", ls.length === 3 && ls.every((l) => l.items <= 5), JSON.stringify(ls));
-  const attention = (html.match(/<li[^>]*>(?:(?!<\/li>)[\s\S])*?aria-haspopup="dialog" class="group flex min-h-11/g) ?? []).length;
-  check("attention: the top 5 of 8, each opening the full list in a drawer", attention === 5, String(attention));
-  check("attention: 'View all (8)' opens the full list (with its resync / reauth actions) in place", /View all \(8\)/.test(t));
-  check("attention rows name the item's own next action", /Resync/.test(t) && /Problem 0/.test(t) && !/Problem 5/.test(t));
-  check("status header: the overview's verdict word + its sentence + checked time", /Degraded/.test(t) && /Something is degraded/.test(t) && /Checked 11:58 UTC/.test(t));
-  check("status facts: attention total, open incidents (unrecovered episodes), jobs, pipeline", /Needs attention 8/.test(t) && /Open incidents 1/.test(t) && /Scheduled jobs 11 healthy/.test(t) && /Refresh pipeline 0 of 12 failed/.test(t));
-  check("jobs KPIs come from the scheduler + job-health counts only (each a MEASURED figure)", /Runs · 24 h Measured 37/.test(t) && /Failing Measured 1/.test(t) && /Overdue Measured 1/.test(t) && /Running Measured 1/.test(t));
-  check("five recent executions (of 8 returned), rows 4–5 hidden below sm", (ls.find((l) => l.label === "Recent executions")?.items ?? 0) === 5 && (html.match(/<li><div class="max-sm:hidden">/g) ?? []).length === 2);
-  check("detail doorways: Domains & sources · Incidents · Platform health · Pipeline · Activity & usage", ["Domains &amp; sources", "Incidents", "Platform health", "Pipeline", "Activity &amp; usage"].every((w) => html.includes(w)) && (ls.find((l) => l.label === "Operations detail")?.items ?? 0) === 5);
-
-  // Fleet / destructive controls are never on the default screen.
-  check("no fleet or run control on the default screen (only the deliberate opener)", !/Run now|Dry run|Run fleet|Yes, run/i.test(t) && /Run an operation…/.test(t));
-  check("the manual-operations entry is a dialog opener, never a commit button", /<button type="button" aria-haspopup="dialog"[^>]*>Run an operation…<\/button>/.test(html));
-  check("without the hosted Manual operations row, the entry is not offered at all", !/Run an operation/.test(text(opsSurface({ hasHosted: (k: string) => k !== "ops_manual_operations" }))));
-  check("without ops_overview hosted, the board / activity doorways and 'View all' disappear (gated by the row)",
-    (() => { const h = text(opsSurface({ hasHosted: (k: string) => k !== "ops_overview" })); return !/Domains &amp; sources|Domains & sources/.test(h) && !/Activity & usage/.test(h) && !/View all/.test(h); })());
-
-  // Unknown is never healthy, never zero.
-  const down = text(opsSurface({ overview: failed("Request failed (500)"), jobs: failed("Request failed (500)"), scheduler: loading }));
-  check("an unread overview is 'Unknown' with the reason — never Healthy", /Unknown/.test(down) && /Health cannot be established/.test(down) && !/Healthy/.test(down));
-  check("unread job KPIs render '—' + reason, never 0", /Failing — job health unavailable/.test(down) && !/Failing (Measured )?0/.test(down));
-
-  // The container renders nothing hosted until a drawer opens.
-  const calls: string[] = [];
-  renderToStaticMarkup(createElement(OperationsLead, { renderHosted: (k: string) => { calls.push(k); return null; }, hasHosted: () => true, onOpenWorkspace: () => {} } as never));
-  check("the lead mounts NO hosted widget on the default screen (drawers closed)", calls.length === 0, calls.join());
-}
+// PLATFORM OPS VISUAL SPEC (2026-10-30) — the R2 Operations lead was REPLACED
+// after the owner's rejection (status header + KPI tiles + doorway lists → the
+// Personal-Space-language dashboard with the unified Jobs list). Its default
+// screen, honest job health, grouping, reachability and fleet gating are pinned
+// in components/platform/ops-visual/ops-visual.test.ts; this file keeps the
+// Pipeline / Providers / hosting / source-rule checks.
 
 // ── A2. Pipeline lead ────────────────────────────────────────────────────────
 
@@ -246,8 +195,11 @@ console.log("C. Connection diagnostics + provider cleanup — hosted, never re-g
   const dash = code("components/platform/PlatformSpaceDashboard.tsx");
   check("the dashboard renders a hosted key through the SAME registry widget with the operator's access",
     /const renderHosted: RenderHosted = \(key, onOpenWorkspace\) => \{[\s\S]{0,260}<Widget section=\{row\} onOpenWorkspace=\{onOpenWorkspace \?\? onOpen\} access=\{access\} \/>/.test(dash));
-  check("…the registry still maps the diagnostics + cleanup + manual-operations keys to their own widgets",
-    /ops_connection_diagnostics: OpsConnectionDiagnosticsWidget/.test(dash) && /ops_provider_cleanup:\s+OpsProviderCleanupWidget/.test(dash) && /ops_manual_operations:\s+OpsManualOperationsWidget/.test(dash));
+  // PLATFORM OPS VISUAL SPEC §3 — ops_manual_operations is absorbed by the unified
+  // Jobs section (ops_job_health → OpsJobsWidget); its widget is no longer registered.
+  check("…the registry still maps the diagnostics + cleanup keys to their own widgets, and jobs to the unified Jobs widget",
+    /ops_connection_diagnostics: OpsConnectionDiagnosticsWidget/.test(dash) && /ops_provider_cleanup:\s+OpsProviderCleanupWidget/.test(dash)
+      && /ops_job_health:\s+OpsJobsWidget/.test(dash) && !/ops_manual_operations:/.test(dash));
   check("…and a hosted key needs an enabled DB row and a widget (fails safe)", /hosted\.includes\(key\) && dbByKey\.has\(key\) && PLATFORM_WIDGET_REGISTRY\[key\] != null/.test(dash));
 }
 
@@ -272,13 +224,15 @@ console.log("D. Dashboard + composition");
     "ops_refresh_executions", "ops_refresh_summary", "ops_connection_health", "ops_refresh_coverage", "ops_provider_health", "ops_provider_operations", "ops_resource_freshness",
     "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_email_delivery"];
   const reachable = new Set(ops.flatMap((w) => (w.views ?? []).flatMap((v) => [...viewComposedKeys(v)])));
-  check("every Operations / Providers key composed before R2 is still reachable", BEFORE.every((k) => reachable.has(k)), BEFORE.filter((k) => !reachable.has(k)).join());
+  // …or absorbed by a reachable key (ops_manual_operations → ops_job_health, spec §3).
+  const ok2 = (k: string) => reachable.has(k) || (PLATFORM_SECTION_REPRESENTATION[k] !== undefined && reachable.has(PLATFORM_SECTION_REPRESENTATION[k]));
+  check("every Operations / Providers key composed before R2 is still reachable", BEFORE.every(ok2), BEFORE.filter((k) => !ok2(k)).join());
 
   const row = (key: string) => ({ id: `row-${key}`, key, label: `DB::${key}` });
   const overview = ops[0].views![0];
   const dbByKey = new Map([...(overview.hosted ?? [])].map((k) => [k, row(k)] as const));
   const body = renderToStaticMarkup(createElement(PlatformWorkspaceBody, { sectionKeys: overview.sections, dbByKey, onOpen: () => {}, lead: overview.lead, hosted: overview.hosted }));
-  check("a lead view renders its lead and NO inline section anchor for hosted keys", !/id="platform-section-/.test(body) && /Jobs &amp; activity/.test(body));
+  check("a lead view renders its lead and NO inline section anchor for hosted keys", !/id="platform-section-/.test(body) && /data-ops-dashboard/.test(body));
   check("…and no 'No sections enabled' message on a lead view", !/No sections enabled/.test(body));
 }
 

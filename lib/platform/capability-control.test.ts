@@ -286,7 +286,12 @@ function main() {
     const DIAGNOSTICS_WIDGET = "components/platform/widgets/OpsConnectionDiagnosticsWidget.tsx";
     // PLATFORM-SEC-1 — Manual operations offers a FLEET-wide Run only behind
     // canControl (others see one line saying it needs Control access).
-    const OPERATIONS_WIDGET = "components/platform/widgets/OpsManualOperationsWidget.tsx";
+    // PLATFORM OPS VISUAL SPEC §3 (2026-10-30) — DELIBERATE consumer change: the
+    // standalone Manual operations widget is gone; the same Run / Dry-run controls
+    // (same POST route, same server checks) are on the unified Jobs rows and job
+    // detail, and UnifiedJobs.tsx is now the one Operations component that reads
+    // canControl. The count of consumers is unchanged (one replaced by one).
+    const OPERATIONS_WIDGET = "components/platform/ops-visual/UnifiedJobs.tsx";
     // The literal CONTROL stays confined to the SYSTEM_ADMIN grant matrix: the
     // widget branches on the descriptive `canControl` flag, never on the level.
     const mentionsControl = [...walk("components"), ...walk("app").filter((f) => /\.tsx$/.test(f))]
@@ -303,7 +308,7 @@ function main() {
              /"CONTROL"\s*[!=]==?\s*(level|accessLevel|access)/.test(src) ||
              /canControl/.test(src);
     }).filter((f) => f !== "components/platform/PlatformSpaceDashboard.tsx"); // the host only forwards `access`
-    check(`the Policies, Connection diagnostics and Manual operations widgets are the only components that consume control-plane access (scanned ${ui.length})`,
+    check(`the Policies, Connection diagnostics and unified Jobs (manual operations) components are the only components that consume control-plane access (scanned ${ui.length})`,
       consumers.slice().sort().join() === [DIAGNOSTICS_WIDGET, POLICIES_WIDGET, OPERATIONS_WIDGET].sort().join(), consumers.join(", "));
     const diagnostics = code(DIAGNOSTICS_WIDGET);
     check("the diagnostics widget renders the recovery panel only behind canControl",
