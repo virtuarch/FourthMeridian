@@ -207,10 +207,10 @@ export interface Coverage {
 
 export function coverage(data: PolicyGroupsResponse): Coverage {
   const covered = data.policyGroups.reduce((a, g) => a + g.customers, 0);
-  const total = covered + data.unassignedCustomers + data.unknownAssignments;
+  const total = covered + (data.unassignedActiveCustomers ?? data.unassignedCustomers) + data.unknownAssignments;
   const def = data.policyGroups.find((g) => g.key === data.defaultPolicyGroup) ?? data.policyGroups.find((g) => g.isDefault);
   return {
-    covered, unassigned: data.unassignedCustomers, unknown: data.unknownAssignments, total,
+    covered, unassigned: (data.unassignedActiveCustomers ?? data.unassignedCustomers), unknown: data.unknownAssignments, total,
     overlaysInUse: data.overlays.reduce((a, o) => a + o.customers, 0), defaultLabel: def?.label ?? null,
   };
 }
@@ -224,7 +224,7 @@ export const DISTRIBUTION_COLORS = {
 export function distribution(data: PolicyGroupsResponse): { id: string; label: string; value: number; color?: string }[] {
   return [
     ...data.policyGroups.map((g) => ({ id: g.key, label: shortName(g.label), value: g.customers })),
-    { id: "unassigned", label: "Unassigned", value: data.unassignedCustomers, color: DISTRIBUTION_COLORS.unassigned },
+    { id: "unassigned", label: "Unassigned", value: (data.unassignedActiveCustomers ?? data.unassignedCustomers), color: DISTRIBUTION_COLORS.unassigned },
     { id: "unknown", label: "Unknown group", value: data.unknownAssignments, color: DISTRIBUTION_COLORS.unknown },
   ].filter((i) => i.value > 0);
 }
@@ -263,7 +263,7 @@ export function policyKpis(groups: Fetched<PolicyGroupsResponse>): Kpi[] {
 
 /** Customers on a missing or unknown assignment — the Attention doorway shows only when > 0. */
 export function exposure(groups: Fetched<PolicyGroupsResponse>): number {
-  return groups.data ? groups.data.unassignedCustomers + groups.data.unknownAssignments : 0;
+  return groups.data ? (groups.data.unassignedActiveCustomers ?? groups.data.unassignedCustomers) + groups.data.unknownAssignments : 0;
 }
 
 // ── Group detail ──────────────────────────────────────────────────────────────
@@ -283,7 +283,7 @@ export function groupDetail(data: PolicyGroupsResponse, key: string): GroupDetai
     ? [
         { label: "Customers assigned", value: n(column.customers) },
         { label: "With an overlay", value: n(data.overlays.reduce((a, o) => a + o.customers, 0)) },
-        ...(column.isDefault ? [{ label: "Unassigned", value: n(data.unassignedCustomers) }, { label: "Unknown group", value: n(data.unknownAssignments) }] : []),
+        ...(column.isDefault ? [{ label: "Unassigned", value: n((data.unassignedActiveCustomers ?? data.unassignedCustomers)) }, { label: "Unknown group", value: n(data.unknownAssignments) }] : []),
       ]
     : [{ label: "Customers with this overlay", value: n(column.customers) }];
   return { column, categories, assignments: assignments.slice(0, 4) };

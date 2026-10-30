@@ -86,7 +86,8 @@ async function main() {
     delete a.checkedAt; delete b.checkedAt;
     t.check("the two bodies are identical apart from the clock", JSON.stringify(a) === JSON.stringify(b), { a, b });
     t.check("the same top-level keys, in the same order",
-      Object.keys(opsOk.body as Body).join() === "dimensions,policyGroups,overlays,cohorts,unassignedCustomers,unknownAssignments,defaultPolicyGroup,checkedAt",
+      // + unassignedActiveCustomers: the active-only population the fail-closed Attention item counts.
+      Object.keys(opsOk.body as Body).join() === "dimensions,policyGroups,overlays,cohorts,unassignedCustomers,unassignedActiveCustomers,unknownAssignments,defaultPolicyGroup,checkedAt",
       Object.keys(opsOk.body as Body).join());
     const body = opsOk.body as {
       dimensions: { key: string }[]; policyGroups: { key: string; isDefault: boolean; customers: number }[];
