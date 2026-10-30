@@ -74,7 +74,11 @@ console.log("\nA. SECTIONS — published from the ACTIVE workspace's DB rows");
   // publishes the ACTIVE VIEW's sections. The same assertions therefore run on
   // the two views' compositions.
   const operations = ops.find((w) => w.workspaceId === "platform-overview")!;
-  const overview = { sections: operations.views![0].sections.map(viewSectionKey) };
+  // PLATFORM OPS 2.0 (R2) — re-ruled: the Overview view is now a summary-first
+  // LEAD with no inline sections (its sections are hosted in drawers and never
+  // publish sidebar anchors), so the inline-section pairing below runs on the
+  // Jobs view (three inline sections) against Pipeline. Same assertions.
+  const overview = { sections: operations.views!.find((v) => v.id === "jobs")!.sections.map(viewSectionKey) };
   const refresh = { sections: operations.views!.find((v) => v.id === "pipeline")!.sections.map(viewSectionKey) };
 
   // Every composed key of both workspaces has an enabled DB row with a label
@@ -145,7 +149,9 @@ console.log("\nA. SECTIONS — published from the ACTIVE workspace's DB rows");
   );
   check(
     "a NON-composed section's anchor is absent from that body",
-    !bodyHtml.includes(`id="${platformSectionAnchor("ops_manual_operations")}"`),
+    // R2 review fix — ops_manual_operations is now composed in the Jobs view of
+    // this workspace, so the example of a key composed ELSEWHERE is an AI & Costs key.
+    !bodyHtml.includes(`id="${platformSectionAnchor("ops_ai_invocations")}"`),
   );
   // The body is scoped to the ACTIVE workspace, not to "every enabled row": a
   // key that is available in the DB map but composed into a DIFFERENT workspace

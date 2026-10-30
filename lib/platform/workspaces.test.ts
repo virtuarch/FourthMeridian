@@ -27,6 +27,7 @@ import {
   resolvePlatformDestination,
   resolvePlatformViewId,
   resolveRequestedPlatformView,
+  viewComposedKeys,
   viewSectionKey,
   PLATFORM_SECTION_REPRESENTATION,
   getPlatformAreaWorkspaces,
@@ -235,13 +236,26 @@ console.log("PLATFORM_OPS decomposition shape");
   // below are about what the operator LANDS on, so they read that view; the
   // doorways stay on the workspace (rendered on its default view only).
   const operations = byId.get("platform-overview")!;
+  // PLATFORM OPS 2.0 (R2) — re-ruled: a view now has INLINE sections (rendered
+  // on the page) and HOSTED keys (reached only through its summary-first lead's
+  // drawers). `viewKeys` is what renders inline; `composedKeys` adds the hosted
+  // keys — what an operator can REACH from that view. The landing invariants
+  // below are about what renders inline; the "question survives" checks read
+  // what is reachable.
   const viewKeys = (ws: string, view: string): string[] =>
     byId.get(ws)?.views?.find((v) => v.id === view)?.sections.map(viewSectionKey) ?? [];
-  const overview = { sections: viewKeys("platform-overview", "overview"), doorways: operations.doorways };
+  const composedKeys = (ws: string, view: string): string[] => {
+    const v = byId.get(ws)?.views?.find((x) => x.id === view);
+    return v ? [...viewComposedKeys(v)] : [];
+  };
+  const overview = { sections: viewKeys("platform-overview", "overview"), reachable: composedKeys("platform-overview", "overview"), doorways: operations.doorways };
   check("Operations' default view is Overview", operations.views?.[0]?.id === "overview");
   check("Overview offers doorways (summary→detail navigation)", (overview.doorways?.length ?? 0) >= 1);
-  check("Overview does NOT host Manual Operations (the WRITE surface left the landing grid)", !overview.sections.includes("ops_manual_operations"));
-  check("Overview does NOT host the connection/API-usage detail", !overview.sections.includes("ops_connection_health") && !overview.sections.includes("ops_api_usage"));
+  check("Overview leads with the summary-first Operations lead", operations.views?.[0]?.lead === "operations");
+  // R2 — re-ruled: Manual operations is HOSTED by the Overview lead (a drawer
+  // behind the deliberate "Run an operation…" entry), never rendered inline.
+  check("Overview does NOT render Manual Operations inline (the WRITE surface is a deliberate drawer)", !overview.sections.includes("ops_manual_operations") && overview.reachable.includes("ops_manual_operations"));
+  check("Overview does NOT host the connection/API-usage detail", !overview.reachable.includes("ops_connection_health") && !overview.reachable.includes("ops_api_usage"));
 
   // PM-1 — Overview no longer carries an alerts CARD; the alerts question is
   // absorbed by the consolidated health surface. The check therefore asserts the
@@ -249,7 +263,7 @@ console.log("PLATFORM_OPS decomposition shape");
   // composed there) rather than pinning the key — a further consolidation is
   // allowed, dropping the question from the landing surface is not.
   const answeredOnOverview = (key: string): boolean =>
-    absorptionChain(key).some((k) => overview.sections.includes(k));
+    absorptionChain(key).some((k) => overview.reachable.includes(k));
   check("Overview still answers the alerts question", answeredOnOverview("ops_alerts"));
   check("Overview still answers the platform-configuration questions (rate limits + environment)",
     answeredOnOverview("ops_rate_limits") && answeredOnOverview("ops_env_status"));
@@ -262,13 +276,22 @@ console.log("PLATFORM_OPS decomposition shape");
 
   // Detailed capabilities have dedicated homes.
   // PLATFORM OPS PHASE 1 UX — re-ruled: Jobs and Pipeline are views of Operations.
-  check("Manual Operations lives in the Jobs view", viewKeys("platform-overview", "jobs").includes("ops_manual_operations"));
+  // R2 — re-ruled: Manual Operations moved from the Jobs view into the Overview
+  // lead's deliberate drawer; it renders INLINE on no view (fleet commands are
+  // never casual buttons on a page).
+  // R2 review fix — Manual Operations is hosted by the Overview lead (the
+  // deliberate "Run an operation…" entry) AND inline on the Jobs drill-down view,
+  // which is where every "Run from Jobs" action lands. Never inline on the
+  // default Overview screen.
+  check("Manual Operations: hosted by the Overview lead, inline only on Jobs, never inline on the default screen",
+    overview.reachable.includes("ops_manual_operations")
+      && (operations.views ?? []).filter((v) => v.sections.map(viewSectionKey).includes("ops_manual_operations")).map((v) => v.id).join() === "jobs");
   check("Rich Job Health lives in the Jobs view", viewKeys("platform-overview", "jobs").includes("ops_job_health"));
   check("Alerts detail lives in the Policies workspace", byId.get("platform-policies")?.sections.includes("ops_alerts") === true);
   check("Providers workspace groups provider + freshness + api; connection health renders once, in Pipeline (P-10)", (() => {
     const p = byId.get("platform-providers")?.sections ?? [];
     return ["ops_provider_health", "ops_resource_freshness", "ops_api_usage"].every((k) => p.includes(k)) && !p.includes("ops_connection_health")
-      && viewKeys("platform-overview", "pipeline").includes("ops_connection_health");
+      && composedKeys("platform-overview", "pipeline").includes("ops_connection_health");
   })());
 
   // Every doorway target is a real sibling workspace in the same area.
@@ -370,10 +393,13 @@ console.log("P-10 + Phase 1 UX · four Operations workspaces, every capability k
 console.log("Phase 1 UX · views");
 {
   const ops = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS;
-  const shape = ops.map((w) => `${w.workspaceId}[${(w.views ?? []).map((v) => `${v.id}:${v.sections.map((e) => typeof e === "string" ? e : `${e.key}/${e.variant}`).join("+")}`).join(" ")}]`).join(" | ");
-  check("the approved composition, exactly (workspace → views → section keys, in order)", shape === [
-    "platform-overview[overview:ops_overview+ops_platform_health+ops_convergence+ops_timeline jobs:ops_scheduler+ops_job_health+ops_manual_operations+ops_history pipeline:ops_refresh_executions+ops_refresh_summary+ops_connection_health+ops_refresh_coverage]",
-    "platform-providers[health:ops_provider_health+ops_provider_operations+ops_resource_freshness connections:ops_connection_diagnostics+ops_provider_cleanup usage:ops_api_usage+ops_email_delivery]",
+  // R2 — the shape now spells each view's lead (`<lead>`) and hosted keys
+  // (`{…}`) beside its inline sections. Operations › Overview and Providers are
+  // summary-first leads; Pipeline keeps its paginated execution table inline.
+  const shape = ops.map((w) => `${w.workspaceId}[${(w.views ?? []).map((v) => `${v.id}:${v.lead ? `<${v.lead}>` : ""}${v.sections.map((e) => typeof e === "string" ? e : `${e.key}/${e.variant}`).join("+")}${v.hosted ? `{${v.hosted.join("+")}}` : ""}`).join(" ")}]`).join(" | ");
+  check("the approved composition, exactly (workspace → views → lead · inline sections · hosted keys, in order)", shape === [
+    "platform-overview[overview:<operations>{ops_overview+ops_platform_health+ops_convergence+ops_timeline+ops_manual_operations} jobs:ops_job_health+ops_scheduler+ops_manual_operations+ops_history pipeline:<pipeline>ops_refresh_executions{ops_refresh_summary+ops_connection_health+ops_refresh_coverage}]",
+    "platform-providers[health:<providers>{ops_provider_health+ops_provider_operations+ops_resource_freshness+ops_connection_diagnostics+ops_provider_cleanup+ops_api_usage+ops_email_delivery}]",
     "platform-ai[ai:ops_ai_invocations+ops_ai_trend+ops_ai_budget+ops_brief_ops costs:ops_plaid_usage+ops_cost]",
     "platform-policies[groups:ops_policies/groups defaults:ops_policies/defaults alerts:ops_alerts emergency:ops_policies/emergency]",
   ].join(" | "), shape);
@@ -381,17 +407,25 @@ console.log("Phase 1 UX · views");
     ops.map((w) => w.label ?? getPlatformWorkspace(w.workspaceId)?.label).join(" · ") === "Operations · Providers · AI & Costs · Policies"
       && getPlatformWorkspace("platform-overview")?.label === "Overview");
   check("view labels", ops.map((w) => (w.views ?? []).map((v) => v.label).join("/")).join(" · ")
-    === "Overview/Jobs/Pipeline · Health/Connections/Usage & delivery · AI/Costs · Policy groups/Platform defaults/Alerts/Emergency controls");
+    === "Overview/Jobs/Pipeline · Providers · AI/Costs · Policy groups/Platform defaults/Alerts/Emergency controls");
 
   for (const w of ops) {
     const views = w.views ?? [];
-    check(`${w.workspaceId}: has ≥2 views`, views.length >= 2);
+    // R2 — re-ruled from "≥2 views": Providers became ONE master–detail view
+    // (its former Health / Connections / Usage views are hosted inside it). A
+    // single view renders no switcher (PlatformSpaceDashboard: views.length > 1).
+    check(`${w.workspaceId}: has ≥1 view`, views.length >= 1);
     const union: string[] = [];
-    for (const v of views) for (const e of v.sections) { const k = viewSectionKey(e); if (!union.includes(k)) union.push(k); }
-    check(`${w.workspaceId}: sections is EXACTLY the ordered union of its views`, w.sections.join() === union.join(), `${w.sections.join()} vs ${union.join()}`);
+    // R2 — the union counts each view's inline sections, then its hosted keys.
+    for (const v of views) for (const k of viewComposedKeys(v)) if (!union.includes(k)) union.push(k);
+    check(`${w.workspaceId}: sections is EXACTLY the ordered union of its views (inline + hosted)`, w.sections.join() === union.join(), `${w.sections.join()} vs ${union.join()}`);
     check(`${w.workspaceId}: view ids are unique`, new Set(views.map((v) => v.id)).size === views.length);
     check(`${w.workspaceId}: view ids are URL-safe and carry no destination separator`, views.every((v) => /^[a-z][a-z-]*$/.test(v.id)));
-    check(`${w.workspaceId}: no view is empty`, views.every((v) => v.sections.length > 0));
+    // R2 — re-ruled from "no view is empty": a view renders SOMETHING — inline
+    // sections or a lead (a lead-only view is the summary-first screen).
+    check(`${w.workspaceId}: no view renders nothing (inline sections or a lead)`, views.every((v) => v.sections.length > 0 || v.lead !== undefined));
+    check(`${w.workspaceId}: hosted keys are only declared beside a lead (something must open them)`, views.every((v) => (v.hosted?.length ?? 0) === 0 || v.lead !== undefined));
+    check(`${w.workspaceId}: no key is both inline and hosted in one view`, views.every((v) => (v.hosted ?? []).every((k) => !v.sections.map(viewSectionKey).includes(k))));
   }
 
   // Every key the six-workspace composition rendered (develop 296516c) renders in SOME view.
@@ -403,15 +437,19 @@ console.log("Phase 1 UX · views");
     "ops_ai_invocations", "ops_ai_trend", "ops_ai_budget", "ops_plaid_usage", "ops_cost", "ops_brief_ops",
     "ops_policies", "ops_alerts",
   ];
-  const inSomeView = new Set(ops.flatMap((w) => (w.views ?? []).flatMap((v) => v.sections.map(viewSectionKey))));
+  // R2 — "reachable in some view" now means rendered inline OR hosted by the
+  // view's lead (opened from its summary). Same list, same strictness.
+  const inSomeView = new Set(ops.flatMap((w) => (w.views ?? []).flatMap((v) => [...viewComposedKeys(v)])));
   const unreachable = SIX_WORKSPACE_KEYS.filter((k) => !inSomeView.has(k));
-  check("every previously composed PLATFORM_OPS key is reachable in some view", unreachable.length === 0, unreachable.join(", "));
+  check("every previously composed PLATFORM_OPS key is reachable in some view (inline or hosted)", unreachable.length === 0, unreachable.join(", "));
   check("…and no view composes a key the six-workspace composition did not (no new section keys)", [...inSomeView].every((k) => SIX_WORKSPACE_KEYS.includes(k)));
-  check("a key renders in ONE view, except ops_policies whose views are its declared variants",
+  // Declared exceptions only: ops_policies (its variants) and ops_manual_operations
+  // (Overview drawer + Jobs, the run destination — R2 review fix). Anything else twice fails.
+  check("a key renders in ONE view, except the declared ops_policies variants and ops_manual_operations (Overview drawer + Jobs)",
     (() => {
       const seen = new Map<string, number>();
-      for (const w of ops) for (const v of w.views ?? []) for (const e of v.sections) { const k = viewSectionKey(e); seen.set(k, (seen.get(k) ?? 0) + 1); }
-      return [...seen].every(([k, n]) => n === 1 || k === "ops_policies");
+      for (const w of ops) for (const v of w.views ?? []) for (const k of viewComposedKeys(v)) seen.set(k, (seen.get(k) ?? 0) + 1);
+      return [...seen].every(([k, n]) => n === 1 || k === "ops_policies" || (k === "ops_manual_operations" && n === 2));
     })());
   check("ops_policies renders in groups / defaults / emergency, each with its own variant and never bare",
     (getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.views ?? [])
@@ -423,7 +461,9 @@ console.log("Phase 1 UX · views");
   check("platformAreaViewIds: PLATFORM_OPS lists every workspace's views (first = default); other areas list none",
     JSON.stringify(platformAreaViewIds("PLATFORM_OPS")) === JSON.stringify({
       "platform-overview": ["overview", "jobs", "pipeline"],
-      "platform-providers": ["health", "connections", "usage"],
+      // R2 — Providers is one master–detail view; its id stays "health" so the
+      // default URL and ?view=health deep links are unchanged.
+      "platform-providers": ["health"],
       "platform-ai": ["ai", "costs"],
       "platform-policies": ["groups", "defaults", "alerts", "emergency"],
     }) && Object.keys(platformAreaViewIds("SECURITY_OPS")).length === 0);
