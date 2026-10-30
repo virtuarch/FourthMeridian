@@ -307,6 +307,10 @@ export const AuditAction = {
   // WRITE-surface convention.
   PLATFORM_OPERATION_EXECUTED:  "PLATFORM_OPERATION_EXECUTED",
   PLATFORM_OPERATION_DRY_RUN:   "PLATFORM_OPERATION_DRY_RUN",
+  // PLATFORM-SEC-1 — written BEFORE a fleet-wide run executes, carrying the
+  // operator and the required reason, so a run that outlives its request
+  // (function timeout) still records who started it and why. EXECUTED follows.
+  PLATFORM_OPERATION_REQUESTED: "PLATFORM_OPERATION_REQUESTED",
 
   // ── Platform policy (PLATFORM OPS POLICIES — Slice 2) ────────────────────
   // A CONTROL grant-holder changed declared operational policy through the
@@ -497,6 +501,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.PLATFORM_GRANT_REINSTATED,
   AuditAction.PLATFORM_OPERATION_EXECUTED,
   AuditAction.PLATFORM_OPERATION_DRY_RUN,
+  AuditAction.PLATFORM_OPERATION_REQUESTED,
   AuditAction.PLATFORM_POLICY_CHANGED,
   AuditAction.PLATFORM_POLICY_RESET,
   AuditAction.BETA_ACCESS_APPROVED,

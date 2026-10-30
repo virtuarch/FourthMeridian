@@ -217,6 +217,8 @@ export const OPERATOR_NOTE_MAX = 280;
 
 /** Actions that MUST carry a structured reason. Everything else may. */
 export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<AuditActionType>([
+  // PLATFORM-SEC-1 — the pre-run intent row of a fleet-wide manual operation.
+  AuditAction.PLATFORM_OPERATION_REQUESTED,
   AuditAction.CUSTOMER_POLICY_ASSIGNED,
   AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
   AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,

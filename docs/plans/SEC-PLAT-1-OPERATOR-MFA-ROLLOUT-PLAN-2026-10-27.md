@@ -121,8 +121,11 @@ WHERE rc."usedAt" IS NULL;
 ## 3. Rollout sequence (each step needs owner approval)
 
 > **Updated 2026-10-30 (PLATFORM-SEC-1).** Enforcement now ships **dormant** behind a per-deployment
-> switch: `OPERATOR_TOTP_ENFORCEMENT=enforce` turns it on (guard refusal, page redirects, and the
-> 2FA-disable refusal together); unset = behaviour exactly as before. Merging no longer activates
+> switch: `OPERATOR_TOTP_ENFORCEMENT=enforce` turns it on (guard refusal and page redirects
+> together); unset = behaviour exactly as before. **Review change:** the 2FA-disable refusal from #78 is
+> dropped — it blocked the only self-service lost-device path, and the guard already refuses Platform
+> access whenever 2FA is off. Steps below that expect "disable → 403" now expect "disable succeeds,
+> Platform access refused until re-enrolment". Merging no longer activates
 > anything. Activation = setting the variable on one environment and redeploying; rollback = removing it.
 > The same PR fixes the SYSTEM_ADMIN kill-switch gap on Platform APIs (§7) — that part is not gated.
 
@@ -145,7 +148,7 @@ WHERE rc."usedAt" IS NULL;
 
 | Situation | Recovery |
 |---|---|
-| Operator lost their authenticator, still has recovery codes | Sign in with a recovery code, then Settings → Security → regenerate the authenticator. |
+| Operator lost their authenticator, still has recovery codes | Sign in with a recovery code, then Settings → Security → turn 2FA off (recovery code + password) and set it up again on the new device. Platform access waits during the gap. |
 | Operator lost the device and the recovery codes | A SYSTEM_ADMIN uses `/admin/security` → user → **Reset 2FA**. That requires the admin's own live TOTP and the literal `RESET`, revokes the user's sessions and emails them. The operator signs in, is refused Platform access, and enrols again. Grants stay intact throughout. |
 | An operator must keep working without TOTP (exceptional) | Not supported by design. Revoke or downgrade the grant instead; there is no per-user bypass. |
 | SYSTEM_ADMIN lost their own TOTP | Unchanged break-glass procedure: another SYSTEM_ADMIN resets it, or use DB-level recovery under the existing runbook. SEC-PLAT-1 does not touch SYSTEM_ADMIN. |
@@ -185,5 +188,6 @@ That would require the session re-derivation (`lib/auth/session-proof.ts`, run a
 ## 7. PLATFORM-SEC-1 companion fixes (same PR, 2026-10-30)
 
 - **Kill switch on Platform APIs.** The SYSTEM_ADMIN break-glass bypass in `resolvePlatformAccess` now applies `decideAdminApiAccess` — the same rule as `/api/admin` — so `DISABLE_SYSTEM_ADMIN` and pending admin TOTP enrolment refuse Platform API calls too, including from sessions issued before the switch was flipped. Refusals are recorded (`break_glass_refused`). Not gated: it makes the documented invariant true.
-- **Fleet-wide manual operations.** Running `sync-banks`, `sync-crypto` or `sol-history-backfill` from Manual operations needs fresh CONTROL and a structured reason (dry runs stay WRITE), matching single-wallet history resume.
+- **Fresh checks use the live role.** `requireFreshUser` now returns the role and enrolment state it just re-read (as `requireFreshSystemAdmin` already did), so a demoted SYSTEM_ADMIN loses break-glass on fresh routes immediately.
+- **Fleet-wide manual operations.** Running `sync-banks`, `sync-crypto` or `sol-history-backfill` from Manual operations needs fresh CONTROL and a structured reason (dry runs stay WRITE), matching single-wallet history resume. The actor and reason are recorded **before** the run (`PLATFORM_OPERATION_REQUESTED`), so a run that outlives its request is still attributed.
 - **Tests:** `lib/platform/platform-sec-1.test.ts` (mutation-checked: removing the kill-switch check, the CONTROL check or the MFA decision each fails it), plus the updated ratchets in `capability-control.test.ts`, `ops-write-access-gating.test.ts`, `operator-action-adoption.test.ts`, `operator-mfa.test.ts`, `rls-server-component-authority.test.ts`.

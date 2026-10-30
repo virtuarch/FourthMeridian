@@ -163,6 +163,22 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     }
   }
 
+  // PLATFORM-SEC-1 — a fleet-wide run records WHO and WHY before it starts: the
+  // run can outlive this request (function timeout), and the EXECUTED row below
+  // is written only after it returns. If this intent row cannot be written,
+  // nothing runs.
+  if (reason) {
+    await recordOperatorAction(db, {
+      actor: operatorActorFrom(auth, "PLATFORM_OPS"),
+      action: AuditAction.PLATFORM_OPERATION_REQUESTED,
+      target: { kind: "JOB", id: command.targetJob },
+      execution: { commandId: command.id, jobRunId: null },
+      result: "SUCCESS",
+      reason,
+      detail: { kind: command.kind, phase: "requested" },
+    });
+  }
+
   const result = await runOperation(command, realOperationDeps(db));
 
   // Audit EVERY invocation (mutating run and dry-run alike) so the manual-ops

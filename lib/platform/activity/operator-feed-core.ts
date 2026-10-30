@@ -40,6 +40,7 @@ export interface FeedActionRule {
 export const PLATFORM_OPS_FEED_RULES: Readonly<Record<string, FeedActionRule>> = {
   [AuditAction.PLATFORM_OPERATION_EXECUTED]:  { label: "Ran a manual operation",    kinds: ["JOB"], legacyOk: true,  workspace: "platform-jobs" },
   [AuditAction.PLATFORM_OPERATION_DRY_RUN]:   { label: "Dry-ran an operation",      kinds: ["JOB"], legacyOk: true,  workspace: "platform-jobs" },
+  [AuditAction.PLATFORM_OPERATION_REQUESTED]: { label: "Started a fleet-wide operation", kinds: ["JOB"], legacyOk: false, workspace: "platform-jobs" },
   [AuditAction.JOB_CADENCE_CHANGED]:          { label: "Changed a job cadence",     kinds: ["JOB"], legacyOk: false, workspace: "platform-policies" },
   [AuditAction.JOB_CADENCE_RESET]:            { label: "Reset a job cadence",       kinds: ["JOB"], legacyOk: false, workspace: "platform-policies" },
   [AuditAction.PLATFORM_POLICY_CHANGED]:      { label: "Changed a platform policy",  kinds: ["PLATFORM_SETTING"], legacyOk: true, workspace: "platform-policies" },

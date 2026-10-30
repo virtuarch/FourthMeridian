@@ -34,7 +34,6 @@ import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { requireFreshUser } from "@/lib/session";
-import { env } from "@/lib/env";
 import { createNotification } from "@/lib/notifications/create";
 import { limitByUser } from "@/lib/rate-limit";
 
@@ -69,23 +68,6 @@ export async function POST(req: NextRequest) {
 
   if (!dbUser.totpEnabled) {
     return NextResponse.json({ error: "2FA is not enabled." }, { status: 400 });
-  }
-
-  // SEC-PLAT-1 (owner ruling P-2) — an ACTIVE Platform access holder must keep a
-  // second factor. Read as the user (their own grant rows; fm_app may SELECT
-  // them). Refused before any code is checked, so this is not an oracle for
-  // anything but the caller's own access. A system administrator can remove the
-  // platform access first, or reset 2FA from the break-glass console.
-  const activeGrants = await withTenantDb(user.id, (tx) => tx.platformGrant.count({
-    where: { userId: user.id, status: "ACTIVE" },
-  }));
-  // Enforced only with operator MFA itself (env.isOperatorTotpEnforced), so the
-  // rollout switch turns on the whole control at once, never half of it.
-  if (env.isOperatorTotpEnforced && activeGrants > 0) {
-    return NextResponse.json(
-      { error: "Two-factor authentication can't be turned off while you have Platform access. Ask a system administrator to remove your Platform access first.", code: "OPERATOR_TOTP_REQUIRED" },
-      { status: 403 },
-    );
   }
 
   // ── Verify identity ──────────────────────────────────────────────────────────

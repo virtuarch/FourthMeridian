@@ -60,13 +60,15 @@ console.log("G2' — the shared guard enforces it on every request");
     /OPERATOR_TOTP_ENROLMENT_PATH = "\/dashboard\/settings\/security\?setup2fa=true"/.test(a));
 }
 
-console.log("G4' — an active operator cannot turn 2FA off");
+console.log("G4' — (PLATFORM-SEC-1 review) 2FA disable stays self-service; the guard is the control");
 {
+  // #78 refused 2FA disable for grant holders. That blocked the only lost-device
+  // path (disable with a recovery code + password, then re-enrol) and added
+  // nothing: with totpEnabled false the shared guard already refuses Platform.
   const d = code("app/api/user/totp/disable/route.ts");
-  check("the disable route counts the caller's ACTIVE grants and refuses (403)",
-    /platformGrant\.count\(\{\s*where: \{ userId: user\.id, status: "ACTIVE" \}/.test(d) && /activeGrants > 0[\s\S]{0,400}status: 403/.test(d));
-  check("…before any secret is checked or changed",
-    d.indexOf("platformGrant.count(") < d.indexOf("matchTOTPStep(") && d.indexOf("platformGrant.count(") < d.indexOf("totpEnabled: false"));
+  check("the disable route does not consult Platform grants", !/platformGrant/.test(d));
+  check("…and the guard refuses an operator whose 2FA is off (read fresh with the grant)",
+    /user: \{ select: \{ totpEnabled: true \} \}/.test(code("lib/platform/authorize.ts")));
 }
 
 console.log("G5' — the unenforced switch is gone");
@@ -84,7 +86,10 @@ console.log("G5' — the unenforced switch is gone");
   for (const d of ["lib", "app", "components"]) walk(d);
   check("no code (outside comments) references it", consumers.length === 0, consumers.join(", "));
   const ui = code("components/admin/AdminSecurityConsole.tsx");
-  check("the admin console states the real rule as a locked line", /Require TOTP for Platform operators/.test(ui) && /Always on/.test(ui));
+  // PLATFORM-SEC-1 — the line states the deployment's real rollout state.
+  check("the admin console states the operator-TOTP rollout state read-only",
+    /Require TOTP for Platform operators/.test(ui) && /adminStatus\?\.operatorTotpEnforced === true/.test(ui)
+      && /"Enforced"/.test(ui) && /"Not enforced yet"/.test(ui));
 }
 
 console.log("grant issuance warns");

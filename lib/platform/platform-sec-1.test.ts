@@ -97,9 +97,14 @@ console.log("B. operator TOTP — enrolment and recovery stay open (no lockout)"
       /requireUser\(\{ allowTotpSetupPending: true \}\)/.test(code(f)) && !/platform\/authorize/.test(code(f))));
   check("a SYSTEM_ADMIN can still reset an operator's 2FA (recovery), behind fresh SYSTEM_ADMIN",
     /requireFreshSystemAdmin\(/.test(code("app/api/admin/security/users/[userId]/2fa-reset/route.ts")));
+  // Review fix: the lost-device path (disable with a recovery code, then re-enrol)
+  // stays self-service for operators. The guard is the control: with 2FA off,
+  // Platform access is refused until they enrol again.
   const disable = code("app/api/user/totp/disable/route.ts");
-  check("an operator cannot switch 2FA off while holding a grant — only when enforced",
-    /if \(env\.isOperatorTotpEnforced && activeGrants > 0\)/.test(disable));
+  check("2FA disable is NOT blocked for grant holders (self-service recovery; the guard refuses Platform instead)",
+    !/platformGrant/.test(disable) && !/OPERATOR_TOTP_REQUIRED/.test(disable));
+  check("a fresh check acts on the LIVE role and enrolment state, never the cached claim",
+    /return \[\{ \.\.\.user, role: live\.facts\.role as SessionUser\["role"\], requireTotpSetup: live\.facts\.requireTotpSetup \}, null\];/.test(code("lib/session.ts")));
 }
 
 console.log("C. fleet-wide operations need CONTROL + reason (pure)");
@@ -126,6 +131,8 @@ console.log("C. fleet-wide operations need CONTROL + reason (route ordering)");
     i('requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL")') > i("getOperationCommand(commandId)") && i('requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL")') < i("runOperation("));
   check("the reason is parsed BEFORE anything runs (no run without a reason)",
     i("parseOperatorReason(body?.reason)") > -1 && i("parseOperatorReason(body?.reason)") < i("runOperation("));
+  check("the fleet intent (actor + reason) is recorded BEFORE anything runs",
+    i("AuditAction.PLATFORM_OPERATION_REQUESTED") > -1 && i("AuditAction.PLATFORM_OPERATION_REQUESTED") < i("runOperation("));
   check("a missing / invalid reason is a 400 that runs nothing", /catch \(e\) \{\s*return NextResponse\.json\([\s\S]{0,200}\{ status: 400 \}/.test(post));
 }
 
