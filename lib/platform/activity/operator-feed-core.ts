@@ -41,7 +41,7 @@ export interface FeedActionRule {
   // defaults (where the cadence editors live). "platform-jobs" /
   // "platform-refresh" are retired ids that resolve to Operations › Jobs /
   // Pipeline (PLATFORM_WORKSPACE_ALIASES); kept so the payload stays stable.
-  workspace: "platform-jobs" | typeof POLICY_DEFAULTS_VIEW | "platform-providers" | "platform-refresh";
+  workspace: "platform-jobs" | typeof POLICY_DEFAULTS_VIEW | "platform-providers" | "platform-refresh" | "platform-policies";
 }
 
 export const PLATFORM_OPS_FEED_RULES: Readonly<Record<string, FeedActionRule>> = {
@@ -60,6 +60,10 @@ export const PLATFORM_OPS_FEED_RULES: Readonly<Record<string, FeedActionRule>> =
   // Refresh All targets a USER in the envelope (the customer whose authorities
   // were refreshed). Admitted because the action is a platform operation; the
   // target renders opaque (`user …last6`), never a username — see the header.
+  // BETA RECONCILIATION (2026-10-30) — taken FROM Platform Ops (Policies) and
+  // targeting the POLICY_GROUP, never a customer: the row carries counts only.
+  // Per-customer assignment (CUSTOMER_POLICY_ASSIGNED, a USER target) stays out.
+  [AuditAction.CUSTOMER_POLICY_RECONCILED]:   { label: "Assigned Beta to unassigned accounts", kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
   [AuditAction.OPERATOR_REFRESH_ALL]:         { label: "Refreshed a customer's authorities", kinds: ["USER"], legacyOk: false, workspace: "platform-refresh" },
 };
 

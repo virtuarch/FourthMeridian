@@ -13,7 +13,11 @@
  *   3. reachability — every policy, alert and emergency control the former
  *      views rendered is reachable: through a drawer (hosted with its variant)
  *      AND through the kept drill-down views, so old ?view= ids still resolve;
- *   4. source rules.
+ *   4. source rules;
+ *   5. Beta reconciliation — the ONE entry: offered only behind the access
+ *      flag and only while the dry run counts n > 0; the confirmation states
+ *      the exact count and the guarantee and requires a reason; it reaches the
+ *      real route (READ dry run, fresh CONTROL POST).
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/platform/leads/platform-visual-policies.test.ts
  */
@@ -36,6 +40,9 @@ import {
 } from "./policies-model";
 import { POLICY_DRAWERS, PoliciesDrawerBody, PoliciesLeadSurface, policiesDrawerTitle } from "./PoliciesLead";
 import { PlatformWorkspaceBody } from "../PlatformSpaceDashboard";
+import { BetaReconciliationButton, BetaReconciliationConfirmBody, BetaReconciliationEntry, RECONCILE_URL } from "./BetaReconciliationEntry";
+import { RECONCILE_GUARANTEE, reconcileConfirmCount, reconcileEntryLabel, reconcileOutcome } from "./policies-model";
+import { EMPTY_OPERATOR_REASON } from "../widgets/OperatorReasonField";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -254,6 +261,48 @@ check("Personal components are imported, not forked (BreakdownWidget; CompactKpi
   /from "@\/components\/space\/widgets\/BreakdownWidget"/.test(code("components/platform/leads/PoliciesLead.tsx")) && /HealthHero/.test(code("components/platform/leads/PoliciesLead.tsx")));
 check("reads only existing PLATFORM_OPS READ routes", (code("components/platform/leads/PoliciesLead.tsx").match(/useSharedWidgetFetch<[^>]+>\("([^"]+)"\)/g) ?? []).length === 6
   && ["policy-groups", "policies", "job-cadence", "ai-cost-controls", "operational-controls", "alerts"].every((r) => readFileSync(path.join(ROOT, `app/api/platform/platform-ops/${r}/route.ts`), "utf8").includes(`requirePlatformAccess("PLATFORM_OPS", "READ")`)));
+
+// ── 5. Beta reconciliation ───────────────────────────────────────────────────
+
+console.log("5. Beta reconciliation — one deliberate, gated entry");
+{
+  check("label: 'Assign Beta to n unassigned accounts' (singular / plural); none at 0 or unknown",
+    reconcileEntryLabel(12) === "Assign Beta to 12 unassigned accounts" && reconcileEntryLabel(1) === "Assign Beta to 1 unassigned account"
+      && reconcileEntryLabel(0) === null && reconcileEntryLabel(null) === null && reconcileEntryLabel(undefined) === null);
+  check("eligible 0 ⇒ the button renders NOTHING (no disabled placeholder)", renderToStaticMarkup(createElement(BetaReconciliationButton, { eligible: 0, onSelect: () => {} })) === "");
+  const btn = renderToStaticMarkup(createElement(BetaReconciliationButton, { eligible: 7, onSelect: () => {} }));
+  check("eligible 7 ⇒ ONE dialog-opening button with the exact count", (btn.match(/<button/g) ?? []).length === 1 && /aria-haspopup="dialog"/.test(btn) && /Assign Beta to 7 unassigned accounts/.test(text(btn)) && !/disabled/.test(btn));
+  const confirm = text(renderToStaticMarkup(createElement(BetaReconciliationConfirmBody, { eligible: 7, reason: EMPTY_OPERATOR_REASON, onReason: () => {}, disabled: false })));
+  check("confirmation: the exact count", confirm.includes(reconcileConfirmCount(7)) && /7 active accounts without an assignment will be placed on Beta\./.test(confirm));
+  check("confirmation: the guarantee, verbatim",
+    RECONCILE_GUARANTEE === "Creates Beta assignments only for active accounts that have none. Existing assignments — including Founder — are never changed." && confirm.includes(RECONCILE_GUARANTEE));
+  check("confirmation: a required reason (OperatorReasonField, nothing pre-selected)", /Choose a reason/.test(confirm) && /A reason is recorded with this action/.test(confirm));
+  const src = code("components/platform/leads/BetaReconciliationEntry.tsx");
+  check("confirm is disabled until a reason code is chosen; the confirmed count is echoed as expectedEligible",
+    /confirmDisabled=\{reasonPayload\(reason\) === null\}/.test(src) && /JSON\.stringify\(\{ reason: why, expectedEligible \}\)/.test(src));
+  check("on an answer it re-reads the catalogue, Attention and the dry run into the shared session",
+    /read\(POLICY_GROUPS_URL, publishGroups\), read\(ATTENTION_URL, publishAttention\), read\(RECONCILE_URL, publishDryRun\)/.test(src));
+  const access = (canControl: boolean) => ({ canRead: true, canWrite: true, canControl, level: canControl ? "X" : "WRITE" });
+  check("without the access flag the entry renders nothing (and never reads the dry run)",
+    renderToStaticMarkup(createElement(BetaReconciliationEntry, { access: access(false) as never })) === "" && renderToStaticMarkup(createElement(BetaReconciliationEntry, {})) === "");
+  check("outcome words: created (+ skipped), 409 says re-check",
+    reconcileOutcome(200, { created: 3, skipped: 1 }).text === "Assigned Beta to 3 accounts · 1 already assigned meanwhile (left unchanged)"
+      && reconcileOutcome(409, { error: "The population changed — re-check." }).tone === "warn");
+
+  const slotted = renderToStaticMarkup(createElement(PoliciesLeadSurface, props({ reconcileSlot: createElement(BetaReconciliationButton, { eligible: 4, onSelect: () => {} }) }) as never));
+  check("the surface places the entry in the hero area, beside the Attention doorway",
+    slotted.indexOf("data-beta-reconcile") > slotted.indexOf("data-health-hero") && slotted.indexOf("data-beta-reconcile") < slotted.indexOf("policies-distribution") && /data-attention-doorway/.test(slotted));
+  check("…and it is the only action button on the default screen", buttons(slotted).filter((b) => /\b(Assign|Apply|Edit|Save)\b/.test(b)).length === 1);
+  const lead = code("components/platform/leads/PoliciesLead.tsx");
+  check("the lead mounts the entry with the operator's access (forwarded, never read)",
+    /reconcileSlot=\{<BetaReconciliationEntry access=\{access\} \/>\}/.test(lead) && !/canControl/.test(lead));
+
+  // Reachability — the entry's URL is the real route, READ for the dry run, fresh CONTROL for the write.
+  const route = readFileSync(path.join(ROOT, "app/api/platform/platform-ops/policies/reconcile-beta/route.ts"), "utf8");
+  check("reachable: the entry reads and posts the real route (GET READ, POST fresh)",
+    RECONCILE_URL === "/api/platform/platform-ops/policies/reconcile-beta" && src.includes(`useSharedWidgetFetch<BetaReconciliationDryRunResponse>("${RECONCILE_URL}")`)
+      && /export async function GET[\s\S]*requirePlatformAccess\("PLATFORM_OPS", "READ"\)/.test(route) && /export async function POST[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS",/.test(route));
+}
 
 if (failures > 0) {
   console.error(`\nplatform-visual-policies: ${failures} check(s) failed.`);

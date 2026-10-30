@@ -198,9 +198,22 @@ function main() {
     // CONTROL check for a FLEET-wide run (registry operationRequirement), the same
     // bar as a single-wallet history resume.
     const OPERATIONS_ROUTE = "app/api/platform/platform-ops/operations/route.ts";
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE].sort();
-    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume and manual-operations (fleet runs) routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // BETA RECONCILIATION (owner ruling 2026-10-30) — a fleet-wide policy write:
+    // creates the beta default for every ACTIVE customer with NO assignment, in
+    // one transaction with one counts-only audit row; reason required; fresh
+    // CONTROL on POST, the dry run at READ. Same bar as the other fleet-wide
+    // policy controls (cadences, AI cost controls, fleet-wide manual runs).
+    const RECONCILE_ROUTE = "app/api/platform/platform-ops/policies/reconcile-beta/route.ts";
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE].sort();
+    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs) and beta-reconciliation routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
+    const reconcile = code(RECONCILE_ROUTE);
+    check("beta reconciliation MUTATES only under FRESH CONTROL and dry-runs at READ",
+      /export async function POST[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/.test(reconcile)
+        && /export async function GET[\s\S]*requirePlatformAccess\("PLATFORM_OPS", "READ"\)[\s\S]*export async function POST/.test(reconcile)
+        && (reconcile.match(/"CONTROL"/g) ?? []).length === 1);
+    check("beta reconciliation requires a structured reason and delegates to its one service",
+      /parseOperatorReason\(/.test(reconcile) && /from "@\/lib\/platform\/policies\/reconcile-beta"/.test(reconcile) && !/customerPolicyAssignment|auditLog/.test(reconcile));
     const operational = code(OPERATIONAL_ROUTE);
     check("maintenance mode MUTATES only under FRESH CONTROL and reads at READ",
       /export async function PATCH[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/.test(operational)
@@ -292,6 +305,13 @@ function main() {
     // detail, and UnifiedJobs.tsx is now the one Operations component that reads
     // canControl. The count of consumers is unchanged (one replaced by one).
     const OPERATIONS_WIDGET = "components/platform/ops-visual/UnifiedJobs.tsx";
+    // BETA RECONCILIATION (owner ruling 2026-10-30) — DELIBERATE consumer
+    // addition: the Policies hero offers "Assign Beta to n unassigned accounts"
+    // only behind canControl (and only while the dry run counts n > 0). The
+    // entry is its own component, so PoliciesLead.tsx itself still reads no
+    // access flag (pinned by platform-visual-policies.test.ts) — it forwards
+    // `access`, like the dashboard host.
+    const RECONCILE_ENTRY = "components/platform/leads/BetaReconciliationEntry.tsx";
     // The literal CONTROL stays confined to the SYSTEM_ADMIN grant matrix: the
     // widget branches on the descriptive `canControl` flag, never on the level.
     const mentionsControl = [...walk("components"), ...walk("app").filter((f) => /\.tsx$/.test(f))]
@@ -308,8 +328,10 @@ function main() {
              /"CONTROL"\s*[!=]==?\s*(level|accessLevel|access)/.test(src) ||
              /canControl/.test(src);
     }).filter((f) => f !== "components/platform/PlatformSpaceDashboard.tsx"); // the host only forwards `access`
-    check(`the Policies, Connection diagnostics and unified Jobs (manual operations) components are the only components that consume control-plane access (scanned ${ui.length})`,
-      consumers.slice().sort().join() === [DIAGNOSTICS_WIDGET, POLICIES_WIDGET, OPERATIONS_WIDGET].sort().join(), consumers.join(", "));
+    check(`the Policies, Connection diagnostics, unified Jobs (manual operations) and Beta reconciliation components are the only components that consume control-plane access (scanned ${ui.length})`,
+      consumers.slice().sort().join() === [DIAGNOSTICS_WIDGET, POLICIES_WIDGET, OPERATIONS_WIDGET, RECONCILE_ENTRY].sort().join(), consumers.join(", "));
+    check("the Beta reconciliation entry mounts (and reads) only behind canControl",
+      /return access\?\.canControl === true \? <Reconcile \/> : null;/.test(code(RECONCILE_ENTRY)));
     const diagnostics = code(DIAGNOSTICS_WIDGET);
     check("the diagnostics widget renders the recovery panel only behind canControl",
       /const offerRecovery = access\?\.canControl === true;/.test(diagnostics) && /\{offerRecovery && selected\.provider === "WALLET"/.test(diagnostics));

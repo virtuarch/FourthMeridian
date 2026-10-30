@@ -54,6 +54,7 @@ export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   CUSTOMER_POLICY_OVERLAY_CHANGED: "Changed a policy overlay",
   CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED: "Changed a customer's AI allowance override",
   CUSTOMER_COHORT_ASSIGNED:        "Assigned a cohort",
+  CUSTOMER_POLICY_RECONCILED:      "Assigned Beta to unassigned accounts",
   JOB_CADENCE_CHANGED:             "Changed a job cadence",
   JOB_CADENCE_RESET:               "Reset a job cadence",
   OPERATOR_REFRESH_ALL:            "Refreshed a customer's authorities",

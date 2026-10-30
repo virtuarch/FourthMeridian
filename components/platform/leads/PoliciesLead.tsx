@@ -7,11 +7,16 @@
  * Operations grammar (Personal Space language). READ-ONLY: editing policy
  * groups arrives with the policy editor (Phase 2), so there is no edit
  * affordance here — not a disabled one, not a fake one; the group detail says
- * so once.
+ * so once. The one exception is the owner-ruled Beta reconciliation entry
+ * (BetaReconciliationEntry.tsx), which creates missing assignments only and
+ * never edits a group or an existing assignment.
  *
  *   ≥ lg (12-col)
  *     A  Customer policies hero (12)  covered x of y · default group · 4 KPIs
  *        (+ one "Review in Attention" doorway while anyone is exposed)
+ *        (+ "Assign Beta to n unassigned accounts" — the ONE action on this
+ *           screen, BetaReconciliationEntry: offered only to an operator whose
+ *           access allows it and only while the dry run counts n > 0)
  *     B  Customers by group (5)        BreakdownWidget donut (groups · Unassigned · Unknown)
  *        Entitlement comparison (7)    groups (+ "Beta + Founder") × the six categories
  *     C  Policy groups (12)            2-col cards: customers · 3 key limits · Read-only
@@ -49,6 +54,7 @@ import type { AiCostControlsReadModel } from "@/lib/platform/ai/cost-controls.ty
 import type { OperationalControlsReadModel } from "@/lib/platform/policies/operational-controls.types";
 import type { PlatformViewLeadProps, RenderHosted } from "./lead-contract";
 import { Caption, ChartMessage, Doorway, Meter } from "./visual-kit";
+import { BetaReconciliationEntry } from "./BetaReconciliationEntry";
 import { HealthHero, type HeroModel } from "../ops-visual/HealthHero";
 import { StatusWord } from "../ops-visual/UnifiedJobs";
 import type { Fetched } from "../ops-visual/ops-visual-model";
@@ -257,6 +263,12 @@ export interface PoliciesLeadSurfaceProps {
   hasHosted: (key: string) => boolean;
   onOpenDrawer: (d: PoliciesDrawer) => void;
   onOpenWorkspace: (id: string) => void;
+  /**
+   * Beta reconciliation (owner ruling, 2026-10-30) — the ONE deliberate entry in
+   * the hero area. The lead passes BetaReconciliationEntry, which decides on its
+   * own whether to render anything; the surface only places it.
+   */
+  reconcileSlot?: ReactNode;
 }
 
 export function policiesHeroModel(groups: Fetched<PolicyGroupsResponse>): HeroModel {
@@ -287,9 +299,14 @@ export function PoliciesLeadSurface(p: PoliciesLeadSurfaceProps) {
       {/* A — Customer policies hero (+ the Attention doorway while anyone is exposed). */}
       <div className="min-w-0">
         <HealthHero model={policiesHeroModel(p.groups)} />
-        {exposed > 0 && (
-          <div className="mt-2 flex justify-end" data-attention-doorway>
-            <Doorway label={`${plural(exposed, "customer")} without a valid assignment · Attention`} onSelect={() => p.onOpenWorkspace(ATTENTION_WORKSPACE)} />
+        {(exposed > 0 || p.reconcileSlot) && (
+          <div className="mt-2 flex flex-wrap items-center justify-end gap-x-4 gap-y-2 empty:hidden">
+            {p.reconcileSlot}
+            {exposed > 0 && (
+              <span data-attention-doorway>
+                <Doorway label={`${plural(exposed, "customer")} without a valid assignment · Attention`} onSelect={() => p.onOpenWorkspace(ATTENTION_WORKSPACE)} />
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -452,7 +469,7 @@ export function PoliciesDrawerBody({ drawer, data, renderHosted, onOpenWorkspace
   return <div className="min-w-0">{renderHosted(h.key, onOpenWorkspace, h.variant)}</div>;
 }
 
-export function PoliciesLead({ renderHosted, hasHosted, onOpenWorkspace }: PlatformViewLeadProps) {
+export function PoliciesLead({ renderHosted, hasHosted, onOpenWorkspace, access }: PlatformViewLeadProps) {
   const groups = useSharedWidgetFetch<PolicyGroupsResponse>("/api/platform/platform-ops/policy-groups");
   const policies = useSharedWidgetFetch<PlatformPoliciesResponse>("/api/platform/platform-ops/policies");
   const cadence = useSharedWidgetFetch<JobCadenceResponse>("/api/platform/platform-ops/job-cadence");
@@ -469,7 +486,8 @@ export function PoliciesLead({ renderHosted, hasHosted, onOpenWorkspace }: Platf
   return (
     <>
       <PoliciesLeadSurface groups={groups} policies={policies} cadence={cadence} costControls={costControls} operational={operational} alerts={alerts}
-        hasHosted={hasHosted} onOpenDrawer={setDrawer} onOpenWorkspace={onOpenWorkspace} />
+        hasHosted={hasHosted} onOpenDrawer={setDrawer} onOpenWorkspace={onOpenWorkspace}
+        reconcileSlot={<BetaReconciliationEntry access={access} />} />
       <DetailDrawer open={drawer !== null && body !== null} onClose={() => setDrawer(null)} eyebrow="Policies" title={title} size="xl">
         {body}
       </DetailDrawer>
