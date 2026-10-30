@@ -72,7 +72,11 @@ function AcquisitionCard({ acq }: { acq: Fetched<AcquisitionResponse> }) {
           <>
             <DayBars days={countBars(days)} height={180} noun={noun} palette={ONE}
               ariaLabel={series === "requests" ? "Distinct beta requesters per UTC day" : "New accounts per UTC day"} />
-            <Caption>{seriesCaption(days, noun)}{series === "requests" && a.coverage.requestsFrom ? ` · recorded from ${a.coverage.requestsFrom}` : ""}</Caption>
+            <Caption>
+              {series === "requests"
+                ? `${n(a.requests.total)} distinct requesters · each counted once per day · ${days.length} UTC days${days.some((d) => d.count === null) ? ` · recorded from ${a.coverage.requestsFrom ?? "—"}` : ""}`
+                : seriesCaption(days, noun)}
+            </Caption>
           </>
         ) : <Loading f={acq} what="acquisition" />}
       </Surface>

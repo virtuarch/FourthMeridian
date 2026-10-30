@@ -201,6 +201,11 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
       { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: reasonPayload(reason) }) },
       closeConfirm(() => { setRevokeId(null); setSelectedInvitationId(null); }));
 
+  // Opening a panel starts from a clean slate: an earlier action's error never
+  // appears inside an unrelated request or confirm.
+  const openRequest = (id: string) => { setError(null); setSelectedRequestId(id); };
+  const openInvitation = (id: string) => { setError(null); setSelectedInvitationId(id); };
+
   const selectedRequest: BetaRequestRow | null =
     selectedRequestId ? reqs?.pending.find((r) => r.id === selectedRequestId) ?? null : null;
   const selectedInvitation: BetaInvitationRow | null =
@@ -257,7 +262,10 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
           <WidgetMessage loading={false} error={error} />
         ) : (
           <>
-            {error && <p role="alert" className="text-[11px] text-[var(--accent-negative)]">{error}</p>}
+            {/* While a panel or confirm is open the error is announced THERE (once). */}
+            {error && !(selectedRequest || selectedInvitation || pendingMode || pendingStatus || revokeId) && (
+              <p role="alert" className="text-[11px] text-[var(--accent-negative)]">{error}</p>
+            )}
 
             {/* ── Access settings (status + signup mode), on demand ─────────── */}
             {settingsOpen && (
@@ -278,7 +286,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                         const active = s.value === status.productStatus;
                         return (
                           <button key={s.value} type="button" disabled={acting !== null}
-                            onClick={() => { if (!active) setPendingStatus(s.value); }}
+                            onClick={() => { if (!active) { setError(null); setPendingStatus(s.value); } }}
                             aria-pressed={active}
                             className="min-h-11 rounded-[calc(var(--radius-sm)-2px)] px-3 text-[11px] font-medium transition-colors disabled:opacity-40 lg:min-h-7"
                             style={active ? { background: "var(--surface-inset)", color: "var(--text-primary)" } : { color: "var(--text-secondary)" }}>
@@ -303,7 +311,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                         const active = m.value === currentMode;
                         return (
                           <button key={m.value} type="button" disabled={acting !== null}
-                            onClick={() => { if (!active) setPendingMode(m.value); }}
+                            onClick={() => { if (!active) { setError(null); setPendingMode(m.value); } }}
                             aria-pressed={active}
                             className="min-h-11 rounded-[calc(var(--radius-sm)-2px)] px-3 text-[11px] font-medium transition-colors disabled:opacity-40 lg:min-h-7"
                             style={active ? { background: "var(--surface-inset)", color: "var(--text-primary)" } : { color: "var(--text-secondary)" }}>
@@ -398,9 +406,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                     </thead>
                     <tbody className="divide-y divide-[var(--border-hairline)]">
                       {pendingRows.slice(0, limit).map((r) => (
-                        <tr key={r.id} onClick={() => setSelectedRequestId(r.id)} className="cursor-pointer transition-colors hover:bg-[var(--surface-hover)]">
+                        <tr key={r.id} onClick={() => openRequest(r.id)} className="cursor-pointer transition-colors hover:bg-[var(--surface-hover)]">
                           <td className={`${TD} truncate font-medium text-[var(--text-primary)]`}>
-                            <button type="button" onClick={(e) => { e.stopPropagation(); setSelectedRequestId(r.id); }} aria-haspopup="dialog" className="max-w-full truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">{r.email}</button>
+                            <button type="button" onClick={(e) => { e.stopPropagation(); openRequest(r.id); }} aria-haspopup="dialog" className="max-w-full truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">{r.email}</button>
                           </td>
                           <td className={`${TD} tabular-nums text-[var(--text-secondary)]`}>{`${timeAgo(r.createdAt)} ago`}</td>
                           <td className={`${TD} tabular-nums text-[var(--text-secondary)]`}>{r.requestCount > 1 ? `${r.requestCount}×` : "1"}</td>
@@ -413,7 +421,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                   <ul className="-mx-1 divide-y divide-[var(--border-hairline)] lg:hidden" aria-label="Waiting beta requests">
                     {pendingRows.slice(0, limit).map((r) => (
                       <li key={r.id}>
-                        <button type="button" onClick={() => setSelectedRequestId(r.id)} aria-haspopup="dialog"
+                        <button type="button" onClick={() => openRequest(r.id)} aria-haspopup="dialog"
                           className="flex min-h-11 w-full items-center justify-between gap-2 px-1 py-2 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]">
                           <span className="min-w-0">
                             <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{r.email}</span>
@@ -438,9 +446,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                   </thead>
                   <tbody className="divide-y divide-[var(--border-hairline)]">
                     {invitationRows.slice(0, limit).map((inv) => (
-                      <tr key={inv.id} onClick={() => setSelectedInvitationId(inv.id)} className="cursor-pointer transition-colors hover:bg-[var(--surface-hover)]">
+                      <tr key={inv.id} onClick={() => openInvitation(inv.id)} className="cursor-pointer transition-colors hover:bg-[var(--surface-hover)]">
                         <td className={`${TD} truncate font-medium text-[var(--text-primary)]`}>
-                          <button type="button" onClick={(e) => { e.stopPropagation(); setSelectedInvitationId(inv.id); }} aria-haspopup="dialog" className="max-w-full truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">{inv.email}</button>
+                          <button type="button" onClick={(e) => { e.stopPropagation(); openInvitation(inv.id); }} aria-haspopup="dialog" className="max-w-full truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">{inv.email}</button>
                         </td>
                         <td className={`${TD} tabular-nums text-[var(--text-secondary)]`}>{inv.invitedAt ? `${timeAgo(inv.invitedAt)} ago` : "—"}</td>
                         <td className={`${TD} tabular-nums`} style={{ color: inv.expired ? "var(--accent-warning)" : "var(--text-secondary)" }}>
@@ -455,7 +463,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                 <ul className="-mx-1 divide-y divide-[var(--border-hairline)] lg:hidden" aria-label="Open beta invitations">
                   {invitationRows.slice(0, limit).map((inv) => (
                     <li key={inv.id}>
-                      <button type="button" onClick={() => setSelectedInvitationId(inv.id)} aria-haspopup="dialog"
+                      <button type="button" onClick={() => openInvitation(inv.id)} aria-haspopup="dialog"
                         className="flex min-h-11 w-full items-center justify-between gap-2 px-1 py-2 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]">
                         <span className="min-w-0">
                           <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{inv.email}</span>
@@ -561,7 +569,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                 </PanelContent>
                 {canWrite && (
                 <PanelFooter>
-                  <button onClick={() => setRevokeId(selectedInvitation.id)} disabled={acting !== null}
+                  <button onClick={() => { setError(null); setRevokeId(selectedInvitation.id); }} disabled={acting !== null}
                     className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                     style={{ background: "rgba(248,113,113,.1)", color: "var(--danger-400, #f87171)", borderColor: "rgba(248,113,113,.28)" }}>
                     <Ban size={13} aria-hidden /> Revoke
