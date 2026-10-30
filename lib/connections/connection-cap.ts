@@ -42,7 +42,8 @@
 import { NextResponse } from "next/server";
 import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { withTenantDb } from "@/lib/db/tenant-context";
-import { countLimit, entitlementsForUser, type EntitlementLoader } from "@/lib/entitlements/consume";
+import { countLimit, entitlementsForUser, PLAN_NEEDS_ATTENTION_CODE, type EntitlementLoader } from "@/lib/entitlements/consume";
+import { planNeedsAttentionSentence } from "@/lib/ai/conversation/refusal-sentences";
 
 export interface ConnectionCapInputs {
   nonRevokedPlaidItems: number;
@@ -56,6 +57,8 @@ export interface ConnectionCapVerdict {
   current: number;
   limit: number;
   reason: "UNDER_LIMIT" | "AT_LIMIT" | "OVER_LIMIT";
+  /** FAIL CLOSED (owner ruling, 2026-10-30) — the limit is 0 because the customer's policy assignment is missing/invalid. */
+  failClosed?: boolean;
 }
 
 /** PURE. `allowed` means ONE more connection may be created. A limit below 1 refuses everything (fail closed). */
@@ -118,7 +121,11 @@ export async function connectionCapForUser(userId: string, deps: ConnectionCapDe
     (deps.counts ?? loadConnectionCount)(userId),
     entitlementsForUser(userId, deps.entitlements),
   ]);
-  return connectionCapVerdict({ ...counts, limit: countLimit(entitlements, "maxConnections") });
+  // FAIL CLOSED — countLimit yields the deliberate 0 for a missing/invalid
+  // assignment, so the verdict refuses every NEW connection. Existing
+  // connections are never touched: this verdict only gates creation.
+  const verdict = connectionCapVerdict({ ...counts, limit: countLimit(entitlements, "maxConnections") });
+  return entitlements.failClosed === true ? { ...verdict, failClosed: true } : verdict;
 }
 
 export const CONNECTION_LIMIT_CODE = "CONNECTION_LIMIT" as const;
@@ -128,8 +135,14 @@ export function connectionLimitMessage(v: Pick<ConnectionCapVerdict, "current" |
   return `Connection limit reached (${v.current} of ${v.limit}). Remove a connection to add another.`;
 }
 
-/** The ONE refusal shape, shared by the Plaid link-token and wallet routes. */
+/** The ONE refusal shape, shared by the Plaid link-token and wallet routes. Same 403 when fail-closed, with the plan sentence. */
 export function connectionLimitResponse(v: ConnectionCapVerdict): NextResponse {
+  if (v.failClosed === true) {
+    return NextResponse.json(
+      { error: planNeedsAttentionSentence("Adding a connection"), code: PLAN_NEEDS_ATTENTION_CODE, current: v.current, limit: v.limit },
+      { status: 403, headers: { "Cache-Control": "no-store" } },
+    );
+  }
   return NextResponse.json(
     { error: connectionLimitMessage(v), code: CONNECTION_LIMIT_CODE, current: v.current, limit: v.limit },
     { status: 403, headers: { "Cache-Control": "no-store" } },

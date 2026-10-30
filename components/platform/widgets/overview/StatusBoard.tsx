@@ -25,7 +25,7 @@ import { useState } from "react";
 import { Activity, ArrowUpRight } from "lucide-react";
 import { WidgetMessage, timeAgo, useWidgetFetch } from "../../widget-kit";
 import { GroupLabel, SectionSurface, StatusTile, StatusWord, ToneBadge } from "../../platform-surface";
-import { getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { platformViewTarget, resolvePlatformDestination } from "@/lib/platform/workspaces";
 import type { OperationsOverview } from "@/lib/platform/ops/overview";
 import { OVERVIEW_FOOTNOTE, POSTURE_TONE, STATE_TOKEN, STATE_TONE, STATE_WORD, overallWord, policyStrip, postureDoorwayLabel } from "../ops-overview-view";
 import { ExecutionTimelinePanel } from "../ExecutionTimelinePanel";
@@ -53,7 +53,9 @@ export function StatusBoardSurface({
   onOpenWorkspace?: (workspaceId: string) => void;
   onSelectExecution?: (selection: ExecutionSelection) => void;
 }) {
-  const policiesWorkspace = getPlatformWorkspace("platform-policies");
+  // PLATFORM OPS PHASE 1 UX — the refresh policy lives in Policies › Platform defaults.
+  const policiesTarget = platformViewTarget("platform-policies", "defaults");
+  const policiesWorkspace = resolvePlatformDestination(policiesTarget);
 
   return (
     <SectionSurface icon={Activity} title={title} footnote={OVERVIEW_FOOTNOTE}>
@@ -69,7 +71,7 @@ export function StatusBoardSurface({
           {onOpenWorkspace && policiesWorkspace && (
             <button
               type="button"
-              onClick={() => onOpenWorkspace("platform-policies")}
+              onClick={() => onOpenWorkspace(policiesTarget)}
               aria-label={`${policiesWorkspace.label} — open the workspace behind the refresh policy`}
               className={DOORWAY_CLASS}
             >
@@ -82,7 +84,7 @@ export function StatusBoardSurface({
       {/* Six domains. Word + tone from the state; figure + qualifier from the server. */}
       <div className="grid gap-x-8 gap-y-8 md:grid-cols-2 xl:grid-cols-3">
         {data.domains.map((d) => {
-          const target = getPlatformWorkspace(d.workspace);
+          const target = resolvePlatformDestination(d.workspace);
           const wired = onOpenWorkspace && target;
           return (
             <StatusTile
@@ -103,7 +105,7 @@ export function StatusBoardSurface({
       {/* Posture: the four Platform Health groups as word + count + doorway. */}
       <div className="mt-10 grid gap-x-8 gap-y-5 border-t pt-6 sm:grid-cols-2 xl:grid-cols-4" style={{ borderColor: "var(--border-hairline)" }}>
         {data.posture.map((chip) => {
-          const target = getPlatformWorkspace(chip.workspace);
+          const target = resolvePlatformDestination(chip.workspace);
           return (
             <div key={chip.key} className="flex min-w-0 flex-col gap-1.5">
               <GroupLabel>{chip.label}</GroupLabel>

@@ -40,6 +40,8 @@ const NOW = new Date("2026-10-14T12:00:00.000Z");
 const AGO = (hours: number) => new Date(NOW.getTime() - hours * 3_600_000).toISOString();
 
 const inputs: AttentionInputs = {
+  // Owner ruling (2026-10-30) — the seventh authority (policy assignments), a clean read.
+  policyAssignments: { checkedAt: "2026-10-14T12:00:00.000Z", enforced: false, unassigned: 0, unknown: 0, total: 0, items: [], cap: 25, truncated: false },
   connections: {
     total: 3, counts: { HEALTHY: 1, STALE: 1, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 1, REVOKED: 0 },
     unhealthy: [
@@ -142,9 +144,10 @@ function main() {
 
   console.log("4. empty state");
   {
-    const empty = response({}, { connections: { total: 1, counts: { HEALTHY: 1, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" }, jobs: { jobs: [] }, providers: inputs.providers, resources: inputs.resources, alerts: { latest: null, titles: {} }, incidents: { items: [], activeTotal: 0, truncated: false } });
+    const empty = response({}, { connections: { total: 1, counts: { HEALTHY: 1, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" }, jobs: { jobs: [] }, providers: inputs.providers, resources: inputs.resources, alerts: { latest: null, titles: {} }, incidents: { items: [], activeTotal: 0, truncated: false }, policyAssignments: inputs.policyAssignments });
     const { html, text } = render(empty);
-    check("says how many authorities were checked and when", text.includes("Nothing needs attention — 6 authorities checked at 2026-10-14 12:00 UTC."), text);
+    // Owner ruling (2026-10-30) — seven authorities now (policy-assignments added).
+    check("says how many authorities were checked and when", text.includes("Nothing needs attention — 7 authorities checked at 2026-10-14 12:00 UTC."), text);
     check("…as a status, not a verdict", /role="status"/.test(html) && badgeWords(html).length === 0);
     check("never reads as healthy", !REASSURING.test(text.replace(ATTENTION_FOOTNOTE, "")), text);
   }
@@ -157,7 +160,8 @@ function main() {
     check("the other rows still render", text.includes("Chase"));
     const emptyButFailed = response({}, { connections: { total: 0, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" }, jobs: null, providers: null, resources: null, alerts: null, incidents: null });
     const r2 = render(emptyButFailed);
-    check("an empty list beside failed readers counts only the ones that answered", r2.text.includes("1 authority checked") && r2.text.includes("5 authorities could not be asked"), r2.text);
+    // Owner ruling (2026-10-30) — the unread policy-assignments authority is named too (6 of 7 failed).
+    check("an empty list beside failed readers counts only the ones that answered", r2.text.includes("1 authority checked") && r2.text.includes("6 authorities could not be asked"), r2.text);
   }
 
   console.log("6. history is apart and labelled");
@@ -230,7 +234,8 @@ function main() {
     check("references are opaque tails typed by kind", text.includes("item …zz9988") && text.includes("account …ww7766") && text.includes("space …sp4455"));
     check("an AI roll-up row says it exposes no reference and carries its count", text.includes("no reference exposed") && /AI failure ×2/.test(text) && !/AI failure ×1\b/.test(text), text);
     check("a refresh row's evidence opens the execution panel", /aria-label="Inspect execution …f1a2b3 for item …zz9988"/.test(html) && /aria-label="Inspect execution …p4c5d6 for account …ww7766"/.test(html));
-    check("an AI / Brief row's evidence is a registry-labelled doorway to AI", /Open AI and costs — evidence for AI · provider call/.test(html) && /Open AI and costs — evidence for Brief · generation/.test(html), html);
+    // PLATFORM OPS PHASE 1 UX — re-ruled: the AI workspace is labelled "AI & Costs" (escaped in markup).
+    check("an AI / Brief row's evidence is a registry-labelled doorway to AI", /Open AI &amp; Costs — evidence for AI · provider call/.test(html) && /Open AI &amp; Costs — evidence for Brief · generation/.test(html), html);
     check("impact kinds are not severity badges (the table's badge count is unchanged)", badgeWords(html).length === data.items.length, badgeWords(html).join(","));
     check("impact header is hidden below md and the cells carry their column word", /class="mb-1 hidden items-center gap-3 border-b px-1 pb-2 md:grid"/.test(html) && /text-\[10px\] uppercase tracking-wide text-\[var\(--text-faint\)\] md:hidden">Reference</.test(html));
     check("the identity rule is the group's hint, reachable by assistive technology (aria-label + title)", html.includes(`aria-label="${IMPACT_FOOTNOTE}"`) && html.includes(`title="${IMPACT_FOOTNOTE}"`), html.match(/aria-label="User-impacting[^"]*"/)?.[0]);

@@ -4495,3 +4495,58 @@ model CustomerCohort {
   @@unique([userId, cohort])
   @@index([cohort])
 }
+
+/// POLICY EDITOR (Phase 2) — a customer Policy Group whose VALUES are data,
+/// edited only from Platform Operations under fresh CONTROL with a reason
+/// (lib/platform/policies/policy-groups-write.ts). The dimension registry,
+/// ceilings, FAIL_CLOSED_VALUES, overlays and cohorts stay code
+/// (lib/entitlements/catalogue.ts). The migration seeds BETA_FULL_ACCESS_V1
+/// (builtIn, isDefault, version 1 = the code values). A partial unique index
+/// (SQL only: "PolicyGroup_single_default") allows at most ONE isDefault row.
+/// Never deleted (fm_system holds no DELETE): retired by `archivedAt`.
+model PolicyGroup {
+  /// UPPER_SNAKE key, immutable after create (assignments name it).
+  key            String               @id
+  label          String
+  description    String               @default("")
+  /// The group NEW registrations receive. Moving it never touches assignments.
+  isDefault      Boolean              @default(false)
+  /// Seeded from the code catalogue by a migration (BETA_FULL_ACCESS_V1).
+  builtIn        Boolean              @default(false)
+  /// Archived groups are not assignable; archiving is refused while any
+  /// assignment names the group, and for the default group.
+  archivedAt     DateTime?
+  /// The PolicyGroupVersion.version in force (optimistic token for edits).
+  currentVersion Int
+  /// Soft reference to the operator who created it (null = seeded).
+  createdById    String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  versions       PolicyGroupVersion[]
+}
+
+/// POLICY EDITOR — one IMMUTABLE version of a Policy Group: the FULL values
+/// (every dimension), the label/description at that version, the change
+/// summary, and the operator's reason. Append-only: fm_system holds SELECT and
+/// INSERT only on this table, and no code path updates or deletes a row
+/// (pinned by lib/platform/policies/policy-groups-write.test.ts). A rollback is
+/// a NEW version whose values equal an earlier one's.
+model PolicyGroupVersion {
+  id            String      @id @default(cuid())
+  groupKey      String
+  group         PolicyGroup @relation(fields: [groupKey], references: [key], onDelete: Restrict, onUpdate: Restrict)
+  version       Int
+  /// Full EntitlementValues — re-validated at every read; invalid ⇒ fail closed.
+  values        Json
+  label         String
+  description   String      @default("")
+  /// { kind, changes: [{ key, before, after }], fromVersion?, from? } — no customer data.
+  changeSummary Json
+  reasonCode    String
+  reasonNote    String?
+  /// Soft reference to the operator who wrote it (null = seeded by a migration).
+  createdById   String?
+  createdAt     DateTime    @default(now())
+
+  @@unique([groupKey, version])
+}

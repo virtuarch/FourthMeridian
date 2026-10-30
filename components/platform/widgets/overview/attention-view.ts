@@ -44,6 +44,8 @@ export const ENTITY_WORD: Record<AttentionEntityKind, string> = {
   resource: "Resource",
   "alert-rule": "Alert rule",
   incident: "Incident",
+  // Owner ruling (2026-10-30) — a customer named by an opaque reference (missing / invalid policy assignment).
+  customer: "Customer",
 };
 
 export type AttentionFilter = "all" | AttentionSeverity;

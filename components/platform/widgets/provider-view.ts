@@ -24,6 +24,7 @@ import type { ProviderHealth, ProviderTrust } from "@/lib/platform/provider-heal
 import type { ProviderHealthResponse } from "@/app/api/platform/platform-ops/provider-health/route";
 import type { EmailHealthResponse } from "@/app/api/platform/platform-ops/email-health/route";
 import { NO_AUTHORITY, type StatusTone } from "../platform-surface";
+import { platformViewTarget } from "@/lib/platform/workspaces";
 
 // ── Trust vocabulary → tone ──────────────────────────────────────────────────
 
@@ -84,8 +85,9 @@ const NO_RUN_IN_WINDOW = "no successful run in the window";
 
 /** The doorway for a provider: where the evidence behind its execution lives. */
 export const PROVIDER_WORKSPACE: Record<string, string> = {
-  PLAID:                "platform-refresh",
-  OPEN_EXCHANGE_RATES:  "platform-jobs",
+  // PLATFORM OPS PHASE 1 UX — Pipeline and Jobs are views of Operations now.
+  PLAID:                platformViewTarget("platform-overview", "pipeline"),
+  OPEN_EXCHANGE_RATES:  platformViewTarget("platform-overview", "jobs"),
 };
 
 const FRESHNESS_WORD: Record<ProviderHealth["freshness"]["state"], string> = {

@@ -153,6 +153,15 @@ export interface OperationTarget {
   description: string;
   /** Active kinds registered for this target (subset of ACTIVE_OPERATION_KINDS). */
   kinds: OperationKind[];
+  /**
+   * PLATFORM-SEC-1 (2026-10-30) — true when a run fans out per-customer provider
+   * work across the WHOLE fleet (every bank item / every wallet). Such a run is
+   * cost-bearing provider work at platform scale, so running it needs CONTROL and
+   * a structured reason — the same bar as resuming ONE wallet's history
+   * (connections/[id]/history-resume). Before this it needed only WRITE with no
+   * reason (capability-classification "manual-operations", UNRESOLVED).
+   */
+  fleet?: true;
 }
 
 /**
@@ -177,6 +186,7 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
   },
   {
     targetJob: "sync-crypto",
+    fleet: true,
     label: "Crypto Wallets",
     description:
       "Refresh every syncable wallet (BTC, ETH, SOL, …) through the one wallet pipeline, oldest first, skipping wallets not yet due under the WALLET refresh policy; regenerate affected snapshots and history. Idempotent; never-throws per wallet.",
@@ -192,6 +202,7 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
     // daily cron runs this identical body. Re-running it retries previously-failed
     // items. Skips deactivated users' items (billing honesty).
     targetJob: "sync-banks",
+    fleet: true,
     label: "Bank Connections",
     description:
       "Sync transactions for every active Plaid bank connection (fleet). Each item runs under its per-item sync lock (skipped if a sync is already in flight), so this respects the same locks the cron and per-item refresh use; per-item failures are isolated. Idempotent; retries previously-failed connections.",
@@ -221,6 +232,7 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
     // once and writes nothing), wake-aware, under each wallet's sync lock, rate-
     // and daily-cap-limited, checkpointed — a manual run is exactly one more run.
     targetJob: "sol-history-backfill",
+    fleet: true,
     label: "Solana History Backfill",
     description:
       "Advance resumable Solana and Bitcoin wallet history (oldest-waiting wallets first) within each chain's rate limit, per-wallet budget and daily request cap; each wallet under its sync lock; progress is checkpointed. Does nothing unless SOL_BACKFILL_ENABLED=true (Bitcoin also off with BTC_BACKFILL_ENABLED=false). Idempotent; never-throws per wallet.",
@@ -273,6 +285,23 @@ export interface OperationCommand {
   destructive: boolean;
   /** Confirmation copy shown before a mutating execute. */
   confirm: string;
+  /** What executing this command requires — read by the route (authority) and the widget (display). */
+  requires: OperationRequirement;
+}
+
+export interface OperationRequirement {
+  level: "WRITE" | "CONTROL";
+  /** A structured operator reason ({ code, note? }) must accompany the request. */
+  reason: boolean;
+}
+
+/**
+ * PURE — the authority a command needs. A MUTATING run of a fleet target needs
+ * CONTROL + reason; everything else (single-scope runs, and every dry run, which
+ * executes nothing) needs WRITE and no reason.
+ */
+export function operationRequirement(mutates: boolean, fleet: boolean): OperationRequirement {
+  return mutates && fleet ? { level: "CONTROL", reason: true } : { level: "WRITE", reason: false };
 }
 
 /** Stable command id. */
@@ -299,6 +328,7 @@ export function listOperationCommands(): OperationCommand[] {
         confirm: meta.mutates
           ? `Run "${t.label}" now? This executes the canonical job body immediately and records a manual JobRun.`
           : `Dry-run "${t.label}"? This only previews what a run would do — nothing executes.`,
+        requires: operationRequirement(meta.mutates, t.fleet === true),
       });
     }
   }

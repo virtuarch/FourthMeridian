@@ -29,6 +29,8 @@
 import "server-only";
 import { systemDb } from "@/lib/db";
 import { resolveEffectiveEntitlements } from "@/lib/entitlements/resolve";
+import type { PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
+import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { CUSTOMER_SURFACES, isCustomerSurface, priceSpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
 import { buildAiSpendHealth, opaqueUserRef, readUserSpendGroups, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
 import { utcDayStart } from "@/lib/platform/ai/customer-spend-today";
@@ -62,6 +64,8 @@ export interface AiBudgetDeps {
   groups?: (since: Date, until: Date) => Promise<UserSpendGroup[]>;
   controls?: CostControlsReadClient;
   assignments?: AssignmentReadClient;
+  /** POLICY EDITOR — the group definitions (default: the cached catalogue loader; tests inject). */
+  loadCatalogue?: () => Promise<PolicyGroupCatalogue>;
 }
 
 /** PURE — per-customer priced USD from user groups (null userId rows are fleet-only). */
@@ -101,7 +105,8 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
   const controlsClient = deps.controls ?? (systemDb as unknown as CostControlsReadClient);
   const assignments = deps.assignments ?? (systemDb as unknown as AssignmentReadClient);
 
-  const [controls, recent, windowGroups, todayGroups] = await Promise.all([
+  const [catalogue, controls, recent, windowGroups, todayGroups] = await Promise.all([
+    (deps.loadCatalogue ?? loadPolicyGroupCatalogue)(),
     loadResolvedControls(controlsClient),
     loadRecentAlertSummaries(controlsClient),
     groups(since, now),
@@ -135,11 +140,14 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
     const e = resolveEffectiveEntitlements(row ? {
       policyGroup: row.policyGroup, overlay: row.overlay, assignedAt: row.assignedAt, assignedById: row.assignedById,
       aiDailyUsdAllowanceOverride: row.aiDailyUsdAllowanceOverride ?? null,
-    } : null, { aiDailyUsdAllowanceUsd: platformUsd });
+    } : null, { aiDailyUsdAllowanceUsd: platformUsd }, { catalogue });
     const dim = e.dimensions.aiDailyUsdAllowance;
     const allowanceUsd = Number(dim.value);
     const todayUsd = today.get(userId) ?? 0;
-    const source: CustomerBudgetView["allowanceSource"] = dim.source === "POLICY_DEFAULT" ? "POLICY" : dim.source;
+    // This Economics view resolves WITHOUT the fail-closed option (it projects the plan's allowance, as before);
+    // FAIL_CLOSED occurs here only for a group whose stored definition is invalid (POLICY EDITOR — $0, its
+    // value is shown); it is folded with POLICY_DEFAULT to satisfy the frozen union.
+    const source: CustomerBudgetView["allowanceSource"] = dim.source === "POLICY_DEFAULT" || dim.source === "FAIL_CLOSED" ? "POLICY" : dim.source;
     return {
       ref: opaqueUserRef(userId),
       rolling24hUsd, todayUsd, allowanceUsd, allowanceSource: source,

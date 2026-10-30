@@ -11,6 +11,7 @@ import { db } from "@/lib/db";
 import { countRemainingCodes } from "@/lib/recovery-codes";
 import { systemDb } from "@/lib/db";
 import { requireSystemAdmin } from "@/lib/session";
+import { env } from "@/lib/env";
 
 export async function GET() {
   const [user, err] = await requireSystemAdmin();
@@ -49,5 +50,8 @@ export async function GET() {
     lastLogin:              lastLogin?.createdAt ?? null,
     lastLoginIp:            lastLogin?.ipAddress ?? null,
     lastCodeGeneration:     lastCodeGeneration?.createdAt ?? null,
+    // SEC-PLAT-1 — the deployment's operator-MFA rollout state (a code-level
+    // switch, OPERATOR_TOTP_ENFORCEMENT), shown read-only on the console.
+    operatorTotpEnforced:   env.isOperatorTotpEnforced,
   });
 }

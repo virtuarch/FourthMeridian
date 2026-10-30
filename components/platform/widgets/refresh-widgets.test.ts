@@ -18,6 +18,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { PLATFORM_WORKSPACE_ALIASES, getPlatformWorkspaceComposition } from "@/lib/platform/workspaces";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -82,9 +83,18 @@ function main() {
       check(`${w.key}: mapped to its widget in the registry`, new RegExp(`${w.key}:\\s*${w.file}`).test(dashboard));
     }
 
-    check("platform-refresh has a workspace identity", /"platform-refresh":\s*\{/.test(workspaces));
-    check("platform-refresh is composed into PLATFORM_OPS", /workspaceId:\s*"platform-refresh"/.test(workspaces));
-    check("platform-refresh is reachable from the Overview doorways", /doorways:[^\]]*"platform-refresh"/.test(workspaces));
+    // PLATFORM OPS PHASE 1 UX — re-ruled: the refresh workspace became the
+    // Pipeline VIEW of Operations. The id "platform-refresh" survives as an alias
+    // that opens that view; the view is composed and the Overview offers a doorway to it.
+    const ops = getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-overview");
+    check("platform-refresh resolves (alias) to Operations › Pipeline",
+      PLATFORM_WORKSPACE_ALIASES["platform-refresh"]?.workspaceId === "platform-overview" && PLATFORM_WORKSPACE_ALIASES["platform-refresh"]?.viewId === "pipeline");
+    check("the Pipeline view is composed into PLATFORM_OPS", ops?.views?.some((v) => v.id === "pipeline") === true);
+    // PLATFORM OPS VISUAL SPEC (2026-10-30) — re-ruled: no doorway row; the
+    // Operations dashboard's Refresh activity / Recent activity cards open Pipeline.
+    const lead = readFileSync(path.join(process.cwd(), "components/platform/leads/OperationsLead.tsx"), "utf8");
+    check("the Pipeline view is reachable from the Operations dashboard", /PIPELINE_VIEW = platformViewTarget\("platform-overview", "pipeline"\)/.test(lead)
+      && /onOpenWorkspace\(PIPELINE_VIEW\)/.test(lead) && ops?.viewControl === "drilldown");
     check("its icon exists in the workspace icon map", /RefreshCw/.test(dashboard));
   }
 
@@ -96,8 +106,10 @@ function main() {
     // section existing anywhere — including Providers, which is where 2C-5 places
     // it by decision. The real protection is no DUPLICATION into Refresh, so the
     // scan is now scoped to the refresh composition, where it still bites.
-    const refreshSections =
-      workspaces.match(/workspaceId:\s*"platform-refresh",\s*sections:\s*\[([^\]]*)\]/)?.[1] ?? "";
+    // PLATFORM OPS PHASE 1 UX — the refresh composition is now Operations › Pipeline.
+    void workspaces;
+    const refreshSections = (getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-overview")?.views
+      ?.find((v) => v.id === "pipeline")?.sections ?? []).map(String).join(",");
     check(
       "provider-operations is NOT folded into the refresh workspace (it lives under Providers)",
       refreshSections.length > 0 && !/ops_provider_operations/.test(refreshSections),

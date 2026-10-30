@@ -408,8 +408,9 @@ console.log("\nUX-P1 — URL-selected workspace (server first paint ⇔ client a
   check("the default workspace's canonical href is the bare area URL; any other appends ?workspace=",
     platformWorkspaceHref("PLATFORM_OPS", PLATFORM_DEFAULT_WORKSPACE_ID) === "/dashboard/platform/PLATFORM_OPS" &&
       platformWorkspaceHref("PLATFORM_OPS", "platform-policies") === "/dashboard/platform/PLATFORM_OPS?workspace=platform-policies");
+  // PLATFORM OPS PHASE 1 UX — re-ruled: plus the area's view ids (composition) and the server-resolved first-paint view.
   check("the host composes the Platform navigation authority with the contract's projection (available + selectedKey)",
-    /usePlatformWorkspaceNavigation\(\{ available, selectedKey \}\)/.test(dash));
+    /usePlatformWorkspaceNavigation\(\{ available, selectedKey, viewIds, selectedView \}\)/.test(dash));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed.`); process.exit(1); }

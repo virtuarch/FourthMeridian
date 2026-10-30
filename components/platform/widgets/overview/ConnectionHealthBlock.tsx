@@ -21,7 +21,7 @@ import { PlugZap } from "lucide-react";
 import { WidgetMessage, useWidgetFetch } from "../../widget-kit";
 import { DistributionBar, SectionSurface } from "../../platform-surface";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
-import { getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { resolvePlatformDestination } from "@/lib/platform/workspaces";
 import type { ConnectionHealthResponse } from "@/app/api/platform/platform-ops/connection-health/route";
 import type { ConnectionHealthRow } from "@/lib/connections/health";
 import type { OverviewBlockProps } from "./block-contract";
@@ -44,7 +44,7 @@ export function ConnectionHealthBlock({ onOpenWorkspace }: OverviewBlockProps) {
  *  host switcher or a registered workspace — a doorway that cannot open is
  *  worse than none. */
 function Doorway({ onOpen }: { onOpen?: (workspaceId: string) => void }) {
-  const def = getPlatformWorkspace(CONNECTION_BLOCK_WORKSPACE);
+  const def = resolvePlatformDestination(CONNECTION_BLOCK_WORKSPACE);
   if (!onOpen || !def) return null;
   return (
     <button

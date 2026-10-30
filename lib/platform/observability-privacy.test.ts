@@ -70,6 +70,8 @@ const READERS = [
   "lib/platform/growth/product-analytics-core.ts",
   "lib/platform/activity/activity.ts",
   "lib/platform/growth/growth.ts",
+  // PLATFORM OPS PHASE 1 UX — the shared Policy Group catalogue reader (counts only).
+  "lib/platform/policy-groups-read.ts",
 ];
 const ROUTES = [
   "app/api/platform/platform-ops/overview/route.ts",
@@ -90,6 +92,8 @@ const ROUTES = [
   "app/api/platform/platform-ops/ai-spend/route.ts",
   // BETA A1–A8 — the GROWTH_REVENUE analytics route (its gate is pinned below).
   "app/api/platform/growth-revenue/product-analytics/route.ts",
+  // PLATFORM OPS PHASE 1 UX — the Policy Group catalogue, PLATFORM_OPS READ (gate pinned in its route.test.ts).
+  "app/api/platform/platform-ops/policy-groups/route.ts",
 ];
 
 console.log("source · no customer identity or secret is selected");

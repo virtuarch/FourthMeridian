@@ -53,11 +53,29 @@ import {
 } from "@/lib/space/use-platform-workspace-navigation";
 import type { SpaceMountContext, SpaceMountAccess } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, ArrowRight } from "lucide-react";
+import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, ArrowRight, ChevronLeft } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
-import { getPlatformAreaWorkspaces, getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { SegmentedControl } from "@/components/atlas/SegmentedControl";
+import {
+  getPlatformAreaWorkspaces,
+  platformAreaViewIds,
+  resolvePlatformDestination,
+  viewSectionKey,
+  type PlatformSectionVariant,
+  type PlatformViewLead,
+  type PlatformViewSection,
+  type PlatformWorkspaceView,
+} from "@/lib/platform/workspaces";
+import type { PlatformViewLeadProps, RenderHosted } from "./leads/lead-contract";
+import { OperationsLead } from "./leads/OperationsLead";
+import { PipelineLead } from "./leads/PipelineLead";
+import { ProvidersLead } from "./leads/ProvidersLead";
+import { AiCostsLead } from "./leads/AiCostsLead";
+import { PoliciesLead } from "./leads/PoliciesLead";
 import { PlatformAreaHero } from "./PlatformAreaHero";
+import { PlatformSpaceSwitcher } from "./PlatformSpaceSwitcher";
+import { usePlatformNav } from "@/components/ui/PlatformNavContext";
 import type { PlatformSection } from "./widget-kit";
 import { SecAuditFeedWidget } from "./widgets/SecAuditFeedWidget";
 import { SecOperatorActionsWidget } from "./widgets/SecOperatorActionsWidget";
@@ -67,7 +85,7 @@ import { SecAnomaliesWidget } from "./widgets/SecAnomaliesWidget";
 import { CsCustomersWidget } from "./widgets/CsCustomersWidget";
 import { GrowthPolicyGroupsWidget } from "./widgets/GrowthPolicyGroupsWidget";
 import { GrowthProductAnalyticsWidget } from "./widgets/GrowthProductAnalyticsWidget";
-import { OpsJobHealthWidget } from "./widgets/OpsJobHealthWidget";
+import { OpsJobsWidget } from "./ops-visual/OpsJobsWidget";
 import { OpsRateLimitsWidget } from "./widgets/OpsRateLimitsWidget";
 import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
 import { OpsApiUsageWidget } from "./widgets/OpsApiUsageWidget";
@@ -76,7 +94,6 @@ import { OpsConnectionDiagnosticsWidget } from "./widgets/OpsConnectionDiagnosti
 import { OpsProviderCleanupWidget } from "./widgets/OpsProviderCleanupWidget";
 import { OpsEmailDeliveryWidget } from "./widgets/OpsEmailDeliveryWidget";
 import { OpsResourceFreshnessWidget } from "./widgets/OpsResourceFreshnessWidget";
-import { OpsManualOperationsWidget } from "./widgets/OpsManualOperationsWidget";
 import { OpsProviderHealthWidget } from "./widgets/OpsProviderHealthWidget";
 import { OpsAlertsWidget } from "./widgets/OpsAlertsWidget";
 import { OpsHistoryWidget } from "./widgets/OpsHistoryWidget";
@@ -127,7 +144,7 @@ const READ_ONLY_ACCESS: SpaceMountAccess = { canRead: true, canWrite: false, can
 
 const PLATFORM_WIDGET_REGISTRY: Record<
   string,
-  ComponentType<{ section: Section; onOpenWorkspace?: (id: string) => void; access?: SpaceMountAccess }>
+  ComponentType<{ section: Section; onOpenWorkspace?: (id: string) => void; access?: SpaceMountAccess; variant?: PlatformSectionVariant }>
 > = {
   // Security Operations
   sec_audit_feed:       SecAuditFeedWidget,
@@ -136,7 +153,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   sec_sessions:     SecSessionsWidget,
   sec_anomalies:    SecAnomaliesWidget,
   // Platform Operations
-  ops_job_health:         OpsJobHealthWidget,
+  ops_job_health:         OpsJobsWidget,
   ops_rate_limits:        OpsRateLimitsWidget,
   ops_env_status:         OpsEnvStatusWidget,
   ops_api_usage:          OpsApiUsageWidget,
@@ -145,7 +162,6 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   ops_provider_cleanup:       OpsProviderCleanupWidget,
   ops_email_delivery:     OpsEmailDeliveryWidget,
   ops_resource_freshness: OpsResourceFreshnessWidget,
-  ops_manual_operations:  OpsManualOperationsWidget,
   ops_provider_health:    OpsProviderHealthWidget,
   ops_alerts:             OpsAlertsWidget,
   ops_history:            OpsHistoryWidget,
@@ -185,6 +201,20 @@ const PLATFORM_WIDGET_REGISTRY: Record<
 };
 
 /**
+ * PLATFORM OPS 2.0 (R2) — the view LEADS: lead id → its summary-first component
+ * (lib/platform/workspaces.ts `PlatformWorkspaceView.lead`). A lead is not a
+ * section: it has no DB row and no anchor; it reads existing READ routes and
+ * reaches the view's HOSTED sections only through `renderHosted` below.
+ */
+const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLeadProps>> = {
+  operations: OperationsLead,
+  pipeline:   PipelineLead,
+  providers:  ProvidersLead,
+  "ai-costs": AiCostsLead,
+  policies:   PoliciesLead,
+};
+
+/**
  * The scroll-anchor id for a composed section, derived from its section KEY (the
  * stable composition identity — labels are editable DB text and would move the
  * anchor under the sidebar). ONE derivation, used by both the rendered wrapper
@@ -195,15 +225,16 @@ export function platformSectionAnchor(key: string): string {
   return `platform-section-${key}`;
 }
 
-/** The DB rows a workspace actually RENDERS: composed, enabled, and backed by a
- *  widget. A composed key with no enabled row, or no widget, renders nothing. */
+/** The DB rows a workspace (view) actually RENDERS: composed, enabled, and
+ *  backed by a widget — each with the variant its view composes it in. A
+ *  composed key with no enabled row, or no widget, renders nothing. */
 function resolveWorkspaceRows(
-  sectionKeys: readonly string[],
+  sectionKeys: readonly PlatformViewSection[],
   dbByKey: ReadonlyMap<string, Section>,
-): Section[] {
+): { row: Section; variant?: PlatformSectionVariant }[] {
   return sectionKeys
-    .map((key) => dbByKey.get(key))
-    .filter((row): row is Section => row != null && PLATFORM_WIDGET_REGISTRY[row.key] != null);
+    .map((entry) => ({ row: dbByKey.get(viewSectionKey(entry)), variant: typeof entry === "string" ? undefined : entry.variant }))
+    .filter((r): r is { row: Section; variant: PlatformSectionVariant | undefined } => r.row != null && PLATFORM_WIDGET_REGISTRY[r.row.key] != null);
 }
 
 /**
@@ -220,11 +251,11 @@ function resolveWorkspaceRows(
  *     page never mounts.
  */
 export function platformChromeSections(
-  sectionKeys: readonly string[],
+  sectionKeys: readonly PlatformViewSection[],
   dbByKey: ReadonlyMap<string, Section>,
 ): SpaceChromeSection[] {
   return sectionKeys
-    .map((key) => dbByKey.get(key))
+    .map((entry) => dbByKey.get(viewSectionKey(entry)))
     .filter((row): row is Section => row != null)
     .map((row) => ({
       label: row.label,
@@ -233,7 +264,9 @@ export function platformChromeSections(
 }
 
 /** Stable empty composition — keeps the sections memo from re-firing per render. */
-const NO_SECTION_KEYS: readonly string[] = [];
+const NO_SECTION_KEYS: readonly PlatformViewSection[] = [];
+/** Stable "hosts nothing" list (a view without a lead). */
+const NO_HOSTED_KEYS: readonly string[] = [];
 
 /** Lucide icon-name → component, for the Platform workspace identities. */
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
@@ -256,6 +289,11 @@ interface Props {
    *  navigation / access / shell config. Required: Platform reads these from the
    *  contract rather than rebuilding them locally. */
   mountContext: SpaceMountContext;
+  /** PLATFORM OPS PHASE 1 UX — the server-resolved first-paint VIEW of the
+   *  selected workspace (`?view=`, resolveRequestedPlatformView), so SSR and the
+   *  hydrated client agree. Absent/null ⇒ the default view. Platform-specific,
+   *  like `area`: views are composition, not mount context. */
+  selectedView?: string | null;
 }
 
 
@@ -267,7 +305,9 @@ interface Props {
  * (workspaces.test.ts pins ≥1 doorway), not a second card grid competing with
  * the blocks. Same `onOpen` mechanism as every block — one navigation path. */
 function WorkspaceDoorway({ targetId, onOpen }: { targetId: string; onOpen: (id: string) => void }) {
-  const def = getPlatformWorkspace(targetId);
+  // PLATFORM OPS PHASE 1 UX — a doorway may target a VIEW (Operations › Jobs);
+  // the destination resolver names it by the view, so the row still reads "Jobs".
+  const def = resolvePlatformDestination(targetId);
   if (!def) return null;
   const Icon = WORKSPACE_ICONS[def.icon] ?? ArrowRight;
   return (
@@ -281,6 +321,55 @@ function WorkspaceDoorway({ targetId, onOpen }: { targetId: string; onOpen: (id:
       <Icon size={12} aria-hidden className="text-[var(--text-muted)]" />
       {def.label}
     </button>
+  );
+}
+
+/**
+ * PLATFORM OPS PHASE 1 UX — the active workspace's VIEW switcher: the shared
+ * Atlas SegmentedControl (the same primitive as the rail), at the top of the
+ * workspace body at every width. Below lg it scrolls horizontally (the
+ * primitive's own overflow) and every segment is a ≥44px touch target; at lg+
+ * it is the compact control. Exported for the render test.
+ */
+export function PlatformViewSwitcher({ views, activeView, onSelect, workspaceLabel }: {
+  views: readonly PlatformWorkspaceView[];
+  activeView: string;
+  onSelect: (viewId: string) => void;
+  workspaceLabel: string;
+}) {
+  return (
+    <div className="min-w-0 max-w-full">
+      <SegmentedControl
+        aria-label={`${workspaceLabel} views`}
+        options={views.map((v) => ({ id: v.id, label: v.label }))}
+        value={activeView}
+        onChange={onSelect}
+        touchOptimized
+        className="max-lg:[&>button]:min-h-11"
+      />
+    </div>
+  );
+}
+
+/**
+ * PLATFORM OPS VISUAL SPEC §1 — a "drilldown" workspace's way back from a
+ * non-default view: ONE compact link ("‹ Operations · Jobs"), never a second
+ * full-height tab row under the workspace rail.
+ */
+export function PlatformDrilldownBack({ label, viewLabel, onBack }: { label: string; viewLabel: string; onBack: () => void }) {
+  return (
+    <nav aria-label={`${label} navigation`} className="-mb-4 flex min-w-0 items-center gap-1.5 text-xs md:-mb-6">
+      <button
+        type="button"
+        onClick={onBack}
+        className="inline-flex min-h-11 items-center gap-1 rounded-[var(--radius-xs)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-8"
+      >
+        <ChevronLeft size={14} aria-hidden />
+        {label}
+      </button>
+      <span aria-hidden className="text-[var(--text-faint)]">/</span>
+      <span aria-current="page" className="truncate font-medium text-[var(--text-primary)]">{viewLabel}</span>
+    </nav>
   );
 }
 
@@ -301,8 +390,10 @@ export function PlatformWorkspaceBody({
   dbByKey,
   onOpen,
   access = READ_ONLY_ACCESS,
+  lead,
+  hosted = NO_HOSTED_KEYS,
 }: {
-  sectionKeys: readonly string[];
+  sectionKeys: readonly PlatformViewSection[];
   doorways?:   readonly string[];
   dbByKey:     Map<string, Section>;
   onOpen:      (id: string) => void;
@@ -310,12 +401,53 @@ export function PlatformWorkspaceBody({
    *  read it; the server gate decides. Optional and FAIL-SAFE: an absent value
    *  renders every widget as READ-only. */
   access?:     SpaceMountAccess;
+  /** PLATFORM OPS 2.0 (R2) — the view's summary-first lead, rendered first. */
+  lead?:       PlatformViewLead;
+  /** The view's HOSTED keys — rendered only when the lead asks (drawers / detail). */
+  hosted?:     readonly string[];
 }) {
   const rows = resolveWorkspaceRows(sectionKeys, dbByKey);
+  const Lead = lead ? PLATFORM_VIEW_LEADS[lead] : null;
+
+  // A hosted key renders exactly as an inline section would: the same registry
+  // widget, its enabled DB row, the same access — so gating (WRITE / control-
+  // plane flags, reasons, confirmations) stays inside the widget, unchanged.
+  // A key outside this view's `hosted`, without an enabled row, or without a
+  // widget renders nothing (fails safe, like an inline section).
+  const hasHosted = (key: string): boolean =>
+    hosted.includes(key) && dbByKey.has(key) && PLATFORM_WIDGET_REGISTRY[key] != null;
+  const renderHosted: RenderHosted = (key, onOpenWorkspace, variant) => {
+    if (!hasHosted(key)) return null;
+    const row = dbByKey.get(key)!;
+    const Widget = PLATFORM_WIDGET_REGISTRY[key];
+    // A variant rides only where the lead asks for one (the Policies drawers),
+    // exactly as an inline view entry passes it; every other hosted widget
+    // receives exactly the props it always did.
+    return variant
+      ? <Widget section={row} onOpenWorkspace={onOpenWorkspace ?? onOpen} access={access} variant={variant} />
+      : <Widget section={row} onOpenWorkspace={onOpenWorkspace ?? onOpen} access={access} />;
+  };
 
   return (
     <div className="flex flex-col gap-8 md:gap-10 pb-16">
-      {rows.length === 0 ? (
+      {Lead && (
+        <WorkspaceSessionProvider>
+          <Lead renderHosted={renderHosted} hasHosted={hasHosted} onOpenWorkspace={onOpen} access={access} />
+          {rows.length > 0 && (
+            <div className="flex flex-col gap-8 md:gap-10">
+              {rows.map(({ row }) => {
+                const Widget = PLATFORM_WIDGET_REGISTRY[row.key];
+                return (
+                  <div key={row.id} id={platformSectionAnchor(row.key)} className="scroll-mt-20">
+                    <Widget section={row} onOpenWorkspace={onOpen} access={access} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </WorkspaceSessionProvider>
+      )}
+      {Lead ? null : rows.length === 0 ? (
         <p className="text-sm text-[var(--text-secondary)]">No sections enabled for this workspace.</p>
       ) : (
         /* OPS-2C-6 — the workspace owns the operational session. Widgets reading
@@ -326,7 +458,7 @@ export function PlatformWorkspaceBody({
            previous view's answer as current. */
         <WorkspaceSessionProvider>
           <div className="flex flex-col gap-8 md:gap-10">
-            {rows.map((row) => {
+            {rows.map(({ row, variant }) => {
               const Widget = PLATFORM_WIDGET_REGISTRY[row.key];
               /* The scroll target for the sidebar's Sections list. Structural
                  only — a wrapper carrying the key-derived id (and the sticky-
@@ -334,7 +466,13 @@ export function PlatformWorkspaceBody({
                  the row is still one child of the same editorial stack. */
               return (
                 <div key={row.id} id={platformSectionAnchor(row.key)} className="scroll-mt-20">
-                  <Widget section={row} onOpenWorkspace={onOpen} access={access} />
+                  {/* A variant rides only where the view composes one, so every
+                      other widget receives exactly the props it always did. */}
+                  {variant ? (
+                    <Widget section={row} onOpenWorkspace={onOpen} access={access} variant={variant} />
+                  ) : (
+                    <Widget section={row} onOpenWorkspace={onOpen} access={access} />
+                  )}
                 </div>
               );
             })}
@@ -354,7 +492,26 @@ export function PlatformWorkspaceBody({
   );
 }
 
-export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) {
+/** "CONTROL" → "Control" — the access level as a chip word. */
+export function accessChipWord(level: string): string {
+  return level ? level.charAt(0).toUpperCase() + level.slice(1).toLowerCase() : "";
+}
+
+/** Platform Ops it2 — the small access chip beside the compact title (and the sidebar's Workspaces heading). */
+export function AccessChip({ level }: { level: string }) {
+  if (!level) return null;
+  return (
+    <span
+      className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]"
+      style={{ background: "var(--surface-hover)", border: "1px solid var(--border-hairline)" }}
+      data-access-chip
+    >
+      <span className="sr-only">Access: </span>{accessChipWord(level)}
+    </span>
+  );
+}
+
+export function PlatformSpaceDashboard({ area, sections, mountContext, selectedView = null }: Props) {
   // ── Identity / display / navigation / access / shell — ALL from the shared
   //    contract (PS-6C). Nothing here is rebuilt from a second local derivation. ──
   const spaceName   = mountContext.display.name;
@@ -366,7 +523,11 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
   // the ONE navigation authority for Platform Spaces. `setActiveTab` is the ONE
   // user-navigation setter: the rail, the sidebar rows and the Overview
   // doorways all call it, so every entry point declares the same PUSH intent.
-  const { activeTab, setActiveTab } = usePlatformWorkspaceNavigation({ available, selectedKey });
+  // PLATFORM OPS PHASE 1 UX — plus the VIEW axis (`?view=`) beneath it; the
+  // view control calls `setActiveView`, every doorway still calls setActiveTab
+  // (a destination id may carry a view: Operations › Jobs).
+  const viewIds = useMemo(() => platformAreaViewIds(area), [area]);
+  const { activeTab, activeView, setActiveTab, setActiveView } = usePlatformWorkspaceNavigation({ available, selectedKey, viewIds, selectedView });
 
   // Operational COMPOSITION (which section keys + doorways each workspace renders)
   // stays Platform-owned — it is data-needs metadata, NOT mount context, and is
@@ -378,26 +539,35 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
   // Rail navigation is the CONTRACT's workspace projection (key/label/icon NAME),
   // not a second registry walk here. Resolving the icon name → component is the
   // consuming surface's concern (the contract is client-safe string data).
-  const railOptions: SpaceShellRailOption[] = available.map((w) => {
-    const Icon = WORKSPACE_ICONS[w.icon] ?? LayoutDashboard;
-    return { id: w.key, label: w.label, icon: <Icon size={14} aria-hidden /> };
-  });
+  // it2 — the rail is the compact (<lg) switcher only; it fills the row in four
+  // equal, text-only columns so every workspace fits a 375 px phone (the icons
+  // stay on the desktop sidebar rows, resolved there from the same icon name).
+  const railOptions: SpaceShellRailOption[] = available.map((w) => ({ id: w.key, label: w.label }));
 
   const active = composition.find((w) => w.workspaceId === activeTab) ?? composition[0];
+  // The open VIEW of the active workspace (its default when the hook's view
+  // belongs to nothing here); undefined for a workspace without views.
+  const activeViewDef = active?.views?.find((v) => v.id === activeView) ?? active?.views?.[0];
+  const isDefaultView = !active?.views || activeViewDef === active.views[0];
+  // Only the active view's sections render — and only they list in the sidebar.
+  const activeSections = activeViewDef?.sections ?? active?.sections;
 
   // SHELL migration — publish platform identity to the ContextualNavbar's Space
   // mode (the same transforming sidebar customer Spaces use; platform Spaces are
   // count-based, so no FX and no Manage). The operator's access level, formerly a
   // toolbar badge, folds into the subtitle so no information is lost.
   const { publishSpace, publishCurrencyControl } = useSpaceChromePublisher();
+  // R1 — the granted Spaces for the mobile Space switcher beside the title
+  // (the Platform nav provider's server-loaded rows; desktop uses the rail).
+  const { spaces: grantedSpaces } = usePlatformNav();
   const chromeSubtitle = `Platform · ${areaLabel} · ${accessLevel}`;
   useEffect(() => {
     publishCurrencyControl(null);
     publishSpace({
-      identity: { name: spaceName, subtitle: chromeSubtitle },
+      identity: { name: spaceName, subtitle: chromeSubtitle, accessChip: accessChipWord(accessLevel) },
     });
     return () => publishSpace(null);
-  }, [publishSpace, publishCurrencyControl, spaceName, chromeSubtitle]);
+  }, [publishSpace, publishCurrencyControl, spaceName, chromeSubtitle, accessLevel]);
 
   // SECTIONS — the ACTIVE workspace's "what's inside" list, published UP to the
   // same ContextualNavbar block customer workspaces feed (SpaceChrome sections
@@ -406,8 +576,8 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
   // leaving a platform Space never leaves its sections behind in the sidebar.
   const publishSections = useSpaceSectionsPublisher();
   const chromeSections = useMemo(
-    () => platformChromeSections(active?.sections ?? NO_SECTION_KEYS, dbByKey),
-    [active, dbByKey],
+    () => platformChromeSections(activeSections ?? NO_SECTION_KEYS, dbByKey),
+    [activeSections, dbByKey],
   );
   useEffect(() => {
     publishSections(chromeSections);
@@ -442,6 +612,11 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
       // `hidden … lg:block`), so exactly one switcher shows at any width.
       railVisibility="belowLg"
       title={spaceName}
+      titleAccessory={<PlatformSpaceSwitcher spaces={grantedSpaces} currentArea={area} />}
+      // it2 — one compact title line (name · switcher · access chip), no meta
+      // line, and a four-equal-column rail that fits a 375 px phone.
+      titleChip={<AccessChip level={accessLevel} />}
+      fillCompactRail
       subtitle={chromeSubtitle}
       railOptions={railOptions}
       activeTab={openWorkspaceId}
@@ -453,23 +628,44 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
     >
       {active ? (
         <div className="flex flex-col gap-8 md:gap-10">
+          {/* PLATFORM OPS PHASE 1 UX — the view control leads the body. */}
+          {active.views && active.views.length > 1 && activeViewDef && active.viewControl === "drilldown" && !isDefaultView && (
+            <PlatformDrilldownBack
+              label={available.find((w) => w.key === active.workspaceId)?.label ?? active.workspaceId}
+              viewLabel={activeViewDef.label}
+              onBack={() => setActiveView(active.views![0].id)}
+            />
+          )}
+          {active.views && active.views.length > 1 && activeViewDef && active.viewControl !== "drilldown" && (
+            <PlatformViewSwitcher
+              views={active.views}
+              activeView={activeViewDef.id}
+              onSelect={setActiveView}
+              workspaceLabel={available.find((w) => w.key === active.workspaceId)?.label ?? active.workspaceId}
+            />
+          )}
           {/* The area's editorial lede opens its Overview — the "operating
-              environment" identity. Detail workspaces (Jobs/Providers/…) skip it
-              and lead straight with their content. */}
-          {active.workspaceId === "platform-overview" && (
+              environment" identity. Detail workspaces and views (Jobs/Providers/…)
+              skip it and lead straight with their content. */}
+          {/* PLATFORM OPS 2.0 (R2) — a view with a summary-first LEAD opens on
+              its status header instead (no editorial paragraph above verdicts). */}
+          {active.workspaceId === "platform-overview" && isDefaultView && !activeViewDef?.lead && (
             <PlatformAreaHero area={area} accessLevel={accessLevel} />
           )}
           <PlatformWorkspaceBody
-            /* OPS-2C-6 — keyed by workspace so the operational session is
+            /* OPS-2C-6 — keyed by workspace (and, since Phase 1 UX, by VIEW —
+               a view is a former workspace) so the operational session is
                DISCARDED on switch. Without this the provider would be reused and
                a return visit would serve the previous session's answers as
                current; refetch-on-return is the verified, honest behaviour. */
-            key={active.workspaceId}
-            sectionKeys={active.sections}
-            doorways={active.doorways}
+            key={`${active.workspaceId}:${activeViewDef?.id ?? ""}`}
+            sectionKeys={activeSections ?? active.sections}
+            doorways={isDefaultView ? active.doorways : undefined}
             dbByKey={dbByKey}
             access={mountContext.access}
             onOpen={setActiveTab}
+            lead={activeViewDef?.lead}
+            hosted={activeViewDef?.hosted}
           />
         </div>
       ) : (

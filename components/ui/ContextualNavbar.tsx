@@ -38,7 +38,10 @@
  * platform axis — the Platform Spaces directory (/dashboard/platform, global
  * mode) and inside a Platform Space (space mode) — the ORDER changes:
  *
- *   platform — the granted Platform list (PlatformNav) LEADS; then, inside a
+ *   platform — Platform Operations 2.0 R1: the THREE Platform destinations
+ *              (PlatformDestinationsNav: Overview · AI · Current Space, the
+ *              same list as the mobile bar, lib/platform/nav) LEAD, with the
+ *              Space switcher nested under Current Space; then, inside a
  *              Platform Space, the Space block + its Sections as above; then a
  *              single "Personal Spaces" exit row back to the launcher.
  *              P-1 (owner-approved separate Platform shell, 2026-10-27): the
@@ -49,8 +52,9 @@
  *              for byte (components/ui/personal-nav-baseline.test.ts).
  *
  * PrimaryNav is still mounted exactly twice in source (once per mode, both on
- * the personal context), PlatformNav exactly twice, PRIMARY_NAV mapped once,
- * /api/spaces fetched once. Inside a PERSONAL Space nothing changes (D2: no
+ * the personal context), PlatformNav once (the personal sidebar's way in),
+ * PlatformContextNav twice (once per mode, platform context), PRIMARY_NAV mapped
+ * once, /api/spaces fetched once (personal context only). Inside a PERSONAL Space nothing changes (D2: no
  * operator door in a member's room).
  *
  * Both modes share DOM position and the left-accent-bar selection idiom, so
@@ -92,6 +96,7 @@ import {
   Gauge,
   RefreshCw,
   SlidersHorizontal,
+  Check,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -108,6 +113,9 @@ import {
   primaryHref,
   type PrimaryDestId,
 } from "@/lib/space-nav";
+import { isPlatformAiPath, platformDestinations, type PlatformDestinationId, type PlatformSpaceOption } from "@/lib/platform/nav";
+import { platformAreaHref } from "@/lib/platform/directory";
+import { usePlatformNav } from "@/components/ui/PlatformNavContext";
 import {
   SPACE_LIST_CHANGED_EVENT,
   SPACE_INVITES_CHANGED_EVENT,
@@ -170,7 +178,9 @@ const PLATFORM_ROUTE_PREFIX = "/dashboard/platform/";
  * that is not granted redirects long before this matters.
  */
 export function isPlatformSpaceRoute(pathname: string | null | undefined): boolean {
-  return typeof pathname === "string" && pathname.startsWith(PLATFORM_ROUTE_PREFIX);
+  // R1 — /dashboard/platform/ai is a Platform DESTINATION (the AI page), not a
+  // Space: it sits under the same prefix but is a static route, never an area.
+  return typeof pathname === "string" && pathname.startsWith(PLATFORM_ROUTE_PREFIX) && !isPlatformAiPath(pathname);
 }
 
 /**
@@ -284,6 +294,124 @@ export function PlatformNav({
       </nav>
     </div>
   );
+}
+
+// ── the Platform context's rail (Platform Operations 2.0 — R1) ───────────────
+
+const PLATFORM_DEST_ICONS: Record<PlatformDestinationId, LucideIcon> = {
+  overview: LayoutGrid,
+  ai: Sparkles,
+  space: Shield,
+};
+
+/** The rail's row idiom (the same accent-bar row every sidebar list uses). */
+const RAIL_ROW = "group relative flex min-h-9 items-center gap-2.5 rounded-[var(--radius-sm)] py-1.5 pl-3 pr-2 text-left text-[13px] transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]";
+
+/**
+ * R1 — the Platform context's TOP block on desktop: the SAME three destinations
+ * the mobile bar shows (lib/platform/nav `platformDestinations`: Overview · AI ·
+ * Current Space), and — nested under Current Space, only when the operator holds
+ * more than one — the Space SWITCHER: the granted Spaces as links. Picking one
+ * opens it (and so becomes the Current Space); the three never change.
+ *
+ * The rows come from the Platform nav provider (granted Spaces, server-loaded as
+ * the tenant), never from a literal. Pure over its props so it renders in a test.
+ */
+export function PlatformDestinationsNav({
+  pathname,
+  spaces,
+  current,
+}: {
+  pathname: string | null;
+  spaces:   readonly PlatformSpaceOption[];
+  current:  PlatformSpaceOption | null;
+}) {
+  const destinations = platformDestinations(pathname, current);
+  return (
+    <div>
+      <p className="mb-1.5 px-1 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+        Platform
+      </p>
+      <nav aria-label="Platform" className="flex flex-col gap-0.5">
+        {destinations.map((d) => {
+          const Icon = PLATFORM_DEST_ICONS[d.id];
+          return (
+            <div key={d.id} className="flex flex-col gap-0.5">
+              <Link
+                href={d.href}
+                prefetch={false}
+                aria-current={d.on ? "true" : undefined}
+                className={[RAIL_ROW, d.on ? "text-[var(--text-primary)]" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"].join(" ")}
+              >
+                <span
+                  aria-hidden
+                  className={[
+                    "absolute inset-y-1 left-0 w-0.5 rounded-full bg-[var(--meridian-400)]",
+                    "transition-opacity duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                    d.on ? "opacity-100" : "opacity-0",
+                  ].join(" ")}
+                />
+                <Icon size={14} strokeWidth={1.75} className="shrink-0" />
+                {/* it2 — with the Space list nested beneath, the destination reads
+                    "Current Space" (the list names and marks it), so the Space's
+                    name appears once, not twice. */}
+                <span className="flex-1 truncate">{d.id === "space" && spaces.length > 1 ? "Current Space" : d.label}</span>
+              </Link>
+              {d.id === "space" && spaces.length > 1 && (
+                <PlatformSpaceSwitchList pathname={pathname} spaces={spaces} current={current} />
+              )}
+            </div>
+          );
+        })}
+      </nav>
+    </div>
+  );
+}
+
+/** The desktop Space switcher, nested under Current Space (guide line, like a
+ *  workspace's children). The selected Space reads in the primary weight; the
+ *  accent bar is reserved for the destination above it. */
+function PlatformSpaceSwitchList({
+  pathname,
+  spaces,
+  current,
+}: {
+  pathname: string | null;
+  spaces:   readonly PlatformSpaceOption[];
+  current:  PlatformSpaceOption | null;
+}) {
+  return (
+    <div role="group" aria-label="Platform Spaces" className="ml-[18px] flex flex-col border-l border-[var(--border-hairline)]">
+      {spaces.map((s) => {
+        const href = platformAreaHref(s.area);
+        const selected = current?.area === s.area;
+        return (
+          <Link
+            key={s.id}
+            href={href}
+            prefetch={false}
+            aria-current={pathname === href ? "page" : undefined}
+            className={[
+              "relative flex min-h-8 items-center rounded-[var(--radius-sm)] py-1 pl-[17px] pr-2 text-left text-[12px]",
+              "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]",
+              selected ? "font-medium text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
+            ].join(" ")}
+          >
+            <span className="min-w-0 flex-1 truncate">{s.name}</span>
+            {/* it2 — the current Space is marked, not just weighted. */}
+            {selected && <Check size={12} aria-hidden className="shrink-0 text-[var(--meridian-400)]" />}
+            {selected && <span className="sr-only"> (current)</span>}
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The Platform context's top block, wired to the provider (both modes mount it). */
+function PlatformContextNav({ pathname }: { pathname: string | null }) {
+  const { spaces, current } = usePlatformNav();
+  return <PlatformDestinationsNav pathname={pathname} spaces={spaces} current={current} />;
 }
 
 export function ContextualNavbar() {
@@ -466,18 +594,19 @@ function PersonalSpacesExit() {
 
 /** Exported so the COMPOSITION (which list leads on which context) renders in a test. */
 export function GlobalMode({ pathname, pendingInvites }: { pathname: string | null; pendingInvites: number }) {
-  // The access-derived platform destinations — the SAME hook Space mode uses.
-  const platform = usePlatformDestinations(true);
-  const site = <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />;
-  const hq = <PlatformNav items={platform} pathname={pathname} />;
+  const platformContext = navContext(pathname) === "platform";
+  // The access-derived platform destinations for the PERSONAL sidebar's way in
+  // (unchanged). In the Platform context the provider's server-loaded rows are
+  // the source instead, so the fetch is not made there.
+  const platform = usePlatformDestinations(!platformContext);
 
-  // P-1 — on the Platform Spaces DIRECTORY the operator stands in the platform
-  // context: the Platform list, then one exit row back to Personal Spaces. The
-  // personal site nav is not part of the Platform shell.
-  if (navContext(pathname) === "platform") {
+  // R1 — on the Platform Overview and the AI page the operator stands in the
+  // platform context: the three destinations (+ Space switcher), then one exit
+  // row back to Personal Spaces. The personal site nav is not part of it.
+  if (platformContext) {
     return (
       <>
-        {hq}
+        <PlatformContextNav pathname={pathname} />
         <PersonalSpacesExit />
       </>
     );
@@ -485,8 +614,8 @@ export function GlobalMode({ pathname, pendingInvites }: { pathname: string | nu
 
   return (
     <>
-      {site}
-      {hq}
+      <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />
+      <PlatformNav items={platform} pathname={pathname} />
     </>
   );
 }
@@ -712,7 +841,6 @@ export function SpaceMode({
   // The list itself is still access-derived (usePlatformDestinations → the same
   // /api/spaces `platform` projection): the route only decides WHETHER to ask.
   const onPlatformAxis = isPlatformSpaceRoute(pathname);
-  const platform = usePlatformDestinations(onPlatformAxis);
 
   // SITE — the same block global mode renders. Fourth Meridian stays on screen;
   // the Space is a place INSIDE it, not a shell that replaces it. In a personal
@@ -722,10 +850,11 @@ export function SpaceMode({
 
   return (
     <>
-      {/* PLATFORM (platform axis only) — the granted HQ Spaces LEAD inside a
-          Platform Space (UX-P2 Phase B), so the operator moves between areas
-          first and reaches the site second. Gated on the route (see above). */}
-      {onPlatformAxis && <PlatformNav items={platform} pathname={pathname} />}
+      {/* PLATFORM (platform axis only) — R1: the three destinations (Overview ·
+          AI · Current Space, with the Space switcher under Current Space) LEAD
+          inside a Platform Space; this Space's block and workspaces follow.
+          Gated on the route (see above). */}
+      {onPlatformAxis && <PlatformContextNav pathname={pathname} />}
 
       {!onPlatformAxis && site}
 
@@ -742,9 +871,27 @@ export function SpaceMode({
         <SpaceControls currencyControl={currencyControl} onManage={onManage} className="mb-3" />
 
         <div className="flex items-center gap-2">
+          {/* it2 — on the platform axis the Space's name already reads in the
+              Space list above, so this block is headed "Workspaces" + the access
+              chip, with no name / meta line (the name stays the accessible heading). */}
+          {onPlatformAxis ? (
+            <h1 className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+              <span className="sr-only">{identity.name} · </span>Workspaces
+            </h1>
+          ) : (
           <h1 className="truncate text-[15px] font-semibold text-[var(--text-primary)]">
             {identity.name}
           </h1>
+          )}
+          {onPlatformAxis && identity.accessChip && (
+            <span
+              className="rounded-full px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]"
+              style={{ background: "var(--surface-hover)", border: "1px solid var(--border-hairline)" }}
+              data-access-chip
+            >
+              <span className="sr-only">Access: </span>{identity.accessChip}
+            </span>
+          )}
           {identity.shared && (
             <span
               className="rounded-full px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]"
@@ -754,7 +901,7 @@ export function SpaceMode({
             </span>
           )}
         </div>
-        <p className="mt-1 text-[11px] text-[var(--text-muted)]">{identity.subtitle}</p>
+        {!onPlatformAxis && <p className="mt-1 text-[11px] text-[var(--text-muted)]">{identity.subtitle}</p>}
         {identity.updatedLabel && (
           <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{identity.updatedLabel}</p>
         )}
@@ -774,7 +921,7 @@ export function SpaceMode({
             Jobs · …), inside the Space block so they read as THIS Space's
             destinations, attached to its identity. */}
         {workspaceNav && workspaceNav.items.length > 0 && (
-          <div className="mt-4">
+          <div className={onPlatformAxis ? "mt-2" : "mt-4"}>
             <SpaceWorkspaceNav nav={workspaceNav} />
           </div>
         )}

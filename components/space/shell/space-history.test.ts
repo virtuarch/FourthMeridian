@@ -386,26 +386,33 @@ console.log("P. Platform Space — the same contract on the ?workspace= axis (th
   // same declared intent. The harness mirrors the route: the server resolves
   // `?workspace=` for the first paint (platformMountContext), the hook takes it
   // from there.
+  // PLATFORM OPS PHASE 1 UX — re-ruled: "platform-jobs" is no longer a
+  // workspace (Jobs is a VIEW of Operations; the id is an alias), so this
+  // workspace-axis walk uses Providers — the same contract, a live workspace.
+  // The view axis has its own block (V) below.
   const { usePlatformWorkspaceNavigation, PLATFORM_DEFAULT_WORKSPACE_ID } = await import("@/lib/space/use-platform-workspace-navigation");
   const { platformMountContext } = await import("@/lib/space/mount-context.server");
+  const { platformAreaViewIds, resolveRequestedPlatformView } = await import("@/lib/platform/workspaces");
+  const viewIds = platformAreaViewIds("PLATFORM_OPS");
   const MOUNT = { spaceId: "s", spaceName: "Platform Ops", area: "PLATFORM_OPS" as never, areaLabel: "Platform Operations", accessLevel: "READ" as never, userId: "u" };
   const available = platformMountContext(MOUNT).workspaces.available;
   type PNav = ReturnType<typeof usePlatformWorkspaceNavigation>;
   let pnav!: PNav;
-  function PlatformHarness({ selectedKey }: { selectedKey: string }) {
-    pnav = usePlatformWorkspaceNavigation({ available, selectedKey });
+  function PlatformHarness({ selectedKey, selectedView }: { selectedKey: string; selectedView: string | null }) {
+    pnav = usePlatformWorkspaceNavigation({ available, selectedKey, viewIds, selectedView });
     return null;
   }
   /** A fresh document load at `url`: SSR resolution first (as the route does), then the client hook. */
   async function loadPlatform(url: string) {
     const requested = new URL(url, BASE).searchParams.get("workspace");
     const { selectedKey } = platformMountContext(MOUNT, { selectedKey: requested }).workspaces;
+    const selectedView = resolveRequestedPlatformView(viewIds[selectedKey], selectedKey, requested, new URL(url, BASE).searchParams.get("view"));
     if (root) await act(async () => root!.unmount());
     entries = [{ url: "/dashboard/spaces", state: { __NA: true } }, { url, state: { __NA: true } }];
     index = 1; canonicalUrl = url; writes.length = 0;
     const container = { nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: doc, addEventListener() {}, removeEventListener() {}, childNodes: [], firstChild: null, appendChild() {}, removeChild() {} };
     root = createRoot(container as never);
-    await act(async () => root!.render(createElement(PlatformHarness, { selectedKey })));
+    await act(async () => root!.render(createElement(PlatformHarness, { selectedKey, selectedView })));
     return selectedKey;
   }
   const ws = () => cur().searchParams.get("workspace");
@@ -414,22 +421,22 @@ console.log("P. Platform Space — the same contract on the ?workspace= axis (th
   const ssr = await loadPlatform("/dashboard/platform/PLATFORM_OPS");
   check("P1. load the area root: Overview (SSR = client), clean URL, NO write on hydration",
     ssr === PLATFORM_DEFAULT_WORKSPACE_ID && pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && ws() === null && writes.length === 0 && history.length === 2, writes.join(" | "));
-  await open("platform-jobs");
-  check("P2. Overview → Jobs: a new entry (PUSH), ?workspace=platform-jobs", history.length === 3 && pushes() === 1 && ws() === "platform-jobs" && pnav.activeTab === "platform-jobs", writes.join(" | "));
+  await open("platform-providers");
+  check("P2. Overview → Providers: a new entry (PUSH), ?workspace=platform-providers", history.length === 3 && pushes() === 1 && ws() === "platform-providers" && pnav.activeTab === "platform-providers", writes.join(" | "));
   check("    Next's canonical URL IS the Space URL (router synced, no __NA pass-through)", canonicalUrl === rel(cur().href));
   const before = cur().href; nextCommit();
   check("    …so Next's HistoryUpdater rewrite is a no-op", cur().href === before);
   await open("platform-policies");
-  check("P3. Jobs → Policies: a new entry", history.length === 4 && pushes() === 2 && ws() === "platform-policies");
+  check("P3. Providers → Policies: a new entry", history.length === 4 && pushes() === 2 && ws() === "platform-policies");
   await back();
-  check("P4. Back → Jobs: state rebuilt FROM the URL", pnav.activeTab === "platform-jobs" && ws() === "platform-jobs", `${pnav.activeTab} ${ws()}`);
+  check("P4. Back → Providers: state rebuilt FROM the URL", pnav.activeTab === "platform-providers" && ws() === "platform-providers", `${pnav.activeTab} ${ws()}`);
   await back();
   check("P5. Back → Overview: the clean area URL restores the default", pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && ws() === null, `${pnav.activeTab} ${ws()}`);
   await forward();
-  check("P6. Forward → Jobs", pnav.activeTab === "platform-jobs" && ws() === "platform-jobs");
+  check("P6. Forward → Providers", pnav.activeTab === "platform-providers" && ws() === "platform-providers");
   check("    Back/Forward created or rewrote NO entry", pushes() === 2 && !writes.some((w) => w.startsWith("replace")) && history.length === 4, writes.join(" | "));
   const n = writes.length;
-  await open("platform-jobs");
+  await open("platform-providers");
   check("P7. selecting the OPEN workspace writes nothing", writes.length === n && history.length === 4);
   await open(PLATFORM_DEFAULT_WORKSPACE_ID);
   check("P8. → Overview: PUSH with the key DELETED — the canonical URL is the bare area path, not workspace=",
@@ -446,12 +453,65 @@ console.log("P. Platform Space — the same contract on the ?workspace= axis (th
     pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && cur().search === "" && history.length === 2 && writes.join() === "replace /dashboard/platform/PLATFORM_OPS", writes.join(" | "));
   await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-overview");
   check("P11. an explicit default canonicalizes to the clean URL in place", cur().search === "" && history.length === 2 && pushes() === 0, writes.join(" | "));
-  await loadPlatform("/dashboard/platform/PLATFORM_OPS?foo=1&workspace=platform-jobs");
+  await loadPlatform("/dashboard/platform/PLATFORM_OPS?foo=1&workspace=platform-providers");
   await open("platform-ai");
   check("P12. unrelated params are preserved by the writer (one serializer, no clobber)",
     cur().search === "?foo=1&workspace=platform-ai" && history.length === 3, cur().search);
   await open(PLATFORM_DEFAULT_WORKSPACE_ID);
   check("    …and survive the default's key deletion", cur().search === "?foo=1", cur().search);
+
+  // ── V. PLATFORM OPS PHASE 1 UX — the VIEW axis (?view=) beneath the workspace ──
+  console.log("V. Platform views — ?view= beside ?workspace=");
+  const vw = () => cur().searchParams.get("view");
+  const openView = (id: string) => step(() => pnav.setActiveView(id));
+
+  await loadPlatform("/dashboard/platform/PLATFORM_OPS");
+  check("V1. the area root opens Operations on its DEFAULT view, and the default view writes no param",
+    pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && pnav.activeView === "overview" && vw() === null && writes.length === 0, writes.join(" | "));
+  await openView("jobs");
+  check("V2. Overview → Jobs (view): a new entry (PUSH), ?view=jobs, no workspace param",
+    history.length === 3 && pushes() === 1 && vw() === "jobs" && ws() === null && pnav.activeView === "jobs", writes.join(" | "));
+  await openView("pipeline");
+  check("V3. Jobs → Pipeline: another entry", history.length === 4 && pushes() === 2 && vw() === "pipeline");
+  await back();
+  check("V4. Back → Jobs: the view is rebuilt FROM the URL", pnav.activeView === "jobs" && vw() === "jobs", `${pnav.activeView} ${vw()}`);
+  await back();
+  check("V5. Back → Overview: the clean URL restores the default view", pnav.activeView === "overview" && vw() === null);
+  await forward();
+  check("V6. Forward → Jobs, and Back/Forward wrote nothing", pnav.activeView === "jobs" && pushes() === 2 && !writes.some((w) => w.startsWith("replace")), writes.join(" | "));
+  const n0 = writes.length;
+  await openView("jobs");
+  check("V7. selecting the OPEN view writes nothing", writes.length === n0);
+  await open("platform-ai");
+  check("V8. switching workspace RESETS the view: AI & Costs opens on its default view, ?view= deleted",
+    pnav.activeTab === "platform-ai" && pnav.activeView === "ai" && ws() === "platform-ai" && vw() === null, cur().search);
+  const n1 = writes.length;
+  await openView("overview");
+  check("V9. a view id foreign to the open workspace falls back to its default (no write)", pnav.activeView === "ai" && vw() === null && writes.length === n1);
+  await open("platform-overview:pipeline");
+  check("V10. a doorway's view target opens the workspace ON that view (one PUSH)",
+    pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && pnav.activeView === "pipeline" && cur().search === "?view=pipeline" && writes[writes.length - 1].startsWith("push"));
+  await open("platform-jobs");
+  check("V11. a retired id still navigates: platform-jobs opens Operations › Jobs", pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && pnav.activeView === "jobs" && cur().search === "?view=jobs");
+
+  check("V12. deep link ?workspace=platform-policies&view=alerts is the first paint AND the hydrated state, no write",
+    (await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-policies&view=alerts")) === "platform-policies"
+      && pnav.activeView === "alerts" && writes.length === 0, writes.join(" | "));
+  await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-providers&view=not-a-view");
+  check("V13. an unknown view falls back to the default and canonicalizes IN PLACE (replace, no entry)",
+    pnav.activeTab === "platform-providers" && pnav.activeView === "health" && cur().search === "?workspace=platform-providers" && history.length === 2 && pushes() === 0, writes.join(" | "));
+  await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-providers&view=health");
+  check("V14. an explicit DEFAULT view canonicalizes away in place", cur().search === "?workspace=platform-providers" && pushes() === 0 && history.length === 2, writes.join(" | "));
+  await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-refresh");
+  check("V15. an OLD deep link ?workspace=platform-refresh opens Operations › Pipeline (SSR = client) and canonicalizes to ?view=pipeline in place",
+    pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && pnav.activeView === "pipeline" && cur().search === "?view=pipeline" && pushes() === 0 && history.length === 2, writes.join(" | "));
+  await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-costs");
+  // Platform Ops visual spec §5 — AI & Costs is ONE dashboard (Costs moved into its
+  // drawers), so the retired economics id opens it on its only (default) view.
+  check("V16. ?workspace=platform-costs opens the AI & Costs dashboard", pnav.activeTab === "platform-ai" && pnav.activeView === "ai" && cur().search === "?workspace=platform-ai", cur().search);
+  await loadPlatform("/dashboard/platform/PLATFORM_OPS?foo=1&view=jobs");
+  await open("platform-policies");
+  check("V17. unrelated params survive view writes", cur().search === "?foo=1&workspace=platform-policies", cur().search);
 }
 
 if (root) await act(async () => root!.unmount());

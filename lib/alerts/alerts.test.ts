@@ -91,10 +91,12 @@ const ALL_ON = () => true;
 // ── Registry shape ───────────────────────────────────────────────────────────────
 
 console.log("registry");
-check("nine rules (five initial + ai-provider-failing + the two ai-spend rules + sync-incident-critical from OBS-004)", ALERT_RULES.length === 9);
-check("eight live rules", ALERT_RULES.filter((r) => r.live).length === 8);
+// Owner ruling (2026-10-30) — + policy-assignment-invalid (missing / invalid customer policy-group
+// assignments fail closed; the actionable operator alert). Ten rules, nine live.
+check("ten rules (five initial + ai-provider-failing + the two ai-spend rules + sync-incident-critical from OBS-004 + policy-assignment-invalid)", ALERT_RULES.length === 10);
+check("nine live rules", ALERT_RULES.filter((r) => r.live).length === 9);
 check("quota-low is the sole dormant rule", ALERT_RULES.filter((r) => !r.live).map((r) => r.id).join() === "quota-low");
-check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 9);
+check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 10);
 check("sync-incident-critical reads the sync-incidents authority, live, on by default", ALERT_RULES.find((r) => r.id === "sync-incident-critical")?.authority === "sync-incidents" && ALERT_RULES.find((r) => r.id === "sync-incident-critical")!.live && ALERT_RULES.find((r) => r.id === "sync-incident-critical")!.defaultEnabled);
 check("ai-provider-failing reads the ai-failures authority", ALERT_RULES.find((r) => r.id === "ai-provider-failing")?.authority === "ai-failures");
 check("ai-spend-fleet-high reads the ai-spend authority and says critical = twice the threshold", ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")?.authority === "ai-spend" && /critical at or above twice/.test(ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")!.description));
@@ -377,7 +379,8 @@ console.log("history derivation");
   check("prior-fired keeps the newest delivery per key", prior.get("job-failing:a") === Date.parse("2026-07-15T07:30:00Z"));
 
   const views = deriveAlertRuleViews(ALERT_RULES, ALL_ON, [s2, s1]);
-  check("a view per rule", views.length === 9);
+  // Owner ruling (2026-10-30) — ten rules now (policy-assignment-invalid added).
+  check("a view per rule", views.length === 10);
   check("last-triggered is the newest across runs", views.find((v) => v.id === "job-failing")!.lastTriggeredAtISO === "2026-07-15T07:30:00Z");
   check("never-fired rule has null last-triggered", views.find((v) => v.id === "scheduler-silent")!.lastTriggeredAtISO === null);
   check("dormant rule reported not-live", views.find((v) => v.id === "quota-low")!.live === false);
@@ -425,7 +428,8 @@ async function orchestratorTests() {
   check("delivered both", s1.counts.delivered === 2 && s1.deliveryStatus === "sent");
   check("one email to the destination", sent.length === 1 && sent[0].to === "ops@fourthmeridian.com" && sent[0].count === 2);
   check("summary records fired for suppression/history", s1.fired.length === 2);
-  check("per-rule outcomes list all nine rules", s1.rules.length === 9);
+  // Owner ruling (2026-10-30) — ten rules now (policy-assignment-invalid added).
+  check("per-rule outcomes list all ten rules", s1.rules.length === 10);
   check("dormant rule not firing in outcomes", s1.rules.find((r) => r.id === "quota-low")!.firing === false);
 
   // Second cycle sees the first as recent history ⇒ suppresses (no second email).
@@ -500,7 +504,7 @@ async function orchestratorTests() {
   }
   check("start-write failed ⇒ no email sent", sent.length === before);
   check("start-write failed ⇒ skipped + LEDGER_WRITE_FAILED with the breach count", broken.deliveryStatus === "skipped" && broken.undelivered?.reason === "LEDGER_WRITE_FAILED" && broken.undelivered.breaches === 2);
-  check("start-write failed ⇒ evaluation still recorded every rule outcome (the breaker is on delivery only)", broken.counts.firing === 2 && broken.rules.length === 9);
+  check("start-write failed ⇒ evaluation still recorded every rule outcome (the breaker is on delivery only)", broken.counts.firing === 2 && broken.rules.length === 10); // owner ruling 2026-10-30: ten rules
   const healthyLedger = await evaluatePlatformAlerts({ ...baseDeps, ledgerStartWriteFailed: () => false });
   check("start-write ok ⇒ delivery proceeds", healthyLedger.deliveryStatus === "sent" && sent.length === before + 1);
 }

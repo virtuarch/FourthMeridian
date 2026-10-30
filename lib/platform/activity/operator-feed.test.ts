@@ -45,11 +45,16 @@ async function main() {
     check("every admitted action is one the Security feed already lists (a subset, never a widening)",
       PLATFORM_OPS_FEED_ACTIONS.every((a) => OPERATOR_ACTION_FEED_ACTIONS.includes(a)));
     check("no security-only action is admitted", SECURITY_ONLY_ACTIONS.every((a) => !(a in PLATFORM_OPS_FEED_RULES)));
-    const expected = ["PLATFORM_OPERATION_EXECUTED", "PLATFORM_OPERATION_DRY_RUN", "JOB_CADENCE_CHANGED", "JOB_CADENCE_RESET",
+    // PLATFORM-SEC-1 adds the fleet-run intent row (PLATFORM_OPERATION_REQUESTED), a JOB target.
+    const expected = ["PLATFORM_OPERATION_EXECUTED", "PLATFORM_OPERATION_DRY_RUN", "PLATFORM_OPERATION_REQUESTED", "JOB_CADENCE_CHANGED", "JOB_CADENCE_RESET",
       "PLATFORM_POLICY_CHANGED", "PLATFORM_POLICY_RESET", "CONNECTION_RESYNC_TRIGGERED", "CONNECTION_REAUTH_REQUESTED",
       "PLAID_ITEM_WEBHOOK_UPDATED", "PLAID_ITEM_REVOCATION_RETRY_REQUESTED", "OPERATOR_REFRESH_ALL",
       // A connection action (D6): resuming ONE wallet connection's history.
-      "WALLET_HISTORY_RESUMED"].sort();
+      "WALLET_HISTORY_RESUMED",
+      // Beta reconciliation: a POLICY_GROUP target, counts only (never a customer).
+      "CUSTOMER_POLICY_RECONCILED",
+      // POLICY EDITOR: group definition changes, POLICY_GROUP targets, counts only (never a customer).
+      "POLICY_GROUP_CREATED", "POLICY_GROUP_UPDATED", "POLICY_GROUP_ROLLED_BACK", "POLICY_GROUP_ARCHIVED", "POLICY_GROUP_DEFAULT_CHANGED"].sort();
     check("the admitted set is exactly D6: job, connection, platform-setting, provider cleanup, Refresh All",
       [...PLATFORM_OPS_FEED_ACTIONS].sort().join() === expected.join(), PLATFORM_OPS_FEED_ACTIONS.join());
     check("every rule names a platform workspace doorway", Object.values(PLATFORM_OPS_FEED_RULES).every((r) => /^platform-/.test(r.workspace)));
@@ -116,7 +121,7 @@ async function main() {
     const feed = buildOperatorFeed(rows, label, NOW.toISOString());
     check("scope + depth + note", feed.scope === "PLATFORM_OPS" && feed.depth.requested === OPERATOR_FEED_DEPTH && feed.depth.returned === 2 && /Security Operations/.test(feed.note));
     check("the grant row is dropped; order is newest first", feed.items.map((i) => i.id).join() === "f1,f3");
-    check("policy change: platform-setting target opaque, Policies workspace", feed.items[0].target === "platform setting …wallet" && feed.items[0].evidence.workspace === "platform-policies");
+    check("policy change: platform-setting target opaque, Policies workspace", feed.items[0].target === "platform setting …wallet" && feed.items[0].evidence.workspace === "platform-policies:defaults"); // PLATFORM OPS PHASE 1 UX — Policies › Platform defaults
     check("reauth: REFUSED result word kept, Providers workspace", feed.items[1].result === "REFUSED" && feed.items[1].evidence.workspace === "platform-providers");
     const empty = buildOperatorFeed([], label, NOW.toISOString());
     check("empty feed: zero items, depth returned 0, not an error", empty.items.length === 0 && empty.depth.returned === 0);

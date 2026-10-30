@@ -36,6 +36,7 @@ import { env } from "@/lib/env";
 import { resolvePlaidRedirectUri } from "@/lib/plaid/redirect-uri";
 // BETA C7′ — the connection-count entitlement (maxConnections), fresh links only.
 import { connectionCapForUser, connectionLimitResponse } from "@/lib/connections/connection-cap";
+import { entitlementsForUser, refuseIfFailClosed } from "@/lib/entitlements/consume";
 
 /**
  * The public URL Plaid should POST webhooks to (TRANSACTIONS/SYNC_UPDATES_AVAILABLE).
@@ -96,6 +97,13 @@ export async function GET(req: NextRequest) {
     // session, so the global Transactions-only path (AmEx-compatible) is
     // untouched. See docs/investigations/PLAID_INVESTMENTS_CONSENT_INVESTIGATION.md.
     const consentParam    = req.nextUrl.searchParams.get("consent");
+    // Owner ruling (2026-10-30) — investments consent opens a new paid product;
+    // a fail-closed customer may still repair an existing Item (plain update
+    // mode), but not add Investments to it.
+    if (consentParam === "investments") {
+      const failClosed = refuseIfFailClosed(await entitlementsForUser(user.id), "Enable Investments");
+      if (failClosed) return failClosed;
+    }
     let accessToken: string | undefined;
 
     if (reconnectItemId) {

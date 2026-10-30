@@ -152,8 +152,10 @@ async function main(): Promise<void> {
       !adminKeys.includes("refresh_cadence_wallet") && !adminKeys.includes("refresh_cadence_bank")
         && !adminKeys.includes("maintenance_mode") && !adminKeys.includes("ingestion_paused") && !adminKeys.includes("product_status"));
     check("the security surface keeps its legitimate keys",
-      ["require_totp_system_admin", "require_totp_admins", "require_totp_all_users", "recovery_codes_enabled", "min_password_length", "registration_mode"]
+      ["require_totp_system_admin", "require_totp_all_users", "recovery_codes_enabled", "min_password_length", "registration_mode"]
         .every((k) => adminKeys.includes(k as never)));
+    // SEC-PLAT-1 — the unenforced "Require 2FA for Space admins" switch is gone.
+    check("the dead require_totp_admins switch is not a setting", !(adminKeys as readonly string[]).includes("require_totp_admins"));
     const settings = readFileSync("lib/platform-settings.ts", "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
     check("setSetting validates before it upserts", settings.indexOf("validateSetting(key, value)") < settings.indexOf("platformSetting.upsert"));
     check("reset is a DELETE of the override row, never a write of the default", /deleteSetting[\s\S]*platformSetting\.deleteMany/.test(settings));

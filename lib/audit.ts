@@ -217,10 +217,22 @@ export const OPERATOR_NOTE_MAX = 280;
 
 /** Actions that MUST carry a structured reason. Everything else may. */
 export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<AuditActionType>([
+  // PLATFORM-SEC-1 — the pre-run intent row of a fleet-wide manual operation.
+  AuditAction.PLATFORM_OPERATION_REQUESTED,
   AuditAction.CUSTOMER_POLICY_ASSIGNED,
   AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
   AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,
   AuditAction.CUSTOMER_COHORT_ASSIGNED,
+  // Beta reconciliation — creates the default assignment for every active
+  // unassigned customer at once; consequential, so it carries a reason.
+  AuditAction.CUSTOMER_POLICY_RECONCILED,
+  // Policy editor (owner ruling 2026-10-30) — every customer policy-group
+  // modification requires an operator reason.
+  AuditAction.POLICY_GROUP_CREATED,
+  AuditAction.POLICY_GROUP_UPDATED,
+  AuditAction.POLICY_GROUP_ROLLED_BACK,
+  AuditAction.POLICY_GROUP_ARCHIVED,
+  AuditAction.POLICY_GROUP_DEFAULT_CHANGED,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
   // UX-P1 D7 — the financial-refresh cadence (bank / wallet) is the same class

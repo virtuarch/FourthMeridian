@@ -59,6 +59,7 @@ import { withTenantDb } from "@/lib/db/tenant-context";
 import { limitByUser } from "@/lib/rate-limit";
 import { syncWalletByChain, isSyncableChain, SYNCABLE_CHAINS } from "@/lib/crypto/wallet-sync-dispatch";
 import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
+import { entitlementLoadOptions, refuseIfFailClosed } from "@/lib/entitlements/consume";
 import { checkManualRefreshCooldown, cooldownMsFromMinutes } from "@/lib/plaid/refreshCooldown";
 import { tenantRefreshDeps } from "@/lib/refresh/deps";
 import { finalizeWalletSync } from "@/lib/refresh/wallet-post-sync";
@@ -88,7 +89,7 @@ export async function POST(
         },
       },
     }),
-    entitlements: await loadEffectiveEntitlements(tx, user.id),
+    entitlements: await loadEffectiveEntitlements(tx, user.id, entitlementLoadOptions()),
   }));
 
   // Owner-only, and no existence disclosure for accounts the user doesn't own.
@@ -123,6 +124,10 @@ export async function POST(
       { status: 503 },
     );
   }
+  // FAIL CLOSED (owner ruling, 2026-10-30) — a missing/invalid policy assignment
+  // refuses a NEW manual sync (403) before the cooldown, the limiter or the claim.
+  const failClosed = refuseIfFailClosed(entitlements, "Manual refresh");
+  if (failClosed) return failClosed;
   const connection = account.connections.map((c) => c.connection).find((c): c is NonNullable<typeof c> => c !== null) ?? null;
   const cooldownMs = cooldownMsFromMinutes(Number(entitlements.dimensions.manualBankRefreshCooldownMinutes.value));
   const cooldown = checkManualRefreshCooldown(connection?.lastManualRefreshAt ?? null, cooldownMs);

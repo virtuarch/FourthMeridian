@@ -49,6 +49,11 @@ const RETAINED: Record<string, string> = {
   "MerchantRule.spaceId":             "not a user column (listed because the census is conservative about `Id` suffixes): Space-scoped rules die with the Space; USER-scoped rules are deleted by ownerUserId",
   "CustomerPolicyAssignment.assignedById": "Customer Success operator who assigned a policy — actor identity; the subject's own assignment row cascades (FK userId)",
   "CustomerCohort.assignedById":          "operator who created the cohort — actor identity on a platform record",
+  // POLICY EDITOR — the operator who created a policy group / wrote a version:
+  // actor identity on a deployment-wide configuration record (no customer data);
+  // versions are immutable history, so the soft reference is kept like an audit actor.
+  "PolicyGroup.createdById":              "operator who created a policy group — actor identity on a platform configuration record",
+  "PolicyGroupVersion.createdById":       "operator who wrote an immutable policy-group version — actor identity on platform configuration history",
   "AiInvocation.spaceId":             "not a user column: a soft Space reference on a ledger that survives by design (RLS migration §4); the user column is nulled",
 };
 

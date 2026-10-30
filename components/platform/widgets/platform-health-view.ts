@@ -45,6 +45,7 @@ import type { ProviderTrust } from "@/lib/platform/provider-health";
 import type { FreshnessHealthState } from "@/lib/platform/resource-freshness";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
 import { openAiFactLines } from "./env-status-view";
+import { platformViewTarget } from "@/lib/platform/workspaces";
 
 // ── Status vocabulary ─────────────────────────────────────────────────────────
 
@@ -190,10 +191,12 @@ export const GROUP_LABEL: Record<HealthGroupId, string> = {
 
 /** Group → the rail workspace id that owns its detail (PLATFORM_AREA_WORKSPACES). */
 export const GROUP_DOORWAY: Record<HealthGroupId, string> = {
-  alerts:        "platform-policies",
+  // PLATFORM OPS PHASE 1 UX — alerts and the configuration posture open the
+  // Policies VIEW that holds them (the default view is Policy groups).
+  alerts:        platformViewTarget("platform-policies", "alerts"),
   providers:     "platform-providers",
   freshness:     "platform-providers",
-  configuration: "platform-policies",
+  configuration: platformViewTarget("platform-policies", "defaults"),
 };
 
 /** The accessible name of a doorway. Begins with the visible text (WCAG 2.5.3)

@@ -14,7 +14,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { requireUser } from '@/lib/session';
 import { paceAiRequest } from '@/lib/ai/pacing';
-import { entitlementsForUser, refuseIfDisabled } from '@/lib/entitlements/consume';
+import { entitlementsForUser, refuseIfDisabled, refuseIfFailClosed } from '@/lib/entitlements/consume';
 import { dailyAiAllowanceFor, allowanceRefusal } from '@/lib/ai/allowance';
 import { readPaidRequestsAdmission, paidRequestsPausedResponse } from '@/lib/platform/ai/paid-requests-admission';
 import { assertPricedModel, UnpricedModelError, AiPausedError, UNPRICED_MODEL_CODE } from '@/lib/ai/provider';
@@ -46,6 +46,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const entitlements = await entitlementsForUser(user.id);
   const disabled = refuseIfDisabled(entitlements, 'dailyBrief', 'The Daily Brief');
   if (disabled) return disabled;
+  // FAIL CLOSED (owner ruling, 2026-10-30) — a missing/invalid policy assignment
+  // keeps `dailyBrief` ON so GET /api/brief still serves the stored Brief, but a
+  // NEW generation is paid work: refused here (403, "plan needs attention")
+  // before pacing, the claim or any model call. The $0 allowance would refuse it
+  // too; this says why honestly instead of "you've used today's allowance".
+  const failClosed = refuseIfFailClosed(entitlements, 'The Daily Brief');
+  if (failClosed) return failClosed;
   // SEC-AI-004 — fails closed on a limiter store error (lib/ai/pacing.ts), like the allowance.
   {
     const limited = await paceAiRequest(user.id, 'ai-brief-generate', { limit: 20, windowSec: 60 }, 'The Daily Brief');

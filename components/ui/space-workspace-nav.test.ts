@@ -257,14 +257,17 @@ console.log("F. Platform axis — the SAME workspace block; mobile; duplicates")
   const hq = spaceMode("/dashboard/platform/PLATFORM_OPS", platNav("platform-policies"));
   const hqNav = navHtml(hq, "Space");
   check("a Platform HQ Space publishes its workspaces to the SAME block — one row per workspace, in composition order",
-    text(topLevel(hqNav)) === platAvailable.map((w) => w.label).join(" ") && platAvailable.length >= 2, text(topLevel(hqNav)));
+    // PLATFORM OPS PHASE 1 UX — "AI & Costs" carries an ampersand, which the markup escapes.
+    text(topLevel(hqNav)) === platAvailable.map((w) => w.label.replace(/&/g, "&amp;")).join(" ") && platAvailable.length >= 2, text(topLevel(hqNav)));
   const hqLinks = hrefs(topLevel(hqNav));
   check("each row is a real link to its canonical deep link: the default = the bare area URL, others ?workspace=<id>",
     hqLinks.join() === platAvailable.map((w) => platformWorkspaceHref("PLATFORM_OPS", w.key)).join() &&
       hqLinks[0] === "/dashboard/platform/PLATFORM_OPS" && platAvailable[0].key === PLATFORM_DEFAULT_WORKSPACE_ID &&
       hqLinks.slice(1).every((h) => /^\/dashboard\/platform\/PLATFORM_OPS\?workspace=platform-[a-z]+$/.test(h)), hqLinks.join());
   check("the open workspace is lit, and only it (the host's activeId, never text)",
-    activeIn(hq, "Space").join() === "Controls" /* P-10 */ && activeIn(spaceMode("/dashboard/platform/PLATFORM_OPS", platNav(PLATFORM_DEFAULT_WORKSPACE_ID)), "Space").join() === "Overview");
+    // PLATFORM OPS PHASE 1 UX — re-ruled labels: "Controls" → "Policies"; the
+    // PLATFORM_OPS default workspace is named "Operations" (area-local label).
+    activeIn(hq, "Space").join() === "Policies" && activeIn(spaceMode("/dashboard/platform/PLATFORM_OPS", platNav(PLATFORM_DEFAULT_WORKSPACE_ID)), "Space").join() === "Operations");
   check("every platform row renders its icon, resolved from the PUBLISHED icon name (the finance id map has no entry for it)",
     (topLevel(hqNav).match(/<svg[^>]*width="14"/g) ?? []).length === platAvailable.length && hqNav.includes("lucide-sliders-horizontal") && hqNav.includes("lucide-layout-dashboard"));
   check("Sections survive on the platform axis, BELOW the workspace list (which workspace, then what's inside)",

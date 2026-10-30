@@ -140,10 +140,12 @@ export function platformMountContext(
   input: PlatformMountInputs,
   opts: PlatformMountOptions = {},
 ): SpaceMountContext {
+  // PLATFORM OPS PHASE 1 UX — an area may name a shared identity locally
+  // (PLATFORM_OPS calls "platform-overview" "Operations"); absent ⇒ identity label.
   const available: MountWorkspaceSummary[] = getPlatformAreaWorkspaces(input.area)
-    .map((c) => getPlatformWorkspace(c.workspaceId))
-    .filter((d): d is NonNullable<typeof d> => Boolean(d))
-    .map((d) => ({ key: d.id, label: d.label, icon: d.icon, kind: d.kind }));
+    .map((c) => ({ c, d: getPlatformWorkspace(c.workspaceId) }))
+    .filter((x): x is { c: typeof x.c; d: NonNullable<typeof x.d> } => Boolean(x.d))
+    .map(({ c, d }) => ({ key: d.id, label: c.label ?? d.label, icon: d.icon, kind: d.kind }));
   // P-10 — a retired workspace id (old deep link) resolves to its new home.
   const selectedKey = resolveSelectedWorkspaceKey(available, canonicalPlatformWorkspaceId(opts.selectedKey), PLATFORM_DEFAULT_WORKSPACE);
 

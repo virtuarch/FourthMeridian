@@ -21,7 +21,8 @@
 import {
   COHORTS, ENTITLEMENT_DIMENSIONS, OVERLAYS, POLICY_GROUPS, DIMENSION_KEYS,
 } from "@/lib/entitlements/catalogue";
-import { explainEntitlement, type EffectiveEntitlements } from "@/lib/entitlements/resolve";
+import { explainEntitlement, type EffectiveEntitlements, type FailClosedReason } from "@/lib/entitlements/resolve";
+import type { PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
 import { deriveConnectionHealthState, type HealthState } from "@/lib/connections/health";
 import { priceAiUsage, type UsageRowLike } from "@/lib/usage/pricing";
 import {
@@ -75,12 +76,22 @@ export interface CustomerPolicyView {
   aiDailyUsdAllowanceOverride: number | null;
   /** AI COST CONTROLS — the allowance IN FORCE for this customer and where it came from (the ONE precedence function). */
   aiDailyAllowance: { usd: number; source: string; ceilingUsd: number; platformUsd: number | null; policyUsd: number; overlayUsd: number | null };
+  /** FAIL CLOSED (owner ruling, 2026-10-30) — the assignment is missing/invalid and the rollout switch is on: no group is in force. */
+  failClosed: boolean;
+  failClosedReason: FailClosedReason | null;
 }
 
-export function projectPolicy(e: EffectiveEntitlements): CustomerPolicyView {
+/** The label the policy view shows when no group is in force (fail closed). */
+export const FAIL_CLOSED_POLICY_LABEL = "None in force — restricted until a valid policy group is assigned";
+
+/** POLICY EDITOR — `catalogue` names DB groups too (absent ⇒ the code catalogue's labels, as before). */
+export function projectPolicy(e: EffectiveEntitlements, catalogue?: PolicyGroupCatalogue): CustomerPolicyView {
   const a = e.dimensions.aiDailyUsdAllowance;
   return {
-    assigned: e.assigned, policyGroup: e.policyGroup, policyGroupLabel: POLICY_GROUPS[e.policyGroup]?.label ?? e.policyGroup,
+    assigned: e.assigned, policyGroup: e.policyGroup,
+    policyGroupLabel: e.failClosed === true ? FAIL_CLOSED_POLICY_LABEL
+      : catalogue?.groups[e.policyGroup]?.label ?? POLICY_GROUPS[e.policyGroup]?.label ?? e.policyGroup,
+    failClosed: e.failClosed === true, failClosedReason: e.failClosedReason ?? null,
     policyGroupKnown: e.policyGroupKnown, unknownPolicyGroup: e.unknownPolicyGroup,
     overlay: e.overlay, overlayLabel: e.overlay ? OVERLAYS[e.overlay]?.label ?? e.overlay : null, overlayKnown: e.overlayKnown,
     assignedAt: e.assignedAt, assignedById: e.assignedById,
