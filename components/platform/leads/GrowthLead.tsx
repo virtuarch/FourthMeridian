@@ -75,7 +75,7 @@ function AcquisitionCard({ acq }: { acq: Fetched<AcquisitionResponse> }) {
               ariaLabel={series === "requests" ? "Distinct beta requesters per UTC day" : "New accounts per UTC day"} />
             <Caption>
               {series === "requests"
-                ? `${n(a.requests.total)} distinct requesters · each counted once per day · ${days.length} UTC days${days.some((d) => d.count === null) ? ` · recorded from ${a.coverage.requestsFrom ?? "—"}` : ""}`
+                ? `${n(a.requests.total)} distinct requesters · ${days.length} UTC days${days.some((d) => d.count === null) ? ` · recorded from ${a.coverage.requestsFrom ?? "—"}` : ""} · bars count each requester once a day`
                 : seriesCaption(days, noun)}
             </Caption>
           </>

@@ -241,7 +241,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   return (
     <Block id="growth-beta-list" label={section.label} className="min-w-0"
       hint={currentMode ? (
-        <span className="inline-flex min-w-0 items-center gap-1.5 truncate text-[11px] text-[var(--text-secondary)]" data-signup-mode title={MODE_META[currentMode].detail}>
+        <span className="inline-flex min-w-0 items-center gap-1.5 truncate text-[11px] text-[var(--text-secondary)] max-sm:hidden" data-signup-mode title={MODE_META[currentMode].detail}>
           <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: MODE_META[currentMode].tone }} />
           {`Signup ${MODE_META[currentMode].label.toLowerCase()}`}
           {status && <span className="text-[var(--text-muted)]">{`· ${PRODUCT_STATUSES.find((s) => s.value === status.productStatus)?.label ?? status.productStatus}`}</span>}
@@ -379,6 +379,15 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
               <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{GROWTH_READ_ONLY_LINE}</p>
             )}
 
+            {/* < sm — the signup mode, which the header hint hides at phone width. */}
+            {currentMode && (
+              <p className="flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] sm:hidden">
+                <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: MODE_META[currentMode].tone }} />
+                {`Signup ${MODE_META[currentMode].label.toLowerCase()}`}
+                {status && <span className="text-[var(--text-muted)]">{`· ${PRODUCT_STATUSES.find((s) => s.value === status.productStatus)?.label ?? status.productStatus}`}</span>}
+              </p>
+            )}
+
             {/* ── Toolbar: status tabs · search · sort ─────────────────────── */}
             <div className="flex flex-wrap items-center gap-2" data-beta-toolbar>
               <span role="tablist" aria-label="Request status" className="inline-flex items-center rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-0.5">
@@ -390,7 +399,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                   </button>
                 ))}
               </span>
-              <label className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-2.5 lg:min-h-8 sm:max-w-xs">
+              <label className="order-last flex min-h-11 min-w-0 basis-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-2.5 sm:order-none sm:max-w-xs sm:flex-1 sm:basis-auto lg:min-h-8">
                 <Search size={12} aria-hidden className="shrink-0 text-[var(--text-faint)]" />
                 <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tab === "pending" ? "Search email or source" : "Search email"}
                   aria-label="Search beta signups" className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none" />
