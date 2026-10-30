@@ -52,7 +52,9 @@ async function main() {
       // A connection action (D6): resuming ONE wallet connection's history.
       "WALLET_HISTORY_RESUMED",
       // Beta reconciliation: a POLICY_GROUP target, counts only (never a customer).
-      "CUSTOMER_POLICY_RECONCILED"].sort();
+      "CUSTOMER_POLICY_RECONCILED",
+      // POLICY EDITOR: group definition changes, POLICY_GROUP targets, counts only (never a customer).
+      "POLICY_GROUP_CREATED", "POLICY_GROUP_UPDATED", "POLICY_GROUP_ROLLED_BACK", "POLICY_GROUP_ARCHIVED", "POLICY_GROUP_DEFAULT_CHANGED"].sort();
     check("the admitted set is exactly D6: job, connection, platform-setting, provider cleanup, Refresh All",
       [...PLATFORM_OPS_FEED_ACTIONS].sort().join() === expected.join(), PLATFORM_OPS_FEED_ACTIONS.join());
     check("every rule names a platform workspace doorway", Object.values(PLATFORM_OPS_FEED_RULES).every((r) => /^platform-/.test(r.workspace)));

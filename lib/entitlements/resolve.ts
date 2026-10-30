@@ -29,6 +29,16 @@
  * Pure and per-request: nothing is written, so a corrected assignment restores
  * normal entitlements on the next request.
  *
+ * POLICY EDITOR (Phase 2) — the policy GROUP values come from a
+ * PolicyGroupCatalogue handed in through `options.catalogue` (the DB's current
+ * versions over the code catalogue, lib/entitlements/policy-groups.ts; loaded,
+ * cached and never-throwing in lib/platform/policies/policy-group-catalogue.ts).
+ * Absent ⇒ CODE_CATALOGUE ⇒ exactly the pre-editor resolution. Effective is
+ * still clamp(ceiling, overlay ∘ group): the editor changes group values only,
+ * never a ceiling, the Founder overlay or FAIL_CLOSED_VALUES. A group whose
+ * stored definition is invalid resolves FAIL CLOSED (INVALID_POLICY_GROUP)
+ * whether or not the rollout switch is on.
+ *
  * "Platform policy / safety constraint" (admission facts like maintenance_mode,
  * provider locks and cooldown floors) is enforced where work executes, not here:
  * this resolver says what the customer is ENTITLED to; the execution path says
@@ -44,19 +54,33 @@
  */
 
 import {
-  DEFAULT_POLICY_GROUP, DIMENSION_KEYS, ENTITLEMENT_DIMENSIONS, FAIL_CLOSED_VALUES, OVERLAYS, POLICY_GROUPS,
+  DIMENSION_KEYS, ENTITLEMENT_DIMENSIONS, FAIL_CLOSED_VALUES, OVERLAYS,
   type EntitlementDimensionKey, type EntitlementValue, type EntitlementValues,
 } from "./catalogue";
 import { parseAllowanceSettingValue, resolveAiDailyAllowance } from "./ai-allowance";
+import { CODE_CATALOGUE, type PolicyGroupCatalogue } from "./policy-groups";
 
 export type EntitlementSource = "POLICY" | "POLICY_DEFAULT" | "OVERLAY" | "CEILING" | "USER_OVERRIDE" | "PLATFORM_SETTING" | "FAIL_CLOSED";
 
-/** Why an assignment failed closed: no row at all, or a row naming a key the catalogue does not define. */
-export type FailClosedReason = "UNASSIGNED" | "UNKNOWN_POLICY_GROUP";
+/**
+ * Why an assignment failed closed: no row at all, a row naming a key the
+ * catalogue does not define, or (POLICY EDITOR) a row naming a group whose
+ * STORED definition is invalid — the last fails closed regardless of the
+ * rollout switch, because no valid plan exists to fall back to honestly.
+ */
+export type FailClosedReason = "UNASSIGNED" | "UNKNOWN_POLICY_GROUP" | "INVALID_POLICY_GROUP";
 
 /** Resolver options. `failClosed` is the rollout switch's value, handed in by the loader (the resolver stays pure). */
 export interface ResolveOptions {
   failClosed?: boolean;
+  /**
+   * POLICY EDITOR — the policy-group definitions in force (DB versions over the
+   * code catalogue). Absent ⇒ CODE_CATALOGUE, i.e. exactly the pre-editor
+   * resolution. The resolver never reads a database; a loader hands this in.
+   */
+  catalogue?: PolicyGroupCatalogue;
+  /** Loader-only: fetch the catalogue (cached, never throws) when `catalogue` is not given. */
+  loadCatalogue?: () => Promise<PolicyGroupCatalogue>;
 }
 
 /** The PlatformSetting key the loader reads for the platform allowance value (registered in lib/platform-settings.ts). */
@@ -148,10 +172,17 @@ export function resolveEffectiveEntitlements(
   platform: PlatformEntitlementInputs = NO_PLATFORM_INPUTS,
   options: ResolveOptions = {},
 ): EffectiveEntitlements {
+  const catalogue = options.catalogue ?? CODE_CATALOGUE;
   const assigned = facts !== null;
-  const known = assigned && facts.policyGroup in POLICY_GROUPS;
-  const groupKey = known ? facts!.policyGroup : DEFAULT_POLICY_GROUP;
-  const group = POLICY_GROUPS[groupKey];
+  const assignedGroup = facts ? catalogue.groups[facts.policyGroup] : undefined;
+  // POLICY EDITOR — a DEFINED group whose stored definition failed validation.
+  const invalidAssigned = assignedGroup !== undefined && !assignedGroup.valid;
+  const known = assignedGroup !== undefined && assignedGroup.valid;
+  const groupKey = assigned && assignedGroup !== undefined ? facts!.policyGroup : catalogue.defaultKey;
+  const group = catalogue.groups[groupKey];
+  // The plan that would be in force — null when there is none that validates
+  // (an invalid assigned group, or an invalid / missing default).
+  const planValues: EntitlementValues | null = group?.valid ? group.values : null;
   const overlayKey = facts?.overlay ?? null;
   const overlayKnown = overlayKey !== null && overlayKey in OVERLAYS;
   const overlay = overlayKnown ? OVERLAYS[overlayKey!] : null;
@@ -164,7 +195,12 @@ export function resolveEffectiveEntitlements(
   // restricted set replaces the policy; the overlay, the per-customer override
   // and the platform allowance setting are NOT candidates (none may resurrect
   // paid access on a broken assignment). The ceiling still clamps last.
-  if (options.failClosed === true && !known) {
+  //
+  // POLICY EDITOR — and ALWAYS (switch or not) when there is no valid plan to
+  // resolve to: an assigned group whose stored version is invalid, or an
+  // unassigned / unknown customer whose DEFAULT group is invalid. Never
+  // "unlimited", never silently Beta.
+  if ((options.failClosed === true && !known) || planValues === null) {
     for (const key of DIMENSION_KEYS) {
       const asked = (FAIL_CLOSED_VALUES as EntitlementValues)[key];
       const { value, clamped } = clamp(key, asked);
@@ -175,11 +211,14 @@ export function resolveEffectiveEntitlements(
       if (key === "aiDailyUsdAllowance") { dim.platformValue = null; dim.overrideValue = null; }
       dimensions[key] = dim;
     }
+    const reason: FailClosedReason = invalidAssigned || (planValues === null && (known || !(options.failClosed === true)))
+      ? "INVALID_POLICY_GROUP"
+      : assigned ? "UNKNOWN_POLICY_GROUP" : "UNASSIGNED";
     return {
       policyGroup: groupKey,
       assigned,
-      policyGroupKnown: !assigned,
-      unknownPolicyGroup: assigned ? facts!.policyGroup : null,
+      policyGroupKnown: !assigned || assignedGroup !== undefined,
+      unknownPolicyGroup: assigned && assignedGroup === undefined ? facts!.policyGroup : null,
       overlay: overlayKnown ? overlayKey : null,
       overlayKnown: overlayKey === null || overlayKnown,
       dimensions,
@@ -187,11 +226,11 @@ export function resolveEffectiveEntitlements(
       assignedById: facts?.assignedById ?? null,
       aiDailyUsdAllowanceOverride: override,
       failClosed: true,
-      failClosedReason: assigned ? "UNKNOWN_POLICY_GROUP" : "UNASSIGNED",
+      failClosedReason: reason,
     };
   }
   for (const key of DIMENSION_KEYS) {
-    const policyValue = (group.values as EntitlementValues)[key];
+    const policyValue = planValues[key];
     const overlayValue = overlay && key in overlay.values ? (overlay.values[key] as EntitlementValue) : null;
     if (key === "aiDailyUsdAllowance") {
       // The ONE precedence function — enforcement and every operator view agree.
@@ -244,7 +283,7 @@ export function explainEntitlement(d: EffectiveDimension): string {
     case "PLATFORM_SETTING": return `${label}: ${v} — platform setting (policy ${String(d.policyValue)}).`;
     case "POLICY":           return `${label}: ${v} — policy group.`;
     case "POLICY_DEFAULT":   return `${label}: ${v} — default policy group (no assignment recorded).`;
-    case "FAIL_CLOSED":      return `${label}: ${v} — restricted (fail closed): the customer's policy-group assignment is missing or invalid; correct it in Customer Success to restore the plan.`;
+    case "FAIL_CLOSED":      return `${label}: ${v} — restricted (fail closed): the customer's policy-group assignment is missing or invalid, or the group's stored definition is invalid; correct it in Customer Success (or the group in Policies) to restore the plan.`;
   }
 }
 
@@ -289,12 +328,13 @@ export async function loadPlatformEntitlementInputs(client: EntitlementReadClien
  * exactly the pre-ruling resolution.
  */
 export async function loadEffectiveEntitlements(client: EntitlementReadClient, userId: string, options: ResolveOptions = {}): Promise<EffectiveEntitlements> {
-  const [row, platform] = await Promise.all([
+  const [row, platform, catalogue] = await Promise.all([
     client.customerPolicyAssignment.findUnique({ where: { userId } }),
     loadPlatformEntitlementInputs(client),
+    options.catalogue ?? (options.loadCatalogue ? options.loadCatalogue() : CODE_CATALOGUE),
   ]);
   return resolveEffectiveEntitlements(row ? {
     policyGroup: row.policyGroup, overlay: row.overlay, assignedAt: row.assignedAt, assignedById: row.assignedById,
     aiDailyUsdAllowanceOverride: row.aiDailyUsdAllowanceOverride ?? null,
-  } : null, platform, options);
+  } : null, platform, { failClosed: options.failClosed, catalogue });
 }

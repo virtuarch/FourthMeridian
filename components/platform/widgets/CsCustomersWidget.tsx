@@ -285,7 +285,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                       <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Change policy</p>
                       <label className="flex items-center justify-between gap-2"><span className="text-[var(--text-secondary)]">Group</span>
                         <select value={policyGroup} onChange={(e) => setPolicyGroup(e.target.value)} className="rounded border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)]" style={{ borderColor: "var(--border-hairline)" }}>
-                          {Object.values(POLICY_GROUPS).map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
+                          {/* POLICY EDITOR — the server's assignable list (code + valid, non-archived DB groups); the code catalogue if absent. */}
+                          {(detail.assignablePolicyGroups ?? Object.values(POLICY_GROUPS)).map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
                         </select></label>
                       <label className="flex items-center justify-between gap-2"><span className="text-[var(--text-secondary)]">Overlay</span>
                         <select value={overlay} onChange={(e) => setOverlay(e.target.value)} className="rounded border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)]" style={{ borderColor: "var(--border-hairline)" }}>

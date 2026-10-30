@@ -23,8 +23,9 @@
  *      deletion sets deactivatedAt) — the same population the fail-closed
  *      Attention item counts. Non-customer roles and deactivated accounts are
  *      excluded and reported as such.
- *   4. BETA ONLY. The group is DEFAULT_POLICY_GROUP and nothing else: no
- *      overlay, no allowance override, never a Free / Paid / Pro group.
+ *   4. BETA ONLY. The group is the DEFAULT group (Beta unless an operator moved
+ *      the default under CONTROL) and nothing else: no overlay, no allowance
+ *      override, never a Free / Paid / Pro group by itself.
  *   5. COUNTED BEFORE CHANGED. The dry run reports the population; the apply
  *      takes the count the operator saw (`expectedEligible`) and refuses with
  *      CONFLICT, writing nothing, when the population moved since.
@@ -39,6 +40,12 @@
  *
  * Fail-closed is unchanged: an account still missing an assignment after this
  * (registered mid-run, or excluded) resolves exactly as before.
+ *
+ * POLICY EDITOR (Phase 2) — "the beta default" is THE DEFAULT GROUP of the
+ * policy-group catalogue (the DB default row, else the code
+ * DEFAULT_POLICY_GROUP = Beta), the same key registration assigns; and
+ * "a catalogue group" (alreadyAssigned vs unknownAssignments) is a key that
+ * resolves to a valid plan in that catalogue. Today both are Beta, unchanged.
  */
 
 import "server-only";
@@ -46,7 +53,8 @@ import type { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
-import { DEFAULT_POLICY_GROUP, POLICY_GROUPS } from "@/lib/entitlements/catalogue";
+import { groupLabel, resolvableGroupKeys, type PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
+import { loadPolicyGroupCatalogue } from "./policy-group-catalogue";
 
 // ── The populations (one definition each; the read and the apply share them) ──
 
@@ -68,6 +76,8 @@ const NON_CUSTOMER_UNASSIGNED_WHERE = { role: { not: "USER" as const }, policyAs
 export interface BetaReconciliationDryRun {
   eligible: number;
   groupKey: string;
+  /** POLICY EDITOR — the default group's label (the entry names the group it assigns). */
+  groupLabel?: string;
   excluded: { deactivated: number; nonCustomerRoles: number; alreadyAssigned: number; unknownAssignments: number };
   checkedAt: string;
 }
@@ -117,8 +127,10 @@ export interface BetaReconciliationClient { $transaction<T>(fn: (tx: BetaReconci
 export async function readBetaReconciliation(
   client: BetaReconciliationReadClient = systemDb as unknown as BetaReconciliationReadClient,
   now: Date = new Date(),
+  loadCatalogue: () => Promise<PolicyGroupCatalogue> = loadPolicyGroupCatalogue,
 ): Promise<BetaReconciliationDryRun> {
-  const known = Object.keys(POLICY_GROUPS);
+  const catalogue = await loadCatalogue();
+  const known = resolvableGroupKeys(catalogue);
   const [eligible, deactivated, nonCustomerRoles, alreadyAssigned, unknownAssignments] = await Promise.all([
     client.user.count({ where: ELIGIBLE_WHERE }),
     client.user.count({ where: DEACTIVATED_UNASSIGNED_WHERE }),
@@ -128,7 +140,8 @@ export async function readBetaReconciliation(
   ]);
   return {
     eligible,
-    groupKey: DEFAULT_POLICY_GROUP,
+    groupKey: catalogue.defaultKey,
+    groupLabel: groupLabel(catalogue, catalogue.defaultKey),
     excluded: { deactivated, nonCustomerRoles, alreadyAssigned, unknownAssignments },
     checkedAt: now.toISOString(),
   };
@@ -139,8 +152,9 @@ export async function readBetaReconciliation(
 export async function applyBetaReconciliation(
   input: ApplyBetaReconciliationInput,
   client: BetaReconciliationClient = systemDb as unknown as BetaReconciliationClient,
+  loadCatalogue: () => Promise<PolicyGroupCatalogue> = loadPolicyGroupCatalogue,
 ): Promise<BetaReconciliationResult> {
-  const groupKey = DEFAULT_POLICY_GROUP;
+  const groupKey = (await loadCatalogue()).defaultKey;
   return client.$transaction(async (tx) => {
     const rows = await tx.user.findMany({ where: ELIGIBLE_WHERE, select: { id: true }, orderBy: { createdAt: "asc" } });
     const eligible = rows.length;

@@ -64,6 +64,13 @@ export const PLATFORM_OPS_FEED_RULES: Readonly<Record<string, FeedActionRule>> =
   // targeting the POLICY_GROUP, never a customer: the row carries counts only.
   // Per-customer assignment (CUSTOMER_POLICY_ASSIGNED, a USER target) stays out.
   [AuditAction.CUSTOMER_POLICY_RECONCILED]:   { label: "Assigned Beta to unassigned accounts", kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
+  // POLICY EDITOR (2026-10-30) — group definitions edited from Policies, each
+  // targeting the POLICY_GROUP (counts only, never a customer).
+  [AuditAction.POLICY_GROUP_CREATED]:         { label: "Created a policy group",   kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
+  [AuditAction.POLICY_GROUP_UPDATED]:         { label: "Edited a policy group",    kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
+  [AuditAction.POLICY_GROUP_ROLLED_BACK]:     { label: "Restored a policy group version", kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
+  [AuditAction.POLICY_GROUP_ARCHIVED]:        { label: "Archived a policy group",  kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
+  [AuditAction.POLICY_GROUP_DEFAULT_CHANGED]: { label: "Changed the default policy group", kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
   [AuditAction.OPERATOR_REFRESH_ALL]:         { label: "Refreshed a customer's authorities", kinds: ["USER"], legacyOk: false, workspace: "platform-refresh" },
 };
 

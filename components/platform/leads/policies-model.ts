@@ -13,9 +13,10 @@
  *   operational-controls   maintenance mode                          → emergency card
  *   alerts                 rules + the latest evaluation's delivery → alerts card
  *
- * READ-ONLY (Phase 1). Editing policy groups arrives with the policy editor
- * (Phase 2): nothing here models an edit, a draft or a pending change — the
- * model has no edit affordance to offer (pinned by platform-visual-policies.test.ts).
+ * READ-ONLY MODEL. Editing policy groups (Phase 2) lives in its own model
+ * (policy-editor-model.ts) and component (PolicyGroupEditor.tsx), offered only
+ * to an operator whose access allows it: nothing HERE models an edit, a draft
+ * or a pending change (pinned by platform-visual-policies.test.ts).
  *
  * THE SIX CATEGORIES (owner, 2026-10-30) map the nine catalogue dimensions with
  * plain-English labels, each dimension exactly once; a category with no
@@ -43,10 +44,8 @@ type Value = Dimension["ceiling"];
 const n = (v: number) => v.toLocaleString("en-US");
 const plural = (v: number, word: string) => `${n(v)} ${word}${v === 1 ? "" : "s"}`;
 
-/** The one honest line about editing (said once, on the group detail). */
-export const EDITING_NOTE = "Editing arrives with the policy editor";
-export const VERSION_HISTORY_NOTE = "Arrives with the policy editor";
-export const COST_EXPOSURE_NOTE = "Arrives with policy economics";
+/** The group detail's line for an operator who may not edit (the editor decides; the server enforces). */
+export const READ_ONLY_NOTE = "Changing a policy group requires Platform Operations' highest access level";
 
 // ── Categories ────────────────────────────────────────────────────────────────
 
@@ -134,6 +133,12 @@ export interface PolicyColumn {
   effectiveFrom: string;
   /** Effective catalogue values (clamped to the ceiling). */
   values: Record<string, Value>;
+  /** POLICY EDITOR — group state (absent on an overlay column / an older reader). */
+  version?: number | null;
+  archived?: boolean;
+  /** False when the stored definition is invalid (its customers fail closed). */
+  valid?: boolean;
+  customersWithOverlay?: number;
 }
 
 /** "Beta — full access (v1)" → "Beta"; "Founder / internal (v1)" → "Founder". */
@@ -149,6 +154,7 @@ export function policyColumns(data: PolicyGroupsResponse): PolicyColumn[] {
     Object.fromEntries(dims.filter((d) => values[d.key] !== undefined).map((d) => [d.key, clampToCeiling(d, values[d.key])]));
   const groups: PolicyColumn[] = data.policyGroups.map((g) => ({
     key: g.key, label: shortName(g.label), title: g.label, kind: "group", isDefault: g.isDefault, customers: g.customers, effectiveFrom: g.effectiveFrom, values: clampAll(g.values),
+    version: g.version ?? null, archived: g.archived === true, valid: g.valid !== false, customersWithOverlay: g.customersWithOverlay ?? 0,
   }));
   const base = data.policyGroups.find((g) => g.isDefault) ?? data.policyGroups[0];
   const overlays: PolicyColumn[] = base
@@ -206,7 +212,9 @@ export interface Coverage {
 }
 
 export function coverage(data: PolicyGroupsResponse): Coverage {
-  const covered = data.policyGroups.reduce((a, g) => a + g.customers, 0);
+  // An INVALID stored group's customers are not covered (they fail closed); the
+  // reader already counts them in unknownAssignments.
+  const covered = data.policyGroups.filter((g) => g.valid !== false).reduce((a, g) => a + g.customers, 0);
   const total = covered + (data.unassignedActiveCustomers ?? data.unassignedCustomers) + data.unknownAssignments;
   const def = data.policyGroups.find((g) => g.key === data.defaultPolicyGroup) ?? data.policyGroups.find((g) => g.isDefault);
   return {
@@ -223,7 +231,7 @@ export const DISTRIBUTION_COLORS = {
 /** The donut: every group, then Unassigned and Unknown. Zero slices are dropped; the slices sum to the total. */
 export function distribution(data: PolicyGroupsResponse): { id: string; label: string; value: number; color?: string }[] {
   return [
-    ...data.policyGroups.map((g) => ({ id: g.key, label: shortName(g.label), value: g.customers })),
+    ...data.policyGroups.filter((g) => g.valid !== false).map((g) => ({ id: g.key, label: shortName(g.label), value: g.customers })),
     { id: "unassigned", label: "Unassigned", value: (data.unassignedActiveCustomers ?? data.unassignedCustomers), color: DISTRIBUTION_COLORS.unassigned },
     { id: "unknown", label: "Unknown group", value: data.unknownAssignments, color: DISTRIBUTION_COLORS.unknown },
   ].filter((i) => i.value > 0);
@@ -254,9 +262,10 @@ export function policyKpis(groups: Fetched<PolicyGroupsResponse>): Kpi[] {
   }
   const c = coverage(d);
   return [
-    { key: "groups", label: "Policy groups", value: n(d.policyGroups.length), sub: `${d.policyGroups.filter((g) => g.isDefault).length ? "1 default" : "no default"} · read-only`, tone: "muted" },
+    { key: "groups", label: "Policy groups", value: n(d.policyGroups.filter((g) => !g.archived).length),
+      sub: `${d.policyGroups.filter((g) => g.isDefault).length ? "1 default" : "no default"}${d.policyGroups.some((g) => g.archived) ? ` · ${n(d.policyGroups.filter((g) => g.archived).length)} archived` : ""}`, tone: "muted" },
     { key: "unassigned", label: "Unassigned", value: n(c.unassigned), sub: c.unassigned > 0 ? "fail-closed exposure" : "none", tone: c.unassigned > 0 ? "warn" : "ok" },
-    { key: "unknown", label: "Unknown group", value: n(c.unknown), sub: c.unknown > 0 ? "retired group key" : "none", tone: c.unknown > 0 ? "bad" : "ok" },
+    { key: "unknown", label: "Unknown group", value: n(c.unknown), sub: c.unknown > 0 ? "retired or invalid group" : "none", tone: c.unknown > 0 ? "bad" : "ok" },
     { key: "overlays", label: "Overlays in use", value: n(c.overlaysInUse), sub: `${plural(d.overlays.length, "overlay")} defined`, tone: "muted" },
   ];
 }
@@ -368,15 +377,19 @@ export function emergencyEngaged(o: Fetched<OperationalControlsReadModel>, a: Fe
 export const RECONCILE_GUARANTEE =
   "Creates Beta assignments only for active accounts that have none. Existing assignments — including Founder — are never changed.";
 
-/** The entry's label, or null when there is nothing to assign (then nothing renders). */
-export function reconcileEntryLabel(eligible: number | null | undefined): string | null {
+/**
+ * The entry's label, or null when there is nothing to assign (then nothing renders).
+ * POLICY EDITOR — `group` is the DEFAULT group's short name from the dry run
+ * (Beta unless an operator moved the default); absent ⇒ "Beta".
+ */
+export function reconcileEntryLabel(eligible: number | null | undefined, group = "Beta"): string | null {
   if (!eligible || eligible <= 0) return null;
-  return `Assign Beta to ${eligible.toLocaleString("en-US")} unassigned account${eligible === 1 ? "" : "s"}`;
+  return `Assign ${group} to ${eligible.toLocaleString("en-US")} unassigned account${eligible === 1 ? "" : "s"}`;
 }
 
 /** The confirmation's exact-count sentence. */
-export function reconcileConfirmCount(eligible: number): string {
-  return `${eligible.toLocaleString("en-US")} active account${eligible === 1 ? "" : "s"} without an assignment will be placed on Beta.`;
+export function reconcileConfirmCount(eligible: number, group = "Beta"): string {
+  return `${eligible.toLocaleString("en-US")} active account${eligible === 1 ? "" : "s"} without an assignment will be placed on ${group}.`;
 }
 
 /** The outcome line after a POST answered (status + body). */

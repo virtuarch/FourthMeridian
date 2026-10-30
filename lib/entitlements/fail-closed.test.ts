@@ -23,6 +23,7 @@ import {
   isOverlayKey, isPolicyGroupKey,
 } from "./catalogue";
 import { explainEntitlement, loadEffectiveEntitlements, resolveEffectiveEntitlements, type AssignmentFacts } from "./resolve";
+import { CODE_CATALOGUE, buildPolicyGroupCatalogue } from "./policy-groups";
 import { countLimit, refuseIfDisabled, refuseIfFailClosed, PLAN_NEEDS_ATTENTION_CODE } from "./consume";
 import { buildPolicyAssignmentHealth, customerRef, describePolicyAssignmentIssue, POLICY_ASSIGNMENT_ISSUE_CAP } from "./assignment-health-core";
 import { loadPolicyAssignmentHealth, type PolicyAssignmentReadClient } from "@/lib/platform/policy-assignment-health";
@@ -156,7 +157,8 @@ async function main(): Promise<void> {
     const readSrc = strip("lib/platform/policy-groups-read.ts");
     check("the policy-groups read never names it (lists POLICY_GROUPS / OVERLAYS only)", !/FAIL_CLOSED/.test(readSrc));
     const assign = strip("lib/platform/customer/assign.ts");
-    check("the assignment write validates through isPolicyGroupKey (FAIL_CLOSED is refused as unknown)", /isPolicyGroupKey\(input\.policyGroup\)/.test(assign) && !/FAIL_CLOSED/.test(assign));
+    // POLICY EDITOR — validation moved to the catalogue (code + valid, non-archived DB groups); FAIL_CLOSED is never a group there.
+    check("the assignment write validates through isAssignableGroup (FAIL_CLOSED is refused as unknown)", /isAssignableGroup\(catalogue, input\.policyGroup\)/.test(assign) && !/FAIL_CLOSED/.test(assign));
     const widget = strip("components/platform/widgets/CsCustomersWidget.tsx");
     check("the CS editor offers POLICY_GROUPS only (never the restricted set)", !/FAIL_CLOSED_VALUES/.test(widget) && /POLICY_GROUPS/.test(widget));
   }
@@ -254,10 +256,23 @@ async function main(): Promise<void> {
         findMany: async (a) => { fake.calls.push(`cpa.findMany:${a.take}:${JSON.stringify(a.where)}`); return [{ userId: "cuserzzzz01", policyGroup: "RETIRED_GROUP_V0", assignedAt: new Date("2026-01-01T00:00:00Z") }, { userId: "cuserzzzz02", policyGroup: "X".repeat(200), assignedAt: new Date("2026-01-02T00:00:00Z") }]; },
       },
     };
-    const h = await loadPolicyAssignmentHealth({ client: fake, enforced: true, now });
+    // POLICY EDITOR — the catalogue is injected (hermetic; production uses the cached loader).
+    const h = await loadPolicyAssignmentHealth({ client: fake, enforced: true, now, catalogue: CODE_CATALOGUE });
     check("reads: two counts + two finds, bounded by the cap", fake.calls.length === 4 && fake.calls.filter((c) => c.includes(`:${POLICY_ASSIGNMENT_ISSUE_CAP}:`)).length === 2);
     check("reads: the user find selects id + createdAt only (no email, name, username)", fake.calls.some((c) => c === `user.findMany:${POLICY_ASSIGNMENT_ISSUE_CAP}:{"id":true,"createdAt":true}`));
     check("reads: unknown = policyGroup NOT IN the catalogue keys", fake.calls.some((c) => c.includes(`"notIn":${JSON.stringify(Object.keys(POLICY_GROUPS))}`)));
+    {
+      // POLICY EDITOR — "known" = resolves to a VALID plan: a valid DB group is known; an INVALID stored one is reported.
+      const db = buildPolicyGroupCatalogue(
+        [{ key: "PRO_V1", label: "Pro", description: "", isDefault: false, builtIn: false, archivedAt: null, currentVersion: 1 },
+         { key: "BROKEN_V1", label: "Broken", description: "", isDefault: false, builtIn: false, archivedAt: null, currentVersion: 1 }],
+        [{ groupKey: "PRO_V1", version: 1, values: POLICY_GROUPS[DEFAULT_POLICY_GROUP].values, createdAt: now },
+         { groupKey: "BROKEN_V1", version: 1, values: {}, createdAt: now }], now);
+      fake.calls.length = 0;
+      await loadPolicyAssignmentHealth({ client: fake, enforced: true, now, catalogue: db });
+      check("reads: a valid DB group is known; an invalid stored group is NOT (its customers are reported)",
+        fake.calls.some((c) => c.includes(`"notIn":${JSON.stringify([DEFAULT_POLICY_GROUP, "PRO_V1"].sort())}`)));
+    }
     check("health: exact counts, capped list, truncated", h.total === 32 && h.unassigned === 30 && h.unknown === 2 && h.items.length === POLICY_ASSIGNMENT_ISSUE_CAP && h.truncated && h.enforced);
     check("health: oldest first — the two unknown keys lead", h.items[0].reason === "UNKNOWN_POLICY_GROUP" && h.items[0].unknownKey === "RETIRED_GROUP_V0" && h.items[0].ref === "user …zzzz01");
     check("health: an over-long unknown key is cut to 64 chars", h.items[1].unknownKey?.length === 64);

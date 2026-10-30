@@ -9,8 +9,8 @@
 import { AuditAction } from "@/lib/audit-actions";
 import { isOperatorReasonCode, type OperatorActionInput } from "@/lib/audit";
 
-export type ControlName = "refresh-cadence" | "job-cadence" | "ai-cost-controls" | "beta-reconciliation";
-export type ControlVerb = "change" | "reset" | "apply";
+export type ControlName = "refresh-cadence" | "job-cadence" | "ai-cost-controls" | "beta-reconciliation" | "policy-groups";
+export type ControlVerb = "change" | "reset" | "apply" | "create" | "rollback" | "archive" | "default";
 export type ControlRefusalCode = "VALIDATION" | "CONFLICT" | "NOT_FOUND" | "NOT_EDITABLE";
 
 export interface ControlRefusal {
@@ -33,6 +33,8 @@ const TARGET_PREFIX: Record<ControlName, string> = {
   "ai-cost-controls": "ai-cost-control",
   // Beta reconciliation — the target key is the policy group it assigns.
   "beta-reconciliation": "beta-reconciliation",
+  // Policy editor — the target key is the policy group (only when it matched the key pattern).
+  "policy-groups": "policy-group",
 };
 
 /** Closed-vocabulary target keys are short identifiers; anything else is "unknown". */
